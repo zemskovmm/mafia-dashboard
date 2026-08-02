@@ -1,0 +1,579 @@
+# Mafia Dashboard — Rules and Product Baseline
+
+> **Status:** researched draft for product planning
+> **Primary mode:** in-person, moderator-led **Sport / Club Mafia**
+> **Product target:** a self-hosted web dashboard for the moderator, not an autonomous online game
+> **Normative terms:** **MUST**, **SHOULD**, and **MAY** indicate required, recommended, and optional behavior.
+
+## 1. Research conclusion
+
+“Mafia” is a family of social-deduction games rather than one universally standardized game. The sources agree on the core model—an informed minority opposes an uninformed majority through alternating day and night phases—but differ on player count, roles, role reveal, voting, ties, night actions, and penalties.[S1][S2][S4][S5][S6][S7]
+
+An earlier Swift prototype contained 60-second and 30-second timers, a drawing/notes area, and music controls. The native implementation has been removed, but those product ideas align especially well with **Sport / Club Mafia**, whose common format uses:
+
+- exactly 10 numbered players;
+- seven red-team roles, including one Sheriff;
+- three black-team roles, including one Don;
+- one-minute sequential speeches;
+- 30-second tie speeches;
+- concealed roles after elimination;
+- moderator-tracked nominations, votes, night shots, checks, and fouls;
+- music or masking sound during the night.[S3][S4]
+
+Therefore, the first web release SHOULD implement Sport / Club Mafia as a versioned default ruleset. Flexible party-game roles such as Doctor, Protector, Seer, or Serial Killer belong in later ruleset modules rather than the first MVP.
+
+## 2. Product scope
+
+### 2.1 MVP scope
+
+The MVP is a **moderator’s control surface for a physical table**. Players remain together in person, receive physical role cards, speak aloud, gesture, and vote at the table. The moderator uses the dashboard to:
+
+1. configure a game;
+2. assign players to seats 1–10;
+3. privately record roles;
+4. run the phase sequence;
+5. time speeches and night steps;
+6. record nominations, votes, fouls, checks, shots, and eliminations;
+7. detect legal next actions and win conditions;
+8. correct moderator mistakes through an audited undo;
+9. retain completed-game history in SQL.
+
+The MVP does **not** require player accounts, automatic role delivery to phones, video chat, or remote voting. Those features materially change the trust and secrecy model and should be separate, optional product modes.
+
+### 2.2 Product principles
+
+- **Assist, do not distract.** The moderator must be able to operate the core flow with large controls and minimal typing.
+- **Rules are data.** A completed game stores the ruleset name and version used at game start.
+- **The event log is authoritative.** Current state is derived from recorded events so actions can be audited and safely undone.
+- **Secrets stay private.** Private roles and checks must not leak to a public display, logs visible to players, browser notifications, or URLs.
+- **A moderator remains the arbiter.** The app validates normal flow but MUST allow an explained override for unusual rulings.
+- **No silent data loss.** Every accepted action is persisted and visibly acknowledged.
+- **Fast recovery.** Refreshing the page or restarting the app MUST restore the active game and timer state.
+
+Existing moderator tools repeatedly emphasize role/vote tracking, guided night actions, timers, game history, autosave, and automatic end-game detection. Those are useful benchmark capabilities, not code or designs to copy.[S8][S9]
+
+## 3. Canonical MVP ruleset: Sport Mafia v1
+
+This section defines the application’s initial executable baseline. It is a product decision derived from the compared sources, not a claim that every club uses identical rules.
+
+### 3.1 Participants and teams
+
+A game has:
+
+- **10 active player seats**, numbered 1 through 10;
+- **1 non-playing moderator / judge**;
+- **Red team (7):** 6 Citizens and 1 Sheriff;
+- **Black team (3):** 2 Mafia and 1 Don.
+
+Roles are assigned randomly unless the moderator explicitly records a manual deal. Seat numbers remain stable for the entire game.
+
+### 3.2 Role abilities
+
+| Role | Team | Count | Knowledge and ability |
+|---|---:|---:|---|
+| Citizen | Red | 6 | No private night action. Speaks, nominates, and votes while active. |
+| Sheriff | Red | 1 | Once per regular night, checks one active player and privately learns whether that player is red or black. |
+| Mafia | Black | 2 | Learns the black team on night zero and participates in the coordinated nightly shot while active. |
+| Don | Black | 1 | Has Mafia abilities and, once per regular night, checks whether one active player is the Sheriff. |
+| Moderator / Judge | Neutral | 1 | Runs phases, time, rulings, secret information, votes, fouls, eliminations, and victory checks. Does not play. |
+
+The Sheriff learns **team alignment**, not an exact role. The Don learns only **Sheriff / not Sheriff**.[S3][S4]
+
+### 3.3 Information policy
+
+The ruleset is **closed-role / dark reveal**:
+
+- each player knows only their own role initially;
+- black players meet one another on night zero;
+- the moderator knows every role;
+- Don and Sheriff checks are private;
+- an eliminated player’s role is not disclosed until the game ends;
+- eliminated players MUST not speak, gesture, or otherwise influence the game after their final speech;
+- all roles may be revealed in the post-game summary.
+
+This differs from many party variants that reveal cards immediately after elimination.[S2][S5]
+
+### 3.4 Victory conditions
+
+The dashboard MUST evaluate victory immediately after each elimination, disqualification, or other event that changes active team counts.
+
+- **Red wins** when no active black players remain.
+- **Black wins** when active black players are equal to or greater than active red players.
+- **Draw** is available as a moderator ruling. In Sport Mafia v1 it is automatically suggested if three consecutive complete night/day cycles produce no elimination, but the moderator must confirm it because club rules differ on this edge case.[S4]
+
+No further phase starts after a win or confirmed draw.
+
+## 4. Game state machine
+
+### 4.1 States
+
+The application SHOULD model explicit states rather than a collection of unrelated buttons:
+
+```text
+DRAFT
+  -> READY
+  -> NIGHT_ZERO
+  -> DAY_SPEECHES
+  -> DAY_VOTE (only when a vote is required)
+  -> TIE_SPEECHES / REVOTE (zero or more times)
+  -> DAY_RESULT
+  -> REGULAR_NIGHT
+  -> NIGHT_RESULT
+  -> DAY_SPEECHES ...
+  -> FINISHED
+```
+
+Exceptional terminal states are `CANCELLED` and `DRAW`. A game may be paused from any live state without changing its logical phase.
+
+### 4.2 Preconditions
+
+A game cannot become `READY` until:
+
+- all 10 seats have unique seat numbers;
+- each seat has a display name or nickname;
+- exactly 7 red and 3 black roles exist;
+- exactly one Sheriff and one Don exist;
+- each seat receives exactly one role assignment and each role slot is assigned once;
+- the moderator has confirmed that players have seen their physical cards;
+- the selected ruleset and ruleset version are stored.
+
+### 4.3 Night zero
+
+Night zero establishes secret information and does not eliminate anyone.
+
+1. The moderator announces night and all players put on masks / close their eyes.
+2. Black players wake, identify one another, identify the Don, and agree on a future target order. The default timer is **60 seconds**.[S3][S4]
+3. Black players sleep.
+4. The Don identifies themself to the moderator if needed.
+5. The Sheriff identifies themself to the moderator if needed.
+6. The moderator may run a **40-second free-seating / sound-masking period** if enabled by the ruleset.[S4]
+7. Day one begins with seat 1.
+
+The target plan is a moderator note; it is not enforced as a mandatory sequence because players can miss, become eliminated, or use a different club convention.
+
+### 4.4 Day speeches
+
+- Only active players speak.
+- Each active player receives up to **60 seconds**.
+- Players speak in ascending seat order, wrapping after seat 10.
+- Day one starts with seat 1.
+- Each later day starts with the next active seat after the previous day’s starting speaker.
+- A player MAY end early by passing; the timer stops and the next speaker begins.
+- A player with a third foul loses their next normal speech but retains the brief opportunity to make one legal nomination.
+- The moderator MAY pause, restart, or correct a timer. Corrections are logged.
+
+The UI MUST show the current speaker, upcoming speaker, remaining time, fouls, and whether the player has already nominated someone that day.
+
+### 4.5 Nominations
+
+During their own speech, each active player MAY nominate at most one active player for elimination.
+
+A valid nomination records:
+
+- game day;
+- nominating player;
+- nominated player;
+- sequence order;
+- timestamp;
+- moderator who accepted it.
+
+Duplicate nominations of the same candidate do not create a second voting slot. In Sport Mafia v1, an accepted nomination cannot be withdrawn. “Allow nomination withdrawal” is a ruleset option because published club rules differ.[S3][S4]
+
+### 4.6 Whether a vote occurs
+
+- With **no nominations**, no vote occurs.
+- On **day one only**, one nomination does not trigger a vote; the nominated player stays.
+- On later days, one or more nominations trigger a vote.
+- With multiple nominations, candidates are voted in nomination order.[S4]
+
+### 4.7 Voting
+
+The moderator opens each candidate’s voting window in nomination order.
+
+- Each active player has one vote per voting round.
+- The physical vote is cast within approximately **1.5–2 seconds** after the moderator calls the candidate.[S3][S4]
+- The moderator records the number of votes for the candidate.
+- A vote already cast cannot be moved.
+- Any uncast votes are assigned to the last candidate under the canonical Sport Mafia rule.
+- The recorded total MUST equal the number of active players eligible to vote unless a rules event explicitly changes eligibility.
+- The candidate with the sole highest total is eliminated.
+
+The app SHOULD support fast count entry rather than requiring the moderator to identify every voter. Per-voter recording MAY be enabled for detailed statistics, but aggregate counts are sufficient for the canonical table procedure.
+
+### 4.8 Tie resolution
+
+If two or more candidates share the highest total:
+
+1. tied candidates receive **30 seconds each**, in original nomination order;
+2. only those candidates enter a revote;
+3. if a smaller subset ties, repeat 30-second speeches and a revote for that subset;
+4. if the same candidate set ties again, the moderator asks whether **all tied candidates should leave**;
+5. all eligible active players vote yes or no;
+6. a strict majority of yes votes eliminates every tied candidate; otherwise all stay.
+
+After simultaneous eliminations, all affected players are marked inactive before victory is evaluated.
+
+### 4.9 Final speech
+
+A player eliminated by the day vote or a successful night shot receives one final speech of up to **60 seconds** unless a disqualifying rule explicitly removes that right. Their role remains hidden.[S3][S4]
+
+The final speech occurs before the next ordinary player speech. The player cannot nominate or vote during it.
+
+### 4.10 Regular night
+
+After the day result and any final speech:
+
+1. all players sleep / put on masks;
+2. the moderator runs the black-team shot;
+3. the Don checks one active player, if the Don is active;
+4. the Sheriff checks one active player, if the Sheriff is active;
+5. the moderator resolves the night;
+6. any special “best move” is recorded;
+7. morning and any final speech occur;
+8. victory is evaluated before normal day speeches begin.
+
+The role order MUST be data-driven so later rulesets can add or reorder actions.
+
+### 4.11 Black-team shot
+
+- The moderator calls seat numbers 1 through 10 in order.
+- Every active black player keeps their eyes closed.
+- Each active black player may make one shooting gesture when the intended seat is called.
+- The shot succeeds only if **every active black player shoots the same active target exactly once**.
+- A mismatch, missing shot, extra shot, or invalid target is a miss; nobody is eliminated by the Mafia that night.
+- The app records each black player’s observed shot privately and derives success or miss.
+
+This closed-eye coordinated shot is a defining Sport Mafia mechanic and differs from party variants where the Mafia awaken and select a victim together every night.[S2][S3][S4]
+
+### 4.12 Don check
+
+If the Don is active:
+
+- the moderator starts a default **10-second** check timer;
+- the Don selects one active target;
+- the moderator privately returns `SHERIFF` or `NOT_SHERIFF`;
+- the result is stored as secret game data.
+
+No player is eliminated by this check.
+
+### 4.13 Sheriff check
+
+If the Sheriff is active:
+
+- the moderator starts a default **10-second** check timer;
+- the Sheriff selects one active target;
+- the moderator privately returns `RED` or `BLACK`;
+- the result is stored as secret game data.
+
+No player is eliminated by this check.
+
+### 4.14 First-night “best move”
+
+If enabled and there is a victim on the first regular night:
+
+- while still masked, the victim receives **20 seconds**;
+- the victim names exactly three seat numbers they believe are black;
+- the moderator records the ordered trio;
+- the victim still receives their normal final speech after morning.
+
+This is a tournament/scoring convention rather than part of all classic rules, so it MUST be configurable.[S4]
+
+## 5. Fouls and discipline
+
+### 5.1 Ordinary fouls
+
+The moderator can issue a foul with a reason and optional note. Common reasons include:
+
+- speaking, whispering, or interjecting out of turn;
+- disruptive touching or table noise;
+- arguing with the moderator;
+- improper conduct during voting;
+- excessive gestures that distract other players;
+- other minor violations selected by the moderator.
+
+Consequences:
+
+- foul 1: warning;
+- foul 2: warning;
+- foul 3: the player loses their next normal 60-second speech but may still make one nomination;
+- foul 4: immediate disqualification with no final speech.[S3][S4]
+
+The app MUST track whether the third-foul speech penalty has been consumed; the count alone is insufficient.
+
+### 5.2 Immediate disqualification
+
+The moderator MAY disqualify a player immediately for a serious violation, including deliberate peeking, prohibited night communication, outside information, threats, bribery, cheating, abusive conduct, or leaving the table without authorization. The exact tournament consequence—player removal, team loss, replay, or other ruling—remains a moderator decision and is logged.
+
+### 5.3 Conduct baseline
+
+At minimum:
+
+- no harassment, threats, slurs, or personal abuse;
+- no external messages, screenshots, coded signals, or spectators supplying information;
+- no physical contact used to communicate hidden information;
+- no wagers, oaths, religion, or real-world claims used as proof of a role;
+- no deliberate peeking;
+- dead players and spectators remain neutral.
+
+The product SHOULD use neutral UI wording such as “eliminated” and “night target,” while allowing themed moderator narration.
+
+## 6. Configurable rules and variants
+
+The following settings MUST NOT be hard-coded globally:
+
+| Setting | Sport Mafia v1 default | Known alternatives |
+|---|---|---|
+| Player count | 10 | 6–24+ in party variants |
+| Roles | 6 Citizen, Sheriff, 2 Mafia, Don | Seer, Doctor, Protector, Bodyguard, Serial Killer, etc. |
+| Role reveal | Hidden until game end | Reveal immediately on elimination |
+| First night kill | No kill on night zero | Some party games kill on the first night |
+| Speech format | Sequential, 60 seconds | Open discussion; other timers |
+| First-day single nominee | No vote | Vote normally or no first-day nominations |
+| Nomination withdrawal | Disabled | Allowed by some clubs |
+| Vote model | Nominee sequence; unused votes to last | Majority threshold, plurality, abstention, skip vote |
+| Tie model | 30-second speeches, revote, all-leave vote | No elimination, random choice, moderator choice |
+| Mafia shot | Closed-eye synchronized shot | Mafia awaken and agree openly to moderator |
+| Doctor / protection | None | Target protection, with variant self-target rules |
+| Don check | Sheriff / not Sheriff | No Don role |
+| Sheriff check | Red / black | Exact role, Mafia / not Mafia, or Seer variant |
+| Best move | Enabled for first regular-night red victim | Disabled |
+| Draw rule | Suggest after 3 no-elimination cycles | No draw or different limit |
+| Foul policy | 3rd loses speech, 4th disqualified | Informal warnings only |
+| Public display | Moderator-only by default | Sanitized spectator display |
+
+Every game snapshot stores resolved values, not just references to mutable global defaults. Editing a template MUST NOT retroactively change an active or completed game.
+
+## 7. Moderator workflow requirements
+
+### 7.1 Setup screen
+
+The setup screen SHOULD provide:
+
+- 10 numbered seats in table order;
+- player nickname entry and reusable player selection;
+- random seat assignment with manual override;
+- role validation and private assignment;
+- ruleset/version selector;
+- timer and variant overrides;
+- readiness checklist;
+- start confirmation that summarizes secret-data handling.
+
+### 7.2 Live dashboard
+
+The main live view SHOULD keep these visible without scrolling on a tablet or laptop:
+
+- current phase and day/night number;
+- ten seat cards in physical table order;
+- active/eliminated/disqualified state;
+- private role indicator in moderator mode;
+- current speaker and countdown;
+- per-player foul count;
+- nominations in accepted order;
+- phase-specific primary action;
+- pause, undo, and correction controls;
+- red/black active counts and pending victory warning;
+- music / masking-audio controls;
+- moderator notes or drawing canvas.
+
+Dangerous actions such as eliminating a player, ending the game, revealing roles, or undoing across a phase boundary require confirmation or a short undo window.
+
+### 7.3 Night screen
+
+The night screen MUST minimize accidental leaks:
+
+- use a dark, low-glare theme;
+- keep role and check details away from any spectator display;
+- show a guided action queue;
+- make target selection large and seat-number based;
+- require confirmation for night resolution;
+- distinguish pending action from resolved result;
+- prevent selecting eliminated targets unless a rules override is recorded.
+
+### 7.4 Public display
+
+A later optional public display may show only:
+
+- current phase;
+- current speaker and remaining time;
+- active seat numbers;
+- public nominations, vote totals, and foul counts;
+- public elimination history.
+
+It MUST NOT expose roles, alignments, individual night shots, Don/Sheriff targets or results, private moderator notes, or undo history containing secrets.
+
+### 7.5 Undo and correction
+
+The moderator MUST be able to correct the most recent action. Corrections are append-only compensating events, not destructive history edits.
+
+Each correction records:
+
+- actor;
+- time;
+- original event;
+- replacement or reversal;
+- reason;
+- resulting phase/state.
+
+The system MUST recalculate nominations, votes, active players, timers, and win conditions after a correction.
+
+## 8. Persistence model
+
+A relational database fits the domain because games have strongly related, auditable records and integrity constraints.
+
+Minimum conceptual entities:
+
+- `users` / `moderators`;
+- `players`;
+- `rulesets` and immutable `ruleset_versions`;
+- `games`;
+- `game_seats`;
+- `game_role_assignments` (secret);
+- `game_events` (append-only authoritative log);
+- `speech_intervals`;
+- `nominations`;
+- `vote_rounds` and `votes`;
+- `night_actions` and private `night_results`;
+- `fouls` and penalties;
+- `game_results`;
+- optional `moderator_notes` and drawing snapshots.
+
+Important invariants:
+
+- one player per seat per game;
+- one role per player per game;
+- exactly one current logical game state;
+- events are ordered monotonically within a game;
+- secret fields are never returned by public APIs;
+- completed games are immutable except through an explicit administrative correction flow;
+- application-level authorization is enforced on every game route, not only in the UI.
+
+## 9. Self-hosted deployment baseline
+
+A small single-server deployment SHOULD use Docker Compose with:
+
+1. one web application container;
+2. one PostgreSQL container or an external managed PostgreSQL service;
+3. a persistent PostgreSQL volume;
+4. a reverse proxy / TLS endpoint, either in Compose or already present on the server;
+5. optional backup and monitoring jobs.
+
+Operational requirements:
+
+- pin major application and PostgreSQL image versions;
+- wait for PostgreSQL’s health check, not merely container startup, before starting migrations/application traffic; Docker documents `service_healthy` for this purpose.[S10]
+- run schema migrations as a controlled one-shot step;
+- keep secrets outside the image and repository;
+- do not publish the PostgreSQL port to the public internet;
+- provide `/health/live` and `/health/ready` endpoints;
+- persist database data outside the disposable container layer;
+- take scheduled PostgreSQL backups and test restoration; PostgreSQL documents SQL dumps, file-system backups, and continuous archiving as distinct approaches.[S11]
+- document upgrades and rollback;
+- use secure cookies, CSRF protection, rate limiting on authentication, and TLS;
+- export completed games to JSON/CSV for portability.
+
+A Docker volume provides persistence but is **not** a backup. For this application’s expected size, regular `pg_dump` backups plus off-server retention and periodic restore tests are a reasonable first production policy.
+
+## 10. Non-functional acceptance criteria
+
+### Reliability
+
+- A browser refresh restores the active game and logical timer.
+- A container restart does not lose accepted game events.
+- Duplicate requests do not create duplicate nominations, votes, fouls, or eliminations.
+- An interrupted migration fails safely and visibly.
+
+### Performance
+
+- Primary moderator actions acknowledge within 200 ms on a local/LAN deployment under normal load.
+- Timer display remains smooth and does not depend on one database write per animation frame.
+- Reconnecting clients derive timer position from server timestamps rather than accumulated browser ticks.
+
+### Accessibility and ergonomics
+
+- Core controls are keyboard operable.
+- Color is never the only indicator of team, state, or error.
+- Touch targets are suitable for a tablet.
+- The live dashboard works at common laptop and tablet landscape widths.
+- Alerts use both visual and optional audio cues.
+- Secret information can be hidden instantly with a privacy toggle.
+
+### Security and privacy
+
+- Only authenticated moderators can create or modify games.
+- Private game data is filtered server-side.
+- Passwords use a modern adaptive hash through the selected framework.
+- Session cookies are `HttpOnly`, `Secure` in production, and use an appropriate `SameSite` policy.
+- No credentials, role assignments, or private checks appear in URLs, analytics, logs, or client error reports.
+- Backups receive the same protection as the live database.
+
+### Testability
+
+- Rules-engine tests cover every normal transition and win condition.
+- Table-driven tests cover vote/tie variants and foul thresholds.
+- Permission tests prove public APIs cannot reveal secret data.
+- Integration tests run against PostgreSQL.
+- End-to-end tests cover setup through both red and black victories, refresh recovery, and undo.
+
+## 11. Product decisions
+
+### Confirmed
+
+- **Platform:** web application only. The earlier Swift/Xcode prototype has been removed and will not be maintained.
+
+### Still requiring owner confirmation
+
+These decisions change implementation scope:
+
+1. Is Sport / Club Mafia definitely the intended primary format?
+2. Should the first release be moderator-only, or should players join from phones?
+3. Is a sanitized public/spectator display required for MVP?
+4. Should the app keep the drawing canvas and control server-hosted audio, browser audio, or an external player?
+5. Which club/tournament’s exact foul, best-move, scoring, and tie rules should be authoritative?
+6. Is English-only acceptable initially, or is Russian localization required from the first release?
+7. What server platform, reverse proxy, backup target, and authentication policy are already available?
+
+When confirmed, answers should be recorded in this file and in repository issue acceptance criteria so future contributors do not re-open settled decisions.
+
+## 12. Source comparison and references
+
+The rules above are paraphrased and normalized; they do not reproduce a commercial rulebook.
+
+- **[S1] Original Mafia rules — Dmitry Davidoff.** Establishes the informed-minority/uninformed-majority core, original player ratios, hidden identities, and a substantially different paper-based night procedure.
+  <https://gusandco.net/wp-content/uploads/2021/04/The-Original-Mafia-Rules-1.pdf>
+- **[S2] Andrew Plotkin, “Werewolf.”** Influential live-play formulation with moderator, night/day loop, Seer, majority elimination, dead-player silence, parity victory, and practical moderation guidance.
+  <https://www.eblong.com/zarf/werewolf.html>
+- **[S3] English Mafia Club, classic rules.** Documents the ten-player 7-red/3-black format, Don and Sheriff, one-minute speeches, closed-eye shots, hidden eliminated roles, timed voting, and foul thresholds.
+  <https://englishmafiaclub.com/how-to-play-mafia-by-classic-rules.html>
+- **[S4] Federal Sport Mafia rules, 23 January 2023 edition, mirrored by Dom Mafia.** Detailed tournament procedure for setup, night zero, sequential speeches, nominations, timed voting, tie revotes, synchronized shots, Don/Sheriff checks, best move, fouls, special cases, and scoring.
+  <https://dom-mafia.ru/sport_mafia_game_rules>
+- **[S5] Fantasy Flight Games, _Mafia: Vendetta_ rules.** Commercial modern reference for facilitator responsibilities, explicit round structure, role secrecy, active/eliminated state, first-night behavior, voting, tie behavior, abilities, and alternate modes.
+  <https://images-cdn.fantasyflightgames.com/filer_public/83/7a/837a5b73-ea6d-4aaa-b723-cbc1a201ce21/va95_mafia_rules_eng_v5compressed.pdf>
+- **[S6] KQED, “How to Play Mafia.”** Accessible party-game example using Mafia, civilians, Doctor, Detective, and narrator; demonstrates how common house rules differ from Sport Mafia.
+  <https://www.kqed.org/pop/10178/how-to-play-mafia-an-in-depth-guide-to-the-perfect-holiday-game>
+- **[S7] Mafia Game rules.** Useful comparison for configurable open/dark games, speeches, nominations, voting/revoting, role actions, game logs, and host responsibilities in a digital implementation.
+  <https://mafia-game.net/en/rules>
+- **[S8] `kligarski/mafia-the-party-game`.** Existing moderator-assistance web app documenting lobby codes, role assignment, moderator prompts, player-device voting, discussion timing, Django, Svelte, WebSockets, and deployment considerations.
+  <https://github.com/kligarski/mafia-the-party-game>
+- **[S9] `samanrashidii/mafiabuzz`.** Existing moderator dashboard illustrating role configuration, team balance, night resolution, end-game detection, history, autosave, localization, and custom roles.
+  <https://github.com/samanrashidii/mafiabuzz>
+- **[S10] Docker Compose startup-order documentation.** Defines health-check-based dependency readiness with `service_healthy`.
+  <https://docs.docker.com/compose/how-tos/startup-order/>
+- **[S11] PostgreSQL Backup and Restore documentation.** Defines SQL dumps, file-system backups, and continuous archiving as separate backup strategies.
+  <https://www.postgresql.org/docs/current/backup.html>
+
+## 13. Glossary
+
+- **Active:** still participating and eligible for applicable actions.
+- **Black:** Mafia team alignment.
+- **Closed / dark reveal:** eliminated roles remain hidden until game end.
+- **Day:** speeches, nominations, and voting.
+- **Don:** black special role that checks for the Sheriff.
+- **Eliminated:** removed through vote or night action; distinct from a disciplinary disqualification.
+- **Foul:** recorded rules violation and its escalating penalty.
+- **Moderator / Judge:** non-playing person who runs and arbitrates the game.
+- **Night zero:** setup night where black players meet; no shot is resolved.
+- **Nomination:** a candidate accepted for the current day’s vote.
+- **Red:** Citizen team alignment.
+- **Ruleset version:** immutable resolved rules attached to a game.
+- **Sheriff:** red special role that checks player alignment.
+- **Shot:** the black team’s coordinated night elimination attempt.
