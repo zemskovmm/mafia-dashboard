@@ -42,4 +42,12 @@ describe("loadConfig", () => {
 
     expect(config.youtubeOAuth).toBeUndefined();
   });
+
+  it("loads the canonical public app URL used for secure browser redirects", () => {
+    const config = loadConfig({
+      PUBLIC_APP_URL: "https://mbp16.tail102fab.ts.net",
+    });
+
+    expect(config.PUBLIC_APP_URL).toBe("https://mbp16.tail102fab.ts.net");
+  });
 });

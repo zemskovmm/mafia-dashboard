@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   beginRoleDraw,
   completeRoleDraw,
@@ -23,9 +23,17 @@ interface SetupWizardProps {
   readonly onSlowStopMusic: () => void;
   readonly onComplete: (game: GameState) => void;
   readonly onEvent?: (type: string, payload: Record<string, unknown>) => void;
+  readonly initialSessionState?: SetupWizardSessionState | null;
+  readonly onSessionStateChange?: (state: SetupWizardSessionState) => void;
 }
 
 type WizardStep = "players" | "music" | "roles";
+
+export interface SetupWizardSessionState {
+  readonly step: WizardStep;
+  readonly selectedPlayerIds: readonly string[];
+  readonly setup: SetupState | null;
+}
 
 export const SetupWizard = ({
   players: availablePlayers,
@@ -38,12 +46,20 @@ export const SetupWizard = ({
   onSlowStopMusic,
   onComplete,
   onEvent = () => undefined,
+  initialSessionState = null,
+  onSessionStateChange,
 }: SetupWizardProps) => {
-  const [step, setStep] = useState<WizardStep>("players");
+  const [step, setStep] = useState<WizardStep>(initialSessionState?.step ?? "players");
   const [selectedPlayerIds, setSelectedPlayerIds] = useState(() =>
-    Array.from({ length: 10 }, () => ""),
+    initialSessionState?.selectedPlayerIds.length === 10
+      ? [...initialSessionState.selectedPlayerIds]
+      : Array.from({ length: 10 }, () => ""),
   );
-  const [setup, setSetup] = useState<SetupState | null>(null);
+  const [setup, setSetup] = useState<SetupState | null>(initialSessionState?.setup ?? null);
+
+  useEffect(() => {
+    onSessionStateChange?.({ step, selectedPlayerIds, setup });
+  }, [onSessionStateChange, selectedPlayerIds, setup, step]);
 
   const players = useMemo<PlayerInput[]>(
     () =>

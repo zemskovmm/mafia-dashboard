@@ -187,6 +187,12 @@ h2 {
   color: #d8d7ff;
   background: rgb(113 112 255 / 18%);
 }
+.app-navigation .clear-game-state {
+  color: #ffb8b8;
+}
+.app-navigation .clear-game-state:hover {
+  background: rgb(255 92 92 / 13%);
+}
 
 .players-shell {
   width: min(1400px, calc(100% - 32px));

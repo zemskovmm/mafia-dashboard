@@ -1,6 +1,6 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { forwardRef } from "react";
+import { forwardRef, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GameState } from "@mafia/game-domain";
 import type { PlayerProfile } from "./api/client.js";
@@ -43,14 +43,50 @@ vi.mock("./api/client.js", () => ({
 }));
 
 vi.mock("./features/setup/SetupWizard.js", () => ({
-  SetupWizard: ({ onComplete }: { onComplete: (game: GameState) => void }) => (
-    <main>
-      <h1>Game setup</h1>
-      <button type="button" onClick={() => onComplete(assignedGame)}>
-        Start test game
-      </button>
-    </main>
-  ),
+  SetupWizard: ({
+    onComplete,
+    initialSessionState,
+    onSessionStateChange,
+    playlistId,
+    onPlaylistIdChange,
+  }: {
+    onComplete: (game: GameState) => void;
+    initialSessionState?: { step: "players" | "music" | "roles" } | null;
+    onSessionStateChange?: (state: {
+      step: "players" | "music" | "roles";
+      selectedPlayerIds: readonly string[];
+      setup: null;
+    }) => void;
+    playlistId: string;
+    onPlaylistIdChange: (playlistId: string) => void;
+  }) => {
+    const [step, setStep] = useState(initialSessionState?.step ?? "players");
+    return (
+      <main>
+        <h1>{step === "music" ? "Restored setup" : "Game setup"}</h1>
+        <p>Playlist: {playlistId || "none"}</p>
+        <button type="button" onClick={() => onPlaylistIdChange("saved-playlist")}>
+          Choose saved playlist
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setStep("music");
+            onSessionStateChange?.({
+              step: "music",
+              selectedPlayerIds: ["player-1"],
+              setup: null,
+            });
+          }}
+        >
+          Save setup progress
+        </button>
+        <button type="button" onClick={() => onComplete(assignedGame)}>
+          Start test game
+        </button>
+      </main>
+    );
+  },
 }));
 
 vi.mock("./features/game/GameScreen.js", () => ({
@@ -108,6 +144,8 @@ const player = (nickname: string, id: string): PlayerProfile => ({
 
 afterEach(() => {
   cleanup();
+  window.sessionStorage.clear();
+  vi.restoreAllMocks();
   vi.clearAllMocks();
 });
 
@@ -149,5 +187,74 @@ describe("App player navigation", () => {
         ]),
       }),
     );
+  });
+
+  it("restores an active game after a reload in the same browser session", async () => {
+    const user = userEvent.setup();
+    api.listPlayers.mockResolvedValue([]);
+    const firstRender = render(<App />);
+    await waitFor(() => expect(api.createRemoteGame).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole("button", { name: /start test game/i }));
+    expect(screen.getByRole("heading", { name: /live test game/i })).toBeInTheDocument();
+
+    firstRender.unmount();
+    render(<App />);
+
+    expect(screen.getByRole("heading", { name: /live test game/i })).toBeInTheDocument();
+    await waitFor(() => expect(api.createRemoteGame).toHaveBeenCalledTimes(1));
+  });
+
+  it("restores setup progress after a reload in the same browser session", async () => {
+    const user = userEvent.setup();
+    api.listPlayers.mockResolvedValue([]);
+    const firstRender = render(<App />);
+    await user.click(screen.getByRole("button", { name: /save setup progress/i }));
+
+    firstRender.unmount();
+    render(<App />);
+
+    expect(screen.getByRole("heading", { name: /restored setup/i })).toBeInTheDocument();
+  });
+
+  it("restores the selected playlist after a reload in the same browser session", async () => {
+    const user = userEvent.setup();
+    api.listPlayers.mockResolvedValue([]);
+    const firstRender = render(<App />);
+    await user.click(screen.getByRole("button", { name: /choose saved playlist/i }));
+
+    firstRender.unmount();
+    render(<App />);
+
+    expect(screen.getByText("Playlist: saved-playlist")).toBeInTheDocument();
+  });
+
+  it("clears in-progress setup state immediately after confirmation", async () => {
+    const user = userEvent.setup();
+    api.listPlayers.mockResolvedValue([]);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: /save setup progress/i }));
+    expect(screen.getByRole("heading", { name: /restored setup/i })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /clear game state/i }));
+
+    expect(screen.getByRole("heading", { name: /game setup/i })).toBeInTheDocument();
+  });
+
+  it("clears the active game from the current browser session after confirmation", async () => {
+    const user = userEvent.setup();
+    api.listPlayers.mockResolvedValue([]);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const firstRender = render(<App />);
+    await user.click(screen.getByRole("button", { name: /start test game/i }));
+
+    await user.click(screen.getByRole("button", { name: /clear game state/i }));
+    expect(window.confirm).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("heading", { name: /game setup/i })).toBeInTheDocument();
+    await waitFor(() => expect(api.createRemoteGame).toHaveBeenCalledTimes(2));
+
+    firstRender.unmount();
+    render(<App />);
+    expect(screen.getByRole("heading", { name: /game setup/i })).toBeInTheDocument();
   });
 });

@@ -18,7 +18,7 @@ import {
 } from "./features/music/YouTubePlaylistPlayer.js";
 import { PlayersScreen } from "./features/players/PlayersScreen.js";
 import { buildFinalGameResults } from "./features/players/game-results.js";
-import { SetupWizard } from "./features/setup/SetupWizard.js";
+import { SetupWizard, type SetupWizardSessionState } from "./features/setup/SetupWizard.js";
 import { createRandomId } from "./utils/random-id.js";
 import "./styles/app.css";
 
@@ -41,6 +41,54 @@ interface PendingRemoteEvent {
 }
 
 const noQueuedVideos: readonly string[] = [];
+const gameSessionStorageKey = "mafia-dashboard.game-session.v1";
+const defaultPlaylistId = import.meta.env.VITE_YOUTUBE_PLAYLIST_ID ?? "";
+
+interface GameSessionSnapshot {
+  readonly version: 1;
+  readonly game: GameState | null;
+  readonly setup: SetupWizardSessionState | null;
+  readonly playlistId: string;
+  readonly remoteGameId: string | null;
+}
+
+const loadGameSession = (): GameSessionSnapshot => {
+  const empty: GameSessionSnapshot = {
+    version: 1,
+    game: null,
+    setup: null,
+    playlistId: defaultPlaylistId,
+    remoteGameId: null,
+  };
+  try {
+    const stored = window.sessionStorage.getItem(gameSessionStorageKey);
+    if (stored === null) return empty;
+    const parsed = JSON.parse(stored) as {
+      readonly version?: unknown;
+      readonly game?: unknown;
+      readonly setup?: unknown;
+      readonly playlistId?: unknown;
+      readonly remoteGameId?: unknown;
+    };
+    if (parsed.version !== 1) return empty;
+    return {
+      version: 1,
+      game:
+        typeof parsed.game === "object" && parsed.game !== null ? (parsed.game as GameState) : null,
+      setup:
+        typeof parsed.setup === "object" && parsed.setup !== null
+          ? (parsed.setup as SetupWizardSessionState)
+          : null,
+      playlistId: typeof parsed.playlistId === "string" ? parsed.playlistId : defaultPlaylistId,
+      remoteGameId: typeof parsed.remoteGameId === "string" ? parsed.remoteGameId : null,
+    };
+  } catch {
+    return empty;
+  }
+};
+
+const hasSetupProgress = ({ step, selectedPlayerIds, setup }: SetupWizardSessionState) =>
+  step !== "players" || setup !== null || selectedPlayerIds.some((playerId) => playerId !== "");
 
 const isSecretEvent = (type: string, payload: Record<string, unknown>) =>
   payload.secret === true ||
@@ -49,23 +97,29 @@ const isSecretEvent = (type: string, payload: Record<string, unknown>) =>
   type.includes("checked");
 
 export const App = () => {
+  const initialSession = useRef(loadGameSession()).current;
   const [view, setView] = useState<"game" | "players">("game");
-  const [game, setGame] = useState<GameState | null>(null);
+  const [game, setGame] = useState<GameState | null>(initialSession.game);
+  const [setupSession, setSetupSession] = useState<SetupWizardSessionState | null>(
+    initialSession.setup,
+  );
+  const [setupInstanceKey, setSetupInstanceKey] = useState(0);
   const [players, setPlayers] = useState<readonly PlayerProfile[]>([]);
   const [playersError, setPlayersError] = useState(false);
-  const [playlistId, setPlaylistId] = useState(import.meta.env.VITE_YOUTUBE_PLAYLIST_ID ?? "");
+  const [playlistId, setPlaylistId] = useState(initialSession.playlistId);
+  const [remoteGameId, setRemoteGameId] = useState(initialSession.remoteGameId);
   const [musicState, setMusicState] = useState<YouTubePlaybackState>("idle");
   const [log, setLog] = useState<LocalLogEntry[]>([]);
   const [persistenceState, setPersistenceState] = useState<"connecting" | "saved" | "offline">(
     "connecting",
   );
-  const gameIdRef = useRef<string | null>(null);
+  const gameIdRef = useRef<string | null>(initialSession.remoteGameId);
   const pendingRef = useRef<PendingRemoteEvent[]>([]);
   const pendingResultsRef = useRef<FinalGameResults | null>(null);
   const savedResultGameIdsRef = useRef(new Set<string>());
   const musicRef = useRef<YouTubePlayerHandle>(null);
   const sequenceRef = useRef(0);
-  const phaseRef = useRef("setup-players");
+  const phaseRef = useRef(initialSession.game?.phase ?? "setup-players");
   const playerRequestRef = useRef(0);
 
   const refreshPlayers = useCallback(async () => {
@@ -85,6 +139,17 @@ export const App = () => {
   useEffect(() => {
     void refreshPlayers();
   }, [refreshPlayers]);
+
+  useEffect(() => {
+    if (game === null && setupSession === null && playlistId === defaultPlaylistId) {
+      window.sessionStorage.removeItem(gameSessionStorageKey);
+      return;
+    }
+    window.sessionStorage.setItem(
+      gameSessionStorageKey,
+      JSON.stringify({ version: 1, game, setup: setupSession, playlistId, remoteGameId }),
+    );
+  }, [game, playlistId, remoteGameId, setupSession]);
 
   const persistResults = useCallback(
     async (gameId: string, results: FinalGameResults) => {
@@ -106,7 +171,13 @@ export const App = () => {
   );
 
   useEffect(() => {
+    if (remoteGameId !== null) {
+      gameIdRef.current = remoteGameId;
+      setPersistenceState("saved");
+      return undefined;
+    }
     let active = true;
+    gameIdRef.current = null;
     void createRemoteGame("Mafia table")
       .then(async (gameId) => {
         if (!active) return;
@@ -121,6 +192,7 @@ export const App = () => {
         } else {
           await persistResults(gameId, pendingResults);
         }
+        if (active) setRemoteGameId(gameId);
       })
       .catch(() => {
         if (active) setPersistenceState("offline");
@@ -128,7 +200,7 @@ export const App = () => {
     return () => {
       active = false;
     };
-  }, [persistResults]);
+  }, [persistResults, remoteGameId]);
 
   const logEvent = useCallback((type: string, payload: Record<string, unknown>) => {
     sequenceRef.current += 1;
@@ -199,6 +271,28 @@ export const App = () => {
     await refreshPlayers();
   };
 
+  const handleSetupSessionChange = useCallback((next: SetupWizardSessionState) => {
+    setSetupSession(hasSetupProgress(next) ? next : null);
+  }, []);
+
+  const clearGameState = () => {
+    if (!window.confirm("Clear the current game from this browser session?")) return;
+    window.sessionStorage.removeItem(gameSessionStorageKey);
+    setGame(null);
+    setSetupSession(null);
+    setPlaylistId(defaultPlaylistId);
+    gameIdRef.current = null;
+    setRemoteGameId(null);
+    setSetupInstanceKey((key) => key + 1);
+    setView("game");
+    setLog([]);
+    sequenceRef.current = 0;
+    phaseRef.current = "setup-players";
+    pendingRef.current = [];
+    pendingResultsRef.current = null;
+    savedResultGameIdsRef.current.clear();
+  };
+
   return (
     <div className="app-shell">
       <nav className="app-navigation" aria-label="Application sections">
@@ -208,6 +302,11 @@ export const App = () => {
         <button type="button" aria-pressed={view === "players"} onClick={() => setView("players")}>
           Players &amp; statistics
         </button>
+        {game === null && setupSession === null ? null : (
+          <button type="button" className="clear-game-state" onClick={clearGameState}>
+            Clear game state
+          </button>
+        )}
       </nav>
       <div className="save-indicator" data-status={persistenceState}>
         <span />{" "}
@@ -229,7 +328,10 @@ export const App = () => {
         </>
       ) : game === null ? (
         <SetupWizard
+          key={setupInstanceKey}
           players={players}
+          initialSessionState={setupSession}
+          onSessionStateChange={handleSetupSessionChange}
           musicPlaying={musicState === "playing"}
           musicStatus={musicLabel[musicState]}
           playlistId={playlistId}
@@ -249,6 +351,7 @@ export const App = () => {
           onEvent={logEvent}
           onComplete={(next) => {
             phaseRef.current = next.phase;
+            setSetupSession(null);
             setGame(next);
           }}
         />

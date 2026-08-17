@@ -20,6 +20,27 @@ afterAll(async () => {
 });
 
 describe("server API", () => {
+  it("redirects browser pages from a direct host to the configured secure app origin", async () => {
+    const secureApp = await buildApp({
+      pool,
+      publicAppUrl: "https://mbp16.tail102fab.ts.net",
+    });
+    await secureApp.ready();
+
+    const response = await secureApp.inject({
+      method: "GET",
+      url: "/?music=connected",
+      headers: {
+        accept: "text/html",
+        host: "100.95.109.89:8080",
+      },
+    });
+
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe("https://mbp16.tail102fab.ts.net/?music=connected");
+    await secureApp.close();
+  });
+
   it("reports liveness and database readiness separately", async () => {
     const live = await app.inject({ method: "GET", url: "/health/live" });
     const ready = await app.inject({ method: "GET", url: "/health/ready" });

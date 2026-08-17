@@ -122,15 +122,37 @@ export const buildApp = async ({
   pool,
   staticDir,
   youtubeOAuth,
+  publicAppUrl,
 }: {
   readonly pool: Pool;
   readonly staticDir?: string;
   readonly youtubeOAuth?: YouTubeOAuthService;
+  readonly publicAppUrl?: string;
 }) => {
   const app = Fastify({ logger: false });
   const store = new EventStore(pool);
   const playerStore = new PlayerStore(pool);
   await store.initialize();
+
+  if (publicAppUrl !== undefined) {
+    const publicUrl = new URL(publicAppUrl);
+    app.addHook("onRequest", async (request, reply) => {
+      const acceptsHtml = request.headers.accept?.includes("text/html") === true;
+      const isPageRequest = !request.url.startsWith("/api/") && !request.url.startsWith("/health/");
+      if (
+        (request.method === "GET" || request.method === "HEAD") &&
+        acceptsHtml &&
+        isPageRequest &&
+        request.hostname.toLowerCase() !== publicUrl.hostname.toLowerCase()
+      ) {
+        const requestedUrl = new URL(request.url, "http://local.invalid");
+        const destination = new URL(publicUrl);
+        destination.pathname = requestedUrl.pathname;
+        destination.search = requestedUrl.search;
+        return reply.redirect(destination.toString());
+      }
+    });
+  }
 
   if (staticDir !== undefined) {
     await app.register(staticFiles, { root: staticDir, wildcard: false });

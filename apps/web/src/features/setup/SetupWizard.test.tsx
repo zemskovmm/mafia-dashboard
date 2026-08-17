@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { PlayerProfile } from "../../api/client.js";
 import { SetupWizard } from "./SetupWizard.js";
-import type { GameState } from "@mafia/game-domain";
+import { createSetup, type GameState } from "@mafia/game-domain";
 
 vi.mock("../music/AccountPlaylistPicker.js", () => ({
   AccountPlaylistPicker: ({
@@ -79,6 +79,30 @@ const Harness = ({
 };
 
 describe("SetupWizard", () => {
+  it("restores a saved setup step and selected seats", () => {
+    const selectedPlayerIds = availablePlayers.map(({ id }) => id);
+    const setup = createSetup(
+      availablePlayers.map(({ id, nickname }, index) => ({ id, name: nickname, seat: index + 1 })),
+    );
+
+    render(
+      <SetupWizard
+        players={availablePlayers}
+        musicPlaying={false}
+        musicStatus="Stopped"
+        playlistId="test-playlist"
+        onPlaylistIdChange={() => undefined}
+        onStartMusic={() => undefined}
+        onQuickStopMusic={() => undefined}
+        onSlowStopMusic={() => undefined}
+        onComplete={() => undefined}
+        initialSessionState={{ step: "music", selectedPlayerIds, setup }}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: /start table music/i })).toBeInTheDocument();
+  });
+
   it("gates ten players, music playback, and per-seat random role draws", async () => {
     const user = userEvent.setup();
     const onComplete = vi.fn<(game: GameState) => void>();

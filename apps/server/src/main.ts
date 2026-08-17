@@ -9,7 +9,12 @@ const youtubeOAuth =
   config.youtubeOAuth === undefined
     ? undefined
     : new YouTubeOAuthService(pool, config.youtubeOAuth);
-const app = await buildApp({ pool, staticDir: config.STATIC_DIR, youtubeOAuth });
+const app = await buildApp({
+  pool,
+  staticDir: config.STATIC_DIR,
+  youtubeOAuth,
+  publicAppUrl: config.PUBLIC_APP_URL,
+});
 
 const shutdown = async () => {
   await app.close();
