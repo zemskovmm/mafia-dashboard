@@ -1,0 +1,47 @@
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mafia}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mafia-local-only}
+      POSTGRES_DB: ${POSTGRES_DB:-mafia}
+    volumes:
+      - mafia-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      args:
+        VITE_YOUTUBE_PLAYLIST_ID: ${VITE_YOUTUBE_PLAYLIST_ID:-}
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-mafia}:${POSTGRES_PASSWORD:-mafia-local-only}@db:5432/${POSTGRES_DB:-mafia}
+      STATIC_DIR: /app/apps/web/dist
+      PORT: 3000
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${APP_PORT:-8080}:3000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 8s
+    restart: unless-stopped
+
+volumes:
+  mafia-postgres:

@@ -1,0 +1,26 @@
+{
+  "name": "@mafia/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsup src/main.ts --format esm --out-dir dist --clean && cp src/schema.sql dist/schema.sql",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@fastify/static": "^10.1.3",
+    "@mafia/game-domain": "^0.1.0",
+    "fastify": "^5.12.0",
+    "pg": "^8.23.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@types/pg": "^8.21.0",
+    "tsup": "^8.5.1",
+    "tsx": "^4.23.12",
+    "vitest": "^4.1.10"
+  }
+}

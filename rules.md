@@ -2,7 +2,7 @@
 
 > **Status:** researched draft for product planning
 > **Primary mode:** in-person, moderator-led **Sport / Club Mafia**
-> **Product target:** a self-hosted web dashboard for the moderator, not an autonomous online game
+> **Product target:** a touch-first, self-hosted SPA for a moderator using a tablet or laptop, not an autonomous online game
 > **Normative terms:** **MUST**, **SHOULD**, and **MAY** indicate required, recommended, and optional behavior.
 
 ## 1. Research conclusion
@@ -69,13 +69,13 @@ Roles are assigned randomly unless the moderator explicitly records a manual dea
 
 ### 3.2 Role abilities
 
-| Role | Team | Count | Knowledge and ability |
-|---|---:|---:|---|
-| Citizen | Red | 6 | No private night action. Speaks, nominates, and votes while active. |
-| Sheriff | Red | 1 | Once per regular night, checks one active player and privately learns whether that player is red or black. |
-| Mafia | Black | 2 | Learns the black team on night zero and participates in the coordinated nightly shot while active. |
-| Don | Black | 1 | Has Mafia abilities and, once per regular night, checks whether one active player is the Sheriff. |
-| Moderator / Judge | Neutral | 1 | Runs phases, time, rulings, secret information, votes, fouls, eliminations, and victory checks. Does not play. |
+| Role              |    Team | Count | Knowledge and ability                                                                                          |
+| ----------------- | ------: | ----: | -------------------------------------------------------------------------------------------------------------- |
+| Citizen           |     Red |     6 | No private night action. Speaks, nominates, and votes while active.                                            |
+| Sheriff           |     Red |     1 | Once per regular night, checks one active player and privately learns whether that player is red or black.     |
+| Mafia             |   Black |     2 | Learns the black team on night zero and participates in the coordinated nightly shot while active.             |
+| Don               |   Black |     1 | Has Mafia abilities and, once per regular night, checks whether one active player is the Sheriff.              |
+| Moderator / Judge | Neutral |     1 | Runs phases, time, rulings, secret information, votes, fouls, eliminations, and victory checks. Does not play. |
 
 The Sheriff learns **team alignment**, not an exact role. The Don learns only **Sheriff / not Sheriff**.[S3][S4]
 
@@ -159,7 +159,7 @@ The target plan is a moderator note; it is not enforced as a mandatory sequence 
 - Day one starts with seat 1.
 - Each later day starts with the next active seat after the previous day’s starting speaker.
 - A player MAY end early by passing; the timer stops and the next speaker begins.
-- A player with a third foul loses their next normal speech but retains the brief opportunity to make one legal nomination.
+- A player with a third foul loses their next normal speech. Their next turn becomes a **10-second nomination-only window** in which they may make one legal nomination.
 - The moderator MAY pause, restart, or correct a timer. Corrections are logged.
 
 The UI MUST show the current speaker, upcoming speaker, remaining time, fouls, and whether the player has already nominated someone that day.
@@ -295,7 +295,7 @@ Consequences:
 
 - foul 1: warning;
 - foul 2: warning;
-- foul 3: the player loses their next normal 60-second speech but may still make one nomination;
+- foul 3: the player’s next normal 60-second speech becomes a 10-second nomination-only turn;
 - foul 4: immediate disqualification with no final speech.[S3][S4]
 
 The app MUST track whether the third-foul speech penalty has been consumed; the count alone is insufficient.
@@ -321,25 +321,25 @@ The product SHOULD use neutral UI wording such as “eliminated” and “night 
 
 The following settings MUST NOT be hard-coded globally:
 
-| Setting | Sport Mafia v1 default | Known alternatives |
-|---|---|---|
-| Player count | 10 | 6–24+ in party variants |
-| Roles | 6 Citizen, Sheriff, 2 Mafia, Don | Seer, Doctor, Protector, Bodyguard, Serial Killer, etc. |
-| Role reveal | Hidden until game end | Reveal immediately on elimination |
-| First night kill | No kill on night zero | Some party games kill on the first night |
-| Speech format | Sequential, 60 seconds | Open discussion; other timers |
-| First-day single nominee | No vote | Vote normally or no first-day nominations |
-| Nomination withdrawal | Disabled | Allowed by some clubs |
-| Vote model | Nominee sequence; unused votes to last | Majority threshold, plurality, abstention, skip vote |
-| Tie model | 30-second speeches, revote, all-leave vote | No elimination, random choice, moderator choice |
-| Mafia shot | Closed-eye synchronized shot | Mafia awaken and agree openly to moderator |
-| Doctor / protection | None | Target protection, with variant self-target rules |
-| Don check | Sheriff / not Sheriff | No Don role |
-| Sheriff check | Red / black | Exact role, Mafia / not Mafia, or Seer variant |
-| Best move | Enabled for first regular-night red victim | Disabled |
-| Draw rule | Suggest after 3 no-elimination cycles | No draw or different limit |
-| Foul policy | 3rd loses speech, 4th disqualified | Informal warnings only |
-| Public display | Moderator-only by default | Sanitized spectator display |
+| Setting                  | Sport Mafia v1 default                     | Known alternatives                                      |
+| ------------------------ | ------------------------------------------ | ------------------------------------------------------- |
+| Player count             | 10                                         | 6–24+ in party variants                                 |
+| Roles                    | 6 Citizen, Sheriff, 2 Mafia, Don           | Seer, Doctor, Protector, Bodyguard, Serial Killer, etc. |
+| Role reveal              | Hidden until game end                      | Reveal immediately on elimination                       |
+| First night kill         | No kill on night zero                      | Some party games kill on the first night                |
+| Speech format            | Sequential, 60 seconds                     | Open discussion; other timers                           |
+| First-day single nominee | No vote                                    | Vote normally or no first-day nominations               |
+| Nomination withdrawal    | Disabled                                   | Allowed by some clubs                                   |
+| Vote model               | Nominee sequence; unused votes to last     | Majority threshold, plurality, abstention, skip vote    |
+| Tie model                | 30-second speeches, revote, all-leave vote | No elimination, random choice, moderator choice         |
+| Mafia shot               | Closed-eye synchronized shot               | Mafia awaken and agree openly to moderator              |
+| Doctor / protection      | None                                       | Target protection, with variant self-target rules       |
+| Don check                | Sheriff / not Sheriff                      | No Don role                                             |
+| Sheriff check            | Red / black                                | Exact role, Mafia / not Mafia, or Seer variant          |
+| Best move                | Enabled for first regular-night red victim | Disabled                                                |
+| Draw rule                | Suggest after 3 no-elimination cycles      | No draw or different limit                              |
+| Foul policy              | 3rd loses speech, 4th disqualified         | Informal warnings only                                  |
+| Public display           | Moderator-only by default                  | Sanitized spectator display                             |
 
 Every game snapshot stores resolved values, not just references to mutable global defaults. Editing a template MUST NOT retroactively change an active or completed game.
 
@@ -357,6 +357,8 @@ The setup screen SHOULD provide:
 - timer and variant overrides;
 - readiness checklist;
 - start confirmation that summarizes secret-data handling.
+
+The canonical setup wizard is ordered and gated: select exactly ten players, start the configured YouTube playlist, draw one random remaining role by tapping each seat, run Mafia negotiation, run the Sheriff wake-up step, and begin day one. The music step may advance only after the browser player reports that playback is actually running. Queue editing in the MVP changes an application-owned queue; changing the owner’s real YouTube playlist is outside the MVP.
 
 ### 7.2 Live dashboard
 

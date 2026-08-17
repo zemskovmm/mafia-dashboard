@@ -8,3 +8,14 @@
 .env
 .env.*
 !.env.example
+
+# Node / TypeScript
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+*.tsbuildinfo
+
+# Local database and container state
+postgres-data/

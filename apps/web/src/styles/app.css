@@ -1,0 +1,822 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap");
+
+:root {
+  color-scheme: dark;
+  font-family:
+    "Inter",
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    sans-serif;
+  font-synthesis: none;
+  --bg: #08090a;
+  --panel: #0f1011;
+  --surface: #191a1b;
+  --surface-strong: #23252a;
+  --text: #f7f8f8;
+  --muted: #8a8f98;
+  --border: rgb(255 255 255 / 9%);
+  --accent: #7170ff;
+  --accent-hover: #8b8aff;
+  --green: #1d9b66;
+  --red: #ef5d68;
+  --amber: #e5a94d;
+  --felt: #0c4f38;
+  --felt-dark: #073426;
+  background: var(--bg);
+  color: var(--text);
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  min-width: 320px;
+  min-height: 100%;
+  margin: 0;
+}
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 50% -20%, rgb(113 112 255 / 12%), transparent 38rem),
+    linear-gradient(180deg, #0b0c0e 0%, var(--bg) 45%);
+}
+button,
+input {
+  font: inherit;
+}
+button {
+  min-height: 44px;
+  color: var(--text);
+  background: rgb(255 255 255 / 4%);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: 150ms ease;
+}
+button:hover:not(:disabled) {
+  background: rgb(255 255 255 / 8%);
+  border-color: rgb(255 255 255 / 18%);
+}
+button:focus-visible,
+input:focus-visible,
+summary:focus-visible {
+  outline: 3px solid rgb(113 112 255 / 55%);
+  outline-offset: 3px;
+}
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.38;
+}
+input {
+  width: 100%;
+  min-height: 48px;
+  padding: 0 14px;
+  color: var(--text);
+  background: rgb(255 255 255 / 3%);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+input::placeholder {
+  color: #62666d;
+}
+h1,
+h2,
+p {
+  margin-top: 0;
+}
+h1 {
+  margin-bottom: 8px;
+  font-size: clamp(1.8rem, 3vw, 2.8rem);
+  font-weight: 500;
+  letter-spacing: -0.04em;
+}
+h2 {
+  letter-spacing: -0.02em;
+}
+
+.app-shell {
+  min-height: 100vh;
+}
+.eyebrow {
+  margin: 0 0 8px;
+  color: var(--accent-hover);
+  font:
+    500 0.72rem/1.4 "JetBrains Mono",
+    monospace;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.lead {
+  color: var(--muted);
+  line-height: 1.55;
+}
+.muted {
+  color: var(--muted);
+}
+.primary-action,
+.table-primary {
+  min-height: 52px;
+  padding: 0 20px;
+  background: var(--accent);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.primary-action:hover:not(:disabled),
+.table-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+
+.save-indicator {
+  position: absolute;
+  z-index: 100;
+  top: 14px;
+  right: 16px;
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  padding: 7px 10px;
+  color: var(--muted);
+  background: rgb(15 16 17 / 85%);
+  border: 1px solid var(--border);
+  border-radius: 99px;
+  font-size: 0.75rem;
+  backdrop-filter: blur(16px);
+}
+.save-indicator span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--amber);
+}
+.save-indicator[data-status="saved"] span {
+  background: var(--green);
+}
+.save-indicator[data-status="offline"] span {
+  background: var(--red);
+}
+
+.setup-shell {
+  width: min(1180px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 58px 0 110px;
+}
+.wizard-progress {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+.wizard-progress span {
+  padding: 8px 12px;
+  color: var(--muted);
+  background: rgb(255 255 255 / 2%);
+  border: 1px solid var(--border);
+  border-radius: 99px;
+  font-size: 0.75rem;
+}
+.wizard-progress .is-active {
+  color: var(--text);
+  border-color: rgb(113 112 255 / 65%);
+  background: rgb(113 112 255 / 12%);
+}
+.wizard-card {
+  width: min(780px, 100%);
+  margin: 0 auto;
+  padding: clamp(22px, 4vw, 42px);
+  background: rgb(15 16 17 / 84%);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  box-shadow: 0 24px 80px rgb(0 0 0 / 30%);
+}
+.player-input-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 24px 0;
+}
+.player-input-grid label,
+.wide-field {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.music-step {
+  display: grid;
+  gap: 18px;
+}
+.music-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px;
+  background: rgb(255 255 255 / 3%);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.status-dot {
+  width: 10px;
+  height: 10px;
+  background: var(--amber);
+  border-radius: 50%;
+}
+.music-status.is-playing .status-dot {
+  background: var(--green);
+  box-shadow: 0 0 18px rgb(29 155 102 / 65%);
+}
+.music-actions,
+.queue-entry,
+.timer-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.music-actions button {
+  min-height: 48px;
+  padding: 0 16px;
+}
+.queue-editor {
+  padding: 18px;
+  background: rgb(255 255 255 / 2%);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.queue-editor h2 {
+  margin-bottom: 12px;
+  font-size: 1rem;
+}
+.queue-entry input {
+  flex: 1 1 240px;
+}
+.queue-entry button {
+  min-width: 72px;
+}
+.queue-editor ol {
+  display: grid;
+  gap: 8px;
+  padding-left: 22px;
+}
+.queue-editor li {
+  padding: 8px;
+  overflow-wrap: anywhere;
+}
+.queue-editor li button {
+  float: right;
+  min-height: 34px;
+  margin-left: 10px;
+}
+.queue-error {
+  margin: 8px 0 0;
+  color: #ffb2b8;
+  font-size: 0.78rem;
+}
+.role-draw-step {
+  text-align: center;
+}
+.roles-remaining {
+  color: var(--accent-hover);
+  font-family: "JetBrains Mono", monospace;
+}
+
+.table-stage {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  min-height: min(74vw, 820px);
+  overflow: visible;
+  padding: 70px 0 120px;
+}
+.round-table {
+  --table-size: min(58vw, 680px);
+  --table-radius: calc(var(--table-size) * 0.52);
+  position: relative;
+  width: var(--table-size);
+  aspect-ratio: 1;
+  border: 12px solid #261b13;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 42% 38%, rgb(255 255 255 / 7%), transparent 26%),
+    repeating-radial-gradient(circle, transparent 0 5px, rgb(255 255 255 / 1.4%) 6px 7px),
+    linear-gradient(145deg, var(--felt), var(--felt-dark));
+  box-shadow:
+    0 30px 90px rgb(0 0 0 / 55%),
+    inset 0 0 0 3px rgb(255 255 255 / 5%),
+    inset 0 -28px 45px rgb(0 0 0 / 20%);
+}
+.table-center {
+  position: absolute;
+  z-index: 2;
+  inset: 30%;
+  display: grid;
+  place-items: center;
+  text-align: center;
+}
+.table-prompt {
+  color: rgb(255 255 255 / 68%);
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+.table-primary {
+  min-width: 150px;
+  max-width: 190px;
+  height: auto;
+  padding: 14px;
+  border-radius: 50%;
+  aspect-ratio: 1;
+}
+.turn-actions {
+  display: grid;
+  gap: 8px;
+}
+.turn-actions > button:last-child {
+  background: rgb(0 0 0 / 20%);
+}
+.seat-anchor {
+  position: absolute;
+  z-index: 4;
+  left: 50%;
+  top: 50%;
+  width: clamp(88px, 9vw, 126px);
+  transform: translate(-50%, -50%) rotate(var(--seat-angle))
+    translateY(calc(-1 * var(--table-radius))) rotate(calc(-1 * var(--seat-angle)));
+}
+.player-seat {
+  position: relative;
+  width: 100%;
+  min-height: 98px;
+  padding: 8px 6px;
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  background: #161819;
+  border-color: rgb(255 255 255 / 14%);
+  box-shadow: 0 9px 25px rgb(0 0 0 / 40%);
+}
+.player-seat.is-current {
+  border-color: var(--accent-hover);
+  box-shadow:
+    0 0 0 4px rgb(113 112 255 / 22%),
+    0 8px 28px rgb(0 0 0 / 55%);
+}
+.player-seat.status-eliminated,
+.player-seat.status-red-carded {
+  filter: grayscale(0.9);
+  opacity: 0.48;
+}
+.player-seat.status-red-carded {
+  border-color: rgb(239 93 104 / 55%);
+}
+.person-icon {
+  width: 34px;
+  height: 34px;
+  fill: rgb(255 255 255 / 12%);
+  stroke: #d0d6e0;
+  stroke-width: 2.5;
+}
+.seat-number {
+  position: absolute;
+  left: 7px;
+  top: 6px;
+  color: var(--accent-hover);
+  font:
+    500 0.68rem "JetBrains Mono",
+    monospace;
+}
+.seat-name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: clamp(0.67rem, 1vw, 0.82rem);
+  font-weight: 600;
+}
+.role-badge,
+.foul-badge,
+.state-badge {
+  margin-top: 3px;
+  padding: 2px 5px;
+  border-radius: 99px;
+  font-size: 0.55rem;
+  text-transform: uppercase;
+}
+.role-badge {
+  color: #d5d4ff;
+  background: rgb(113 112 255 / 18%);
+}
+.role-mafia,
+.role-don {
+  color: #ffccd0;
+  background: rgb(239 93 104 / 18%);
+}
+.foul-badge {
+  color: #ffe0ad;
+  background: rgb(229 169 77 / 16%);
+}
+.state-badge {
+  color: #f4d3ff;
+  background: rgb(183 101 205 / 18%);
+}
+.seat-actions {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 5px);
+  display: flex;
+  transform: translateX(-50%);
+}
+.seat-actions button {
+  min-width: 42px;
+  min-height: 38px;
+  padding: 0 5px;
+  border-radius: 5px;
+  font-size: 0.6rem;
+  background: #202224;
+}
+.seat-actions button:nth-child(2) {
+  color: #ffb2b8;
+}
+.host-seat {
+  position: absolute;
+  z-index: 5;
+  left: 50%;
+  bottom: -102px;
+  width: 110px;
+  min-height: 76px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  transform: translateX(-50%);
+  color: #d5d4ff;
+  background: #171821;
+  border: 1px solid rgb(113 112 255 / 38%);
+  border-radius: 14px;
+  box-shadow: 0 14px 35px rgb(0 0 0 / 45%);
+}
+.host-crown {
+  color: var(--accent-hover);
+}
+
+.game-shell {
+  min-height: 100vh;
+  padding: 22px clamp(14px, 2vw, 28px) 110px;
+}
+.game-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  max-width: 1600px;
+  margin: 0 auto 8px;
+}
+.game-header h1 {
+  margin-bottom: 0;
+}
+.privacy-button {
+  margin-right: 96px;
+  padding: 0 14px;
+}
+.live-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 290px;
+  gap: 18px;
+  max-width: 1600px;
+  margin: 0 auto;
+}
+.table-workspace {
+  min-width: 0;
+  padding: 10px;
+  background: rgb(15 16 17 / 48%);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  overflow: visible;
+}
+.utility-rail {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+.timer-panel,
+.nomination-panel {
+  padding: 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+.timer-display {
+  display: grid;
+  justify-items: center;
+  padding: 16px;
+  margin-bottom: 10px;
+  background: rgb(255 255 255 / 2%);
+  border-radius: 10px;
+}
+.timer-display strong {
+  font:
+    500 3.4rem/1 "JetBrains Mono",
+    monospace;
+  letter-spacing: -0.08em;
+}
+.timer-display span {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+.timer-display.is-warning {
+  color: #ffca76;
+  box-shadow: inset 0 0 0 1px rgb(229 169 77 / 40%);
+}
+.timer-presets button {
+  flex: 1 1 58px;
+  min-height: 48px;
+}
+.nomination-panel ol {
+  display: grid;
+  gap: 6px;
+  padding-left: 24px;
+}
+.phase-banner {
+  margin: 0 auto 6px;
+  padding: 11px 14px;
+  text-align: center;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.night-banner {
+  color: #ffccd0;
+  background: rgb(239 93 104 / 10%);
+  border-color: rgb(239 93 104 / 24%);
+}
+.sheriff-banner {
+  color: #cbd2ff;
+  background: rgb(113 112 255 / 10%);
+  border-color: rgb(113 112 255 / 26%);
+}
+.current-turn-copy {
+  margin: 0 auto;
+  padding: 8px;
+  color: #d5d4ff;
+  text-align: center;
+}
+
+.voting-stage,
+.night-stage {
+  min-height: 650px;
+  padding: clamp(16px, 3vw, 34px);
+}
+.candidate-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 22px 0;
+}
+.candidate {
+  min-width: 150px;
+  min-height: 82px;
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  text-align: left;
+}
+.candidate.is-selected {
+  background: rgb(113 112 255 / 18%);
+  border-color: var(--accent);
+}
+.candidate span:last-child {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.voter-grid,
+.night-target-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(100px, 1fr));
+  gap: 9px;
+  margin: 20px 0;
+}
+.voter,
+.night-target-grid button {
+  min-height: 84px;
+  display: grid;
+  justify-items: start;
+  align-content: center;
+  gap: 3px;
+  padding: 10px;
+  text-align: left;
+}
+.voter small {
+  color: var(--muted);
+}
+.voter.is-assigned {
+  border-color: rgb(29 155 102 / 55%);
+  background: rgb(29 155 102 / 10%);
+}
+.voter-seat,
+.night-target-grid strong {
+  color: var(--accent-hover);
+  font:
+    500 0.7rem "JetBrains Mono",
+    monospace;
+}
+.tie-notice,
+.secret-result {
+  margin: 12px 0;
+  padding: 14px;
+  border: 1px solid rgb(229 169 77 / 35%);
+  border-radius: 10px;
+  background: rgb(229 169 77 / 9%);
+}
+.night-stage h2 {
+  font-size: 1.8rem;
+}
+.night-instruction {
+  color: var(--muted);
+}
+.secret-result {
+  color: #d5d4ff;
+  border-color: rgb(113 112 255 / 42%);
+  background: rgb(113 112 255 / 12%);
+  font-size: 1.2rem;
+  font-weight: 600;
+}
+
+.youtube-dock {
+  position: relative;
+  z-index: 80;
+  width: min(356px, calc(100vw - 32px));
+  margin: -90px auto 100px;
+}
+.youtube-dock.is-compact {
+  position: fixed;
+  right: 16px;
+  bottom: 66px;
+  width: min(356px, calc(100vw - 32px));
+  margin: 0;
+  opacity: 0.75;
+}
+.youtube-player-frame {
+  display: grid;
+  overflow: hidden;
+  background: #000;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.youtube-player-frame > div:first-child {
+  width: 100%;
+  height: 200px;
+}
+.reload-player {
+  justify-self: end;
+  margin: 4px;
+  min-height: 30px;
+  padding: 0 7px;
+  font-size: 0.62rem;
+  background: rgb(0 0 0 / 75%);
+}
+.live-music-controls {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  background: rgb(15 16 17 / 96%);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.live-music-controls > strong {
+  font-size: 0.78rem;
+}
+.live-music-controls > div {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
+}
+.live-music-controls button {
+  min-height: 42px;
+  padding: 0 5px;
+  font-size: 0.68rem;
+}
+.game-log-drawer {
+  position: fixed;
+  z-index: 90;
+  left: 16px;
+  bottom: 14px;
+  width: min(420px, calc(100vw - 32px));
+  background: rgb(15 16 17 / 96%);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  box-shadow: 0 20px 60px rgb(0 0 0 / 55%);
+}
+.game-log-drawer summary {
+  padding: 12px 14px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.game-log-drawer summary span {
+  float: right;
+  color: var(--muted);
+}
+.game-log-list {
+  max-height: 42vh;
+  overflow: auto;
+  padding: 0 10px 10px;
+}
+.game-log-list article {
+  display: flex;
+  gap: 10px;
+  padding: 9px 4px;
+  border-top: 1px solid var(--border);
+}
+.log-sequence {
+  color: var(--accent-hover);
+  font:
+    500 0.68rem "JetBrains Mono",
+    monospace;
+}
+.game-log-list article div {
+  display: grid;
+  gap: 3px;
+}
+.game-log-list small {
+  color: var(--muted);
+}
+
+@media (max-width: 1150px) {
+  .live-layout {
+    grid-template-columns: 1fr;
+  }
+  .utility-rail {
+    grid-template-columns: 1fr 1fr;
+  }
+  .round-table {
+    --table-size: min(68vw, 650px);
+  }
+  .privacy-button {
+    margin-right: 80px;
+  }
+}
+
+@media (max-width: 760px) {
+  .setup-shell {
+    width: min(100% - 20px, 700px);
+    padding-top: 48px;
+  }
+  .player-input-grid {
+    grid-template-columns: 1fr;
+  }
+  .wizard-progress {
+    overflow-x: auto;
+  }
+  .game-shell {
+    padding-inline: 8px;
+  }
+  .game-header {
+    padding-inline: 6px;
+  }
+  .game-header h1 {
+    font-size: 1.55rem;
+  }
+  .privacy-button {
+    margin-right: 72px;
+    font-size: 0.7rem;
+  }
+  .utility-rail {
+    grid-template-columns: 1fr;
+  }
+  .round-table {
+    --table-size: min(76vw, 560px);
+  }
+  .seat-anchor {
+    width: clamp(70px, 11vw, 92px);
+  }
+  .player-seat {
+    min-height: 78px;
+  }
+  .person-icon {
+    width: 26px;
+    height: 26px;
+  }
+  .seat-actions {
+    display: none;
+  }
+  .voter-grid,
+  .night-target-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .youtube-dock.is-compact {
+    width: min(356px, calc(100vw - 16px));
+    right: 8px;
+    bottom: 64px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
