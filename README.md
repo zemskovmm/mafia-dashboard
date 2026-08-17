@@ -29,7 +29,7 @@ The application is a TypeScript npm workspace with a React/Vite SPA, Fastify API
    docker compose up --build
    ```
 
-4. Open <http://localhost:8080> on the host. Other tablets/laptops can use the host Mac's LAN address after changing the Compose port binding from `127.0.0.1` to an appropriate LAN interface and applying local firewall/TLS policy.
+4. Open <http://localhost:8080> on the host. To allow tablets/laptops on the trusted LAN, set `APP_BIND=0.0.0.0` in `.env`, restart Compose, and open `http://<host-LAN-address>:8080` from those devices. Apply local firewall and TLS policy before exposing the service beyond a trusted network.
 
 Health checks:
 
