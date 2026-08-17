@@ -2,27 +2,77 @@ import { useState } from "react";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import type { PlayerProfile } from "../../api/client.js";
 import { SetupWizard } from "./SetupWizard.js";
 import type { GameState } from "@mafia/game-domain";
 
+vi.mock("../music/AccountPlaylistPicker.js", () => ({
+  AccountPlaylistPicker: ({
+    playlistId,
+    onPlaylistIdChange,
+  }: {
+    playlistId: string;
+    onPlaylistIdChange: (playlistId: string) => void;
+  }) => (
+    <select
+      aria-label="YouTube Music playlist"
+      value={playlistId}
+      onChange={(event) => onPlaylistIdChange(event.target.value)}
+    >
+      <option value="test-playlist">Test playlist</option>
+      <option value="account-playlist">Account playlist</option>
+    </select>
+  ),
+}));
+
+const availablePlayers: readonly PlayerProfile[] = Array.from({ length: 10 }, (_, index) => ({
+  id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+  nickname: `Player ${index + 1}`,
+  consent: false,
+  firstName: null,
+  lastName: null,
+  email: null,
+  consentAt: null,
+  createdAt: "2026-08-17T20:00:00.000Z",
+  updatedAt: "2026-08-17T20:00:00.000Z",
+  lastPlayedAt: index < 2 ? `2026-08-${17 - index}T20:00:00.000Z` : null,
+  statistics: {
+    gamesPlayed: index < 2 ? 1 : 0,
+    wins: 0,
+    losses: index < 2 ? 1 : 0,
+    redGames: 0,
+    redWins: 0,
+    blackGames: 0,
+    blackWins: 0,
+    sheriffGames: 0,
+    citizenGames: 0,
+    mafiaGames: 0,
+    donGames: 0,
+    totalFouls: 0,
+    eliminations: 0,
+    redCards: 0,
+  },
+}));
+
 const Harness = ({
   onComplete,
-  onQueueChange = () => undefined,
+  players = availablePlayers,
 }: {
   onComplete: (game: GameState) => void;
-  onQueueChange?: (queue: readonly string[]) => void;
+  players?: readonly PlayerProfile[];
 }) => {
   const [musicPlaying, setMusicPlaying] = useState(false);
+  const [playlistId, setPlaylistId] = useState("test-playlist");
   return (
     <SetupWizard
+      players={players}
       musicPlaying={musicPlaying}
       musicStatus={musicPlaying ? "Playing" : "Stopped"}
-      playlistId="test-playlist"
-      onPlaylistIdChange={() => undefined}
+      playlistId={playlistId}
+      onPlaylistIdChange={setPlaylistId}
       onStartMusic={() => setMusicPlaying(true)}
       onQuickStopMusic={() => setMusicPlaying(false)}
       onSlowStopMusic={() => setMusicPlaying(false)}
-      onQueueChange={onQueueChange}
       onComplete={onComplete}
     />
   );
@@ -38,10 +88,10 @@ describe("SetupWizard", () => {
     const continuePlayers = screen.getByRole("button", { name: /continue to music/i });
     expect(continuePlayers).toBeDisabled();
 
-    const inputs = screen.getAllByRole("textbox", { name: /seat \d+ player/i });
-    expect(inputs).toHaveLength(10);
-    for (let index = 0; index < inputs.length; index += 1) {
-      await user.type(inputs[index]!, `Player ${index + 1}`);
+    const selectors = screen.getAllByRole("combobox", { name: /seat \d+ player/i });
+    expect(selectors).toHaveLength(10);
+    for (let index = 0; index < selectors.length; index += 1) {
+      await user.selectOptions(selectors[index]!, availablePlayers[index]!.id);
     }
     expect(continuePlayers).toBeEnabled();
     await user.click(continuePlayers);
@@ -68,23 +118,38 @@ describe("SetupWizard", () => {
     expect(onComplete.mock.calls[0]?.[0].phase).toBe("mafia-negotiation");
   });
 
-  it("normalizes a YouTube URL before exposing the playback queue", async () => {
+  it("uses account playlists without exposing a generic YouTube video queue", async () => {
     const user = userEvent.setup();
-    const onQueueChange = vi.fn<(queue: readonly string[]) => void>();
-    render(<Harness onComplete={() => undefined} onQueueChange={onQueueChange} />);
+    render(<Harness onComplete={() => undefined} />);
 
-    const inputs = screen.getAllByRole("textbox", { name: /seat \d+ player/i });
-    for (let index = 0; index < inputs.length; index += 1) {
-      await user.type(inputs[index]!, `Player ${index + 1}`);
+    const selectors = screen.getAllByRole("combobox", { name: /seat \d+ player/i });
+    for (let index = 0; index < selectors.length; index += 1) {
+      await user.selectOptions(selectors[index]!, availablePlayers[index]!.id);
     }
     await user.click(screen.getByRole("button", { name: /continue to music/i }));
-    await user.type(
-      screen.getByRole("textbox", { name: /youtube video url or id/i }),
-      "https://youtu.be/dQw4w9WgXcQ?t=12",
-    );
-    await user.click(screen.getByRole("button", { name: /^add$/i }));
+    const accountPlaylist = screen.getByRole("combobox", { name: "YouTube Music playlist" });
+    await user.selectOptions(accountPlaylist, "account-playlist");
 
-    expect(onQueueChange).toHaveBeenLastCalledWith(["dQw4w9WgXcQ"]);
-    expect(screen.getByText("dQw4w9WgXcQ")).toBeInTheDocument();
+    expect(accountPlaylist).toHaveValue("account-playlist");
+    expect(screen.queryByRole("textbox", { name: /youtube video url or id/i })).toBeNull();
+    expect(screen.queryByRole("heading", { name: /quick queue/i })).toBeNull();
+  });
+
+  it("prevents duplicate selections and guides an empty roster to player management", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<Harness onComplete={() => undefined} />);
+    const selectors = screen.getAllByRole("combobox", { name: /seat \d+ player/i });
+    await user.selectOptions(selectors[0]!, availablePlayers[0]!.id);
+    const duplicateOption = Array.from((selectors[1] as HTMLSelectElement).options).find(
+      ({ value }) => value === availablePlayers[0]!.id,
+    );
+    expect(duplicateOption).toBeDisabled();
+
+    unmount();
+    render(<Harness players={[]} onComplete={() => undefined} />);
+    expect(
+      screen.getByText(/add at least 10 players in players & statistics/i),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /continue to music/i })).toBeDisabled();
   });
 });

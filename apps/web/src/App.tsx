@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { GameState } from "@mafia/game-domain";
-import { appendRemoteEvent, createRemoteGame } from "./api/client.js";
+import {
+  appendRemoteEvent,
+  createPlayer,
+  createRemoteGame,
+  listPlayers,
+  saveGameResults,
+  updatePlayer,
+} from "./api/client.js";
+import type { FinalGameResults, PlayerProfile, PlayerProfileInput } from "./api/client.js";
 import { GameScreen } from "./features/game/GameScreen.js";
 import { LiveMusicControls } from "./features/music/LiveMusicControls.js";
 import {
@@ -8,7 +16,10 @@ import {
   type YouTubePlaybackState,
   type YouTubePlayerHandle,
 } from "./features/music/YouTubePlaylistPlayer.js";
+import { PlayersScreen } from "./features/players/PlayersScreen.js";
+import { buildFinalGameResults } from "./features/players/game-results.js";
 import { SetupWizard } from "./features/setup/SetupWizard.js";
+import { createRandomId } from "./utils/random-id.js";
 import "./styles/app.css";
 
 interface LocalLogEntry {
@@ -29,6 +40,8 @@ interface PendingRemoteEvent {
   readonly secret: boolean;
 }
 
+const noQueuedVideos: readonly string[] = [];
+
 const isSecretEvent = (type: string, payload: Record<string, unknown>) =>
   payload.secret === true ||
   type === "setup.role-drawn" ||
@@ -36,9 +49,11 @@ const isSecretEvent = (type: string, payload: Record<string, unknown>) =>
   type.includes("checked");
 
 export const App = () => {
+  const [view, setView] = useState<"game" | "players">("game");
   const [game, setGame] = useState<GameState | null>(null);
+  const [players, setPlayers] = useState<readonly PlayerProfile[]>([]);
+  const [playersError, setPlayersError] = useState(false);
   const [playlistId, setPlaylistId] = useState(import.meta.env.VITE_YOUTUBE_PLAYLIST_ID ?? "");
-  const [playbackQueue, setPlaybackQueue] = useState<readonly string[]>([]);
   const [musicState, setMusicState] = useState<YouTubePlaybackState>("idle");
   const [log, setLog] = useState<LocalLogEntry[]>([]);
   const [persistenceState, setPersistenceState] = useState<"connecting" | "saved" | "offline">(
@@ -46,9 +61,49 @@ export const App = () => {
   );
   const gameIdRef = useRef<string | null>(null);
   const pendingRef = useRef<PendingRemoteEvent[]>([]);
+  const pendingResultsRef = useRef<FinalGameResults | null>(null);
+  const savedResultGameIdsRef = useRef(new Set<string>());
   const musicRef = useRef<YouTubePlayerHandle>(null);
   const sequenceRef = useRef(0);
   const phaseRef = useRef("setup-players");
+  const playerRequestRef = useRef(0);
+
+  const refreshPlayers = useCallback(async () => {
+    const request = playerRequestRef.current + 1;
+    playerRequestRef.current = request;
+    try {
+      const nextPlayers = await listPlayers();
+      if (playerRequestRef.current === request) {
+        setPlayers(nextPlayers);
+        setPlayersError(false);
+      }
+    } catch {
+      if (playerRequestRef.current === request) setPlayersError(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshPlayers();
+  }, [refreshPlayers]);
+
+  const persistResults = useCallback(
+    async (gameId: string, results: FinalGameResults) => {
+      if (savedResultGameIdsRef.current.has(gameId)) return;
+      savedResultGameIdsRef.current.add(gameId);
+      setPersistenceState("connecting");
+      try {
+        await saveGameResults(gameId, results);
+        pendingResultsRef.current = null;
+        await refreshPlayers();
+        setPersistenceState("saved");
+      } catch {
+        savedResultGameIdsRef.current.delete(gameId);
+        pendingResultsRef.current = results;
+        setPersistenceState("offline");
+      }
+    },
+    [refreshPlayers],
+  );
 
   useEffect(() => {
     let active = true;
@@ -60,7 +115,12 @@ export const App = () => {
         for (const event of pending) {
           await appendRemoteEvent(gameId, event);
         }
-        setPersistenceState("saved");
+        const pendingResults = pendingResultsRef.current;
+        if (pendingResults === null) {
+          setPersistenceState("saved");
+        } else {
+          await persistResults(gameId, pendingResults);
+        }
       })
       .catch(() => {
         if (active) setPersistenceState("offline");
@@ -68,12 +128,12 @@ export const App = () => {
     return () => {
       active = false;
     };
-  }, []);
+  }, [persistResults]);
 
   const logEvent = useCallback((type: string, payload: Record<string, unknown>) => {
     sequenceRef.current += 1;
     const phase = phaseRef.current;
-    const idempotencyKey = crypto.randomUUID();
+    const idempotencyKey = createRandomId();
     const entry: LocalLogEntry = {
       id: idempotencyKey,
       sequence: sequenceRef.current,
@@ -107,6 +167,14 @@ export const App = () => {
   const changeGame = (next: GameState) => {
     phaseRef.current = next.phase;
     setGame(next);
+    const results = buildFinalGameResults(next, new Date());
+    if (results === null) return;
+    const gameId = gameIdRef.current;
+    if (gameId === null) {
+      pendingResultsRef.current = results;
+    } else {
+      void persistResults(gameId, results);
+    }
   };
 
   const handleMusicState = useCallback((state: YouTubePlaybackState) => {
@@ -121,8 +189,26 @@ export const App = () => {
     error: "Playback unavailable",
   };
 
+  const createProfile = async (input: PlayerProfileInput) => {
+    await createPlayer(input);
+    await refreshPlayers();
+  };
+
+  const updateProfile = async (playerId: string, input: PlayerProfileInput) => {
+    await updatePlayer(playerId, input);
+    await refreshPlayers();
+  };
+
   return (
     <div className="app-shell">
+      <nav className="app-navigation" aria-label="Application sections">
+        <button type="button" aria-pressed={view === "game"} onClick={() => setView("game")}>
+          {game === null ? "Game setup" : "Live game"}
+        </button>
+        <button type="button" aria-pressed={view === "players"} onClick={() => setView("players")}>
+          Players &amp; statistics
+        </button>
+      </nav>
       <div className="save-indicator" data-status={persistenceState}>
         <span />{" "}
         {persistenceState === "saved"
@@ -132,8 +218,18 @@ export const App = () => {
             : "Saving"}
       </div>
 
-      {game === null ? (
+      {view === "players" ? (
+        <>
+          {playersError ? (
+            <p className="players-load-error" role="alert">
+              Player profiles are temporarily unavailable.
+            </p>
+          ) : null}
+          <PlayersScreen players={players} onCreate={createProfile} onUpdate={updateProfile} />
+        </>
+      ) : game === null ? (
         <SetupWizard
+          players={players}
           musicPlaying={musicState === "playing"}
           musicStatus={musicLabel[musicState]}
           playlistId={playlistId}
@@ -150,7 +246,6 @@ export const App = () => {
             logEvent("music.slow-fade-out-requested", {});
             void musicRef.current?.slowFadeOut();
           }}
-          onQueueChange={setPlaybackQueue}
           onEvent={logEvent}
           onComplete={(next) => {
             phaseRef.current = next.phase;
@@ -161,51 +256,55 @@ export const App = () => {
         <GameScreen game={game} onGameChange={changeGame} onEvent={logEvent} />
       )}
 
-      <div className={game === null ? "youtube-dock" : "youtube-dock is-compact"}>
-        <YouTubePlaylistPlayer
-          ref={musicRef}
-          playlistId={playlistId}
-          queue={playbackQueue}
-          onStateChange={handleMusicState}
-        />
-        {game === null ? null : (
-          <LiveMusicControls
-            isPlaying={musicState === "playing"}
-            onFadeIn={() => {
-              logEvent("music.fade-in-requested", { playlistId });
-              void musicRef.current?.fadeIn();
-            }}
-            onQuickFadeOut={() => {
-              logEvent("music.quick-fade-out-requested", {});
-              void musicRef.current?.quickFadeOut();
-            }}
-            onSlowFadeOut={() => {
-              logEvent("music.slow-fade-out-requested", {});
-              void musicRef.current?.slowFadeOut();
-            }}
+      {view === "players" ? null : (
+        <div className={game === null ? "youtube-dock" : "youtube-dock is-compact"}>
+          <YouTubePlaylistPlayer
+            ref={musicRef}
+            playlistId={playlistId}
+            queue={noQueuedVideos}
+            onStateChange={handleMusicState}
           />
-        )}
-      </div>
-
-      <details className="game-log-drawer">
-        <summary>
-          Game log <span>{log.length}</span>
-        </summary>
-        <div className="game-log-list">
-          {log.length === 0 ? <p>No actions recorded yet.</p> : null}
-          {[...log].reverse().map((entry) => (
-            <article key={entry.id}>
-              <span className="log-sequence">#{entry.sequence}</span>
-              <div>
-                <strong>{entry.type}</strong>
-                <small>
-                  {entry.phase} · {entry.createdAt.toLocaleTimeString()}
-                </small>
-              </div>
-            </article>
-          ))}
+          {game === null ? null : (
+            <LiveMusicControls
+              isPlaying={musicState === "playing"}
+              onFadeIn={() => {
+                logEvent("music.fade-in-requested", { playlistId });
+                void musicRef.current?.fadeIn();
+              }}
+              onQuickFadeOut={() => {
+                logEvent("music.quick-fade-out-requested", {});
+                void musicRef.current?.quickFadeOut();
+              }}
+              onSlowFadeOut={() => {
+                logEvent("music.slow-fade-out-requested", {});
+                void musicRef.current?.slowFadeOut();
+              }}
+            />
+          )}
         </div>
-      </details>
+      )}
+
+      {view === "players" ? null : (
+        <details className="game-log-drawer">
+          <summary>
+            Game log <span>{log.length}</span>
+          </summary>
+          <div className="game-log-list">
+            {log.length === 0 ? <p>No actions recorded yet.</p> : null}
+            {[...log].reverse().map((entry) => (
+              <article key={entry.id}>
+                <span className="log-sequence">#{entry.sequence}</span>
+                <div>
+                  <strong>{entry.type}</strong>
+                  <small>
+                    {entry.phase} · {entry.createdAt.toLocaleTimeString()}
+                  </small>
+                </div>
+              </article>
+            ))}
+          </div>
+        </details>
+      )}
     </div>
   );
 };

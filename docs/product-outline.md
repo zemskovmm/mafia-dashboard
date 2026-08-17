@@ -13,6 +13,7 @@ Players do not need accounts or phones in the first release. The host controls s
 - Complete setup through a guided, gated wizard.
 - Make timer and music controls available without leaving the game context.
 - Record player-specific votes and Mafia shots by tapping player icons.
+- Preserve reusable player profiles and per-player results across games.
 - Enforce the requested role counts, turn order, foul penalty, vote uniqueness, night order, and victory conditions.
 - Recover the active game and log after browser or container restart.
 - Keep role assignments, Mafia shots, and Don/Sheriff checks private to the host.
@@ -34,7 +35,8 @@ The SPA has three persistent regions:
 
 1. **Game header** — game name/status, current phase, day/night number, privacy shield, connection/save state.
 2. **Workspace** — setup wizard before the game; round table and phase controls during play.
-3. **Utility rail** — music, timer, nomination queue, and collapsible game log. On smaller tablets this becomes a bottom sheet so the table retains usable size.
+3. **Players & Statistics** — a separate profile-management and historical-statistics workspace outside the live game.
+4. **Utility rail** — music, timer, nomination queue, and collapsible game log. On smaller tablets this becomes a bottom sheet so the table retains usable size.
 
 The host can reach music, timers, and the log from every live phase. Phase-specific actions remain near the affected player or in the center of the table.
 
@@ -67,20 +69,30 @@ Primary hit targets are at least 48×48 CSS pixels. A destructive action require
 
 ### Step 1 — Select ten players
 
-- Select existing players or create display names inline.
+- Select existing players from ten nickname dropdowns.
+- Dropdown options are ordered by most recent game first, then nickname alphabetically; players who have never played follow the dated entries.
 - Exactly ten distinct players are required.
 - The selected order maps to seats 1–10 and can be reordered before confirmation.
 - Continue remains disabled until all ten seats are valid.
 
+### Player profiles and statistics
+
+- Player management is a separate application section and remains available outside game setup.
+- Nicknames are required and case-insensitively unique.
+- Without **Agree for data processing**, only the nickname is stored; first name, last name, and email are cleared.
+- With consent, first name, last name, and email are all required.
+- A player card shows games played, wins, losses, win rate, red/black games and wins, role counts, total fouls, eliminations, red cards, and last played.
+- A completed game stores one idempotent result row per selected player so retries cannot double-count a game.
+
 ### Step 2 — Start music
 
-- Load the configured YouTube playlist or locally edited queue.
+- Connect the host's Google account and choose a playlist from the account's YouTube Music library.
+- When account OAuth is not configured, a playlist ID remains available as a deployment fallback.
 - Controls:
   - **Start + fade in**
   - **Quick fade out + stop**
   - **Slow fade out + stop**
   - pause/resume when supported by the player state
-  - queue editor for add, remove, and reorder
 - Continue remains disabled until the official YouTube IFrame Player API reports `PLAYING`.
 - A blocked, unavailable, or failed video displays a recovery action and does not satisfy the gate.
 
@@ -115,9 +127,14 @@ Primary hit targets are at least 48×48 CSS pixels. A destructive action require
 ### 7.1 Playback integration
 
 - Playback uses the official YouTube IFrame Player API in the browser.
-- A playlist ID is configured through the environment/admin configuration.
+- The connected account picker lists owned playlists with the read-only YouTube Data API scope; arbitrary YouTube video queueing is not exposed.
+- A playlist ID is available only as a fallback when account OAuth is not configured.
 - The host’s explicit button press satisfies browser user-gesture requirements where supported.
 - The app treats player state events as authoritative; button presses alone never mark music as playing.
+- The host may authorize the YouTube Data API to list playlists owned by the selected Google account. YouTube Music playlists are available through the same account's YouTube library.
+- Google account authorization does not replace the playback surface: playback remains in the visible YouTube IFrame player.
+- A YouTube Music-only embedded player, hidden YouTube player, separated audio stream, and background player are not supported integration modes.
+- OAuth uses an HTTPS callback, a short-lived secure/HTTP-only state cookie, encrypted refresh-token storage, and explicit revocation on disconnect.
 
 ### 7.2 Fade behavior
 
@@ -129,7 +146,7 @@ Primary hit targets are at least 48×48 CSS pixels. A destructive action require
 
 ### 7.3 Queue behavior
 
-The MVP queue is application-owned. It accepts YouTube video URLs or IDs, preserves order, and supports add, remove, and reorder. Changing the actual playlist on the user’s YouTube account is out of scope because it requires Google OAuth and YouTube Data API write scopes.
+The MVP queue is application-owned. It accepts YouTube video URLs or IDs, preserves order, and supports add, remove, and reorder. Account authorization may list/select existing owned playlists with read access; changing the actual playlist on the user’s account remains out of scope because it requires separate YouTube Data API write scopes.
 
 ## 8. Timer behavior
 

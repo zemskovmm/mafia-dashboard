@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { buildApp } from "./app.js";
+import type { YouTubeOAuthService } from "./youtube-oauth.js";
 
 const pool = new Pool({
   connectionString:
@@ -128,5 +129,259 @@ describe("server API", () => {
 
     expect(host.json().events[0].payload).toEqual({ targetSeat: 8, match: true });
     expect(publicLog.json().events[0].payload).toEqual({ redacted: true });
+  });
+
+  it("creates consent-safe player profiles and rejects duplicate nicknames", async () => {
+    const nickname = `Profile-${randomUUID().slice(0, 8)}`;
+    const invalidWithoutConsent = await app.inject({
+      method: "POST",
+      url: "/api/players",
+      payload: {
+        nickname,
+        consent: false,
+        firstName: "Must not be stored",
+        lastName: null,
+        email: null,
+      },
+    });
+    expect(invalidWithoutConsent.statusCode).toBe(400);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/players",
+      payload: {
+        nickname,
+        consent: false,
+        firstName: null,
+        lastName: null,
+        email: null,
+      },
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json().player).toMatchObject({
+      nickname,
+      consent: false,
+      firstName: null,
+      lastName: null,
+      email: null,
+      statistics: { gamesPlayed: 0, wins: 0, losses: 0 },
+    });
+
+    const duplicate = await app.inject({
+      method: "POST",
+      url: "/api/players",
+      payload: {
+        nickname: nickname.toUpperCase(),
+        consent: false,
+        firstName: null,
+        lastName: null,
+        email: null,
+      },
+    });
+    expect(duplicate.statusCode).toBe(409);
+
+    const listed = await app.inject({ method: "GET", url: "/api/players" });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json().players).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: created.json().player.id, nickname })]),
+    );
+  });
+
+  it("requires all personal fields with consent and updates a player", async () => {
+    const nickname = `Consented-${randomUUID().slice(0, 8)}`;
+    const missingEmail = await app.inject({
+      method: "POST",
+      url: "/api/players",
+      payload: {
+        nickname,
+        consent: true,
+        firstName: "Ada",
+        lastName: "Player",
+        email: null,
+      },
+    });
+    expect(missingEmail.statusCode).toBe(400);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/players",
+      payload: {
+        nickname,
+        consent: true,
+        firstName: "Ada",
+        lastName: "Player",
+        email: "ada@example.test",
+      },
+    });
+    expect(created.statusCode).toBe(201);
+
+    const updated = await app.inject({
+      method: "PUT",
+      url: `/api/players/${created.json().player.id}`,
+      payload: {
+        nickname: `${nickname}-updated`,
+        consent: false,
+        firstName: null,
+        lastName: null,
+        email: null,
+      },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json().player).toMatchObject({
+      nickname: `${nickname}-updated`,
+      consent: false,
+      firstName: null,
+      lastName: null,
+      email: null,
+    });
+  });
+
+  it("saves one finalized result per player and exposes aggregate statistics", async () => {
+    const players: Array<{ id: string; nickname: string }> = [];
+    for (let index = 0; index < 10; index += 1) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/players",
+        payload: {
+          nickname: `Result-${index}-${randomUUID().slice(0, 8)}`,
+          consent: false,
+          firstName: null,
+          lastName: null,
+          email: null,
+        },
+      });
+      expect(response.statusCode).toBe(201);
+      players.push(response.json().player as { id: string; nickname: string });
+    }
+
+    const gameId = randomUUID();
+    const payload = {
+      winner: "red",
+      playedAt: "2026-08-17T22:00:00.000Z",
+      players: players.map((player, index) => ({
+        playerId: player.id,
+        seat: index + 1,
+        role: index === 0 ? "sheriff" : index < 7 ? "citizen" : index === 9 ? "don" : "mafia",
+        team: index < 7 ? "red" : "black",
+        status: index === 7 ? "eliminated" : "active",
+        fouls: index === 0 ? 2 : 0,
+      })),
+    };
+    const saved = await app.inject({
+      method: "PUT",
+      url: `/api/games/${gameId}/results`,
+      payload,
+    });
+    const duplicate = await app.inject({
+      method: "PUT",
+      url: `/api/games/${gameId}/results`,
+      payload,
+    });
+    expect(saved.statusCode).toBe(204);
+    expect(duplicate.statusCode).toBe(204);
+
+    const listed = await app.inject({ method: "GET", url: "/api/players" });
+    const sheriff = listed
+      .json()
+      .players.find((player: { id: string }) => player.id === players[0]!.id);
+    expect(sheriff.statistics).toMatchObject({
+      gamesPlayed: 1,
+      wins: 1,
+      losses: 0,
+      sheriffGames: 1,
+      totalFouls: 2,
+    });
+  });
+
+  it("validates OAuth state before exchanging the Google authorization code", async () => {
+    const oauth = {
+      createAuthorizationUrl: vi.fn(
+        (state: string) => `https://accounts.google.test/authorize?state=${state}`,
+      ),
+      exchangeCode: vi.fn().mockResolvedValue(undefined),
+    } as unknown as YouTubeOAuthService;
+    const oauthApp = await buildApp({ pool, youtubeOAuth: oauth });
+    await oauthApp.ready();
+
+    const started = await oauthApp.inject({ method: "GET", url: "/api/music/oauth/start" });
+    expect(started.statusCode).toBe(302);
+    const location = new URL(started.headers.location!);
+    const cookie = String(started.headers["set-cookie"]).split(";", 1)[0]!;
+    expect(location.searchParams.get("state")).toHaveLength(43);
+    expect(started.headers["set-cookie"]).toContain("HttpOnly");
+    expect(started.headers["set-cookie"]).toContain("Secure");
+    expect(started.headers["set-cookie"]).toContain("SameSite=Lax");
+
+    const invalid = await oauthApp.inject({
+      method: "GET",
+      url: "/api/music/oauth/callback?code=authorization-code&state=wrong-state",
+      headers: { cookie },
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(oauth.exchangeCode).not.toHaveBeenCalled();
+
+    const callback = await oauthApp.inject({
+      method: "GET",
+      url: `/api/music/oauth/callback?code=authorization-code&state=${location.searchParams.get("state")}`,
+      headers: { cookie },
+    });
+    expect(callback.statusCode).toBe(302);
+    expect(callback.headers.location).toBe("/?music=connected");
+    expect(callback.headers["set-cookie"]).toContain("Max-Age=0");
+    expect(oauth.exchangeCode).toHaveBeenCalledWith("authorization-code");
+
+    await oauthApp.close();
+  });
+
+  it("reports that account playlists are unavailable when OAuth is not configured", async () => {
+    const status = await app.inject({ method: "GET", url: "/api/music/oauth/status" });
+
+    expect(status.statusCode).toBe(200);
+    expect(status.json()).toEqual({
+      configured: false,
+      connected: false,
+      accountLabel: null,
+    });
+  });
+
+  it("returns connected account playlists and disconnects the account", async () => {
+    const playlists = [
+      {
+        id: "PL-music",
+        title: "Mafia music",
+        itemCount: 20,
+        thumbnailUrl: "https://i.ytimg.com/music.jpg",
+      },
+    ];
+    const oauth = {
+      getStatus: vi.fn().mockResolvedValue({
+        configured: true,
+        connected: true,
+        accountLabel: "Mafia Host",
+      }),
+      listPlaylists: vi.fn().mockResolvedValue(playlists),
+      disconnect: vi.fn().mockResolvedValue(undefined),
+    } as unknown as YouTubeOAuthService;
+    const oauthApp = await buildApp({ pool, youtubeOAuth: oauth });
+    await oauthApp.ready();
+
+    const status = await oauthApp.inject({ method: "GET", url: "/api/music/oauth/status" });
+    const listed = await oauthApp.inject({ method: "GET", url: "/api/music/playlists" });
+    const disconnected = await oauthApp.inject({
+      method: "DELETE",
+      url: "/api/music/oauth/connection",
+    });
+
+    expect(status.json()).toEqual({
+      configured: true,
+      connected: true,
+      accountLabel: "Mafia Host",
+    });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json()).toEqual({ playlists });
+    expect(disconnected.statusCode).toBe(204);
+    expect(oauth.disconnect).toHaveBeenCalledOnce();
+
+    await oauthApp.close();
   });
 });

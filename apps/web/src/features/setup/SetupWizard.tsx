@@ -8,10 +8,12 @@ import {
   setMusicState,
 } from "@mafia/game-domain";
 import type { GameState, PlayerInput, SetupState } from "@mafia/game-domain";
-import { normalizeYouTubeVideoId } from "../music/youtube-id.js";
+import type { PlayerProfile } from "../../api/client.js";
+import { AccountPlaylistPicker } from "../music/AccountPlaylistPicker.js";
 import { GameTable } from "../table/GameTable.js";
 
 interface SetupWizardProps {
+  readonly players: readonly PlayerProfile[];
   readonly musicPlaying: boolean;
   readonly musicStatus: string;
   readonly playlistId: string;
@@ -19,7 +21,6 @@ interface SetupWizardProps {
   readonly onStartMusic: () => void;
   readonly onQuickStopMusic: () => void;
   readonly onSlowStopMusic: () => void;
-  readonly onQueueChange: (queue: readonly string[]) => void;
   readonly onComplete: (game: GameState) => void;
   readonly onEvent?: (type: string, payload: Record<string, unknown>) => void;
 }
@@ -27,6 +28,7 @@ interface SetupWizardProps {
 type WizardStep = "players" | "music" | "roles";
 
 export const SetupWizard = ({
+  players: availablePlayers,
   musicPlaying,
   musicStatus,
   playlistId,
@@ -34,33 +36,27 @@ export const SetupWizard = ({
   onStartMusic,
   onQuickStopMusic,
   onSlowStopMusic,
-  onQueueChange,
   onComplete,
   onEvent = () => undefined,
 }: SetupWizardProps) => {
   const [step, setStep] = useState<WizardStep>("players");
-  const [names, setNames] = useState(() => Array.from({ length: 10 }, () => ""));
+  const [selectedPlayerIds, setSelectedPlayerIds] = useState(() =>
+    Array.from({ length: 10 }, () => ""),
+  );
   const [setup, setSetup] = useState<SetupState | null>(null);
-
-  const [queueInput, setQueueInput] = useState("");
-  const [queue, setQueue] = useState<string[]>([]);
-  const [queueError, setQueueError] = useState<string | null>(null);
 
   const players = useMemo<PlayerInput[]>(
     () =>
-      names.map((name, index) => ({
-        id: `seat-${index + 1}-${name
-          .trim()
-          .toLowerCase()
-          .replaceAll(/[^a-z0-9]+/g, "-")}`,
-        name: name.trim(),
-        seat: index + 1,
-      })),
-    [names],
+      selectedPlayerIds.flatMap((playerId, index) => {
+        const player = availablePlayers.find(({ id }) => id === playerId);
+        return player === undefined
+          ? []
+          : [{ id: player.id, name: player.nickname, seat: index + 1 }];
+      }),
+    [availablePlayers, selectedPlayerIds],
   );
   const playersReady =
-    players.every(({ name }) => name.length > 0) &&
-    new Set(players.map(({ name }) => name.toLocaleLowerCase()).values()).size === 10;
+    players.length === 10 && new Set(selectedPlayerIds.filter(Boolean)).size === 10;
 
   const continueToMusic = () => {
     const nextSetup = createSetup(players);
@@ -116,22 +112,41 @@ export const SetupWizard = ({
         <section className="wizard-card">
           <p className="eyebrow">Setup · Step 1</p>
           <h1>Select 10 players</h1>
-          <p className="lead">The list order becomes seats 1–10 around the table.</p>
+          <p className="lead">
+            Choose saved nicknames. The list order becomes seats 1–10 around the table.
+          </p>
+          {availablePlayers.length < 10 ? (
+            <p className="roster-guidance">
+              Add at least 10 players in Players &amp; statistics before continuing.
+            </p>
+          ) : null}
           <div className="player-input-grid">
-            {names.map((name, index) => (
+            {selectedPlayerIds.map((playerId, index) => (
               <label key={index}>
                 <span>Seat {index + 1}</span>
-                <input
+                <select
                   aria-label={`Seat ${index + 1} player`}
-                  value={name}
-                  autoComplete="off"
-                  placeholder={`Player ${index + 1}`}
+                  value={playerId}
                   onChange={(event) => {
-                    const next = [...names];
+                    const next = [...selectedPlayerIds];
                     next[index] = event.target.value;
-                    setNames(next);
+                    setSelectedPlayerIds(next);
                   }}
-                />
+                >
+                  <option value="">Choose a nickname</option>
+                  {availablePlayers.map((player) => (
+                    <option
+                      key={player.id}
+                      value={player.id}
+                      disabled={selectedPlayerIds.some(
+                        (selectedId, selectedIndex) =>
+                          selectedIndex !== index && selectedId === player.id,
+                      )}
+                    >
+                      {player.nickname}
+                    </option>
+                  ))}
+                </select>
               </label>
             ))}
           </div>
@@ -155,19 +170,12 @@ export const SetupWizard = ({
             <span className="status-dot" />
             <strong>{musicStatus}</strong>
           </div>
-          <label className="wide-field">
-            <span>YouTube playlist ID</span>
-            <input
-              value={playlistId}
-              placeholder="Paste a playlist ID"
-              onChange={(event) => onPlaylistIdChange(event.target.value)}
-            />
-          </label>
+          <AccountPlaylistPicker playlistId={playlistId} onPlaylistIdChange={onPlaylistIdChange} />
           <div className="music-actions">
             <button
               type="button"
               className="primary-action"
-              disabled={playlistId.trim().length === 0 && queue.length === 0}
+              disabled={playlistId.trim().length === 0}
               onClick={onStartMusic}
             >
               Start · fade in
@@ -178,58 +186,6 @@ export const SetupWizard = ({
             <button type="button" disabled={!musicPlaying} onClick={onSlowStopMusic}>
               Slow fade out
             </button>
-          </div>
-          <div className="queue-editor">
-            <h2>Quick queue</h2>
-            <div className="queue-entry">
-              <input
-                aria-label="YouTube video URL or ID"
-                value={queueInput}
-                placeholder="YouTube video URL or ID"
-                onChange={(event) => {
-                  setQueueInput(event.target.value);
-                  setQueueError(null);
-                }}
-              />
-              <button
-                type="button"
-                disabled={queueInput.trim().length === 0}
-                onClick={() => {
-                  const videoId = normalizeYouTubeVideoId(queueInput);
-                  if (videoId === null) {
-                    setQueueError("Enter a valid YouTube video URL or 11-character ID.");
-                    return;
-                  }
-                  const next = [...queue, videoId];
-                  setQueue(next);
-                  onQueueChange(next);
-                  onEvent("music.queue-item-added", { item: videoId });
-                  setQueueInput("");
-                }}
-              >
-                Add
-              </button>
-            </div>
-            {queueError === null ? null : <p className="queue-error">{queueError}</p>}
-            {queue.length === 0 ? <p className="muted">Playlist order will be used.</p> : null}
-            <ol>
-              {queue.map((item, index) => (
-                <li key={`${item}-${index}`}>
-                  <span>{item}</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const next = queue.filter((_, itemIndex) => itemIndex !== index);
-                      setQueue(next);
-                      onQueueChange(next);
-                      onEvent("music.queue-item-removed", { item, index });
-                    }}
-                  >
-                    Remove
-                  </button>
-                </li>
-              ))}
-            </ol>
           </div>
           <button
             className="primary-action"

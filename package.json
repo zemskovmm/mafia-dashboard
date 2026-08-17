@@ -16,6 +16,7 @@
     "dev": "concurrently --kill-others-on-fail --names server,web \"npm run dev -w @mafia/server\" \"npm run dev -w @mafia/web\"",
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
+    "verify:oauth": "node scripts/verify-oauth.mjs",
     "verify:ui": "node scripts/verify-ui.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "eslint . --max-warnings=0",

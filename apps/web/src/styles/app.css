@@ -45,7 +45,8 @@ body {
     linear-gradient(180deg, #0b0c0e 0%, var(--bg) 45%);
 }
 button,
-input {
+input,
+select {
   font: inherit;
 }
 button {
@@ -64,6 +65,7 @@ button:hover:not(:disabled) {
 }
 button:focus-visible,
 input:focus-visible,
+select:focus-visible,
 summary:focus-visible {
   outline: 3px solid rgb(113 112 255 / 55%);
   outline-offset: 3px;
@@ -72,7 +74,8 @@ button:disabled {
   cursor: not-allowed;
   opacity: 0.38;
 }
-input {
+input,
+select {
   width: 100%;
   min-height: 48px;
   padding: 0 14px;
@@ -160,6 +163,210 @@ h2 {
   background: var(--red);
 }
 
+.app-navigation {
+  position: absolute;
+  z-index: 100;
+  top: 12px;
+  left: 16px;
+  display: flex;
+  gap: 6px;
+  padding: 3px;
+  background: rgb(15 16 17 / 88%);
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  backdrop-filter: blur(16px);
+}
+.app-navigation button {
+  min-height: 38px;
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  font-size: 0.78rem;
+}
+.app-navigation button[aria-pressed="true"] {
+  color: #d8d7ff;
+  background: rgb(113 112 255 / 18%);
+}
+
+.players-shell {
+  width: min(1400px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 86px 0 80px;
+}
+.players-header {
+  display: flex;
+  gap: 24px;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-bottom: 22px;
+}
+.players-header .lead {
+  max-width: 690px;
+  margin-bottom: 0;
+}
+.player-count {
+  min-width: 110px;
+  display: grid;
+  justify-items: end;
+}
+.player-count strong {
+  font:
+    500 2.4rem/1 "JetBrains Mono",
+    monospace;
+}
+.player-count span,
+.last-played,
+.win-rate {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+.new-player-panel,
+.player-profile-card,
+.empty-roster {
+  background: rgb(15 16 17 / 84%);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgb(0 0 0 / 22%);
+}
+.new-player-panel {
+  display: grid;
+  grid-template-columns: minmax(160px, 0.35fr) minmax(0, 1fr);
+  gap: 28px;
+  padding: 24px;
+  margin-bottom: 20px;
+}
+.new-player-panel h2,
+.player-profile-card h2 {
+  margin-bottom: 0;
+}
+.new-player-panel form,
+.player-profile-card form {
+  display: grid;
+  gap: 12px;
+}
+.player-profile-fields {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.player-profile-fields label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+.player-profile-fields label:first-child {
+  grid-column: span 2;
+}
+.player-profile-fields .consent-field {
+  grid-column: span 2;
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  min-height: 48px;
+  padding: 0 12px;
+  color: var(--text);
+  background: rgb(255 255 255 / 3%);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.consent-field input {
+  width: 22px;
+  min-height: 22px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.new-player-panel form > button,
+.player-profile-card form > button {
+  justify-self: end;
+  min-width: 130px;
+  padding: 0 18px;
+}
+.new-player-panel [role="alert"],
+.player-profile-card [role="alert"],
+.players-load-error {
+  margin: 0;
+  color: #ffb2b8;
+}
+.players-load-error {
+  position: absolute;
+  top: 64px;
+  left: 50%;
+  z-index: 90;
+  transform: translateX(-50%);
+}
+.player-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.player-profile-card {
+  min-width: 0;
+  padding: 20px;
+}
+.player-profile-card > header {
+  display: flex;
+  gap: 16px;
+  align-items: start;
+  justify-content: space-between;
+}
+.last-played {
+  text-align: right;
+}
+.statistics-summary {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 18px 0 8px;
+}
+.statistics-summary > div {
+  display: grid;
+  gap: 2px;
+  padding: 12px;
+  background: rgb(255 255 255 / 3%);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.statistics-summary strong {
+  font:
+    500 1.55rem/1 "JetBrains Mono",
+    monospace;
+}
+.statistics-summary span {
+  color: var(--muted);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+.statistics-details {
+  display: grid;
+  gap: 7px;
+  margin: 14px 0 18px;
+}
+.statistics-details > div {
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr);
+  gap: 10px;
+  padding-top: 7px;
+  border-top: 1px solid var(--border);
+}
+.statistics-details dt {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+.statistics-details dd {
+  margin: 0;
+  font-size: 0.78rem;
+}
+.empty-roster {
+  padding: 42px;
+  color: var(--muted);
+  text-align: center;
+}
+.empty-roster h2 {
+  color: var(--text);
+}
+
 .setup-shell {
   width: min(1180px, calc(100% - 32px));
   margin: 0 auto;
@@ -227,6 +434,47 @@ h2 {
 .music-status.is-playing .status-dot {
   background: var(--green);
   box-shadow: 0 0 18px rgb(29 155 102 / 65%);
+}
+.account-playlist-picker {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  background: rgb(255 255 255 / 2%);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.account-playlist-picker h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+.account-playlist-picker p {
+  margin: 0;
+}
+.account-playlist-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.account-playlist-heading button {
+  min-height: 44px;
+  padding: 0 14px;
+}
+.oauth-connect {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  justify-self: start;
+  min-height: 48px;
+  padding: 0 18px;
+  color: white;
+  font-weight: 800;
+  text-decoration: none;
+  background: var(--accent);
+  border-radius: 10px;
+}
+.oauth-connect:hover {
+  background: var(--accent-hover);
 }
 .music-actions,
 .queue-entry,
@@ -743,6 +991,9 @@ h2 {
 }
 
 @media (max-width: 1150px) {
+  .player-card-grid {
+    grid-template-columns: 1fr;
+  }
   .live-layout {
     grid-template-columns: 1fr;
   }
@@ -758,6 +1009,29 @@ h2 {
 }
 
 @media (max-width: 760px) {
+  .app-navigation {
+    left: 8px;
+  }
+  .app-navigation button {
+    padding-inline: 8px;
+    font-size: 0.68rem;
+  }
+  .players-shell {
+    width: min(100% - 20px, 700px);
+  }
+  .players-header {
+    align-items: start;
+  }
+  .new-player-panel {
+    grid-template-columns: 1fr;
+  }
+  .player-profile-fields {
+    grid-template-columns: 1fr;
+  }
+  .player-profile-fields label:first-child,
+  .player-profile-fields .consent-field {
+    grid-column: auto;
+  }
   .setup-shell {
     width: min(100% - 20px, 700px);
     padding-top: 48px;

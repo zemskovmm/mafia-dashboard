@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
 import type { Pool, PoolClient } from "pg";
+import { initializeSchema } from "./initialize-schema.js";
 
 export interface GameEventInput {
   readonly gameId: string;
@@ -65,8 +65,7 @@ export class EventStore {
   public constructor(private readonly pool: Pool) {}
 
   public async initialize(): Promise<void> {
-    const schema = await readFile(new URL("./schema.sql", import.meta.url), "utf8");
-    await this.pool.query(schema);
+    await initializeSchema(this.pool);
   }
 
   public async append(input: GameEventInput): Promise<GameEvent> {

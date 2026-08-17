@@ -28,6 +28,9 @@ const PersonIcon = () => (
   </svg>
 );
 
+const TABLE_SEAT_COUNT = 10;
+const FIRST_SEAT_POSITION_INDEX = 8;
+
 export const GameTable = ({
   seats,
   privacyHidden = false,
@@ -39,8 +42,9 @@ export const GameTable = ({
   <section className="table-stage" aria-label="Mafia table">
     <div className="round-table">
       <div className="table-center">{center}</div>
-      {seats.map((seat, index) => {
-        const angle = (index / 10) * 360 - 90;
+      {seats.map((seat) => {
+        const positionIndex = (FIRST_SEAT_POSITION_INDEX + seat.seat - 1) % TABLE_SEAT_COUNT;
+        const angle = (positionIndex / TABLE_SEAT_COUNT) * 360 - 90;
         const label = seatActionLabel?.(seat) ?? `Seat ${seat.seat}: ${seat.name}`;
         return (
           <div

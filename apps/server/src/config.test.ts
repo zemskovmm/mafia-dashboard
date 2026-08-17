@@ -1,0 +1,45 @@
+import { describe, expect, it } from "vitest";
+import { loadConfig } from "./config.js";
+
+describe("loadConfig", () => {
+  it("builds the YouTube OAuth configuration from a complete secret set", () => {
+    const encryptionKey = Buffer.alloc(32, 9).toString("base64url");
+
+    const config = loadConfig({
+      DATABASE_URL: "postgresql://mafia:mafia@db:5432/mafia",
+      HOST: "0.0.0.0",
+      PORT: "3000",
+      GOOGLE_CLIENT_ID: "client-id.apps.googleusercontent.com",
+      GOOGLE_CLIENT_SECRET: "client-secret",
+      GOOGLE_OAUTH_REDIRECT_URI: "https://mbp16.tail102fab.ts.net/api/music/oauth/callback",
+      MUSIC_TOKEN_ENCRYPTION_KEY: encryptionKey,
+    });
+
+    expect(config.youtubeOAuth).toEqual({
+      clientId: "client-id.apps.googleusercontent.com",
+      clientSecret: "client-secret",
+      redirectUri: "https://mbp16.tail102fab.ts.net/api/music/oauth/callback",
+      encryptionKey: Buffer.alloc(32, 9),
+    });
+  });
+
+  it("rejects a partial YouTube OAuth secret set", () => {
+    expect(() =>
+      loadConfig({
+        GOOGLE_CLIENT_ID: "client-id.apps.googleusercontent.com",
+        GOOGLE_CLIENT_SECRET: "client-secret",
+      }),
+    ).toThrow(/all be set together/i);
+  });
+
+  it("treats empty Compose OAuth variables as unconfigured", () => {
+    const config = loadConfig({
+      GOOGLE_CLIENT_ID: "",
+      GOOGLE_CLIENT_SECRET: "",
+      GOOGLE_OAUTH_REDIRECT_URI: "",
+      MUSIC_TOKEN_ENCRYPTION_KEY: "",
+    });
+
+    expect(config.youtubeOAuth).toBeUndefined();
+  });
+});
