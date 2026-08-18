@@ -12,7 +12,6 @@ import {
   createSetup,
   drawRoleForSeat,
   nominate,
-  setMusicState,
   startVoting,
 } from "@mafia/game-domain";
 import type { GameState, PlayerInput } from "@mafia/game-domain";
@@ -24,7 +23,7 @@ const votingGame = (): GameState => {
     name: `Player ${index + 1}`,
     seat: index + 1,
   }));
-  let setup = beginRoleDraw(setMusicState(createSetup(players), "playing"), createSeededRandom(9));
+  let setup = beginRoleDraw(createSetup(players), createSeededRandom(9));
   for (let seat = 1; seat <= 10; seat += 1) setup = drawRoleForSeat(setup, seat);
   let game = advanceSetupPhase(advanceSetupPhase(createGame(completeRoleDraw(setup))));
   game = nominate(game, 1, 4);
@@ -50,6 +49,34 @@ const Harness = ({
 };
 
 describe("VotingStage", () => {
+  it("clears a resolved tie when canonical vote assignments roll back", async () => {
+    const user = userEvent.setup();
+    const base = votingGame();
+    const tied: GameState = {
+      ...base,
+      voteAssignments: Object.fromEntries(
+        Array.from({ length: 10 }, (_, index) => [index + 1, index < 5 ? 4 : 6]),
+      ),
+    };
+    const props = {
+      onGameChange: () => undefined,
+      onResolved: () => undefined,
+      onEvent: () => undefined,
+    };
+    const { rerender } = render(<VotingStage {...props} game={tied} />);
+
+    await user.click(screen.getByRole("button", { name: /resolve voting/i }));
+    expect(screen.getByRole("status")).toHaveTextContent(/tie between seats 4 and 6/i);
+
+    rerender(
+      <VotingStage
+        {...props}
+        game={{ ...tied, voteAssignments: { ...tied.voteAssignments, 10: undefined } }}
+      />,
+    );
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
   it("assigns each voter once to the selected candidate and resolves totals", async () => {
     const user = userEvent.setup();
     const onResolved = vi.fn<(game: GameState, seats: readonly number[]) => void>();

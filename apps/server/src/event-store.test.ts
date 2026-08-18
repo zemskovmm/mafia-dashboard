@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { EventStore } from "./event-store.js";
+import { GameSessionStore } from "./game-session-store.js";
 
 const databaseUrl =
   process.env.TEST_DATABASE_URL ?? "postgresql://mafia:mafia@127.0.0.1:54329/mafia_test";
@@ -15,6 +16,22 @@ beforeAll(async () => {
 afterAll(async () => {
   await pool.end();
 });
+
+const waitForAdvisoryWaiters = async (expected: number): Promise<void> => {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
+    const result = await pool.query<{ waiters: number }>(
+      `SELECT COUNT(*)::int AS waiters
+         FROM pg_stat_activity
+        WHERE datname = current_database()
+          AND wait_event_type = 'Lock'
+          AND query LIKE '%pg_advisory_xact_lock%'`,
+    );
+    if ((result.rows[0]?.waiters ?? 0) >= expected) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("Timed out waiting for advisory lock waiter");
+};
 
 describe("PostgreSQL event store", () => {
   it("assigns monotonic per-game sequences and reads events in order", async () => {
@@ -50,9 +67,10 @@ describe("PostgreSQL event store", () => {
     const input = {
       gameId,
       idempotencyKey: "same-tap",
-      type: "timer.started",
+      type: "turn.started",
       phase: "day",
-      payload: { seconds: 60 },
+      seat: 3,
+      payload: { seat: 3, seconds: 60 },
       secret: false,
     } as const;
 
@@ -83,6 +101,68 @@ describe("PostgreSQL event store", () => {
     expect(publicEvents[0]?.payload).toEqual({ redacted: true });
   });
 
+  it("truncates the undone event tail by idempotency key while preserving game.created", async () => {
+    const gameId = randomUUID();
+    await store.append({
+      gameId,
+      idempotencyKey: "game-created",
+      type: "game.created",
+      phase: "setup-players",
+      payload: {},
+      secret: false,
+    });
+    await store.append({
+      gameId,
+      idempotencyKey: "undo-from-here",
+      type: "turn.completed",
+      phase: "day",
+      payload: { day: 2 },
+      secret: false,
+    });
+    await store.append({
+      gameId,
+      idempotencyKey: "later-event",
+      type: "foul.issued",
+      phase: "day",
+      payload: { seat: 1 },
+      secret: false,
+    });
+
+    await store.truncateFrom(gameId, "undo-from-here");
+    await store.truncateFrom(gameId, "undo-from-here");
+    await store.truncateFrom(gameId, "game-created");
+
+    await expect(store.read(gameId)).resolves.toMatchObject([
+      { sequence: 1, idempotencyKey: "game-created", type: "game.created" },
+    ]);
+  });
+
+  it("tombstones an abandoned game, removes its active setup roster, and rejects late appends", async () => {
+    const gameId = randomUUID();
+    await store.append({
+      gameId,
+      idempotencyKey: "setup-roster",
+      type: "setup.players-selected",
+      phase: "setup-players",
+      payload: { hostPlayerId: randomUUID(), players: [] },
+      secret: false,
+    });
+
+    await store.deleteGame(gameId);
+
+    await expect(store.read(gameId)).resolves.toEqual([]);
+    await expect(
+      store.append({
+        gameId,
+        idempotencyKey: "late-event",
+        type: "turn.started",
+        phase: "day",
+        payload: {},
+        secret: false,
+      }),
+    ).rejects.toMatchObject({ code: "game_deleted" });
+  });
+
   it("serializes concurrent appends without duplicate sequence numbers", async () => {
     const gameId = randomUUID();
 
@@ -102,5 +182,33 @@ describe("PostgreSQL event store", () => {
     expect(events.map(({ sequence }) => sequence).sort((a, b) => a - b)).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
     ]);
+  });
+
+  it("rejects an append queued behind an aggregate tombstone", async () => {
+    const gameId = randomUUID();
+    const locker = await pool.connect();
+    try {
+      await locker.query("BEGIN");
+      await locker.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [gameId]);
+      const clear = new GameSessionStore(pool).clear(gameId);
+      await waitForAdvisoryWaiters(1);
+      const append = store.append({
+        gameId,
+        idempotencyKey: randomUUID(),
+        type: "turn.started",
+        phase: "day",
+        payload: {},
+        secret: false,
+      });
+      await waitForAdvisoryWaiters(2);
+      await locker.query("COMMIT");
+
+      await clear;
+      await expect(append).rejects.toMatchObject({ code: "game_deleted" });
+      await expect(store.read(gameId)).resolves.toEqual([]);
+    } finally {
+      await locker.query("ROLLBACK");
+      locker.release();
+    }
   });
 });

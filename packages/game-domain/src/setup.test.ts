@@ -6,7 +6,6 @@ import {
   createSetup,
   drawRoleForSeat,
   roleCounts,
-  setMusicState,
 } from "./setup.js";
 import type { PlayerInput, Role } from "./types.js";
 
@@ -42,19 +41,15 @@ describe("setup", () => {
     expect(setup.step).toBe("music");
   });
 
-  it("blocks role drawing until music is actually playing", () => {
+  it("keeps music playback state out of the durable setup", () => {
     const setup = createSetup(players());
-
-    expect(() => beginRoleDraw(setup, createSeededRandom(7))).toThrow(/music must be playing/i);
-
-    const blocked = setMusicState(setup, "blocked");
-    expect(() => beginRoleDraw(blocked, createSeededRandom(7))).toThrow(/music must be playing/i);
+    expect(setup).not.toHaveProperty("musicState");
   });
 
   it("draws one deterministic remaining role per tapped seat", () => {
-    const playing = setMusicState(createSetup(players()), "playing");
-    const first = beginRoleDraw(playing, createSeededRandom(42));
-    const second = beginRoleDraw(playing, createSeededRandom(42));
+    const setup = createSetup(players());
+    const first = beginRoleDraw(setup, createSeededRandom(42));
+    const second = beginRoleDraw(setup, createSeededRandom(42));
 
     expect(first.roleDeck).toEqual(second.roleDeck);
 
@@ -65,8 +60,7 @@ describe("setup", () => {
   });
 
   it("cannot finish role drawing until all ten seats are assigned", () => {
-    const playing = setMusicState(createSetup(players()), "playing");
-    let drawing = beginRoleDraw(playing, createSeededRandom(19));
+    let drawing = beginRoleDraw(createSetup(players()), createSeededRandom(19));
 
     drawing = drawRoleForSeat(drawing, 1);
     expect(() => completeRoleDraw(drawing)).toThrow(/all ten seats/i);

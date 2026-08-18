@@ -27,7 +27,6 @@ declare global {
       pauseVideo(): void;
       setVolume(volume: number): void;
       getVolume(): number;
-      cuePlaylist(videoIds: readonly string[]): void;
       destroy(): void;
     }
   }

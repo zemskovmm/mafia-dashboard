@@ -6,7 +6,6 @@ import {
   createSeededRandom,
   createSetup,
   drawRoleForSeat,
-  setMusicState,
 } from "@mafia/game-domain";
 import type { GameState, PlayerInput } from "@mafia/game-domain";
 import { buildFinalGameResults } from "./game-results.js";
@@ -17,14 +16,14 @@ const createAssignedGame = (): GameState => {
     name: `Player ${index + 1}`,
     seat: index + 1,
   }));
-  let setup = beginRoleDraw(setMusicState(createSetup(players), "playing"), createSeededRandom(13));
+  let setup = beginRoleDraw(createSetup(players), createSeededRandom(13));
   for (let seat = 1; seat <= 10; seat += 1) setup = drawRoleForSeat(setup, seat);
   return createGame(completeRoleDraw(setup));
 };
 
 describe("buildFinalGameResults", () => {
   it("returns null until victory has finalized the game", () => {
-    expect(buildFinalGameResults(createAssignedGame(), new Date())).toBeNull();
+    expect(buildFinalGameResults(createAssignedGame(), new Date(), "host-player-id")).toBeNull();
   });
 
   it("captures every player's role, team, status, fouls, and winner", () => {
@@ -42,8 +41,13 @@ describe("buildFinalGameResults", () => {
       ),
     };
 
-    const results = buildFinalGameResults(finished, new Date("2026-08-17T22:00:00.000Z"));
+    const results = buildFinalGameResults(
+      finished,
+      new Date("2026-08-17T22:00:00.000Z"),
+      "00000000-0000-4000-8000-000000000011",
+    );
     expect(results).toMatchObject({
+      hostPlayerId: "00000000-0000-4000-8000-000000000011",
       winner: "red",
       playedAt: "2026-08-17T22:00:00.000Z",
     });

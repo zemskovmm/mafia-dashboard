@@ -358,7 +358,7 @@ The setup screen SHOULD provide:
 - readiness checklist;
 - start confirmation that summarizes secret-data handling.
 
-The canonical setup wizard is ordered and gated: select exactly ten players, start the configured YouTube playlist, draw one random remaining role by tapping each seat, run Mafia negotiation, run the Sheriff wake-up step, and begin day one. The music step may advance only after the browser player reports that playback is actually running. Queue editing in the MVP changes an application-owned queue; changing the owner’s real YouTube playlist is outside the MVP.
+The canonical setup wizard is ordered and gated: select exactly ten players, start the configured YouTube playlist, draw one random remaining role by tapping each seat, run Mafia negotiation, run the Sheriff wake-up step, and begin day one. The music step may advance only after the browser player reports that playback is actually running. The MVP plays the selected YouTube playlist in its supplied order, including repeated video occurrences; editing the owner’s real playlist or maintaining a separate application-owned queue is outside the MVP.
 
 ### 7.2 Live dashboard
 
@@ -405,9 +405,9 @@ It MUST NOT expose roles, alignments, individual night shots, Don/Sheriff target
 
 ### 7.5 Undo and correction
 
-The moderator MUST be able to correct the most recent action. Corrections are append-only compensating events, not destructive history edits.
+The moderator MUST be able to correct the most recent action. Every accepted action persists one complete revisioned session snapshot and its non-auxiliary log tail. Explicit undo is not logged as a separate event; it restores the prior snapshot and corresponding log tail, and it cannot cross a new-day checkpoint. A separate audited administrative correction may use compensating events.
 
-Each correction records:
+Each audited administrative correction records:
 
 - actor;
 - time;
@@ -416,7 +416,7 @@ Each correction records:
 - reason;
 - resulting phase/state.
 
-The system MUST recalculate nominations, votes, active players, timers, and win conditions after a correction.
+The system MUST recalculate nominations, votes, active players, and win conditions after a correction. The auxiliary timer is reset locally rather than reconstructed from game history.
 
 ## 8. Persistence model
 
@@ -430,7 +430,7 @@ Minimum conceptual entities:
 - `games`;
 - `game_seats`;
 - `game_role_assignments` (secret);
-- `game_events` (append-only authoritative log);
+- `game_events` (authoritative log; append-only during normal play, with explicit undo truncating the undone tail);
 - `speech_intervals`;
 - `nominations`;
 - `vote_rounds` and `votes`;
@@ -446,7 +446,7 @@ Important invariants:
 - exactly one current logical game state;
 - events are ordered monotonically within a game;
 - secret fields are never returned by public APIs;
-- completed games are immutable except through an explicit administrative correction flow;
+- a just-finished game may be retracted only by ordinary undo within the current same-day three-action checkpoint; after that window, completed games are immutable except through an explicit administrative correction flow;
 - application-level authorization is enforced on every game route, not only in the UI.
 
 ## 9. Self-hosted deployment baseline
@@ -479,7 +479,7 @@ A Docker volume provides persistence but is **not** a backup. For this applicati
 
 ### Reliability
 
-- A browser refresh restores the active game and logical timer.
+- A browser refresh restores the active game; the auxiliary timer resets locally.
 - A container restart does not lose accepted game events.
 - Duplicate requests do not create duplicate nominations, votes, fouls, or eliminations.
 - An interrupted migration fails safely and visibly.
@@ -488,7 +488,7 @@ A Docker volume provides persistence but is **not** a backup. For this applicati
 
 - Primary moderator actions acknowledge within 200 ms on a local/LAN deployment under normal load.
 - Timer display remains smooth and does not depend on one database write per animation frame.
-- Reconnecting clients derive timer position from server timestamps rather than accumulated browser ticks.
+- Reconnecting clients start with a reset local timer; timer position is never reconstructed from server state.
 
 ### Accessibility and ergonomics
 

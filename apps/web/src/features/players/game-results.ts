@@ -1,10 +1,15 @@
 import type { GameState } from "@mafia/game-domain";
 import type { FinalGameResults } from "../../api/client.js";
 
-export const buildFinalGameResults = (game: GameState, playedAt: Date): FinalGameResults | null => {
+export const buildFinalGameResults = (
+  game: GameState,
+  playedAt: Date,
+  hostPlayerId: string,
+): FinalGameResults | null => {
   if (game.phase !== "finished" || game.winner === null) return null;
 
   return {
+    hostPlayerId,
     winner: game.winner,
     playedAt: playedAt.toISOString(),
     players: game.players.map((player) => ({

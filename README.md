@@ -18,7 +18,7 @@ The project has entered implementation. The earlier Swift/Xcode prototype has be
 
 ## Architecture direction
 
-The application is a TypeScript npm workspace with a React/Vite SPA, Fastify API, pure game-domain package, and PostgreSQL event log. The deployment target is Docker Compose with an application container and PostgreSQL persistence.
+The application is a TypeScript npm workspace with a React/Vite SPA, Fastify API, pure game-domain package, and one revisioned PostgreSQL game-session aggregate. The deployment target is Docker Compose with an application container and PostgreSQL persistence.
 
 ## Run locally with Docker
 
@@ -68,7 +68,9 @@ Server integration tests expect PostgreSQL at `postgresql://mafia:mafia@127.0.0.
 - Round-table host dashboard with privacy shield
 - 60/30/10-second timers and faint ten-second warning
 - Foul, red-card, nomination, individual voting, Mafia shot, Don check, and Sheriff check controls
-- Rotating day order, automatic win detection, and append-only PostgreSQL game events
+- Rotating day order, automatic win detection, and atomic PostgreSQL game-session snapshots after every setup/game-state action
+- Durable browser outbox plus **Active games** resume for full setup/live state, host, playlist, log, and undo recovery
+- Three-action ordinary undo with every new day as a checkpoint; timer and music controls remain non-durable UI state
 
 Owner input still needed for a production table session: preferred fade durations/chime, red-card final-speech rule, initial languages, and any tie-vote rule that differs from `rules.md`.
 

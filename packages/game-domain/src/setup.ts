@@ -1,4 +1,4 @@
-import type { MusicState, PlayerInput, Role, SetupState } from "./types.js";
+import type { PlayerInput, Role, SetupState } from "./types.js";
 
 const CANONICAL_ROLE_DECK: readonly Role[] = [
   "sheriff",
@@ -68,23 +68,13 @@ export const createSetup = (players: readonly PlayerInput[]): SetupState => {
   return {
     step: "music",
     players: players.map((player) => ({ ...player })),
-    musicState: "idle",
     roleDeck: [...CANONICAL_ROLE_DECK],
     remainingRoles: [...CANONICAL_ROLE_DECK],
     assignments: {},
   };
 };
 
-export const setMusicState = (state: SetupState, musicState: MusicState): SetupState => ({
-  ...state,
-  musicState,
-});
-
 export const beginRoleDraw = (state: SetupState, random: RandomSource): SetupState => {
-  if (state.musicState !== "playing") {
-    throw new Error("Music must be playing before role drawing begins");
-  }
-
   const roleDeck = shuffle(CANONICAL_ROLE_DECK, random);
   return {
     ...state,

@@ -14,7 +14,6 @@ import {
   createSeededRandom,
   createSetup,
   drawRoleForSeat,
-  setMusicState,
 } from "./setup.js";
 import type { GameState, PlayerInput, SetupState } from "./types.js";
 
@@ -26,10 +25,7 @@ const players = (): PlayerInput[] =>
   }));
 
 const completedSetup = (): SetupState => {
-  let setup = beginRoleDraw(
-    setMusicState(createSetup(players()), "playing"),
-    createSeededRandom(71),
-  );
+  let setup = beginRoleDraw(createSetup(players()), createSeededRandom(71));
   for (let seat = 1; seat <= 10; seat += 1) {
     setup = drawRoleForSeat(setup, seat);
   }

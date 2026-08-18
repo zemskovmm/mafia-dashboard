@@ -14,6 +14,7 @@ export interface TableSeatView {
 
 interface GameTableProps {
   readonly seats: readonly TableSeatView[];
+  readonly hostName?: string;
   readonly privacyHidden?: boolean;
   readonly seatActionLabel?: (seat: TableSeatView) => string;
   readonly onSeatClick?: (seat: number) => void;
@@ -28,11 +29,12 @@ const PersonIcon = () => (
   </svg>
 );
 
-const TABLE_SEAT_COUNT = 10;
-const FIRST_SEAT_POSITION_INDEX = 8;
+const TABLE_POSITION_COUNT = 11;
+const HOST_ANGLE = 180;
 
 export const GameTable = ({
   seats,
+  hostName = "Host",
   privacyHidden = false,
   seatActionLabel,
   onSeatClick,
@@ -43,8 +45,7 @@ export const GameTable = ({
     <div className="round-table">
       <div className="table-center">{center}</div>
       {seats.map((seat) => {
-        const positionIndex = (FIRST_SEAT_POSITION_INDEX + seat.seat - 1) % TABLE_SEAT_COUNT;
-        const angle = (positionIndex / TABLE_SEAT_COUNT) * 360 - 90;
+        const angle = HOST_ANGLE + (seat.seat * 360) / TABLE_POSITION_COUNT;
         const label = seatActionLabel?.(seat) ?? `Seat ${seat.seat}: ${seat.name}`;
         return (
           <div
@@ -54,7 +55,7 @@ export const GameTable = ({
           >
             <button
               type="button"
-              className={`player-seat status-${seat.status ?? "active"}${seat.current ? " is-current" : ""}`}
+              className={`table-card player-seat status-${seat.status ?? "active"}${seat.current ? " is-current" : ""}`}
               aria-label={label}
               aria-current={seat.current ? "step" : undefined}
               onClick={() => onSeatClick?.(seat.seat)}
@@ -75,9 +76,15 @@ export const GameTable = ({
           </div>
         );
       })}
-      <div className="host-seat" aria-label="Host position">
-        <span className="host-crown">◆</span>
-        <span>Host</span>
+      <div
+        className="seat-anchor host-anchor"
+        style={{ "--seat-angle": `${HOST_ANGLE}deg` } as CSSProperties}
+      >
+        <div className="table-card host-seat" role="group" aria-label={`Host: ${hostName}`}>
+          <span className="host-crown">◆</span>
+          <span className="host-name">{hostName}</span>
+          <span className="host-role">Host</span>
+        </div>
       </div>
     </div>
   </section>

@@ -16,6 +16,42 @@ CREATE TABLE IF NOT EXISTS game_events (
 CREATE INDEX IF NOT EXISTS game_events_game_sequence_idx
   ON game_events (game_id, sequence);
 
+CREATE TABLE IF NOT EXISTS deleted_games (
+  game_id UUID PRIMARY KEY,
+  deleted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS game_sessions (
+  id UUID PRIMARY KEY,
+  name TEXT NOT NULL CHECK (BTRIM(name) <> ''),
+  revision INTEGER NOT NULL CHECK (revision > 0),
+  last_mutation_id UUID NOT NULL,
+  state JSONB NOT NULL,
+  results JSONB NULL,
+  status TEXT NOT NULL CHECK (status IN ('active', 'completed')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE game_sessions
+  ADD COLUMN IF NOT EXISTS results JSONB NULL;
+
+CREATE INDEX IF NOT EXISTS game_sessions_active_updated_idx
+  ON game_sessions (updated_at DESC, id)
+  WHERE status = 'active';
+
+CREATE TABLE IF NOT EXISTS game_session_mutations (
+  game_id UUID NOT NULL REFERENCES game_sessions (id) ON DELETE CASCADE,
+  mutation_id UUID NOT NULL,
+  revision INTEGER NOT NULL CHECK (revision > 0),
+  request JSONB NULL,
+  PRIMARY KEY (game_id, mutation_id),
+  UNIQUE (game_id, revision)
+);
+
+ALTER TABLE game_session_mutations
+  ADD COLUMN IF NOT EXISTS request JSONB NULL;
+
 CREATE TABLE IF NOT EXISTS players (
   id UUID PRIMARY KEY,
   nickname TEXT NOT NULL CHECK (BTRIM(nickname) <> ''),
@@ -55,11 +91,31 @@ CREATE UNIQUE INDEX IF NOT EXISTS players_nickname_unique_idx
 CREATE INDEX IF NOT EXISTS players_last_played_nickname_idx
   ON players (last_played_at DESC, nickname);
 
+CREATE TABLE IF NOT EXISTS game_session_players (
+  game_id UUID NOT NULL REFERENCES game_sessions (id) ON DELETE CASCADE,
+  player_id UUID NOT NULL REFERENCES players (id) ON DELETE RESTRICT,
+  seat INTEGER NULL CHECK (seat BETWEEN 1 AND 10),
+  is_host BOOLEAN NOT NULL,
+  PRIMARY KEY (game_id, player_id),
+  UNIQUE (game_id, seat),
+  CHECK ((is_host AND seat IS NULL) OR (NOT is_host AND seat IS NOT NULL))
+);
+
+CREATE INDEX IF NOT EXISTS game_session_players_player_idx
+  ON game_session_players (player_id, game_id);
+
 CREATE TABLE IF NOT EXISTS game_results (
   game_id UUID PRIMARY KEY,
   winner TEXT NOT NULL CHECK (winner IN ('red', 'black')),
-  played_at TIMESTAMPTZ NOT NULL
+  played_at TIMESTAMPTZ NOT NULL,
+  host_player_id UUID NULL REFERENCES players (id) ON DELETE RESTRICT
 );
+
+ALTER TABLE game_results
+  ADD COLUMN IF NOT EXISTS host_player_id UUID NULL REFERENCES players (id) ON DELETE RESTRICT;
+
+CREATE INDEX IF NOT EXISTS game_results_host_idx
+  ON game_results (host_player_id, played_at DESC);
 
 CREATE TABLE IF NOT EXISTS game_player_results (
   game_id UUID NOT NULL REFERENCES game_results (game_id) ON DELETE CASCADE,

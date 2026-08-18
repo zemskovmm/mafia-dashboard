@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { assignVote, countVotes, resolveVote } from "@mafia/game-domain";
 import type { GameState } from "@mafia/game-domain";
 
@@ -14,18 +14,20 @@ export const VotingStage = ({ game, onGameChange, onResolved, onEvent }: VotingS
     game.nominations[0]?.candidateSeat ?? null,
   );
   const [tieSeats, setTieSeats] = useState<readonly number[]>([]);
+  useEffect(() => setTieSeats([]), [game.voteAssignments]);
   const totals = countVotes(game);
   const activePlayers = game.players.filter(({ status }) => status === "active");
   const allVotesAssigned = Object.keys(game.voteAssignments).length === activePlayers.length;
 
   const resolve = () => {
     const result = resolveVote(game);
-    onEvent("voting.resolved", { kind: result.kind, seats: result.seats, totals: result.totals });
     if (result.kind === "tie") {
+      onEvent("voting.resolved", { kind: result.kind, seats: result.seats, totals: result.totals });
       setTieSeats(result.seats);
       return;
     }
     onResolved(game, result.seats);
+    onEvent("voting.resolved", { kind: result.kind, seats: result.seats, totals: result.totals });
   };
 
   return (

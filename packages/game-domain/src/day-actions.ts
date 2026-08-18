@@ -86,7 +86,24 @@ export const completeCurrentTurn = (game: GameState): GameState => {
 export const redCard = (game: GameState, seat: number): GameState => {
   const updated = markPlayerInactive(game, seat, "red-carded");
   const winner = evaluateVictory(updated.players);
-  return winner === null ? updated : { ...updated, phase: "finished", winner };
+  if (winner !== null) return { ...updated, phase: "finished", winner };
+  if (game.phase !== "day") return updated;
+
+  const removedIndex = game.turnOrder.indexOf(seat);
+  if (removedIndex < 0) return updated;
+  const turnOrder = game.turnOrder.filter((candidateSeat) => candidateSeat !== seat);
+  const currentTurnIndex =
+    removedIndex < game.currentTurnIndex ? game.currentTurnIndex - 1 : game.currentTurnIndex;
+  if (currentTurnIndex >= turnOrder.length) {
+    return {
+      ...updated,
+      turnOrder,
+      currentTurnIndex,
+      phase: game.nominations.length > 0 ? "voting" : "night-mafia",
+      voteAssignments: {},
+    };
+  }
+  return { ...updated, turnOrder, currentTurnIndex };
 };
 
 export const startVoting = (game: GameState): GameState => {

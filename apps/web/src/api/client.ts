@@ -10,6 +10,7 @@ export interface RemoteGameEvent {
 }
 
 export interface PlayerStatistics {
+  readonly hostedGames: number;
   readonly gamesPlayed: number;
   readonly wins: number;
   readonly losses: number;
@@ -57,6 +58,7 @@ export type PlayerProfileInput =
     };
 
 export interface FinalGameResults {
+  readonly hostPlayerId: string;
   readonly winner: "red" | "black";
   readonly playedAt: string;
   readonly players: readonly {
@@ -67,6 +69,45 @@ export interface FinalGameResults {
     readonly status: "active" | "eliminated" | "red-carded";
     readonly fouls: number;
   }[];
+}
+
+export interface GameSessionState {
+  readonly setup: unknown | null;
+  readonly game: unknown | null;
+  readonly hostPlayerId: string | null;
+  readonly hostName: string | null;
+  readonly playlistId: string;
+  readonly log: readonly unknown[];
+  readonly undoHistory: readonly unknown[];
+}
+
+export interface GameSessionMutation {
+  readonly name: string;
+  readonly mutationId: string;
+  readonly baseRevision: number;
+  readonly state: GameSessionState;
+  readonly results: FinalGameResults | null;
+}
+
+export interface ActiveGameSessionSummary {
+  readonly gameId: string;
+  readonly name: string;
+  readonly revision: number;
+  readonly hostName: string | null;
+  readonly phase: string;
+  readonly day: number;
+  readonly updatedAt: string;
+}
+
+export interface RemoteGameSession {
+  readonly gameId: string;
+  readonly name: string;
+  readonly revision: number;
+  readonly duplicate: boolean;
+  readonly status: "active" | "completed";
+  readonly updatedAt: string;
+  readonly state: GameSessionState;
+  readonly results: FinalGameResults | null;
 }
 
 export interface MusicAccountStatus {
@@ -154,6 +195,43 @@ export const updatePlayer = async (
   return body.player;
 };
 
+export const deletePlayer = async (playerId: string): Promise<void> => {
+  const response = await fetch(`/api/players/${playerId}`, { method: "DELETE" });
+  if (!response.ok) return throwApiError(response, "Unable to delete player");
+};
+
+export const saveGameSession = async (
+  gameId: string,
+  mutation: GameSessionMutation,
+): Promise<RemoteGameSession> => {
+  const response = await fetch(`/api/game-sessions/${gameId}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(mutation),
+  });
+  if (!response.ok) return throwApiError(response, "Unable to save the game session");
+  return (await response.json()) as RemoteGameSession;
+};
+
+export const listActiveGameSessions = async (): Promise<readonly ActiveGameSessionSummary[]> => {
+  const response = await fetch("/api/game-sessions");
+  if (!response.ok) return throwApiError(response, "Unable to load active game sessions");
+  const body = (await response.json()) as { sessions: readonly ActiveGameSessionSummary[] };
+  return body.sessions;
+};
+
+export const getGameSession = async (gameId: string): Promise<RemoteGameSession> => {
+  const response = await fetch(`/api/game-sessions/${gameId}`);
+  if (!response.ok) return throwApiError(response, "Unable to restore the game session");
+  const body = (await response.json()) as { session: RemoteGameSession };
+  return body.session;
+};
+
+export const clearGameSession = async (gameId: string): Promise<void> => {
+  const response = await fetch(`/api/game-sessions/${gameId}`, { method: "DELETE" });
+  if (!response.ok) return throwApiError(response, "Unable to clear the game session");
+};
+
 export const saveGameResults = async (gameId: string, results: FinalGameResults): Promise<void> => {
   const response = await fetch(`/api/games/${gameId}/results`, {
     method: "PUT",
@@ -161,6 +239,16 @@ export const saveGameResults = async (gameId: string, results: FinalGameResults)
     body: JSON.stringify(results),
   });
   if (!response.ok) return throwApiError(response, "Unable to save player statistics");
+};
+
+export const deleteGameResults = async (gameId: string): Promise<void> => {
+  const response = await fetch(`/api/games/${gameId}/results`, { method: "DELETE" });
+  if (!response.ok) return throwApiError(response, "Unable to retract player statistics");
+};
+
+export const deleteRemoteGame = async (gameId: string): Promise<void> => {
+  const response = await fetch(`/api/games/${gameId}`, { method: "DELETE" });
+  if (!response.ok) return throwApiError(response, "Unable to clear the persisted game");
 };
 
 export const createRemoteGame = async (name: string): Promise<string> => {
@@ -191,6 +279,18 @@ export const appendRemoteEvent = async (
     body: JSON.stringify(event),
   });
   if (!response.ok) throw new Error("Unable to persist the game event");
+};
+
+export const truncateRemoteEvents = async (
+  gameId: string,
+  fromIdempotencyKey: string,
+): Promise<void> => {
+  const response = await fetch(`/api/games/${gameId}/events/truncate`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ fromIdempotencyKey }),
+  });
+  if (!response.ok) return throwApiError(response, "Unable to undo persisted game events");
 };
 
 export const readRemoteLog = async (gameId: string): Promise<readonly RemoteGameEvent[]> => {

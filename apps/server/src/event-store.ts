@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
+import { assertGameNotDeleted, assertLegacyGameMutationAllowed } from "./game-lifecycle.js";
 import { initializeSchema } from "./initialize-schema.js";
 
 export interface GameEventInput {
@@ -72,7 +73,10 @@ export class EventStore {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      await client.query("LOCK TABLE game_events IN ROW EXCLUSIVE MODE");
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [input.gameId]);
+      await assertGameNotDeleted(client, input.gameId);
+      await assertLegacyGameMutationAllowed(client, input.gameId);
 
       const duplicate = await findByIdempotencyKey(client, input.gameId, input.idempotencyKey);
       if (duplicate !== null) {
@@ -115,6 +119,60 @@ export class EventStore {
       }
       await client.query("COMMIT");
       return mapRow(row);
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async truncateFrom(gameId: string, idempotencyKey: string): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("LOCK TABLE game_events IN ROW EXCLUSIVE MODE");
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [gameId]);
+      await assertGameNotDeleted(client, gameId);
+      await assertLegacyGameMutationAllowed(client, gameId);
+      await client.query(
+        `WITH cutoff AS (
+           SELECT sequence
+             FROM game_events
+            WHERE game_id = $1 AND idempotency_key = $2
+         )
+         DELETE FROM game_events AS event
+          USING cutoff
+          WHERE event.game_id = $1
+            AND event.sequence >= GREATEST(cutoff.sequence, 2)`,
+        [gameId, idempotencyKey],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async deleteGame(gameId: string): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "LOCK TABLE game_results, game_player_results, game_events IN SHARE ROW EXCLUSIVE MODE",
+      );
+      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [gameId]);
+      await assertLegacyGameMutationAllowed(client, gameId);
+      await client.query(
+        `INSERT INTO deleted_games (game_id)
+         VALUES ($1)
+         ON CONFLICT (game_id) DO NOTHING`,
+        [gameId],
+      );
+      await client.query("DELETE FROM game_events WHERE game_id = $1", [gameId]);
+      await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;

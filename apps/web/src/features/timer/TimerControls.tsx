@@ -1,13 +1,9 @@
 import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
-import { pauseCountdown, readCountdown, resumeCountdown, startCountdown } from "./timer.js";
+import { readCountdown, startCountdown } from "./timer.js";
 import type { CountdownState } from "./timer.js";
 
 export interface TimerControlsHandle {
   start(seconds: 10 | 30 | 60): void;
-}
-
-interface TimerControlsProps {
-  readonly onEvent: (type: string, payload: Record<string, unknown>) => void;
 }
 
 const playFaintChime = () => {
@@ -27,90 +23,79 @@ const playFaintChime = () => {
   oscillator.stop(context.currentTime + 0.18);
 };
 
-export const TimerControls = forwardRef<TimerControlsHandle, TimerControlsProps>(
-  ({ onEvent }, ref) => {
-    const [timer, setTimer] = useState<CountdownState | null>(null);
-    const [remaining, setRemaining] = useState(0);
+export const TimerControls = forwardRef<TimerControlsHandle>((_, ref) => {
+  const [timer, setTimer] = useState<CountdownState | null>(null);
+  const [remaining, setRemaining] = useState(0);
 
-    const start = (seconds: 10 | 30 | 60) => {
-      const next = startCountdown(seconds, Date.now());
-      const reading = readCountdown(next, Date.now());
-      setTimer(reading.timer);
-      setRemaining(reading.remainingSeconds);
-      if (reading.emitWarning) {
-        playFaintChime();
-      }
-      onEvent("timer.started", { seconds });
-    };
+  const start = (seconds: 10 | 30 | 60) => {
+    const next = startCountdown(seconds, Date.now());
+    const reading = readCountdown(next, Date.now());
+    setTimer(reading.timer);
+    setRemaining(reading.remainingSeconds);
+    if (reading.emitWarning) {
+      playFaintChime();
+    }
+  };
 
-    useImperativeHandle(ref, () => ({ start }));
+  useImperativeHandle(ref, () => ({ start }));
 
-    useEffect(() => {
-      if (timer === null || timer.status !== "running") {
-        return undefined;
-      }
-      const interval = window.setInterval(() => {
-        setTimer((current) => {
-          if (current === null) {
-            return current;
-          }
-          const reading = readCountdown(current, Date.now());
-          setRemaining(reading.remainingSeconds);
-          if (reading.emitWarning) {
-            playFaintChime();
-            onEvent("timer.warning", { remainingSeconds: 10 });
-          }
-          if (reading.timer.status === "expired") {
-            onEvent("timer.expired", {});
-          }
-          return reading.timer;
-        });
-      }, 200);
-      return () => window.clearInterval(interval);
-    }, [timer?.status, onEvent]);
+  useEffect(() => {
+    if (timer === null || timer.status !== "running") {
+      return undefined;
+    }
+    const interval = window.setInterval(() => {
+      setTimer((current) => {
+        if (current === null) {
+          return current;
+        }
+        const reading = readCountdown(current, Date.now());
+        setRemaining(reading.remainingSeconds);
+        if (reading.emitWarning) {
+          playFaintChime();
+        }
+        return reading.timer;
+      });
+    }, 200);
+    return () => window.clearInterval(interval);
+  }, [timer?.status]);
 
-    const togglePause = () => {
-      if (timer === null || timer.status === "expired") {
-        return;
-      }
-      if (timer.status === "paused") {
-        setTimer(resumeCountdown(timer, Date.now()));
-        onEvent("timer.resumed", {});
-      } else {
-        setTimer(pauseCountdown(timer, Date.now()));
-        onEvent("timer.paused", { remainingSeconds: remaining });
-      }
-    };
+  const stop = () => {
+    if (timer === null || timer.status === "expired") {
+      return;
+    }
+    setTimer(null);
+    setRemaining(0);
+  };
 
-    return (
-      <section className="timer-panel" aria-label="Timer controls">
-        <div className={`timer-display${remaining <= 10 && remaining > 0 ? " is-warning" : ""}`}>
-          <span className="timer-label">Timer</span>
-          <strong>{remaining.toString().padStart(2, "0")}</strong>
-          <span>seconds</span>
-        </div>
-        <div className="timer-presets">
-          {([60, 30, 10] as const).map((seconds) => (
-            <button
-              type="button"
-              key={seconds}
-              aria-label={`Start ${seconds} second timer`}
-              onClick={() => start(seconds)}
-            >
-              +{seconds}
-            </button>
-          ))}
+  return (
+    <section className="timer-panel" aria-label="Timer controls">
+      <div className={`timer-display${remaining <= 10 && remaining > 0 ? " is-warning" : ""}`}>
+        <span className="timer-label">Timer</span>
+        <strong>{remaining.toString().padStart(2, "0")}</strong>
+        <span>seconds</span>
+      </div>
+      <div className="timer-presets">
+        {([60, 30, 10] as const).map((seconds) => (
           <button
             type="button"
-            onClick={togglePause}
-            disabled={timer === null || timer.status === "expired"}
+            key={seconds}
+            aria-label={`Start ${seconds} second timer`}
+            onClick={() => start(seconds)}
           >
-            {timer?.status === "paused" ? "Resume" : "Pause"}
+            +{seconds}
           </button>
-        </div>
-      </section>
-    );
-  },
-);
+        ))}
+        <button
+          type="button"
+          aria-label="Stop timer"
+          onClick={stop}
+          disabled={timer === null || timer.status === "expired"}
+        >
+          Stop
+        </button>
+      </div>
+    </section>
+  );
+});
 
 TimerControls.displayName = "TimerControls";

@@ -11,7 +11,6 @@ import {
   createSeededRandom,
   createSetup,
   drawRoleForSeat,
-  setMusicState,
 } from "@mafia/game-domain";
 import type { GameState, PlayerInput } from "@mafia/game-domain";
 import { NightStage } from "./NightStage.js";
@@ -22,7 +21,7 @@ const createNightGame = (): GameState => {
     name: `Player ${index + 1}`,
     seat: index + 1,
   }));
-  let setup = beginRoleDraw(setMusicState(createSetup(players), "playing"), createSeededRandom(17));
+  let setup = beginRoleDraw(createSetup(players), createSeededRandom(17));
   for (let seat = 1; seat <= 10; seat += 1) setup = drawRoleForSeat(setup, seat);
   const day = advanceSetupPhase(advanceSetupPhase(createGame(completeRoleDraw(setup))));
   return beginNight(day);

@@ -1,12 +1,19 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
+import type { RemoteGameSession } from "./client.js";
 import {
   ApiError,
   createPlayer,
+  deleteGameResults,
+  deleteRemoteGame,
   disconnectMusicAccount,
+  getGameSession,
   getMusicAccountStatus,
+  listActiveGameSessions,
   listMusicPlaylists,
   listPlayers,
   saveGameResults,
+  saveGameSession,
+  truncateRemoteEvents,
   updatePlayer,
 } from "./client.js";
 
@@ -46,6 +53,10 @@ afterEach(() => {
 });
 
 describe("player API client", () => {
+  it("keeps detailed session responses separate from list summaries", () => {
+    expectTypeOf<RemoteGameSession>().not.toHaveProperty("phase");
+  });
+
   it("loads ordered player profiles", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ players: [player] }), {
@@ -120,6 +131,7 @@ describe("player API client", () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
     vi.stubGlobal("fetch", fetchMock);
     const results = {
+      hostPlayerId: "00000000-0000-4000-8000-000000000011",
       winner: "red" as const,
       playedAt: "2026-08-17T22:00:00.000Z",
       players: [
@@ -139,6 +151,107 @@ describe("player API client", () => {
       "/api/games/00000000-0000-4000-8000-000000000002/results",
       expect.objectContaining({ method: "PUT", body: JSON.stringify(results) }),
     );
+  });
+
+  it("truncates an undone remote event tail by idempotency key", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await truncateRemoteEvents("00000000-0000-4000-8000-000000000002", "undo-from-this-event");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/games/00000000-0000-4000-8000-000000000002/events/truncate",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ fromIdempotencyKey: "undo-from-this-event" }),
+      },
+    );
+  });
+
+  it("tombstones a cleared remote game with DELETE", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await deleteRemoteGame("00000000-0000-4000-8000-000000000002");
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/games/00000000-0000-4000-8000-000000000002", {
+      method: "DELETE",
+    });
+  });
+
+  it("retracts finalized game results with an idempotent DELETE", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await deleteGameResults("00000000-0000-4000-8000-000000000002");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/games/00000000-0000-4000-8000-000000000002/results",
+      { method: "DELETE" },
+    );
+  });
+});
+
+describe("game session aggregate API client", () => {
+  it("uses the authoritative mutation, active list, and restore endpoints", async () => {
+    const gameId = "00000000-0000-4000-8000-000000000002";
+    const state = {
+      setup: null,
+      game: null,
+      hostPlayerId: null,
+      hostName: null,
+      playlistId: "PL",
+      log: [],
+      undoHistory: [],
+    };
+    const summary = {
+      gameId,
+      name: "Table",
+      revision: 1,
+      hostName: null,
+      phase: "setup-players",
+      day: 0,
+      updatedAt: "2026-08-18T08:00:00.000Z",
+    };
+    const session = { ...summary, duplicate: false, status: "active", state };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(session), {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ sessions: [summary] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ session }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const mutation = {
+      name: "Table",
+      mutationId: "00000000-0000-4000-8000-000000000003",
+      baseRevision: 0,
+      state,
+      results: null,
+    };
+
+    await expect(saveGameSession(gameId, mutation)).resolves.toEqual(session);
+    await expect(listActiveGameSessions()).resolves.toEqual([summary]);
+    await expect(getGameSession(gameId)).resolves.toEqual(session);
+    expect(fetchMock).toHaveBeenNthCalledWith(1, `/api/game-sessions/${gameId}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(mutation),
+    });
   });
 });
 

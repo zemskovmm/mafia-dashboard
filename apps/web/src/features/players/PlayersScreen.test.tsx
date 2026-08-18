@@ -19,6 +19,7 @@ const profile = (overrides: Partial<PlayerProfile> = {}): PlayerProfile => ({
   updatedAt: "2026-08-17T20:00:00.000Z",
   lastPlayedAt: "2026-08-17T22:00:00.000Z",
   statistics: {
+    hostedGames: 2,
     gamesPlayed: 5,
     wins: 3,
     losses: 2,
@@ -38,6 +39,46 @@ const profile = (overrides: Partial<PlayerProfile> = {}): PlayerProfile => ({
 });
 
 describe("PlayersScreen", () => {
+  it("submits a changed player name", async () => {
+    const user = userEvent.setup();
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
+    render(<PlayersScreen players={[profile()]} onCreate={vi.fn()} onUpdate={onUpdate} />);
+    const card = screen.getByRole("article", { name: /player alpha/i });
+
+    await user.clear(within(card).getByLabelText(/alpha nickname/i));
+    await user.type(within(card).getByLabelText(/alpha nickname/i), "Bravo");
+    await user.click(within(card).getByRole("button", { name: /save alpha/i }));
+
+    expect(onUpdate).toHaveBeenCalledWith(
+      profile().id,
+      expect.objectContaining({ nickname: "Bravo" }),
+    );
+  });
+
+  it("requires confirmation before deleting a player", async () => {
+    const user = userEvent.setup();
+    const onDelete = vi.fn().mockResolvedValue(undefined);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(
+      <PlayersScreen
+        players={[profile()]}
+        onCreate={vi.fn()}
+        onUpdate={vi.fn()}
+        {...({ onDelete } as Record<string, unknown>)}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /delete alpha/i }));
+    expect(confirm).toHaveBeenCalledWith(
+      'Delete player "Alpha" and 7 associated games? Those games will also be removed from every affected player\'s statistics. This cannot be undone.',
+    );
+    expect(onDelete).not.toHaveBeenCalled();
+
+    confirm.mockReturnValue(true);
+    await user.click(screen.getByRole("button", { name: /delete alpha/i }));
+    expect(onDelete).toHaveBeenCalledWith(profile().id);
+  });
+
   it("creates a nickname-only profile when consent is not granted", async () => {
     const user = userEvent.setup();
     const onCreate = vi.fn().mockResolvedValue(undefined);
@@ -105,6 +146,8 @@ describe("PlayersScreen", () => {
     render(<PlayersScreen players={[profile()]} onCreate={vi.fn()} onUpdate={onUpdate} />);
 
     const card = screen.getByRole("article", { name: /player alpha/i });
+    const hostedLabel = within(card).getByText("Hosted");
+    expect(hostedLabel.previousElementSibling).toHaveTextContent("2");
     expect(within(card).getByText("5")).toBeInTheDocument();
     expect(within(card).getByText(/60% win rate/i)).toBeInTheDocument();
     expect(within(card).getByText(/sheriff 1/i)).toBeInTheDocument();

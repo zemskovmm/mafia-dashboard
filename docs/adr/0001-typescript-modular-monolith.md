@@ -18,21 +18,21 @@ Use one TypeScript npm workspace with three deployable/logical units:
 - `apps/server`: Fastify HTTP API and static production host
 - `packages/game-domain`: framework-independent commands, events, state transitions, and projections
 
-Use PostgreSQL for the append-only game event store and durable projections. Use `pg` and explicit SQL migrations initially rather than introducing a heavyweight ORM before the domain stabilizes. Validate API boundaries with Zod.
+Use PostgreSQL for one authoritative game-session aggregate. Each accepted setup or game action replaces the complete restorable snapshot, its non-auxiliary log tail, active-roster projection, undo history, and final results in one transaction. A revisioned, durable browser outbox retries mutations by UUID and fails closed on conflicts. Validate API boundaries with Zod.
 
 Use Vitest for domain/server/component tests, Testing Library for React behavior, and Playwright for critical browser flows. Build the production SPA into the server image and run the app plus PostgreSQL through Docker Compose.
 
-The YouTube IFrame Player API runs only in the browser. The server stores playlist configuration, the application-owned queue, and music events; it does not proxy audio.
+The YouTube IFrame Player API runs only in the browser. The session snapshot stores the selected playlist, but playback, fades, and timer controls are auxiliary local UI state and do not produce durable game events.
 
-## Event and state model
+## Aggregate state and undo model
 
-- Commands are validated against reconstructed/current game state.
-- Accepted commands emit one or more immutable events.
-- Events receive monotonic per-game sequence numbers in one database transaction.
-- Idempotency keys prevent double taps/retries from duplicating actions.
-- Host and future public projections are separate server-side serializers.
-- Corrections append compensating events; they never delete history.
-- Timers store timestamps and paused durations, not one row per visual tick.
+- A client-generated game UUID exists before the first network mutation.
+- Each accepted normal setup/game action queues one complete snapshot mutation with a base revision and mutation UUID.
+- The server commits the snapshot, non-auxiliary log, active player foreign keys, and results atomically under a per-game advisory lock.
+- The immutable sequence-1 `game.created` row is preserved while later log rows are replaced from the authoritative snapshot.
+- Undo restores a prior game snapshot and removes the corresponding log tail. At most three ordinary actions are retained.
+- Beginning day one and every later completed-night day increment are checkpoints: undo history is cleared, so undo never crosses a day boundary.
+- Timers provide start presets and stop only. Timer ticks, starts/stops, music playback, and fades are not durable events.
 
 ## Considered alternatives
 
@@ -54,7 +54,7 @@ Rejected as unnecessary for a single-host local deployment. HTTP commands plus p
 
 ### YouTube Data API playlist writes
 
-Deferred. Playback through the IFrame API does not require modifying the user’s account, while playlist writes require Google OAuth, scopes, consent configuration, token storage, and additional security work. MVP edits an application-owned queue.
+Deferred. Playback through the IFrame API does not require modifying the user’s account, while playlist writes require Google OAuth, scopes, consent configuration, token storage, and additional security work. The MVP plays the selected YouTube playlist as supplied, including repeated video occurrences, without an application-owned editable queue.
 
 ## Consequences
 

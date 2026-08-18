@@ -50,7 +50,7 @@ export const AccountPlaylistPicker = ({
   }, [status]);
 
   if (failed) {
-    return <p className="queue-error">Unable to check the YouTube Music account.</p>;
+    return <p className="account-playlist-error">Unable to check the YouTube Music account.</p>;
   }
   if (status === null) {
     return <p className="muted">Checking YouTube Music account…</p>;

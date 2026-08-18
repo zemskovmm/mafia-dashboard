@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   advanceSetupPhase,
   completeCurrentTurn,
@@ -19,9 +19,26 @@ import { VotingStage } from "../voting/VotingStage.js";
 
 interface GameScreenProps {
   readonly game: GameState;
+  readonly hostName: string;
   readonly onGameChange: (game: GameState) => void;
   readonly onEvent: (type: string, payload: Record<string, unknown>) => void;
+  readonly onUndo: () => void;
+  readonly undoCount: number;
 }
+
+interface WebkitFullscreenDocument extends Document {
+  readonly webkitFullscreenElement?: Element | null;
+  readonly webkitExitFullscreen?: () => Promise<void> | void;
+}
+
+interface WebkitFullscreenElement extends HTMLElement {
+  readonly webkitRequestFullscreen?: () => Promise<void> | void;
+}
+
+const currentFullscreenElement = (): Element | null =>
+  document.fullscreenElement ??
+  (document as WebkitFullscreenDocument).webkitFullscreenElement ??
+  null;
 
 const phaseTitle = (game: GameState): string => {
   switch (game.phase) {
@@ -46,11 +63,54 @@ const phaseTitle = (game: GameState): string => {
   }
 };
 
-export const GameScreen = ({ game, onGameChange, onEvent }: GameScreenProps) => {
+export const GameScreen = ({
+  game,
+  hostName,
+  onGameChange,
+  onEvent,
+  onUndo,
+  undoCount,
+}: GameScreenProps) => {
   const timerRef = useRef<TimerControlsHandle>(null);
   const [privacyHidden, setPrivacyHidden] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(() => currentFullscreenElement() !== null);
+  const fullscreenTarget = document.documentElement as WebkitFullscreenElement;
+  const fullscreenDocument = document as WebkitFullscreenDocument;
+  const fullscreenAvailable =
+    typeof fullscreenTarget.requestFullscreen === "function" ||
+    typeof fullscreenTarget.webkitRequestFullscreen === "function";
   const currentSeat = game.turnOrder[game.currentTurnIndex];
-  const currentPlayer = game.players.find(({ seat }) => seat === currentSeat);
+  const currentPlayer = game.players.find(
+    ({ seat, status }) => seat === currentSeat && status === "active",
+  );
+
+  useEffect(() => {
+    const syncFullscreenState = () => setIsFullscreen(currentFullscreenElement() !== null);
+    document.addEventListener("fullscreenchange", syncFullscreenState);
+    document.addEventListener("webkitfullscreenchange", syncFullscreenState);
+    return () => {
+      document.removeEventListener("fullscreenchange", syncFullscreenState);
+      document.removeEventListener("webkitfullscreenchange", syncFullscreenState);
+    };
+  }, []);
+
+  const toggleFullscreen = async () => {
+    try {
+      if (currentFullscreenElement() === null) {
+        if (typeof fullscreenTarget.requestFullscreen === "function") {
+          await fullscreenTarget.requestFullscreen();
+        } else {
+          await fullscreenTarget.webkitRequestFullscreen?.();
+        }
+      } else if (typeof document.exitFullscreen === "function") {
+        await document.exitFullscreen();
+      } else {
+        await fullscreenDocument.webkitExitFullscreen?.();
+      }
+    } catch {
+      setIsFullscreen(currentFullscreenElement() !== null);
+    }
+  };
 
   const continueSetup = () => {
     const next = advanceSetupPhase(game);
@@ -64,7 +124,6 @@ export const GameScreen = ({ game, onGameChange, onEvent }: GameScreenProps) => 
     }
     const seconds = getCurrentTurnDuration(game);
     timerRef.current?.start(seconds);
-    onEvent("turn.started", { seat: currentPlayer.seat, seconds });
   };
 
   const finishTurn = () => {
@@ -80,28 +139,54 @@ export const GameScreen = ({ game, onGameChange, onEvent }: GameScreenProps) => 
           <p className="eyebrow">Live game · Host view</p>
           <h1>{phaseTitle(game)}</h1>
         </div>
-        <button
-          type="button"
-          className="privacy-button"
-          aria-pressed={privacyHidden}
-          onClick={() => setPrivacyHidden((value) => !value)}
-        >
-          {privacyHidden ? "Show private info" : "Privacy shield"}
-        </button>
+        {game.phase === "mafia-negotiation" ? (
+          <div className="phase-banner night-banner">Wake Mafia · negotiate target order</div>
+        ) : null}
+        {game.phase === "sheriff-wake" ? (
+          <div className="phase-banner sheriff-banner">Wake Sheriff · 10 seconds</div>
+        ) : null}
+        {game.phase === "day" && currentPlayer !== undefined ? (
+          <div className="phase-banner current-turn-copy">Current turn: {currentPlayer.name}</div>
+        ) : null}
+        <div className="game-header-actions">
+          <button
+            type="button"
+            className="fullscreen-button"
+            aria-label={
+              fullscreenAvailable
+                ? isFullscreen
+                  ? "Exit fullscreen"
+                  : "Enter fullscreen"
+                : "Fullscreen unavailable"
+            }
+            aria-pressed={isFullscreen}
+            disabled={!fullscreenAvailable}
+            onClick={() => void toggleFullscreen()}
+          >
+            {isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+          </button>
+          <button
+            type="button"
+            className="undo-button"
+            aria-label={`Undo last action · ${undoCount} available`}
+            disabled={undoCount === 0}
+            onClick={onUndo}
+          >
+            Undo · {undoCount}
+          </button>
+          <button
+            type="button"
+            className="privacy-button"
+            aria-pressed={privacyHidden}
+            onClick={() => setPrivacyHidden((value) => !value)}
+          >
+            {privacyHidden ? "Show private info" : "Privacy shield"}
+          </button>
+        </div>
       </header>
 
       <div className="live-layout">
         <section className="table-workspace">
-          {game.phase === "mafia-negotiation" ? (
-            <div className="phase-banner night-banner">Wake Mafia · negotiate target order</div>
-          ) : null}
-          {game.phase === "sheriff-wake" ? (
-            <div className="phase-banner sheriff-banner">Wake Sheriff · 10 seconds</div>
-          ) : null}
-          {game.phase === "day" && currentPlayer !== undefined ? (
-            <div className="current-turn-copy">Current turn: {currentPlayer.name}</div>
-          ) : null}
-
           {game.phase === "voting" ? (
             <VotingStage
               game={game}
@@ -128,13 +213,17 @@ export const GameScreen = ({ game, onGameChange, onEvent }: GameScreenProps) => 
             <NightStage game={game} onGameChange={onGameChange} onEvent={onEvent} />
           ) : (
             <GameTable
+              hostName={hostName}
               privacyHidden={privacyHidden}
               seats={game.players.map((player) => ({
                 seat: player.seat,
                 name: player.name,
                 role: player.role,
                 status: player.status,
-                current: player.seat === currentSeat && game.phase === "day",
+                current:
+                  player.seat === currentPlayer?.seat &&
+                  player.status === "active" &&
+                  game.phase === "day",
                 fouls: player.fouls,
                 muted: player.mutePending,
                 nominated: game.nominations.some(
@@ -167,12 +256,12 @@ export const GameScreen = ({ game, onGameChange, onEvent }: GameScreenProps) => 
                     <button
                       type="button"
                       aria-label={`Nominate ${seat.name}`}
-                      disabled={seat.seat === currentSeat}
+                      disabled={currentPlayer === undefined || seat.seat === currentPlayer.seat}
                       onClick={() => {
-                        if (currentSeat === undefined) return;
-                        onGameChange(nominate(game, currentSeat, seat.seat));
+                        if (currentPlayer === undefined) return;
+                        onGameChange(nominate(game, currentPlayer.seat, seat.seat));
                         onEvent("player.nominated", {
-                          nominatorSeat: currentSeat,
+                          nominatorSeat: currentPlayer.seat,
                           candidateSeat: seat.seat,
                         });
                       }}
@@ -207,7 +296,7 @@ export const GameScreen = ({ game, onGameChange, onEvent }: GameScreenProps) => 
         </section>
 
         <aside className="utility-rail">
-          <TimerControls ref={timerRef} onEvent={onEvent} />
+          <TimerControls ref={timerRef} />
           <section className="nomination-panel">
             <p className="eyebrow">Voting order</p>
             {game.nominations.length === 0 ? (

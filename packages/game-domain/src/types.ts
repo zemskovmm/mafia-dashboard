@@ -2,8 +2,6 @@ export type Role = "sheriff" | "citizen" | "mafia" | "don";
 
 export type Team = "red" | "black";
 
-export type MusicState = "idle" | "loading" | "playing" | "paused" | "blocked" | "error";
-
 export type SetupStep = "music" | "role-draw" | "mafia-negotiation";
 
 export type PlayerStatus = "active" | "eliminated" | "red-carded";
@@ -30,7 +28,6 @@ export interface PlayerInput {
 export interface SetupState {
   readonly step: SetupStep;
   readonly players: readonly PlayerInput[];
-  readonly musicState: MusicState;
   readonly roleDeck: readonly Role[];
   readonly remainingRoles: readonly Role[];
   readonly assignments: Readonly<Partial<Record<number, Role>>>;

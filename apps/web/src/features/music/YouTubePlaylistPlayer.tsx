@@ -12,7 +12,6 @@ export interface YouTubePlayerHandle {
 
 interface YouTubePlaylistPlayerProps {
   readonly playlistId: string;
-  readonly queue: readonly string[];
   readonly onStateChange: (state: YouTubePlaybackState) => void;
 }
 
@@ -52,7 +51,7 @@ class YouTubeAdapter implements MusicPlayerAdapter {
 }
 
 export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlaylistPlayerProps>(
-  ({ playlistId, queue, onStateChange }, ref) => {
+  ({ playlistId, onStateChange }, ref) => {
     const [instanceKey, setInstanceKey] = useState(0);
     const playerRef = useRef<YT.Player | null>(null);
     const controllerRef = useRef<MusicController | null>(null);
@@ -60,7 +59,7 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
     const elementId = `youtube-mafia-player-${instanceKey}`;
 
     useEffect(() => {
-      if (playlistId.trim().length === 0 && queue.length === 0) {
+      if (playlistId.trim().length === 0) {
         onStateChange("idle");
         return undefined;
       }
@@ -76,29 +75,23 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
             playsinline: 1,
             controls: 1,
             rel: 0,
+            listType: "playlist",
+            list: playlistId.trim(),
           };
-          if (queue.length === 0) {
-            playerVars.listType = "playlist";
-            playerVars.list = playlistId.trim();
-          }
           playerRef.current = new window.YT.Player(elementId, {
             width: "100%",
             height: "100%",
             playerVars,
             events: {
               onReady: ({ target }) => {
-                if (queue.length > 0) target.cuePlaylist(queue);
                 readyRef.current = true;
                 controllerRef.current = new MusicController(new YouTubeAdapter(target));
                 onStateChange("paused");
               },
               onStateChange: ({ data }) => {
                 if (data === window.YT?.PlayerState.PLAYING) onStateChange("playing");
-                else if (
-                  data === window.YT?.PlayerState.PAUSED ||
-                  data === window.YT?.PlayerState.ENDED
-                )
-                  onStateChange("paused");
+                else if (data === window.YT?.PlayerState.ENDED) onStateChange("paused");
+                else if (data === window.YT?.PlayerState.PAUSED) onStateChange("paused");
               },
               onError: () => onStateChange("error"),
             },
@@ -109,12 +102,12 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
       return () => {
         cancelled = true;
       };
-    }, [elementId, onStateChange, playlistId, queue]);
+    }, [elementId, onStateChange, playlistId]);
 
     useImperativeHandle(ref, () => ({
       async fadeIn() {
         if (!readyRef.current || controllerRef.current === null) {
-          onStateChange(playlistId.trim().length === 0 && queue.length === 0 ? "error" : "loading");
+          onStateChange(playlistId.trim().length === 0 ? "error" : "loading");
           return false;
         }
         await controllerRef.current.fadeIn({ durationMs: 2_000, targetVolume: 65 });

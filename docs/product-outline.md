@@ -4,7 +4,7 @@
 
 Mafia Dashboard is a host-operated, touch-first single-page application for running an in-person ten-player Sport / Club Mafia game. It is designed for landscape tablets and laptops and runs from a local Dockerized server with PostgreSQL persistence.
 
-Players do not need accounts or phones in the first release. The host controls setup, music, timers, turns, nominations, voting, night actions, penalties, eliminations, and corrections from one device. Every accepted action is appended to the game log.
+Players do not need accounts or phones in the first release. The host controls setup, music, timers, turns, nominations, voting, night actions, penalties, eliminations, and corrections from one device. Every accepted setup or game-state action is included in the authoritative session snapshot and non-auxiliary game log; timer and music controls remain local UI state.
 
 ## 2. First-release goals
 
@@ -15,7 +15,7 @@ Players do not need accounts or phones in the first release. The host controls s
 - Record player-specific votes and Mafia shots by tapping player icons.
 - Preserve reusable player profiles and per-player results across games.
 - Enforce the requested role counts, turn order, foul penalty, vote uniqueness, night order, and victory conditions.
-- Recover the active game and log after browser or container restart.
+- Recover the complete active setup or game, host, playlist, log, and undo history after browser or container restart by choosing it in **Active games**.
 - Keep role assignments, Mafia shots, and Don/Sheriff checks private to the host.
 
 ## 3. Explicit non-goals for the first release
@@ -92,7 +92,7 @@ Primary hit targets are at least 48×48 CSS pixels. A destructive action require
   - **Start + fade in**
   - **Quick fade out + stop**
   - **Slow fade out + stop**
-  - pause/resume when supported by the player state
+  - no separate pause/resume control; fades own playback transitions
 - Continue remains disabled until the official YouTube IFrame Player API reports `PLAYING`.
 - A blocked, unavailable, or failed video displays a recovery action and does not satisfy the gate.
 
@@ -109,7 +109,7 @@ Primary hit targets are at least 48×48 CSS pixels. A destructive action require
 - The screen changes to a low-glare night state with a prominent `MAFIA NEGOTIATION` phase banner.
 - The center action confirms entry into the stage.
 - The host uses the `+60` timer control to start negotiation.
-- Timer actions are logged but timer expiry does not advance the phase automatically.
+- Starting or stopping the timer is local UI behavior and is not added to the durable game log; timer expiry does not advance the phase automatically.
 
 ### Step 5 — Sheriff wake-up
 
@@ -128,7 +128,7 @@ Primary hit targets are at least 48×48 CSS pixels. A destructive action require
 
 - Playback uses the official YouTube IFrame Player API in the browser.
 - The connected account picker lists owned playlists with the read-only YouTube Data API scope; arbitrary YouTube video queueing is not exposed.
-- A playlist ID is available only as a fallback when account OAuth is not configured.
+- The host may also enter an ordinary YouTube playlist ID without connecting a Google account.
 - The host’s explicit button press satisfies browser user-gesture requirements where supported.
 - The app treats player state events as authoritative; button presses alone never mark music as playing.
 - The host may authorize the YouTube Data API to list playlists owned by the selected Google account. YouTube Music playlists are available through the same account's YouTube library.
@@ -142,22 +142,22 @@ Primary hit targets are at least 48×48 CSS pixels. A destructive action require
 - Quick fade-out uses a short configurable duration and then pauses playback at volume 0.
 - Slow fade-out uses a longer configurable duration and then pauses playback at volume 0.
 - Starting a new fade cancels the previous fade cleanly.
-- Fade progress is local UI state; start, stop, failure, and queue edits are durable game events.
+- Fade progress and playback transitions are local UI state. Music start/stop/failure, fades, and queue navigation do not produce durable game events; only the chosen playlist ID belongs to the restorable session snapshot.
 
 ### 7.3 Queue behavior
 
-The MVP queue is application-owned. It accepts YouTube video URLs or IDs, preserves order, and supports add, remove, and reorder. Account authorization may list/select existing owned playlists with read access; changing the actual playlist on the user’s account remains out of scope because it requires separate YouTube Data API write scopes.
+The MVP plays the selected YouTube playlist as supplied by YouTube. It preserves playlist order and repeated occurrences of the same video, and it does not expose application-owned add, remove, or reorder controls. Account authorization may list/select existing owned playlists with read access; changing the actual playlist on the user’s account remains out of scope because it requires separate YouTube Data API write scopes.
 
 ## 8. Timer behavior
 
 - Preset buttons: **+60**, **+30**, and **+10**.
 - Pressing a preset immediately starts/replaces the active countdown after confirmation if another timer is running.
-- Pause, resume, reset, and clear controls are available.
+- **Stop** cancels the countdown and resets it to zero; pause/resume is not part of the MVP.
 - When remaining time first reaches 10 seconds, play one faint chime and show a subtle warning state.
 - A 10-second timer plays the warning once at start.
-- Timer position derives from an authoritative start timestamp and accumulated paused duration, not browser interval counts.
-- Reload/reconnect restores the same logical remaining time.
-- Timer start, pause, resume, reset, expiry, and correction are logged.
+- Timer position derives from a local start timestamp, not accumulated browser interval counts.
+- Reload/reconnect resets the auxiliary timer; timer state is not part of the durable game snapshot.
+- Timer start, stop/reset, ticks, and expiry are not added to the durable game log.
 - Timer expiry never silently advances a game phase.
 
 ## 9. Day turns
@@ -241,36 +241,26 @@ Night is a host-private guided sequence.
 
 ## 13. Game log
 
-The log is append-only. Each entry stores:
+The full non-auxiliary log is part of every authoritative session mutation. The server preserves immutable sequence-1 `game.created` and transactionally replaces the later tail from the snapshot, so state, log, roster, and results cannot diverge. Each retained entry stores:
 
 - event sequence and timestamp;
-- game ID and phase;
-- host or affected seat;
-- event type and public summary;
+- phase;
+- affected seat data in the payload where applicable;
+- event type;
 - secret payload classification where applicable;
-- idempotency key;
-- correlation/causation metadata;
-- correction reference when an action is reversed.
+- mutation-safe UUID.
 
-Required event families:
+Required durable event families include:
 
-- game and setup creation;
-- player selection/reordering;
-- music start/stop/failure and queue edits;
+- setup progress and player selection/reordering;
 - role draws;
-- phase transitions;
-- timer start/pause/resume/reset/expiry;
-- turn start/end/skip;
+- phase transitions and turns;
 - foul, muted-turn consumption, and red card;
-- nomination;
-- individual vote assignment and voting result;
-- individual Mafia shot and shot resolution;
-- Don/Sheriff check and secret result;
-- elimination;
-- victory/draw/cancellation;
-- correction/override.
+- nomination and vote assignment/result;
+- Mafia shots, Don/Sheriff checks, and secret results;
+- elimination and victory.
 
-Corrections append compensating events. Existing events are never deleted or rewritten.
+Timer starts/stops/ticks and music playback/fades/navigation are auxiliary controls and are never durable log entries. An ordinary undo restores its prior full game snapshot and removes that action's log tail. Only the latest three ordinary actions are retained. Beginning day one and every later completed-night day increment clear undo history; no undo crosses a day boundary.
 
 ## 14. Phase model
 
@@ -290,7 +280,7 @@ SETUP_PLAYERS
   → FINISHED
 ```
 
-Cross-cutting state: paused timer, privacy shield, music player state, active correction, connection/save status.
+Cross-cutting UI state: local running timer, privacy shield, local music player state, and aggregate connection/save status.
 
 ## 15. Touch and accessibility requirements
 

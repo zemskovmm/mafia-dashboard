@@ -6,6 +6,8 @@ interface PlayersScreenProps {
   readonly players: readonly PlayerProfile[];
   readonly onCreate: (input: PlayerProfileInput) => Promise<void>;
   readonly onUpdate: (playerId: string, input: PlayerProfileInput) => Promise<void>;
+  readonly onDelete?: (playerId: string) => Promise<void>;
+  readonly deletionProtectedPlayerIds?: ReadonlySet<string>;
 }
 
 interface ProfileDraft {
@@ -54,6 +56,16 @@ const errorMessage = (error: unknown): string => {
     return "That nickname already exists. Choose another nickname.";
   }
   return "The player could not be saved. Please try again.";
+};
+
+const deleteErrorMessage = (): string => {
+  return "The player could not be deleted. Please try again.";
+};
+
+const deletionConfirmation = (player: PlayerProfile): string => {
+  const gameCount = player.statistics.hostedGames + player.statistics.gamesPlayed;
+  if (gameCount === 0) return `Delete player "${player.nickname}"? This cannot be undone.`;
+  return `Delete player "${player.nickname}" and ${gameCount} associated ${gameCount === 1 ? "game" : "games"}? Those games will also be removed from every affected player's statistics. This cannot be undone.`;
 };
 
 const ProfileFields = ({
@@ -141,19 +153,25 @@ const ProfileFields = ({
 const PlayerCard = ({
   player,
   onUpdate,
+  onDelete,
+  deletionProtected,
 }: {
   readonly player: PlayerProfile;
   readonly onUpdate: PlayersScreenProps["onUpdate"];
+  readonly onDelete: PlayersScreenProps["onDelete"];
+  readonly deletionProtected: boolean;
 }) => {
   const [draft, setDraft] = useState(() => draftFromPlayer(player));
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     setDraft(draftFromPlayer(player));
   }, [player]);
 
   const statistics = player.statistics;
+  const deletionGuidanceId = `player-${player.id}-deletion-guidance`;
   const winRate =
     statistics.gamesPlayed === 0 ? 0 : Math.round((statistics.wins / statistics.gamesPlayed) * 100);
 
@@ -172,6 +190,10 @@ const PlayerCard = ({
       </header>
 
       <div className="statistics-summary">
+        <div>
+          <strong>{statistics.hostedGames}</strong>
+          <span>Hosted</span>
+        </div>
         <div>
           <strong>{statistics.gamesPlayed}</strong>
           <span>Games</span>
@@ -227,15 +249,53 @@ const PlayerCard = ({
           onChange={setDraft}
         />
         {error === null ? null : <p role="alert">{error}</p>}
-        <button type="submit" disabled={saving}>
+        <button type="submit" disabled={saving || deleting}>
           {saving ? "Saving…" : `Save ${player.nickname}`}
         </button>
+        {onDelete === undefined ? null : (
+          <>
+            {deletionProtected ? (
+              <p id={deletionGuidanceId} className="deletion-guidance">
+                This player is selected in the current game and cannot be deleted.
+              </p>
+            ) : null}
+            <button
+              type="button"
+              className="danger-action"
+              disabled={saving || deleting || deletionProtected}
+              aria-describedby={deletionProtected ? deletionGuidanceId : undefined}
+              title={
+                deletionProtected
+                  ? "Clear the current game state before deleting this player."
+                  : undefined
+              }
+              onClick={() => {
+                if (!window.confirm(deletionConfirmation(player))) {
+                  return;
+                }
+                setError(null);
+                setDeleting(true);
+                void onDelete(player.id)
+                  .catch(() => setError(deleteErrorMessage()))
+                  .finally(() => setDeleting(false));
+              }}
+            >
+              {deleting ? "Deleting…" : `Delete ${player.nickname}`}
+            </button>
+          </>
+        )}
       </form>
     </article>
   );
 };
 
-export const PlayersScreen = ({ players, onCreate, onUpdate }: PlayersScreenProps) => {
+export const PlayersScreen = ({
+  players,
+  onCreate,
+  onUpdate,
+  onDelete,
+  deletionProtectedPlayerIds,
+}: PlayersScreenProps) => {
   const [draft, setDraft] = useState<ProfileDraft>(emptyDraft);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -293,7 +353,13 @@ export const PlayersScreen = ({ players, onCreate, onUpdate }: PlayersScreenProp
       ) : (
         <section className="player-card-grid" aria-label="Player profiles">
           {players.map((player) => (
-            <PlayerCard key={player.id} player={player} onUpdate={onUpdate} />
+            <PlayerCard
+              key={player.id}
+              player={player}
+              onUpdate={onUpdate}
+              onDelete={onDelete}
+              deletionProtected={deletionProtectedPlayerIds?.has(player.id) ?? false}
+            />
           ))}
         </section>
       )}

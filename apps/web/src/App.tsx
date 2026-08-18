@@ -1,14 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { GameState } from "@mafia/game-domain";
 import {
-  appendRemoteEvent,
+  clearGameSession,
   createPlayer,
-  createRemoteGame,
+  deletePlayer,
+  getGameSession,
+  listActiveGameSessions,
   listPlayers,
-  saveGameResults,
+  saveGameSession,
   updatePlayer,
 } from "./api/client.js";
-import type { FinalGameResults, PlayerProfile, PlayerProfileInput } from "./api/client.js";
+import type {
+  ActiveGameSessionSummary,
+  FinalGameResults,
+  GameSessionState,
+  PlayerProfile,
+  PlayerProfileInput,
+  RemoteGameSession,
+} from "./api/client.js";
 import { GameScreen } from "./features/game/GameScreen.js";
 import { LiveMusicControls } from "./features/music/LiveMusicControls.js";
 import {
@@ -19,6 +28,7 @@ import {
 import { PlayersScreen } from "./features/players/PlayersScreen.js";
 import { buildFinalGameResults } from "./features/players/game-results.js";
 import { SetupWizard, type SetupWizardSessionState } from "./features/setup/SetupWizard.js";
+import { GameSessionOutbox } from "./session-outbox.js";
 import { createRandomId } from "./utils/random-id.js";
 import "./styles/app.css";
 
@@ -28,67 +38,37 @@ interface LocalLogEntry {
   readonly type: string;
   readonly phase: string;
   readonly payload: Record<string, unknown>;
-  readonly createdAt: Date;
-}
-
-interface PendingRemoteEvent {
-  readonly idempotencyKey: string;
-  readonly type: string;
-  readonly phase: string;
-  readonly seat?: number;
-  readonly payload: Record<string, unknown>;
   readonly secret: boolean;
+  readonly createdAt: string;
 }
 
-const noQueuedVideos: readonly string[] = [];
-const gameSessionStorageKey = "mafia-dashboard.game-session.v1";
-const defaultPlaylistId = import.meta.env.VITE_YOUTUBE_PLAYLIST_ID ?? "";
+interface UndoSnapshot {
+  readonly game: GameState;
+  readonly logLength: number;
+  readonly sequence: number;
+}
 
-interface GameSessionSnapshot {
-  readonly version: 1;
-  readonly game: GameState | null;
+interface PersistedState extends GameSessionState {
   readonly setup: SetupWizardSessionState | null;
-  readonly playlistId: string;
-  readonly remoteGameId: string | null;
+  readonly game: GameState | null;
+  readonly log: readonly LocalLogEntry[];
+  readonly undoHistory: readonly UndoSnapshot[];
 }
 
-const loadGameSession = (): GameSessionSnapshot => {
-  const empty: GameSessionSnapshot = {
-    version: 1,
-    game: null,
-    setup: null,
-    playlistId: defaultPlaylistId,
-    remoteGameId: null,
-  };
-  try {
-    const stored = window.sessionStorage.getItem(gameSessionStorageKey);
-    if (stored === null) return empty;
-    const parsed = JSON.parse(stored) as {
-      readonly version?: unknown;
-      readonly game?: unknown;
-      readonly setup?: unknown;
-      readonly playlistId?: unknown;
-      readonly remoteGameId?: unknown;
-    };
-    if (parsed.version !== 1) return empty;
-    return {
-      version: 1,
-      game:
-        typeof parsed.game === "object" && parsed.game !== null ? (parsed.game as GameState) : null,
-      setup:
-        typeof parsed.setup === "object" && parsed.setup !== null
-          ? (parsed.setup as SetupWizardSessionState)
-          : null,
-      playlistId: typeof parsed.playlistId === "string" ? parsed.playlistId : defaultPlaylistId,
-      remoteGameId: typeof parsed.remoteGameId === "string" ? parsed.remoteGameId : null,
-    };
-  } catch {
-    return empty;
-  }
-};
+const defaultPlaylistId = import.meta.env.VITE_YOUTUBE_PLAYLIST_ID ?? "";
+const developmentAdjectives = ["Crimson", "Midnight", "Velvet", "Golden", "Silent"] as const;
+const developmentAliases = ["Fox", "Raven", "Wolf", "Owl", "Viper"] as const;
 
-const hasSetupProgress = ({ step, selectedPlayerIds, setup }: SetupWizardSessionState) =>
-  step !== "players" || setup !== null || selectedPlayerIds.some((playerId) => playerId !== "");
+const hasSetupProgress = ({
+  step,
+  hostPlayerId,
+  selectedPlayerIds,
+  setup,
+}: SetupWizardSessionState) =>
+  step !== "players" ||
+  setup !== null ||
+  (hostPlayerId !== undefined && hostPlayerId !== "") ||
+  selectedPlayerIds.some((playerId) => playerId !== "");
 
 const isSecretEvent = (type: string, payload: Record<string, unknown>) =>
   payload.secret === true ||
@@ -96,31 +76,62 @@ const isSecretEvent = (type: string, payload: Record<string, unknown>) =>
   type.includes("shot") ||
   type.includes("checked");
 
+const isAuxiliaryEvent = (type: string) => type.startsWith("timer.") || type.startsWith("music.");
+
+const asPersistedState = (state: GameSessionState | undefined): PersistedState => ({
+  setup: (state?.setup as SetupWizardSessionState | null | undefined) ?? null,
+  game: (state?.game as GameState | null | undefined) ?? null,
+  hostPlayerId: state?.hostPlayerId ?? null,
+  hostName: state?.hostName ?? null,
+  playlistId: state?.playlistId ?? defaultPlaylistId,
+  log: (state?.log as readonly LocalLogEntry[] | undefined) ?? [],
+  undoHistory: (state?.undoHistory as readonly UndoSnapshot[] | undefined) ?? [],
+});
+
 export const App = () => {
-  const initialSession = useRef(loadGameSession()).current;
+  const sessionSyncRef = useRef<GameSessionOutbox | null>(null);
+  if (sessionSyncRef.current === null) {
+    sessionSyncRef.current = new GameSessionOutbox({
+      storage: window.sessionStorage,
+      createId: createRandomId,
+      save: saveGameSession,
+    });
+  }
+  const sessionSync = sessionSyncRef.current;
+  const initialCurrent = useRef(sessionSync.current).current;
+  const initialState = useRef(asPersistedState(initialCurrent?.state)).current;
+
   const [view, setView] = useState<"game" | "players">("game");
-  const [game, setGame] = useState<GameState | null>(initialSession.game);
+  const [sessionName, setSessionName] = useState(initialCurrent?.name ?? "Mafia table");
+  const [game, setGame] = useState<GameState | null>(initialState.game);
   const [setupSession, setSetupSession] = useState<SetupWizardSessionState | null>(
-    initialSession.setup,
+    initialState.setup,
   );
   const [setupInstanceKey, setSetupInstanceKey] = useState(0);
+  const [hostPlayerId, setHostPlayerId] = useState<string | null>(initialState.hostPlayerId);
+  const [hostName, setHostName] = useState<string | null>(initialState.hostName);
+  const [finalResults, setFinalResults] = useState<FinalGameResults | null>(
+    initialCurrent?.results ?? null,
+  );
   const [players, setPlayers] = useState<readonly PlayerProfile[]>([]);
   const [playersError, setPlayersError] = useState(false);
-  const [playlistId, setPlaylistId] = useState(initialSession.playlistId);
-  const [remoteGameId, setRemoteGameId] = useState(initialSession.remoteGameId);
+  const [playlistId, setPlaylistId] = useState(initialState.playlistId);
   const [musicState, setMusicState] = useState<YouTubePlaybackState>("idle");
-  const [log, setLog] = useState<LocalLogEntry[]>([]);
-  const [persistenceState, setPersistenceState] = useState<"connecting" | "saved" | "offline">(
-    "connecting",
-  );
-  const gameIdRef = useRef<string | null>(initialSession.remoteGameId);
-  const pendingRef = useRef<PendingRemoteEvent[]>([]);
-  const pendingResultsRef = useRef<FinalGameResults | null>(null);
-  const savedResultGameIdsRef = useRef(new Set<string>());
+  const [log, setLog] = useState<readonly LocalLogEntry[]>(initialState.log);
+  const [undoHistory, setUndoHistory] = useState<readonly UndoSnapshot[]>(initialState.undoHistory);
+  const [activeSessions, setActiveSessions] = useState<readonly ActiveGameSessionSummary[]>([]);
+  const [activeSessionsError, setActiveSessionsError] = useState(false);
+  const [resumeGameId, setResumeGameId] = useState<string | null>(null);
+  const [, setSyncRender] = useState(0);
+
   const musicRef = useRef<YouTubePlayerHandle>(null);
-  const sequenceRef = useRef(0);
-  const phaseRef = useRef(initialSession.game?.phase ?? "setup-players");
+  const logRef = useRef<readonly LocalLogEntry[]>(initialState.log);
+  const sequenceRef = useRef(initialState.log.at(-1)?.sequence ?? 0);
+  const phaseRef = useRef(initialState.game?.phase ?? "setup-players");
   const playerRequestRef = useRef(0);
+  const activeSessionsRequestRef = useRef(0);
+  const resumeRequestRef = useRef(0);
+  const persistedResultsRef = useRef<FinalGameResults | null>(initialCurrent?.results ?? null);
 
   const refreshPlayers = useCallback(async () => {
     const request = playerRequestRef.current + 1;
@@ -136,117 +147,132 @@ export const App = () => {
     }
   }, []);
 
+  const refreshActiveSessions = useCallback(async () => {
+    const request = activeSessionsRequestRef.current + 1;
+    activeSessionsRequestRef.current = request;
+    try {
+      const sessions = await listActiveGameSessions();
+      if (activeSessionsRequestRef.current === request) {
+        setActiveSessions(sessions);
+        setActiveSessionsError(false);
+      }
+    } catch {
+      if (activeSessionsRequestRef.current === request) setActiveSessionsError(true);
+    }
+  }, []);
+
   useEffect(() => {
     void refreshPlayers();
-  }, [refreshPlayers]);
+    void refreshActiveSessions();
+  }, [refreshActiveSessions, refreshPlayers]);
 
-  useEffect(() => {
-    if (game === null && setupSession === null && playlistId === defaultPlaylistId) {
-      window.sessionStorage.removeItem(gameSessionStorageKey);
-      return;
-    }
-    window.sessionStorage.setItem(
-      gameSessionStorageKey,
-      JSON.stringify({ version: 1, game, setup: setupSession, playlistId, remoteGameId }),
-    );
-  }, [game, playlistId, remoteGameId, setupSession]);
-
-  const persistResults = useCallback(
-    async (gameId: string, results: FinalGameResults) => {
-      if (savedResultGameIdsRef.current.has(gameId)) return;
-      savedResultGameIdsRef.current.add(gameId);
-      setPersistenceState("connecting");
-      try {
-        await saveGameResults(gameId, results);
-        pendingResultsRef.current = null;
-        await refreshPlayers();
-        setPersistenceState("saved");
-      } catch {
-        savedResultGameIdsRef.current.delete(gameId);
-        pendingResultsRef.current = results;
-        setPersistenceState("offline");
-      }
-    },
-    [refreshPlayers],
+  useEffect(
+    () =>
+      sessionSync.subscribe(() => {
+        setSyncRender((revision) => revision + 1);
+      }),
+    [sessionSync],
   );
 
   useEffect(() => {
-    if (remoteGameId !== null) {
-      gameIdRef.current = remoteGameId;
-      setPersistenceState("saved");
-      return undefined;
-    }
-    let active = true;
-    gameIdRef.current = null;
-    void createRemoteGame("Mafia table")
-      .then(async (gameId) => {
-        if (!active) return;
-        gameIdRef.current = gameId;
-        const pending = pendingRef.current.splice(0);
-        for (const event of pending) {
-          await appendRemoteEvent(gameId, event);
+    void sessionSync.flush().catch(() => undefined);
+  }, [sessionSync]);
+
+  useEffect(() => {
+    const hasContent =
+      game !== null ||
+      setupSession !== null ||
+      hostPlayerId !== null ||
+      hostName !== null ||
+      playlistId !== defaultPlaylistId ||
+      log.length > 0;
+    if (!hasContent) return;
+    sessionSync.enqueue(
+      sessionName,
+      {
+        setup: setupSession,
+        game,
+        hostPlayerId,
+        hostName,
+        playlistId,
+        log,
+        undoHistory,
+      },
+      finalResults,
+    );
+    void sessionSync
+      .flush()
+      .then(() => {
+        if (persistedResultsRef.current !== finalResults) {
+          persistedResultsRef.current = finalResults;
+          void refreshPlayers();
         }
-        const pendingResults = pendingResultsRef.current;
-        if (pendingResults === null) {
-          setPersistenceState("saved");
-        } else {
-          await persistResults(gameId, pendingResults);
-        }
-        if (active) setRemoteGameId(gameId);
       })
-      .catch(() => {
-        if (active) setPersistenceState("offline");
-      });
-    return () => {
-      active = false;
-    };
-  }, [persistResults, remoteGameId]);
+      .catch(() => undefined);
+  }, [
+    finalResults,
+    game,
+    hostName,
+    hostPlayerId,
+    log,
+    playlistId,
+    refreshPlayers,
+    sessionName,
+    sessionSync,
+    setupSession,
+    undoHistory,
+  ]);
 
   const logEvent = useCallback((type: string, payload: Record<string, unknown>) => {
+    if (isAuxiliaryEvent(type)) return;
     sequenceRef.current += 1;
-    const phase = phaseRef.current;
-    const idempotencyKey = createRandomId();
     const entry: LocalLogEntry = {
-      id: idempotencyKey,
+      id: createRandomId(),
       sequence: sequenceRef.current,
       type,
-      phase,
-      payload,
-      createdAt: new Date(),
-    };
-    setLog((current) => [...current, entry]);
-
-    const seat = typeof payload.seat === "number" ? payload.seat : undefined;
-    const remote: PendingRemoteEvent = {
-      idempotencyKey,
-      type,
-      phase,
-      ...(seat === undefined ? {} : { seat }),
+      phase: phaseRef.current,
       payload,
       secret: isSecretEvent(type, payload),
+      createdAt: new Date().toISOString(),
     };
-    const gameId = gameIdRef.current;
-    if (gameId === null) {
-      pendingRef.current.push(remote);
-      return;
-    }
-    setPersistenceState("connecting");
-    void appendRemoteEvent(gameId, remote)
-      .then(() => setPersistenceState("saved"))
-      .catch(() => setPersistenceState("offline"));
+    const nextLog = [...logRef.current, entry];
+    logRef.current = nextLog;
+    setLog(nextLog);
   }, []);
 
   const changeGame = (next: GameState) => {
+    if (game !== null) {
+      if (next.day > game.day) {
+        setUndoHistory([]);
+      } else {
+        const snapshot: UndoSnapshot = {
+          game,
+          logLength: logRef.current.length,
+          sequence: sequenceRef.current,
+        };
+        setUndoHistory((current) => [...current, snapshot].slice(-3));
+      }
+    }
     phaseRef.current = next.phase;
     setGame(next);
-    const results = buildFinalGameResults(next, new Date());
-    if (results === null) return;
-    const gameId = gameIdRef.current;
-    if (gameId === null) {
-      pendingResultsRef.current = results;
-    } else {
-      void persistResults(gameId, results);
+    if (next.phase === "finished" && game?.phase !== "finished" && hostPlayerId !== null) {
+      setFinalResults(buildFinalGameResults(next, new Date(), hostPlayerId));
+    } else if (next.phase !== "finished") {
+      setFinalResults(null);
     }
+  };
+
+  const undoLastGameAction = () => {
+    const snapshot = undoHistory.at(-1);
+    if (snapshot === undefined) return;
+    setUndoHistory((current) => current.slice(0, -1));
+    phaseRef.current = snapshot.game.phase;
+    setGame(snapshot.game);
+    if (snapshot.game.phase !== "finished") setFinalResults(null);
+    const restoredLog = logRef.current.slice(0, snapshot.logLength);
+    logRef.current = restoredLog;
+    setLog(restoredLog);
+    sequenceRef.current = snapshot.sequence;
   };
 
   const handleMusicState = useCallback((state: YouTubePlaybackState) => {
@@ -271,30 +297,170 @@ export const App = () => {
     await refreshPlayers();
   };
 
-  const handleSetupSessionChange = useCallback((next: SetupWizardSessionState) => {
-    setSetupSession(hasSetupProgress(next) ? next : null);
-  }, []);
-
-  const clearGameState = () => {
-    if (!window.confirm("Clear the current game from this browser session?")) return;
-    window.sessionStorage.removeItem(gameSessionStorageKey);
-    setGame(null);
-    setSetupSession(null);
-    setPlaylistId(defaultPlaylistId);
-    gameIdRef.current = null;
-    setRemoteGameId(null);
-    setSetupInstanceKey((key) => key + 1);
-    setView("game");
-    setLog([]);
-    sequenceRef.current = 0;
-    phaseRef.current = "setup-players";
-    pendingRef.current = [];
-    pendingResultsRef.current = null;
-    savedResultGameIdsRef.current.clear();
+  const deleteProfile = async (playerId: string) => {
+    await deletePlayer(playerId);
+    setPlayers((current) => current.filter(({ id }) => id !== playerId));
+    await refreshPlayers();
   };
 
+  const populateDevelopmentPlayers = async (): Promise<readonly PlayerProfile[]> => {
+    const batchId = createRandomId().slice(0, 8);
+    const created: PlayerProfile[] = [];
+    try {
+      for (let index = 0; index < 11; index += 1) {
+        const adjective =
+          developmentAdjectives[Math.floor(Math.random() * developmentAdjectives.length)];
+        const alias = developmentAliases[Math.floor(Math.random() * developmentAliases.length)];
+        created.push(
+          await createPlayer({
+            nickname: `Dev ${adjective} ${alias} ${batchId}-${index + 1}`,
+            consent: false,
+            firstName: null,
+            lastName: null,
+            email: null,
+          }),
+        );
+      }
+      return created;
+    } catch (error) {
+      await Promise.allSettled(created.map(({ id }) => deletePlayer(id)));
+      throw error;
+    } finally {
+      await refreshPlayers();
+    }
+  };
+
+  const handleSetupSessionChange = useCallback(
+    (next: SetupWizardSessionState) => {
+      setSetupSession(hasSetupProgress(next) ? next : null);
+      const nextHostId = next.hostPlayerId;
+      if (nextHostId === undefined || nextHostId === "") {
+        setHostPlayerId(null);
+        setHostName(null);
+        return;
+      }
+      const selectedHost = players.find(({ id }) => id === nextHostId);
+      setHostPlayerId(nextHostId);
+      if (selectedHost !== undefined) setHostName(selectedHost.nickname);
+    },
+    [players],
+  );
+
+  const applyRemoteSession = useCallback(
+    (session: RemoteGameSession) => {
+      const restored = asPersistedState(session.state);
+      sessionSync.restore(
+        session.gameId,
+        session.revision,
+        session.name,
+        session.state,
+        session.results,
+      );
+      setSessionName(session.name);
+      setGame(restored.game);
+      setSetupSession(restored.setup);
+      setHostPlayerId(restored.hostPlayerId);
+      setHostName(restored.hostName);
+      setPlaylistId(restored.playlistId);
+      setFinalResults(session.results);
+      persistedResultsRef.current = session.results;
+      setLog(restored.log);
+      logRef.current = restored.log;
+      setUndoHistory(restored.undoHistory);
+      sequenceRef.current = restored.log.at(-1)?.sequence ?? 0;
+      phaseRef.current = restored.game?.phase ?? "setup-players";
+      setSetupInstanceKey((key) => key + 1);
+      setView("game");
+    },
+    [sessionSync],
+  );
+
+  const resumeSession = async (gameId: string) => {
+    if (sessionSync.status !== "saved") {
+      setActiveSessionsError(true);
+      return;
+    }
+    const request = resumeRequestRef.current + 1;
+    resumeRequestRef.current = request;
+    const localGameId = sessionSync.gameId;
+    const localRevision = sessionSync.revision;
+    const localCurrent = sessionSync.current;
+    setResumeGameId(gameId);
+    setActiveSessionsError(false);
+    try {
+      const session = await getGameSession(gameId);
+      if (resumeRequestRef.current !== request) return;
+      if (
+        sessionSync.gameId !== localGameId ||
+        sessionSync.revision !== localRevision ||
+        sessionSync.current !== localCurrent ||
+        sessionSync.status !== "saved"
+      ) {
+        setResumeGameId(null);
+        return;
+      }
+      applyRemoteSession(session);
+      setResumeGameId(null);
+    } catch {
+      if (resumeRequestRef.current === request) {
+        setResumeGameId(null);
+        setActiveSessionsError(true);
+      }
+    }
+  };
+
+  const resetLocalState = () => {
+    setSessionName("Mafia table");
+    setGame(null);
+    setSetupSession(null);
+    setHostPlayerId(null);
+    setHostName(null);
+    setFinalResults(null);
+    setPlaylistId(defaultPlaylistId);
+    setSetupInstanceKey((key) => key + 1);
+    setView("game");
+    setUndoHistory([]);
+    setLog([]);
+    logRef.current = [];
+    sequenceRef.current = 0;
+    phaseRef.current = "setup-players";
+  };
+
+  const clearGameState = async () => {
+    if (
+      !window.confirm(
+        "Delete this active game from the server? This is irreversible and removes its saved session and game log for every browser.",
+      )
+    )
+      return;
+    const clearingGameId = sessionSync.gameId;
+    try {
+      await sessionSync.clear(clearGameSession);
+    } catch {
+      return;
+    }
+    if (sessionSync.gameId !== null && sessionSync.gameId !== clearingGameId) return;
+    resetLocalState();
+    void refreshActiveSessions();
+  };
+
+  const deletionProtectedPlayerIds = new Set([
+    ...(game === null
+      ? (setupSession?.selectedPlayerIds.filter((playerId) => playerId !== "") ?? [])
+      : game.players.map(({ id }) => id)),
+    ...(game === null
+      ? setupSession?.hostPlayerId === undefined || setupSession.hostPlayerId === ""
+        ? []
+        : [setupSession.hostPlayerId]
+      : hostPlayerId === null
+        ? []
+        : [hostPlayerId]),
+  ]);
+
+  const persistenceState = sessionSync.status;
+
   return (
-    <div className="app-shell">
+    <div className={`app-shell${view === "game" && game !== null ? " has-live-game" : ""}`}>
       <nav className="app-navigation" aria-label="Application sections">
         <button type="button" aria-pressed={view === "game"} onClick={() => setView("game")}>
           {game === null ? "Game setup" : "Live game"}
@@ -302,8 +468,8 @@ export const App = () => {
         <button type="button" aria-pressed={view === "players"} onClick={() => setView("players")}>
           Players &amp; statistics
         </button>
-        {game === null && setupSession === null ? null : (
-          <button type="button" className="clear-game-state" onClick={clearGameState}>
+        {game === null && setupSession === null && playlistId === defaultPlaylistId ? null : (
+          <button type="button" className="clear-game-state" onClick={() => void clearGameState()}>
             Clear game state
           </button>
         )}
@@ -324,39 +490,86 @@ export const App = () => {
               Player profiles are temporarily unavailable.
             </p>
           ) : null}
-          <PlayersScreen players={players} onCreate={createProfile} onUpdate={updateProfile} />
+          <PlayersScreen
+            players={players}
+            onCreate={createProfile}
+            onUpdate={updateProfile}
+            onDelete={deleteProfile}
+            deletionProtectedPlayerIds={deletionProtectedPlayerIds}
+          />
         </>
       ) : game === null ? (
-        <SetupWizard
-          key={setupInstanceKey}
-          players={players}
-          initialSessionState={setupSession}
-          onSessionStateChange={handleSetupSessionChange}
-          musicPlaying={musicState === "playing"}
-          musicStatus={musicLabel[musicState]}
-          playlistId={playlistId}
-          onPlaylistIdChange={setPlaylistId}
-          onStartMusic={() => {
-            logEvent("music.fade-in-requested", { playlistId });
-            void musicRef.current?.fadeIn();
-          }}
-          onQuickStopMusic={() => {
-            logEvent("music.quick-fade-out-requested", {});
-            void musicRef.current?.quickFadeOut();
-          }}
-          onSlowStopMusic={() => {
-            logEvent("music.slow-fade-out-requested", {});
-            void musicRef.current?.slowFadeOut();
-          }}
-          onEvent={logEvent}
-          onComplete={(next) => {
-            phaseRef.current = next.phase;
-            setSetupSession(null);
-            setGame(next);
-          }}
-        />
+        <>
+          <section className="active-game-sessions" aria-labelledby="active-game-sessions-title">
+            <h2 id="active-game-sessions-title">Active games</h2>
+            {activeSessionsError ? (
+              <p role="alert">Active games are temporarily unavailable.</p>
+            ) : activeSessions.length === 0 ? (
+              <p>No active games to resume.</p>
+            ) : (
+              <ul>
+                {activeSessions.map((session) => (
+                  <li key={session.gameId}>
+                    <div>
+                      <strong>{session.name}</strong>
+                      <span>
+                        {session.hostName ?? "Host not selected"} · {session.phase} · day{" "}
+                        {session.day}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={resumeGameId === session.gameId}
+                      onClick={() => void resumeSession(session.gameId)}
+                    >
+                      {resumeGameId === session.gameId ? "Resuming…" : `Resume ${session.name}`}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+          <SetupWizard
+            key={setupInstanceKey}
+            players={players}
+            showDevelopmentTools={import.meta.env.DEV}
+            onPopulateDevelopmentPlayers={populateDevelopmentPlayers}
+            initialSessionState={setupSession}
+            onSessionStateChange={handleSetupSessionChange}
+            musicPlaying={musicState === "playing"}
+            musicStatus={musicLabel[musicState]}
+            playlistId={playlistId}
+            onPlaylistIdChange={setPlaylistId}
+            onStartMusic={() => {
+              void musicRef.current?.fadeIn();
+            }}
+            onQuickStopMusic={() => {
+              void musicRef.current?.quickFadeOut();
+            }}
+            onSlowStopMusic={() => {
+              void musicRef.current?.slowFadeOut();
+            }}
+            onEvent={logEvent}
+            onComplete={(next, selectedHostPlayerId, selectedHostName) => {
+              phaseRef.current = next.phase;
+              setSetupSession(null);
+              setHostPlayerId(selectedHostPlayerId);
+              setHostName(selectedHostName);
+              setFinalResults(null);
+              setUndoHistory([]);
+              setGame(next);
+            }}
+          />
+        </>
       ) : (
-        <GameScreen game={game} onGameChange={changeGame} onEvent={logEvent} />
+        <GameScreen
+          game={game}
+          hostName={hostName ?? "Host"}
+          onGameChange={changeGame}
+          onEvent={logEvent}
+          onUndo={undoLastGameAction}
+          undoCount={undoHistory.length}
+        />
       )}
 
       {view === "players" ? null : (
@@ -364,22 +577,18 @@ export const App = () => {
           <YouTubePlaylistPlayer
             ref={musicRef}
             playlistId={playlistId}
-            queue={noQueuedVideos}
             onStateChange={handleMusicState}
           />
           {game === null ? null : (
             <LiveMusicControls
               isPlaying={musicState === "playing"}
               onFadeIn={() => {
-                logEvent("music.fade-in-requested", { playlistId });
                 void musicRef.current?.fadeIn();
               }}
               onQuickFadeOut={() => {
-                logEvent("music.quick-fade-out-requested", {});
                 void musicRef.current?.quickFadeOut();
               }}
               onSlowFadeOut={() => {
-                logEvent("music.slow-fade-out-requested", {});
                 void musicRef.current?.slowFadeOut();
               }}
             />
@@ -400,7 +609,7 @@ export const App = () => {
                 <div>
                   <strong>{entry.type}</strong>
                   <small>
-                    {entry.phase} · {entry.createdAt.toLocaleTimeString()}
+                    {entry.phase} · {new Date(entry.createdAt).toLocaleTimeString()}
                   </small>
                 </div>
               </article>

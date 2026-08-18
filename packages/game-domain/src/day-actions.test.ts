@@ -16,7 +16,6 @@ import {
   createSeededRandom,
   createSetup,
   drawRoleForSeat,
-  setMusicState,
 } from "./setup.js";
 import type { GameState, PlayerInput, SetupState } from "./types.js";
 
@@ -28,10 +27,7 @@ const players = (): PlayerInput[] =>
   }));
 
 const completedSetup = (): SetupState => {
-  let setup = beginRoleDraw(
-    setMusicState(createSetup(players()), "playing"),
-    createSeededRandom(5),
-  );
+  let setup = beginRoleDraw(createSetup(players()), createSeededRandom(5));
   for (let seat = 1; seat <= 10; seat += 1) {
     setup = drawRoleForSeat(setup, seat);
   }
@@ -81,6 +77,23 @@ describe("day actions", () => {
     expect(game.winner).toBe("red");
     expect(game.phase).toBe("finished");
     expect(game.players.filter(({ status }) => status === "red-carded")).toHaveLength(3);
+  });
+
+  it("advances immediately when the current speaker receives a red card", () => {
+    const game = redCard(dayOne(), 1);
+
+    expect(game.phase).toBe("day");
+    expect(game.turnOrder).not.toContain(1);
+    expect(game.turnOrder[game.currentTurnIndex]).toBe(2);
+    expect(() => getCurrentTurnDuration(game)).not.toThrow();
+  });
+
+  it("skips a future speaker who received a red card", () => {
+    let game = redCard(dayOne(), 2);
+
+    expect(game.turnOrder).not.toContain(2);
+    game = completeCurrentTurn(game);
+    expect(game.turnOrder[game.currentTurnIndex]).toBe(3);
   });
 
   it("assigns each eligible voter once and derives totals", () => {
