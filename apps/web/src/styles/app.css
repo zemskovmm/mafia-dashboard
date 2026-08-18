@@ -1297,6 +1297,10 @@ h2 {
   .has-live-game .game-header h1 {
     font-size: clamp(1.6rem, 2.4vw, 2.25rem);
   }
+  html:fullscreen .has-live-game .game-header > :first-child,
+  html:-webkit-full-screen .has-live-game .game-header > :first-child {
+    margin-left: 88px;
+  }
   .has-live-game .live-layout {
     grid-template-columns: minmax(0, 1fr) 270px;
     width: 100%;

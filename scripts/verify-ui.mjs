@@ -293,7 +293,10 @@ try {
   const geometry = await page.evaluate(() => {
     const table = document.querySelector(".round-table");
     if (!(table instanceof HTMLElement)) throw new Error("Missing round table");
+    const headerTitle = document.querySelector(".game-header > :first-child");
+    if (!(headerTitle instanceof HTMLElement)) throw new Error("Missing game header title");
     const tableBox = table.getBoundingClientRect();
+    const headerTitleBox = headerTitle.getBoundingClientRect();
     const tableCenter = {
       x: tableBox.left + tableBox.width / 2,
       y: tableBox.top + tableBox.height / 2,
@@ -331,6 +334,12 @@ try {
           });
     return {
       cards,
+      headerTitle: {
+        left: headerTitleBox.left,
+        right: headerTitleBox.right,
+        top: headerTitleBox.top,
+        bottom: headerTitleBox.bottom,
+      },
       phaseBannerObstructionCount: phaseBannerObstructions.length,
       viewportWidth: innerWidth,
       viewportHeight: innerHeight,
@@ -339,6 +348,17 @@ try {
     };
   });
   if (geometry.cards.length !== 11) throw new Error("Expected ten player cards and one host card");
+  const fullscreenExitSafeArea = { right: 88, bottom: 88 };
+  if (
+    geometry.headerTitle.left < fullscreenExitSafeArea.right &&
+    geometry.headerTitle.right > 0 &&
+    geometry.headerTitle.top < fullscreenExitSafeArea.bottom &&
+    geometry.headerTitle.bottom > 0
+  ) {
+    throw new Error(
+      `Game header title overlaps the fullscreen exit safe area: ${JSON.stringify(geometry.headerTitle)}`,
+    );
+  }
   const [referenceCard] = geometry.cards;
   if (referenceCard === undefined) throw new Error("Expected table cards");
   for (const card of geometry.cards) {
