@@ -90,6 +90,33 @@ describe("LocalDJPlayer", () => {
     expect(screen.getByRole("slider", { name: "Next track start position" })).toBeDisabled();
   });
 
+  it("does not start an automatic crossfade when a paused track seeks near its end", async () => {
+    const onStateChange = vi.fn();
+    const play = vi.mocked(HTMLMediaElement.prototype.play);
+    const { container } = render(<LocalDJPlayer onStateChange={onStateChange} />);
+    await screen.findByRole("heading", { name: "Current · Opening" });
+    const [currentDeck] = [...container.querySelectorAll("audio")];
+    expect(currentDeck).toBeDefined();
+    Object.defineProperties(currentDeck!, {
+      currentTime: { configurable: true, value: 98 },
+      duration: { configurable: true, value: 100 },
+      paused: { configurable: true, value: true },
+    });
+    play.mockClear();
+    onStateChange.mockClear();
+
+    fireEvent.timeUpdate(currentDeck!);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(play).not.toHaveBeenCalled();
+    expect(onStateChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("heading", { name: "Current · Opening" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Next · Night" })).toBeInTheDocument();
+  });
+
   it("shows each successful sequential upload even when a later file fails", async () => {
     const uploadedTrack = { ...tracks[0], id: "uploaded-one", title: "Uploaded opening" };
     let rejectSecond!: (error: unknown) => void;

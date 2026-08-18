@@ -572,6 +572,7 @@ export const LocalDJPlayer = forwardRef<YouTubePlayerHandle, LocalDJPlayerProps>
             const audio = event.currentTarget;
             setPlayedSeconds(audio.currentTime);
             if (
+              !audio.paused &&
               !transitioningRef.current &&
               nextTrack !== null &&
               shouldStartCrossfade({
@@ -599,6 +600,7 @@ export const LocalDJPlayer = forwardRef<YouTubePlayerHandle, LocalDJPlayerProps>
             const audio = event.currentTarget;
             setPlayedSeconds(audio.currentTime);
             if (
+              !audio.paused &&
               !transitioningRef.current &&
               nextTrack !== null &&
               shouldStartCrossfade({
