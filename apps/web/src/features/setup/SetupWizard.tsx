@@ -17,6 +17,8 @@ interface SetupWizardProps {
   readonly musicStatus: string;
   readonly playlistId: string;
   readonly onPlaylistIdChange: (playlistId: string) => void;
+  readonly musicSource: "youtube" | "local";
+  readonly onMusicSourceChange: (source: "youtube" | "local") => void;
   readonly onStartMusic: () => void;
   readonly onQuickStopMusic: () => void;
   readonly onSlowStopMusic: () => void;
@@ -52,6 +54,8 @@ export const SetupWizard = ({
   musicStatus,
   playlistId,
   onPlaylistIdChange,
+  musicSource,
+  onMusicSourceChange,
   onStartMusic,
   onQuickStopMusic,
   onSlowStopMusic,
@@ -354,12 +358,38 @@ export const SetupWizard = ({
             <span className="status-dot" />
             <strong>{musicStatus}</strong>
           </div>
-          <AccountPlaylistPicker playlistId={playlistId} onPlaylistIdChange={onPlaylistIdChange} />
+          <div className="music-source-picker" aria-label="Music source">
+            <button
+              type="button"
+              aria-pressed={musicSource === "local"}
+              onClick={() => onMusicSourceChange("local")}
+            >
+              Local waveform DJ
+            </button>
+            <button
+              type="button"
+              aria-pressed={musicSource === "youtube"}
+              onClick={() => onMusicSourceChange("youtube")}
+            >
+              YouTube Music
+            </button>
+          </div>
+          {musicSource === "youtube" ? (
+            <AccountPlaylistPicker
+              playlistId={playlistId}
+              onPlaylistIdChange={onPlaylistIdChange}
+            />
+          ) : (
+            <p className="local-dj-guidance">
+              The player below uses uploaded audio for real oscillograms, start-point seeking, and
+              crossfades. Upload at least two tracks, then set the current and next cue points.
+            </p>
+          )}
           <div className="music-actions">
             <button
               type="button"
               className="primary-action"
-              disabled={playlistId.trim().length === 0}
+              disabled={musicSource === "youtube" && playlistId.trim().length === 0}
               onClick={onStartMusic}
             >
               Start · fade in

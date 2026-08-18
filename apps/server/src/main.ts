@@ -12,6 +12,13 @@ const youtubeOAuth =
 const app = await buildApp({
   pool,
   staticDir: config.STATIC_DIR,
+  musicStorageDir: config.MUSIC_STORAGE_DIR,
+  musicLimits: {
+    maxFileBytes: config.MUSIC_MAX_FILE_BYTES,
+    maxStorageBytes: config.MUSIC_MAX_STORAGE_BYTES,
+    maxDurationSeconds: config.MUSIC_MAX_DURATION_SECONDS,
+    analysisTimeoutMs: config.MUSIC_ANALYSIS_TIMEOUT_MS,
+  },
   youtubeOAuth,
   publicAppUrl: config.PUBLIC_APP_URL,
 });

@@ -142,3 +142,17 @@ CREATE TABLE IF NOT EXISTS youtube_oauth_credentials (
   scope TEXT NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS music_tracks (
+  id UUID PRIMARY KEY,
+  title TEXT NOT NULL CHECK (BTRIM(title) <> ''),
+  original_filename TEXT NOT NULL CHECK (BTRIM(original_filename) <> ''),
+  storage_filename TEXT NOT NULL UNIQUE CHECK (BTRIM(storage_filename) <> ''),
+  mime_type TEXT NOT NULL CHECK (mime_type LIKE 'audio/%'),
+  duration_seconds DOUBLE PRECISION NOT NULL CHECK (duration_seconds > 0),
+  waveform JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS music_tracks_created_idx
+  ON music_tracks (created_at, title);

@@ -43,6 +43,22 @@ describe("loadConfig", () => {
     expect(config.youtubeOAuth).toBeUndefined();
   });
 
+  it("loads configurable music resource limits below the legacy upload cap", () => {
+    const config = loadConfig({
+      MUSIC_MAX_FILE_BYTES: "1048576",
+      MUSIC_MAX_STORAGE_BYTES: "10485760",
+      MUSIC_MAX_DURATION_SECONDS: "600",
+      MUSIC_ANALYSIS_TIMEOUT_MS: "5000",
+    });
+
+    expect(config).toMatchObject({
+      MUSIC_MAX_FILE_BYTES: 1_048_576,
+      MUSIC_MAX_STORAGE_BYTES: 10_485_760,
+      MUSIC_MAX_DURATION_SECONDS: 600,
+      MUSIC_ANALYSIS_TIMEOUT_MS: 5_000,
+    });
+  });
+
   it("loads the canonical public app URL used for secure browser redirects", () => {
     const config = loadConfig({
       PUBLIC_APP_URL: "https://mbp16.tail102fab.ts.net",

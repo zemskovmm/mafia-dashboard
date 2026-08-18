@@ -194,6 +194,12 @@ h2 {
   background: rgb(255 92 92 / 13%);
 }
 
+.active-game-sessions {
+  width: min(1400px, calc(100% - 32px));
+  margin: 0 auto;
+  padding-top: 76px;
+}
+
 .players-shell {
   width: min(1400px, calc(100% - 32px));
   margin: 0 auto;
@@ -484,6 +490,28 @@ h2 {
 .music-status.is-playing .status-dot {
   background: var(--green);
   box-shadow: 0 0 18px rgb(29 155 102 / 65%);
+}
+.music-source-picker {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 4px;
+  background: rgb(255 255 255 / 3%);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.music-source-picker button[aria-pressed="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.local-dj-guidance {
+  margin: 0;
+  padding: 16px;
+  color: #cbcaff;
+  line-height: 1.5;
+  background: rgb(113 112 255 / 10%);
+  border: 1px solid rgb(113 112 255 / 25%);
+  border-radius: 12px;
 }
 .account-playlist-picker {
   display: grid;
@@ -974,6 +1002,178 @@ h2 {
   margin: 0;
   opacity: 0.75;
 }
+.local-dj-dock {
+  position: relative;
+  z-index: 80;
+  width: min(1120px, calc(100vw - 32px));
+  margin: -90px auto 100px;
+}
+.local-dj-dock.is-compact {
+  position: fixed;
+  right: 16px;
+  bottom: 66px;
+  width: min(760px, calc(100vw - 32px));
+  max-height: calc(100vh - 100px);
+  margin: 0;
+  overflow: auto;
+  box-shadow: 0 20px 70px rgb(0 0 0 / 60%);
+}
+.local-dj-player {
+  display: grid;
+  gap: 18px;
+  padding: 18px;
+  background: rgb(15 16 17 / 96%);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  backdrop-filter: blur(18px);
+}
+.local-dj-player audio {
+  display: none;
+}
+.dj-library-heading,
+.dj-deck-heading,
+.crossfade-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.dj-library-heading h2,
+.dj-deck-heading h3 {
+  margin: 0;
+}
+.audio-upload {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0 16px;
+  overflow: hidden;
+  color: white;
+  background: var(--accent);
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 600;
+}
+.audio-upload.is-disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+.audio-upload input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+.dj-decks {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.dj-deck {
+  min-width: 0;
+  padding: 14px;
+  background: rgb(255 255 255 / 2%);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.dj-deck.is-current {
+  border-color: rgb(29 155 102 / 45%);
+}
+.dj-deck-heading {
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+.dj-deck-heading > div > span {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font:
+    500 0.68rem/1.3 "JetBrains Mono",
+    monospace;
+  text-transform: uppercase;
+}
+.dj-deck-heading h3 {
+  overflow: hidden;
+  font-size: 1rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dj-deck-heading select {
+  width: min(190px, 42%);
+  min-height: 40px;
+}
+.waveform-scrubber {
+  display: grid;
+  gap: 5px;
+}
+.waveform-heading,
+.waveform-scale {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--muted);
+  font:
+    500 0.68rem/1.3 "JetBrains Mono",
+    monospace;
+}
+.waveform-heading strong {
+  color: var(--text);
+}
+.waveform-canvas {
+  width: 100%;
+  height: 112px;
+  overflow: visible;
+  touch-action: none;
+  background: #08090a;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: ew-resize;
+}
+.waveform-played {
+  fill: rgb(113 112 255 / 14%);
+}
+.waveform-peak {
+  fill: #777b84;
+  pointer-events: none;
+}
+.is-current .waveform-peak {
+  fill: #66d5a5;
+}
+.waveform-playhead {
+  stroke: #fff;
+  stroke-width: 0.35;
+  pointer-events: none;
+}
+.waveform-range {
+  min-height: 24px;
+  padding: 0;
+  accent-color: var(--accent);
+}
+.crossfade-controls label {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  color: var(--muted);
+}
+.crossfade-controls select {
+  width: auto;
+  min-height: 44px;
+}
+.dj-queue {
+  display: flex;
+  gap: 16px;
+  align-items: baseline;
+  color: var(--muted);
+}
+.dj-queue ol {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin: 0;
+  padding-left: 20px;
+}
 .youtube-player-frame {
   display: grid;
   overflow: hidden;
@@ -1024,6 +1224,13 @@ h2 {
   border: 1px solid var(--border);
   border-radius: 11px;
   box-shadow: 0 20px 60px rgb(0 0 0 / 55%);
+}
+.app-shell:not(.has-live-game) .game-log-drawer {
+  position: relative;
+  left: auto;
+  bottom: auto;
+  width: min(1120px, calc(100vw - 32px));
+  margin: -72px auto 80px;
 }
 .game-log-drawer summary {
   padding: 12px 14px;
@@ -1313,6 +1520,26 @@ html:-webkit-full-screen .save-indicator {
     position: static;
     width: calc(100% - 16px);
     margin: 12px auto;
+  }
+  .local-dj-dock,
+  .local-dj-dock.is-compact {
+    right: 8px;
+    width: calc(100vw - 16px);
+  }
+  .dj-decks {
+    grid-template-columns: 1fr;
+  }
+  .dj-library-heading,
+  .dj-deck-heading,
+  .crossfade-controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .dj-deck-heading select {
+    width: 100%;
+  }
+  .waveform-canvas {
+    height: 92px;
   }
 }
 

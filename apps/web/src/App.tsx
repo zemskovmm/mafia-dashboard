@@ -20,6 +20,7 @@ import type {
 } from "./api/client.js";
 import { GameScreen } from "./features/game/GameScreen.js";
 import { LiveMusicControls } from "./features/music/LiveMusicControls.js";
+import { LocalDJPlayer, type LocalDJSessionState } from "./features/music/LocalDJPlayer.js";
 import {
   YouTubePlaylistPlayer,
   type YouTubePlaybackState,
@@ -116,6 +117,8 @@ export const App = () => {
   const [players, setPlayers] = useState<readonly PlayerProfile[]>([]);
   const [playersError, setPlayersError] = useState(false);
   const [playlistId, setPlaylistId] = useState(initialState.playlistId);
+  const [musicSource, setMusicSource] = useState<"youtube" | "local">("youtube");
+  const [localDjSession, setLocalDjSession] = useState<LocalDJSessionState | null>(null);
   const [musicState, setMusicState] = useState<YouTubePlaybackState>("idle");
   const [log, setLog] = useState<readonly LocalLogEntry[]>(initialState.log);
   const [undoHistory, setUndoHistory] = useState<readonly UndoSnapshot[]>(initialState.undoHistory);
@@ -417,6 +420,8 @@ export const App = () => {
     setHostName(null);
     setFinalResults(null);
     setPlaylistId(defaultPlaylistId);
+    setMusicSource("youtube");
+    setLocalDjSession(null);
     setSetupInstanceKey((key) => key + 1);
     setView("game");
     setUndoHistory([]);
@@ -540,6 +545,11 @@ export const App = () => {
             musicStatus={musicLabel[musicState]}
             playlistId={playlistId}
             onPlaylistIdChange={setPlaylistId}
+            musicSource={musicSource}
+            onMusicSourceChange={(source) => {
+              setMusicSource(source);
+              setMusicState("idle");
+            }}
             onStartMusic={() => {
               void musicRef.current?.fadeIn();
             }}
@@ -573,12 +583,25 @@ export const App = () => {
       )}
 
       {view === "players" ? null : (
-        <div className={game === null ? "youtube-dock" : "youtube-dock is-compact"}>
-          <YouTubePlaylistPlayer
-            ref={musicRef}
-            playlistId={playlistId}
-            onStateChange={handleMusicState}
-          />
+        <div
+          className={`${musicSource === "local" ? "local-dj-dock" : "youtube-dock"}${
+            game === null ? "" : " is-compact"
+          }`}
+        >
+          {musicSource === "local" ? (
+            <LocalDJPlayer
+              ref={musicRef}
+              onStateChange={handleMusicState}
+              initialSessionState={localDjSession}
+              onSessionStateChange={setLocalDjSession}
+            />
+          ) : (
+            <YouTubePlaylistPlayer
+              ref={musicRef}
+              playlistId={playlistId}
+              onStateChange={handleMusicState}
+            />
+          )}
           {game === null ? null : (
             <LiveMusicControls
               isPlaying={musicState === "playing"}

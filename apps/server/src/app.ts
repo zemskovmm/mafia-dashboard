@@ -1,8 +1,13 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+import multipart from "@fastify/multipart";
 import staticFiles from "@fastify/static";
 import Fastify from "fastify";
 import type { Pool } from "pg";
 import { z } from "zod";
+import { createAudioAnalyzer } from "./audio-analysis.js";
+import { parseByteRange } from "./byte-range.js";
 import { EventStore } from "./event-store.js";
 import { AuthoritativeGameSessionError, DeletedGameError } from "./game-lifecycle.js";
 import {
@@ -14,11 +19,18 @@ import {
   durableGameEventTypeSchema,
   gameSessionMutationSchema,
 } from "./game-session-validation.js";
+import { mapMusicUploadError } from "./music-api-errors.js";
+import {
+  DEFAULT_MAX_MUSIC_FILE_BYTES,
+  DEFAULT_MAX_MUSIC_STORAGE_BYTES,
+  MusicTrackStore,
+} from "./music-track-store.js";
 import { PlayerStore } from "./player-store.js";
 import type { YouTubeOAuthService } from "./youtube-oauth.js";
 
 const gameIdParams = z.object({ gameId: z.uuid() });
 const playerIdParams = z.object({ playerId: z.uuid() });
+const trackIdParams = z.object({ trackId: z.uuid() });
 const createGameBody = z.object({ name: z.string().trim().min(1).max(100) });
 const appendEventBody = z.object({
   idempotencyKey: z.string().trim().min(1).max(200),
@@ -139,22 +151,115 @@ const matchesState = (expected: string | null, received: string): boolean => {
 const stateCookie = (state: string, maxAge: number) =>
   `${oauthStateCookieName}=${encodeURIComponent(state)}; Path=/api/music/oauth/callback; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax`;
 
+const supportedAudioTypes = new Set([
+  "audio/aac",
+  "audio/flac",
+  "audio/m4a",
+  "audio/mp4",
+  "audio/mpeg",
+  "audio/ogg",
+  "audio/wav",
+  "audio/wave",
+  "audio/x-m4a",
+  "audio/x-wav",
+]);
+
+const MAX_TRACK_TITLE_BYTES = 640;
+const MAX_MULTIPART_OVERHEAD_BYTES = 256 * 1024;
+
+class MultipartContractError extends Error {
+  public constructor(
+    public readonly statusCode: number,
+    public readonly code: string,
+  ) {
+    super(code);
+    this.name = "MultipartContractError";
+  }
+}
+
+const codedError = (error: unknown): string | undefined =>
+  typeof error === "object" && error !== null && "code" in error ? String(error.code) : undefined;
+
+const multipartLimitError = (error: unknown): MultipartContractError | null => {
+  switch (codedError(error)) {
+    case "FST_FIELDS_LIMIT":
+    case "FST_FILES_LIMIT":
+    case "FST_PARTS_LIMIT":
+    case "FST_ERR_CTP_BODY_TOO_LARGE":
+      return new MultipartContractError(413, "multipart_limit_exceeded");
+    default:
+      return null;
+  }
+};
+
+const deferredValidation = () => {
+  let resolve!: () => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<void>((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  // The parser can reject before the file pipeline reaches this barrier.
+  void promise.catch(() => undefined);
+  return { promise, resolve, reject };
+};
+
 export const buildApp = async ({
   pool,
   staticDir,
+  musicStorageDir,
+  musicTrackStore,
+  musicLimits = {},
   youtubeOAuth,
   publicAppUrl,
 }: {
   readonly pool: Pool;
   readonly staticDir?: string;
+  readonly musicStorageDir?: string;
+  readonly musicTrackStore?: MusicTrackStore;
+  readonly musicLimits?: {
+    readonly maxFileBytes?: number;
+    readonly maxStorageBytes?: number;
+    readonly maxDurationSeconds?: number;
+    readonly analysisTimeoutMs?: number;
+  };
   readonly youtubeOAuth?: YouTubeOAuthService;
   readonly publicAppUrl?: string;
 }) => {
   const app = Fastify({ logger: false });
+  const maxFileBytes = musicLimits.maxFileBytes ?? DEFAULT_MAX_MUSIC_FILE_BYTES;
+  const maxStorageBytes = musicLimits.maxStorageBytes ?? DEFAULT_MAX_MUSIC_STORAGE_BYTES;
+  const maxMultipartBodyBytes = maxFileBytes + MAX_MULTIPART_OVERHEAD_BYTES;
+  await app.register(multipart, {
+    throwFileSizeLimit: true,
+    limits: {
+      fieldNameSize: 16,
+      fieldSize: MAX_TRACK_TITLE_BYTES,
+      fields: 1,
+      fileSize: maxFileBytes,
+      files: 1,
+      headerPairs: 8,
+      parts: 2,
+    },
+  });
   const store = new EventStore(pool);
   const gameSessionStore = new GameSessionStore(pool);
   const playerStore = new PlayerStore(pool);
   await store.initialize();
+  const musicTracks =
+    musicTrackStore ??
+    (musicStorageDir === undefined
+      ? undefined
+      : new MusicTrackStore(
+          pool,
+          musicStorageDir,
+          createAudioAnalyzer({
+            maxDurationSeconds: musicLimits.maxDurationSeconds,
+            timeoutMs: musicLimits.analysisTimeoutMs,
+          }),
+          { maxFileBytes, maxStorageBytes },
+        ));
+  await musicTracks?.initialize();
 
   if (publicAppUrl !== undefined) {
     const publicUrl = new URL(publicAppUrl);
@@ -227,6 +332,169 @@ export const buildApp = async ({
       return reply.code(503).send({ error: "youtube_oauth_not_configured" });
     }
     return { playlists: await youtubeOAuth.listPlaylists() };
+  });
+
+  app.get("/api/music/tracks", async (_request, reply) => {
+    if (musicTracks === undefined) {
+      return reply.code(503).send({ error: "local_music_not_configured" });
+    }
+    return { tracks: await musicTracks.list() };
+  });
+
+  app.post("/api/music/tracks", { bodyLimit: maxMultipartBodyBytes }, async (request, reply) => {
+    if (musicTracks === undefined) {
+      return reply.code(503).send({ error: "local_music_not_configured" });
+    }
+    const contentLength = Number(request.headers["content-length"]);
+    if (!Number.isSafeInteger(contentLength) || contentLength < 0) {
+      request.raw.resume();
+      return reply.code(411).send({ error: "multipart_content_length_required" });
+    }
+    if (contentLength > maxMultipartBodyBytes) {
+      request.raw.resume();
+      return reply.code(413).send({ error: "multipart_body_too_large" });
+    }
+
+    let validation: ReturnType<typeof deferredValidation> | null = null;
+    let uploadTask: Promise<Awaited<ReturnType<MusicTrackStore["create"]>>> | null = null;
+    let contractError: MultipartContractError | null = null;
+    let titleFieldSeen = false;
+    let fileSeen = false;
+    try {
+      let requestedTitle = "";
+      for await (const part of request.parts()) {
+        if (part.type === "field") {
+          if (
+            fileSeen ||
+            titleFieldSeen ||
+            part.fieldname !== "title" ||
+            part.fieldnameTruncated ||
+            part.valueTruncated
+          ) {
+            contractError ??= new MultipartContractError(400, "invalid_multipart_contract");
+            continue;
+          }
+          titleFieldSeen = true;
+          requestedTitle = String(part.value).trim();
+          continue;
+        }
+
+        fileSeen = true;
+        let fileLimitReached = false;
+        part.file.once("limit", () => {
+          fileLimitReached = true;
+        });
+        if (part.fieldname !== "file") {
+          contractError ??= new MultipartContractError(400, "invalid_multipart_contract");
+        }
+        if (!supportedAudioTypes.has(part.mimetype)) {
+          contractError ??= new MultipartContractError(415, "unsupported_audio_type");
+        }
+        const title = requestedTitle || part.filename.replace(/\.[^.]+$/, "").trim();
+        if (title.length === 0 || title.length > 160) {
+          contractError ??= new MultipartContractError(400, "invalid_track_title");
+        }
+
+        if (contractError !== null) {
+          part.file.resume();
+          continue;
+        }
+
+        validation = deferredValidation();
+        const currentValidation = validation;
+        uploadTask = musicTracks.create({
+          title,
+          originalFilename: part.filename,
+          mimeType: part.mimetype,
+          stream: part.file,
+          validateUpload: async () => {
+            await currentValidation.promise;
+            if (fileLimitReached || part.file.truncated) {
+              throw new MultipartContractError(413, "audio_file_too_large");
+            }
+          },
+        });
+        void uploadTask.catch(() => undefined);
+      }
+
+      if (!fileSeen || uploadTask === null || validation === null) {
+        throw contractError ?? new MultipartContractError(400, "audio_file_required");
+      }
+      if (contractError !== null) throw contractError;
+      validation.resolve();
+      const track = await uploadTask;
+      return reply.code(201).send({ track });
+    } catch (error) {
+      validation?.reject(error);
+      if (uploadTask !== null) {
+        try {
+          await uploadTask;
+        } catch (uploadError) {
+          const mappedUploadError = mapMusicUploadError(uploadError);
+          if (mappedUploadError !== null) {
+            return reply.code(mappedUploadError.statusCode).send({ error: mappedUploadError.code });
+          }
+          if (uploadError instanceof MultipartContractError) {
+            return reply.code(uploadError.statusCode).send({ error: uploadError.code });
+          }
+        }
+      }
+      if (error instanceof MultipartContractError) {
+        return reply.code(error.statusCode).send({ error: error.code });
+      }
+      const limitError = multipartLimitError(error);
+      if (limitError !== null) {
+        return reply.code(limitError.statusCode).send({ error: limitError.code });
+      }
+      const uploadError = mapMusicUploadError(error);
+      if (uploadError === null) throw error;
+      if (uploadError.code === "audio_analysis_busy") reply.header("retry-after", "1");
+      return reply.code(uploadError.statusCode).send({ error: uploadError.code });
+    }
+  });
+
+  app.get("/api/music/tracks/:trackId/audio", async (request, reply) => {
+    if (musicTracks === undefined) {
+      return reply.code(503).send({ error: "local_music_not_configured" });
+    }
+    const params = trackIdParams.safeParse(request.params);
+    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
+    const source = await musicTracks.open(params.data.trackId);
+    if (source === null) return reply.code(404).send({ error: "track_not_found" });
+    let file;
+    try {
+      file = await stat(source.path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return reply.code(404).send({ error: "track_file_missing" });
+      }
+      throw error;
+    }
+    if (!file.isFile()) return reply.code(404).send({ error: "track_file_missing" });
+    const range = parseByteRange(request.headers.range, file.size);
+    reply.header("accept-ranges", "bytes").header("content-type", source.mimeType);
+    if (range === "invalid") {
+      return reply.header("content-range", `bytes */${file.size}`).code(416).send();
+    }
+    if (range === null) {
+      return reply.header("content-length", file.size).send(createReadStream(source.path));
+    }
+    return reply
+      .code(206)
+      .header("content-range", `bytes ${range.start}-${range.end}/${file.size}`)
+      .header("content-length", range.end - range.start + 1)
+      .send(createReadStream(source.path, range));
+  });
+
+  app.delete("/api/music/tracks/:trackId", async (request, reply) => {
+    if (musicTracks === undefined) {
+      return reply.code(503).send({ error: "local_music_not_configured" });
+    }
+    const params = trackIdParams.safeParse(request.params);
+    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
+    return (await musicTracks.delete(params.data.trackId))
+      ? reply.code(204).send()
+      : reply.code(404).send({ error: "track_not_found" });
   });
 
   app.delete("/api/music/oauth/connection", async (_request, reply) => {

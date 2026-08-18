@@ -29,6 +29,9 @@ services:
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
       GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-}
       MUSIC_TOKEN_ENCRYPTION_KEY: ${MUSIC_TOKEN_ENCRYPTION_KEY:-}
+      MUSIC_STORAGE_DIR: /app/data/music
+    volumes:
+      - mafia-music:/app/data/music
     depends_on:
       db:
         condition: service_healthy
@@ -50,3 +53,4 @@ services:
 
 volumes:
   mafia-postgres:
+  mafia-music:

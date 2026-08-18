@@ -16,6 +16,7 @@ RUN npm run build
 RUN npm prune --omit=dev
 
 FROM node:22-alpine AS runtime
+RUN apk add --no-cache ffmpeg
 WORKDIR /app
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
@@ -29,6 +30,7 @@ COPY --from=build --chown=node:node /app/apps/server/dist ./apps/server/dist
 COPY --from=build --chown=node:node /app/apps/web/dist ./apps/web/dist
 COPY --from=build --chown=node:node /app/packages/game-domain/package.json ./packages/game-domain/package.json
 COPY --from=build --chown=node:node /app/packages/game-domain/dist ./packages/game-domain/dist
+RUN mkdir -p /app/data/music && chown -R node:node /app/data
 
 USER node
 EXPOSE 3000

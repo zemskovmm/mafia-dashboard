@@ -26,6 +26,17 @@ class FakePlayer implements MusicPlayerAdapter {
   }
 }
 
+class DeferredPlayer extends FakePlayer {
+  public resolvePlay!: () => void;
+
+  public override play(): Promise<void> {
+    this.playCalls += 1;
+    return new Promise((resolve) => {
+      this.resolvePlay = resolve;
+    });
+  }
+}
+
 describe("MusicController", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
@@ -72,6 +83,43 @@ describe("MusicController", () => {
     await expect(first).resolves.toBe("cancelled");
     await expect(second).resolves.toBe("completed");
     expect(player.volume).toBe(0);
+    expect(player.pauseCalls).toBe(1);
+  });
+
+  it("cancels a fade-in while play is still pending without starting a timer later", async () => {
+    const player = new DeferredPlayer();
+    const controller = new MusicController(player, { stepMs: 100 });
+    let settled: string | undefined;
+    const fade = controller.fadeIn({ durationMs: 500, targetVolume: 50 });
+    void fade.then((result) => {
+      settled = result;
+    });
+
+    controller.cancelActiveFade();
+    await Promise.resolve();
+
+    expect(settled).toBe("cancelled");
+    player.resolvePlay();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(500);
+    await expect(fade).resolves.toBe("cancelled");
+    expect(player.volumes).toEqual([0]);
+    expect(player.pauseCalls).toBeGreaterThanOrEqual(1);
+  });
+
+  it("does not let a cancelled pending fade-in compete with a newer fade-out", async () => {
+    const player = new DeferredPlayer();
+    const controller = new MusicController(player, { stepMs: 100 });
+    const fadeIn = controller.fadeIn({ durationMs: 1_000, targetVolume: 80 });
+    player.volume = 60;
+
+    const fadeOut = controller.fadeOut({ durationMs: 200 });
+    player.resolvePlay();
+    await vi.advanceTimersByTimeAsync(200);
+
+    await expect(fadeIn).resolves.toBe("cancelled");
+    await expect(fadeOut).resolves.toBe("completed");
+    expect(player.volumes).toEqual([0, 30, 0]);
     expect(player.pauseCalls).toBe(1);
   });
 });

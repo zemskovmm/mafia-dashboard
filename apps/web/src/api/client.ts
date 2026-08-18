@@ -123,6 +123,17 @@ export interface MusicPlaylist {
   readonly thumbnailUrl: string | null;
 }
 
+export interface LocalMusicTrack {
+  readonly id: string;
+  readonly title: string;
+  readonly originalFilename: string;
+  readonly mimeType: string;
+  readonly durationSeconds: number;
+  readonly waveform: readonly number[];
+  readonly audioUrl: string;
+  readonly createdAt: string;
+}
+
 export class ApiError extends Error {
   public constructor(
     message: string,
@@ -156,6 +167,28 @@ export const listMusicPlaylists = async (): Promise<readonly MusicPlaylist[]> =>
   if (!response.ok) return throwApiError(response, "Unable to load account playlists");
   const body = (await response.json()) as { playlists: readonly MusicPlaylist[] };
   return body.playlists;
+};
+
+export const listLocalMusicTracks = async (): Promise<readonly LocalMusicTrack[]> => {
+  const response = await fetch("/api/music/tracks");
+  if (!response.ok) return throwApiError(response, "Unable to load local music tracks");
+  const body = (await response.json()) as { tracks: readonly LocalMusicTrack[] };
+  return body.tracks;
+};
+
+export const uploadLocalMusicTrack = async (file: File): Promise<LocalMusicTrack> => {
+  const form = new FormData();
+  form.append("title", file.name.replace(/\.[^.]+$/, ""));
+  form.append("file", file);
+  const response = await fetch("/api/music/tracks", { method: "POST", body: form });
+  if (!response.ok) return throwApiError(response, "Unable to upload music track");
+  const body = (await response.json()) as { track: LocalMusicTrack };
+  return body.track;
+};
+
+export const deleteLocalMusicTrack = async (trackId: string): Promise<void> => {
+  const response = await fetch(`/api/music/tracks/${trackId}`, { method: "DELETE" });
+  if (!response.ok) return throwApiError(response, "Unable to delete music track");
 };
 
 export const disconnectMusicAccount = async (): Promise<void> => {

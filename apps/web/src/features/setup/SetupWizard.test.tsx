@@ -66,6 +66,7 @@ const Harness = ({
 }) => {
   const [musicPlaying, setMusicPlaying] = useState(false);
   const [playlistId, setPlaylistId] = useState("test-playlist");
+  const [musicSource, setMusicSource] = useState<"youtube" | "local">("youtube");
   return (
     <SetupWizard
       players={players}
@@ -73,6 +74,8 @@ const Harness = ({
       musicStatus={musicPlaying ? "Playing" : "Stopped"}
       playlistId={playlistId}
       onPlaylistIdChange={setPlaylistId}
+      musicSource={musicSource}
+      onMusicSourceChange={setMusicSource}
       onStartMusic={() => setMusicPlaying(true)}
       onQuickStopMusic={() => setMusicPlaying(false)}
       onSlowStopMusic={() => setMusicPlaying(false)}
@@ -152,6 +155,8 @@ describe("SetupWizard", () => {
         musicStatus="Stopped"
         playlistId="test-playlist"
         onPlaylistIdChange={() => undefined}
+        musicSource="youtube"
+        onMusicSourceChange={() => undefined}
         onStartMusic={() => undefined}
         onQuickStopMusic={() => undefined}
         onSlowStopMusic={() => undefined}
@@ -227,6 +232,8 @@ describe("SetupWizard", () => {
         musicStatus="Stopped"
         playlistId="test-playlist"
         onPlaylistIdChange={() => undefined}
+        musicSource="youtube"
+        onMusicSourceChange={() => undefined}
         onStartMusic={() => undefined}
         onQuickStopMusic={() => undefined}
         onSlowStopMusic={() => undefined}
@@ -258,6 +265,8 @@ describe("SetupWizard", () => {
         musicStatus="Stopped"
         playlistId="test-playlist"
         onPlaylistIdChange={() => undefined}
+        musicSource="youtube"
+        onMusicSourceChange={() => undefined}
         onStartMusic={() => undefined}
         onQuickStopMusic={() => undefined}
         onSlowStopMusic={() => undefined}
@@ -339,6 +348,28 @@ describe("SetupWizard", () => {
     expect(accountPlaylist).toHaveValue("account-playlist");
     expect(screen.queryByRole("textbox", { name: /youtube video url or id/i })).toBeNull();
     expect(screen.queryByRole("heading", { name: /quick queue/i })).toBeNull();
+  });
+
+  it("offers a local waveform DJ mode for real oscillograms and crossfades", async () => {
+    const user = userEvent.setup();
+    render(<Harness onComplete={() => undefined} />);
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Host player" }),
+      availablePlayers[10]!.id,
+    );
+    const selectors = screen.getAllByRole("combobox", { name: /seat \d+ player/i });
+    for (let index = 0; index < selectors.length; index += 1) {
+      await user.selectOptions(selectors[index]!, availablePlayers[index]!.id);
+    }
+    await user.click(screen.getByRole("button", { name: /continue to music/i }));
+
+    await user.click(screen.getByRole("button", { name: "Local waveform DJ" }));
+
+    expect(
+      screen.getByText(/real oscillograms, start-point seeking, and crossfades/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("combobox", { name: "YouTube Music playlist" })).toBeNull();
+    expect(screen.getByRole("button", { name: /start.*fade in/i })).toBeEnabled();
   });
 
   it("prevents duplicate selections and guides an empty roster to player management", async () => {
