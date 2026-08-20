@@ -11,10 +11,13 @@ describe("TimerControls", () => {
     await user.click(screen.getByRole("button", { name: "Start 60 second timer" }));
     expect(screen.getByText("60")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Stop timer" }));
+    const timerFace = screen.getByRole("button", { name: "Stop timer" });
+    expect(timerFace).toHaveClass("timer-display");
+    expect(screen.queryByText("Stop")).toBeNull();
+    await user.click(timerFace);
 
     expect(screen.getByText("00")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Stop timer" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Timer face" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: /pause|resume/i })).toBeNull();
   });
 });

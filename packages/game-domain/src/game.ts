@@ -60,9 +60,10 @@ export const createGame = (setup: SetupState): GameState => {
   };
 };
 
-export const getCurrentTurnDuration = (game: GameState): 10 | 60 => {
+export const getCurrentTurnDuration = (game: GameState): 10 | 30 | 60 => {
+  if (game.phase === "car-crash") return 30;
   if (game.phase !== "day") {
-    throw new Error("A turn timer is only available during the day");
+    throw new Error("A turn timer is only available during the day or car crash");
   }
   const seat = game.turnOrder[game.currentTurnIndex];
   const player = game.players.find((candidate) => candidate.seat === seat);

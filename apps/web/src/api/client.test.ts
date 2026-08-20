@@ -2,6 +2,7 @@ import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import type { RemoteGameSession } from "./client.js";
 import {
   ApiError,
+  clearGameSession,
   createPlayer,
   deleteGameResults,
   deleteRemoteGame,
@@ -251,6 +252,17 @@ describe("game session aggregate API client", () => {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(mutation),
+    });
+  });
+  it("sends the expected revision when clearing a session", async () => {
+    const gameId = "00000000-0000-4000-8000-000000000002";
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await clearGameSession(gameId, 7);
+
+    expect(fetchMock).toHaveBeenCalledWith(`/api/game-sessions/${gameId}?expectedRevision=7`, {
+      method: "DELETE",
     });
   });
 });

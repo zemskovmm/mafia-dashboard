@@ -47,6 +47,7 @@ describe("server API", () => {
 
     expect(live.statusCode).toBe(200);
     expect(live.json()).toEqual({ status: "live" });
+    expect(live.headers["permissions-policy"]).toBe("picture-in-picture=()");
     expect(ready.statusCode).toBe(200);
     expect(ready.json()).toEqual({ status: "ready" });
   });
@@ -387,7 +388,7 @@ describe("server API", () => {
 
     const cleared = await app.inject({
       method: "DELETE",
-      url: `/api/game-sessions/${gameId}`,
+      url: `/api/game-sessions/${gameId}?expectedRevision=1`,
     });
     expect(cleared.statusCode).toBe(204);
     const deletedAfterClear = await app.inject({
@@ -572,6 +573,9 @@ describe("server API", () => {
         thumbnailUrl: "https://i.ytimg.com/music.jpg",
       },
     ];
+    const playlistItems = [
+      { videoId: "video-1", title: "Opening", position: 0, thumbnailUrl: null },
+    ];
     const oauth = {
       getStatus: vi.fn().mockResolvedValue({
         configured: true,
@@ -579,6 +583,7 @@ describe("server API", () => {
         accountLabel: "Mafia Host",
       }),
       listPlaylists: vi.fn().mockResolvedValue(playlists),
+      listPlaylistItems: vi.fn().mockResolvedValue(playlistItems),
       disconnect: vi.fn().mockResolvedValue(undefined),
     } as unknown as YouTubeOAuthService;
     const oauthApp = await buildApp({ pool, youtubeOAuth: oauth });
@@ -586,6 +591,10 @@ describe("server API", () => {
 
     const status = await oauthApp.inject({ method: "GET", url: "/api/music/oauth/status" });
     const listed = await oauthApp.inject({ method: "GET", url: "/api/music/playlists" });
+    const items = await oauthApp.inject({
+      method: "GET",
+      url: "/api/music/playlists/PL-music/items",
+    });
     const disconnected = await oauthApp.inject({
       method: "DELETE",
       url: "/api/music/oauth/connection",
@@ -598,6 +607,9 @@ describe("server API", () => {
     });
     expect(listed.statusCode).toBe(200);
     expect(listed.json()).toEqual({ playlists });
+    expect(items.statusCode).toBe(200);
+    expect(items.json()).toEqual({ items: playlistItems });
+    expect(oauth.listPlaylistItems).toHaveBeenCalledWith("PL-music");
     expect(disconnected.statusCode).toBe(204);
     expect(oauth.disconnect).toHaveBeenCalledOnce();
 

@@ -185,6 +185,9 @@ const updateLastPlayed = async (
   affectedPlayerIds: readonly string[],
 ): Promise<void> => {
   if (affectedPlayerIds.length === 0) return;
+  await client.query("SELECT id FROM players WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE", [
+    affectedPlayerIds,
+  ]);
   await client.query(
     `UPDATE players AS p
         SET last_played_at = (
@@ -298,19 +301,46 @@ export class GameSessionStore {
     await initializeSchema(this.pool);
   }
 
-  public async clear(gameId: string): Promise<void> {
+  public async clear(gameId: string, expectedRevision?: number): Promise<void> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
       await lockAggregateProjectionTables(client);
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [gameId]);
+      const current = await client.query<{ revision: number }>(
+        "SELECT revision FROM game_sessions WHERE id = $1 FOR UPDATE",
+        [gameId],
+      );
+      const currentRevision = current.rows[0]?.revision ?? 0;
+      if (expectedRevision !== undefined && currentRevision !== expectedRevision) {
+        const deleted = await client.query("SELECT 1 FROM deleted_games WHERE game_id = $1", [
+          gameId,
+        ]);
+        if (current.rowCount !== 0 || deleted.rowCount === 0) {
+          throw new GameSessionConflictError(currentRevision);
+        }
+        await client.query("COMMIT");
+        return;
+      }
       await client.query(
         `INSERT INTO deleted_games (game_id) VALUES ($1)
          ON CONFLICT (game_id) DO NOTHING`,
         [gameId],
       );
+      const affectedPlayers = await client.query<{ player_id: string }>(
+        `SELECT player_id FROM game_player_results WHERE game_id = $1
+         UNION
+         SELECT host_player_id AS player_id
+           FROM game_results
+          WHERE game_id = $1
+            AND host_player_id IS NOT NULL`,
+        [gameId],
+      );
       await client.query("DELETE FROM game_sessions WHERE id = $1", [gameId]);
       await client.query("DELETE FROM game_events WHERE game_id = $1", [gameId]);
+      await client.query("DELETE FROM game_results WHERE game_id = $1", [gameId]);
+      const affectedPlayerIds = affectedPlayers.rows.map(({ player_id }) => player_id);
+      await updateLastPlayed(client, affectedPlayerIds);
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");

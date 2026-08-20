@@ -123,6 +123,13 @@ export interface MusicPlaylist {
   readonly thumbnailUrl: string | null;
 }
 
+export interface MusicPlaylistItem {
+  readonly videoId: string;
+  readonly title: string;
+  readonly position: number;
+  readonly thumbnailUrl: string | null;
+}
+
 export interface LocalMusicTrack {
   readonly id: string;
   readonly title: string;
@@ -167,6 +174,15 @@ export const listMusicPlaylists = async (): Promise<readonly MusicPlaylist[]> =>
   if (!response.ok) return throwApiError(response, "Unable to load account playlists");
   const body = (await response.json()) as { playlists: readonly MusicPlaylist[] };
   return body.playlists;
+};
+
+export const listMusicPlaylistItems = async (
+  playlistId: string,
+): Promise<readonly MusicPlaylistItem[]> => {
+  const response = await fetch(`/api/music/playlists/${encodeURIComponent(playlistId)}/items`);
+  if (!response.ok) return throwApiError(response, "Unable to load playlist queue");
+  const body = (await response.json()) as { items: readonly MusicPlaylistItem[] };
+  return body.items;
 };
 
 export const listLocalMusicTracks = async (): Promise<readonly LocalMusicTrack[]> => {
@@ -260,8 +276,11 @@ export const getGameSession = async (gameId: string): Promise<RemoteGameSession>
   return body.session;
 };
 
-export const clearGameSession = async (gameId: string): Promise<void> => {
-  const response = await fetch(`/api/game-sessions/${gameId}`, { method: "DELETE" });
+export const clearGameSession = async (gameId: string, expectedRevision: number): Promise<void> => {
+  const response = await fetch(
+    `/api/game-sessions/${gameId}?expectedRevision=${encodeURIComponent(expectedRevision)}`,
+    { method: "DELETE" },
+  );
   if (!response.ok) return throwApiError(response, "Unable to clear the game session");
 };
 

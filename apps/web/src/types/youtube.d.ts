@@ -27,6 +27,16 @@ declare global {
       pauseVideo(): void;
       setVolume(volume: number): void;
       getVolume(): number;
+      getIframe(): HTMLIFrameElement;
+      cuePlaylist(
+        playlist: string | readonly string[],
+        index?: number,
+        startSeconds?: number,
+      ): void;
+      loadPlaylist(playlist: readonly string[], index?: number, startSeconds?: number): void;
+      getPlaylistIndex(): number;
+      getCurrentTime(): number;
+      playVideoAt(index: number): void;
       destroy(): void;
     }
   }
@@ -39,6 +49,7 @@ declare global {
         PAUSED: number;
         ENDED: number;
         BUFFERING: number;
+        CUED: number;
       };
     };
     onYouTubeIframeAPIReady?: () => void;

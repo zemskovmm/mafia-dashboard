@@ -29,12 +29,8 @@ const createNegotiationGame = (): GameState => {
 
 const Harness = ({
   onEvent,
-  onUndo = () => undefined,
-  undoCount = 0,
 }: {
   onEvent: (type: string, payload: Record<string, unknown>) => void;
-  onUndo?: () => void;
-  undoCount?: number;
 }) => {
   const [game, setGame] = useState(createNegotiationGame);
   return (
@@ -43,8 +39,22 @@ const Harness = ({
       hostName="Host Player"
       onGameChange={setGame}
       onEvent={onEvent}
-      onUndo={onUndo}
-      undoCount={undoCount}
+      privacyHidden={false}
+    />
+  );
+};
+
+const DayHarness = () => {
+  const [game, setGame] = useState(() =>
+    advanceSetupPhase(advanceSetupPhase(createNegotiationGame())),
+  );
+  return (
+    <GameScreen
+      game={game}
+      hostName="Host Player"
+      onGameChange={setGame}
+      onEvent={() => undefined}
+      privacyHidden={false}
     />
   );
 };
@@ -53,60 +63,6 @@ describe("GameScreen", () => {
   it("shows the selected host at the table", () => {
     render(<Harness onEvent={() => undefined} />);
     expect(screen.getByText("Host Player")).toBeInTheDocument();
-  });
-
-  it("offers the available game action undo history", async () => {
-    const user = userEvent.setup();
-    const onUndo = vi.fn();
-    const { rerender } = render(
-      <Harness onEvent={() => undefined} onUndo={onUndo} undoCount={2} />,
-    );
-
-    await user.click(screen.getByRole("button", { name: /undo last action.*2 available/i }));
-    expect(onUndo).toHaveBeenCalledOnce();
-
-    rerender(<Harness onEvent={() => undefined} onUndo={onUndo} undoCount={0} />);
-    expect(screen.getByRole("button", { name: /undo last action.*0 available/i })).toBeDisabled();
-  });
-
-  it("enters and exits fullscreen from the live header", async () => {
-    const user = userEvent.setup();
-    let fullscreenElement: Element | null = null;
-    const requestFullscreen = vi.fn(async () => {
-      fullscreenElement = document.documentElement;
-      document.dispatchEvent(new Event("fullscreenchange"));
-    });
-    const exitFullscreen = vi.fn(async () => {
-      fullscreenElement = null;
-      document.dispatchEvent(new Event("fullscreenchange"));
-    });
-    Object.defineProperty(document, "fullscreenElement", {
-      configurable: true,
-      get: () => fullscreenElement,
-    });
-    Object.defineProperty(document.documentElement, "requestFullscreen", {
-      configurable: true,
-      value: requestFullscreen,
-    });
-    Object.defineProperty(document, "exitFullscreen", {
-      configurable: true,
-      value: exitFullscreen,
-    });
-
-    render(<Harness onEvent={() => undefined} />);
-    const enter = screen.getByRole("button", { name: "Enter fullscreen" });
-    expect(enter).toHaveAttribute("aria-pressed", "false");
-    await user.click(enter);
-
-    expect(requestFullscreen).toHaveBeenCalledOnce();
-    const exit = screen.getByRole("button", { name: "Exit fullscreen" });
-    expect(exit).toHaveAttribute("aria-pressed", "true");
-    await user.click(exit);
-    expect(exitFullscreen).toHaveBeenCalledOnce();
-
-    Reflect.deleteProperty(document, "fullscreenElement");
-    Reflect.deleteProperty(document.documentElement, "requestFullscreen");
-    Reflect.deleteProperty(document, "exitFullscreen");
   });
 
   it("signals setup phases and enters the rotating first day", async () => {
@@ -134,6 +90,74 @@ describe("GameScreen", () => {
     expect(onEvent).not.toHaveBeenCalledWith("turn.started", expect.anything());
   });
 
+  it("locks every nomination button after the current speaker nominates", async () => {
+    const user = userEvent.setup();
+    render(<DayHarness />);
+
+    await user.click(screen.getByRole("button", { name: /nominate player 2/i }));
+    expect(
+      screen
+        .getAllByRole("button", { name: /nominate player/i })
+        .every((button) => button.hasAttribute("disabled")),
+    ).toBe(true);
+
+    await user.click(screen.getByRole("button", { name: /next player/i }));
+    expect(screen.getByRole("button", { name: /nominate player 3/i })).toBeEnabled();
+  });
+
+  it("presents each car-crash nominee with a 30-second turn", () => {
+    const game: GameState = {
+      ...advanceSetupPhase(advanceSetupPhase(createNegotiationGame())),
+      phase: "car-crash",
+      turnOrder: [4, 6],
+      currentTurnIndex: 0,
+      carCrashSeats: [4, 6],
+      votingRound: "repeat",
+    };
+
+    render(
+      <GameScreen
+        game={game}
+        hostName="Host Player"
+        onGameChange={() => undefined}
+        onEvent={() => undefined}
+        privacyHidden={false}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: /car crash/i })).toBeInTheDocument();
+    expect(screen.getByText(/car crash turn: player 4/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /start player 4 30-second turn/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /next nominee/i })).toBeEnabled();
+  });
+
+  it("eliminates every nominee approved by the car-crash ballot", async () => {
+    const user = userEvent.setup();
+    const onGameChange = vi.fn<(game: GameState) => void>();
+    const base = advanceSetupPhase(advanceSetupPhase(createNegotiationGame()));
+    const game: GameState = {
+      ...base,
+      phase: "car-crash-decision",
+      carCrashSeats: [4, 6],
+      carCrashVotes: Object.fromEntries(base.players.map(({ seat }) => [seat, true])),
+    };
+
+    render(
+      <GameScreen
+        game={game}
+        hostName="Host Player"
+        onGameChange={onGameChange}
+        onEvent={() => undefined}
+        privacyHidden={false}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /resolve car crash/i }));
+
+    const resolved = onGameChange.mock.calls.at(-1)?.[0];
+    expect(resolved?.players.find(({ seat }) => seat === 4)?.status).toBe("eliminated");
+    expect(resolved?.players.find(({ seat }) => seat === 6)?.status).toBe("eliminated");
+  });
+
   it("does not present an inactive restored current speaker as the active turn", () => {
     const dayGame = advanceSetupPhase(advanceSetupPhase(createNegotiationGame()));
     const restored = {
@@ -149,8 +173,7 @@ describe("GameScreen", () => {
         hostName="Host Player"
         onGameChange={() => undefined}
         onEvent={() => undefined}
-        onUndo={() => undefined}
-        undoCount={0}
+        privacyHidden={false}
       />,
     );
 

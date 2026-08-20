@@ -3,6 +3,14 @@ import type { Pool } from "pg";
 import { z } from "zod";
 
 const YOUTUBE_READONLY_SCOPE = "https://www.googleapis.com/auth/youtube.readonly";
+const MAX_YOUTUBE_PAGE_COUNT = 20;
+
+export class YouTubePlaylistAccessError extends Error {
+  public constructor(playlistId: string) {
+    super(`Playlist ${playlistId} is not in the connected YouTube account`);
+    this.name = "YouTubePlaylistAccessError";
+  }
+}
 
 export interface YouTubeOAuthConfig {
   readonly clientId: string;
@@ -39,6 +47,19 @@ const playlistPageResponse = z.object({
     }),
   ),
 });
+const playlistItemPageResponse = z.object({
+  nextPageToken: z.string().optional(),
+  items: z.array(
+    z.object({
+      snippet: z.object({
+        title: z.string(),
+        position: z.number().int().min(0),
+        resourceId: z.object({ videoId: z.string().min(1).optional() }),
+        thumbnails: z.object({ default: z.object({ url: z.string() }).optional() }).default({}),
+      }),
+    }),
+  ),
+});
 
 const encrypt = (plaintext: string, key: Buffer): Buffer => {
   const initializationVector = randomBytes(12);
@@ -61,6 +82,13 @@ export interface YouTubePlaylist {
   readonly id: string;
   readonly title: string;
   readonly itemCount: number;
+  readonly thumbnailUrl: string | null;
+}
+
+export interface YouTubePlaylistItem {
+  readonly videoId: string;
+  readonly title: string;
+  readonly position: number;
   readonly thumbnailUrl: string | null;
 }
 
@@ -149,7 +177,12 @@ export class YouTubeOAuthService {
     const accessToken = await this.getAccessToken();
     const playlists: YouTubePlaylist[] = [];
     let pageToken: string | undefined;
+    let pageCount = 0;
     do {
+      if (pageCount >= MAX_YOUTUBE_PAGE_COUNT) {
+        throw new Error("YouTube pagination limit exceeded");
+      }
+      pageCount += 1;
       const url = new URL("https://www.googleapis.com/youtube/v3/playlists");
       url.search = new URLSearchParams({
         part: "snippet,contentDetails",
@@ -174,6 +207,52 @@ export class YouTubeOAuthService {
       pageToken = page.nextPageToken;
     } while (pageToken !== undefined);
     return playlists;
+  }
+
+  public async listPlaylistItems(playlistId: string): Promise<readonly YouTubePlaylistItem[]> {
+    const ownedPlaylists = await this.listPlaylists();
+    if (!ownedPlaylists.some(({ id }) => id === playlistId)) {
+      throw new YouTubePlaylistAccessError(playlistId);
+    }
+    const accessToken = await this.getAccessToken();
+    const items: YouTubePlaylistItem[] = [];
+    let pageToken: string | undefined;
+    let pageCount = 0;
+    do {
+      if (pageCount >= MAX_YOUTUBE_PAGE_COUNT) {
+        throw new Error("YouTube pagination limit exceeded");
+      }
+      pageCount += 1;
+      const url = new URL("https://www.googleapis.com/youtube/v3/playlistItems");
+      url.search = new URLSearchParams({
+        part: "snippet",
+        playlistId,
+        maxResults: "50",
+        ...(pageToken === undefined ? {} : { pageToken }),
+      }).toString();
+      const response = await this.fetcher(url.toString(), {
+        headers: { authorization: `Bearer ${accessToken}` },
+      });
+      if (!response.ok)
+        throw new Error(`YouTube playlist item lookup failed with HTTP ${response.status}`);
+      const page = playlistItemPageResponse.parse(await response.json());
+      items.push(
+        ...page.items.flatMap(({ snippet }) =>
+          snippet.resourceId.videoId === undefined
+            ? []
+            : [
+                {
+                  videoId: snippet.resourceId.videoId,
+                  title: snippet.title,
+                  position: snippet.position,
+                  thumbnailUrl: snippet.thumbnails.default?.url ?? null,
+                },
+              ],
+        ),
+      );
+      pageToken = page.nextPageToken;
+    } while (pageToken !== undefined);
+    return items.sort((left, right) => left.position - right.position);
   }
 
   public async disconnect(): Promise<void> {

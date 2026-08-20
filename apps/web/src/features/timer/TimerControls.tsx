@@ -69,13 +69,27 @@ export const TimerControls = forwardRef<TimerControlsHandle>((_, ref) => {
 
   return (
     <section className="timer-panel" aria-label="Timer controls">
-      <div className={`timer-display${remaining <= 10 && remaining > 0 ? " is-warning" : ""}`}>
+      <button
+        type="button"
+        className="timer-preset-60"
+        aria-label="Start 60 second timer"
+        onClick={() => start(60)}
+      >
+        +60
+      </button>
+      <button
+        type="button"
+        className={`timer-display${remaining <= 10 && remaining > 0 ? " is-warning" : ""}`}
+        aria-label={timer === null || timer.status === "expired" ? "Timer face" : "Stop timer"}
+        disabled={timer === null || timer.status === "expired"}
+        onClick={stop}
+      >
         <span className="timer-label">Timer</span>
         <strong>{remaining.toString().padStart(2, "0")}</strong>
         <span>seconds</span>
-      </div>
-      <div className="timer-presets">
-        {([60, 30, 10] as const).map((seconds) => (
+      </button>
+      <div className="timer-side-presets">
+        {([30, 10] as const).map((seconds) => (
           <button
             type="button"
             key={seconds}
@@ -85,14 +99,6 @@ export const TimerControls = forwardRef<TimerControlsHandle>((_, ref) => {
             +{seconds}
           </button>
         ))}
-        <button
-          type="button"
-          aria-label="Stop timer"
-          onClick={stop}
-          disabled={timer === null || timer.status === "expired"}
-        >
-          Stop
-        </button>
       </div>
     </section>
   );

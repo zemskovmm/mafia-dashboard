@@ -26,11 +26,14 @@ import {
   MusicTrackStore,
 } from "./music-track-store.js";
 import { PlayerStore } from "./player-store.js";
+import { YouTubePlaylistAccessError } from "./youtube-oauth.js";
 import type { YouTubeOAuthService } from "./youtube-oauth.js";
 
 const gameIdParams = z.object({ gameId: z.uuid() });
+const clearGameSessionQuery = z.object({ expectedRevision: z.coerce.number().int().nonnegative() });
 const playerIdParams = z.object({ playerId: z.uuid() });
 const trackIdParams = z.object({ trackId: z.uuid() });
+const playlistIdParams = z.object({ playlistId: z.string().trim().min(1).max(200) });
 const createGameBody = z.object({ name: z.string().trim().min(1).max(100) });
 const appendEventBody = z.object({
   idempotencyKey: z.string().trim().min(1).max(200),
@@ -227,6 +230,9 @@ export const buildApp = async ({
   readonly publicAppUrl?: string;
 }) => {
   const app = Fastify({ logger: false });
+  app.addHook("onRequest", async (_request, reply) => {
+    reply.header("permissions-policy", "picture-in-picture=()");
+  });
   const maxFileBytes = musicLimits.maxFileBytes ?? DEFAULT_MAX_MUSIC_FILE_BYTES;
   const maxStorageBytes = musicLimits.maxStorageBytes ?? DEFAULT_MAX_MUSIC_STORAGE_BYTES;
   const maxMultipartBodyBytes = maxFileBytes + MAX_MULTIPART_OVERHEAD_BYTES;
@@ -332,6 +338,22 @@ export const buildApp = async ({
       return reply.code(503).send({ error: "youtube_oauth_not_configured" });
     }
     return { playlists: await youtubeOAuth.listPlaylists() };
+  });
+
+  app.get("/api/music/playlists/:playlistId/items", async (request, reply) => {
+    if (youtubeOAuth === undefined) {
+      return reply.code(503).send({ error: "youtube_oauth_not_configured" });
+    }
+    const params = playlistIdParams.safeParse(request.params);
+    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
+    try {
+      return { items: await youtubeOAuth.listPlaylistItems(params.data.playlistId) };
+    } catch (error) {
+      if (error instanceof YouTubePlaylistAccessError) {
+        return reply.code(404).send({ error: "youtube_playlist_not_available" });
+      }
+      throw error;
+    }
   });
 
   app.get("/api/music/tracks", async (_request, reply) => {
@@ -606,9 +628,21 @@ export const buildApp = async ({
 
   app.delete("/api/game-sessions/:gameId", async (request, reply) => {
     const params = gameIdParams.safeParse(request.params);
+    const query = clearGameSessionQuery.safeParse(request.query);
     if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
-    await gameSessionStore.clear(params.data.gameId);
-    return reply.code(204).send();
+    if (!query.success) return reply.code(400).send(validationFailure(query.error.issues));
+    try {
+      await gameSessionStore.clear(params.data.gameId, query.data.expectedRevision);
+      return reply.code(204).send();
+    } catch (error) {
+      if (error instanceof GameSessionConflictError) {
+        return reply.code(409).send({
+          error: "game_session_revision_conflict",
+          currentRevision: error.currentRevision,
+        });
+      }
+      throw error;
+    }
   });
 
   app.post("/api/games", async (request, reply) => {

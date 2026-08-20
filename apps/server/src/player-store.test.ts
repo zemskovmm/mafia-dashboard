@@ -870,7 +870,7 @@ describe("PlayerStore", () => {
     }
   });
 
-  it("cannot retract finalized results after the aggregate is tombstoned", async () => {
+  it("clears finalized results while tombstoning the aggregate", async () => {
     const host = await store.create({
       nickname: nickname("Tombstoned result host"),
       consent: false,
@@ -910,6 +910,14 @@ describe("PlayerStore", () => {
         "SELECT COUNT(*)::int AS count FROM game_results WHERE game_id = $1",
         [gameId],
       ),
-    ).resolves.toMatchObject({ rows: [{ count: 1 }] });
+    ).resolves.toMatchObject({ rows: [{ count: 0 }] });
+    await expect(store.get(host.id)).resolves.toMatchObject({
+      lastPlayedAt: null,
+      statistics: { hostedGames: 0, gamesPlayed: 0 },
+    });
+    await expect(store.get(participant.id)).resolves.toMatchObject({
+      lastPlayedAt: null,
+      statistics: { hostedGames: 0, gamesPlayed: 0 },
+    });
   });
 });

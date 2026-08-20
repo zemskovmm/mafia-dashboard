@@ -302,19 +302,9 @@ export const PlayersScreen = ({
 
   return (
     <main className="players-shell">
-      <header className="players-header">
-        <div>
-          <p className="eyebrow">Persistent roster</p>
-          <h1>Players &amp; statistics</h1>
-          <p className="lead">
-            Nicknames are always saved. Personal details are stored only with explicit consent.
-          </p>
-        </div>
-        <div className="player-count">
-          <strong>{players.length}</strong>
-          <span>Players</span>
-        </div>
-      </header>
+      <p className="players-roster-note">
+        Nicknames are always saved. Personal details are stored only with explicit consent.
+      </p>
 
       <section className="new-player-panel" aria-labelledby="new-player-title">
         <div>

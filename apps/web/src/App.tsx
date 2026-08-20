@@ -49,12 +49,46 @@ interface UndoSnapshot {
   readonly sequence: number;
 }
 
+type BackgroundShade = "black" | "grey-33" | "grey-66" | "white";
+
+const backgroundShadeOrder: readonly BackgroundShade[] = ["black", "grey-33", "grey-66", "white"];
+const backgroundShadeClass: Record<BackgroundShade, string> = {
+  black: "",
+  "grey-33": " is-background-grey-33",
+  "grey-66": " is-background-grey-66",
+  white: " is-light-background",
+};
+const backgroundShadeLabel: Record<BackgroundShade, string> = {
+  black: "black",
+  "grey-33": "33% grey",
+  "grey-66": "66% grey",
+  white: "white",
+};
+
 interface PersistedState extends GameSessionState {
   readonly setup: SetupWizardSessionState | null;
   readonly game: GameState | null;
   readonly log: readonly LocalLogEntry[];
   readonly undoHistory: readonly UndoSnapshot[];
 }
+
+interface WebkitFullscreenDocument extends Document {
+  readonly webkitFullscreenElement?: Element | null;
+  readonly webkitExitFullscreen?: () => Promise<void> | void;
+}
+
+interface WebkitFullscreenElement extends HTMLElement {
+  readonly webkitRequestFullscreen?: () => Promise<void> | void;
+}
+
+const currentFullscreenElement = (): Element | null =>
+  document.fullscreenElement ??
+  (document as WebkitFullscreenDocument).webkitFullscreenElement ??
+  null;
+
+const isTouchIPad = () =>
+  /iPad/.test(navigator.userAgent) ||
+  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
 
 const defaultPlaylistId = import.meta.env.VITE_YOUTUBE_PLAYLIST_ID ?? "";
 const developmentAdjectives = ["Crimson", "Midnight", "Velvet", "Golden", "Silent"] as const;
@@ -71,13 +105,17 @@ const hasSetupProgress = ({
   (hostPlayerId !== undefined && hostPlayerId !== "") ||
   selectedPlayerIds.some((playerId) => playerId !== "");
 
+const setupPhase = (step: SetupWizardSessionState["step"] | undefined) =>
+  step === "roles" ? "setup-roles" : step === "music" ? "setup-music" : "setup-players";
+
 const isSecretEvent = (type: string, payload: Record<string, unknown>) =>
   payload.secret === true ||
   type === "setup.role-drawn" ||
   type.includes("shot") ||
   type.includes("checked");
 
-const isAuxiliaryEvent = (type: string) => type.startsWith("timer.") || type.startsWith("music.");
+const isAuxiliaryEvent = (type: string) =>
+  type.startsWith("timer.") || type.startsWith("music.") || type.startsWith("setup.");
 
 const asPersistedState = (state: GameSessionState | undefined): PersistedState => ({
   setup: (state?.setup as SetupWizardSessionState | null | undefined) ?? null,
@@ -109,6 +147,7 @@ export const App = () => {
     initialState.setup,
   );
   const [setupInstanceKey, setSetupInstanceKey] = useState(0);
+  const [randomFillRequest, setRandomFillRequest] = useState(0);
   const [hostPlayerId, setHostPlayerId] = useState<string | null>(initialState.hostPlayerId);
   const [hostName, setHostName] = useState<string | null>(initialState.hostName);
   const [finalResults, setFinalResults] = useState<FinalGameResults | null>(
@@ -118,6 +157,10 @@ export const App = () => {
   const [playersError, setPlayersError] = useState(false);
   const [playlistId, setPlaylistId] = useState(initialState.playlistId);
   const [musicSource, setMusicSource] = useState<"youtube" | "local">("youtube");
+  const [musicPlayerExpanded, setMusicPlayerExpanded] = useState(false);
+  const [musicVolumePresets, setMusicVolumePresets] = useState<readonly [number, number]>([50, 80]);
+  const [activeMusicVolume, setActiveMusicVolume] = useState(80);
+  const [musicReloadRequest, setMusicReloadRequest] = useState(0);
   const [localDjSession, setLocalDjSession] = useState<LocalDJSessionState | null>(null);
   const [musicState, setMusicState] = useState<YouTubePlaybackState>("idle");
   const [log, setLog] = useState<readonly LocalLogEntry[]>(initialState.log);
@@ -125,16 +168,32 @@ export const App = () => {
   const [activeSessions, setActiveSessions] = useState<readonly ActiveGameSessionSummary[]>([]);
   const [activeSessionsError, setActiveSessionsError] = useState(false);
   const [resumeGameId, setResumeGameId] = useState<string | null>(null);
+  const [swipedSessionId, setSwipedSessionId] = useState<string | null>(null);
+  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
+  const [activeDrawer, setActiveDrawer] = useState<"log" | "dev" | null>(null);
+  const [backgroundShade, setBackgroundShade] = useState<BackgroundShade>("black");
+  const [privacyHidden, setPrivacyHidden] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(() => currentFullscreenElement() !== null);
+  const [clearingAllData, setClearingAllData] = useState(false);
+  const [clearAllDataError, setClearAllDataError] = useState(false);
   const [, setSyncRender] = useState(0);
 
   const musicRef = useRef<YouTubePlayerHandle>(null);
+  const devDrawerRef = useRef<HTMLElement>(null);
+  const touchIPad = useRef(isTouchIPad()).current;
+  const sessionSwipeStartRef = useRef<{ readonly gameId: string; readonly x: number } | null>(null);
   const logRef = useRef<readonly LocalLogEntry[]>(initialState.log);
   const sequenceRef = useRef(initialState.log.at(-1)?.sequence ?? 0);
-  const phaseRef = useRef(initialState.game?.phase ?? "setup-players");
+  const phaseRef = useRef(initialState.game?.phase ?? setupPhase(initialState.setup?.step));
   const playerRequestRef = useRef(0);
   const activeSessionsRequestRef = useRef(0);
   const resumeRequestRef = useRef(0);
   const persistedResultsRef = useRef<FinalGameResults | null>(initialCurrent?.results ?? null);
+  const fullscreenTarget = document.documentElement as WebkitFullscreenElement;
+  const fullscreenDocument = document as WebkitFullscreenDocument;
+  const fullscreenAvailable =
+    typeof fullscreenTarget.requestFullscreen === "function" ||
+    typeof fullscreenTarget.webkitRequestFullscreen === "function";
 
   const refreshPlayers = useCallback(async () => {
     const request = playerRequestRef.current + 1;
@@ -168,6 +227,41 @@ export const App = () => {
     void refreshPlayers();
     void refreshActiveSessions();
   }, [refreshActiveSessions, refreshPlayers]);
+
+  useEffect(() => {
+    const syncFullscreenState = () => setIsFullscreen(currentFullscreenElement() !== null);
+    document.addEventListener("fullscreenchange", syncFullscreenState);
+    document.addEventListener("webkitfullscreenchange", syncFullscreenState);
+    return () => {
+      document.removeEventListener("fullscreenchange", syncFullscreenState);
+      document.removeEventListener("webkitfullscreenchange", syncFullscreenState);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (activeDrawer !== "dev") return;
+    const drawer = devDrawerRef.current;
+    if (drawer === null) return;
+    let lastTouchY = 0;
+    const rememberTouch = (event: TouchEvent) => {
+      lastTouchY = event.touches[0]?.clientY ?? lastTouchY;
+    };
+    const containEdgeSwipe = (event: TouchEvent) => {
+      const touchY = event.touches[0]?.clientY;
+      if (touchY === undefined) return;
+      const deltaY = touchY - lastTouchY;
+      const atTop = drawer.scrollTop <= 0;
+      const atBottom = drawer.scrollTop + drawer.clientHeight >= drawer.scrollHeight - 1;
+      if ((atTop && deltaY > 0) || (atBottom && deltaY < 0)) event.preventDefault();
+      lastTouchY = touchY;
+    };
+    drawer.addEventListener("touchstart", rememberTouch, { passive: true });
+    drawer.addEventListener("touchmove", containEdgeSwipe, { passive: false });
+    return () => {
+      drawer.removeEventListener("touchstart", rememberTouch);
+      drawer.removeEventListener("touchmove", containEdgeSwipe);
+    };
+  }, [activeDrawer]);
 
   useEffect(
     () =>
@@ -335,6 +429,7 @@ export const App = () => {
 
   const handleSetupSessionChange = useCallback(
     (next: SetupWizardSessionState) => {
+      phaseRef.current = setupPhase(next.step);
       setSetupSession(hasSetupProgress(next) ? next : null);
       const nextHostId = next.hostPlayerId;
       if (nextHostId === undefined || nextHostId === "") {
@@ -371,7 +466,7 @@ export const App = () => {
       logRef.current = restored.log;
       setUndoHistory(restored.undoHistory);
       sequenceRef.current = restored.log.at(-1)?.sequence ?? 0;
-      phaseRef.current = restored.game?.phase ?? "setup-players";
+      phaseRef.current = restored.game?.phase ?? setupPhase(restored.setup?.step);
       setSetupInstanceKey((key) => key + 1);
       setView("game");
     },
@@ -449,6 +544,70 @@ export const App = () => {
     void refreshActiveSessions();
   };
 
+  const deleteActiveSession = async (session: ActiveGameSessionSummary) => {
+    if (
+      !window.confirm(
+        `Delete "${session.name}" and all associated game statistics? This cannot be undone.`,
+      )
+    )
+      return;
+    setDeletingSessionId(session.gameId);
+    try {
+      if (sessionSync.gameId === session.gameId) {
+        await sessionSync.clear(clearGameSession);
+        resetLocalState();
+      } else {
+        await clearGameSession(session.gameId, session.revision);
+      }
+      setSwipedSessionId(null);
+      await Promise.all([refreshActiveSessions(), refreshPlayers()]);
+    } catch {
+      setActiveSessionsError(true);
+    } finally {
+      setDeletingSessionId(null);
+    }
+  };
+
+  const clearApplicationData = async () => {
+    if (
+      !window.confirm(
+        "Clear all data stored by Mafia Dashboard in this browser? Server players, sessions, results, and music will not be deleted.",
+      )
+    )
+      return;
+    setClearingAllData(true);
+    setClearAllDataError(false);
+    try {
+      await sessionSync.clear(async () => undefined);
+      window.localStorage.clear();
+      window.sessionStorage.clear();
+      resetLocalState();
+      setActiveDrawer(null);
+    } catch {
+      setClearAllDataError(true);
+    } finally {
+      setClearingAllData(false);
+    }
+  };
+
+  const toggleFullscreen = async () => {
+    try {
+      if (currentFullscreenElement() === null) {
+        if (typeof fullscreenTarget.requestFullscreen === "function") {
+          await fullscreenTarget.requestFullscreen();
+        } else {
+          await fullscreenTarget.webkitRequestFullscreen?.();
+        }
+      } else if (typeof document.exitFullscreen === "function") {
+        await document.exitFullscreen();
+      } else {
+        await fullscreenDocument.webkitExitFullscreen?.();
+      }
+    } catch {
+      setIsFullscreen(currentFullscreenElement() !== null);
+    }
+  };
+
   const deletionProtectedPlayerIds = new Set([
     ...(game === null
       ? (setupSession?.selectedPlayerIds.filter((playerId) => playerId !== "") ?? [])
@@ -463,30 +622,249 @@ export const App = () => {
   ]);
 
   const persistenceState = sessionSync.status;
+  const setupStep = setupSession?.step ?? "players";
+  const roleGiveawayActive = view === "game" && game === null && setupStep === "roles";
+  const showApplicationStatus = view === "players" || (game === null && !roleGiveawayActive);
+  const applicationStatusTitle = view === "players" ? "Players & statistics" : "Game setup";
+  const applicationStatusPhase =
+    view === "players"
+      ? `${players.length} game ${players.length === 1 ? "player" : "players"}`
+      : setupStep === "music"
+        ? "Table music"
+        : "Select players";
+  const nextBackgroundShade =
+    backgroundShadeOrder[
+      (backgroundShadeOrder.indexOf(backgroundShade) + 1) % backgroundShadeOrder.length
+    ]!;
 
   return (
-    <div className={`app-shell${view === "game" && game !== null ? " has-live-game" : ""}`}>
-      <nav className="app-navigation" aria-label="Application sections">
-        <button type="button" aria-pressed={view === "game"} onClick={() => setView("game")}>
-          {game === null ? "Game setup" : "Live game"}
+    <div
+      className={`app-shell${backgroundShadeClass[backgroundShade]}${
+        view === "game" && (game !== null || roleGiveawayActive)
+          ? " has-live-game table-layout-shell"
+          : ""
+      }${game !== null ? " has-timer-rail" : ""}${
+        showApplicationStatus ? " has-top-level-screen" : ""
+      }`}
+    >
+      {showApplicationStatus ? (
+        <header
+          className="app-status-bar game-header"
+          role="banner"
+          aria-label="Application status"
+        >
+          <div>
+            <p className="eyebrow">
+              {view === "players" ? "Persistent roster" : "Game setup"} · Host view
+            </p>
+            <h1>{applicationStatusTitle}</h1>
+          </div>
+          <div className="phase-banner">{applicationStatusPhase}</div>
+        </header>
+      ) : null}
+      <div className="app-fixed-toolbar" aria-label="Application tools">
+        <div className="save-indicator" data-status={persistenceState}>
+          <span />{" "}
+          {persistenceState === "saved"
+            ? "Saved"
+            : persistenceState === "offline"
+              ? "Local only"
+              : "Saving"}
+        </div>
+        <button
+          type="button"
+          className="fullscreen-button icon-toolbar-button"
+          aria-label={
+            fullscreenAvailable
+              ? isFullscreen
+                ? "Exit fullscreen"
+                : "Enter fullscreen"
+              : "Fullscreen unavailable"
+          }
+          aria-pressed={isFullscreen}
+          disabled={!fullscreenAvailable}
+          onClick={() => void toggleFullscreen()}
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" />
+          </svg>
         </button>
-        <button type="button" aria-pressed={view === "players"} onClick={() => setView("players")}>
-          Players &amp; statistics
+        <button
+          type="button"
+          className="undo-button"
+          aria-label={`Undo last action · ${undoHistory.length} available`}
+          disabled={undoHistory.length === 0}
+          onClick={undoLastGameAction}
+        >
+          Undo · {undoHistory.length}
         </button>
-        {game === null && setupSession === null && playlistId === defaultPlaylistId ? null : (
-          <button type="button" className="clear-game-state" onClick={() => void clearGameState()}>
-            Clear game state
-          </button>
-        )}
-      </nav>
-      <div className="save-indicator" data-status={persistenceState}>
-        <span />{" "}
-        {persistenceState === "saved"
-          ? "Saved"
-          : persistenceState === "offline"
-            ? "Local only"
-            : "Saving"}
+        <button
+          type="button"
+          className="privacy-button icon-toolbar-button"
+          aria-label={privacyHidden ? "Show private info" : "Hide private info"}
+          aria-pressed={privacyHidden}
+          onClick={() => setPrivacyHidden((hidden) => !hidden)}
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24">
+            <path d="M2 5c3.6 0 6.5 1 8.5 3.5a2 2 0 0 0 3 0C15.5 6 18.4 5 22 5v4.5c0 4.1-3.4 7.5-7.5 7.5-.9 0-1.7-.4-2.2-1.1a.4.4 0 0 0-.6 0c-.5.7-1.3 1.1-2.2 1.1C5.4 17 2 13.6 2 9.5V5Z" />
+            <path d="M6 11c1.5 0 2.5.5 3 2M18 11c-1.5 0-2.5.5-3 2" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          className="log-toolbar-button"
+          aria-label={activeDrawer === "log" ? "Close game log" : "Open game log"}
+          aria-expanded={activeDrawer === "log"}
+          onClick={() => setActiveDrawer((drawer) => (drawer === "log" ? null : "log"))}
+        >
+          Log <span>{log.length}</span>
+        </button>
+        <button
+          type="button"
+          aria-label={activeDrawer === "dev" ? "Close developer menu" : "Open developer menu"}
+          aria-expanded={activeDrawer === "dev"}
+          onClick={() => setActiveDrawer((drawer) => (drawer === "dev" ? null : "dev"))}
+        >
+          Dev
+        </button>
       </div>
+      {activeDrawer === "log" ? (
+        <aside className="app-drawer game-log-drawer" role="dialog" aria-label="Game log">
+          <h2>Log</h2>
+          <div className="game-log-list">
+            {log.length === 0 ? <p>No actions recorded yet.</p> : null}
+            {[...log].reverse().map((entry) => (
+              <article key={entry.id}>
+                <span className="log-sequence">#{entry.sequence}</span>
+                <div>
+                  <strong>{entry.type}</strong>
+                  <small>
+                    {entry.phase} · {new Date(entry.createdAt).toLocaleTimeString()}
+                  </small>
+                </div>
+              </article>
+            ))}
+          </div>
+        </aside>
+      ) : null}
+      {activeDrawer === "dev" ? (
+        <aside
+          ref={devDrawerRef}
+          className="app-drawer dev-menu-drawer"
+          role="dialog"
+          aria-label="Developer menu"
+        >
+          <h2>Dev menu</h2>
+          <div className="dev-menu-actions">
+            <button
+              type="button"
+              onClick={() => {
+                setView((currentView) => (currentView === "players" ? "game" : "players"));
+                setActiveDrawer(null);
+              }}
+            >
+              {view === "players" ? "Game screen" : "Players screen"}
+            </button>
+            {view === "game" && game === null && setupStep === "players" ? (
+              <button
+                type="button"
+                disabled={players.length < 11}
+                onClick={() => {
+                  setRandomFillRequest((request) => request + 1);
+                  setActiveDrawer(null);
+                }}
+              >
+                Randomly fill 10 seats
+              </button>
+            ) : null}
+            {game === null && setupSession === null && playlistId === defaultPlaylistId ? null : (
+              <button type="button" className="danger-action" onClick={() => void clearGameState()}>
+                Clear game state
+              </button>
+            )}
+            <button type="button" onClick={() => setBackgroundShade(nextBackgroundShade)}>
+              Use {backgroundShadeLabel[nextBackgroundShade]} background
+            </button>
+            {musicSource === "youtube" ? (
+              <button type="button" onClick={() => setMusicReloadRequest((request) => request + 1)}>
+                Reload music player
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="danger-action"
+              disabled={clearingAllData}
+              onClick={() => void clearApplicationData()}
+            >
+              {clearingAllData ? "Clearing…" : "Clear all data"}
+            </button>
+          </div>
+          <section className="dev-active-sessions" aria-labelledby="dev-active-sessions-title">
+            <h3 id="dev-active-sessions-title">Active games</h3>
+            {activeSessionsError ? (
+              <p role="alert">Active games are temporarily unavailable.</p>
+            ) : activeSessions.length === 0 ? (
+              <p>No active games to resume.</p>
+            ) : (
+              <ul>
+                {activeSessions.map((session) => (
+                  <li
+                    key={session.gameId}
+                    className={swipedSessionId === session.gameId ? "is-delete-revealed" : ""}
+                    onTouchStart={(event) => {
+                      sessionSwipeStartRef.current = {
+                        gameId: session.gameId,
+                        x: event.touches[0]?.clientX ?? 0,
+                      };
+                    }}
+                    onTouchEnd={(event) => {
+                      const start = sessionSwipeStartRef.current;
+                      sessionSwipeStartRef.current = null;
+                      if (start?.gameId !== session.gameId) return;
+                      const delta = (event.changedTouches[0]?.clientX ?? start.x) - start.x;
+                      if (delta < -44) setSwipedSessionId(session.gameId);
+                      else if (delta > 44) setSwipedSessionId(null);
+                    }}
+                  >
+                    <button
+                      type="button"
+                      className="session-delete-action"
+                      disabled={deletingSessionId === session.gameId}
+                      onClick={() => void deleteActiveSession(session)}
+                    >
+                      {deletingSessionId === session.gameId ? "Deleting…" : "Delete"}
+                    </button>
+                    <div className="session-swipe-content">
+                      <div>
+                        <strong>{session.name}</strong>
+                        <span>
+                          {session.hostName ?? "Host not selected"} · {session.phase} · day{" "}
+                          {session.day}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={resumeGameId === session.gameId}
+                        onClick={() => {
+                          setActiveDrawer(null);
+                          void resumeSession(session.gameId);
+                        }}
+                      >
+                        {resumeGameId === session.gameId ? "Resuming…" : `Resume ${session.name}`}
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+          {clearAllDataError ? (
+            <p className="dev-menu-error" role="alert">
+              Unable to clear all browser data completely.
+            </p>
+          ) : null}
+        </aside>
+      ) : null}
 
       {view === "players" ? (
         <>
@@ -505,40 +883,14 @@ export const App = () => {
         </>
       ) : game === null ? (
         <>
-          <section className="active-game-sessions" aria-labelledby="active-game-sessions-title">
-            <h2 id="active-game-sessions-title">Active games</h2>
-            {activeSessionsError ? (
-              <p role="alert">Active games are temporarily unavailable.</p>
-            ) : activeSessions.length === 0 ? (
-              <p>No active games to resume.</p>
-            ) : (
-              <ul>
-                {activeSessions.map((session) => (
-                  <li key={session.gameId}>
-                    <div>
-                      <strong>{session.name}</strong>
-                      <span>
-                        {session.hostName ?? "Host not selected"} · {session.phase} · day{" "}
-                        {session.day}
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      disabled={resumeGameId === session.gameId}
-                      onClick={() => void resumeSession(session.gameId)}
-                    >
-                      {resumeGameId === session.gameId ? "Resuming…" : `Resume ${session.name}`}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
           <SetupWizard
             key={setupInstanceKey}
             players={players}
             showDevelopmentTools={import.meta.env.DEV}
             onPopulateDevelopmentPlayers={populateDevelopmentPlayers}
+            randomFillRequest={randomFillRequest}
+            privacyHidden={privacyHidden}
+            fullscreenTouchPicker={isFullscreen && touchIPad}
             initialSessionState={setupSession}
             onSessionStateChange={handleSetupSessionChange}
             musicPlaying={musicState === "playing"}
@@ -546,8 +898,14 @@ export const App = () => {
             playlistId={playlistId}
             onPlaylistIdChange={setPlaylistId}
             musicSource={musicSource}
+            volumePresets={musicVolumePresets}
+            onVolumePresetsChange={(presets) => {
+              setMusicVolumePresets(presets);
+              setActiveMusicVolume(presets[1]);
+            }}
             onMusicSourceChange={(source) => {
               setMusicSource(source);
+              setMusicPlayerExpanded(false);
               setMusicState("idle");
             }}
             onStartMusic={() => {
@@ -577,69 +935,49 @@ export const App = () => {
           hostName={hostName ?? "Host"}
           onGameChange={changeGame}
           onEvent={logEvent}
-          onUndo={undoLastGameAction}
-          undoCount={undoHistory.length}
+          privacyHidden={privacyHidden}
         />
       )}
 
-      {view === "players" ? null : (
-        <div
-          className={`${musicSource === "local" ? "local-dj-dock" : "youtube-dock"}${
-            game === null ? "" : " is-compact"
-          }`}
-        >
-          {musicSource === "local" ? (
-            <LocalDJPlayer
-              ref={musicRef}
-              onStateChange={handleMusicState}
-              initialSessionState={localDjSession}
-              onSessionStateChange={setLocalDjSession}
-            />
-          ) : (
-            <YouTubePlaylistPlayer
-              ref={musicRef}
-              playlistId={playlistId}
-              onStateChange={handleMusicState}
-            />
-          )}
-          {game === null ? null : (
-            <LiveMusicControls
-              isPlaying={musicState === "playing"}
-              onFadeIn={() => {
-                void musicRef.current?.fadeIn();
-              }}
-              onQuickFadeOut={() => {
-                void musicRef.current?.quickFadeOut();
-              }}
-              onSlowFadeOut={() => {
-                void musicRef.current?.slowFadeOut();
-              }}
-            />
-          )}
-        </div>
-      )}
-
-      {view === "players" ? null : (
-        <details className="game-log-drawer">
-          <summary>
-            Game log <span>{log.length}</span>
-          </summary>
-          <div className="game-log-list">
-            {log.length === 0 ? <p>No actions recorded yet.</p> : null}
-            {[...log].reverse().map((entry) => (
-              <article key={entry.id}>
-                <span className="log-sequence">#{entry.sequence}</span>
-                <div>
-                  <strong>{entry.type}</strong>
-                  <small>
-                    {entry.phase} · {new Date(entry.createdAt).toLocaleTimeString()}
-                  </small>
-                </div>
-              </article>
-            ))}
-          </div>
-        </details>
-      )}
+      <div
+        className={`${musicSource === "local" ? "local-dj-dock" : "youtube-dock"} is-compact${
+          musicSource === "youtube" && musicPlayerExpanded ? " is-expanded" : ""
+        }`}
+      >
+        {musicSource === "local" ? (
+          <LocalDJPlayer
+            ref={musicRef}
+            onStateChange={handleMusicState}
+            initialSessionState={localDjSession}
+            onSessionStateChange={setLocalDjSession}
+          />
+        ) : (
+          <YouTubePlaylistPlayer
+            ref={musicRef}
+            playlistId={playlistId}
+            onStateChange={handleMusicState}
+            expanded={musicPlayerExpanded}
+            onExpandedChange={setMusicPlayerExpanded}
+            volumePresets={musicVolumePresets}
+            activeVolume={activeMusicVolume}
+            onVolumeChange={setActiveMusicVolume}
+            reloadRequest={musicReloadRequest}
+          />
+        )}
+        <LiveMusicControls
+          isPlaying={musicState === "playing"}
+          canFadeIn={musicState === "paused"}
+          onFadeIn={() => {
+            void musicRef.current?.fadeIn();
+          }}
+          onQuickFadeOut={() => {
+            void musicRef.current?.quickFadeOut();
+          }}
+          onSlowFadeOut={() => {
+            void musicRef.current?.slowFadeOut();
+          }}
+        />
+      </div>
     </div>
   );
 };

@@ -11,6 +11,8 @@ export type GamePhase =
   | "sheriff-wake"
   | "day"
   | "voting"
+  | "car-crash"
+  | "car-crash-decision"
   | "night-mafia"
   | "night-don"
   | "night-sheriff"
@@ -61,14 +63,24 @@ export interface GameState {
   readonly currentTurnIndex: number;
   readonly nominations: readonly Nomination[];
   readonly voteAssignments: Readonly<Partial<Record<number, number>>>;
+  readonly votingRound?: "initial" | "repeat";
+  readonly carCrashSeats?: readonly number[];
+  readonly carCrashVotes?: Readonly<Partial<Record<number, boolean>>>;
   readonly shotAssignments: Readonly<Partial<Record<number, number>>>;
   readonly winner: Winner;
 }
 
 export interface VoteResult {
-  readonly kind: "winner" | "tie";
+  readonly kind: "winner" | "car-crash" | "eliminate-both-vote";
   readonly seats: readonly number[];
   readonly totals: Readonly<Record<number, number>>;
+}
+
+export interface CarCrashVoteResult {
+  readonly eliminate: boolean;
+  readonly seats: readonly number[];
+  readonly yesVotes: number;
+  readonly eligibleVoters: number;
 }
 
 export type NightShotResult =

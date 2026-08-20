@@ -49,7 +49,28 @@ const Harness = ({
 };
 
 describe("VotingStage", () => {
-  it("clears a resolved tie when canonical vote assignments roll back", async () => {
+  it("presents the eliminate-both decision after a repeated car-crash tie", () => {
+    const game: GameState = {
+      ...votingGame(),
+      phase: "car-crash-decision",
+      carCrashSeats: [4, 6],
+      carCrashVotes: {},
+    };
+
+    render(
+      <VotingStage
+        game={game}
+        onGameChange={() => undefined}
+        onResolved={() => undefined}
+        onEvent={() => undefined}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /eliminate both/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /keep both/i })).toBeInTheDocument();
+  });
+
+  it("moves a tied vote into canonical car-crash speeches", async () => {
     const user = userEvent.setup();
     const base = votingGame();
     const tied: GameState = {
@@ -58,23 +79,23 @@ describe("VotingStage", () => {
         Array.from({ length: 10 }, (_, index) => [index + 1, index < 5 ? 4 : 6]),
       ),
     };
+    const onGameChange = vi.fn<(game: GameState) => void>();
     const props = {
-      onGameChange: () => undefined,
+      onGameChange,
       onResolved: () => undefined,
       onEvent: () => undefined,
     };
-    const { rerender } = render(<VotingStage {...props} game={tied} />);
+    render(<VotingStage {...props} game={tied} />);
 
     await user.click(screen.getByRole("button", { name: /resolve voting/i }));
-    expect(screen.getByRole("status")).toHaveTextContent(/tie between seats 4 and 6/i);
-
-    rerender(
-      <VotingStage
-        {...props}
-        game={{ ...tied, voteAssignments: { ...tied.voteAssignments, 10: undefined } }}
-      />,
+    expect(onGameChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        phase: "car-crash",
+        turnOrder: [4, 6],
+        currentTurnIndex: 0,
+        voteAssignments: {},
+      }),
     );
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
   it("assigns each voter once to the selected candidate and resolves totals", async () => {

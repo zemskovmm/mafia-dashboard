@@ -10,6 +10,8 @@ const gamePhase = z.enum([
   "sheriff-wake",
   "day",
   "voting",
+  "car-crash",
+  "car-crash-decision",
   "night-mafia",
   "night-don",
   "night-sheriff",
@@ -104,6 +106,9 @@ export const gameStateSchema = z
       }),
     ),
     voteAssignments: z.record(z.string(), z.number().int().min(1).max(10)),
+    votingRound: z.enum(["initial", "repeat"]).optional(),
+    carCrashSeats: z.array(z.number().int().min(1).max(10)).optional(),
+    carCrashVotes: z.record(z.string(), z.boolean()).optional(),
     shotAssignments: z.record(z.string(), z.number().int().min(1).max(10)),
     winner: team.nullable(),
   })
@@ -117,6 +122,9 @@ export const gameStateSchema = z
         day,
         nominations,
         voteAssignments,
+        votingRound,
+        carCrashSeats = [],
+        carCrashVotes = {},
         shotAssignments,
         winner,
       },
@@ -262,6 +270,71 @@ export const gameStateSchema = z
               code: "custom",
               path: ["voteAssignments", voterSeatText],
               message: "Votes must target nominated players",
+            });
+          }
+        }
+      }
+
+      const carCrashPhase = phase === "car-crash" || phase === "car-crash-decision";
+      if (carCrashPhase) {
+        if (carCrashSeats.length < 2 || new Set(carCrashSeats).size !== carCrashSeats.length) {
+          context.addIssue({
+            code: "custom",
+            path: ["carCrashSeats"],
+            message: "A car crash requires at least two unique nominees",
+          });
+        }
+        if (
+          carCrashSeats.some((seat) => !activeSeats.has(seat) || !nominationCandidates.has(seat))
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["carCrashSeats"],
+            message: "Car-crash seats must be active nominated players",
+          });
+        }
+        if (votingRound !== "repeat") {
+          context.addIssue({
+            code: "custom",
+            path: ["votingRound"],
+            message: "Car-crash phases require the repeat voting round",
+          });
+        }
+        if (voteEntries.length > 0) {
+          context.addIssue({
+            code: "custom",
+            path: ["voteAssignments"],
+            message: "Normal votes must be cleared during car-crash phases",
+          });
+        }
+      }
+      if (
+        phase === "car-crash" &&
+        (turnOrder.length !== carCrashSeats.length ||
+          turnOrder.some((seat, index) => seat !== carCrashSeats[index]) ||
+          currentTurnIndex >= turnOrder.length)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["turnOrder"],
+          message: "Car-crash turn order must contain the tied nominees",
+        });
+      }
+      if (phase === "car-crash-decision") {
+        for (const voterSeatText of Object.keys(carCrashVotes)) {
+          const voterSeat = Number(voterSeatText);
+          if (String(voterSeat) !== voterSeatText) {
+            context.addIssue({
+              code: "custom",
+              path: ["carCrashVotes", voterSeatText],
+              message: "Car-crash vote keys must use canonical seat numbers",
+            });
+          }
+          if (!activeSeats.has(voterSeat)) {
+            context.addIssue({
+              code: "custom",
+              path: ["carCrashVotes", voterSeatText],
+              message: "Only active players may vote in a car crash decision",
             });
           }
         }

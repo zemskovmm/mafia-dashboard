@@ -20,7 +20,7 @@ const nextPrivatePhase = (game: GameState): GameState["phase"] => {
 };
 
 export const beginNight = (game: GameState): GameState => {
-  if (game.phase !== "day" && game.phase !== "voting") {
+  if (game.phase !== "day" && game.phase !== "voting" && game.phase !== "car-crash-decision") {
     throw new Error(`Cannot begin night from phase ${game.phase}`);
   }
   return { ...game, phase: "night-mafia", shotAssignments: {} };

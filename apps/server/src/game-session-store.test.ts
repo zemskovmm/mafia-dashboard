@@ -8,6 +8,21 @@ const databaseUrl =
 const pool = new Pool({ connectionString: databaseUrl });
 const store = new GameSessionStore(pool);
 
+const waitForPlayerLockWaiter = async (): Promise<void> => {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const waiting = await pool.query(
+      `SELECT 1
+         FROM pg_stat_activity
+        WHERE datname = current_database()
+          AND wait_event_type = 'Lock'
+          AND (query LIKE '%UPDATE players AS p%' OR query LIKE '%SELECT id FROM players%')`,
+    );
+    if (waiting.rowCount !== 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error("Timed out waiting for the player projection lock");
+};
+
 beforeAll(async () => {
   await store.initialize();
 });
@@ -208,6 +223,38 @@ describe("GameSessionStore", () => {
     await expect(store.get(gameId)).resolves.toMatchObject({ revision: 2, state: newerState });
   });
 
+  it("rejects a stale clear without tombstoning the newer session", async () => {
+    const gameId = randomUUID();
+    const first = await store.save({
+      gameId,
+      name: "Stale clear table",
+      mutationId: randomUUID(),
+      baseRevision: 0,
+      state: emptyState,
+      results: null,
+    });
+    const second = await store.save({
+      gameId,
+      name: "Stale clear table",
+      mutationId: randomUUID(),
+      baseRevision: first.revision,
+      state: { ...emptyState, playlistId: "newer" },
+      results: null,
+    });
+
+    await expect(store.clear(gameId, first.revision)).rejects.toMatchObject({
+      name: "GameSessionConflictError",
+      currentRevision: second.revision,
+    });
+    await expect(store.get(gameId)).resolves.toMatchObject({
+      revision: second.revision,
+      state: { playlistId: "newer" },
+    });
+
+    await store.clear(gameId, second.revision);
+    await expect(store.get(gameId)).resolves.toBeNull();
+  });
+
   it("derives the active roster from setup player foreign keys", async () => {
     const gameId = randomUUID();
     const hostPlayerId = randomUUID();
@@ -289,6 +336,62 @@ describe("GameSessionStore", () => {
       { sequence: 1, event_type: "game.created" },
       { sequence: 2, event_type: "game.finished" },
     ]);
+  });
+
+  it("recomputes player timestamps after a concurrent result commits", async () => {
+    const clearedGameId = randomUUID();
+    const completed = await createCompletedSession(clearedGameId);
+    await store.save({
+      gameId: clearedGameId,
+      name: "Cleared table",
+      mutationId: randomUUID(),
+      baseRevision: 0,
+      state: completed.state,
+      results: completed.results,
+    });
+    const hostPlayerId = completed.hostPlayerId;
+    const participantId = completed.results.players[0]!.playerId;
+    const newerGameId = randomUUID();
+    const newerPlayedAt = new Date("2026-08-18T09:00:00.000Z");
+    const blocker = await pool.connect();
+    let committed = false;
+    try {
+      await blocker.query("BEGIN");
+      await blocker.query(
+        "SELECT id FROM players WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE",
+        [[hostPlayerId, participantId]],
+      );
+      await blocker.query(
+        `INSERT INTO game_results (game_id, winner, played_at, host_player_id)
+         VALUES ($1, 'red', $2, $3)`,
+        [newerGameId, newerPlayedAt, hostPlayerId],
+      );
+      await blocker.query(
+        `INSERT INTO game_player_results
+           (game_id, player_id, seat, role, team, final_status, fouls, won)
+         VALUES ($1, $2, 1, 'citizen', 'red', 'active', 0, TRUE)`,
+        [newerGameId, participantId],
+      );
+
+      const clearing = store.clear(clearedGameId, 1);
+      await waitForPlayerLockWaiter();
+      await blocker.query("COMMIT");
+      committed = true;
+      await clearing;
+
+      const players = await pool.query<{ id: string; last_played_at: Date | null }>(
+        "SELECT id, last_played_at FROM players WHERE id = ANY($1::uuid[]) ORDER BY id",
+        [[hostPlayerId, participantId]],
+      );
+      expect(players.rows).toHaveLength(2);
+      expect(players.rows.map(({ last_played_at }) => last_played_at?.toISOString())).toEqual([
+        newerPlayedAt.toISOString(),
+        newerPlayedAt.toISOString(),
+      ]);
+    } finally {
+      if (!committed) await blocker.query("ROLLBACK");
+      blocker.release();
+    }
   });
 
   it("tombstones a known client game id before its first save and rejects the late mutation", async () => {

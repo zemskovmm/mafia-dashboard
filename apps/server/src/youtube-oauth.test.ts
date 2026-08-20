@@ -172,6 +172,170 @@ describe("YouTubeOAuthService", () => {
     expect(String(fetcher.mock.calls[4]![0])).toContain("pageToken=next-page");
   });
 
+  it("returns every item in a playlist for a local playback queue", async () => {
+    const jsonResponse = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          access_token: "queue-access-token",
+          refresh_token: "queue-refresh-token",
+          expires_in: 3600,
+          scope: "https://www.googleapis.com/auth/youtube.readonly",
+          token_type: "Bearer",
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ items: [{ snippet: { title: "Mafia Host" } }] }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          items: [
+            {
+              id: "PL-queue",
+              snippet: { title: "Queue", thumbnails: {} },
+              contentDetails: { itemCount: 2 },
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          nextPageToken: "queue-page-2",
+          items: [
+            {
+              snippet: {
+                title: "Opening track",
+                position: 0,
+                resourceId: { videoId: "video-1" },
+                thumbnails: { default: { url: "https://i.ytimg.com/video-1.jpg" } },
+              },
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({
+          items: [
+            {
+              snippet: {
+                title: "Second track",
+                position: 1,
+                resourceId: { videoId: "video-2" },
+                thumbnails: {},
+              },
+            },
+          ],
+        }),
+      );
+    const service = new YouTubeOAuthService(pool, config, fetcher as unknown as typeof fetch);
+    await pool.query("DELETE FROM youtube_oauth_credentials");
+    await service.exchangeCode("authorization-code");
+
+    await expect(service.listPlaylistItems("PL-queue")).resolves.toEqual([
+      {
+        videoId: "video-1",
+        title: "Opening track",
+        position: 0,
+        thumbnailUrl: "https://i.ytimg.com/video-1.jpg",
+      },
+      { videoId: "video-2", title: "Second track", position: 1, thumbnailUrl: null },
+    ]);
+
+    expect(String(fetcher.mock.calls[2]![0])).toContain("mine=true");
+    expect(String(fetcher.mock.calls[3]![0])).toContain("playlistId=PL-queue");
+    expect(String(fetcher.mock.calls[4]![0])).toContain("pageToken=queue-page-2");
+  });
+
+  it("rejects playlist item lookup outside the connected account", async () => {
+    const jsonResponse = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({
+          access_token: "owned-access-token",
+          refresh_token: "owned-refresh-token",
+          expires_in: 3600,
+          scope: "https://www.googleapis.com/auth/youtube.readonly",
+          token_type: "Bearer",
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ items: [{ snippet: { title: "Mafia Host" } }] }))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          items: [
+            {
+              id: "PL-owned",
+              snippet: { title: "Owned", thumbnails: {} },
+              contentDetails: { itemCount: 1 },
+            },
+          ],
+        }),
+      );
+    const service = new YouTubeOAuthService(pool, config, fetcher as unknown as typeof fetch);
+    await pool.query("DELETE FROM youtube_oauth_credentials");
+    await service.exchangeCode("authorization-code");
+
+    await expect(service.listPlaylistItems("PL-other")).rejects.toMatchObject({
+      name: "YouTubePlaylistAccessError",
+    });
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
+  it("bounds playlist item pagination", async () => {
+    const jsonResponse = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    let itemPages = 0;
+    const fetcher = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === "https://oauth2.googleapis.com/token") {
+        return jsonResponse({
+          access_token: "bounded-access-token",
+          refresh_token: "bounded-refresh-token",
+          expires_in: 3600,
+          scope: "https://www.googleapis.com/auth/youtube.readonly",
+          token_type: "Bearer",
+        });
+      }
+      if (url.includes("/youtube/v3/channels")) {
+        return jsonResponse({ items: [{ snippet: { title: "Mafia Host" } }] });
+      }
+      if (url.includes("/youtube/v3/playlists")) {
+        return jsonResponse({
+          items: [
+            {
+              id: "PL-owned",
+              snippet: { title: "Owned", thumbnails: {} },
+              contentDetails: { itemCount: 2000 },
+            },
+          ],
+        });
+      }
+      itemPages += 1;
+      return jsonResponse({
+        nextPageToken: itemPages <= 20 ? `page-${itemPages + 1}` : undefined,
+        items: [],
+      });
+    });
+    const service = new YouTubeOAuthService(pool, config, fetcher as unknown as typeof fetch);
+    await pool.query("DELETE FROM youtube_oauth_credentials");
+    await service.exchangeCode("authorization-code");
+
+    await expect(service.listPlaylistItems("PL-owned")).rejects.toThrow(
+      "YouTube pagination limit exceeded",
+    );
+    expect(itemPages).toBe(20);
+  });
+
   it("revokes the offline token before removing the connection", async () => {
     const jsonResponse = (body: unknown) =>
       new Response(JSON.stringify(body), {

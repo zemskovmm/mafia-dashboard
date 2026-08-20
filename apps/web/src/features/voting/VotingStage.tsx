@@ -1,5 +1,13 @@
-import { useEffect, useState } from "react";
-import { assignVote, countVotes, resolveVote } from "@mafia/game-domain";
+import { useState } from "react";
+import {
+  assignCarCrashVote,
+  assignVote,
+  beginCarCrash,
+  beginCarCrashDecision,
+  countVotes,
+  resolveCarCrashVote,
+  resolveVote,
+} from "@mafia/game-domain";
 import type { GameState } from "@mafia/game-domain";
 
 interface VotingStageProps {
@@ -13,22 +21,111 @@ export const VotingStage = ({ game, onGameChange, onResolved, onEvent }: VotingS
   const [selectedCandidate, setSelectedCandidate] = useState<number | null>(
     game.nominations[0]?.candidateSeat ?? null,
   );
-  const [tieSeats, setTieSeats] = useState<readonly number[]>([]);
-  useEffect(() => setTieSeats([]), [game.voteAssignments]);
+  const [selectedDecision, setSelectedDecision] = useState(true);
   const totals = countVotes(game);
   const activePlayers = game.players.filter(({ status }) => status === "active");
   const allVotesAssigned = Object.keys(game.voteAssignments).length === activePlayers.length;
+  const allDecisionVotesAssigned =
+    Object.keys(game.carCrashVotes ?? {}).length === activePlayers.length;
 
   const resolve = () => {
     const result = resolveVote(game);
-    if (result.kind === "tie") {
+    if (result.kind === "car-crash") {
+      onGameChange(beginCarCrash(game, result.seats));
       onEvent("voting.resolved", { kind: result.kind, seats: result.seats, totals: result.totals });
-      setTieSeats(result.seats);
+      return;
+    }
+    if (result.kind === "eliminate-both-vote") {
+      onGameChange(beginCarCrashDecision(game, result.seats));
+      onEvent("voting.resolved", { kind: result.kind, seats: result.seats, totals: result.totals });
       return;
     }
     onResolved(game, result.seats);
     onEvent("voting.resolved", { kind: result.kind, seats: result.seats, totals: result.totals });
   };
+
+  if (game.phase === "car-crash-decision") {
+    const nominees = (game.carCrashSeats ?? [])
+      .map((seat) => game.players.find((player) => player.seat === seat)?.name ?? `Seat ${seat}`)
+      .join(" and ");
+    return (
+      <section className="voting-stage">
+        <div className="phase-banner vote-banner">Car crash · eliminate both?</div>
+        <p className="muted">{nominees}</p>
+        <div className="candidate-grid" aria-label="Car-crash decision">
+          <button
+            type="button"
+            className={selectedDecision ? "candidate is-selected" : "candidate"}
+            aria-pressed={selectedDecision}
+            aria-label="Eliminate both nominees"
+            onClick={() => setSelectedDecision(true)}
+          >
+            Eliminate both
+          </button>
+          <button
+            type="button"
+            className={!selectedDecision ? "candidate is-selected" : "candidate"}
+            aria-pressed={!selectedDecision}
+            aria-label="Keep both nominees"
+            onClick={() => setSelectedDecision(false)}
+          >
+            Keep both
+          </button>
+        </div>
+
+        <div className="voter-grid" aria-label="Eligible voters">
+          {activePlayers.map((player) => {
+            const assigned = game.carCrashVotes?.[player.seat];
+            return (
+              <button
+                type="button"
+                key={player.seat}
+                className={assigned === undefined ? "voter" : "voter is-assigned"}
+                disabled={assigned !== undefined}
+                aria-label={`Assign ${player.name} car-crash vote`}
+                onClick={() => {
+                  const next = assignCarCrashVote(game, player.seat, selectedDecision);
+                  onGameChange(next);
+                  onEvent("car-crash.vote-assigned", {
+                    voterSeat: player.seat,
+                    eliminateBoth: selectedDecision,
+                  });
+                }}
+              >
+                <span className="voter-seat">{player.seat}</span>
+                <span>{player.name}</span>
+                <small>
+                  {assigned === undefined
+                    ? "Unassigned"
+                    : assigned
+                      ? "Eliminate both"
+                      : "Keep both"}
+                </small>
+              </button>
+            );
+          })}
+        </div>
+
+        <button
+          type="button"
+          className="primary-action"
+          disabled={!allDecisionVotesAssigned}
+          onClick={() => {
+            const result = resolveCarCrashVote(game);
+            onResolved(game, result.eliminate ? result.seats : []);
+            onEvent("car-crash.resolved", {
+              eliminate: result.eliminate,
+              seats: result.seats,
+              yesVotes: result.yesVotes,
+              eligibleVoters: result.eligibleVoters,
+            });
+          }}
+        >
+          Resolve car crash
+        </button>
+      </section>
+    );
+  }
 
   return (
     <section className="voting-stage">
@@ -82,12 +179,6 @@ export const VotingStage = ({ game, onGameChange, onResolved, onEvent }: VotingS
           );
         })}
       </div>
-
-      {tieSeats.length > 0 ? (
-        <div className="tie-notice" role="status">
-          Tie between seats {tieSeats.join(" and ")}. The configured tie round is required.
-        </div>
-      ) : null}
 
       <button
         type="button"

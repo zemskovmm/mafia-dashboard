@@ -306,7 +306,7 @@ describe("GameSessionOutbox", () => {
 
     await expect(outbox.clear(clear)).rejects.toThrow("offline");
 
-    expect(clear).toHaveBeenCalledWith("00000000-0000-4000-8000-000000000020");
+    expect(clear).toHaveBeenCalledWith("00000000-0000-4000-8000-000000000020", 0);
     expect(outbox.current?.state).toEqual(state("pending"));
     expect(outbox.pendingCount).toBe(1);
     expect(outbox.status).toBe("offline");

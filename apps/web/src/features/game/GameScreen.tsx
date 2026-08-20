@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef } from "react";
 import {
   advanceSetupPhase,
   completeCurrentTurn,
@@ -22,23 +22,8 @@ interface GameScreenProps {
   readonly hostName: string;
   readonly onGameChange: (game: GameState) => void;
   readonly onEvent: (type: string, payload: Record<string, unknown>) => void;
-  readonly onUndo: () => void;
-  readonly undoCount: number;
+  readonly privacyHidden: boolean;
 }
-
-interface WebkitFullscreenDocument extends Document {
-  readonly webkitFullscreenElement?: Element | null;
-  readonly webkitExitFullscreen?: () => Promise<void> | void;
-}
-
-interface WebkitFullscreenElement extends HTMLElement {
-  readonly webkitRequestFullscreen?: () => Promise<void> | void;
-}
-
-const currentFullscreenElement = (): Element | null =>
-  document.fullscreenElement ??
-  (document as WebkitFullscreenDocument).webkitFullscreenElement ??
-  null;
 
 const phaseTitle = (game: GameState): string => {
   switch (game.phase) {
@@ -50,6 +35,10 @@ const phaseTitle = (game: GameState): string => {
       return `Day ${game.day}`;
     case "voting":
       return "Voting";
+    case "car-crash":
+      return "Car crash";
+    case "car-crash-decision":
+      return "Car crash decision";
     case "night-mafia":
       return "Mafia shots";
     case "night-don":
@@ -68,49 +57,16 @@ export const GameScreen = ({
   hostName,
   onGameChange,
   onEvent,
-  onUndo,
-  undoCount,
+  privacyHidden,
 }: GameScreenProps) => {
   const timerRef = useRef<TimerControlsHandle>(null);
-  const [privacyHidden, setPrivacyHidden] = useState(false);
-  const [isFullscreen, setIsFullscreen] = useState(() => currentFullscreenElement() !== null);
-  const fullscreenTarget = document.documentElement as WebkitFullscreenElement;
-  const fullscreenDocument = document as WebkitFullscreenDocument;
-  const fullscreenAvailable =
-    typeof fullscreenTarget.requestFullscreen === "function" ||
-    typeof fullscreenTarget.webkitRequestFullscreen === "function";
   const currentSeat = game.turnOrder[game.currentTurnIndex];
   const currentPlayer = game.players.find(
     ({ seat, status }) => seat === currentSeat && status === "active",
   );
-
-  useEffect(() => {
-    const syncFullscreenState = () => setIsFullscreen(currentFullscreenElement() !== null);
-    document.addEventListener("fullscreenchange", syncFullscreenState);
-    document.addEventListener("webkitfullscreenchange", syncFullscreenState);
-    return () => {
-      document.removeEventListener("fullscreenchange", syncFullscreenState);
-      document.removeEventListener("webkitfullscreenchange", syncFullscreenState);
-    };
-  }, []);
-
-  const toggleFullscreen = async () => {
-    try {
-      if (currentFullscreenElement() === null) {
-        if (typeof fullscreenTarget.requestFullscreen === "function") {
-          await fullscreenTarget.requestFullscreen();
-        } else {
-          await fullscreenTarget.webkitRequestFullscreen?.();
-        }
-      } else if (typeof document.exitFullscreen === "function") {
-        await document.exitFullscreen();
-      } else {
-        await fullscreenDocument.webkitExitFullscreen?.();
-      }
-    } catch {
-      setIsFullscreen(currentFullscreenElement() !== null);
-    }
-  };
+  const currentSpeakerHasNominated = game.nominations.some(
+    ({ nominatorSeat }) => nominatorSeat === currentPlayer?.seat,
+  );
 
   const continueSetup = () => {
     const next = advanceSetupPhase(game);
@@ -148,57 +104,22 @@ export const GameScreen = ({
         {game.phase === "day" && currentPlayer !== undefined ? (
           <div className="phase-banner current-turn-copy">Current turn: {currentPlayer.name}</div>
         ) : null}
-        <div className="game-header-actions">
-          <button
-            type="button"
-            className="fullscreen-button"
-            aria-label={
-              fullscreenAvailable
-                ? isFullscreen
-                  ? "Exit fullscreen"
-                  : "Enter fullscreen"
-                : "Fullscreen unavailable"
-            }
-            aria-pressed={isFullscreen}
-            disabled={!fullscreenAvailable}
-            onClick={() => void toggleFullscreen()}
-          >
-            {isFullscreen ? "Exit fullscreen" : "Fullscreen"}
-          </button>
-          <button
-            type="button"
-            className="undo-button"
-            aria-label={`Undo last action · ${undoCount} available`}
-            disabled={undoCount === 0}
-            onClick={onUndo}
-          >
-            Undo · {undoCount}
-          </button>
-          <button
-            type="button"
-            className="privacy-button"
-            aria-pressed={privacyHidden}
-            onClick={() => setPrivacyHidden((value) => !value)}
-          >
-            {privacyHidden ? "Show private info" : "Privacy shield"}
-          </button>
-        </div>
+        {game.phase === "car-crash" && currentPlayer !== undefined ? (
+          <div className="phase-banner current-turn-copy">Car crash turn: {currentPlayer.name}</div>
+        ) : null}
       </header>
 
       <div className="live-layout">
         <section className="table-workspace">
-          {game.phase === "voting" ? (
+          {game.phase === "voting" || game.phase === "car-crash-decision" ? (
             <VotingStage
               game={game}
               onGameChange={onGameChange}
               onEvent={onEvent}
               onResolved={(votingGame, seats) => {
-                const eliminatedSeat = seats[0];
-                if (eliminatedSeat === undefined) return;
-                const afterElimination = markPlayerInactive(
+                const afterElimination = seats.reduce(
+                  (state, seat) => markPlayerInactive(state, seat, "eliminated"),
                   votingGame,
-                  eliminatedSeat,
-                  "eliminated",
                 );
                 const winner = evaluateVictory(afterElimination.players);
                 const next =
@@ -206,7 +127,9 @@ export const GameScreen = ({
                     ? beginNight(afterElimination)
                     : { ...afterElimination, phase: "finished" as const, winner };
                 onGameChange(next);
-                onEvent("player.eliminated", { seat: eliminatedSeat, source: "vote" });
+                for (const seat of seats) {
+                  onEvent("player.eliminated", { seat, source: "vote" });
+                }
               }}
             />
           ) : game.phase.startsWith("night-") ? (
@@ -223,7 +146,7 @@ export const GameScreen = ({
                 current:
                   player.seat === currentPlayer?.seat &&
                   player.status === "active" &&
-                  game.phase === "day",
+                  (game.phase === "day" || game.phase === "car-crash"),
                 fouls: player.fouls,
                 muted: player.mutePending,
                 nominated: game.nominations.some(
@@ -256,7 +179,12 @@ export const GameScreen = ({
                     <button
                       type="button"
                       aria-label={`Nominate ${seat.name}`}
-                      disabled={currentPlayer === undefined || seat.seat === currentPlayer.seat}
+                      disabled={
+                        currentPlayer === undefined ||
+                        seat.seat === currentPlayer.seat ||
+                        seat.nominated ||
+                        currentSpeakerHasNominated
+                      }
                       onClick={() => {
                         if (currentPlayer === undefined) return;
                         onGameChange(nominate(game, currentPlayer.seat, seat.seat));
@@ -287,6 +215,15 @@ export const GameScreen = ({
                     </button>
                     <button type="button" onClick={finishTurn}>
                       Next player
+                    </button>
+                  </div>
+                ) : game.phase === "car-crash" && currentPlayer !== undefined ? (
+                  <div className="turn-actions">
+                    <button type="button" className="table-primary" onClick={startTurn}>
+                      Start {currentPlayer.name} 30-second turn
+                    </button>
+                    <button type="button" onClick={finishTurn}>
+                      Next nominee
                     </button>
                   </div>
                 ) : null

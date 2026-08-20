@@ -12,6 +12,7 @@ describe("LiveMusicControls", () => {
     render(
       <LiveMusicControls
         isPlaying
+        canFadeIn
         onFadeIn={onFadeIn}
         onQuickFadeOut={onQuickFadeOut}
         onSlowFadeOut={onSlowFadeOut}

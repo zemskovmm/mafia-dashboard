@@ -235,7 +235,9 @@ export class GameSessionOutbox {
     this.persist();
   }
 
-  public async clear(clearRemote: (gameId: string) => Promise<void>): Promise<void> {
+  public async clear(
+    clearRemote: (gameId: string, expectedRevision: number) => Promise<void>,
+  ): Promise<void> {
     const gameId = this.envelope.gameId;
     if (gameId === null) {
       this.envelope = emptyEnvelope();
@@ -255,7 +257,7 @@ export class GameSessionOutbox {
     this.clearCount += 1;
     this.notify();
     try {
-      await clearRemote(gameId);
+      await clearRemote(gameId, durable.revision);
       if (generation !== this.generation || this.envelope.gameId !== gameId) return;
       const durableAfterClear = loadEnvelope(this.options.storage);
       if (durableAfterClear.gameId !== gameId) {

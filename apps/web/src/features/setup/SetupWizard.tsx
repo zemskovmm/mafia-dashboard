@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   beginRoleDraw,
   completeRoleDraw,
@@ -19,6 +20,8 @@ interface SetupWizardProps {
   readonly onPlaylistIdChange: (playlistId: string) => void;
   readonly musicSource: "youtube" | "local";
   readonly onMusicSourceChange: (source: "youtube" | "local") => void;
+  readonly volumePresets?: readonly [number, number];
+  readonly onVolumePresetsChange?: (presets: readonly [number, number]) => void;
   readonly onStartMusic: () => void;
   readonly onQuickStopMusic: () => void;
   readonly onSlowStopMusic: () => void;
@@ -28,12 +31,15 @@ interface SetupWizardProps {
   readonly onSessionStateChange?: (state: SetupWizardSessionState) => void;
   readonly showDevelopmentTools?: boolean;
   readonly onPopulateDevelopmentPlayers?: () => Promise<readonly PlayerProfile[]>;
+  readonly randomFillRequest?: number;
+  readonly privacyHidden?: boolean;
+  readonly fullscreenTouchPicker?: boolean;
 }
 
 type WizardStep = "players" | "music" | "roles";
 
 export interface SetupWizardSessionState {
-  readonly step: WizardStep;
+  readonly step: WizardStep | "roles";
   readonly hostPlayerId?: string;
   readonly selectedPlayerIds: readonly string[];
   readonly setup: SetupState | null;
@@ -48,6 +54,156 @@ const shuffled = <Value,>(values: readonly Value[]): Value[] => {
   return result;
 };
 
+interface PlayerComboboxProps {
+  readonly id: string;
+  readonly label: string;
+  readonly placeholder: string;
+  readonly value: string;
+  readonly players: readonly PlayerProfile[];
+  readonly unavailablePlayerIds: readonly string[];
+  readonly onChange: (playerId: string) => void;
+  readonly fullscreenTouchPicker: boolean;
+}
+
+const PlayerCombobox = ({
+  id,
+  label,
+  placeholder,
+  value,
+  players,
+  unavailablePlayerIds,
+  onChange,
+  fullscreenTouchPicker,
+}: PlayerComboboxProps) => {
+  const selectedPlayer = players.find((player) => player.id === value);
+  const [query, setQuery] = useState(selectedPlayer?.nickname ?? "");
+  const [open, setOpen] = useState(false);
+  const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const normalizedQuery = fullscreenTouchPicker && open ? "" : query.trim().toLocaleLowerCase();
+  const unavailable = new Set(unavailablePlayerIds);
+  const matchingPlayers = players.filter(
+    (player) =>
+      (player.id === value || !unavailable.has(player.id)) &&
+      (normalizedQuery.length === 0 ||
+        player.nickname.toLocaleLowerCase().includes(normalizedQuery)),
+  );
+  const listboxId = `${id}-suggestions`;
+
+  useEffect(() => {
+    if (!open) setQuery(selectedPlayer?.nickname ?? "");
+  }, [open, selectedPlayer?.nickname]);
+
+  const choosePlayer = (player: PlayerProfile) => {
+    onChange(player.id);
+    setQuery(player.nickname);
+    setOpen(false);
+  };
+
+  const handleKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      setOpen(true);
+      setHighlightedIndex((current) => {
+        const offset = event.key === "ArrowDown" ? 1 : -1;
+        return (current + offset + matchingPlayers.length) % Math.max(matchingPlayers.length, 1);
+      });
+    } else if (event.key === "Enter" && open && matchingPlayers[highlightedIndex] !== undefined) {
+      event.preventDefault();
+      choosePlayer(matchingPlayers[highlightedIndex]!);
+    } else if (event.key === "Escape") {
+      setOpen(false);
+      setQuery(selectedPlayer?.nickname ?? "");
+    }
+  };
+
+  return (
+    <div
+      className="player-combobox"
+      tabIndex={fullscreenTouchPicker ? 0 : undefined}
+      onBlur={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget)) return;
+        setOpen(false);
+        setQuery(selectedPlayer?.nickname ?? "");
+      }}
+    >
+      <label htmlFor={id}>{label}</label>
+      <div className="player-combobox-control">
+        <input
+          id={id}
+          type="search"
+          role="combobox"
+          aria-label={`${label} player`}
+          aria-autocomplete="list"
+          aria-controls={listboxId}
+          aria-expanded={open}
+          aria-activedescendant={
+            open && matchingPlayers[highlightedIndex] !== undefined
+              ? `${id}-option-${matchingPlayers[highlightedIndex]!.id}`
+              : undefined
+          }
+          autoComplete="off"
+          inputMode={fullscreenTouchPicker ? "none" : "search"}
+          readOnly={fullscreenTouchPicker}
+          tabIndex={fullscreenTouchPicker ? -1 : undefined}
+          value={query}
+          placeholder={placeholder}
+          onFocus={(event) => {
+            event.currentTarget.select();
+            setHighlightedIndex(0);
+            setOpen(true);
+          }}
+          onPointerDown={(event) => {
+            if (!fullscreenTouchPicker) return;
+            event.preventDefault();
+            event.currentTarget.closest<HTMLElement>(".player-combobox")?.focus();
+            setHighlightedIndex(0);
+            setOpen(true);
+          }}
+          onChange={(event) => {
+            setQuery(event.currentTarget.value);
+            setHighlightedIndex(0);
+            setOpen(true);
+            if (value !== "") onChange("");
+          }}
+          onKeyDown={handleKeyDown}
+        />
+        <span className="player-combobox-chevron" aria-hidden="true">
+          ⌄
+        </span>
+      </div>
+      {open ? (
+        <div
+          id={listboxId}
+          className="player-combobox-list"
+          role="listbox"
+          aria-label={`${label} suggestions`}
+        >
+          {matchingPlayers.length === 0 ? (
+            <p>No matching players</p>
+          ) : (
+            matchingPlayers.map((player) => (
+              <button
+                id={`${id}-option-${player.id}`}
+                key={player.id}
+                type="button"
+                role="option"
+                aria-selected={player.id === value}
+                className={
+                  player.id === matchingPlayers[highlightedIndex]?.id ? "is-highlighted" : ""
+                }
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => choosePlayer(player)}
+              >
+                {player.nickname}
+              </button>
+            ))
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+};
+
 export const SetupWizard = ({
   players: availablePlayers,
   musicPlaying,
@@ -56,17 +212,23 @@ export const SetupWizard = ({
   onPlaylistIdChange,
   musicSource,
   onMusicSourceChange,
-  onStartMusic,
-  onQuickStopMusic,
-  onSlowStopMusic,
+  volumePresets = [50, 80],
+  onVolumePresetsChange = () => undefined,
   onComplete,
   onEvent = () => undefined,
   initialSessionState = null,
   onSessionStateChange,
   showDevelopmentTools = false,
   onPopulateDevelopmentPlayers,
+  randomFillRequest = 0,
+  privacyHidden = false,
+  fullscreenTouchPicker = false,
 }: SetupWizardProps) => {
-  const [step, setStep] = useState<WizardStep>(initialSessionState?.step ?? "players");
+  const [step, setStep] = useState<WizardStep>(
+    initialSessionState?.step === "roles" && initialSessionState.setup?.step !== "role-draw"
+      ? "players"
+      : (initialSessionState?.step ?? "players"),
+  );
   const [selectedPlayerIds, setSelectedPlayerIds] = useState(() =>
     initialSessionState?.selectedPlayerIds.length === 10
       ? [...initialSessionState.selectedPlayerIds]
@@ -74,10 +236,10 @@ export const SetupWizard = ({
   );
   const [hostPlayerId, setHostPlayerId] = useState(initialSessionState?.hostPlayerId ?? "");
   const [setup, setSetup] = useState<SetupState | null>(initialSessionState?.setup ?? null);
-  const [playerSearch, setPlayerSearch] = useState("");
   const [developmentPlayers, setDevelopmentPlayers] = useState<readonly PlayerProfile[]>([]);
   const [populatingPlayers, setPopulatingPlayers] = useState(false);
   const [developmentError, setDevelopmentError] = useState(false);
+  const handledRandomFillRequest = useRef(randomFillRequest);
 
   const selectablePlayers = useMemo(
     () => [
@@ -125,16 +287,6 @@ export const SetupWizard = ({
     hostPlayer !== undefined &&
     players.length === 10 &&
     new Set([hostPlayerId, ...selectedPlayerIds.filter(Boolean)]).size === 11;
-  const normalizedPlayerSearch = playerSearch.trim().toLocaleLowerCase();
-  const matchingPlayers = useMemo(
-    () =>
-      normalizedPlayerSearch.length === 0
-        ? selectablePlayers
-        : selectablePlayers.filter(({ nickname }) =>
-            nickname.toLocaleLowerCase().includes(normalizedPlayerSearch),
-          ),
-    [normalizedPlayerSearch, selectablePlayers],
-  );
 
   const publishSessionState = (nextStep: WizardStep, nextSetup: SetupState | null) => {
     onSessionStateChange?.({
@@ -144,6 +296,24 @@ export const SetupWizard = ({
       setup: nextSetup,
     });
   };
+
+  const randomlyFillSeats = useCallback(() => {
+    const eligiblePlayers = selectablePlayers.filter(({ id }) => id !== hostPlayerId);
+    if ((hostPlayerId === "" && selectablePlayers.length < 11) || eligiblePlayers.length < 10)
+      return;
+    setSelectedPlayerIds(
+      shuffled(eligiblePlayers)
+        .slice(0, 10)
+        .map(({ id }) => id),
+    );
+    setSetup(null);
+  }, [hostPlayerId, selectablePlayers]);
+
+  useEffect(() => {
+    if (handledRandomFillRequest.current === randomFillRequest) return;
+    handledRandomFillRequest.current = randomFillRequest;
+    if (step === "players") randomlyFillSeats();
+  }, [randomFillRequest, randomlyFillSeats, step]);
 
   const continueToMusic = () => {
     const nextSetup = createSetup(players);
@@ -156,11 +326,15 @@ export const SetupWizard = ({
     });
   };
 
-  const continueToRoles = () => {
-    if (setup === null || !musicPlaying) {
-      return;
+  const startRoleDraw = () => {
+    if (!playersReady || hostPlayer === undefined) return;
+    if (step === "players") {
+      onEvent("setup.players-selected", {
+        hostPlayerId,
+        players: players.map(({ id, name, seat }) => ({ id, name, seat })),
+      });
     }
-    const nextSetup = beginRoleDraw(setup, Math.random);
+    const nextSetup = beginRoleDraw(setup ?? createSetup(players), Math.random);
     setSetup(nextSetup);
     setStep("roles");
     publishSessionState("roles", nextSetup);
@@ -168,41 +342,75 @@ export const SetupWizard = ({
   };
 
   const drawRole = (seat: number) => {
-    if (setup === null || setup.assignments[seat] !== undefined) {
-      return;
-    }
-    const next = drawRoleForSeat(setup, seat);
-    setSetup(next);
-    publishSessionState("roles", next);
-    onEvent("setup.role-drawn", { seat, role: next.assignments[seat], secret: true });
+    if (setup === null || setup.assignments[seat] !== undefined) return;
+    const nextSetup = drawRoleForSeat(setup, seat);
+    setSetup(nextSetup);
+    publishSessionState("roles", nextSetup);
+    onEvent("setup.role-drawn", {
+      seat,
+      role: nextSetup.assignments[seat],
+      secret: true,
+    });
   };
 
-  const finish = () => {
-    if (setup === null || hostPlayer === undefined) {
-      return;
-    }
+  const finishRoleDraw = () => {
+    if (setup === null || hostPlayer === undefined) return;
     const game = createGame(completeRoleDraw(setup));
     onEvent("setup.completed", { phase: game.phase });
     onComplete(game, hostPlayerId, hostPlayer.nickname);
   };
 
-  return (
-    <main className="setup-shell">
-      <div className="wizard-progress" aria-label="Setup progress">
-        {[
-          ["players", "1 · Players"],
-          ["music", "2 · Music"],
-          ["roles", "3 · Roles"],
-        ].map(([value, label]) => (
-          <span key={value} className={step === value ? "is-active" : ""}>
-            {label}
-          </span>
-        ))}
-      </div>
+  if (step === "roles" && setup !== null) {
+    return (
+      <main className="game-shell role-draw-screen">
+        <header className="game-header">
+          <div>
+            <p className="eyebrow">First game stage · Host view</p>
+            <h1>Role giveaway</h1>
+          </div>
+          <div className="phase-banner">Draw roles · {setup.remainingRoles.length} remaining</div>
+        </header>
+        <div className="live-layout">
+          <section className="table-workspace">
+            <GameTable
+              hostName={hostPlayer?.nickname ?? "Host"}
+              privacyHidden={privacyHidden}
+              seats={setup.players.map((player) => ({
+                seat: player.seat,
+                name: player.name,
+                role: setup.assignments[player.seat],
+              }))}
+              seatActionLabel={(seat) =>
+                seat.role === undefined
+                  ? `Draw role for ${seat.name}`
+                  : `${seat.name}: ${seat.role}`
+              }
+              onSeatClick={drawRole}
+              center={
+                setup.remainingRoles.length === 0 ? (
+                  <button type="button" className="table-primary" onClick={finishRoleDraw}>
+                    Begin Mafia negotiation
+                  </button>
+                ) : (
+                  <span className="table-prompt">Tap a player to reveal their role</span>
+                )
+              }
+            />
+          </section>
+        </div>
+      </main>
+    );
+  }
 
+  return (
+    <main
+      className={`setup-shell${
+        step === "players" ? " is-player-setup" : step === "music" ? " is-music-setup" : ""
+      }`}
+    >
       {step === "players" ? (
-        <section className="wizard-card">
-          <p className="eyebrow">Setup · Step 1</p>
+        <section className="wizard-card player-setup-card">
+          <p className="eyebrow">Game setup</p>
           <h1>Select 10 players + host</h1>
           <p className="lead">
             Choose a saved host and ten different saved players. The player order becomes seats 1–10
@@ -230,7 +438,6 @@ export const SetupWizard = ({
                       setDevelopmentPlayers(selected);
                       setHostPlayerId(selected[0]!.id);
                       setSelectedPlayerIds(selected.slice(1).map(({ id }) => id));
-                      setPlayerSearch("");
                     })
                     .catch(() => setDevelopmentError(true))
                     .finally(() => setPopulatingPlayers(false));
@@ -245,119 +452,85 @@ export const SetupWizard = ({
               ) : null}
             </div>
           ) : null}
-          <label className="player-search-field">
-            <span>Search saved players</span>
-            <input
-              type="search"
-              value={playerSearch}
-              placeholder="Search by nickname"
-              onChange={(event) => setPlayerSearch(event.currentTarget.value)}
-            />
-          </label>
-          <label className="host-player-field">
-            <span>Host</span>
-            <select
-              aria-label="Host player"
-              value={hostPlayerId}
-              onChange={(event) => setHostPlayerId(event.currentTarget.value)}
-            >
-              <option value="">Choose the host</option>
-              {(hostPlayerId === "" || matchingPlayers.some(({ id }) => id === hostPlayerId)
-                ? matchingPlayers
-                : [
-                    selectablePlayers.find(({ id }) => id === hostPlayerId),
-                    ...matchingPlayers,
-                  ].filter((player): player is PlayerProfile => player !== undefined)
-              ).map((player) => (
-                <option
-                  key={player.id}
-                  value={player.id}
-                  disabled={selectedPlayerIds.includes(player.id)}
-                >
-                  {player.nickname}
-                </option>
-              ))}
-            </select>
-          </label>
-          <button
-            type="button"
-            disabled={
-              hostPlayerId === ""
-                ? selectablePlayers.length < 11
-                : selectablePlayers.filter(({ id }) => id !== hostPlayerId).length < 10
-            }
-            onClick={() => {
-              const eligiblePlayers = selectablePlayers.filter(({ id }) => id !== hostPlayerId);
-              setSelectedPlayerIds(
-                shuffled(eligiblePlayers)
-                  .slice(0, 10)
-                  .map(({ id }) => id),
-              );
-              setPlayerSearch("");
-              setSetup(null);
-            }}
-          >
-            Randomly fill 10 seats
-          </button>
+          <PlayerCombobox
+            id="host-player"
+            label="Host"
+            placeholder="Choose or search the host"
+            value={hostPlayerId}
+            players={selectablePlayers}
+            unavailablePlayerIds={selectedPlayerIds.filter(Boolean)}
+            onChange={setHostPlayerId}
+            fullscreenTouchPicker={fullscreenTouchPicker}
+          />
           <div className="player-input-grid">
-            {selectedPlayerIds.map((playerId, index) => {
-              const selectedPlayer = selectablePlayers.find(({ id }) => id === playerId);
-              const choices =
-                selectedPlayer === undefined || matchingPlayers.some(({ id }) => id === playerId)
-                  ? matchingPlayers
-                  : [selectedPlayer, ...matchingPlayers];
-              return (
-                <label key={index}>
-                  <span>Seat {index + 1}</span>
-                  <select
-                    aria-label={`Seat ${index + 1} player`}
-                    value={playerId}
-                    onChange={(event) => {
-                      const next = [...selectedPlayerIds];
-                      next[index] = event.target.value;
-                      setSelectedPlayerIds(next);
-                    }}
-                  >
-                    <option value="">Choose a nickname</option>
-                    {choices.map((player) => (
-                      <option
-                        key={player.id}
-                        value={player.id}
-                        disabled={
-                          selectedPlayerIds.some(
-                            (selectedId, selectedIndex) =>
-                              selectedIndex !== index && selectedId === player.id,
-                          ) || player.id === hostPlayerId
-                        }
-                      >
-                        {player.nickname}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              );
-            })}
+            {selectedPlayerIds.map((playerId, index) => (
+              <PlayerCombobox
+                id={`seat-${index + 1}-player`}
+                key={index}
+                label={`Seat ${index + 1}`}
+                placeholder="Choose or search a nickname"
+                value={playerId}
+                players={selectablePlayers}
+                unavailablePlayerIds={[
+                  hostPlayerId,
+                  ...selectedPlayerIds.filter(
+                    (selectedId, selectedIndex) => selectedIndex !== index && selectedId !== "",
+                  ),
+                ].filter(Boolean)}
+                onChange={(nextPlayerId) => {
+                  const next = [...selectedPlayerIds];
+                  next[index] = nextPlayerId;
+                  setSelectedPlayerIds(next);
+                }}
+                fullscreenTouchPicker={fullscreenTouchPicker}
+              />
+            ))}
           </div>
-          <button
-            className="primary-action"
-            type="button"
-            disabled={!playersReady}
-            onClick={continueToMusic}
-          >
-            Continue to music
-          </button>
+          <div className="setup-completion-actions">
+            <button
+              className="primary-action"
+              type="button"
+              disabled={!playersReady}
+              onClick={startRoleDraw}
+            >
+              Start game
+            </button>
+            <button type="button" disabled={!playersReady} onClick={continueToMusic}>
+              Set up music · Optional
+            </button>
+          </div>
         </section>
       ) : null}
 
       {step === "music" ? (
         <section className="wizard-card music-step">
-          <p className="eyebrow">Setup · Step 2</p>
-          <h1>Start table music</h1>
-          <p className="lead">Playback must be confirmed before roles can be drawn.</p>
+          <p className="eyebrow">Game setup</p>
+          <h1>Table music · Optional</h1>
+          <p className="lead">Start table music now, or begin the game without playback.</p>
           <div className={`music-status ${musicPlaying ? "is-playing" : ""}`}>
             <span className="status-dot" />
             <strong>{musicStatus}</strong>
           </div>
+          <fieldset className="volume-mode-setup">
+            <legend>Volume modes</legend>
+            {volumePresets.map((volume, index) => (
+              <label key={index}>
+                <span>{index === 0 ? "Low" : "High"}</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="100"
+                  value={volume}
+                  onChange={(event) => {
+                    const nextValue = Math.min(100, Math.max(1, Number(event.target.value) || 1));
+                    onVolumePresetsChange(
+                      index === 0 ? [nextValue, volumePresets[1]] : [volumePresets[0], nextValue],
+                    );
+                  }}
+                />
+              </label>
+            ))}
+          </fieldset>
           <div className="music-source-picker" aria-label="Music source">
             <button
               type="button"
@@ -385,60 +558,26 @@ export const SetupWizard = ({
               crossfades. Upload at least two tracks, then set the current and next cue points.
             </p>
           )}
-          <div className="music-actions">
+          <div className="setup-completion-actions">
+            <button
+              className="primary-action"
+              type="button"
+              disabled={!playersReady}
+              onClick={startRoleDraw}
+            >
+              Start game
+            </button>
             <button
               type="button"
-              className="primary-action"
-              disabled={musicSource === "youtube" && playlistId.trim().length === 0}
-              onClick={onStartMusic}
+              onClick={() => {
+                setStep("players");
+                setSetup(null);
+                publishSessionState("players", null);
+              }}
             >
-              Start · fade in
-            </button>
-            <button type="button" disabled={!musicPlaying} onClick={onQuickStopMusic}>
-              Quick fade out
-            </button>
-            <button type="button" disabled={!musicPlaying} onClick={onSlowStopMusic}>
-              Slow fade out
+              Back to players
             </button>
           </div>
-          <button
-            className="primary-action"
-            type="button"
-            disabled={!musicPlaying}
-            onClick={continueToRoles}
-          >
-            Continue to role draw
-          </button>
-        </section>
-      ) : null}
-
-      {step === "roles" && setup !== null ? (
-        <section className="role-draw-step">
-          <p className="eyebrow">Setup · Step 3</p>
-          <h1>Draw roles at the table</h1>
-          <p className="lead">Tap each player once to draw from the shuffled role deck.</p>
-          <p className="roles-remaining">Roles remaining: {setup.remainingRoles.length}</p>
-          <GameTable
-            hostName={selectablePlayers.find(({ id }) => id === hostPlayerId)?.nickname ?? "Host"}
-            seats={setup.players.map((player) => ({
-              seat: player.seat,
-              name: player.name,
-              role: setup.assignments[player.seat],
-            }))}
-            seatActionLabel={(seat) =>
-              seat.role === undefined ? `Draw role for ${seat.name}` : `${seat.name}: ${seat.role}`
-            }
-            onSeatClick={drawRole}
-            center={
-              setup.remainingRoles.length === 0 ? (
-                <button type="button" className="table-primary" onClick={finish}>
-                  Begin Mafia negotiation
-                </button>
-              ) : (
-                <span className="table-prompt">Tap a player</span>
-              )
-            }
-          />
         </section>
       ) : null}
     </main>

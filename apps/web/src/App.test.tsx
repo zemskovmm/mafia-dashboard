@@ -7,6 +7,7 @@ import type { PlayerProfile, RemoteGameSession } from "./api/client.js";
 import { App } from "./App.js";
 
 const api = vi.hoisted(() => ({
+  clearAllData: vi.fn(),
   clearGameSession: vi.fn(),
   createPlayer: vi.fn(),
   deletePlayer: vi.fn(),
@@ -71,6 +72,7 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
     playlistId,
     onPlaylistIdChange,
     onPopulateDevelopmentPlayers,
+    randomFillRequest = 0,
   }: {
     onComplete: (game: GameState, hostPlayerId: string, hostName: string) => void;
     initialSessionState?: { step: "players" | "music" | "roles" } | null;
@@ -84,12 +86,16 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
     playlistId: string;
     onPlaylistIdChange: (playlistId: string) => void;
     onPopulateDevelopmentPlayers?: () => Promise<readonly PlayerProfile[]>;
+    randomFillRequest?: number;
   }) => {
     const [step, setStep] = useState(initialSessionState?.step ?? "players");
     return (
       <main>
-        <h1>{step === "music" ? "Restored setup" : "Game setup"}</h1>
+        <h1>
+          {step === "roles" ? "Role giveaway" : step === "music" ? "Restored setup" : "Game setup"}
+        </h1>
         <p>Playlist: {playlistId || "none"}</p>
+        <output data-testid="random-fill-request">{randomFillRequest}</output>
         <button type="button" onClick={() => onPlaylistIdChange("saved-playlist")}>
           Choose saved playlist
         </button>
@@ -117,6 +123,22 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
         <button type="button" onClick={() => onComplete(assignedGame, hostPlayerId, "Host Player")}>
           Start test game
         </button>
+        <button
+          type="button"
+          onClick={() => {
+            setStep("roles");
+            onSessionStateChange?.({
+              step: "roles",
+              hostPlayerId,
+              selectedPlayerIds: Array.from({ length: 10 }, (_, index) =>
+                String(index + 1).padStart(36, "0"),
+              ),
+              setup: null,
+            });
+          }}
+        >
+          Enter role giveaway
+        </button>
         {onPopulateDevelopmentPlayers === undefined ? null : (
           <button
             type="button"
@@ -136,21 +158,20 @@ vi.mock("./features/game/GameScreen.js", () => ({
     hostName,
     onGameChange,
     onEvent,
-    onUndo,
-    undoCount,
+    privacyHidden,
   }: {
     game: GameState;
     hostName: string;
     onGameChange: (game: GameState) => void;
     onEvent: (type: string, payload: Record<string, unknown>) => void;
-    onUndo: () => void;
-    undoCount: number;
+    privacyHidden: boolean;
   }) => (
     <main>
       <h1>Live test game</h1>
       <p>Host: {hostName}</p>
       <p>Game day {game.day}</p>
       <p>Game turn {game.currentTurnIndex}</p>
+      <p>Private info {privacyHidden ? "hidden" : "visible"}</p>
       <button
         type="button"
         onClick={() => {
@@ -170,9 +191,6 @@ vi.mock("./features/game/GameScreen.js", () => ({
         }}
       >
         Start new day
-      </button>
-      <button type="button" disabled={!undoCount} onClick={onUndo}>
-        Undo last action
       </button>
       <button
         type="button"
@@ -219,6 +237,7 @@ const player = (nickname: string, id: string): PlayerProfile => ({
 });
 
 beforeEach(() => {
+  api.clearAllData.mockReset().mockResolvedValue(undefined);
   api.clearGameSession.mockReset().mockResolvedValue(undefined);
   api.createPlayer.mockReset();
   api.deletePlayer.mockReset().mockResolvedValue(undefined);
@@ -235,12 +254,266 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  window.localStorage.clear();
   window.sessionStorage.clear();
   vi.restoreAllMocks();
 });
 
+describe("developer menu", () => {
+  it("keeps random seat fill and active game sessions inside Dev", async () => {
+    const user = userEvent.setup();
+    api.listPlayers.mockResolvedValue(
+      Array.from({ length: 11 }, (_, index) =>
+        player(
+          `Player ${index + 1}`,
+          `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+        ),
+      ),
+    );
+    api.listActiveGameSessions.mockResolvedValue([
+      {
+        gameId: "00000000-0000-4000-8000-0000000000d4",
+        name: "Dev table",
+        revision: 3,
+        hostName: "Host Player",
+        phase: "day",
+        day: 2,
+        updatedAt: "2026-08-18T12:00:00.000Z",
+      },
+    ]);
+    render(<App />);
+    await waitFor(() => expect(api.listActiveGameSessions).toHaveBeenCalledOnce());
+
+    expect(screen.queryByRole("region", { name: "Active games" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Randomly fill 10 seats" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    expect(screen.getByRole("region", { name: "Active games" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Resume Dev table" })).toBeInTheDocument();
+    const randomFill = screen.getByRole("button", { name: "Randomly fill 10 seats" });
+    await waitFor(() => expect(randomFill).toBeEnabled());
+    await user.click(randomFill);
+
+    expect(screen.getByTestId("random-fill-request")).toHaveTextContent("1");
+  });
+
+  it("uses one canonical status bar and opens the game players screen from Dev", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const status = screen.getByRole("banner", { name: "Application status" });
+    expect(status).toHaveTextContent("Game setup");
+    expect(status).toHaveTextContent("Select players");
+    expect(screen.queryByRole("navigation", { name: "Application sections" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Players screen" }));
+
+    expect(screen.getByRole("banner", { name: "Application status" })).toHaveTextContent(
+      "Players & statistics",
+    );
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Game screen" }));
+    expect(screen.getByRole("banner", { name: "Application status" })).toHaveTextContent(
+      "Game setup",
+    );
+  });
+
+  it("uses the live table shell for the role giveaway stage", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
+
+    expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
+    expect(document.querySelector(".app-shell")).toHaveClass("has-live-game", "table-layout-shell");
+    expect(screen.queryByRole("banner", { name: "Application status" })).toBeNull();
+  });
+
+  it("keeps the save indicator inside the fixed application toolbar", () => {
+    render(<App />);
+
+    const toolbar = screen.getByLabelText("Application tools");
+    expect(toolbar.querySelector(".save-indicator")).not.toBeNull();
+    expect(document.querySelector(".app-shell > .save-indicator")).toBeNull();
+  });
+
+  it("renders Log with the same titled drawer shell as Dev", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Open game log" }));
+
+    const log = screen.getByRole("dialog", { name: "Game log" });
+    expect(log).toHaveClass("app-drawer", "game-log-drawer");
+    expect(screen.getByRole("heading", { name: "Log" })).toBeInTheDocument();
+  });
+
+  it("keeps the same compact music player mounted across top-level screens", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const player = screen.getByTestId("youtube-player");
+    expect(player.closest(".youtube-dock")).toHaveClass("is-compact");
+
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Players screen" }));
+
+    expect(screen.getByTestId("youtube-player")).toBe(player);
+    expect(player.closest(".youtube-dock")).toHaveClass("is-compact");
+  });
+
+  it("keeps the fade controls directly below the persistent player during setup and live play", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const player = screen.getByTestId("youtube-player");
+    const controls = screen.getByLabelText("Live music controls");
+    expect(controls.parentElement).toBe(player.closest(".youtube-dock"));
+
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+
+    expect(screen.getByLabelText("Live music controls")).toBe(controls);
+    expect(controls.parentElement).toBe(player.closest(".youtube-dock"));
+  });
+
+  it("keeps fullscreen, Undo, and the private mask visible across application views", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const fullscreen = screen.getByRole("button", { name: "Fullscreen unavailable" });
+    const undo = screen.getByRole("button", { name: /undo last action.*0 available/i });
+    const privacy = screen.getByRole("button", { name: "Hide private info" });
+    expect(fullscreen).toBeVisible();
+    expect(undo).toBeVisible();
+    expect(undo).toBeDisabled();
+    expect(privacy).toBeVisible();
+    expect(privacy).toHaveTextContent("");
+    expect(privacy.querySelector("svg")).not.toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Players screen" }));
+
+    expect(screen.getByRole("button", { name: "Fullscreen unavailable" })).toBe(fullscreen);
+    expect(screen.getByRole("button", { name: /undo last action.*0 available/i })).toBe(undo);
+    expect(screen.getByRole("button", { name: "Hide private info" })).toBe(privacy);
+  });
+
+  it("enters and exits fullscreen from the fixed application toolbar", async () => {
+    const user = userEvent.setup();
+    let fullscreenElement: Element | null = null;
+    const requestFullscreen = vi.fn(async () => {
+      fullscreenElement = document.documentElement;
+      document.dispatchEvent(new Event("fullscreenchange"));
+    });
+    const exitFullscreen = vi.fn(async () => {
+      fullscreenElement = null;
+      document.dispatchEvent(new Event("fullscreenchange"));
+    });
+    Object.defineProperty(document, "fullscreenElement", {
+      configurable: true,
+      get: () => fullscreenElement,
+    });
+    Object.defineProperty(document.documentElement, "requestFullscreen", {
+      configurable: true,
+      value: requestFullscreen,
+    });
+    Object.defineProperty(document, "exitFullscreen", {
+      configurable: true,
+      value: exitFullscreen,
+    });
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Enter fullscreen" }));
+    expect(requestFullscreen).toHaveBeenCalledOnce();
+    await user.click(screen.getByRole("button", { name: "Exit fullscreen" }));
+    expect(exitFullscreen).toHaveBeenCalledOnce();
+
+    Reflect.deleteProperty(document, "fullscreenElement");
+    Reflect.deleteProperty(document.documentElement, "requestFullscreen");
+    Reflect.deleteProperty(document, "exitFullscreen");
+  });
+
+  it("uses the fixed mask control to hide private game information", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    expect(screen.getByText("Private info visible")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Hide private info" }));
+
+    expect(screen.getByText("Private info hidden")).toBeInTheDocument();
+    const mask = screen.getByRole("button", { name: "Show private info" });
+    expect(mask).toHaveTextContent("");
+    expect(mask.querySelector("svg")).not.toBeNull();
+  });
+
+  it("cycles the application background through black, 33%, 66%, and white", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const logButton = screen.getByRole("button", { name: "Open game log" });
+    const devButton = screen.getByRole("button", { name: "Open developer menu" });
+    await user.click(devButton);
+
+    expect(screen.getByRole("dialog", { name: "Developer menu" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Use 33% grey background" }));
+    expect(document.querySelector(".app-shell")).toHaveClass("is-background-grey-33");
+
+    await user.click(screen.getByRole("button", { name: "Use 66% grey background" }));
+    expect(document.querySelector(".app-shell")).toHaveClass("is-background-grey-66");
+
+    await user.click(screen.getByRole("button", { name: "Use white background" }));
+    expect(document.querySelector(".app-shell")).toHaveClass("is-light-background");
+
+    await user.click(screen.getByRole("button", { name: "Use black background" }));
+
+    expect(document.querySelector(".app-shell")).not.toHaveClass(
+      "is-background-grey-33",
+      "is-background-grey-66",
+      "is-light-background",
+    );
+    expect(logButton).toBeVisible();
+    expect(devButton).toBeVisible();
+  });
+
+  it("keeps browser-only clearing available when persistence is offline", async () => {
+    const user = userEvent.setup();
+    api.saveGameSession.mockRejectedValue(new Error("offline"));
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    await waitFor(() => expect(api.saveGameSession).toHaveBeenCalled());
+
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+
+    expect(screen.getByRole("button", { name: "Clear all data" })).toBeEnabled();
+  });
+
+  it("clears all browser data without deleting server data", async () => {
+    const user = userEvent.setup();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    window.localStorage.setItem("other-local-data", "keep nowhere");
+    window.sessionStorage.setItem("other-session-data", "keep nowhere");
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    await waitFor(() => expect(api.saveGameSession).toHaveBeenCalled());
+
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Clear all data" }));
+
+    expect(confirm).toHaveBeenCalledWith(
+      "Clear all data stored by Mafia Dashboard in this browser? Server players, sessions, results, and music will not be deleted.",
+    );
+    expect(api.clearAllData).not.toHaveBeenCalled();
+    expect(screen.getByRole("banner", { name: "Application status" })).toHaveTextContent(
+      "Game setup",
+    );
+    expect(window.localStorage.length).toBe(0);
+    expect(window.sessionStorage.length).toBe(0);
+  });
+});
+
 describe("authoritative game session lifecycle", () => {
-  it("creates no empty remote game and persists setup through one full session mutation", async () => {
+  it("persists setup without adding setup or music selections to the game log", async () => {
     const user = userEvent.setup();
     api.listPlayers.mockResolvedValue([player("Host Player", hostPlayerId)]);
     render(<App />);
@@ -259,7 +532,7 @@ describe("authoritative game session lifecycle", () => {
           setup: expect.objectContaining({ step: "music" }),
           hostPlayerId,
           hostName: "Host Player",
-          log: [expect.objectContaining({ type: "setup.players-selected" })],
+          log: [],
         }),
         results: null,
       }),
@@ -304,7 +577,7 @@ describe("authoritative game session lifecycle", () => {
       ),
     );
     await waitFor(() => expect(api.listPlayers).toHaveBeenCalledTimes(2));
-    await user.click(screen.getByRole("button", { name: "Undo last action" }));
+    await user.click(screen.getByRole("button", { name: /undo last action/i }));
     await waitFor(() =>
       expect(api.saveGameSession).toHaveBeenLastCalledWith(
         expect.any(String),
@@ -370,9 +643,11 @@ describe("authoritative game session lifecycle", () => {
       gameId === sessionAId ? sessionA.promise : sessionB.promise,
     );
     render(<App />);
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     await screen.findByRole("button", { name: "Resume Table A" });
 
     await user.click(screen.getByRole("button", { name: "Resume Table A" }));
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     await user.click(screen.getByRole("button", { name: "Resume Table B" }));
     sessionB.resolve(remoteSession(sessionBId, "Table B", "Host B", 7, 3));
     await screen.findByText("Host: Host B");
@@ -406,6 +681,7 @@ describe("authoritative game session lifecycle", () => {
     ]);
     api.getGameSession.mockReturnValue(remote.promise);
     render(<App />);
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     await screen.findByRole("button", { name: "Resume Remote table" });
 
     await user.click(screen.getByRole("button", { name: "Resume Remote table" }));
@@ -439,6 +715,7 @@ describe("authoritative game session lifecycle", () => {
     expect(screen.getByRole("heading", { name: "Live test game" })).toBeInTheDocument();
     expect(screen.getByText("Host: Host Player")).toBeInTheDocument();
     expect(screen.getByText("Game turn 1")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Open game log" }));
     expect(screen.getByText("turn.completed")).toBeInTheDocument();
     await act(async () => {
       await Promise.resolve();
@@ -472,12 +749,13 @@ describe("authoritative game session lifecycle", () => {
     await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledOnce());
     const gameId = api.saveGameSession.mock.calls[0]?.[0] as string;
 
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     await user.click(screen.getByRole("button", { name: "Clear game state" }));
 
     expect(confirm).toHaveBeenCalledWith(
       "Delete this active game from the server? This is irreversible and removes its saved session and game log for every browser.",
     );
-    expect(api.clearGameSession).toHaveBeenCalledWith(gameId);
+    expect(api.clearGameSession).toHaveBeenCalledWith(gameId, 0);
     expect(screen.getByRole("heading", { name: "Restored setup" })).toBeInTheDocument();
     clear.resolve();
     await screen.findByRole("heading", { name: "Game setup" });
@@ -495,6 +773,7 @@ describe("authoritative game session lifecycle", () => {
     await waitFor(() => expect(screen.getByText("Saved")).toBeInTheDocument());
     const clearedGameId = api.saveGameSession.mock.calls[0]?.[0] as string;
 
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     await user.click(screen.getByRole("button", { name: "Clear game state" }));
     await user.click(screen.getByRole("button", { name: "Choose saved playlist" }));
     await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledTimes(2));
@@ -502,7 +781,7 @@ describe("authoritative game session lifecycle", () => {
     expect(newerGameId).not.toBe(clearedGameId);
 
     clear.resolve();
-    await waitFor(() => expect(api.clearGameSession).toHaveBeenCalledWith(clearedGameId));
+    await waitFor(() => expect(api.clearGameSession).toHaveBeenCalledWith(clearedGameId, 1));
 
     expect(screen.getByRole("heading", { name: "Restored setup" })).toBeInTheDocument();
     expect(screen.getByText("Playlist: saved-playlist")).toBeInTheDocument();
@@ -519,6 +798,7 @@ describe("authoritative game session lifecycle", () => {
     await user.click(screen.getByRole("button", { name: "Save setup progress" }));
     await waitFor(() => expect(screen.getByText("Saved")).toBeInTheDocument());
 
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     await user.click(screen.getByRole("button", { name: "Clear game state" }));
 
     await waitFor(() => expect(screen.getByText("Local only")).toBeInTheDocument());
@@ -565,15 +845,16 @@ describe("undo checkpoints", () => {
     await user.click(screen.getByRole("button", { name: "Start test game" }));
     await user.click(screen.getByRole("button", { name: "Record game action" }));
     await user.click(screen.getByRole("button", { name: "Record game action" }));
-    expect(screen.getByRole("button", { name: "Undo last action" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /undo last action/i })).toBeEnabled();
 
     await user.click(screen.getByRole("button", { name: "Start new day" }));
 
     expect(screen.getByText("Game day 1")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Undo last action" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /undo last action/i })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Record game action" }));
-    await user.click(screen.getByRole("button", { name: "Undo last action" }));
+    await user.click(screen.getByRole("button", { name: /undo last action/i }));
     expect(screen.getByText("Game day 1")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Open game log" }));
     expect(screen.getAllByText("turn.completed")).toHaveLength(2);
     expect(screen.getByText("day.started")).toBeInTheDocument();
   });
@@ -586,14 +867,15 @@ describe("undo checkpoints", () => {
       await user.click(screen.getByRole("button", { name: "Record game action" }));
     }
     expect(screen.getByText("Game turn 4")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Open game log" }));
     expect(screen.getAllByText("turn.completed")).toHaveLength(4);
 
     for (let index = 0; index < 3; index += 1) {
-      await user.click(screen.getByRole("button", { name: "Undo last action" }));
+      await user.click(screen.getByRole("button", { name: /undo last action/i }));
     }
     expect(screen.getByText("Game turn 1")).toBeInTheDocument();
     expect(screen.getAllByText("turn.completed")).toHaveLength(1);
-    expect(screen.getByRole("button", { name: "Undo last action" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /undo last action/i })).toBeDisabled();
   });
 });
 
@@ -606,7 +888,8 @@ describe("player workflows", () => {
     ]);
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
-    await user.click(screen.getByRole("button", { name: "Players & statistics" }));
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Players screen" }));
 
     expect(screen.getByRole("heading", { name: "Players & statistics" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Delete Player 1" })).toBeDisabled();

@@ -1,5 +1,6 @@
 interface LiveMusicControlsProps {
   readonly isPlaying: boolean;
+  readonly canFadeIn: boolean;
   readonly onFadeIn: () => void;
   readonly onQuickFadeOut: () => void;
   readonly onSlowFadeOut: () => void;
@@ -7,6 +8,7 @@ interface LiveMusicControlsProps {
 
 export const LiveMusicControls = ({
   isPlaying,
+  canFadeIn,
   onFadeIn,
   onQuickFadeOut,
   onSlowFadeOut,
@@ -14,7 +16,7 @@ export const LiveMusicControls = ({
   <section className="live-music-controls" aria-label="Live music controls">
     <strong>Table music</strong>
     <div>
-      <button type="button" aria-label="Music fade in" onClick={onFadeIn}>
+      <button type="button" aria-label="Music fade in" disabled={!canFadeIn} onClick={onFadeIn}>
         Fade in
       </button>
       <button
@@ -23,7 +25,7 @@ export const LiveMusicControls = ({
         disabled={!isPlaying}
         onClick={onQuickFadeOut}
       >
-        Quick out
+        Quick fade
       </button>
       <button
         type="button"
@@ -31,7 +33,7 @@ export const LiveMusicControls = ({
         disabled={!isPlaying}
         onClick={onSlowFadeOut}
       >
-        Slow out
+        Slow fade
       </button>
     </div>
   </section>

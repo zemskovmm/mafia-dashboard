@@ -38,6 +38,66 @@ const liveGame = (day: number) => ({
 });
 
 describe("game session validation", () => {
+  it("rejects non-canonical car-crash voter keys", () => {
+    const parsed = gameSessionMutationSchema.safeParse({
+      name: "Aliased car-crash voter",
+      mutationId: uuid(98),
+      baseRevision: 0,
+      state: {
+        setup: null,
+        game: {
+          ...liveGame(1),
+          phase: "car-crash-decision",
+          carCrashSeats: [4, 6],
+          carCrashVotes: { "1": true, "01": true },
+        },
+        hostPlayerId: uuid(11),
+        hostName: "Host",
+        playlistId: "",
+        log: [],
+        undoHistory: [],
+      },
+      results: null,
+    });
+
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues.map(({ message }) => message)).toContain(
+        "Car-crash vote keys must use canonical seat numbers",
+      );
+    }
+  });
+
+  it("rejects car-crash decision votes from non-active seats", () => {
+    const parsed = gameSessionMutationSchema.safeParse({
+      name: "Invalid car-crash voter",
+      mutationId: uuid(99),
+      baseRevision: 0,
+      state: {
+        setup: null,
+        game: {
+          ...liveGame(1),
+          phase: "car-crash-decision",
+          carCrashSeats: [4, 6],
+          carCrashVotes: { "11": true },
+        },
+        hostPlayerId: uuid(11),
+        hostName: "Host",
+        playlistId: "",
+        log: [],
+        undoHistory: [],
+      },
+      results: null,
+    });
+
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues.map(({ message }) => message)).toContain(
+        "Only active players may vote in a car crash decision",
+      );
+    }
+  });
+
   it("rejects a setup whose visible players do not match the selected roster", () => {
     const roles = [
       "sheriff",

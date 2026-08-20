@@ -1,6 +1,11 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { YouTubePlaylistPlayer } from "./YouTubePlaylistPlayer.js";
+
+const api = vi.hoisted(() => ({ listMusicPlaylistItems: vi.fn() }));
+
+vi.mock("../../api/client.js", () => api);
 
 afterEach(() => {
   Object.defineProperty(window, "YT", { configurable: true, value: undefined, writable: true });
@@ -8,19 +13,34 @@ afterEach(() => {
 });
 
 describe("YouTubePlaylistPlayer", () => {
-  it("supplies the selected playlist directly to YouTube without an order override", async () => {
+  it("cues a reorderable local queue completely before enabling playback", async () => {
+    const user = userEvent.setup();
+    api.listMusicPlaylistItems.mockResolvedValue([
+      { videoId: "video-1", title: "Opening", position: 0, thumbnailUrl: null },
+      { videoId: "video-2", title: "Middle", position: 1, thumbnailUrl: null },
+      { videoId: "video-3", title: "Finale", position: 2, thumbnailUrl: null },
+    ]);
+    const iframe = document.createElement("iframe");
+    iframe.setAttribute(
+      "allow",
+      "accelerometer; autoplay; encrypted-media; picture-in-picture; fullscreen",
+    );
     const player = {
       playVideo: vi.fn(),
       pauseVideo: vi.fn(),
       setVolume: vi.fn(),
       getVolume: vi.fn(() => 65),
+      getIframe: vi.fn(() => iframe),
+      cuePlaylist: vi.fn(),
+      getPlaylistIndex: vi.fn(() => 0),
+      getCurrentTime: vi.fn(() => 42),
+      loadPlaylist: vi.fn(),
+      playVideoAt: vi.fn(),
       destroy: vi.fn(),
     } as unknown as YT.Player;
     let onPlayerStateChange: ((event: YT.OnStateChangeEvent) => void) | undefined;
-    let playerOptions: YT.PlayerOptions | undefined;
     class FakePlayer {
       public constructor(_elementId: string, options: YT.PlayerOptions) {
-        playerOptions = options;
         onPlayerStateChange = options.events?.onStateChange;
         queueMicrotask(() => options.events?.onReady?.({ target: player }));
         return player;
@@ -28,20 +48,120 @@ describe("YouTubePlaylistPlayer", () => {
     }
     window.YT = {
       Player: FakePlayer as unknown as typeof YT.Player,
-      PlayerState: { PLAYING: 1, PAUSED: 2, ENDED: 0, BUFFERING: 3 },
+      PlayerState: { PLAYING: 1, PAUSED: 2, ENDED: 0, BUFFERING: 3, CUED: 5 },
     };
+    const onStateChange = vi.fn();
 
-    render(<YouTubePlaylistPlayer playlistId="PL-selected" onStateChange={() => undefined} />);
+    render(
+      <YouTubePlaylistPlayer
+        playlistId="PL-selected"
+        onStateChange={onStateChange}
+        expanded
+        onExpandedChange={() => undefined}
+      />,
+    );
     await vi.waitFor(() => expect(onPlayerStateChange).toBeTypeOf("function"));
-    expect(screen.queryByLabelText("Choose next YouTube track")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Set next track" })).toBeNull();
-    expect(playerOptions?.playerVars).toMatchObject({
-      listType: "playlist",
-      list: "PL-selected",
-    });
+    expect(api.listMusicPlaylistItems).toHaveBeenCalledWith("PL-selected");
+    expect(player.cuePlaylist).toHaveBeenCalledWith(["video-1", "video-2", "video-3"], 0, 0);
+    expect(player.setVolume).toHaveBeenCalledWith(80);
+    expect(player.playVideo).not.toHaveBeenCalled();
+    expect(onStateChange).toHaveBeenLastCalledWith("loading");
+    expect(iframe.getAttribute("allow")).toBe(
+      "accelerometer; autoplay; encrypted-media; fullscreen",
+    );
 
     await act(async () => {
-      onPlayerStateChange?.({ target: player, data: window.YT!.PlayerState.ENDED });
+      onPlayerStateChange?.({ target: player, data: window.YT!.PlayerState.CUED });
     });
+    expect(onStateChange).toHaveBeenLastCalledWith("paused");
+
+    const queueItems = screen.getAllByRole("listitem");
+    const elementFromPoint = vi.fn(() => queueItems[1]!);
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: elementFromPoint,
+    });
+    const finaleDragHandle = screen.getByLabelText("Drag Finale");
+    fireEvent.pointerDown(finaleDragHandle, { pointerId: 1, clientX: 10, clientY: 10 });
+    fireEvent.pointerMove(finaleDragHandle, { pointerId: 1, clientX: 10, clientY: 40 });
+    fireEvent.pointerUp(finaleDragHandle, { pointerId: 1, clientX: 10, clientY: 40 });
+    Reflect.deleteProperty(document, "elementFromPoint");
+    expect(screen.getAllByRole("listitem").map((item) => item.textContent)).toEqual([
+      expect.stringContaining("Opening"),
+      expect.stringContaining("Finale"),
+      expect.stringContaining("Middle"),
+    ]);
+    expect(player.cuePlaylist).toHaveBeenLastCalledWith(["video-1", "video-3", "video-2"], 0, 42);
+
+    await act(async () => {
+      onPlayerStateChange?.({ target: player, data: window.YT!.PlayerState.CUED });
+    });
+    await user.click(screen.getByRole("button", { name: "Play Middle next" }));
+    expect(player.cuePlaylist).toHaveBeenLastCalledWith(["video-1", "video-2", "video-3"], 0, 42);
+    await act(async () => {
+      onPlayerStateChange?.({ target: player, data: window.YT!.PlayerState.CUED });
+    });
+    await act(async () => {
+      onPlayerStateChange?.({ target: player, data: window.YT!.PlayerState.PLAYING });
+    });
+
+    const refreshedItems = screen.getAllByRole("listitem");
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: vi.fn(() => refreshedItems[1]!),
+    });
+    const refreshedFinaleDragHandle = screen.getByLabelText("Drag Finale");
+    fireEvent.pointerDown(refreshedFinaleDragHandle, { pointerId: 2, clientX: 10, clientY: 10 });
+    fireEvent.pointerMove(refreshedFinaleDragHandle, { pointerId: 2, clientX: 10, clientY: 40 });
+    fireEvent.pointerUp(refreshedFinaleDragHandle, { pointerId: 2, clientX: 10, clientY: 40 });
+    Reflect.deleteProperty(document, "elementFromPoint");
+    expect(player.loadPlaylist).toHaveBeenLastCalledWith(["video-1", "video-3", "video-2"], 0, 42);
+    await act(async () => {
+      onPlayerStateChange?.({ target: player, data: window.YT!.PlayerState.PLAYING });
+    });
+
+    await user.click(screen.getByRole("button", { name: "Play Finale now" }));
+    expect(player.playVideoAt).toHaveBeenLastCalledWith(1);
+  });
+
+  it("becomes ready with the playlist fallback when queue loading fails", async () => {
+    api.listMusicPlaylistItems.mockRejectedValue(new Error("queue unavailable"));
+    const iframe = document.createElement("iframe");
+    const player = {
+      playVideo: vi.fn(),
+      pauseVideo: vi.fn(),
+      setVolume: vi.fn(),
+      getVolume: vi.fn(() => 65),
+      getIframe: vi.fn(() => iframe),
+      cuePlaylist: vi.fn(),
+      getPlaylistIndex: vi.fn(() => 0),
+      getCurrentTime: vi.fn(() => 0),
+      loadPlaylist: vi.fn(),
+      playVideoAt: vi.fn(),
+      destroy: vi.fn(),
+    } as unknown as YT.Player;
+    class FakePlayer {
+      public constructor(_elementId: string, options: YT.PlayerOptions) {
+        queueMicrotask(() => options.events?.onReady?.({ target: player }));
+        return player;
+      }
+    }
+    window.YT = {
+      Player: FakePlayer as unknown as typeof YT.Player,
+      PlayerState: { PLAYING: 1, PAUSED: 2, ENDED: 0, BUFFERING: 3, CUED: 5 },
+    };
+    const onStateChange = vi.fn();
+
+    render(
+      <YouTubePlaylistPlayer
+        playlistId="PL-fallback"
+        activeVolume={65}
+        onStateChange={onStateChange}
+      />,
+    );
+
+    await vi.waitFor(() => expect(onStateChange).toHaveBeenLastCalledWith("paused"));
+    expect(player.setVolume).toHaveBeenCalledWith(65);
+    expect(player.cuePlaylist).not.toHaveBeenCalled();
   });
 });
