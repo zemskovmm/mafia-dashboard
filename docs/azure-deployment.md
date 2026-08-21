@@ -30,13 +30,25 @@ It must contain these secrets:
 - `GOOGLE_CLIENT_SECRET`
 - `MUSIC_TOKEN_ENCRYPTION_KEY`
 
-Azure login uses the federated subject:
+Azure login uses the resource-group-scoped user-assigned managed identity `mafiadashboard-github`. Its federated subject uses GitHub's immutable owner and repository IDs:
 
 ```text
-repo:zemskovmm/mafia-dashboard:environment:production
+repo:zemskovmm@8973322/mafia-dashboard@1320321469:environment:production
 ```
 
-The deployment identity needs Contributor only on the deployment resource group.
+The deployment identity has Contributor only on the deployment resource group. The federated credential is an Azure Managed Identity resource created through Azure Resource Manager, so routine GitHub deployments need no user login, stored Azure client secret, or Microsoft Graph application-registration permission.
+
+Bootstrap or repair that trust once from an interactively authenticated Azure CLI session:
+
+```bash
+AZURE_SUBSCRIPTION_ID=9f0da8f6-9da5-4bef-9738-cb26f2a19e58 \
+AZURE_TENANT_ID=b41b72d0-4e9f-4c26-8a69-f949f367c91d \
+AZURE_RESOURCE_GROUP=rg-mafia-dashboard-prod-weu \
+AZURE_LOCATION=northeurope \
+scripts/bootstrap-azure-oidc.sh
+```
+
+After this bootstrap, `azure/login` exchanges GitHub's short-lived OIDC assertion for an Azure token on every run. Interactive Azure login is needed only to bootstrap or repair the managed identity, not for normal deployments.
 
 ## Deployment flow
 
