@@ -1,12 +1,18 @@
 import { evaluateVictory, getDayOrder, markPlayerInactive } from "./game.js";
 import type { GameState, NightShotResult, SecretCheckResult, ShotAssignment } from "./types.js";
 
-const activePlayerAt = (game: GameState, seat: number) => {
+const playerAt = (game: GameState, seat: number) => {
   const player = game.players.find((candidate) => candidate.seat === seat);
-  if (player === undefined || player.status !== "active") {
-    throw new Error(`Seat ${seat} must be an active target`);
-  }
+  if (player === undefined) throw new Error(`Seat ${seat} is not seated`);
   return player;
+};
+
+const resultForTargets = (game: GameState, targets: ReadonlySet<number>): NightShotResult => {
+  if (targets.size !== 1) return { kind: "miss" };
+  const targetSeat = [...targets][0]!;
+  return playerAt(game, targetSeat).status === "active"
+    ? { kind: "kill", targetSeat }
+    : { kind: "no-effect", targetSeat };
 };
 
 const nextPrivatePhase = (game: GameState): GameState["phase"] => {
@@ -20,10 +26,29 @@ const nextPrivatePhase = (game: GameState): GameState["phase"] => {
 };
 
 export const beginNight = (game: GameState): GameState => {
-  if (game.phase !== "day" && game.phase !== "voting" && game.phase !== "car-crash-decision") {
+  if (
+    game.phase !== "day" &&
+    game.phase !== "voting" &&
+    game.phase !== "car-crash-decision" &&
+    game.phase !== "goodbye-speech"
+  ) {
     throw new Error(`Cannot begin night from phase ${game.phase}`);
   }
-  return { ...game, phase: "night-mafia", shotAssignments: {} };
+  return {
+    ...game,
+    phase: "night-mafia",
+    nominations: [],
+    voteAssignments: {},
+    votingRound: undefined,
+    carCrashSeats: undefined,
+    carCrashVotes: undefined,
+    goodbyeSeats: undefined,
+    goodbyeNext: undefined,
+    shotAssignments: {},
+    checkResult: undefined,
+    nightResult: undefined,
+    dayNotice: undefined,
+  };
 };
 
 export const recordMafiaShot = (
@@ -38,7 +63,7 @@ export const recordMafiaShot = (
   if (shooter === undefined || shooter.status !== "active" || shooter.team !== "black") {
     throw new Error("The shooter must be an active Mafia-aligned player");
   }
-  activePlayerAt(game, targetSeat);
+  playerAt(game, targetSeat);
   if (game.shotAssignments[shooterSeat] !== undefined) {
     throw new Error(`A shot is already recorded for seat ${shooterSeat}`);
   }
@@ -68,22 +93,49 @@ export const resolveMafiaShots = (
   }));
   const targets = new Set(secretShots.map(({ targetSeat }) => targetSeat));
 
-  if (targets.size !== 1) {
-    return {
-      game: { ...game, phase: nextPrivatePhase(game) },
-      result: { kind: "miss" },
-      secretShots,
-    };
-  }
+  return {
+    game: { ...game, phase: "night-mafia-result" },
+    result: resultForTargets(game, targets),
+    secretShots,
+  };
+};
 
-  const targetSeat = secretShots[0]!.targetSeat;
-  const afterKill = markPlayerInactive(game, targetSeat, "eliminated");
-  const winner = evaluateVictory(afterKill.players);
-  const nextGame =
-    winner === null
-      ? { ...afterKill, phase: nextPrivatePhase(afterKill) }
-      : { ...afterKill, phase: "finished" as const, winner };
-  return { game: nextGame, result: { kind: "kill", targetSeat }, secretShots };
+export const getMafiaShotResult = (game: GameState): NightShotResult => {
+  if (game.phase !== "night-mafia-result") {
+    throw new Error("Mafia shot results are only available after evaluation");
+  }
+  const shooters = game.players.filter(
+    ({ team, status }) => team === "black" && status === "active",
+  );
+  if (shooters.some(({ seat }) => game.shotAssignments[seat] === undefined)) {
+    throw new Error("Every active Mafia-aligned player must record one shot");
+  }
+  const targets = new Set(shooters.map(({ seat }) => game.shotAssignments[seat]!));
+  return resultForTargets(game, targets);
+};
+
+export const reopenMafiaShots = (game: GameState): GameState => {
+  getMafiaShotResult(game);
+  return {
+    ...game,
+    phase: "night-mafia",
+    shotAssignments: {},
+    winner: null,
+  };
+};
+
+export const completeMafiaShots = (game: GameState): GameState => {
+  if (game.phase !== "night-mafia-result") {
+    throw new Error("Mafia shots can only complete after evaluation");
+  }
+  const result = getMafiaShotResult(game);
+  const resolvedGame =
+    result.kind === "kill" ? markPlayerInactive(game, result.targetSeat, "eliminated") : game;
+  const withResult = { ...resolvedGame, nightResult: result };
+  const winner = evaluateVictory(withResult.players);
+  return winner === null
+    ? { ...withResult, phase: nextPrivatePhase(withResult), shotAssignments: {} }
+    : { ...withResult, phase: "finished", shotAssignments: {}, winner };
 };
 
 export const performDonCheck = (
@@ -96,19 +148,27 @@ export const performDonCheck = (
   if (!game.players.some(({ role, status }) => role === "don" && status === "active")) {
     throw new Error("There is no active Don");
   }
-  const target = activePlayerAt(game, targetSeat);
+  const target = playerAt(game, targetSeat);
+  const result: SecretCheckResult = {
+    kind: "don-check",
+    targetSeat,
+    match: target.role === "sheriff",
+    secret: true,
+  };
+  return {
+    game: { ...game, phase: "night-don-result", checkResult: result },
+    result,
+  };
+};
+
+export const continueDonCheck = (game: GameState): GameState => {
+  if (game.phase !== "night-don-result" || game.checkResult?.kind !== "don-check") {
+    throw new Error("The Don result is not ready to continue");
+  }
   const phase = game.players.some(({ role, status }) => role === "sheriff" && status === "active")
     ? "night-sheriff"
     : "night-resolution";
-  return {
-    game: { ...game, phase },
-    result: {
-      kind: "don-check",
-      targetSeat,
-      match: target.role === "sheriff",
-      secret: true,
-    },
-  };
+  return { ...game, phase, checkResult: undefined };
 };
 
 export const performSheriffCheck = (
@@ -121,16 +181,24 @@ export const performSheriffCheck = (
   if (!game.players.some(({ role, status }) => role === "sheriff" && status === "active")) {
     throw new Error("There is no active Sheriff");
   }
-  const target = activePlayerAt(game, targetSeat);
-  return {
-    game: { ...game, phase: "night-resolution" },
-    result: {
-      kind: "sheriff-check",
-      targetSeat,
-      match: target.team === "black",
-      secret: true,
-    },
+  const target = playerAt(game, targetSeat);
+  const result: SecretCheckResult = {
+    kind: "sheriff-check",
+    targetSeat,
+    match: target.team === "black",
+    secret: true,
   };
+  return {
+    game: { ...game, phase: "night-sheriff-result", checkResult: result },
+    result,
+  };
+};
+
+export const continueSheriffCheck = (game: GameState): GameState => {
+  if (game.phase !== "night-sheriff-result" || game.checkResult?.kind !== "sheriff-check") {
+    throw new Error("The Sheriff result is not ready to continue");
+  }
+  return { ...game, phase: "night-resolution", checkResult: undefined };
 };
 
 export const completeNight = (game: GameState): GameState => {
@@ -138,14 +206,91 @@ export const completeNight = (game: GameState): GameState => {
     throw new Error("Night can only complete after all available checks");
   }
   const day = game.day + 1;
-  return {
+  const dayState: GameState = {
     ...game,
-    phase: "day",
     day,
     turnOrder: getDayOrder(game.players, day),
     currentTurnIndex: 0,
     nominations: [],
     voteAssignments: {},
     shotAssignments: {},
+    checkResult: undefined,
+  };
+  if (game.nightResult?.kind === "kill") {
+    return game.day === 1
+      ? {
+          ...dayState,
+          phase: "best-move",
+          goodbyeSeats: [game.nightResult.targetSeat],
+          goodbyeNext: "day",
+          bestMove: { playerSeat: game.nightResult.targetSeat, selectedSeats: [] },
+        }
+      : {
+          ...dayState,
+          phase: "goodbye-speech",
+          goodbyeSeats: [game.nightResult.targetSeat],
+          goodbyeNext: "day",
+        };
+  }
+  return {
+    ...dayState,
+    phase: "day",
+    goodbyeSeats: undefined,
+    goodbyeNext: undefined,
+    nightResult: undefined,
+    dayNotice: "happy",
+  };
+};
+
+export const toggleBestMoveSeat = (game: GameState, seat: number): GameState => {
+  if (game.phase !== "best-move" || game.bestMove === undefined) {
+    throw new Error("Best move selections require the Best move phase");
+  }
+  if (seat === game.bestMove.playerSeat)
+    throw new Error("The deceased player cannot select themself");
+  const target = playerAt(game, seat);
+  if (target.status !== "active") throw new Error("Best move targets must still be active");
+  const selected = game.bestMove.selectedSeats;
+  const selectedSeats = selected.includes(seat)
+    ? selected.filter((candidate) => candidate !== seat)
+    : selected.length >= 3
+      ? (() => {
+          throw new Error("A Best move contains exactly three players");
+        })()
+      : [...selected, seat];
+  return { ...game, bestMove: { ...game.bestMove, selectedSeats } };
+};
+
+export const completeBestMove = (game: GameState): GameState => {
+  if (game.phase !== "best-move" || game.bestMove === undefined) {
+    throw new Error("Only a Best move can be completed");
+  }
+  if (game.bestMove.selectedSeats.length !== 3) {
+    throw new Error("A Best move must name exactly three players");
+  }
+  const mafiaHits = game.bestMove.selectedSeats.filter(
+    (seat) => playerAt(game, seat).team === "black",
+  ).length;
+  return {
+    ...game,
+    phase: "day",
+    bestMove: { ...game.bestMove, mafiaHits },
+    goodbyeSeats: undefined,
+    goodbyeNext: undefined,
+    nightResult: undefined,
+    dayNotice: undefined,
+  };
+};
+
+export const completeGoodbyeSpeech = (game: GameState): GameState => {
+  if (game.phase !== "goodbye-speech") throw new Error("There is no goodbye speech to complete");
+  if (game.goodbyeNext !== "day") return beginNight(game);
+  return {
+    ...game,
+    phase: "day",
+    goodbyeSeats: undefined,
+    goodbyeNext: undefined,
+    nightResult: undefined,
+    dayNotice: undefined,
   };
 };

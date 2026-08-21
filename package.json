@@ -17,7 +17,6 @@
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "verify:oauth": "node scripts/verify-oauth.mjs",
-    "verify:dj": "node scripts/verify-dj.mjs",
     "verify:session": "node scripts/verify-session-state.mjs",
     "verify:ui": "node scripts/verify-ui.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
@@ -28,6 +27,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.62.1",
     "concurrently": "^10.0.5",
     "eslint": "^10.8.1",
     "prettier": "^3.9.6",

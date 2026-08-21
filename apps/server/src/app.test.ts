@@ -2,13 +2,25 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { buildApp } from "./app.js";
+import { DEFAULT_CLUB_ID } from "./club-store.js";
+import type { AppUser, GoogleAuthService } from "./google-auth.js";
 import type { YouTubeOAuthService } from "./youtube-oauth.js";
 
 const pool = new Pool({
   connectionString:
     process.env.TEST_DATABASE_URL ?? "postgresql://mafia:mafia@127.0.0.1:54329/mafia_test",
 });
-const app = await buildApp({ pool });
+const authenticatedUser: AppUser = {
+  id: "00000000-0000-4000-8000-000000000001",
+  email: "owner@mafiamalaga.es",
+  name: "Mafia Malaga owner",
+  picture: null,
+};
+const app = await buildApp({
+  pool,
+  authenticateRequest: async () => authenticatedUser,
+  defaultClubId: DEFAULT_CLUB_ID,
+});
 
 beforeAll(async () => {
   await app.ready();
@@ -20,6 +32,154 @@ afterAll(async () => {
 });
 
 describe("server API", () => {
+  it("authenticates the owner, creates a club, and isolates its players", async () => {
+    const auth = await app.inject({ method: "GET", url: "/api/auth/session" });
+    expect(auth.json().user).toMatchObject(authenticatedUser);
+    const authHeaders = {};
+
+    const anonymousApp = await buildApp({
+      pool,
+      authenticateRequest: async () => null,
+      defaultClubId: DEFAULT_CLUB_ID,
+    });
+
+    expect(
+      await anonymousApp.inject({
+        method: "POST",
+        url: "/api/clubs",
+        payload: { name: "Unauthorized", city: "Nowhere", headerLogo: null, cardLogo: null },
+      }),
+    ).toHaveProperty("statusCode", 401);
+    await anonymousApp.close();
+
+    const initial = await app.inject({ method: "GET", url: "/api/clubs", headers: authHeaders });
+    expect(initial.statusCode).toBe(200);
+    expect(initial.json().clubs).toEqual(
+      expect.arrayContaining([expect.objectContaining({ name: "Mafia Malaga", city: "Málaga" })]),
+    );
+    const defaultClubId = initial.json().clubs[0].id as string;
+
+    const createdClub = await app.inject({
+      method: "POST",
+      url: "/api/clubs",
+      headers: authHeaders,
+      payload: {
+        name: `Sevilla ${randomUUID().slice(0, 8)}`,
+        city: "Sevilla",
+        headerLogo: null,
+        cardLogo: null,
+      },
+    });
+    expect(createdClub.statusCode).toBe(201);
+    const secondClubId = createdClub.json().club.id as string;
+
+    const nickname = `Tenant-${randomUUID().slice(0, 8)}`;
+    const createdPlayer = await app.inject({
+      method: "POST",
+      url: "/api/players",
+      headers: { ...authHeaders, "x-club-id": secondClubId },
+      payload: { nickname, consent: false, firstName: null, lastName: null, email: null },
+    });
+    expect(createdPlayer.statusCode).toBe(201);
+    expect(
+      await app.inject({
+        method: "POST",
+        url: "/api/players",
+        headers: { ...authHeaders, "x-club-id": defaultClubId },
+        payload: { nickname, consent: false, firstName: null, lastName: null, email: null },
+      }),
+    ).toHaveProperty("statusCode", 201);
+
+    const secondRoster = await app.inject({
+      method: "GET",
+      url: "/api/players",
+      headers: { ...authHeaders, "x-club-id": secondClubId },
+    });
+    const firstRoster = await app.inject({
+      method: "GET",
+      url: "/api/players",
+      headers: { ...authHeaders, "x-club-id": defaultClubId },
+    });
+    expect(secondRoster.json().players).toEqual(
+      expect.arrayContaining([expect.objectContaining({ nickname })]),
+    );
+    expect(secondRoster.json().players.map((player: { id: string }) => player.id)).toContain(
+      createdPlayer.json().player.id,
+    );
+    expect(firstRoster.json().players).toEqual(
+      expect.arrayContaining([expect.objectContaining({ nickname })]),
+    );
+    expect(
+      firstRoster
+        .json()
+        .players.find((player: { nickname: string }) => player.nickname === nickname).id,
+    ).not.toBe(createdPlayer.json().player.id);
+    expect(firstRoster.json().players.map((player: { id: string }) => player.id)).not.toContain(
+      createdPlayer.json().player.id,
+    );
+
+    const gameId = randomUUID();
+    const savedGame = await app.inject({
+      method: "PUT",
+      url: `/api/game-sessions/${gameId}`,
+      headers: { ...authHeaders, "x-club-id": secondClubId },
+      payload: {
+        name: "Tenant table",
+        mutationId: randomUUID(),
+        baseRevision: 0,
+        state: {
+          setup: null,
+          game: null,
+          hostPlayerId: null,
+          hostName: null,
+          playlistId: "",
+          log: [],
+          undoHistory: [],
+        },
+        results: null,
+      },
+    });
+    expect(savedGame.statusCode).toBe(201);
+    expect(
+      await app.inject({
+        method: "GET",
+        url: `/api/game-sessions/${gameId}`,
+        headers: { ...authHeaders, "x-club-id": defaultClubId },
+      }),
+    ).toHaveProperty("statusCode", 404);
+    expect(
+      await app.inject({
+        method: "GET",
+        url: `/api/game-sessions/${gameId}`,
+        headers: { ...authHeaders, "x-club-id": secondClubId },
+      }),
+    ).toHaveProperty("statusCode", 200);
+
+    const deletedClub = await app.inject({
+      method: "DELETE",
+      url: `/api/clubs/${secondClubId}`,
+      headers: authHeaders,
+    });
+    expect(deletedClub.statusCode).toBe(204);
+    const afterDelete = await app.inject({
+      method: "GET",
+      url: "/api/clubs",
+      headers: authHeaders,
+    });
+    expect(afterDelete.json().clubs.map((club: { id: string }) => club.id)).not.toContain(
+      secondClubId,
+    );
+    expect(
+      await pool.query(
+        `SELECT
+           (SELECT COUNT(*) FROM players WHERE club_id = $1)::int AS players,
+           (SELECT COUNT(*) FROM game_sessions WHERE club_id = $1)::int AS sessions,
+           (SELECT COUNT(*) FROM game_events WHERE club_id = $1)::int AS events`,
+        [secondClubId],
+      ),
+    ).toMatchObject({ rows: [{ players: 0, sessions: 0, events: 0 }] });
+  });
+
   it("redirects browser pages from a direct host to the configured secure app origin", async () => {
     const secureApp = await buildApp({
       pool,
@@ -520,7 +680,12 @@ describe("server API", () => {
       ),
       exchangeCode: vi.fn().mockResolvedValue(undefined),
     } as unknown as YouTubeOAuthService;
-    const oauthApp = await buildApp({ pool, youtubeOAuth: oauth });
+    let oauthUser = authenticatedUser;
+    const oauthApp = await buildApp({
+      pool,
+      youtubeOAuth: oauth,
+      authenticateRequest: async () => oauthUser,
+    });
     await oauthApp.ready();
 
     const started = await oauthApp.inject({ method: "GET", url: "/api/music/oauth/start" });
@@ -540,6 +705,16 @@ describe("server API", () => {
     expect(invalid.statusCode).toBe(400);
     expect(oauth.exchangeCode).not.toHaveBeenCalled();
 
+    oauthUser = { ...authenticatedUser, id: randomUUID() };
+    const changedUser = await oauthApp.inject({
+      method: "GET",
+      url: `/api/music/oauth/callback?code=authorization-code&state=${location.searchParams.get("state")}`,
+      headers: { cookie },
+    });
+    expect(changedUser.statusCode).toBe(400);
+    expect(oauth.exchangeCode).not.toHaveBeenCalled();
+    oauthUser = authenticatedUser;
+
     const callback = await oauthApp.inject({
       method: "GET",
       url: `/api/music/oauth/callback?code=authorization-code&state=${location.searchParams.get("state")}`,
@@ -548,9 +723,69 @@ describe("server API", () => {
     expect(callback.statusCode).toBe(302);
     expect(callback.headers.location).toBe("/?music=connected");
     expect(callback.headers["set-cookie"]).toContain("Max-Age=0");
-    expect(oauth.exchangeCode).toHaveBeenCalledWith("authorization-code");
+    expect(oauth.exchangeCode).toHaveBeenCalledWith(authenticatedUser.id, "authorization-code");
 
     await oauthApp.close();
+  });
+
+  it("creates and clears an HttpOnly application session through Google sign-in", async () => {
+    const googleAuth = {
+      createAuthorizationUrl: vi.fn(
+        (state: string) => `https://accounts.google.test/authorize?state=${state}`,
+      ),
+      completeAuthorization: vi.fn(async () => ({
+        user: authenticatedUser,
+        sessionToken: "application-session-token",
+        expiresAt: new Date(Date.now() + 60_000),
+      })),
+      getUserForSession: vi.fn(async (token: string | null) =>
+        token === "application-session-token" ? authenticatedUser : null,
+      ),
+      endSession: vi.fn(async () => undefined),
+    } as unknown as GoogleAuthService;
+    const authApp = await buildApp({
+      pool,
+      googleAuth,
+      publicAppUrl: "https://mafia.example.test",
+    });
+    await authApp.ready();
+
+    const started = await authApp.inject({ method: "GET", url: "/api/auth/google/start" });
+    const location = new URL(started.headers.location!);
+    const state = location.searchParams.get("state")!;
+    const stateCookie = String(started.headers["set-cookie"]).split(";", 1)[0]!;
+    expect(started.statusCode).toBe(302);
+    expect(state).toHaveLength(43);
+    expect(started.headers["set-cookie"]).toContain("HttpOnly");
+    expect(started.headers["set-cookie"]).toContain("Secure");
+
+    const callback = await authApp.inject({
+      method: "GET",
+      url: `/api/auth/google/callback?code=google-code&state=${encodeURIComponent(state)}`,
+      headers: { cookie: stateCookie },
+    });
+    expect(callback.statusCode).toBe(302);
+    expect(callback.headers.location).toBe("/");
+    expect(String(callback.headers["set-cookie"])).toContain(
+      "mafia_session=application-session-token",
+    );
+    expect(googleAuth.completeAuthorization).toHaveBeenCalledWith("google-code");
+
+    const session = await authApp.inject({
+      method: "GET",
+      url: "/api/auth/session",
+      headers: { cookie: "mafia_session=application-session-token" },
+    });
+    expect(session.json()).toEqual({ configured: true, user: authenticatedUser });
+
+    const signedOut = await authApp.inject({
+      method: "DELETE",
+      url: "/api/auth/session",
+      headers: { cookie: "mafia_session=application-session-token" },
+    });
+    expect(signedOut.statusCode).toBe(204);
+    expect(googleAuth.endSession).toHaveBeenCalledWith("application-session-token");
+    await authApp.close();
   });
 
   it("reports that account playlists are unavailable when OAuth is not configured", async () => {
@@ -586,7 +821,11 @@ describe("server API", () => {
       listPlaylistItems: vi.fn().mockResolvedValue(playlistItems),
       disconnect: vi.fn().mockResolvedValue(undefined),
     } as unknown as YouTubeOAuthService;
-    const oauthApp = await buildApp({ pool, youtubeOAuth: oauth });
+    const oauthApp = await buildApp({
+      pool,
+      youtubeOAuth: oauth,
+      authenticateRequest: async () => authenticatedUser,
+    });
     await oauthApp.ready();
 
     const status = await oauthApp.inject({ method: "GET", url: "/api/music/oauth/status" });
@@ -609,9 +848,9 @@ describe("server API", () => {
     expect(listed.json()).toEqual({ playlists });
     expect(items.statusCode).toBe(200);
     expect(items.json()).toEqual({ items: playlistItems });
-    expect(oauth.listPlaylistItems).toHaveBeenCalledWith("PL-music");
+    expect(oauth.listPlaylistItems).toHaveBeenCalledWith(authenticatedUser.id, "PL-music");
     expect(disconnected.statusCode).toBe(204);
-    expect(oauth.disconnect).toHaveBeenCalledOnce();
+    expect(oauth.disconnect).toHaveBeenCalledWith(authenticatedUser.id);
 
     await oauthApp.close();
   });

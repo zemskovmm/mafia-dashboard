@@ -28,7 +28,7 @@ export const getDayOrder = (players: readonly PlayerState[], day: number): numbe
 };
 
 export const createGame = (setup: SetupState): GameState => {
-  if (setup.step !== "mafia-negotiation" || Object.keys(setup.assignments).length !== 10) {
+  if (setup.step !== "mafia-planning" || Object.keys(setup.assignments).length !== 10) {
     throw new Error("Role setup must be complete before a game is created");
   }
 
@@ -48,7 +48,7 @@ export const createGame = (setup: SetupState): GameState => {
   });
 
   return {
-    phase: "mafia-negotiation",
+    phase: "mafia-planning",
     day: 0,
     players,
     turnOrder: [],
@@ -74,7 +74,7 @@ export const getCurrentTurnDuration = (game: GameState): 10 | 30 | 60 => {
 };
 
 export const advanceSetupPhase = (game: GameState): GameState => {
-  if (game.phase === "mafia-negotiation") {
+  if (game.phase === "mafia-planning") {
     return { ...game, phase: "sheriff-wake" };
   }
   if (game.phase === "sheriff-wake") {

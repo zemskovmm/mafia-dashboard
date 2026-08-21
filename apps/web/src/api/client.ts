@@ -1,15 +1,4 @@
-export interface RemoteGameEvent {
-  readonly id: string;
-  readonly sequence: number;
-  readonly type: string;
-  readonly phase: string;
-  readonly seat?: number;
-  readonly payload: Record<string, unknown>;
-  readonly secret: boolean;
-  readonly createdAt: string;
-}
-
-export interface PlayerStatistics {
+interface PlayerStatistics {
   readonly hostedGames: number;
   readonly gamesPlayed: number;
   readonly wins: number;
@@ -25,6 +14,8 @@ export interface PlayerStatistics {
   readonly totalFouls: number;
   readonly eliminations: number;
   readonly redCards: number;
+  readonly bestMoves: number;
+  readonly bestMoveMafiaHits: number;
 }
 
 export interface PlayerProfile {
@@ -39,6 +30,32 @@ export interface PlayerProfile {
   readonly updatedAt: string;
   readonly lastPlayedAt: string | null;
   readonly statistics: PlayerStatistics;
+}
+
+export interface AppUser {
+  readonly id: string;
+  readonly email: string;
+  readonly name: string;
+  readonly picture: string | null;
+}
+
+export interface AuthSession {
+  readonly configured: boolean;
+  readonly user: AppUser | null;
+}
+
+export interface ClubInput {
+  readonly name: string;
+  readonly city: string;
+  readonly headerLogo: string | null;
+  readonly cardLogo: string | null;
+}
+
+export interface Club extends ClubInput {
+  readonly id: string;
+  readonly role: "owner" | "editor";
+  readonly createdAt: string;
+  readonly updatedAt: string;
 }
 
 export type PlayerProfileInput =
@@ -68,6 +85,7 @@ export interface FinalGameResults {
     readonly team: "red" | "black";
     readonly status: "active" | "eliminated" | "red-carded";
     readonly fouls: number;
+    readonly bestMoveHits: number | null;
   }[];
 }
 
@@ -130,17 +148,6 @@ export interface MusicPlaylistItem {
   readonly thumbnailUrl: string | null;
 }
 
-export interface LocalMusicTrack {
-  readonly id: string;
-  readonly title: string;
-  readonly originalFilename: string;
-  readonly mimeType: string;
-  readonly durationSeconds: number;
-  readonly waveform: readonly number[];
-  readonly audioUrl: string;
-  readonly createdAt: string;
-}
-
 export class ApiError extends Error {
   public constructor(
     message: string,
@@ -161,6 +168,55 @@ const throwApiError = async (response: Response, message: string): Promise<never
     // Non-JSON failures still retain their HTTP status.
   }
   throw new ApiError(message, response.status, code);
+};
+
+const clubHeaders = (clubId: string | undefined, json = false): HeadersInit => ({
+  ...(json ? { "content-type": "application/json" } : {}),
+  ...(clubId === undefined ? {} : { "x-club-id": clubId }),
+});
+
+export const getAuthSession = async (): Promise<AuthSession> => {
+  const response = await fetch("/api/auth/session");
+  if (!response.ok) return throwApiError(response, "Unable to load the sign-in session");
+  return (await response.json()) as AuthSession;
+};
+
+export const signOut = async (): Promise<void> => {
+  const response = await fetch("/api/auth/session", { method: "DELETE" });
+  if (!response.ok) return throwApiError(response, "Unable to sign out");
+};
+
+export const listClubs = async (): Promise<readonly Club[]> => {
+  const response = await fetch("/api/clubs");
+  if (!response.ok) return throwApiError(response, "Unable to load clubs");
+  return ((await response.json()) as { clubs: readonly Club[] }).clubs;
+};
+
+export const createClub = async (input: ClubInput): Promise<Club> => {
+  const response = await fetch("/api/clubs", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) return throwApiError(response, "Unable to create club");
+  return ((await response.json()) as { club: Club }).club;
+};
+
+export const updateClub = async (clubId: string, input: ClubInput): Promise<Club> => {
+  const response = await fetch(`/api/clubs/${clubId}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) return throwApiError(response, "Unable to update club");
+  return ((await response.json()) as { club: Club }).club;
+};
+
+export const deleteClub = async (clubId: string): Promise<void> => {
+  const response = await fetch(`/api/clubs/${clubId}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) return throwApiError(response, "Unable to delete club");
 };
 
 export const getMusicAccountStatus = async (): Promise<MusicAccountStatus> => {
@@ -185,44 +241,25 @@ export const listMusicPlaylistItems = async (
   return body.items;
 };
 
-export const listLocalMusicTracks = async (): Promise<readonly LocalMusicTrack[]> => {
-  const response = await fetch("/api/music/tracks");
-  if (!response.ok) return throwApiError(response, "Unable to load local music tracks");
-  const body = (await response.json()) as { tracks: readonly LocalMusicTrack[] };
-  return body.tracks;
-};
-
-export const uploadLocalMusicTrack = async (file: File): Promise<LocalMusicTrack> => {
-  const form = new FormData();
-  form.append("title", file.name.replace(/\.[^.]+$/, ""));
-  form.append("file", file);
-  const response = await fetch("/api/music/tracks", { method: "POST", body: form });
-  if (!response.ok) return throwApiError(response, "Unable to upload music track");
-  const body = (await response.json()) as { track: LocalMusicTrack };
-  return body.track;
-};
-
-export const deleteLocalMusicTrack = async (trackId: string): Promise<void> => {
-  const response = await fetch(`/api/music/tracks/${trackId}`, { method: "DELETE" });
-  if (!response.ok) return throwApiError(response, "Unable to delete music track");
-};
-
 export const disconnectMusicAccount = async (): Promise<void> => {
   const response = await fetch("/api/music/oauth/connection", { method: "DELETE" });
   if (!response.ok) return throwApiError(response, "Unable to disconnect music account");
 };
 
-export const listPlayers = async (): Promise<readonly PlayerProfile[]> => {
-  const response = await fetch("/api/players");
+export const listPlayers = async (clubId?: string): Promise<readonly PlayerProfile[]> => {
+  const response = await fetch("/api/players", { headers: clubHeaders(clubId) });
   if (!response.ok) return throwApiError(response, "Unable to load players");
   const body = (await response.json()) as { players: readonly PlayerProfile[] };
   return body.players;
 };
 
-export const createPlayer = async (input: PlayerProfileInput): Promise<PlayerProfile> => {
+export const createPlayer = async (
+  input: PlayerProfileInput,
+  clubId?: string,
+): Promise<PlayerProfile> => {
   const response = await fetch("/api/players", {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: clubHeaders(clubId, true),
     body: JSON.stringify(input),
   });
   if (!response.ok) return throwApiError(response, "Unable to create player");
@@ -233,10 +270,11 @@ export const createPlayer = async (input: PlayerProfileInput): Promise<PlayerPro
 export const updatePlayer = async (
   playerId: string,
   input: PlayerProfileInput,
+  clubId?: string,
 ): Promise<PlayerProfile> => {
   const response = await fetch(`/api/players/${playerId}`, {
     method: "PUT",
-    headers: { "content-type": "application/json" },
+    headers: clubHeaders(clubId, true),
     body: JSON.stringify(input),
   });
   if (!response.ok) return throwApiError(response, "Unable to update player");
@@ -244,110 +282,55 @@ export const updatePlayer = async (
   return body.player;
 };
 
-export const deletePlayer = async (playerId: string): Promise<void> => {
-  const response = await fetch(`/api/players/${playerId}`, { method: "DELETE" });
+export const deletePlayer = async (playerId: string, clubId?: string): Promise<void> => {
+  const response = await fetch(`/api/players/${playerId}`, {
+    method: "DELETE",
+    headers: clubHeaders(clubId),
+  });
   if (!response.ok) return throwApiError(response, "Unable to delete player");
 };
 
 export const saveGameSession = async (
   gameId: string,
   mutation: GameSessionMutation,
+  clubId?: string,
 ): Promise<RemoteGameSession> => {
   const response = await fetch(`/api/game-sessions/${gameId}`, {
     method: "PUT",
-    headers: { "content-type": "application/json" },
+    headers: clubHeaders(clubId, true),
     body: JSON.stringify(mutation),
   });
   if (!response.ok) return throwApiError(response, "Unable to save the game session");
   return (await response.json()) as RemoteGameSession;
 };
 
-export const listActiveGameSessions = async (): Promise<readonly ActiveGameSessionSummary[]> => {
-  const response = await fetch("/api/game-sessions");
+export const listActiveGameSessions = async (
+  clubId?: string,
+): Promise<readonly ActiveGameSessionSummary[]> => {
+  const response = await fetch("/api/game-sessions", { headers: clubHeaders(clubId) });
   if (!response.ok) return throwApiError(response, "Unable to load active game sessions");
   const body = (await response.json()) as { sessions: readonly ActiveGameSessionSummary[] };
   return body.sessions;
 };
 
-export const getGameSession = async (gameId: string): Promise<RemoteGameSession> => {
-  const response = await fetch(`/api/game-sessions/${gameId}`);
+export const getGameSession = async (
+  gameId: string,
+  clubId?: string,
+): Promise<RemoteGameSession> => {
+  const response = await fetch(`/api/game-sessions/${gameId}`, { headers: clubHeaders(clubId) });
   if (!response.ok) return throwApiError(response, "Unable to restore the game session");
   const body = (await response.json()) as { session: RemoteGameSession };
   return body.session;
 };
 
-export const clearGameSession = async (gameId: string, expectedRevision: number): Promise<void> => {
+export const clearGameSession = async (
+  gameId: string,
+  expectedRevision: number,
+  clubId?: string,
+): Promise<void> => {
   const response = await fetch(
     `/api/game-sessions/${gameId}?expectedRevision=${encodeURIComponent(expectedRevision)}`,
-    { method: "DELETE" },
+    { method: "DELETE", headers: clubHeaders(clubId) },
   );
   if (!response.ok) return throwApiError(response, "Unable to clear the game session");
-};
-
-export const saveGameResults = async (gameId: string, results: FinalGameResults): Promise<void> => {
-  const response = await fetch(`/api/games/${gameId}/results`, {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(results),
-  });
-  if (!response.ok) return throwApiError(response, "Unable to save player statistics");
-};
-
-export const deleteGameResults = async (gameId: string): Promise<void> => {
-  const response = await fetch(`/api/games/${gameId}/results`, { method: "DELETE" });
-  if (!response.ok) return throwApiError(response, "Unable to retract player statistics");
-};
-
-export const deleteRemoteGame = async (gameId: string): Promise<void> => {
-  const response = await fetch(`/api/games/${gameId}`, { method: "DELETE" });
-  if (!response.ok) return throwApiError(response, "Unable to clear the persisted game");
-};
-
-export const createRemoteGame = async (name: string): Promise<string> => {
-  const response = await fetch("/api/games", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ name }),
-  });
-  if (!response.ok) throw new Error("Unable to create the persisted game");
-  const body = (await response.json()) as { gameId: string };
-  return body.gameId;
-};
-
-export const appendRemoteEvent = async (
-  gameId: string,
-  event: {
-    readonly idempotencyKey: string;
-    readonly type: string;
-    readonly phase: string;
-    readonly seat?: number;
-    readonly payload: Record<string, unknown>;
-    readonly secret: boolean;
-  },
-): Promise<void> => {
-  const response = await fetch(`/api/games/${gameId}/events`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(event),
-  });
-  if (!response.ok) throw new Error("Unable to persist the game event");
-};
-
-export const truncateRemoteEvents = async (
-  gameId: string,
-  fromIdempotencyKey: string,
-): Promise<void> => {
-  const response = await fetch(`/api/games/${gameId}/events/truncate`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ fromIdempotencyKey }),
-  });
-  if (!response.ok) return throwApiError(response, "Unable to undo persisted game events");
-};
-
-export const readRemoteLog = async (gameId: string): Promise<readonly RemoteGameEvent[]> => {
-  const response = await fetch(`/api/games/${gameId}/events`);
-  if (!response.ok) throw new Error("Unable to load the game log");
-  const body = (await response.json()) as { events: readonly RemoteGameEvent[] };
-  return body.events;
 };

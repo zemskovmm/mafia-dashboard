@@ -1,12 +1,5 @@
 import { z } from "zod";
-import {
-  DEFAULT_ANALYSIS_TIMEOUT_MS,
-  DEFAULT_MAX_TRACK_DURATION_SECONDS,
-} from "./audio-analysis.js";
-import {
-  DEFAULT_MAX_MUSIC_FILE_BYTES,
-  DEFAULT_MAX_MUSIC_STORAGE_BYTES,
-} from "./music-track-store.js";
+import type { GoogleAuthConfig } from "./google-auth.js";
 import type { YouTubeOAuthConfig } from "./youtube-oauth.js";
 
 const emptyToUndefined = (value: unknown) => (value === "" ? undefined : value);
@@ -17,30 +10,6 @@ const environment = z
     HOST: z.string().default("0.0.0.0"),
     PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
     STATIC_DIR: z.string().optional(),
-    MUSIC_STORAGE_DIR: z.string().trim().min(1).default("./data/music"),
-    MUSIC_MAX_FILE_BYTES: z.coerce
-      .number()
-      .int()
-      .positive()
-      .max(200 * 1024 * 1024)
-      .default(DEFAULT_MAX_MUSIC_FILE_BYTES),
-    MUSIC_MAX_STORAGE_BYTES: z.coerce
-      .number()
-      .int()
-      .positive()
-      .max(Number.MAX_SAFE_INTEGER)
-      .default(DEFAULT_MAX_MUSIC_STORAGE_BYTES),
-    MUSIC_MAX_DURATION_SECONDS: z.coerce
-      .number()
-      .int()
-      .positive()
-      .default(DEFAULT_MAX_TRACK_DURATION_SECONDS),
-    MUSIC_ANALYSIS_TIMEOUT_MS: z.coerce
-      .number()
-      .int()
-      .min(1_000)
-      .max(10 * 60 * 1_000)
-      .default(DEFAULT_ANALYSIS_TIMEOUT_MS),
     PUBLIC_APP_URL: z.preprocess(emptyToUndefined, z.url().optional()),
     GOOGLE_CLIENT_ID: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
     GOOGLE_CLIENT_SECRET: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
@@ -54,23 +23,27 @@ const environment = z
     ),
   })
   .superRefine((value, context) => {
-    if (value.MUSIC_MAX_STORAGE_BYTES < value.MUSIC_MAX_FILE_BYTES) {
+    if ((value.GOOGLE_CLIENT_ID === undefined) !== (value.GOOGLE_CLIENT_SECRET === undefined)) {
       context.addIssue({
         code: "custom",
-        message: "Music storage quota must be at least the per-file limit",
+        message: "Google client ID and secret must be set together",
       });
     }
-    const oauthValues = [
-      value.GOOGLE_CLIENT_ID,
-      value.GOOGLE_CLIENT_SECRET,
-      value.GOOGLE_OAUTH_REDIRECT_URI,
-      value.MUSIC_TOKEN_ENCRYPTION_KEY,
-    ];
-    const configuredCount = oauthValues.filter((item) => item !== undefined).length;
-    if (configuredCount !== 0 && configuredCount !== oauthValues.length) {
+    const musicValues = [value.GOOGLE_OAUTH_REDIRECT_URI, value.MUSIC_TOKEN_ENCRYPTION_KEY];
+    const musicConfiguredCount = musicValues.filter((item) => item !== undefined).length;
+    if (musicConfiguredCount === 1) {
       context.addIssue({
         code: "custom",
-        message: "Google OAuth variables must all be set together",
+        message: "YouTube Music redirect URI and encryption key must be set together",
+      });
+    }
+    if (
+      musicConfiguredCount > 0 &&
+      (value.GOOGLE_CLIENT_ID === undefined || value.GOOGLE_CLIENT_SECRET === undefined)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "YouTube Music OAuth requires Google client credentials",
       });
     }
   })
@@ -83,6 +56,16 @@ const environment = z
       ...server
     }) => ({
       ...server,
+      googleAuth:
+        GOOGLE_CLIENT_ID === undefined ||
+        GOOGLE_CLIENT_SECRET === undefined ||
+        server.PUBLIC_APP_URL === undefined
+          ? undefined
+          : {
+              clientId: GOOGLE_CLIENT_ID,
+              clientSecret: GOOGLE_CLIENT_SECRET,
+              redirectUri: new URL("/api/auth/google/callback", server.PUBLIC_APP_URL).toString(),
+            },
       youtubeOAuth:
         GOOGLE_CLIENT_ID === undefined ||
         GOOGLE_CLIENT_SECRET === undefined ||
@@ -99,6 +82,7 @@ const environment = z
   );
 
 export type ServerConfig = z.infer<typeof environment> & {
+  readonly googleAuth?: GoogleAuthConfig;
   readonly youtubeOAuth?: YouTubeOAuthConfig;
 };
 

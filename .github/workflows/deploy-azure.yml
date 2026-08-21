@@ -1,0 +1,222 @@
+name: Deploy Azure
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy after verification
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: read
+  id-token: write
+
+concurrency:
+  group: azure-production
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: mafia
+          POSTGRES_PASSWORD: mafia
+          POSTGRES_DB: mafia_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mafia -d mafia_test"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgresql://mafia:mafia@127.0.0.1:5432/mafia_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: false
+          tags: mafia-dashboard:verify
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: verify
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.deploy) ||
+      (github.event_name == 'push' && vars.AZURE_DEPLOY_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production
+    env:
+      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+      AZURE_NAME_PREFIX: ${{ vars.AZURE_NAME_PREFIX }}
+      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      MUSIC_TOKEN_ENCRYPTION_KEY: ${{ secrets.MUSIC_TOKEN_ENCRYPTION_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Validate deployment inputs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          : "${AZURE_RESOURCE_GROUP:?Missing AZURE_RESOURCE_GROUP}"
+          : "${AZURE_LOCATION:?Missing AZURE_LOCATION}"
+          : "${AZURE_NAME_PREFIX:?Missing AZURE_NAME_PREFIX}"
+          : "${POSTGRES_PASSWORD:?Missing POSTGRES_PASSWORD}"
+      - name: Create resource group
+        run: >-
+          az group create
+          --name "$AZURE_RESOURCE_GROUP"
+          --location "$AZURE_LOCATION"
+          --output none
+      - name: Validate Bicep
+        run: |
+          set -Eeuo pipefail
+          az bicep build --file infra/main.bicep
+          az deployment group validate \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --template-file infra/main.bicep \
+            --parameters \
+              location="$AZURE_LOCATION" \
+              namePrefix="$AZURE_NAME_PREFIX" \
+              deployApp=false \
+              postgresPassword="$POSTGRES_PASSWORD" \
+              googleClientId="$GOOGLE_CLIENT_ID" \
+              googleClientSecret="$GOOGLE_CLIENT_SECRET" \
+              musicTokenEncryptionKey="$MUSIC_TOKEN_ENCRYPTION_KEY" \
+            --output none
+      - name: Deploy foundation
+        id: foundation
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          outputs=$(az deployment group create \
+            --name "mafia-foundation-${GITHUB_RUN_ID}" \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --template-file infra/main.bicep \
+            --parameters \
+              location="$AZURE_LOCATION" \
+              namePrefix="$AZURE_NAME_PREFIX" \
+              deployApp=false \
+              postgresPassword="$POSTGRES_PASSWORD" \
+              googleClientId="$GOOGLE_CLIENT_ID" \
+              googleClientSecret="$GOOGLE_CLIENT_SECRET" \
+              musicTokenEncryptionKey="$MUSIC_TOKEN_ENCRYPTION_KEY" \
+            --query properties.outputs \
+            --output json)
+          registry_name=$(jq -r '.registryName.value' <<<"$outputs")
+          registry_server=$(jq -r '.registryServer.value' <<<"$outputs")
+          app_name=$(jq -r '.containerAppName.value' <<<"$outputs")
+          {
+            echo "registry_name=$registry_name"
+            echo "registry_server=$registry_server"
+            echo "app_name=$app_name"
+          } >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - name: Sign in to Azure Container Registry
+        run: az acr login --name "${{ steps.foundation.outputs.registry_name }}"
+      - name: Build and push immutable image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.foundation.outputs.registry_server }}/mafia-dashboard:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Deploy application
+        id: app
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          app_name='${{ steps.foundation.outputs.app_name }}'
+          registry_server='${{ steps.foundation.outputs.registry_server }}'
+          image="$registry_server/mafia-dashboard:${GITHUB_SHA}"
+          existing_fqdn=$(az containerapp show \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$app_name" \
+            --query properties.configuration.ingress.fqdn \
+            --output tsv 2>/dev/null || true)
+          public_url=''
+          if [[ -n "$existing_fqdn" ]]; then
+            public_url="https://$existing_fqdn"
+          fi
+          deploy() {
+            az deployment group create \
+              --name "mafia-app-${GITHUB_RUN_ID}" \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --template-file infra/main.bicep \
+              --parameters \
+                location="$AZURE_LOCATION" \
+                namePrefix="$AZURE_NAME_PREFIX" \
+                deployApp=true \
+                image="$image" \
+                publicAppUrl="$1" \
+                postgresPassword="$POSTGRES_PASSWORD" \
+                googleClientId="$GOOGLE_CLIENT_ID" \
+                googleClientSecret="$GOOGLE_CLIENT_SECRET" \
+                musicTokenEncryptionKey="$MUSIC_TOKEN_ENCRYPTION_KEY" \
+              --output none
+          }
+          deploy "$public_url"
+          if [[ -z "$public_url" ]]; then
+            fqdn=$(az containerapp show \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --name "$app_name" \
+              --query properties.configuration.ingress.fqdn \
+              --output tsv)
+            public_url="https://$fqdn"
+            deploy "$public_url"
+          fi
+          echo "public_url=$public_url" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Azure deployment"
+            echo "- Image: \`$image\`"
+            echo "- URL: $public_url"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Verify Azure deployment
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          app_name='${{ steps.foundation.outputs.app_name }}'
+          az containerapp show \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$app_name" \
+            --query '{provisioningState:properties.provisioningState,minReplicas:properties.template.scale.minReplicas,maxReplicas:properties.template.scale.maxReplicas,targetPort:properties.configuration.ingress.targetPort}' \
+            --output json
+          for _ in $(seq 1 30); do
+            if curl --fail --silent --show-error \
+              "${{ steps.app.outputs.public_url }}/health/ready" >/dev/null; then
+              exit 0
+            fi
+            sleep 10
+          done
+          exit 1

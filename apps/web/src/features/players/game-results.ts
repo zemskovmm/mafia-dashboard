@@ -19,6 +19,10 @@ export const buildFinalGameResults = (
       team: player.role === "mafia" || player.role === "don" ? "black" : "red",
       status: player.status,
       fouls: player.fouls,
+      bestMoveHits:
+        game.bestMove?.playerSeat === player.seat && game.bestMove.mafiaHits !== undefined
+          ? game.bestMove.mafiaHits
+          : null,
     })),
   };
 };

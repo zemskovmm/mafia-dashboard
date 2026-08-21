@@ -34,6 +34,8 @@ const profile = (overrides: Partial<PlayerProfile> = {}): PlayerProfile => ({
     totalFouls: 4,
     eliminations: 1,
     redCards: 0,
+    bestMoves: 0,
+    bestMoveMafiaHits: 0,
   },
   ...overrides,
 });

@@ -3,8 +3,9 @@ import { isDeepStrictEqual } from "node:util";
 import type { Pool, PoolClient } from "pg";
 import { assertGameNotDeleted, lockAggregateProjectionTables } from "./game-lifecycle.js";
 import { initializeSchema } from "./initialize-schema.js";
+import { DEFAULT_CLUB_ID } from "./club-store.js";
 
-export interface StoredGameLogEntry {
+interface StoredGameLogEntry {
   readonly id: string;
   readonly sequence: number;
   readonly type: string;
@@ -14,13 +15,13 @@ export interface StoredGameLogEntry {
   readonly createdAt: string;
 }
 
-export interface StoredUndoSnapshot {
+interface StoredUndoSnapshot {
   readonly game: unknown;
   readonly logLength: number;
   readonly sequence: number;
 }
 
-export interface StoredGameSessionState {
+interface StoredGameSessionState {
   readonly setup: unknown | null;
   readonly game: unknown | null;
   readonly hostPlayerId: string | null;
@@ -30,7 +31,7 @@ export interface StoredGameSessionState {
   readonly undoHistory: readonly StoredUndoSnapshot[];
 }
 
-export interface StoredGameResults {
+interface StoredGameResults {
   readonly hostPlayerId: string;
   readonly winner: "red" | "black";
   readonly playedAt: string;
@@ -41,10 +42,12 @@ export interface StoredGameResults {
     readonly team: "red" | "black";
     readonly status: "active" | "eliminated" | "red-carded";
     readonly fouls: number;
+    readonly bestMoveHits?: number | null;
   }[];
 }
 
 export interface SaveGameSessionInput {
+  readonly clubId?: string;
   readonly gameId: string;
   readonly name: string;
   readonly mutationId: string;
@@ -116,8 +119,25 @@ interface RosterState {
   readonly hostPlayerId?: string | null;
 }
 
+const assertPlayersBelongToClub = async (
+  client: PoolClient,
+  clubId: string,
+  playerIds: readonly string[],
+): Promise<void> => {
+  const uniqueIds = [...new Set(playerIds.filter((id) => id !== ""))];
+  if (uniqueIds.length === 0) return;
+  const result = await client.query<{ count: number }>(
+    "SELECT COUNT(*)::int AS count FROM players WHERE club_id = $1 AND id = ANY($2::uuid[])",
+    [clubId, uniqueIds],
+  );
+  if (result.rows[0]?.count !== uniqueIds.length) {
+    throw new Error("All game participants must belong to the selected club");
+  }
+};
+
 const replaceActiveRoster = async (
   client: PoolClient,
+  clubId: string,
   gameId: string,
   state: StoredGameSessionState,
 ): Promise<void> => {
@@ -142,6 +162,10 @@ const replaceActiveRoster = async (
       id === "" ? [] : [{ id, seat: index + 1 }],
     ) ??
     [];
+  await assertPlayersBelongToClub(client, clubId, [
+    ...(hostPlayerId === undefined || hostPlayerId === null ? [] : [hostPlayerId]),
+    ...seatedPlayers.map(({ id }) => id),
+  ]);
   for (const player of seatedPlayers) {
     await client.query(
       `INSERT INTO game_session_players (game_id, player_id, seat, is_host)
@@ -153,6 +177,7 @@ const replaceActiveRoster = async (
 
 const replaceLogTail = async (
   client: PoolClient,
+  clubId: string,
   gameId: string,
   log: readonly StoredGameLogEntry[],
 ): Promise<void> => {
@@ -161,11 +186,12 @@ const replaceLogTail = async (
     const seat = typeof entry.payload.seat === "number" ? entry.payload.seat : null;
     await client.query(
       `INSERT INTO game_events
-         (id, game_id, sequence, idempotency_key, event_type, phase, seat, payload, secret,
+         (id, club_id, game_id, sequence, idempotency_key, event_type, phase, seat, payload, secret,
           created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11)`,
       [
         entry.id,
+        clubId,
         gameId,
         index + 2,
         entry.id,
@@ -211,6 +237,7 @@ const updateLastPlayed = async (
 
 const replaceResults = async (
   client: PoolClient,
+  clubId: string,
   gameId: string,
   results: StoredGameResults | null,
 ): Promise<void> => {
@@ -227,23 +254,28 @@ const replaceResults = async (
     await updateLastPlayed(client, [...affected]);
     return;
   }
+  await assertPlayersBelongToClub(client, clubId, [
+    results.hostPlayerId,
+    ...results.players.map(({ playerId }) => playerId),
+  ]);
   affected.add(results.hostPlayerId);
   for (const player of results.players) affected.add(player.playerId);
   await client.query(
-    `INSERT INTO game_results (game_id, winner, played_at, host_player_id)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO game_results (game_id, club_id, winner, played_at, host_player_id)
+     VALUES ($1, $2, $3, $4, $5)
      ON CONFLICT (game_id) DO UPDATE
        SET winner = EXCLUDED.winner,
            played_at = EXCLUDED.played_at,
-           host_player_id = EXCLUDED.host_player_id`,
-    [gameId, results.winner, results.playedAt, results.hostPlayerId],
+           host_player_id = EXCLUDED.host_player_id
+     WHERE game_results.club_id = EXCLUDED.club_id`,
+    [gameId, clubId, results.winner, results.playedAt, results.hostPlayerId],
   );
   await client.query("DELETE FROM game_player_results WHERE game_id = $1", [gameId]);
   for (const player of results.players) {
     await client.query(
       `INSERT INTO game_player_results
-         (game_id, player_id, seat, role, team, final_status, fouls, won)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $5 = $8)`,
+         (game_id, player_id, seat, role, team, final_status, fouls, won, best_move_hits)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $5 = $8, $9)`,
       [
         gameId,
         player.playerId,
@@ -253,6 +285,7 @@ const replaceResults = async (
         player.status,
         player.fouls,
         results.winner,
+        player.bestMoveHits ?? null,
       ],
     );
   }
@@ -261,13 +294,14 @@ const replaceResults = async (
 
 const synchronizeAggregate = async (
   client: PoolClient,
+  clubId: string,
   gameId: string,
   state: StoredGameSessionState,
   results: StoredGameResults | null,
 ): Promise<void> => {
-  await replaceLogTail(client, gameId, state.log);
-  await replaceResults(client, gameId, results);
-  if (results === null) await replaceActiveRoster(client, gameId, state);
+  await replaceLogTail(client, clubId, gameId, state.log);
+  await replaceResults(client, clubId, gameId, results);
+  if (results === null) await replaceActiveRoster(client, clubId, gameId, state);
   else await client.query("DELETE FROM game_session_players WHERE game_id = $1", [gameId]);
 };
 
@@ -277,6 +311,25 @@ const mutationRequest = (input: SaveGameSessionInput) => ({
   state: input.state,
   results: input.results,
 });
+
+const allocateCanonicalName = async (
+  client: PoolClient,
+  clubId: string,
+  requestedName: string,
+): Promise<string> => {
+  const match = /^(\d{2}\.\d{2}\.\d{2})(?:\s+#\d+)?$/.exec(requestedName.trim());
+  if (match === null) return requestedName.trim();
+  const date = match[1]!;
+  const allocated = await client.query<{ last_number: number }>(
+    `INSERT INTO game_daily_counters (club_id, game_date, last_number)
+     VALUES ($1, TO_DATE($2, 'DD.MM.YY'), 1)
+     ON CONFLICT (club_id, game_date) DO UPDATE
+       SET last_number = game_daily_counters.last_number + 1
+     RETURNING last_number`,
+    [clubId, date],
+  );
+  return `${date} #${allocated.rows[0]!.last_number}`;
+};
 
 export class GameSessionMutationMismatchError extends Error {
   public override readonly name = "GameSessionMutationMismatchError";
@@ -301,21 +354,26 @@ export class GameSessionStore {
     await initializeSchema(this.pool);
   }
 
-  public async clear(gameId: string, expectedRevision?: number): Promise<void> {
+  public async clear(
+    gameId: string,
+    expectedRevision?: number,
+    clubId = DEFAULT_CLUB_ID,
+  ): Promise<void> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
       await lockAggregateProjectionTables(client);
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [gameId]);
       const current = await client.query<{ revision: number }>(
-        "SELECT revision FROM game_sessions WHERE id = $1 FOR UPDATE",
-        [gameId],
+        "SELECT revision FROM game_sessions WHERE id = $1 AND club_id = $2 FOR UPDATE",
+        [gameId, clubId],
       );
       const currentRevision = current.rows[0]?.revision ?? 0;
       if (expectedRevision !== undefined && currentRevision !== expectedRevision) {
-        const deleted = await client.query("SELECT 1 FROM deleted_games WHERE game_id = $1", [
-          gameId,
-        ]);
+        const deleted = await client.query(
+          "SELECT 1 FROM deleted_games WHERE game_id = $1 AND club_id = $2",
+          [gameId, clubId],
+        );
         if (current.rowCount !== 0 || deleted.rowCount === 0) {
           throw new GameSessionConflictError(currentRevision);
         }
@@ -323,9 +381,9 @@ export class GameSessionStore {
         return;
       }
       await client.query(
-        `INSERT INTO deleted_games (game_id) VALUES ($1)
+        `INSERT INTO deleted_games (game_id, club_id) VALUES ($1, $2)
          ON CONFLICT (game_id) DO NOTHING`,
-        [gameId],
+        [gameId, clubId],
       );
       const affectedPlayers = await client.query<{ player_id: string }>(
         `SELECT player_id FROM game_player_results WHERE game_id = $1
@@ -336,9 +394,18 @@ export class GameSessionStore {
             AND host_player_id IS NOT NULL`,
         [gameId],
       );
-      await client.query("DELETE FROM game_sessions WHERE id = $1", [gameId]);
-      await client.query("DELETE FROM game_events WHERE game_id = $1", [gameId]);
-      await client.query("DELETE FROM game_results WHERE game_id = $1", [gameId]);
+      await client.query("DELETE FROM game_sessions WHERE id = $1 AND club_id = $2", [
+        gameId,
+        clubId,
+      ]);
+      await client.query("DELETE FROM game_events WHERE game_id = $1 AND club_id = $2", [
+        gameId,
+        clubId,
+      ]);
+      await client.query("DELETE FROM game_results WHERE game_id = $1 AND club_id = $2", [
+        gameId,
+        clubId,
+      ]);
       const affectedPlayerIds = affectedPlayers.rows.map(({ player_id }) => player_id);
       await updateLastPlayed(client, affectedPlayerIds);
       await client.query("COMMIT");
@@ -350,12 +417,13 @@ export class GameSessionStore {
     }
   }
 
-  public async listActive(): Promise<readonly GameSessionSummary[]> {
+  public async listActive(clubId = DEFAULT_CLUB_ID): Promise<readonly GameSessionSummary[]> {
     const result = await this.pool.query<SessionRow>(
       `SELECT ${sessionColumns}
          FROM game_sessions
-        WHERE status = 'active'
+        WHERE status = 'active' AND club_id = $1
         ORDER BY updated_at DESC, id`,
+      [clubId],
     );
     return result.rows.map((row) => {
       const state = row.state as StoredGameSessionState & {
@@ -376,16 +444,17 @@ export class GameSessionStore {
     });
   }
 
-  public async get(gameId: string): Promise<StoredGameSession | null> {
+  public async get(gameId: string, clubId = DEFAULT_CLUB_ID): Promise<StoredGameSession | null> {
     const result = await this.pool.query<SessionRow>(
-      `SELECT ${sessionColumns} FROM game_sessions WHERE id = $1`,
-      [gameId],
+      `SELECT ${sessionColumns} FROM game_sessions WHERE id = $1 AND club_id = $2`,
+      [gameId, clubId],
     );
     const row = result.rows[0];
     return row === undefined ? null : mapSession(row, false);
   }
 
   public async save(input: SaveGameSessionInput): Promise<StoredGameSession> {
+    const clubId = input.clubId ?? DEFAULT_CLUB_ID;
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -400,8 +469,8 @@ export class GameSessionStore {
                 mutation.request AS mutation_request
            FROM game_session_mutations AS mutation
            JOIN game_sessions AS session ON session.id = mutation.game_id
-          WHERE mutation.game_id = $1 AND mutation.mutation_id = $2`,
-        [input.gameId, input.mutationId],
+          WHERE mutation.game_id = $1 AND mutation.mutation_id = $2 AND session.club_id = $3`,
+        [input.gameId, input.mutationId, clubId],
       );
       const duplicateRow = duplicate.rows[0];
       if (duplicateRow !== undefined) {
@@ -416,8 +485,8 @@ export class GameSessionStore {
       }
 
       const current = await client.query<SessionRow>(
-        `SELECT ${sessionColumns} FROM game_sessions WHERE id = $1 FOR UPDATE`,
-        [input.gameId],
+        `SELECT ${sessionColumns} FROM game_sessions WHERE id = $1 AND club_id = $2 FOR UPDATE`,
+        [input.gameId, clubId],
       );
       const currentRow = current.rows[0];
       if (currentRow !== undefined) {
@@ -428,13 +497,12 @@ export class GameSessionStore {
         const status = input.results === null ? "active" : "completed";
         const updated = await client.query<SessionRow>(
           `UPDATE game_sessions
-              SET name = $2, revision = $3, last_mutation_id = $4,
-                  state = $5::jsonb, status = $6, results = $7::jsonb, updated_at = NOW()
+              SET revision = $2, last_mutation_id = $3,
+                  state = $4::jsonb, status = $5, results = $6::jsonb, updated_at = NOW()
             WHERE id = $1
           RETURNING ${sessionColumns}`,
           [
             input.gameId,
-            input.name.trim(),
             nextRevision,
             input.mutationId,
             JSON.stringify(input.state),
@@ -442,7 +510,7 @@ export class GameSessionStore {
             input.results === null ? null : JSON.stringify(input.results),
           ],
         );
-        await synchronizeAggregate(client, input.gameId, input.state, input.results);
+        await synchronizeAggregate(client, clubId, input.gameId, input.state, input.results);
         await client.query(
           `INSERT INTO game_session_mutations (game_id, mutation_id, revision, request)
            VALUES ($1, $2, $3, $4::jsonb)`,
@@ -457,15 +525,17 @@ export class GameSessionStore {
       if (input.baseRevision !== 0) {
         throw new GameSessionConflictError(0);
       }
+      const canonicalName = await allocateCanonicalName(client, clubId, input.name);
       const status = input.results === null ? "active" : "completed";
       const inserted = await client.query<SessionRow>(
         `INSERT INTO game_sessions
-           (id, name, revision, last_mutation_id, state, status, results)
-         VALUES ($1, $2, 1, $3, $4::jsonb, $5, $6::jsonb)
+           (id, club_id, name, revision, last_mutation_id, state, status, results)
+         VALUES ($1, $2, $3, 1, $4, $5::jsonb, $6, $7::jsonb)
          RETURNING ${sessionColumns}`,
         [
           input.gameId,
-          input.name.trim(),
+          clubId,
+          canonicalName,
           input.mutationId,
           JSON.stringify(input.state),
           status,
@@ -474,11 +544,11 @@ export class GameSessionStore {
       );
       await client.query(
         `INSERT INTO game_events
-           (id, game_id, sequence, idempotency_key, event_type, phase, payload, secret)
-         VALUES ($1, $2, 1, 'game-created', 'game.created', 'setup-players', $3::jsonb, FALSE)`,
-        [randomUUID(), input.gameId, JSON.stringify({ name: input.name.trim() })],
+           (id, club_id, game_id, sequence, idempotency_key, event_type, phase, payload, secret)
+         VALUES ($1, $2, $3, 1, 'game-created', 'game.created', 'setup-players', $4::jsonb, FALSE)`,
+        [randomUUID(), clubId, input.gameId, JSON.stringify({ name: canonicalName })],
       );
-      await synchronizeAggregate(client, input.gameId, input.state, input.results);
+      await synchronizeAggregate(client, clubId, input.gameId, input.state, input.results);
       await client.query(
         `INSERT INTO game_session_mutations (game_id, mutation_id, revision, request)
          VALUES ($1, $2, 1, $3::jsonb)`,

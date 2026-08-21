@@ -1,14 +1,18 @@
 import { useRef } from "react";
 import {
   advanceSetupPhase,
+  completeBestMove,
+  completeGoodbyeSpeech,
   completeCurrentTurn,
   beginNight,
+  countVotes,
   evaluateVictory,
   getCurrentTurnDuration,
   issueFoul,
   markPlayerInactive,
   nominate,
   redCard,
+  toggleBestMoveSeat,
 } from "@mafia/game-domain";
 import type { GameState } from "@mafia/game-domain";
 import { NightStage } from "../night/NightStage.js";
@@ -19,16 +23,21 @@ import { VotingStage } from "../voting/VotingStage.js";
 
 interface GameScreenProps {
   readonly game: GameState;
+  readonly gameName?: string;
   readonly hostName: string;
   readonly onGameChange: (game: GameState) => void;
   readonly onEvent: (type: string, payload: Record<string, unknown>) => void;
   readonly privacyHidden: boolean;
+  readonly onFinishGame?: () => void;
+  readonly finishGameState?: "ready" | "saving" | "saved" | "error";
+  readonly clubLogo?: string | null;
+  readonly clubName?: string;
 }
 
 const phaseTitle = (game: GameState): string => {
   switch (game.phase) {
-    case "mafia-negotiation":
-      return "Mafia negotiation";
+    case "mafia-planning":
+      return "Mafia planning stage";
     case "sheriff-wake":
       return "Sheriff wake-up";
     case "day":
@@ -39,14 +48,24 @@ const phaseTitle = (game: GameState): string => {
       return "Car crash";
     case "car-crash-decision":
       return "Car crash decision";
+    case "goodbye-speech":
+      return "Goodbye speech";
+    case "best-move":
+      return "Best move";
     case "night-mafia":
       return "Mafia shots";
+    case "night-mafia-result":
+      return "Mafia result";
     case "night-don":
       return "Don check";
+    case "night-don-result":
+      return "Don result";
     case "night-sheriff":
       return "Sheriff check";
+    case "night-sheriff-result":
+      return "Sheriff result";
     case "night-resolution":
-      return "Night result";
+      return "Night complete";
     case "finished":
       return `${game.winner === "red" ? "Citizens" : "Mafia"} win`;
   }
@@ -54,19 +73,41 @@ const phaseTitle = (game: GameState): string => {
 
 export const GameScreen = ({
   game,
+  gameName = "Mafia table",
   hostName,
   onGameChange,
   onEvent,
   privacyHidden,
+  onFinishGame = () => undefined,
+  finishGameState = "ready",
+  clubLogo = null,
+  clubName,
 }: GameScreenProps) => {
   const timerRef = useRef<TimerControlsHandle>(null);
   const currentSeat = game.turnOrder[game.currentTurnIndex];
   const currentPlayer = game.players.find(
     ({ seat, status }) => seat === currentSeat && status === "active",
   );
+  const isLastDayTurn = game.phase === "day" && game.currentTurnIndex === game.turnOrder.length - 1;
   const currentSpeakerHasNominated = game.nominations.some(
     ({ nominatorSeat }) => nominatorSeat === currentPlayer?.seat,
   );
+  const votingTotals = countVotes(game);
+  const votingStageActive =
+    game.phase === "voting" ||
+    game.phase === "car-crash" ||
+    game.phase === "car-crash-decision" ||
+    game.phase === "goodbye-speech";
+  const activeVoteCount =
+    game.phase === "car-crash-decision"
+      ? Object.keys(game.carCrashVotes ?? {}).length
+      : Object.keys(game.voteAssignments).length;
+  const activeCitizens = game.players.filter(
+    ({ team, status }) => team === "red" && status === "active",
+  ).length;
+  const activeMafia = game.players.filter(
+    ({ team, status }) => team === "black" && status === "active",
+  ).length;
 
   const continueSetup = () => {
     const next = advanceSetupPhase(game);
@@ -91,29 +132,60 @@ export const GameScreen = ({
   return (
     <main className={`game-shell phase-${game.phase}`}>
       <header className="game-header">
+        {clubLogo === null ? null : (
+          <img className="active-club-header-logo" src={clubLogo} alt="" />
+        )}
         <div>
-          <p className="eyebrow">Live game · Host view</p>
+          <p className="eyebrow">
+            Live game · {clubName === undefined ? "" : `${clubName} · `}
+            {gameName} · Host view
+          </p>
           <h1>{phaseTitle(game)}</h1>
         </div>
-        {game.phase === "mafia-negotiation" ? (
-          <div className="phase-banner night-banner">Wake Mafia · negotiate target order</div>
+        {game.phase === "mafia-planning" ? (
+          <div className="phase-banner night-banner">Mafia planning stage · set target order</div>
         ) : null}
         {game.phase === "sheriff-wake" ? (
           <div className="phase-banner sheriff-banner">Wake Sheriff · 10 seconds</div>
         ) : null}
         {game.phase === "day" && currentPlayer !== undefined ? (
-          <div className="phase-banner current-turn-copy">Current turn: {currentPlayer.name}</div>
+          <div className="phase-banner current-turn-copy">
+            {isLastDayTurn
+              ? game.nominations.length > 0
+                ? `Final turn: ${currentPlayer.name} · Voting next`
+                : `Final turn: ${currentPlayer.name} · Night next`
+              : `Current turn: ${currentPlayer.name}`}
+          </div>
         ) : null}
         {game.phase === "car-crash" && currentPlayer !== undefined ? (
           <div className="phase-banner current-turn-copy">Car crash turn: {currentPlayer.name}</div>
+        ) : null}
+        {game.phase === "goodbye-speech" ? (
+          <div className="phase-banner current-turn-copy">Final words before night</div>
+        ) : null}
+        {game.phase === "best-move" ? (
+          <div className="phase-banner current-turn-copy">Name three potential Mafia players</div>
         ) : null}
       </header>
 
       <div className="live-layout">
         <section className="table-workspace">
+          <div
+            className="team-counts"
+            aria-label={
+              privacyHidden
+                ? "Active team counts hidden"
+                : `${activeCitizens} active citizens and ${activeMafia} active Mafia`
+            }
+          >
+            <span>Citizens {privacyHidden ? "?" : activeCitizens}</span>
+            <span>Mafia {privacyHidden ? "?" : activeMafia}</span>
+          </div>
           {game.phase === "voting" || game.phase === "car-crash-decision" ? (
             <VotingStage
               game={game}
+              hostName={hostName}
+              privacyHidden={privacyHidden}
               onGameChange={onGameChange}
               onEvent={onEvent}
               onResolved={(votingGame, seats) => {
@@ -123,9 +195,16 @@ export const GameScreen = ({
                 );
                 const winner = evaluateVictory(afterElimination.players);
                 const next =
-                  winner === null
-                    ? beginNight(afterElimination)
-                    : { ...afterElimination, phase: "finished" as const, winner };
+                  winner !== null
+                    ? { ...afterElimination, phase: "finished" as const, winner }
+                    : seats.length === 0
+                      ? beginNight(afterElimination)
+                      : {
+                          ...afterElimination,
+                          phase: "goodbye-speech" as const,
+                          goodbyeSeats: seats,
+                          goodbyeNext: "night" as const,
+                        };
                 onGameChange(next);
                 for (const seat of seats) {
                   onEvent("player.eliminated", { seat, source: "vote" });
@@ -133,7 +212,13 @@ export const GameScreen = ({
               }}
             />
           ) : game.phase.startsWith("night-") ? (
-            <NightStage game={game} onGameChange={onGameChange} onEvent={onEvent} />
+            <NightStage
+              game={game}
+              hostName={hostName}
+              privacyHidden={privacyHidden}
+              onGameChange={onGameChange}
+              onEvent={onEvent}
+            />
           ) : (
             <GameTable
               hostName={hostName}
@@ -143,10 +228,31 @@ export const GameScreen = ({
                 name: player.name,
                 role: player.role,
                 status: player.status,
-                current:
-                  player.seat === currentPlayer?.seat &&
+                mafiaShooter:
+                  game.phase === "mafia-planning" &&
                   player.status === "active" &&
-                  (game.phase === "day" || game.phase === "car-crash"),
+                  player.team === "black",
+                sheriffHighlight:
+                  game.phase === "sheriff-wake" &&
+                  player.status === "active" &&
+                  player.role === "sheriff",
+                dimmed:
+                  (game.phase === "mafia-planning" && player.team !== "black") ||
+                  (game.phase === "sheriff-wake" && player.role !== "sheriff"),
+                inactive:
+                  (game.phase === "car-crash" && !game.carCrashSeats?.includes(player.seat)) ||
+                  (game.phase === "best-move" &&
+                    player.status !== "active" &&
+                    game.bestMove?.playerSeat !== player.seat),
+                goodbyeHighlight:
+                  game.goodbyeSeats?.includes(player.seat) ||
+                  (game.phase === "best-move" && game.bestMove?.playerSeat === player.seat),
+                current:
+                  (player.seat === currentPlayer?.seat &&
+                    player.status === "active" &&
+                    (game.phase === "day" || game.phase === "car-crash")) ||
+                  (game.phase === "best-move" &&
+                    game.bestMove?.selectedSeats.includes(player.seat)),
                 fouls: player.fouls,
                 muted: player.mutePending,
                 nominated: game.nominations.some(
@@ -199,8 +305,80 @@ export const GameScreen = ({
                   </>
                 ) : null
               }
+              seatActionLabel={(seat) =>
+                game.phase === "best-move"
+                  ? game.bestMove?.playerSeat === seat.seat
+                    ? `Best move by ${seat.name}`
+                    : game.bestMove?.selectedSeats.includes(seat.seat)
+                      ? `Remove ${seat.name} from Best move`
+                      : `Add ${seat.name} to Best move`
+                  : `Seat ${seat.seat}: ${seat.name}`
+              }
+              onSeatClick={(seat) => {
+                if (
+                  game.phase === "best-move" &&
+                  game.bestMove?.playerSeat !== seat &&
+                  game.players.find((player) => player.seat === seat)?.status === "active"
+                ) {
+                  onGameChange(toggleBestMoveSeat(game, seat));
+                }
+              }}
               center={
-                game.phase === "mafia-negotiation" ? (
+                game.phase === "finished" && game.winner !== null ? (
+                  <div className={`winner-card winner-${game.winner}`} role="status">
+                    <span className="table-prompt">Game complete</span>
+                    <strong>{game.winner === "red" ? "Citizens win" : "Mafia win"}</strong>
+                    <button
+                      type="button"
+                      className="finish-game-button"
+                      disabled={finishGameState === "saving" || finishGameState === "saved"}
+                      onClick={onFinishGame}
+                    >
+                      {finishGameState === "saving"
+                        ? "Saving game…"
+                        : finishGameState === "saved"
+                          ? "Game safely saved"
+                          : "Finish the game"}
+                    </button>
+                    {finishGameState === "error" ? (
+                      <span className="finish-game-error">Game was not saved. Try again.</span>
+                    ) : null}
+                  </div>
+                ) : game.phase === "best-move" && game.bestMove !== undefined ? (
+                  <div className="best-move-center">
+                    <span className="table-prompt">
+                      Best move · {game.bestMove.selectedSeats.length}/3
+                    </span>
+                    <button
+                      type="button"
+                      className="table-primary"
+                      disabled={game.bestMove.selectedSeats.length !== 3}
+                      onClick={() => {
+                        const next = completeBestMove(game);
+                        onGameChange(next);
+                        onEvent("best-move.completed", {
+                          playerSeat: game.bestMove?.playerSeat,
+                          selectedSeats: game.bestMove?.selectedSeats,
+                          mafiaHits: next.bestMove?.mafiaHits,
+                        });
+                      }}
+                    >
+                      Save Best move
+                    </button>
+                  </div>
+                ) : game.phase === "goodbye-speech" ? (
+                  <button
+                    type="button"
+                    className="table-primary"
+                    onClick={() => {
+                      const next = completeGoodbyeSpeech(game);
+                      onGameChange(next);
+                      onEvent("phase.changed", { from: game.phase, to: next.phase });
+                    }}
+                  >
+                    {game.goodbyeNext === "day" ? `Begin day ${game.day}` : "Begin night"}
+                  </button>
+                ) : game.phase === "mafia-planning" ? (
                   <button type="button" className="table-primary" onClick={continueSetup}>
                     Continue to Sheriff wake-up
                   </button>
@@ -209,13 +387,22 @@ export const GameScreen = ({
                     Begin day one
                   </button>
                 ) : game.phase === "day" && currentPlayer !== undefined ? (
-                  <div className="turn-actions">
-                    <button type="button" className="table-primary" onClick={startTurn}>
-                      Start {currentPlayer.name} turn
-                    </button>
-                    <button type="button" onClick={finishTurn}>
-                      Next player
-                    </button>
+                  <div className="day-center-stack">
+                    {game.dayNotice === "happy" ? (
+                      <div className="happy-day-note">Happy day</div>
+                    ) : null}
+                    <div className="turn-actions">
+                      <button type="button" className="table-primary" onClick={startTurn}>
+                        Start {currentPlayer.name} turn
+                      </button>
+                      <button type="button" onClick={finishTurn}>
+                        {isLastDayTurn
+                          ? game.nominations.length > 0
+                            ? "Begin voting"
+                            : "Begin night"
+                          : "Next player"}
+                      </button>
+                    </div>
                   </div>
                 ) : game.phase === "car-crash" && currentPlayer !== undefined ? (
                   <div className="turn-actions">
@@ -236,12 +423,20 @@ export const GameScreen = ({
           <TimerControls ref={timerRef} />
           <section className="nomination-panel">
             <p className="eyebrow">Voting order</p>
+            {votingStageActive ? (
+              <p className="vote-count-summary">
+                {activeVoteCount} active {activeVoteCount === 1 ? "vote" : "votes"}
+              </p>
+            ) : null}
             {game.nominations.length === 0 ? (
               <p className="muted">No nominations yet</p>
             ) : (
               <ol>
                 {game.nominations.map(({ candidateSeat }) => (
-                  <li key={candidateSeat}>Seat {candidateSeat}</li>
+                  <li key={candidateSeat}>
+                    Seat {candidateSeat}
+                    {votingStageActive ? <span>{votingTotals[candidateSeat] ?? 0}</span> : null}
+                  </li>
                 ))}
               </ol>
             )}

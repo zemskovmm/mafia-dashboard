@@ -181,6 +181,7 @@ describe("PlayerStore", () => {
           team: "red" as const,
           status: "eliminated" as const,
           fouls: 2,
+          bestMoveHits: 2,
         },
       ],
     };
@@ -204,6 +205,8 @@ describe("PlayerStore", () => {
       totalFouls: 2,
       eliminations: 1,
       redCards: 0,
+      bestMoves: 1,
+      bestMoveMafiaHits: 2,
     });
     expect(saved?.lastPlayedAt?.toISOString()).toBe("2026-08-17T21:00:00.000Z");
   });
@@ -459,7 +462,7 @@ describe("PlayerStore", () => {
       await locker.query("BEGIN");
       await locker.query("SELECT id FROM players WHERE id = $1 FOR UPDATE", [player.id]);
       const deletion = new PlayerStore(operationPool).delete(player.id);
-      await waitForBlockedQuery("SELECT id FROM players WHERE id = $1 FOR UPDATE");
+      await waitForBlockedQuery("SELECT id FROM players WHERE id = $1 AND club_id = $2 FOR UPDATE");
 
       const save = new GameSessionStore(operationPool).save({
         gameId,

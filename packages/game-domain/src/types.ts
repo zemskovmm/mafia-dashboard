@@ -2,20 +2,25 @@ export type Role = "sheriff" | "citizen" | "mafia" | "don";
 
 export type Team = "red" | "black";
 
-export type SetupStep = "music" | "role-draw" | "mafia-negotiation";
+export type SetupStep = "music" | "role-draw" | "mafia-planning";
 
 export type PlayerStatus = "active" | "eliminated" | "red-carded";
 
 export type GamePhase =
-  | "mafia-negotiation"
+  | "mafia-planning"
   | "sheriff-wake"
   | "day"
   | "voting"
   | "car-crash"
   | "car-crash-decision"
+  | "goodbye-speech"
+  | "best-move"
   | "night-mafia"
+  | "night-mafia-result"
   | "night-don"
+  | "night-don-result"
   | "night-sheriff"
+  | "night-sheriff-result"
   | "night-resolution"
   | "finished";
 
@@ -66,7 +71,17 @@ export interface GameState {
   readonly votingRound?: "initial" | "repeat";
   readonly carCrashSeats?: readonly number[];
   readonly carCrashVotes?: Readonly<Partial<Record<number, boolean>>>;
+  readonly goodbyeSeats?: readonly number[];
+  readonly goodbyeNext?: "day" | "night";
   readonly shotAssignments: Readonly<Partial<Record<number, number>>>;
+  readonly checkResult?: SecretCheckResult;
+  readonly nightResult?: NightShotResult;
+  readonly dayNotice?: "happy";
+  readonly bestMove?: {
+    readonly playerSeat: number;
+    readonly selectedSeats: readonly number[];
+    readonly mafiaHits?: number;
+  };
   readonly winner: Winner;
 }
 
@@ -84,7 +99,9 @@ export interface CarCrashVoteResult {
 }
 
 export type NightShotResult =
-  { readonly kind: "kill"; readonly targetSeat: number } | { readonly kind: "miss" };
+  | { readonly kind: "kill"; readonly targetSeat: number }
+  | { readonly kind: "no-effect"; readonly targetSeat: number }
+  | { readonly kind: "miss" };
 
 export interface SecretCheckResult {
   readonly kind: "don-check" | "sheriff-check";

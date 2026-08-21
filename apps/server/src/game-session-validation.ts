@@ -6,15 +6,20 @@ const team = z.enum(["red", "black"]);
 const playerStatus = z.enum(["active", "eliminated", "red-carded"]);
 const expectedRoleCounts = { sheriff: 1, citizen: 6, mafia: 2, don: 1 } as const;
 const gamePhase = z.enum([
-  "mafia-negotiation",
+  "mafia-planning",
   "sheriff-wake",
   "day",
   "voting",
   "car-crash",
   "car-crash-decision",
+  "goodbye-speech",
+  "best-move",
   "night-mafia",
+  "night-mafia-result",
   "night-don",
+  "night-don-result",
   "night-sheriff",
+  "night-sheriff-result",
   "night-resolution",
   "finished",
 ]);
@@ -26,7 +31,7 @@ const playerInput = z.object({
 });
 
 const setupState = z.object({
-  step: z.enum(["music", "role-draw", "mafia-negotiation"]),
+  step: z.enum(["music", "role-draw", "mafia-planning"]),
   players: z.array(playerInput).length(10),
   roleDeck: z.array(role).length(10),
   remainingRoles: z.array(role).max(10),
@@ -60,6 +65,7 @@ export const setupSessionStateSchema = z
       const visiblePlayers = [...setup.players].sort((left, right) => left.seat - right.seat);
       const visibleIds = visiblePlayers.map(({ id }) => id);
       const visibleSeats = visiblePlayers.map(({ seat }) => seat);
+      const visibleSeatSet = new Set(visibleSeats);
       if (
         new Set(visibleIds).size !== visibleIds.length ||
         new Set(visibleSeats).size !== visibleSeats.length
@@ -80,6 +86,44 @@ export const setupSessionStateSchema = z
           message: "Setup players must match the selected roster",
         });
       }
+      const assignmentEntries = Object.entries(setup.assignments);
+      if (
+        assignmentEntries.some(([seatText]) => {
+          const seat = Number(seatText);
+          return String(seat) !== seatText || !visibleSeatSet.has(seat);
+        })
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["setup", "assignments"],
+          message: "Role assignment keys must use canonical seated player numbers",
+        });
+      }
+      const countRoles = (roles: readonly string[]) =>
+        Object.fromEntries(
+          Object.keys(expectedRoleCounts).map((expectedRole) => [
+            expectedRole,
+            roles.filter((candidate) => candidate === expectedRole).length,
+          ]),
+        );
+      const deckCounts = countRoles(setup.roleDeck);
+      const conservedCounts = countRoles([
+        ...setup.remainingRoles,
+        ...assignmentEntries.map(([, assignedRole]) => assignedRole),
+      ]);
+      if (
+        assignmentEntries.length + setup.remainingRoles.length !== 10 ||
+        Object.entries(expectedRoleCounts).some(
+          ([expectedRole, count]) =>
+            deckCounts[expectedRole] !== count || conservedCounts[expectedRole] !== count,
+        )
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["setup"],
+          message: "Setup roles must conserve the canonical ten-card role deck",
+        });
+      }
     }
   });
 
@@ -91,7 +135,7 @@ const playerState = playerInput.extend({
   mutePending: z.boolean(),
 });
 
-export const gameStateSchema = z
+const gameStateSchema = z
   .object({
     phase: gamePhase,
     day: z.number().int().min(0),
@@ -109,7 +153,32 @@ export const gameStateSchema = z
     votingRound: z.enum(["initial", "repeat"]).optional(),
     carCrashSeats: z.array(z.number().int().min(1).max(10)).optional(),
     carCrashVotes: z.record(z.string(), z.boolean()).optional(),
+    goodbyeSeats: z.array(z.number().int().min(1).max(10)).optional(),
+    goodbyeNext: z.enum(["day", "night"]).optional(),
     shotAssignments: z.record(z.string(), z.number().int().min(1).max(10)),
+    checkResult: z
+      .object({
+        kind: z.enum(["don-check", "sheriff-check"]),
+        targetSeat: z.number().int().min(1).max(10),
+        match: z.boolean(),
+        secret: z.literal(true),
+      })
+      .optional(),
+    nightResult: z
+      .discriminatedUnion("kind", [
+        z.object({ kind: z.literal("kill"), targetSeat: z.number().int().min(1).max(10) }),
+        z.object({ kind: z.literal("no-effect"), targetSeat: z.number().int().min(1).max(10) }),
+        z.object({ kind: z.literal("miss") }),
+      ])
+      .optional(),
+    dayNotice: z.literal("happy").optional(),
+    bestMove: z
+      .object({
+        playerSeat: z.number().int().min(1).max(10),
+        selectedSeats: z.array(z.number().int().min(1).max(10)).max(3),
+        mafiaHits: z.number().int().min(0).max(3).optional(),
+      })
+      .optional(),
     winner: team.nullable(),
   })
   .superRefine(
@@ -125,7 +194,10 @@ export const gameStateSchema = z
         votingRound,
         carCrashSeats = [],
         carCrashVotes = {},
+        goodbyeSeats = [],
         shotAssignments,
+        checkResult,
+        bestMove,
         winner,
       },
       context,
@@ -199,13 +271,6 @@ export const gameStateSchema = z
       const nominationNominators = new Set<number>();
       const nominationCandidates = new Set<number>();
       for (const [index, nomination] of nominations.entries()) {
-        if (nomination.nominatorSeat === nomination.candidateSeat) {
-          context.addIssue({
-            code: "custom",
-            path: ["nominations", index, "candidateSeat"],
-            message: "A player cannot nominate themself",
-          });
-        }
         if (nomination.order !== index + 1) {
           context.addIssue({
             code: "custom",
@@ -231,7 +296,7 @@ export const gameStateSchema = z
         nominationCandidates.add(nomination.candidateSeat);
       }
 
-      const setupPhase = phase === "mafia-negotiation" || phase === "sheriff-wake";
+      const setupPhase = phase === "mafia-planning" || phase === "sheriff-wake";
       if (setupPhase && nominations.length > 0) {
         context.addIssue({
           code: "custom",
@@ -256,8 +321,36 @@ export const gameStateSchema = z
         });
       }
       if (phase === "voting") {
+        const votingOrder = nominations.map(({ candidateSeat }) => candidateSeat);
+        if (
+          turnOrder.length !== votingOrder.length ||
+          turnOrder.some((seat, index) => seat !== votingOrder[index])
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["turnOrder"],
+            message: "Voting order must exactly match nomination order",
+          });
+        }
+        if (currentTurnIndex < 0 || currentTurnIndex >= votingOrder.length) {
+          context.addIssue({
+            code: "custom",
+            path: ["currentTurnIndex"],
+            message: "Voting candidate index must reference a nomination",
+          });
+        }
+        const availableCandidates = new Set(votingOrder.slice(0, currentTurnIndex + 1));
+        const assignedVoterSeats = new Set<number>();
         for (const [voterSeatText, candidateSeat] of voteEntries) {
           const voterSeat = Number(voterSeatText);
+          assignedVoterSeats.add(voterSeat);
+          if (String(voterSeat) !== voterSeatText) {
+            context.addIssue({
+              code: "custom",
+              path: ["voteAssignments", voterSeatText],
+              message: "Voter keys must use canonical seat numbers",
+            });
+          }
           if (!activeSeats.has(voterSeat)) {
             context.addIssue({
               code: "custom",
@@ -265,13 +358,24 @@ export const gameStateSchema = z
               message: "Only active players may vote",
             });
           }
-          if (!nominationCandidates.has(candidateSeat)) {
+          if (!nominationCandidates.has(candidateSeat) || !availableCandidates.has(candidateSeat)) {
             context.addIssue({
               code: "custom",
               path: ["voteAssignments", voterSeatText],
-              message: "Votes must target nominated players",
+              message: "Votes must target the current or an earlier nominated player",
             });
           }
+        }
+        if (
+          currentTurnIndex === votingOrder.length - 1 &&
+          (assignedVoterSeats.size !== activeSeats.size ||
+            [...activeSeats].some((seat) => !assignedVoterSeats.has(seat)))
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["voteAssignments"],
+            message: "The final voting candidate must receive every remaining active vote",
+          });
         }
       }
 
@@ -356,9 +460,23 @@ export const gameStateSchema = z
           message: "Night shots are not valid during the day phase",
         });
       }
-      if (phase === "night-mafia") {
+      if (phase === "night-mafia" || phase === "night-mafia-result") {
+        const activeBlackSeats = new Set(
+          players
+            .filter(({ status, team }) => status === "active" && team === "black")
+            .map(({ seat }) => seat),
+        );
+        const assignedShooterSeats = new Set<number>();
         for (const [shooterSeatText, targetSeat] of shotEntries) {
           const shooterSeat = Number(shooterSeatText);
+          assignedShooterSeats.add(shooterSeat);
+          if (String(shooterSeat) !== shooterSeatText) {
+            context.addIssue({
+              code: "custom",
+              path: ["shotAssignments", shooterSeatText],
+              message: "Mafia shooter keys must use canonical seat numbers",
+            });
+          }
           const shooter = players.find(({ seat }) => seat === shooterSeat);
           if (shooter?.status !== "active" || shooter.team !== "black") {
             context.addIssue({
@@ -367,13 +485,66 @@ export const gameStateSchema = z
               message: "Only active Mafia-aligned players may shoot",
             });
           }
-          if (!activeSeats.has(targetSeat)) {
+          if (!playerSeats.has(targetSeat)) {
             context.addIssue({
               code: "custom",
               path: ["shotAssignments", shooterSeatText],
-              message: "Night shots must target active players",
+              message: "Night shots must target seated players",
             });
           }
+        }
+        if (
+          phase === "night-mafia-result" &&
+          (assignedShooterSeats.size !== activeBlackSeats.size ||
+            [...activeBlackSeats].some((seat) => !assignedShooterSeats.has(seat)))
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["shotAssignments"],
+            message: "Every active Mafia-aligned player must have exactly one evaluated shot",
+          });
+        }
+      }
+      const expectedCheckKind =
+        phase === "night-don-result"
+          ? "don-check"
+          : phase === "night-sheriff-result"
+            ? "sheriff-check"
+            : null;
+      if (
+        expectedCheckKind === null
+          ? checkResult !== undefined
+          : checkResult?.kind !== expectedCheckKind
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["checkResult"],
+          message: "Check results must exist only in their matching result phase",
+        });
+      }
+      if (phase === "goodbye-speech" && goodbyeSeats.length === 0) {
+        context.addIssue({
+          code: "custom",
+          path: ["goodbyeSeats"],
+          message: "A goodbye speech requires at least one player",
+        });
+      }
+      if (phase === "best-move") {
+        const actor = players.find(({ seat }) => seat === bestMove?.playerSeat);
+        if (
+          bestMove === undefined ||
+          actor?.status === "active" ||
+          new Set(bestMove.selectedSeats).size !== bestMove.selectedSeats.length ||
+          bestMove.selectedSeats.includes(bestMove.playerSeat) ||
+          bestMove.selectedSeats.some((seat) => !activeSeats.has(seat)) ||
+          bestMove.mafiaHits !== undefined
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["bestMove"],
+            message:
+              "Best move must belong to the deceased player and select up to three active seats",
+          });
         }
       }
       for (const [index, player] of players.entries()) {
@@ -416,7 +587,7 @@ export const durableGameEventTypeSchema = z
     message: "Timer and music controls are not durable game log events",
   });
 
-export const gameLogEntrySchema = z.object({
+const gameLogEntrySchema = z.object({
   id: z.uuid(),
   sequence: z.number().int().positive(),
   type: durableGameEventTypeSchema,
@@ -426,7 +597,7 @@ export const gameLogEntrySchema = z.object({
   createdAt: z.iso.datetime({ offset: true }),
 });
 
-export const gameSessionStateSchema = z
+const gameSessionStateSchema = z
   .object({
     setup: setupSessionStateSchema.nullable(),
     game: gameStateSchema.nullable(),
@@ -509,7 +680,7 @@ export const gameSessionStateSchema = z
     }
   });
 
-export const finalGameResultsSchema = z
+const finalGameResultsSchema = z
   .object({
     hostPlayerId: z.uuid(),
     winner: team,
@@ -523,6 +694,7 @@ export const finalGameResultsSchema = z
           team,
           status: playerStatus,
           fouls: z.number().int().min(0),
+          bestMoveHits: z.number().int().min(0).max(3).nullable().optional(),
         }),
       )
       .length(10),
@@ -576,11 +748,11 @@ export const gameSessionMutationSchema = z
   })
   .superRefine(({ state, results }, context) => {
     const finished = state.game?.phase === "finished";
-    if (finished !== (results !== null)) {
+    if (results !== null && !finished) {
       context.addIssue({
         code: "custom",
         path: ["results"],
-        message: "Final results must exactly match finished state",
+        message: "Final results require a finished game",
       });
       return;
     }
@@ -601,7 +773,11 @@ export const gameSessionMutationSchema = z
         player.role !== result.role ||
         player.team !== result.team ||
         player.status !== result.status ||
-        player.fouls !== result.fouls
+        player.fouls !== result.fouls ||
+        (result.bestMoveHits ?? null) !==
+          (state.game.bestMove?.playerSeat === player.seat
+            ? (state.game.bestMove.mafiaHits ?? null)
+            : null)
       ) {
         context.addIssue({
           code: "custom",
@@ -612,5 +788,3 @@ export const gameSessionMutationSchema = z
       }
     }
   });
-
-export type ValidatedGameSessionMutation = z.infer<typeof gameSessionMutationSchema>;

@@ -9,6 +9,7 @@ const config = {
   redirectUri: "https://mbp16.tail102fab.ts.net/api/music/oauth/callback",
   encryptionKey: Buffer.alloc(32, 7),
 };
+const userId = "00000000-0000-4000-8000-000000000001";
 const pool = new Pool({
   connectionString:
     process.env.TEST_DATABASE_URL ?? "postgresql://mafia:mafia@127.0.0.1:54329/mafia_test",
@@ -63,7 +64,7 @@ describe("YouTubeOAuthService", () => {
     const service = new YouTubeOAuthService(pool, config, fetcher as unknown as typeof fetch);
     await pool.query("DELETE FROM youtube_oauth_credentials");
 
-    await service.exchangeCode("authorization-code");
+    await service.exchangeCode(userId, "authorization-code");
 
     expect(fetcher).toHaveBeenNthCalledWith(
       1,
@@ -75,16 +76,24 @@ describe("YouTubeOAuthService", () => {
       "https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true",
       expect.objectContaining({ headers: { authorization: "Bearer access-token-secret" } }),
     );
-    await expect(service.getStatus()).resolves.toEqual({
+    await expect(service.getStatus(userId)).resolves.toEqual({
       configured: true,
       connected: true,
       accountLabel: "Mafia Host",
+    });
+    await expect(service.getStatus("00000000-0000-4000-8000-000000000002")).resolves.toEqual({
+      configured: true,
+      connected: false,
+      accountLabel: null,
     });
 
     const stored = await pool.query<{
       access_token_encrypted: Buffer;
       refresh_token_encrypted: Buffer;
-    }>("SELECT access_token_encrypted, refresh_token_encrypted FROM youtube_oauth_credentials");
+    }>(
+      "SELECT access_token_encrypted, refresh_token_encrypted FROM youtube_oauth_credentials WHERE user_id = $1",
+      [userId],
+    );
     expect(stored.rows).toHaveLength(1);
     expect(stored.rows[0]!.access_token_encrypted.toString()).not.toContain("access-token-secret");
     expect(stored.rows[0]!.refresh_token_encrypted.toString()).not.toContain(
@@ -146,12 +155,13 @@ describe("YouTubeOAuthService", () => {
       );
     const service = new YouTubeOAuthService(pool, config, fetcher as unknown as typeof fetch);
     await pool.query("DELETE FROM youtube_oauth_credentials");
-    await service.exchangeCode("authorization-code");
+    await service.exchangeCode(userId, "authorization-code");
     await pool.query(
-      "UPDATE youtube_oauth_credentials SET expires_at = '2000-01-01T00:00:00.000Z'",
+      "UPDATE youtube_oauth_credentials SET expires_at = '2000-01-01T00:00:00.000Z' WHERE user_id = $1",
+      [userId],
     );
 
-    await expect(service.listPlaylists()).resolves.toEqual([
+    await expect(service.listPlaylists(userId)).resolves.toEqual([
       {
         id: "PL-first",
         title: "Dinner mix",
@@ -172,7 +182,7 @@ describe("YouTubeOAuthService", () => {
     expect(String(fetcher.mock.calls[4]![0])).toContain("pageToken=next-page");
   });
 
-  it("returns every item in a playlist for a local playback queue", async () => {
+  it("returns every item in the supplied playlist order", async () => {
     const jsonResponse = (body: unknown) =>
       new Response(JSON.stringify(body), {
         status: 200,
@@ -232,9 +242,9 @@ describe("YouTubeOAuthService", () => {
       );
     const service = new YouTubeOAuthService(pool, config, fetcher as unknown as typeof fetch);
     await pool.query("DELETE FROM youtube_oauth_credentials");
-    await service.exchangeCode("authorization-code");
+    await service.exchangeCode(userId, "authorization-code");
 
-    await expect(service.listPlaylistItems("PL-queue")).resolves.toEqual([
+    await expect(service.listPlaylistItems(userId, "PL-queue")).resolves.toEqual([
       {
         videoId: "video-1",
         title: "Opening track",
@@ -280,9 +290,9 @@ describe("YouTubeOAuthService", () => {
       );
     const service = new YouTubeOAuthService(pool, config, fetcher as unknown as typeof fetch);
     await pool.query("DELETE FROM youtube_oauth_credentials");
-    await service.exchangeCode("authorization-code");
+    await service.exchangeCode(userId, "authorization-code");
 
-    await expect(service.listPlaylistItems("PL-other")).rejects.toMatchObject({
+    await expect(service.listPlaylistItems(userId, "PL-other")).rejects.toMatchObject({
       name: "YouTubePlaylistAccessError",
     });
     expect(fetcher).toHaveBeenCalledTimes(3);
@@ -328,9 +338,9 @@ describe("YouTubeOAuthService", () => {
     });
     const service = new YouTubeOAuthService(pool, config, fetcher as unknown as typeof fetch);
     await pool.query("DELETE FROM youtube_oauth_credentials");
-    await service.exchangeCode("authorization-code");
+    await service.exchangeCode(userId, "authorization-code");
 
-    await expect(service.listPlaylistItems("PL-owned")).rejects.toThrow(
+    await expect(service.listPlaylistItems(userId, "PL-owned")).rejects.toThrow(
       "YouTube pagination limit exceeded",
     );
     expect(itemPages).toBe(20);
@@ -357,9 +367,9 @@ describe("YouTubeOAuthService", () => {
       .mockResolvedValueOnce(new Response(null, { status: 200 }));
     const service = new YouTubeOAuthService(pool, config, fetcher as unknown as typeof fetch);
     await pool.query("DELETE FROM youtube_oauth_credentials");
-    await service.exchangeCode("authorization-code");
+    await service.exchangeCode(userId, "authorization-code");
 
-    await service.disconnect();
+    await service.disconnect(userId);
 
     expect(fetcher).toHaveBeenNthCalledWith(
       3,
@@ -369,7 +379,7 @@ describe("YouTubeOAuthService", () => {
         body: expect.stringContaining("token=refresh-token-to-revoke"),
       }),
     );
-    await expect(service.getStatus()).resolves.toEqual({
+    await expect(service.getStatus(userId)).resolves.toEqual({
       configured: true,
       connected: false,
       accountLabel: null,

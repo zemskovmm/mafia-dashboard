@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gameSessionMutationSchema } from "./game-session-validation.js";
+import { gameSessionMutationSchema, setupSessionStateSchema } from "./game-session-validation.js";
 
 const uuid = (index: number) => `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
 
@@ -38,6 +38,232 @@ const liveGame = (day: number) => ({
 });
 
 describe("game session validation", () => {
+  it("allows a winning session to wait for explicit result confirmation", () => {
+    const base = liveGame(3);
+    const finished = {
+      ...base,
+      phase: "finished" as const,
+      winner: "red" as const,
+      players: base.players.map((player) =>
+        player.team === "black" ? { ...player, status: "eliminated" as const } : player,
+      ),
+      turnOrder: base.turnOrder.filter((seat) => seat <= 7),
+    };
+    const parsed = gameSessionMutationSchema.safeParse({
+      name: "Awaiting finish confirmation",
+      mutationId: uuid(90),
+      baseRevision: 4,
+      state: {
+        setup: null,
+        game: finished,
+        hostPlayerId: uuid(11),
+        hostName: "Host",
+        playlistId: "",
+        log: [],
+        undoHistory: [],
+      },
+      results: null,
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it("conserves the role deck for partial manual role assignments", () => {
+    const selectedPlayerIds = Array.from({ length: 10 }, (_, index) => uuid(index + 1));
+    const valid = {
+      step: "roles",
+      hostPlayerId: uuid(11),
+      selectedPlayerIds,
+      setup: {
+        step: "role-draw",
+        players: selectedPlayerIds.map((id, index) => ({
+          id,
+          name: `Player ${index + 1}`,
+          seat: index + 1,
+        })),
+        roleDeck: clubRoles,
+        remainingRoles: clubRoles.filter((role) => role !== "sheriff"),
+        assignments: { "1": "sheriff" },
+      },
+    };
+    expect(setupSessionStateSchema.safeParse(valid).success).toBe(true);
+    expect(
+      setupSessionStateSchema.safeParse({
+        ...valid,
+        setup: { ...valid.setup, assignments: { "01": "sheriff" } },
+      }).success,
+    ).toBe(false);
+    expect(
+      setupSessionStateSchema.safeParse({
+        ...valid,
+        setup: { ...valid.setup, remainingRoles: valid.setup.remainingRoles.slice(1) },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("enforces the persisted voting candidate cursor and final auto-fill", () => {
+    const base = liveGame(1);
+    const voting = {
+      ...base,
+      phase: "voting",
+      nominations: [
+        { nominatorSeat: 1, candidateSeat: 4, order: 1 },
+        { nominatorSeat: 2, candidateSeat: 6, order: 2 },
+      ],
+      turnOrder: [4, 6],
+      currentTurnIndex: 0,
+      votingRound: "initial",
+      voteAssignments: { "1": 4 },
+    };
+    const parse = (game: object) =>
+      gameSessionMutationSchema.safeParse({
+        name: "Voting cursor",
+        mutationId: uuid(95),
+        baseRevision: 0,
+        state: {
+          setup: null,
+          game,
+          hostPlayerId: uuid(11),
+          hostName: "Host",
+          playlistId: "",
+          log: [],
+          undoHistory: [],
+        },
+        results: null,
+      });
+
+    expect(parse(voting).success).toBe(true);
+    expect(parse({ ...voting, turnOrder: base.turnOrder }).success).toBe(false);
+    expect(parse({ ...voting, voteAssignments: { "1": 6 } }).success).toBe(false);
+    expect(parse({ ...voting, voteAssignments: { "01": 4 } }).success).toBe(false);
+    expect(parse({ ...voting, currentTurnIndex: 1 }).success).toBe(false);
+  });
+
+  it("accepts a persisted evaluated Mafia result with its provisional victim", () => {
+    const base = liveGame(1);
+    const parsed = gameSessionMutationSchema.safeParse({
+      name: "Evaluated Mafia result",
+      mutationId: uuid(97),
+      baseRevision: 0,
+      state: {
+        setup: null,
+        game: {
+          ...base,
+          phase: "night-mafia-result",
+          shotAssignments: { "8": 1, "9": 1, "10": 1 },
+        },
+        hostPlayerId: uuid(11),
+        hostName: "Host",
+        playlistId: "",
+        log: [],
+        undoHistory: [],
+      },
+      results: null,
+    });
+
+    expect(parsed.success).toBe(true);
+  });
+
+  it("validates persisted check-result and Best move phases", () => {
+    const base = liveGame(1);
+    const parse = (game: unknown) =>
+      gameSessionMutationSchema.safeParse({
+        name: "Persisted special phase",
+        mutationId: uuid(94),
+        baseRevision: 0,
+        state: {
+          setup: null,
+          game,
+          hostPlayerId: uuid(11),
+          hostName: "Host",
+          playlistId: "",
+          log: [],
+          undoHistory: [],
+        },
+        results: null,
+      });
+
+    expect(
+      parse({
+        ...base,
+        phase: "night-don-result",
+        checkResult: { kind: "don-check", targetSeat: 1, match: false, secret: true },
+      }).success,
+    ).toBe(true);
+    expect(parse({ ...base, phase: "night-don-result" }).success).toBe(false);
+
+    const bestMove = {
+      ...base,
+      phase: "best-move",
+      day: 2,
+      players: base.players.map((player) =>
+        player.seat === 1 ? { ...player, status: "eliminated" as const } : player,
+      ),
+      turnOrder: base.turnOrder.filter((seat) => seat !== 1),
+      bestMove: { playerSeat: 1, selectedSeats: [2, 3] },
+    };
+    expect(parse(bestMove).success).toBe(true);
+    expect(parse({ ...bestMove, bestMove: { ...bestMove.bestMove, mafiaHits: 1 } }).success).toBe(
+      false,
+    );
+  });
+
+  it("rejects incomplete or aliased Mafia result assignments while accepting inactive targets", () => {
+    const base = liveGame(1);
+    const invalidGames = [
+      { ...base, phase: "night-mafia-result", shotAssignments: { "8": 1, "9": 1 } },
+      {
+        ...base,
+        phase: "night-mafia-result",
+        shotAssignments: { "08": 1, "9": 1, "10": 1 },
+      },
+    ];
+
+    for (const game of invalidGames) {
+      const parsed = gameSessionMutationSchema.safeParse({
+        name: "Invalid Mafia result",
+        mutationId: uuid(96),
+        baseRevision: 0,
+        state: {
+          setup: null,
+          game,
+          hostPlayerId: uuid(11),
+          hostName: "Host",
+          playlistId: "",
+          log: [],
+          undoHistory: [],
+        },
+        results: null,
+      });
+      expect(parsed.success).toBe(false);
+    }
+
+    const inactiveTarget = {
+      ...base,
+      phase: "night-mafia-result",
+      players: base.players.map((player) =>
+        player.seat === 1 ? { ...player, status: "eliminated" as const } : player,
+      ),
+      turnOrder: base.turnOrder.filter((seat) => seat !== 1),
+      shotAssignments: { "8": 1, "9": 1, "10": 1 },
+    };
+    const parsed = gameSessionMutationSchema.safeParse({
+      name: "Mafia result on inactive target",
+      mutationId: uuid(95),
+      baseRevision: 0,
+      state: {
+        setup: null,
+        game: inactiveTarget,
+        hostPlayerId: uuid(11),
+        hostName: "Host",
+        playlistId: "",
+        log: [],
+        undoHistory: [],
+      },
+      results: null,
+    });
+    expect(parsed.success).toBe(true);
+  });
+
   it("rejects non-canonical car-crash voter keys", () => {
     const parsed = gameSessionMutationSchema.safeParse({
       name: "Aliased car-crash voter",
@@ -267,7 +493,6 @@ describe("game session validation", () => {
         expect.arrayContaining([
           "Day turn order must contain every active player",
           "The current day turn must reference an active player",
-          "A player cannot nominate themself",
           "Votes are not valid during the day phase",
           "Night shots are not valid during the day phase",
         ]),
@@ -314,7 +539,7 @@ describe("game session validation", () => {
         setup: null,
         game: {
           ...liveGame(1),
-          phase: "mafia-negotiation",
+          phase: "mafia-planning",
           day: 0,
           turnOrder: [],
           currentTurnIndex: 0,

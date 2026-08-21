@@ -114,7 +114,7 @@ export class YouTubeOAuthService {
     return url.toString();
   }
 
-  public async exchangeCode(code: string): Promise<void> {
+  public async exchangeCode(userId: string, code: string): Promise<void> {
     const response = await this.fetcher("https://oauth2.googleapis.com/token", {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -139,9 +139,9 @@ export class YouTubeOAuthService {
     const account = channelResponse.parse(await accountResponse.json());
     await this.pool.query(
       `INSERT INTO youtube_oauth_credentials
-         (singleton, access_token_encrypted, refresh_token_encrypted, expires_at, account_label, scope)
-       VALUES (TRUE, $1, $2, $3, $4, $5)
-       ON CONFLICT (singleton) DO UPDATE
+         (user_id, singleton, access_token_encrypted, refresh_token_encrypted, expires_at, account_label, scope)
+       VALUES ($1, TRUE, $2, $3, $4, $5, $6)
+       ON CONFLICT (user_id) DO UPDATE
          SET access_token_encrypted = EXCLUDED.access_token_encrypted,
              refresh_token_encrypted = EXCLUDED.refresh_token_encrypted,
              expires_at = EXCLUDED.expires_at,
@@ -149,6 +149,7 @@ export class YouTubeOAuthService {
              scope = EXCLUDED.scope,
              updated_at = NOW()`,
       [
+        userId,
         encrypt(tokens.access_token, this.config.encryptionKey),
         encrypt(tokens.refresh_token, this.config.encryptionKey),
         new Date(Date.now() + tokens.expires_in * 1_000),
@@ -158,13 +159,14 @@ export class YouTubeOAuthService {
     );
   }
 
-  public async getStatus(): Promise<{
+  public async getStatus(userId: string): Promise<{
     readonly configured: true;
     readonly connected: boolean;
     readonly accountLabel: string | null;
   }> {
     const result = await this.pool.query<{ account_label: string }>(
-      "SELECT account_label FROM youtube_oauth_credentials WHERE singleton = TRUE",
+      "SELECT account_label FROM youtube_oauth_credentials WHERE user_id = $1",
+      [userId],
     );
     return {
       configured: true,
@@ -173,8 +175,8 @@ export class YouTubeOAuthService {
     };
   }
 
-  public async listPlaylists(): Promise<readonly YouTubePlaylist[]> {
-    const accessToken = await this.getAccessToken();
+  public async listPlaylists(userId: string): Promise<readonly YouTubePlaylist[]> {
+    const accessToken = await this.getAccessToken(userId);
     const playlists: YouTubePlaylist[] = [];
     let pageToken: string | undefined;
     let pageCount = 0;
@@ -209,12 +211,15 @@ export class YouTubeOAuthService {
     return playlists;
   }
 
-  public async listPlaylistItems(playlistId: string): Promise<readonly YouTubePlaylistItem[]> {
-    const ownedPlaylists = await this.listPlaylists();
+  public async listPlaylistItems(
+    userId: string,
+    playlistId: string,
+  ): Promise<readonly YouTubePlaylistItem[]> {
+    const ownedPlaylists = await this.listPlaylists(userId);
     if (!ownedPlaylists.some(({ id }) => id === playlistId)) {
       throw new YouTubePlaylistAccessError(playlistId);
     }
-    const accessToken = await this.getAccessToken();
+    const accessToken = await this.getAccessToken(userId);
     const items: YouTubePlaylistItem[] = [];
     let pageToken: string | undefined;
     let pageCount = 0;
@@ -255,9 +260,10 @@ export class YouTubeOAuthService {
     return items.sort((left, right) => left.position - right.position);
   }
 
-  public async disconnect(): Promise<void> {
+  public async disconnect(userId: string): Promise<void> {
     const result = await this.pool.query<{ refresh_token_encrypted: Buffer }>(
-      "SELECT refresh_token_encrypted FROM youtube_oauth_credentials WHERE singleton = TRUE",
+      "SELECT refresh_token_encrypted FROM youtube_oauth_credentials WHERE user_id = $1",
+      [userId],
     );
     const credentials = result.rows[0];
     if (credentials === undefined) return;
@@ -270,10 +276,10 @@ export class YouTubeOAuthService {
     });
     if (!response.ok)
       throw new Error(`Google token revocation failed with HTTP ${response.status}`);
-    await this.pool.query("DELETE FROM youtube_oauth_credentials WHERE singleton = TRUE");
+    await this.pool.query("DELETE FROM youtube_oauth_credentials WHERE user_id = $1", [userId]);
   }
 
-  private async getAccessToken(): Promise<string> {
+  private async getAccessToken(userId: string): Promise<string> {
     const result = await this.pool.query<{
       access_token_encrypted: Buffer;
       refresh_token_encrypted: Buffer;
@@ -281,7 +287,8 @@ export class YouTubeOAuthService {
     }>(
       `SELECT access_token_encrypted, refresh_token_encrypted, expires_at
          FROM youtube_oauth_credentials
-        WHERE singleton = TRUE`,
+        WHERE user_id = $1`,
+      [userId],
     );
     const credentials = result.rows[0];
     if (credentials === undefined) throw new Error("YouTube account is not connected");
@@ -307,11 +314,12 @@ export class YouTubeOAuthService {
               expires_at = $2,
               scope = COALESCE($3, scope),
               updated_at = NOW()
-        WHERE singleton = TRUE`,
+        WHERE user_id = $4`,
       [
         encrypt(tokens.access_token, this.config.encryptionKey),
         new Date(Date.now() + tokens.expires_in * 1_000),
         tokens.scope ?? null,
+        userId,
       ],
     );
     return tokens.access_token;

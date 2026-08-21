@@ -108,10 +108,54 @@ export const drawRoleForSeat = (state: SetupState, seat: number): SetupState => 
   };
 };
 
+export const rerollRoleForSeat = (
+  state: SetupState,
+  seat: number,
+  random: RandomSource,
+): SetupState => {
+  if (state.step !== "role-draw") throw new Error("Role drawing has not started");
+  const currentRole = state.assignments[seat];
+  if (currentRole === undefined) throw new Error(`Seat ${seat} does not have a role to reroll`);
+  if (state.remainingRoles.length === 0) return state;
+
+  const nextIndex = Math.min(
+    state.remainingRoles.length - 1,
+    Math.floor(random() * state.remainingRoles.length),
+  );
+  const nextRole = state.remainingRoles[nextIndex]!;
+  return {
+    ...state,
+    remainingRoles: state.remainingRoles.map((role, index) =>
+      index === nextIndex ? currentRole : role,
+    ),
+    assignments: { ...state.assignments, [seat]: nextRole },
+  };
+};
+
+export const assignRoleForSeat = (state: SetupState, seat: number, role: Role): SetupState => {
+  if (state.step !== "role-draw") throw new Error("Roles can only be assigned during role draw");
+  if (!state.players.some((player) => player.seat === seat)) {
+    throw new Error(`Seat ${seat} does not exist`);
+  }
+  const availableIndex = state.remainingRoles.indexOf(role);
+  if (availableIndex < 0) throw new Error(`Role ${role} is not available`);
+  const currentRole = state.assignments[seat];
+  return {
+    ...state,
+    remainingRoles:
+      currentRole === undefined
+        ? state.remainingRoles.filter((_, index) => index !== availableIndex)
+        : state.remainingRoles.map((availableRole, index) =>
+            index === availableIndex ? currentRole : availableRole,
+          ),
+    assignments: { ...state.assignments, [seat]: role },
+  };
+};
+
 export const completeRoleDraw = (state: SetupState): SetupState => {
   if (Object.keys(state.assignments).length !== 10 || state.remainingRoles.length !== 0) {
     throw new Error("All ten seats must have a role before setup can continue");
   }
 
-  return { ...state, step: "mafia-negotiation" };
+  return { ...state, step: "mafia-planning" };
 };

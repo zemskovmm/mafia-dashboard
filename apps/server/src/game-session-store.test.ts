@@ -2,6 +2,9 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { GameSessionStore } from "./game-session-store.js";
+import { ClubStore } from "./club-store.js";
+
+const legacyOwnerId = "00000000-0000-4000-8000-000000000001";
 
 const databaseUrl =
   process.env.TEST_DATABASE_URL ?? "postgresql://mafia:mafia@127.0.0.1:54329/mafia_test";
@@ -71,6 +74,7 @@ const createCompletedSession = async (gameId: string) => {
     nominations: [],
     voteAssignments: {},
     shotAssignments: {},
+    bestMove: { playerSeat: 1, selectedSeats: [2, 3, 4], mafiaHits: 2 },
     winner: "red" as const,
   };
   return {
@@ -103,12 +107,37 @@ const createCompletedSession = async (gameId: string) => {
         team,
         status,
         fouls,
+        bestMoveHits: seat === 1 ? 2 : null,
       })),
     },
   };
 };
 
 describe("GameSessionStore", () => {
+  it("isolates active sessions by club", async () => {
+    const club = await new ClubStore(pool).create(legacyOwnerId, {
+      name: `Isolated ${randomUUID().slice(0, 8)}`,
+      city: "Granada",
+      headerLogo: null,
+      cardLogo: null,
+    });
+    const gameId = randomUUID();
+    await store.save({
+      clubId: club.id,
+      gameId,
+      name: "Isolated table",
+      mutationId: randomUUID(),
+      baseRevision: 0,
+      state: emptyState,
+      results: null,
+    });
+
+    expect(await store.get(gameId)).toBeNull();
+    expect(await store.get(gameId, club.id)).toMatchObject({ gameId });
+    expect((await store.listActive()).map(({ gameId: id }) => id)).not.toContain(gameId);
+    expect((await store.listActive(club.id)).map(({ gameId: id }) => id)).toContain(gameId);
+  });
+
   it("creates one revision for a retry of the same session mutation", async () => {
     const gameId = randomUUID();
     const mutationId = randomUUID();
@@ -131,6 +160,36 @@ describe("GameSessionStore", () => {
       [gameId],
     );
     expect(events.rows).toEqual([{ event_type: "game.created" }]);
+  });
+
+  it("allocates concurrent dated names once and preserves the canonical name", async () => {
+    await pool.query(
+      "DELETE FROM game_daily_counters WHERE game_date = TO_DATE('12.02.26', 'DD.MM.YY')",
+    );
+    const gameIds = [randomUUID(), randomUUID()];
+    const created = await Promise.all(
+      gameIds.map((gameId) =>
+        store.save({
+          gameId,
+          name: "12.02.26 #1",
+          mutationId: randomUUID(),
+          baseRevision: 0,
+          state: emptyState,
+          results: null,
+        }),
+      ),
+    );
+    expect(created.map(({ name }) => name).sort()).toEqual(["12.02.26 #1", "12.02.26 #2"]);
+
+    const updated = await store.save({
+      gameId: created[0]!.gameId,
+      name: "12.02.26 #99",
+      mutationId: randomUUID(),
+      baseRevision: 1,
+      state: { ...emptyState, playlistId: "updated" },
+      results: null,
+    });
+    expect(updated.name).toBe(created[0]!.name);
   });
 
   it("rejects reuse of a mutation id with a different full snapshot", async () => {
@@ -317,8 +376,13 @@ describe("GameSessionStore", () => {
     const roster = await pool.query("SELECT 1 FROM game_session_players WHERE game_id = $1", [
       gameId,
     ]);
-    const results = await pool.query<{ winner: string; participants: number }>(
-      `SELECT result.winner, COUNT(player_result.player_id)::int AS participants
+    const results = await pool.query<{
+      winner: string;
+      participants: number;
+      best_move_hits: number;
+    }>(
+      `SELECT result.winner, COUNT(player_result.player_id)::int AS participants,
+              COALESCE(SUM(player_result.best_move_hits), 0)::int AS best_move_hits
          FROM game_results AS result
          JOIN game_player_results AS player_result ON player_result.game_id = result.game_id
         WHERE result.game_id = $1
@@ -331,7 +395,7 @@ describe("GameSessionStore", () => {
     );
     expect(session.rows).toEqual([{ status: "completed" }]);
     expect(roster.rowCount).toBe(0);
-    expect(results.rows).toEqual([{ winner: "red", participants: 10 }]);
+    expect(results.rows).toEqual([{ winner: "red", participants: 10, best_move_hits: 2 }]);
     expect(events.rows).toEqual([
       { sequence: 1, event_type: "game.created" },
       { sequence: 2, event_type: "game.finished" },

@@ -34,7 +34,7 @@ const completedSetup = (): SetupState => {
 describe("game phases and victory", () => {
   it("advances through negotiation and Sheriff wake-up into day one", () => {
     const game = createGame(completedSetup());
-    expect(game.phase).toBe("mafia-negotiation");
+    expect(game.phase).toBe("mafia-planning");
 
     const sheriffWake = advanceSetupPhase(game);
     expect(sheriffWake.phase).toBe("sheriff-wake");

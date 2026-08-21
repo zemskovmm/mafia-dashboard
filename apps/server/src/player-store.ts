@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { assertGameNotDeleted, assertLegacyGameMutationAllowed } from "./game-lifecycle.js";
 import { initializeSchema } from "./initialize-schema.js";
+import { DEFAULT_CLUB_ID } from "./club-store.js";
 
 export interface PlayerProfileInput {
   readonly nickname: string;
@@ -11,7 +12,7 @@ export interface PlayerProfileInput {
   readonly email: string | null;
 }
 
-export interface PlayerStatistics {
+interface PlayerStatistics {
   readonly hostedGames: number;
   readonly gamesPlayed: number;
   readonly wins: number;
@@ -27,6 +28,8 @@ export interface PlayerStatistics {
   readonly totalFouls: number;
   readonly eliminations: number;
   readonly redCards: number;
+  readonly bestMoves: number;
+  readonly bestMoveMafiaHits: number;
 }
 
 export interface PlayerProfile extends PlayerProfileInput {
@@ -38,13 +41,14 @@ export interface PlayerProfile extends PlayerProfileInput {
   readonly statistics: PlayerStatistics;
 }
 
-export interface GamePlayerResultInput {
+interface GamePlayerResultInput {
   readonly playerId: string;
   readonly seat: number;
   readonly role: "sheriff" | "citizen" | "mafia" | "don";
   readonly team: "red" | "black";
   readonly status: "active" | "eliminated" | "red-carded";
   readonly fouls: number;
+  readonly bestMoveHits?: number | null;
 }
 
 export interface GameResultsInput {
@@ -80,6 +84,8 @@ interface PlayerRow {
   total_fouls: number;
   eliminations: number;
   red_cards: number;
+  best_moves: number;
+  best_move_mafia_hits: number;
 }
 
 const mapPlayer = (row: PlayerRow): PlayerProfile => ({
@@ -109,6 +115,8 @@ const mapPlayer = (row: PlayerRow): PlayerProfile => ({
     totalFouls: row.total_fouls,
     eliminations: row.eliminations,
     redCards: row.red_cards,
+    bestMoves: row.best_moves,
+    bestMoveMafiaHits: row.best_move_mafia_hits,
   },
 });
 
@@ -130,7 +138,9 @@ const profileSelect = `
          COUNT(r.player_id) FILTER (WHERE r.role = 'don')::int AS don_games,
          COALESCE(SUM(r.fouls), 0)::int AS total_fouls,
          COUNT(r.player_id) FILTER (WHERE r.final_status = 'eliminated')::int AS eliminations,
-         COUNT(r.player_id) FILTER (WHERE r.final_status = 'red-carded')::int AS red_cards
+         COUNT(r.player_id) FILTER (WHERE r.final_status = 'red-carded')::int AS red_cards,
+         COUNT(r.player_id) FILTER (WHERE r.best_move_hits IS NOT NULL)::int AS best_moves,
+         COALESCE(SUM(r.best_move_hits), 0)::int AS best_move_mafia_hits
     FROM players p
     LEFT JOIN game_player_results r ON r.player_id = p.id`;
 
@@ -145,33 +155,48 @@ export class PlayerStore {
     await initializeSchema(this.pool);
   }
 
-  public async list(): Promise<readonly PlayerProfile[]> {
-    const result = await this.pool.query<PlayerRow>(`${profileSelect}${profileGroupAndOrder}`);
+  public async list(clubId = DEFAULT_CLUB_ID): Promise<readonly PlayerProfile[]> {
+    const result = await this.pool.query<PlayerRow>(
+      `${profileSelect} WHERE p.club_id = $1 ${profileGroupAndOrder}`,
+      [clubId],
+    );
     return result.rows.map(mapPlayer);
   }
 
-  public async get(id: string): Promise<PlayerProfile | null> {
+  public async get(id: string, clubId = DEFAULT_CLUB_ID): Promise<PlayerProfile | null> {
     const result = await this.pool.query<PlayerRow>(
-      `${profileSelect} WHERE p.id = $1 ${profileGroupAndOrder}`,
-      [id],
+      `${profileSelect} WHERE p.id = $1 AND p.club_id = $2 ${profileGroupAndOrder}`,
+      [id, clubId],
     );
     return result.rows[0] === undefined ? null : mapPlayer(result.rows[0]);
   }
 
-  public async create(input: PlayerProfileInput): Promise<PlayerProfile> {
+  public async create(input: PlayerProfileInput, clubId = DEFAULT_CLUB_ID): Promise<PlayerProfile> {
     const id = randomUUID();
     await this.pool.query(
       `INSERT INTO players
-         (id, nickname, first_name, last_name, email, data_processing_consent, consent_at)
-       VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $6 THEN NOW() ELSE NULL END)`,
-      [id, input.nickname.trim(), input.firstName, input.lastName, input.email, input.consent],
+         (id, club_id, nickname, first_name, last_name, email, data_processing_consent, consent_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $7 THEN NOW() ELSE NULL END)`,
+      [
+        id,
+        clubId,
+        input.nickname.trim(),
+        input.firstName,
+        input.lastName,
+        input.email,
+        input.consent,
+      ],
     );
-    const player = await this.get(id);
+    const player = await this.get(id, clubId);
     if (player === null) throw new Error("Created player was not found");
     return player;
   }
 
-  public async update(id: string, input: PlayerProfileInput): Promise<PlayerProfile | null> {
+  public async update(
+    id: string,
+    input: PlayerProfileInput,
+    clubId = DEFAULT_CLUB_ID,
+  ): Promise<PlayerProfile | null> {
     const result = await this.pool.query(
       `UPDATE players
           SET nickname = $2,
@@ -184,14 +209,25 @@ export class PlayerStore {
                 ELSE NULL
               END,
               updated_at = NOW()
-        WHERE id = $1`,
-      [id, input.nickname.trim(), input.firstName, input.lastName, input.email, input.consent],
+        WHERE id = $1 AND club_id = $7`,
+      [
+        id,
+        input.nickname.trim(),
+        input.firstName,
+        input.lastName,
+        input.email,
+        input.consent,
+        clubId,
+      ],
     );
     if (result.rowCount === 0) return null;
-    return this.get(id);
+    return this.get(id, clubId);
   }
 
-  public async delete(id: string): Promise<"deleted" | "not_found" | "active_game"> {
+  public async delete(
+    id: string,
+    clubId = DEFAULT_CLUB_ID,
+  ): Promise<"deleted" | "not_found" | "active_game"> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -200,8 +236,8 @@ export class PlayerStore {
       );
       await client.query("LOCK TABLE game_session_players IN SHARE MODE");
       const locked = await client.query<{ id: string }>(
-        "SELECT id FROM players WHERE id = $1 FOR UPDATE",
-        [id],
+        "SELECT id FROM players WHERE id = $1 AND club_id = $2 FOR UPDATE",
+        [id, clubId],
       );
       if (locked.rowCount === 0) {
         await client.query("COMMIT");
@@ -245,10 +281,10 @@ export class PlayerStore {
 
       if (gameIds.length > 0) {
         await client.query(
-          `INSERT INTO deleted_games (game_id)
-           SELECT UNNEST($1::uuid[])
+          `INSERT INTO deleted_games (game_id, club_id)
+           SELECT game_id, $2 FROM UNNEST($1::uuid[]) AS game_id
            ON CONFLICT (game_id) DO NOTHING`,
-          [gameIds],
+          [gameIds, clubId],
         );
         await client.query("DELETE FROM game_sessions WHERE id = ANY($1::uuid[])", [gameIds]);
         await client.query("DELETE FROM game_events WHERE game_id = ANY($1::uuid[])", [gameIds]);
@@ -286,7 +322,7 @@ export class PlayerStore {
     }
   }
 
-  public async saveGameResults(input: GameResultsInput): Promise<void> {
+  public async saveGameResults(input: GameResultsInput, clubId = DEFAULT_CLUB_ID): Promise<void> {
     const hostPlayerId = input.hostPlayerId ?? null;
     const client = await this.pool.connect();
     try {
@@ -295,18 +331,37 @@ export class PlayerStore {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [input.gameId]);
       await assertGameNotDeleted(client, input.gameId);
       await assertLegacyGameMutationAllowed(client, input.gameId);
-      const previousResult = await client.query<{ host_player_id: string | null }>(
-        "SELECT host_player_id FROM game_results WHERE game_id = $1",
+      const existingOwner = await client.query<{ club_id: string }>(
+        "SELECT club_id FROM game_results WHERE game_id = $1",
         [input.gameId],
       );
+      if (existingOwner.rows[0] !== undefined && existingOwner.rows[0].club_id !== clubId) {
+        throw new Error("The game result belongs to another club");
+      }
+      const participantIds = [
+        ...input.players.map(({ playerId }) => playerId),
+        ...(hostPlayerId === null ? [] : [hostPlayerId]),
+      ];
+      const participants = await client.query<{ count: number }>(
+        "SELECT COUNT(*)::int AS count FROM players WHERE club_id = $1 AND id = ANY($2::uuid[])",
+        [clubId, participantIds],
+      );
+      if (participants.rows[0]?.count !== participantIds.length) {
+        throw new Error("All game participants must belong to the selected club");
+      }
+      const previousResult = await client.query<{ host_player_id: string | null }>(
+        "SELECT host_player_id FROM game_results WHERE game_id = $1 AND club_id = $2",
+        [input.gameId, clubId],
+      );
       await client.query(
-        `INSERT INTO game_results (game_id, winner, played_at, host_player_id)
-         VALUES ($1, $2, $3, $4)
+        `INSERT INTO game_results (game_id, club_id, winner, played_at, host_player_id)
+         VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (game_id) DO UPDATE
            SET winner = EXCLUDED.winner,
                played_at = EXCLUDED.played_at,
-               host_player_id = EXCLUDED.host_player_id`,
-        [input.gameId, input.winner, input.playedAt, hostPlayerId],
+               host_player_id = EXCLUDED.host_player_id
+         WHERE game_results.club_id = EXCLUDED.club_id`,
+        [input.gameId, clubId, input.winner, input.playedAt, hostPlayerId],
       );
       const previousResults = await client.query<{ player_id: string }>(
         "SELECT player_id FROM game_player_results WHERE game_id = $1",
@@ -327,8 +382,8 @@ export class PlayerStore {
       for (const player of input.players) {
         await client.query(
           `INSERT INTO game_player_results
-             (game_id, player_id, seat, role, team, final_status, fouls, won)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $5 = $8)`,
+             (game_id, player_id, seat, role, team, final_status, fouls, won, best_move_hits)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $5 = $8, $9)`,
           [
             input.gameId,
             player.playerId,
@@ -338,6 +393,7 @@ export class PlayerStore {
             player.status,
             player.fouls,
             input.winner,
+            player.bestMoveHits ?? null,
           ],
         );
       }
@@ -369,7 +425,7 @@ export class PlayerStore {
     }
   }
 
-  public async deleteGameResults(gameId: string): Promise<void> {
+  public async deleteGameResults(gameId: string, clubId = DEFAULT_CLUB_ID): Promise<void> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -382,8 +438,8 @@ export class PlayerStore {
         [gameId],
       );
       const result = await client.query<{ host_player_id: string | null }>(
-        "DELETE FROM game_results WHERE game_id = $1 RETURNING host_player_id",
-        [gameId],
+        "DELETE FROM game_results WHERE game_id = $1 AND club_id = $2 RETURNING host_player_id",
+        [gameId, clubId],
       );
       const affectedPlayerIds = [
         ...new Set([

@@ -32,6 +32,7 @@ describe("buildFinalGameResults", () => {
       ...game,
       phase: "finished",
       winner: "red",
+      bestMove: { playerSeat: 1, selectedSeats: [2, 3, 4], mafiaHits: 2 },
       players: game.players.map((player) =>
         player.seat === 1
           ? { ...player, status: "eliminated", fouls: 2 }
@@ -62,7 +63,8 @@ describe("buildFinalGameResults", () => {
           : "red",
       status: "eliminated",
       fouls: 2,
+      bestMoveHits: 2,
     });
-    expect(results?.players[1]).toMatchObject({ status: "red-carded" });
+    expect(results?.players[1]).toMatchObject({ status: "red-carded", bestMoveHits: null });
   });
 });

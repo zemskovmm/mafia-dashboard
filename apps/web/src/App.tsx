@@ -1,14 +1,31 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { GameState } from "@mafia/game-domain";
 import {
+  DoorOpen,
+  Eye,
+  EyeOff,
+  ListTree,
+  Maximize2,
+  Minimize2,
+  Save,
+  Undo2,
+  Wrench,
+} from "lucide-react";
+import {
   clearGameSession,
   createPlayer,
   deletePlayer,
+  getAuthSession,
   getGameSession,
   listActiveGameSessions,
   listPlayers,
   saveGameSession,
   updatePlayer,
+  createClub,
+  deleteClub,
+  listClubs,
+  signOut,
+  updateClub,
 } from "./api/client.js";
 import type {
   ActiveGameSessionSummary,
@@ -17,10 +34,13 @@ import type {
   PlayerProfile,
   PlayerProfileInput,
   RemoteGameSession,
+  Club,
+  ClubInput,
+  AppUser,
 } from "./api/client.js";
+import { ClubPortal } from "./features/clubs/ClubPortal.js";
 import { GameScreen } from "./features/game/GameScreen.js";
-import { LiveMusicControls } from "./features/music/LiveMusicControls.js";
-import { LocalDJPlayer, type LocalDJSessionState } from "./features/music/LocalDJPlayer.js";
+import { MusicDock } from "./features/music/MusicDock.js";
 import {
   YouTubePlaylistPlayer,
   type YouTubePlaybackState,
@@ -31,7 +51,9 @@ import { buildFinalGameResults } from "./features/players/game-results.js";
 import { SetupWizard, type SetupWizardSessionState } from "./features/setup/SetupWizard.js";
 import { GameSessionOutbox } from "./session-outbox.js";
 import { createRandomId } from "./utils/random-id.js";
+import { applyColorTheme, readColorTheme, type ColorTheme } from "./theme.js";
 import "./styles/app.css";
+import "./styles/clubs.css";
 
 interface LocalLogEntry {
   readonly id: string;
@@ -64,6 +86,28 @@ const backgroundShadeLabel: Record<BackgroundShade, string> = {
   "grey-66": "66% grey",
   white: "white",
 };
+const centerShadowStorageKey = "mafia-dashboard.center-shadow";
+const defaultClubId = "00000000-0000-4000-8000-000000000101";
+const gameSessionStoragePrefix = "mafia-dashboard.game-session.v3";
+const gameSessionStorageKey = (clubId: string) =>
+  clubId === defaultClubId ? gameSessionStoragePrefix : `${gameSessionStoragePrefix}.${clubId}`;
+const clearGameSessionStorage = (storage: Storage) => {
+  for (let index = storage.length - 1; index >= 0; index -= 1) {
+    const key = storage.key(index);
+    if (key === gameSessionStoragePrefix || key?.startsWith(`${gameSessionStoragePrefix}.`)) {
+      storage.removeItem(key);
+    }
+  }
+};
+const nextGameName = (storage: Storage, now: Date): string => {
+  const date = [now.getDate(), now.getMonth() + 1, now.getFullYear() % 100]
+    .map((value) => String(value).padStart(2, "0"))
+    .join(".");
+  const key = `mafia-dashboard.game-sequence.${date}`;
+  const next = Math.max(0, Number(storage.getItem(key)) || 0) + 1;
+  storage.setItem(key, String(next));
+  return `${date} #${next}`;
+};
 
 interface PersistedState extends GameSessionState {
   readonly setup: SetupWizardSessionState | null;
@@ -86,9 +130,12 @@ const currentFullscreenElement = (): Element | null =>
   (document as WebkitFullscreenDocument).webkitFullscreenElement ??
   null;
 
-const isTouchIPad = () =>
+const isTouchTablet = () =>
   /iPad/.test(navigator.userAgent) ||
-  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1) ||
+  (/Android/.test(navigator.userAgent) &&
+    !/Mobile/.test(navigator.userAgent) &&
+    navigator.maxTouchPoints > 0);
 
 const defaultPlaylistId = import.meta.env.VITE_YOUTUBE_PLAYLIST_ID ?? "";
 const developmentAdjectives = ["Crimson", "Midnight", "Velvet", "Golden", "Silent"] as const;
@@ -117,23 +164,57 @@ const isSecretEvent = (type: string, payload: Record<string, unknown>) =>
 const isAuxiliaryEvent = (type: string) =>
   type.startsWith("timer.") || type.startsWith("music.") || type.startsWith("setup.");
 
+const migratePlanningNames = (state: GameSessionState | undefined) => {
+  const setup = (state?.setup as SetupWizardSessionState | null | undefined) ?? null;
+  const setupState = setup?.setup as unknown as { step?: string } | null;
+  const game =
+    (state?.game as unknown as ({ phase?: string } & Record<string, unknown>) | null) ?? null;
+  return {
+    setup:
+      setup === null
+        ? null
+        : {
+            ...setup,
+            setup:
+              setupState?.step === "mafia-negotiation"
+                ? ({ ...setup.setup, step: "mafia-planning" } as SetupWizardSessionState["setup"])
+                : setup.setup,
+          },
+    game:
+      game?.phase === "mafia-negotiation"
+        ? ({ ...game, phase: "mafia-planning" } as GameState)
+        : (game as unknown as GameState | null),
+  };
+};
+
 const asPersistedState = (state: GameSessionState | undefined): PersistedState => ({
-  setup: (state?.setup as SetupWizardSessionState | null | undefined) ?? null,
-  game: (state?.game as GameState | null | undefined) ?? null,
+  ...migratePlanningNames(state),
   hostPlayerId: state?.hostPlayerId ?? null,
   hostName: state?.hostName ?? null,
   playlistId: state?.playlistId ?? defaultPlaylistId,
   log: (state?.log as readonly LocalLogEntry[] | undefined) ?? [],
-  undoHistory: (state?.undoHistory as readonly UndoSnapshot[] | undefined) ?? [],
+  undoHistory: ((state?.undoHistory as readonly UndoSnapshot[] | undefined) ?? []).map(
+    (snapshot) =>
+      (snapshot.game as unknown as { phase: string }).phase === "mafia-negotiation"
+        ? { ...snapshot, game: { ...snapshot.game, phase: "mafia-planning" } }
+        : snapshot,
+  ),
 });
 
-export const App = () => {
+export const ClubWorkspace = ({
+  club,
+  onExit,
+}: {
+  readonly club: Club;
+  readonly onExit: () => void;
+}) => {
   const sessionSyncRef = useRef<GameSessionOutbox | null>(null);
   if (sessionSyncRef.current === null) {
     sessionSyncRef.current = new GameSessionOutbox({
       storage: window.sessionStorage,
+      storageKey: gameSessionStorageKey(club.id),
       createId: createRandomId,
-      save: saveGameSession,
+      save: (gameId, mutation) => saveGameSession(gameId, mutation, club.id),
     });
   }
   const sessionSync = sessionSyncRef.current;
@@ -141,7 +222,9 @@ export const App = () => {
   const initialState = useRef(asPersistedState(initialCurrent?.state)).current;
 
   const [view, setView] = useState<"game" | "players">("game");
-  const [sessionName, setSessionName] = useState(initialCurrent?.name ?? "Mafia table");
+  const [sessionName, setSessionName] = useState(
+    () => initialCurrent?.name ?? nextGameName(window.localStorage, new Date()),
+  );
   const [game, setGame] = useState<GameState | null>(initialState.game);
   const [setupSession, setSetupSession] = useState<SetupWizardSessionState | null>(
     initialState.setup,
@@ -153,15 +236,17 @@ export const App = () => {
   const [finalResults, setFinalResults] = useState<FinalGameResults | null>(
     initialCurrent?.results ?? null,
   );
+  const [finishGameState, setFinishGameState] = useState<"ready" | "saving" | "saved" | "error">(
+    initialCurrent?.results === null || initialCurrent?.results === undefined ? "ready" : "saved",
+  );
   const [players, setPlayers] = useState<readonly PlayerProfile[]>([]);
   const [playersError, setPlayersError] = useState(false);
+  const [rosterGateError, setRosterGateError] = useState<string | null>(null);
   const [playlistId, setPlaylistId] = useState(initialState.playlistId);
-  const [musicSource, setMusicSource] = useState<"youtube" | "local">("youtube");
   const [musicPlayerExpanded, setMusicPlayerExpanded] = useState(false);
   const [musicVolumePresets, setMusicVolumePresets] = useState<readonly [number, number]>([50, 80]);
   const [activeMusicVolume, setActiveMusicVolume] = useState(80);
   const [musicReloadRequest, setMusicReloadRequest] = useState(0);
-  const [localDjSession, setLocalDjSession] = useState<LocalDJSessionState | null>(null);
   const [musicState, setMusicState] = useState<YouTubePlaybackState>("idle");
   const [log, setLog] = useState<readonly LocalLogEntry[]>(initialState.log);
   const [undoHistory, setUndoHistory] = useState<readonly UndoSnapshot[]>(initialState.undoHistory);
@@ -172,6 +257,9 @@ export const App = () => {
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [activeDrawer, setActiveDrawer] = useState<"log" | "dev" | null>(null);
   const [backgroundShade, setBackgroundShade] = useState<BackgroundShade>("black");
+  const [centerShadowVisible, setCenterShadowVisible] = useState(
+    () => window.localStorage.getItem(centerShadowStorageKey) !== "hidden",
+  );
   const [privacyHidden, setPrivacyHidden] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(() => currentFullscreenElement() !== null);
   const [clearingAllData, setClearingAllData] = useState(false);
@@ -180,7 +268,7 @@ export const App = () => {
 
   const musicRef = useRef<YouTubePlayerHandle>(null);
   const devDrawerRef = useRef<HTMLElement>(null);
-  const touchIPad = useRef(isTouchIPad()).current;
+  const touchTablet = useRef(isTouchTablet()).current;
   const sessionSwipeStartRef = useRef<{ readonly gameId: string; readonly x: number } | null>(null);
   const logRef = useRef<readonly LocalLogEntry[]>(initialState.log);
   const sequenceRef = useRef(initialState.log.at(-1)?.sequence ?? 0);
@@ -199,21 +287,22 @@ export const App = () => {
     const request = playerRequestRef.current + 1;
     playerRequestRef.current = request;
     try {
-      const nextPlayers = await listPlayers();
+      const nextPlayers = await listPlayers(club.id);
       if (playerRequestRef.current === request) {
         setPlayers(nextPlayers);
         setPlayersError(false);
+        if (nextPlayers.length < 11) setView("players");
       }
     } catch {
       if (playerRequestRef.current === request) setPlayersError(true);
     }
-  }, []);
+  }, [club.id]);
 
   const refreshActiveSessions = useCallback(async () => {
     const request = activeSessionsRequestRef.current + 1;
     activeSessionsRequestRef.current = request;
     try {
-      const sessions = await listActiveGameSessions();
+      const sessions = await listActiveGameSessions(club.id);
       if (activeSessionsRequestRef.current === request) {
         setActiveSessions(sessions);
         setActiveSessionsError(false);
@@ -221,12 +310,19 @@ export const App = () => {
     } catch {
       if (activeSessionsRequestRef.current === request) setActiveSessionsError(true);
     }
-  }, []);
+  }, [club.id]);
 
   useEffect(() => {
     void refreshPlayers();
     void refreshActiveSessions();
   }, [refreshActiveSessions, refreshPlayers]);
+
+  useEffect(() => {
+    document.title = `${club.name} · Mafia Dashboard`;
+    return () => {
+      document.title = "Mafia Dashboard";
+    };
+  }, [club.name]);
 
   useEffect(() => {
     const syncFullscreenState = () => setIsFullscreen(currentFullscreenElement() !== null);
@@ -235,6 +331,79 @@ export const App = () => {
     return () => {
       document.removeEventListener("fullscreenchange", syncFullscreenState);
       document.removeEventListener("webkitfullscreenchange", syncFullscreenState);
+    };
+  }, []);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const visualViewport = window.visualViewport;
+    const syncViewportHeight = () => {
+      root.style.setProperty(
+        "--app-viewport-height",
+        `${visualViewport?.height ?? window.innerHeight}px`,
+      );
+    };
+    syncViewportHeight();
+    window.addEventListener("resize", syncViewportHeight);
+    visualViewport?.addEventListener("resize", syncViewportHeight);
+    return () => {
+      window.removeEventListener("resize", syncViewportHeight);
+      visualViewport?.removeEventListener("resize", syncViewportHeight);
+      root.style.removeProperty("--app-viewport-height");
+    };
+  }, []);
+
+  useEffect(() => {
+    let lastTouch: { readonly x: number; readonly y: number } | null = null;
+    const rememberTouch = (event: TouchEvent) => {
+      const touch = event.touches[0];
+      lastTouch = touch === undefined ? null : { x: touch.clientX, y: touch.clientY };
+    };
+    const scrollableAncestor = (target: EventTarget | null) => {
+      let element = target instanceof Element ? target : null;
+      while (element !== null && element !== document.documentElement) {
+        if (element instanceof HTMLElement) {
+          const overflowY = window.getComputedStyle(element).overflowY;
+          if (
+            (overflowY === "auto" || overflowY === "scroll") &&
+            element.scrollHeight > element.clientHeight + 1
+          ) {
+            return element;
+          }
+        }
+        element = element.parentElement;
+      }
+      return null;
+    };
+    const containViewportPan = (event: TouchEvent) => {
+      const touch = event.touches[0];
+      if (touch === undefined || lastTouch === null) return;
+      const deltaX = touch.clientX - lastTouch.x;
+      const deltaY = touch.clientY - lastTouch.y;
+      lastTouch = { x: touch.clientX, y: touch.clientY };
+      if (Math.abs(deltaY) <= Math.abs(deltaX)) return;
+
+      const scroller = scrollableAncestor(event.target);
+      const canScroll =
+        scroller !== null &&
+        (deltaY > 0
+          ? scroller.scrollTop > 0
+          : scroller.scrollTop + scroller.clientHeight < scroller.scrollHeight - 1);
+      if (!canScroll) event.preventDefault();
+    };
+    const clearTouch = () => {
+      lastTouch = null;
+    };
+
+    document.addEventListener("touchstart", rememberTouch, { passive: true });
+    document.addEventListener("touchmove", containViewportPan, { passive: false });
+    document.addEventListener("touchend", clearTouch, { passive: true });
+    document.addEventListener("touchcancel", clearTouch, { passive: true });
+    return () => {
+      document.removeEventListener("touchstart", rememberTouch);
+      document.removeEventListener("touchmove", containViewportPan);
+      document.removeEventListener("touchend", clearTouch);
+      document.removeEventListener("touchcancel", clearTouch);
     };
   }, []);
 
@@ -267,6 +436,8 @@ export const App = () => {
     () =>
       sessionSync.subscribe(() => {
         setSyncRender((revision) => revision + 1);
+        const canonicalName = sessionSync.current?.name;
+        if (canonicalName !== undefined) setSessionName(canonicalName);
       }),
     [sessionSync],
   );
@@ -352,10 +523,41 @@ export const App = () => {
     }
     phaseRef.current = next.phase;
     setGame(next);
-    if (next.phase === "finished" && game?.phase !== "finished" && hostPlayerId !== null) {
-      setFinalResults(buildFinalGameResults(next, new Date(), hostPlayerId));
+    if (next.phase === "finished" && game?.phase !== "finished") {
+      setFinalResults(null);
+      setFinishGameState("ready");
     } else if (next.phase !== "finished") {
       setFinalResults(null);
+      setFinishGameState("ready");
+    }
+  };
+
+  const finishGame = async () => {
+    if (game?.phase !== "finished" || hostPlayerId === null || finishGameState === "saving") return;
+    const results = buildFinalGameResults(game, new Date(), hostPlayerId);
+    setFinishGameState("saving");
+    setFinalResults(results);
+    setUndoHistory([]);
+    sessionSync.enqueue(
+      sessionName,
+      {
+        setup: setupSession,
+        game,
+        hostPlayerId,
+        hostName,
+        playlistId,
+        log,
+        undoHistory: [],
+      },
+      results,
+    );
+    try {
+      await sessionSync.flush();
+      persistedResultsRef.current = results;
+      await Promise.all([refreshPlayers(), refreshActiveSessions()]);
+      setFinishGameState("saved");
+    } catch {
+      setFinishGameState("error");
     }
   };
 
@@ -365,7 +567,10 @@ export const App = () => {
     setUndoHistory((current) => current.slice(0, -1));
     phaseRef.current = snapshot.game.phase;
     setGame(snapshot.game);
-    if (snapshot.game.phase !== "finished") setFinalResults(null);
+    if (snapshot.game.phase !== "finished") {
+      setFinalResults(null);
+      setFinishGameState("ready");
+    }
     const restoredLog = logRef.current.slice(0, snapshot.logLength);
     logRef.current = restoredLog;
     setLog(restoredLog);
@@ -385,17 +590,17 @@ export const App = () => {
   };
 
   const createProfile = async (input: PlayerProfileInput) => {
-    await createPlayer(input);
+    await createPlayer(input, club.id);
     await refreshPlayers();
   };
 
   const updateProfile = async (playerId: string, input: PlayerProfileInput) => {
-    await updatePlayer(playerId, input);
+    await updatePlayer(playerId, input, club.id);
     await refreshPlayers();
   };
 
   const deleteProfile = async (playerId: string) => {
-    await deletePlayer(playerId);
+    await deletePlayer(playerId, club.id);
     setPlayers((current) => current.filter(({ id }) => id !== playerId));
     await refreshPlayers();
   };
@@ -409,18 +614,21 @@ export const App = () => {
           developmentAdjectives[Math.floor(Math.random() * developmentAdjectives.length)];
         const alias = developmentAliases[Math.floor(Math.random() * developmentAliases.length)];
         created.push(
-          await createPlayer({
-            nickname: `Dev ${adjective} ${alias} ${batchId}-${index + 1}`,
-            consent: false,
-            firstName: null,
-            lastName: null,
-            email: null,
-          }),
+          await createPlayer(
+            {
+              nickname: `Dev ${adjective} ${alias} ${batchId}-${index + 1}`,
+              consent: false,
+              firstName: null,
+              lastName: null,
+              email: null,
+            },
+            club.id,
+          ),
         );
       }
       return created;
     } catch (error) {
-      await Promise.allSettled(created.map(({ id }) => deletePlayer(id)));
+      await Promise.allSettled(created.map(({ id }) => deletePlayer(id, club.id)));
       throw error;
     } finally {
       await refreshPlayers();
@@ -461,6 +669,7 @@ export const App = () => {
       setHostName(restored.hostName);
       setPlaylistId(restored.playlistId);
       setFinalResults(session.results);
+      setFinishGameState(session.results === null ? "ready" : "saved");
       persistedResultsRef.current = session.results;
       setLog(restored.log);
       logRef.current = restored.log;
@@ -486,7 +695,7 @@ export const App = () => {
     setResumeGameId(gameId);
     setActiveSessionsError(false);
     try {
-      const session = await getGameSession(gameId);
+      const session = await getGameSession(gameId, club.id);
       if (resumeRequestRef.current !== request) return;
       if (
         sessionSync.gameId !== localGameId ||
@@ -508,15 +717,14 @@ export const App = () => {
   };
 
   const resetLocalState = () => {
-    setSessionName("Mafia table");
+    setSessionName(nextGameName(window.localStorage, new Date()));
     setGame(null);
     setSetupSession(null);
     setHostPlayerId(null);
     setHostName(null);
     setFinalResults(null);
+    setFinishGameState("ready");
     setPlaylistId(defaultPlaylistId);
-    setMusicSource("youtube");
-    setLocalDjSession(null);
     setSetupInstanceKey((key) => key + 1);
     setView("game");
     setUndoHistory([]);
@@ -535,7 +743,7 @@ export const App = () => {
       return;
     const clearingGameId = sessionSync.gameId;
     try {
-      await sessionSync.clear(clearGameSession);
+      await sessionSync.clear((gameId, revision) => clearGameSession(gameId, revision, club.id));
     } catch {
       return;
     }
@@ -554,10 +762,10 @@ export const App = () => {
     setDeletingSessionId(session.gameId);
     try {
       if (sessionSync.gameId === session.gameId) {
-        await sessionSync.clear(clearGameSession);
+        await sessionSync.clear((gameId, revision) => clearGameSession(gameId, revision, club.id));
         resetLocalState();
       } else {
-        await clearGameSession(session.gameId, session.revision);
+        await clearGameSession(session.gameId, session.revision, club.id);
       }
       setSwipedSessionId(null);
       await Promise.all([refreshActiveSessions(), refreshPlayers()]);
@@ -581,7 +789,9 @@ export const App = () => {
       await sessionSync.clear(async () => undefined);
       window.localStorage.clear();
       window.sessionStorage.clear();
+      setCenterShadowVisible(true);
       resetLocalState();
+      window.localStorage.clear();
       setActiveDrawer(null);
     } catch {
       setClearAllDataError(true);
@@ -628,7 +838,9 @@ export const App = () => {
   const applicationStatusTitle = view === "players" ? "Players & statistics" : "Game setup";
   const applicationStatusPhase =
     view === "players"
-      ? `${players.length} game ${players.length === 1 ? "player" : "players"}`
+      ? players.length < 11
+        ? `Need 11 players · ${players.length} registered`
+        : `${players.length} game ${players.length === 1 ? "player" : "players"}`
       : setupStep === "music"
         ? "Table music"
         : "Select players";
@@ -645,7 +857,8 @@ export const App = () => {
           : ""
       }${game !== null ? " has-timer-rail" : ""}${
         showApplicationStatus ? " has-top-level-screen" : ""
-      }`}
+      }${isFullscreen ? " is-fullscreen" : ""}${centerShadowVisible ? "" : " is-center-shadow-hidden"}`}
+      data-background-shade={backgroundShade}
     >
       {showApplicationStatus ? (
         <header
@@ -653,23 +866,39 @@ export const App = () => {
           role="banner"
           aria-label="Application status"
         >
+          {club.headerLogo === null ? null : (
+            <img className="active-club-header-logo" src={club.headerLogo} alt="" />
+          )}
           <div>
             <p className="eyebrow">
-              {view === "players" ? "Persistent roster" : "Game setup"} · Host view
+              {view === "players" ? "Persistent roster" : `Game setup · ${sessionName}`} · Host view
             </p>
-            <h1>{applicationStatusTitle}</h1>
+            <h1 aria-label={applicationStatusTitle}>
+              <span className="active-club-title-name">{club.name}</span>
+              <span aria-hidden="true"> · </span>
+              {applicationStatusTitle}
+            </h1>
           </div>
           <div className="phase-banner">{applicationStatusPhase}</div>
         </header>
       ) : null}
       <div className="app-fixed-toolbar" aria-label="Application tools">
-        <div className="save-indicator" data-status={persistenceState}>
-          <span />{" "}
-          {persistenceState === "saved"
-            ? "Saved"
-            : persistenceState === "offline"
-              ? "Local only"
-              : "Saving"}
+        <button
+          type="button"
+          className="club-exit-button icon-toolbar-button"
+          aria-label={`Choose another club · current club ${club.name}`}
+          onClick={onExit}
+        >
+          <DoorOpen aria-hidden="true" />
+        </button>
+        <div
+          className="save-indicator icon-toolbar-button"
+          data-status={persistenceState}
+          role="status"
+          aria-label={`Save status: ${persistenceState}`}
+          title={`Save status: ${persistenceState}`}
+        >
+          <Save aria-hidden="true" />
         </div>
         <button
           type="button"
@@ -685,18 +914,17 @@ export const App = () => {
           disabled={!fullscreenAvailable}
           onClick={() => void toggleFullscreen()}
         >
-          <svg aria-hidden="true" viewBox="0 0 24 24">
-            <path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" />
-          </svg>
+          {isFullscreen ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
         </button>
         <button
           type="button"
-          className="undo-button"
+          className="undo-button icon-toolbar-button"
           aria-label={`Undo last action · ${undoHistory.length} available`}
           disabled={undoHistory.length === 0}
           onClick={undoLastGameAction}
         >
-          Undo · {undoHistory.length}
+          <Undo2 aria-hidden="true" />
+          <span className="toolbar-count">{undoHistory.length}</span>
         </button>
         <button
           type="button"
@@ -705,27 +933,26 @@ export const App = () => {
           aria-pressed={privacyHidden}
           onClick={() => setPrivacyHidden((hidden) => !hidden)}
         >
-          <svg aria-hidden="true" viewBox="0 0 24 24">
-            <path d="M2 5c3.6 0 6.5 1 8.5 3.5a2 2 0 0 0 3 0C15.5 6 18.4 5 22 5v4.5c0 4.1-3.4 7.5-7.5 7.5-.9 0-1.7-.4-2.2-1.1a.4.4 0 0 0-.6 0c-.5.7-1.3 1.1-2.2 1.1C5.4 17 2 13.6 2 9.5V5Z" />
-            <path d="M6 11c1.5 0 2.5.5 3 2M18 11c-1.5 0-2.5.5-3 2" />
-          </svg>
+          {privacyHidden ? <Eye aria-hidden="true" /> : <EyeOff aria-hidden="true" />}
         </button>
         <button
           type="button"
-          className="log-toolbar-button"
+          className="log-toolbar-button icon-toolbar-button"
           aria-label={activeDrawer === "log" ? "Close game log" : "Open game log"}
           aria-expanded={activeDrawer === "log"}
           onClick={() => setActiveDrawer((drawer) => (drawer === "log" ? null : "log"))}
         >
-          Log <span>{log.length}</span>
+          <ListTree aria-hidden="true" />
+          <span className="toolbar-count">{log.length}</span>
         </button>
         <button
           type="button"
+          className="dev-toolbar-button icon-toolbar-button"
           aria-label={activeDrawer === "dev" ? "Close developer menu" : "Open developer menu"}
           aria-expanded={activeDrawer === "dev"}
           onClick={() => setActiveDrawer((drawer) => (drawer === "dev" ? null : "dev"))}
         >
-          Dev
+          <Wrench aria-hidden="true" />
         </button>
       </div>
       {activeDrawer === "log" ? (
@@ -759,6 +986,14 @@ export const App = () => {
             <button
               type="button"
               onClick={() => {
+                if (view === "players" && players.length < 11) {
+                  setRosterGateError(
+                    `Add ${11 - players.length} more registered ${11 - players.length === 1 ? "player" : "players"} before opening the game screen.`,
+                  );
+                  setActiveDrawer(null);
+                  return;
+                }
+                setRosterGateError(null);
                 setView((currentView) => (currentView === "players" ? "game" : "players"));
                 setActiveDrawer(null);
               }}
@@ -785,11 +1020,21 @@ export const App = () => {
             <button type="button" onClick={() => setBackgroundShade(nextBackgroundShade)}>
               Use {backgroundShadeLabel[nextBackgroundShade]} background
             </button>
-            {musicSource === "youtube" ? (
-              <button type="button" onClick={() => setMusicReloadRequest((request) => request + 1)}>
-                Reload music player
-              </button>
-            ) : null}
+            <button
+              type="button"
+              onClick={() => {
+                setCenterShadowVisible((visible) => {
+                  const next = !visible;
+                  window.localStorage.setItem(centerShadowStorageKey, next ? "visible" : "hidden");
+                  return next;
+                });
+              }}
+            >
+              {centerShadowVisible ? "Hide table center shadow" : "Show table center shadow"}
+            </button>
+            <button type="button" onClick={() => setMusicReloadRequest((request) => request + 1)}>
+              Reload music player
+            </button>
             <button
               type="button"
               className="danger-action"
@@ -868,6 +1113,11 @@ export const App = () => {
 
       {view === "players" ? (
         <>
+          {rosterGateError !== null ? (
+            <p className="roster-gate-error" role="alert">
+              {rosterGateError}
+            </p>
+          ) : null}
           {playersError ? (
             <p className="players-load-error" role="alert">
               Player profiles are temporarily unavailable.
@@ -890,32 +1140,17 @@ export const App = () => {
             onPopulateDevelopmentPlayers={populateDevelopmentPlayers}
             randomFillRequest={randomFillRequest}
             privacyHidden={privacyHidden}
-            fullscreenTouchPicker={isFullscreen && touchIPad}
+            fullscreenTouchPicker={touchTablet}
             initialSessionState={setupSession}
             onSessionStateChange={handleSetupSessionChange}
             musicPlaying={musicState === "playing"}
             musicStatus={musicLabel[musicState]}
             playlistId={playlistId}
             onPlaylistIdChange={setPlaylistId}
-            musicSource={musicSource}
             volumePresets={musicVolumePresets}
             onVolumePresetsChange={(presets) => {
               setMusicVolumePresets(presets);
               setActiveMusicVolume(presets[1]);
-            }}
-            onMusicSourceChange={(source) => {
-              setMusicSource(source);
-              setMusicPlayerExpanded(false);
-              setMusicState("idle");
-            }}
-            onStartMusic={() => {
-              void musicRef.current?.fadeIn();
-            }}
-            onQuickStopMusic={() => {
-              void musicRef.current?.quickFadeOut();
-            }}
-            onSlowStopMusic={() => {
-              void musicRef.current?.slowFadeOut();
             }}
             onEvent={logEvent}
             onComplete={(next, selectedHostPlayerId, selectedHostName) => {
@@ -932,52 +1167,192 @@ export const App = () => {
       ) : (
         <GameScreen
           game={game}
+          gameName={sessionName}
           hostName={hostName ?? "Host"}
           onGameChange={changeGame}
           onEvent={logEvent}
           privacyHidden={privacyHidden}
+          clubLogo={club.headerLogo}
+          clubName={club.name}
+          finishGameState={finishGameState}
+          onFinishGame={() => void finishGame()}
         />
       )}
 
-      <div
-        className={`${musicSource === "local" ? "local-dj-dock" : "youtube-dock"} is-compact${
-          musicSource === "youtube" && musicPlayerExpanded ? " is-expanded" : ""
-        }`}
+      <MusicDock
+        expanded={musicPlayerExpanded}
+        hidden={view === "players"}
+        isPlaying={musicState === "playing"}
+        canFadeIn={musicState === "paused"}
+        onFadeIn={() => {
+          void musicRef.current?.fadeIn();
+        }}
+        onQuickFadeOut={() => {
+          void musicRef.current?.quickFadeOut();
+        }}
+        onSlowFadeOut={() => {
+          void musicRef.current?.slowFadeOut();
+        }}
       >
-        {musicSource === "local" ? (
-          <LocalDJPlayer
-            ref={musicRef}
-            onStateChange={handleMusicState}
-            initialSessionState={localDjSession}
-            onSessionStateChange={setLocalDjSession}
-          />
-        ) : (
-          <YouTubePlaylistPlayer
-            ref={musicRef}
-            playlistId={playlistId}
-            onStateChange={handleMusicState}
-            expanded={musicPlayerExpanded}
-            onExpandedChange={setMusicPlayerExpanded}
-            volumePresets={musicVolumePresets}
-            activeVolume={activeMusicVolume}
-            onVolumeChange={setActiveMusicVolume}
-            reloadRequest={musicReloadRequest}
-          />
-        )}
-        <LiveMusicControls
-          isPlaying={musicState === "playing"}
-          canFadeIn={musicState === "paused"}
-          onFadeIn={() => {
-            void musicRef.current?.fadeIn();
-          }}
-          onQuickFadeOut={() => {
-            void musicRef.current?.quickFadeOut();
-          }}
-          onSlowFadeOut={() => {
-            void musicRef.current?.slowFadeOut();
-          }}
+        <YouTubePlaylistPlayer
+          ref={musicRef}
+          playlistId={playlistId}
+          onStateChange={handleMusicState}
+          expanded={musicPlayerExpanded}
+          onExpandedChange={setMusicPlayerExpanded}
+          volumePresets={musicVolumePresets}
+          activeVolume={activeMusicVolume}
+          onVolumeChange={setActiveMusicVolume}
+          reloadRequest={musicReloadRequest}
         />
-      </div>
+      </MusicDock>
     </div>
+  );
+};
+
+export const App = () => {
+  const [colorTheme, setColorTheme] = useState<ColorTheme>(() =>
+    readColorTheme(window.localStorage),
+  );
+  const [user, setUser] = useState<AppUser | null>(null);
+  const [authConfigured, setAuthConfigured] = useState<boolean | null>(null);
+  const [authUnavailable, setAuthUnavailable] = useState(false);
+  const [clubs, setClubs] = useState<readonly Club[]>([]);
+  const [selectedClub, setSelectedClub] = useState<Club | null>(null);
+  const [openingCurtains, setOpeningCurtains] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    applyColorTheme(document.documentElement, window.localStorage, colorTheme);
+  }, [colorTheme]);
+
+  const refreshClubs = useCallback(async () => {
+    setLoading(true);
+    try {
+      setClubs(await listClubs());
+      setError(null);
+    } catch {
+      setError("Clubs are temporarily unavailable.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    let current = true;
+    void getAuthSession()
+      .then((session) => {
+        if (!current) return;
+        setAuthConfigured(session.configured);
+        setAuthUnavailable(false);
+        setUser(session.user);
+        setError(null);
+      })
+      .catch(() => {
+        if (current) setAuthUnavailable(true);
+      })
+      .finally(() => {
+        if (current) setLoading(false);
+      });
+    return () => {
+      current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (user !== null) void refreshClubs();
+  }, [refreshClubs, user]);
+
+  const endSession = async () => {
+    setLoading(true);
+    try {
+      await signOut();
+      clearGameSessionStorage(window.sessionStorage);
+      setUser(null);
+      setClubs([]);
+      setSelectedClub(null);
+      setError(null);
+    } catch {
+      setError("Sign out could not be completed.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const saveClub = async (clubId: string | null, input: ClubInput) => {
+    if (user === null) throw new Error("Sign in before editing a club");
+    try {
+      const saved = clubId === null ? await createClub(input) : await updateClub(clubId, input);
+      setClubs((current) =>
+        clubId === null
+          ? [...current, saved]
+          : current.map((club) => (club.id === clubId ? saved : club)),
+      );
+      setError(null);
+    } catch (saveError) {
+      setError("The club could not be saved.");
+      throw saveError;
+    }
+  };
+
+  const removeClub = async (club: Club) => {
+    if (user === null) throw new Error("Sign in before deleting a club");
+    if (
+      !window.confirm(
+        `Delete "${club.name}" and all of its players, games, and statistics? This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      await deleteClub(club.id);
+      window.sessionStorage.removeItem(gameSessionStorageKey(club.id));
+      setClubs((current) => current.filter(({ id }) => id !== club.id));
+      setError(null);
+    } catch {
+      setError("The club could not be deleted.");
+    }
+  };
+
+  const openClub = (club: Club) => {
+    setSelectedClub(club);
+    setOpeningCurtains(true);
+    window.setTimeout(() => setOpeningCurtains(false), 900);
+  };
+
+  if (selectedClub !== null) {
+    return (
+      <>
+        <ClubWorkspace
+          key={selectedClub.id}
+          club={selectedClub}
+          onExit={() => setSelectedClub(null)}
+        />
+        {openingCurtains ? (
+          <div className="club-curtain-opening" aria-hidden="true">
+            <div className="curtain curtain-left" />
+            <div className="curtain curtain-right" />
+          </div>
+        ) : null}
+      </>
+    );
+  }
+
+  return (
+    <ClubPortal
+      user={user}
+      authConfigured={authConfigured}
+      authUnavailable={authUnavailable}
+      colorTheme={colorTheme}
+      clubs={clubs}
+      loading={loading}
+      error={error}
+      onSignOut={endSession}
+      onColorThemeChange={setColorTheme}
+      onSaveClub={saveClub}
+      onDeleteClub={removeClub}
+      onOpenClub={openClub}
+    />
   );
 };

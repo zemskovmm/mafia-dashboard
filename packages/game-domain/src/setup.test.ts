@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  assignRoleForSeat,
   beginRoleDraw,
   completeRoleDraw,
   createSeededRandom,
   createSetup,
   drawRoleForSeat,
+  rerollRoleForSeat,
   roleCounts,
 } from "./setup.js";
 import type { PlayerInput, Role } from "./types.js";
@@ -59,6 +61,34 @@ describe("setup", () => {
     expect(() => drawRoleForSeat(afterSeatOne, 1)).toThrow(/already has a role/i);
   });
 
+  it("rerolls an assigned seat only from roles that are still available", () => {
+    let drawing = beginRoleDraw(createSetup(players()), createSeededRandom(42));
+    drawing = drawRoleForSeat(drawing, 1);
+    const previousRole = drawing.assignments[1];
+
+    const rerolled = rerollRoleForSeat(drawing, 1, () => 0);
+    expect(rerolled.remainingRoles).toHaveLength(9);
+    expect(rerolled.remainingRoles).toContain(previousRole);
+    expect(
+      roleCounts([
+        ...rerolled.remainingRoles,
+        ...Object.values(rerolled.assignments).filter((role): role is Role => role !== undefined),
+      ]),
+    ).toEqual({ sheriff: 1, citizen: 6, mafia: 2, don: 1 });
+
+    for (let seat = 2; seat <= 10; seat += 1) drawing = drawRoleForSeat(drawing, seat);
+    expect(rerollRoleForSeat(drawing, 1, () => 0)).toBe(drawing);
+  });
+
+  it("manually assigns only a role card that remains in the deck", () => {
+    const drawing = beginRoleDraw(createSetup(players()), createSeededRandom(42));
+    const assigned = assignRoleForSeat(drawing, 1, "sheriff");
+
+    expect(assigned.assignments[1]).toBe("sheriff");
+    expect(assigned.remainingRoles).toHaveLength(9);
+    expect(() => assignRoleForSeat(assigned, 2, "sheriff")).toThrow(/not available/i);
+  });
+
   it("cannot finish role drawing until all ten seats are assigned", () => {
     let drawing = beginRoleDraw(createSetup(players()), createSeededRandom(19));
 
@@ -70,7 +100,7 @@ describe("setup", () => {
     }
 
     const complete = completeRoleDraw(drawing);
-    expect(complete.step).toBe("mafia-negotiation");
+    expect(complete.step).toBe("mafia-planning");
     const assignedRoles = Object.values(complete.assignments).filter(
       (role): role is Role => role !== undefined,
     );

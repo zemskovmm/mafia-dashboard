@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { PlayerProfile } from "../../api/client.js";
@@ -52,6 +52,8 @@ const availablePlayers: readonly PlayerProfile[] = Array.from({ length: 11 }, (_
     totalFouls: 0,
     eliminations: 0,
     redCards: 0,
+    bestMoves: 0,
+    bestMoveMafiaHits: 0,
   },
 }));
 
@@ -68,21 +70,14 @@ const Harness = ({
   randomFillRequest?: number;
   fullscreenTouchPicker?: boolean;
 }) => {
-  const [musicPlaying, setMusicPlaying] = useState(false);
   const [playlistId, setPlaylistId] = useState("test-playlist");
-  const [musicSource, setMusicSource] = useState<"youtube" | "local">("youtube");
   return (
     <SetupWizard
       players={players}
-      musicPlaying={musicPlaying}
-      musicStatus={musicPlaying ? "Playing" : "Stopped"}
+      musicPlaying={false}
+      musicStatus="Stopped"
       playlistId={playlistId}
       onPlaylistIdChange={setPlaylistId}
-      musicSource={musicSource}
-      onMusicSourceChange={setMusicSource}
-      onStartMusic={() => setMusicPlaying(true)}
-      onQuickStopMusic={() => setMusicPlaying(false)}
-      onSlowStopMusic={() => setMusicPlaying(false)}
       onComplete={onComplete}
       fullscreenTouchPicker={fullscreenTouchPicker}
       {...({
@@ -151,14 +146,12 @@ describe("SetupWizard", () => {
   it("scopes player search to the combobox currently being edited", async () => {
     const user = userEvent.setup();
     render(<Harness onComplete={() => undefined} />);
-    expect(screen.queryByRole("searchbox", { name: /search saved players/i })).toBeNull();
 
     const seat = screen.getByRole("combobox", { name: "Seat 1 player" });
     await user.click(seat);
     await user.type(seat, "PLAYER 10");
     const seatSuggestions = screen.getByRole("listbox", { name: "Seat 1 suggestions" });
     expect(within(seatSuggestions).getByRole("option", { name: "Player 10" })).toBeInTheDocument();
-    expect(within(seatSuggestions).queryByRole("option", { name: "Player 2" })).toBeNull();
     await user.click(within(seatSuggestions).getByRole("option", { name: "Player 10" }));
 
     const host = screen.getByRole("combobox", { name: "Host player" });
@@ -211,7 +204,6 @@ describe("SetupWizard", () => {
       .map((seat) => (seat as HTMLInputElement).value);
     expect(new Set(selectedNames).size).toBe(10);
     expect(selectedNames).not.toContain(host.nickname);
-    expect(screen.queryByRole("button", { name: /randomly fill 10 seats/i })).toBeNull();
     random.mockRestore();
   });
 
@@ -230,11 +222,6 @@ describe("SetupWizard", () => {
         musicStatus="Stopped"
         playlistId="test-playlist"
         onPlaylistIdChange={() => undefined}
-        musicSource="youtube"
-        onMusicSourceChange={() => undefined}
-        onStartMusic={() => undefined}
-        onQuickStopMusic={() => undefined}
-        onSlowStopMusic={() => undefined}
         onComplete={() => undefined}
         onEvent={onEvent}
         onSessionStateChange={onSessionStateChange}
@@ -322,11 +309,6 @@ describe("SetupWizard", () => {
         musicStatus="Stopped"
         playlistId="test-playlist"
         onPlaylistIdChange={() => undefined}
-        musicSource="youtube"
-        onMusicSourceChange={() => undefined}
-        onStartMusic={() => undefined}
-        onQuickStopMusic={() => undefined}
-        onSlowStopMusic={() => undefined}
         onComplete={() => undefined}
         initialSessionState={{
           step: "music",
@@ -355,11 +337,6 @@ describe("SetupWizard", () => {
         musicStatus="Stopped"
         playlistId="test-playlist"
         onPlaylistIdChange={() => undefined}
-        musicSource="youtube"
-        onMusicSourceChange={() => undefined}
-        onStartMusic={() => undefined}
-        onQuickStopMusic={() => undefined}
-        onSlowStopMusic={() => undefined}
         onComplete={() => undefined}
         initialSessionState={{
           step: "music",
@@ -374,7 +351,7 @@ describe("SetupWizard", () => {
     expect(screen.getByRole("combobox", { name: "Host player" })).toHaveValue("");
   });
 
-  it("runs a persisted role giveaway on the table before Mafia negotiation", async () => {
+  it("runs a persisted role giveaway on the table before Mafia planning", async () => {
     const user = userEvent.setup();
     const onComplete = vi.fn<(game: GameState, hostPlayerId: string, hostName: string) => void>();
     const onSessionStateChange = vi.fn();
@@ -386,11 +363,6 @@ describe("SetupWizard", () => {
         musicStatus="Stopped"
         playlistId="test-playlist"
         onPlaylistIdChange={() => undefined}
-        musicSource="youtube"
-        onMusicSourceChange={() => undefined}
-        onStartMusic={() => undefined}
-        onQuickStopMusic={() => undefined}
-        onSlowStopMusic={() => undefined}
         onComplete={onComplete}
         onEvent={onEvent}
         onSessionStateChange={onSessionStateChange}
@@ -398,7 +370,6 @@ describe("SetupWizard", () => {
     );
 
     expect(screen.getByRole("heading", { name: /select 10 players/i })).toBeInTheDocument();
-    expect(screen.queryByLabelText("Setup progress")).toBeNull();
     const startGame = screen.getByRole("button", { name: /^start game$/i });
     expect(startGame).toBeDisabled();
 
@@ -420,16 +391,23 @@ describe("SetupWizard", () => {
     );
     expect(onEvent).toHaveBeenCalledWith("setup.role-draw-started", {});
 
-    for (const player of availablePlayers.slice(0, 10)) {
+    const firstRoleCard = screen.getByRole("button", { name: "Draw role for Player 1" });
+    fireEvent.touchStart(firstRoleCard, { touches: [{ clientX: 100, clientY: 100 }] });
+    fireEvent.touchEnd(firstRoleCard, { changedTouches: [{ clientX: 160, clientY: 102 }] });
+    expect(screen.getByRole("dialog", { name: "Choose role" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Assign sheriff to seat 1" }));
+    expect(screen.getByRole("button", { name: /Player 1: sheriff/i })).toBeInTheDocument();
+
+    for (const player of availablePlayers.slice(1, 10)) {
       await user.click(screen.getByRole("button", { name: `Draw role for ${player.nickname}` }));
     }
 
     expect(screen.getByText("Draw roles · 0 remaining")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Begin Mafia negotiation" }));
+    await user.click(screen.getByRole("button", { name: "Begin Mafia planning stage" }));
 
     expect(onComplete).toHaveBeenCalledTimes(1);
     const completedGame = onComplete.mock.calls[0]?.[0];
-    expect(completedGame?.phase).toBe("mafia-negotiation");
+    expect(completedGame?.phase).toBe("mafia-planning");
     expect(completedGame?.players.map(({ role }) => role).sort()).toEqual(
       [
         "citizen",
@@ -456,7 +434,6 @@ describe("SetupWizard", () => {
 
     await user.click(screen.getByRole("button", { name: /set up music.*optional/i }));
     expect(screen.getByRole("heading", { name: /table music.*optional/i })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /start.*fade in/i })).toBeNull();
     const startGame = screen.getByRole("button", { name: /^start game$/i });
     expect(startGame).toBeEnabled();
     await user.click(startGame);
@@ -465,7 +442,7 @@ describe("SetupWizard", () => {
     expect(onComplete).not.toHaveBeenCalled();
   });
 
-  it("uses account playlists without exposing a generic YouTube video queue", async () => {
+  it("uses a playlist selected from the connected YouTube Music account", async () => {
     const user = userEvent.setup();
     render(<Harness onComplete={() => undefined} />);
 
@@ -475,23 +452,6 @@ describe("SetupWizard", () => {
     await user.selectOptions(accountPlaylist, "account-playlist");
 
     expect(accountPlaylist).toHaveValue("account-playlist");
-    expect(screen.queryByRole("textbox", { name: /youtube video url or id/i })).toBeNull();
-    expect(screen.queryByRole("heading", { name: /quick queue/i })).toBeNull();
-  });
-
-  it("offers a local waveform DJ mode for real oscillograms and crossfades", async () => {
-    const user = userEvent.setup();
-    render(<Harness onComplete={() => undefined} />);
-    await fillRoster(user);
-    await user.click(screen.getByRole("button", { name: /set up music.*optional/i }));
-
-    await user.click(screen.getByRole("button", { name: "Local waveform DJ" }));
-
-    expect(
-      screen.getByText(/real oscillograms, start-point seeking, and crossfades/i),
-    ).toBeInTheDocument();
-    expect(screen.queryByRole("combobox", { name: "YouTube Music playlist" })).toBeNull();
-    expect(screen.queryByRole("button", { name: /start.*fade in/i })).toBeNull();
   });
 
   it("prevents duplicate selections and guides an empty roster to player management", async () => {

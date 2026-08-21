@@ -66,8 +66,30 @@ describe("VotingStage", () => {
       />,
     );
 
-    expect(screen.getByRole("button", { name: /eliminate both/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /keep both/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Eliminate both nominees" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Keep both nominees" })).toBeInTheDocument();
+  });
+
+  it("de-emphasizes players outside a car crash", () => {
+    const game: GameState = {
+      ...votingGame(),
+      phase: "car-crash-decision",
+      carCrashSeats: [4, 6],
+      carCrashVotes: {},
+    };
+    render(
+      <VotingStage
+        game={game}
+        onGameChange={() => undefined}
+        onResolved={() => undefined}
+        onEvent={() => undefined}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: /^vote as player 1 /i })).toHaveClass("is-inactive");
+    expect(screen.getByRole("button", { name: /^vote as player 4 /i })).not.toHaveClass(
+      "is-inactive",
+    );
   });
 
   it("moves a tied vote into canonical car-crash speeches", async () => {
@@ -75,6 +97,7 @@ describe("VotingStage", () => {
     const base = votingGame();
     const tied: GameState = {
       ...base,
+      currentTurnIndex: base.nominations.length - 1,
       voteAssignments: Object.fromEntries(
         Array.from({ length: 10 }, (_, index) => [index + 1, index < 5 ? 4 : 6]),
       ),
@@ -98,25 +121,28 @@ describe("VotingStage", () => {
     );
   });
 
-  it("assigns each voter once to the selected candidate and resolves totals", async () => {
+  it("keeps voting on the table and gives the last candidate every remaining vote", async () => {
     const user = userEvent.setup();
     const onResolved = vi.fn<(game: GameState, seats: readonly number[]) => void>();
     render(<Harness onResolved={onResolved} />);
 
-    await user.click(screen.getByRole("button", { name: /select candidate player 4/i }));
-    for (let seat = 1; seat <= 7; seat += 1) {
+    expect(screen.getByRole("region", { name: "Mafia table" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Voting candidate" })).toHaveTextContent("Player 4");
+    await user.click(screen.getByRole("button", { name: /vote as player 4 for player 4/i }));
+    expect(screen.getByRole("button", { name: /player 4 voted for seat 4/i })).toHaveClass(
+      "is-inactive",
+    );
+    for (const seat of [1, 2, 3, 5, 6, 7]) {
       await user.click(
-        screen.getByRole("button", { name: new RegExp(`assign player ${seat} vote`, "i") }),
+        screen.getByRole("button", {
+          name: new RegExp(`vote as player ${seat} for player 4`, "i"),
+        }),
       );
     }
-    await user.click(screen.getByRole("button", { name: /select candidate player 6/i }));
-    for (let seat = 8; seat <= 10; seat += 1) {
-      await user.click(
-        screen.getByRole("button", { name: new RegExp(`assign player ${seat} vote`, "i") }),
-      );
-    }
+    await user.click(screen.getByRole("button", { name: /next candidate/i }));
 
-    expect(screen.getByText("7 votes")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /voted for seat 4/i })).toHaveLength(7);
+    expect(screen.getAllByRole("button", { name: /voted for seat 6/i })).toHaveLength(3);
     expect(screen.getByText("3 votes")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /resolve voting/i }));
 

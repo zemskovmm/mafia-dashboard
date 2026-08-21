@@ -1,13 +1,9 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
-import multipart from "@fastify/multipart";
 import staticFiles from "@fastify/static";
 import Fastify from "fastify";
+import type { FastifyReply, FastifyRequest } from "fastify";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { createAudioAnalyzer } from "./audio-analysis.js";
-import { parseByteRange } from "./byte-range.js";
 import { EventStore } from "./event-store.js";
 import { AuthoritativeGameSessionError, DeletedGameError } from "./game-lifecycle.js";
 import {
@@ -19,20 +15,16 @@ import {
   durableGameEventTypeSchema,
   gameSessionMutationSchema,
 } from "./game-session-validation.js";
-import { mapMusicUploadError } from "./music-api-errors.js";
-import {
-  DEFAULT_MAX_MUSIC_FILE_BYTES,
-  DEFAULT_MAX_MUSIC_STORAGE_BYTES,
-  MusicTrackStore,
-} from "./music-track-store.js";
 import { PlayerStore } from "./player-store.js";
 import { YouTubePlaylistAccessError } from "./youtube-oauth.js";
 import type { YouTubeOAuthService } from "./youtube-oauth.js";
+import { ClubStore } from "./club-store.js";
+import type { AppUser, GoogleAuthService } from "./google-auth.js";
 
 const gameIdParams = z.object({ gameId: z.uuid() });
 const clearGameSessionQuery = z.object({ expectedRevision: z.coerce.number().int().nonnegative() });
 const playerIdParams = z.object({ playerId: z.uuid() });
-const trackIdParams = z.object({ trackId: z.uuid() });
+const clubIdParams = z.object({ clubId: z.uuid() });
 const playlistIdParams = z.object({ playlistId: z.string().trim().min(1).max(200) });
 const createGameBody = z.object({ name: z.string().trim().min(1).max(100) });
 const appendEventBody = z.object({
@@ -53,6 +45,12 @@ const oauthCallbackQuery = z.object({
 });
 
 const nickname = z.string().trim().min(1).max(80);
+const clubBody = z.object({
+  name: z.string().trim().min(1).max(100),
+  city: z.string().trim().min(1).max(100),
+  headerLogo: z.string().max(1_500_000).nullable(),
+  cardLogo: z.string().max(1_500_000).nullable(),
+});
 const playerProfileBody = z.discriminatedUnion("consent", [
   z.object({
     nickname,
@@ -77,6 +75,7 @@ const gamePlayerResultBody = z.object({
   team: z.enum(["red", "black"]),
   status: z.enum(["active", "eliminated", "red-carded"]),
   fouls: z.number().int().min(0),
+  bestMoveHits: z.number().int().min(0).max(3).nullable().optional(),
 });
 
 const gameResultsBody = z
@@ -132,7 +131,9 @@ const validationFailure = (issues: readonly z.core.$ZodIssue[]) => ({
 const isUniqueViolation = (error: unknown): error is { readonly code: "23505" } =>
   typeof error === "object" && error !== null && "code" in error && error.code === "23505";
 
-const oauthStateCookieName = "music_oauth_state";
+const authStateCookieName = "auth_oauth_state";
+const musicStateCookieName = "music_oauth_state";
+const sessionCookieName = "mafia_session";
 const readCookie = (header: string | undefined, name: string): string | null => {
   if (header === undefined) return null;
   for (const part of header.split(";")) {
@@ -151,121 +152,50 @@ const matchesState = (expected: string | null, received: string): boolean => {
   );
 };
 
-const stateCookie = (state: string, maxAge: number) =>
-  `${oauthStateCookieName}=${encodeURIComponent(state)}; Path=/api/music/oauth/callback; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax`;
-
-const supportedAudioTypes = new Set([
-  "audio/aac",
-  "audio/flac",
-  "audio/m4a",
-  "audio/mp4",
-  "audio/mpeg",
-  "audio/ogg",
-  "audio/wav",
-  "audio/wave",
-  "audio/x-m4a",
-  "audio/x-wav",
-]);
-
-const MAX_TRACK_TITLE_BYTES = 640;
-const MAX_MULTIPART_OVERHEAD_BYTES = 256 * 1024;
-
-class MultipartContractError extends Error {
-  public constructor(
-    public readonly statusCode: number,
-    public readonly code: string,
-  ) {
-    super(code);
-    this.name = "MultipartContractError";
-  }
-}
-
-const codedError = (error: unknown): string | undefined =>
-  typeof error === "object" && error !== null && "code" in error ? String(error.code) : undefined;
-
-const multipartLimitError = (error: unknown): MultipartContractError | null => {
-  switch (codedError(error)) {
-    case "FST_FIELDS_LIMIT":
-    case "FST_FILES_LIMIT":
-    case "FST_PARTS_LIMIT":
-    case "FST_ERR_CTP_BODY_TOO_LARGE":
-      return new MultipartContractError(413, "multipart_limit_exceeded");
-    default:
-      return null;
-  }
-};
-
-const deferredValidation = () => {
-  let resolve!: () => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<void>((onResolve, onReject) => {
-    resolve = onResolve;
-    reject = onReject;
-  });
-  // The parser can reject before the file pipeline reaches this barrier.
-  void promise.catch(() => undefined);
-  return { promise, resolve, reject };
-};
+const cookie = ({
+  name,
+  value,
+  path,
+  maxAge,
+  secure,
+}: {
+  readonly name: string;
+  readonly value: string;
+  readonly path: string;
+  readonly maxAge: number;
+  readonly secure: boolean;
+}) =>
+  `${name}=${encodeURIComponent(value)}; Path=${path}; Max-Age=${maxAge}; HttpOnly; SameSite=Lax${
+    secure ? "; Secure" : ""
+  }`;
 
 export const buildApp = async ({
   pool,
   staticDir,
-  musicStorageDir,
-  musicTrackStore,
-  musicLimits = {},
+  googleAuth,
+  authenticateRequest,
+  defaultClubId,
   youtubeOAuth,
   publicAppUrl,
 }: {
   readonly pool: Pool;
   readonly staticDir?: string;
-  readonly musicStorageDir?: string;
-  readonly musicTrackStore?: MusicTrackStore;
-  readonly musicLimits?: {
-    readonly maxFileBytes?: number;
-    readonly maxStorageBytes?: number;
-    readonly maxDurationSeconds?: number;
-    readonly analysisTimeoutMs?: number;
-  };
+  readonly googleAuth?: GoogleAuthService;
+  readonly authenticateRequest?: (request: FastifyRequest) => Promise<AppUser | null>;
+  readonly defaultClubId?: string;
   readonly youtubeOAuth?: YouTubeOAuthService;
   readonly publicAppUrl?: string;
 }) => {
-  const app = Fastify({ logger: false });
+  const app = Fastify({ logger: false, bodyLimit: 4 * 1024 * 1024 });
   app.addHook("onRequest", async (_request, reply) => {
     reply.header("permissions-policy", "picture-in-picture=()");
-  });
-  const maxFileBytes = musicLimits.maxFileBytes ?? DEFAULT_MAX_MUSIC_FILE_BYTES;
-  const maxStorageBytes = musicLimits.maxStorageBytes ?? DEFAULT_MAX_MUSIC_STORAGE_BYTES;
-  const maxMultipartBodyBytes = maxFileBytes + MAX_MULTIPART_OVERHEAD_BYTES;
-  await app.register(multipart, {
-    throwFileSizeLimit: true,
-    limits: {
-      fieldNameSize: 16,
-      fieldSize: MAX_TRACK_TITLE_BYTES,
-      fields: 1,
-      fileSize: maxFileBytes,
-      files: 1,
-      headerPairs: 8,
-      parts: 2,
-    },
   });
   const store = new EventStore(pool);
   const gameSessionStore = new GameSessionStore(pool);
   const playerStore = new PlayerStore(pool);
+  const clubStore = new ClubStore(pool);
   await store.initialize();
-  const musicTracks =
-    musicTrackStore ??
-    (musicStorageDir === undefined
-      ? undefined
-      : new MusicTrackStore(
-          pool,
-          musicStorageDir,
-          createAudioAnalyzer({
-            maxDurationSeconds: musicLimits.maxDurationSeconds,
-            timeoutMs: musicLimits.analysisTimeoutMs,
-          }),
-          { maxFileBytes, maxStorageBytes },
-        ));
-  await musicTracks?.initialize();
+  const secureCookies = publicAppUrl?.startsWith("https://") === true;
 
   if (publicAppUrl !== undefined) {
     const publicUrl = new URL(publicAppUrl);
@@ -301,23 +231,171 @@ export const buildApp = async ({
     }
   });
 
-  app.get("/api/music/oauth/status", async () =>
-    youtubeOAuth === undefined
-      ? { configured: false, connected: false, accountLabel: null }
-      : youtubeOAuth.getStatus(),
-  );
+  const authenticate =
+    authenticateRequest ??
+    ((request: FastifyRequest) =>
+      googleAuth?.getUserForSession(readCookie(request.headers.cookie, sessionCookieName)) ??
+      Promise.resolve(null));
+  const requireUser = async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = await authenticate(request);
+    if (user === null) await reply.code(401).send({ error: "authentication_required" });
+    return user;
+  };
+  const selectedClub = async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = await requireUser(request, reply);
+    if (user === null) return null;
+    const value = request.headers["x-club-id"];
+    const clubId = typeof value === "string" ? value : defaultClubId;
+    if (clubId === undefined || !z.uuid().safeParse(clubId).success) {
+      await reply.code(400).send({ error: "club_required" });
+      return null;
+    }
+    if (!(await clubStore.isMember(user.id, clubId))) {
+      await reply.code(403).send({ error: "club_access_denied" });
+      return null;
+    }
+    return clubId;
+  };
 
-  app.get("/api/music/oauth/start", async (_request, reply) => {
+  app.get("/api/auth/session", async (request) => ({
+    configured: googleAuth !== undefined,
+    user: await authenticate(request),
+  }));
+
+  app.get("/api/auth/google/start", async (_request, reply) => {
+    if (googleAuth === undefined) {
+      return reply.code(503).send({ error: "google_auth_not_configured" });
+    }
+    const state = randomBytes(32).toString("base64url");
+    return reply
+      .header(
+        "set-cookie",
+        cookie({
+          name: authStateCookieName,
+          value: state,
+          path: "/api/auth/google/callback",
+          maxAge: 600,
+          secure: true,
+        }),
+      )
+      .redirect(googleAuth.createAuthorizationUrl(state));
+  });
+
+  app.get("/api/auth/google/callback", async (request, reply) => {
+    if (googleAuth === undefined) {
+      return reply.code(503).send({ error: "google_auth_not_configured" });
+    }
+    const query = oauthCallbackQuery.safeParse(request.query);
+    if (!query.success) return reply.code(400).send(validationFailure(query.error.issues));
+    const expectedState = readCookie(request.headers.cookie, authStateCookieName);
+    if (!matchesState(expectedState, query.data.state)) {
+      return reply.code(400).send({ error: "oauth_state_mismatch" });
+    }
+    const authorization = await googleAuth.completeAuthorization(query.data.code);
+    return reply
+      .header("set-cookie", [
+        cookie({
+          name: authStateCookieName,
+          value: "",
+          path: "/api/auth/google/callback",
+          maxAge: 0,
+          secure: true,
+        }),
+        cookie({
+          name: sessionCookieName,
+          value: authorization.sessionToken,
+          path: "/",
+          maxAge: Math.max(0, Math.floor((authorization.expiresAt.getTime() - Date.now()) / 1_000)),
+          secure: secureCookies,
+        }),
+      ])
+      .redirect("/");
+  });
+
+  app.delete("/api/auth/session", async (request, reply) => {
+    const token = readCookie(request.headers.cookie, sessionCookieName);
+    await googleAuth?.endSession(token);
+    return reply
+      .header(
+        "set-cookie",
+        cookie({
+          name: sessionCookieName,
+          value: "",
+          path: "/",
+          maxAge: 0,
+          secure: secureCookies,
+        }),
+      )
+      .code(204)
+      .send();
+  });
+
+  app.get("/api/clubs", async (request, reply) => {
+    const user = await requireUser(request, reply);
+    return user === null ? undefined : { clubs: await clubStore.listForUser(user.id) };
+  });
+
+  app.post("/api/clubs", async (request, reply) => {
+    const body = clubBody.safeParse(request.body);
+    if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
+    const user = await requireUser(request, reply);
+    if (user === null) return;
+    return reply.code(201).send({ club: await clubStore.create(user.id, body.data) });
+  });
+
+  app.put("/api/clubs/:clubId", async (request, reply) => {
+    const params = clubIdParams.safeParse(request.params);
+    const body = clubBody.safeParse(request.body);
+    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
+    if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
+    const user = await requireUser(request, reply);
+    if (user === null) return;
+    const club = await clubStore.update(user.id, params.data.clubId, body.data);
+    return club === null ? reply.code(404).send({ error: "club_not_found" }) : reply.send({ club });
+  });
+
+  app.delete("/api/clubs/:clubId", async (request, reply) => {
+    const params = clubIdParams.safeParse(request.params);
+    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
+    const user = await requireUser(request, reply);
+    if (user === null) return;
+    return (await clubStore.delete(user.id, params.data.clubId))
+      ? reply.code(204).send()
+      : reply.code(404).send({ error: "club_not_found" });
+  });
+
+  app.get("/api/music/oauth/status", async (request, reply) => {
+    const user = await requireUser(request, reply);
+    if (user === null) return;
+    return youtubeOAuth === undefined
+      ? { configured: false, connected: false, accountLabel: null }
+      : youtubeOAuth.getStatus(user.id);
+  });
+
+  app.get("/api/music/oauth/start", async (request, reply) => {
+    const user = await requireUser(request, reply);
+    if (user === null) return;
     if (youtubeOAuth === undefined) {
       return reply.code(503).send({ error: "youtube_oauth_not_configured" });
     }
     const state = randomBytes(32).toString("base64url");
     return reply
-      .header("set-cookie", stateCookie(state, 600))
+      .header(
+        "set-cookie",
+        cookie({
+          name: musicStateCookieName,
+          value: `${user.id}:${state}`,
+          path: "/api/music/oauth/callback",
+          maxAge: 600,
+          secure: true,
+        }),
+      )
       .redirect(youtubeOAuth.createAuthorizationUrl(state));
   });
 
   app.get("/api/music/oauth/callback", async (request, reply) => {
+    const user = await requireUser(request, reply);
+    if (user === null) return;
     if (youtubeOAuth === undefined) {
       return reply.code(503).send({ error: "youtube_oauth_not_configured" });
     }
@@ -325,29 +403,44 @@ export const buildApp = async ({
     if (!query.success) {
       return reply.code(400).send(validationFailure(query.error.issues));
     }
-    const expectedState = readCookie(request.headers.cookie, oauthStateCookieName);
-    if (!matchesState(expectedState, query.data.state)) {
+    const expectedState = readCookie(request.headers.cookie, musicStateCookieName);
+    if (!matchesState(expectedState, `${user.id}:${query.data.state}`)) {
       return reply.code(400).send({ error: "oauth_state_mismatch" });
     }
-    await youtubeOAuth.exchangeCode(query.data.code);
-    return reply.header("set-cookie", stateCookie("", 0)).redirect("/?music=connected");
+    await youtubeOAuth.exchangeCode(user.id, query.data.code);
+    return reply
+      .header(
+        "set-cookie",
+        cookie({
+          name: musicStateCookieName,
+          value: "",
+          path: "/api/music/oauth/callback",
+          maxAge: 0,
+          secure: true,
+        }),
+      )
+      .redirect("/?music=connected");
   });
 
-  app.get("/api/music/playlists", async (_request, reply) => {
+  app.get("/api/music/playlists", async (request, reply) => {
+    const user = await requireUser(request, reply);
+    if (user === null) return;
     if (youtubeOAuth === undefined) {
       return reply.code(503).send({ error: "youtube_oauth_not_configured" });
     }
-    return { playlists: await youtubeOAuth.listPlaylists() };
+    return { playlists: await youtubeOAuth.listPlaylists(user.id) };
   });
 
   app.get("/api/music/playlists/:playlistId/items", async (request, reply) => {
+    const user = await requireUser(request, reply);
+    if (user === null) return;
     if (youtubeOAuth === undefined) {
       return reply.code(503).send({ error: "youtube_oauth_not_configured" });
     }
     const params = playlistIdParams.safeParse(request.params);
     if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
     try {
-      return { items: await youtubeOAuth.listPlaylistItems(params.data.playlistId) };
+      return { items: await youtubeOAuth.listPlaylistItems(user.id, params.data.playlistId) };
     } catch (error) {
       if (error instanceof YouTubePlaylistAccessError) {
         return reply.code(404).send({ error: "youtube_playlist_not_available" });
@@ -356,191 +449,39 @@ export const buildApp = async ({
     }
   });
 
-  app.get("/api/music/tracks", async (_request, reply) => {
-    if (musicTracks === undefined) {
-      return reply.code(503).send({ error: "local_music_not_configured" });
-    }
-    return { tracks: await musicTracks.list() };
-  });
-
-  app.post("/api/music/tracks", { bodyLimit: maxMultipartBodyBytes }, async (request, reply) => {
-    if (musicTracks === undefined) {
-      return reply.code(503).send({ error: "local_music_not_configured" });
-    }
-    const contentLength = Number(request.headers["content-length"]);
-    if (!Number.isSafeInteger(contentLength) || contentLength < 0) {
-      request.raw.resume();
-      return reply.code(411).send({ error: "multipart_content_length_required" });
-    }
-    if (contentLength > maxMultipartBodyBytes) {
-      request.raw.resume();
-      return reply.code(413).send({ error: "multipart_body_too_large" });
-    }
-
-    let validation: ReturnType<typeof deferredValidation> | null = null;
-    let uploadTask: Promise<Awaited<ReturnType<MusicTrackStore["create"]>>> | null = null;
-    let contractError: MultipartContractError | null = null;
-    let titleFieldSeen = false;
-    let fileSeen = false;
-    try {
-      let requestedTitle = "";
-      for await (const part of request.parts()) {
-        if (part.type === "field") {
-          if (
-            fileSeen ||
-            titleFieldSeen ||
-            part.fieldname !== "title" ||
-            part.fieldnameTruncated ||
-            part.valueTruncated
-          ) {
-            contractError ??= new MultipartContractError(400, "invalid_multipart_contract");
-            continue;
-          }
-          titleFieldSeen = true;
-          requestedTitle = String(part.value).trim();
-          continue;
-        }
-
-        fileSeen = true;
-        let fileLimitReached = false;
-        part.file.once("limit", () => {
-          fileLimitReached = true;
-        });
-        if (part.fieldname !== "file") {
-          contractError ??= new MultipartContractError(400, "invalid_multipart_contract");
-        }
-        if (!supportedAudioTypes.has(part.mimetype)) {
-          contractError ??= new MultipartContractError(415, "unsupported_audio_type");
-        }
-        const title = requestedTitle || part.filename.replace(/\.[^.]+$/, "").trim();
-        if (title.length === 0 || title.length > 160) {
-          contractError ??= new MultipartContractError(400, "invalid_track_title");
-        }
-
-        if (contractError !== null) {
-          part.file.resume();
-          continue;
-        }
-
-        validation = deferredValidation();
-        const currentValidation = validation;
-        uploadTask = musicTracks.create({
-          title,
-          originalFilename: part.filename,
-          mimeType: part.mimetype,
-          stream: part.file,
-          validateUpload: async () => {
-            await currentValidation.promise;
-            if (fileLimitReached || part.file.truncated) {
-              throw new MultipartContractError(413, "audio_file_too_large");
-            }
-          },
-        });
-        void uploadTask.catch(() => undefined);
-      }
-
-      if (!fileSeen || uploadTask === null || validation === null) {
-        throw contractError ?? new MultipartContractError(400, "audio_file_required");
-      }
-      if (contractError !== null) throw contractError;
-      validation.resolve();
-      const track = await uploadTask;
-      return reply.code(201).send({ track });
-    } catch (error) {
-      validation?.reject(error);
-      if (uploadTask !== null) {
-        try {
-          await uploadTask;
-        } catch (uploadError) {
-          const mappedUploadError = mapMusicUploadError(uploadError);
-          if (mappedUploadError !== null) {
-            return reply.code(mappedUploadError.statusCode).send({ error: mappedUploadError.code });
-          }
-          if (uploadError instanceof MultipartContractError) {
-            return reply.code(uploadError.statusCode).send({ error: uploadError.code });
-          }
-        }
-      }
-      if (error instanceof MultipartContractError) {
-        return reply.code(error.statusCode).send({ error: error.code });
-      }
-      const limitError = multipartLimitError(error);
-      if (limitError !== null) {
-        return reply.code(limitError.statusCode).send({ error: limitError.code });
-      }
-      const uploadError = mapMusicUploadError(error);
-      if (uploadError === null) throw error;
-      if (uploadError.code === "audio_analysis_busy") reply.header("retry-after", "1");
-      return reply.code(uploadError.statusCode).send({ error: uploadError.code });
-    }
-  });
-
-  app.get("/api/music/tracks/:trackId/audio", async (request, reply) => {
-    if (musicTracks === undefined) {
-      return reply.code(503).send({ error: "local_music_not_configured" });
-    }
-    const params = trackIdParams.safeParse(request.params);
-    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
-    const source = await musicTracks.open(params.data.trackId);
-    if (source === null) return reply.code(404).send({ error: "track_not_found" });
-    let file;
-    try {
-      file = await stat(source.path);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return reply.code(404).send({ error: "track_file_missing" });
-      }
-      throw error;
-    }
-    if (!file.isFile()) return reply.code(404).send({ error: "track_file_missing" });
-    const range = parseByteRange(request.headers.range, file.size);
-    reply.header("accept-ranges", "bytes").header("content-type", source.mimeType);
-    if (range === "invalid") {
-      return reply.header("content-range", `bytes */${file.size}`).code(416).send();
-    }
-    if (range === null) {
-      return reply.header("content-length", file.size).send(createReadStream(source.path));
-    }
-    return reply
-      .code(206)
-      .header("content-range", `bytes ${range.start}-${range.end}/${file.size}`)
-      .header("content-length", range.end - range.start + 1)
-      .send(createReadStream(source.path, range));
-  });
-
-  app.delete("/api/music/tracks/:trackId", async (request, reply) => {
-    if (musicTracks === undefined) {
-      return reply.code(503).send({ error: "local_music_not_configured" });
-    }
-    const params = trackIdParams.safeParse(request.params);
-    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
-    return (await musicTracks.delete(params.data.trackId))
-      ? reply.code(204).send()
-      : reply.code(404).send({ error: "track_not_found" });
-  });
-
-  app.delete("/api/music/oauth/connection", async (_request, reply) => {
+  app.delete("/api/music/oauth/connection", async (request, reply) => {
+    const user = await requireUser(request, reply);
+    if (user === null) return;
     if (youtubeOAuth === undefined) {
       return reply.code(503).send({ error: "youtube_oauth_not_configured" });
     }
-    await youtubeOAuth.disconnect();
+    await youtubeOAuth.disconnect(user.id);
     return reply.code(204).send();
   });
 
-  app.get("/api/players", async () => ({ players: await playerStore.list() }));
+  app.get("/api/players", async (request, reply) => {
+    const clubId = await selectedClub(request, reply);
+    if (clubId === null) return;
+    return { players: await playerStore.list(clubId) };
+  });
 
   app.post("/api/players", async (request, reply) => {
+    const clubId = await selectedClub(request, reply);
+    if (clubId === null) return;
     const parsed = playerProfileBody.safeParse(request.body);
     if (!parsed.success) {
       return reply.code(400).send(validationFailure(parsed.error.issues));
     }
     try {
-      const player = await playerStore.create({
-        ...parsed.data,
-        firstName: parsed.data.firstName ?? null,
-        lastName: parsed.data.lastName ?? null,
-        email: parsed.data.email ?? null,
-      });
+      const player = await playerStore.create(
+        {
+          ...parsed.data,
+          firstName: parsed.data.firstName ?? null,
+          lastName: parsed.data.lastName ?? null,
+          email: parsed.data.email ?? null,
+        },
+        clubId,
+      );
       return reply.code(201).send({ player });
     } catch (error) {
       if (isUniqueViolation(error)) {
@@ -551,6 +492,8 @@ export const buildApp = async ({
   });
 
   app.put("/api/players/:playerId", async (request, reply) => {
+    const clubId = await selectedClub(request, reply);
+    if (clubId === null) return;
     const params = playerIdParams.safeParse(request.params);
     const body = playerProfileBody.safeParse(request.body);
     if (!params.success) {
@@ -560,12 +503,16 @@ export const buildApp = async ({
       return reply.code(400).send(validationFailure(body.error.issues));
     }
     try {
-      const player = await playerStore.update(params.data.playerId, {
-        ...body.data,
-        firstName: body.data.firstName ?? null,
-        lastName: body.data.lastName ?? null,
-        email: body.data.email ?? null,
-      });
+      const player = await playerStore.update(
+        params.data.playerId,
+        {
+          ...body.data,
+          firstName: body.data.firstName ?? null,
+          lastName: body.data.lastName ?? null,
+          email: body.data.email ?? null,
+        },
+        clubId,
+      );
       if (player === null) {
         return reply.code(404).send({ error: "player_not_found" });
       }
@@ -579,35 +526,47 @@ export const buildApp = async ({
   });
 
   app.delete("/api/players/:playerId", async (request, reply) => {
+    const clubId = await selectedClub(request, reply);
+    if (clubId === null) return;
     const params = playerIdParams.safeParse(request.params);
     if (!params.success) {
       return reply.code(400).send(validationFailure(params.error.issues));
     }
-    const result = await playerStore.delete(params.data.playerId);
+    const result = await playerStore.delete(params.data.playerId, clubId);
     if (result === "not_found") return reply.code(404).send({ error: "player_not_found" });
     if (result === "active_game") return reply.code(409).send({ error: "active_game" });
     return reply.code(204).send();
   });
 
-  app.get("/api/game-sessions", async () => ({
-    sessions: await gameSessionStore.listActive(),
-  }));
+  app.get("/api/game-sessions", async (request, reply) => {
+    const clubId = await selectedClub(request, reply);
+    if (clubId === null) return;
+    return { sessions: await gameSessionStore.listActive(clubId) };
+  });
 
   app.get("/api/game-sessions/:gameId", async (request, reply) => {
+    const clubId = await selectedClub(request, reply);
+    if (clubId === null) return;
     const params = gameIdParams.safeParse(request.params);
     if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
-    const session = await gameSessionStore.get(params.data.gameId);
+    const session = await gameSessionStore.get(params.data.gameId, clubId);
     if (session === null) return reply.code(404).send({ error: "game_session_not_found" });
     return { session };
   });
 
   app.put("/api/game-sessions/:gameId", async (request, reply) => {
+    const clubId = await selectedClub(request, reply);
+    if (clubId === null) return;
     const params = gameIdParams.safeParse(request.params);
     const body = gameSessionMutationSchema.safeParse(request.body);
     if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
     if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
     try {
-      const session = await gameSessionStore.save({ gameId: params.data.gameId, ...body.data });
+      const session = await gameSessionStore.save({
+        clubId,
+        gameId: params.data.gameId,
+        ...body.data,
+      });
       return reply.code(session.duplicate || session.revision > 1 ? 200 : 201).send(session);
     } catch (error) {
       if (error instanceof GameSessionMutationMismatchError) {
@@ -627,12 +586,14 @@ export const buildApp = async ({
   });
 
   app.delete("/api/game-sessions/:gameId", async (request, reply) => {
+    const clubId = await selectedClub(request, reply);
+    if (clubId === null) return;
     const params = gameIdParams.safeParse(request.params);
     const query = clearGameSessionQuery.safeParse(request.query);
     if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
     if (!query.success) return reply.code(400).send(validationFailure(query.error.issues));
     try {
-      await gameSessionStore.clear(params.data.gameId, query.data.expectedRevision);
+      await gameSessionStore.clear(params.data.gameId, query.data.expectedRevision, clubId);
       return reply.code(204).send();
     } catch (error) {
       if (error instanceof GameSessionConflictError) {
@@ -646,6 +607,8 @@ export const buildApp = async ({
   });
 
   app.post("/api/games", async (request, reply) => {
+    const clubId = await selectedClub(request, reply);
+    if (clubId === null) return;
     const parsed = createGameBody.safeParse(request.body);
     if (!parsed.success) {
       return reply.code(400).send(validationFailure(parsed.error.issues));
@@ -653,6 +616,7 @@ export const buildApp = async ({
 
     const gameId = randomUUID();
     const event = await store.append({
+      clubId,
       gameId,
       idempotencyKey: "game-created",
       type: "game.created",
@@ -664,12 +628,14 @@ export const buildApp = async ({
   });
 
   app.delete("/api/games/:gameId", async (request, reply) => {
+    const clubId = await selectedClub(request, reply);
+    if (clubId === null) return;
     const params = gameIdParams.safeParse(request.params);
     if (!params.success) {
       return reply.code(400).send(validationFailure(params.error.issues));
     }
     try {
-      await store.deleteGame(params.data.gameId);
+      await store.deleteGame(params.data.gameId, clubId);
       return reply.code(204).send();
     } catch (error) {
       if (error instanceof AuthoritativeGameSessionError) {
@@ -680,6 +646,8 @@ export const buildApp = async ({
   });
 
   app.post("/api/games/:gameId/events/truncate", async (request, reply) => {
+    const clubId = await selectedClub(request, reply);
+    if (clubId === null) return;
     const params = gameIdParams.safeParse(request.params);
     const body = truncateEventsBody.safeParse(request.body);
     if (!params.success) {
@@ -689,7 +657,7 @@ export const buildApp = async ({
       return reply.code(400).send(validationFailure(body.error.issues));
     }
     try {
-      await store.truncateFrom(params.data.gameId, body.data.fromIdempotencyKey);
+      await store.truncateFrom(params.data.gameId, body.data.fromIdempotencyKey, clubId);
       return reply.code(204).send();
     } catch (error) {
       if (error instanceof AuthoritativeGameSessionError) {
@@ -700,6 +668,8 @@ export const buildApp = async ({
   });
 
   app.post("/api/games/:gameId/events", async (request, reply) => {
+    const clubId = await selectedClub(request, reply);
+    if (clubId === null) return;
     const params = gameIdParams.safeParse(request.params);
     const body = appendEventBody.safeParse(request.body);
     if (!params.success) {
@@ -710,7 +680,7 @@ export const buildApp = async ({
     }
 
     try {
-      const event = await store.append({ gameId: params.data.gameId, ...body.data });
+      const event = await store.append({ clubId, gameId: params.data.gameId, ...body.data });
       return reply.code(event.duplicate ? 200 : 201).send({ event });
     } catch (error) {
       if (error instanceof AuthoritativeGameSessionError) {
@@ -721,6 +691,8 @@ export const buildApp = async ({
   });
 
   app.get("/api/games/:gameId/events", async (request, reply) => {
+    const clubId = await selectedClub(request, reply);
+    if (clubId === null) return;
     const params = gameIdParams.safeParse(request.params);
     const query = visibilityQuery.safeParse(request.query);
     if (!params.success) {
@@ -730,13 +702,17 @@ export const buildApp = async ({
       return reply.code(400).send(validationFailure(query.error.issues));
     }
 
-    const events = await store.read(params.data.gameId, {
-      includeSecrets: query.data.visibility === "host",
-    });
+    const events = await store.read(
+      params.data.gameId,
+      { includeSecrets: query.data.visibility === "host" },
+      clubId,
+    );
     return { events };
   });
 
   app.put("/api/games/:gameId/results", async (request, reply) => {
+    const clubId = await selectedClub(request, reply);
+    if (clubId === null) return;
     const params = gameIdParams.safeParse(request.params);
     const body = gameResultsBody.safeParse(request.body);
     if (!params.success) {
@@ -746,7 +722,7 @@ export const buildApp = async ({
       return reply.code(400).send(validationFailure(body.error.issues));
     }
     try {
-      await playerStore.saveGameResults({ gameId: params.data.gameId, ...body.data });
+      await playerStore.saveGameResults({ gameId: params.data.gameId, ...body.data }, clubId);
       return reply.code(204).send();
     } catch (error) {
       if (error instanceof DeletedGameError) {
@@ -760,12 +736,14 @@ export const buildApp = async ({
   });
 
   app.delete("/api/games/:gameId/results", async (request, reply) => {
+    const clubId = await selectedClub(request, reply);
+    if (clubId === null) return;
     const params = gameIdParams.safeParse(request.params);
     if (!params.success) {
       return reply.code(400).send(validationFailure(params.error.issues));
     }
     try {
-      await playerStore.deleteGameResults(params.data.gameId);
+      await playerStore.deleteGameResults(params.data.gameId, clubId);
       return reply.code(204).send();
     } catch (error) {
       if (error instanceof DeletedGameError) {

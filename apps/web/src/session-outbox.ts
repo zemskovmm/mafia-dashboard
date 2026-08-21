@@ -3,10 +3,12 @@ import type { FinalGameResults, GameSessionMutation, GameSessionState } from "./
 export interface SessionSaveResponse {
   readonly revision: number;
   readonly duplicate: boolean;
+  readonly name?: string;
 }
 
 interface OutboxOptions {
   readonly storage: Storage;
+  readonly storageKey?: string;
   readonly createId: () => string;
   readonly save: (gameId: string, mutation: GameSessionMutation) => Promise<SessionSaveResponse>;
 }
@@ -28,7 +30,7 @@ interface PersistedEnvelope {
   readonly clearingGameId: string | null;
 }
 
-const storageKey = "mafia-dashboard.game-session.v3";
+const defaultStorageKey = "mafia-dashboard.game-session.v3";
 
 const emptyEnvelope = (): PersistedEnvelope => ({
   version: 3,
@@ -41,7 +43,7 @@ const emptyEnvelope = (): PersistedEnvelope => ({
   clearingGameId: null,
 });
 
-const loadEnvelope = (storage: Storage): PersistedEnvelope => {
+const loadEnvelope = (storage: Storage, storageKey: string): PersistedEnvelope => {
   try {
     const raw = storage.getItem(storageKey);
     if (raw === null) return emptyEnvelope();
@@ -98,9 +100,11 @@ export class GameSessionOutbox {
   private readonly pendingClears = new Map<string, number>();
   private generation = 0;
   private readonly listeners = new Set<() => void>();
+  private readonly storageKey: string;
 
   public constructor(private readonly options: OutboxOptions) {
-    this.envelope = loadEnvelope(options.storage);
+    this.storageKey = options.storageKey ?? defaultStorageKey;
+    this.envelope = loadEnvelope(options.storage, this.storageKey);
   }
 
   public get status(): "saved" | "saving" | "offline" {
@@ -143,9 +147,9 @@ export class GameSessionOutbox {
 
   private persist(): void {
     if (this.envelope.current === null && this.envelope.outbox.length === 0) {
-      this.options.storage.removeItem(storageKey);
+      this.options.storage.removeItem(this.storageKey);
     } else {
-      this.options.storage.setItem(storageKey, JSON.stringify(this.envelope));
+      this.options.storage.setItem(this.storageKey, JSON.stringify(this.envelope));
     }
     this.notify();
   }
@@ -206,7 +210,7 @@ export class GameSessionOutbox {
     state: GameSessionState,
     results: FinalGameResults | null,
   ): void {
-    const durable = loadEnvelope(this.options.storage);
+    const durable = loadEnvelope(this.options.storage, this.storageKey);
     if (!sameEnvelope(durable, this.envelope)) {
       this.envelope = durable;
       this.notify();
@@ -244,7 +248,7 @@ export class GameSessionOutbox {
       this.persist();
       return;
     }
-    const durable = loadEnvelope(this.options.storage);
+    const durable = loadEnvelope(this.options.storage, this.storageKey);
     if (durable.gameId !== gameId) {
       this.envelope = durable;
       this.notify();
@@ -259,7 +263,7 @@ export class GameSessionOutbox {
     try {
       await clearRemote(gameId, durable.revision);
       if (generation !== this.generation || this.envelope.gameId !== gameId) return;
-      const durableAfterClear = loadEnvelope(this.options.storage);
+      const durableAfterClear = loadEnvelope(this.options.storage, this.storageKey);
       if (durableAfterClear.gameId !== gameId) {
         this.envelope = durableAfterClear;
         this.notify();
@@ -271,7 +275,7 @@ export class GameSessionOutbox {
       this.persist();
     } catch (error) {
       if (generation === this.generation && this.envelope.gameId === gameId) {
-        const durableAfterClear = loadEnvelope(this.options.storage);
+        const durableAfterClear = loadEnvelope(this.options.storage, this.storageKey);
         if (durableAfterClear.gameId !== gameId) {
           this.envelope = durableAfterClear;
           this.notify();
@@ -312,7 +316,7 @@ export class GameSessionOutbox {
           if (response.revision !== mutation.baseRevision + 1) {
             throw new Error("Unexpected game session revision");
           }
-          const durable = loadEnvelope(this.options.storage);
+          const durable = loadEnvelope(this.options.storage, this.storageKey);
           if (durable.gameId !== gameId) {
             this.envelope = durable;
             activeMutation = null;
@@ -322,13 +326,32 @@ export class GameSessionOutbox {
           const durableIndex = durable.outbox.findIndex(
             ({ mutationId }) => mutationId === mutation.mutationId,
           );
+          const canonicalName = response.name?.trim();
+          const remainingOutbox =
+            durableIndex === -1
+              ? durable.outbox
+              : durable.outbox.filter((_, index) => index !== durableIndex);
           this.envelope =
             durableIndex === -1
-              ? durable
+              ? canonicalName === undefined || canonicalName === ""
+                ? durable
+                : {
+                    ...durable,
+                    current:
+                      durable.current === null ? null : { ...durable.current, name: canonicalName },
+                    outbox: durable.outbox.map((queued) => ({ ...queued, name: canonicalName })),
+                  }
               : {
                   ...durable,
                   revision: Math.max(durable.revision, response.revision),
-                  outbox: durable.outbox.filter((_, index) => index !== durableIndex),
+                  current:
+                    canonicalName === undefined || canonicalName === "" || durable.current === null
+                      ? durable.current
+                      : { ...durable.current, name: canonicalName },
+                  outbox:
+                    canonicalName === undefined || canonicalName === ""
+                      ? remainingOutbox
+                      : remainingOutbox.map((queued) => ({ ...queued, name: canonicalName })),
                   failed: false,
                 };
           activeMutation = null;
@@ -336,7 +359,7 @@ export class GameSessionOutbox {
         }
       } catch (error) {
         if (generation === this.generation) {
-          const durable = loadEnvelope(this.options.storage);
+          const durable = loadEnvelope(this.options.storage, this.storageKey);
           if (durable.gameId !== this.envelope.gameId) {
             this.envelope = durable;
             this.notify();

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": { "value": "westeurope" },
+    "namePrefix": { "value": "mafiadashboard" },
+    "deployApp": { "value": false },
+    "image": { "value": "" },
+    "publicAppUrl": { "value": "" },
+    "googleClientId": { "value": "" },
+    "googleClientSecret": { "value": "" },
+    "musicTokenEncryptionKey": { "value": "" },
+    "postgresPassword": { "value": "replace-securely-at-deployment" }
+  }
+}

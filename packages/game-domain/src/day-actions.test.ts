@@ -3,9 +3,11 @@ import { advanceSetupPhase, createGame, getCurrentTurnDuration } from "./game.js
 import {
   assignCarCrashVote,
   assignVote,
+  advanceVotingCandidate,
   completeCurrentTurn,
   countVotes,
   issueFoul,
+  getCurrentVotingCandidateSeat,
   nominate,
   redCard,
   resolveVote,
@@ -116,14 +118,15 @@ describe("day actions", () => {
     expect(() => redCard(game, 4)).toThrow("Red cards are only accepted during the day");
   });
 
-  it("skips first-day voting when only one active nominee remains", () => {
+  it("keeps a one-person voting screen and assigns every active vote", () => {
     let game = nominate(dayOne(), 1, 4);
 
     while (game.phase === "day") game = completeCurrentTurn(game);
 
-    expect(game.phase).toBe("night-mafia");
+    expect(game.phase).toBe("voting");
     expect(game.players.find(({ seat }) => seat === 4)?.status).toBe("active");
-    expect(game.nominations).toEqual([]);
+    expect(game.turnOrder).toEqual([4]);
+    expect(Object.values(game.voteAssignments)).toEqual(Array.from({ length: 10 }, () => 4));
   });
 
   it("removes a red-carded nominee instead of entering an unresolvable vote", () => {
@@ -143,15 +146,20 @@ describe("day actions", () => {
     game = nominate(game, 2, 6);
     game = startVoting(game);
 
+    expect(game.turnOrder).toEqual([4, 6]);
+    expect(getCurrentVotingCandidateSeat(game)).toBe(4);
     game = assignVote(game, 1, 4);
+    game = assignVote(game, 4, 4);
+    expect(game.voteAssignments[4]).toBe(4);
     expect(() => assignVote(game, 1, 6)).toThrow(/already voted/i);
+    expect(() => assignVote(game, 2, 6)).toThrow(/current voting candidate/i);
 
-    for (const seat of [2, 3, 4, 5, 6, 7]) {
+    for (const seat of [2, 3, 5, 6, 7]) {
       game = assignVote(game, seat, 4);
     }
-    for (const seat of [8, 9, 10]) {
-      game = assignVote(game, seat, 6);
-    }
+    game = advanceVotingCandidate(game);
+    expect(getCurrentVotingCandidateSeat(game)).toBe(6);
+    expect(game.voteAssignments).toMatchObject({ 8: 6, 9: 6, 10: 6 });
 
     expect(countVotes(game)).toEqual({ 4: 7, 6: 3 });
     expect(resolveVote(game)).toEqual({ kind: "winner", seats: [4], totals: { 4: 7, 6: 3 } });
@@ -167,9 +175,7 @@ describe("day actions", () => {
     for (const seat of [1, 2, 3, 4, 5]) {
       game = assignVote(game, seat, 4);
     }
-    for (const seat of [6, 7, 8, 9, 10]) {
-      game = assignVote(game, seat, 6);
-    }
+    game = advanceVotingCandidate(game);
 
     expect(resolveVote(game)).toEqual({
       kind: "car-crash",
@@ -183,15 +189,40 @@ describe("day actions", () => {
     game = nominate(game, 1, 4);
     game = completeCurrentTurn(game);
     game = nominate(game, 2, 6);
-    game = { ...startVoting(game), votingRound: "repeat" };
+    game = { ...startVoting(game), votingRound: "repeat", carCrashSeats: [4, 6] };
 
     for (const seat of [1, 2, 3, 4, 5]) game = assignVote(game, seat, 4);
-    for (const seat of [6, 7, 8, 9, 10]) game = assignVote(game, seat, 6);
+    game = advanceVotingCandidate(game);
 
     expect(resolveVote(game)).toEqual({
       kind: "eliminate-both-vote",
       seats: [4, 6],
       totals: { 4: 5, 6: 5 },
+    });
+  });
+
+  it("runs another car crash when a repeated tie shrinks to a smaller subset", () => {
+    const game: GameState = {
+      ...dayOne(),
+      phase: "voting",
+      nominations: [
+        { nominatorSeat: 1, candidateSeat: 4, order: 1 },
+        { nominatorSeat: 2, candidateSeat: 6, order: 2 },
+        { nominatorSeat: 3, candidateSeat: 8, order: 3 },
+      ],
+      turnOrder: [4, 6, 8],
+      currentTurnIndex: 2,
+      votingRound: "repeat",
+      carCrashSeats: [4, 6, 8],
+      voteAssignments: Object.fromEntries(
+        Array.from({ length: 10 }, (_, index) => [index + 1, index < 5 ? 4 : 6]),
+      ),
+    };
+
+    expect(resolveVote(game)).toEqual({
+      kind: "car-crash",
+      seats: [4, 6],
+      totals: { 4: 5, 6: 5, 8: 0 },
     });
   });
 

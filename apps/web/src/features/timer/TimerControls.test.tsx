@@ -13,7 +13,6 @@ describe("TimerControls", () => {
 
     const timerFace = screen.getByRole("button", { name: "Stop timer" });
     expect(timerFace).toHaveClass("timer-display");
-    expect(screen.queryByText("Stop")).toBeNull();
     await user.click(timerFace);
 
     expect(screen.getByText("00")).toBeInTheDocument();

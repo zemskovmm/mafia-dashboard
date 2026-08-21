@@ -2,6 +2,21 @@ import { describe, expect, it } from "vitest";
 import { loadConfig } from "./config.js";
 
 describe("loadConfig", () => {
+  it("builds Google sign-in configuration from the public app URL", () => {
+    const config = loadConfig({
+      PUBLIC_APP_URL: "https://mafia.example.test",
+      GOOGLE_CLIENT_ID: "client-id.apps.googleusercontent.com",
+      GOOGLE_CLIENT_SECRET: "client-secret",
+    });
+
+    expect(config.googleAuth).toEqual({
+      clientId: "client-id.apps.googleusercontent.com",
+      clientSecret: "client-secret",
+      redirectUri: "https://mafia.example.test/api/auth/google/callback",
+    });
+    expect(config.youtubeOAuth).toBeUndefined();
+  });
+
   it("builds the YouTube OAuth configuration from a complete secret set", () => {
     const encryptionKey = Buffer.alloc(32, 9).toString("base64url");
 
@@ -23,13 +38,12 @@ describe("loadConfig", () => {
     });
   });
 
-  it("rejects a partial YouTube OAuth secret set", () => {
+  it("rejects unpaired Google client credentials", () => {
     expect(() =>
       loadConfig({
         GOOGLE_CLIENT_ID: "client-id.apps.googleusercontent.com",
-        GOOGLE_CLIENT_SECRET: "client-secret",
       }),
-    ).toThrow(/all be set together/i);
+    ).toThrow(/client id and secret must be set together/i);
   });
 
   it("treats empty Compose OAuth variables as unconfigured", () => {
@@ -41,22 +55,6 @@ describe("loadConfig", () => {
     });
 
     expect(config.youtubeOAuth).toBeUndefined();
-  });
-
-  it("loads configurable music resource limits below the legacy upload cap", () => {
-    const config = loadConfig({
-      MUSIC_MAX_FILE_BYTES: "1048576",
-      MUSIC_MAX_STORAGE_BYTES: "10485760",
-      MUSIC_MAX_DURATION_SECONDS: "600",
-      MUSIC_ANALYSIS_TIMEOUT_MS: "5000",
-    });
-
-    expect(config).toMatchObject({
-      MUSIC_MAX_FILE_BYTES: 1_048_576,
-      MUSIC_MAX_STORAGE_BYTES: 10_485_760,
-      MUSIC_MAX_DURATION_SECONDS: 600,
-      MUSIC_ANALYSIS_TIMEOUT_MS: 5_000,
-    });
   });
 
   it("loads the canonical public app URL used for secure browser redirects", () => {

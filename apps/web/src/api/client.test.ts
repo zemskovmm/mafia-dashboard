@@ -1,20 +1,18 @@
-import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
-import type { RemoteGameSession } from "./client.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   clearGameSession,
   createPlayer,
-  deleteGameResults,
-  deleteRemoteGame,
+  deleteClub,
   disconnectMusicAccount,
+  getAuthSession,
   getGameSession,
   getMusicAccountStatus,
   listActiveGameSessions,
   listMusicPlaylists,
   listPlayers,
-  saveGameResults,
   saveGameSession,
-  truncateRemoteEvents,
+  signOut,
   updatePlayer,
 } from "./client.js";
 
@@ -53,11 +51,48 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("player API client", () => {
-  it("keeps detailed session responses separate from list summaries", () => {
-    expectTypeOf<RemoteGameSession>().not.toHaveProperty("phase");
+describe("club API client", () => {
+  it("uses the secure server session for club requests", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await deleteClub("00000000-0000-4000-8000-000000000101");
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/clubs/00000000-0000-4000-8000-000000000101", {
+      method: "DELETE",
+    });
   });
 
+  it("loads and clears the current Google-backed application session", async () => {
+    const session = {
+      configured: true,
+      user: {
+        id: "00000000-0000-4000-8000-000000000001",
+        email: "owner@example.test",
+        name: "Club owner",
+        picture: null,
+      },
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify(session), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getAuthSession()).resolves.toEqual(session);
+    await signOut();
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/auth/session");
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/auth/session", { method: "DELETE" });
+  });
+});
+
+describe("player API client", () => {
   it("loads ordered player profiles", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ players: [player] }), {
@@ -68,7 +103,7 @@ describe("player API client", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(listPlayers()).resolves.toEqual([player]);
-    expect(fetchMock).toHaveBeenCalledWith("/api/players");
+    expect(fetchMock).toHaveBeenCalledWith("/api/players", { headers: {} });
   });
 
   it("creates and updates consent-safe profiles", async () => {
@@ -126,71 +161,6 @@ describe("player API client", () => {
     });
     await expect(failure).rejects.toBeInstanceOf(ApiError);
     await expect(failure).rejects.toMatchObject({ status: 409, code: "nickname_conflict" });
-  });
-
-  it("saves finalized game results with a retry-safe PUT", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
-    vi.stubGlobal("fetch", fetchMock);
-    const results = {
-      hostPlayerId: "00000000-0000-4000-8000-000000000011",
-      winner: "red" as const,
-      playedAt: "2026-08-17T22:00:00.000Z",
-      players: [
-        {
-          playerId: player.id,
-          seat: 1,
-          role: "sheriff" as const,
-          team: "red" as const,
-          status: "active" as const,
-          fouls: 0,
-        },
-      ],
-    };
-
-    await saveGameResults("00000000-0000-4000-8000-000000000002", results);
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/games/00000000-0000-4000-8000-000000000002/results",
-      expect.objectContaining({ method: "PUT", body: JSON.stringify(results) }),
-    );
-  });
-
-  it("truncates an undone remote event tail by idempotency key", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await truncateRemoteEvents("00000000-0000-4000-8000-000000000002", "undo-from-this-event");
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/games/00000000-0000-4000-8000-000000000002/events/truncate",
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ fromIdempotencyKey: "undo-from-this-event" }),
-      },
-    );
-  });
-
-  it("tombstones a cleared remote game with DELETE", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await deleteRemoteGame("00000000-0000-4000-8000-000000000002");
-
-    expect(fetchMock).toHaveBeenCalledWith("/api/games/00000000-0000-4000-8000-000000000002", {
-      method: "DELETE",
-    });
-  });
-
-  it("retracts finalized game results with an idempotent DELETE", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    await deleteGameResults("00000000-0000-4000-8000-000000000002");
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/games/00000000-0000-4000-8000-000000000002/results",
-      { method: "DELETE" },
-    );
   });
 });
 
@@ -263,6 +233,7 @@ describe("game session aggregate API client", () => {
 
     expect(fetchMock).toHaveBeenCalledWith(`/api/game-sessions/${gameId}?expectedRevision=7`, {
       method: "DELETE",
+      headers: {},
     });
   });
 });

@@ -230,6 +230,13 @@ const PlayerCard = ({
             {statistics.redCards} red cards
           </dd>
         </div>
+        <div>
+          <dt>Best moves</dt>
+          <dd>
+            {statistics.bestMoveMafiaHits} Mafia hits across {statistics.bestMoves}{" "}
+            {statistics.bestMoves === 1 ? "move" : "moves"}
+          </dd>
+        </div>
       </dl>
 
       <form
@@ -299,13 +306,16 @@ export const PlayersScreen = ({
   const [draft, setDraft] = useState<ProfileDraft>(emptyDraft);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [query, setQuery] = useState("");
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const visiblePlayers = players.filter((player) =>
+    [player.nickname, player.firstName, player.lastName, player.email]
+      .filter((value): value is string => value !== null)
+      .some((value) => value.toLocaleLowerCase().includes(normalizedQuery)),
+  );
 
   return (
     <main className="players-shell">
-      <p className="players-roster-note">
-        Nicknames are always saved. Personal details are stored only with explicit consent.
-      </p>
-
       <section className="new-player-panel" aria-labelledby="new-player-title">
         <div>
           <p className="eyebrow">Add to roster</p>
@@ -335,14 +345,30 @@ export const PlayersScreen = ({
         </form>
       </section>
 
+      <label className="roster-search" htmlFor="roster-search">
+        <span>Search roster</span>
+        <input
+          id="roster-search"
+          type="search"
+          value={query}
+          placeholder="Search by nickname, name, or email"
+          onChange={(event) => setQuery(event.currentTarget.value)}
+        />
+      </label>
+
       {players.length === 0 ? (
         <section className="empty-roster">
           <h2>No players yet</h2>
-          <p>Add at least ten nicknames before starting a game.</p>
+          <p>Add at least eleven nicknames before starting a game.</p>
+        </section>
+      ) : visiblePlayers.length === 0 ? (
+        <section className="empty-roster">
+          <h2>No matching players</h2>
+          <p>Try another search.</p>
         </section>
       ) : (
         <section className="player-card-grid" aria-label="Player profiles">
-          {players.map((player) => (
+          {visiblePlayers.map((player) => (
             <PlayerCard
               key={player.id}
               player={player}

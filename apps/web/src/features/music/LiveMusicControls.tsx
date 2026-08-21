@@ -14,7 +14,6 @@ export const LiveMusicControls = ({
   onSlowFadeOut,
 }: LiveMusicControlsProps) => (
   <section className="live-music-controls" aria-label="Live music controls">
-    <strong>Table music</strong>
     <div>
       <button type="button" aria-label="Music fade in" disabled={!canFadeIn} onClick={onFadeIn}>
         Fade in

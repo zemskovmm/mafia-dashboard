@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
+  assignRoleForSeat,
   beginRoleDraw,
   completeRoleDraw,
   createGame,
   createSetup,
   drawRoleForSeat,
+  rerollRoleForSeat,
 } from "@mafia/game-domain";
-import type { GameState, PlayerInput, SetupState } from "@mafia/game-domain";
+import type { GameState, PlayerInput, Role, SetupState } from "@mafia/game-domain";
 import type { PlayerProfile } from "../../api/client.js";
 import { AccountPlaylistPicker } from "../music/AccountPlaylistPicker.js";
 import { GameTable } from "../table/GameTable.js";
@@ -18,13 +20,8 @@ interface SetupWizardProps {
   readonly musicStatus: string;
   readonly playlistId: string;
   readonly onPlaylistIdChange: (playlistId: string) => void;
-  readonly musicSource: "youtube" | "local";
-  readonly onMusicSourceChange: (source: "youtube" | "local") => void;
   readonly volumePresets?: readonly [number, number];
   readonly onVolumePresetsChange?: (presets: readonly [number, number]) => void;
-  readonly onStartMusic: () => void;
-  readonly onQuickStopMusic: () => void;
-  readonly onSlowStopMusic: () => void;
   readonly onComplete: (game: GameState, hostPlayerId: string, hostName: string) => void;
   readonly onEvent?: (type: string, payload: Record<string, unknown>) => void;
   readonly initialSessionState?: SetupWizardSessionState | null;
@@ -210,8 +207,6 @@ export const SetupWizard = ({
   musicStatus,
   playlistId,
   onPlaylistIdChange,
-  musicSource,
-  onMusicSourceChange,
   volumePresets = [50, 80],
   onVolumePresetsChange = () => undefined,
   onComplete,
@@ -239,7 +234,9 @@ export const SetupWizard = ({
   const [developmentPlayers, setDevelopmentPlayers] = useState<readonly PlayerProfile[]>([]);
   const [populatingPlayers, setPopulatingPlayers] = useState(false);
   const [developmentError, setDevelopmentError] = useState(false);
+  const [manualRoleSeat, setManualRoleSeat] = useState<number | null>(null);
   const handledRandomFillRequest = useRef(randomFillRequest);
+  const roleTapState = useRef<{ seat: number; count: number; at: number } | null>(null);
 
   const selectablePlayers = useMemo(
     () => [
@@ -343,6 +340,7 @@ export const SetupWizard = ({
 
   const drawRole = (seat: number) => {
     if (setup === null || setup.assignments[seat] !== undefined) return;
+    setManualRoleSeat(null);
     const nextSetup = drawRoleForSeat(setup, seat);
     setSetup(nextSetup);
     publishSessionState("roles", nextSetup);
@@ -351,6 +349,40 @@ export const SetupWizard = ({
       role: nextSetup.assignments[seat],
       secret: true,
     });
+  };
+
+  const handleRoleCardTap = (seat: number) => {
+    if (setup === null) return;
+    setManualRoleSeat(null);
+    if (setup.assignments[seat] === undefined) {
+      roleTapState.current = null;
+      drawRole(seat);
+      return;
+    }
+    if (setup.remainingRoles.length === 0) return;
+    const now = Date.now();
+    const previous = roleTapState.current;
+    const count = previous?.seat === seat && now - previous.at <= 800 ? previous.count + 1 : 1;
+    roleTapState.current = { seat, count, at: now };
+    if (count < 3) return;
+    roleTapState.current = null;
+    const nextSetup = rerollRoleForSeat(setup, seat, Math.random);
+    setSetup(nextSetup);
+    publishSessionState("roles", nextSetup);
+    onEvent("setup.role-rerolled", {
+      seat,
+      role: nextSetup.assignments[seat],
+      secret: true,
+    });
+  };
+
+  const selectManualRole = (role: Role) => {
+    if (setup === null || manualRoleSeat === null || setup.remainingRoles.length === 0) return;
+    const nextSetup = assignRoleForSeat(setup, manualRoleSeat, role);
+    setSetup(nextSetup);
+    setManualRoleSeat(null);
+    publishSessionState("roles", nextSetup);
+    onEvent("setup.role-assigned", { seat: manualRoleSeat, role, secret: true });
   };
 
   const finishRoleDraw = () => {
@@ -383,13 +415,36 @@ export const SetupWizard = ({
               seatActionLabel={(seat) =>
                 seat.role === undefined
                   ? `Draw role for ${seat.name}`
-                  : `${seat.name}: ${seat.role}`
+                  : `${seat.name}: ${seat.role}${setup.remainingRoles.length > 0 ? ". Triple tap to reroll" : ""}`
               }
-              onSeatClick={drawRole}
+              onSeatClick={handleRoleCardTap}
+              onSeatSwipeRight={(seat) => {
+                if (setup.remainingRoles.length > 0) setManualRoleSeat(seat);
+              }}
               center={
-                setup.remainingRoles.length === 0 ? (
+                manualRoleSeat !== null && setup.remainingRoles.length > 0 ? (
+                  <div className="manual-role-menu" role="dialog" aria-label="Choose role">
+                    <span className="table-prompt">Choose role for seat {manualRoleSeat}</span>
+                    <div>
+                      {[...new Set(setup.remainingRoles)].map((role) => (
+                        <button
+                          type="button"
+                          key={role}
+                          aria-label={`Assign ${role} to seat ${manualRoleSeat}`}
+                          onClick={() => selectManualRole(role)}
+                        >
+                          {role} ×
+                          {setup.remainingRoles.filter((candidate) => candidate === role).length}
+                        </button>
+                      ))}
+                    </div>
+                    <button type="button" onClick={() => setManualRoleSeat(null)}>
+                      Cancel
+                    </button>
+                  </div>
+                ) : setup.remainingRoles.length === 0 ? (
                   <button type="button" className="table-primary" onClick={finishRoleDraw}>
-                    Begin Mafia negotiation
+                    Begin Mafia planning stage
                   </button>
                 ) : (
                   <span className="table-prompt">Tap a player to reveal their role</span>
@@ -531,33 +586,7 @@ export const SetupWizard = ({
               </label>
             ))}
           </fieldset>
-          <div className="music-source-picker" aria-label="Music source">
-            <button
-              type="button"
-              aria-pressed={musicSource === "local"}
-              onClick={() => onMusicSourceChange("local")}
-            >
-              Local waveform DJ
-            </button>
-            <button
-              type="button"
-              aria-pressed={musicSource === "youtube"}
-              onClick={() => onMusicSourceChange("youtube")}
-            >
-              YouTube Music
-            </button>
-          </div>
-          {musicSource === "youtube" ? (
-            <AccountPlaylistPicker
-              playlistId={playlistId}
-              onPlaylistIdChange={onPlaylistIdChange}
-            />
-          ) : (
-            <p className="local-dj-guidance">
-              The player below uses uploaded audio for real oscillograms, start-point seeking, and
-              crossfades. Upload at least two tracks, then set the current and next cue points.
-            </p>
-          )}
+          <AccountPlaylistPicker playlistId={playlistId} onPlaylistIdChange={onPlaylistIdChange} />
           <div className="setup-completion-actions">
             <button
               className="primary-action"

@@ -36,6 +36,25 @@ const state = (playlistId: string) => ({
 });
 
 describe("GameSessionOutbox", () => {
+  it("keeps local session state isolated by club storage key", () => {
+    const storage = memoryStorage();
+    const first = new GameSessionOutbox({
+      storage,
+      storageKey: "club-one",
+      createId: () => "00000000-0000-4000-8000-000000000001",
+      save: vi.fn(),
+    });
+    first.enqueue("Club one", state("one"), null);
+
+    const second = new GameSessionOutbox({
+      storage,
+      storageKey: "club-two",
+      createId: () => "00000000-0000-4000-8000-000000000002",
+      save: vi.fn(),
+    });
+    expect(second.current).toBeNull();
+  });
+
   it("does not queue a no-op when PostgreSQL JSONB reorders restored object keys", () => {
     const storage = memoryStorage();
     const createId = vi.fn(() => "00000000-0000-4000-8000-000000000099");
@@ -69,6 +88,30 @@ describe("GameSessionOutbox", () => {
     expect(outbox.pendingCount).toBe(0);
     expect(createId).not.toHaveBeenCalled();
     expect(save).not.toHaveBeenCalled();
+  });
+
+  it("adopts the server-allocated dated name for current and queued mutations", async () => {
+    const storage = memoryStorage();
+    const firstSave = deferred<SessionSaveResponse>();
+    const save = vi
+      .fn()
+      .mockImplementationOnce(() => firstSave.promise)
+      .mockResolvedValueOnce({ revision: 2, duplicate: false, name: "12.02.26 #4" });
+    const ids = [
+      "00000000-0000-4000-8000-000000000001",
+      "00000000-0000-4000-8000-000000000002",
+      "00000000-0000-4000-8000-000000000003",
+    ];
+    const outbox = new GameSessionOutbox({ storage, createId: () => ids.shift()!, save });
+    outbox.enqueue("12.02.26 #1", state("first"), null);
+    const flush = outbox.flush();
+    outbox.enqueue("12.02.26 #1", state("second"), null);
+
+    firstSave.resolve({ revision: 1, duplicate: false, name: "12.02.26 #4" });
+    await flush;
+
+    expect(save.mock.calls[1]?.[1]).toMatchObject({ name: "12.02.26 #4" });
+    expect(outbox.current?.name).toBe("12.02.26 #4");
   });
 
   it("reuses the client game UUID and first mutation after reload while its save is unresolved", async () => {

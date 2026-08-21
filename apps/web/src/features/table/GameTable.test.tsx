@@ -24,4 +24,17 @@ describe("GameTable", () => {
     expect(screen.getByRole("group", { name: "Host: Host Player" })).toHaveClass("table-card");
     expect(screen.getByRole("button", { name: "Seat 1: Player 1" })).toHaveClass("table-card");
   });
+
+  it("adds a visual cross to an eliminated player", () => {
+    const { container } = render(
+      <GameTable
+        seats={seats.map((seat) => (seat.seat === 1 ? { ...seat, status: "eliminated" } : seat))}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Seat 1: Player 1" })).toHaveClass(
+      "status-eliminated",
+    );
+    expect(container.querySelector(".deceased-cross")).not.toBeNull();
+  });
 });

@@ -280,7 +280,7 @@ SETUP_PLAYERS
   → FINISHED
 ```
 
-Cross-cutting UI state: local running timer, privacy shield, local music player state, and aggregate connection/save status.
+Cross-cutting UI state: local running timer, privacy shield, YouTube playback state, and aggregate connection/save status.
 
 ## 15. Touch and accessibility requirements
 
