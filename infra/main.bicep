@@ -265,9 +265,6 @@ resource environment 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: environmentName
   location: location
   properties: {
-    appLogsConfiguration: {
-      destination: 'none'
-    }
     vnetConfiguration: {
       infrastructureSubnetId: containerSubnet.id
       internal: false
