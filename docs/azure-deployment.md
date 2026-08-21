@@ -4,7 +4,7 @@ Mafia Dashboard deploys to Azure Container Apps from `.github/workflows/deploy-a
 
 - Azure Container Apps Consumption, 0.5 vCPU / 1 GiB, 0–1 replicas
 - Azure Database for PostgreSQL Flexible Server 17, private VNet access, B1ms, 32 GiB, 7-day backups
-- public immutable images in GitHub Container Registry
+- private immutable images in GitHub Container Registry
 - no Azure Files, storage account, Dapr, Redis, NAT Gateway, or retained Log Analytics workspace
 
 Expected baseline is approximately **US$19.41/month** before tax, domain, egress, or excess Container Apps usage. B1ms and a single app/database are pilot-grade, not HA.
@@ -19,11 +19,13 @@ The `production` environment must contain these variables:
 - `AZURE_RESOURCE_GROUP`
 - `AZURE_LOCATION`
 - `AZURE_NAME_PREFIX`
+- `GHCR_USERNAME`
 - `AZURE_DEPLOY_ENABLED=true`
 
 It must contain these secrets:
 
 - `POSTGRES_PASSWORD`
+- `GHCR_PULL_TOKEN` with `read:packages` access
 - `GOOGLE_CLIENT_ID`
 - `GOOGLE_CLIENT_SECRET`
 - `MUSIC_TOKEN_ENCRYPTION_KEY`

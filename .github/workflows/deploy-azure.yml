@@ -98,6 +98,8 @@ jobs:
       AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
       AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
       AZURE_NAME_PREFIX: ${{ vars.AZURE_NAME_PREFIX }}
+      GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
+      GHCR_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
       POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
       GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
       GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
@@ -116,6 +118,8 @@ jobs:
           : "${AZURE_RESOURCE_GROUP:?Missing AZURE_RESOURCE_GROUP}"
           : "${AZURE_LOCATION:?Missing AZURE_LOCATION}"
           : "${AZURE_NAME_PREFIX:?Missing AZURE_NAME_PREFIX}"
+          : "${GHCR_USERNAME:?Missing GHCR_USERNAME}"
+          : "${GHCR_TOKEN:?Missing GHCR_PULL_TOKEN}"
           : "${POSTGRES_PASSWORD:?Missing POSTGRES_PASSWORD}"
       - name: Create resource group
         run: >-
@@ -135,6 +139,8 @@ jobs:
               namePrefix="$AZURE_NAME_PREFIX" \
               deployApp=false \
               postgresPassword="$POSTGRES_PASSWORD" \
+              ghcrUsername="$GHCR_USERNAME" \
+              ghcrToken="$GHCR_TOKEN" \
               googleClientId="$GOOGLE_CLIENT_ID" \
               googleClientSecret="$GOOGLE_CLIENT_SECRET" \
               musicTokenEncryptionKey="$MUSIC_TOKEN_ENCRYPTION_KEY" \
@@ -153,6 +159,8 @@ jobs:
               namePrefix="$AZURE_NAME_PREFIX" \
               deployApp=false \
               postgresPassword="$POSTGRES_PASSWORD" \
+              ghcrUsername="$GHCR_USERNAME" \
+              ghcrToken="$GHCR_TOKEN" \
               googleClientId="$GOOGLE_CLIENT_ID" \
               googleClientSecret="$GOOGLE_CLIENT_SECRET" \
               musicTokenEncryptionKey="$MUSIC_TOKEN_ENCRYPTION_KEY" \
@@ -188,6 +196,8 @@ jobs:
                 image="$image" \
                 publicAppUrl="$1" \
                 postgresPassword="$POSTGRES_PASSWORD" \
+                ghcrUsername="$GHCR_USERNAME" \
+                ghcrToken="$GHCR_TOKEN" \
                 googleClientId="$GOOGLE_CLIENT_ID" \
                 googleClientSecret="$GOOGLE_CLIENT_SECRET" \
                 musicTokenEncryptionKey="$MUSIC_TOKEN_ENCRYPTION_KEY" \

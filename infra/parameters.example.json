@@ -7,6 +7,8 @@
     "deployApp": { "value": false },
     "image": { "value": "" },
     "publicAppUrl": { "value": "" },
+    "ghcrUsername": { "value": "replace-with-github-owner" },
+    "ghcrToken": { "value": "replace-securely-at-deployment" },
     "googleClientId": { "value": "" },
     "googleClientSecret": { "value": "" },
     "musicTokenEncryptionKey": { "value": "" },

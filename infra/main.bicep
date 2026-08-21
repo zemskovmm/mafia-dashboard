@@ -10,6 +10,11 @@ param namePrefix string = 'mafiadashboard'
 param deployApp bool = false
 param image string = ''
 param publicAppUrl string = ''
+param ghcrUsername string = ''
+
+@secure()
+param ghcrToken string = ''
+
 param googleClientId string = ''
 
 @secure()
@@ -32,6 +37,7 @@ var privateDnsZoneName = '${uniqueSuffix}.postgres.database.azure.com'
 var databaseUrl = 'postgresql://${postgresAdminUser}:${postgresPassword}@${postgres.properties.fullyQualifiedDomainName}:5432/${databaseName}?sslmode=verify-full'
 var googleConfigured = !empty(googleClientId) && !empty(googleClientSecret) && !empty(publicAppUrl)
 var musicConfigured = googleConfigured && !empty(musicTokenEncryptionKey)
+var ghcrConfigured = !empty(ghcrUsername) && !empty(ghcrToken)
 var appSecrets = concat(
   [
     {
@@ -52,6 +58,14 @@ var appSecrets = concat(
         {
           name: 'music-token-encryption-key'
           value: musicTokenEncryptionKey
+        }
+      ]
+    : [],
+  ghcrConfigured
+    ? [
+        {
+          name: 'ghcr-token'
+          value: ghcrToken
         }
       ]
     : []
@@ -247,6 +261,15 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = if (deployApp) {
         targetPort: 3000
         transport: 'auto'
       }
+      registries: ghcrConfigured
+        ? [
+            {
+              server: 'ghcr.io'
+              username: ghcrUsername
+              passwordSecretRef: 'ghcr-token'
+            }
+          ]
+        : []
       secrets: appSecrets
     }
     template: {
