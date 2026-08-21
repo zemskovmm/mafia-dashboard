@@ -4,10 +4,10 @@ Mafia Dashboard deploys to Azure Container Apps from `.github/workflows/deploy-a
 
 - Azure Container Apps Consumption, 0.5 vCPU / 1 GiB, 0–1 replicas
 - Azure Database for PostgreSQL Flexible Server 17, private VNet access, B1ms, 32 GiB, 7-day backups
-- Azure Container Registry Standard with a user-assigned `AcrPull` identity (Basic is unavailable on the target subscription)
+- public immutable images in GitHub Container Registry
 - no Azure Files, storage account, Dapr, Redis, NAT Gateway, or retained Log Analytics workspace
 
-Expected baseline is approximately **US$24.41/month** before tax, domain, egress, or excess Container Apps usage. B1ms and a single app/database are pilot-grade, not HA.
+Expected baseline is approximately **US$19.41/month** before tax, domain, egress, or excess Container Apps usage. B1ms and a single app/database are pilot-grade, not HA.
 
 ## GitHub production environment
 
@@ -45,8 +45,8 @@ The Azure workflow:
 1. runs `npm run check` with PostgreSQL 17;
 2. verifies a Linux `amd64` Docker build;
 3. logs into Azure using GitHub OIDC;
-4. deploys the private network, PostgreSQL, ACR, managed pull identity, and Container Apps environment;
-5. publishes `mafia-dashboard:<full-git-sha>` to ACR;
+4. deploys the private network, PostgreSQL, and Container Apps environment;
+5. publishes `ghcr.io/zemskovmm/mafia-dashboard:<full-git-sha>`;
 6. deploys that immutable image;
 7. discovers the generated Container Apps HTTPS hostname and applies it as `PUBLIC_APP_URL`;
 8. verifies the Container App configuration and `/health/ready`.

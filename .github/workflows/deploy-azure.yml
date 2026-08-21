@@ -12,7 +12,7 @@ on:
 
 permissions:
   contents: read
-  packages: read
+  packages: write
   id-token: write
 
 concurrency:
@@ -129,24 +129,22 @@ jobs:
               musicTokenEncryptionKey="$MUSIC_TOKEN_ENCRYPTION_KEY" \
             --query properties.outputs \
             --output json)
-          registry_name=$(jq -r '.registryName.value' <<<"$outputs")
-          registry_server=$(jq -r '.registryServer.value' <<<"$outputs")
           app_name=$(jq -r '.containerAppName.value' <<<"$outputs")
-          {
-            echo "registry_name=$registry_name"
-            echo "registry_server=$registry_server"
-            echo "app_name=$app_name"
-          } >> "$GITHUB_OUTPUT"
+          echo "app_name=$app_name" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v3
-      - name: Sign in to Azure Container Registry
-        run: az acr login --name "${{ steps.foundation.outputs.registry_name }}"
+      - name: Sign in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and push immutable image
         uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64
           push: true
-          tags: ${{ steps.foundation.outputs.registry_server }}/mafia-dashboard:${{ github.sha }}
+          tags: ghcr.io/${{ github.repository }}:${{ github.sha }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -158,8 +156,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           app_name='${{ steps.foundation.outputs.app_name }}'
-          registry_server='${{ steps.foundation.outputs.registry_server }}'
-          image="$registry_server/mafia-dashboard:${GITHUB_SHA}"
+          image="ghcr.io/${GITHUB_REPOSITORY}:${GITHUB_SHA}"
           existing_fqdn=$(az containerapp show \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --name "$app_name" \

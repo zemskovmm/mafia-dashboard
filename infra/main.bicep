@@ -24,15 +24,11 @@ param postgresPassword string
 param postgresAdminUser string = 'mafiaadmin'
 
 var uniqueSuffix = uniqueString(subscription().id, resourceGroup().id)
-var compactPrefix = replace(toLower(namePrefix), '-', '')
-var registryName = take('${compactPrefix}${uniqueSuffix}', 50)
-var postgresServerName = take('${compactPrefix}-pg-${uniqueSuffix}', 63)
+var postgresServerName = take('${namePrefix}-pg-${uniqueSuffix}', 63)
 var environmentName = '${namePrefix}-env'
 var appName = '${namePrefix}-app'
-var identityName = '${namePrefix}-pull'
 var databaseName = 'mafia'
 var privateDnsZoneName = '${uniqueSuffix}.postgres.database.azure.com'
-var registryServer = '${registry.name}.azurecr.io'
 var databaseUrl = 'postgresql://${postgresAdminUser}:${postgresPassword}@${postgres.properties.fullyQualifiedDomainName}:5432/${databaseName}?sslmode=verify-full'
 var googleConfigured = !empty(googleClientId) && !empty(googleClientSecret) && !empty(publicAppUrl)
 var musicConfigured = googleConfigured && !empty(musicTokenEncryptionKey)
@@ -221,46 +217,6 @@ resource database 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2024-08-0
   properties: {}
 }
 
-resource registry 'Microsoft.ContainerRegistry/registries@2023-11-01-preview' = {
-  name: registryName
-  location: location
-  sku: {
-    name: 'Standard'
-  }
-  properties: {
-    adminUserEnabled: false
-    publicNetworkAccess: 'Enabled'
-    policies: {
-      quarantinePolicy: {
-        status: 'disabled'
-      }
-      retentionPolicy: {
-        days: 7
-        status: 'enabled'
-      }
-      trustPolicy: {
-        type: 'Notary'
-        status: 'disabled'
-      }
-    }
-  }
-}
-
-resource pullIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
-  name: identityName
-  location: location
-}
-
-resource acrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(registry.id, pullIdentity.id, 'AcrPull')
-  scope: registry
-  properties: {
-    principalId: pullIdentity.properties.principalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '7f951dda-4ed3-4680-a7ca-43fe172d538d')
-  }
-}
-
 resource environment 'Microsoft.App/managedEnvironments@2024-03-01' = {
   name: environmentName
   location: location
@@ -281,12 +237,6 @@ resource environment 'Microsoft.App/managedEnvironments@2024-03-01' = {
 resource app 'Microsoft.App/containerApps@2024-03-01' = if (deployApp) {
   name: appName
   location: location
-  identity: {
-    type: 'UserAssigned'
-    userAssignedIdentities: {
-      '${pullIdentity.id}': {}
-    }
-  }
   properties: {
     managedEnvironmentId: environment.id
     configuration: {
@@ -297,12 +247,6 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = if (deployApp) {
         targetPort: 3000
         transport: 'auto'
       }
-      registries: [
-        {
-          server: registryServer
-          identity: pullIdentity.id
-        }
-      ]
       secrets: appSecrets
     }
     template: {
@@ -372,13 +316,10 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = if (deployApp) {
     }
   }
   dependsOn: [
-    acrPullRole
     database
   ]
 }
 
-output registryName string = registry.name
-output registryServer string = registryServer
 output postgresServerName string = postgres.name
 output containerAppName string = appName
 output appFqdn string = deployApp ? app!.properties.configuration.ingress.fqdn : ''
