@@ -1,7 +1,7 @@
 targetScope = 'resourceGroup'
 
 @description('Azure region for all resources.')
-param location string = resourceGroup().location
+param location string = 'northeurope'
 
 @minLength(3)
 @maxLength(18)
@@ -225,7 +225,7 @@ resource registry 'Microsoft.ContainerRegistry/registries@2023-11-01-preview' = 
   name: registryName
   location: location
   sku: {
-    name: 'Basic'
+    name: 'Standard'
   }
   properties: {
     adminUserEnabled: false

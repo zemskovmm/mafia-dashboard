@@ -4,7 +4,7 @@ Mafia Dashboard deploys to Azure Container Apps from `.github/workflows/deploy-a
 
 - Azure Container Apps Consumption, 0.5 vCPU / 1 GiB, 0–1 replicas
 - Azure Database for PostgreSQL Flexible Server 17, private VNet access, B1ms, 32 GiB, 7-day backups
-- Azure Container Registry Basic with a user-assigned `AcrPull` identity
+- Azure Container Registry Standard with a user-assigned `AcrPull` identity (Basic is unavailable on the target subscription)
 - no Azure Files, storage account, Dapr, Redis, NAT Gateway, or retained Log Analytics workspace
 
 Expected baseline is approximately **US$24.41/month** before tax, domain, egress, or excess Container Apps usage. B1ms and a single app/database are pilot-grade, not HA.
