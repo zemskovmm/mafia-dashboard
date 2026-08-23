@@ -34,6 +34,16 @@ interface GameScreenProps {
   readonly clubName?: string;
 }
 
+const isSkippedCarCrash = (game: GameState): boolean => {
+  if (game.phase === "car-crash-skipped") return true;
+  if (game.phase !== "car-crash-decision") return false;
+  const activeSeats = game.players
+    .filter(({ status }) => status === "active")
+    .map(({ seat }) => seat);
+  const tiedSeats = new Set(game.carCrashSeats ?? []);
+  return tiedSeats.size === activeSeats.length && activeSeats.every((seat) => tiedSeats.has(seat));
+};
+
 const phaseTitle = (game: GameState): string => {
   switch (game.phase) {
     case "mafia-planning":
@@ -47,7 +57,9 @@ const phaseTitle = (game: GameState): string => {
     case "car-crash":
       return "Car crash";
     case "car-crash-decision":
-      return "Car crash decision";
+      return isSkippedCarCrash(game) ? "Car crash" : "Car crash decision";
+    case "car-crash-skipped":
+      return "Car crash";
     case "goodbye-speech":
       return "Goodbye speech";
     case "best-move":
@@ -92,11 +104,12 @@ export const GameScreen = ({
   const currentSpeakerHasNominated = game.nominations.some(
     ({ nominatorSeat }) => nominatorSeat === currentPlayer?.seat,
   );
+  const skippedCarCrash = isSkippedCarCrash(game);
   const votingTotals = countVotes(game);
   const votingStageActive =
     game.phase === "voting" ||
     game.phase === "car-crash" ||
-    game.phase === "car-crash-decision" ||
+    (game.phase === "car-crash-decision" && !skippedCarCrash) ||
     game.phase === "goodbye-speech";
   const activeVoteCount =
     game.phase === "car-crash-decision"
@@ -129,6 +142,178 @@ export const GameScreen = ({
     onEvent("turn.completed", { seat: currentSeat });
   };
 
+  const tableCenter = (() => {
+    if (game.phase === "finished" && game.winner !== null) {
+      return (
+        <div className={`winner-card winner-${game.winner}`} role="status">
+          <span className="table-prompt">Game complete</span>
+          <strong>{game.winner === "red" ? "Citizens win" : "Mafia win"}</strong>
+          {finishGameState === "error" ? (
+            <span className="finish-game-error">Game was not saved. Try again.</span>
+          ) : null}
+        </div>
+      );
+    }
+    if (game.phase === "best-move" && game.bestMove !== undefined) {
+      return (
+        <div className="best-move-center">
+          <span className="table-prompt">Best move</span>
+          <strong>{game.bestMove.selectedSeats.length} of 3 players selected</strong>
+        </div>
+      );
+    }
+    if (game.phase === "goodbye-speech") {
+      const names = (game.goodbyeSeats ?? [])
+        .map((seat) => game.players.find((player) => player.seat === seat)?.name ?? `Seat ${seat}`)
+        .join(" and ");
+      return (
+        <div className="table-check-center">
+          <span className="table-prompt">Goodbye speech</span>
+          <strong>{names || "Final words"}</strong>
+        </div>
+      );
+    }
+    if (game.phase === "mafia-planning") {
+      return (
+        <div className="table-check-center">
+          <span className="table-prompt">Mafia planning</span>
+          <strong>Review the target order</strong>
+        </div>
+      );
+    }
+    if (game.phase === "sheriff-wake") {
+      return (
+        <div className="table-check-center">
+          <span className="table-prompt">Sheriff wake-up</span>
+          <strong>Wake Sheriff · 10 seconds</strong>
+        </div>
+      );
+    }
+    if (game.phase === "day") {
+      return (
+        <div className="day-center-stack">
+          {game.dayNotice === "happy" ? <div className="happy-day-note">Happy day</div> : null}
+          <span className="table-prompt">Current speaker</span>
+          <strong>{currentPlayer?.name ?? "Waiting for active player"}</strong>
+          <button
+            type="button"
+            className="table-center-secondary"
+            disabled={currentPlayer === undefined}
+            onClick={startTurn}
+          >
+            Start {currentPlayer?.name ?? "player"} turn
+          </button>
+        </div>
+      );
+    }
+    if (game.phase === "car-crash") {
+      return (
+        <div className="day-center-stack">
+          <span className="table-prompt">Car crash speech</span>
+          <strong>{currentPlayer?.name ?? "Waiting for nominee"}</strong>
+          <button
+            type="button"
+            className="table-center-secondary"
+            aria-label={`Start ${currentPlayer?.name ?? "player"} 30-second turn`}
+            disabled={currentPlayer === undefined}
+            onClick={startTurn}
+          >
+            Start 30-second turn
+          </button>
+        </div>
+      );
+    }
+    return <span className="table-prompt">Waiting for next action</span>;
+  })();
+
+  const tableAdvance = (() => {
+    if (game.phase === "finished") {
+      return (
+        <button
+          type="button"
+          disabled={finishGameState === "saving" || finishGameState === "saved"}
+          onClick={onFinishGame}
+        >
+          {finishGameState === "saving"
+            ? "Saving game…"
+            : finishGameState === "saved"
+              ? "Game safely saved"
+              : "Finish the game"}
+        </button>
+      );
+    }
+    if (game.phase === "best-move" && game.bestMove !== undefined) {
+      return (
+        <button
+          type="button"
+          disabled={game.bestMove.selectedSeats.length !== 3}
+          onClick={() => {
+            const next = completeBestMove(game);
+            onGameChange(next);
+            onEvent("best-move.completed", {
+              playerSeat: game.bestMove?.playerSeat,
+              selectedSeats: game.bestMove?.selectedSeats,
+              mafiaHits: next.bestMove?.mafiaHits,
+            });
+          }}
+        >
+          Save Best move
+        </button>
+      );
+    }
+    if (game.phase === "goodbye-speech") {
+      return (
+        <button
+          type="button"
+          onClick={() => {
+            const next = completeGoodbyeSpeech(game);
+            onGameChange(next);
+            onEvent("phase.changed", { from: game.phase, to: next.phase });
+          }}
+        >
+          {game.goodbyeNext === "day" ? `Begin day ${game.day}` : "Begin night"}
+        </button>
+      );
+    }
+    if (game.phase === "mafia-planning") {
+      return (
+        <button type="button" onClick={continueSetup}>
+          Continue to Sheriff wake-up
+        </button>
+      );
+    }
+    if (game.phase === "sheriff-wake") {
+      return (
+        <button type="button" onClick={continueSetup}>
+          Begin day one
+        </button>
+      );
+    }
+    if (game.phase === "day") {
+      return (
+        <button type="button" disabled={currentPlayer === undefined} onClick={finishTurn}>
+          {isLastDayTurn
+            ? game.nominations.length > 0 && game.redCardIssuedThisDay !== true
+              ? "Begin voting"
+              : "Begin night"
+            : "Next player"}
+        </button>
+      );
+    }
+    if (game.phase === "car-crash") {
+      return (
+        <button type="button" disabled={currentPlayer === undefined} onClick={finishTurn}>
+          {game.currentTurnIndex >= game.turnOrder.length - 1 ? "Begin revote" : "Next nominee"}
+        </button>
+      );
+    }
+    return (
+      <button type="button" disabled>
+        Continue
+      </button>
+    );
+  })();
+
   return (
     <main className={`game-shell phase-${game.phase}`}>
       <header className="game-header">
@@ -151,7 +336,7 @@ export const GameScreen = ({
         {game.phase === "day" && currentPlayer !== undefined ? (
           <div className="phase-banner current-turn-copy">
             {isLastDayTurn
-              ? game.nominations.length > 0
+              ? game.nominations.length > 0 && game.redCardIssuedThisDay !== true
                 ? `Final turn: ${currentPlayer.name} · Voting next`
                 : `Final turn: ${currentPlayer.name} · Night next`
               : `Current turn: ${currentPlayer.name}`}
@@ -181,7 +366,9 @@ export const GameScreen = ({
             <span>Citizens {privacyHidden ? "?" : activeCitizens}</span>
             <span>Mafia {privacyHidden ? "?" : activeMafia}</span>
           </div>
-          {game.phase === "voting" || game.phase === "car-crash-decision" ? (
+          {game.phase === "voting" ||
+          game.phase === "car-crash-decision" ||
+          game.phase === "car-crash-skipped" ? (
             <VotingStage
               game={game}
               hostName={hostName}
@@ -239,11 +426,7 @@ export const GameScreen = ({
                 dimmed:
                   (game.phase === "mafia-planning" && player.team !== "black") ||
                   (game.phase === "sheriff-wake" && player.role !== "sheriff"),
-                inactive:
-                  (game.phase === "car-crash" && !game.carCrashSeats?.includes(player.seat)) ||
-                  (game.phase === "best-move" &&
-                    player.status !== "active" &&
-                    game.bestMove?.playerSeat !== player.seat),
+                inactive: game.phase === "car-crash" && !game.carCrashSeats?.includes(player.seat),
                 goodbyeHighlight:
                   game.goodbyeSeats?.includes(player.seat) ||
                   (game.phase === "best-move" && game.bestMove?.playerSeat === player.seat),
@@ -266,8 +449,15 @@ export const GameScreen = ({
                       type="button"
                       aria-label={`Foul ${seat.name}`}
                       onClick={() => {
-                        onGameChange(issueFoul(game, seat.seat));
+                        const next = issueFoul(game, seat.seat);
+                        onGameChange(next);
                         onEvent("foul.issued", { seat: seat.seat });
+                        if (
+                          next.players.find((player) => player.seat === seat.seat)?.status ===
+                          "red-carded"
+                        ) {
+                          onEvent("player.red-carded", { seat: seat.seat, source: "fourth-foul" });
+                        }
                       }}
                     >
                       Foul
@@ -286,10 +476,7 @@ export const GameScreen = ({
                       type="button"
                       aria-label={`Nominate ${seat.name}`}
                       disabled={
-                        currentPlayer === undefined ||
-                        seat.seat === currentPlayer.seat ||
-                        seat.nominated ||
-                        currentSpeakerHasNominated
+                        currentPlayer === undefined || seat.nominated || currentSpeakerHasNominated
                       }
                       onClick={() => {
                         if (currentPlayer === undefined) return;
@@ -307,114 +494,18 @@ export const GameScreen = ({
               }
               seatActionLabel={(seat) =>
                 game.phase === "best-move"
-                  ? game.bestMove?.playerSeat === seat.seat
-                    ? `Best move by ${seat.name}`
-                    : game.bestMove?.selectedSeats.includes(seat.seat)
-                      ? `Remove ${seat.name} from Best move`
-                      : `Add ${seat.name} to Best move`
+                  ? game.bestMove?.selectedSeats.includes(seat.seat)
+                    ? `Remove ${seat.name} from Best move`
+                    : `Add ${seat.name} to Best move`
                   : `Seat ${seat.seat}: ${seat.name}`
               }
               onSeatClick={(seat) => {
-                if (
-                  game.phase === "best-move" &&
-                  game.bestMove?.playerSeat !== seat &&
-                  game.players.find((player) => player.seat === seat)?.status === "active"
-                ) {
+                if (game.phase === "best-move") {
                   onGameChange(toggleBestMoveSeat(game, seat));
                 }
               }}
-              center={
-                game.phase === "finished" && game.winner !== null ? (
-                  <div className={`winner-card winner-${game.winner}`} role="status">
-                    <span className="table-prompt">Game complete</span>
-                    <strong>{game.winner === "red" ? "Citizens win" : "Mafia win"}</strong>
-                    <button
-                      type="button"
-                      className="finish-game-button"
-                      disabled={finishGameState === "saving" || finishGameState === "saved"}
-                      onClick={onFinishGame}
-                    >
-                      {finishGameState === "saving"
-                        ? "Saving game…"
-                        : finishGameState === "saved"
-                          ? "Game safely saved"
-                          : "Finish the game"}
-                    </button>
-                    {finishGameState === "error" ? (
-                      <span className="finish-game-error">Game was not saved. Try again.</span>
-                    ) : null}
-                  </div>
-                ) : game.phase === "best-move" && game.bestMove !== undefined ? (
-                  <div className="best-move-center">
-                    <span className="table-prompt">
-                      Best move · {game.bestMove.selectedSeats.length}/3
-                    </span>
-                    <button
-                      type="button"
-                      className="table-primary"
-                      disabled={game.bestMove.selectedSeats.length !== 3}
-                      onClick={() => {
-                        const next = completeBestMove(game);
-                        onGameChange(next);
-                        onEvent("best-move.completed", {
-                          playerSeat: game.bestMove?.playerSeat,
-                          selectedSeats: game.bestMove?.selectedSeats,
-                          mafiaHits: next.bestMove?.mafiaHits,
-                        });
-                      }}
-                    >
-                      Save Best move
-                    </button>
-                  </div>
-                ) : game.phase === "goodbye-speech" ? (
-                  <button
-                    type="button"
-                    className="table-primary"
-                    onClick={() => {
-                      const next = completeGoodbyeSpeech(game);
-                      onGameChange(next);
-                      onEvent("phase.changed", { from: game.phase, to: next.phase });
-                    }}
-                  >
-                    {game.goodbyeNext === "day" ? `Begin day ${game.day}` : "Begin night"}
-                  </button>
-                ) : game.phase === "mafia-planning" ? (
-                  <button type="button" className="table-primary" onClick={continueSetup}>
-                    Continue to Sheriff wake-up
-                  </button>
-                ) : game.phase === "sheriff-wake" ? (
-                  <button type="button" className="table-primary" onClick={continueSetup}>
-                    Begin day one
-                  </button>
-                ) : game.phase === "day" && currentPlayer !== undefined ? (
-                  <div className="day-center-stack">
-                    {game.dayNotice === "happy" ? (
-                      <div className="happy-day-note">Happy day</div>
-                    ) : null}
-                    <div className="turn-actions">
-                      <button type="button" className="table-primary" onClick={startTurn}>
-                        Start {currentPlayer.name} turn
-                      </button>
-                      <button type="button" onClick={finishTurn}>
-                        {isLastDayTurn
-                          ? game.nominations.length > 0
-                            ? "Begin voting"
-                            : "Begin night"
-                          : "Next player"}
-                      </button>
-                    </div>
-                  </div>
-                ) : game.phase === "car-crash" && currentPlayer !== undefined ? (
-                  <div className="turn-actions">
-                    <button type="button" className="table-primary" onClick={startTurn}>
-                      Start {currentPlayer.name} 30-second turn
-                    </button>
-                    <button type="button" onClick={finishTurn}>
-                      Next nominee
-                    </button>
-                  </div>
-                ) : null
-              }
+              center={tableCenter}
+              advance={tableAdvance}
             />
           )}
         </section>

@@ -37,4 +37,24 @@ describe("GameTable", () => {
     );
     expect(container.querySelector(".deceased-cross")).not.toBeNull();
   });
+
+  it("keeps information in the center and a persistent advance control below it", () => {
+    const { container, rerender } = render(
+      <GameTable
+        seats={seats}
+        center={<strong>Phase information</strong>}
+        advance={<button disabled>Resolve phase</button>}
+      />,
+    );
+
+    expect(container.querySelector(".table-center")).toHaveTextContent("Phase information");
+    expect(container.querySelector(".table-center button")).toBeNull();
+    expect(container.querySelector(".table-advance")).toContainElement(
+      screen.getByRole("button", { name: "Resolve phase" }),
+    );
+    expect(screen.getByRole("button", { name: "Resolve phase" })).toBeDisabled();
+
+    rerender(<GameTable seats={seats} center={<strong>Waiting</strong>} />);
+    expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+  });
 });

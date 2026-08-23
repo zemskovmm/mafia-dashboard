@@ -45,7 +45,6 @@ describe("day actions", () => {
     let game = dayOne();
 
     expect(() => nominate(game, 2, 4)).toThrow(/current speaker/i);
-    expect(() => nominate(game, 1, 1)).toThrow(/another active player/i);
 
     game = nominate(game, 1, 4);
     game = completeCurrentTurn(game);
@@ -54,6 +53,12 @@ describe("day actions", () => {
 
     expect(() => nominate(game, 3, 4)).toThrow(/already nominated/i);
     expect(game.nominations.map(({ candidateSeat }) => candidateSeat)).toEqual([4, 6]);
+  });
+
+  it("allows the current speaker to nominate themself", () => {
+    const game = nominate(dayOne(), 1, 1);
+
+    expect(game.nominations).toEqual([{ nominatorSeat: 1, candidateSeat: 1, order: 1 }]);
   });
 
   it("turns the next normal turn into one 10-second nomination-only turn after three fouls", () => {
@@ -68,6 +73,36 @@ describe("day actions", () => {
     game = completeCurrentTurn(game);
     expect(game.players.find(({ seat }) => seat === 2)?.mutePending).toBe(false);
     expect(game.turnOrder[game.currentTurnIndex]).toBe(3);
+  });
+
+  it("treats a fourth foul as a red card and suppresses voting for that day", () => {
+    let game = dayOne();
+    const redCardSeat = game.players.find(
+      ({ seat, team }) => seat !== 1 && seat !== 4 && team === "red",
+    )!.seat;
+    game = nominate(game, 1, 4);
+
+    for (let foul = 0; foul < 4; foul += 1) game = issueFoul(game, redCardSeat);
+
+    expect(game.players.find(({ seat }) => seat === redCardSeat)).toMatchObject({
+      fouls: 4,
+      status: "red-carded",
+    });
+    expect(game.redCardIssuedThisDay).toBe(true);
+    while (game.phase === "day") game = completeCurrentTurn(game);
+    expect(game).toMatchObject({ phase: "night-mafia", nominations: [] });
+  });
+
+  it("suppresses voting after any manual red card during the day", () => {
+    let game = nominate(dayOne(), 1, 4);
+    const redCardSeat = game.players.find(
+      ({ seat, team }) => seat !== 1 && seat !== 4 && team === "red",
+    )!.seat;
+
+    game = redCard(game, redCardSeat);
+    while (game.phase === "day") game = completeCurrentTurn(game);
+
+    expect(game).toMatchObject({ phase: "night-mafia", nominations: [] });
   });
 
   it("red-cards an active player immediately and evaluates victory", () => {
@@ -100,22 +135,24 @@ describe("day actions", () => {
     expect(game.turnOrder[game.currentTurnIndex]).toBe(3);
   });
 
-  it("rejects red cards outside ordinary day speeches", () => {
+  it("allows night exclusions outside Mafia shooting and skips an excluded private role", () => {
+    const day = dayOne();
+    const donSeat = day.players.find(({ role }) => role === "don")!.seat;
+    const night: GameState = { ...day, phase: "night-don" };
+
+    const excluded = redCard(night, donSeat);
+
+    expect(excluded.players.find(({ seat }) => seat === donSeat)?.status).toBe("red-carded");
+    expect(excluded.phase).toBe("night-sheriff");
+  });
+
+  it("rejects red cards while Mafia is shooting", () => {
     const game: GameState = {
       ...dayOne(),
-      phase: "car-crash",
-      turnOrder: [4, 6],
-      currentTurnIndex: 0,
-      nominations: [
-        { nominatorSeat: 1, candidateSeat: 4, order: 1 },
-        { nominatorSeat: 2, candidateSeat: 6, order: 2 },
-      ],
-      votingRound: "repeat",
-      carCrashSeats: [4, 6],
-      carCrashVotes: {},
+      phase: "night-mafia",
     };
 
-    expect(() => redCard(game, 4)).toThrow("Red cards are only accepted during the day");
+    expect(() => redCard(game, 4)).toThrow(/not accepted while Mafia is shooting/i);
   });
 
   it("keeps a one-person voting screen and assigns every active vote", () => {
@@ -198,6 +235,33 @@ describe("day actions", () => {
       kind: "eliminate-both-vote",
       seats: [4, 6],
       totals: { 4: 5, 6: 5 },
+    });
+  });
+
+  it("skips the eliminate-all ballot when every active player is tied", () => {
+    const base = dayOne();
+    const activeSeats = base.players
+      .filter(({ status }) => status === "active")
+      .map(({ seat }) => seat);
+    const game: GameState = {
+      ...base,
+      phase: "voting",
+      nominations: activeSeats.map((seat, index) => ({
+        nominatorSeat: seat,
+        candidateSeat: seat,
+        order: index + 1,
+      })),
+      turnOrder: activeSeats,
+      currentTurnIndex: activeSeats.length - 1,
+      votingRound: "repeat",
+      carCrashSeats: activeSeats,
+      voteAssignments: Object.fromEntries(activeSeats.map((seat) => [seat, seat])),
+    };
+
+    expect(resolveVote(game)).toEqual({
+      kind: "eliminate-all-skipped",
+      seats: activeSeats,
+      totals: Object.fromEntries(activeSeats.map((seat) => [seat, 1])),
     });
   });
 

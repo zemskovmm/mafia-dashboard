@@ -80,34 +80,27 @@
   font-size: 2.4rem;
 }
 
-.club-portal-intro {
-  max-width: 560px;
-  margin: 0 0 10px;
-  color: rgb(var(--portal-muted-rgb) / 65%);
-}
-
-.theme-picker {
+.theme-cycle-button {
   position: fixed;
   top: 18px;
   right: 18px;
   z-index: 4;
   display: grid;
-  grid-template-columns: auto 138px;
-  gap: 9px;
-  align-items: center;
-  color: rgb(var(--portal-muted-rgb) / 62%);
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  width: 42px;
+  min-height: 42px;
+  padding: 0;
+  place-items: center;
+  color: rgb(var(--portal-muted-rgb) / 72%);
+  background: rgb(0 0 0 / 28%);
+  border-color: rgb(var(--portal-muted-rgb) / 16%);
+  border-radius: 50%;
+  backdrop-filter: blur(12px);
 }
 
-.theme-picker select {
-  height: 38px;
-  min-height: 38px;
-  color: var(--portal-text);
-  background: rgb(0 0 0 / 42%);
-  border-color: rgb(var(--portal-muted-rgb) / 16%);
+.theme-cycle-button svg {
+  width: 19px;
+  height: 19px;
+  stroke-width: 1.7;
 }
 
 .google-auth-button {
@@ -195,9 +188,10 @@
 .club-card-grid {
   display: grid;
   width: 100%;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(190px, 243px));
   gap: 18px;
   align-items: stretch;
+  justify-content: center;
 }
 
 .club-playing-card {
@@ -279,7 +273,7 @@
 
 .club-card-logo {
   position: absolute;
-  inset: 20px 18px 116px;
+  inset: 20px 18px 88px;
   display: grid;
   place-items: center;
   overflow: hidden;
@@ -327,7 +321,7 @@
 }
 
 .club-card-open > strong {
-  bottom: 83px;
+  bottom: 48px;
   font-family: Georgia, "Times New Roman", serif;
   font-size: 1.15rem;
   font-weight: 600;
@@ -336,40 +330,11 @@
 }
 
 .club-card-open > span:last-child {
-  bottom: 64px;
+  bottom: 29px;
   color: rgb(var(--portal-muted-rgb) / 58%);
   font-size: 0.72rem;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-}
-
-.club-card-actions {
-  position: absolute;
-  z-index: 4;
-  right: 18px;
-  bottom: 15px;
-  left: 18px;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 7px;
-}
-
-.club-card-edit,
-.club-card-delete {
-  padding: 0 6px;
-  overflow: hidden;
-  color: rgb(var(--portal-muted-rgb) / 72%);
-  font-size: 0.67rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  background: rgb(0 0 0 / 34%);
-  border: 1px solid rgb(var(--portal-muted-rgb) / 13%);
-  border-radius: 6px;
-}
-
-.club-card-delete {
-  color: #f2a2a8;
-  border-color: rgb(239 93 104 / 28%);
 }
 
 .new-club-card {
@@ -418,7 +383,6 @@
   box-shadow: 0 24px 70px rgb(0 0 0 / 55%);
 }
 
-.club-editor-card h2,
 .club-editor-card p {
   margin: 0;
 }
@@ -446,6 +410,7 @@
 }
 
 .club-logo-preview {
+  position: relative;
   display: grid;
   height: 82px;
   place-items: center;
@@ -454,10 +419,46 @@
   background: rgb(var(--portal-muted-rgb) / 3%);
   border: 1px dashed rgb(var(--portal-muted-rgb) / 22%);
   border-radius: 12px;
+  cursor: pointer;
+  transition:
+    color 160ms ease,
+    background 160ms ease,
+    border-color 160ms ease;
+}
+
+.club-logo-field:hover .club-logo-preview,
+.club-logo-field:focus-within .club-logo-preview {
+  color: var(--portal-gold-strong);
+  background: rgb(var(--portal-spotlight-rgb) / 8%);
+  border-color: rgb(176 141 87 / 58%);
 }
 
 .club-logo-preview img {
   padding: 8px;
+}
+
+.club-logo-placeholder {
+  display: grid;
+  gap: 5px;
+  place-items: center;
+  font-size: 0.7rem;
+}
+
+.club-logo-placeholder svg {
+  width: 22px;
+  height: 22px;
+  stroke-width: 1.5;
+}
+
+.club-logo-change {
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  padding: 3px 6px;
+  color: var(--portal-text);
+  font-size: 0.62rem;
+  background: rgb(0 0 0 / 68%);
+  border-radius: 999px;
 }
 
 .card-logo-preview {
@@ -466,15 +467,23 @@
   border-radius: 50%;
 }
 
-.club-editor-card input[type="file"] {
-  width: 100%;
-  color: rgb(var(--portal-muted-rgb) / 55%);
-  font-size: 0.7rem;
+.club-editor-card .club-logo-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  border: 0;
+  white-space: nowrap;
 }
 
 .club-editor-actions {
   display: grid;
-  grid-template-columns: 1fr 1.4fr;
+  grid-template-columns: 1fr 1fr;
   gap: 10px;
   margin-top: 4px;
 }
@@ -581,7 +590,7 @@
   }
 
   .club-card-grid {
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(170px, 204px));
     gap: 12px;
   }
 
@@ -605,18 +614,13 @@
     padding-top: 66px;
   }
 
-  .theme-picker {
+  .theme-cycle-button {
     top: 10px;
     right: 10px;
-    grid-template-columns: 120px;
-  }
-
-  .theme-picker > span {
-    display: none;
   }
 
   .club-card-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 193px);
   }
 
   .club-playing-card,

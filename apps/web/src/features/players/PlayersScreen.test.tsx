@@ -41,6 +41,27 @@ const profile = (overrides: Partial<PlayerProfile> = {}): PlayerProfile => ({
 });
 
 describe("PlayersScreen", () => {
+  it("keeps game availability controls out of persistent player-profile cards", () => {
+    const player = profile();
+    render(
+      <PlayersScreen
+        players={[player]}
+        onCreate={vi.fn()}
+        onUpdate={vi.fn()}
+        {...({
+          availablePlayerIds: new Set([player.id]),
+          onAvailabilityChange: vi.fn(),
+        } as Record<string, unknown>)}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("checkbox", {
+        name: `${player.nickname} available for game selection`,
+      }),
+    ).not.toBeInTheDocument();
+  });
+
   it("submits a changed player name", async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn().mockResolvedValue(undefined);

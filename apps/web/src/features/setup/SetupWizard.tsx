@@ -28,7 +28,7 @@ interface SetupWizardProps {
   readonly onSessionStateChange?: (state: SetupWizardSessionState) => void;
   readonly showDevelopmentTools?: boolean;
   readonly onPopulateDevelopmentPlayers?: () => Promise<readonly PlayerProfile[]>;
-  readonly randomFillRequest?: number;
+  readonly onOpenAvailablePlayers?: () => void;
   readonly privacyHidden?: boolean;
   readonly fullscreenTouchPicker?: boolean;
 }
@@ -42,13 +42,43 @@ export interface SetupWizardSessionState {
   readonly setup: SetupState | null;
 }
 
-const shuffled = <Value,>(values: readonly Value[]): Value[] => {
+const shuffled = <Value,>(
+  values: readonly Value[],
+  random: () => number = Math.random,
+): Value[] => {
   const result = [...values];
   for (let index = result.length - 1; index > 0; index -= 1) {
-    const target = Math.floor(Math.random() * (index + 1));
+    const target = Math.floor(random() * (index + 1));
     [result[index], result[target]] = [result[target]!, result[index]!];
   }
   return result;
+};
+
+const randomPlayersBySelectionPriority = (
+  players: readonly PlayerProfile[],
+  random: () => number = Math.random,
+): PlayerProfile[] => {
+  const ranked = [...players].sort(
+    (left, right) =>
+      right.statistics.hostedGames - left.statistics.hostedGames ||
+      left.statistics.gamesPlayed - right.statistics.gamesPlayed ||
+      right.statistics.wins - left.statistics.wins,
+  );
+  const groups: PlayerProfile[][] = [];
+  for (const player of ranked) {
+    const previous = groups.at(-1)?.[0];
+    if (
+      previous === undefined ||
+      previous.statistics.hostedGames !== player.statistics.hostedGames ||
+      previous.statistics.gamesPlayed !== player.statistics.gamesPlayed ||
+      previous.statistics.wins !== player.statistics.wins
+    ) {
+      groups.push([player]);
+    } else {
+      groups.at(-1)!.push(player);
+    }
+  }
+  return groups.flatMap((group) => shuffled(group, random));
 };
 
 interface PlayerComboboxProps {
@@ -215,7 +245,7 @@ export const SetupWizard = ({
   onSessionStateChange,
   showDevelopmentTools = false,
   onPopulateDevelopmentPlayers,
-  randomFillRequest = 0,
+  onOpenAvailablePlayers = () => undefined,
   privacyHidden = false,
   fullscreenTouchPicker = false,
 }: SetupWizardProps) => {
@@ -235,7 +265,6 @@ export const SetupWizard = ({
   const [populatingPlayers, setPopulatingPlayers] = useState(false);
   const [developmentError, setDevelopmentError] = useState(false);
   const [manualRoleSeat, setManualRoleSeat] = useState<number | null>(null);
-  const handledRandomFillRequest = useRef(randomFillRequest);
   const roleTapState = useRef<{ seat: number; count: number; at: number } | null>(null);
 
   const selectablePlayers = useMemo(
@@ -253,20 +282,26 @@ export const SetupWizard = ({
   }, [hostPlayerId, onSessionStateChange, selectedPlayerIds, setup, step]);
 
   useEffect(() => {
-    if (step === "players" || selectablePlayers.length === 0) return;
     const availableIds = new Set(selectablePlayers.map(({ id }) => id));
-    const restoredIds = [hostPlayerId, ...selectedPlayerIds];
+    const nextHostPlayerId =
+      hostPlayerId === "" || availableIds.has(hostPlayerId) ? hostPlayerId : "";
+    const nextSelectedPlayerIds = selectedPlayerIds.map((playerId) =>
+      playerId === "" || availableIds.has(playerId) ? playerId : "",
+    );
+    const restoredIds = [nextHostPlayerId, ...nextSelectedPlayerIds];
     const valid =
       restoredIds.length === 11 &&
       restoredIds.every((playerId) => playerId !== "" && availableIds.has(playerId)) &&
       new Set(restoredIds).size === 11;
-    if (valid) return;
-    setStep("players");
-    setHostPlayerId("");
-    setSelectedPlayerIds(
-      selectedPlayerIds.map((playerId) => (availableIds.has(playerId) ? playerId : "")),
-    );
-    setSetup(null);
+    const selectionChanged =
+      nextHostPlayerId !== hostPlayerId ||
+      nextSelectedPlayerIds.some((playerId, index) => playerId !== selectedPlayerIds[index]);
+    if (step !== "players" && !valid) setStep("players");
+    if (!valid || selectionChanged) {
+      if (nextHostPlayerId !== hostPlayerId) setHostPlayerId(nextHostPlayerId);
+      if (selectionChanged) setSelectedPlayerIds(nextSelectedPlayerIds);
+      setSetup(null);
+    }
   }, [hostPlayerId, selectablePlayers, selectedPlayerIds, step]);
 
   const players = useMemo<PlayerInput[]>(
@@ -298,19 +333,10 @@ export const SetupWizard = ({
     const eligiblePlayers = selectablePlayers.filter(({ id }) => id !== hostPlayerId);
     if ((hostPlayerId === "" && selectablePlayers.length < 11) || eligiblePlayers.length < 10)
       return;
-    setSelectedPlayerIds(
-      shuffled(eligiblePlayers)
-        .slice(0, 10)
-        .map(({ id }) => id),
-    );
+    const selectedPlayers = randomPlayersBySelectionPriority(eligiblePlayers).slice(0, 10);
+    setSelectedPlayerIds(shuffled(selectedPlayers).map(({ id }) => id));
     setSetup(null);
   }, [hostPlayerId, selectablePlayers]);
-
-  useEffect(() => {
-    if (handledRandomFillRequest.current === randomFillRequest) return;
-    handledRandomFillRequest.current = randomFillRequest;
-    if (step === "players") randomlyFillSeats();
-  }, [randomFillRequest, randomlyFillSeats, step]);
 
   const continueToMusic = () => {
     const nextSetup = createSetup(players);
@@ -443,12 +469,22 @@ export const SetupWizard = ({
                     </button>
                   </div>
                 ) : setup.remainingRoles.length === 0 ? (
-                  <button type="button" className="table-primary" onClick={finishRoleDraw}>
-                    Begin Mafia planning stage
-                  </button>
+                  <div className="table-check-center">
+                    <span className="table-prompt">Role giveaway</span>
+                    <strong>All roles assigned</strong>
+                  </div>
                 ) : (
                   <span className="table-prompt">Tap a player to reveal their role</span>
                 )
+              }
+              advance={
+                <button
+                  type="button"
+                  disabled={setup.remainingRoles.length > 0 || hostPlayer === undefined}
+                  onClick={finishRoleDraw}
+                >
+                  Begin Mafia planning stage
+                </button>
               }
             />
           </section>
@@ -473,7 +509,7 @@ export const SetupWizard = ({
           </p>
           {selectablePlayers.length < 11 ? (
             <p className="roster-guidance">
-              Add at least 11 players in Players &amp; statistics before continuing.
+              Mark at least 11 players available in Players &amp; statistics before continuing.
             </p>
           ) : null}
           {showDevelopmentTools && onPopulateDevelopmentPlayers !== undefined ? (
@@ -540,6 +576,19 @@ export const SetupWizard = ({
                 fullscreenTouchPicker={fullscreenTouchPicker}
               />
             ))}
+          </div>
+          <div className="player-assignment-actions">
+            <button type="button" onClick={onOpenAvailablePlayers}>
+              Select available players
+            </button>
+            <button
+              type="button"
+              className="primary-action"
+              disabled={selectablePlayers.length < 11}
+              onClick={randomlyFillSeats}
+            >
+              Assign players
+            </button>
           </div>
           <div className="setup-completion-actions">
             <button

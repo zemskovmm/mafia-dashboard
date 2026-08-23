@@ -30,6 +30,7 @@ export const beginNight = (game: GameState): GameState => {
     game.phase !== "day" &&
     game.phase !== "voting" &&
     game.phase !== "car-crash-decision" &&
+    game.phase !== "car-crash-skipped" &&
     game.phase !== "goodbye-speech"
   ) {
     throw new Error(`Cannot begin night from phase ${game.phase}`);
@@ -48,6 +49,7 @@ export const beginNight = (game: GameState): GameState => {
     checkResult: undefined,
     nightResult: undefined,
     dayNotice: undefined,
+    redCardIssuedThisDay: undefined,
   };
 };
 
@@ -132,10 +134,12 @@ export const completeMafiaShots = (game: GameState): GameState => {
   const resolvedGame =
     result.kind === "kill" ? markPlayerInactive(game, result.targetSeat, "eliminated") : game;
   const withResult = { ...resolvedGame, nightResult: result };
-  const winner = evaluateVictory(withResult.players);
-  return winner === null
-    ? { ...withResult, phase: nextPrivatePhase(withResult), shotAssignments: {} }
-    : { ...withResult, phase: "finished", shotAssignments: {}, winner };
+  return {
+    ...withResult,
+    phase: nextPrivatePhase(withResult),
+    shotAssignments: {},
+    winner: null,
+  };
 };
 
 export const performDonCheck = (
@@ -215,6 +219,7 @@ export const completeNight = (game: GameState): GameState => {
     voteAssignments: {},
     shotAssignments: {},
     checkResult: undefined,
+    redCardIssuedThisDay: undefined,
   };
   if (game.nightResult?.kind === "kill") {
     return game.day === 1
@@ -246,10 +251,7 @@ export const toggleBestMoveSeat = (game: GameState, seat: number): GameState => 
   if (game.phase !== "best-move" || game.bestMove === undefined) {
     throw new Error("Best move selections require the Best move phase");
   }
-  if (seat === game.bestMove.playerSeat)
-    throw new Error("The deceased player cannot select themself");
-  const target = playerAt(game, seat);
-  if (target.status !== "active") throw new Error("Best move targets must still be active");
+  playerAt(game, seat);
   const selected = game.bestMove.selectedSeats;
   const selectedSeats = selected.includes(seat)
     ? selected.filter((candidate) => candidate !== seat)
@@ -273,17 +275,26 @@ export const completeBestMove = (game: GameState): GameState => {
   ).length;
   return {
     ...game,
-    phase: "day",
+    phase: "goodbye-speech",
     bestMove: { ...game.bestMove, mafiaHits },
-    goodbyeSeats: undefined,
-    goodbyeNext: undefined,
-    nightResult: undefined,
     dayNotice: undefined,
   };
 };
 
 export const completeGoodbyeSpeech = (game: GameState): GameState => {
   if (game.phase !== "goodbye-speech") throw new Error("There is no goodbye speech to complete");
+  const winner = evaluateVictory(game.players);
+  if (winner !== null) {
+    return {
+      ...game,
+      phase: "finished",
+      winner,
+      goodbyeSeats: undefined,
+      goodbyeNext: undefined,
+      nightResult: undefined,
+      dayNotice: undefined,
+    };
+  }
   if (game.goodbyeNext !== "day") return beginNight(game);
   return {
     ...game,

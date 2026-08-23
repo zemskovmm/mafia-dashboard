@@ -94,7 +94,7 @@ describe("GameScreen", () => {
     const user = userEvent.setup();
     render(<DayHarness />);
 
-    expect(screen.getByRole("button", { name: /^nominate player 1$/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^nominate player 1$/i })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: /^nominate player 2$/i }));
     expect(
       screen
@@ -134,6 +134,33 @@ describe("GameScreen", () => {
     expect(screen.getByRole("button", { name: /^seat 4: player 4$/i })).not.toHaveClass(
       "is-inactive",
     );
+  });
+
+  it("presents an all-player car crash as a skipped ballot instead of a decision", () => {
+    const base = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+    const activeSeats = base.players
+      .filter(({ status }) => status === "active")
+      .map(({ seat }) => seat);
+    const game: GameState = {
+      ...base,
+      phase: "car-crash-decision",
+      carCrashSeats: activeSeats,
+      carCrashVotes: {},
+    };
+
+    render(
+      <GameScreen
+        game={game}
+        hostName="Host Player"
+        onGameChange={() => undefined}
+        onEvent={() => undefined}
+        privacyHidden={false}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Car crash" })).toBeInTheDocument();
+    expect(screen.getByText("Eliminate-all vote skipped")).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Car-crash decision" })).not.toBeInTheDocument();
   });
 
   it("keeps a single nominee in voting and shows a yellow goodbye speech before night", async () => {
@@ -254,12 +281,18 @@ describe("GameScreen", () => {
     render(<BestMoveHarness />);
     const targets = initial.players
       .filter(({ status, seat }) => status === "active" && seat !== victim.seat)
-      .slice(0, 3);
+      .slice(0, 2);
+    await user.click(screen.getByRole("button", { name: `Add ${victim.name} to Best move` }));
     for (const target of targets) {
       await user.click(screen.getByRole("button", { name: `Add ${target.name} to Best move` }));
     }
     await user.click(screen.getByRole("button", { name: "Save Best move" }));
 
+    expect(screen.getByRole("heading", { name: "Goodbye speech" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /seat 2: player 2/i })).toHaveClass(
+      "is-goodbye-highlight",
+    );
+    await user.click(screen.getByRole("button", { name: "Begin day 2" }));
     expect(screen.getByRole("heading", { name: "Day 2" })).toBeInTheDocument();
   });
 

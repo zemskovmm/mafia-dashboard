@@ -35,7 +35,14 @@ const testClub: Club = {
   createdAt: "2026-08-21T00:00:00.000Z",
   updatedAt: "2026-08-21T00:00:00.000Z",
 };
-const App = () => <ClubWorkspace club={testClub} onExit={() => undefined} />;
+const App = () => (
+  <ClubWorkspace
+    club={testClub}
+    onExit={() => undefined}
+    onEditClub={() => undefined}
+    onDeleteClub={() => Promise.resolve()}
+  />
+);
 const assignedGame = {
   phase: "mafia-planning",
   day: 0,
@@ -82,6 +89,7 @@ vi.mock("./api/client.js", () => ({
 
 vi.mock("./features/setup/SetupWizard.js", () => ({
   SetupWizard: ({
+    players,
     onComplete,
     initialSessionState,
     onSessionStateChange,
@@ -89,9 +97,10 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
     playlistId,
     onPlaylistIdChange,
     onPopulateDevelopmentPlayers,
-    randomFillRequest = 0,
+    onOpenAvailablePlayers,
     fullscreenTouchPicker = false,
   }: {
+    players: readonly PlayerProfile[];
     onComplete: (game: GameState, hostPlayerId: string, hostName: string) => void;
     initialSessionState?: { step: "players" | "music" | "roles" } | null;
     onSessionStateChange?: (state: {
@@ -104,7 +113,7 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
     playlistId: string;
     onPlaylistIdChange: (playlistId: string) => void;
     onPopulateDevelopmentPlayers?: () => Promise<readonly PlayerProfile[]>;
-    randomFillRequest?: number;
+    onOpenAvailablePlayers?: () => void;
     fullscreenTouchPicker?: boolean;
   }) => {
     const [step, setStep] = useState(initialSessionState?.step ?? "players");
@@ -114,8 +123,15 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
           {step === "roles" ? "Role giveaway" : step === "music" ? "Restored setup" : "Game setup"}
         </h1>
         <p>Playlist: {playlistId || "none"}</p>
-        <output data-testid="random-fill-request">{randomFillRequest}</output>
+        <output data-testid="setup-player-pool">
+          {players.map(({ nickname }) => nickname).join(",")}
+        </output>
         <output data-testid="touch-player-picker">{String(fullscreenTouchPicker)}</output>
+        {onOpenAvailablePlayers === undefined ? null : (
+          <button type="button" onClick={onOpenAvailablePlayers}>
+            Select available players
+          </button>
+        )}
         <button type="button" onClick={() => onPlaylistIdChange("saved-playlist")}>
           Choose saved playlist
         </button>
@@ -321,13 +337,17 @@ describe("club welcome", () => {
     ).toHaveTextContent("Reload this page to try again");
   });
 
-  it("switches the application to the Málaga color scheme", async () => {
+  it("cycles through the available color schemes", async () => {
     const user = userEvent.setup();
     render(<WelcomeApp />);
 
-    await user.selectOptions(screen.getByRole("combobox", { name: "Color theme" }), "malaga");
+    await user.click(screen.getByRole("button", { name: "Switch to Málaga gold theme" }));
 
     expect(document.documentElement).toHaveAttribute("data-theme", "malaga");
+
+    await user.click(screen.getByRole("button", { name: "Switch to Midnight theme" }));
+
+    expect(document.documentElement).toHaveAttribute("data-theme", "midnight");
   });
 
   it("creates a club, returns to its card list, and opens the workspace through curtains", async () => {
@@ -353,6 +373,8 @@ describe("club welcome", () => {
 
     await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i });
     await user.click(screen.getByRole("button", { name: /New club/i }));
+    expect(screen.getByRole("heading", { name: "Create a new club" })).toBeInTheDocument();
+    expect(screen.queryByText("Club identity")).not.toBeInTheDocument();
     await user.type(screen.getByLabelText("Club name"), "Mafia Sevilla");
     await user.type(screen.getByLabelText("City"), "Sevilla");
     await user.click(screen.getByRole("button", { name: "Save club" }));
@@ -367,7 +389,32 @@ describe("club welcome", () => {
     );
   });
 
-  it("deletes a club from its playing card after named confirmation", async () => {
+  it("moves club editing from the welcome card into the workspace Dev menu", async () => {
+    const user = userEvent.setup();
+    api.getAuthSession.mockResolvedValue({
+      configured: true,
+      user: {
+        id: "00000000-0000-4000-8000-000000000001",
+        email: "owner@mafiamalaga.es",
+        name: "Mafia Malaga owner",
+        picture: null,
+      },
+    });
+    api.listClubs.mockResolvedValue([testClub]);
+    render(<WelcomeApp />);
+    await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i });
+
+    expect(screen.queryByRole("button", { name: "Edit Mafia Malaga" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete Mafia Malaga" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Mafia Malaga.*Málaga/i }));
+    await user.click(await screen.findByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Edit club" }));
+
+    expect(screen.getByRole("heading", { name: "Edit Mafia Malaga" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Club name")).toHaveValue("Mafia Malaga");
+  });
+
+  it("deletes a club from Dev and returns to the welcome screen", async () => {
     const user = userEvent.setup();
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     api.getAuthSession.mockResolvedValue({
@@ -383,12 +430,15 @@ describe("club welcome", () => {
     render(<WelcomeApp />);
     await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i });
 
-    await user.click(screen.getByRole("button", { name: "Delete Mafia Malaga" }));
+    await user.click(screen.getByRole("button", { name: /Mafia Malaga.*Málaga/i }));
+    await user.click(await screen.findByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Delete club" }));
 
     expect(confirm).toHaveBeenCalledWith(
       'Delete "Mafia Malaga" and all of its players, games, and statistics? This cannot be undone.',
     );
     expect(api.deleteClub).toHaveBeenCalledWith(testClub.id);
+    expect(await screen.findByRole("heading", { name: "Choose your club" })).toBeInTheDocument();
     await waitFor(() =>
       expect(
         screen.queryByRole("button", { name: /Mafia Malaga.*Málaga/i }),
@@ -427,7 +477,14 @@ describe("club roster gate", () => {
     const user = userEvent.setup();
     const onExit = vi.fn();
     api.listPlayers.mockResolvedValue([]);
-    render(<ClubWorkspace club={testClub} onExit={onExit} />);
+    render(
+      <ClubWorkspace
+        club={testClub}
+        onExit={onExit}
+        onEditClub={() => undefined}
+        onDeleteClub={() => Promise.resolve()}
+      />,
+    );
     expect(
       await screen.findByRole("heading", { name: "Players & statistics" }),
     ).toBeInTheDocument();
@@ -450,6 +507,28 @@ describe("club roster gate", () => {
 });
 
 describe("developer menu", () => {
+  it("cycles the application theme from Dev", async () => {
+    const user = userEvent.setup();
+    api.getAuthSession.mockResolvedValue({
+      configured: true,
+      user: {
+        id: "00000000-0000-4000-8000-000000000001",
+        email: "owner@mafiamalaga.es",
+        name: "Mafia Malaga owner",
+        picture: null,
+      },
+    });
+    api.listClubs.mockResolvedValue([testClub]);
+    render(<WelcomeApp />);
+
+    await user.click(await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i }));
+    await user.click(await screen.findByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Use Málaga gold theme" }));
+
+    expect(document.documentElement).toHaveAttribute("data-theme", "malaga");
+    expect(screen.getByRole("button", { name: "Use Midnight theme" })).toBeInTheDocument();
+  });
+
   it("uses a dated sequence name for a new game", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-02-12T12:00:00"));
@@ -493,16 +572,8 @@ describe("developer menu", () => {
     Reflect.deleteProperty(navigator, "maxTouchPoints");
   });
 
-  it("keeps random seat fill and active game sessions inside Dev", async () => {
+  it("keeps active game sessions in Dev without player-assignment controls", async () => {
     const user = userEvent.setup();
-    api.listPlayers.mockResolvedValue(
-      Array.from({ length: 11 }, (_, index) =>
-        player(
-          `Player ${index + 1}`,
-          `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
-        ),
-      ),
-    );
     api.listActiveGameSessions.mockResolvedValue([
       {
         gameId: "00000000-0000-4000-8000-0000000000d4",
@@ -520,15 +591,17 @@ describe("developer menu", () => {
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     expect(screen.getByRole("region", { name: "Active games" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Resume Dev table" })).toBeInTheDocument();
-    const randomFill = screen.getByRole("button", { name: "Randomly fill 10 seats" });
-    await waitFor(() => expect(randomFill).toBeEnabled());
-    await user.click(randomFill);
-
-    expect(screen.getByTestId("random-fill-request")).toHaveTextContent("1");
+    expect(
+      screen.queryByRole("button", { name: "Randomly fill 10 seats" }),
+    ).not.toBeInTheDocument();
   });
 
   it("uses one canonical status bar and opens the game players screen from Dev", async () => {
     const user = userEvent.setup();
+    window.localStorage.setItem(
+      `mafia-dashboard.available-player-ids.${testClub.id}`,
+      JSON.stringify([...assignedGame.players.map(({ id }) => id), hostPlayerId]),
+    );
     render(<App />);
 
     const status = screen.getByRole("banner", { name: "Application status" });
@@ -546,6 +619,61 @@ describe("developer menu", () => {
     expect(screen.getByRole("banner", { name: "Application status" })).toHaveTextContent(
       "Game setup",
     );
+  });
+
+  it("limits setup Host and Seat choices to marked-available players", async () => {
+    const [firstPlayer, secondPlayer] = assignedGame.players;
+    window.localStorage.setItem(
+      `mafia-dashboard.available-player-ids.${testClub.id}`,
+      JSON.stringify([firstPlayer!.id, hostPlayerId]),
+    );
+
+    render(<App />);
+    await waitFor(() => expect(api.listPlayers).toHaveBeenCalled());
+
+    expect(screen.getByTestId("setup-player-pool")).toHaveTextContent(
+      `${firstPlayer!.name},Host Player`,
+    );
+    expect(screen.getByTestId("setup-player-pool")).not.toHaveTextContent(secondPlayer!.name);
+  });
+
+  it("opens a searchable table-card availability screen and returns to setup", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() => expect(api.listPlayers).toHaveBeenCalled());
+
+    await user.click(screen.getByRole("button", { name: "Select available players" }));
+    expect(
+      screen.getByText("Available players", { selector: ".availability-selection-card h1" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("searchbox", { name: "Search available players" })).toBeInTheDocument();
+
+    const firstPlayer = assignedGame.players[0]!;
+    const secondPlayer = assignedGame.players[1]!;
+    const firstCard = screen.getByRole("button", { name: `Mark ${firstPlayer.name} available` });
+    await user.click(firstCard);
+    expect(firstCard).toHaveAttribute("aria-pressed", "true");
+    expect(firstCard).toHaveClass("is-availability-selected");
+
+    await user.type(
+      screen.getByRole("searchbox", { name: "Search available players" }),
+      secondPlayer.name,
+    );
+    expect(
+      screen.getByRole("button", { name: `Mark ${secondPlayer.name} available` }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: `Mark ${firstPlayer.name} unavailable` }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Close available players" }));
+    expect(screen.getByTestId("setup-player-pool")).toBeInTheDocument();
+    expect(
+      JSON.parse(
+        window.localStorage.getItem(`mafia-dashboard.available-player-ids.${testClub.id}`) ??
+          "null",
+      ),
+    ).toEqual([firstPlayer.id]);
   });
 
   it("uses the live table shell for the role giveaway stage", async () => {
@@ -844,7 +972,7 @@ describe("authoritative game session lifecycle", () => {
     });
   });
 
-  it("stores final results only after the explicit Finish the game confirmation", async () => {
+  it("stores final results and returns to the initial setup after Finish the game", async () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
@@ -865,7 +993,8 @@ describe("authoritative game session lifecycle", () => {
         results: expect.objectContaining({ hostPlayerId, winner: "red" }),
       }),
     );
-    expect(screen.getByRole("button", { name: "Game safely saved" })).toBeDisabled();
+    expect(await screen.findByRole("button", { name: "Start test game" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Game safely saved" })).not.toBeInTheDocument();
   });
 
   it("keeps Local only when the newer queued aggregate mutation fails", async () => {

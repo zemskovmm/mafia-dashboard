@@ -18,7 +18,7 @@ const activeNominations = (game: GameState): GameState["nominations"] =>
 
 const completeDay = (game: GameState): GameState => {
   const nominations = activeNominations(game);
-  if (nominations.length === 0) {
+  if (game.redCardIssuedThisDay === true || nominations.length === 0) {
     return {
       ...game,
       phase: "night-mafia",
@@ -29,6 +29,7 @@ const completeDay = (game: GameState): GameState => {
       goodbyeNext: undefined,
       nightResult: undefined,
       dayNotice: undefined,
+      redCardIssuedThisDay: undefined,
       checkResult: undefined,
     };
   }
@@ -64,9 +65,6 @@ export const nominate = (
   if (currentSpeakerSeat(game) !== nominatorSeat) {
     throw new Error("Only the current speaker may nominate");
   }
-  if (candidateSeat === nominatorSeat) {
-    throw new Error("The current speaker must nominate another active player");
-  }
   const candidate = game.players.find(({ seat }) => seat === candidateSeat);
   if (candidate === undefined || candidate.status !== "active") {
     throw new Error("The nomination target must be an active player");
@@ -94,7 +92,7 @@ export const issueFoul = (game: GameState, seat: number): GameState => {
   }
 
   const fouls = player.fouls + 1;
-  return {
+  const updated: GameState = {
     ...game,
     players: game.players.map((candidate) =>
       candidate.seat === seat
@@ -102,6 +100,7 @@ export const issueFoul = (game: GameState, seat: number): GameState => {
         : candidate,
     ),
   };
+  return fouls >= 4 ? redCard(updated, seat) : updated;
 };
 
 export const completeCurrentTurn = (game: GameState): GameState => {
@@ -138,13 +137,44 @@ export const completeCurrentTurn = (game: GameState): GameState => {
 };
 
 export const redCard = (game: GameState, seat: number): GameState => {
-  if (game.phase !== "day") {
-    throw new Error("Red cards are only accepted during the day");
+  const nightPhases: ReadonlySet<GameState["phase"]> = new Set([
+    "night-don",
+    "night-don-result",
+    "night-sheriff",
+    "night-sheriff-result",
+    "night-resolution",
+  ]);
+  if (game.phase === "night-mafia" || game.phase === "night-mafia-result") {
+    throw new Error("Red cards are not accepted while Mafia is shooting");
+  }
+  if (game.phase !== "day" && !nightPhases.has(game.phase)) {
+    throw new Error("Red cards are only accepted during the day or night");
   }
   const afterRedCard = markPlayerInactive(game, seat, "red-carded");
-  const updated = { ...afterRedCard, nominations: activeNominations(afterRedCard) };
+  const updated: GameState = {
+    ...afterRedCard,
+    nominations: activeNominations(afterRedCard),
+    redCardIssuedThisDay: game.phase === "day" ? true : game.redCardIssuedThisDay,
+  };
   const winner = evaluateVictory(updated.players);
   if (winner !== null) return { ...updated, phase: "finished", winner };
+  if (game.phase === "night-don") {
+    const hasDon = updated.players.some(
+      ({ role, status }) => role === "don" && status === "active",
+    );
+    if (!hasDon) {
+      const hasSheriff = updated.players.some(
+        ({ role, status }) => role === "sheriff" && status === "active",
+      );
+      return { ...updated, phase: hasSheriff ? "night-sheriff" : "night-resolution" };
+    }
+  }
+  if (
+    game.phase === "night-sheriff" &&
+    !updated.players.some(({ role, status }) => role === "sheriff" && status === "active")
+  ) {
+    return { ...updated, phase: "night-resolution" };
+  }
   if (game.phase !== "day") return updated;
 
   const removedIndex = game.turnOrder.indexOf(seat);
@@ -267,8 +297,18 @@ export const resolveVote = (game: GameState): VoteResult => {
     game.votingRound === "repeat" &&
     previousTiedSeats.size === seats.length &&
     seats.every((seat) => previousTiedSeats.has(seat));
+  const allActivePlayersTied =
+    seats.length === eligibleVoterSeats.length &&
+    eligibleVoterSeats.every((seat) => seats.includes(seat));
   return {
-    kind: seats.length === 1 ? "winner" : repeatedSameTie ? "eliminate-both-vote" : "car-crash",
+    kind:
+      seats.length === 1
+        ? "winner"
+        : repeatedSameTie
+          ? allActivePlayersTied
+            ? "eliminate-all-skipped"
+            : "eliminate-both-vote"
+          : "car-crash",
     seats,
     totals,
   };
@@ -310,6 +350,29 @@ export const beginCarCrashDecision = (game: GameState, seats: readonly number[])
     voteAssignments: {},
     carCrashSeats: [...seats],
     carCrashVotes: {},
+  };
+};
+
+export const beginSkippedCarCrashDecision = (
+  game: GameState,
+  seats: readonly number[],
+): GameState => {
+  if (game.phase !== "voting" || game.votingRound !== "repeat") {
+    throw new Error("A skipped eliminate-all ballot requires a repeated car-crash tie");
+  }
+  const activeSeats = game.players
+    .filter(({ status }) => status === "active")
+    .map(({ seat }) => seat);
+  const tied = new Set(seats);
+  if (tied.size !== activeSeats.length || activeSeats.some((seat) => !tied.has(seat))) {
+    throw new Error("The eliminate-all ballot is skipped only when every active player is tied");
+  }
+  return {
+    ...game,
+    phase: "car-crash-skipped",
+    voteAssignments: {},
+    carCrashSeats: [...seats],
+    carCrashVotes: undefined,
   };
 };
 

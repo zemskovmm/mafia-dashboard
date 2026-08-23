@@ -1,6 +1,12 @@
 import { useEffect, useState } from "react";
+import { ImagePlus, Palette } from "lucide-react";
 import type { AppUser, Club, ClubInput } from "../../api/client.js";
 import type { ColorTheme } from "../../theme.js";
+
+const colorThemes = [
+  { value: "midnight", label: "Midnight" },
+  { value: "malaga", label: "Málaga gold" },
+] as const satisfies readonly { readonly value: ColorTheme; readonly label: string }[];
 
 interface ClubPortalProps {
   readonly user: AppUser | null;
@@ -10,10 +16,11 @@ interface ClubPortalProps {
   readonly clubs: readonly Club[];
   readonly loading: boolean;
   readonly error: string | null;
+  readonly editing: Club | "new" | null;
   readonly onSignOut: () => Promise<void>;
   readonly onColorThemeChange: (theme: ColorTheme) => void;
+  readonly onEditingChange: (editing: Club | "new" | null) => void;
   readonly onSaveClub: (clubId: string | null, input: ClubInput) => Promise<void>;
-  readonly onDeleteClub: (club: Club) => Promise<void>;
   readonly onOpenClub: (club: Club) => void;
 }
 
@@ -55,9 +62,7 @@ const ClubEditor = ({
   };
 
   return (
-    <section className="club-editor-card" aria-labelledby="club-editor-title">
-      <p className="eyebrow">Club identity</p>
-      <h2 id="club-editor-title">{club === null ? "Create a new club" : `Edit ${club.name}`}</h2>
+    <section className="club-editor-card" aria-label="Club details">
       <label>
         Club name
         <input value={name} maxLength={100} onChange={(event) => setName(event.target.value)} />
@@ -70,9 +75,20 @@ const ClubEditor = ({
         <label className="club-logo-field">
           <span>Header logo</span>
           <span className="club-logo-preview">
-            {headerLogo === null ? "Header" : <img src={headerLogo} alt="Header logo preview" />}
+            {headerLogo === null ? (
+              <span className="club-logo-placeholder">
+                <ImagePlus aria-hidden="true" />
+                Choose image
+              </span>
+            ) : (
+              <>
+                <img src={headerLogo} alt="Header logo preview" />
+                <span className="club-logo-change">Change</span>
+              </>
+            )}
           </span>
           <input
+            className="club-logo-input"
             type="file"
             accept="image/png,image/jpeg,image/webp,image/svg+xml"
             onChange={(event) => void chooseImage(event.target.files?.[0], setHeaderLogo)}
@@ -81,9 +97,20 @@ const ClubEditor = ({
         <label className="club-logo-field">
           <span>Playing-card logo</span>
           <span className="club-logo-preview card-logo-preview">
-            {cardLogo === null ? "Card" : <img src={cardLogo} alt="Card logo preview" />}
+            {cardLogo === null ? (
+              <span className="club-logo-placeholder">
+                <ImagePlus aria-hidden="true" />
+                Choose image
+              </span>
+            ) : (
+              <>
+                <img src={cardLogo} alt="Playing-card logo preview" />
+                <span className="club-logo-change">Change</span>
+              </>
+            )}
           </span>
           <input
+            className="club-logo-input"
             type="file"
             accept="image/png,image/jpeg,image/webp,image/svg+xml"
             onChange={(event) => void chooseImage(event.target.files?.[0], setCardLogo)}
@@ -116,26 +143,34 @@ export const ClubPortal = ({
   clubs,
   loading,
   error,
+  editing,
   onSignOut,
   onColorThemeChange,
+  onEditingChange,
   onSaveClub,
-  onDeleteClub,
   onOpenClub,
 }: ClubPortalProps) => {
-  const [editing, setEditing] = useState<Club | "new" | null>(null);
   const [saving, setSaving] = useState(false);
+  const currentThemeIndex = colorThemes.findIndex(({ value }) => value === colorTheme);
+  const nextTheme = colorThemes[(currentThemeIndex + 1) % colorThemes.length] ?? colorThemes[0];
+  const portalTitle =
+    editing === "new"
+      ? "Create a new club"
+      : editing === null
+        ? "Choose your club"
+        : `Edit ${editing.name}`;
 
   useEffect(() => {
     if (editing !== null && editing !== "new" && !clubs.some(({ id }) => id === editing.id)) {
-      setEditing(null);
+      onEditingChange(null);
     }
-  }, [clubs, editing]);
+  }, [clubs, editing, onEditingChange]);
 
   const save = async (input: ClubInput) => {
     setSaving(true);
     try {
       await onSaveClub(editing === "new" || editing === null ? null : editing.id, input);
-      setEditing(null);
+      onEditingChange(null);
     } finally {
       setSaving(false);
     }
@@ -146,25 +181,19 @@ export const ClubPortal = ({
       <div className="curtain curtain-left" aria-hidden="true" />
       <div className="curtain curtain-right" aria-hidden="true" />
       <section className="club-portal-content">
-        <label className="theme-picker">
-          <span>Color theme</span>
-          <select
-            aria-label="Color theme"
-            value={colorTheme}
-            onChange={(event) => onColorThemeChange(event.target.value as ColorTheme)}
-          >
-            <option value="midnight">Midnight</option>
-            <option value="malaga">Málaga gold</option>
-          </select>
-        </label>
+        <button
+          type="button"
+          className="theme-cycle-button"
+          aria-label={`Switch to ${nextTheme.label} theme`}
+          title={`Switch to ${nextTheme.label} theme`}
+          onClick={() => onColorThemeChange(nextTheme.value)}
+        >
+          <Palette aria-hidden="true" />
+        </button>
         <p className="club-portal-suit" aria-hidden="true">
           ♠
         </p>
-        <p className="eyebrow">Mafia Dashboard</p>
-        <h1>Choose your club</h1>
-        <p className="club-portal-intro">
-          Every table, player and statistic stays inside its own club.
-        </p>
+        <h1>{portalTitle}</h1>
         {user === null ? (
           loading ? (
             <p className="club-auth-status" role="status">
@@ -206,7 +235,7 @@ export const ClubPortal = ({
             key={editing === "new" ? "new" : editing.id}
             club={editing === "new" ? null : editing}
             saving={saving}
-            onCancel={() => setEditing(null)}
+            onCancel={() => onEditingChange(null)}
             onSave={save}
           />
         ) : (
@@ -254,30 +283,12 @@ export const ClubPortal = ({
                     <strong>{club.name}</strong>
                     <span>{club.city}</span>
                   </button>
-                  <div className="club-card-actions">
-                    <button
-                      type="button"
-                      className="club-card-edit"
-                      onClick={() => setEditing(club)}
-                    >
-                      Edit {club.name}
-                    </button>
-                    {club.role === "owner" ? (
-                      <button
-                        type="button"
-                        className="club-card-delete"
-                        onClick={() => void onDeleteClub(club)}
-                      >
-                        Delete {club.name}
-                      </button>
-                    ) : null}
-                  </div>
                 </article>
               ))}
               <button
                 type="button"
                 className="club-playing-card new-club-card"
-                onClick={() => setEditing("new")}
+                onClick={() => onEditingChange("new")}
               >
                 <span aria-hidden="true">＋</span>
                 <strong>New club</strong>

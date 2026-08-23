@@ -29,6 +29,7 @@ interface GameTableProps {
   readonly onSeatSwipeRight?: (seat: number) => void;
   readonly renderSeatActions?: (seat: TableSeatView) => ReactNode;
   readonly center?: ReactNode;
+  readonly advance?: ReactNode;
 }
 
 const PersonIcon = () => (
@@ -50,6 +51,7 @@ export const GameTable = ({
   onSeatSwipeRight,
   renderSeatActions,
   center,
+  advance,
 }: GameTableProps) => {
   const swipeStart = useRef<{
     readonly seat: number;
@@ -61,6 +63,13 @@ export const GameTable = ({
     <section className="table-stage" aria-label="Mafia table">
       <div className="round-table">
         <div className="table-center">{center}</div>
+        <div className="table-advance">
+          {advance ?? (
+            <button type="button" disabled>
+              Continue
+            </button>
+          )}
+        </div>
         {seats.map((seat) => {
           const angle = HOST_ANGLE + (seat.seat * 360) / TABLE_POSITION_COUNT;
           const label = seatActionLabel?.(seat) ?? `Seat ${seat.seat}: ${seat.name}`;

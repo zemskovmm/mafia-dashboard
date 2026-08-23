@@ -8,10 +8,11 @@ import {
   performSheriffCheck,
   recordMafiaShot,
   reopenMafiaShots,
+  redCard,
   resolveMafiaShots,
 } from "@mafia/game-domain";
 import type { GameState } from "@mafia/game-domain";
-import { GameTable } from "../table/GameTable.js";
+import { GameTable, type TableSeatView } from "../table/GameTable.js";
 
 interface NightStageProps {
   readonly game: GameState;
@@ -29,6 +30,19 @@ export const NightStage = ({
   privacyHidden = false,
 }: NightStageProps) => {
   const activePlayers = game.players.filter(({ status }) => status === "active");
+  const renderRedCardAction = (seat: TableSeatView) =>
+    seat.status === "active" ? (
+      <button
+        type="button"
+        aria-label={`Red card ${seat.name}`}
+        onClick={() => {
+          onGameChange(redCard(game, seat.seat));
+          onEvent("player.red-carded", { seat: seat.seat, source: "night" });
+        }}
+      >
+        Red
+      </button>
+    ) : null;
 
   if (game.phase === "night-mafia") {
     const shooters = activePlayers
@@ -80,15 +94,16 @@ export const NightStage = ({
             <strong>
               {Object.keys(game.shotAssignments).length} of {shooters.length} shooters assigned
             </strong>
-            <button
-              type="button"
-              className="table-center-primary"
-              disabled={!allShotsRecorded}
-              onClick={() => onGameChange(resolveMafiaShots(game).game)}
-            >
-              Evaluate Mafia shots
-            </button>
           </div>
+        }
+        advance={
+          <button
+            type="button"
+            disabled={!allShotsRecorded}
+            onClick={() => onGameChange(resolveMafiaShots(game).game)}
+          >
+            Evaluate Mafia shots
+          </button>
         }
       />
     );
@@ -132,27 +147,28 @@ export const NightStage = ({
               <button type="button" onClick={() => onGameChange(reopenMafiaShots(game))}>
                 Re-evaluate Mafia shots
               </button>
-              <button
-                type="button"
-                className="table-center-primary"
-                onClick={() => {
-                  const next = completeMafiaShots(game);
-                  onGameChange(next);
-                  for (const [shooterSeat, targetSeat] of Object.entries(game.shotAssignments)) {
-                    onEvent("mafia.shot-recorded", {
-                      shooterSeat: Number(shooterSeat),
-                      targetSeat,
-                      day: game.day,
-                      secret: true,
-                    });
-                  }
-                  onEvent("mafia.shots-resolved", { ...result, day: game.day });
-                }}
-              >
-                Continue night
-              </button>
             </div>
           </div>
+        }
+        advance={
+          <button
+            type="button"
+            onClick={() => {
+              const next = completeMafiaShots(game);
+              onGameChange(next);
+              for (const [shooterSeat, targetSeat] of Object.entries(game.shotAssignments)) {
+                onEvent("mafia.shot-recorded", {
+                  shooterSeat: Number(shooterSeat),
+                  targetSeat,
+                  day: game.day,
+                  secret: true,
+                });
+              }
+              onEvent("mafia.shots-resolved", { ...result, day: game.day });
+            }}
+          >
+            Continue night
+          </button>
         }
       />
     );
@@ -173,11 +189,17 @@ export const NightStage = ({
           onGameChange(check.game);
           onEvent("don.checked", { ...check.result });
         }}
+        renderSeatActions={renderRedCardAction}
         center={
           <div className="table-check-center">
             <span className="table-prompt">Don check</span>
             <strong>Select a player to check for Sheriff</strong>
           </div>
+        }
+        advance={
+          <button type="button" disabled>
+            Select a player to continue
+          </button>
         }
       />
     );
@@ -197,20 +219,19 @@ export const NightStage = ({
           mafiaShooter: player.status === "active" && player.role === "don",
           current: player.seat === game.checkResult?.targetSeat,
         }))}
+        renderSeatActions={renderRedCardAction}
         center={
           <div className="table-check-center" role="status" aria-label="Don check result">
             <span className="table-prompt">Don checked {target?.name ?? "player"}</span>
             <div className="secret-result">
               {game.checkResult.match ? "Sheriff found" : "Not the Sheriff"}
             </div>
-            <button
-              type="button"
-              className="table-center-primary"
-              onClick={() => onGameChange(continueDonCheck(game))}
-            >
-              {hasSheriff ? "Proceed to Sheriff check" : "Continue night"}
-            </button>
           </div>
+        }
+        advance={
+          <button type="button" onClick={() => onGameChange(continueDonCheck(game))}>
+            {hasSheriff ? "Proceed to Sheriff check" : "Continue night"}
+          </button>
         }
       />
     );
@@ -231,11 +252,17 @@ export const NightStage = ({
           onGameChange(check.game);
           onEvent("sheriff.checked", { ...check.result });
         }}
+        renderSeatActions={renderRedCardAction}
         center={
           <div className="table-check-center">
             <span className="table-prompt">Sheriff check</span>
             <strong>Select a player to check for Mafia</strong>
           </div>
+        }
+        advance={
+          <button type="button" disabled>
+            Select a player to continue
+          </button>
         }
       />
     );
@@ -252,20 +279,19 @@ export const NightStage = ({
           sheriffHighlight: player.status === "active" && player.role === "sheriff",
           current: player.seat === game.checkResult?.targetSeat,
         }))}
+        renderSeatActions={renderRedCardAction}
         center={
           <div className="table-check-center" role="status" aria-label="Sheriff check result">
             <span className="table-prompt">Sheriff checked {target?.name ?? "player"}</span>
             <div className="secret-result">
               {game.checkResult.match ? "Mafia found" : "Not Mafia"}
             </div>
-            <button
-              type="button"
-              className="table-center-primary"
-              onClick={() => onGameChange(continueSheriffCheck(game))}
-            >
-              Continue night
-            </button>
           </div>
+        }
+        advance={
+          <button type="button" onClick={() => onGameChange(continueSheriffCheck(game))}>
+            Continue night
+          </button>
         }
       />
     );
@@ -277,25 +303,27 @@ export const NightStage = ({
         hostName={hostName}
         privacyHidden={privacyHidden}
         seats={game.players}
+        renderSeatActions={renderRedCardAction}
         center={
           <div className="table-check-center">
             <span className="table-prompt">Night complete</span>
-            <button
-              type="button"
-              className="table-center-primary"
-              onClick={() => {
-                const next = completeNight(game);
-                onGameChange(next);
-                onEvent("phase.changed", {
-                  from: "night-resolution",
-                  to: next.phase,
-                  day: next.day,
-                });
-              }}
-            >
-              Begin day {game.day + 1}
-            </button>
           </div>
+        }
+        advance={
+          <button
+            type="button"
+            onClick={() => {
+              const next = completeNight(game);
+              onGameChange(next);
+              onEvent("phase.changed", {
+                from: "night-resolution",
+                to: next.phase,
+                day: next.day,
+              });
+            }}
+          >
+            Begin day {game.day + 1}
+          </button>
         }
       />
     );

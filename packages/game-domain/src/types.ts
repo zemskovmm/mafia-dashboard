@@ -13,6 +13,7 @@ export type GamePhase =
   | "voting"
   | "car-crash"
   | "car-crash-decision"
+  | "car-crash-skipped"
   | "goodbye-speech"
   | "best-move"
   | "night-mafia"
@@ -77,6 +78,7 @@ export interface GameState {
   readonly checkResult?: SecretCheckResult;
   readonly nightResult?: NightShotResult;
   readonly dayNotice?: "happy";
+  readonly redCardIssuedThisDay?: boolean;
   readonly bestMove?: {
     readonly playerSeat: number;
     readonly selectedSeats: readonly number[];
@@ -86,7 +88,7 @@ export interface GameState {
 }
 
 export interface VoteResult {
-  readonly kind: "winner" | "car-crash" | "eliminate-both-vote";
+  readonly kind: "winner" | "car-crash" | "eliminate-both-vote" | "eliminate-all-skipped";
   readonly seats: readonly number[];
   readonly totals: Readonly<Record<number, number>>;
 }

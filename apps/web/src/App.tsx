@@ -49,6 +49,7 @@ import {
 import { PlayersScreen } from "./features/players/PlayersScreen.js";
 import { buildFinalGameResults } from "./features/players/game-results.js";
 import { SetupWizard, type SetupWizardSessionState } from "./features/setup/SetupWizard.js";
+import { AvailablePlayersScreen } from "./features/setup/AvailablePlayersScreen.js";
 import { GameSessionOutbox } from "./session-outbox.js";
 import { createRandomId } from "./utils/random-id.js";
 import { applyColorTheme, readColorTheme, type ColorTheme } from "./theme.js";
@@ -89,6 +90,20 @@ const backgroundShadeLabel: Record<BackgroundShade, string> = {
 const centerShadowStorageKey = "mafia-dashboard.center-shadow";
 const defaultClubId = "00000000-0000-4000-8000-000000000101";
 const gameSessionStoragePrefix = "mafia-dashboard.game-session.v3";
+const availablePlayerStorageKey = (clubId: string) =>
+  `mafia-dashboard.available-player-ids.${clubId}`;
+const readAvailablePlayerIds = (storage: Storage, clubId: string): ReadonlySet<string> => {
+  try {
+    const value = JSON.parse(storage.getItem(availablePlayerStorageKey(clubId)) ?? "[]");
+    return new Set(
+      Array.isArray(value)
+        ? value.filter((playerId): playerId is string => typeof playerId === "string")
+        : [],
+    );
+  } catch {
+    return new Set();
+  }
+};
 const gameSessionStorageKey = (clubId: string) =>
   clubId === defaultClubId ? gameSessionStoragePrefix : `${gameSessionStoragePrefix}.${clubId}`;
 const clearGameSessionStorage = (storage: Storage) => {
@@ -204,9 +219,17 @@ const asPersistedState = (state: GameSessionState | undefined): PersistedState =
 export const ClubWorkspace = ({
   club,
   onExit,
+  onEditClub,
+  onDeleteClub,
+  colorTheme = "midnight",
+  onColorThemeChange = () => undefined,
 }: {
   readonly club: Club;
   readonly onExit: () => void;
+  readonly onEditClub: () => void;
+  readonly onDeleteClub: () => Promise<void>;
+  readonly colorTheme?: ColorTheme;
+  readonly onColorThemeChange?: (theme: ColorTheme) => void;
 }) => {
   const sessionSyncRef = useRef<GameSessionOutbox | null>(null);
   if (sessionSyncRef.current === null) {
@@ -222,6 +245,7 @@ export const ClubWorkspace = ({
   const initialState = useRef(asPersistedState(initialCurrent?.state)).current;
 
   const [view, setView] = useState<"game" | "players">("game");
+  const [availabilityScreenOpen, setAvailabilityScreenOpen] = useState(false);
   const [sessionName, setSessionName] = useState(
     () => initialCurrent?.name ?? nextGameName(window.localStorage, new Date()),
   );
@@ -230,7 +254,6 @@ export const ClubWorkspace = ({
     initialState.setup,
   );
   const [setupInstanceKey, setSetupInstanceKey] = useState(0);
-  const [randomFillRequest, setRandomFillRequest] = useState(0);
   const [hostPlayerId, setHostPlayerId] = useState<string | null>(initialState.hostPlayerId);
   const [hostName, setHostName] = useState<string | null>(initialState.hostName);
   const [finalResults, setFinalResults] = useState<FinalGameResults | null>(
@@ -240,6 +263,9 @@ export const ClubWorkspace = ({
     initialCurrent?.results === null || initialCurrent?.results === undefined ? "ready" : "saved",
   );
   const [players, setPlayers] = useState<readonly PlayerProfile[]>([]);
+  const [availablePlayerIds, setAvailablePlayerIds] = useState<ReadonlySet<string>>(() =>
+    readAvailablePlayerIds(window.localStorage, club.id),
+  );
   const [playersError, setPlayersError] = useState(false);
   const [rosterGateError, setRosterGateError] = useState<string | null>(null);
   const [playlistId, setPlaylistId] = useState(initialState.playlistId);
@@ -555,7 +581,8 @@ export const ClubWorkspace = ({
       await sessionSync.flush();
       persistedResultsRef.current = results;
       await Promise.all([refreshPlayers(), refreshActiveSessions()]);
-      setFinishGameState("saved");
+      await sessionSync.clear(async () => undefined);
+      resetLocalState();
     } catch {
       setFinishGameState("error");
     }
@@ -599,8 +626,22 @@ export const ClubWorkspace = ({
     await refreshPlayers();
   };
 
+  const updatePlayerAvailability = (playerId: string, available: boolean) => {
+    setAvailablePlayerIds((current) => {
+      const next = new Set(current);
+      if (available) next.add(playerId);
+      else next.delete(playerId);
+      window.localStorage.setItem(
+        availablePlayerStorageKey(club.id),
+        JSON.stringify([...next].sort()),
+      );
+      return next;
+    });
+  };
+
   const deleteProfile = async (playerId: string) => {
     await deletePlayer(playerId, club.id);
+    updatePlayerAvailability(playerId, false);
     setPlayers((current) => current.filter(({ id }) => id !== playerId));
     await refreshPlayers();
   };
@@ -678,6 +719,7 @@ export const ClubWorkspace = ({
       phaseRef.current = restored.game?.phase ?? setupPhase(restored.setup?.step);
       setSetupInstanceKey((key) => key + 1);
       setView("game");
+      setAvailabilityScreenOpen(false);
     },
     [sessionSync],
   );
@@ -723,10 +765,12 @@ export const ClubWorkspace = ({
     setHostPlayerId(null);
     setHostName(null);
     setFinalResults(null);
+    persistedResultsRef.current = null;
     setFinishGameState("ready");
     setPlaylistId(defaultPlaylistId);
     setSetupInstanceKey((key) => key + 1);
     setView("game");
+    setAvailabilityScreenOpen(false);
     setUndoHistory([]);
     setLog([]);
     logRef.current = [];
@@ -790,6 +834,7 @@ export const ClubWorkspace = ({
       window.localStorage.clear();
       window.sessionStorage.clear();
       setCenterShadowVisible(true);
+      setAvailablePlayerIds(new Set());
       resetLocalState();
       window.localStorage.clear();
       setActiveDrawer(null);
@@ -830,24 +875,34 @@ export const ClubWorkspace = ({
         ? []
         : [hostPlayerId]),
   ]);
+  const availablePlayersForSetup = players.filter(({ id }) => availablePlayerIds.has(id));
 
   const persistenceState = sessionSync.status;
   const setupStep = setupSession?.step ?? "players";
   const roleGiveawayActive = view === "game" && game === null && setupStep === "roles";
   const showApplicationStatus = view === "players" || (game === null && !roleGiveawayActive);
-  const applicationStatusTitle = view === "players" ? "Players & statistics" : "Game setup";
+  const applicationStatusTitle =
+    view === "players"
+      ? "Players & statistics"
+      : availabilityScreenOpen
+        ? "Available players"
+        : "Game setup";
   const applicationStatusPhase =
     view === "players"
       ? players.length < 11
         ? `Need 11 players · ${players.length} registered`
-        : `${players.length} game ${players.length === 1 ? "player" : "players"}`
+        : `${availablePlayersForSetup.length} available · ${players.length} registered`
       : setupStep === "music"
         ? "Table music"
-        : "Select players";
+        : availabilityScreenOpen
+          ? `${availablePlayersForSetup.length} available`
+          : "Select players";
   const nextBackgroundShade =
     backgroundShadeOrder[
       (backgroundShadeOrder.indexOf(backgroundShade) + 1) % backgroundShadeOrder.length
     ]!;
+  const nextColorTheme: ColorTheme = colorTheme === "midnight" ? "malaga" : "midnight";
+  const nextColorThemeLabel = nextColorTheme === "malaga" ? "Málaga gold" : "Midnight";
 
   return (
     <div
@@ -986,32 +1041,48 @@ export const ClubWorkspace = ({
             <button
               type="button"
               onClick={() => {
-                if (view === "players" && players.length < 11) {
+                setActiveDrawer(null);
+                onEditClub();
+              }}
+            >
+              Edit club
+            </button>
+            {club.role === "owner" ? (
+              <button
+                type="button"
+                className="danger-action"
+                onClick={() => {
+                  setActiveDrawer(null);
+                  void onDeleteClub();
+                }}
+              >
+                Delete club
+              </button>
+            ) : null}
+            <button type="button" onClick={() => onColorThemeChange(nextColorTheme)}>
+              Use {nextColorThemeLabel} theme
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (view === "players" && availablePlayersForSetup.length < 11) {
+                  const missing = 11 - availablePlayersForSetup.length;
                   setRosterGateError(
-                    `Add ${11 - players.length} more registered ${11 - players.length === 1 ? "player" : "players"} before opening the game screen.`,
+                    players.length < 11
+                      ? `Add ${11 - players.length} more registered ${11 - players.length === 1 ? "player" : "players"} before opening the game screen.`
+                      : `Mark ${missing} more ${missing === 1 ? "player" : "players"} available before opening the game screen.`,
                   );
                   setActiveDrawer(null);
                   return;
                 }
                 setRosterGateError(null);
+                setAvailabilityScreenOpen(false);
                 setView((currentView) => (currentView === "players" ? "game" : "players"));
                 setActiveDrawer(null);
               }}
             >
               {view === "players" ? "Game screen" : "Players screen"}
             </button>
-            {view === "game" && game === null && setupStep === "players" ? (
-              <button
-                type="button"
-                disabled={players.length < 11}
-                onClick={() => {
-                  setRandomFillRequest((request) => request + 1);
-                  setActiveDrawer(null);
-                }}
-              >
-                Randomly fill 10 seats
-              </button>
-            ) : null}
             {game === null && setupSession === null && playlistId === defaultPlaylistId ? null : (
               <button type="button" className="danger-action" onClick={() => void clearGameState()}>
                 Clear game state
@@ -1131,14 +1202,21 @@ export const ClubWorkspace = ({
             deletionProtectedPlayerIds={deletionProtectedPlayerIds}
           />
         </>
+      ) : game === null && availabilityScreenOpen ? (
+        <AvailablePlayersScreen
+          players={players}
+          availablePlayerIds={availablePlayerIds}
+          onAvailabilityChange={updatePlayerAvailability}
+          onClose={() => setAvailabilityScreenOpen(false)}
+        />
       ) : game === null ? (
         <>
           <SetupWizard
             key={setupInstanceKey}
-            players={players}
+            players={availablePlayersForSetup}
             showDevelopmentTools={import.meta.env.DEV}
             onPopulateDevelopmentPlayers={populateDevelopmentPlayers}
-            randomFillRequest={randomFillRequest}
+            onOpenAvailablePlayers={() => setAvailabilityScreenOpen(true)}
             privacyHidden={privacyHidden}
             fullscreenTouchPicker={touchTablet}
             initialSessionState={setupSession}
@@ -1219,6 +1297,7 @@ export const App = () => {
   const [authUnavailable, setAuthUnavailable] = useState(false);
   const [clubs, setClubs] = useState<readonly Club[]>([]);
   const [selectedClub, setSelectedClub] = useState<Club | null>(null);
+  const [editingClub, setEditingClub] = useState<Club | "new" | null>(null);
   const [openingCurtains, setOpeningCurtains] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1272,6 +1351,7 @@ export const App = () => {
       setUser(null);
       setClubs([]);
       setSelectedClub(null);
+      setEditingClub(null);
       setError(null);
     } catch {
       setError("Sign out could not be completed.");
@@ -1308,7 +1388,10 @@ export const App = () => {
     try {
       await deleteClub(club.id);
       window.sessionStorage.removeItem(gameSessionStorageKey(club.id));
+      window.localStorage.removeItem(availablePlayerStorageKey(club.id));
       setClubs((current) => current.filter(({ id }) => id !== club.id));
+      setSelectedClub(null);
+      setEditingClub(null);
       setError(null);
     } catch {
       setError("The club could not be deleted.");
@@ -1316,6 +1399,7 @@ export const App = () => {
   };
 
   const openClub = (club: Club) => {
+    setEditingClub(null);
     setSelectedClub(club);
     setOpeningCurtains(true);
     window.setTimeout(() => setOpeningCurtains(false), 900);
@@ -1327,7 +1411,17 @@ export const App = () => {
         <ClubWorkspace
           key={selectedClub.id}
           club={selectedClub}
-          onExit={() => setSelectedClub(null)}
+          onExit={() => {
+            setSelectedClub(null);
+            setEditingClub(null);
+          }}
+          onEditClub={() => {
+            setSelectedClub(null);
+            setEditingClub(selectedClub);
+          }}
+          onDeleteClub={() => removeClub(selectedClub)}
+          colorTheme={colorTheme}
+          onColorThemeChange={setColorTheme}
         />
         {openingCurtains ? (
           <div className="club-curtain-opening" aria-hidden="true">
@@ -1348,10 +1442,11 @@ export const App = () => {
       clubs={clubs}
       loading={loading}
       error={error}
+      editing={editingClub}
       onSignOut={endSession}
       onColorThemeChange={setColorTheme}
+      onEditingChange={setEditingClub}
       onSaveClub={saveClub}
-      onDeleteClub={removeClub}
       onOpenClub={openClub}
     />
   );

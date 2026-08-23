@@ -5,6 +5,8 @@ import {
   assignVote,
   beginCarCrash,
   beginCarCrashDecision,
+  beginNight,
+  beginSkippedCarCrashDecision,
   countVotes,
   getCurrentVotingCandidateSeat,
   resolveCarCrashVote,
@@ -39,6 +41,10 @@ export const VotingStage = ({
   const allDecisionVotesAssigned = activePlayers.every(
     ({ seat }) => game.carCrashVotes?.[seat] !== undefined,
   );
+  const carCrashSeatSet = new Set(game.carCrashSeats ?? []);
+  const allActivePlayersTied =
+    carCrashSeatSet.size === activePlayers.length &&
+    activePlayers.every(({ seat }) => carCrashSeatSet.has(seat));
   const selectedCandidate = game.phase === "voting" ? getCurrentVotingCandidateSeat(game) : null;
   const selectedCandidateIndex = game.phase === "voting" ? game.currentTurnIndex : -1;
 
@@ -54,12 +60,58 @@ export const VotingStage = ({
       onEvent("voting.resolved", { kind: result.kind, seats: result.seats, totals: result.totals });
       return;
     }
+    if (result.kind === "eliminate-all-skipped") {
+      onGameChange(beginSkippedCarCrashDecision(game, result.seats));
+      onEvent("voting.resolved", { kind: result.kind, seats: result.seats, totals: result.totals });
+      return;
+    }
     onResolved(game, result.seats);
     onEvent("voting.resolved", { kind: result.kind, seats: result.seats, totals: result.totals });
   };
 
+  if (
+    game.phase === "car-crash-skipped" ||
+    (game.phase === "car-crash-decision" && allActivePlayersTied)
+  ) {
+    return (
+      <GameTable
+        hostName={hostName}
+        privacyHidden={privacyHidden}
+        seats={game.players.map((player) => ({
+          ...player,
+          current: game.carCrashSeats?.includes(player.seat),
+          inactive: player.status !== "active",
+        }))}
+        center={
+          <div className="table-vote-center" role="status" aria-label="Car-crash result">
+            <span className="table-prompt">Car crash</span>
+            <strong>Eliminate-all vote skipped</strong>
+            <span className="car-crash-skip-message">
+              All active players are tied. Eliminating everyone would leave no way to determine a
+              winner.
+            </span>
+          </div>
+        }
+        advance={
+          <button
+            type="button"
+            onClick={() => {
+              const next = beginNight(game);
+              onGameChange(next);
+              onEvent("phase.changed", { from: game.phase, to: next.phase });
+            }}
+          >
+            Begin night
+          </button>
+        }
+      />
+    );
+  }
+
   if (game.phase === "car-crash-decision") {
-    const nominees = (game.carCrashSeats ?? [])
+    const carCrashSeats = game.carCrashSeats ?? [];
+    const collective = carCrashSeats.length > 2 ? "all" : "both";
+    const nominees = carCrashSeats
       .map((seat) => game.players.find((player) => player.seat === seat)?.name ?? `Seat ${seat}`)
       .join(" and ");
     return (
@@ -76,8 +128,8 @@ export const VotingStage = ({
         seatActionLabel={(seat) => {
           const assigned = game.carCrashVotes?.[seat.seat];
           return assigned === undefined
-            ? `Vote as ${seat.name} to ${selectedDecision ? "eliminate" : "keep"} both nominees`
-            : `${seat.name} voted to ${assigned ? "eliminate" : "keep"} both nominees`;
+            ? `Vote as ${seat.name} to ${selectedDecision ? "eliminate" : "keep"} ${collective} nominees`
+            : `${seat.name} voted to ${assigned ? "eliminate" : "keep"} ${collective} nominees`;
         }}
         onSeatClick={(voterSeat) => {
           if (game.carCrashVotes?.[voterSeat] !== undefined) return;
@@ -94,24 +146,27 @@ export const VotingStage = ({
                 type="button"
                 className={selectedDecision ? "is-selected" : ""}
                 aria-pressed={selectedDecision}
-                aria-label="Eliminate both nominees"
+                aria-label={`Eliminate ${collective} nominees`}
                 onClick={() => setSelectedDecision(true)}
               >
-                Eliminate both
+                Eliminate {collective}
               </button>
               <button
                 type="button"
                 className={!selectedDecision ? "is-selected" : ""}
                 aria-pressed={!selectedDecision}
-                aria-label="Keep both nominees"
+                aria-label={`Keep ${collective} nominees`}
                 onClick={() => setSelectedDecision(false)}
               >
-                Keep both
+                Keep {collective}
               </button>
             </div>
+          </div>
+        }
+        advance={
+          <div className="table-advance-options">
             <button
               type="button"
-              className="table-center-primary"
               disabled={!allDecisionVotesAssigned}
               onClick={() => {
                 const result = resolveCarCrashVote(game);
@@ -125,6 +180,17 @@ export const VotingStage = ({
               }}
             >
               Resolve car crash
+            </button>
+            <button
+              type="button"
+              className="table-advance-secondary"
+              onClick={() => {
+                const next = beginNight(game);
+                onGameChange(next);
+                onEvent("voting.skipped", { day: game.day });
+              }}
+            >
+              Skip voting
             </button>
           </div>
         }
@@ -162,13 +228,14 @@ export const VotingStage = ({
           </span>
           <strong>{candidate?.name ?? "No candidate"}</strong>
           <span>{selectedCandidate === null ? 0 : (totals[selectedCandidate] ?? 0)} votes</span>
-          <div className="candidate-navigation">
+        </div>
+      }
+      advance={
+        <div className="table-advance-options">
+          {selectedCandidateIndex >= 0 && selectedCandidateIndex < game.nominations.length - 1 ? (
             <button
               type="button"
               aria-label="Next candidate"
-              disabled={
-                selectedCandidateIndex < 0 || selectedCandidateIndex >= game.nominations.length - 1
-              }
               onClick={() => {
                 const next = advanceVotingCandidate(game);
                 const autoAssignedVoterSeats = activePlayers
@@ -185,16 +252,23 @@ export const VotingStage = ({
                 });
               }}
             >
-              Next
+              Next candidate
             </button>
-          </div>
+          ) : (
+            <button type="button" disabled={!allVotesAssigned} onClick={resolve}>
+              Resolve voting
+            </button>
+          )}
           <button
             type="button"
-            className="table-center-primary"
-            disabled={!allVotesAssigned}
-            onClick={resolve}
+            className="table-advance-secondary"
+            onClick={() => {
+              const next = beginNight(game);
+              onGameChange(next);
+              onEvent("voting.skipped", { day: game.day });
+            }}
           >
-            Resolve voting
+            Skip voting
           </button>
         </div>
       }

@@ -4,6 +4,7 @@ import {
   beginNight,
   completeMafiaShots,
   completeBestMove,
+  completeGoodbyeSpeech,
   completeNight,
   continueDonCheck,
   continueSheriffCheck,
@@ -105,6 +106,40 @@ describe("night actions", () => {
     expect(completeMafiaShots(evaluated).phase).toBe("night-don");
   });
 
+  it("finishes a lethal Mafia night only after the victim's goodbye speech", () => {
+    let game: GameState = { ...dayOne(), day: 2 };
+    const redPlayers = game.players.filter(({ team }) => team === "red");
+    for (const player of redPlayers.slice(0, 3)) {
+      game = markPlayerInactive(game, player.seat, "eliminated");
+    }
+    const victim = redPlayers[3]!;
+    game = beginNight(game);
+    const shooters = game.players.filter(
+      ({ team, status }) => team === "black" && status === "active",
+    );
+    for (const shooter of shooters) game = recordMafiaShot(game, shooter.seat, victim.seat);
+
+    game = completeMafiaShots(resolveMafiaShots(game).game);
+    expect(game.phase).not.toBe("finished");
+    expect(game.winner).toBeNull();
+
+    if (game.phase === "night-don") {
+      game = continueDonCheck(performDonCheck(game, victim.seat).game);
+    }
+    if (game.phase === "night-sheriff") {
+      game = continueSheriffCheck(performSheriffCheck(game, shooters[0]!.seat).game);
+    }
+    game = completeNight(game);
+    expect(game).toMatchObject({
+      phase: "goodbye-speech",
+      goodbyeSeats: [victim.seat],
+      winner: null,
+    });
+
+    game = completeGoodbyeSpeech(game);
+    expect(game).toMatchObject({ phase: "finished", winner: "black" });
+  });
+
   it("opens a happy day after a miss and a goodbye before later days after a kill", () => {
     const base = dayOne();
     const happy = completeNight({
@@ -127,6 +162,25 @@ describe("night actions", () => {
       goodbyeSeats: [victim.seat],
       goodbyeNext: "day",
     });
+  });
+
+  it("allows a Best move to select any seated player", () => {
+    const base = dayOne();
+    const [victim, previouslyEliminated] = base.players.filter(({ team }) => team === "red");
+    let game = markPlayerInactive(base, victim!.seat, "eliminated");
+    game = markPlayerInactive(game, previouslyEliminated!.seat, "eliminated");
+    game = {
+      ...game,
+      phase: "best-move",
+      bestMove: { playerSeat: victim!.seat, selectedSeats: [] },
+      goodbyeSeats: [victim!.seat],
+      goodbyeNext: "day",
+    };
+
+    game = toggleBestMoveSeat(game, victim!.seat);
+    game = toggleBestMoveSeat(game, previouslyEliminated!.seat);
+
+    expect(game.bestMove?.selectedSeats).toEqual([victim!.seat, previouslyEliminated!.seat]);
   });
 
   it("rejects non-Mafia shooters but permits shots at inactive targets", () => {
@@ -210,8 +264,12 @@ describe("night actions", () => {
     ];
     for (const target of bestMoveTargets) nextDay = toggleBestMoveSeat(nextDay, target.seat);
     nextDay = completeBestMove(nextDay);
-    expect(nextDay.phase).toBe("day");
+    expect(nextDay.phase).toBe("goodbye-speech");
+    expect(nextDay.goodbyeSeats).toEqual([citizen]);
     expect(nextDay.bestMove?.mafiaHits).toBe(2);
+
+    nextDay = completeGoodbyeSpeech(nextDay);
+    expect(nextDay.phase).toBe("day");
     expect(nextDay.day).toBe(2);
     expect(nextDay.turnOrder[0]).toBe(2);
   });

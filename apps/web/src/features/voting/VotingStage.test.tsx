@@ -49,6 +49,27 @@ const Harness = ({
 };
 
 describe("VotingStage", () => {
+  it("can skip voting and begin night without eliminating a nominee", async () => {
+    const user = userEvent.setup();
+    const onGameChange = vi.fn<(game: GameState) => void>();
+    const onEvent = vi.fn<(type: string, payload: Record<string, unknown>) => void>();
+    render(
+      <VotingStage
+        game={votingGame()}
+        onGameChange={onGameChange}
+        onResolved={() => undefined}
+        onEvent={onEvent}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Skip voting" }));
+
+    expect(onGameChange).toHaveBeenCalledWith(
+      expect.objectContaining({ phase: "night-mafia", nominations: [] }),
+    );
+    expect(onEvent).toHaveBeenCalledWith("voting.skipped", { day: 1 });
+  });
+
   it("presents the eliminate-both decision after a repeated car-crash tie", () => {
     const game: GameState = {
       ...votingGame(),
@@ -68,6 +89,59 @@ describe("VotingStage", () => {
 
     expect(screen.getByRole("button", { name: "Eliminate both nominees" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Keep both nominees" })).toBeInTheDocument();
+  });
+
+  it("uses eliminate-all wording when more than two nominees are tied", () => {
+    const game: GameState = {
+      ...votingGame(),
+      phase: "car-crash-decision",
+      carCrashSeats: [4, 6, 8],
+      carCrashVotes: {},
+    };
+
+    render(
+      <VotingStage
+        game={game}
+        onGameChange={() => undefined}
+        onResolved={() => undefined}
+        onEvent={() => undefined}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Eliminate all nominees" })).toHaveTextContent(
+      "Eliminate all",
+    );
+    expect(screen.getByRole("button", { name: "Keep all nominees" })).toHaveTextContent("Keep all");
+  });
+
+  it("keeps Skip voting enabled while the eliminate-all ballot is incomplete", async () => {
+    const user = userEvent.setup();
+    const game: GameState = {
+      ...votingGame(),
+      phase: "car-crash-decision",
+      carCrashSeats: [4, 6, 8],
+      carCrashVotes: {},
+    };
+    const onGameChange = vi.fn<(game: GameState) => void>();
+    const onEvent = vi.fn<(type: string, payload: Record<string, unknown>) => void>();
+    render(
+      <VotingStage
+        game={game}
+        onGameChange={onGameChange}
+        onResolved={() => undefined}
+        onEvent={onEvent}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Resolve car crash" })).toBeDisabled();
+    const skip = screen.getByRole("button", { name: "Skip voting" });
+    expect(skip).toBeEnabled();
+    await user.click(skip);
+
+    expect(onGameChange).toHaveBeenCalledWith(
+      expect.objectContaining({ phase: "night-mafia", nominations: [] }),
+    );
+    expect(onEvent).toHaveBeenCalledWith("voting.skipped", { day: 1 });
   });
 
   it("de-emphasizes players outside a car crash", () => {
@@ -119,6 +193,80 @@ describe("VotingStage", () => {
         voteAssignments: {},
       }),
     );
+  });
+
+  it("moves an all-player repeated tie to the skipped-ballot message", async () => {
+    const user = userEvent.setup();
+    const base = votingGame();
+    const activeSeats = base.players
+      .filter(({ status }) => status === "active")
+      .map(({ seat }) => seat);
+    const game: GameState = {
+      ...base,
+      nominations: activeSeats.map((seat, index) => ({
+        nominatorSeat: seat,
+        candidateSeat: seat,
+        order: index + 1,
+      })),
+      turnOrder: activeSeats,
+      currentTurnIndex: activeSeats.length - 1,
+      votingRound: "repeat",
+      carCrashSeats: activeSeats,
+      voteAssignments: Object.fromEntries(activeSeats.map((seat) => [seat, seat])),
+    };
+    const onGameChange = vi.fn<(game: GameState) => void>();
+
+    render(
+      <VotingStage
+        game={game}
+        onGameChange={onGameChange}
+        onResolved={() => undefined}
+        onEvent={() => undefined}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Resolve voting" }));
+
+    expect(onGameChange).toHaveBeenCalledWith(
+      expect.objectContaining({ phase: "car-crash-skipped", carCrashSeats: activeSeats }),
+    );
+  });
+
+  it("explains a skipped eliminate-all ballot before beginning night", async () => {
+    const user = userEvent.setup();
+    const base = votingGame();
+    const activeSeats = base.players
+      .filter(({ status }) => status === "active")
+      .map(({ seat }) => seat);
+    const game: GameState = {
+      ...base,
+      phase: "car-crash-decision",
+      carCrashSeats: activeSeats,
+      carCrashVotes: {},
+      voteAssignments: {},
+    };
+    const onGameChange = vi.fn<(game: GameState) => void>();
+
+    render(
+      <VotingStage
+        game={game}
+        onGameChange={onGameChange}
+        onResolved={() => undefined}
+        onEvent={() => undefined}
+      />,
+    );
+
+    expect(screen.getByText("Eliminate-all vote skipped")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "All active players are tied. Eliminating everyone would leave no way to determine a winner.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Eliminate all nominees" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Begin night" }));
+    expect(onGameChange).toHaveBeenCalledWith(expect.objectContaining({ phase: "night-mafia" }));
   });
 
   it("keeps voting on the table and gives the last candidate every remaining vote", async () => {

@@ -39,6 +39,33 @@ const Harness = ({
 };
 
 describe("NightStage", () => {
+  it("shows night red-card controls outside Mafia shooting", async () => {
+    const user = userEvent.setup();
+    const base = createNightGame();
+    const target = base.players.find(({ team }) => team === "red")!;
+    const { rerender } = render(<Harness initial={base} />);
+
+    expect(screen.queryByRole("button", { name: `Red card ${target.name}` })).toBeNull();
+
+    const onGameChange = vi.fn<(game: GameState) => void>();
+    rerender(
+      <NightStage
+        game={{ ...base, phase: "night-don" }}
+        onGameChange={onGameChange}
+        onEvent={() => undefined}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: `Red card ${target.name}` }));
+
+    expect(onGameChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        players: expect.arrayContaining([
+          expect.objectContaining({ seat: target.seat, status: "red-carded" }),
+        ]),
+      }),
+    );
+  });
+
   it("uses the table with one sorted shooter button per target", async () => {
     const user = userEvent.setup();
     const initial = createNightGame();

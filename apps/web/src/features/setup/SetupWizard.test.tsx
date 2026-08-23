@@ -61,13 +61,11 @@ const Harness = ({
   onComplete,
   players = availablePlayers,
   onPopulateDevelopmentPlayers,
-  randomFillRequest = 0,
   fullscreenTouchPicker = false,
 }: {
   onComplete: (game: GameState, hostPlayerId: string, hostName: string) => void;
   players?: readonly PlayerProfile[];
   onPopulateDevelopmentPlayers?: () => Promise<readonly PlayerProfile[]>;
-  randomFillRequest?: number;
   fullscreenTouchPicker?: boolean;
 }) => {
   const [playlistId, setPlaylistId] = useState("test-playlist");
@@ -83,7 +81,6 @@ const Harness = ({
       {...({
         showDevelopmentTools: onPopulateDevelopmentPlayers !== undefined,
         onPopulateDevelopmentPlayers,
-        randomFillRequest,
       } as Record<string, unknown>)}
     />
   );
@@ -182,14 +179,14 @@ describe("SetupWizard", () => {
     expect(host).toHaveValue("Player 11");
   });
 
-  it("randomly fills ten seats from saved players without selecting the host", async () => {
+  it("assigns ten random seats from saved players without changing the host", async () => {
     const user = userEvent.setup();
     const random = vi.spyOn(Math, "random").mockReturnValue(0);
     const host = availablePlayers[10]!;
-    const view = render(<Harness onComplete={() => undefined} randomFillRequest={0} />);
+    render(<Harness onComplete={() => undefined} />);
 
     await choosePlayer(user, "Host player", host);
-    view.rerender(<Harness onComplete={() => undefined} randomFillRequest={1} />);
+    await user.click(screen.getByRole("button", { name: "Assign players" }));
 
     await waitFor(() =>
       expect(
@@ -204,6 +201,65 @@ describe("SetupWizard", () => {
       .map((seat) => (seat as HTMLInputElement).value);
     expect(new Set(selectedNames).size).toBe(10);
     expect(selectedNames).not.toContain(host.nickname);
+    random.mockRestore();
+  });
+
+  it("prioritizes available players by hosted, fewer played, and more wins before shuffling seats", async () => {
+    const user = userEvent.setup();
+    const random = vi.spyOn(Math, "random").mockReturnValue(0);
+    const host = { ...availablePlayers[10]!, nickname: "Selected Host" };
+    const candidate = (
+      index: number,
+      nickname: string,
+      hostedGames: number,
+      gamesPlayed: number,
+      wins: number,
+    ): PlayerProfile => ({
+      ...availablePlayers[index % availablePlayers.length]!,
+      id: `20000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+      nickname,
+      statistics: {
+        ...availablePlayers[0]!.statistics,
+        hostedGames,
+        gamesPlayed,
+        wins,
+        losses: Math.max(0, gamesPlayed - wins),
+      },
+    });
+    const priorityCandidates = [
+      candidate(0, "Hosted leader", 2, 100, 0),
+      ...Array.from({ length: 8 }, (_, index) =>
+        candidate(index + 1, `Less played ${index + 1}`, 1, 5, 1),
+      ),
+      candidate(9, "More wins", 1, 6, 5),
+    ];
+    const lowerPriority = [
+      candidate(10, "Fewer wins", 1, 6, 0),
+      candidate(11, "Never hosted", 0, 0, 0),
+    ];
+    const players = [host, ...priorityCandidates, ...lowerPriority];
+    render(<Harness players={players} onComplete={() => undefined} />);
+
+    await choosePlayer(user, "Host player", host);
+    await user.click(screen.getByRole("button", { name: "Assign players" }));
+
+    await waitFor(() =>
+      expect(
+        screen
+          .getAllByRole("combobox", { name: /seat \d+ player/i })
+          .map((seat) => (seat as HTMLInputElement).value)
+          .filter(Boolean),
+      ).toHaveLength(10),
+    );
+    const selectedNames = screen
+      .getAllByRole("combobox", { name: /seat \d+ player/i })
+      .map((seat) => (seat as HTMLInputElement).value);
+    expect(new Set(selectedNames)).toEqual(
+      new Set(priorityCandidates.map(({ nickname }) => nickname)),
+    );
+    expect(selectedNames).not.toContain("Fewer wins");
+    expect(selectedNames).not.toContain("Never hosted");
+    expect(screen.getByRole("combobox", { name: "Host player" })).toHaveValue("Selected Host");
     random.mockRestore();
   });
 
@@ -237,22 +293,10 @@ describe("SetupWizard", () => {
     );
   });
 
-  it("ignores a random fill request when it would leave no player available to host", () => {
-    const view = render(
-      <Harness
-        players={availablePlayers.slice(0, 10)}
-        onComplete={() => undefined}
-        randomFillRequest={0}
-      />,
-    );
-    view.rerender(
-      <Harness
-        players={availablePlayers.slice(0, 10)}
-        onComplete={() => undefined}
-        randomFillRequest={1}
-      />,
-    );
+  it("disables player assignment when it would leave no player available to host", () => {
+    render(<Harness players={availablePlayers.slice(0, 10)} onComplete={() => undefined} />);
 
+    expect(screen.getByRole("button", { name: "Assign players" })).toBeDisabled();
     expect(
       screen
         .getAllByRole("combobox", { name: /seat \d+ player/i })
@@ -349,6 +393,39 @@ describe("SetupWizard", () => {
 
     expect(screen.getByRole("heading", { name: /select 10 players/i })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Host player" })).toHaveValue("");
+  });
+
+  it("clears restored seat selections that are no longer marked available", async () => {
+    const onSessionStateChange = vi.fn();
+    const selectedPlayerIds = availablePlayers.slice(0, 10).map(({ id }) => id);
+
+    render(
+      <SetupWizard
+        players={availablePlayers.slice(1)}
+        musicPlaying={false}
+        musicStatus="Stopped"
+        playlistId="test-playlist"
+        onPlaylistIdChange={() => undefined}
+        onComplete={() => undefined}
+        onSessionStateChange={onSessionStateChange}
+        initialSessionState={{
+          step: "players",
+          hostPlayerId: availablePlayers[10]!.id,
+          selectedPlayerIds,
+          setup: null,
+        }}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(onSessionStateChange.mock.lastCall?.[0]).toEqual(
+        expect.objectContaining({
+          hostPlayerId: availablePlayers[10]!.id,
+          selectedPlayerIds: ["", ...selectedPlayerIds.slice(1)],
+        }),
+      ),
+    );
+    expect(screen.getByRole("combobox", { name: "Seat 1 player" })).toHaveValue("");
   });
 
   it("runs a persisted role giveaway on the table before Mafia planning", async () => {
@@ -470,7 +547,7 @@ describe("SetupWizard", () => {
     unmount();
     render(<Harness players={[]} onComplete={() => undefined} />);
     expect(
-      screen.getByText(/add at least 11 players in players & statistics/i),
+      screen.getByText(/mark at least 11 players available in players & statistics/i),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /set up music.*optional/i })).toBeDisabled();
   });
