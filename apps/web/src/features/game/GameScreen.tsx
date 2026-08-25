@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useState } from "react";
 import {
   advanceSetupPhase,
   completeBestMove,
@@ -7,18 +7,16 @@ import {
   beginNight,
   countVotes,
   evaluateVictory,
-  getCurrentTurnDuration,
   issueFoul,
   markPlayerInactive,
   nominate,
   redCard,
   toggleBestMoveSeat,
 } from "@mafia/game-domain";
-import type { GameState } from "@mafia/game-domain";
+import type { CanonicalGameEventDraft, GameState } from "@mafia/game-domain";
 import { NightStage } from "../night/NightStage.js";
 import { GameTable } from "../table/GameTable.js";
 import { TimerControls } from "../timer/TimerControls.js";
-import type { TimerControlsHandle } from "../timer/TimerControls.js";
 import { VotingStage } from "../voting/VotingStage.js";
 
 interface GameScreenProps {
@@ -27,7 +25,14 @@ interface GameScreenProps {
   readonly hostName: string;
   readonly onGameChange: (game: GameState) => void;
   readonly onEvent: (type: string, payload: Record<string, unknown>) => void;
+  readonly onAcceptedEvent?: (event: CanonicalGameEventDraft) => void;
+  readonly onReopenLastAcceptedEvent?: () => void;
+  readonly mode?: "live" | "preview";
+  readonly previewSequence?: number;
+  readonly onExitPreview?: () => void;
+  readonly onResetPreview?: () => void;
   readonly privacyHidden: boolean;
+  readonly dayNightIndicatorVisible?: boolean;
   readonly onFinishGame?: () => void;
   readonly finishGameState?: "ready" | "saving" | "saved" | "error";
   readonly clubLogo?: string | null;
@@ -54,6 +59,8 @@ const phaseTitle = (game: GameState): string => {
       return `Day ${game.day}`;
     case "voting":
       return "Voting";
+    case "voting-cancelled":
+      return "Voting";
     case "car-crash":
       return "Car crash";
     case "car-crash-decision":
@@ -79,7 +86,7 @@ const phaseTitle = (game: GameState): string => {
     case "night-resolution":
       return "Night complete";
     case "finished":
-      return `${game.winner === "red" ? "Citizens" : "Mafia"} win`;
+      return `${game.winner === "red" ? "Citizens" : "Mafia"} won`;
   }
 };
 
@@ -89,13 +96,20 @@ export const GameScreen = ({
   hostName,
   onGameChange,
   onEvent,
+  onAcceptedEvent,
+  onReopenLastAcceptedEvent,
+  mode = "live",
+  previewSequence,
+  onExitPreview = () => undefined,
+  onResetPreview = () => undefined,
   privacyHidden,
+  dayNightIndicatorVisible = false,
   onFinishGame = () => undefined,
   finishGameState = "ready",
   clubLogo = null,
   clubName,
 }: GameScreenProps) => {
-  const timerRef = useRef<TimerControlsHandle>(null);
+  const [swipedSeat, setSwipedSeat] = useState<number | null>(null);
   const currentSeat = game.turnOrder[game.currentTurnIndex];
   const currentPlayer = game.players.find(
     ({ seat, status }) => seat === currentSeat && status === "active",
@@ -108,6 +122,7 @@ export const GameScreen = ({
   const votingTotals = countVotes(game);
   const votingStageActive =
     game.phase === "voting" ||
+    game.phase === "voting-cancelled" ||
     game.phase === "car-crash" ||
     (game.phase === "car-crash-decision" && !skippedCarCrash) ||
     game.phase === "goodbye-speech";
@@ -121,33 +136,121 @@ export const GameScreen = ({
   const activeMafia = game.players.filter(
     ({ team, status }) => team === "black" && status === "active",
   ).length;
+  const swipedPlayer = game.players.find(
+    ({ seat, status }) => seat === swipedSeat && status === "active",
+  );
+  const disciplineAvailable =
+    mode === "live" &&
+    game.day >= 1 &&
+    game.phase !== "mafia-planning" &&
+    game.phase !== "sheriff-wake" &&
+    game.phase !== "finished";
+  const revealDisciplineAction = (seat: number) => {
+    const player = game.players.find((candidate) => candidate.seat === seat);
+    setSwipedSeat(disciplineAvailable && player?.status === "active" ? seat : null);
+  };
+  const swipeAction =
+    disciplineAvailable && swipedPlayer !== undefined ? (
+      <>
+        <span className="table-swipe-player">{swipedPlayer.name}</span>
+        <button
+          type="button"
+          className="table-swipe-red-card"
+          aria-label={`Red card ${swipedPlayer.name}`}
+          onClick={() => {
+            setSwipedSeat(null);
+            if (onAcceptedEvent !== undefined) {
+              onAcceptedEvent({
+                type: "player.red-carded",
+                payload: { seat: swipedPlayer.seat },
+                secret: false,
+              });
+            } else {
+              const next = redCard(game, swipedPlayer.seat);
+              onGameChange(next);
+              onEvent("player.red-carded", {
+                seat: swipedPlayer.seat,
+                source: "swipe",
+                phase: game.phase,
+              });
+            }
+          }}
+        >
+          Red card
+        </button>
+        <button
+          type="button"
+          className="table-swipe-close"
+          aria-label={`Close actions for ${swipedPlayer.name}`}
+          onClick={() => setSwipedSeat(null)}
+        >
+          ×
+        </button>
+      </>
+    ) : undefined;
 
   const continueSetup = () => {
     const next = advanceSetupPhase(game);
-    onGameChange(next);
-    onEvent("phase.changed", { from: game.phase, to: next.phase });
-  };
-
-  const startTurn = () => {
-    if (currentPlayer === undefined) {
-      return;
+    if (onAcceptedEvent !== undefined) {
+      onAcceptedEvent({ type: "phase.changed", payload: { to: next.phase }, secret: false });
+    } else {
+      onGameChange(next);
+      onEvent("phase.changed", { from: game.phase, to: next.phase });
     }
-    const seconds = getCurrentTurnDuration(game);
-    timerRef.current?.start(seconds);
   };
 
   const finishTurn = () => {
-    const next = completeCurrentTurn(game);
-    onGameChange(next);
-    onEvent("turn.completed", { seat: currentSeat });
+    if (currentSeat === undefined) return;
+    if (onAcceptedEvent !== undefined) {
+      onAcceptedEvent({ type: "turn.completed", payload: { seat: currentSeat }, secret: false });
+    } else {
+      const next = completeCurrentTurn(game);
+      onGameChange(next);
+      onEvent("turn.completed", { seat: currentSeat });
+    }
+  };
+
+  const foulPlayer = (seat: number) => {
+    const next = issueFoul(game, seat);
+    const player = next.players.find((candidate) => candidate.seat === seat);
+    if (onAcceptedEvent !== undefined && player !== undefined) {
+      onAcceptedEvent({
+        type: "foul.issued",
+        payload: {
+          seat,
+          foulNumber: player.fouls,
+          redCarded: player.status === "red-carded",
+        },
+        secret: false,
+      });
+    } else {
+      onGameChange(next);
+      onEvent("foul.issued", { seat });
+      if (player?.status === "red-carded") {
+        onEvent("player.red-carded", { seat, source: "fourth-foul" });
+      }
+    }
   };
 
   const tableCenter = (() => {
+    if (mode === "preview") {
+      return (
+        <div className="preview-state-center" role="group" aria-label="Log state preview controls">
+          <span className="table-prompt">Preview · Log #{previewSequence ?? "—"}</span>
+          <button type="button" onClick={onExitPreview}>
+            Exit preview
+          </button>
+          <button type="button" className="danger-action" onClick={onResetPreview}>
+            Reset game to this state
+          </button>
+        </div>
+      );
+    }
     if (game.phase === "finished" && game.winner !== null) {
       return (
         <div className={`winner-card winner-${game.winner}`} role="status">
           <span className="table-prompt">Game complete</span>
-          <strong>{game.winner === "red" ? "Citizens win" : "Mafia win"}</strong>
+          <strong>{game.winner === "red" ? "Citizens won" : "Mafia won"}</strong>
           {finishGameState === "error" ? (
             <span className="finish-game-error">Game was not saved. Try again.</span>
           ) : null}
@@ -195,14 +298,6 @@ export const GameScreen = ({
           {game.dayNotice === "happy" ? <div className="happy-day-note">Happy day</div> : null}
           <span className="table-prompt">Current speaker</span>
           <strong>{currentPlayer?.name ?? "Waiting for active player"}</strong>
-          <button
-            type="button"
-            className="table-center-secondary"
-            disabled={currentPlayer === undefined}
-            onClick={startTurn}
-          >
-            Start {currentPlayer?.name ?? "player"} turn
-          </button>
         </div>
       );
     }
@@ -211,15 +306,6 @@ export const GameScreen = ({
         <div className="day-center-stack">
           <span className="table-prompt">Car crash speech</span>
           <strong>{currentPlayer?.name ?? "Waiting for nominee"}</strong>
-          <button
-            type="button"
-            className="table-center-secondary"
-            aria-label={`Start ${currentPlayer?.name ?? "player"} 30-second turn`}
-            disabled={currentPlayer === undefined}
-            onClick={startTurn}
-          >
-            Start 30-second turn
-          </button>
         </div>
       );
     }
@@ -227,6 +313,7 @@ export const GameScreen = ({
   })();
 
   const tableAdvance = (() => {
+    if (mode === "preview") return undefined;
     if (game.phase === "finished") {
       return (
         <button
@@ -249,12 +336,24 @@ export const GameScreen = ({
           disabled={game.bestMove.selectedSeats.length !== 3}
           onClick={() => {
             const next = completeBestMove(game);
-            onGameChange(next);
-            onEvent("best-move.completed", {
-              playerSeat: game.bestMove?.playerSeat,
-              selectedSeats: game.bestMove?.selectedSeats,
-              mafiaHits: next.bestMove?.mafiaHits,
-            });
+            if (onAcceptedEvent !== undefined && game.bestMove !== undefined) {
+              onAcceptedEvent({
+                type: "best-move.completed",
+                payload: {
+                  playerSeat: game.bestMove.playerSeat,
+                  selectedSeats: game.bestMove.selectedSeats,
+                  mafiaHits: next.bestMove?.mafiaHits ?? 0,
+                },
+                secret: true,
+              });
+            } else {
+              onGameChange(next);
+              onEvent("best-move.completed", {
+                playerSeat: game.bestMove?.playerSeat,
+                selectedSeats: game.bestMove?.selectedSeats,
+                mafiaHits: next.bestMove?.mafiaHits,
+              });
+            }
           }}
         >
           Save Best move
@@ -267,8 +366,16 @@ export const GameScreen = ({
           type="button"
           onClick={() => {
             const next = completeGoodbyeSpeech(game);
-            onGameChange(next);
-            onEvent("phase.changed", { from: game.phase, to: next.phase });
+            if (onAcceptedEvent !== undefined) {
+              onAcceptedEvent({
+                type: "phase.changed",
+                payload: { to: next.phase },
+                secret: false,
+              });
+            } else {
+              onGameChange(next);
+              onEvent("phase.changed", { from: game.phase, to: next.phase });
+            }
           }}
         >
           {game.goodbyeNext === "day" ? `Begin day ${game.day}` : "Begin night"}
@@ -314,8 +421,30 @@ export const GameScreen = ({
     );
   })();
 
+  const tableCycle =
+    game.phase === "mafia-planning" ||
+    game.phase === "sheriff-wake" ||
+    game.phase.startsWith("night-")
+      ? "night"
+      : "day";
+
   return (
-    <main className={`game-shell phase-${game.phase}`}>
+    <main
+      className={`game-shell phase-${game.phase}${mode === "preview" ? " is-history-preview" : ""}${
+        dayNightIndicatorVisible
+          ? ` is-day-night-indicator-visible is-table-cycle-${tableCycle}`
+          : ""
+      }`}
+    >
+      {dayNightIndicatorVisible ? (
+        <span
+          className="table-cycle-accessible"
+          role="status"
+          aria-label={`${tableCycle === "day" ? "Day" : "Night"} table indication`}
+        >
+          {tableCycle === "day" ? "Day" : "Night"} {game.day}
+        </span>
+      ) : null}
       <header className="game-header">
         {clubLogo === null ? null : (
           <img className="active-club-header-logo" src={clubLogo} alt="" />
@@ -325,7 +454,7 @@ export const GameScreen = ({
             Live game · {clubName === undefined ? "" : `${clubName} · `}
             {gameName} · Host view
           </p>
-          <h1>{phaseTitle(game)}</h1>
+          <h1>{mode === "preview" ? `${phaseTitle(game)} · Preview` : phaseTitle(game)}</h1>
         </div>
         {game.phase === "mafia-planning" ? (
           <div className="phase-banner night-banner">Mafia planning stage · set target order</div>
@@ -366,15 +495,38 @@ export const GameScreen = ({
             <span>Citizens {privacyHidden ? "?" : activeCitizens}</span>
             <span>Mafia {privacyHidden ? "?" : activeMafia}</span>
           </div>
-          {game.phase === "voting" ||
-          game.phase === "car-crash-decision" ||
-          game.phase === "car-crash-skipped" ? (
+          {mode === "preview" ? (
+            <GameTable
+              hostName={hostName}
+              privacyHidden={privacyHidden}
+              seats={game.players.map((player) => ({
+                ...player,
+                current:
+                  player.seat === currentPlayer?.seat ||
+                  game.checkResult?.targetSeat === player.seat,
+                fouls: player.fouls,
+                muted: player.mutePending,
+                nominated: game.nominations.some(
+                  ({ candidateSeat }) => candidateSeat === player.seat,
+                ),
+              }))}
+              center={tableCenter}
+              readOnly
+            />
+          ) : game.phase === "voting" ||
+            game.phase === "voting-cancelled" ||
+            game.phase === "car-crash-decision" ||
+            game.phase === "car-crash-skipped" ? (
             <VotingStage
               game={game}
               hostName={hostName}
               privacyHidden={privacyHidden}
+              onSeatSwipe={revealDisciplineAction}
+              swipeAction={swipeAction}
+              onFoul={foulPlayer}
               onGameChange={onGameChange}
               onEvent={onEvent}
+              onAcceptedEvent={onAcceptedEvent}
               onResolved={(votingGame, seats) => {
                 const afterElimination = seats.reduce(
                   (state, seat) => markPlayerInactive(state, seat, "eliminated"),
@@ -403,13 +555,19 @@ export const GameScreen = ({
               game={game}
               hostName={hostName}
               privacyHidden={privacyHidden}
+              onSeatSwipe={revealDisciplineAction}
+              swipeAction={swipeAction}
               onGameChange={onGameChange}
               onEvent={onEvent}
+              onAcceptedEvent={onAcceptedEvent}
+              onReopenLastAcceptedEvent={onReopenLastAcceptedEvent}
             />
           ) : (
             <GameTable
               hostName={hostName}
               privacyHidden={privacyHidden}
+              onSeatSwipe={revealDisciplineAction}
+              swipeAction={swipeAction}
               seats={game.players.map((player) => ({
                 seat: player.seat,
                 name: player.name,
@@ -428,8 +586,13 @@ export const GameScreen = ({
                   (game.phase === "sheriff-wake" && player.role !== "sheriff"),
                 inactive: game.phase === "car-crash" && !game.carCrashSeats?.includes(player.seat),
                 goodbyeHighlight:
-                  game.goodbyeSeats?.includes(player.seat) ||
+                  (game.phase === "goodbye-speech" && game.goodbyeSeats?.includes(player.seat)) ||
                   (game.phase === "best-move" && game.bestMove?.playerSeat === player.seat),
+                votingHighlight:
+                  game.goodbyeNext === "day" &&
+                  ((game.phase === "best-move" && game.bestMove?.playerSeat === player.seat) ||
+                    (game.phase === "goodbye-speech" &&
+                      game.goodbyeSeats?.includes(player.seat) === true)),
                 current:
                   (player.seat === currentPlayer?.seat &&
                     player.status === "active" &&
@@ -448,29 +611,9 @@ export const GameScreen = ({
                     <button
                       type="button"
                       aria-label={`Foul ${seat.name}`}
-                      onClick={() => {
-                        const next = issueFoul(game, seat.seat);
-                        onGameChange(next);
-                        onEvent("foul.issued", { seat: seat.seat });
-                        if (
-                          next.players.find((player) => player.seat === seat.seat)?.status ===
-                          "red-carded"
-                        ) {
-                          onEvent("player.red-carded", { seat: seat.seat, source: "fourth-foul" });
-                        }
-                      }}
+                      onClick={() => foulPlayer(seat.seat)}
                     >
                       Foul
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={`Red card ${seat.name}`}
-                      onClick={() => {
-                        onGameChange(redCard(game, seat.seat));
-                        onEvent("player.red-carded", { seat: seat.seat });
-                      }}
-                    >
-                      Red
                     </button>
                     <button
                       type="button"
@@ -480,11 +623,22 @@ export const GameScreen = ({
                       }
                       onClick={() => {
                         if (currentPlayer === undefined) return;
-                        onGameChange(nominate(game, currentPlayer.seat, seat.seat));
-                        onEvent("player.nominated", {
-                          nominatorSeat: currentPlayer.seat,
-                          candidateSeat: seat.seat,
-                        });
+                        if (onAcceptedEvent !== undefined) {
+                          onAcceptedEvent({
+                            type: "player.nominated",
+                            payload: {
+                              nominatorSeat: currentPlayer.seat,
+                              candidateSeat: seat.seat,
+                            },
+                            secret: false,
+                          });
+                        } else {
+                          onGameChange(nominate(game, currentPlayer.seat, seat.seat));
+                          onEvent("player.nominated", {
+                            nominatorSeat: currentPlayer.seat,
+                            candidateSeat: seat.seat,
+                          });
+                        }
                       }}
                     >
                       Vote
@@ -494,13 +648,21 @@ export const GameScreen = ({
               }
               seatActionLabel={(seat) =>
                 game.phase === "best-move"
-                  ? game.bestMove?.selectedSeats.includes(seat.seat)
-                    ? `Remove ${seat.name} from Best move`
-                    : `Add ${seat.name} to Best move`
+                  ? seat.status !== "active" || seat.seat === game.bestMove?.playerSeat
+                    ? `Seat ${seat.seat}: ${seat.name}`
+                    : game.bestMove?.selectedSeats.includes(seat.seat)
+                      ? `Remove ${seat.name} from Best move`
+                      : `Add ${seat.name} to Best move`
                   : `Seat ${seat.seat}: ${seat.name}`
+              }
+              seatActionDisabled={(seat) =>
+                game.phase === "best-move" &&
+                (seat.status !== "active" || seat.seat === game.bestMove?.playerSeat)
               }
               onSeatClick={(seat) => {
                 if (game.phase === "best-move") {
+                  const player = game.players.find((candidate) => candidate.seat === seat);
+                  if (player?.status !== "active" || seat === game.bestMove?.playerSeat) return;
                   onGameChange(toggleBestMoveSeat(game, seat));
                 }
               }}
@@ -510,29 +672,47 @@ export const GameScreen = ({
           )}
         </section>
 
-        <aside className="utility-rail">
-          <TimerControls ref={timerRef} />
-          <section className="nomination-panel">
-            <p className="eyebrow">Voting order</p>
-            {votingStageActive ? (
-              <p className="vote-count-summary">
-                {activeVoteCount} active {activeVoteCount === 1 ? "vote" : "votes"}
-              </p>
-            ) : null}
-            {game.nominations.length === 0 ? (
-              <p className="muted">No nominations yet</p>
-            ) : (
-              <ol>
-                {game.nominations.map(({ candidateSeat }) => (
-                  <li key={candidateSeat}>
-                    Seat {candidateSeat}
-                    {votingStageActive ? <span>{votingTotals[candidateSeat] ?? 0}</span> : null}
-                  </li>
-                ))}
-              </ol>
-            )}
-          </section>
-        </aside>
+        {mode === "live" ? (
+          <aside className="utility-rail">
+            <TimerControls />
+            <section className="nomination-panel">
+              <p className="eyebrow">Voting order</p>
+              {votingStageActive ? (
+                <p className="vote-count-summary">
+                  {activeVoteCount} active {activeVoteCount === 1 ? "vote" : "votes"}
+                </p>
+              ) : null}
+              {game.nominations.length === 0 ? (
+                <p className="muted">No nominations yet</p>
+              ) : (
+                <ol>
+                  {game.nominations.map(({ candidateSeat, nominatorSeat }) => {
+                    const candidate = game.players.find(({ seat }) => seat === candidateSeat);
+                    const initiator = game.players.find(({ seat }) => seat === nominatorSeat);
+                    return (
+                      <li key={candidateSeat}>
+                        <div className="nomination-copy">
+                          <strong>
+                            #{candidateSeat} {candidate?.name ?? `Seat ${candidateSeat}`}
+                          </strong>
+                          <span>
+                            Initiated by #{nominatorSeat}{" "}
+                            {initiator?.name ?? `Seat ${nominatorSeat}`}
+                          </span>
+                        </div>
+                        {votingStageActive ? (
+                          <span className="nomination-total">
+                            {votingTotals[candidateSeat] ?? 0}
+                          </span>
+                        ) : null}
+                      </li>
+                    );
+                  })}
+                </ol>
+              )}
+            </section>
+          </aside>
+        ) : null}
       </div>
     </main>
   );

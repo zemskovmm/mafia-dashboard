@@ -3,11 +3,13 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { EventStore } from "./event-store.js";
 import { GameSessionStore } from "./game-session-store.js";
+import { ClubStore, DEFAULT_CLUB_ID } from "./club-store.js";
 
 const databaseUrl =
   process.env.TEST_DATABASE_URL ?? "postgresql://mafia:mafia@127.0.0.1:54329/mafia_test";
 const pool = new Pool({ connectionString: databaseUrl });
 const store = new EventStore(pool);
+const legacyOwnerId = "00000000-0000-4000-8000-000000000001";
 
 beforeAll(async () => {
   await store.initialize();
@@ -184,12 +186,78 @@ describe("PostgreSQL event store", () => {
     ]);
   });
 
+  it("does not serialize the same game UUID across independent clubs", async () => {
+    const club = await new ClubStore(pool).create(legacyOwnerId, {
+      name: `Independent lock ${randomUUID().slice(0, 8)}`,
+      city: "Granada",
+      headerLogo: null,
+      cardLogo: null,
+    });
+    const gameId = randomUUID();
+    const locker = await pool.connect();
+    let local: ReturnType<EventStore["append"]> | undefined;
+    let foreign: ReturnType<EventStore["append"]> | undefined;
+    let foreignOutcome: string | undefined;
+    let localOutcome: string | undefined;
+    try {
+      await locker.query("BEGIN");
+      await locker.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [gameId]);
+      await locker.query("SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2, 0))", [
+        DEFAULT_CLUB_ID,
+        gameId,
+      ]);
+      local = store.append({
+        clubId: DEFAULT_CLUB_ID,
+        gameId,
+        idempotencyKey: "local",
+        type: "game.created",
+        phase: "setup-players",
+        payload: {},
+        secret: false,
+      });
+      foreign = store.append({
+        clubId: club.id,
+        gameId,
+        idempotencyKey: "foreign",
+        type: "game.created",
+        phase: "setup-players",
+        payload: {},
+        secret: false,
+      });
+      foreignOutcome = await Promise.race([
+        foreign.then(() => "completed"),
+        new Promise<string>((resolve) => setTimeout(() => resolve("blocked"), 250)),
+      ]);
+      localOutcome = await Promise.race([
+        local.then(() => "completed"),
+        new Promise<string>((resolve) => setTimeout(() => resolve("blocked"), 50)),
+      ]);
+    } finally {
+      await locker.query("ROLLBACK");
+      locker.release();
+      await Promise.allSettled([
+        ...(local === undefined ? [] : [local]),
+        ...(foreign === undefined ? [] : [foreign]),
+      ]);
+    }
+
+    expect(foreignOutcome).toBe("completed");
+    expect(localOutcome).toBe("blocked");
+    await expect(store.read(gameId, { includeSecrets: true }, club.id)).resolves.toHaveLength(1);
+    await expect(
+      store.read(gameId, { includeSecrets: true }, DEFAULT_CLUB_ID),
+    ).resolves.toHaveLength(1);
+  });
+
   it("rejects an append queued behind an aggregate tombstone", async () => {
     const gameId = randomUUID();
     const locker = await pool.connect();
     try {
       await locker.query("BEGIN");
-      await locker.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [gameId]);
+      await locker.query("SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2, 0))", [
+        DEFAULT_CLUB_ID,
+        gameId,
+      ]);
       const clear = new GameSessionStore(pool).clear(gameId);
       await waitForAdvisoryWaiters(1);
       const append = store.append({

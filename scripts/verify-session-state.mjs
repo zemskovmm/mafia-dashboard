@@ -1,9 +1,97 @@
-import { chromium } from "@playwright/test";
+/* global URL, document, fetch */
+import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
+import { replayGameLog } from "@mafia/game-domain";
+import { chromium, request as playwrightRequest } from "@playwright/test";
 
-const baseUrl = process.env.APP_URL;
-if (!baseUrl) {
+const configuredUrl = process.env.APP_URL;
+if (!configuredUrl) {
   throw new Error("APP_URL is required, for example https://mbp16.tail102fab.ts.net");
 }
+const localHosts = new Set(["127.0.0.1", "localhost", "::1"]);
+const remoteAllowed = process.env.SESSION_VERIFY_ALLOW_REMOTE === "1";
+const configuredExpectedOrigin = process.env.SESSION_VERIFY_EXPECTED_ORIGIN?.trim();
+const expectedRemoteOrigin =
+  configuredExpectedOrigin === undefined ? null : new URL(configuredExpectedOrigin).origin;
+const assertAllowedTarget = (target) => {
+  if (localHosts.has(target.hostname)) return;
+  if (!remoteAllowed) {
+    throw new Error(
+      "Remote session verification is destructive; set SESSION_VERIFY_ALLOW_REMOTE=1 only for an isolated test deployment",
+    );
+  }
+  if (target.protocol !== "https:") throw new Error("Remote session verification requires HTTPS");
+  if (expectedRemoteOrigin === null || target.origin !== expectedRemoteOrigin) {
+    throw new Error("SESSION_VERIFY_EXPECTED_ORIGIN must exactly match every remote origin");
+  }
+};
+const resolveAppUrl = async (value) => {
+  let current = new URL(value);
+  for (let redirect = 0; redirect < 5; redirect += 1) {
+    assertAllowedTarget(current);
+    const response = await fetch(current, {
+      redirect: "manual",
+      headers: { accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" },
+    });
+    await response.body?.cancel();
+    if (response.status < 300 || response.status >= 400) return current;
+    const location = response.headers.get("location");
+    if (location === null) throw new Error("APP_URL returned a redirect without a location");
+    const next = new URL(location, current);
+    if (next.protocol !== "http:" && next.protocol !== "https:") {
+      throw new Error("APP_URL redirected to an unsupported protocol");
+    }
+    if (current.protocol === "https:" && next.protocol !== "https:") {
+      throw new Error("APP_URL redirected from HTTPS to an insecure origin");
+    }
+    current = next;
+  }
+  throw new Error("APP_URL exceeded the redirect limit");
+};
+
+const configuredTargetUrl = new URL(configuredUrl);
+assertAllowedTarget(configuredTargetUrl);
+const configuredHostHeader = process.env.SESSION_VERIFY_HOST_HEADER?.trim();
+if (
+  configuredHostHeader !== undefined &&
+  !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/i.test(configuredHostHeader)
+) {
+  throw new Error("SESSION_VERIFY_HOST_HEADER must be a bare DNS hostname");
+}
+const targetUrl =
+  configuredHostHeader === undefined
+    ? await resolveAppUrl(configuredUrl)
+    : (() => {
+        const localBrowserUrl = new URL(configuredTargetUrl);
+        localBrowserUrl.hostname = configuredHostHeader;
+        return localBrowserUrl;
+      })();
+const apiBaseUrl = configuredTargetUrl.origin;
+const remoteTarget = !localHosts.has(configuredTargetUrl.hostname);
+const authCookie = process.env.SESSION_AUTH_COOKIE?.trim();
+const configuredClubId = process.env.SESSION_CLUB_ID?.trim();
+if (remoteTarget && !configuredClubId) {
+  throw new Error("SESSION_CLUB_ID is required for remote session verification");
+}
+const clubId = configuredClubId || "00000000-0000-4000-8000-000000000101";
+if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(clubId)) {
+  throw new Error("SESSION_CLUB_ID must be a UUID");
+}
+const apiHeaders = { "x-club-id": clubId };
+const browserHeaders = {
+  ...apiHeaders,
+};
+const parsedAuthCookie = (() => {
+  if (authCookie === undefined || authCookie === "") return null;
+  const separator = authCookie.indexOf("=");
+  if (separator <= 0 || separator === authCookie.length - 1) {
+    throw new Error("SESSION_AUTH_COOKIE must use name=value format");
+  }
+  return {
+    name: authCookie.slice(0, separator).trim(),
+    value: authCookie.slice(separator + 1).trim(),
+  };
+})();
 
 const playlist = {
   id: "session-verification-playlist",
@@ -11,20 +99,55 @@ const playlist = {
   itemCount: 2,
   thumbnailUrl: null,
 };
+const runId = randomUUID().slice(0, 12);
 const playerNames = Array.from(
   { length: 11 },
-  (_, index) => `Session Player ${String(index + 1).padStart(2, "0")}`,
+  (_, index) => `Session ${runId} Player ${String(index + 1).padStart(2, "0")}`,
 );
 const screenshotPath = process.env.SESSION_SCREENSHOT ?? "/tmp/mafia-session-restored.png";
-const browser = await chromium.launch({ channel: "chrome", headless: true });
+const browser = await chromium.launch({
+  channel: "chrome",
+  headless: true,
+  ...(configuredHostHeader === undefined
+    ? {}
+    : { args: [`--host-resolver-rules=MAP ${configuredHostHeader} 127.0.0.1`] }),
+});
+const apiContext = await playwrightRequest.newContext({
+  baseURL: apiBaseUrl,
+  extraHTTPHeaders: {
+    ...apiHeaders,
+    ...(parsedAuthCookie === null
+      ? {}
+      : { cookie: `${parsedAuthCookie.name}=${parsedAuthCookie.value}` }),
+  },
+});
+const createdPlayerIds = [];
+const createdPlayers = new Map();
+const createdGameIds = new Set();
+const cleanupErrors = [];
 
 const createContext = async () => {
-  const context = await browser.newContext({ viewport: { width: 1180, height: 820 } });
+  const context = await browser.newContext({
+    viewport: { width: 1180, height: 820 },
+    extraHTTPHeaders: browserHeaders,
+  });
+  if (parsedAuthCookie !== null) {
+    await context.addCookies([
+      {
+        ...parsedAuthCookie,
+        url: targetUrl.origin,
+        httpOnly: true,
+        secure: targetUrl.protocol === "https:",
+        sameSite: "Lax",
+      },
+    ]);
+  }
   await context.addInitScript(() => {
     class FakeYouTubePlayer {
       constructor(_elementId, options) {
         this.options = options;
         this.volume = 65;
+        this.iframe = document.createElement("iframe");
         setTimeout(() => options.events?.onReady?.({ target: this }), 0);
       }
       playVideo() {
@@ -33,18 +156,42 @@ const createContext = async () => {
       pauseVideo() {
         this.options.events?.onStateChange?.({ target: this, data: 2 });
       }
+      cuePlaylist(_videoIds, index = 0) {
+        this.playlistIndex = index;
+        this.options.events?.onStateChange?.({ target: this, data: 5 });
+      }
+      loadPlaylist(_videoIds, index = 0) {
+        this.playlistIndex = index;
+        this.options.events?.onStateChange?.({ target: this, data: 1 });
+      }
       setVolume(volume) {
         this.volume = volume;
       }
       getVolume() {
         return this.volume;
       }
+      getIframe() {
+        return this.iframe;
+      }
+      getPlaylistIndex() {
+        return this.playlistIndex ?? 0;
+      }
+      getCurrentTime() {
+        return 0;
+      }
       destroy() {}
     }
     window.YT = {
       Player: FakeYouTubePlayer,
-      PlayerState: { PLAYING: 1, PAUSED: 2, ENDED: 0, BUFFERING: 3 },
+      PlayerState: { PLAYING: 1, PAUSED: 2, ENDED: 0, BUFFERING: 3, CUED: 5 },
     };
+  });
+  await context.route("**/api/**", async (route) => {
+    if (new URL(route.request().url()).origin !== targetUrl.origin) {
+      await route.abort("blockedbyclient");
+      return;
+    }
+    await route.continue();
   });
   await context.route("**/api/music/oauth/status", async (route) => {
     await route.fulfill({
@@ -62,14 +209,87 @@ const createContext = async () => {
       body: JSON.stringify({ playlists: [playlist] }),
     });
   });
+  await context.route("**/api/music/playlists/*/items", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        items: [
+          {
+            videoId: "session-track-1",
+            title: "Session verification track",
+            channelTitle: "Session verification",
+            thumbnailUrl: null,
+            position: 0,
+          },
+        ],
+      }),
+    });
+  });
+  await context.route("**/api/game-sessions/**", async (route) => {
+    const request = route.request();
+    const requestUrl = new URL(request.url());
+    if (requestUrl.origin !== targetUrl.origin) {
+      await route.abort("blockedbyclient");
+      return;
+    }
+    const match = requestUrl.pathname.match(/^\/api\/game-sessions\/([^/]+)(?:\/|$)/);
+    const matchedGameId = match === null ? null : decodeURIComponent(match[1]);
+    if (
+      request.method() === "PATCH" ||
+      (request.method() === "DELETE" &&
+        (matchedGameId === null || !createdGameIds.has(matchedGameId)))
+    ) {
+      cleanupErrors.push(new Error("Refusing an unowned or unsupported game-session mutation"));
+      await route.abort("blockedbyclient");
+      return;
+    }
+    if (
+      matchedGameId !== null &&
+      (request.method() === "PUT" || request.method() === "POST") &&
+      !createdGameIds.has(matchedGameId)
+    ) {
+      const gameId = matchedGameId;
+      const existing = await apiContext.get(`/api/game-sessions/${gameId}`, { maxRedirects: 0 });
+      if (existing.status() !== 404) {
+        cleanupErrors.push(new Error("Refusing to mutate a pre-existing game session ID"));
+        await route.abort("blockedbyclient");
+        return;
+      }
+      createdGameIds.add(gameId);
+    }
+    await route.continue();
+  });
   return context;
 };
 
+const assertPageTarget = (page) => {
+  const actual = new URL(page.url());
+  if (actual.origin !== targetUrl.origin || (remoteTarget && actual.protocol !== "https:")) {
+    throw new Error(`Browser navigation left the verified application origin: ${actual.origin}`);
+  }
+};
+
+let verificationError = null;
 try {
+  const authResponse = await apiContext.get("/api/auth/session", { maxRedirects: 0 });
+  if (!authResponse.ok()) {
+    throw new Error(`Authentication preflight failed: HTTP ${authResponse.status()}`);
+  }
+  const authSession = await authResponse.json();
+  if (authSession.user == null) {
+    throw new Error("SESSION_AUTH_COOKIE must contain an authenticated test-session cookie");
+  }
+  const clubsResponse = await apiContext.get("/api/clubs", { maxRedirects: 0 });
+  if (!clubsResponse.ok()) throw new Error("Club identity preflight failed");
+  const selectedClub = (await clubsResponse.json()).clubs?.find(({ id }) => id === clubId);
+  if (selectedClub === undefined) {
+    throw new Error("SESSION_CLUB_ID is not an accessible club for the authenticated user");
+  }
   const firstContext = await createContext();
   const players = [];
   for (const nickname of playerNames) {
-    const response = await firstContext.request.post(`${baseUrl}/api/players`, {
+    const response = await apiContext.post(`${apiBaseUrl}/api/players`, {
+      maxRedirects: 0,
       data: {
         nickname,
         consent: false,
@@ -78,85 +298,217 @@ try {
         email: null,
       },
     });
-    if (!response.ok()) throw new Error(`Unable to create ${nickname}`);
+    if (!response.ok()) {
+      throw new Error(`Unable to create a verification player: HTTP ${response.status()}`);
+    }
     const { player } = await response.json();
+    if (player.nickname !== nickname) {
+      throw new Error("Verification player response did not match the requested nickname");
+    }
     players.push(player);
+    createdPlayerIds.push(player.id);
+    createdPlayers.set(player.id, nickname);
   }
 
   const firstPage = await firstContext.newPage();
-  await firstPage.goto(baseUrl, { waitUntil: "networkidle" });
-  await firstPage.getByLabel("Host player").selectOption(players[10].id);
-  const playerSelectors = firstPage.locator(".player-input-grid select");
-  for (let index = 0; index < 10; index += 1) {
-    await playerSelectors.nth(index).selectOption(players[index].id);
-  }
-  await firstPage.getByRole("button", { name: "Continue to music" }).click();
-  await firstPage.getByLabel("YouTube Music playlist").selectOption(playlist.id);
-  await firstPage.getByText("Ready · paused").waitFor();
-  await firstPage.getByRole("button", { name: "Start · fade in" }).click();
-  await firstPage.getByText("Playing", { exact: true }).waitFor();
-  await firstPage.getByRole("button", { name: "Continue to role draw" }).click();
-  for (const player of players.slice(0, 10)) {
+  let reportSessionFailure;
+  const firstSessionFailure = new Promise((resolve) => {
+    reportSessionFailure = resolve;
+  });
+  let sessionFailureReported = false;
+  const reportFailure = (error) => {
+    if (sessionFailureReported) return;
+    sessionFailureReported = true;
+    reportSessionFailure(error instanceof Error ? error : new Error(String(error)));
+  };
+  firstPage.on("response", (response) => {
+    void (async () => {
+      const responseUrl = new URL(response.url());
+      const sessionMatch = responseUrl.pathname.match(/^\/api\/game-sessions\/([^/]+)(?:\/|$)/);
+      if (sessionMatch === null || !createdGameIds.has(decodeURIComponent(sessionMatch[1]))) return;
+      if (response.ok()) return;
+      reportFailure(
+        new Error(
+          `Game-session request failed: HTTP ${response.status()} ${response.request().method()} ${responseUrl.pathname}`,
+        ),
+      );
+    })().catch(reportFailure);
+  });
+  const waitForSaved = async () => {
+    const result = await Promise.race([
+      firstPage
+        .getByRole("status", { name: "Save status: saved" })
+        .waitFor()
+        .then(() => null),
+      firstSessionFailure,
+    ]);
+    if (result instanceof Error) throw result;
+  };
+  await firstPage.goto(targetUrl.href, { waitUntil: "networkidle" });
+  assertPageTarget(firstPage);
+  await firstPage
+    .getByRole("button", { name: `Open ${selectedClub.name} in ${selectedClub.city}`, exact: true })
+    .click();
+  await firstPage.getByRole("button", { name: "Select available players" }).click();
+  for (const player of players) {
     await firstPage
-      .getByRole("button", { name: `Draw role for ${player.nickname}`, exact: true })
+      .getByRole("button", { name: `Mark ${player.nickname} available`, exact: true })
       .click();
   }
-  await firstPage.getByRole("button", { name: "Begin Mafia negotiation" }).click();
+  await firstPage.getByRole("button", { name: "Close available players" }).click();
+  await firstPage.getByRole("combobox", { name: "Host player" }).click();
+  await firstPage.getByRole("option", { name: players[10].nickname, exact: true }).click();
+  await firstPage.getByRole("button", { name: "Assign players" }).click();
+  const startGame = firstPage.getByRole("button", { name: "Start game" });
+  await startGame.waitFor();
+  await firstPage.getByRole("button", { name: "Open developer menu" }).click();
+  await firstPage.getByRole("button", { name: "Music player setup" }).click();
+  await firstPage.getByLabel("YouTube Music playlist").selectOption(playlist.id);
+  await firstPage.getByRole("button", { name: "Close developer menu" }).click();
+  await startGame.click();
+  for (let roleIndex = 0; roleIndex < 10; roleIndex += 1) {
+    await firstPage
+      .getByRole("button", { name: /^Draw role for / })
+      .first()
+      .click();
+  }
+  await firstPage.getByRole("button", { name: "Begin Mafia planning stage" }).click();
   await firstPage.getByRole("button", { name: "Continue to Sheriff wake-up" }).click();
   await firstPage.getByRole("button", { name: "Begin day one" }).click();
-  await firstPage.getByText("Saved", { exact: true }).waitFor();
+  await waitForSaved();
   const turnSave = firstPage.waitForResponse((response) => {
     if (
-      response.request().method() !== "PUT" ||
-      !new globalThis.URL(response.url()).pathname.startsWith("/api/game-sessions/")
+      response.request().method() !== "POST" ||
+      !new globalThis.URL(response.url()).pathname.endsWith("/events")
     ) {
       return false;
     }
     const request = response.request().postDataJSON();
-    return request.state?.log?.at(-1)?.type === "turn.completed";
+    return request.event?.type === "turn.completed";
   });
   await firstPage.getByRole("button", { name: "Next player" }).click();
   if (!(await turnSave).ok()) throw new Error("The state-changing turn was not persisted");
-  await firstPage.getByText("Saved", { exact: true }).waitFor();
+  await waitForSaved();
 
-  const activeResponse = await firstContext.request.get(`${baseUrl}/api/game-sessions`);
+  const activeResponse = await apiContext.get(`${apiBaseUrl}/api/game-sessions`, {
+    maxRedirects: 0,
+  });
   if (!activeResponse.ok()) throw new Error("Active session listing failed");
   const { sessions } = await activeResponse.json();
-  if (!Array.isArray(sessions) || sessions.length !== 1) {
-    throw new Error("Expected exactly one active server session before restart");
+  const verificationSessions = Array.isArray(sessions)
+    ? sessions.filter(({ hostName }) => hostName === players[10].nickname)
+    : [];
+  if (verificationSessions.length !== 1) {
+    throw new Error("Expected exactly one run-owned active server session before restart");
   }
-  const gameId = sessions[0].gameId;
-  const storedResponse = await firstContext.request.get(`${baseUrl}/api/game-sessions/${gameId}`);
+  const gameId = verificationSessions[0].gameId;
+  const gameName = verificationSessions[0].name;
+  const storedResponse = await apiContext.get(`${apiBaseUrl}/api/game-sessions/${gameId}`, {
+    maxRedirects: 0,
+  });
+  if (!storedResponse.ok()) throw new Error("Stored session readback failed");
   const { session: storedSession } = await storedResponse.json();
+  let authoritativeSession = storedSession;
+  const storedEvents = Array.isArray(storedSession.state.events) ? storedSession.state.events : [];
+  const eventsById = new Map(storedEvents.map((event) => [event.id, event]));
+  const activeEventIds = new Set();
+  let activeEventId = storedSession.state.headEventId;
+  let priorSequence = Number.POSITIVE_INFINITY;
+  while (activeEventId !== null) {
+    if (activeEventIds.has(activeEventId)) throw new Error("Stored replay chain contains a cycle");
+    activeEventIds.add(activeEventId);
+    const event = eventsById.get(activeEventId);
+    if (event === undefined || event.gameId !== gameId || event.sequence >= priorSequence) {
+      throw new Error("Stored replay chain has an invalid parent or sequence");
+    }
+    if (!/^sha256:[0-9a-f]{64}$/.test(event.stateHashAfter)) {
+      throw new Error("Stored replay chain has an invalid state hash");
+    }
+    priorSequence = event.sequence;
+    activeEventId = event.parentEventId;
+  }
+  const activeEvents = storedEvents.filter(({ id }) => activeEventIds.has(id));
+  const replayed = replayGameLog(storedSession.state.initialGame, activeEvents);
   if (
     storedSession.state.hostPlayerId !== players[10].id ||
     storedSession.state.hostName !== players[10].nickname ||
     storedSession.state.playlistId !== playlist.id ||
     storedSession.state.game?.phase !== "day" ||
     storedSession.state.game?.currentTurnIndex !== 1 ||
-    storedSession.state.undoHistory.length !== 1 ||
-    !storedSession.state.log.some(({ type }) => type === "turn.completed")
+    storedSession.state.undoHistory.length !== 0 ||
+    storedSession.state.initialGame?.replayVersion !== 1 ||
+    activeEvents.length === 0 ||
+    !activeEvents.some(({ type }) => type === "game.started" || type === "game.checkpointed") ||
+    !activeEvents.some(({ type }) => type === "turn.completed") ||
+    !isDeepStrictEqual(replayed.game, storedSession.state.game)
   ) {
     throw new Error("The authoritative server session is not fully restorable");
+  }
+  const acceptedTurn = activeEvents.find(({ type }) => type === "turn.completed");
+  if (acceptedTurn?.parentEventId == null) throw new Error("Reset probe has no parent event");
+  const resetResponse = await apiContext.post(`${apiBaseUrl}/api/game-sessions/${gameId}/head`, {
+    maxRedirects: 0,
+    data: {
+      mutationId: randomUUID(),
+      baseRevision: storedSession.revision,
+      targetEventId: acceptedTurn.parentEventId,
+      reason: "reset",
+    },
+  });
+  if (!resetResponse.ok()) throw new Error("Authoritative reset probe failed");
+  const resetSession = await resetResponse.json();
+  if (
+    resetSession.state.headEventId !== acceptedTurn.parentEventId ||
+    resetSession.state.resetReturnEventId !== acceptedTurn.id ||
+    resetSession.state.game?.currentTurnIndex !== 0 ||
+    resetSession.results !== null ||
+    resetSession.status !== "active"
+  ) {
+    throw new Error("Authoritative reset did not retract exactly one accepted event");
+  }
+  const restoreResponse = await apiContext.post(`${apiBaseUrl}/api/game-sessions/${gameId}/head`, {
+    maxRedirects: 0,
+    data: {
+      mutationId: randomUUID(),
+      baseRevision: resetSession.revision,
+      targetEventId: acceptedTurn.id,
+      reason: "restore-reset",
+    },
+  });
+  if (!restoreResponse.ok()) throw new Error("Authoritative reset recovery failed");
+  authoritativeSession = await restoreResponse.json();
+  if (
+    authoritativeSession.state.headEventId !== acceptedTurn.id ||
+    authoritativeSession.state.resetReturnEventId !== null ||
+    authoritativeSession.state.game?.currentTurnIndex !== 1 ||
+    authoritativeSession.results !== null ||
+    authoritativeSession.status !== "active"
+  ) {
+    throw new Error("Authoritative reset recovery did not restore the active branch");
   }
   await firstContext.close();
 
   const restartedContext = await createContext();
   const restartedPage = await restartedContext.newPage();
-  await restartedPage.goto(baseUrl, { waitUntil: "networkidle" });
-  await restartedPage.getByRole("button", { name: "Resume Mafia table" }).click();
+  await restartedPage.goto(targetUrl.href, { waitUntil: "networkidle" });
+  assertPageTarget(restartedPage);
+  await restartedPage
+    .getByRole("button", { name: `Open ${selectedClub.name} in ${selectedClub.city}`, exact: true })
+    .click();
+  await restartedPage.getByRole("button", { name: "Open developer menu" }).click();
+  await restartedPage.getByRole("button", { name: `Resume ${gameName}` }).click();
   await restartedPage.getByRole("heading", { name: "Day 1" }).waitFor();
   await restartedPage.getByRole("group", { name: `Host: ${players[10].nickname}` }).waitFor();
   await restartedPage.getByRole("button", { name: /undo last action.*1 available/i }).waitFor();
-  await restartedPage.locator(".game-log-drawer summary").click();
+  await restartedPage.getByRole("button", { name: "Open game log" }).click();
   await restartedPage.getByText("turn.completed", { exact: true }).waitFor();
   const restoredEnvelope = await restartedPage.evaluate(() => {
-    const raw = window.sessionStorage.getItem("mafia-dashboard.game-session.v3");
+    const raw = window.sessionStorage.getItem("mafia-dashboard.game-session.v4");
     return raw === null ? null : JSON.parse(raw);
   });
   if (
     restoredEnvelope?.gameId !== gameId ||
-    restoredEnvelope?.revision !== storedSession.revision ||
+    restoredEnvelope?.revision !== authoritativeSession.revision ||
     restoredEnvelope?.outbox?.length !== 0
   ) {
     throw new Error("Resume did not reset durable client metadata to the server revision");
@@ -164,22 +516,129 @@ try {
   await restartedPage.screenshot({ path: screenshotPath, fullPage: true });
 
   restartedPage.once("dialog", (dialog) => dialog.accept());
+  await restartedPage.getByRole("button", { name: "Open developer menu" }).click();
   await restartedPage.getByRole("button", { name: "Clear game state" }).click();
   await restartedPage.getByRole("heading", { name: "Select 10 players + host" }).waitFor();
-  const afterClear = await restartedContext.request.get(`${baseUrl}/api/game-sessions`);
+  const afterClear = await apiContext.get(`${apiBaseUrl}/api/game-sessions`, {
+    maxRedirects: 0,
+  });
   const clearedSessions = (await afterClear.json()).sessions;
-  if (!Array.isArray(clearedSessions) || clearedSessions.length !== 0) {
+  if (
+    !Array.isArray(clearedSessions) ||
+    clearedSessions.some(({ hostName }) => hostName === players[10].nickname)
+  ) {
     throw new Error("Cleared session remains active on the server");
   }
-  const tombstoned = await restartedContext.request.get(`${baseUrl}/api/game-sessions/${gameId}`);
+  const tombstoned = await apiContext.get(`${apiBaseUrl}/api/game-sessions/${gameId}`, {
+    maxRedirects: 0,
+  });
   if (tombstoned.status() !== 404) throw new Error("Cleared session remains server-restorable");
   const remainingEnvelope = await restartedPage.evaluate(() =>
-    window.sessionStorage.getItem("mafia-dashboard.game-session.v3"),
+    window.sessionStorage.getItem("mafia-dashboard.game-session.v4"),
   );
   if (remainingEnvelope !== null) throw new Error("Cleared session remains in the client outbox");
   await restartedContext.close();
-
-  console.log(`Authoritative session restart verification: PASS (${screenshotPath})`);
+} catch (error) {
+  verificationError = error instanceof Error ? error : new Error(String(error));
 } finally {
-  await browser.close();
+  const cleanupAttempt = async (action) => {
+    try {
+      await action();
+    } catch (error) {
+      cleanupErrors.push(error instanceof Error ? error : new Error(String(error)));
+    }
+  };
+  let listedPlayers = [];
+  await cleanupAttempt(async () => {
+    const playerList = await apiContext.get("/api/players", { maxRedirects: 0 });
+    if (!playerList.ok()) {
+      throw new Error(`Unable to inspect verification player cleanup: HTTP ${playerList.status()}`);
+    }
+    listedPlayers = (await playerList.json()).players;
+    if (!Array.isArray(listedPlayers)) throw new Error("Player cleanup listing is malformed");
+    for (const player of listedPlayers) {
+      if (playerNames.includes(player.nickname)) createdPlayers.set(player.id, player.nickname);
+    }
+  });
+  for (const path of ["/api/game-sessions", "/api/game-sessions?status=completed"]) {
+    await cleanupAttempt(async () => {
+      const response = await apiContext.get(path, { maxRedirects: 0 });
+      if (!response.ok())
+        throw new Error(`Unable to discover verifier sessions: HTTP ${response.status()}`);
+      const sessions = (await response.json()).sessions;
+      if (!Array.isArray(sessions)) throw new Error("Session cleanup listing is malformed");
+      for (const session of sessions) {
+        if (session.hostName === playerNames[10]) createdGameIds.add(session.gameId);
+      }
+    });
+  }
+  for (const gameId of createdGameIds) {
+    await cleanupAttempt(async () => {
+      const stored = await apiContext.get(`/api/game-sessions/${gameId}`, { maxRedirects: 0 });
+      if (stored.status() === 404) return;
+      if (!stored.ok()) {
+        throw new Error(`Unable to inspect verification session cleanup: HTTP ${stored.status()}`);
+      }
+      const { session } = await stored.json();
+      const statePlayerIds = [
+        ...(session.state?.setup?.players ?? []),
+        ...(session.state?.game?.players ?? []),
+        ...(session.state?.initialGame?.game?.players ?? []),
+        ...(session.state?.hostPlayerId == null ? [] : [{ id: session.state.hostPlayerId }]),
+      ].map(({ id }) => id);
+      const ownedPlayerIds = new Set(statePlayerIds);
+      if (
+        session.state?.hostName !== playerNames[10] ||
+        ownedPlayerIds.size !== playerNames.length ||
+        [...ownedPlayerIds].some((id) => !createdPlayers.has(id))
+      ) {
+        throw new Error("Refusing to clean up a session not owned by this verifier run");
+      }
+      const response = await apiContext.delete(
+        `/api/game-sessions/${gameId}?expectedRevision=${session.revision}`,
+        { maxRedirects: 0 },
+      );
+      if (!response.ok() && response.status() !== 404) {
+        throw new Error(`Unable to clean up a verification session: HTTP ${response.status()}`);
+      }
+      const readback = await apiContext.get(`/api/game-sessions/${gameId}`, { maxRedirects: 0 });
+      if (readback.status() !== 404) {
+        throw new Error("Verifier-owned session remains after cleanup");
+      }
+    });
+  }
+  for (const [playerId, expectedNickname] of [...createdPlayers].reverse()) {
+    await cleanupAttempt(async () => {
+      const storedPlayer = listedPlayers.find(({ id }) => id === playerId);
+      if (storedPlayer === undefined) return;
+      if (storedPlayer.nickname !== expectedNickname) {
+        throw new Error("Refusing to clean up a player not owned by this verifier run");
+      }
+      const response = await apiContext.delete(`/api/players/${playerId}`, { maxRedirects: 0 });
+      if (!response.ok() && response.status() !== 404) {
+        throw new Error(`Unable to clean up a verification player: HTTP ${response.status()}`);
+      }
+    });
+  }
+  await cleanupAttempt(async () => {
+    const readback = await apiContext.get("/api/players", { maxRedirects: 0 });
+    if (!readback.ok()) throw new Error("Unable to verify player cleanup");
+    const remaining = (await readback.json()).players;
+    if (
+      !Array.isArray(remaining) ||
+      remaining.some(
+        ({ id, nickname }) => createdPlayerIds.includes(id) || playerNames.includes(nickname),
+      )
+    ) {
+      throw new Error("Verifier-owned players remain after cleanup");
+    }
+  });
+  await cleanupAttempt(() => apiContext.dispose());
+  await cleanupAttempt(() => browser.close());
 }
+
+const failures = [...(verificationError === null ? [] : [verificationError]), ...cleanupErrors];
+if (failures.length > 0) {
+  throw new AggregateError(failures, "Session verification or cleanup failed");
+}
+console.log(`Authoritative session restart verification: PASS (${screenshotPath})`);

@@ -1,3 +1,5 @@
+import type { GameLogEntry, InitialGameBaseline } from "@mafia/game-domain";
+
 interface PlayerStatistics {
   readonly hostedGames: number;
   readonly gamesPlayed: number;
@@ -97,6 +99,11 @@ export interface GameSessionState {
   readonly playlistId: string;
   readonly log: readonly unknown[];
   readonly undoHistory: readonly unknown[];
+  readonly initialGame?: InitialGameBaseline | null;
+  readonly events?: readonly GameLogEntry[];
+  readonly headEventId?: string | null;
+  readonly resetReturnEventId?: string | null;
+  readonly legacyLog?: readonly unknown[];
 }
 
 export interface GameSessionMutation {
@@ -105,6 +112,54 @@ export interface GameSessionMutation {
   readonly baseRevision: number;
   readonly state: GameSessionState;
   readonly results: FinalGameResults | null;
+}
+
+export interface SessionMetadata {
+  readonly setup: unknown | null;
+  readonly hostPlayerId: string | null;
+  readonly hostName: string | null;
+  readonly playlistId: string;
+  readonly legacyLog: readonly unknown[];
+}
+
+interface GameSessionOperationBase {
+  readonly name: string;
+  readonly mutationId: string;
+  readonly baseRevision: number;
+}
+
+export type GameSessionOperation =
+  | (GameSessionOperationBase & {
+      readonly kind: "metadata";
+      readonly metadata: SessionMetadata;
+    })
+  | (GameSessionOperationBase & { readonly kind: "normalize" })
+  | (GameSessionOperationBase & {
+      readonly kind: "start";
+      readonly baseline: InitialGameBaseline;
+      readonly event: GameLogEntry;
+    })
+  | (GameSessionOperationBase & {
+      readonly kind: "append-event";
+      readonly event: GameLogEntry;
+    })
+  | (GameSessionOperationBase & {
+      readonly kind: "move-head";
+      readonly targetEventId: string;
+      readonly reason: "undo" | "reset" | "restore-reset";
+    })
+  | (GameSessionOperationBase & {
+      readonly kind: "complete";
+      readonly results: FinalGameResults;
+    });
+
+export interface GameSessionOperationResponse {
+  readonly revision: number;
+  readonly duplicate: boolean;
+  readonly name?: string;
+  readonly gameId?: string;
+  readonly state?: GameSessionState;
+  readonly results?: FinalGameResults | null;
 }
 
 export interface ActiveGameSessionSummary {
@@ -126,6 +181,30 @@ export interface RemoteGameSession {
   readonly updatedAt: string;
   readonly state: GameSessionState;
   readonly results: FinalGameResults | null;
+}
+
+export interface CompletedGameSessionSummary {
+  readonly gameId: string;
+  readonly name: string;
+  readonly revision: number;
+  readonly hostName: string | null;
+  readonly winner: "red" | "black";
+  readonly playedAt: string;
+  readonly day: number;
+  readonly eventCount: number;
+  readonly updatedAt: string;
+}
+
+export interface GameEventRecord {
+  readonly id: string;
+  readonly gameId: string;
+  readonly sequence: number;
+  readonly parentEventId?: string | null;
+  readonly type: string;
+  readonly phase: string;
+  readonly payload: Readonly<Record<string, unknown>>;
+  readonly secret: boolean;
+  readonly createdAt: string;
 }
 
 export interface MusicAccountStatus {
@@ -304,6 +383,78 @@ export const saveGameSession = async (
   return (await response.json()) as RemoteGameSession;
 };
 
+export const saveGameSessionOperation = async (
+  gameId: string,
+  operation: GameSessionOperation,
+  clubId?: string,
+): Promise<GameSessionOperationResponse> => {
+  const request = (() => {
+    const base = {
+      mutationId: operation.mutationId,
+      baseRevision: operation.baseRevision,
+    };
+    switch (operation.kind) {
+      case "metadata":
+        return {
+          url: `/api/game-sessions/${gameId}`,
+          method: "PUT",
+          body: {
+            name: operation.name,
+            ...base,
+            state: {
+              setup: operation.metadata.setup,
+              game: null,
+              hostPlayerId: operation.metadata.hostPlayerId,
+              hostName: operation.metadata.hostName,
+              playlistId: operation.metadata.playlistId,
+              log: operation.metadata.legacyLog,
+              undoHistory: [],
+              legacyLog: operation.metadata.legacyLog,
+            },
+            results: null,
+          },
+        } as const;
+      case "normalize":
+        return {
+          url: `/api/game-sessions/${gameId}/normalize`,
+          method: "POST",
+          body: base,
+        } as const;
+      case "start":
+        return {
+          url: `/api/game-sessions/${gameId}/start`,
+          method: "POST",
+          body: { ...base, initialGame: operation.baseline, event: operation.event },
+        } as const;
+      case "append-event":
+        return {
+          url: `/api/game-sessions/${gameId}/events`,
+          method: "POST",
+          body: { ...base, event: operation.event },
+        } as const;
+      case "move-head":
+        return {
+          url: `/api/game-sessions/${gameId}/head`,
+          method: "POST",
+          body: { ...base, targetEventId: operation.targetEventId, reason: operation.reason },
+        } as const;
+      case "complete":
+        return {
+          url: `/api/game-sessions/${gameId}/complete`,
+          method: "POST",
+          body: { ...base, results: operation.results },
+        } as const;
+    }
+  })();
+  const response = await fetch(request.url, {
+    method: request.method,
+    headers: clubHeaders(clubId, true),
+    body: JSON.stringify(request.body),
+  });
+  if (!response.ok) return throwApiError(response, "Unable to save the game session operation");
+  return (await response.json()) as GameSessionOperationResponse;
+};
+
 export const listActiveGameSessions = async (
   clubId?: string,
 ): Promise<readonly ActiveGameSessionSummary[]> => {
@@ -311,6 +462,29 @@ export const listActiveGameSessions = async (
   if (!response.ok) return throwApiError(response, "Unable to load active game sessions");
   const body = (await response.json()) as { sessions: readonly ActiveGameSessionSummary[] };
   return body.sessions;
+};
+
+export const listCompletedGameSessions = async (
+  clubId?: string,
+): Promise<readonly CompletedGameSessionSummary[]> => {
+  const response = await fetch("/api/game-sessions?status=completed", {
+    headers: clubHeaders(clubId),
+  });
+  if (!response.ok) return throwApiError(response, "Unable to load completed game sessions");
+  return ((await response.json()) as { sessions: readonly CompletedGameSessionSummary[] }).sessions;
+};
+
+export const getGameEvents = async (
+  gameId: string,
+  clubId?: string,
+  visibility: "host" | "public" = "host",
+): Promise<readonly GameEventRecord[]> => {
+  const response = await fetch(
+    `/api/games/${gameId}/events?visibility=${encodeURIComponent(visibility)}`,
+    { headers: clubHeaders(clubId) },
+  );
+  if (!response.ok) return throwApiError(response, "Unable to load the game event history");
+  return ((await response.json()) as { events: readonly GameEventRecord[] }).events;
 };
 
 export const getGameSession = async (

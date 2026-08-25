@@ -2,26 +2,42 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import userEvent from "@testing-library/user-event";
 import { forwardRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { GameState } from "@mafia/game-domain";
+import {
+  createGameLogEntry,
+  type CanonicalGameEventDraft,
+  type GameState,
+} from "@mafia/game-domain";
 import type { Club, PlayerProfile, RemoteGameSession } from "./api/client.js";
 import { App as WelcomeApp, ClubWorkspace } from "./App.js";
 
-const api = vi.hoisted(() => ({
-  clearAllData: vi.fn(),
-  clearGameSession: vi.fn(),
-  createPlayer: vi.fn(),
-  deletePlayer: vi.fn(),
-  getGameSession: vi.fn(),
-  listActiveGameSessions: vi.fn(),
-  listPlayers: vi.fn(),
-  saveGameSession: vi.fn(),
-  updatePlayer: vi.fn(),
-  getAuthSession: vi.fn(),
-  signOut: vi.fn(),
-  listClubs: vi.fn(),
-  createClub: vi.fn(),
-  deleteClub: vi.fn(),
-  updateClub: vi.fn(),
+const api = vi.hoisted(() => {
+  const saveGameSession = vi.fn();
+  return {
+    clearAllData: vi.fn(),
+    clearGameSession: vi.fn(),
+    createPlayer: vi.fn(),
+    deletePlayer: vi.fn(),
+    getGameSession: vi.fn(),
+    listActiveGameSessions: vi.fn(),
+    listCompletedGameSessions: vi.fn(),
+    listPlayers: vi.fn(),
+    saveGameSession,
+    saveGameSessionOperation: saveGameSession,
+    updatePlayer: vi.fn(),
+    getAuthSession: vi.fn(),
+    signOut: vi.fn(),
+    listClubs: vi.fn(),
+    createClub: vi.fn(),
+    deleteClub: vi.fn(),
+    updateClub: vi.fn(),
+  };
+});
+
+const gameScreenHarness = vi.hoisted(() => ({
+  previewGame: null as GameState | null,
+  previewOnGameChange: null as ((game: GameState) => void) | null,
+  liveGame: null as GameState | null,
+  liveOnGameChange: null as ((game: GameState) => void) | null,
 }));
 
 const hostPlayerId = "00000000-0000-4000-8000-000000000011";
@@ -44,8 +60,8 @@ const App = () => (
   />
 );
 const assignedGame = {
-  phase: "mafia-planning",
-  day: 0,
+  phase: "day",
+  day: 1,
   winner: null,
   players: Array.from({ length: 10 }, (_, index) => ({
     id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
@@ -194,7 +210,13 @@ vi.mock("./features/game/GameScreen.js", () => ({
     hostName,
     onGameChange,
     onEvent,
+    onAcceptedEvent,
+    mode,
+    previewSequence,
+    onExitPreview,
+    onResetPreview,
     privacyHidden,
+    dayNightIndicatorVisible,
     onFinishGame,
     finishGameState,
   }: {
@@ -202,53 +224,114 @@ vi.mock("./features/game/GameScreen.js", () => ({
     hostName: string;
     onGameChange: (game: GameState) => void;
     onEvent: (type: string, payload: Record<string, unknown>) => void;
+    onAcceptedEvent?: (event: CanonicalGameEventDraft) => void;
+    mode?: "live" | "preview";
+    previewSequence?: number;
+    onExitPreview?: () => void;
+    onResetPreview?: () => void;
     privacyHidden: boolean;
+    dayNightIndicatorVisible: boolean;
     onFinishGame: () => void;
     finishGameState: "ready" | "saving" | "saved" | "error";
-  }) => (
-    <main>
-      <h1>Live test game</h1>
-      <p>Host: {hostName}</p>
-      <p>Game day {game.day}</p>
-      <p>Game turn {game.currentTurnIndex}</p>
-      <p>Private info {privacyHidden ? "hidden" : "visible"}</p>
-      <button
-        type="button"
-        onClick={() => {
-          const nextTurn = game.currentTurnIndex + 1;
-          onGameChange({ ...game, currentTurnIndex: nextTurn });
-          onEvent("turn.completed", { turn: nextTurn });
-        }}
-      >
-        Record game action
-      </button>
-      <button
-        type="button"
-        onClick={() => {
-          const nextDay = game.day + 1;
-          onGameChange({ ...game, day: nextDay });
-          onEvent("day.started", { day: nextDay });
-        }}
-      >
-        Start new day
-      </button>
-      <button
-        type="button"
-        onClick={() => onGameChange({ ...game, phase: "finished", winner: "red" })}
-      >
-        Finish test game
-      </button>
-      {game.phase === "finished" ? (
-        <button type="button" disabled={finishGameState === "saved"} onClick={onFinishGame}>
-          {finishGameState === "saved" ? "Game safely saved" : "Finish the game"}
+  }) => {
+    if (mode === "preview") {
+      gameScreenHarness.previewGame = game;
+      gameScreenHarness.previewOnGameChange = onGameChange;
+    } else {
+      gameScreenHarness.liveGame = game;
+      gameScreenHarness.liveOnGameChange = onGameChange;
+    }
+    return mode === "preview" ? (
+      <main>
+        <h1>Preview game state</h1>
+        <p>Preview log {previewSequence}</p>
+        <button type="button" onClick={onExitPreview}>
+          Exit preview
         </button>
-      ) : null}
-    </main>
-  ),
+        <button type="button" onClick={onResetPreview}>
+          Reset game to this state
+        </button>
+      </main>
+    ) : (
+      <main>
+        <h1>Live test game</h1>
+        <p>Host: {hostName}</p>
+        <p>Game day {game.day}</p>
+        <p>Game turn {game.currentTurnIndex}</p>
+        <p>Private info {privacyHidden ? "hidden" : "visible"}</p>
+        <p>Day/night indication {dayNightIndicatorVisible ? "enabled" : "disabled"}</p>
+        <button
+          type="button"
+          onClick={() => {
+            const seat = game.turnOrder[game.currentTurnIndex];
+            if (onAcceptedEvent !== undefined && seat !== undefined) {
+              onAcceptedEvent({ type: "turn.completed", payload: { seat }, secret: false });
+            } else {
+              const nextTurn = game.currentTurnIndex + 1;
+              onGameChange({ ...game, currentTurnIndex: nextTurn });
+              onEvent("turn.completed", { turn: nextTurn });
+            }
+          }}
+        >
+          Record game action
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            const nextDay = game.day + 1;
+            onGameChange({ ...game, day: nextDay });
+            onEvent("day.started", { day: nextDay });
+          }}
+        >
+          Start new day
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            if (onAcceptedEvent !== undefined) {
+              for (const player of game.players.filter(({ team }) => team === "black")) {
+                onAcceptedEvent({
+                  type: "player.red-carded",
+                  payload: { seat: player.seat },
+                  secret: false,
+                });
+              }
+            } else onGameChange({ ...game, phase: "finished", winner: "red" });
+          }}
+        >
+          Finish test game
+        </button>
+        {game.phase === "finished" ? (
+          <button type="button" disabled={finishGameState === "saved"} onClick={onFinishGame}>
+            {finishGameState === "saved" ? "Game safely saved" : "Finish the game"}
+          </button>
+        ) : null}
+      </main>
+    );
+  },
 }));
 
 vi.mock("./features/music/YouTubePlaylistPlayer.js", () => ({
   YouTubePlaylistPlayer: forwardRef(() => <div data-testid="youtube-player" />),
+}));
+
+vi.mock("./features/music/AccountPlaylistPicker.js", () => ({
+  AccountPlaylistPicker: ({
+    playlistId,
+    onPlaylistIdChange,
+  }: {
+    playlistId: string;
+    onPlaylistIdChange: (playlistId: string) => void;
+  }) => (
+    <select
+      aria-label="YouTube Music playlist"
+      value={playlistId}
+      onChange={(event) => onPlaylistIdChange(event.target.value)}
+    >
+      <option value="">No playlist</option>
+      <option value="dev-playlist">Dev playlist</option>
+    </select>
+  ),
 }));
 
 const player = (nickname: string, id: string): PlayerProfile => ({
@@ -290,6 +373,7 @@ beforeEach(() => {
   api.deletePlayer.mockReset().mockResolvedValue(undefined);
   api.getGameSession.mockReset();
   api.listActiveGameSessions.mockReset().mockResolvedValue([]);
+  api.listCompletedGameSessions.mockReset().mockResolvedValue([]);
   api.listPlayers
     .mockReset()
     .mockResolvedValue([
@@ -300,6 +384,11 @@ beforeEach(() => {
     .mockReset()
     .mockImplementation((_gameId: string, mutation: { baseRevision: number }) =>
       Promise.resolve({ revision: mutation.baseRevision + 1, duplicate: false }),
+    );
+  api.saveGameSessionOperation
+    .mockReset()
+    .mockImplementation((_gameId: string, operation: { baseRevision: number }) =>
+      Promise.resolve({ revision: operation.baseRevision + 1, duplicate: false }),
     );
   api.updatePlayer.mockReset();
   api.getAuthSession.mockReset().mockResolvedValue({ configured: true, user: null });
@@ -450,6 +539,8 @@ describe("club welcome", () => {
     const user = userEvent.setup();
     window.sessionStorage.setItem("mafia-dashboard.game-session.v3", "private game");
     window.sessionStorage.setItem("mafia-dashboard.game-session.v3.other-club", "private game");
+    window.sessionStorage.setItem("mafia-dashboard.game-session.v4", "private game");
+    window.sessionStorage.setItem("mafia-dashboard.game-session.v4.other-club", "private game");
     window.sessionStorage.setItem("unrelated", "keep");
     api.getAuthSession.mockResolvedValue({
       configured: true,
@@ -467,6 +558,8 @@ describe("club welcome", () => {
     expect(api.signOut).toHaveBeenCalledOnce();
     expect(window.sessionStorage.getItem("mafia-dashboard.game-session.v3")).toBeNull();
     expect(window.sessionStorage.getItem("mafia-dashboard.game-session.v3.other-club")).toBeNull();
+    expect(window.sessionStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
+    expect(window.sessionStorage.getItem("mafia-dashboard.game-session.v4.other-club")).toBeNull();
     expect(window.sessionStorage.getItem("unrelated")).toBe("keep");
     expect(await screen.findByRole("link", { name: "Continue with Google" })).toBeInTheDocument();
   });
@@ -507,6 +600,22 @@ describe("club roster gate", () => {
 });
 
 describe("developer menu", () => {
+  it("opens the full-screen past-game timeline and returns to the prior workspace", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Past game timeline" }));
+
+    expect(screen.getByRole("heading", { name: "Past game timeline" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Application tools")).toBeNull();
+    expect(await screen.findByText("No completed games yet.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /back/i }));
+    expect(screen.getAllByRole("heading", { name: "Game setup" })).toHaveLength(2);
+    expect(screen.getByLabelText("Application tools")).toBeInTheDocument();
+  });
+
   it("cycles the application theme from Dev", async () => {
     const user = userEvent.setup();
     api.getAuthSession.mockResolvedValue({
@@ -548,6 +657,29 @@ describe("developer menu", () => {
 
     expect(document.querySelector(".app-shell")).toHaveClass("is-center-shadow-hidden");
     expect(window.localStorage.getItem("mafia-dashboard.center-shadow")).toBe("hidden");
+  });
+
+  it("persists the optional animated Day/night table indication in the browser", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(<App />);
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    expect(screen.getByText("Day/night indication disabled")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    const toggle = screen.getByRole("button", { name: "Show Day/night table indication" });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await user.click(toggle);
+
+    expect(screen.getByText("Day/night indication enabled")).toBeInTheDocument();
+    expect(window.localStorage.getItem("mafia-dashboard.day-night-indicator")).toBe("visible");
+    expect(screen.getByRole("button", { name: "Hide Day/night table indication" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    unmount();
+    render(<App />);
+    expect(screen.getByText("Day/night indication enabled")).toBeInTheDocument();
   });
 
   it("uses the non-editable player picker on touch iPads outside fullscreen", () => {
@@ -719,6 +851,24 @@ describe("developer menu", () => {
     expect(dock).toHaveClass("is-compact");
     expect(dock).toHaveAttribute("hidden");
     expect(dock).not.toBeVisible();
+  });
+
+  it("keeps music player setup behind the Dev menu", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    expect(screen.queryByRole("region", { name: "Music player setup" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    expect(screen.queryByRole("button", { name: "Reload music player" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Music player setup" }));
+
+    expect(screen.getByRole("region", { name: "Music player setup" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reload music player" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Low")).toHaveValue(50);
+    expect(screen.getByLabelText("High")).toHaveValue(80);
+    const playlist = screen.getByRole("combobox", { name: "YouTube Music playlist" });
+    await user.selectOptions(playlist, "dev-playlist");
+    expect(playlist).toHaveValue("dev-playlist");
   });
 
   it("keeps the fade controls directly below the persistent player during setup and live play", async () => {
@@ -940,19 +1090,19 @@ describe("authoritative game session lifecycle", () => {
       expect.objectContaining({
         mutationId: expect.stringMatching(/^[0-9a-f-]{36}$/),
         baseRevision: 0,
-        state: expect.objectContaining({
+        kind: "metadata",
+        metadata: expect.objectContaining({
           setup: expect.objectContaining({ step: "music" }),
           hostPlayerId,
           hostName: "Host Player",
-          log: [],
+          legacyLog: [],
         }),
-        results: null,
       }),
       testClub.id,
     );
   });
 
-  it("persists one full snapshot for a normal game action including log and undo", async () => {
+  it("persists one baseline plus incremental events without per-step game snapshots", async () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
@@ -962,14 +1112,131 @@ describe("authoritative game session lifecycle", () => {
     await user.click(screen.getByRole("button", { name: "Record game action" }));
 
     await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledOnce());
-    expect(api.saveGameSession.mock.calls[0]?.[1]).toMatchObject({
-      state: {
-        game: expect.objectContaining({ currentTurnIndex: 1, day: 0 }),
-        log: [expect.objectContaining({ type: "turn.completed" })],
-        undoHistory: [expect.objectContaining({ logLength: 0 })],
-      },
-      results: null,
+    const operation = api.saveGameSession.mock.calls[0]?.[1];
+    expect(operation).toMatchObject({
+      kind: "append-event",
+      event: expect.objectContaining({ type: "turn.completed", payload: { seat: 1 } }),
     });
+    expect(operation).not.toHaveProperty("state");
+    expect(operation).not.toHaveProperty("events");
+    expect(operation).not.toHaveProperty("log");
+    expect(operation).not.toHaveProperty("undoHistory");
+    expect(
+      JSON.parse(window.sessionStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+    ).toMatchObject({
+      baseline: expect.objectContaining({
+        replayVersion: 1,
+        game: expect.objectContaining({ currentTurnIndex: 0, day: 1 }),
+      }),
+      entries: [
+        expect.objectContaining({ type: "game.checkpointed" }),
+        expect.objectContaining({ type: "turn.completed", payload: { seat: 1 } }),
+      ],
+    });
+  });
+
+  it("previews a Log state without mutation and resets by moving the active head", async () => {
+    const user = userEvent.setup();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    await user.click(screen.getByRole("button", { name: "Record game action" }));
+    expect(screen.getByText("Game turn 1")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Open game log" }));
+    await user.click(screen.getByRole("button", { name: "Preview state after log #1" }));
+    expect(screen.getByRole("heading", { name: "Preview game state" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Application tools")).toBeNull();
+    expect(screen.getAllByRole("button").map((button) => button.textContent)).toEqual([
+      "Exit preview",
+      "Reset game to this state",
+    ]);
+
+    await user.click(screen.getByRole("button", { name: "Exit preview" }));
+    expect(screen.getByText("Game turn 1")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Open game log" }));
+    await user.click(screen.getByRole("button", { name: "Preview state after log #1" }));
+    await user.click(screen.getByRole("button", { name: "Reset game to this state" }));
+    expect(screen.getByRole("heading", { name: "Preview game state" })).toBeInTheDocument();
+
+    confirm.mockReturnValue(true);
+    await user.click(screen.getByRole("button", { name: "Reset game to this state" }));
+    expect(screen.getByText("Game turn 0")).toBeInTheDocument();
+    expect(confirm).toHaveBeenLastCalledWith(
+      "Reset the active game to log #1? 1 later active action will leave the current branch. Their history will be preserved.",
+    );
+
+    await user.click(screen.getByRole("button", { name: /undo last action/i }));
+    expect(screen.getByText("Game turn 1")).toBeInTheDocument();
+  });
+
+  it("keeps the live head unchanged when the server rejects a reset", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    await user.click(screen.getByRole("button", { name: "Record game action" }));
+    await waitFor(() =>
+      expect(screen.getByRole("status", { name: "Save status: saved" })).toBeInTheDocument(),
+    );
+    const before = JSON.parse(
+      window.sessionStorage.getItem("mafia-dashboard.game-session.v4") ?? "null",
+    ) as { headEventId: string };
+    api.saveGameSessionOperation.mockRejectedValueOnce(new Error("revision conflict"));
+
+    await user.click(screen.getByRole("button", { name: "Open game log" }));
+    await user.click(screen.getByRole("button", { name: "Preview state after log #1" }));
+    await user.click(screen.getByRole("button", { name: "Reset game to this state" }));
+
+    expect(screen.getByRole("heading", { name: "Preview game state" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Exit preview" }));
+    expect(screen.getByText("Game turn 1")).toBeInTheDocument();
+    expect(
+      JSON.parse(window.sessionStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+    ).toMatchObject({ headEventId: before.headEventId, outbox: [] });
+  });
+
+  it("ignores a delayed component-local mutation captured during preview after exit", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    await user.click(screen.getByRole("button", { name: "Record game action" }));
+    expect(screen.getByText("Game turn 1")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Open game log" }));
+    await user.click(screen.getByRole("button", { name: "Preview state after log #1" }));
+    const delayedPreviewChange = gameScreenHarness.previewOnGameChange;
+    const capturedPreviewGame = gameScreenHarness.previewGame;
+    if (delayedPreviewChange === null || capturedPreviewGame === null) {
+      throw new Error("Preview mutation callback was not captured");
+    }
+    await user.click(screen.getByRole("button", { name: "Exit preview" }));
+
+    act(() => delayedPreviewChange({ ...capturedPreviewGame, currentTurnIndex: 99 }));
+
+    expect(screen.getByText("Game turn 1")).toBeInTheDocument();
+    expect(screen.queryByText("Game turn 99")).toBeNull();
+  });
+
+  it("ignores a delayed live mutation captured before undo moves the active head", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    await user.click(screen.getByRole("button", { name: "Record game action" }));
+    await user.click(screen.getByRole("button", { name: "Record game action" }));
+    const delayedLiveChange = gameScreenHarness.liveOnGameChange;
+    const capturedLiveGame = gameScreenHarness.liveGame;
+    if (delayedLiveChange === null || capturedLiveGame === null) {
+      throw new Error("Live mutation callback was not captured");
+    }
+
+    await user.click(screen.getByRole("button", { name: /undo last action/i }));
+    expect(screen.getByText("Game turn 1")).toBeInTheDocument();
+    act(() => delayedLiveChange({ ...capturedLiveGame, currentTurnIndex: 99 }));
+
+    expect(screen.getByText("Game turn 1")).toBeInTheDocument();
+    expect(screen.queryByText("Game turn 99")).toBeNull();
   });
 
   it("stores final results and returns to the initial setup after Finish the game", async () => {
@@ -982,16 +1249,24 @@ describe("authoritative game session lifecycle", () => {
     await user.click(screen.getByRole("button", { name: "Finish test game" }));
     await waitFor(() => expect(api.saveGameSession).toHaveBeenCalled());
     expect(api.saveGameSession.mock.calls.at(-1)?.[1]).toMatchObject({
-      state: expect.objectContaining({ game: expect.objectContaining({ phase: "finished" }) }),
-      results: null,
+      kind: "append-event",
+      event: expect.objectContaining({ phaseAfter: "finished", type: "player.red-carded" }),
     });
 
     await user.click(screen.getByRole("button", { name: "Finish the game" }));
     await waitFor(() =>
       expect(api.saveGameSession.mock.calls.at(-1)?.[1]).toMatchObject({
-        state: expect.objectContaining({ game: expect.objectContaining({ phase: "finished" }) }),
+        kind: "complete",
         results: expect.objectContaining({ hostPlayerId, winner: "red" }),
       }),
+    );
+    expect(api.saveGameSession.mock.calls.map(([, saved]) => saved)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "append-event",
+          event: expect.objectContaining({ type: "game.completed" }),
+        }),
+      ]),
     );
     expect(await screen.findByRole("button", { name: "Start test game" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Game safely saved" })).not.toBeInTheDocument();
@@ -1002,7 +1277,7 @@ describe("authoritative game session lifecycle", () => {
     const first = deferred<{ revision: number; duplicate: boolean }>();
     api.saveGameSession
       .mockImplementationOnce(() => first.promise)
-      .mockRejectedValueOnce(new Error("offline"));
+      .mockRejectedValue(new Error("offline"));
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
     await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledOnce());
@@ -1016,8 +1291,11 @@ describe("authoritative game session lifecycle", () => {
       expect(screen.getByRole("status", { name: "Save status: offline" })).toBeInTheDocument(),
     );
     expect(
-      JSON.parse(window.sessionStorage.getItem("mafia-dashboard.game-session.v3") ?? "null"),
-    ).toMatchObject({ failed: true, outbox: [expect.objectContaining({ baseRevision: 1 })] });
+      JSON.parse(window.sessionStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+    ).toMatchObject({
+      failed: true,
+      outbox: expect.arrayContaining([expect.objectContaining({ baseRevision: 1 })]),
+    });
   });
 
   it("uses latest-request-wins when two active sessions are resumed", async () => {
@@ -1049,6 +1327,17 @@ describe("authoritative game session lifecycle", () => {
     api.getGameSession.mockImplementation((gameId: string) =>
       gameId === sessionAId ? sessionA.promise : sessionB.promise,
     );
+    const normalizedB = normalizedRemoteSession(
+      remoteSession(sessionBId, "Table B", "Host B", 7, 3),
+    );
+    api.saveGameSessionOperation.mockImplementation(
+      (_gameId: string, operation: { baseRevision: number; kind: string }) =>
+        Promise.resolve(
+          operation.kind === "normalize"
+            ? { ...normalizedB, revision: operation.baseRevision + 1 }
+            : { revision: operation.baseRevision + 1, duplicate: false },
+        ),
+    );
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     await screen.findByRole("button", { name: "Resume Table A" });
@@ -1065,10 +1354,19 @@ describe("authoritative game session lifecycle", () => {
 
     expect(screen.getByText("Host: Host B")).toBeInTheDocument();
     expect(screen.getByText("Game day 3")).toBeInTheDocument();
-    expect(api.saveGameSession).not.toHaveBeenCalled();
+    await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledOnce());
+    expect(api.saveGameSession.mock.calls[0]?.[1]).toMatchObject({
+      baseRevision: 7,
+      kind: "normalize",
+    });
     expect(
-      JSON.parse(window.sessionStorage.getItem("mafia-dashboard.game-session.v3") ?? "null"),
-    ).toMatchObject({ gameId: sessionBId, revision: 7, outbox: [] });
+      JSON.parse(window.sessionStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+    ).toMatchObject({
+      gameId: sessionBId,
+      revision: 8,
+      baseline: { game: expect.objectContaining({ day: 3 }) },
+      outbox: [],
+    });
   });
 
   it("ignores a resume response after newer local setup is saved", async () => {
@@ -1105,7 +1403,7 @@ describe("authoritative game session lifecycle", () => {
 
     expect(screen.getByRole("heading", { name: "Restored setup" })).toBeInTheDocument();
     expect(
-      JSON.parse(window.sessionStorage.getItem("mafia-dashboard.game-session.v3") ?? "null"),
+      JSON.parse(window.sessionStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
     ).toMatchObject({ gameId: localGameId, revision: 1, outbox: [] });
   });
 
@@ -1171,7 +1469,7 @@ describe("authoritative game session lifecycle", () => {
     expect(screen.getByRole("heading", { name: "Restored setup" })).toBeInTheDocument();
     clear.resolve();
     await screen.findByRole("heading", { name: "Game setup" });
-    expect(window.sessionStorage.getItem("mafia-dashboard.game-session.v3")).toBeNull();
+    expect(window.sessionStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
     firstSave.resolve({ revision: 1, duplicate: false });
   });
 
@@ -1202,8 +1500,8 @@ describe("authoritative game session lifecycle", () => {
     expect(screen.getByRole("heading", { name: "Restored setup" })).toBeInTheDocument();
     expect(screen.getByText("Playlist: saved-playlist")).toBeInTheDocument();
     expect(
-      JSON.parse(window.sessionStorage.getItem("mafia-dashboard.game-session.v3") ?? "null"),
-    ).toMatchObject({ gameId: newerGameId, current: { state: { playlistId: "saved-playlist" } } });
+      JSON.parse(window.sessionStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+    ).toMatchObject({ gameId: newerGameId, metadata: { playlistId: "saved-playlist" } });
   });
 
   it("preserves local setup and outbox when remote clear fails", async () => {
@@ -1224,9 +1522,9 @@ describe("authoritative game session lifecycle", () => {
     );
     expect(screen.getByRole("heading", { name: "Restored setup" })).toBeInTheDocument();
     expect(
-      JSON.parse(window.sessionStorage.getItem("mafia-dashboard.game-session.v3") ?? "null"),
+      JSON.parse(window.sessionStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
     ).toMatchObject({
-      current: { state: { setup: { step: "music" } } },
+      metadata: { setup: { step: "music" } },
       failed: false,
       clearFailed: true,
     });
@@ -1258,25 +1556,101 @@ const remoteSession = (
   results: null,
 });
 
+const normalizedRemoteSession = (session: RemoteGameSession): RemoteGameSession => {
+  const game = session.state.game as GameState | null;
+  if (game === null) throw new Error("A normalization fixture requires a game");
+  const baseline = { replayVersion: 1 as const, game };
+  const started = createGameLogEntry({
+    gameId: session.gameId,
+    id: "00000000-0000-4000-8000-0000000000dd",
+    sequence: 1,
+    parentEventId: null,
+    createdAt: "2026-08-18T09:00:00.000Z",
+    before: game,
+    draft: { type: "game.checkpointed", payload: {}, secret: true },
+  });
+  return {
+    ...session,
+    state: {
+      ...session.state,
+      game: null,
+      initialGame: baseline,
+      events: [started.entry],
+      headEventId: started.entry.id,
+      resetReturnEventId: null,
+    },
+  };
+};
+
 describe("undo checkpoints", () => {
-  it("treats day zero to one and every later day increment as an undo checkpoint", async () => {
+  it("does not let cursor Undo cross the immutable game baseline", async () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
+    expect(screen.getByRole("button", { name: /undo last action/i })).toBeDisabled();
+
     await user.click(screen.getByRole("button", { name: "Record game action" }));
     await user.click(screen.getByRole("button", { name: "Record game action" }));
+    expect(screen.getByText("Game turn 2")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /undo last action/i })).toBeEnabled();
 
-    await user.click(screen.getByRole("button", { name: "Start new day" }));
-
-    expect(screen.getByText("Game day 1")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /undo last action/i })).toBeDisabled();
-    await user.click(screen.getByRole("button", { name: "Record game action" }));
     await user.click(screen.getByRole("button", { name: /undo last action/i }));
-    expect(screen.getByText("Game day 1")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /undo last action/i }));
+    expect(screen.getByText("Game turn 0")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /undo last action/i })).toBeDisabled();
+  });
+
+  it("preserves the remaining ordinary undo budget across reload", async () => {
+    const user = userEvent.setup();
+    const firstRender = render(<App />);
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    for (let index = 0; index < 4; index += 1) {
+      await user.click(screen.getByRole("button", { name: "Record game action" }));
+    }
+    await user.click(screen.getByRole("button", { name: /undo last action/i }));
+    await user.click(screen.getByRole("button", { name: /undo last action/i }));
+    expect(screen.getByText("Game turn 2")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /undo last action.*1 available/i })).toBeEnabled();
+    await waitFor(() =>
+      expect(screen.getByRole("status", { name: "Save status: saved" })).toBeInTheDocument(),
+    );
+
+    firstRender.unmount();
+    render(<App />);
+
+    expect(screen.getByText("Game turn 2")).toBeInTheDocument();
+    const remainingUndo = screen.getByRole("button", {
+      name: /undo last action.*1 available/i,
+    });
+    await user.click(remainingUndo);
+    expect(screen.getByText("Game turn 1")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /undo last action.*0 available/i })).toBeDisabled();
+  });
+
+  it("preserves the pre-reset undo budget across reload and reset return", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const firstRender = render(<App />);
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    for (let index = 0; index < 3; index += 1) {
+      await user.click(screen.getByRole("button", { name: "Record game action" }));
+    }
+    await user.click(screen.getByRole("button", { name: /undo last action/i }));
+    expect(screen.getByRole("button", { name: /undo last action.*2 available/i })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "Open game log" }));
-    expect(screen.getAllByText("turn.completed")).toHaveLength(2);
-    expect(screen.getByText("day.started")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Preview state after log #1" }));
+    await user.click(screen.getByRole("button", { name: "Reset game to this state" }));
+    expect(screen.getByText("Game turn 0")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("status", { name: "Save status: saved" })).toBeInTheDocument(),
+    );
+
+    firstRender.unmount();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: /undo last action.*1 available/i }));
+
+    expect(screen.getByText("Game turn 2")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /undo last action.*2 available/i })).toBeEnabled();
   });
 
   it("retains only three ordinary actions and undo removes matching log state", async () => {

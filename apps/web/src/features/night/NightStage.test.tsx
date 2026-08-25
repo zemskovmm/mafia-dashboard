@@ -96,11 +96,33 @@ describe("NightStage", () => {
     );
 
     await user.click(targetButtons[0]!);
+    const selectedShot = screen.getByRole("button", {
+      name: `Remove shooter ${shooters[0]!.seat} from target ${target.name}`,
+    });
+    expect(selectedShot).toBeEnabled();
+    expect(selectedShot).toHaveAttribute("aria-pressed", "true");
+
+    await user.click(
+      screen.getByRole("button", {
+        name: `Assign shooter ${shooters[0]!.seat} to target ${otherTarget.name}`,
+      }),
+    );
+    expect(
+      screen.getByRole("button", {
+        name: `Remove shooter ${shooters[0]!.seat} from target ${otherTarget.name}`,
+      }),
+    ).toHaveAttribute("aria-pressed", "true");
+
+    await user.click(
+      screen.getByRole("button", {
+        name: `Remove shooter ${shooters[0]!.seat} from target ${otherTarget.name}`,
+      }),
+    );
     expect(
       screen.getByRole("button", {
         name: `Assign shooter ${shooters[0]!.seat} to target ${otherTarget.name}`,
       }),
-    ).toBeDisabled();
+    ).toHaveAttribute("aria-pressed", "false");
   });
 
   it("allows every remaining shot to target a deceased player and reports no effect", async () => {
@@ -121,7 +143,7 @@ describe("NightStage", () => {
       }),
     );
     expect(
-      screen.getAllByRole("button", { name: new RegExp(`to target ${deceased.name}$`) }),
+      screen.getAllByRole("button", { name: new RegExp(`from target ${deceased.name}$`) }),
     ).toHaveLength(3);
     await user.click(screen.getByRole("button", { name: /evaluate mafia shots/i }));
     expect(screen.getByRole("status", { name: "Mafia shots had no effect" })).toHaveTextContent(
@@ -159,7 +181,31 @@ describe("NightStage", () => {
     expect(screen.getByRole("button", { name: /begin day 2/i })).toBeInTheDocument();
   });
 
-  it("re-evaluates without logging discarded shots, then confirms the deceased player", async () => {
+  it("shows deceased owners' checks and provides explicit skip actions", async () => {
+    const user = userEvent.setup();
+    const base = createNightGame();
+    const onEvent = vi.fn();
+    const initial: GameState = {
+      ...base,
+      phase: "night-don",
+      players: base.players.map((player) =>
+        player.role === "don" || player.role === "sheriff"
+          ? { ...player, status: "eliminated" }
+          : player,
+      ),
+    };
+    render(<Harness initial={initial} onEvent={onEvent} />);
+
+    await user.click(screen.getByRole("button", { name: "Skip Don check" }));
+    expect(screen.getByText("Sheriff check")).toBeInTheDocument();
+    expect(onEvent).toHaveBeenCalledWith("don.check-skipped", { day: initial.day });
+
+    await user.click(screen.getByRole("button", { name: "Skip Sheriff check" }));
+    expect(screen.getByText("Night complete")).toBeInTheDocument();
+    expect(onEvent).toHaveBeenCalledWith("sheriff.check-skipped", { day: initial.day });
+  });
+
+  it("logs Mafia moves only when shots are evaluated", async () => {
     const user = userEvent.setup();
     const initial = createNightGame();
     const shooters = initial.players
@@ -180,23 +226,36 @@ describe("NightStage", () => {
     };
 
     await assignAll();
+    expect(onEvent).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: /evaluate mafia shots/i }));
     expect(screen.getByRole("group", { name: "Deceased player" })).toHaveTextContent(target.name);
     expect(screen.getByRole("button", { name: `Seat ${target.seat}: ${target.name}` })).toHaveClass(
       "is-provisional-deceased",
     );
-    expect(onEvent).not.toHaveBeenCalled();
+    expect(onEvent.mock.calls.filter(([type]) => type === "mafia.shot-recorded")).toHaveLength(0);
+    expect(onEvent.mock.calls.filter(([type]) => type === "mafia.shots-resolved")).toHaveLength(1);
+    expect(onEvent).toHaveBeenLastCalledWith(
+      "mafia.shots-resolved",
+      expect.objectContaining({
+        shots: expect.arrayContaining(
+          shooters.map(({ seat }) =>
+            expect.objectContaining({ shooterSeat: seat, targetSeat: target.seat }),
+          ),
+        ),
+      }),
+    );
 
     await user.click(screen.getByRole("button", { name: /re-evaluate mafia shots/i }));
     expect(screen.queryByRole("group", { name: "Deceased player" })).toBeNull();
-    expect(onEvent).not.toHaveBeenCalled();
+    expect(onEvent.mock.calls.filter(([type]) => type === "mafia.shot-recorded")).toHaveLength(0);
+    expect(onEvent.mock.calls.filter(([type]) => type === "mafia.shots-resolved")).toHaveLength(1);
 
     await assignAll();
     await user.click(screen.getByRole("button", { name: /evaluate mafia shots/i }));
     await user.click(screen.getByRole("button", { name: /continue night/i }));
 
-    expect(onEvent.mock.calls.filter(([type]) => type === "mafia.shot-recorded")).toHaveLength(3);
-    expect(onEvent.mock.calls.filter(([type]) => type === "mafia.shots-resolved")).toHaveLength(1);
+    expect(onEvent.mock.calls.filter(([type]) => type === "mafia.shot-recorded")).toHaveLength(0);
+    expect(onEvent.mock.calls.filter(([type]) => type === "mafia.shots-resolved")).toHaveLength(2);
     expect(screen.getByText("Don check")).toBeInTheDocument();
   });
 
@@ -233,6 +292,7 @@ describe("NightStage", () => {
     expect(screen.getByText(/mafia found/i)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Continue night" }));
     expect(screen.getByRole("region", { name: "Mafia table" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /red card/i })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /begin day 2/i }));
     expect(screen.getByRole("heading", { name: /night complete/i })).toBeInTheDocument();

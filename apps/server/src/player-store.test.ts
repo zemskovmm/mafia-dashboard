@@ -5,6 +5,7 @@ import { EventStore } from "./event-store.js";
 import { DeletedGameError } from "./game-lifecycle.js";
 import { GameSessionStore } from "./game-session-store.js";
 import { PlayerStore } from "./player-store.js";
+import { DEFAULT_CLUB_ID } from "./club-store.js";
 
 const databaseUrl =
   process.env.TEST_DATABASE_URL ?? "postgresql://mafia:mafia@127.0.0.1:54329/mafia_test";
@@ -333,7 +334,10 @@ describe("PlayerStore", () => {
     const locker = await pool.connect();
     try {
       await locker.query("BEGIN");
-      await locker.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [gameId]);
+      await locker.query("SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2, 0))", [
+        DEFAULT_CLUB_ID,
+        gameId,
+      ]);
       let saveSettled = false;
       const save = store.saveGameResults(input).finally(() => {
         saveSettled = true;
@@ -344,7 +348,10 @@ describe("PlayerStore", () => {
       await save;
 
       await locker.query("BEGIN");
-      await locker.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [gameId]);
+      await locker.query("SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2, 0))", [
+        DEFAULT_CLUB_ID,
+        gameId,
+      ]);
       let deleteSettled = false;
       const deletion = store.deleteGameResults(gameId).finally(() => {
         deleteSettled = true;

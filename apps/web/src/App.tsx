@@ -1,5 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { GameState } from "@mafia/game-domain";
+import {
+  createGameLogEntry,
+  replayGameLog,
+  type CanonicalGameEventDraft,
+  type GameLogEntry,
+  type GameState,
+  type InitialGameBaseline,
+} from "@mafia/game-domain";
 import {
   DoorOpen,
   Eye,
@@ -20,6 +27,7 @@ import {
   listActiveGameSessions,
   listPlayers,
   saveGameSession,
+  saveGameSessionOperation,
   updatePlayer,
   createClub,
   deleteClub,
@@ -40,6 +48,13 @@ import type {
 } from "./api/client.js";
 import { ClubPortal } from "./features/clubs/ClubPortal.js";
 import { GameScreen } from "./features/game/GameScreen.js";
+import {
+  getActiveBranch,
+  getRemainingUndoBudget,
+  getUndoableEvents,
+  replayToEvent,
+} from "./features/game/game-history.js";
+import { AccountPlaylistPicker } from "./features/music/AccountPlaylistPicker.js";
 import { MusicDock } from "./features/music/MusicDock.js";
 import {
   YouTubePlaylistPlayer,
@@ -50,11 +65,13 @@ import { PlayersScreen } from "./features/players/PlayersScreen.js";
 import { buildFinalGameResults } from "./features/players/game-results.js";
 import { SetupWizard, type SetupWizardSessionState } from "./features/setup/SetupWizard.js";
 import { AvailablePlayersScreen } from "./features/setup/AvailablePlayersScreen.js";
+import { GameTimelineScreen } from "./features/timeline/GameTimelineScreen.js";
 import { GameSessionOutbox } from "./session-outbox.js";
 import { createRandomId } from "./utils/random-id.js";
 import { applyColorTheme, readColorTheme, type ColorTheme } from "./theme.js";
 import "./styles/app.css";
 import "./styles/clubs.css";
+import "./styles/timeline.css";
 
 interface LocalLogEntry {
   readonly id: string;
@@ -66,13 +83,8 @@ interface LocalLogEntry {
   readonly createdAt: string;
 }
 
-interface UndoSnapshot {
-  readonly game: GameState;
-  readonly logLength: number;
-  readonly sequence: number;
-}
-
 type BackgroundShade = "black" | "grey-33" | "grey-66" | "white";
+type WorkspaceView = "game" | "players" | "timeline";
 
 const backgroundShadeOrder: readonly BackgroundShade[] = ["black", "grey-33", "grey-66", "white"];
 const backgroundShadeClass: Record<BackgroundShade, string> = {
@@ -88,8 +100,10 @@ const backgroundShadeLabel: Record<BackgroundShade, string> = {
   white: "white",
 };
 const centerShadowStorageKey = "mafia-dashboard.center-shadow";
+const dayNightIndicatorStorageKey = "mafia-dashboard.day-night-indicator";
 const defaultClubId = "00000000-0000-4000-8000-000000000101";
-const gameSessionStoragePrefix = "mafia-dashboard.game-session.v3";
+const gameSessionStoragePrefix = "mafia-dashboard.game-session.v4";
+const legacyGameSessionStoragePrefix = "mafia-dashboard.game-session.v3";
 const availablePlayerStorageKey = (clubId: string) =>
   `mafia-dashboard.available-player-ids.${clubId}`;
 const readAvailablePlayerIds = (storage: Storage, clubId: string): ReadonlySet<string> => {
@@ -106,10 +120,19 @@ const readAvailablePlayerIds = (storage: Storage, clubId: string): ReadonlySet<s
 };
 const gameSessionStorageKey = (clubId: string) =>
   clubId === defaultClubId ? gameSessionStoragePrefix : `${gameSessionStoragePrefix}.${clubId}`;
+const legacyGameSessionStorageKey = (clubId: string) =>
+  clubId === defaultClubId
+    ? legacyGameSessionStoragePrefix
+    : `${legacyGameSessionStoragePrefix}.${clubId}`;
 const clearGameSessionStorage = (storage: Storage) => {
   for (let index = storage.length - 1; index >= 0; index -= 1) {
     const key = storage.key(index);
-    if (key === gameSessionStoragePrefix || key?.startsWith(`${gameSessionStoragePrefix}.`)) {
+    if (
+      key === gameSessionStoragePrefix ||
+      key?.startsWith(`${gameSessionStoragePrefix}.`) ||
+      key === legacyGameSessionStoragePrefix ||
+      key?.startsWith(`${legacyGameSessionStoragePrefix}.`)
+    ) {
       storage.removeItem(key);
     }
   }
@@ -128,7 +151,12 @@ interface PersistedState extends GameSessionState {
   readonly setup: SetupWizardSessionState | null;
   readonly game: GameState | null;
   readonly log: readonly LocalLogEntry[];
-  readonly undoHistory: readonly UndoSnapshot[];
+  readonly undoHistory: readonly unknown[];
+  readonly initialGame: InitialGameBaseline | null;
+  readonly events: readonly GameLogEntry[];
+  readonly headEventId: string | null;
+  readonly resetReturnEventId: string | null;
+  readonly legacyLog: readonly LocalLogEntry[];
 }
 
 interface WebkitFullscreenDocument extends Document {
@@ -179,6 +207,16 @@ const isSecretEvent = (type: string, payload: Record<string, unknown>) =>
 const isAuxiliaryEvent = (type: string) =>
   type.startsWith("timer.") || type.startsWith("music.") || type.startsWith("setup.");
 
+const toLocalLogEntry = (entry: GameLogEntry): LocalLogEntry => ({
+  id: entry.id,
+  sequence: entry.sequence,
+  type: entry.type,
+  phase: entry.phaseBefore,
+  payload: entry.payload as Record<string, unknown>,
+  secret: entry.secret,
+  createdAt: entry.createdAt,
+});
+
 const migratePlanningNames = (state: GameSessionState | undefined) => {
   const setup = (state?.setup as SetupWizardSessionState | null | undefined) ?? null;
   const setupState = setup?.setup as unknown as { step?: string } | null;
@@ -202,19 +240,35 @@ const migratePlanningNames = (state: GameSessionState | undefined) => {
   };
 };
 
-const asPersistedState = (state: GameSessionState | undefined): PersistedState => ({
-  ...migratePlanningNames(state),
-  hostPlayerId: state?.hostPlayerId ?? null,
-  hostName: state?.hostName ?? null,
-  playlistId: state?.playlistId ?? defaultPlaylistId,
-  log: (state?.log as readonly LocalLogEntry[] | undefined) ?? [],
-  undoHistory: ((state?.undoHistory as readonly UndoSnapshot[] | undefined) ?? []).map(
-    (snapshot) =>
-      (snapshot.game as unknown as { phase: string }).phase === "mafia-negotiation"
-        ? { ...snapshot, game: { ...snapshot.game, phase: "mafia-planning" } }
-        : snapshot,
-  ),
-});
+const asPersistedState = (state: GameSessionState | undefined): PersistedState => {
+  const migrated = migratePlanningNames(state);
+  const incremental = state as
+    | (GameSessionState & {
+        readonly initialGame?: InitialGameBaseline | null;
+        readonly events?: readonly GameLogEntry[];
+        readonly headEventId?: string | null;
+        readonly resetReturnEventId?: string | null;
+        readonly legacyLog?: readonly LocalLogEntry[];
+      })
+    | undefined;
+  const storedLog = (state?.log as readonly LocalLogEntry[] | undefined) ?? [];
+  const events = incremental?.events ?? [];
+  return {
+    ...migrated,
+    hostPlayerId: state?.hostPlayerId ?? null,
+    hostName: state?.hostName ?? null,
+    playlistId: state?.playlistId ?? defaultPlaylistId,
+    log: storedLog,
+    undoHistory: [],
+    initialGame:
+      incremental?.initialGame ??
+      (migrated.game === null ? null : { replayVersion: 1, game: migrated.game }),
+    events,
+    headEventId: incremental?.headEventId ?? events.at(-1)?.id ?? null,
+    resetReturnEventId: incremental?.resetReturnEventId ?? null,
+    legacyLog: incremental?.legacyLog ?? (events.length === 0 ? storedLog : []),
+  };
+};
 
 export const ClubWorkspace = ({
   club,
@@ -236,20 +290,56 @@ export const ClubWorkspace = ({
     sessionSyncRef.current = new GameSessionOutbox({
       storage: window.sessionStorage,
       storageKey: gameSessionStorageKey(club.id),
+      legacyStorageKey: legacyGameSessionStorageKey(club.id),
       createId: createRandomId,
-      save: (gameId, mutation) => saveGameSession(gameId, mutation, club.id),
+      save: (gameId, operation) => saveGameSessionOperation(gameId, operation, club.id),
+      read: (gameId) => getGameSession(gameId, club.id),
+      clearRemote: (gameId, expectedRevision) =>
+        clearGameSession(gameId, expectedRevision, club.id),
+      saveLegacy: (gameId, mutation) => saveGameSession(gameId, mutation, club.id),
     });
   }
   const sessionSync = sessionSyncRef.current;
   const initialCurrent = useRef(sessionSync.current).current;
   const initialState = useRef(asPersistedState(initialCurrent?.state)).current;
 
-  const [view, setView] = useState<"game" | "players">("game");
+  const [view, setView] = useState<WorkspaceView>("game");
   const [availabilityScreenOpen, setAvailabilityScreenOpen] = useState(false);
   const [sessionName, setSessionName] = useState(
     () => initialCurrent?.name ?? nextGameName(window.localStorage, new Date()),
   );
-  const [game, setGame] = useState<GameState | null>(initialState.game);
+  const initialDerivedGame = (() => {
+    if (initialState.initialGame === null) return initialState.game;
+    if (initialState.headEventId === null) return initialState.initialGame.game;
+    try {
+      return replayGameLog(
+        initialState.initialGame,
+        getActiveBranch(initialState.events, initialState.headEventId),
+      ).game;
+    } catch {
+      return initialState.game;
+    }
+  })();
+  const [game, setGame] = useState<GameState | null>(initialDerivedGame);
+  const [initialGame, setInitialGame] = useState<InitialGameBaseline | null>(
+    initialState.initialGame,
+  );
+  const [events, setEvents] = useState<readonly GameLogEntry[]>(initialState.events);
+  const [headEventId, setHeadEventId] = useState<string | null>(initialState.headEventId);
+  const [legacyLog, setLegacyLog] = useState<readonly LocalLogEntry[]>(initialState.legacyLog);
+  const [resetReturnEventId, setResetReturnEventId] = useState<string | null>(
+    initialState.resetReturnEventId,
+  );
+  const [previewTargetEventId, setPreviewTargetEventId] = useState<string | null>(null);
+  const [previewGame, setPreviewGame] = useState<GameState | null>(null);
+  const [undoBudget, setUndoBudget] = useState(() =>
+    initialState.resetReturnEventId === null
+      ? getRemainingUndoBudget(initialState.events, initialState.headEventId)
+      : 0,
+  );
+  const [resetReturnUndoBudget, setResetReturnUndoBudget] = useState(() =>
+    getRemainingUndoBudget(initialState.events, initialState.resetReturnEventId),
+  );
   const [setupSession, setSetupSession] = useState<SetupWizardSessionState | null>(
     initialState.setup,
   );
@@ -274,17 +364,20 @@ export const ClubWorkspace = ({
   const [activeMusicVolume, setActiveMusicVolume] = useState(80);
   const [musicReloadRequest, setMusicReloadRequest] = useState(0);
   const [musicState, setMusicState] = useState<YouTubePlaybackState>("idle");
-  const [log, setLog] = useState<readonly LocalLogEntry[]>(initialState.log);
-  const [undoHistory, setUndoHistory] = useState<readonly UndoSnapshot[]>(initialState.undoHistory);
+
   const [activeSessions, setActiveSessions] = useState<readonly ActiveGameSessionSummary[]>([]);
   const [activeSessionsError, setActiveSessionsError] = useState(false);
   const [resumeGameId, setResumeGameId] = useState<string | null>(null);
   const [swipedSessionId, setSwipedSessionId] = useState<string | null>(null);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [activeDrawer, setActiveDrawer] = useState<"log" | "dev" | null>(null);
+  const [musicSetupOpen, setMusicSetupOpen] = useState(false);
   const [backgroundShade, setBackgroundShade] = useState<BackgroundShade>("black");
   const [centerShadowVisible, setCenterShadowVisible] = useState(
     () => window.localStorage.getItem(centerShadowStorageKey) !== "hidden",
+  );
+  const [dayNightIndicatorVisible, setDayNightIndicatorVisible] = useState(
+    () => window.localStorage.getItem(dayNightIndicatorStorageKey) === "visible",
   );
   const [privacyHidden, setPrivacyHidden] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(() => currentFullscreenElement() !== null);
@@ -296,8 +389,15 @@ export const ClubWorkspace = ({
   const devDrawerRef = useRef<HTMLElement>(null);
   const touchTablet = useRef(isTouchTablet()).current;
   const sessionSwipeStartRef = useRef<{ readonly gameId: string; readonly x: number } | null>(null);
-  const logRef = useRef<readonly LocalLogEntry[]>(initialState.log);
-  const sequenceRef = useRef(initialState.log.at(-1)?.sequence ?? 0);
+  const initialGameRef = useRef<InitialGameBaseline | null>(initialState.initialGame);
+  const eventsRef = useRef<readonly GameLogEntry[]>(initialState.events);
+  const headEventIdRef = useRef<string | null>(initialState.headEventId);
+  const canonicalGameRef = useRef<GameState | null>(initialDerivedGame);
+  const legacyLogRef = useRef<readonly LocalLogEntry[]>(initialState.legacyLog);
+  const previewTargetEventIdRef = useRef<string | null>(null);
+  const gameScreenMutationGenerationRef = useRef(0);
+  const liveGameBeforePreviewRef = useRef<GameState | null>(null);
+  const viewBeforeTimelineRef = useRef<Exclude<WorkspaceView, "timeline">>("game");
   const phaseRef = useRef(initialState.game?.phase ?? setupPhase(initialState.setup?.step));
   const playerRequestRef = useRef(0);
   const activeSessionsRequestRef = useRef(0);
@@ -308,6 +408,21 @@ export const ClubWorkspace = ({
   const fullscreenAvailable =
     typeof fullscreenTarget.requestFullscreen === "function" ||
     typeof fullscreenTarget.webkitRequestFullscreen === "function";
+  const activeBranch = (() => {
+    try {
+      return getActiveBranch(events, headEventId);
+    } catch {
+      return [];
+    }
+  })();
+  const log: readonly LocalLogEntry[] = [...legacyLog, ...activeBranch.map(toLocalLogEntry)];
+  const undoHistory = undoBudget === 0 ? [] : getUndoableEvents(activeBranch).slice(-undoBudget);
+  const undoCount = resetReturnEventId === null ? undoHistory.length : 1;
+  const previewEntry = events.find(({ id }) => id === previewTargetEventId);
+  const renderedGameScreenMutationGeneration = gameScreenMutationGenerationRef.current;
+  const canApplyGameScreenMutation = () =>
+    previewTargetEventIdRef.current === null &&
+    gameScreenMutationGenerationRef.current === renderedGameScreenMutationGeneration;
 
   const refreshPlayers = useCallback(async () => {
     const request = playerRequestRef.current + 1;
@@ -462,8 +577,35 @@ export const ClubWorkspace = ({
     () =>
       sessionSync.subscribe(() => {
         setSyncRender((revision) => revision + 1);
-        const canonicalName = sessionSync.current?.name;
+        const current = sessionSync.current;
+        const normalized = sessionSync.takeNormalizedCurrent();
+        const canonicalName = current?.name;
         if (canonicalName !== undefined) setSessionName(canonicalName);
+        if (
+          normalized !== null &&
+          normalized.state.initialGame != null &&
+          (normalized.state.events?.length ?? 0) > 0
+        ) {
+          const baseline = normalized.state.initialGame;
+          const canonicalEvents = [...(normalized.state.events ?? [])];
+          const canonicalHead = normalized.state.headEventId ?? canonicalEvents.at(-1)?.id ?? null;
+          const canonicalGame =
+            canonicalHead === null
+              ? baseline.game
+              : replayToEvent(baseline, canonicalEvents, canonicalHead);
+          initialGameRef.current = baseline;
+          eventsRef.current = canonicalEvents;
+          headEventIdRef.current = canonicalHead;
+          canonicalGameRef.current = canonicalGame;
+          phaseRef.current = canonicalGame.phase;
+          setInitialGame(baseline);
+          setEvents(canonicalEvents);
+          setHeadEventId(canonicalHead);
+          setResetReturnEventId(normalized.state.resetReturnEventId ?? null);
+          setGame(canonicalGame);
+          setFinalResults(normalized.results);
+          setFinishGameState(normalized.results === null ? "ready" : "saved");
+        }
       }),
     [sessionSync],
   );
@@ -474,7 +616,7 @@ export const ClubWorkspace = ({
 
   useEffect(() => {
     const hasContent =
-      game !== null ||
+      initialGame !== null ||
       setupSession !== null ||
       hostPlayerId !== null ||
       hostName !== null ||
@@ -485,13 +627,18 @@ export const ClubWorkspace = ({
       sessionName,
       {
         setup: setupSession,
-        game,
+        game: initialGame === null ? canonicalGameRef.current : null,
         hostPlayerId,
         hostName,
         playlistId,
         log,
-        undoHistory,
-      },
+        undoHistory: [],
+        initialGame,
+        events,
+        headEventId,
+        resetReturnEventId,
+        legacyLog,
+      } as GameSessionState,
       finalResults,
     );
     void sessionSync
@@ -505,76 +652,268 @@ export const ClubWorkspace = ({
       .catch(() => undefined);
   }, [
     finalResults,
-    game,
+    events,
+    headEventId,
     hostName,
     hostPlayerId,
+    initialGame,
+    legacyLog,
     log,
     playlistId,
     refreshPlayers,
+    resetReturnEventId,
     sessionName,
     sessionSync,
     setupSession,
-    undoHistory,
   ]);
 
-  const logEvent = useCallback((type: string, payload: Record<string, unknown>) => {
-    if (isAuxiliaryEvent(type)) return;
-    sequenceRef.current += 1;
-    const entry: LocalLogEntry = {
-      id: createRandomId(),
-      sequence: sequenceRef.current,
-      type,
-      phase: phaseRef.current,
-      payload,
-      secret: isSecretEvent(type, payload),
-      createdAt: new Date().toISOString(),
-    };
-    const nextLog = [...logRef.current, entry];
-    logRef.current = nextLog;
-    setLog(nextLog);
-  }, []);
+  const logEvent = useCallback(
+    (type: string, payload: Record<string, unknown>) => {
+      if (
+        sessionSync.normalizing ||
+        previewTargetEventIdRef.current !== null ||
+        isAuxiliaryEvent(type)
+      )
+        return;
+      const sequence =
+        Math.max(
+          0,
+          ...legacyLogRef.current.map((entry) => entry.sequence),
+          ...eventsRef.current.map((entry) => entry.sequence),
+        ) + 1;
+      const entry: LocalLogEntry = {
+        id: createRandomId(),
+        sequence,
+        type,
+        phase: phaseRef.current,
+        payload,
+        secret: isSecretEvent(type, payload),
+        createdAt: new Date().toISOString(),
+      };
+      const nextLog = [...legacyLogRef.current, entry];
+      legacyLogRef.current = nextLog;
+      setLegacyLog(nextLog);
+    },
+    [sessionSync],
+  );
 
   const changeGame = (next: GameState) => {
-    if (game !== null) {
-      if (next.day > game.day) {
-        setUndoHistory([]);
-      } else {
-        const snapshot: UndoSnapshot = {
-          game,
-          logLength: logRef.current.length,
-          sequence: sequenceRef.current,
-        };
-        setUndoHistory((current) => [...current, snapshot].slice(-3));
-      }
-    }
-    phaseRef.current = next.phase;
+    if (sessionSync.normalizing || previewTargetEventIdRef.current !== null) return;
     setGame(next);
-    if (next.phase === "finished" && game?.phase !== "finished") {
-      setFinalResults(null);
-      setFinishGameState("ready");
-    } else if (next.phase !== "finished") {
-      setFinalResults(null);
-      setFinishGameState("ready");
-    }
   };
+
+  const acceptGameEvent = useCallback(
+    (draft: CanonicalGameEventDraft) => {
+      if (sessionSync.normalizing || previewTargetEventIdRef.current !== null) return;
+      const baseline = initialGameRef.current;
+      const before = canonicalGameRef.current;
+      const gameId = sessionSync.gameId;
+      if (baseline === null || before === null || gameId === null) return;
+      const sequence = Math.max(0, ...eventsRef.current.map((entry) => entry.sequence)) + 1;
+      const created = createGameLogEntry({
+        gameId,
+        id: createRandomId(),
+        sequence,
+        parentEventId: headEventIdRef.current,
+        createdAt: new Date().toISOString(),
+        before,
+        draft,
+      });
+      const displayedAfter =
+        draft.type === "foul.issued" && game !== null && created.after.phase === before.phase
+          ? {
+              ...created.after,
+              currentTurnIndex: game.currentTurnIndex,
+              voteAssignments: game.voteAssignments,
+              carCrashVotes: game.carCrashVotes,
+            }
+          : created.after;
+      const nextEvents = [...eventsRef.current, created.entry];
+      eventsRef.current = nextEvents;
+      headEventIdRef.current = created.entry.id;
+      canonicalGameRef.current = created.after;
+      phaseRef.current = created.after.phase;
+      setEvents(nextEvents);
+      setHeadEventId(created.entry.id);
+      setResetReturnEventId(null);
+      if (draft.type !== "game.started" && draft.type !== "game.completed") {
+        setUndoBudget((current) => (created.after.day > before.day ? 0 : Math.min(3, current + 1)));
+      }
+      setGame(displayedAfter);
+      if (created.after.phase !== "finished") {
+        setFinalResults(null);
+        setFinishGameState("ready");
+      }
+    },
+    [game, sessionSync],
+  );
+
+  const moveHeadLocally = useCallback(
+    (targetEventId: string | null) => {
+      const baseline = initialGameRef.current;
+      if (baseline === null) return;
+      gameScreenMutationGenerationRef.current += 1;
+      const nextGame =
+        targetEventId === null
+          ? baseline.game
+          : replayToEvent(baseline, eventsRef.current, targetEventId);
+      headEventIdRef.current = targetEventId;
+      canonicalGameRef.current = nextGame;
+      phaseRef.current = nextGame.phase;
+      setHeadEventId(targetEventId);
+      setGame(nextGame);
+      const target = eventsRef.current.find(({ id }) => id === targetEventId);
+      if (
+        nextGame.phase === "finished" &&
+        target?.type === "game.completed" &&
+        hostPlayerId !== null
+      ) {
+        setFinalResults(
+          buildFinalGameResults(nextGame, new Date(target?.createdAt ?? Date.now()), hostPlayerId),
+        );
+        setFinishGameState("saved");
+      } else {
+        setFinalResults(null);
+        setFinishGameState("ready");
+      }
+    },
+    [hostPlayerId],
+  );
+
+  const persistHeadMove = useCallback(
+    async (
+      targetEventId: string,
+      nextResetReturnEventId: string | null,
+      nextResults: FinalGameResults | null,
+    ): Promise<boolean> => {
+      const baseline = initialGameRef.current;
+      if (baseline === null) return false;
+      sessionSync.enqueue(
+        sessionName,
+        {
+          setup: setupSession,
+          game: null,
+          hostPlayerId,
+          hostName,
+          playlistId,
+          log: legacyLogRef.current,
+          undoHistory: [],
+          initialGame: baseline,
+          events: eventsRef.current,
+          headEventId: targetEventId,
+          resetReturnEventId: nextResetReturnEventId,
+          legacyLog: legacyLogRef.current,
+        } as GameSessionState,
+        nextResults,
+      );
+      try {
+        await sessionSync.flush();
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [hostName, hostPlayerId, playlistId, sessionName, sessionSync, setupSession],
+  );
+
+  const reopenLastAcceptedEvent = useCallback(async () => {
+    const head = eventsRef.current.find(({ id }) => id === headEventIdRef.current);
+    if (
+      head?.type !== "mafia.shots-resolved" ||
+      head.parentEventId === null ||
+      !(await persistHeadMove(head.parentEventId, resetReturnEventId, null))
+    ) {
+      return;
+    }
+    moveHeadLocally(head.parentEventId);
+  }, [moveHeadLocally, persistHeadMove, resetReturnEventId]);
+
+  const previewEventState = useCallback(
+    (eventId: string) => {
+      const baseline = initialGameRef.current;
+      if (baseline === null) return;
+      liveGameBeforePreviewRef.current = game;
+      gameScreenMutationGenerationRef.current += 1;
+      previewTargetEventIdRef.current = eventId;
+      setPreviewTargetEventId(eventId);
+      setPreviewGame(replayToEvent(baseline, eventsRef.current, eventId));
+      setActiveDrawer(null);
+    },
+    [game],
+  );
+
+  const exitPreview = useCallback(() => {
+    gameScreenMutationGenerationRef.current += 1;
+    previewTargetEventIdRef.current = null;
+    setPreviewTargetEventId(null);
+    setPreviewGame(null);
+    liveGameBeforePreviewRef.current = null;
+  }, []);
+
+  const resetToEventState = useCallback(
+    async (eventId: string) => {
+      const branch = getActiveBranch(eventsRef.current, headEventIdRef.current);
+      const targetIndex = branch.findIndex(({ id }) => id === eventId);
+      if (targetIndex < 0) return;
+      const futureCount = branch.length - targetIndex - 1;
+      const target = branch[targetIndex]!;
+      if (
+        !window.confirm(
+          `Reset the active game to log #${target.sequence}? ${futureCount} later active ${futureCount === 1 ? "action" : "actions"} will leave the current branch. Their history will be preserved.`,
+        )
+      ) {
+        return;
+      }
+      const previousHead = headEventIdRef.current;
+      if (previousHead === null || !(await persistHeadMove(eventId, previousHead, null))) return;
+      gameScreenMutationGenerationRef.current += 1;
+      setResetReturnUndoBudget(undoBudget);
+      moveHeadLocally(eventId);
+      setResetReturnEventId(previousHead);
+      setUndoBudget(0);
+      previewTargetEventIdRef.current = null;
+      setPreviewTargetEventId(null);
+      setPreviewGame(null);
+      liveGameBeforePreviewRef.current = null;
+      setActiveDrawer(null);
+    },
+    [moveHeadLocally, persistHeadMove, undoBudget],
+  );
 
   const finishGame = async () => {
     if (game?.phase !== "finished" || hostPlayerId === null || finishGameState === "saving") return;
-    const results = buildFinalGameResults(game, new Date(), hostPlayerId);
+    acceptGameEvent({
+      type: "game.completed",
+      payload: { winner: game.winner ?? "red" },
+      secret: false,
+    });
+    const completionEvent = eventsRef.current.at(-1);
+    const results = buildFinalGameResults(
+      game,
+      new Date(completionEvent?.createdAt ?? Date.now()),
+      hostPlayerId,
+    );
     setFinishGameState("saving");
     setFinalResults(results);
-    setUndoHistory([]);
     sessionSync.enqueue(
       sessionName,
       {
         setup: setupSession,
-        game,
+        game: initialGame === null ? canonicalGameRef.current : null,
         hostPlayerId,
         hostName,
         playlistId,
-        log,
+        log: [
+          ...legacyLogRef.current,
+          ...getActiveBranch(eventsRef.current, headEventIdRef.current).map(toLocalLogEntry),
+        ],
         undoHistory: [],
-      },
+        initialGame: initialGameRef.current,
+        events: eventsRef.current,
+        headEventId: headEventIdRef.current,
+        resetReturnEventId,
+        legacyLog: legacyLogRef.current,
+      } as GameSessionState,
       results,
     );
     try {
@@ -588,20 +927,29 @@ export const ClubWorkspace = ({
     }
   };
 
-  const undoLastGameAction = () => {
-    const snapshot = undoHistory.at(-1);
-    if (snapshot === undefined) return;
-    setUndoHistory((current) => current.slice(0, -1));
-    phaseRef.current = snapshot.game.phase;
-    setGame(snapshot.game);
-    if (snapshot.game.phase !== "finished") {
-      setFinalResults(null);
-      setFinishGameState("ready");
+  const undoLastGameAction = async () => {
+    if (resetReturnEventId !== null) {
+      const baseline = initialGameRef.current;
+      const target = eventsRef.current.find(({ id }) => id === resetReturnEventId);
+      if (baseline === null || target === undefined || hostPlayerId === null) return;
+      const restoredGame = replayToEvent(baseline, eventsRef.current, resetReturnEventId);
+      const restoredResults = buildFinalGameResults(
+        restoredGame,
+        new Date(target.createdAt),
+        hostPlayerId,
+      );
+      if (!(await persistHeadMove(resetReturnEventId, null, restoredResults))) return;
+      moveHeadLocally(resetReturnEventId);
+      setResetReturnEventId(null);
+      setUndoBudget(resetReturnUndoBudget);
+      setResetReturnUndoBudget(0);
+      return;
     }
-    const restoredLog = logRef.current.slice(0, snapshot.logLength);
-    logRef.current = restoredLog;
-    setLog(restoredLog);
-    sequenceRef.current = snapshot.sequence;
+    const entry = undoHistory.at(-1);
+    if (entry?.parentEventId == null) return;
+    if (!(await persistHeadMove(entry.parentEventId, null, null))) return;
+    moveHeadLocally(entry.parentEventId);
+    setUndoBudget((current) => Math.max(0, current - 1));
   };
 
   const handleMusicState = useCallback((state: YouTubePlaybackState) => {
@@ -703,8 +1051,36 @@ export const ClubWorkspace = ({
         session.state,
         session.results,
       );
+      gameScreenMutationGenerationRef.current += 1;
       setSessionName(session.name);
-      setGame(restored.game);
+      const restoredGame =
+        restored.initialGame === null
+          ? restored.game
+          : restored.headEventId === null
+            ? restored.initialGame.game
+            : replayGameLog(
+                restored.initialGame,
+                getActiveBranch(restored.events, restored.headEventId),
+              ).game;
+      setGame(restoredGame);
+      setInitialGame(restored.initialGame);
+      initialGameRef.current = restored.initialGame;
+      setEvents(restored.events);
+      eventsRef.current = restored.events;
+      setHeadEventId(restored.headEventId);
+      headEventIdRef.current = restored.headEventId;
+      canonicalGameRef.current = restoredGame;
+      setLegacyLog(restored.legacyLog);
+      legacyLogRef.current = restored.legacyLog;
+      setResetReturnEventId(restored.resetReturnEventId);
+      setUndoBudget(
+        restored.resetReturnEventId === null
+          ? getRemainingUndoBudget(restored.events, restored.headEventId)
+          : 0,
+      );
+      setResetReturnUndoBudget(
+        getRemainingUndoBudget(restored.events, restored.resetReturnEventId),
+      );
       setSetupSession(restored.setup);
       setHostPlayerId(restored.hostPlayerId);
       setHostName(restored.hostName);
@@ -712,11 +1088,7 @@ export const ClubWorkspace = ({
       setFinalResults(session.results);
       setFinishGameState(session.results === null ? "ready" : "saved");
       persistedResultsRef.current = session.results;
-      setLog(restored.log);
-      logRef.current = restored.log;
-      setUndoHistory(restored.undoHistory);
-      sequenceRef.current = restored.log.at(-1)?.sequence ?? 0;
-      phaseRef.current = restored.game?.phase ?? setupPhase(restored.setup?.step);
+      phaseRef.current = restoredGame?.phase ?? setupPhase(restored.setup?.step);
       setSetupInstanceKey((key) => key + 1);
       setView("game");
       setAvailabilityScreenOpen(false);
@@ -771,10 +1143,23 @@ export const ClubWorkspace = ({
     setSetupInstanceKey((key) => key + 1);
     setView("game");
     setAvailabilityScreenOpen(false);
-    setUndoHistory([]);
-    setLog([]);
-    logRef.current = [];
-    sequenceRef.current = 0;
+    setInitialGame(null);
+    initialGameRef.current = null;
+    setEvents([]);
+    eventsRef.current = [];
+    setHeadEventId(null);
+    headEventIdRef.current = null;
+    canonicalGameRef.current = null;
+    setLegacyLog([]);
+    legacyLogRef.current = [];
+    setResetReturnEventId(null);
+    setUndoBudget(0);
+    setResetReturnUndoBudget(0);
+    gameScreenMutationGenerationRef.current += 1;
+    previewTargetEventIdRef.current = null;
+    setPreviewTargetEventId(null);
+    setPreviewGame(null);
+    liveGameBeforePreviewRef.current = null;
     phaseRef.current = "setup-players";
   };
 
@@ -834,6 +1219,7 @@ export const ClubWorkspace = ({
       window.localStorage.clear();
       window.sessionStorage.clear();
       setCenterShadowVisible(true);
+      setDayNightIndicatorVisible(false);
       setAvailablePlayerIds(new Set());
       resetLocalState();
       window.localStorage.clear();
@@ -880,7 +1266,8 @@ export const ClubWorkspace = ({
   const persistenceState = sessionSync.status;
   const setupStep = setupSession?.step ?? "players";
   const roleGiveawayActive = view === "game" && game === null && setupStep === "roles";
-  const showApplicationStatus = view === "players" || (game === null && !roleGiveawayActive);
+  const showApplicationStatus =
+    view !== "timeline" && (view === "players" || (game === null && !roleGiveawayActive));
   const applicationStatusTitle =
     view === "players"
       ? "Players & statistics"
@@ -910,7 +1297,7 @@ export const ClubWorkspace = ({
         view === "game" && (game !== null || roleGiveawayActive)
           ? " has-live-game table-layout-shell"
           : ""
-      }${game !== null ? " has-timer-rail" : ""}${
+      }${game !== null && view !== "timeline" ? " has-timer-rail" : ""}${
         showApplicationStatus ? " has-top-level-screen" : ""
       }${isFullscreen ? " is-fullscreen" : ""}${centerShadowVisible ? "" : " is-center-shadow-hidden"}`}
       data-background-shade={backgroundShade}
@@ -937,99 +1324,126 @@ export const ClubWorkspace = ({
           <div className="phase-banner">{applicationStatusPhase}</div>
         </header>
       ) : null}
-      <div className="app-fixed-toolbar" aria-label="Application tools">
-        <button
-          type="button"
-          className="club-exit-button icon-toolbar-button"
-          aria-label={`Choose another club · current club ${club.name}`}
-          onClick={onExit}
-        >
-          <DoorOpen aria-hidden="true" />
-        </button>
-        <div
-          className="save-indicator icon-toolbar-button"
-          data-status={persistenceState}
-          role="status"
-          aria-label={`Save status: ${persistenceState}`}
-          title={`Save status: ${persistenceState}`}
-        >
-          <Save aria-hidden="true" />
+      {previewGame === null && view !== "timeline" ? (
+        <div className="app-fixed-toolbar" aria-label="Application tools">
+          <button
+            type="button"
+            className="club-exit-button icon-toolbar-button"
+            aria-label={`Choose another club · current club ${club.name}`}
+            onClick={onExit}
+          >
+            <DoorOpen aria-hidden="true" />
+          </button>
+          <div
+            className="save-indicator icon-toolbar-button"
+            data-status={persistenceState}
+            role="status"
+            aria-label={`Save status: ${persistenceState}`}
+            title={`Save status: ${persistenceState}`}
+          >
+            <Save aria-hidden="true" />
+          </div>
+          <button
+            type="button"
+            className="fullscreen-button icon-toolbar-button"
+            aria-label={
+              fullscreenAvailable
+                ? isFullscreen
+                  ? "Exit fullscreen"
+                  : "Enter fullscreen"
+                : "Fullscreen unavailable"
+            }
+            aria-pressed={isFullscreen}
+            disabled={!fullscreenAvailable}
+            onClick={() => void toggleFullscreen()}
+          >
+            {isFullscreen ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
+          </button>
+          <button
+            type="button"
+            className="undo-button icon-toolbar-button"
+            aria-label={`Undo last action · ${undoCount} available`}
+            disabled={undoCount === 0}
+            onClick={undoLastGameAction}
+          >
+            <Undo2 aria-hidden="true" />
+            <span className="toolbar-count">{undoCount}</span>
+          </button>
+          <button
+            type="button"
+            className="privacy-button icon-toolbar-button"
+            aria-label={privacyHidden ? "Show private info" : "Hide private info"}
+            aria-pressed={privacyHidden}
+            onClick={() => setPrivacyHidden((hidden) => !hidden)}
+          >
+            {privacyHidden ? <Eye aria-hidden="true" /> : <EyeOff aria-hidden="true" />}
+          </button>
+          <button
+            type="button"
+            className="log-toolbar-button icon-toolbar-button"
+            aria-label={activeDrawer === "log" ? "Close game log" : "Open game log"}
+            aria-expanded={activeDrawer === "log"}
+            onClick={() => setActiveDrawer((drawer) => (drawer === "log" ? null : "log"))}
+          >
+            <ListTree aria-hidden="true" />
+            <span className="toolbar-count">{log.length}</span>
+          </button>
+          <button
+            type="button"
+            className="dev-toolbar-button icon-toolbar-button"
+            aria-label={activeDrawer === "dev" ? "Close developer menu" : "Open developer menu"}
+            aria-expanded={activeDrawer === "dev"}
+            onClick={() => setActiveDrawer((drawer) => (drawer === "dev" ? null : "dev"))}
+          >
+            <Wrench aria-hidden="true" />
+          </button>
         </div>
-        <button
-          type="button"
-          className="fullscreen-button icon-toolbar-button"
-          aria-label={
-            fullscreenAvailable
-              ? isFullscreen
-                ? "Exit fullscreen"
-                : "Enter fullscreen"
-              : "Fullscreen unavailable"
-          }
-          aria-pressed={isFullscreen}
-          disabled={!fullscreenAvailable}
-          onClick={() => void toggleFullscreen()}
-        >
-          {isFullscreen ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
-        </button>
-        <button
-          type="button"
-          className="undo-button icon-toolbar-button"
-          aria-label={`Undo last action · ${undoHistory.length} available`}
-          disabled={undoHistory.length === 0}
-          onClick={undoLastGameAction}
-        >
-          <Undo2 aria-hidden="true" />
-          <span className="toolbar-count">{undoHistory.length}</span>
-        </button>
-        <button
-          type="button"
-          className="privacy-button icon-toolbar-button"
-          aria-label={privacyHidden ? "Show private info" : "Hide private info"}
-          aria-pressed={privacyHidden}
-          onClick={() => setPrivacyHidden((hidden) => !hidden)}
-        >
-          {privacyHidden ? <Eye aria-hidden="true" /> : <EyeOff aria-hidden="true" />}
-        </button>
-        <button
-          type="button"
-          className="log-toolbar-button icon-toolbar-button"
-          aria-label={activeDrawer === "log" ? "Close game log" : "Open game log"}
-          aria-expanded={activeDrawer === "log"}
-          onClick={() => setActiveDrawer((drawer) => (drawer === "log" ? null : "log"))}
-        >
-          <ListTree aria-hidden="true" />
-          <span className="toolbar-count">{log.length}</span>
-        </button>
-        <button
-          type="button"
-          className="dev-toolbar-button icon-toolbar-button"
-          aria-label={activeDrawer === "dev" ? "Close developer menu" : "Open developer menu"}
-          aria-expanded={activeDrawer === "dev"}
-          onClick={() => setActiveDrawer((drawer) => (drawer === "dev" ? null : "dev"))}
-        >
-          <Wrench aria-hidden="true" />
-        </button>
-      </div>
-      {activeDrawer === "log" ? (
+      ) : null}
+      {previewGame === null && view !== "timeline" && activeDrawer === "log" ? (
         <aside className="app-drawer game-log-drawer" role="dialog" aria-label="Game log">
           <h2>Log</h2>
           <div className="game-log-list">
             {log.length === 0 ? <p>No actions recorded yet.</p> : null}
-            {[...log].reverse().map((entry) => (
-              <article key={entry.id}>
-                <span className="log-sequence">#{entry.sequence}</span>
-                <div>
-                  <strong>{entry.type}</strong>
-                  <small>
-                    {entry.phase} · {new Date(entry.createdAt).toLocaleTimeString()}
-                  </small>
-                </div>
-              </article>
-            ))}
+            {[...log].reverse().map((entry) => {
+              const previewable = events.some(({ id }) => id === entry.id);
+              return (
+                <article key={entry.id}>
+                  <span className="log-sequence">#{entry.sequence}</span>
+                  <div>
+                    <strong>{entry.type}</strong>
+                    <small>
+                      {entry.phase} · {new Date(entry.createdAt).toLocaleTimeString()}
+                    </small>
+                    <div className="log-state-actions">
+                      <button
+                        type="button"
+                        disabled={!previewable}
+                        aria-label={`Preview state after log #${entry.sequence}`}
+                        onClick={() => previewEventState(entry.id)}
+                      >
+                        Preview state
+                      </button>
+                      <button
+                        type="button"
+                        className="danger-action"
+                        disabled={!previewable}
+                        aria-label={`Reset game to state after log #${entry.sequence}`}
+                        onClick={() => resetToEventState(entry.id)}
+                      >
+                        Reset
+                      </button>
+                    </div>
+                    {!previewable ? (
+                      <small>State preview unavailable for this legacy entry.</small>
+                    ) : null}
+                  </div>
+                </article>
+              );
+            })}
           </div>
         </aside>
       ) : null}
-      {activeDrawer === "dev" ? (
+      {previewGame === null && view !== "timeline" && activeDrawer === "dev" ? (
         <aside
           ref={devDrawerRef}
           className="app-drawer dev-menu-drawer"
@@ -1083,6 +1497,16 @@ export const ClubWorkspace = ({
             >
               {view === "players" ? "Game screen" : "Players screen"}
             </button>
+            <button
+              type="button"
+              onClick={() => {
+                viewBeforeTimelineRef.current = view === "players" ? "players" : "game";
+                setActiveDrawer(null);
+                setView("timeline");
+              }}
+            >
+              Past game timeline
+            </button>
             {game === null && setupSession === null && playlistId === defaultPlaylistId ? null : (
               <button type="button" className="danger-action" onClick={() => void clearGameState()}>
                 Clear game state
@@ -1103,9 +1527,81 @@ export const ClubWorkspace = ({
             >
               {centerShadowVisible ? "Hide table center shadow" : "Show table center shadow"}
             </button>
-            <button type="button" onClick={() => setMusicReloadRequest((request) => request + 1)}>
-              Reload music player
+            <button
+              type="button"
+              className="dev-setting-toggle"
+              aria-label={`${dayNightIndicatorVisible ? "Hide" : "Show"} Day/night table indication`}
+              aria-pressed={dayNightIndicatorVisible}
+              onClick={() => {
+                setDayNightIndicatorVisible((visible) => {
+                  const next = !visible;
+                  window.localStorage.setItem(
+                    dayNightIndicatorStorageKey,
+                    next ? "visible" : "hidden",
+                  );
+                  return next;
+                });
+              }}
+            >
+              <span>
+                <strong>Day/night indication</strong>
+                <small>Animated ambient light on the table</small>
+              </span>
+              <span className="dev-setting-state">{dayNightIndicatorVisible ? "On" : "Off"}</span>
             </button>
+            <button
+              type="button"
+              aria-expanded={musicSetupOpen}
+              aria-controls="dev-music-setup"
+              onClick={() => setMusicSetupOpen((open) => !open)}
+            >
+              {musicSetupOpen ? "Hide music player setup" : "Music player setup"}
+            </button>
+            {musicSetupOpen ? (
+              <section
+                id="dev-music-setup"
+                className="dev-music-setup"
+                aria-label="Music player setup"
+              >
+                <div className={`music-status ${musicState === "playing" ? "is-playing" : ""}`}>
+                  <span className="status-dot" />
+                  <strong>{musicLabel[musicState]}</strong>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setMusicReloadRequest((request) => request + 1)}
+                >
+                  Reload music player
+                </button>
+                <fieldset className="volume-mode-setup">
+                  <legend>Volume modes</legend>
+                  {musicVolumePresets.map((volume, index) => (
+                    <label key={index}>
+                      <span>{index === 0 ? "Low" : "High"}</span>
+                      <input
+                        type="number"
+                        min="1"
+                        max="100"
+                        value={volume}
+                        onChange={(event) => {
+                          const nextValue = Math.min(
+                            100,
+                            Math.max(1, Number(event.target.value) || 1),
+                          );
+                          const presets: readonly [number, number] =
+                            index === 0
+                              ? [nextValue, musicVolumePresets[1]]
+                              : [musicVolumePresets[0], nextValue];
+                          setMusicVolumePresets(presets);
+                          setActiveMusicVolume(presets[1]);
+                        }}
+                      />
+                    </label>
+                  ))}
+                </fieldset>
+                <AccountPlaylistPicker playlistId={playlistId} onPlaylistIdChange={setPlaylistId} />
+              </section>
+            ) : null}
             <button
               type="button"
               className="danger-action"
@@ -1182,7 +1678,14 @@ export const ClubWorkspace = ({
         </aside>
       ) : null}
 
-      {view === "players" ? (
+      {view === "timeline" ? (
+        <GameTimelineScreen
+          clubId={club.id}
+          onBack={() => setView(viewBeforeTimelineRef.current)}
+          privacyHidden={privacyHidden}
+          onTogglePrivacy={() => setPrivacyHidden((hidden) => !hidden)}
+        />
+      ) : view === "players" ? (
         <>
           {rosterGateError !== null ? (
             <p className="roster-gate-error" role="alert">
@@ -1232,58 +1735,103 @@ export const ClubWorkspace = ({
             }}
             onEvent={logEvent}
             onComplete={(next, selectedHostPlayerId, selectedHostName) => {
+              const baseline: InitialGameBaseline = { replayVersion: 1, game: next };
+              const gameId = sessionSync.gameId ?? createRandomId();
+              sessionSync.ensureGameId(gameId);
+              const sequence =
+                Math.max(0, ...legacyLogRef.current.map((entry) => entry.sequence)) + 1;
+              const started = createGameLogEntry({
+                gameId,
+                id: createRandomId(),
+                sequence,
+                parentEventId: null,
+                createdAt: new Date().toISOString(),
+                before: next,
+                draft: { type: "game.checkpointed", payload: {}, secret: true },
+              });
+              initialGameRef.current = baseline;
+              eventsRef.current = [started.entry];
+              headEventIdRef.current = started.entry.id;
+              canonicalGameRef.current = next;
+              setInitialGame(baseline);
+              setEvents([started.entry]);
+              setHeadEventId(started.entry.id);
+              setResetReturnEventId(null);
+              setUndoBudget(0);
+              setResetReturnUndoBudget(0);
               phaseRef.current = next.phase;
               setSetupSession(null);
               setHostPlayerId(selectedHostPlayerId);
               setHostName(selectedHostName);
               setFinalResults(null);
-              setUndoHistory([]);
               setGame(next);
             }}
           />
         </>
       ) : (
         <GameScreen
-          game={game}
+          key={`${previewGame === null ? "live" : "preview"}-${renderedGameScreenMutationGeneration}`}
+          game={previewGame ?? game}
           gameName={sessionName}
           hostName={hostName ?? "Host"}
-          onGameChange={changeGame}
-          onEvent={logEvent}
+          onGameChange={(nextGame) => {
+            if (canApplyGameScreenMutation()) changeGame(nextGame);
+          }}
+          onEvent={(type, payload) => {
+            if (canApplyGameScreenMutation()) logEvent(type, payload);
+          }}
+          onAcceptedEvent={(draft) => {
+            if (canApplyGameScreenMutation()) acceptGameEvent(draft);
+          }}
+          onReopenLastAcceptedEvent={() => {
+            if (canApplyGameScreenMutation()) reopenLastAcceptedEvent();
+          }}
+          mode={previewGame === null ? "live" : "preview"}
+          previewSequence={previewEntry?.sequence}
+          onExitPreview={exitPreview}
+          onResetPreview={() => {
+            if (previewTargetEventId !== null) resetToEventState(previewTargetEventId);
+          }}
           privacyHidden={privacyHidden}
+          dayNightIndicatorVisible={dayNightIndicatorVisible}
           clubLogo={club.headerLogo}
           clubName={club.name}
           finishGameState={finishGameState}
-          onFinishGame={() => void finishGame()}
+          onFinishGame={() => {
+            if (canApplyGameScreenMutation()) void finishGame();
+          }}
         />
       )}
 
-      <MusicDock
-        expanded={musicPlayerExpanded}
-        hidden={view === "players"}
-        isPlaying={musicState === "playing"}
-        canFadeIn={musicState === "paused"}
-        onFadeIn={() => {
-          void musicRef.current?.fadeIn();
-        }}
-        onQuickFadeOut={() => {
-          void musicRef.current?.quickFadeOut();
-        }}
-        onSlowFadeOut={() => {
-          void musicRef.current?.slowFadeOut();
-        }}
-      >
-        <YouTubePlaylistPlayer
-          ref={musicRef}
-          playlistId={playlistId}
-          onStateChange={handleMusicState}
+      {previewGame === null ? (
+        <MusicDock
           expanded={musicPlayerExpanded}
-          onExpandedChange={setMusicPlayerExpanded}
-          volumePresets={musicVolumePresets}
-          activeVolume={activeMusicVolume}
-          onVolumeChange={setActiveMusicVolume}
-          reloadRequest={musicReloadRequest}
-        />
-      </MusicDock>
+          hidden={view === "players" || view === "timeline" || previewGame !== null}
+          isPlaying={musicState === "playing"}
+          canFadeIn={musicState === "paused"}
+          onFadeIn={() => {
+            void musicRef.current?.fadeIn();
+          }}
+          onQuickFadeOut={() => {
+            void musicRef.current?.quickFadeOut();
+          }}
+          onSlowFadeOut={() => {
+            void musicRef.current?.slowFadeOut();
+          }}
+        >
+          <YouTubePlaylistPlayer
+            ref={musicRef}
+            playlistId={playlistId}
+            onStateChange={handleMusicState}
+            expanded={musicPlayerExpanded}
+            onExpandedChange={setMusicPlayerExpanded}
+            volumePresets={musicVolumePresets}
+            activeVolume={activeMusicVolume}
+            onVolumeChange={setActiveMusicVolume}
+            reloadRequest={musicReloadRequest}
+          />
+        </MusicDock>
+      ) : null}
     </div>
   );
 };
@@ -1388,6 +1936,7 @@ export const App = () => {
     try {
       await deleteClub(club.id);
       window.sessionStorage.removeItem(gameSessionStorageKey(club.id));
+      window.sessionStorage.removeItem(legacyGameSessionStorageKey(club.id));
       window.localStorage.removeItem(availablePlayerStorageKey(club.id));
       setClubs((current) => current.filter(({ id }) => id !== club.id));
       setSelectedClub(null);

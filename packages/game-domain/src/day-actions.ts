@@ -1,4 +1,5 @@
 import { evaluateVictory, markPlayerInactive } from "./game.js";
+import { beginNight } from "./night-actions.js";
 import type { CarCrashVoteResult, GameState, VoteResult } from "./types.js";
 
 const currentSpeakerSeat = (game: GameState): number => {
@@ -16,23 +17,41 @@ const activeNominations = (game: GameState): GameState["nominations"] =>
     )
     .map((nomination, index) => ({ ...nomination, order: index + 1 }));
 
+export const cancelVoting = (
+  game: GameState,
+  votingCancellation: NonNullable<GameState["votingCancellation"]>,
+): GameState => {
+  const cancellablePhases: ReadonlySet<GameState["phase"]> = new Set([
+    "day",
+    "voting",
+    "voting-cancelled",
+    "car-crash",
+    "car-crash-decision",
+    "car-crash-skipped",
+  ]);
+  if (!cancellablePhases.has(game.phase)) {
+    throw new Error(`Voting cannot be cancelled from phase ${game.phase}`);
+  }
+  return {
+    ...game,
+    phase: "voting-cancelled",
+    voteAssignments: {},
+    votingRound: undefined,
+    carCrashSeats: undefined,
+    carCrashVotes: undefined,
+    votingCancellation,
+  };
+};
+
+export const skipVoting = (game: GameState): GameState =>
+  cancelVoting(game, { reason: "host-skipped" });
+
 const completeDay = (game: GameState): GameState => {
   const nominations = activeNominations(game);
-  if (game.redCardIssuedThisDay === true || nominations.length === 0) {
-    return {
-      ...game,
-      phase: "night-mafia",
-      nominations: [],
-      voteAssignments: {},
-      shotAssignments: {},
-      goodbyeSeats: undefined,
-      goodbyeNext: undefined,
-      nightResult: undefined,
-      dayNotice: undefined,
-      redCardIssuedThisDay: undefined,
-      checkResult: undefined,
-    };
+  if (game.redCardIssuedThisDay === true) {
+    return cancelVoting({ ...game, nominations }, { reason: "red-card" });
   }
+  if (nominations.length === 0) return beginNight({ ...game, nominations });
   const voting: GameState = {
     ...game,
     phase: "voting",
@@ -137,18 +156,25 @@ export const completeCurrentTurn = (game: GameState): GameState => {
 };
 
 export const redCard = (game: GameState, seat: number): GameState => {
-  const nightPhases: ReadonlySet<GameState["phase"]> = new Set([
+  const allowedPhases: ReadonlySet<GameState["phase"]> = new Set([
+    "day",
+    "voting",
+    "voting-cancelled",
+    "car-crash",
+    "car-crash-decision",
+    "car-crash-skipped",
+    "goodbye-speech",
+    "best-move",
+    "night-mafia",
+    "night-mafia-result",
     "night-don",
     "night-don-result",
     "night-sheriff",
     "night-sheriff-result",
     "night-resolution",
   ]);
-  if (game.phase === "night-mafia" || game.phase === "night-mafia-result") {
-    throw new Error("Red cards are not accepted while Mafia is shooting");
-  }
-  if (game.phase !== "day" && !nightPhases.has(game.phase)) {
-    throw new Error("Red cards are only accepted during the day or night");
+  if (game.day < 1 || !allowedPhases.has(game.phase)) {
+    throw new Error("Red cards are only accepted during active play from day one");
   }
   const afterRedCard = markPlayerInactive(game, seat, "red-carded");
   const updated: GameState = {
@@ -158,6 +184,15 @@ export const redCard = (game: GameState, seat: number): GameState => {
   };
   const winner = evaluateVictory(updated.players);
   if (winner !== null) return { ...updated, phase: "finished", winner };
+  if (
+    game.phase === "voting" ||
+    game.phase === "voting-cancelled" ||
+    game.phase === "car-crash" ||
+    game.phase === "car-crash-decision" ||
+    game.phase === "car-crash-skipped"
+  ) {
+    return cancelVoting(updated, { reason: "red-card" });
+  }
   if (game.phase === "night-don") {
     const hasDon = updated.players.some(
       ({ role, status }) => role === "don" && status === "active",
@@ -226,6 +261,31 @@ export const assignVote = (
   };
 };
 
+export const toggleVote = (
+  game: GameState,
+  voterSeat: number,
+  candidateSeat: number,
+): GameState => {
+  const assignedCandidateSeat = game.voteAssignments[voterSeat];
+  if (assignedCandidateSeat === undefined) return assignVote(game, voterSeat, candidateSeat);
+  if (game.phase !== "voting") {
+    throw new Error("Votes can only be changed during voting");
+  }
+  const voter = game.players.find(({ seat }) => seat === voterSeat);
+  if (voter === undefined || voter.status !== "active") {
+    throw new Error("Only active players may change votes");
+  }
+  if (candidateSeat !== getCurrentVotingCandidateSeat(game)) {
+    throw new Error("Votes can only be changed for the current voting candidate");
+  }
+  if (assignedCandidateSeat !== candidateSeat) {
+    throw new Error(`Seat ${voterSeat} has already voted for another candidate`);
+  }
+  const voteAssignments = { ...game.voteAssignments };
+  delete voteAssignments[voterSeat];
+  return { ...game, voteAssignments };
+};
+
 export const getCurrentVotingCandidateSeat = (game: GameState): number => {
   if (game.phase !== "voting") {
     throw new Error("There is no active voting candidate outside voting");
@@ -273,13 +333,30 @@ export const resolveVote = (game: GameState): VoteResult => {
     throw new Error("A vote can only be resolved during voting");
   }
   getCurrentVotingCandidateSeat(game);
-  if (game.currentTurnIndex !== game.nominations.length - 1) {
+  if (game.currentTurnIndex !== game.turnOrder.length - 1) {
     throw new Error("Voting can only resolve on the final candidate");
   }
   const eligibleVoterSeats = game.players
     .filter(({ status }) => status === "active")
     .map(({ seat }) => seat);
-  const assignedVoterSeats = new Set(Object.keys(game.voteAssignments).map(Number));
+  const eligibleVoterSeatSet = new Set(eligibleVoterSeats);
+  const nominatedSeatSet = new Set(game.turnOrder);
+  const voteEntries = Object.entries(game.voteAssignments);
+  const assignedVoterSeats = new Set<number>();
+  for (const [voterSeatKey, candidateSeat] of voteEntries) {
+    const voterSeat = Number(voterSeatKey);
+    if (!Number.isSafeInteger(voterSeat) || voterSeat < 1 || String(voterSeat) !== voterSeatKey) {
+      throw new Error("Vote assignment keys must use canonical seat numbers");
+    }
+    if (!eligibleVoterSeatSet.has(voterSeat)) {
+      throw new Error("Only active players may participate in voting");
+    }
+    if (candidateSeat === undefined) continue;
+    if (!Number.isSafeInteger(candidateSeat) || !nominatedSeatSet.has(candidateSeat)) {
+      throw new Error("Every vote must target a nominated player");
+    }
+    assignedVoterSeats.add(voterSeat);
+  }
   if (
     assignedVoterSeats.size !== eligibleVoterSeats.length ||
     eligibleVoterSeats.some((seat) => !assignedVoterSeats.has(seat))
@@ -288,10 +365,8 @@ export const resolveVote = (game: GameState): VoteResult => {
   }
 
   const totals = countVotes(game);
-  const highest = Math.max(...Object.values(totals));
-  const seats = game.nominations
-    .map(({ candidateSeat }) => candidateSeat)
-    .filter((candidateSeat) => totals[candidateSeat] === highest);
+  const highest = Math.max(...game.turnOrder.map((seat) => totals[seat] ?? 0));
+  const seats = game.turnOrder.filter((candidateSeat) => totals[candidateSeat] === highest);
   const previousTiedSeats = new Set(game.carCrashSeats ?? []);
   const repeatedSameTie =
     game.votingRound === "repeat" &&
@@ -399,12 +474,29 @@ export const resolveCarCrashVote = (game: GameState): CarCrashVoteResult => {
   if (game.phase !== "car-crash-decision") {
     throw new Error("Only a car-crash decision can be resolved");
   }
-  const eligibleVoters = game.players.filter(({ status }) => status === "active").length;
+  const eligibleSeats = new Set(
+    game.players.filter(({ status }) => status === "active").map(({ seat }) => seat),
+  );
+  const eligibleVoters = eligibleSeats.size;
   const voteEntries = Object.entries(game.carCrashVotes ?? {});
-  if (voteEntries.some(([voterSeat]) => String(Number(voterSeat)) !== voterSeat)) {
+  if (
+    voteEntries.some(([voterSeatKey]) => {
+      const voterSeat = Number(voterSeatKey);
+      return !Number.isSafeInteger(voterSeat) || String(voterSeat) !== voterSeatKey;
+    })
+  ) {
     throw new Error("Car-crash vote keys must use canonical seat numbers");
   }
-  if (voteEntries.length !== eligibleVoters) {
+  if (voteEntries.some(([voterSeat]) => !eligibleSeats.has(Number(voterSeat)))) {
+    throw new Error("Only active players may vote in a car-crash decision");
+  }
+  if (voteEntries.some(([, vote]) => typeof vote !== "boolean")) {
+    throw new Error("Every car-crash vote must be a boolean decision");
+  }
+  if (
+    voteEntries.length !== eligibleVoters ||
+    [...eligibleSeats].some((seat) => !Object.hasOwn(game.carCrashVotes ?? {}, seat))
+  ) {
     throw new Error("Every eligible player must vote before resolution");
   }
   const yesVotes = voteEntries.filter(([, vote]) => vote === true).length;

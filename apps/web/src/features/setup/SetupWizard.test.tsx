@@ -1,29 +1,9 @@
-import { useState } from "react";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { PlayerProfile } from "../../api/client.js";
 import { SetupWizard } from "./SetupWizard.js";
 import { createSetup, type GameState } from "@mafia/game-domain";
-
-vi.mock("../music/AccountPlaylistPicker.js", () => ({
-  AccountPlaylistPicker: ({
-    playlistId,
-    onPlaylistIdChange,
-  }: {
-    playlistId: string;
-    onPlaylistIdChange: (playlistId: string) => void;
-  }) => (
-    <select
-      aria-label="YouTube Music playlist"
-      value={playlistId}
-      onChange={(event) => onPlaylistIdChange(event.target.value)}
-    >
-      <option value="test-playlist">Test playlist</option>
-      <option value="account-playlist">Account playlist</option>
-    </select>
-  ),
-}));
 
 const availablePlayers: readonly PlayerProfile[] = Array.from({ length: 11 }, (_, index) => ({
   id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
@@ -67,24 +47,21 @@ const Harness = ({
   players?: readonly PlayerProfile[];
   onPopulateDevelopmentPlayers?: () => Promise<readonly PlayerProfile[]>;
   fullscreenTouchPicker?: boolean;
-}) => {
-  const [playlistId, setPlaylistId] = useState("test-playlist");
-  return (
-    <SetupWizard
-      players={players}
-      musicPlaying={false}
-      musicStatus="Stopped"
-      playlistId={playlistId}
-      onPlaylistIdChange={setPlaylistId}
-      onComplete={onComplete}
-      fullscreenTouchPicker={fullscreenTouchPicker}
-      {...({
-        showDevelopmentTools: onPopulateDevelopmentPlayers !== undefined,
-        onPopulateDevelopmentPlayers,
-      } as Record<string, unknown>)}
-    />
-  );
-};
+}) => (
+  <SetupWizard
+    players={players}
+    musicPlaying={false}
+    musicStatus="Stopped"
+    playlistId="test-playlist"
+    onPlaylistIdChange={() => undefined}
+    onComplete={onComplete}
+    fullscreenTouchPicker={fullscreenTouchPicker}
+    {...({
+      showDevelopmentTools: onPopulateDevelopmentPlayers !== undefined,
+      onPopulateDevelopmentPlayers,
+    } as Record<string, unknown>)}
+  />
+);
 
 const choosePlayer = async (
   user: ReturnType<typeof userEvent.setup>,
@@ -118,7 +95,8 @@ describe("SetupWizard", () => {
 
     await fillRoster(user);
 
-    expect(screen.getByRole("button", { name: /set up music.*optional/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /^start game$/i })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: /set up music/i })).not.toBeInTheDocument();
     const firstSeat = screen.getByRole("combobox", { name: "Seat 1 player" });
     await user.click(firstSeat);
     await user.clear(firstSeat);
@@ -177,6 +155,18 @@ describe("SetupWizard", () => {
     expect(screen.getByRole("listbox", { name: "Host suggestions" })).toBeInTheDocument();
     await user.click(screen.getByRole("option", { name: "Player 11" }));
     expect(host).toHaveValue("Player 11");
+  });
+
+  it("clears an assigned seat with a dedicated control", async () => {
+    const user = userEvent.setup();
+    render(<Harness onComplete={() => undefined} />);
+    await fillRoster(user);
+
+    await user.click(screen.getByRole("button", { name: "Clear Seat 1" }));
+
+    expect(screen.getByRole("combobox", { name: "Seat 1 player" })).toHaveValue("");
+    expect(screen.queryByRole("button", { name: "Clear Seat 1" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^start game$/i })).toBeDisabled();
   });
 
   it("assigns ten random seats from saved players without changing the host", async () => {
@@ -263,36 +253,6 @@ describe("SetupWizard", () => {
     random.mockRestore();
   });
 
-  it("publishes the complete music-step snapshot before its durable setup event", async () => {
-    const user = userEvent.setup();
-    const onSessionStateChange = vi.fn();
-    let sessionStateAtEvent: unknown;
-    const onEvent = vi.fn((type: string) => {
-      if (type !== "setup.players-selected") return;
-      sessionStateAtEvent = onSessionStateChange.mock.lastCall?.[0];
-    });
-    render(
-      <SetupWizard
-        players={availablePlayers}
-        musicPlaying={false}
-        musicStatus="Stopped"
-        playlistId="test-playlist"
-        onPlaylistIdChange={() => undefined}
-        onComplete={() => undefined}
-        onEvent={onEvent}
-        onSessionStateChange={onSessionStateChange}
-      />,
-    );
-    await fillRoster(user);
-
-    await user.click(screen.getByRole("button", { name: /set up music.*optional/i }));
-
-    expect(onEvent).toHaveBeenCalledWith("setup.players-selected", expect.any(Object));
-    expect(sessionStateAtEvent).toEqual(
-      expect.objectContaining({ step: "music", setup: expect.any(Object) }),
-    );
-  });
-
   it("disables player assignment when it would leave no player available to host", () => {
     render(<Harness players={availablePlayers.slice(0, 10)} onComplete={() => undefined} />);
 
@@ -335,10 +295,10 @@ describe("SetupWizard", () => {
     expect(seats.map((seat) => (seat as HTMLInputElement).value)).toEqual(
       generated.slice(1).map(({ nickname }) => nickname),
     );
-    expect(screen.getByRole("button", { name: /set up music.*optional/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /^start game$/i })).toBeEnabled();
   });
 
-  it("restores a saved setup step and selected seats", () => {
+  it("returns legacy music-step snapshots to the player setup with seats intact", () => {
     const selectedPlayerIds = availablePlayers.slice(0, 10).map(({ id }) => id);
     const setup = createSetup(
       availablePlayers
@@ -363,7 +323,9 @@ describe("SetupWizard", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: /table music.*optional/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /select 10 players/i })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Seat 1 player" })).toHaveValue("Player 1");
+    expect(screen.queryByText(/table music/i)).not.toBeInTheDocument();
   });
 
   it("returns stale restored host selection to the player step", () => {
@@ -503,34 +465,6 @@ describe("SetupWizard", () => {
     expect(onComplete.mock.calls[0]?.[2]).toBe(availablePlayers[10]!.nickname);
   });
 
-  it("offers music setup without requiring playback before role giveaway", async () => {
-    const user = userEvent.setup();
-    const onComplete = vi.fn<(game: GameState, hostPlayerId: string, hostName: string) => void>();
-    render(<Harness onComplete={onComplete} />);
-    await fillRoster(user);
-
-    await user.click(screen.getByRole("button", { name: /set up music.*optional/i }));
-    expect(screen.getByRole("heading", { name: /table music.*optional/i })).toBeInTheDocument();
-    const startGame = screen.getByRole("button", { name: /^start game$/i });
-    expect(startGame).toBeEnabled();
-    await user.click(startGame);
-
-    expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
-    expect(onComplete).not.toHaveBeenCalled();
-  });
-
-  it("uses a playlist selected from the connected YouTube Music account", async () => {
-    const user = userEvent.setup();
-    render(<Harness onComplete={() => undefined} />);
-
-    await fillRoster(user);
-    await user.click(screen.getByRole("button", { name: /set up music.*optional/i }));
-    const accountPlaylist = screen.getByRole("combobox", { name: "YouTube Music playlist" });
-    await user.selectOptions(accountPlaylist, "account-playlist");
-
-    expect(accountPlaylist).toHaveValue("account-playlist");
-  });
-
   it("prevents duplicate selections and guides an empty roster to player management", async () => {
     const user = userEvent.setup();
     const { unmount } = render(<Harness onComplete={() => undefined} />);
@@ -549,6 +483,6 @@ describe("SetupWizard", () => {
     expect(
       screen.getByText(/mark at least 11 players available in players & statistics/i),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /set up music.*optional/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^start game$/i })).toBeDisabled();
   });
 });

@@ -1,4 +1,5 @@
-import { render, screen } from "@testing-library/react";
+import { useState } from "react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { GameTable, type TableSeatView } from "./GameTable.js";
 
@@ -23,6 +24,23 @@ describe("GameTable", () => {
 
     expect(screen.getByRole("group", { name: "Host: Host Player" })).toHaveClass("table-card");
     expect(screen.getByRole("button", { name: "Seat 1: Player 1" })).toHaveClass("table-card");
+  });
+
+  it("keeps the nickname separate while player status pills wrap together", () => {
+    render(
+      <GameTable
+        seats={seats.map((seat) =>
+          seat.seat === 1 ? { ...seat, role: "citizen", fouls: 1, nominated: true } : seat,
+        )}
+      />,
+    );
+
+    const player = screen.getByRole("button", { name: "Seat 1: Player 1" });
+    expect(player.querySelector(".seat-name")).toHaveTextContent("Player 1");
+    const badges = player.querySelector(".seat-badges");
+    expect(badges).toHaveTextContent("citizen");
+    expect(badges).toHaveTextContent("Foul ×1");
+    expect(badges).toHaveTextContent("Nominated");
   });
 
   it("adds a visual cross to an eliminated player", () => {
@@ -56,5 +74,37 @@ describe("GameTable", () => {
 
     rerender(<GameTable seats={seats} center={<strong>Waiting</strong>} />);
     expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
+  });
+
+  it("shows a table action menu after horizontally swiping a player card", () => {
+    const Harness = () => {
+      const [swipedSeat, setSwipedSeat] = useState<number | null>(null);
+      return (
+        <GameTable
+          seats={seats}
+          onSeatSwipe={setSwipedSeat}
+          swipeAction={
+            swipedSeat === null ? undefined : (
+              <button type="button" className="table-swipe-red-card">
+                Red card Player {swipedSeat}
+              </button>
+            )
+          }
+        />
+      );
+    };
+    render(<Harness />);
+    const player = screen.getByRole("button", { name: "Seat 1: Player 1" });
+    expect(screen.queryByRole("button", { name: "Red card Player 1" })).toBeNull();
+
+    fireEvent.touchStart(player, { touches: [{ clientX: 10, clientY: 40 }] });
+    fireEvent.touchEnd(player, { changedTouches: [{ clientX: 70, clientY: 42 }] });
+
+    expect(screen.getByRole("button", { name: "Red card Player 1" })).toHaveClass(
+      "table-swipe-red-card",
+    );
+    expect(screen.getByRole("button", { name: "Red card Player 1" }).parentElement).toHaveClass(
+      "table-swipe-menu",
+    );
   });
 });

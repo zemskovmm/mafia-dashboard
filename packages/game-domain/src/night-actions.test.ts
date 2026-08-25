@@ -13,7 +13,10 @@ import {
   recordMafiaShot,
   reopenMafiaShots,
   resolveMafiaShots,
+  skipDonCheck,
+  skipSheriffCheck,
   toggleBestMoveSeat,
+  toggleMafiaShot,
 } from "./night-actions.js";
 import {
   beginRoleDraw,
@@ -77,6 +80,21 @@ describe("night actions", () => {
 
     expect(resolution.result).toEqual({ kind: "miss" });
     expect(resolution.game.players.filter(({ status }) => status === "active")).toHaveLength(10);
+  });
+
+  it("toggles and reassigns a Mafia shot before evaluation", () => {
+    const initial = beginNight(dayOne());
+    const shooter = initial.players.find(({ team }) => team === "black")!;
+    const [firstTarget, secondTarget] = initial.players.filter(({ team }) => team === "red");
+
+    const selected = toggleMafiaShot(initial, shooter.seat, firstTarget!.seat);
+    expect(selected.shotAssignments[shooter.seat]).toBe(firstTarget!.seat);
+
+    const cleared = toggleMafiaShot(selected, shooter.seat, firstTarget!.seat);
+    expect(cleared.shotAssignments[shooter.seat]).toBeUndefined();
+
+    const reassigned = toggleMafiaShot(selected, shooter.seat, secondTarget!.seat);
+    expect(reassigned.shotAssignments[shooter.seat]).toBe(secondTarget!.seat);
   });
 
   it("reopens Mafia shots by restoring the provisional victim and clearing the attempt", () => {
@@ -164,7 +182,7 @@ describe("night actions", () => {
     });
   });
 
-  it("allows a Best move to select any seated player", () => {
+  it("allows a Best move to select only active players other than its deceased owner", () => {
     const base = dayOne();
     const [victim, previouslyEliminated] = base.players.filter(({ team }) => team === "red");
     let game = markPlayerInactive(base, victim!.seat, "eliminated");
@@ -177,10 +195,11 @@ describe("night actions", () => {
       goodbyeNext: "day",
     };
 
-    game = toggleBestMoveSeat(game, victim!.seat);
-    game = toggleBestMoveSeat(game, previouslyEliminated!.seat);
-
-    expect(game.bestMove?.selectedSeats).toEqual([victim!.seat, previouslyEliminated!.seat]);
+    expect(() => toggleBestMoveSeat(game, victim!.seat)).toThrow(/owner/i);
+    expect(() => toggleBestMoveSeat(game, previouslyEliminated!.seat)).toThrow(/active/i);
+    const active = game.players.find(({ status }) => status === "active")!;
+    game = toggleBestMoveSeat(game, active.seat);
+    expect(game.bestMove?.selectedSeats).toEqual([active.seat]);
   });
 
   it("rejects non-Mafia shooters but permits shots at inactive targets", () => {
@@ -272,5 +291,31 @@ describe("night actions", () => {
     expect(nextDay.phase).toBe("day");
     expect(nextDay.day).toBe(2);
     expect(nextDay.turnOrder[0]).toBe(2);
+  });
+
+  it("keeps deceased check owners in the night sequence and lets the host skip each check", () => {
+    let game = dayOne();
+    const don = game.players.find(({ role }) => role === "don")!;
+    const sheriff = game.players.find(({ role }) => role === "sheriff")!;
+    game = markPlayerInactive(game, don.seat, "eliminated");
+    game = markPlayerInactive(game, sheriff.seat, "eliminated");
+    game = beginNight(game);
+    const target = game.players.find(({ status, team }) => status === "active" && team === "red")!;
+    for (const shooter of game.players.filter(
+      ({ status, team }) => status === "active" && team === "black",
+    )) {
+      game = recordMafiaShot(game, shooter.seat, target.seat);
+    }
+
+    game = completeMafiaShots(resolveMafiaShots(game).game);
+    expect(game.phase).toBe("night-don");
+    expect(() => performDonCheck(game, sheriff.seat)).toThrow(/available Don/i);
+
+    game = skipDonCheck(game);
+    expect(game.phase).toBe("night-sheriff");
+    expect(() => performSheriffCheck(game, don.seat)).toThrow(/available Sheriff/i);
+
+    game = skipSheriffCheck(game);
+    expect(game.phase).toBe("night-resolution");
   });
 });

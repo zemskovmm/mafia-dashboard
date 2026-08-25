@@ -6,9 +6,11 @@ import {
   deleteClub,
   disconnectMusicAccount,
   getAuthSession,
+  getGameEvents,
   getGameSession,
   getMusicAccountStatus,
   listActiveGameSessions,
+  listCompletedGameSessions,
   listMusicPlaylists,
   listPlayers,
   saveGameSession,
@@ -165,6 +167,60 @@ describe("player API client", () => {
 });
 
 describe("game session aggregate API client", () => {
+  it("routes incremental session operations to dedicated mutation endpoints", async () => {
+    const gameId = "00000000-0000-4000-8000-000000000002";
+    const operation = {
+      kind: "metadata",
+      name: "Table",
+      mutationId: "00000000-0000-4000-8000-000000000003",
+      baseRevision: 0,
+      metadata: {
+        setup: null,
+        hostPlayerId: null,
+        hostName: null,
+        playlistId: "PL",
+        legacyLog: [],
+      },
+    };
+    const response = { revision: 1, duplicate: false, name: "Table" };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(response), {
+        status: 201,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const api = (await import("./client.js")) as unknown as {
+      saveGameSessionOperation: (
+        id: string,
+        input: typeof operation,
+        clubId?: string,
+      ) => Promise<typeof response>;
+    };
+
+    await expect(api.saveGameSessionOperation(gameId, operation)).resolves.toEqual(response);
+    expect(fetchMock).toHaveBeenCalledWith(`/api/game-sessions/${gameId}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: operation.name,
+        mutationId: operation.mutationId,
+        baseRevision: operation.baseRevision,
+        state: {
+          setup: operation.metadata.setup,
+          game: null,
+          hostPlayerId: operation.metadata.hostPlayerId,
+          hostName: operation.metadata.hostName,
+          playlistId: operation.metadata.playlistId,
+          log: operation.metadata.legacyLog,
+          undoHistory: [],
+          legacyLog: operation.metadata.legacyLog,
+        },
+        results: null,
+      }),
+    });
+  });
+
   it("uses the authoritative mutation, active list, and restore endpoints", async () => {
     const gameId = "00000000-0000-4000-8000-000000000002";
     const state = {
@@ -222,6 +278,46 @@ describe("game session aggregate API client", () => {
       method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(mutation),
+    });
+  });
+  it("loads completed summaries and host-visible events for the selected club", async () => {
+    const gameId = "00000000-0000-4000-8000-000000000002";
+    const clubId = "00000000-0000-4000-8000-000000000101";
+    const completed = {
+      gameId,
+      name: "Completed",
+      revision: 8,
+      hostName: "Host",
+      winner: "red",
+      playedAt: "2026-08-24T20:00:00.000Z",
+      day: 3,
+      eventCount: 20,
+      updatedAt: "2026-08-24T20:00:00.000Z",
+    };
+    const events = [{ id: "event", gameId, sequence: 1, type: "game.started" }];
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ sessions: [completed] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ events }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(listCompletedGameSessions(clubId)).resolves.toEqual([completed]);
+    await expect(getGameEvents(gameId, clubId, "host")).resolves.toEqual(events);
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/game-sessions?status=completed", {
+      headers: { "x-club-id": clubId },
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(2, `/api/games/${gameId}/events?visibility=host`, {
+      headers: { "x-club-id": clubId },
     });
   });
   it("sends the expected revision when clearing a session", async () => {

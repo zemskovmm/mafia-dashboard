@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { createGameLogEntry } from "@mafia/game-domain";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { buildApp } from "./app.js";
 import { DEFAULT_CLUB_ID } from "./club-store.js";
+import { GameSessionStore } from "./game-session-store.js";
 import type { AppUser, GoogleAuthService } from "./google-auth.js";
 import type { YouTubeOAuthService } from "./youtube-oauth.js";
 
@@ -30,6 +32,40 @@ afterAll(async () => {
   await app.close();
   await pool.end();
 });
+
+const createReplayGameFixture = async () => {
+  const hostPlayerId = randomUUID();
+  const playerIds = Array.from({ length: 10 }, () => randomUUID());
+  for (const [index, id] of [hostPlayerId, ...playerIds].entries()) {
+    await pool.query("INSERT INTO players (id, nickname) VALUES ($1, $2)", [
+      id,
+      `API replay ${index} ${randomUUID().slice(0, 8)}`,
+    ]);
+  }
+  const roles = ["sheriff", ...Array(6).fill("citizen"), "mafia", "mafia", "don"] as const;
+  const players = playerIds.map((id, index) => ({
+    id,
+    name: `Player ${index + 1}`,
+    seat: index + 1,
+    role: roles[index]!,
+    team: index >= 7 ? ("black" as const) : ("red" as const),
+    status: "active" as const,
+    fouls: 0,
+    mutePending: false,
+  }));
+  const game = {
+    phase: "day" as const,
+    day: 1,
+    players,
+    turnOrder: Array.from({ length: 10 }, (_, index) => index + 1),
+    currentTurnIndex: 0,
+    nominations: [],
+    voteAssignments: {},
+    shotAssignments: {},
+    winner: null,
+  };
+  return { hostPlayerId, game };
+};
 
 describe("server API", () => {
   it("authenticates the owner, creates a club, and isolates its players", async () => {
@@ -331,7 +367,7 @@ describe("server API", () => {
     expect(log.json().events).toEqual([]);
   });
 
-  it("redacts secret event payloads from public log requests", async () => {
+  it("redacts secret payloads and integrity hashes from public log requests", async () => {
     const gameId = randomUUID();
     await app.inject({
       method: "POST",
@@ -345,6 +381,11 @@ describe("server API", () => {
         secret: true,
       },
     });
+    const stateHashAfter = `sha256:${"a".repeat(64)}`;
+    await pool.query("UPDATE game_events SET state_hash_after = $2 WHERE game_id = $1", [
+      gameId,
+      stateHashAfter,
+    ]);
 
     const host = await app.inject({ method: "GET", url: `/api/games/${gameId}/events` });
     const publicLog = await app.inject({
@@ -352,8 +393,14 @@ describe("server API", () => {
       url: `/api/games/${gameId}/events?visibility=public`,
     });
 
-    expect(host.json().events[0].payload).toEqual({ targetSeat: 8, match: true });
-    expect(publicLog.json().events[0].payload).toEqual({ redacted: true });
+    expect(host.json().events[0]).toMatchObject({
+      payload: { targetSeat: 8, match: true },
+      stateHashAfter,
+    });
+    expect(publicLog.json().events[0]).toMatchObject({
+      payload: { redacted: true },
+      stateHashAfter: null,
+    });
   });
 
   it("creates consent-safe player profiles and rejects duplicate nicknames", async () => {
@@ -853,6 +900,368 @@ describe("server API", () => {
     expect(oauth.disconnect).toHaveBeenCalledWith(authenticatedUser.id);
 
     await oauthApp.close();
+  });
+
+  it("starts a session through the dedicated incremental operation endpoint", async () => {
+    const gameId = randomUUID();
+    const fixture = await createReplayGameFixture();
+    const setup = await app.inject({
+      method: "PUT",
+      url: `/api/game-sessions/${gameId}`,
+      payload: {
+        name: "Dedicated start",
+        mutationId: randomUUID(),
+        baseRevision: 0,
+        state: {
+          setup: null,
+          game: null,
+          hostPlayerId: fixture.hostPlayerId,
+          hostName: "API Host",
+          playlistId: "",
+          log: [],
+          undoHistory: [],
+        },
+        results: null,
+      },
+    });
+    expect(setup.statusCode).toBe(201);
+    const initialGame = { replayVersion: 1 as const, game: fixture.game };
+    const started = createGameLogEntry({
+      gameId,
+      id: randomUUID(),
+      sequence: 1,
+      parentEventId: null,
+      createdAt: "2026-08-25T00:00:00.000Z",
+      before: fixture.game,
+      draft: { type: "game.checkpointed", payload: {}, secret: true },
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/game-sessions/${gameId}/start`,
+      payload: {
+        mutationId: randomUUID(),
+        baseRevision: 1,
+        initialGame,
+        event: started.entry,
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      gameId,
+      revision: 2,
+      duplicate: false,
+      state: {
+        game: fixture.game,
+        initialGame,
+        events: [started.entry],
+        headEventId: started.entry.id,
+      },
+    });
+    const stored = await pool.query<{ state: Record<string, unknown> }>(
+      "SELECT state FROM game_sessions WHERE id = $1",
+      [gameId],
+    );
+    expect(stored.rows[0]?.state).not.toHaveProperty("game");
+    expect(stored.rows[0]?.state).not.toHaveProperty("events");
+  });
+
+  it("normalizes a legacy snapshot through its dedicated idempotent endpoint", async () => {
+    const gameId = randomUUID();
+    const fixture = await createReplayGameFixture();
+    const legacy = await app.inject({
+      method: "PUT",
+      url: `/api/game-sessions/${gameId}`,
+      payload: {
+        name: "Normalize endpoint",
+        mutationId: randomUUID(),
+        baseRevision: 0,
+        state: {
+          setup: null,
+          game: fixture.game,
+          hostPlayerId: fixture.hostPlayerId,
+          hostName: "Normalize Host",
+          playlistId: "",
+          log: [],
+          undoHistory: [],
+        },
+        results: null,
+      },
+    });
+    expect(legacy.statusCode).toBe(201);
+    const mutationId = randomUUID();
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/game-sessions/${gameId}/normalize`,
+      payload: { mutationId, baseRevision: 1 },
+    });
+    const retry = await app.inject({
+      method: "POST",
+      url: `/api/game-sessions/${gameId}/normalize`,
+      payload: { mutationId, baseRevision: 1 },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      revision: 2,
+      duplicate: false,
+      previewableFromEventId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      state: {
+        game: fixture.game,
+        events: [expect.objectContaining({ type: "game.checkpointed", sequence: 1 })],
+      },
+    });
+    expect(retry.statusCode).toBe(200);
+    expect(retry.json()).toMatchObject({ revision: 2, duplicate: true });
+  });
+
+  it("appends exactly one canonical entry through the dedicated session event endpoint", async () => {
+    const gameId = randomUUID();
+    const fixture = await createReplayGameFixture();
+    await app.inject({
+      method: "PUT",
+      url: `/api/game-sessions/${gameId}`,
+      payload: {
+        name: "Dedicated append",
+        mutationId: randomUUID(),
+        baseRevision: 0,
+        state: {
+          setup: null,
+          game: null,
+          hostPlayerId: fixture.hostPlayerId,
+          hostName: "Append API Host",
+          playlistId: "",
+          log: [],
+          undoHistory: [],
+        },
+        results: null,
+      },
+    });
+    const initialGame = { replayVersion: 1 as const, game: fixture.game };
+    const started = createGameLogEntry({
+      gameId,
+      id: randomUUID(),
+      sequence: 1,
+      parentEventId: null,
+      createdAt: "2026-08-25T00:00:00.000Z",
+      before: fixture.game,
+      draft: { type: "game.checkpointed", payload: {}, secret: true },
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/game-sessions/${gameId}/start`,
+      payload: { mutationId: randomUUID(), baseRevision: 1, initialGame, event: started.entry },
+    });
+    const turn = createGameLogEntry({
+      gameId,
+      id: randomUUID(),
+      sequence: 2,
+      parentEventId: started.entry.id,
+      createdAt: "2026-08-25T00:01:00.000Z",
+      before: started.after,
+      draft: { type: "turn.completed", payload: { seat: 1 }, secret: false },
+    });
+    const mutationId = randomUUID();
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/game-sessions/${gameId}/events`,
+      payload: { mutationId, baseRevision: 2, event: turn.entry },
+    });
+    const retry = await app.inject({
+      method: "POST",
+      url: `/api/game-sessions/${gameId}/events`,
+      payload: { mutationId, baseRevision: 2, event: turn.entry },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      revision: 3,
+      duplicate: false,
+      state: {
+        game: expect.objectContaining({ currentTurnIndex: 1 }),
+        events: [started.entry, turn.entry],
+        headEventId: turn.entry.id,
+      },
+    });
+    expect(retry.statusCode).toBe(200);
+    expect(retry.json()).toMatchObject({ revision: 3, duplicate: true });
+    const restored = await app.inject({ method: "GET", url: `/api/game-sessions/${gameId}` });
+    expect(restored.json().session.state).toMatchObject({
+      game: expect.objectContaining({ currentTurnIndex: 1 }),
+      events: [started.entry, turn.entry],
+    });
+  });
+
+  it("moves the active replay head through the dedicated head endpoint", async () => {
+    const gameId = randomUUID();
+    const fixture = await createReplayGameFixture();
+    const sessionStore = new GameSessionStore(pool);
+    await sessionStore.save({
+      gameId,
+      name: "Dedicated head",
+      mutationId: randomUUID(),
+      baseRevision: 0,
+      state: {
+        setup: null,
+        game: null,
+        hostPlayerId: fixture.hostPlayerId,
+        hostName: "Head API Host",
+        playlistId: "",
+        log: [],
+        undoHistory: [],
+      },
+      results: null,
+    });
+    const initialGame = { replayVersion: 1 as const, game: fixture.game };
+    const started = createGameLogEntry({
+      gameId,
+      id: randomUUID(),
+      sequence: 1,
+      parentEventId: null,
+      createdAt: "2026-08-25T00:00:00.000Z",
+      before: fixture.game,
+      draft: { type: "game.checkpointed", payload: {}, secret: true },
+    });
+    await sessionStore.start({
+      gameId,
+      mutationId: randomUUID(),
+      baseRevision: 1,
+      initialGame,
+      event: started.entry,
+    });
+    const turn = createGameLogEntry({
+      gameId,
+      id: randomUUID(),
+      sequence: 2,
+      parentEventId: started.entry.id,
+      createdAt: "2026-08-25T00:01:00.000Z",
+      before: started.after,
+      draft: { type: "turn.completed", payload: { seat: 1 }, secret: false },
+    });
+    await sessionStore.appendEvent({
+      gameId,
+      mutationId: randomUUID(),
+      baseRevision: 2,
+      event: turn.entry,
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/game-sessions/${gameId}/head`,
+      payload: {
+        mutationId: randomUUID(),
+        baseRevision: 3,
+        targetEventId: started.entry.id,
+        reason: "reset",
+      },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      revision: 4,
+      state: {
+        game: expect.objectContaining({ currentTurnIndex: 0 }),
+        headEventId: started.entry.id,
+        resetReturnEventId: turn.entry.id,
+      },
+    });
+    expect(
+      await pool.query(
+        "SELECT COUNT(*)::int AS count FROM game_events WHERE game_id = $1 AND replay_sequence IS NOT NULL",
+        [gameId],
+      ),
+    ).toMatchObject({ rows: [{ count: 2 }] });
+  });
+
+  it("completes a replayed finished session through the dedicated complete endpoint", async () => {
+    const gameId = randomUUID();
+    const fixture = await createReplayGameFixture();
+    const finished = { ...fixture.game, phase: "finished" as const, winner: "red" as const };
+    const sessionStore = new GameSessionStore(pool);
+    await sessionStore.save({
+      gameId,
+      name: "Dedicated complete",
+      mutationId: randomUUID(),
+      baseRevision: 0,
+      state: {
+        setup: null,
+        game: null,
+        hostPlayerId: fixture.hostPlayerId,
+        hostName: "Complete API Host",
+        playlistId: "",
+        log: [],
+        undoHistory: [],
+      },
+      results: null,
+    });
+    const initialGame = { replayVersion: 1 as const, game: finished };
+    const started = createGameLogEntry({
+      gameId,
+      id: randomUUID(),
+      sequence: 1,
+      parentEventId: null,
+      createdAt: "2026-08-25T00:00:00.000Z",
+      before: finished,
+      draft: { type: "game.checkpointed", payload: {}, secret: true },
+    });
+    await sessionStore.start({
+      gameId,
+      mutationId: randomUUID(),
+      baseRevision: 1,
+      initialGame,
+      event: started.entry,
+    });
+    const completedEvent = createGameLogEntry({
+      gameId,
+      id: randomUUID(),
+      sequence: 2,
+      parentEventId: started.entry.id,
+      createdAt: "2026-08-25T00:02:00.000Z",
+      before: started.after,
+      draft: { type: "game.completed", payload: { winner: "red" }, secret: false },
+    });
+    await sessionStore.appendEvent({
+      gameId,
+      mutationId: randomUUID(),
+      baseRevision: 2,
+      event: completedEvent.entry,
+    });
+    const results = {
+      hostPlayerId: fixture.hostPlayerId,
+      winner: "red" as const,
+      playedAt: completedEvent.entry.createdAt,
+      players: finished.players.map(({ id, seat, role, team, status, fouls }) => ({
+        playerId: id,
+        seat,
+        role,
+        team,
+        status,
+        fouls,
+        bestMoveHits: null,
+      })),
+    };
+
+    const response = await app.inject({
+      method: "POST",
+      url: `/api/game-sessions/${gameId}/complete`,
+      payload: { mutationId: randomUUID(), baseRevision: 3, results },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      revision: 4,
+      status: "completed",
+      results,
+      state: { game: finished, events: [started.entry, completedEvent.entry] },
+    });
+    expect(
+      await pool.query("SELECT COUNT(*)::int AS count FROM game_events WHERE game_id = $1", [
+        gameId,
+      ]),
+    ).toMatchObject({ rows: [{ count: 3 }] });
   });
 
   it("saves, lists, and restores a client-id game session aggregate", async () => {

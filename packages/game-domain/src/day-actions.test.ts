@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { advanceSetupPhase, createGame, getCurrentTurnDuration } from "./game.js";
+import { beginNight } from "./night-actions.js";
 import {
   assignCarCrashVote,
   assignVote,
@@ -90,7 +91,11 @@ describe("day actions", () => {
     });
     expect(game.redCardIssuedThisDay).toBe(true);
     while (game.phase === "day") game = completeCurrentTurn(game);
-    expect(game).toMatchObject({ phase: "night-mafia", nominations: [] });
+    expect(game).toMatchObject({
+      phase: "voting-cancelled",
+      votingCancellation: { reason: "red-card" },
+    });
+    expect(beginNight(game)).toMatchObject({ phase: "night-mafia", nominations: [] });
   });
 
   it("suppresses voting after any manual red card during the day", () => {
@@ -102,7 +107,10 @@ describe("day actions", () => {
     game = redCard(game, redCardSeat);
     while (game.phase === "day") game = completeCurrentTurn(game);
 
-    expect(game).toMatchObject({ phase: "night-mafia", nominations: [] });
+    expect(game).toMatchObject({
+      phase: "voting-cancelled",
+      votingCancellation: { reason: "red-card" },
+    });
   });
 
   it("red-cards an active player immediately and evaluates victory", () => {
@@ -146,13 +154,64 @@ describe("day actions", () => {
     expect(excluded.phase).toBe("night-sheriff");
   });
 
-  it("rejects red cards while Mafia is shooting", () => {
-    const game: GameState = {
-      ...dayOne(),
-      phase: "night-mafia",
-    };
+  it("accepts red cards in every active gameplay phase from day one", () => {
+    const phases: readonly GameState["phase"][] = [
+      "day",
+      "voting",
+      "voting-cancelled",
+      "car-crash",
+      "car-crash-decision",
+      "car-crash-skipped",
+      "goodbye-speech",
+      "best-move",
+      "night-mafia",
+      "night-mafia-result",
+      "night-don",
+      "night-don-result",
+      "night-sheriff",
+      "night-sheriff-result",
+      "night-resolution",
+    ];
 
-    expect(() => redCard(game, 4)).toThrow(/not accepted while Mafia is shooting/i);
+    for (const phase of phases) {
+      const game = dayOne();
+      const target = game.players.find(({ role }) => role === "citizen")!;
+      const excluded = redCard({ ...game, phase }, target.seat);
+
+      expect(excluded.players.find(({ seat }) => seat === target.seat)?.status, phase).toBe(
+        "red-carded",
+      );
+    }
+  });
+
+  it("cancels an in-progress voting sequence when a player gets a red card", () => {
+    const phases: readonly GameState["phase"][] = [
+      "voting",
+      "car-crash",
+      "car-crash-decision",
+      "car-crash-skipped",
+    ];
+
+    for (const phase of phases) {
+      const game = dayOne();
+      const target = game.players.find(({ role }) => role === "citizen")!;
+      const excluded = redCard(
+        {
+          ...game,
+          phase,
+          nominations: [{ nominatorSeat: 1, candidateSeat: target.seat, order: 1 }],
+          turnOrder: [target.seat],
+          carCrashSeats: [target.seat, 10],
+        },
+        target.seat,
+      );
+
+      expect(excluded, phase).toMatchObject({
+        phase: "voting-cancelled",
+        votingCancellation: { reason: "red-card" },
+        turnOrder: [target.seat],
+      });
+    }
   });
 
   it("keeps a one-person voting screen and assigns every active vote", () => {
@@ -172,7 +231,8 @@ describe("day actions", () => {
 
     while (game.phase === "day") game = completeCurrentTurn(game);
 
-    expect(game.phase).toBe("night-mafia");
+    expect(game.phase).toBe("voting-cancelled");
+    expect(game.votingCancellation).toEqual({ reason: "red-card" });
     expect(game.nominations).toEqual([]);
   });
 
@@ -341,6 +401,40 @@ describe("day actions", () => {
     );
   });
 
+  it("rejects aliased voter keys and votes for non-nominees", () => {
+    const voting = (): GameState => ({
+      ...dayOne(),
+      phase: "voting",
+      nominations: [
+        { nominatorSeat: 1, candidateSeat: 4, order: 1 },
+        { nominatorSeat: 2, candidateSeat: 6, order: 2 },
+      ],
+      turnOrder: [4, 6],
+      currentTurnIndex: 1,
+      votingRound: "initial",
+      voteAssignments: Object.fromEntries(
+        Array.from({ length: 10 }, (_, index) => [index + 1, index < 5 ? 4 : 6]),
+      ),
+    });
+
+    const aliasedAssignments = { ...voting().voteAssignments } as Record<string, number>;
+    delete aliasedAssignments["1"];
+    aliasedAssignments["01"] = 4;
+    expect(() =>
+      resolveVote({
+        ...voting(),
+        voteAssignments: aliasedAssignments as unknown as GameState["voteAssignments"],
+      }),
+    ).toThrow(/canonical seat numbers/i);
+
+    expect(() =>
+      resolveVote({
+        ...voting(),
+        voteAssignments: { ...voting().voteAssignments, 1: 9 },
+      }),
+    ).toThrow(/nominated player/i);
+  });
+
   it("eliminates tied nominees only when more than half vote for it", () => {
     const decision = (): GameState => ({
       ...dayOne(),
@@ -356,6 +450,17 @@ describe("day actions", () => {
       return game;
     };
 
+    expect(() => resolveCarCrashVote(decision())).toThrow(/every eligible player/i);
+    const aliasedDecision = fillDecision(5);
+    const aliasedVotes = { ...aliasedDecision.carCrashVotes } as Record<string, boolean>;
+    delete aliasedVotes["1"];
+    aliasedVotes["01"] = true;
+    expect(() =>
+      resolveCarCrashVote({
+        ...aliasedDecision,
+        carCrashVotes: aliasedVotes as unknown as GameState["carCrashVotes"],
+      }),
+    ).toThrow(/canonical seat numbers/i);
     expect(resolveCarCrashVote(fillDecision(5)).eliminate).toBe(false);
     expect(resolveCarCrashVote(fillDecision(6))).toMatchObject({
       eliminate: true,

@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
-import { assertGameNotDeleted, assertLegacyGameMutationAllowed } from "./game-lifecycle.js";
+import {
+  assertGameNotDeleted,
+  assertLegacyGameMutationAllowed,
+  lockClubGame,
+} from "./game-lifecycle.js";
 import { initializeSchema } from "./initialize-schema.js";
 import { DEFAULT_CLUB_ID } from "./club-store.js";
 
@@ -20,6 +24,9 @@ export interface GameEvent extends GameEventInput {
   readonly sequence: number;
   readonly createdAt: Date;
   readonly duplicate: boolean;
+  readonly parentEventId: string | null;
+  readonly replayVersion: number;
+  readonly stateHashAfter: string | null;
 }
 
 interface EventRow {
@@ -33,6 +40,9 @@ interface EventRow {
   payload: Record<string, unknown>;
   secret: boolean;
   created_at: Date;
+  parent_event_id: string | null;
+  replay_version: number;
+  state_hash_after: string | null;
 }
 
 const mapRow = (row: EventRow): GameEvent => ({
@@ -47,6 +57,9 @@ const mapRow = (row: EventRow): GameEvent => ({
   secret: row.secret,
   createdAt: row.created_at,
   duplicate: false,
+  parentEventId: row.parent_event_id,
+  replayVersion: row.replay_version,
+  stateHashAfter: row.state_hash_after,
 });
 
 const findByIdempotencyKey = async (
@@ -57,26 +70,12 @@ const findByIdempotencyKey = async (
 ): Promise<GameEvent | null> => {
   const result = await client.query<EventRow>(
     `SELECT id, game_id, sequence, idempotency_key, event_type, phase, seat, payload, secret,
-            created_at
+            created_at, parent_event_id, replay_version, state_hash_after
        FROM game_events
       WHERE club_id = $1 AND game_id = $2 AND idempotency_key = $3`,
     [clubId, gameId, idempotencyKey],
   );
   return result.rows[0] === undefined ? null : mapRow(result.rows[0]);
-};
-
-const assertLegacyClubOwnership = async (
-  client: PoolClient,
-  clubId: string,
-  gameId: string,
-): Promise<void> => {
-  const existing = await client.query<{ club_id: string }>(
-    "SELECT club_id FROM game_events WHERE game_id = $1 LIMIT 1",
-    [gameId],
-  );
-  if (existing.rows[0] !== undefined && existing.rows[0].club_id !== clubId) {
-    throw new Error("The game belongs to another club");
-  }
 };
 
 export class EventStore {
@@ -92,10 +91,9 @@ export class EventStore {
     try {
       await client.query("BEGIN");
       await client.query("LOCK TABLE game_events IN ROW EXCLUSIVE MODE");
-      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [input.gameId]);
-      await assertGameNotDeleted(client, input.gameId);
-      await assertLegacyGameMutationAllowed(client, input.gameId);
-      await assertLegacyClubOwnership(client, clubId, input.gameId);
+      await lockClubGame(client, clubId, input.gameId);
+      await assertGameNotDeleted(client, clubId, input.gameId);
+      await assertLegacyGameMutationAllowed(client, clubId, input.gameId);
 
       const duplicate = await findByIdempotencyKey(
         client,
@@ -124,7 +122,7 @@ export class EventStore {
            (id, club_id, game_id, sequence, idempotency_key, event_type, phase, seat, payload, secret)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
          RETURNING id, game_id, sequence, idempotency_key, event_type, phase, seat, payload,
-                   secret, created_at`,
+                   secret, created_at, parent_event_id, replay_version, state_hash_after`,
         [
           randomUUID(),
           clubId,
@@ -161,10 +159,9 @@ export class EventStore {
     try {
       await client.query("BEGIN");
       await client.query("LOCK TABLE game_events IN ROW EXCLUSIVE MODE");
-      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [gameId]);
-      await assertGameNotDeleted(client, gameId);
-      await assertLegacyGameMutationAllowed(client, gameId);
-      await assertLegacyClubOwnership(client, clubId, gameId);
+      await lockClubGame(client, clubId, gameId);
+      await assertGameNotDeleted(client, clubId, gameId);
+      await assertLegacyGameMutationAllowed(client, clubId, gameId);
       await client.query(
         `WITH cutoff AS (
            SELECT sequence
@@ -193,13 +190,12 @@ export class EventStore {
       await client.query(
         "LOCK TABLE game_results, game_player_results, game_events IN SHARE ROW EXCLUSIVE MODE",
       );
-      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [gameId]);
-      await assertLegacyGameMutationAllowed(client, gameId);
-      await assertLegacyClubOwnership(client, clubId, gameId);
+      await lockClubGame(client, clubId, gameId);
+      await assertLegacyGameMutationAllowed(client, clubId, gameId);
       await client.query(
         `INSERT INTO deleted_games (game_id, club_id)
          VALUES ($1, $2)
-         ON CONFLICT (game_id) DO NOTHING`,
+         ON CONFLICT (club_id, game_id) DO NOTHING`,
         [gameId, clubId],
       );
       await client.query("DELETE FROM game_events WHERE game_id = $1 AND club_id = $2", [
@@ -222,7 +218,7 @@ export class EventStore {
   ): Promise<readonly GameEvent[]> {
     const result = await this.pool.query<EventRow>(
       `SELECT id, game_id, sequence, idempotency_key, event_type, phase, seat, payload, secret,
-              created_at
+              created_at, parent_event_id, replay_version, state_hash_after
          FROM game_events
         WHERE club_id = $1 AND game_id = $2
         ORDER BY sequence ASC`,
@@ -230,9 +226,12 @@ export class EventStore {
     );
     return result.rows.map((row) => {
       const event = mapRow(row);
-      return !options.includeSecrets && event.secret
-        ? { ...event, payload: { redacted: true } }
-        : event;
+      if (options.includeSecrets) return event;
+      return {
+        ...event,
+        stateHashAfter: null,
+        ...(event.secret ? { payload: { redacted: true } } : {}),
+      };
     });
   }
 }

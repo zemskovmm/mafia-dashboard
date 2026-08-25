@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -60,6 +60,42 @@ const DayHarness = () => {
 };
 
 describe("GameScreen", () => {
+  it("animates the optional table indication between Day and night", () => {
+    const day = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+    const { rerender } = render(
+      <GameScreen
+        game={day}
+        hostName="Host Player"
+        onGameChange={() => undefined}
+        onEvent={() => undefined}
+        privacyHidden={false}
+        dayNightIndicatorVisible
+      />,
+    );
+
+    expect(document.querySelector(".game-shell")).toHaveClass(
+      "is-day-night-indicator-visible",
+      "is-table-cycle-day",
+    );
+    expect(screen.getByRole("status", { name: "Day table indication" })).toHaveTextContent("Day 1");
+
+    rerender(
+      <GameScreen
+        game={{ ...day, phase: "night-mafia" }}
+        hostName="Host Player"
+        onGameChange={() => undefined}
+        onEvent={() => undefined}
+        privacyHidden={false}
+        dayNightIndicatorVisible
+      />,
+    );
+
+    expect(document.querySelector(".game-shell")).toHaveClass("is-table-cycle-night");
+    expect(screen.getByRole("status", { name: "Night table indication" })).toHaveTextContent(
+      "Night 1",
+    );
+  });
+
   it("shows the selected host at the table", () => {
     render(<Harness onEvent={() => undefined} />);
     expect(screen.getByText("Host Player")).toBeInTheDocument();
@@ -86,16 +122,53 @@ describe("GameScreen", () => {
       "step",
     );
 
-    await user.click(screen.getByRole("button", { name: /start player 1 turn/i }));
+    expect(screen.queryByRole("button", { name: /start player 1 turn/i })).not.toBeInTheDocument();
     expect(onEvent).not.toHaveBeenCalledWith("turn.started", expect.anything());
+  });
+
+  it("offers a swipe red card for an active player while Mafia is shooting", async () => {
+    const user = userEvent.setup();
+    const base = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+    const game: GameState = { ...base, phase: "night-mafia" };
+    const target = game.players.find(({ role }) => role === "citizen")!;
+    const onGameChange = vi.fn<(next: GameState) => void>();
+    render(
+      <GameScreen
+        game={game}
+        hostName="Host Player"
+        onGameChange={onGameChange}
+        onEvent={() => undefined}
+        privacyHidden={false}
+      />,
+    );
+    const card = screen.getByRole("button", {
+      name: `Assign all remaining Mafia shots to ${target.name}`,
+    });
+
+    fireEvent.touchStart(card, { touches: [{ clientX: 20, clientY: 50 }] });
+    fireEvent.touchEnd(card, { changedTouches: [{ clientX: 82, clientY: 52 }] });
+    await user.click(screen.getByRole("button", { name: `Red card ${target.name}` }));
+
+    expect(onGameChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        players: expect.arrayContaining([
+          expect.objectContaining({ seat: target.seat, status: "red-carded" }),
+        ]),
+      }),
+    );
   });
 
   it("locks every nomination button after the current speaker nominates", async () => {
     const user = userEvent.setup();
     render(<DayHarness />);
 
+    expect(screen.queryByRole("button", { name: /^red card player/i })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /^nominate player 1$/i }).parentElement?.children,
+    ).toHaveLength(2);
     expect(screen.getByRole("button", { name: /^nominate player 1$/i })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: /^nominate player 2$/i }));
+    expect(screen.getByText("Initiated by #1 Player 1")).toBeInTheDocument();
     expect(
       screen
         .getAllByRole("button", { name: /nominate player/i })
@@ -128,7 +201,9 @@ describe("GameScreen", () => {
 
     expect(screen.getByRole("heading", { name: /car crash/i })).toBeInTheDocument();
     expect(screen.getByText(/car crash turn: player 4/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /start player 4 30-second turn/i })).toBeEnabled();
+    expect(
+      screen.queryByRole("button", { name: /start player 4 30-second turn/i }),
+    ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /next nominee/i })).toBeEnabled();
     expect(screen.getByRole("button", { name: /^seat 1: player 1$/i })).toHaveClass("is-inactive");
     expect(screen.getByRole("button", { name: /^seat 4: player 4$/i })).not.toHaveClass(
@@ -161,6 +236,74 @@ describe("GameScreen", () => {
     expect(screen.getByRole("heading", { name: "Car crash" })).toBeInTheDocument();
     expect(screen.getByText("Eliminate-all vote skipped")).toBeInTheDocument();
     expect(screen.queryByRole("group", { name: "Car-crash decision" })).not.toBeInTheDocument();
+  });
+
+  it("keeps a red-card cancellation on the voting screen until night is confirmed", async () => {
+    const user = userEvent.setup();
+    const base = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+    const initial: GameState = {
+      ...base,
+      phase: "voting-cancelled",
+      nominations: [{ nominatorSeat: 1, candidateSeat: 4, order: 1 }],
+      turnOrder: [4],
+      currentTurnIndex: 0,
+      votingCancellation: { reason: "red-card" },
+    };
+    const CancellationHarness = () => {
+      const [game, setGame] = useState(initial);
+      return (
+        <GameScreen
+          game={game}
+          hostName="Host Player"
+          onGameChange={setGame}
+          onEvent={() => undefined}
+          privacyHidden={false}
+        />
+      );
+    };
+    render(<CancellationHarness />);
+
+    expect(screen.getByRole("heading", { name: "Voting" })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Voting cancelled" })).toHaveTextContent(
+      "A player received a red card",
+    );
+    await user.click(screen.getByRole("button", { name: "Begin night" }));
+    expect(screen.getByRole("heading", { name: "Mafia shots" })).toBeInTheDocument();
+  });
+
+  it("shows working Foul controls during voting", async () => {
+    const user = userEvent.setup();
+    const base = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+    const game: GameState = {
+      ...base,
+      phase: "voting",
+      nominations: [{ nominatorSeat: 1, candidateSeat: 4, order: 1 }],
+      turnOrder: [4],
+      currentTurnIndex: 0,
+      voteAssignments: {},
+      votingRound: "initial",
+    };
+    const onGameChange = vi.fn<(next: GameState) => void>();
+    const onEvent = vi.fn<(type: string, payload: Record<string, unknown>) => void>();
+    render(
+      <GameScreen
+        game={game}
+        hostName="Host Player"
+        onGameChange={onGameChange}
+        onEvent={onEvent}
+        privacyHidden={false}
+      />,
+    );
+
+    expect(screen.getAllByRole("button", { name: /^foul player/i })).toHaveLength(10);
+    await user.click(screen.getByRole("button", { name: "Foul Player 1" }));
+
+    expect(onGameChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        players: expect.arrayContaining([expect.objectContaining({ seat: 1, fouls: 1 })]),
+      }),
+    );
+    expect(onEvent).toHaveBeenCalledWith("foul.issued", { seat: 1 });
   });
 
   it("keeps a single nominee in voting and shows a yellow goodbye speech before night", async () => {
@@ -279,21 +422,96 @@ describe("GameScreen", () => {
       );
     };
     render(<BestMoveHarness />);
+    const victimCard = screen.getByRole("button", { name: `Seat ${victim.seat}: ${victim.name}` });
+    expect(victimCard).toHaveClass("is-voting-highlight");
+    expect(victimCard).toBeDisabled();
     const targets = initial.players
       .filter(({ status, seat }) => status === "active" && seat !== victim.seat)
-      .slice(0, 2);
-    await user.click(screen.getByRole("button", { name: `Add ${victim.name} to Best move` }));
+      .slice(0, 3);
     for (const target of targets) {
       await user.click(screen.getByRole("button", { name: `Add ${target.name} to Best move` }));
     }
     await user.click(screen.getByRole("button", { name: "Save Best move" }));
 
     expect(screen.getByRole("heading", { name: "Goodbye speech" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /seat 2: player 2/i })).toHaveClass(
-      "is-goodbye-highlight",
+    expect(screen.getByRole("button", { name: `Seat ${victim.seat}: ${victim.name}` })).toHaveClass(
+      "is-voting-highlight",
     );
     await user.click(screen.getByRole("button", { name: "Begin day 2" }));
     expect(screen.getByRole("heading", { name: "Day 2" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: `Seat ${victim.seat}: ${victim.name}` }),
+    ).not.toHaveClass("is-voting-highlight");
+  });
+
+  it("highlights only the current goodbye speaker when an earlier Best move is retained", () => {
+    const base = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+    const [earlierVictim, currentVictim] = base.players.filter(({ team }) => team === "red");
+    const game: GameState = {
+      ...base,
+      day: 5,
+      phase: "goodbye-speech",
+      players: base.players.map((player) =>
+        player.seat === earlierVictim!.seat || player.seat === currentVictim!.seat
+          ? { ...player, status: "eliminated" }
+          : player,
+      ),
+      bestMove: { playerSeat: earlierVictim!.seat, selectedSeats: [], mafiaHits: 0 },
+      goodbyeSeats: [currentVictim!.seat],
+      goodbyeNext: "day",
+    };
+
+    render(
+      <GameScreen
+        game={game}
+        hostName="Host Player"
+        onGameChange={() => undefined}
+        onEvent={() => undefined}
+        privacyHidden={false}
+      />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: `Seat ${currentVictim!.seat}: ${currentVictim!.name}` }),
+    ).toHaveClass("is-voting-highlight");
+    expect(
+      screen.getByRole("button", { name: `Seat ${earlierVictim!.seat}: ${earlierVictim!.name}` }),
+    ).not.toHaveClass("is-voting-highlight", "is-goodbye-highlight");
+    expect(document.querySelectorAll(".player-seat.is-voting-highlight")).toHaveLength(1);
+  });
+
+  it("renders a historical state with only Exit and Reset actions", async () => {
+    const user = userEvent.setup();
+    const onExitPreview = vi.fn();
+    const onResetPreview = vi.fn();
+    const day = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+    render(
+      <GameScreen
+        game={day}
+        hostName="Host Player"
+        onGameChange={() => undefined}
+        onEvent={() => undefined}
+        privacyHidden={false}
+        mode="preview"
+        previewSequence={7}
+        onExitPreview={onExitPreview}
+        onResetPreview={onResetPreview}
+      />,
+    );
+
+    const actions = screen
+      .getAllByRole("button")
+      .filter((button) => !button.hasAttribute("disabled"));
+    expect(actions.map((button) => button.textContent?.trim())).toEqual([
+      "Exit preview",
+      "Reset game to this state",
+    ]);
+    expect(screen.queryByRole("button", { name: /foul|nominate|next player/i })).toBeNull();
+    expect(screen.queryByText("Timer")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Exit preview" }));
+    await user.click(screen.getByRole("button", { name: "Reset game to this state" }));
+    expect(onExitPreview).toHaveBeenCalledOnce();
+    expect(onResetPreview).toHaveBeenCalledOnce();
   });
 
   it("shows Happy day, active team counts, and explicitly finishes the winning game", async () => {
@@ -323,7 +541,7 @@ describe("GameScreen", () => {
         onFinishGame={onFinishGame}
       />,
     );
-    expect(screen.getByRole("status")).toHaveTextContent("Citizens win");
+    expect(screen.getByRole("status")).toHaveTextContent("Citizens won");
     await user.click(screen.getByRole("button", { name: "Finish the game" }));
     expect(onFinishGame).toHaveBeenCalledTimes(1);
   });

@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import {
   completeMafiaShots,
   completeNight,
@@ -10,24 +11,35 @@ import {
   reopenMafiaShots,
   redCard,
   resolveMafiaShots,
+  skipDonCheck,
+  skipSheriffCheck,
+  toggleMafiaShot,
 } from "@mafia/game-domain";
-import type { GameState } from "@mafia/game-domain";
+import type { CanonicalGameEventDraft, GameState } from "@mafia/game-domain";
 import { GameTable, type TableSeatView } from "../table/GameTable.js";
 
 interface NightStageProps {
   readonly game: GameState;
   readonly onGameChange: (game: GameState) => void;
   readonly onEvent: (type: string, payload: Record<string, unknown>) => void;
+  readonly onAcceptedEvent?: (event: CanonicalGameEventDraft) => void;
+  readonly onReopenLastAcceptedEvent?: () => void;
   readonly hostName?: string;
   readonly privacyHidden?: boolean;
+  readonly onSeatSwipe?: (seat: number) => void;
+  readonly swipeAction?: ReactNode;
 }
 
 export const NightStage = ({
   game,
   onGameChange,
   onEvent,
+  onAcceptedEvent,
+  onReopenLastAcceptedEvent,
   hostName = "Host",
   privacyHidden = false,
+  onSeatSwipe,
+  swipeAction,
 }: NightStageProps) => {
   const activePlayers = game.players.filter(({ status }) => status === "active");
   const renderRedCardAction = (seat: TableSeatView) =>
@@ -36,8 +48,16 @@ export const NightStage = ({
         type="button"
         aria-label={`Red card ${seat.name}`}
         onClick={() => {
-          onGameChange(redCard(game, seat.seat));
-          onEvent("player.red-carded", { seat: seat.seat, source: "night" });
+          if (onAcceptedEvent !== undefined) {
+            onAcceptedEvent({
+              type: "player.red-carded",
+              payload: { seat: seat.seat },
+              secret: false,
+            });
+          } else {
+            onGameChange(redCard(game, seat.seat));
+            onEvent("player.red-carded", { seat: seat.seat, source: "night" });
+          }
         }}
       >
         Red
@@ -62,6 +82,8 @@ export const NightStage = ({
       <GameTable
         hostName={hostName}
         privacyHidden={privacyHidden}
+        onSeatSwipe={onSeatSwipe}
+        swipeAction={swipeAction}
         seats={game.players.map((player) => ({
           ...player,
           mafiaShooter: player.status === "active" && player.team === "black",
@@ -77,10 +99,12 @@ export const NightStage = ({
                 type="button"
                 key={shooter.seat}
                 className={`shooter-button${selected ? " is-selected" : ""}`}
-                disabled={assignedTarget !== undefined}
-                aria-label={`Assign shooter ${shooter.seat} to target ${target.name}`}
+                aria-pressed={selected}
+                aria-label={`${selected ? "Remove" : "Assign"} shooter ${shooter.seat} ${
+                  selected ? "from" : "to"
+                } target ${target.name}`}
                 onClick={() => {
-                  onGameChange(recordMafiaShot(game, shooter.seat, target.seat));
+                  onGameChange(toggleMafiaShot(game, shooter.seat, target.seat));
                 }}
               >
                 #{shooter.seat}
@@ -100,7 +124,23 @@ export const NightStage = ({
           <button
             type="button"
             disabled={!allShotsRecorded}
-            onClick={() => onGameChange(resolveMafiaShots(game).game)}
+            onClick={() => {
+              const resolution = resolveMafiaShots(game);
+              if (onAcceptedEvent !== undefined) {
+                onAcceptedEvent({
+                  type: "mafia.shots-resolved",
+                  payload: { shots: resolution.secretShots, result: resolution.result },
+                  secret: true,
+                });
+              } else {
+                onEvent("mafia.shots-resolved", {
+                  shots: resolution.secretShots,
+                  result: resolution.result,
+                  day: game.day,
+                });
+                onGameChange(resolution.game);
+              }
+            }}
           >
             Evaluate Mafia shots
           </button>
@@ -119,6 +159,8 @@ export const NightStage = ({
       <GameTable
         hostName={hostName}
         privacyHidden={privacyHidden}
+        onSeatSwipe={onSeatSwipe}
+        swipeAction={swipeAction}
         seats={game.players.map((player) => ({
           ...player,
           mafiaShooter: player.team === "black" && game.shotAssignments[player.seat] !== undefined,
@@ -144,7 +186,13 @@ export const NightStage = ({
               </div>
             )}
             <div className="night-result-actions">
-              <button type="button" onClick={() => onGameChange(reopenMafiaShots(game))}>
+              <button
+                type="button"
+                onClick={() => {
+                  if (onReopenLastAcceptedEvent !== undefined) onReopenLastAcceptedEvent();
+                  else onGameChange(reopenMafiaShots(game));
+                }}
+              >
                 Re-evaluate Mafia shots
               </button>
             </div>
@@ -155,16 +203,15 @@ export const NightStage = ({
             type="button"
             onClick={() => {
               const next = completeMafiaShots(game);
-              onGameChange(next);
-              for (const [shooterSeat, targetSeat] of Object.entries(game.shotAssignments)) {
-                onEvent("mafia.shot-recorded", {
-                  shooterSeat: Number(shooterSeat),
-                  targetSeat,
-                  day: game.day,
-                  secret: true,
+              if (onAcceptedEvent !== undefined) {
+                onAcceptedEvent({
+                  type: "phase.changed",
+                  payload: { to: next.phase },
+                  secret: false,
                 });
+              } else {
+                onGameChange(next);
               }
-              onEvent("mafia.shots-resolved", { ...result, day: game.day });
             }}
           >
             Continue night
@@ -179,6 +226,8 @@ export const NightStage = ({
       <GameTable
         hostName={hostName}
         privacyHidden={privacyHidden}
+        onSeatSwipe={onSeatSwipe}
+        swipeAction={swipeAction}
         seats={game.players.map((player) => ({
           ...player,
           mafiaShooter: player.status === "active" && player.role === "don",
@@ -186,8 +235,16 @@ export const NightStage = ({
         seatActionLabel={(seat) => `Don check ${seat.name}`}
         onSeatClick={(targetSeat) => {
           const check = performDonCheck(game, targetSeat);
-          onGameChange(check.game);
-          onEvent("don.checked", { ...check.result });
+          if (onAcceptedEvent !== undefined) {
+            onAcceptedEvent({
+              type: "don.checked",
+              payload: { targetSeat, match: check.result.match },
+              secret: true,
+            });
+          } else {
+            onGameChange(check.game);
+            onEvent("don.checked", { ...check.result });
+          }
         }}
         renderSeatActions={renderRedCardAction}
         center={
@@ -197,9 +254,26 @@ export const NightStage = ({
           </div>
         }
         advance={
-          <button type="button" disabled>
-            Select a player to continue
-          </button>
+          <div className="table-advance-options">
+            <button type="button" disabled>
+              Select a player to continue
+            </button>
+            <button
+              type="button"
+              className="table-advance-secondary"
+              onClick={() => {
+                const next = skipDonCheck(game);
+                if (onAcceptedEvent !== undefined) {
+                  onAcceptedEvent({ type: "don.check-skipped", payload: {}, secret: true });
+                } else {
+                  onGameChange(next);
+                  onEvent("don.check-skipped", { day: game.day });
+                }
+              }}
+            >
+              Skip Don check
+            </button>
+          </div>
         }
       />
     );
@@ -207,13 +281,13 @@ export const NightStage = ({
 
   if (game.phase === "night-don-result" && game.checkResult?.kind === "don-check") {
     const target = game.players.find(({ seat }) => seat === game.checkResult?.targetSeat);
-    const hasSheriff = game.players.some(
-      ({ role, status }) => role === "sheriff" && status === "active",
-    );
+    const hasSheriff = game.players.some(({ role }) => role === "sheriff");
     return (
       <GameTable
         hostName={hostName}
         privacyHidden={privacyHidden}
+        onSeatSwipe={onSeatSwipe}
+        swipeAction={swipeAction}
         seats={game.players.map((player) => ({
           ...player,
           mafiaShooter: player.status === "active" && player.role === "don",
@@ -229,7 +303,19 @@ export const NightStage = ({
           </div>
         }
         advance={
-          <button type="button" onClick={() => onGameChange(continueDonCheck(game))}>
+          <button
+            type="button"
+            onClick={() => {
+              const next = continueDonCheck(game);
+              if (onAcceptedEvent !== undefined) {
+                onAcceptedEvent({
+                  type: "phase.changed",
+                  payload: { to: next.phase },
+                  secret: false,
+                });
+              } else onGameChange(next);
+            }}
+          >
             {hasSheriff ? "Proceed to Sheriff check" : "Continue night"}
           </button>
         }
@@ -242,6 +328,8 @@ export const NightStage = ({
       <GameTable
         hostName={hostName}
         privacyHidden={privacyHidden}
+        onSeatSwipe={onSeatSwipe}
+        swipeAction={swipeAction}
         seats={game.players.map((player) => ({
           ...player,
           sheriffHighlight: player.status === "active" && player.role === "sheriff",
@@ -249,8 +337,16 @@ export const NightStage = ({
         seatActionLabel={(seat) => `Sheriff check ${seat.name}`}
         onSeatClick={(targetSeat) => {
           const check = performSheriffCheck(game, targetSeat);
-          onGameChange(check.game);
-          onEvent("sheriff.checked", { ...check.result });
+          if (onAcceptedEvent !== undefined) {
+            onAcceptedEvent({
+              type: "sheriff.checked",
+              payload: { targetSeat, match: check.result.match },
+              secret: true,
+            });
+          } else {
+            onGameChange(check.game);
+            onEvent("sheriff.checked", { ...check.result });
+          }
         }}
         renderSeatActions={renderRedCardAction}
         center={
@@ -260,9 +356,26 @@ export const NightStage = ({
           </div>
         }
         advance={
-          <button type="button" disabled>
-            Select a player to continue
-          </button>
+          <div className="table-advance-options">
+            <button type="button" disabled>
+              Select a player to continue
+            </button>
+            <button
+              type="button"
+              className="table-advance-secondary"
+              onClick={() => {
+                const next = skipSheriffCheck(game);
+                if (onAcceptedEvent !== undefined) {
+                  onAcceptedEvent({ type: "sheriff.check-skipped", payload: {}, secret: true });
+                } else {
+                  onGameChange(next);
+                  onEvent("sheriff.check-skipped", { day: game.day });
+                }
+              }}
+            >
+              Skip Sheriff check
+            </button>
+          </div>
         }
       />
     );
@@ -274,6 +387,8 @@ export const NightStage = ({
       <GameTable
         hostName={hostName}
         privacyHidden={privacyHidden}
+        onSeatSwipe={onSeatSwipe}
+        swipeAction={swipeAction}
         seats={game.players.map((player) => ({
           ...player,
           sheriffHighlight: player.status === "active" && player.role === "sheriff",
@@ -289,7 +404,19 @@ export const NightStage = ({
           </div>
         }
         advance={
-          <button type="button" onClick={() => onGameChange(continueSheriffCheck(game))}>
+          <button
+            type="button"
+            onClick={() => {
+              const next = continueSheriffCheck(game);
+              if (onAcceptedEvent !== undefined) {
+                onAcceptedEvent({
+                  type: "phase.changed",
+                  payload: { to: next.phase },
+                  secret: false,
+                });
+              } else onGameChange(next);
+            }}
+          >
             Continue night
           </button>
         }
@@ -302,8 +429,9 @@ export const NightStage = ({
       <GameTable
         hostName={hostName}
         privacyHidden={privacyHidden}
+        onSeatSwipe={onSeatSwipe}
+        swipeAction={swipeAction}
         seats={game.players}
-        renderSeatActions={renderRedCardAction}
         center={
           <div className="table-check-center">
             <span className="table-prompt">Night complete</span>
@@ -314,12 +442,20 @@ export const NightStage = ({
             type="button"
             onClick={() => {
               const next = completeNight(game);
-              onGameChange(next);
-              onEvent("phase.changed", {
-                from: "night-resolution",
-                to: next.phase,
-                day: next.day,
-              });
+              if (onAcceptedEvent !== undefined) {
+                onAcceptedEvent({
+                  type: "phase.changed",
+                  payload: { to: next.phase },
+                  secret: false,
+                });
+              } else {
+                onGameChange(next);
+                onEvent("phase.changed", {
+                  from: "night-resolution",
+                  to: next.phase,
+                  day: next.day,
+                });
+              }
             }}
           >
             Begin day {game.day + 1}

@@ -11,7 +11,6 @@ import {
 } from "@mafia/game-domain";
 import type { GameState, PlayerInput, Role, SetupState } from "@mafia/game-domain";
 import type { PlayerProfile } from "../../api/client.js";
-import { AccountPlaylistPicker } from "../music/AccountPlaylistPicker.js";
 import { GameTable } from "../table/GameTable.js";
 
 interface SetupWizardProps {
@@ -33,10 +32,11 @@ interface SetupWizardProps {
   readonly fullscreenTouchPicker?: boolean;
 }
 
-type WizardStep = "players" | "music" | "roles";
+type WizardStep = "players" | "roles";
 
 export interface SetupWizardSessionState {
-  readonly step: WizardStep | "roles";
+  /** "music" is retained only to restore snapshots created before music setup moved to Dev. */
+  readonly step: WizardStep | "music";
   readonly hostPlayerId?: string;
   readonly selectedPlayerIds: readonly string[];
   readonly setup: SetupState | null;
@@ -194,8 +194,28 @@ const PlayerCombobox = ({
           }}
           onKeyDown={handleKeyDown}
         />
+        {value === "" ? null : (
+          <button
+            type="button"
+            className="player-combobox-clear"
+            aria-label={`Clear ${label}`}
+            onPointerDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+            onClick={() => {
+              onChange("");
+              setQuery("");
+              setOpen(false);
+            }}
+          >
+            ×
+          </button>
+        )}
         <span className="player-combobox-chevron" aria-hidden="true">
-          ⌄
+          <svg viewBox="0 0 16 10">
+            <path d="m2 2 6 6 6-6" />
+          </svg>
         </span>
       </div>
       {open ? (
@@ -233,12 +253,6 @@ const PlayerCombobox = ({
 
 export const SetupWizard = ({
   players: availablePlayers,
-  musicPlaying,
-  musicStatus,
-  playlistId,
-  onPlaylistIdChange,
-  volumePresets = [50, 80],
-  onVolumePresetsChange = () => undefined,
   onComplete,
   onEvent = () => undefined,
   initialSessionState = null,
@@ -252,7 +266,9 @@ export const SetupWizard = ({
   const [step, setStep] = useState<WizardStep>(
     initialSessionState?.step === "roles" && initialSessionState.setup?.step !== "role-draw"
       ? "players"
-      : (initialSessionState?.step ?? "players"),
+      : initialSessionState?.step === "roles"
+        ? "roles"
+        : "players",
   );
   const [selectedPlayerIds, setSelectedPlayerIds] = useState(() =>
     initialSessionState?.selectedPlayerIds.length === 10
@@ -337,17 +353,6 @@ export const SetupWizard = ({
     setSelectedPlayerIds(shuffled(selectedPlayers).map(({ id }) => id));
     setSetup(null);
   }, [hostPlayerId, selectablePlayers]);
-
-  const continueToMusic = () => {
-    const nextSetup = createSetup(players);
-    setSetup(nextSetup);
-    setStep("music");
-    publishSessionState("music", nextSetup);
-    onEvent("setup.players-selected", {
-      hostPlayerId,
-      players: players.map(({ id, name, seat }) => ({ id, name, seat })),
-    });
-  };
 
   const startRoleDraw = () => {
     if (!playersReady || hostPlayer === undefined) return;
@@ -444,7 +449,7 @@ export const SetupWizard = ({
                   : `${seat.name}: ${seat.role}${setup.remainingRoles.length > 0 ? ". Triple tap to reroll" : ""}`
               }
               onSeatClick={handleRoleCardTap}
-              onSeatSwipeRight={(seat) => {
+              onSeatSwipe={(seat) => {
                 if (setup.remainingRoles.length > 0) setManualRoleSeat(seat);
               }}
               center={
@@ -494,11 +499,7 @@ export const SetupWizard = ({
   }
 
   return (
-    <main
-      className={`setup-shell${
-        step === "players" ? " is-player-setup" : step === "music" ? " is-music-setup" : ""
-      }`}
-    >
+    <main className={`setup-shell${step === "players" ? " is-player-setup" : ""}`}>
       {step === "players" ? (
         <section className="wizard-card player-setup-card">
           <p className="eyebrow">Game setup</p>
@@ -598,62 +599,6 @@ export const SetupWizard = ({
               onClick={startRoleDraw}
             >
               Start game
-            </button>
-            <button type="button" disabled={!playersReady} onClick={continueToMusic}>
-              Set up music · Optional
-            </button>
-          </div>
-        </section>
-      ) : null}
-
-      {step === "music" ? (
-        <section className="wizard-card music-step">
-          <p className="eyebrow">Game setup</p>
-          <h1>Table music · Optional</h1>
-          <p className="lead">Start table music now, or begin the game without playback.</p>
-          <div className={`music-status ${musicPlaying ? "is-playing" : ""}`}>
-            <span className="status-dot" />
-            <strong>{musicStatus}</strong>
-          </div>
-          <fieldset className="volume-mode-setup">
-            <legend>Volume modes</legend>
-            {volumePresets.map((volume, index) => (
-              <label key={index}>
-                <span>{index === 0 ? "Low" : "High"}</span>
-                <input
-                  type="number"
-                  min="1"
-                  max="100"
-                  value={volume}
-                  onChange={(event) => {
-                    const nextValue = Math.min(100, Math.max(1, Number(event.target.value) || 1));
-                    onVolumePresetsChange(
-                      index === 0 ? [nextValue, volumePresets[1]] : [volumePresets[0], nextValue],
-                    );
-                  }}
-                />
-              </label>
-            ))}
-          </fieldset>
-          <AccountPlaylistPicker playlistId={playlistId} onPlaylistIdChange={onPlaylistIdChange} />
-          <div className="setup-completion-actions">
-            <button
-              className="primary-action"
-              type="button"
-              disabled={!playersReady}
-              onClick={startRoleDraw}
-            >
-              Start game
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setStep("players");
-                setSetup(null);
-                publishSessionState("players", null);
-              }}
-            >
-              Back to players
             </button>
           </div>
         </section>

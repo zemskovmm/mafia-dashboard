@@ -11,6 +11,7 @@ export type GamePhase =
   | "sheriff-wake"
   | "day"
   | "voting"
+  | "voting-cancelled"
   | "car-crash"
   | "car-crash-decision"
   | "car-crash-skipped"
@@ -69,6 +70,8 @@ export interface GameState {
   readonly currentTurnIndex: number;
   readonly nominations: readonly Nomination[];
   readonly voteAssignments: Readonly<Partial<Record<number, number>>>;
+  readonly votingCancellation?:
+    { readonly reason: "red-card" } | { readonly reason: "host-skipped" };
   readonly votingRound?: "initial" | "repeat";
   readonly carCrashSeats?: readonly number[];
   readonly carCrashVotes?: Readonly<Partial<Record<number, boolean>>>;

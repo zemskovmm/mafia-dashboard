@@ -1,3 +1,9 @@
+import {
+  replayGameLog,
+  type GameLogEntry,
+  type GameState,
+  type InitialGameBaseline,
+} from "@mafia/game-domain";
 import { z } from "zod";
 
 const uuidOrEmpty = z.union([z.uuid(), z.literal("")]);
@@ -10,8 +16,10 @@ const gamePhase = z.enum([
   "sheriff-wake",
   "day",
   "voting",
+  "voting-cancelled",
   "car-crash",
   "car-crash-decision",
+  "car-crash-skipped",
   "goodbye-speech",
   "best-move",
   "night-mafia",
@@ -150,6 +158,12 @@ const gameStateSchema = z
       }),
     ),
     voteAssignments: z.record(z.string(), z.number().int().min(1).max(10)),
+    votingCancellation: z
+      .discriminatedUnion("reason", [
+        z.object({ reason: z.literal("red-card") }),
+        z.object({ reason: z.literal("host-skipped") }),
+      ])
+      .optional(),
     votingRound: z.enum(["initial", "repeat"]).optional(),
     carCrashSeats: z.array(z.number().int().min(1).max(10)).optional(),
     carCrashVotes: z.record(z.string(), z.boolean()).optional(),
@@ -172,6 +186,7 @@ const gameStateSchema = z
       ])
       .optional(),
     dayNotice: z.literal("happy").optional(),
+    redCardIssuedThisDay: z.boolean().optional(),
     bestMove: z
       .object({
         playerSeat: z.number().int().min(1).max(10),
@@ -191,6 +206,7 @@ const gameStateSchema = z
         day,
         nominations,
         voteAssignments,
+        votingCancellation,
         votingRound,
         carCrashSeats = [],
         carCrashVotes = {},
@@ -377,6 +393,14 @@ const gameStateSchema = z
             message: "The final voting candidate must receive every remaining active vote",
           });
         }
+      }
+
+      if ((phase === "voting-cancelled") !== (votingCancellation !== undefined)) {
+        context.addIssue({
+          code: "custom",
+          path: ["votingCancellation"],
+          message: "A voting cancellation reason must exist only in the cancelled voting phase",
+        });
       }
 
       const carCrashPhase = phase === "car-crash" || phase === "car-crash-decision";
@@ -597,6 +621,229 @@ const gameLogEntrySchema = z.object({
   createdAt: z.iso.datetime({ offset: true }),
 });
 
+const canonicalSeat = z.number().int().min(1).max(10);
+const canonicalSeatKey = z.string().regex(/^(?:[1-9]|10)$/);
+const emptyCanonicalPayload = z.object({}).strict();
+const voteResultSchema = z
+  .object({
+    kind: z.enum(["winner", "car-crash", "eliminate-both-vote", "eliminate-all-skipped"]),
+    seats: z.array(canonicalSeat),
+    totals: z.record(canonicalSeatKey, z.number().int().nonnegative()),
+  })
+  .strict();
+const carCrashVoteResultSchema = z
+  .object({
+    eliminate: z.boolean(),
+    seats: z.array(canonicalSeat),
+    yesVotes: z.number().int().nonnegative(),
+    eligibleVoters: z.number().int().nonnegative(),
+  })
+  .strict();
+const nightShotResultSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("kill"), targetSeat: canonicalSeat }).strict(),
+  z.object({ kind: z.literal("no-effect"), targetSeat: canonicalSeat }).strict(),
+  z.object({ kind: z.literal("miss") }).strict(),
+]);
+const canonicalEventMetadata = z.object({
+  replayVersion: z.literal(1),
+  id: z.uuid(),
+  gameId: z.uuid(),
+  sequence: z.number().int().positive(),
+  parentEventId: z.uuid().nullable(),
+  phaseBefore: gamePhase,
+  phaseAfter: gamePhase,
+  dayBefore: z.number().int().min(0),
+  dayAfter: z.number().int().min(0),
+  stateHashAfter: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+  createdAt: z.iso.datetime({ offset: true }),
+});
+const canonicalGameEventSchema = z.discriminatedUnion("type", [
+  canonicalEventMetadata
+    .extend({
+      type: z.literal("game.started"),
+      payload: emptyCanonicalPayload,
+      secret: z.literal(true),
+    })
+    .strict(),
+  canonicalEventMetadata
+    .extend({
+      type: z.literal("game.checkpointed"),
+      payload: emptyCanonicalPayload,
+      secret: z.literal(true),
+    })
+    .strict(),
+  canonicalEventMetadata
+    .extend({
+      type: z.literal("phase.changed"),
+      payload: z.object({ to: gamePhase }).strict(),
+      secret: z.literal(false),
+    })
+    .strict(),
+  canonicalEventMetadata
+    .extend({
+      type: z.literal("turn.completed"),
+      payload: z.object({ seat: canonicalSeat }).strict(),
+      secret: z.literal(false),
+    })
+    .strict(),
+  canonicalEventMetadata
+    .extend({
+      type: z.literal("player.nominated"),
+      payload: z.object({ nominatorSeat: canonicalSeat, candidateSeat: canonicalSeat }).strict(),
+      secret: z.literal(false),
+    })
+    .strict(),
+  canonicalEventMetadata
+    .extend({
+      type: z.literal("foul.issued"),
+      payload: z
+        .object({
+          seat: canonicalSeat,
+          foulNumber: z.number().int().positive(),
+          redCarded: z.boolean(),
+        })
+        .strict(),
+      secret: z.literal(false),
+    })
+    .strict(),
+  canonicalEventMetadata
+    .extend({
+      type: z.literal("player.red-carded"),
+      payload: z.object({ seat: canonicalSeat }).strict(),
+      secret: z.literal(false),
+    })
+    .strict(),
+  canonicalEventMetadata
+    .extend({
+      type: z.literal("voting.skipped"),
+      payload: z.object({ reason: z.literal("host-skipped") }).strict(),
+      secret: z.literal(false),
+    })
+    .strict(),
+  canonicalEventMetadata
+    .extend({
+      type: z.literal("voting.resolved"),
+      payload: z
+        .object({
+          voteAssignments: z.record(canonicalSeatKey, canonicalSeat),
+          result: voteResultSchema,
+        })
+        .strict(),
+      secret: z.literal(false),
+    })
+    .strict(),
+  canonicalEventMetadata
+    .extend({
+      type: z.literal("car-crash.resolved"),
+      payload: z
+        .object({
+          votes: z.record(canonicalSeatKey, z.boolean()),
+          result: carCrashVoteResultSchema,
+        })
+        .strict(),
+      secret: z.literal(false),
+    })
+    .strict(),
+  canonicalEventMetadata
+    .extend({
+      type: z.literal("mafia.shots-resolved"),
+      payload: z
+        .object({
+          shots: z.array(
+            z
+              .object({
+                shooterSeat: canonicalSeat,
+                targetSeat: canonicalSeat,
+                secret: z.literal(true),
+              })
+              .strict(),
+          ),
+          result: nightShotResultSchema,
+        })
+        .strict(),
+      secret: z.literal(true),
+    })
+    .strict(),
+  canonicalEventMetadata
+    .extend({
+      type: z.literal("don.checked"),
+      payload: z.object({ targetSeat: canonicalSeat, match: z.boolean() }).strict(),
+      secret: z.literal(true),
+    })
+    .strict(),
+  canonicalEventMetadata
+    .extend({
+      type: z.literal("don.check-skipped"),
+      payload: emptyCanonicalPayload,
+      secret: z.literal(true),
+    })
+    .strict(),
+  canonicalEventMetadata
+    .extend({
+      type: z.literal("sheriff.checked"),
+      payload: z.object({ targetSeat: canonicalSeat, match: z.boolean() }).strict(),
+      secret: z.literal(true),
+    })
+    .strict(),
+  canonicalEventMetadata
+    .extend({
+      type: z.literal("sheriff.check-skipped"),
+      payload: emptyCanonicalPayload,
+      secret: z.literal(true),
+    })
+    .strict(),
+  canonicalEventMetadata
+    .extend({
+      type: z.literal("best-move.completed"),
+      payload: z
+        .object({
+          playerSeat: canonicalSeat,
+          selectedSeats: z.array(canonicalSeat).max(3),
+          mafiaHits: z.number().int().min(0).max(3),
+        })
+        .strict(),
+      secret: z.literal(true),
+    })
+    .strict(),
+  canonicalEventMetadata
+    .extend({
+      type: z.literal("game.completed"),
+      payload: z.object({ winner: team }).strict(),
+      secret: z.literal(false),
+    })
+    .strict(),
+]);
+
+const initialGameBaselineSchema = z.object({
+  replayVersion: z.literal(1),
+  game: gameStateSchema,
+});
+
+interface ReplayableStateInput {
+  readonly game: GameState | null;
+  readonly initialGame?: InitialGameBaseline | null;
+  readonly events?: readonly GameLogEntry[];
+  readonly headEventId?: string | null;
+}
+
+const deriveReplayState = (state: ReplayableStateInput): GameState | null => {
+  if (state.initialGame == null) return state.game;
+  if (state.headEventId == null) return state.initialGame.game;
+  const byId = new Map((state.events ?? []).map((event) => [event.id, event]));
+  const reversed: GameLogEntry[] = [];
+  const visited = new Set<string>();
+  let currentId: string | null = state.headEventId;
+  while (currentId !== null) {
+    if (visited.has(currentId)) throw new Error("Game history contains a cycle");
+    visited.add(currentId);
+    const event: GameLogEntry | undefined = byId.get(currentId);
+    if (event === undefined) throw new Error("Game history is missing its active parent");
+    reversed.push(event);
+    currentId = event.parentEventId;
+  }
+  return replayGameLog(state.initialGame, reversed.reverse()).game;
+};
+
 const gameSessionStateSchema = z
   .object({
     setup: setupSessionStateSchema.nullable(),
@@ -605,6 +852,11 @@ const gameSessionStateSchema = z
     hostName: z.string().trim().min(1).max(100).nullable(),
     playlistId: z.string().max(200),
     log: z.array(gameLogEntrySchema),
+    initialGame: initialGameBaselineSchema.nullable().optional(),
+    events: z.array(canonicalGameEventSchema).optional(),
+    headEventId: z.uuid().nullable().optional(),
+    resetReturnEventId: z.uuid().nullable().optional(),
+    legacyLog: z.array(gameLogEntrySchema).optional(),
     undoHistory: z
       .array(
         z.object({
@@ -615,70 +867,129 @@ const gameSessionStateSchema = z
       )
       .max(3),
   })
-  .superRefine(({ setup, game, hostPlayerId, hostName, log, undoHistory }, context) => {
-    if ((hostPlayerId === null) !== (hostName === null)) {
-      context.addIssue({
-        code: "custom",
-        path: ["hostName"],
-        message: "Host ID and name must be stored together",
-      });
-    }
-    if (game !== null && hostPlayerId === null) {
-      context.addIssue({
-        code: "custom",
-        path: ["hostPlayerId"],
-        message: "A live game requires its host",
-      });
-    }
-    if (hostPlayerId !== null && game?.players.some(({ id }) => id === hostPlayerId)) {
-      context.addIssue({
-        code: "custom",
-        path: ["hostPlayerId"],
-        message: "Host cannot occupy a player seat",
-      });
-    }
-    const setupHostPlayerId = setup?.hostPlayerId === "" ? null : (setup?.hostPlayerId ?? null);
-    if (setup !== null && setupHostPlayerId !== hostPlayerId) {
-      context.addIssue({
-        code: "custom",
-        path: ["setup", "hostPlayerId"],
-        message: "Setup host must match the authoritative session host",
-      });
-    }
-    if (new Set(log.map(({ id }) => id)).size !== log.length) {
-      context.addIssue({ code: "custom", path: ["log"], message: "Log IDs must be unique" });
-    }
-    for (const [index, entry] of log.entries()) {
-      if (entry.sequence !== index + 1) {
+  .superRefine(
+    (
+      {
+        setup,
+        game,
+        hostPlayerId,
+        hostName,
+        log,
+        undoHistory,
+        initialGame,
+        events = [],
+        headEventId,
+      },
+      context,
+    ) => {
+      let currentGame: GameState | null = game;
+      try {
+        currentGame = deriveReplayState({
+          game,
+          initialGame: initialGame as InitialGameBaseline | null | undefined,
+          events: events as unknown as readonly GameLogEntry[],
+          headEventId,
+        });
+      } catch (error) {
         context.addIssue({
           code: "custom",
-          path: ["log", index, "sequence"],
-          message: "Log sequence must be contiguous",
+          path: ["events"],
+          message: error instanceof Error ? error.message : "Game history cannot be replayed",
         });
       }
-    }
-    for (const [index, snapshot] of undoHistory.entries()) {
-      if (game === null || snapshot.game.day !== game.day) {
+      if ((hostPlayerId === null) !== (hostName === null)) {
         context.addIssue({
           code: "custom",
-          path: ["undoHistory", index, "game", "day"],
-          message: "Undo history cannot cross a day checkpoint",
+          path: ["hostName"],
+          message: "Host ID and name must be stored together",
         });
       }
-      const retainedEntry = snapshot.logLength === 0 ? undefined : log[snapshot.logLength - 1];
+      if (currentGame !== null && hostPlayerId === null) {
+        context.addIssue({
+          code: "custom",
+          path: ["hostPlayerId"],
+          message: "A live game requires its host",
+        });
+      }
+      if (hostPlayerId !== null && currentGame?.players.some(({ id }) => id === hostPlayerId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["hostPlayerId"],
+          message: "Host cannot occupy a player seat",
+        });
+      }
+      const setupHostPlayerId = setup?.hostPlayerId === "" ? null : (setup?.hostPlayerId ?? null);
+      if (setup !== null && setupHostPlayerId !== hostPlayerId) {
+        context.addIssue({
+          code: "custom",
+          path: ["setup", "hostPlayerId"],
+          message: "Setup host must match the authoritative session host",
+        });
+      }
+      if (new Set(log.map(({ id }) => id)).size !== log.length) {
+        context.addIssue({ code: "custom", path: ["log"], message: "Log IDs must be unique" });
+      }
+      for (const [index, entry] of log.entries()) {
+        const previous = log[index - 1];
+        const invalidSequence =
+          events.length === 0
+            ? entry.sequence !== index + 1
+            : previous !== undefined && entry.sequence <= previous.sequence;
+        if (invalidSequence) {
+          context.addIssue({
+            code: "custom",
+            path: ["log", index, "sequence"],
+            message:
+              events.length === 0
+                ? "Log sequence must be contiguous"
+                : "Active branch log sequence must be increasing",
+          });
+        }
+      }
+      for (const [index, snapshot] of undoHistory.entries()) {
+        if (currentGame === null || snapshot.game.day !== currentGame.day) {
+          context.addIssue({
+            code: "custom",
+            path: ["undoHistory", index, "game", "day"],
+            message: "Undo history cannot cross a day checkpoint",
+          });
+        }
+        const retainedEntry = snapshot.logLength === 0 ? undefined : log[snapshot.logLength - 1];
+        if (
+          snapshot.logLength > log.length ||
+          snapshot.sequence !== snapshot.logLength ||
+          (snapshot.sequence > 0 && retainedEntry?.sequence !== snapshot.sequence)
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["undoHistory", index],
+            message: "Undo snapshot must reference a retained log prefix",
+          });
+        }
+      }
+      if (events.length > 0 && (initialGame === undefined || initialGame === null)) {
+        context.addIssue({
+          code: "custom",
+          path: ["initialGame"],
+          message: "Incremental events require an initial game baseline",
+        });
+      }
+      if (new Set(events.map(({ id }) => id)).size !== events.length) {
+        context.addIssue({ code: "custom", path: ["events"], message: "Event IDs must be unique" });
+      }
       if (
-        snapshot.logLength > log.length ||
-        snapshot.sequence !== snapshot.logLength ||
-        (snapshot.sequence > 0 && retainedEntry?.sequence !== snapshot.sequence)
+        headEventId !== undefined &&
+        headEventId !== null &&
+        !events.some(({ id }) => id === headEventId)
       ) {
         context.addIssue({
           code: "custom",
-          path: ["undoHistory", index],
-          message: "Undo snapshot must reference a retained log prefix",
+          path: ["headEventId"],
+          message: "The active head must reference a stored event",
         });
       }
-    }
-  });
+    },
+  );
 
 const finalGameResultsSchema = z
   .object({
@@ -738,6 +1049,79 @@ const finalGameResultsSchema = z
     }
   });
 
+const sessionOperationBase = {
+  mutationId: z.uuid(),
+  baseRevision: z.number().int().nonnegative(),
+} as const;
+
+export const gameSessionNormalizeMutationSchema = z.object(sessionOperationBase).strict();
+
+export const gameSessionStartMutationSchema = z
+  .object({
+    ...sessionOperationBase,
+    initialGame: initialGameBaselineSchema,
+    event: canonicalGameEventSchema,
+  })
+  .strict()
+  .superRefine(({ initialGame, event }, context) => {
+    if (event.type !== "game.started" && event.type !== "game.checkpointed") {
+      context.addIssue({
+        code: "custom",
+        path: ["event", "type"],
+        message: "A session start requires a game.started event",
+      });
+      return;
+    }
+    if (event.sequence !== 1 || event.parentEventId !== null) {
+      context.addIssue({
+        code: "custom",
+        path: ["event"],
+        message: "game.started must be replay sequence 1 with no parent",
+      });
+      return;
+    }
+    try {
+      replayGameLog(initialGame as InitialGameBaseline, [event as unknown as GameLogEntry]);
+    } catch (error) {
+      context.addIssue({
+        code: "custom",
+        path: ["event"],
+        message: error instanceof Error ? error.message : "The start event cannot be replayed",
+      });
+    }
+  });
+
+export const gameSessionEventMutationSchema = z
+  .object({
+    ...sessionOperationBase,
+    event: canonicalGameEventSchema,
+  })
+  .strict()
+  .superRefine(({ event }, context) => {
+    if (event.type === "game.started" || event.sequence < 2 || event.parentEventId === null) {
+      context.addIssue({
+        code: "custom",
+        path: ["event"],
+        message: "An appended event must be a non-root canonical replay entry",
+      });
+    }
+  });
+
+export const gameSessionHeadMutationSchema = z
+  .object({
+    ...sessionOperationBase,
+    targetEventId: z.uuid(),
+    reason: z.enum(["undo", "reset", "restore-reset"]),
+  })
+  .strict();
+
+export const gameSessionCompleteMutationSchema = z
+  .object({
+    ...sessionOperationBase,
+    results: finalGameResultsSchema,
+  })
+  .strict();
+
 export const gameSessionMutationSchema = z
   .object({
     name: z.string().trim().min(1).max(100),
@@ -747,7 +1131,18 @@ export const gameSessionMutationSchema = z
     results: finalGameResultsSchema.nullable(),
   })
   .superRefine(({ state, results }, context) => {
-    const finished = state.game?.phase === "finished";
+    let currentGame: GameState | null;
+    try {
+      currentGame = deriveReplayState({
+        game: state.game,
+        initialGame: state.initialGame as InitialGameBaseline | null | undefined,
+        events: state.events as unknown as readonly GameLogEntry[] | undefined,
+        headEventId: state.headEventId,
+      });
+    } catch {
+      return;
+    }
+    const finished = currentGame?.phase === "finished";
     if (results !== null && !finished) {
       context.addIssue({
         code: "custom",
@@ -756,15 +1151,15 @@ export const gameSessionMutationSchema = z
       });
       return;
     }
-    if (results === null || state.game === null) return;
-    if (results.hostPlayerId !== state.hostPlayerId || results.winner !== state.game.winner) {
+    if (results === null || currentGame === null) return;
+    if (results.hostPlayerId !== state.hostPlayerId || results.winner !== currentGame.winner) {
       context.addIssue({
         code: "custom",
         path: ["results"],
         message: "Results do not match the game snapshot",
       });
     }
-    const gamePlayers = new Map(state.game.players.map((player) => [player.id, player]));
+    const gamePlayers = new Map(currentGame.players.map((player) => [player.id, player]));
     for (const result of results.players) {
       const player = gamePlayers.get(result.playerId);
       if (
@@ -775,8 +1170,8 @@ export const gameSessionMutationSchema = z
         player.status !== result.status ||
         player.fouls !== result.fouls ||
         (result.bestMoveHits ?? null) !==
-          (state.game.bestMove?.playerSeat === player.seat
-            ? (state.game.bestMove.mafiaHits ?? null)
+          (currentGame.bestMove?.playerSeat === player.seat
+            ? (currentGame.bestMove.mafiaHits ?? null)
             : null)
       ) {
         context.addIssue({

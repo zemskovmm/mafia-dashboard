@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
-import { assertGameNotDeleted, assertLegacyGameMutationAllowed } from "./game-lifecycle.js";
+import {
+  assertGameNotDeleted,
+  assertLegacyGameMutationAllowed,
+  lockClubGame,
+} from "./game-lifecycle.js";
 import { initializeSchema } from "./initialize-schema.js";
 import { DEFAULT_CLUB_ID } from "./club-store.js";
 
@@ -124,7 +128,8 @@ const profileSelect = `
   SELECT p.id, p.nickname, p.first_name, p.last_name, p.email,
          p.data_processing_consent, p.consent_at, p.created_at, p.updated_at,
          p.last_played_at,
-         (SELECT COUNT(*)::int FROM game_results hosted WHERE hosted.host_player_id = p.id)
+         (SELECT COUNT(*)::int FROM game_results hosted
+           WHERE hosted.club_id = p.club_id AND hosted.host_player_id = p.id)
            AS hosted_games,
          COUNT(r.player_id)::int AS games_played,
          COUNT(r.player_id) FILTER (WHERE r.won)::int AS wins,
@@ -142,7 +147,7 @@ const profileSelect = `
          COUNT(r.player_id) FILTER (WHERE r.best_move_hits IS NOT NULL)::int AS best_moves,
          COALESCE(SUM(r.best_move_hits), 0)::int AS best_move_mafia_hits
     FROM players p
-    LEFT JOIN game_player_results r ON r.player_id = p.id`;
+    LEFT JOIN game_player_results r ON r.club_id = p.club_id AND r.player_id = p.id`;
 
 const profileGroupAndOrder = `
    GROUP BY p.id
@@ -246,20 +251,20 @@ export class PlayerStore {
       const activeGame = await client.query(
         `SELECT 1
            FROM game_session_players
-          WHERE player_id = $1
+          WHERE club_id = $2 AND player_id = $1
           LIMIT 1`,
-        [id],
+        [id, clubId],
       );
       if (activeGame.rowCount !== 0) {
         await client.query("COMMIT");
         return "active_game";
       }
       const currentGames = await client.query<{ game_id: string }>(
-        `SELECT game_id FROM game_player_results WHERE player_id = $1
+        `SELECT game_id FROM game_player_results WHERE club_id = $2 AND player_id = $1
          UNION
-         SELECT game_id FROM game_results WHERE host_player_id = $1
+         SELECT game_id FROM game_results WHERE club_id = $2 AND host_player_id = $1
          ORDER BY game_id`,
-        [id],
+        [id, clubId],
       );
       const gameIds = currentGames.rows.map(({ game_id }) => game_id);
       const affectedPlayers =
@@ -269,13 +274,13 @@ export class PlayerStore {
               await client.query<{ player_id: string }>(
                 `SELECT player_id
                    FROM game_player_results
-                  WHERE game_id = ANY($1::uuid[])
+                  WHERE club_id = $2 AND game_id = ANY($1::uuid[])
                  UNION
                  SELECT host_player_id AS player_id
                    FROM game_results
-                  WHERE game_id = ANY($1::uuid[])
+                  WHERE club_id = $2 AND game_id = ANY($1::uuid[])
                     AND host_player_id IS NOT NULL`,
-                [gameIds],
+                [gameIds, clubId],
               )
             ).rows.map(({ player_id }) => player_id);
 
@@ -283,14 +288,23 @@ export class PlayerStore {
         await client.query(
           `INSERT INTO deleted_games (game_id, club_id)
            SELECT game_id, $2 FROM UNNEST($1::uuid[]) AS game_id
-           ON CONFLICT (game_id) DO NOTHING`,
+           ON CONFLICT (club_id, game_id) DO NOTHING`,
           [gameIds, clubId],
         );
-        await client.query("DELETE FROM game_sessions WHERE id = ANY($1::uuid[])", [gameIds]);
-        await client.query("DELETE FROM game_events WHERE game_id = ANY($1::uuid[])", [gameIds]);
-        await client.query("DELETE FROM game_results WHERE game_id = ANY($1::uuid[])", [gameIds]);
+        await client.query(
+          "DELETE FROM game_sessions WHERE club_id = $2 AND id = ANY($1::uuid[])",
+          [gameIds, clubId],
+        );
+        await client.query(
+          "DELETE FROM game_events WHERE club_id = $2 AND game_id = ANY($1::uuid[])",
+          [gameIds, clubId],
+        );
+        await client.query(
+          "DELETE FROM game_results WHERE club_id = $2 AND game_id = ANY($1::uuid[])",
+          [gameIds, clubId],
+        );
       }
-      await client.query("DELETE FROM players WHERE id = $1", [id]);
+      await client.query("DELETE FROM players WHERE id = $1 AND club_id = $2", [id, clubId]);
       if (affectedPlayers.length > 0) {
         await client.query(
           `UPDATE players AS p
@@ -299,17 +313,21 @@ export class PlayerStore {
                       FROM (
                         SELECT result.played_at
                           FROM game_player_results AS player_result
-                          JOIN game_results AS result ON result.game_id = player_result.game_id
-                         WHERE player_result.player_id = p.id
+                          JOIN game_results AS result
+                            ON result.club_id = player_result.club_id
+                           AND result.game_id = player_result.game_id
+                         WHERE player_result.club_id = p.club_id
+                           AND player_result.player_id = p.id
                         UNION ALL
                         SELECT hosted.played_at
                           FROM game_results AS hosted
-                         WHERE hosted.host_player_id = p.id
+                         WHERE hosted.club_id = p.club_id
+                           AND hosted.host_player_id = p.id
                       ) AS history
                   ),
                   updated_at = NOW()
-            WHERE p.id = ANY($1::uuid[])`,
-          [affectedPlayers],
+            WHERE p.club_id = $2 AND p.id = ANY($1::uuid[])`,
+          [affectedPlayers, clubId],
         );
       }
       await client.query("COMMIT");
@@ -328,16 +346,9 @@ export class PlayerStore {
     try {
       await client.query("BEGIN");
       await client.query("LOCK TABLE game_results, game_player_results IN ROW EXCLUSIVE MODE");
-      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [input.gameId]);
-      await assertGameNotDeleted(client, input.gameId);
-      await assertLegacyGameMutationAllowed(client, input.gameId);
-      const existingOwner = await client.query<{ club_id: string }>(
-        "SELECT club_id FROM game_results WHERE game_id = $1",
-        [input.gameId],
-      );
-      if (existingOwner.rows[0] !== undefined && existingOwner.rows[0].club_id !== clubId) {
-        throw new Error("The game result belongs to another club");
-      }
+      await lockClubGame(client, clubId, input.gameId);
+      await assertGameNotDeleted(client, clubId, input.gameId);
+      await assertLegacyGameMutationAllowed(client, clubId, input.gameId);
       const participantIds = [
         ...input.players.map(({ playerId }) => playerId),
         ...(hostPlayerId === null ? [] : [hostPlayerId]),
@@ -356,16 +367,15 @@ export class PlayerStore {
       await client.query(
         `INSERT INTO game_results (game_id, club_id, winner, played_at, host_player_id)
          VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (game_id) DO UPDATE
+         ON CONFLICT (club_id, game_id) DO UPDATE
            SET winner = EXCLUDED.winner,
                played_at = EXCLUDED.played_at,
-               host_player_id = EXCLUDED.host_player_id
-         WHERE game_results.club_id = EXCLUDED.club_id`,
+               host_player_id = EXCLUDED.host_player_id`,
         [input.gameId, clubId, input.winner, input.playedAt, hostPlayerId],
       );
       const previousResults = await client.query<{ player_id: string }>(
-        "SELECT player_id FROM game_player_results WHERE game_id = $1",
-        [input.gameId],
+        "SELECT player_id FROM game_player_results WHERE club_id = $2 AND game_id = $1",
+        [input.gameId, clubId],
       );
       const affectedPlayerIds = [
         ...new Set([
@@ -377,14 +387,19 @@ export class PlayerStore {
           ...(hostPlayerId === null ? [] : [hostPlayerId]),
         ]),
       ];
-      await client.query("DELETE FROM game_player_results WHERE game_id = $1", [input.gameId]);
+      await client.query("DELETE FROM game_player_results WHERE club_id = $2 AND game_id = $1", [
+        input.gameId,
+        clubId,
+      ]);
 
       for (const player of input.players) {
         await client.query(
           `INSERT INTO game_player_results
-             (game_id, player_id, seat, role, team, final_status, fouls, won, best_move_hits)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $5 = $8, $9)`,
+             (club_id, game_id, player_id, seat, role, team, final_status, fouls, won,
+              best_move_hits)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $6 = $9, $10)`,
           [
+            clubId,
             input.gameId,
             player.playerId,
             player.seat,
@@ -404,17 +419,21 @@ export class PlayerStore {
                     FROM (
                       SELECT result.played_at
                         FROM game_player_results AS player_result
-                        JOIN game_results AS result ON result.game_id = player_result.game_id
-                       WHERE player_result.player_id = p.id
+                        JOIN game_results AS result
+                          ON result.club_id = player_result.club_id
+                         AND result.game_id = player_result.game_id
+                       WHERE player_result.club_id = p.club_id
+                         AND player_result.player_id = p.id
                       UNION ALL
                       SELECT hosted.played_at
                         FROM game_results AS hosted
-                       WHERE hosted.host_player_id = p.id
+                       WHERE hosted.club_id = p.club_id
+                         AND hosted.host_player_id = p.id
                     ) AS history
                 ),
                 updated_at = NOW()
-          WHERE p.id = ANY($1::uuid[])`,
-        [affectedPlayerIds],
+          WHERE p.club_id = $2 AND p.id = ANY($1::uuid[])`,
+        [affectedPlayerIds, clubId],
       );
       await client.query("COMMIT");
     } catch (error) {
@@ -430,12 +449,12 @@ export class PlayerStore {
     try {
       await client.query("BEGIN");
       await client.query("LOCK TABLE game_results, game_player_results IN ROW EXCLUSIVE MODE");
-      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [gameId]);
-      await assertGameNotDeleted(client, gameId);
-      await assertLegacyGameMutationAllowed(client, gameId);
+      await lockClubGame(client, clubId, gameId);
+      await assertGameNotDeleted(client, clubId, gameId);
+      await assertLegacyGameMutationAllowed(client, clubId, gameId);
       const participants = await client.query<{ player_id: string }>(
-        "SELECT player_id FROM game_player_results WHERE game_id = $1",
-        [gameId],
+        "SELECT player_id FROM game_player_results WHERE club_id = $2 AND game_id = $1",
+        [gameId, clubId],
       );
       const result = await client.query<{ host_player_id: string | null }>(
         "DELETE FROM game_results WHERE game_id = $1 AND club_id = $2 RETURNING host_player_id",
@@ -456,17 +475,21 @@ export class PlayerStore {
                     FROM (
                       SELECT result.played_at
                         FROM game_player_results AS player_result
-                        JOIN game_results AS result ON result.game_id = player_result.game_id
-                       WHERE player_result.player_id = p.id
+                        JOIN game_results AS result
+                          ON result.club_id = player_result.club_id
+                         AND result.game_id = player_result.game_id
+                       WHERE player_result.club_id = p.club_id
+                         AND player_result.player_id = p.id
                       UNION ALL
                       SELECT hosted.played_at
                         FROM game_results AS hosted
-                       WHERE hosted.host_player_id = p.id
+                       WHERE hosted.club_id = p.club_id
+                         AND hosted.host_player_id = p.id
                     ) AS history
                 ),
                 updated_at = NOW()
-          WHERE p.id = ANY($1::uuid[])`,
-        [affectedPlayerIds],
+          WHERE p.club_id = $2 AND p.id = ANY($1::uuid[])`,
+        [affectedPlayerIds, clubId],
       );
       await client.query("COMMIT");
     } catch (error) {

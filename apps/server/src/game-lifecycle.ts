@@ -18,16 +18,40 @@ export class AuthoritativeGameSessionError extends Error {
   }
 }
 
-export const assertGameNotDeleted = async (client: PoolClient, gameId: string): Promise<void> => {
-  const deleted = await client.query("SELECT 1 FROM deleted_games WHERE game_id = $1", [gameId]);
+export const lockClubGame = async (
+  client: PoolClient,
+  clubId: string,
+  gameId: string,
+): Promise<void> => {
+  await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2, 0))", [
+    clubId,
+    gameId,
+  ]);
+};
+
+export const assertGameNotDeleted = async (
+  client: PoolClient,
+  clubId: string,
+  gameId: string,
+): Promise<void> => {
+  const deleted = await client.query(
+    "SELECT 1 FROM deleted_games WHERE club_id = $1 AND game_id = $2",
+    [clubId, gameId],
+  );
   if (deleted.rowCount !== 0) throw new DeletedGameError(gameId);
 };
 
+export const assertClubGameNotDeleted = assertGameNotDeleted;
+
 export const assertLegacyGameMutationAllowed = async (
   client: PoolClient,
+  clubId: string,
   gameId: string,
 ): Promise<void> => {
-  const session = await client.query("SELECT 1 FROM game_sessions WHERE id = $1", [gameId]);
+  const session = await client.query("SELECT 1 FROM game_sessions WHERE club_id = $1 AND id = $2", [
+    clubId,
+    gameId,
+  ]);
   if (session.rowCount !== 0) throw new AuthoritativeGameSessionError(gameId);
 };
 

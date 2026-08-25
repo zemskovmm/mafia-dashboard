@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import type { GameLogEntry, InitialGameBaseline } from "@mafia/game-domain";
 import staticFiles from "@fastify/static";
 import Fastify from "fastify";
 import type { FastifyReply, FastifyRequest } from "fastify";
@@ -9,10 +10,17 @@ import { AuthoritativeGameSessionError, DeletedGameError } from "./game-lifecycl
 import {
   GameSessionConflictError,
   GameSessionMutationMismatchError,
+  GameSessionNotFoundError,
+  GameSessionOperationError,
   GameSessionStore,
 } from "./game-session-store.js";
 import {
   durableGameEventTypeSchema,
+  gameSessionCompleteMutationSchema,
+  gameSessionEventMutationSchema,
+  gameSessionHeadMutationSchema,
+  gameSessionNormalizeMutationSchema,
+  gameSessionStartMutationSchema,
   gameSessionMutationSchema,
 } from "./game-session-validation.js";
 import { PlayerStore } from "./player-store.js";
@@ -23,6 +31,9 @@ import type { AppUser, GoogleAuthService } from "./google-auth.js";
 
 const gameIdParams = z.object({ gameId: z.uuid() });
 const clearGameSessionQuery = z.object({ expectedRevision: z.coerce.number().int().nonnegative() });
+const gameSessionListQuery = z.object({
+  status: z.enum(["active", "completed"]).default("active"),
+});
 const playerIdParams = z.object({ playerId: z.uuid() });
 const clubIdParams = z.object({ clubId: z.uuid() });
 const playlistIdParams = z.object({ playlistId: z.string().trim().min(1).max(200) });
@@ -127,6 +138,28 @@ const validationFailure = (issues: readonly z.core.$ZodIssue[]) => ({
   error: "validation_failed",
   issues: issues.map(({ path, message }) => ({ path, message })),
 });
+
+const sendGameSessionMutationError = (reply: FastifyReply, error: unknown): FastifyReply => {
+  if (error instanceof GameSessionMutationMismatchError) {
+    return reply.code(409).send({ error: "game_session_mutation_mismatch" });
+  }
+  if (error instanceof GameSessionConflictError) {
+    return reply.code(409).send({
+      error: "game_session_revision_conflict",
+      currentRevision: error.currentRevision,
+    });
+  }
+  if (error instanceof GameSessionNotFoundError) {
+    return reply.code(404).send({ error: error.code });
+  }
+  if (error instanceof GameSessionOperationError) {
+    return reply.code(409).send({ error: error.code });
+  }
+  if (error instanceof DeletedGameError) {
+    return reply.code(410).send({ error: "game_deleted" });
+  }
+  throw error;
+};
 
 const isUniqueViolation = (error: unknown): error is { readonly code: "23505" } =>
   typeof error === "object" && error !== null && "code" in error && error.code === "23505";
@@ -541,7 +574,14 @@ export const buildApp = async ({
   app.get("/api/game-sessions", async (request, reply) => {
     const clubId = await selectedClub(request, reply);
     if (clubId === null) return;
-    return { sessions: await gameSessionStore.listActive(clubId) };
+    const query = gameSessionListQuery.safeParse(request.query);
+    if (!query.success) return reply.code(400).send(validationFailure(query.error.issues));
+    return {
+      sessions:
+        query.data.status === "completed"
+          ? await gameSessionStore.listCompleted(clubId)
+          : await gameSessionStore.listActive(clubId),
+    };
   });
 
   app.get("/api/game-sessions/:gameId", async (request, reply) => {
@@ -569,19 +609,104 @@ export const buildApp = async ({
       });
       return reply.code(session.duplicate || session.revision > 1 ? 200 : 201).send(session);
     } catch (error) {
-      if (error instanceof GameSessionMutationMismatchError) {
-        return reply.code(409).send({ error: "game_session_mutation_mismatch" });
-      }
-      if (error instanceof GameSessionConflictError) {
-        return reply.code(409).send({
-          error: "game_session_revision_conflict",
-          currentRevision: error.currentRevision,
-        });
-      }
-      if (error instanceof DeletedGameError) {
-        return reply.code(410).send({ error: "game_deleted" });
-      }
-      throw error;
+      return sendGameSessionMutationError(reply, error);
+    }
+  });
+
+  app.post("/api/game-sessions/:gameId/normalize", async (request, reply) => {
+    const clubId = await selectedClub(request, reply);
+    if (clubId === null) return;
+    const params = gameIdParams.safeParse(request.params);
+    const body = gameSessionNormalizeMutationSchema.safeParse(request.body);
+    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
+    if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
+    try {
+      return await gameSessionStore.normalize({
+        clubId,
+        gameId: params.data.gameId,
+        ...body.data,
+      });
+    } catch (error) {
+      return sendGameSessionMutationError(reply, error);
+    }
+  });
+
+  app.post("/api/game-sessions/:gameId/start", async (request, reply) => {
+    const clubId = await selectedClub(request, reply);
+    if (clubId === null) return;
+    const params = gameIdParams.safeParse(request.params);
+    const body = gameSessionStartMutationSchema.safeParse(request.body);
+    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
+    if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
+    try {
+      const session = await gameSessionStore.start({
+        clubId,
+        gameId: params.data.gameId,
+        mutationId: body.data.mutationId,
+        baseRevision: body.data.baseRevision,
+        initialGame: body.data.initialGame as InitialGameBaseline,
+        event: body.data.event as unknown as GameLogEntry,
+      });
+      return reply.code(session.duplicate ? 200 : 201).send(session);
+    } catch (error) {
+      return sendGameSessionMutationError(reply, error);
+    }
+  });
+
+  app.post("/api/game-sessions/:gameId/events", async (request, reply) => {
+    const clubId = await selectedClub(request, reply);
+    if (clubId === null) return;
+    const params = gameIdParams.safeParse(request.params);
+    const body = gameSessionEventMutationSchema.safeParse(request.body);
+    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
+    if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
+    try {
+      const session = await gameSessionStore.appendEvent({
+        clubId,
+        gameId: params.data.gameId,
+        mutationId: body.data.mutationId,
+        baseRevision: body.data.baseRevision,
+        event: body.data.event as unknown as GameLogEntry,
+      });
+      return reply.code(session.duplicate ? 200 : 201).send(session);
+    } catch (error) {
+      return sendGameSessionMutationError(reply, error);
+    }
+  });
+
+  app.post("/api/game-sessions/:gameId/head", async (request, reply) => {
+    const clubId = await selectedClub(request, reply);
+    if (clubId === null) return;
+    const params = gameIdParams.safeParse(request.params);
+    const body = gameSessionHeadMutationSchema.safeParse(request.body);
+    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
+    if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
+    try {
+      return await gameSessionStore.moveHead({
+        clubId,
+        gameId: params.data.gameId,
+        ...body.data,
+      });
+    } catch (error) {
+      return sendGameSessionMutationError(reply, error);
+    }
+  });
+
+  app.post("/api/game-sessions/:gameId/complete", async (request, reply) => {
+    const clubId = await selectedClub(request, reply);
+    if (clubId === null) return;
+    const params = gameIdParams.safeParse(request.params);
+    const body = gameSessionCompleteMutationSchema.safeParse(request.body);
+    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
+    if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
+    try {
+      return await gameSessionStore.complete({
+        clubId,
+        gameId: params.data.gameId,
+        ...body.data,
+      });
+    } catch (error) {
+      return sendGameSessionMutationError(reply, error);
     }
   });
 

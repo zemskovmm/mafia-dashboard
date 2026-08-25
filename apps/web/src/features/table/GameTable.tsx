@@ -14,6 +14,7 @@ export interface TableSeatView {
   readonly mafiaShooter?: boolean;
   readonly sheriffHighlight?: boolean;
   readonly goodbyeHighlight?: boolean;
+  readonly votingHighlight?: boolean;
   readonly dimmed?: boolean;
   readonly inactive?: boolean;
   readonly provisionalDeceased?: boolean;
@@ -25,11 +26,14 @@ interface GameTableProps {
   readonly hostName?: string;
   readonly privacyHidden?: boolean;
   readonly seatActionLabel?: (seat: TableSeatView) => string;
+  readonly seatActionDisabled?: (seat: TableSeatView) => boolean;
   readonly onSeatClick?: (seat: number) => void;
-  readonly onSeatSwipeRight?: (seat: number) => void;
+  readonly onSeatSwipe?: (seat: number) => void;
   readonly renderSeatActions?: (seat: TableSeatView) => ReactNode;
+  readonly swipeAction?: ReactNode;
   readonly center?: ReactNode;
   readonly advance?: ReactNode;
+  readonly readOnly?: boolean;
 }
 
 const PersonIcon = () => (
@@ -47,11 +51,14 @@ export const GameTable = ({
   hostName = "Host",
   privacyHidden = false,
   seatActionLabel,
+  seatActionDisabled,
   onSeatClick,
-  onSeatSwipeRight,
+  onSeatSwipe,
   renderSeatActions,
+  swipeAction,
   center,
   advance,
+  readOnly = false,
 }: GameTableProps) => {
   const swipeStart = useRef<{
     readonly seat: number;
@@ -63,65 +70,28 @@ export const GameTable = ({
     <section className="table-stage" aria-label="Mafia table">
       <div className="round-table">
         <div className="table-center">{center}</div>
-        <div className="table-advance">
-          {advance ?? (
-            <button type="button" disabled>
-              Continue
-            </button>
-          )}
-        </div>
+        {swipeAction === undefined ? null : <div className="table-swipe-menu">{swipeAction}</div>}
+        {readOnly ? null : (
+          <div className="table-advance">
+            {advance ?? (
+              <button type="button" disabled>
+                Continue
+              </button>
+            )}
+          </div>
+        )}
         {seats.map((seat) => {
           const angle = HOST_ANGLE + (seat.seat * 360) / TABLE_POSITION_COUNT;
           const label = seatActionLabel?.(seat) ?? `Seat ${seat.seat}: ${seat.name}`;
-          return (
-            <div
-              key={seat.seat}
-              className="seat-anchor"
-              style={{ "--seat-angle": `${angle}deg` } as CSSProperties}
-            >
-              <button
-                type="button"
-                className={`table-card player-seat status-${seat.status ?? "active"}${seat.current ? " is-current" : ""}${seat.mafiaShooter ? " is-mafia-shooter" : ""}${seat.sheriffHighlight ? " is-sheriff-highlight" : ""}${seat.goodbyeHighlight ? " is-goodbye-highlight" : ""}${seat.dimmed ? " is-dimmed" : ""}${seat.inactive ? " is-inactive" : ""}${seat.provisionalDeceased ? " is-provisional-deceased" : ""}`}
-                aria-label={label}
-                aria-current={seat.current ? "step" : undefined}
-                onTouchStart={(event) => {
-                  if (onSeatSwipeRight === undefined) return;
-                  const touch = event.touches[0];
-                  if (touch !== undefined) {
-                    swipeStart.current = { seat: seat.seat, x: touch.clientX, y: touch.clientY };
-                  }
-                }}
-                onTouchEnd={(event) => {
-                  const start = swipeStart.current;
-                  swipeStart.current = null;
-                  if (start?.seat !== seat.seat || onSeatSwipeRight === undefined) return;
-                  const touch = event.changedTouches[0];
-                  if (touch === undefined) return;
-                  const deltaX = touch.clientX - start.x;
-                  const deltaY = touch.clientY - start.y;
-                  if (deltaX > 44 && Math.abs(deltaX) > Math.abs(deltaY) * 1.2) {
-                    suppressClickSeat.current = seat.seat;
-                    onSeatSwipeRight(seat.seat);
-                    window.setTimeout(() => {
-                      if (suppressClickSeat.current === seat.seat) suppressClickSeat.current = null;
-                    }, 0);
-                  }
-                }}
-                onTouchCancel={() => {
-                  swipeStart.current = null;
-                }}
-                onClick={() => {
-                  if (suppressClickSeat.current === seat.seat) {
-                    suppressClickSeat.current = null;
-                    return;
-                  }
-                  onSeatClick?.(seat.seat);
-                }}
-              >
-                <span className="seat-number">{seat.seat}</span>
-                <PersonIcon />
-                <span className="seat-name">{seat.name}</span>
-                {seat.role !== undefined && !privacyHidden ? (
+          const showRole = seat.role !== undefined && !privacyHidden;
+          const className = `table-card player-seat status-${seat.status ?? "active"}${seat.current ? " is-current" : ""}${seat.mafiaShooter ? " is-mafia-shooter" : ""}${seat.sheriffHighlight ? " is-sheriff-highlight" : ""}${seat.goodbyeHighlight ? " is-goodbye-highlight" : ""}${seat.votingHighlight ? " is-voting-highlight" : ""}${seat.dimmed ? " is-dimmed" : ""}${seat.inactive ? " is-inactive" : ""}${seat.provisionalDeceased ? " is-provisional-deceased" : ""}`;
+          const content = (
+            <>
+              <span className="seat-number">{seat.seat}</span>
+              <PersonIcon />
+              <span className="seat-name">{seat.name}</span>
+              <span className="seat-badges">
+                {showRole ? (
                   <span className={`role-badge role-${seat.role}`}>{seat.role}</span>
                 ) : null}
                 {seat.fouls ? <span className="foul-badge">Foul ×{seat.fouls}</span> : null}
@@ -130,11 +100,73 @@ export const GameTable = ({
                 {seat.voteTargetSeat === undefined ? null : (
                   <span className="state-badge">Vote → #{seat.voteTargetSeat}</span>
                 )}
-                {seat.status === "eliminated" ? (
-                  <span className="deceased-cross" aria-hidden="true" />
-                ) : null}
-              </button>
-              {renderSeatActions === undefined ? null : (
+              </span>
+              {seat.status === "eliminated" ? (
+                <span className="deceased-cross" aria-hidden="true" />
+              ) : null}
+            </>
+          );
+          return (
+            <div
+              key={seat.seat}
+              className="seat-anchor"
+              style={{ "--seat-angle": `${angle}deg` } as CSSProperties}
+            >
+              {readOnly ? (
+                <div
+                  className={className}
+                  role="group"
+                  aria-label={label}
+                  aria-current={seat.current ? "step" : undefined}
+                >
+                  {content}
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  disabled={seatActionDisabled?.(seat) ?? false}
+                  className={className}
+                  aria-label={label}
+                  aria-current={seat.current ? "step" : undefined}
+                  onTouchStart={(event) => {
+                    if (onSeatSwipe === undefined) return;
+                    const touch = event.touches[0];
+                    if (touch !== undefined) {
+                      swipeStart.current = { seat: seat.seat, x: touch.clientX, y: touch.clientY };
+                    }
+                  }}
+                  onTouchEnd={(event) => {
+                    const start = swipeStart.current;
+                    swipeStart.current = null;
+                    if (start?.seat !== seat.seat || onSeatSwipe === undefined) return;
+                    const touch = event.changedTouches[0];
+                    if (touch === undefined) return;
+                    const deltaX = touch.clientX - start.x;
+                    const deltaY = touch.clientY - start.y;
+                    if (Math.abs(deltaX) > 44 && Math.abs(deltaX) > Math.abs(deltaY) * 1.2) {
+                      suppressClickSeat.current = seat.seat;
+                      onSeatSwipe(seat.seat);
+                      window.setTimeout(() => {
+                        if (suppressClickSeat.current === seat.seat)
+                          suppressClickSeat.current = null;
+                      }, 0);
+                    }
+                  }}
+                  onTouchCancel={() => {
+                    swipeStart.current = null;
+                  }}
+                  onClick={() => {
+                    if (suppressClickSeat.current === seat.seat) {
+                      suppressClickSeat.current = null;
+                      return;
+                    }
+                    onSeatClick?.(seat.seat);
+                  }}
+                >
+                  {content}
+                </button>
+              )}
+              {readOnly || renderSeatActions === undefined ? null : (
                 <div className="seat-actions">{renderSeatActions(seat)}</div>
               )}
             </div>

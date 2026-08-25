@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { createGameLogEntry } from "@mafia/game-domain";
 import { gameSessionMutationSchema, setupSessionStateSchema } from "./game-session-validation.js";
+import * as validationSchemas from "./game-session-validation.js";
 
 const uuid = (index: number) => `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
 
@@ -38,6 +40,200 @@ const liveGame = (day: number) => ({
 });
 
 describe("game session validation", () => {
+  it("requires only an idempotency UUID and base revision to normalize a session", () => {
+    const schema = (
+      validationSchemas as unknown as {
+        readonly gameSessionNormalizeMutationSchema?: {
+          readonly safeParse: (value: unknown) => { readonly success: boolean };
+        };
+      }
+    ).gameSessionNormalizeMutationSchema;
+
+    expect(schema?.safeParse({ mutationId: uuid(89), baseRevision: 3 }).success).toBe(true);
+    expect(schema?.safeParse({ mutationId: "not-a-uuid", baseRevision: 3 }).success).toBe(false);
+    expect(schema?.safeParse({ mutationId: uuid(89), baseRevision: -1 }).success).toBe(false);
+    expect(
+      schema?.safeParse({ mutationId: uuid(89), baseRevision: 3, state: liveGame(1) }).success,
+    ).toBe(false);
+  });
+
+  it("accepts one verified lifecycle root and its immutable baseline", () => {
+    const gameId = uuid(88);
+    const initialGame = { replayVersion: 1 as const, game: liveGame(1) };
+    const { entry } = createGameLogEntry({
+      gameId,
+      id: uuid(87),
+      sequence: 1,
+      parentEventId: null,
+      createdAt: "2026-08-25T00:00:00.000Z",
+      before: initialGame.game,
+      draft: { type: "game.checkpointed", payload: {}, secret: true },
+    });
+    const schema = (
+      validationSchemas as unknown as {
+        readonly gameSessionStartMutationSchema?: {
+          readonly safeParse: (value: unknown) => { readonly success: boolean };
+        };
+      }
+    ).gameSessionStartMutationSchema;
+
+    const valid = { mutationId: uuid(86), baseRevision: 4, initialGame, event: entry };
+    expect(schema?.safeParse(valid).success).toBe(true);
+    expect(
+      schema?.safeParse({
+        ...valid,
+        event: { ...entry, type: "turn.completed", payload: { seat: 1 } },
+      }).success,
+    ).toBe(false);
+    expect(
+      schema?.safeParse({ ...valid, event: { ...entry, parentEventId: uuid(85) } }).success,
+    ).toBe(false);
+    expect(schema?.safeParse({ ...valid, cumulativeGame: liveGame(2) }).success).toBe(false);
+  });
+
+  it("accepts exactly one canonical non-root replay entry for append", () => {
+    const gameId = uuid(84);
+    const before = liveGame(1);
+    const { entry } = createGameLogEntry({
+      gameId,
+      id: uuid(83),
+      sequence: 2,
+      parentEventId: uuid(82),
+      createdAt: "2026-08-25T00:01:00.000Z",
+      before,
+      draft: { type: "turn.completed", payload: { seat: 1 }, secret: false },
+    });
+    const schema = (
+      validationSchemas as unknown as {
+        readonly gameSessionEventMutationSchema?: {
+          readonly safeParse: (value: unknown) => { readonly success: boolean };
+        };
+      }
+    ).gameSessionEventMutationSchema;
+    const valid = { mutationId: uuid(81), baseRevision: 5, event: entry };
+
+    expect(schema?.safeParse(valid).success).toBe(true);
+    expect(schema?.safeParse({ ...valid, event: [entry, entry] }).success).toBe(false);
+    expect(
+      schema?.safeParse({ ...valid, event: { ...entry, type: "vote.assigned" } }).success,
+    ).toBe(false);
+    expect(schema?.safeParse({ ...valid, events: [entry] }).success).toBe(false);
+  });
+
+  it("enforces canonical payload, visibility, and hash contracts at runtime", () => {
+    const gameId = uuid(84);
+    const before = liveGame(1);
+    const { entry } = createGameLogEntry({
+      gameId,
+      id: uuid(83),
+      sequence: 2,
+      parentEventId: uuid(82),
+      createdAt: "2026-08-25T00:01:00.000Z",
+      before,
+      draft: { type: "turn.completed", payload: { seat: 1 }, secret: false },
+    });
+    const schema = validationSchemas.gameSessionEventMutationSchema;
+    const request = { mutationId: uuid(81), baseRevision: 5, event: entry };
+
+    expect(
+      schema.safeParse({
+        ...request,
+        event: { ...entry, stateHashAfter: `sha256:${"a".repeat(64)}` },
+      }).success,
+    ).toBe(true);
+    expect(
+      schema.safeParse({
+        ...request,
+        event: { ...entry, secret: true },
+      }).success,
+    ).toBe(false);
+    expect(
+      schema.safeParse({
+        ...request,
+        event: { ...entry, payload: { seat: 1, injected: true } },
+      }).success,
+    ).toBe(false);
+    expect(
+      schema.safeParse({
+        ...request,
+        event: {
+          ...entry,
+          type: "don.checked",
+          payload: { targetSeat: 1, match: true },
+          secret: false,
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      schema.safeParse({
+        ...request,
+        event: { ...entry, stateHashAfter: `sha256:${"A".repeat(64)}` },
+      }).success,
+    ).toBe(false);
+    expect(
+      schema.safeParse({
+        ...request,
+        event: { ...entry, stateHashAfter: "a".repeat(64) },
+      }).success,
+    ).toBe(false);
+    expect(
+      schema.safeParse({
+        ...request,
+        event: { ...entry, stateHashAfter: "deadbeef" },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("accepts only reachable-head movement reasons and a UUID target", () => {
+    const schema = (
+      validationSchemas as unknown as {
+        readonly gameSessionHeadMutationSchema?: {
+          readonly safeParse: (value: unknown) => { readonly success: boolean };
+        };
+      }
+    ).gameSessionHeadMutationSchema;
+    const base = { mutationId: uuid(80), baseRevision: 6, targetEventId: uuid(79) };
+
+    for (const reason of ["undo", "reset", "restore-reset"]) {
+      expect(schema?.safeParse({ ...base, reason }).success).toBe(true);
+    }
+    expect(schema?.safeParse({ ...base, reason: "redo" }).success).toBe(false);
+    expect(schema?.safeParse({ ...base, targetEventId: null, reason: "reset" }).success).toBe(
+      false,
+    );
+    expect(schema?.safeParse({ ...base, reason: "reset", game: liveGame(1) }).success).toBe(false);
+  });
+
+  it("accepts completion results without a cumulative game snapshot", () => {
+    const game = liveGame(1);
+    const results = {
+      hostPlayerId: uuid(11),
+      winner: "red" as const,
+      playedAt: "2026-08-25T00:02:00.000Z",
+      players: game.players.map(({ id, seat, role, team, status, fouls }) => ({
+        playerId: id,
+        seat,
+        role,
+        team,
+        status,
+        fouls,
+        bestMoveHits: null,
+      })),
+    };
+    const schema = (
+      validationSchemas as unknown as {
+        readonly gameSessionCompleteMutationSchema?: {
+          readonly safeParse: (value: unknown) => { readonly success: boolean };
+        };
+      }
+    ).gameSessionCompleteMutationSchema;
+    const valid = { mutationId: uuid(78), baseRevision: 7, results };
+
+    expect(schema?.safeParse(valid).success).toBe(true);
+    expect(schema?.safeParse({ ...valid, results: null }).success).toBe(false);
+    expect(schema?.safeParse({ ...valid, state: { game } }).success).toBe(false);
+  });
+
   it("allows a winning session to wait for explicit result confirmation", () => {
     const base = liveGame(3);
     const finished = {
@@ -136,6 +332,40 @@ describe("game session validation", () => {
     expect(parse({ ...voting, voteAssignments: { "1": 6 } }).success).toBe(false);
     expect(parse({ ...voting, voteAssignments: { "01": 4 } }).success).toBe(false);
     expect(parse({ ...voting, currentTurnIndex: 1 }).success).toBe(false);
+  });
+
+  it("preserves a persisted voting cancellation reason", () => {
+    const base = liveGame(1);
+    const parsed = gameSessionMutationSchema.safeParse({
+      name: "Cancelled voting",
+      mutationId: uuid(96),
+      baseRevision: 0,
+      state: {
+        setup: null,
+        game: {
+          ...base,
+          phase: "voting-cancelled",
+          players: base.players.map((player) =>
+            player.seat === 1 ? { ...player, status: "red-carded" } : player,
+          ),
+          turnOrder: base.turnOrder.filter((seat) => seat !== 1),
+          votingCancellation: { reason: "red-card" },
+          redCardIssuedThisDay: true,
+        },
+        hostPlayerId: uuid(11),
+        hostName: "Host",
+        playlistId: "",
+        log: [],
+        undoHistory: [],
+      },
+      results: null,
+    });
+
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.state.game?.votingCancellation).toEqual({ reason: "red-card" });
+      expect(parsed.data.state.game?.redCardIssuedThisDay).toBe(true);
+    }
   });
 
   it("accepts a persisted evaluated Mafia result with its provisional victim", () => {
