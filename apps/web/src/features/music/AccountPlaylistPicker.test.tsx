@@ -105,9 +105,10 @@ describe("AccountPlaylistPicker", () => {
     expect(onPlaylistIdChange).toHaveBeenCalledWith("PL-late");
   });
 
-  it("configures Day, Voting, and Night playlists from one account load", async () => {
-    const StagePicker = AccountPlaylistPicker as unknown as ComponentType<Record<string, unknown>>;
-    const onStagePlaylistIdsChange = vi.fn();
+  it("renders only one remembered playlist selector even when obsolete stage props are present", async () => {
+    const LegacyCompatiblePicker = AccountPlaylistPicker as unknown as ComponentType<
+      Record<string, unknown>
+    >;
     vi.mocked(getMusicAccountStatus).mockResolvedValue({
       configured: true,
       connected: true,
@@ -118,27 +119,21 @@ describe("AccountPlaylistPicker", () => {
       { id: "PL-vote", title: "Vote mix", itemCount: 8, thumbnailUrl: null },
       { id: "PL-night", title: "Night mix", itemCount: 10, thumbnailUrl: null },
     ]);
-    const user = userEvent.setup();
-
     render(
-      <StagePicker
+      <LegacyCompatiblePicker
         playlistId="PL-day"
         onPlaylistIdChange={vi.fn()}
         onAccountDisconnected={vi.fn()}
         stagePlaylistIds={{ day: "PL-day", night: "PL-night" }}
-        onStagePlaylistIdsChange={onStagePlaylistIdsChange}
+        onStagePlaylistIdsChange={vi.fn()}
       />,
     );
 
-    const voting = await screen.findByRole("combobox", { name: "Voting playlist" });
-    expect(screen.getByRole("combobox", { name: "Day playlist" })).toHaveValue("PL-day");
-    expect(screen.getByRole("combobox", { name: "Night playlist" })).toHaveValue("PL-night");
-    await user.selectOptions(voting, "PL-vote");
-    expect(onStagePlaylistIdsChange).toHaveBeenCalledWith({
-      day: "PL-day",
-      voting: "PL-vote",
-      night: "PL-night",
-    });
+    await screen.findByRole("combobox", { name: "YouTube Music playlist" });
+    expect(screen.queryByRole("combobox", { name: "Day playlist" })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Voting playlist" })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Night playlist" })).toBeNull();
+    expect(screen.getAllByRole("combobox")).toHaveLength(1);
     expect(listMusicPlaylists).toHaveBeenCalledOnce();
   });
 

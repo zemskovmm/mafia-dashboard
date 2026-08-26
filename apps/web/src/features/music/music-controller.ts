@@ -33,16 +33,18 @@ export class MusicController {
   public fadeIn({
     durationMs,
     targetVolume,
+    startPlayback,
   }: {
     readonly durationMs: number;
     readonly targetVolume: number;
+    readonly startPlayback?: () => void | Promise<void>;
   }): Promise<FadeResult> {
     const operation = this.beginOperation();
     this.player.setVolume(0);
 
     let playResult: void | Promise<void>;
     try {
-      playResult = this.player.play();
+      playResult = startPlayback === undefined ? this.player.play() : startPlayback();
     } catch (error) {
       this.failOperation(operation, error);
       return operation.promise;

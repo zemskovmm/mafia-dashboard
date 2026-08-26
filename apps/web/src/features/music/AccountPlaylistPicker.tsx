@@ -6,24 +6,17 @@ import {
 } from "../../api/client.js";
 import type { MusicAccountStatus, MusicPlaylist } from "../../api/client.js";
 import { reportError } from "../console/error-console.js";
-import type { MusicStage } from "./music-preferences.js";
 
 interface AccountPlaylistPickerProps {
   readonly playlistId: string;
   readonly onPlaylistIdChange: (playlistId: string) => void;
   readonly onAccountDisconnected: () => void;
-  readonly stagePlaylistIds?: Readonly<Partial<Record<MusicStage, string>>>;
-  readonly onStagePlaylistIdsChange?: (
-    playlistIds: Readonly<Partial<Record<MusicStage, string>>>,
-  ) => void;
 }
 
 export const AccountPlaylistPicker = ({
   playlistId,
   onPlaylistIdChange,
   onAccountDisconnected,
-  stagePlaylistIds = {},
-  onStagePlaylistIdsChange = () => undefined,
 }: AccountPlaylistPickerProps) => {
   const [status, setStatus] = useState<MusicAccountStatus | null>(null);
   const [playlists, setPlaylists] = useState<readonly MusicPlaylist[] | null>(null);
@@ -144,33 +137,6 @@ export const AccountPlaylistPicker = ({
           ))}
         </select>
       </label>
-      <div className="stage-playlist-grid" aria-label="Game stage playlists">
-        {(["day", "voting", "night"] as const).map((stage) => {
-          const label = `${stage[0]!.toUpperCase()}${stage.slice(1)} playlist`;
-          return (
-            <label key={stage}>
-              <span>{label}</span>
-              <select
-                aria-label={label}
-                value={stagePlaylistIds[stage] ?? ""}
-                onChange={(event) => {
-                  const next: Partial<Record<MusicStage, string>> = { ...stagePlaylistIds };
-                  if (event.target.value.length === 0) delete next[stage];
-                  else next[stage] = event.target.value;
-                  onStagePlaylistIdsChange(next);
-                }}
-              >
-                <option value="">Use current playlist</option>
-                {playlists.map((playlist) => (
-                  <option key={playlist.id} value={playlist.id}>
-                    {playlist.title} · {playlist.itemCount} tracks
-                  </option>
-                ))}
-              </select>
-            </label>
-          );
-        })}
-      </div>
       {playlists.length === 0 ? (
         <p className="muted">No playlists were found in this account.</p>
       ) : null}

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
+  checkServerReady,
   clearGameSession,
   createPlayer,
   deleteClub,
@@ -50,6 +51,7 @@ const player = {
 };
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -167,6 +169,40 @@ describe("player API client", () => {
 });
 
 describe("game session aggregate API client", () => {
+  it("checks server and database readiness", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ status: "ready" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(checkServerReady()).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/health/ready",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
+  it("bounds a readiness request that never reaches the server", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        (_input: RequestInfo | URL, init?: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+          }),
+      ),
+    );
+
+    const readiness = expect(checkServerReady()).rejects.toMatchObject({ name: "AbortError" });
+    await vi.advanceTimersByTimeAsync(4_000);
+
+    await readiness;
+  });
+
   it("routes incremental session operations to dedicated mutation endpoints", async () => {
     const gameId = "00000000-0000-4000-8000-000000000002";
     const operation = {
@@ -199,26 +235,30 @@ describe("game session aggregate API client", () => {
     };
 
     await expect(api.saveGameSessionOperation(gameId, operation)).resolves.toEqual(response);
-    expect(fetchMock).toHaveBeenCalledWith(`/api/game-sessions/${gameId}`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        name: operation.name,
-        mutationId: operation.mutationId,
-        baseRevision: operation.baseRevision,
-        state: {
-          setup: operation.metadata.setup,
-          game: null,
-          hostPlayerId: operation.metadata.hostPlayerId,
-          hostName: operation.metadata.hostName,
-          playlistId: operation.metadata.playlistId,
-          log: operation.metadata.legacyLog,
-          undoHistory: [],
-          legacyLog: operation.metadata.legacyLog,
-        },
-        results: null,
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/game-sessions/${gameId}`,
+      expect.objectContaining({
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        signal: expect.any(AbortSignal),
+        body: JSON.stringify({
+          name: operation.name,
+          mutationId: operation.mutationId,
+          baseRevision: operation.baseRevision,
+          state: {
+            setup: operation.metadata.setup,
+            game: null,
+            hostPlayerId: operation.metadata.hostPlayerId,
+            hostName: operation.metadata.hostName,
+            playlistId: operation.metadata.playlistId,
+            log: operation.metadata.legacyLog,
+            undoHistory: [],
+            legacyLog: operation.metadata.legacyLog,
+          },
+          results: null,
+        }),
       }),
-    });
+    );
   });
 
   it("uses the authoritative mutation, active list, and restore endpoints", async () => {
@@ -274,11 +314,16 @@ describe("game session aggregate API client", () => {
     await expect(saveGameSession(gameId, mutation)).resolves.toEqual(session);
     await expect(listActiveGameSessions()).resolves.toEqual([summary]);
     await expect(getGameSession(gameId)).resolves.toEqual(session);
-    expect(fetchMock).toHaveBeenNthCalledWith(1, `/api/game-sessions/${gameId}`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(mutation),
-    });
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      `/api/game-sessions/${gameId}`,
+      expect.objectContaining({
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        signal: expect.any(AbortSignal),
+        body: JSON.stringify(mutation),
+      }),
+    );
   });
   it("loads completed summaries and host-visible events for the selected club", async () => {
     const gameId = "00000000-0000-4000-8000-000000000002";

@@ -59,6 +59,22 @@ describe("MusicController", () => {
     expect(player.volumes).toEqual([0, 10, 20, 30, 40, 50]);
   });
 
+  it("can start a selected queue item after muting instead of calling generic play", async () => {
+    const player = new FakePlayer();
+    const controller = new MusicController(player, { stepMs: 100 });
+    const startPlayback = vi.fn(() => {
+      player.operations.push("selected-play");
+    });
+
+    const fade = controller.fadeIn({ durationMs: 200, targetVolume: 60, startPlayback });
+
+    expect(player.operations.slice(0, 2)).toEqual(["volume:0", "selected-play"]);
+    expect(player.playCalls).toBe(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await expect(fade).resolves.toBe("completed");
+    expect(player.volume).toBe(60);
+  });
+
   it("fades to zero before pausing", async () => {
     const player = new FakePlayer();
     player.volume = 60;

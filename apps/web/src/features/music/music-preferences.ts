@@ -1,10 +1,9 @@
-export type MusicStage = "day" | "voting" | "night";
-
 export interface MusicPreferencesV1 {
   readonly version: 1;
   readonly lastPlaylistId: string;
-  readonly queueOrderByPlaylist: Readonly<Record<string, readonly string[]>>;
-  readonly stagePlaylistIds: Readonly<Partial<Record<MusicStage, string>>>;
+  readonly queueOrder: readonly string[];
+  readonly initialStageEntryKeys: readonly string[];
+  readonly endgameEntryKeys: readonly string[];
 }
 
 const STORAGE_KEY_PREFIX = "mafia-dashboard.music-preferences.v1";
@@ -16,42 +15,50 @@ export const musicPreferencesStorageKey = (clubId: string): string =>
 const emptyMusicPreferences = (): MusicPreferencesV1 => ({
   version: 1,
   lastPlaylistId: "",
-  queueOrderByPlaylist: {},
-  stagePlaylistIds: {},
+  queueOrder: [],
+  initialStageEntryKeys: [],
+  endgameEntryKeys: [],
 });
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 
+const boundedStrings = (value: unknown): readonly string[] => {
+  if (!Array.isArray(value)) return [];
+  const unique = new Set<string>();
+  for (const entry of value) {
+    if (typeof entry === "string") unique.add(entry);
+    if (unique.size === MAX_QUEUE_ENTRY_KEYS) break;
+  }
+  return [...unique];
+};
+
 const sanitizeMusicPreferences = (value: Record<string, unknown>): MusicPreferencesV1 => {
-  const queueOrderByPlaylist = isRecord(value.queueOrderByPlaylist)
-    ? Object.fromEntries(
-        Object.entries(value.queueOrderByPlaylist).flatMap(([playlistId, order]) =>
-          Array.isArray(order)
-            ? [
-                [
-                  playlistId,
-                  order
-                    .filter((entryKey): entryKey is string => typeof entryKey === "string")
-                    .slice(0, MAX_QUEUE_ENTRY_KEYS),
-                ],
-              ]
-            : [],
-        ),
-      )
-    : {};
-  const rawStagePlaylistIds = isRecord(value.stagePlaylistIds) ? value.stagePlaylistIds : {};
-  const stagePlaylistIds = Object.fromEntries(
-    (["day", "voting", "night"] as const).flatMap((stage) =>
-      typeof rawStagePlaylistIds[stage] === "string" ? [[stage, rawStagePlaylistIds[stage]]] : [],
-    ),
-  );
+  const legacyStages = isRecord(value.stagePlaylistIds) ? value.stagePlaylistIds : {};
+  const lastPlaylistId =
+    (typeof value.lastPlaylistId === "string" && value.lastPlaylistId) ||
+    (["initial", "day", "night", "voting"] as const)
+      .map((stage) => legacyStages[stage])
+      .find(
+        (playlistId): playlistId is string =>
+          typeof playlistId === "string" && playlistId.length > 0,
+      ) ||
+    "";
+  const legacyOrders = isRecord(value.queueOrderByPlaylist) ? value.queueOrderByPlaylist : {};
+  const queueOrder = Array.isArray(value.queueOrder)
+    ? boundedStrings(value.queueOrder)
+    : boundedStrings(legacyOrders[lastPlaylistId]);
+  const endgameEntryKeys = boundedStrings(value.endgameEntryKeys);
+  const endgameEntries = new Set(endgameEntryKeys);
 
   return {
     version: 1,
-    lastPlaylistId: typeof value.lastPlaylistId === "string" ? value.lastPlaylistId : "",
-    queueOrderByPlaylist,
-    stagePlaylistIds,
+    lastPlaylistId,
+    queueOrder,
+    initialStageEntryKeys: boundedStrings(value.initialStageEntryKeys).filter(
+      (entryKey) => !endgameEntries.has(entryKey),
+    ),
+    endgameEntryKeys,
   };
 };
 
@@ -75,10 +82,74 @@ export interface QueueEntryIdentity {
 export const queueEntryKey = ({ videoId, position }: QueueEntryIdentity): string =>
   `${videoId}:${position}`;
 
+export const selectRememberedPlaylist = (
+  current: MusicPreferencesV1,
+  lastPlaylistId: string,
+): MusicPreferencesV1 =>
+  current.lastPlaylistId === lastPlaylistId
+    ? current
+    : {
+        version: 1,
+        lastPlaylistId,
+        queueOrder: [],
+        initialStageEntryKeys: [],
+        endgameEntryKeys: [],
+      };
+
 const queueEntryVideoId = (entryKey: string): string | null => {
   const separatorIndex = entryKey.lastIndexOf(":");
   if (separatorIndex <= 0 || !/^\d+$/.test(entryKey.slice(separatorIndex + 1))) return null;
   return entryKey.slice(0, separatorIndex);
+};
+
+export const shuffledQueue = <Entry>(
+  entries: readonly Entry[],
+  random: () => number = Math.random,
+): readonly Entry[] => {
+  const result = [...entries];
+  for (let index = result.length - 1; index > 0; index -= 1) {
+    const candidate = Math.floor(random() * (index + 1));
+    const target = Number.isFinite(candidate) ? Math.max(0, Math.min(index, candidate)) : 0;
+    [result[index], result[target]] = [result[target]!, result[index]!];
+  }
+  return result;
+};
+
+export const openingQueue = <Entry>(
+  entries: readonly Entry[],
+  isInitial: (entry: Entry) => boolean,
+  isEndgame: (entry: Entry) => boolean,
+  random: () => number = Math.random,
+): readonly Entry[] | null => {
+  const initial = shuffledQueue(entries.filter(isInitial), random);
+  const untagged = shuffledQueue(
+    entries.filter((entry) => !isInitial(entry) && !isEndgame(entry)),
+    random,
+  );
+  const current = initial[0];
+  const next = untagged[0];
+  if (current === undefined || next === undefined) return null;
+  const middle = shuffledQueue(
+    [...untagged.slice(1), ...entries.filter((entry) => !isInitial(entry) && isEndgame(entry))],
+    random,
+  );
+  return [current, next, ...middle, ...initial.slice(1)];
+};
+
+export const shuffledQueueWithPreferred = <Entry>(
+  entries: readonly Entry[],
+  preferred: (entry: Entry) => boolean,
+  random: () => number = Math.random,
+): readonly Entry[] => {
+  const preferredEntries = entries.filter(preferred);
+  if (preferredEntries.length === 0) return shuffledQueue(entries, random);
+  return [
+    ...shuffledQueue(preferredEntries, random),
+    ...shuffledQueue(
+      entries.filter((entry) => !preferred(entry)),
+      random,
+    ),
+  ];
 };
 
 export const restoreQueueOrder = <Entry extends QueueEntryIdentity>(

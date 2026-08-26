@@ -254,6 +254,25 @@ const clubHeaders = (clubId: string | undefined, json = false): HeadersInit => (
   ...(clubId === undefined ? {} : { "x-club-id": clubId }),
 });
 
+const persistenceRequestTimeoutMs = 4_000;
+const fetchPersistenceRequest = async (
+  input: RequestInfo | URL,
+  init: RequestInit = {},
+): Promise<Response> => {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), persistenceRequestTimeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timeout);
+  }
+};
+
+export const checkServerReady = async (): Promise<void> => {
+  const response = await fetchPersistenceRequest("/health/ready");
+  if (!response.ok) return throwApiError(response, "Server is not ready");
+};
+
 export const getAuthSession = async (): Promise<AuthSession> => {
   const response = await fetch("/api/auth/session");
   if (!response.ok) return throwApiError(response, "Unable to load the sign-in session");
@@ -374,7 +393,7 @@ export const saveGameSession = async (
   mutation: GameSessionMutation,
   clubId?: string,
 ): Promise<RemoteGameSession> => {
-  const response = await fetch(`/api/game-sessions/${gameId}`, {
+  const response = await fetchPersistenceRequest(`/api/game-sessions/${gameId}`, {
     method: "PUT",
     headers: clubHeaders(clubId, true),
     body: JSON.stringify(mutation),
@@ -446,7 +465,7 @@ export const saveGameSessionOperation = async (
         } as const;
     }
   })();
-  const response = await fetch(request.url, {
+  const response = await fetchPersistenceRequest(request.url, {
     method: request.method,
     headers: clubHeaders(clubId, true),
     body: JSON.stringify(request.body),

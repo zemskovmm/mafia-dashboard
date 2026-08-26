@@ -16,13 +16,8 @@ import { GameTable } from "../table/GameTable.js";
 
 interface SetupWizardProps {
   readonly players: readonly PlayerProfile[];
-  readonly musicPlaying: boolean;
-  readonly musicStatus: string;
-  readonly playlistId: string;
-  readonly onPlaylistIdChange: (playlistId: string) => void;
-  readonly volumePresets?: readonly [number, number];
-  readonly onVolumePresetsChange?: (presets: readonly [number, number]) => void;
   readonly onComplete: (game: GameState, hostPlayerId: string, hostName: string) => void;
+  readonly onStartGame?: () => void;
   readonly onEvent?: (type: string, payload: Record<string, unknown>) => void;
   readonly initialSessionState?: SetupWizardSessionState | null;
   readonly onSessionStateChange?: (state: SetupWizardSessionState) => void;
@@ -255,6 +250,7 @@ const PlayerCombobox = ({
 export const SetupWizard = ({
   players: availablePlayers,
   onComplete,
+  onStartGame = () => undefined,
   onEvent = () => undefined,
   initialSessionState = null,
   onSessionStateChange,
@@ -357,6 +353,7 @@ export const SetupWizard = ({
 
   const startRoleDraw = () => {
     if (!playersReady || hostPlayer === undefined) return;
+    onStartGame();
     if (step === "players") {
       onEvent("setup.players-selected", {
         hostPlayerId,

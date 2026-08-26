@@ -557,11 +557,15 @@
   border-color: rgb(var(--accent-rgb) / 62%);
 }
 
-.finish-game-error {
+.finish-game-error,
+.finish-game-local {
   display: block;
   margin-top: 7px;
   color: #ff9aab;
   font-size: 0.72rem;
+}
+.finish-game-local {
+  color: var(--amber);
 }
 
 .roster-gate-error {

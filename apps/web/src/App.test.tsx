@@ -1,13 +1,13 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { forwardRef, useEffect, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createGameLogEntry,
   type CanonicalGameEventDraft,
   type GameState,
 } from "@mafia/game-domain";
-import type { Club, PlayerProfile, RemoteGameSession } from "./api/client.js";
+import { ApiError, type Club, type PlayerProfile, type RemoteGameSession } from "./api/client.js";
 import { App as WelcomeApp, ClubWorkspace } from "./App.js";
 import { clearErrorConsole, reportError } from "./features/console/error-console.js";
 import { musicPreferencesStorageKey } from "./features/music/music-preferences.js";
@@ -16,6 +16,7 @@ import { GLASS_SETTINGS_STORAGE_KEY } from "./features/theme/glass-settings.js";
 const api = vi.hoisted(() => {
   const saveGameSession = vi.fn();
   return {
+    checkServerReady: vi.fn(),
     clearAllData: vi.fn(),
     clearGameSession: vi.fn(),
     createPlayer: vi.fn(),
@@ -43,7 +44,16 @@ const gameScreenHarness = vi.hoisted(() => ({
   liveOnGameChange: null as ((game: GameState) => void) | null,
 }));
 
-const musicPlayerHarness = vi.hoisted(() => ({ mounts: 0, unmounts: 0 }));
+const musicPlayerHarness = vi.hoisted(() => ({
+  mounts: 0,
+  unmounts: 0,
+  setState: null as ((state: "idle" | "loading" | "playing" | "paused" | "error") => void) | null,
+  startOpeningQueue: vi.fn(() => true),
+  playFirstRegularTrack: vi.fn(() => true),
+  quickFadeOut: vi.fn(() => Promise.resolve()),
+  slowFadeOut: vi.fn(() => Promise.resolve()),
+  shuffleQueue: vi.fn(() => true),
+}));
 
 const hostPlayerId = "00000000-0000-4000-8000-000000000011";
 const testClub: Club = {
@@ -112,11 +122,10 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
   SetupWizard: ({
     players,
     onComplete,
+    onStartGame = () => undefined,
     initialSessionState,
     onSessionStateChange,
     onEvent,
-    playlistId,
-    onPlaylistIdChange,
     onPopulateDevelopmentPlayers,
     onOpenAvailablePlayers,
     showDevelopmentTools = false,
@@ -124,6 +133,7 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
   }: {
     players: readonly PlayerProfile[];
     onComplete: (game: GameState, hostPlayerId: string, hostName: string) => void;
+    onStartGame?: () => void;
     initialSessionState?: { step: "players" | "music" | "roles" } | null;
     onSessionStateChange?: (state: {
       step: "players" | "music" | "roles";
@@ -132,8 +142,6 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
       setup: null;
     }) => void;
     onEvent: (type: string, payload: Record<string, unknown>) => void;
-    playlistId: string;
-    onPlaylistIdChange: (playlistId: string) => void;
     onPopulateDevelopmentPlayers?: () => Promise<readonly PlayerProfile[]>;
     onOpenAvailablePlayers?: () => void;
     showDevelopmentTools?: boolean;
@@ -145,7 +153,6 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
         <h1>
           {step === "roles" ? "Role giveaway" : step === "music" ? "Restored setup" : "Game setup"}
         </h1>
-        <p>Playlist: {playlistId || "none"}</p>
         <output data-testid="setup-player-pool">
           {players.map(({ nickname }) => nickname).join(",")}
         </output>
@@ -155,9 +162,6 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
             Select available players
           </button>
         )}
-        <button type="button" onClick={() => onPlaylistIdChange("saved-playlist")}>
-          Choose saved playlist
-        </button>
         <button
           type="button"
           onClick={() => {
@@ -185,6 +189,7 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
         <button
           type="button"
           onClick={() => {
+            onStartGame();
             setStep("roles");
             onSessionStateChange?.({
               step: "roles",
@@ -237,7 +242,7 @@ vi.mock("./features/game/GameScreen.js", () => ({
     onResetPreview?: () => void;
     privacyHidden: boolean;
     onFinishGame: () => void;
-    finishGameState: "ready" | "saving" | "saved" | "error";
+    finishGameState: "ready" | "saving" | "saved" | "queued";
   }) => {
     if (mode === "preview") {
       gameScreenHarness.previewGame = game;
@@ -330,8 +335,14 @@ vi.mock("./features/game/GameScreen.js", () => ({
           Finish test game
         </button>
         {game.phase === "finished" ? (
-          <button type="button" disabled={finishGameState === "saved"} onClick={onFinishGame}>
-            {finishGameState === "saved" ? "Game safely saved" : "Finish the game"}
+          <button type="button" disabled={finishGameState !== "ready"} onClick={onFinishGame}>
+            {finishGameState === "saved"
+              ? "Game safely saved"
+              : finishGameState === "queued"
+                ? "Game saved offline"
+                : finishGameState === "saving"
+                  ? "Saving game…"
+                  : "Finish the game"}
           </button>
         ) : null}
       </main>
@@ -346,14 +357,32 @@ vi.mock("./features/music/YouTubePlaylistPlayer.js", () => ({
         playlistId,
         rememberedQueueOrder = [],
         onQueueOrderChange,
+        onStateChange,
+        initialStageEntryKeys = [],
+        onInitialStageEntryKeysChange,
+        endgameEntryKeys = [],
+        onEndgameEntryKeysChange,
       }: {
         playlistId: string;
         rememberedQueueOrder?: readonly string[];
         onQueueOrderChange?: (playlistId: string, order: readonly string[]) => void;
+        onStateChange: (state: "idle" | "loading" | "playing" | "paused" | "error") => void;
+        initialStageEntryKeys?: readonly string[];
+        onInitialStageEntryKeysChange?: (playlistId: string, entryKeys: readonly string[]) => void;
+        endgameEntryKeys?: readonly string[];
+        onEndgameEntryKeysChange?: (playlistId: string, entryKeys: readonly string[]) => void;
       },
-      _ref,
+      ref,
     ) => {
-      void _ref;
+      musicPlayerHarness.setState = onStateChange;
+      useImperativeHandle(ref, () => ({
+        fadeIn: () => Promise.resolve(true),
+        quickFadeOut: musicPlayerHarness.quickFadeOut,
+        slowFadeOut: musicPlayerHarness.slowFadeOut,
+        startOpeningQueue: musicPlayerHarness.startOpeningQueue,
+        playFirstRegularTrack: musicPlayerHarness.playFirstRegularTrack,
+        shuffleQueue: musicPlayerHarness.shuffleQueue,
+      }));
       useEffect(() => {
         musicPlayerHarness.mounts += 1;
         return () => {
@@ -366,11 +395,45 @@ vi.mock("./features/music/YouTubePlaylistPlayer.js", () => ({
             data-testid="youtube-player"
             data-playlist-id={playlistId}
             data-remembered-order={rememberedQueueOrder.join(",")}
+            data-initial-keys={initialStageEntryKeys.join(",")}
+            data-endgame-keys={endgameEntryKeys.join(",")}
           />
           <button
             type="button"
             aria-label="Remember mock queue order"
             onClick={() => onQueueOrderChange?.(playlistId, ["video-c:2", "video-a:0"])}
+          />
+          <button
+            type="button"
+            aria-label="Remember mock queue tags"
+            onClick={() => {
+              onInitialStageEntryKeysChange?.(playlistId, ["video-a:0"]);
+              onEndgameEntryKeysChange?.(playlistId, ["video-c:2"]);
+            }}
+          />
+          <button
+            type="button"
+            aria-label={`${initialStageEntryKeys.includes("video-a:0") ? "Unmark" : "Mark"} mock Initial`}
+            onClick={() =>
+              onInitialStageEntryKeysChange?.(
+                playlistId,
+                initialStageEntryKeys.includes("video-a:0")
+                  ? initialStageEntryKeys.filter((entryKey) => entryKey !== "video-a:0")
+                  : [...initialStageEntryKeys, "video-a:0"],
+              )
+            }
+          />
+          <button
+            type="button"
+            aria-label={`${endgameEntryKeys.includes("video-a:0") ? "Unmark" : "Mark"} mock Endgame`}
+            onClick={() =>
+              onEndgameEntryKeysChange?.(
+                playlistId,
+                endgameEntryKeys.includes("video-a:0")
+                  ? endgameEntryKeys.filter((entryKey) => entryKey !== "video-a:0")
+                  : [...endgameEntryKeys, "video-a:0"],
+              )
+            }
           />
         </>
       );
@@ -383,16 +446,10 @@ vi.mock("./features/music/AccountPlaylistPicker.js", () => ({
     playlistId,
     onPlaylistIdChange,
     onAccountDisconnected,
-    stagePlaylistIds = {},
-    onStagePlaylistIdsChange,
   }: {
     playlistId: string;
     onPlaylistIdChange: (playlistId: string) => void;
     onAccountDisconnected: () => void;
-    stagePlaylistIds?: Partial<Record<"day" | "voting" | "night", string>>;
-    onStagePlaylistIdsChange?: (
-      playlistIds: Partial<Record<"day" | "voting" | "night", string>>,
-    ) => void;
   }) => (
     <>
       <select
@@ -406,18 +463,6 @@ vi.mock("./features/music/AccountPlaylistPicker.js", () => ({
       <button type="button" onClick={onAccountDisconnected}>
         Disconnect account
       </button>
-      {onStagePlaylistIdsChange ? (
-        <select
-          aria-label="Voting playlist"
-          value={stagePlaylistIds.voting ?? ""}
-          onChange={(event) =>
-            onStagePlaylistIdsChange({ ...stagePlaylistIds, voting: event.target.value })
-          }
-        >
-          <option value="">Use current playlist</option>
-          <option value="dev-playlist">Dev playlist</option>
-        </select>
-      ) : null}
     </>
   ),
 }));
@@ -457,6 +502,13 @@ const player = (nickname: string, id: string): PlayerProfile => ({
 beforeEach(() => {
   musicPlayerHarness.mounts = 0;
   musicPlayerHarness.unmounts = 0;
+  musicPlayerHarness.setState = null;
+  musicPlayerHarness.startOpeningQueue.mockReset().mockReturnValue(true);
+  musicPlayerHarness.playFirstRegularTrack.mockReset().mockReturnValue(true);
+  musicPlayerHarness.quickFadeOut.mockReset().mockResolvedValue(undefined);
+  musicPlayerHarness.slowFadeOut.mockReset().mockResolvedValue(undefined);
+  musicPlayerHarness.shuffleQueue.mockReset().mockReturnValue(true);
+  api.checkServerReady.mockReset().mockResolvedValue(undefined);
   api.clearAllData.mockReset().mockResolvedValue(undefined);
   api.clearGameSession.mockReset().mockResolvedValue(undefined);
   api.createPlayer.mockReset();
@@ -632,6 +684,11 @@ describe("club welcome", () => {
 
   it("signs out the current application session", async () => {
     const user = userEvent.setup();
+    window.localStorage.setItem("mafia-dashboard.game-session.v3", "private game");
+    window.localStorage.setItem("mafia-dashboard.game-session.v3.other-club", "private game");
+    window.localStorage.setItem("mafia-dashboard.game-session.v4", "private game");
+    window.localStorage.setItem("mafia-dashboard.game-session.v4.other-club", "private game");
+    window.localStorage.setItem("unrelated-local", "keep");
     window.sessionStorage.setItem("mafia-dashboard.game-session.v3", "private game");
     window.sessionStorage.setItem("mafia-dashboard.game-session.v3.other-club", "private game");
     window.sessionStorage.setItem("mafia-dashboard.game-session.v4", "private game");
@@ -651,6 +708,11 @@ describe("club welcome", () => {
     await user.click(await screen.findByRole("button", { name: "Sign out" }));
 
     expect(api.signOut).toHaveBeenCalledOnce();
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v3")).toBeNull();
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v3.other-club")).toBeNull();
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v4.other-club")).toBeNull();
+    expect(window.localStorage.getItem("unrelated-local")).toBe("keep");
     expect(window.sessionStorage.getItem("mafia-dashboard.game-session.v3")).toBeNull();
     expect(window.sessionStorage.getItem("mafia-dashboard.game-session.v3.other-club")).toBeNull();
     expect(window.sessionStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
@@ -695,6 +757,42 @@ describe("club roster gate", () => {
 });
 
 describe("developer menu", () => {
+  it("uses the Save icon as a server readiness button", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const save = screen.getByRole("button", {
+      name: "Saved to server · tap to check connection",
+    });
+    await user.click(save);
+
+    await waitFor(() => expect(api.checkServerReady).toHaveBeenCalledOnce());
+    expect(save).toHaveAttribute("data-status", "saved");
+  });
+
+  it("flushes setup queued while a manual readiness check is in flight", async () => {
+    const user = userEvent.setup();
+    const readiness = deferred<void>();
+    api.checkServerReady.mockReturnValue(readiness.promise);
+    render(<App />);
+
+    await user.click(
+      screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
+    );
+    await waitFor(() => expect(api.checkServerReady).toHaveBeenCalledOnce());
+    await user.click(screen.getByRole("button", { name: "Save setup progress" }));
+    expect(api.saveGameSession).not.toHaveBeenCalled();
+
+    readiness.resolve();
+    await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledOnce());
+    expect(
+      screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
+    ).toHaveAttribute("data-status", "saved");
+    expect(
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+    ).toMatchObject({ outbox: [] });
+  });
+
   it("previews and resets the active game from its current timeline", async () => {
     const user = userEvent.setup();
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -768,7 +866,7 @@ describe("developer menu", () => {
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
     await waitFor(() => expect(api.saveGameSession).toHaveBeenCalled());
-    const beforeConsole = window.sessionStorage.getItem("mafia-dashboard.game-session.v4");
+    const beforeConsole = window.localStorage.getItem("mafia-dashboard.game-session.v4");
     reportError(new Error("Captured before Console navigation"), {
       source: "application",
       context: "mafia.shots-resolved",
@@ -782,7 +880,7 @@ describe("developer menu", () => {
 
     await user.click(screen.getByRole("button", { name: "Back" }));
     expect(screen.getByRole("heading", { name: "Live test game" })).toBeInTheDocument();
-    expect(window.sessionStorage.getItem("mafia-dashboard.game-session.v4")).toBe(beforeConsole);
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v4")).toBe(beforeConsole);
   });
 
   it("captures a handled player API failure in the Console", async () => {
@@ -1052,6 +1150,109 @@ describe("developer menu", () => {
     expect(screen.getByTestId("youtube-player")).toBe(player);
   });
 
+  it("keeps the complete right pane unchanged across setup, Available players, and Role giveaway", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const rail = screen.getByRole("complementary", { name: "Live game controls" });
+    const player = screen.getByTestId("youtube-player");
+    const timer = within(rail).getByRole("region", { name: "Timer controls" });
+    expect(within(rail).getByRole("region", { name: "Voting order" })).toHaveTextContent(
+      "No nominations yet",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Select available players" }));
+    expect(screen.getAllByRole("heading", { name: "Available players" })).toHaveLength(2);
+    expect(screen.getByRole("complementary", { name: "Live game controls" })).toBe(rail);
+    expect(screen.getByRole("region", { name: "Timer controls" })).toBe(timer);
+    expect(screen.getByTestId("youtube-player")).toBe(player);
+
+    await user.click(screen.getByRole("button", { name: "Close available players" }));
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
+    expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "Live game controls" })).toBe(rail);
+    expect(screen.getByRole("region", { name: "Timer controls" })).toBe(timer);
+    expect(screen.getByTestId("youtube-player")).toBe(player);
+  });
+
+  it("starts the constrained opening music queue when Start game enters Role giveaway", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
+
+    expect(musicPlayerHarness.startOpeningQueue).toHaveBeenCalledOnce();
+  });
+
+  it("advances to the first non-Initial track when a playing Role giveaway completes", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    act(() => musicPlayerHarness.setState?.("playing"));
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+
+    expect(musicPlayerHarness.playFirstRegularTrack).toHaveBeenCalledOnce();
+  });
+
+  it("quick-fades before an Endgame-preferred shuffle when Night ends in Critical Best move", async () => {
+    const user = userEvent.setup();
+    const fade = deferred<void>();
+    musicPlayerHarness.quickFadeOut.mockReturnValueOnce(fade.promise);
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    act(() => musicPlayerHarness.setState?.("playing"));
+    let activeCitizens = 0;
+    const players = assignedGame.players.map((player) => ({
+      ...player,
+      status: player.team === "red" ? (activeCitizens++ < 4 ? "active" : "eliminated") : "active",
+    })) as GameState["players"];
+
+    act(() => {
+      gameScreenHarness.liveOnGameChange?.({
+        ...assignedGame,
+        players,
+        phase: "night-resolution",
+      } as GameState);
+    });
+    act(() => {
+      gameScreenHarness.liveOnGameChange?.({
+        ...assignedGame,
+        players,
+        phase: "best-move",
+      } as GameState);
+    });
+
+    expect(musicPlayerHarness.quickFadeOut).toHaveBeenCalledOnce();
+    expect(musicPlayerHarness.slowFadeOut).not.toHaveBeenCalled();
+    expect(musicPlayerHarness.shuffleQueue).not.toHaveBeenCalled();
+    fade.resolve();
+    await waitFor(() =>
+      expect(musicPlayerHarness.shuffleQueue).toHaveBeenCalledWith({ preferEndgame: true }),
+    );
+  });
+
+  it("still performs an ordinary shuffle when the slow Day fade rejects", async () => {
+    const user = userEvent.setup();
+    musicPlayerHarness.slowFadeOut.mockRejectedValueOnce(new Error("fade failed"));
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    act(() => musicPlayerHarness.setState?.("playing"));
+    act(() => {
+      gameScreenHarness.liveOnGameChange?.({
+        ...assignedGame,
+        phase: "night-resolution",
+      } as GameState);
+    });
+    act(() => {
+      gameScreenHarness.liveOnGameChange?.({ ...assignedGame, phase: "day" } as GameState);
+    });
+
+    await waitFor(() => expect(musicPlayerHarness.slowFadeOut).toHaveBeenCalledOnce());
+    expect(musicPlayerHarness.quickFadeOut).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(musicPlayerHarness.shuffleQueue).toHaveBeenCalledWith({ preferEndgame: false }),
+    );
+  });
+
   it("keeps the music player mounted while previewing and exiting a log state", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -1062,12 +1263,14 @@ describe("developer menu", () => {
     await user.click(screen.getByRole("button", { name: "Preview state after log #1" }));
 
     expect(screen.getByTestId("youtube-player")).toBe(player);
-    expect(player.closest(".youtube-dock")).toHaveAttribute("hidden");
-    expect(musicPlayerHarness).toEqual({ mounts: 1, unmounts: 0 });
+    expect(player.closest(".youtube-dock")).not.toHaveAttribute("hidden");
+    expect(screen.getByRole("region", { name: "Timer controls" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Voting order" })).toBeInTheDocument();
+    expect(musicPlayerHarness).toMatchObject({ mounts: 1, unmounts: 0 });
 
     await user.click(screen.getByRole("button", { name: "Exit preview" }));
     expect(screen.getByTestId("youtube-player")).toBe(player);
-    expect(musicPlayerHarness).toEqual({ mounts: 1, unmounts: 0 });
+    expect(musicPlayerHarness).toMatchObject({ mounts: 1, unmounts: 0 });
   });
 
   it("keeps music player setup behind the Dev menu", async () => {
@@ -1081,8 +1284,9 @@ describe("developer menu", () => {
 
     expect(screen.getByRole("region", { name: "Music player setup" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reload music player" })).toBeInTheDocument();
-    expect(screen.getByLabelText("Low")).toHaveValue(50);
-    expect(screen.getByLabelText("High")).toHaveValue(80);
+    expect(screen.queryByLabelText("Low")).toBeNull();
+    expect(screen.queryByLabelText("High")).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Voting playlist" })).toBeNull();
     const playlist = screen.getByRole("combobox", { name: "YouTube Music playlist" });
     await user.selectOptions(playlist, "dev-playlist");
     expect(playlist).toHaveValue("dev-playlist");
@@ -1133,24 +1337,29 @@ describe("developer menu", () => {
       JSON.stringify({
         version: 1,
         lastPlaylistId: "remembered-playlist",
-        queueOrderByPlaylist: {},
-        stagePlaylistIds: {},
+        queueOrder: [],
+        initialStageEntryKeys: [],
+        endgameEntryKeys: [],
       }),
     );
 
     render(<App />);
 
-    expect(screen.getByText("Playlist: remembered-playlist")).toBeInTheDocument();
+    expect(screen.getByTestId("youtube-player")).toHaveAttribute(
+      "data-playlist-id",
+      "remembered-playlist",
+    );
   });
 
-  it("restores and updates each playlist's remembered queue order", async () => {
+  it("restores and updates the one remembered queue order", async () => {
     window.localStorage.setItem(
       musicPreferencesStorageKey(testClub.id),
       JSON.stringify({
         version: 1,
         lastPlaylistId: "PL-base",
-        queueOrderByPlaylist: { "PL-base": ["video-b:1", "video-a:0"] },
-        stagePlaylistIds: {},
+        queueOrder: ["video-b:1", "video-a:0"],
+        initialStageEntryKeys: [],
+        endgameEntryKeys: [],
       }),
     );
     const user = userEvent.setup();
@@ -1163,46 +1372,83 @@ describe("developer menu", () => {
     await user.click(screen.getByRole("button", { name: "Remember mock queue order" }));
     expect(
       JSON.parse(window.localStorage.getItem(musicPreferencesStorageKey(testClub.id)) ?? "null"),
+    ).toMatchObject({ queueOrder: ["video-c:2", "video-a:0"] });
+  });
+
+  it("persists Initial and Endgame tags for the one active playlist", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Music player setup" }));
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "YouTube Music playlist" }),
+      "dev-playlist",
+    );
+    await user.click(screen.getByRole("button", { name: "Remember mock queue tags" }));
+
+    expect(
+      JSON.parse(window.localStorage.getItem(musicPreferencesStorageKey(testClub.id)) ?? "null"),
     ).toMatchObject({
-      queueOrderByPlaylist: { "PL-base": ["video-c:2", "video-a:0"] },
+      lastPlaylistId: "dev-playlist",
+      initialStageEntryKeys: ["video-a:0"],
+      endgameEntryKeys: ["video-c:2"],
+    });
+
+    await user.click(screen.getByRole("button", { name: "Mark mock Endgame" }));
+    expect(
+      JSON.parse(window.localStorage.getItem(musicPreferencesStorageKey(testClub.id)) ?? "null"),
+    ).toMatchObject({
+      initialStageEntryKeys: [],
+      endgameEntryKeys: ["video-c:2", "video-a:0"],
+    });
+
+    await user.click(screen.getByRole("button", { name: "Mark mock Initial" }));
+    expect(
+      JSON.parse(window.localStorage.getItem(musicPreferencesStorageKey(testClub.id)) ?? "null"),
+    ).toMatchObject({
+      initialStageEntryKeys: ["video-a:0"],
+      endgameEntryKeys: ["video-c:2"],
+    });
+
+    await user.click(screen.getByRole("button", { name: "Unmark mock Initial" }));
+    expect(
+      JSON.parse(window.localStorage.getItem(musicPreferencesStorageKey(testClub.id)) ?? "null"),
+    ).toMatchObject({
+      initialStageEntryKeys: [],
+      endgameEntryKeys: ["video-c:2"],
     });
   });
 
   it("remembers a newly selected playlist for this club", async () => {
     const user = userEvent.setup();
     render(<App />);
-
-    await user.click(screen.getByRole("button", { name: "Choose saved playlist" }));
-
-    expect(
-      JSON.parse(window.localStorage.getItem(musicPreferencesStorageKey(testClub.id)) ?? "null"),
-    ).toMatchObject({ version: 1, lastPlaylistId: "saved-playlist" });
-  });
-
-  it("stores stage playlist mappings from Dev music settings", async () => {
-    const user = userEvent.setup();
-    render(<App />);
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     await user.click(screen.getByRole("button", { name: "Music player setup" }));
-
     await user.selectOptions(
-      screen.getByRole("combobox", { name: "Voting playlist" }),
+      screen.getByRole("combobox", { name: "YouTube Music playlist" }),
       "dev-playlist",
     );
 
     expect(
       JSON.parse(window.localStorage.getItem(musicPreferencesStorageKey(testClub.id)) ?? "null"),
-    ).toMatchObject({ stagePlaylistIds: { voting: "dev-playlist" } });
+    ).toEqual({
+      version: 1,
+      lastPlaylistId: "dev-playlist",
+      queueOrder: [],
+      initialStageEntryKeys: [],
+      endgameEntryKeys: [],
+    });
   });
 
-  it("hot-swaps configured playlists as the game enters Day, Voting, and Night", async () => {
+  it("keeps one selected playlist as the game enters Day, Voting, and Night", async () => {
     window.localStorage.setItem(
       musicPreferencesStorageKey(testClub.id),
       JSON.stringify({
         version: 1,
         lastPlaylistId: "PL-base",
-        queueOrderByPlaylist: {},
-        stagePlaylistIds: { day: "PL-day", voting: "PL-vote", night: "PL-night" },
+        queueOrder: [],
+        initialStageEntryKeys: [],
+        endgameEntryKeys: [],
       }),
     );
     const user = userEvent.setup();
@@ -1210,23 +1456,24 @@ describe("developer menu", () => {
     const player = screen.getByTestId("youtube-player");
 
     await user.click(screen.getByRole("button", { name: "Start test game" }));
-    expect(player).toHaveAttribute("data-playlist-id", "PL-day");
+    expect(player).toHaveAttribute("data-playlist-id", "PL-base");
     await user.click(screen.getByRole("button", { name: "Enter voting phase" }));
-    expect(player).toHaveAttribute("data-playlist-id", "PL-vote");
+    expect(player).toHaveAttribute("data-playlist-id", "PL-base");
     await user.click(screen.getByRole("button", { name: "Enter night phase" }));
-    expect(player).toHaveAttribute("data-playlist-id", "PL-night");
+    expect(player).toHaveAttribute("data-playlist-id", "PL-base");
     expect(screen.getByTestId("youtube-player")).toBe(player);
-    expect(musicPlayerHarness).toEqual({ mounts: 1, unmounts: 0 });
+    expect(musicPlayerHarness).toMatchObject({ mounts: 1, unmounts: 0 });
   });
 
-  it("atomically clears mapped Day playback on account disconnect", async () => {
+  it("atomically clears the one remembered playlist on account disconnect", async () => {
     window.localStorage.setItem(
       musicPreferencesStorageKey(testClub.id),
       JSON.stringify({
         version: 1,
         lastPlaylistId: "PL-base",
-        queueOrderByPlaylist: {},
-        stagePlaylistIds: { day: "PL-day", voting: "PL-vote", night: "PL-night" },
+        queueOrder: ["video-a:0"],
+        initialStageEntryKeys: ["video-a:0"],
+        endgameEntryKeys: ["video-b:1"],
       }),
     );
     const user = userEvent.setup();
@@ -1234,7 +1481,7 @@ describe("developer menu", () => {
     const player = screen.getByTestId("youtube-player");
 
     await user.click(screen.getByRole("button", { name: "Start test game" }));
-    expect(player).toHaveAttribute("data-playlist-id", "PL-day");
+    expect(player).toHaveAttribute("data-playlist-id", "PL-base");
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     await user.click(screen.getByRole("button", { name: "Music player setup" }));
     await user.click(screen.getByRole("button", { name: "Disconnect account" }));
@@ -1246,8 +1493,9 @@ describe("developer menu", () => {
     ).toEqual({
       version: 1,
       lastPlaylistId: "",
-      queueOrderByPlaylist: {},
-      stagePlaylistIds: {},
+      queueOrder: [],
+      initialStageEntryKeys: [],
+      endgameEntryKeys: [],
     });
   });
 
@@ -1458,11 +1706,9 @@ describe("developer menu", () => {
       JSON.stringify({
         version: 1,
         lastPlaylistId: "remembered-playlist",
-        queueOrderByPlaylist: {
-          "": ["stale-default:0"],
-          "remembered-playlist": ["video-b:1"],
-        },
-        stagePlaylistIds: { voting: "dev-playlist" },
+        queueOrder: ["video-b:1"],
+        initialStageEntryKeys: ["video-b:1"],
+        endgameEntryKeys: ["video-b:1"],
       }),
     );
     window.localStorage.setItem(GLASS_SETTINGS_STORAGE_KEY, JSON.stringify({ blur: 12 }));
@@ -1477,20 +1723,20 @@ describe("developer menu", () => {
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     const glassBlur = screen.getByRole("spinbutton", { name: "Glass blur" });
     await user.click(screen.getByRole("button", { name: "Music player setup" }));
-    const votingPlaylist = screen.getByRole("combobox", { name: "Voting playlist" });
+    const playlist = screen.getByRole("combobox", { name: "YouTube Music playlist" });
     await user.click(screen.getByRole("button", { name: "Console" }));
 
     expect({
       playlistId: musicPlayer.getAttribute("data-playlist-id"),
       rememberedOrder: musicPlayer.getAttribute("data-remembered-order"),
-      votingPlaylist: (votingPlaylist as HTMLSelectElement).value,
+      selectedPlaylist: (playlist as HTMLSelectElement).value,
       glassBlur: Number((glassBlur as HTMLInputElement).value),
       consoleIsEmpty: screen.queryByText("No errors have been captured.") !== null,
       localStorageItems: window.localStorage.length,
     }).toEqual({
       playlistId: "",
       rememberedOrder: "",
-      votingPlaylist: "",
+      selectedPlaylist: "",
       glassBlur: 4,
       consoleIsEmpty: true,
       localStorageItems: 0,
@@ -1542,7 +1788,7 @@ describe("authoritative game session lifecycle", () => {
     await act(async () => Promise.resolve());
     expect(api.saveGameSession).not.toHaveBeenCalled();
     expect(
-      JSON.parse(window.sessionStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
     ).toMatchObject({ entries: [expect.objectContaining({ type: "game.checkpointed" })] });
     await user.click(screen.getByRole("button", { name: "Open game log" }));
     expect(screen.queryByText("turn.completed")).toBeNull();
@@ -1600,7 +1846,7 @@ describe("authoritative game session lifecycle", () => {
     expect(operation).not.toHaveProperty("log");
     expect(operation).not.toHaveProperty("undoHistory");
     expect(
-      JSON.parse(window.sessionStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
     ).toMatchObject({
       baseline: expect.objectContaining({
         replayVersion: 1,
@@ -1628,10 +1874,11 @@ describe("authoritative game session lifecycle", () => {
     await user.click(screen.getByRole("button", { name: "Preview state after log #1" }));
     expect(screen.getByRole("heading", { name: "Preview game state" })).toBeInTheDocument();
     expect(screen.queryByLabelText("Application tools")).toBeNull();
-    expect(screen.getAllByRole("button").map((button) => button.textContent)).toEqual([
-      "Exit preview",
-      "Reset game to this state",
-    ]);
+    expect(
+      within(screen.getByRole("main"))
+        .getAllByRole("button")
+        .map((button) => button.textContent?.trim()),
+    ).toEqual(["Exit preview", "Reset game to this state"]);
 
     await user.click(screen.getByRole("button", { name: "Exit preview" }));
     expect(screen.getByText("Game fouls 1")).toBeInTheDocument();
@@ -1652,30 +1899,38 @@ describe("authoritative game session lifecycle", () => {
     expect(screen.getByText("Game fouls 1")).toBeInTheDocument();
   });
 
-  it("keeps the live head unchanged when the server rejects a reset", async () => {
+  it("applies a reset locally while its server operation remains queued", async () => {
     const user = userEvent.setup();
     vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
     await user.click(screen.getByRole("button", { name: "Record meaningful checkpoint" }));
     await waitFor(() =>
-      expect(screen.getByRole("status", { name: "Save status: saved" })).toBeInTheDocument(),
+      expect(
+        screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
+      ).toBeInTheDocument(),
     );
     const before = JSON.parse(
-      window.sessionStorage.getItem("mafia-dashboard.game-session.v4") ?? "null",
+      window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null",
     ) as { headEventId: string };
-    api.saveGameSessionOperation.mockRejectedValueOnce(new Error("revision conflict"));
+    api.saveGameSessionOperation.mockRejectedValue(new Error("offline"));
 
     await user.click(screen.getByRole("button", { name: "Open game log" }));
     await user.click(screen.getByRole("button", { name: "Preview state after log #1" }));
     await user.click(screen.getByRole("button", { name: "Reset game to this state" }));
 
-    expect(screen.getByRole("heading", { name: "Preview game state" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Exit preview" }));
-    expect(screen.getByText("Game fouls 1")).toBeInTheDocument();
-    expect(
-      JSON.parse(window.sessionStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
-    ).toMatchObject({ headEventId: before.headEventId, outbox: [] });
+    expect(screen.getByText("Game fouls 0")).toBeInTheDocument();
+    const persisted = JSON.parse(
+      window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null",
+    );
+    expect(persisted.headEventId).not.toBe(before.headEventId);
+    expect(persisted.outbox).toEqual(
+      expect.arrayContaining([expect.objectContaining({ kind: "move-head" })]),
+    );
+    expect(screen.getByRole("button", { name: /^Save failed · retry 1 of 3/ })).toHaveAttribute(
+      "data-status",
+      "retrying",
+    );
   });
 
   it("ignores a delayed component-local mutation captured during preview after exit", async () => {
@@ -1753,26 +2008,70 @@ describe("authoritative game session lifecycle", () => {
     expect(screen.queryByRole("button", { name: "Game safely saved" })).not.toBeInTheDocument();
   });
 
+  it("finishes locally while offline and uploads exactly once after Save is pressed", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
+      ).toBeInTheDocument(),
+    );
+
+    api.saveGameSession.mockRejectedValue(new ApiError("save rejected", 400, "invalid"));
+    await user.click(screen.getByRole("button", { name: "Record meaningful checkpoint" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Save blocked ·/ })).toHaveAttribute(
+        "data-status",
+        "offline",
+      ),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Finish test game" }));
+    await user.click(screen.getByRole("button", { name: "Finish the game" }));
+    expect(screen.getByRole("button", { name: "Game saved offline" })).toBeDisabled();
+    expect(
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null").outbox,
+    ).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "complete" })]));
+
+    api.saveGameSession.mockImplementation((_gameId: string, operation: { baseRevision: number }) =>
+      Promise.resolve({ revision: operation.baseRevision + 1, duplicate: false }),
+    );
+    await user.click(screen.getByRole("button", { name: /^Save blocked ·/ }));
+
+    expect(await screen.findByRole("button", { name: "Start test game" })).toBeInTheDocument();
+    expect(
+      api.saveGameSession.mock.calls.filter(([, operation]) => operation.kind === "complete"),
+    ).toHaveLength(1);
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
+  });
+
   it("keeps Local only when the newer queued aggregate mutation fails", async () => {
     const user = userEvent.setup();
     const first = deferred<{ revision: number; duplicate: boolean }>();
     api.saveGameSession
       .mockImplementationOnce(() => first.promise)
-      .mockRejectedValue(new Error("offline"));
+      .mockRejectedValue(new ApiError("save rejected", 400, "invalid"));
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
     await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledOnce());
     await user.click(screen.getByRole("button", { name: "Record meaningful checkpoint" }));
-    expect(screen.getByRole("status", { name: "Save status: saving" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Saving ·/ })).toHaveAttribute(
+      "data-status",
+      "saving",
+    );
 
     first.resolve({ revision: 1, duplicate: false });
 
     await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledTimes(2));
     await waitFor(() =>
-      expect(screen.getByRole("status", { name: "Save status: offline" })).toBeInTheDocument(),
+      expect(screen.getByRole("button", { name: /^Save blocked ·/ })).toHaveAttribute(
+        "data-status",
+        "offline",
+      ),
     );
     expect(
-      JSON.parse(window.sessionStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
     ).toMatchObject({
       failed: true,
       outbox: expect.arrayContaining([expect.objectContaining({ baseRevision: 1 })]),
@@ -1841,7 +2140,7 @@ describe("authoritative game session lifecycle", () => {
       kind: "normalize",
     });
     expect(
-      JSON.parse(window.sessionStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
     ).toMatchObject({
       gameId: sessionBId,
       revision: 8,
@@ -1873,7 +2172,9 @@ describe("authoritative game session lifecycle", () => {
     await user.click(screen.getByRole("button", { name: "Resume Remote table" }));
     await user.click(screen.getByRole("button", { name: "Save setup progress" }));
     await waitFor(() =>
-      expect(screen.getByRole("status", { name: "Save status: saved" })).toBeInTheDocument(),
+      expect(
+        screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
+      ).toBeInTheDocument(),
     );
     const localGameId = api.saveGameSession.mock.calls[0]?.[0] as string;
 
@@ -1884,7 +2185,7 @@ describe("authoritative game session lifecycle", () => {
 
     expect(screen.getByRole("heading", { name: "Restored setup" })).toBeInTheDocument();
     expect(
-      JSON.parse(window.sessionStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
     ).toMatchObject({ gameId: localGameId, revision: 1, outbox: [] });
   });
 
@@ -1894,7 +2195,9 @@ describe("authoritative game session lifecycle", () => {
     await user.click(screen.getByRole("button", { name: "Start test game" }));
     await user.click(screen.getByRole("button", { name: "Record meaningful checkpoint" }));
     await waitFor(() =>
-      expect(screen.getByRole("status", { name: "Save status: saved" })).toBeInTheDocument(),
+      expect(
+        screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
+      ).toBeInTheDocument(),
     );
     const callsBeforeReload = api.saveGameSession.mock.calls.length;
 
@@ -1915,17 +2218,79 @@ describe("authoritative game session lifecycle", () => {
   it("restores setup and playlist progress from the durable browser aggregate", async () => {
     const user = userEvent.setup();
     const firstRender = render(<App />);
-    await user.click(screen.getByRole("button", { name: "Choose saved playlist" }));
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Music player setup" }));
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "YouTube Music playlist" }),
+      "dev-playlist",
+    );
     await user.click(screen.getByRole("button", { name: "Save setup progress" }));
     await waitFor(() =>
-      expect(screen.getByRole("status", { name: "Save status: saved" })).toBeInTheDocument(),
+      expect(
+        screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
+      ).toBeInTheDocument(),
     );
 
     firstRender.unmount();
     render(<App />);
 
     expect(screen.getByRole("heading", { name: "Restored setup" })).toBeInTheDocument();
-    expect(screen.getByText("Playlist: saved-playlist")).toBeInTheDocument();
+    expect(screen.getByTestId("youtube-player")).toHaveAttribute(
+      "data-playlist-id",
+      "dev-playlist",
+    );
+  });
+
+  it("migrates an existing session-storage game into durable local storage", async () => {
+    const user = userEvent.setup();
+    const firstRender = render(<App />);
+    await user.click(screen.getByRole("button", { name: "Save setup progress" }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
+      ).toBeInTheDocument(),
+    );
+    const saved = window.localStorage.getItem("mafia-dashboard.game-session.v4");
+    expect(saved).not.toBeNull();
+    window.sessionStorage.setItem("mafia-dashboard.game-session.v4", saved!);
+    window.localStorage.removeItem("mafia-dashboard.game-session.v4");
+
+    firstRender.unmount();
+    render(<App />);
+
+    expect(screen.getByRole("heading", { name: "Restored setup" })).toBeInTheDocument();
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v4")).toBe(saved);
+    expect(window.sessionStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
+  });
+
+  it("removes a stale session copy before local clear can resurrect it", async () => {
+    const user = userEvent.setup();
+    const firstRender = render(<App />);
+    await user.click(screen.getByRole("button", { name: "Save setup progress" }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
+      ).toBeInTheDocument(),
+    );
+    const saved = window.localStorage.getItem("mafia-dashboard.game-session.v4");
+    expect(saved).not.toBeNull();
+    firstRender.unmount();
+    window.sessionStorage.setItem("mafia-dashboard.game-session.v4", saved!);
+
+    const restored = render(<App />);
+    expect(screen.getByRole("heading", { name: "Restored setup" })).toBeInTheDocument();
+    expect(window.sessionStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
+
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Clear game state" }));
+    await screen.findByRole("button", { name: "Start test game" });
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
+
+    restored.unmount();
+    render(<App />);
+    expect(screen.getAllByRole("heading", { name: "Game setup" })).not.toHaveLength(0);
+    expect(screen.queryByRole("heading", { name: "Restored setup" })).toBeNull();
   });
 
   it("clears by known UUID while first save is pending and waits for the tombstone", async () => {
@@ -1950,7 +2315,7 @@ describe("authoritative game session lifecycle", () => {
     expect(screen.getByRole("heading", { name: "Restored setup" })).toBeInTheDocument();
     clear.resolve();
     await screen.findByRole("heading", { name: "Game setup" });
-    expect(window.sessionStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
     firstSave.resolve({ revision: 1, duplicate: false });
   });
 
@@ -1962,13 +2327,19 @@ describe("authoritative game session lifecycle", () => {
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Save setup progress" }));
     await waitFor(() =>
-      expect(screen.getByRole("status", { name: "Save status: saved" })).toBeInTheDocument(),
+      expect(
+        screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
+      ).toBeInTheDocument(),
     );
     const clearedGameId = api.saveGameSession.mock.calls[0]?.[0] as string;
 
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     await user.click(screen.getByRole("button", { name: "Clear game state" }));
-    await user.click(screen.getByRole("button", { name: "Choose saved playlist" }));
+    await user.click(screen.getByRole("button", { name: "Music player setup" }));
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "YouTube Music playlist" }),
+      "dev-playlist",
+    );
     await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledTimes(2));
     const newerGameId = api.saveGameSession.mock.calls[1]?.[0] as string;
     expect(newerGameId).not.toBe(clearedGameId);
@@ -1979,10 +2350,13 @@ describe("authoritative game session lifecycle", () => {
     );
 
     expect(screen.getByRole("heading", { name: "Restored setup" })).toBeInTheDocument();
-    expect(screen.getByText("Playlist: saved-playlist")).toBeInTheDocument();
+    expect(screen.getByTestId("youtube-player")).toHaveAttribute(
+      "data-playlist-id",
+      "dev-playlist",
+    );
     expect(
-      JSON.parse(window.sessionStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
-    ).toMatchObject({ gameId: newerGameId, metadata: { playlistId: "saved-playlist" } });
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+    ).toMatchObject({ gameId: newerGameId, metadata: { playlistId: "dev-playlist" } });
   });
 
   it("preserves local setup and outbox when remote clear fails", async () => {
@@ -1992,18 +2366,23 @@ describe("authoritative game session lifecycle", () => {
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Save setup progress" }));
     await waitFor(() =>
-      expect(screen.getByRole("status", { name: "Save status: saved" })).toBeInTheDocument(),
+      expect(
+        screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
+      ).toBeInTheDocument(),
     );
 
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     await user.click(screen.getByRole("button", { name: "Clear game state" }));
 
     await waitFor(() =>
-      expect(screen.getByRole("status", { name: "Save status: offline" })).toBeInTheDocument(),
+      expect(screen.getByRole("button", { name: /^Offline ·/ })).toHaveAttribute(
+        "data-status",
+        "offline",
+      ),
     );
     expect(screen.getByRole("heading", { name: "Restored setup" })).toBeInTheDocument();
     expect(
-      JSON.parse(window.sessionStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
     ).toMatchObject({
       metadata: { setup: { step: "music" } },
       failed: false,
@@ -2093,7 +2472,9 @@ describe("undo checkpoints", () => {
     expect(screen.getByText("Game fouls 2")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /undo last action.*1 available/i })).toBeEnabled();
     await waitFor(() =>
-      expect(screen.getByRole("status", { name: "Save status: saved" })).toBeInTheDocument(),
+      expect(
+        screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
+      ).toBeInTheDocument(),
     );
 
     firstRender.unmount();
@@ -2123,7 +2504,9 @@ describe("undo checkpoints", () => {
     await user.click(screen.getByRole("button", { name: "Reset game to this state" }));
     expect(screen.getByText("Game fouls 0")).toBeInTheDocument();
     await waitFor(() =>
-      expect(screen.getByRole("status", { name: "Save status: saved" })).toBeInTheDocument(),
+      expect(
+        screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
+      ).toBeInTheDocument(),
     );
 
     firstRender.unmount();

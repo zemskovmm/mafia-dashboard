@@ -60,6 +60,54 @@ const DayHarness = () => {
 };
 
 describe("GameScreen", () => {
+  it("shows Critical under active team counts only for an unmasked critical day", () => {
+    const day = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+    let citizens = 0;
+    let mafia = 0;
+    const critical: GameState = {
+      ...day,
+      players: day.players.map((player) => {
+        const active = player.team === "red" ? citizens++ < 4 : mafia++ < 3;
+        return { ...player, status: active ? "active" : "eliminated" };
+      }),
+    };
+    const { rerender } = render(
+      <GameScreen
+        game={critical}
+        hostName="Host Player"
+        onGameChange={() => undefined}
+        onEvent={() => undefined}
+        privacyHidden={false}
+      />,
+    );
+
+    const counts = screen.getByLabelText("4 active citizens and 3 active Mafia");
+    expect(screen.getByRole("status", { name: "Critical" })).toBeInTheDocument();
+    expect(counts).toContainElement(screen.getByRole("status", { name: "Critical" }));
+
+    rerender(
+      <GameScreen
+        game={critical}
+        hostName="Host Player"
+        onGameChange={() => undefined}
+        onEvent={() => undefined}
+        privacyHidden
+      />,
+    );
+    expect(screen.queryByRole("status", { name: "Critical" })).toBeNull();
+
+    rerender(
+      <GameScreen
+        game={{ ...critical, phase: "night-mafia" }}
+        hostName="Host Player"
+        onGameChange={() => undefined}
+        onEvent={() => undefined}
+        privacyHidden={false}
+      />,
+    );
+    expect(screen.queryByRole("status", { name: "Critical" })).toBeNull();
+  });
+
   it("keeps a static table tint in sync with Day and night", () => {
     const day = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
     const { rerender } = render(
@@ -621,5 +669,24 @@ describe("GameScreen", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Citizens won");
     await user.click(screen.getByRole("button", { name: "Finish the game" }));
     expect(onFinishGame).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a locally durable completion while the server is offline", () => {
+    const day = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+    render(
+      <GameScreen
+        game={{ ...day, phase: "finished", winner: "red" }}
+        hostName="Host Player"
+        onGameChange={() => undefined}
+        onEvent={() => undefined}
+        privacyHidden={false}
+        finishGameState="queued"
+      />,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Game saved on this device · reconnect to upload",
+    );
+    expect(screen.getByRole("button", { name: "Game saved offline" })).toBeDisabled();
   });
 });

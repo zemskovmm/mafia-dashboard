@@ -50,10 +50,6 @@ const Harness = ({
 }) => (
   <SetupWizard
     players={players}
-    musicPlaying={false}
-    musicStatus="Stopped"
-    playlistId="test-playlist"
-    onPlaylistIdChange={() => undefined}
     onComplete={onComplete}
     fullscreenTouchPicker={fullscreenTouchPicker}
     {...({
@@ -319,10 +315,6 @@ describe("SetupWizard", () => {
     render(
       <SetupWizard
         players={availablePlayers}
-        musicPlaying={false}
-        musicStatus="Stopped"
-        playlistId="test-playlist"
-        onPlaylistIdChange={() => undefined}
         onComplete={() => undefined}
         initialSessionState={{
           step: "music",
@@ -349,10 +341,6 @@ describe("SetupWizard", () => {
     render(
       <SetupWizard
         players={availablePlayers}
-        musicPlaying={false}
-        musicStatus="Stopped"
-        playlistId="test-playlist"
-        onPlaylistIdChange={() => undefined}
         onComplete={() => undefined}
         initialSessionState={{
           step: "music",
@@ -374,10 +362,6 @@ describe("SetupWizard", () => {
     render(
       <SetupWizard
         players={availablePlayers.slice(1)}
-        musicPlaying={false}
-        musicStatus="Stopped"
-        playlistId="test-playlist"
-        onPlaylistIdChange={() => undefined}
         onComplete={() => undefined}
         onSessionStateChange={onSessionStateChange}
         initialSessionState={{
@@ -403,16 +387,14 @@ describe("SetupWizard", () => {
   it("runs a persisted role giveaway on the table before Mafia planning", async () => {
     const user = userEvent.setup();
     const onComplete = vi.fn<(game: GameState, hostPlayerId: string, hostName: string) => void>();
+    const onStartGame = vi.fn();
     const onSessionStateChange = vi.fn();
     const onEvent = vi.fn();
     render(
       <SetupWizard
         players={availablePlayers}
-        musicPlaying={false}
-        musicStatus="Stopped"
-        playlistId="test-playlist"
-        onPlaylistIdChange={() => undefined}
         onComplete={onComplete}
+        onStartGame={onStartGame}
         onEvent={onEvent}
         onSessionStateChange={onSessionStateChange}
       />,
@@ -429,6 +411,7 @@ describe("SetupWizard", () => {
     await user.click(startGame);
 
     expect(onComplete).not.toHaveBeenCalled();
+    expect(onStartGame).toHaveBeenCalledOnce();
     expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
     expect(screen.getByText("Draw roles · 10 remaining")).toBeInTheDocument();
     expect(screen.getByLabelText("Mafia table")).toBeInTheDocument();

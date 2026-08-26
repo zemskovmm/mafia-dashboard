@@ -3,9 +3,16 @@ import type { CSSProperties } from "react";
 import { listMusicPlaylistItems } from "../../api/client.js";
 import type { MusicPlaylistItem } from "../../api/client.js";
 import { reportError } from "../console/error-console.js";
+import { classifyPanelSwipe } from "../game/panel-swipe.js";
 import { MusicController } from "./music-controller.js";
 import type { MusicPlayerAdapter } from "./music-controller.js";
-import { queueEntryKey, restoreQueueOrder } from "./music-preferences.js";
+import {
+  openingQueue,
+  queueEntryKey,
+  restoreQueueOrder,
+  shuffledQueue,
+  shuffledQueueWithPreferred,
+} from "./music-preferences.js";
 
 export type YouTubePlaybackState = "idle" | "loading" | "playing" | "paused" | "error";
 
@@ -13,19 +20,25 @@ export interface YouTubePlayerHandle {
   fadeIn(): Promise<boolean>;
   quickFadeOut(): Promise<void>;
   slowFadeOut(): Promise<void>;
+  startOpeningQueue(): boolean;
+  playFirstRegularTrack(): boolean;
+  shuffleQueue(options?: { readonly preferEndgame?: boolean }): boolean;
 }
 
 interface YouTubePlaylistPlayerProps {
   readonly playlistId: string;
   readonly onStateChange: (state: YouTubePlaybackState) => void;
   readonly expanded?: boolean;
-  readonly onExpandedChange?: (expanded: boolean) => void;
-  readonly volumePresets?: readonly [number, number];
-  readonly activeVolume?: number;
-  readonly onVolumeChange?: (volume: number) => void;
   readonly reloadRequest?: number;
   readonly rememberedQueueOrder?: readonly string[];
   readonly onQueueOrderChange?: (playlistId: string, orderedEntryKeys: readonly string[]) => void;
+  readonly initialStageEntryKeys?: readonly string[];
+  readonly onInitialStageEntryKeysChange?: (
+    playlistId: string,
+    entryKeys: readonly string[],
+  ) => void;
+  readonly endgameEntryKeys?: readonly string[];
+  readonly onEndgameEntryKeysChange?: (playlistId: string, entryKeys: readonly string[]) => void;
 }
 
 const EMPTY_QUEUE_ORDER: readonly string[] = [];
@@ -85,13 +98,13 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
       playlistId,
       onStateChange,
       expanded = false,
-      onExpandedChange = () => undefined,
-      volumePresets = [50, 80],
-      activeVolume = 80,
-      onVolumeChange = () => undefined,
       reloadRequest = 0,
       rememberedQueueOrder = EMPTY_QUEUE_ORDER,
       onQueueOrderChange = () => undefined,
+      initialStageEntryKeys = EMPTY_QUEUE_ORDER,
+      onInitialStageEntryKeysChange = () => undefined,
+      endgameEntryKeys = EMPTY_QUEUE_ORDER,
+      onEndgameEntryKeysChange = () => undefined,
     },
     ref,
   ) => {
@@ -101,8 +114,8 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
       readonly items: readonly MusicPlaylistItem[];
       readonly unavailable: boolean;
     } | null>(null);
-    const [nextItemPosition, setNextItemPosition] = useState<number | null>(null);
     const [playerReady, setPlayerReady] = useState(false);
+    const [revealedTagEntryKey, setRevealedTagEntryKey] = useState<string | null>(null);
     const [dragPreview, setDragPreview] = useState<{
       readonly item: MusicPlaylistItem;
       readonly originIndex: number;
@@ -131,13 +144,19 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
     const normalizedPlaylistIdRef = useRef(playlistId.trim());
     const rememberedQueueOrderRef = useRef(rememberedQueueOrder);
     rememberedQueueOrderRef.current = rememberedQueueOrder;
-    const activeVolumeRef = useRef(activeVolume);
-    activeVolumeRef.current = activeVolume;
+    const lastAudibleVolumeRef = useRef(100);
     const onStateChangeRef = useRef(onStateChange);
     onStateChangeRef.current = onStateChange;
     const playbackStateRef = useRef<YouTubePlaybackState>("idle");
     const draggedIndexRef = useRef<number | null>(null);
     const pointerDropIndexRef = useRef<number | null>(null);
+    const tagSwipeStartRef = useRef<{
+      readonly entryKey: string;
+      readonly x: number;
+      readonly y: number;
+    } | null>(null);
+    const suppressTagClickRef = useRef(false);
+    const pendingOpeningFadeRef = useRef(false);
     const handledReloadRequest = useRef(reloadRequest);
     const elementId = `youtube-mafia-player-${instanceKey}`;
     const normalizedPlaylistId = playlistId.trim();
@@ -161,7 +180,8 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
       queueUnavailableRef.current = false;
       readyRef.current = false;
       setPlayerReady(false);
-      setNextItemPosition(null);
+      setRevealedTagEntryKey(null);
+      pendingOpeningFadeRef.current = false;
       controllerRef.current?.cancelActiveFade();
       setQueueState(null);
       if (normalizedPlaylistId.length === 0) {
@@ -209,6 +229,10 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
     }, [normalizedPlaylistId]);
 
     useEffect(() => {
+      if (!expanded) setRevealedTagEntryKey(null);
+    }, [expanded]);
+
+    useEffect(() => {
       const providerQueue = providerQueueRef.current;
       if (providerQueue?.playlistId !== normalizedPlaylistId) return;
       const appliedOrder = appliedRememberedQueueOrderRef.current;
@@ -229,7 +253,6 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
         items: restoredItems,
         unavailable: false,
       });
-      setNextItemPosition(null);
       if (playerRef.current !== null && iframeReadyRef.current) {
         applyQueue(restoredItems, position);
       }
@@ -270,7 +293,10 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
                   return;
                 iframeReadyRef.current = true;
                 disablePictureInPicture(target);
-                target.setVolume(activeVolumeRef.current);
+                const nativeVolume = target.getVolume();
+                if (Number.isFinite(nativeVolume) && nativeVolume > 0) {
+                  lastAudibleVolumeRef.current = nativeVolume;
+                }
                 controllerRef.current = new MusicController(new YouTubeAdapter(target));
                 if (queueRef.current.length > 0) {
                   readyRef.current = false;
@@ -302,14 +328,26 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
                   playbackStateRef.current = "paused";
                   readyRef.current = true;
                   setPlayerReady(true);
-                  onStateChangeRef.current("paused");
+                  if (pendingOpeningFadeRef.current && controllerRef.current !== null) {
+                    pendingOpeningFadeRef.current = false;
+                    void controllerRef.current.fadeIn({
+                      durationMs: 2_000,
+                      targetVolume: lastAudibleVolumeRef.current,
+                    });
+                  } else {
+                    pendingOpeningFadeRef.current = false;
+                    onStateChangeRef.current("paused");
+                  }
                 } else if (data === window.YT?.PlayerState.PLAYING) {
+                  const nativeVolume = target.getVolume();
+                  if (Number.isFinite(nativeVolume) && nativeVolume > 0) {
+                    lastAudibleVolumeRef.current = nativeVolume;
+                  }
                   playbackStateRef.current = "playing";
                   readyRef.current = true;
                   setPlayerReady(true);
                   onStateChangeRef.current("playing");
                 } else if (data === window.YT?.PlayerState.ENDED) {
-                  setNextItemPosition(null);
                   playbackStateRef.current = "paused";
                   onStateChangeRef.current("paused");
                 } else if (data === window.YT?.PlayerState.PAUSED) {
@@ -323,6 +361,7 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
                   normalizedPlaylistIdRef.current.length === 0
                 )
                   return;
+                pendingOpeningFadeRef.current = false;
                 onStateChangeRef.current("error");
               },
             },
@@ -346,6 +385,7 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
         controllerRef.current = null;
         iframeReadyRef.current = false;
         readyRef.current = false;
+        pendingOpeningFadeRef.current = false;
       },
       [elementId],
     );
@@ -385,6 +425,8 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
       next: readonly MusicPlaylistItem[],
       position: ReturnType<typeof currentPosition>,
     ) {
+      pendingOpeningFadeRef.current = false;
+      setRevealedTagEntryKey(null);
       const nextIndex =
         position?.item === null || position?.item === undefined
           ? 0
@@ -433,15 +475,29 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
       next.splice(Math.min(nextCurrentIndex + 1, next.length), 0, selected);
       queueRef.current = next;
       setQueueState((state) => (state === null ? null : { ...state, items: next }));
-      setNextItemPosition(selected.position);
       emitQueueOrder(next);
       applyQueue(next, position);
     };
 
     const playNow = (index: number) => {
-      setNextItemPosition(null);
-      playerRef.current?.playVideoAt(index);
+      const player = playerRef.current;
+      const controller = controllerRef.current;
+      if (player === null || controller === null || !readyRef.current) return;
+      const nativeVolume = player.getVolume();
+      if (Number.isFinite(nativeVolume) && nativeVolume > 0) {
+        lastAudibleVolumeRef.current = nativeVolume;
+      }
+      void controller.fadeIn({
+        durationMs: 2_000,
+        targetVolume: lastAudibleVolumeRef.current,
+        startPlayback: () => player.playVideoAt(index),
+      });
     };
+
+    const toggledEntryKeys = (entryKeys: readonly string[], entryKey: string): readonly string[] =>
+      entryKeys.includes(entryKey)
+        ? entryKeys.filter((candidate) => candidate !== entryKey)
+        : [...entryKeys, entryKey];
 
     const queueItemStyle = (index: number): CSSProperties | undefined => {
       if (dragPreview === null || index === dragPreview.originIndex) return undefined;
@@ -469,7 +525,10 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
           onStateChange(playlistId.trim().length === 0 ? "error" : "loading");
           return false;
         }
-        await controllerRef.current.fadeIn({ durationMs: 2_000, targetVolume: activeVolume });
+        await controllerRef.current.fadeIn({
+          durationMs: 2_000,
+          targetVolume: lastAudibleVolumeRef.current,
+        });
         return true;
       },
       async quickFadeOut() {
@@ -477,6 +536,91 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
       },
       async slowFadeOut() {
         await controllerRef.current?.fadeOut({ durationMs: 3_000 });
+      },
+      startOpeningQueue() {
+        const player = playerRef.current;
+        if (
+          player === null ||
+          controllerRef.current === null ||
+          !readyRef.current ||
+          queueUnavailableRef.current
+        )
+          return false;
+        const initial = new Set(initialStageEntryKeys);
+        const endgame = new Set(endgameEntryKeys);
+        const next = openingQueue(
+          queueRef.current,
+          (item) => initial.has(queueEntryKey(item)),
+          (item) => endgame.has(queueEntryKey(item)),
+        );
+        if (next === null) return false;
+        queueRef.current = next;
+        setQueueState((state) => (state === null ? null : { ...state, items: next }));
+        setRevealedTagEntryKey(null);
+        emitQueueOrder(next);
+        readyRef.current = false;
+        setPlayerReady(false);
+        controllerRef.current.cancelActiveFade();
+        playbackStateRef.current = "loading";
+        pendingOpeningFadeRef.current = true;
+        onStateChangeRef.current("loading");
+        player.cuePlaylist(
+          next.map(({ videoId }) => videoId),
+          0,
+          0,
+        );
+        return true;
+      },
+      playFirstRegularTrack() {
+        const player = playerRef.current;
+        if (
+          player === null ||
+          !readyRef.current ||
+          queueUnavailableRef.current ||
+          playbackStateRef.current !== "playing"
+        )
+          return false;
+        const marked = new Set(initialStageEntryKeys);
+        const index = queueRef.current.findIndex((item) => !marked.has(queueEntryKey(item)));
+        if (index < 0) return false;
+        player.playVideoAt(index);
+        return true;
+      },
+      shuffleQueue({ preferEndgame = false } = {}) {
+        const current = queueRef.current;
+        if (queueUnavailableRef.current || current.length < 2) return false;
+        pendingOpeningFadeRef.current = false;
+        setRevealedTagEntryKey(null);
+        const position = currentPosition();
+        const endgame = new Set(endgameEntryKeys);
+        const hasPreferred =
+          preferEndgame && current.some((item) => endgame.has(queueEntryKey(item)));
+        const next = hasPreferred
+          ? shuffledQueueWithPreferred(current, (item) => endgame.has(queueEntryKey(item)))
+          : shuffledQueue(current);
+        const nextIndex = hasPreferred
+          ? 0
+          : position?.item == null
+            ? 0
+            : Math.max(0, next.indexOf(position.item));
+        const seconds = hasPreferred ? 0 : (position?.seconds ?? 0);
+        queueRef.current = next;
+        setQueueState((state) => (state === null ? null : { ...state, items: next }));
+        emitQueueOrder(next);
+        const player = playerRef.current;
+        if (player !== null && iframeReadyRef.current) {
+          readyRef.current = false;
+          setPlayerReady(false);
+          controllerRef.current?.cancelActiveFade();
+          playbackStateRef.current = "loading";
+          onStateChangeRef.current("loading");
+          player.cuePlaylist(
+            next.map(({ videoId }) => videoId),
+            nextIndex,
+            seconds,
+          );
+        }
+        return true;
       },
     }));
 
@@ -486,27 +630,6 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
         aria-label="YouTube playlist player"
       >
         <div className="youtube-player-video" id={elementId} />
-        <div className="youtube-player-actions">
-          <div className="youtube-volume-presets" aria-label="Music volume modes">
-            {volumePresets.map((volume) => (
-              <button
-                key={volume}
-                type="button"
-                aria-label={`Set music volume to ${volume}%`}
-                aria-pressed={activeVolume === volume}
-                onClick={() => {
-                  playerRef.current?.setVolume(volume);
-                  onVolumeChange(volume);
-                }}
-              >
-                {volume}%
-              </button>
-            ))}
-          </div>
-          <button type="button" onClick={() => onExpandedChange(!expanded)}>
-            {expanded ? "Collapse player" : "Expand player and queue"}
-          </button>
-        </div>
         {expanded ? (
           <section className="youtube-session-queue" aria-label="Session playlist queue">
             <h2>Session queue</h2>
@@ -516,116 +639,203 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
             ) : null}
             {queue !== null && !queueUnavailable ? (
               <ol>
-                {queue.map((item, index) => (
-                  <li
-                    key={`${item.videoId}-${item.position}`}
-                    className={`${nextItemPosition === item.position ? "is-next" : ""}${
-                      dragPreview?.originIndex === index ? " is-dragging" : ""
-                    }`}
-                    data-queue-index={index}
-                    style={queueItemStyle(index)}
-                  >
-                    <span
-                      className="queue-drag-handle"
-                      aria-label={`Drag ${item.title}`}
-                      onPointerDown={(event) => {
-                        const row = event.currentTarget.closest<HTMLElement>("[data-queue-index]");
-                        const bounds = row?.getBoundingClientRect();
-                        draggedIndexRef.current = index;
-                        pointerDropIndexRef.current = index;
-                        if (bounds !== undefined) {
-                          setDragPreview({
-                            item,
-                            originIndex: index,
-                            targetIndex: index,
-                            pointerY: event.clientY,
-                            offsetY: event.clientY - bounds.top,
-                            left: bounds.left,
-                            width: bounds.width,
-                            height: bounds.height,
-                          });
-                        }
-                        event.currentTarget.setPointerCapture?.(event.pointerId);
-                      }}
-                      onPointerMove={(event) => {
-                        const draggedIndex = draggedIndexRef.current;
-                        if (draggedIndex === null) return;
-                        setDragPreview((current) =>
-                          current === null ? null : { ...current, pointerY: event.clientY },
-                        );
-                        const targetRow = document
-                          .elementFromPoint(event.clientX, event.clientY)
-                          ?.closest<HTMLElement>("[data-queue-index]");
-                        const targetIndex = Number(targetRow?.dataset.queueIndex);
-                        if (!Number.isInteger(targetIndex) || targetIndex === draggedIndex) return;
-                        pointerDropIndexRef.current = targetIndex;
-                        setDragPreview((current) =>
-                          current === null ? null : { ...current, targetIndex },
-                        );
-                      }}
-                      onPointerUp={(event) => {
-                        const draggedIndex = draggedIndexRef.current;
-                        const targetIndex = pointerDropIndexRef.current;
-                        if (
-                          draggedIndex !== null &&
-                          targetIndex !== null &&
-                          targetIndex !== draggedIndex
-                        ) {
-                          reorderQueue(draggedIndex, targetIndex);
-                        }
-                        draggedIndexRef.current = null;
-                        pointerDropIndexRef.current = null;
-                        setDragPreview(null);
-                        event.currentTarget.releasePointerCapture?.(event.pointerId);
-                      }}
-                      onPointerCancel={() => {
-                        draggedIndexRef.current = null;
-                        pointerDropIndexRef.current = null;
-                        setDragPreview(null);
+                {queue.map((item, index) => {
+                  const entryKey = queueEntryKey(item);
+                  const endgameMarked = endgameEntryKeys.includes(entryKey);
+                  const initialMarked = !endgameMarked && initialStageEntryKeys.includes(entryKey);
+                  const revealed = revealedTagEntryKey === entryKey;
+                  return (
+                    <li
+                      key={entryKey}
+                      className={`${dragPreview?.originIndex === index ? "is-dragging" : ""}${
+                        revealed ? " is-queue-tags-revealed" : ""
+                      }`}
+                      data-queue-index={index}
+                      data-initial-stage={initialMarked}
+                      data-endgame={endgameMarked}
+                      style={queueItemStyle(index)}
+                      onClickCapture={(event) => {
+                        if (!suppressTagClickRef.current) return;
+                        suppressTagClickRef.current = false;
+                        event.preventDefault();
+                        event.stopPropagation();
                       }}
                     >
-                      <svg aria-hidden="true" viewBox="0 0 24 24">
-                        <circle cx="8" cy="6" r="1.5" />
-                        <circle cx="16" cy="6" r="1.5" />
-                        <circle cx="8" cy="12" r="1.5" />
-                        <circle cx="16" cy="12" r="1.5" />
-                        <circle cx="8" cy="18" r="1.5" />
-                        <circle cx="16" cy="18" r="1.5" />
-                      </svg>
-                    </span>
-                    {item.thumbnailUrl === null ? (
-                      <span className="queue-thumbnail-placeholder" />
-                    ) : (
-                      <img src={item.thumbnailUrl} alt="" loading="lazy" />
-                    )}
-                    <span>{item.title}</span>
-                    <div className="queue-item-actions">
-                      <button
-                        type="button"
-                        aria-label={`Play ${item.title} next`}
-                        title="Play next"
-                        aria-pressed={nextItemPosition === item.position}
-                        onClick={() => playNext(index)}
+                      <div
+                        className="queue-tag-actions"
+                        role="group"
+                        aria-label={`Track types for ${item.title}`}
                       >
-                        <svg aria-hidden="true" viewBox="0 0 24 24">
-                          <path d="M5 6h8a4 4 0 0 1 4 4v7" />
-                          <path d="m13 14 4 4 4-4" />
-                        </svg>
-                      </button>
-                      <button
-                        type="button"
-                        aria-label={`Play ${item.title} now`}
-                        title="Play now"
-                        disabled={!playerReady}
-                        onClick={() => playNow(index)}
+                        <button
+                          type="button"
+                          className="queue-tag-action is-initial"
+                          aria-label={`${initialMarked ? "Unmark" : "Mark"} ${item.title} for Role giveaway`}
+                          aria-pressed={initialMarked}
+                          onClick={() => {
+                            onInitialStageEntryKeysChange(
+                              normalizedPlaylistId,
+                              toggledEntryKeys(initialStageEntryKeys, entryKey),
+                            );
+                            setRevealedTagEntryKey(null);
+                          }}
+                        >
+                          Initial
+                        </button>
+                        <button
+                          type="button"
+                          className="queue-tag-action is-endgame"
+                          aria-label={`${endgameMarked ? "Unmark" : "Mark"} ${item.title} for Critical endgame`}
+                          aria-pressed={endgameMarked}
+                          onClick={() => {
+                            onEndgameEntryKeysChange(
+                              normalizedPlaylistId,
+                              toggledEntryKeys(endgameEntryKeys, entryKey),
+                            );
+                            setRevealedTagEntryKey(null);
+                          }}
+                        >
+                          Endgame
+                        </button>
+                      </div>
+                      <div
+                        className="queue-item-content"
+                        onTouchStart={(event) => {
+                          const target = event.target as HTMLElement;
+                          if (
+                            target.closest(
+                              ".queue-drag-handle, .queue-item-actions, .queue-tag-actions",
+                            ) !== null
+                          ) {
+                            tagSwipeStartRef.current = null;
+                            return;
+                          }
+                          const touch = event.touches[0];
+                          tagSwipeStartRef.current = touch
+                            ? { entryKey, x: touch.clientX, y: touch.clientY }
+                            : null;
+                          suppressTagClickRef.current = false;
+                        }}
+                        onTouchEnd={(event) => {
+                          const start = tagSwipeStartRef.current;
+                          tagSwipeStartRef.current = null;
+                          const touch = event.changedTouches[0];
+                          if (!start || !touch || start.entryKey !== entryKey) return;
+                          const swipe = classifyPanelSwipe(
+                            { x: start.x, y: start.y },
+                            { x: touch.clientX, y: touch.clientY },
+                            44,
+                          );
+                          if (swipe !== "left" && swipe !== "right") return;
+                          suppressTagClickRef.current = true;
+                          setRevealedTagEntryKey(swipe === "left" ? entryKey : null);
+                        }}
                       >
-                        <svg aria-hidden="true" viewBox="0 0 24 24">
-                          <path d="m8 5 11 7-11 7V5Z" />
-                        </svg>
-                      </button>
-                    </div>
-                  </li>
-                ))}
+                        <span
+                          className="queue-drag-handle"
+                          aria-label={`Drag ${item.title}`}
+                          onPointerDown={(event) => {
+                            const row =
+                              event.currentTarget.closest<HTMLElement>("[data-queue-index]");
+                            const bounds = row?.getBoundingClientRect();
+                            draggedIndexRef.current = index;
+                            pointerDropIndexRef.current = index;
+                            if (bounds !== undefined) {
+                              setDragPreview({
+                                item,
+                                originIndex: index,
+                                targetIndex: index,
+                                pointerY: event.clientY,
+                                offsetY: event.clientY - bounds.top,
+                                left: bounds.left,
+                                width: bounds.width,
+                                height: bounds.height,
+                              });
+                            }
+                            event.currentTarget.setPointerCapture?.(event.pointerId);
+                          }}
+                          onPointerMove={(event) => {
+                            const draggedIndex = draggedIndexRef.current;
+                            if (draggedIndex === null) return;
+                            setDragPreview((current) =>
+                              current === null ? null : { ...current, pointerY: event.clientY },
+                            );
+                            const targetRow = document
+                              .elementFromPoint(event.clientX, event.clientY)
+                              ?.closest<HTMLElement>("[data-queue-index]");
+                            const targetIndex = Number(targetRow?.dataset.queueIndex);
+                            if (!Number.isInteger(targetIndex) || targetIndex === draggedIndex)
+                              return;
+                            pointerDropIndexRef.current = targetIndex;
+                            setDragPreview((current) =>
+                              current === null ? null : { ...current, targetIndex },
+                            );
+                          }}
+                          onPointerUp={(event) => {
+                            const draggedIndex = draggedIndexRef.current;
+                            const targetIndex = pointerDropIndexRef.current;
+                            if (
+                              draggedIndex !== null &&
+                              targetIndex !== null &&
+                              targetIndex !== draggedIndex
+                            ) {
+                              reorderQueue(draggedIndex, targetIndex);
+                            }
+                            draggedIndexRef.current = null;
+                            pointerDropIndexRef.current = null;
+                            setDragPreview(null);
+                            event.currentTarget.releasePointerCapture?.(event.pointerId);
+                          }}
+                          onPointerCancel={() => {
+                            draggedIndexRef.current = null;
+                            pointerDropIndexRef.current = null;
+                            setDragPreview(null);
+                          }}
+                        >
+                          <svg aria-hidden="true" viewBox="0 0 24 24">
+                            <circle cx="8" cy="6" r="1.5" />
+                            <circle cx="16" cy="6" r="1.5" />
+                            <circle cx="8" cy="12" r="1.5" />
+                            <circle cx="16" cy="12" r="1.5" />
+                            <circle cx="8" cy="18" r="1.5" />
+                            <circle cx="16" cy="18" r="1.5" />
+                          </svg>
+                        </span>
+                        {item.thumbnailUrl === null ? (
+                          <span className="queue-thumbnail-placeholder" />
+                        ) : (
+                          <img src={item.thumbnailUrl} alt="" loading="lazy" />
+                        )}
+                        <span className="queue-item-copy">
+                          <span className="queue-item-title">{item.title}</span>
+                        </span>
+                        <div className="queue-item-actions">
+                          <button
+                            type="button"
+                            aria-label={`Play ${item.title} next`}
+                            title="Play next"
+                            onClick={() => playNext(index)}
+                          >
+                            <svg aria-hidden="true" viewBox="0 0 24 24">
+                              <path d="M5 6h8a4 4 0 0 1 4 4v7" />
+                              <path d="m13 14 4 4 4-4" />
+                            </svg>
+                          </button>
+                          <button
+                            type="button"
+                            aria-label={`Play ${item.title} now`}
+                            title="Play now"
+                            disabled={!playerReady}
+                            onClick={() => playNow(index)}
+                          >
+                            <svg aria-hidden="true" viewBox="0 0 24 24">
+                              <path d="m8 5 11 7-11 7V5Z" />
+                            </svg>
+                          </button>
+                        </div>
+                      </div>
+                    </li>
+                  );
+                })}
               </ol>
             ) : null}
             {dragPreview === null ? null : (

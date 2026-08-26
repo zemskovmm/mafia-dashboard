@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import type { ComponentType } from "react";
 import { describe, expect, it } from "vitest";
 import {
@@ -40,7 +40,7 @@ describe("LiveSidePanel", () => {
     expect(rail.lastElementChild).toBe(screen.getByTestId("persistent-player"));
   });
 
-  it("keeps the player mounted when live utility panels are unavailable", () => {
+  it("keeps the same full panel mounted before a game and while hidden outside Game mode", () => {
     const { rerender } = render(
       <LiveSidePanel game={createDayGame()}>
         <div data-testid="persistent-player">Music</div>
@@ -55,9 +55,36 @@ describe("LiveSidePanel", () => {
     );
 
     expect(screen.getByTestId("persistent-player")).toBe(player);
-    expect(screen.getByRole("complementary", { hidden: true })).toHaveClass("is-player-only");
-    expect(screen.queryByRole("region", { name: "Timer controls" })).toBeNull();
-    expect(screen.queryByRole("region", { name: "Voting order" })).toBeNull();
+    expect(screen.getByRole("complementary", { hidden: true })).toHaveClass("has-live-utilities");
+    expect(
+      screen.getByRole("region", { name: "Timer controls", hidden: true }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Voting order", hidden: true })).toHaveTextContent(
+      "No nominations yet",
+    );
+  });
+
+  it("uses one grip to hide both utilities without unmounting the Timer", () => {
+    render(
+      <LiveSidePanel game={null}>
+        <div>Music</div>
+      </LiveSidePanel>,
+    );
+    const timer = screen.getByRole("region", { name: "Timer controls" });
+    const hide = screen.getByRole("button", { name: "Hide timer and voting" });
+    fireEvent.click(hide);
+
+    const show = screen.getByRole("button", { name: "Show timer and voting" });
+    expect(screen.getByRole("region", { name: "Timer controls", hidden: true })).toBe(timer);
+    expect(screen.getByRole("region", { name: "Voting order", hidden: true })).toBeInTheDocument();
+    fireEvent.click(show);
+    expect(screen.getByRole("region", { name: "Timer controls" })).toBe(timer);
+
+    const handle = screen.getByRole("button", { name: "Hide timer and voting" });
+    fireEvent.touchStart(handle, { touches: [{ clientX: 20, clientY: 80 }] });
+    fireEvent.touchEnd(handle, { changedTouches: [{ clientX: 20, clientY: 20 }] });
+    fireEvent.click(handle);
+    expect(screen.getByRole("region", { name: "Timer controls" })).toBe(timer);
   });
 
   it("uses the Málaga Glass fallback as the single live rail surface", () => {

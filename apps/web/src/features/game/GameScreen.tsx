@@ -15,6 +15,7 @@ import {
 import type { CanonicalGameEventDraft, GameState } from "@mafia/game-domain";
 import { NightStage } from "../night/NightStage.js";
 import { GameTable } from "../table/GameTable.js";
+import { isCriticalState } from "./critical-state.js";
 import { VotingStage } from "../voting/VotingStage.js";
 
 interface GameScreenProps {
@@ -30,7 +31,7 @@ interface GameScreenProps {
   readonly onResetPreview?: () => void;
   readonly privacyHidden: boolean;
   readonly onFinishGame?: () => void;
-  readonly finishGameState?: "ready" | "saving" | "saved" | "error";
+  readonly finishGameState?: "ready" | "saving" | "saved" | "queued";
   readonly clubLogo?: string | null;
   readonly clubName?: string;
 }
@@ -242,8 +243,10 @@ export const GameScreen = ({
         <div className={`winner-card winner-${game.winner}`} role="status">
           <span className="table-prompt">Game complete</span>
           <strong>{game.winner === "red" ? "Citizens won" : "Mafia won"}</strong>
-          {finishGameState === "error" ? (
-            <span className="finish-game-error">Game was not saved. Try again.</span>
+          {finishGameState === "queued" ? (
+            <span className="finish-game-local">
+              Game saved on this device · reconnect to upload
+            </span>
           ) : null}
         </div>
       );
@@ -306,16 +309,14 @@ export const GameScreen = ({
     if (mode === "preview") return undefined;
     if (game.phase === "finished") {
       return (
-        <button
-          type="button"
-          disabled={finishGameState === "saving" || finishGameState === "saved"}
-          onClick={onFinishGame}
-        >
+        <button type="button" disabled={finishGameState !== "ready"} onClick={onFinishGame}>
           {finishGameState === "saving"
             ? "Saving game…"
-            : finishGameState === "saved"
-              ? "Game safely saved"
-              : "Finish the game"}
+            : finishGameState === "queued"
+              ? "Game saved offline"
+              : finishGameState === "saved"
+                ? "Game safely saved"
+                : "Finish the game"}
         </button>
       );
     }
@@ -469,8 +470,15 @@ export const GameScreen = ({
                 : `${activeCitizens} active citizens and ${activeMafia} active Mafia`
             }
           >
-            <span>Citizens {privacyHidden ? "?" : activeCitizens}</span>
-            <span>Mafia {privacyHidden ? "?" : activeMafia}</span>
+            <span className="team-count-values">
+              <span>Citizens {privacyHidden ? "?" : activeCitizens}</span>
+              <span>Mafia {privacyHidden ? "?" : activeMafia}</span>
+            </span>
+            {!privacyHidden && isCriticalState(game) ? (
+              <span className="critical-state-pill" role="status" aria-label="Critical">
+                Critical
+              </span>
+            ) : null}
           </div>
           {mode === "preview" ? (
             <GameTable

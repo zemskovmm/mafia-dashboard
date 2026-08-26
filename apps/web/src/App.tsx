@@ -22,6 +22,7 @@ import {
   Wrench,
 } from "lucide-react";
 import {
+  checkServerReady,
   clearGameSession,
   createPlayer,
   deletePlayer,
@@ -53,6 +54,7 @@ import { ClubPortal } from "./features/clubs/ClubPortal.js";
 import { ErrorConsoleScreen } from "./features/console/ErrorConsoleScreen.js";
 import { clearErrorConsole, reportError } from "./features/console/error-console.js";
 import { GameScreen } from "./features/game/GameScreen.js";
+import { isCriticalState } from "./features/game/critical-state.js";
 import { LiveSidePanel } from "./features/game/LiveSidePanel.js";
 import {
   getActiveBranch,
@@ -64,10 +66,10 @@ import { AccountPlaylistPicker } from "./features/music/AccountPlaylistPicker.js
 import { MusicDock } from "./features/music/MusicDock.js";
 import {
   readMusicPreferences,
+  selectRememberedPlaylist,
   writeMusicPreferences,
   type MusicPreferencesV1,
 } from "./features/music/music-preferences.js";
-import { musicStageForPhase } from "./features/music/music-stage.js";
 import {
   YouTubePlaylistPlayer,
   type YouTubePlaybackState,
@@ -87,6 +89,7 @@ import {
 } from "./features/theme/glass-settings.js";
 import { supportsTrueRefraction } from "./features/theme/refractive-support.js";
 import { GameSessionOutbox } from "./session-outbox.js";
+import { SessionRetryController } from "./session-retry.js";
 import { createRandomId } from "./utils/random-id.js";
 import { applyColorTheme, readColorTheme, type ColorTheme } from "./theme.js";
 import "./styles/app.css";
@@ -155,6 +158,16 @@ const clearGameSessionStorage = (storage: Storage) => {
       storage.removeItem(key);
     }
   }
+};
+const migrateGameSessionStorage = (source: Storage, destination: Storage, key: string) => {
+  if (destination.getItem(key) !== null) {
+    source.removeItem(key);
+    return;
+  }
+  const value = source.getItem(key);
+  if (value === null) return;
+  destination.setItem(key, value);
+  if (destination.getItem(key) === value) source.removeItem(key);
 };
 const nextGameName = (storage: Storage, now: Date): string => {
   const date = [now.getDate(), now.getMonth() + 1, now.getFullYear() % 100]
@@ -225,6 +238,19 @@ const isSecretEvent = (type: string, payload: Record<string, unknown>) =>
 
 const isAuxiliaryEvent = (type: string) =>
   type.startsWith("timer.") || type.startsWith("music.") || type.startsWith("setup.");
+
+type NightExitFade = "quick" | "slow";
+
+const nightExitFade = (
+  previous: GameState | null,
+  next: GameState | null,
+): NightExitFade | null => {
+  if (previous?.phase !== "night-resolution" || next === null) return null;
+  if (next.phase === "best-move") return "quick";
+  if (next.phase === "day") return "slow";
+  if (next.phase === "goodbye-speech" && next.goodbyeNext === "day") return "slow";
+  return null;
+};
 
 const toLocalLogEntry = (entry: GameLogEntry): LocalLogEntry => ({
   id: entry.id,
@@ -304,12 +330,16 @@ export const ClubWorkspace = ({
   readonly colorTheme?: ColorTheme;
   readonly onColorThemeChange?: (theme: ColorTheme) => void;
 }) => {
+  const storageKey = gameSessionStorageKey(club.id);
+  const legacyStorageKey = legacyGameSessionStorageKey(club.id);
+  migrateGameSessionStorage(window.sessionStorage, window.localStorage, storageKey);
+  migrateGameSessionStorage(window.sessionStorage, window.localStorage, legacyStorageKey);
   const sessionSyncRef = useRef<GameSessionOutbox | null>(null);
   if (sessionSyncRef.current === null) {
     sessionSyncRef.current = new GameSessionOutbox({
-      storage: window.sessionStorage,
-      storageKey: gameSessionStorageKey(club.id),
-      legacyStorageKey: legacyGameSessionStorageKey(club.id),
+      storage: window.localStorage,
+      storageKey,
+      legacyStorageKey,
       createId: createRandomId,
       save: (gameId, operation) => saveGameSessionOperation(gameId, operation, club.id),
       read: (gameId) => getGameSession(gameId, club.id),
@@ -319,6 +349,17 @@ export const ClubWorkspace = ({
     });
   }
   const sessionSync = sessionSyncRef.current;
+  const sessionRetryRef = useRef<SessionRetryController | null>(null);
+  if (sessionRetryRef.current === null) {
+    sessionRetryRef.current = new SessionRetryController({
+      flush: () => sessionSync.flush(),
+      probe: checkServerReady,
+      pendingCount: () => sessionSync.pendingCount,
+      reportTerminal: (error) =>
+        reportError(error, { source: "persistence", context: "game-session.offline" }),
+    });
+  }
+  const sessionRetry = sessionRetryRef.current;
   const initialCurrent = useRef(sessionSync.current).current;
   const initialState = useRef(asPersistedState(initialCurrent?.state)).current;
   const initialMusicPreferences = useRef(
@@ -378,8 +419,12 @@ export const ClubWorkspace = ({
   const [finalResults, setFinalResults] = useState<FinalGameResults | null>(
     initialCurrent?.results ?? null,
   );
-  const [finishGameState, setFinishGameState] = useState<"ready" | "saving" | "saved" | "error">(
-    initialCurrent?.results === null || initialCurrent?.results === undefined ? "ready" : "saved",
+  const [finishGameState, setFinishGameState] = useState<"ready" | "saving" | "saved" | "queued">(
+    initialCurrent?.results === null || initialCurrent?.results === undefined
+      ? "ready"
+      : sessionSync.pendingCount > 0
+        ? "queued"
+        : "saved",
   );
   const [players, setPlayers] = useState<readonly PlayerProfile[]>([]);
   const [availablePlayerIds, setAvailablePlayerIds] = useState<ReadonlySet<string>>(() =>
@@ -391,8 +436,6 @@ export const ClubWorkspace = ({
   const [musicPreferences, setMusicPreferences] =
     useState<MusicPreferencesV1>(initialMusicPreferences);
   const [musicPlayerExpanded, setMusicPlayerExpanded] = useState(false);
-  const [musicVolumePresets, setMusicVolumePresets] = useState<readonly [number, number]>([50, 80]);
-  const [activeMusicVolume, setActiveMusicVolume] = useState(80);
   const [musicReloadRequest, setMusicReloadRequest] = useState(0);
   const [musicState, setMusicState] = useState<YouTubePlaybackState>("idle");
 
@@ -400,17 +443,7 @@ export const ClubWorkspace = ({
     (nextPlaylistId: string) => {
       setPlaylistId(nextPlaylistId);
       setMusicPreferences((current) => {
-        const next = { ...current, lastPlaylistId: nextPlaylistId };
-        writeMusicPreferences(window.localStorage, club.id, next);
-        return next;
-      });
-    },
-    [club.id],
-  );
-  const changeStagePlaylistIds = useCallback(
-    (stagePlaylistIds: MusicPreferencesV1["stagePlaylistIds"]) => {
-      setMusicPreferences((current) => {
-        const next = { ...current, stagePlaylistIds };
+        const next = selectRememberedPlaylist(current, nextPlaylistId);
         writeMusicPreferences(window.localStorage, club.id, next);
         return next;
       });
@@ -420,34 +453,55 @@ export const ClubWorkspace = ({
   const clearMusicAccountState = useCallback(() => {
     setPlaylistId("");
     setMusicPreferences((current) => {
-      const next = { ...current, lastPlaylistId: "", stagePlaylistIds: {} };
+      const next = selectRememberedPlaylist(current, "");
       writeMusicPreferences(window.localStorage, club.id, next);
       return next;
     });
   }, [club.id]);
   const changeQueueOrder = useCallback(
     (changedPlaylistId: string, order: readonly string[]) => {
+      if (changedPlaylistId !== playlistId) return;
       setMusicPreferences((current) => {
-        const next = {
-          ...current,
-          queueOrderByPlaylist: {
-            ...current.queueOrderByPlaylist,
-            [changedPlaylistId]: order,
-          },
-        };
+        const selected = selectRememberedPlaylist(current, changedPlaylistId);
+        const next = { ...selected, queueOrder: order };
         writeMusicPreferences(window.localStorage, club.id, next);
         return next;
       });
     },
-    [club.id],
+    [club.id, playlistId],
   );
-
-  useEffect(() => {
-    if (game === null) return;
-    const stage = musicStageForPhase(game.phase);
-    const mappedPlaylistId = stage === null ? undefined : musicPreferences.stagePlaylistIds[stage];
-    if (mappedPlaylistId && mappedPlaylistId !== playlistId) changePlaylistId(mappedPlaylistId);
-  }, [changePlaylistId, game, musicPreferences.stagePlaylistIds, playlistId]);
+  const changeQueueTags = useCallback(
+    (
+      field: "initialStageEntryKeys" | "endgameEntryKeys",
+      changedPlaylistId: string,
+      entryKeys: readonly string[],
+    ) => {
+      if (changedPlaylistId !== playlistId) return;
+      setMusicPreferences((current) => {
+        const selected = selectRememberedPlaylist(current, changedPlaylistId);
+        const classifiedEntries = new Set(entryKeys);
+        const next =
+          field === "initialStageEntryKeys"
+            ? {
+                ...selected,
+                initialStageEntryKeys: entryKeys,
+                endgameEntryKeys: selected.endgameEntryKeys.filter(
+                  (entryKey) => !classifiedEntries.has(entryKey),
+                ),
+              }
+            : {
+                ...selected,
+                initialStageEntryKeys: selected.initialStageEntryKeys.filter(
+                  (entryKey) => !classifiedEntries.has(entryKey),
+                ),
+                endgameEntryKeys: entryKeys,
+              };
+        writeMusicPreferences(window.localStorage, club.id, next);
+        return next;
+      });
+    },
+    [club.id, playlistId],
+  );
 
   const [activeSessions, setActiveSessions] = useState<readonly ActiveGameSessionSummary[]>([]);
   const [activeSessionsError, setActiveSessionsError] = useState(false);
@@ -465,9 +519,10 @@ export const ClubWorkspace = ({
   const [isFullscreen, setIsFullscreen] = useState(() => currentFullscreenElement() !== null);
   const [clearingAllData, setClearingAllData] = useState(false);
   const [clearAllDataError, setClearAllDataError] = useState(false);
-  const [, setSyncRender] = useState(0);
+  const [syncRender, setSyncRender] = useState(0);
 
   const musicRef = useRef<YouTubePlayerHandle>(null);
+  const previousMusicGameRef = useRef<GameState | null>(initialDerivedGame);
   const devDrawerRef = useRef<HTMLElement>(null);
   const touchTablet = useRef(isTouchTablet()).current;
   const sessionSwipeStartRef = useRef<{ readonly gameId: string; readonly x: number } | null>(null);
@@ -487,6 +542,7 @@ export const ClubWorkspace = ({
   const activeSessionsRequestRef = useRef(0);
   const resumeRequestRef = useRef(0);
   const persistedResultsRef = useRef<FinalGameResults | null>(initialCurrent?.results ?? null);
+  const finalizingCompletionRef = useRef(false);
   const fullscreenTarget = document.documentElement as WebkitFullscreenElement;
   const fullscreenDocument = document as WebkitFullscreenDocument;
   const fullscreenAvailable =
@@ -711,10 +767,17 @@ export const ClubWorkspace = ({
   );
 
   useEffect(() => {
-    void sessionSync.flush().catch((error: unknown) => {
-      reportError(error, { source: "persistence", context: "game-session.initial-flush" });
-    });
-  }, [sessionSync]);
+    sessionRetry.activate();
+    const unsubscribe = sessionRetry.subscribe(() => setSyncRender((revision) => revision + 1));
+    return () => {
+      unsubscribe();
+      sessionRetry.dispose();
+    };
+  }, [sessionRetry]);
+
+  useEffect(() => {
+    sessionRetry.requestAutoSync();
+  }, [sessionRetry]);
 
   useEffect(() => {
     const hasContent =
@@ -743,17 +806,7 @@ export const ClubWorkspace = ({
       } as GameSessionState,
       finalResults,
     );
-    void sessionSync
-      .flush()
-      .then(() => {
-        if (persistedResultsRef.current !== finalResults) {
-          persistedResultsRef.current = finalResults;
-          void refreshPlayers();
-        }
-      })
-      .catch((error: unknown) => {
-        reportError(error, { source: "persistence", context: "game-session.auto-flush" });
-      });
+    sessionRetry.requestAutoSync();
   }, [
     finalResults,
     events,
@@ -764,12 +817,18 @@ export const ClubWorkspace = ({
     legacyLog,
     log,
     playlistId,
-    refreshPlayers,
     resetReturnEventId,
+    sessionRetry,
     sessionName,
     sessionSync,
     setupSession,
   ]);
+
+  useEffect(() => {
+    if (finalResults === null) return;
+    const phase = sessionRetry.getSnapshot().phase;
+    setFinishGameState(phase === "offline" ? "queued" : phase === "saved" ? "saved" : "saving");
+  }, [finalResults, sessionRetry, syncRender]);
 
   const logEvent = useCallback(
     (type: string, payload: Record<string, unknown>) => {
@@ -897,41 +956,41 @@ export const ClubWorkspace = ({
     [hostPlayerId],
   );
 
-  const persistHeadMove = useCallback(
-    async (
+  const queueHeadMove = useCallback(
+    (
       targetEventId: string,
       nextResetReturnEventId: string | null,
       nextResults: FinalGameResults | null,
-    ): Promise<boolean> => {
+    ): boolean => {
       const baseline = initialGameRef.current;
       if (baseline === null) return false;
-      sessionSync.enqueue(
-        sessionName,
-        {
-          setup: setupSession,
-          game: null,
-          hostPlayerId,
-          hostName,
-          playlistId,
-          log: legacyLogRef.current,
-          undoHistory: [],
-          initialGame: baseline,
-          events: eventsRef.current,
-          headEventId: targetEventId,
-          resetReturnEventId: nextResetReturnEventId,
-          legacyLog: legacyLogRef.current,
-        } as GameSessionState,
-        nextResults,
-      );
       try {
-        await sessionSync.flush();
+        sessionSync.enqueue(
+          sessionName,
+          {
+            setup: setupSession,
+            game: null,
+            hostPlayerId,
+            hostName,
+            playlistId,
+            log: legacyLogRef.current,
+            undoHistory: [],
+            initialGame: baseline,
+            events: eventsRef.current,
+            headEventId: targetEventId,
+            resetReturnEventId: nextResetReturnEventId,
+            legacyLog: legacyLogRef.current,
+          } as GameSessionState,
+          nextResults,
+        );
+        sessionRetry.requestAutoSync();
         return true;
       } catch (error) {
-        reportError(error, { source: "persistence", context: "game-session.flush" });
+        reportError(error, { source: "persistence", context: "game-session.queue-head" });
         return false;
       }
     },
-    [hostName, hostPlayerId, playlistId, sessionName, sessionSync, setupSession],
+    [hostName, hostPlayerId, playlistId, sessionName, sessionRetry, sessionSync, setupSession],
   );
 
   const previewEventState = useCallback(
@@ -971,8 +1030,7 @@ export const ClubWorkspace = ({
         return false;
       }
       const previousHead = headEventIdRef.current;
-      if (previousHead === null || !(await persistHeadMove(eventId, previousHead, null)))
-        return false;
+      if (previousHead === null || !queueHeadMove(eventId, previousHead, null)) return false;
       gameScreenMutationGenerationRef.current += 1;
       setResetReturnUndoBudget(undoBudget);
       moveHeadLocally(eventId);
@@ -985,11 +1043,11 @@ export const ClubWorkspace = ({
       setActiveDrawer(null);
       return true;
     },
-    [moveHeadLocally, persistHeadMove, undoBudget],
+    [moveHeadLocally, queueHeadMove, undoBudget],
   );
 
-  const finishGame = async () => {
-    if (game?.phase !== "finished" || hostPlayerId === null || finishGameState === "saving") return;
+  const finishGame = () => {
+    if (game?.phase !== "finished" || hostPlayerId === null || finalResults !== null) return;
     acceptGameEvent({
       type: "game.completed",
       payload: { winner: game.winner ?? "red" },
@@ -1024,19 +1082,10 @@ export const ClubWorkspace = ({
       } as GameSessionState,
       results,
     );
-    try {
-      await sessionSync.flush();
-      persistedResultsRef.current = results;
-      await Promise.all([refreshPlayers(), refreshActiveSessions()]);
-      await sessionSync.clear(async () => undefined);
-      resetLocalState();
-    } catch (error) {
-      reportError(error, { source: "api", context: "game.finish" });
-      setFinishGameState("error");
-    }
+    sessionRetry.requestAutoSync();
   };
 
-  const undoLastGameAction = async () => {
+  const undoLastGameAction = () => {
     if (resetReturnEventId !== null) {
       const baseline = initialGameRef.current;
       const target = eventsRef.current.find(({ id }) => id === resetReturnEventId);
@@ -1047,7 +1096,7 @@ export const ClubWorkspace = ({
         new Date(target.createdAt),
         hostPlayerId,
       );
-      if (!(await persistHeadMove(resetReturnEventId, null, restoredResults))) return;
+      if (!queueHeadMove(resetReturnEventId, null, restoredResults)) return;
       moveHeadLocally(resetReturnEventId);
       setResetReturnEventId(null);
       setUndoBudget(resetReturnUndoBudget);
@@ -1056,7 +1105,7 @@ export const ClubWorkspace = ({
     }
     const entry = undoHistory.at(-1);
     if (entry?.parentEventId == null) return;
-    if (!(await persistHeadMove(entry.parentEventId, null, null))) return;
+    if (!queueHeadMove(entry.parentEventId, null, null)) return;
     moveHeadLocally(entry.parentEventId);
     setUndoBudget((current) => Math.max(0, current - 1));
   };
@@ -1064,6 +1113,26 @@ export const ClubWorkspace = ({
   const handleMusicState = useCallback((state: YouTubePlaybackState) => {
     setMusicState(state);
   }, []);
+
+  useEffect(() => {
+    const previous = previousMusicGameRef.current;
+    previousMusicGameRef.current = game;
+    const fade = nightExitFade(previous, game);
+    if (fade === null || game === null) return;
+    const preferEndgame = isCriticalState(game);
+    void (async () => {
+      try {
+        if (musicState === "playing") {
+          if (fade === "quick") await musicRef.current?.quickFadeOut();
+          else await musicRef.current?.slowFadeOut();
+        }
+      } catch {
+        // The controller reports fade failures; the Night shuffle is still mandatory.
+      } finally {
+        musicRef.current?.shuffleQueue({ preferEndgame });
+      }
+    })();
+  }, [game, musicState]);
 
   const musicLabel: Record<YouTubePlaybackState, string> = {
     idle: "Playlist required",
@@ -1241,7 +1310,7 @@ export const ClubWorkspace = ({
     }
   };
 
-  const resetLocalState = () => {
+  const resetLocalState = useCallback(() => {
     setSessionName(nextGameName(window.localStorage, new Date()));
     setGame(null);
     setSetupSession(null);
@@ -1272,7 +1341,41 @@ export const ClubWorkspace = ({
     setPreviewGame(null);
     liveGameBeforePreviewRef.current = null;
     phaseRef.current = "setup-players";
-  };
+  }, []);
+
+  useEffect(() => {
+    if (
+      finalResults === null ||
+      sessionRetry.getSnapshot().phase !== "saved" ||
+      sessionSync.pendingCount > 0 ||
+      finalizingCompletionRef.current
+    ) {
+      return;
+    }
+    finalizingCompletionRef.current = true;
+    persistedResultsRef.current = finalResults;
+    void (async () => {
+      try {
+        await sessionSync.clear(async () => undefined);
+        resetLocalState();
+        void Promise.all([refreshPlayers(), refreshActiveSessions()]).catch((error: unknown) =>
+          reportError(error, { source: "api", context: "game.finish-refresh" }),
+        );
+      } catch (error) {
+        reportError(error, { source: "persistence", context: "game.finish-local-clear" });
+      } finally {
+        finalizingCompletionRef.current = false;
+      }
+    })();
+  }, [
+    finalResults,
+    refreshActiveSessions,
+    refreshPlayers,
+    resetLocalState,
+    sessionRetry,
+    sessionSync,
+    syncRender,
+  ]);
 
   const clearGameState = async () => {
     if (
@@ -1380,7 +1483,23 @@ export const ClubWorkspace = ({
   ]);
   const availablePlayersForSetup = players.filter(({ id }) => availablePlayerIds.has(id));
 
-  const persistenceState = sessionSync.status;
+  const persistenceSnapshot = sessionRetry.getSnapshot();
+  const persistenceState =
+    persistenceSnapshot.phase === "saved" && sessionSync.status === "offline"
+      ? "offline"
+      : persistenceSnapshot.phase;
+  const pendingChanges = sessionSync.pendingCount;
+  const pendingLabel = `${pendingChanges} ${pendingChanges === 1 ? "change" : "changes"}`;
+  const saveStatusLabel =
+    persistenceState === "saved"
+      ? "Saved to server · tap to check connection"
+      : persistenceState === "offline"
+        ? persistenceSnapshot.terminalReason === "rejected"
+          ? `Save blocked · ${pendingLabel} safe on this device · tap to retry`
+          : `Offline · ${pendingLabel} safe on this device · tap to retry`
+        : persistenceState === "retrying"
+          ? `Save failed · retry ${persistenceSnapshot.attempt} of ${persistenceSnapshot.maxAttempts} · ${pendingLabel} pending`
+          : `Saving · ${pendingLabel} pending`;
   const setupStep = setupSession?.step ?? "players";
   const roleGiveawayActive = view === "game" && game === null && setupStep === "roles";
   const showApplicationStatus =
@@ -1439,9 +1558,9 @@ export const ClubWorkspace = ({
         view === "game" && (game !== null || roleGiveawayActive)
           ? " has-live-game table-layout-shell"
           : ""
-      }${game !== null && view === "game" ? " has-timer-rail" : ""}${
-        showApplicationStatus ? " has-top-level-screen" : ""
-      }${isFullscreen ? " is-fullscreen" : ""}`}
+      }${showApplicationStatus ? " has-top-level-screen" : ""}${
+        isFullscreen ? " is-fullscreen" : ""
+      }`}
       data-background-shade={backgroundShade}
     >
       {showApplicationStatus ? (
@@ -1476,15 +1595,18 @@ export const ClubWorkspace = ({
           >
             <DoorOpen aria-hidden="true" />
           </button>
-          <div
+          <button
+            type="button"
             className="save-indicator icon-toolbar-button"
             data-status={persistenceState}
-            role="status"
-            aria-label={`Save status: ${persistenceState}`}
-            title={`Save status: ${persistenceState}`}
+            aria-label={saveStatusLabel}
+            aria-live="polite"
+            aria-busy={persistenceState === "saving" || persistenceState === "retrying"}
+            title={saveStatusLabel}
+            onClick={() => sessionRetry.retryNow()}
           >
             <Save aria-hidden="true" />
-          </div>
+          </button>
           <button
             type="button"
             className="fullscreen-button icon-toolbar-button"
@@ -1746,38 +1868,10 @@ export const ClubWorkspace = ({
                 >
                   Reload music player
                 </button>
-                <fieldset className="volume-mode-setup">
-                  <legend>Volume modes</legend>
-                  {musicVolumePresets.map((volume, index) => (
-                    <label key={index}>
-                      <span>{index === 0 ? "Low" : "High"}</span>
-                      <input
-                        type="number"
-                        min="1"
-                        max="100"
-                        value={volume}
-                        onChange={(event) => {
-                          const nextValue = Math.min(
-                            100,
-                            Math.max(1, Number(event.target.value) || 1),
-                          );
-                          const presets: readonly [number, number] =
-                            index === 0
-                              ? [nextValue, musicVolumePresets[1]]
-                              : [musicVolumePresets[0], nextValue];
-                          setMusicVolumePresets(presets);
-                          setActiveMusicVolume(presets[1]);
-                        }}
-                      />
-                    </label>
-                  ))}
-                </fieldset>
                 <AccountPlaylistPicker
                   playlistId={playlistId}
                   onPlaylistIdChange={changePlaylistId}
                   onAccountDisconnected={clearMusicAccountState}
-                  stagePlaylistIds={musicPreferences.stagePlaylistIds}
-                  onStagePlaylistIdsChange={changeStagePlaylistIds}
                 />
               </section>
             ) : null}
@@ -1914,16 +2008,10 @@ export const ClubWorkspace = ({
             fullscreenTouchPicker={touchTablet}
             initialSessionState={setupSession}
             onSessionStateChange={handleSetupSessionChange}
-            musicPlaying={musicState === "playing"}
-            musicStatus={musicLabel[musicState]}
-            playlistId={playlistId}
-            onPlaylistIdChange={changePlaylistId}
-            volumePresets={musicVolumePresets}
-            onVolumePresetsChange={(presets) => {
-              setMusicVolumePresets(presets);
-              setActiveMusicVolume(presets[1]);
-            }}
             onEvent={logEvent}
+            onStartGame={() => {
+              musicRef.current?.startOpeningQueue();
+            }}
             onComplete={(next, selectedHostPlayerId, selectedHostName) => {
               const baseline: InitialGameBaseline = { replayVersion: 1, game: next };
               const gameId = sessionSync.gameId ?? createRandomId();
@@ -1955,6 +2043,7 @@ export const ClubWorkspace = ({
               setHostPlayerId(selectedHostPlayerId);
               setHostName(selectedHostName);
               setFinalResults(null);
+              if (musicState === "playing") musicRef.current?.playFirstRegularTrack();
               setGame(next);
             }}
           />
@@ -1991,8 +2080,8 @@ export const ClubWorkspace = ({
       )}
 
       <LiveSidePanel
-        game={view === "game" && previewGame === null ? game : null}
-        hidden={view !== "game" || previewGame !== null}
+        game={view === "game" ? (previewGame ?? game) : null}
+        hidden={view !== "game"}
         theme={colorTheme}
         glassSettings={glassSettings}
         supportsTrueRefraction={trueRefractionSupported}
@@ -2000,7 +2089,7 @@ export const ClubWorkspace = ({
         <MusicDock
           expanded={musicPlayerExpanded}
           onExpandedChange={setMusicPlayerExpanded}
-          hidden={view !== "game" || previewGame !== null}
+          hidden={view !== "game"}
           isPlaying={musicState === "playing"}
           canFadeIn={musicState === "paused"}
           onFadeIn={() => {
@@ -2018,13 +2107,27 @@ export const ClubWorkspace = ({
             playlistId={playlistId}
             onStateChange={handleMusicState}
             expanded={musicPlayerExpanded}
-            onExpandedChange={setMusicPlayerExpanded}
-            volumePresets={musicVolumePresets}
-            activeVolume={activeMusicVolume}
-            onVolumeChange={setActiveMusicVolume}
             reloadRequest={musicReloadRequest}
-            rememberedQueueOrder={musicPreferences.queueOrderByPlaylist[playlistId] ?? []}
+            rememberedQueueOrder={
+              musicPreferences.lastPlaylistId === playlistId ? musicPreferences.queueOrder : []
+            }
             onQueueOrderChange={changeQueueOrder}
+            initialStageEntryKeys={
+              musicPreferences.lastPlaylistId === playlistId
+                ? musicPreferences.initialStageEntryKeys
+                : []
+            }
+            onInitialStageEntryKeysChange={(changedPlaylistId, entryKeys) =>
+              changeQueueTags("initialStageEntryKeys", changedPlaylistId, entryKeys)
+            }
+            endgameEntryKeys={
+              musicPreferences.lastPlaylistId === playlistId
+                ? musicPreferences.endgameEntryKeys
+                : []
+            }
+            onEndgameEntryKeysChange={(changedPlaylistId, entryKeys) =>
+              changeQueueTags("endgameEntryKeys", changedPlaylistId, entryKeys)
+            }
           />
         </MusicDock>
       </LiveSidePanel>
@@ -2093,6 +2196,7 @@ export const App = () => {
     setLoading(true);
     try {
       await signOut();
+      clearGameSessionStorage(window.localStorage);
       clearGameSessionStorage(window.sessionStorage);
       setUser(null);
       setClubs([]);
@@ -2135,6 +2239,8 @@ export const App = () => {
     }
     try {
       await deleteClub(club.id);
+      window.localStorage.removeItem(gameSessionStorageKey(club.id));
+      window.localStorage.removeItem(legacyGameSessionStorageKey(club.id));
       window.sessionStorage.removeItem(gameSessionStorageKey(club.id));
       window.sessionStorage.removeItem(legacyGameSessionStorageKey(club.id));
       window.localStorage.removeItem(availablePlayerStorageKey(club.id));

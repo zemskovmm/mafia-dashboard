@@ -8,6 +8,8 @@ const screenshotPath = process.env.UI_SCREENSHOT ?? "/tmp/mafia-dashboard-setup.
 const tableScreenshotPath = process.env.UI_TABLE_SCREENSHOT ?? "/tmp/mafia-dashboard-table.png";
 const sidePanelScreenshotPath =
   process.env.UI_SIDE_PANEL_SCREENSHOT ?? "/tmp/mafia-dashboard-side-panel.png";
+const queueTagsScreenshotPath =
+  process.env.UI_QUEUE_TAGS_SCREENSHOT ?? "/tmp/mafia-dashboard-queue-tags.png";
 const glassScreenshotPath =
   process.env.UI_GLASS_SCREENSHOT ?? "/tmp/mafia-dashboard-malagas-glass.png";
 const playersScreenshotPath =
@@ -224,6 +226,34 @@ await page.route("**/api/music/playlists/*/items", async (route) => {
           thumbnailUrl: null,
           position: 0,
         },
+        {
+          videoId: "ui-track-2",
+          title: "UI verification middle",
+          channelTitle: "UI verification",
+          thumbnailUrl: null,
+          position: 1,
+        },
+        {
+          videoId: "ui-track-3",
+          title: "UI verification finale",
+          channelTitle: "UI verification",
+          thumbnailUrl: null,
+          position: 2,
+        },
+        {
+          videoId: "ui-track-4",
+          title: "UI verification opening two",
+          channelTitle: "UI verification",
+          thumbnailUrl: null,
+          position: 3,
+        },
+        {
+          videoId: "ui-track-5",
+          title: "UI verification ordinary two",
+          channelTitle: "UI verification",
+          thumbnailUrl: null,
+          position: 4,
+        },
       ],
     }),
   });
@@ -352,6 +382,29 @@ try {
     await page.getByRole("button", { name: "Game screen" }).click();
   }
   await setupHeading.waitFor();
+  const saveButton = page.getByRole("button", {
+    name: "Saved to server · tap to check connection",
+  });
+  await saveButton.waitFor();
+  const saveIndicator = await saveButton.evaluate(async (button) => {
+    const original = button.dataset.status;
+    const colors = {};
+    for (const status of ["saved", "saving", "offline"]) {
+      button.dataset.status = status;
+      await new Promise(window.requestAnimationFrame);
+      colors[status] = getComputedStyle(button).color;
+    }
+    button.dataset.status = original;
+    return { tagName: button.tagName, original, colors };
+  });
+  if (saveIndicator.tagName !== "BUTTON" || saveIndicator.original !== "saved") {
+    throw new Error("The Save indicator must be an interactive saved-state button");
+  }
+  if (new Set(Object.values(saveIndicator.colors)).size !== 3) {
+    throw new Error(
+      `Saved, retrying, and offline Save colors must be visually distinct: ${JSON.stringify(saveIndicator.colors)}`,
+    );
+  }
   if (headerOnly) {
     if ((await page.getByText("Development only", { exact: true }).count()) !== 0) {
       throw new Error("Development-only setup tools must be hidden before Dev mode is enabled");
@@ -537,10 +590,11 @@ try {
     await musicSetup.getByRole("button", { name: "Reload music player" }).waitFor();
     await musicSetup.getByRole("combobox", { name: "YouTube Music playlist" }).waitFor();
     if (
-      (await musicSetup.getByLabel("Low").inputValue()) !== "50" ||
-      (await musicSetup.getByLabel("High").inputValue()) !== "80"
+      (await musicSetup.getByLabel("Low").count()) !== 0 ||
+      (await musicSetup.getByLabel("High").count()) !== 0 ||
+      (await musicSetup.getByRole("combobox").count()) !== 1
     ) {
-      throw new Error("Dev music setup must expose both volume presets");
+      throw new Error("Dev music setup must expose one playlist and no app volume presets");
     }
     await page.screenshot({ path: screenshotPath, fullPage: true });
     await page.getByRole("button", { name: "Close developer menu" }).click();
@@ -631,19 +685,38 @@ try {
           height: bounds.height,
         };
       };
+      const style = (selector) => {
+        const element = document.querySelector(selector);
+        if (!(element instanceof HTMLElement)) throw new Error(`Missing ${selector}`);
+        const computed = getComputedStyle(element);
+        return {
+          borderTopLeftRadius: Number.parseFloat(computed.borderTopLeftRadius),
+          borderTopRightRadius: Number.parseFloat(computed.borderTopRightRadius),
+          borderLeftWidth: Number.parseFloat(computed.borderLeftWidth),
+          borderRightWidth: Number.parseFloat(computed.borderRightWidth),
+          borderTopWidth: Number.parseFloat(computed.borderTopWidth),
+          borderBottomWidth: Number.parseFloat(computed.borderBottomWidth),
+        };
+      };
       const rail = document.querySelector(".live-side-panel.has-live-utilities");
       if (!(rail instanceof HTMLElement)) throw new Error("Missing unified live side panel");
       return {
         main: box(".table-workspace"),
         rail: box(".live-side-panel.has-live-utilities"),
+        upperGrip: box(".utility-panels-toggle"),
+        timerSection: box('.utility-panel-section[data-panel="timer"]'),
+        votingSection: box('.utility-panel-section[data-panel="voting"]'),
         timer: box(".timer-panel"),
         voting: box(".nomination-panel"),
         music: box(".live-side-panel .youtube-dock"),
+        railStyle: style(".live-side-panel.has-live-utilities"),
+        upperGripStyle: style(".utility-panels-toggle"),
+        votingStyle: style('.utility-panel-section[data-panel="voting"]'),
+        musicStyle: style(".live-side-panel .youtube-dock"),
         handles: [...rail.querySelectorAll(".panel-swipe-handle")].map((element) => {
           const bounds = element.getBoundingClientRect();
           return { width: bounds.width, height: bounds.height };
         }),
-        railPaddingBottom: Number.parseFloat(getComputedStyle(rail).paddingBottom),
         viewportWidth: innerWidth,
         documentHeight: document.documentElement.scrollHeight,
         viewportHeight: innerHeight,
@@ -664,66 +737,75 @@ try {
       );
     }
     if (
-      !near(sidePanelGeometry.timer.width, sidePanelGeometry.voting.width) ||
-      !near(sidePanelGeometry.timer.width, sidePanelGeometry.music.width)
+      !near(sidePanelGeometry.timer.left - sidePanelGeometry.rail.left, 8) ||
+      !near(sidePanelGeometry.rail.right - sidePanelGeometry.timer.right, 8) ||
+      !near(sidePanelGeometry.voting.left - sidePanelGeometry.rail.left, 8) ||
+      !near(sidePanelGeometry.rail.right - sidePanelGeometry.voting.right, 8) ||
+      !near(sidePanelGeometry.music.width, sidePanelGeometry.rail.width)
     ) {
       throw new Error(
-        `Timer, Voting, and Music widths differ: ${JSON.stringify(sidePanelGeometry)}`,
+        `Integrated pane widths violate the utility-inset/music-flush contract: ${JSON.stringify(
+          sidePanelGeometry,
+        )}`,
       );
     }
     if (
-      sidePanelGeometry.handles.length !== 3 ||
+      !near(sidePanelGeometry.upperGrip.left, sidePanelGeometry.rail.left) ||
+      !near(sidePanelGeometry.upperGrip.right, sidePanelGeometry.rail.right) ||
+      !near(sidePanelGeometry.upperGrip.top, sidePanelGeometry.rail.top) ||
+      !near(sidePanelGeometry.music.left, sidePanelGeometry.rail.left) ||
+      !near(sidePanelGeometry.music.right, sidePanelGeometry.rail.right) ||
+      !near(sidePanelGeometry.music.bottom, sidePanelGeometry.rail.bottom)
+    ) {
+      throw new Error(
+        `Top grip and music must meet the pane edges: ${JSON.stringify(sidePanelGeometry)}`,
+      );
+    }
+    if (
+      !near(
+        sidePanelGeometry.upperGripStyle.borderTopLeftRadius,
+        sidePanelGeometry.railStyle.borderTopLeftRadius,
+      ) ||
+      !near(
+        sidePanelGeometry.upperGripStyle.borderTopRightRadius,
+        sidePanelGeometry.railStyle.borderTopRightRadius,
+      ) ||
+      sidePanelGeometry.musicStyle.borderLeftWidth !== 0 ||
+      sidePanelGeometry.musicStyle.borderRightWidth !== 0 ||
+      sidePanelGeometry.musicStyle.borderBottomWidth !== 0
+    ) {
+      throw new Error(
+        `Pane edge radii and music chrome are not integrated: ${JSON.stringify(sidePanelGeometry)}`,
+      );
+    }
+    if (
+      sidePanelGeometry.votingStyle.borderTopWidth !== 0 ||
+      sidePanelGeometry.votingSection.top - sidePanelGeometry.timerSection.bottom < 28
+    ) {
+      throw new Error(
+        `Voting must be borderless and separated from the timer by 28px: ${JSON.stringify(
+          sidePanelGeometry,
+        )}`,
+      );
+    }
+    if (
+      sidePanelGeometry.handles.length !== 2 ||
       sidePanelGeometry.handles.some(({ width, height }) => width < 44 || height < 44)
     ) {
       throw new Error(
         `Panel swipe handles are not touch-sized: ${JSON.stringify(sidePanelGeometry)}`,
       );
     }
-    if (
-      !near(
-        sidePanelGeometry.rail.bottom - sidePanelGeometry.music.bottom,
-        sidePanelGeometry.railPaddingBottom,
-      ) ||
-      sidePanelGeometry.documentHeight > sidePanelGeometry.viewportHeight + 1
-    ) {
+    if (sidePanelGeometry.documentHeight > sidePanelGeometry.viewportHeight + 1) {
       throw new Error(
         `Music is not pinned inside a non-scrolling rail: ${JSON.stringify(sidePanelGeometry)}`,
       );
     }
 
-    const timerHandle = page.getByRole("button", { name: "Timer panel handle" });
-    await timerHandle.dispatchEvent("touchstart", {
-      touches: [{ identifier: 1, clientX: 100, clientY: 20 }],
-    });
-    await timerHandle.dispatchEvent("touchend", {
-      changedTouches: [{ identifier: 1, clientX: 165, clientY: 22 }],
-    });
-    const showTimer = page.getByRole("button", { name: "Show timer" });
-    await showTimer.waitFor();
-    await showTimer.dispatchEvent("touchstart", {
-      touches: [{ identifier: 6, clientX: 100, clientY: 20 }],
-    });
-    await showTimer.dispatchEvent("touchend", {
-      changedTouches: [{ identifier: 6, clientX: 104, clientY: 24 }],
-    });
-    await showTimer.click();
+    await page.getByRole("button", { name: "Hide timer and voting" }).click();
+    await page.locator("#game-utility-panels[hidden]").waitFor({ state: "attached" });
+    await page.getByRole("button", { name: "Show timer and voting" }).click();
     await page.getByRole("region", { name: "Timer controls" }).waitFor();
-
-    const votingHandle = page.getByRole("button", { name: "Voting panel handle" });
-    await votingHandle.dispatchEvent("touchstart", {
-      touches: [{ identifier: 2, clientX: 100, clientY: 20 }],
-    });
-    await votingHandle.dispatchEvent("touchend", {
-      changedTouches: [{ identifier: 2, clientX: 165, clientY: 22 }],
-    });
-    const showVoting = page.getByRole("button", { name: "Show voting" });
-    await showVoting.waitFor();
-    await showVoting.dispatchEvent("touchstart", {
-      touches: [{ identifier: 3, clientX: 165, clientY: 20 }],
-    });
-    await showVoting.dispatchEvent("touchend", {
-      changedTouches: [{ identifier: 3, clientX: 100, clientY: 22 }],
-    });
     await page.getByRole("region", { name: "Voting order" }).waitFor();
 
     const musicHandle = page.getByRole("button", { name: "Music player panel handle" });
@@ -731,6 +813,7 @@ try {
       player.dataset.verifierNode = crypto.randomUUID();
       return player.dataset.verifierNode;
     });
+    await page.screenshot({ path: sidePanelScreenshotPath, fullPage: true });
     await musicHandle.dispatchEvent("touchstart", {
       touches: [{ identifier: 4, clientX: 100, clientY: 100 }],
     });
@@ -738,7 +821,6 @@ try {
       changedTouches: [{ identifier: 4, clientX: 102, clientY: 35 }],
     });
     await page.locator(".youtube-dock.is-expanded").waitFor();
-    await page.screenshot({ path: sidePanelScreenshotPath, fullPage: true });
     await musicHandle.dispatchEvent("touchstart", {
       touches: [{ identifier: 5, clientX: 100, clientY: 35 }],
     });
@@ -870,15 +952,19 @@ try {
     await page.getByRole("button", { name: "Open game log" }).click();
     await page.getByRole("button", { name: "Preview state after log #1" }).click();
     await page.getByRole("heading", { name: /preview/i }).waitFor();
-    const previewActions = await page.locator("button:not([disabled]):visible").allTextContents();
+    const previewActions = await page
+      .locator("main button:not([disabled]):visible")
+      .allTextContents();
     if (
       JSON.stringify(previewActions.map((text) => text.trim())) !==
       JSON.stringify(["Exit preview", "Reset game to this state"])
     ) {
       throw new Error(
-        `Preview must expose exactly Exit and Reset: ${JSON.stringify(previewActions)}`,
+        `Preview game surface must expose exactly Exit and Reset: ${JSON.stringify(previewActions)}`,
       );
     }
+    await page.getByRole("region", { name: "Timer controls" }).waitFor();
+    await page.getByRole("region", { name: "Voting order" }).waitFor();
     if ((await page.getByLabel("Application tools").count()) !== 0) {
       throw new Error("Application toolbar must be unavailable during history preview");
     }
@@ -1727,16 +1813,22 @@ try {
       constructor(_elementId, options) {
         this.options = options;
         this.volume = 65;
+        this.volumeChanges = [];
+        this.played = false;
+        this.videoIds = [];
         this.iframe = document.createElement("iframe");
+        window.__uiYouTubePlayer = this;
         setTimeout(() => options.events?.onReady?.({ target: this }), 0);
       }
       playVideo() {
+        this.played = true;
         this.options.events?.onStateChange?.({ target: this, data: 1 });
       }
       pauseVideo() {
         this.options.events?.onStateChange?.({ target: this, data: 2 });
       }
-      cuePlaylist(_videoIds, index = 0) {
+      cuePlaylist(videoIds, index = 0) {
+        this.videoIds = [...videoIds];
         this.playlistIndex = index;
         this.options.events?.onStateChange?.({ target: this, data: 5 });
       }
@@ -1744,8 +1836,13 @@ try {
         this.playlistIndex = index;
         this.options.events?.onStateChange?.({ target: this, data: 1 });
       }
+      playVideoAt(index) {
+        this.playlistIndex = index;
+        this.playVideo();
+      }
       setVolume(volume) {
         this.volume = volume;
+        this.volumeChanges.push(volume);
       }
       getVolume() {
         return this.volume;
@@ -1773,7 +1870,162 @@ try {
   await page.getByText("Ready · paused").waitFor();
   await page.screenshot({ path: screenshotPath, fullPage: true });
   await page.getByRole("button", { name: "Close developer menu" }).click();
+  const queueHandle = page.getByRole("button", { name: "Music player panel handle" });
+  await queueHandle.click();
+  const queue = page.getByRole("region", { name: "Session playlist queue" });
+  const finaleRow = queue.getByRole("listitem").filter({ hasText: "UI verification finale" });
+  const finaleContent = finaleRow.locator(".queue-item-content");
+  const revealTrackTypes = async (row, content, identifier) => {
+    await content.dispatchEvent("touchstart", {
+      touches: [{ identifier, clientX: 180, clientY: 40 }],
+    });
+    await content.dispatchEvent("touchend", {
+      changedTouches: [{ identifier, clientX: 80, clientY: 42 }],
+    });
+    if (
+      !(await row.evaluate((candidate) => candidate.classList.contains("is-queue-tags-revealed")))
+    ) {
+      throw new Error("Queue browser fixture did not reveal the track-type tray");
+    }
+    await content.click();
+  };
+  await revealTrackTypes(finaleRow, finaleContent, 9);
+  await finaleRow
+    .getByRole("button", { name: "Mark UI verification finale for Role giveaway" })
+    .click();
+  await page.waitForFunction(() => {
+    const row = [...document.querySelectorAll(".youtube-session-queue li")].find((candidate) =>
+      candidate.textContent?.includes("UI verification finale"),
+    );
+    return row?.getAttribute("data-initial-stage") === "true";
+  });
+  const initialMarkerColor = await finaleRow.evaluate(
+    (row) => getComputedStyle(row, "::before").backgroundColor,
+  );
+  await revealTrackTypes(finaleRow, finaleContent, 10);
+  await page.waitForTimeout(180);
+  const initialAction = finaleRow.getByRole("button", {
+    name: "Unmark UI verification finale for Role giveaway",
+  });
+  const initialActionStyle = await initialAction.evaluate((button) => {
+    const style = getComputedStyle(button);
+    return {
+      backgroundColor: style.backgroundColor,
+      boxShadow: style.boxShadow,
+      fontWeight: style.fontWeight,
+    };
+  });
+  await finaleRow
+    .getByRole("button", { name: "Mark UI verification finale for Critical endgame" })
+    .click();
+  await page.waitForFunction(() => {
+    const row = [...document.querySelectorAll(".youtube-session-queue li")].find((candidate) =>
+      candidate.textContent?.includes("UI verification finale"),
+    );
+    return (
+      row?.getAttribute("data-initial-stage") === "false" &&
+      row.getAttribute("data-endgame") === "true"
+    );
+  });
+  const endgameMarkerColor = await finaleRow.evaluate(
+    (row) => getComputedStyle(row, "::before").backgroundColor,
+  );
+  await revealTrackTypes(finaleRow, finaleContent, 11);
+  await page.waitForTimeout(180);
+  const endgameAction = finaleRow.getByRole("button", {
+    name: "Unmark UI verification finale for Critical endgame",
+  });
+  const endgameActionStyle = await endgameAction.evaluate((button) => {
+    const style = getComputedStyle(button);
+    return {
+      backgroundColor: style.backgroundColor,
+      boxShadow: style.boxShadow,
+      fontWeight: style.fontWeight,
+    };
+  });
+  if (
+    initialMarkerColor !== "rgb(53, 201, 120)" ||
+    endgameMarkerColor !== "rgb(228, 75, 85)" ||
+    initialActionStyle.backgroundColor !== "rgb(22, 133, 83)" ||
+    endgameActionStyle.backgroundColor !== "rgb(167, 43, 53)" ||
+    !initialActionStyle.boxShadow.includes("inset") ||
+    !endgameActionStyle.boxShadow.includes("inset") ||
+    Number(initialActionStyle.fontWeight) < 700 ||
+    Number(endgameActionStyle.fontWeight) < 700
+  ) {
+    throw new Error(
+      `Queue markers or pressed actions are not visually distinct: ${JSON.stringify({ initialMarkerColor, endgameMarkerColor, initialActionStyle, endgameActionStyle })}`,
+    );
+  }
+  await page.screenshot({ path: queueTagsScreenshotPath, fullPage: true });
+  await finaleRow.getByRole("button", { name: "Play UI verification finale next" }).click();
+  if (
+    !(await queue.getByRole("listitem").nth(1).innerText()).includes("UI verification finale") ||
+    (await finaleRow.evaluate(
+      (row) =>
+        row.classList.contains("is-queue-tags-revealed") ||
+        row.classList.contains("is-next") ||
+        row.getAttribute("data-initial-stage") !== "false" ||
+        row.getAttribute("data-endgame") !== "true",
+    )) ||
+    (await finaleRow
+      .getByRole("button", { name: "Play UI verification finale next" })
+      .getAttribute("aria-pressed")) !== null
+  ) {
+    throw new Error("Play next must move the row without leaving tray or selected-row state");
+  }
+  const markInitial = async (title, identifier) => {
+    const row = queue.getByRole("listitem").filter({ hasText: title });
+    const content = row.locator(".queue-item-content");
+    await revealTrackTypes(row, content, identifier);
+    await row.getByRole("button", { name: `Mark ${title} for Role giveaway` }).click();
+  };
+  await markInitial("UI verification track", 12);
+  await markInitial("UI verification opening two", 13);
+  await queueHandle.click();
   await page.getByRole("button", { name: "Start game" }).click();
+  await page.getByRole("heading", { name: "Role giveaway" }).waitFor();
+  await queueHandle.click();
+  const openingRows = await queue.getByRole("listitem").evaluateAll((rows) =>
+    rows.map((row) => ({
+      title: row.textContent ?? "",
+      initial: row.getAttribute("data-initial-stage") === "true",
+      endgame: row.getAttribute("data-endgame") === "true",
+    })),
+  );
+  const openingPlayer = await page.evaluate(() => {
+    const player = window.__uiYouTubePlayer;
+    return {
+      played: player?.played ?? false,
+      playlistIndex: player?.playlistIndex ?? null,
+      videoIds: player?.videoIds ?? [],
+      volumeChanges: player?.volumeChanges ?? [],
+    };
+  });
+  const openingCurrentVideoId = openingRows[0]?.title.includes("opening two")
+    ? "ui-track-4"
+    : "ui-track-1";
+  const openingNextVideoId = openingRows[1]?.title.includes("ordinary two")
+    ? "ui-track-5"
+    : "ui-track-2";
+  if (
+    openingRows.length !== 5 ||
+    openingRows[0]?.initial !== true ||
+    openingRows[1]?.initial !== false ||
+    openingRows[1]?.endgame !== false ||
+    openingRows.at(-1)?.initial !== true ||
+    openingRows.slice(1, -1).some(({ initial }) => initial) ||
+    openingPlayer.played !== true ||
+    openingPlayer.playlistIndex !== 0 ||
+    openingPlayer.videoIds[0] !== openingCurrentVideoId ||
+    openingPlayer.videoIds[1] !== openingNextVideoId ||
+    openingPlayer.volumeChanges[0] !== 0
+  ) {
+    throw new Error(
+      `Start game did not build and fade the constrained opening queue: ${JSON.stringify({ openingRows, openingPlayer })}`,
+    );
+  }
+  await queueHandle.click();
 
   for (const { nickname } of selectedPlayers) {
     await page.getByRole("button", { name: `Draw role for ${nickname}`, exact: true }).click();
