@@ -21,6 +21,25 @@ describe("replay-frame timeline model", () => {
     expect(timeline.regions.every(({ frameCount }) => frameCount > 0)).toBe(true);
   });
 
+  it("keeps a later-night Best move completion in that night's numbered region", () => {
+    const bestMove = createSampleGameHistory().frames.find(
+      ({ entry }) => entry.type === "best-move.completed",
+    )!;
+    const nightTwoBestMove: ReplayFrame = {
+      ...bestMove,
+      before: { ...bestMove.before, day: 2 },
+      after: { ...bestMove.after, day: 3 },
+    };
+
+    const timeline = buildTimeline([nightTwoBestMove]);
+
+    expect(timeline.regions[0]).toMatchObject({ id: "night-2", label: "Night 2", day: 2 });
+    expect(timeline.markers[0]).toMatchObject({
+      eventType: "best-move.completed",
+      regionId: "night-2",
+    });
+  });
+
   it("projects semantic events into labelled, accessible markers", () => {
     const timeline = buildTimeline(createSampleGameHistory().frames);
     const markerFor = (eventType: string) =>
@@ -33,6 +52,7 @@ describe("replay-frame timeline model", () => {
     });
     expect(markerFor("voting.resolved")?.ariaLabel).toContain("Player 7 eliminated");
     expect(markerFor("don.checked")?.ariaLabel).toBe("Don checked Player 1: Sheriff");
+    expect(markerFor("don.checked")).not.toHaveProperty("secret");
     expect(markerFor("sheriff.checked")?.ariaLabel).toBe("Sheriff checked Player 10: Mafia");
     expect(
       timeline.markers
@@ -40,6 +60,25 @@ describe("replay-frame timeline model", () => {
         .map(({ kind }) => kind),
     ).toEqual(["foul", "foul", "foul", "red-card"]);
     expect(markerFor("player.red-carded")?.kind).toBe("red-card");
+    expect(timeline.markers.some(({ eventType }) => eventType === "turn.completed")).toBe(false);
+    expect(
+      timeline.markers.some(
+        ({ eventType, label }) =>
+          eventType === "phase.changed" &&
+          [
+            "Phase: sheriff wake",
+            "Phase: night don",
+            "Phase: night sheriff",
+            "Phase: best move",
+          ].includes(label),
+      ),
+    ).toBe(false);
+    expect(
+      timeline.markers.find(
+        ({ eventType, label }) => eventType === "phase.changed" && label === "Night",
+      ),
+    ).toBeDefined();
+    expect(markerFor("best-move.completed")?.regionId).toBe("night-1");
     expect(markerFor("game.completed")).toMatchObject({
       kind: "completion",
       icon: "trophy",

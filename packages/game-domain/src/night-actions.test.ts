@@ -11,10 +11,10 @@ import {
   performDonCheck,
   performSheriffCheck,
   recordMafiaShot,
-  reopenMafiaShots,
   resolveMafiaShots,
   skipDonCheck,
   skipSheriffCheck,
+  toggleAllMafiaShotsForTarget,
   toggleBestMoveSeat,
   toggleMafiaShot,
 } from "./night-actions.js";
@@ -97,18 +97,31 @@ describe("night actions", () => {
     expect(reassigned.shotAssignments[shooter.seat]).toBe(secondTarget!.seat);
   });
 
-  it("reopens Mafia shots by restoring the provisional victim and clearing the attempt", () => {
-    let game = beginNight(dayOne());
-    const shooters = game.players.filter(({ team }) => team === "black").map(({ seat }) => seat);
-    const target = game.players.find(({ team }) => team === "red")!.seat;
-    for (const shooter of shooters) game = recordMafiaShot(game, shooter, target);
+  it("toggles every active Mafia shot by target", () => {
+    const initial = beginNight(dayOne());
+    const shooters = initial.players.filter(
+      ({ team, status }) => team === "black" && status === "active",
+    );
+    const [target, otherTarget] = initial.players.filter(({ team }) => team === "red");
 
-    const evaluated = resolveMafiaShots(game).game;
-    const reopened = reopenMafiaShots(evaluated);
+    const selected = toggleAllMafiaShotsForTarget(initial, target!.seat);
+    expect(selected.shotAssignments).toEqual(
+      Object.fromEntries(shooters.map(({ seat }) => [seat, target!.seat])),
+    );
 
-    expect(reopened.phase).toBe("night-mafia");
-    expect(reopened.shotAssignments).toEqual({});
-    expect(reopened.players.find(({ seat }) => seat === target)?.status).toBe("active");
+    const cleared = toggleAllMafiaShotsForTarget(selected, target!.seat);
+    expect(cleared.shotAssignments).toEqual({});
+
+    const split = toggleMafiaShot(initial, shooters[0]!.seat, otherTarget!.seat);
+    const reassigned = toggleAllMafiaShotsForTarget(split, target!.seat);
+    expect(Object.values(reassigned.shotAssignments)).toEqual(
+      Array.from({ length: shooters.length }, () => target!.seat),
+    );
+
+    const inactive = markPlayerInactive(initial, target!.seat, "eliminated");
+    expect(
+      Object.values(toggleAllMafiaShotsForTarget(inactive, target!.seat).shotAssignments),
+    ).toHaveLength(shooters.length);
   });
 
   it("advances only after the evaluated Mafia result is confirmed", () => {
@@ -142,10 +155,14 @@ describe("night actions", () => {
     expect(game.winner).toBeNull();
 
     if (game.phase === "night-don") {
-      game = continueDonCheck(performDonCheck(game, victim.seat).game);
+      game = game.players.some(({ role, status }) => role === "don" && status === "active")
+        ? continueDonCheck(performDonCheck(game, victim.seat).game)
+        : skipDonCheck(game);
     }
     if (game.phase === "night-sheriff") {
-      game = continueSheriffCheck(performSheriffCheck(game, shooters[0]!.seat).game);
+      game = game.players.some(({ role, status }) => role === "sheriff" && status === "active")
+        ? continueSheriffCheck(performSheriffCheck(game, shooters[0]!.seat).game)
+        : skipSheriffCheck(game);
     }
     game = completeNight(game);
     expect(game).toMatchObject({
@@ -158,14 +175,15 @@ describe("night actions", () => {
     expect(game).toMatchObject({ phase: "finished", winner: "black" });
   });
 
-  it("opens a happy day after a miss and a goodbye before later days after a kill", () => {
+  it("opens an ordinary day after a miss and a goodbye before later days after a kill", () => {
     const base = dayOne();
     const happy = completeNight({
       ...base,
       phase: "night-resolution",
       nightResult: { kind: "miss" },
     });
-    expect(happy).toMatchObject({ phase: "day", day: 2, dayNotice: "happy" });
+    expect(happy).toMatchObject({ phase: "day", day: 2 });
+    expect(happy).not.toHaveProperty("dayNotice");
 
     const victim = base.players.find(({ team }) => team === "red")!;
     const killed = markPlayerInactive({ ...base, day: 2 }, victim.seat, "eliminated");
@@ -317,5 +335,40 @@ describe("night actions", () => {
 
     game = skipSheriffCheck(game);
     expect(game.phase).toBe("night-resolution");
+  });
+
+  it("does not let a check owner killed that night perform a check", () => {
+    const base = dayOne();
+    const don = base.players.find(({ role }) => role === "don")!;
+    const sheriff = base.players.find(({ role }) => role === "sheriff")!;
+    const target = base.players.find(({ role }) => role === "citizen")!;
+    const eliminate = (seat: number) =>
+      base.players.map((player) =>
+        player.seat === seat ? { ...player, status: "eliminated" as const } : player,
+      );
+
+    expect(() =>
+      performDonCheck(
+        {
+          ...base,
+          phase: "night-don",
+          players: eliminate(don.seat),
+          nightResult: { kind: "kill", targetSeat: don.seat },
+        },
+        target.seat,
+      ),
+    ).toThrow(/available Don/i);
+
+    expect(() =>
+      performSheriffCheck(
+        {
+          ...base,
+          phase: "night-sheriff",
+          players: eliminate(sheriff.seat),
+          nightResult: { kind: "kill", targetSeat: sheriff.seat },
+        },
+        target.seat,
+      ),
+    ).toThrow(/available Sheriff/i);
   });
 });

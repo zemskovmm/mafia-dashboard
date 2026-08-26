@@ -103,7 +103,6 @@ export const createSampleGameHistory = (): SampleGameHistory => {
   };
 
   append({ type: "game.started", payload: {}, secret: true });
-  append({ type: "phase.changed", payload: { to: "sheriff-wake" }, secret: false });
   append({ type: "phase.changed", payload: { to: "day" }, secret: false });
 
   append({
@@ -116,9 +115,6 @@ export const createSampleGameHistory = (): SampleGameHistory => {
     payload: { seat: 9, foulNumber: 1, redCarded: false },
     secret: false,
   });
-  for (const seat of game.turnOrder) {
-    append({ type: "turn.completed", payload: { seat }, secret: false });
-  }
   const dayOneVotes = Object.fromEntries(
     game.players.filter(({ status }) => status === "active").map(({ seat }) => [seat, 7]),
   );
@@ -144,20 +140,17 @@ export const createSampleGameHistory = (): SampleGameHistory => {
     },
     secret: true,
   });
-  append({ type: "phase.changed", payload: { to: "night-don" }, secret: false });
   append({
     type: "don.checked",
     payload: { targetSeat: 1, match: true },
     secret: true,
   });
-  append({ type: "phase.changed", payload: { to: "night-sheriff" }, secret: false });
   append({
     type: "sheriff.checked",
     payload: { targetSeat: 10, match: true },
     secret: true,
   });
   append({ type: "phase.changed", payload: { to: "night-resolution" }, secret: false });
-  append({ type: "phase.changed", payload: { to: "best-move" }, secret: false });
   append({
     type: "best-move.completed",
     payload: { playerSeat: 2, selectedSeats: [8, 9, 3], mafiaHits: 2 },
@@ -188,9 +181,11 @@ export const createSampleGameHistory = (): SampleGameHistory => {
       secret: false,
     });
   }
-  for (const seat of game.turnOrder) {
-    append({ type: "turn.completed", payload: { seat }, secret: false });
-  }
+  append({
+    type: "voting.skipped",
+    payload: { reason: "host-skipped" },
+    secret: false,
+  });
   append({ type: "phase.changed", payload: { to: "night-mafia" }, secret: false });
   append({
     type: "mafia.shots-resolved",

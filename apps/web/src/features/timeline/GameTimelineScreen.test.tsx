@@ -51,6 +51,153 @@ const legacySession = (
 });
 
 describe("GameTimelineScreen", () => {
+  it("hides sample generation unless shared development tools are enabled", () => {
+    const loaders = { listCompleted: () => Promise.resolve([]), getSession: vi.fn() };
+    const { rerender } = render(
+      <GameTimelineScreen
+        clubId="00000000-0000-4000-8000-000000000101"
+        onBack={() => undefined}
+        loaders={loaders}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Generate sample game data" })).toBeNull();
+
+    rerender(
+      <GameTimelineScreen
+        clubId="00000000-0000-4000-8000-000000000101"
+        onBack={() => undefined}
+        loaders={loaders}
+        showDevelopmentTools
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Generate sample game data" })).toBeInTheDocument();
+  });
+
+  it("selects the loaded current head before any marker interaction", async () => {
+    const user = userEvent.setup();
+    const sample = createSampleGameHistory();
+    const onPreview = vi.fn<(eventId: string) => void>();
+    const onReset = vi.fn<(eventId: string) => void>();
+    render(
+      <GameTimelineScreen
+        clubId="00000000-0000-4000-8000-000000000101"
+        onBack={() => undefined}
+        currentHistory={{
+          label: "Current table",
+          frames: sample.frames,
+          headEventId: sample.headEventId,
+        }}
+        onPreviewCurrentEvent={onPreview}
+        onResetCurrentEvent={onReset}
+        loaders={{ listCompleted: () => Promise.resolve([]), getSession: vi.fn() }}
+      />,
+    );
+
+    const headMarker = screen.getByRole("button", { name: "Game completed: Red team won" });
+    const preview = screen.getByRole("button", { name: "Preview timeline checkpoint" });
+    const reset = screen.getByRole("button", { name: "Reset game to timeline checkpoint" });
+    expect(screen.getByRole("heading", { name: "Red team won" })).toBeInTheDocument();
+    expect(headMarker).toHaveAttribute("aria-pressed", "true");
+    expect(reset).toBeDisabled();
+
+    await user.click(preview);
+    await user.click(reset);
+
+    expect(onPreview).toHaveBeenCalledOnce();
+    expect(onPreview).toHaveBeenCalledWith(sample.headEventId);
+    expect(onReset).not.toHaveBeenCalled();
+  });
+
+  it("selects the latest semantic marker when a legacy current head is filtered", async () => {
+    const user = userEvent.setup();
+    const sample = createSampleGameHistory();
+    const visibleHead = sample.frames.at(-1)!;
+    const hiddenHeadId = "00000000-0000-4000-8000-000000009999";
+    const onPreview = vi.fn<(eventId: string) => void>();
+    const onReset = vi.fn<(eventId: string) => void>();
+    render(
+      <GameTimelineScreen
+        clubId="00000000-0000-4000-8000-000000000101"
+        onBack={() => undefined}
+        currentHistory={{
+          label: "Legacy current table",
+          frames: [
+            ...sample.frames,
+            {
+              entry: {
+                ...visibleHead.entry,
+                id: hiddenHeadId,
+                parentEventId: visibleHead.entry.id,
+                sequence: visibleHead.entry.sequence + 1,
+                type: "turn.completed",
+                payload: { seat: 1 },
+                secret: false,
+              },
+              before: visibleHead.after,
+              after: visibleHead.after,
+            },
+          ],
+          headEventId: hiddenHeadId,
+        }}
+        onPreviewCurrentEvent={onPreview}
+        onResetCurrentEvent={onReset}
+        loaders={{ listCompleted: () => Promise.resolve([]), getSession: vi.fn() }}
+      />,
+    );
+
+    const effectiveHead = screen.getByRole("button", { name: "Game completed: Red team won" });
+    expect(effectiveHead).toHaveAttribute("aria-pressed", "true");
+    expect(
+      screen.getByRole("button", { name: "Reset game to timeline checkpoint" }),
+    ).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Preview timeline checkpoint" }));
+
+    expect(onPreview).toHaveBeenCalledWith(visibleHead.entry.id);
+    expect(onReset).not.toHaveBeenCalled();
+  });
+
+  it("opens on the current checkpoint and exposes shared Preview and Reset actions", async () => {
+    const user = userEvent.setup();
+    const sample = createSampleGameHistory();
+    const onPreview = vi.fn<(eventId: string) => void>();
+    const onReset = vi.fn<(eventId: string) => void>();
+    render(
+      <GameTimelineScreen
+        clubId="00000000-0000-4000-8000-000000000101"
+        onBack={() => undefined}
+        showDevelopmentTools
+        currentHistory={{
+          label: "Current table",
+          frames: sample.frames,
+          headEventId: sample.headEventId,
+        }}
+        onPreviewCurrentEvent={onPreview}
+        onResetCurrentEvent={onReset}
+        loaders={{ listCompleted: () => Promise.resolve([]), getSession: vi.fn() }}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Game timeline" })).toBeInTheDocument();
+    expect(screen.getByText("Current game · Semantic checkpoints")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Completed game" })).toHaveValue("current");
+    expect(screen.getByText(/Current table · Checkpoint #/)).toBeInTheDocument();
+    const marker = screen.getByRole("button", { name: /Foul 1:/i });
+    await user.click(marker);
+    await user.click(screen.getByRole("button", { name: "Preview timeline checkpoint" }));
+    await user.click(screen.getByRole("button", { name: "Reset game to timeline checkpoint" }));
+
+    expect(onPreview).toHaveBeenCalledWith(expect.any(String));
+    expect(onReset).toHaveBeenCalledWith(expect.any(String));
+    expect(onPreview.mock.calls[0]?.[0]).toBe(onReset.mock.calls[0]?.[0]);
+
+    await user.click(screen.getByRole("button", { name: "Generate sample game data" }));
+    expect(screen.getByRole("combobox", { name: "Completed game" })).toHaveValue("");
+    expect(screen.queryByRole("button", { name: "Preview timeline checkpoint" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reset game to timeline checkpoint" })).toBeNull();
+  });
+
   it("removes the prior club history synchronously when the tenant changes", async () => {
     const user = userEvent.setup();
     const clubA = "00000000-0000-4000-8000-000000000101";
@@ -212,6 +359,7 @@ describe("GameTimelineScreen", () => {
       <GameTimelineScreen
         clubId="00000000-0000-4000-8000-000000000101"
         onBack={() => undefined}
+        showDevelopmentTools
         loaders={{
           listCompleted: () => Promise.resolve([game]),
           getSession: () => response.promise,
@@ -242,6 +390,7 @@ describe("GameTimelineScreen", () => {
       <GameTimelineScreen
         clubId="00000000-0000-4000-8000-000000000101"
         onBack={() => undefined}
+        showDevelopmentTools
         loaders={{ listCompleted: () => list.promise, getSession: vi.fn() }}
       />,
     );
@@ -287,8 +436,9 @@ describe("GameTimelineScreen", () => {
       />,
     );
 
+    await screen.findByRole("option", { name: "Expected game · Citizens" });
     await user.selectOptions(
-      await screen.findByRole("combobox", { name: "Completed game" }),
+      screen.getByRole("combobox", { name: "Completed game" }),
       selected.gameId,
     );
 
@@ -416,6 +566,7 @@ describe("GameTimelineScreen", () => {
       <GameTimelineScreen
         clubId="00000000-0000-4000-8000-000000000101"
         onBack={() => undefined}
+        showDevelopmentTools
         loaders={{
           listCompleted: () => Promise.resolve([]),
           getSession: vi.fn(),
@@ -426,7 +577,7 @@ describe("GameTimelineScreen", () => {
     expect(await screen.findByText("No completed games yet.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Generate sample game data" }));
 
-    expect(screen.getByRole("heading", { name: "Past game timeline" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Game timeline" })).toBeInTheDocument();
     expect(screen.getByText("Sample game · not saved")).toBeInTheDocument();
     for (const label of [
       "Initial night",
@@ -447,32 +598,42 @@ describe("GameTimelineScreen", () => {
       screen.getByRole("button", { name: /Don checked Player 1: Sheriff/i }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Red card: Player 8/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /completed their turn/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Phase: sheriff wake" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Phase: night don" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Phase: night sheriff" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Phase: best move" })).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Night" })).toHaveLength(2);
   });
 
-  it("redacts secret markers and inspector details while privacy is hidden", async () => {
+  it("always renders canonical secret events without a Timeline private-view control", async () => {
     const user = userEvent.setup();
-    const onTogglePrivacy = vi.fn();
+    const sample = createSampleGameHistory();
     render(
       <GameTimelineScreen
         clubId="00000000-0000-4000-8000-000000000101"
         onBack={() => undefined}
         loaders={{ listCompleted: () => Promise.resolve([]), getSession: vi.fn() }}
-        privacyHidden
-        onTogglePrivacy={onTogglePrivacy}
+        currentHistory={{
+          label: "Current table",
+          frames: sample.frames,
+          headEventId: sample.headEventId,
+        }}
       />,
     );
 
-    await screen.findByText("No completed games yet.");
-    await user.click(screen.getByRole("button", { name: "Generate sample game data" }));
-    const privateMarkers = screen.getAllByRole("button", { name: "Private event" });
-    expect(privateMarkers.length).toBeGreaterThan(0);
-    await user.click(privateMarkers[0]!);
-    expect(screen.getByRole("heading", { name: "Private event" })).toBeInTheDocument();
-    expect(screen.getByText("Hidden")).toBeInTheDocument();
-    expect(screen.getByLabelText("Selected event details")).not.toHaveTextContent(/Mafia hits|→/i);
+    const secretMarker = screen.getByRole("button", {
+      name: /Mafia shots: Player 8 to Player 2.*Result: Player 2 killed/i,
+    });
+    expect(screen.queryByText("Scroll timeline →")).toBeNull();
+    expect(document.querySelector(".timeline-track-scroll")).toBeInTheDocument();
+    await user.click(secretMarker);
 
-    await user.click(screen.getByRole("button", { name: "Show private info" }));
-    expect(onTogglePrivacy).toHaveBeenCalledOnce();
+    expect(screen.getByRole("heading", { name: "Mafia kill: Player 2" })).toBeInTheDocument();
+    expect(screen.getByText("mafia.shots-resolved")).toBeInTheDocument();
+    expect(screen.getByText("Player 8 → Player 2")).toBeInTheDocument();
+    expect(screen.getByLabelText("Selected event details")).not.toHaveTextContent("Visibility");
+    expect(screen.queryByRole("button", { name: /private info/i })).toBeNull();
   });
 
   it("loads a selected completed game and ignores a superseded response", async () => {

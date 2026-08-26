@@ -59,7 +59,6 @@ export interface TimelineMarker {
   readonly label: string;
   readonly ariaLabel: string;
   readonly accessibleLabel: string;
-  readonly secret: boolean;
   readonly createdAt: string;
   readonly shots?: readonly TimelineShot[];
   readonly result?: string;
@@ -142,13 +141,33 @@ const regionForState = (game: GameState): RegionIdentity | null => {
   };
 };
 
-const regionForFrame = (frame: ReplayFrame): RegionIdentity | null =>
-  regionForState(frame.after) ?? regionForState(frame.before);
+const regionForFrame = (frame: ReplayFrame): RegionIdentity | null => {
+  if (frame.entry.type === "best-move.completed") {
+    const day = frame.before.day;
+    return {
+      id: `night-${day}`,
+      kind: "night",
+      label: `Night ${day}`,
+      color: TIMELINE_REGION_COLORS.night,
+      day,
+    };
+  }
+  return regionForState(frame.after) ?? regionForState(frame.before);
+};
 
 const asRecord = (value: unknown): Readonly<Record<string, unknown>> | null =>
   value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as Readonly<Record<string, unknown>>)
     : null;
+
+const hiddenPhaseTargets = new Set(["sheriff-wake", "night-don", "night-sheriff", "best-move"]);
+
+export const isVisibleTimelineEvent = (eventType: string, payload: unknown): boolean => {
+  if (eventType === "turn.completed") return false;
+  if (eventType !== "phase.changed") return true;
+  const target = asRecord(payload)?.to;
+  return typeof target !== "string" || !hiddenPhaseTargets.has(target);
+};
 
 const integer = (value: unknown): number | null =>
   typeof value === "number" && Number.isInteger(value) ? value : null;
@@ -205,6 +224,9 @@ const describeMarker = (frame: ReplayFrame): MarkerDescription => {
     case "phase.changed": {
       const to = typeof payload.to === "string" ? payload.to : null;
       if (to === null) return genericDescription(eventType);
+      if (to === "night-mafia") {
+        return { kind: "phase", icon: "arrow-right", label: "Night", ariaLabel: "Night" };
+      }
       const label = `Phase: ${to.replaceAll("-", " ")}`;
       return { kind: "phase", icon: "arrow-right", label, ariaLabel: label };
     }
@@ -256,7 +278,8 @@ const describeMarker = (frame: ReplayFrame): MarkerDescription => {
         ariaLabel: "Voting skipped by the host",
         result: "host-skipped",
       };
-    case "car-crash.resolved": {
+    case "car-crash.resolved":
+    case "car-crash.ballot-resolved": {
       const result = asRecord(payload.result);
       const seats = Array.isArray(result?.seats) ? result.seats : null;
       if (
@@ -440,16 +463,18 @@ const createMarker = (
     regionId,
     ...description,
     accessibleLabel: description.ariaLabel,
-    secret: frame.entry.secret,
     createdAt: frame.entry.createdAt,
   };
 };
 
 export const buildTimeline = (frames: readonly ReplayFrame[]): TimelineModel => {
+  const visibleFrames = frames.filter(({ entry }) =>
+    isVisibleTimelineEvent(String(entry.type), entry.payload),
+  );
   const regions: TimelineRegion[] = [];
   const regionIds: Array<string | null> = [];
 
-  frames.forEach((frame, frameIndex) => {
+  visibleFrames.forEach((frame, frameIndex) => {
     const identity = regionForFrame(frame);
     regionIds.push(identity?.id ?? null);
     if (identity === null) return;
@@ -473,10 +498,10 @@ export const buildTimeline = (frames: readonly ReplayFrame[]): TimelineModel => 
     });
   });
 
-  const markers = frames.map((frame, index) =>
+  const markers = visibleFrames.map((frame, index) =>
     createMarker(frame, index, regionIds[index] ?? null),
   );
-  const frameModels = frames.map((replayFrame, index) => ({
+  const frameModels = visibleFrames.map((replayFrame, index) => ({
     index,
     sequence: replayFrame.entry.sequence,
     regionId: regionIds[index] ?? null,

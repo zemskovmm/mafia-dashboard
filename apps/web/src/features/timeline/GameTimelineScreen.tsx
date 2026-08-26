@@ -8,7 +8,6 @@ import {
   Circle,
   Crosshair,
   Eye,
-  EyeOff,
   Lightbulb,
   MessageCircle,
   Play,
@@ -25,6 +24,7 @@ import {
   type GameLogEntry,
   type GameState,
   type InitialGameBaseline,
+  type ReplayFrame,
 } from "@mafia/game-domain";
 import {
   getGameSession,
@@ -32,10 +32,12 @@ import {
   type CompletedGameSessionSummary,
   type RemoteGameSession,
 } from "../../api/client.js";
+import { reportError } from "../console/error-console.js";
 import { getActiveBranch } from "../game/game-history.js";
 import { createSampleGameHistory } from "./sample-game-data.js";
 import {
   buildTimeline,
+  isVisibleTimelineEvent,
   TIMELINE_REGION_COLORS,
   type TimelineMarker,
   type TimelineModel,
@@ -52,8 +54,14 @@ interface GameTimelineScreenProps {
   readonly clubId: string;
   readonly onBack: () => void;
   readonly loaders?: TimelineLoaders;
-  readonly privacyHidden?: boolean;
-  readonly onTogglePrivacy?: () => void;
+  readonly showDevelopmentTools?: boolean;
+  readonly currentHistory?: {
+    readonly label: string;
+    readonly frames: readonly ReplayFrame[];
+    readonly headEventId: string;
+  };
+  readonly onPreviewCurrentEvent?: (eventId: string) => void;
+  readonly onResetCurrentEvent?: (eventId: string) => void;
 }
 
 interface LoadedHistory {
@@ -62,6 +70,8 @@ interface LoadedHistory {
   readonly summary: CompletedGameSessionSummary | null;
   readonly sample: boolean;
   readonly legacy: boolean;
+  readonly current: boolean;
+  readonly headEventId: string | null;
 }
 
 const defaultLoaders: TimelineLoaders = {
@@ -94,7 +104,6 @@ interface LegacyLogEntry {
   readonly type: string;
   readonly phase: string;
   readonly payload: Readonly<Record<string, unknown>>;
-  readonly secret: boolean;
   readonly createdAt: string;
 }
 
@@ -173,7 +182,10 @@ const legacyMarker = (
       if (typeof raw.payload.to === "string") {
         kind = "phase";
         icon = "arrow-right";
-        label = `Phase: ${raw.payload.to.replaceAll("-", " ")}`;
+        label =
+          raw.payload.to === "night-mafia"
+            ? "Night"
+            : `Phase: ${raw.payload.to.replaceAll("-", " ")}`;
         ariaLabel = label;
       }
       break;
@@ -254,7 +266,6 @@ const legacyMarker = (
     label,
     ariaLabel,
     accessibleLabel: ariaLabel,
-    secret: raw.secret,
     createdAt: raw.createdAt,
   };
 };
@@ -267,7 +278,9 @@ const legacyTimeline = (session: RemoteGameSession): TimelineModel => {
   const regions: TimelineRegion[] = [];
   const markers: TimelineMarker[] = [];
   for (const raw of rawLog) {
-    if (isProvisionalInteractionType(raw.type)) continue;
+    if (isProvisionalInteractionType(raw.type) || !isVisibleTimelineEvent(raw.type, raw.payload)) {
+      continue;
+    }
     if (typeof raw.payload.day === "number" && Number.isInteger(raw.payload.day)) {
       day = raw.payload.day;
     }
@@ -278,7 +291,10 @@ const legacyTimeline = (session: RemoteGameSession): TimelineModel => {
     if (day === 0 && requestedPhase !== "mafia-planning" && requestedPhase !== "sheriff-wake") {
       day = 1;
     }
-    const identity = legacyRegion(requestedPhase, day);
+    const identity =
+      raw.type === "best-move.completed"
+        ? legacyRegion("night-best-move", Math.max(1, day - 1))
+        : legacyRegion(requestedPhase, day);
     const frameIndex = markers.length;
     const previous = regions.at(-1);
     if (identity !== null) {
@@ -333,12 +349,37 @@ const TenantGameTimelineScreen = ({
   clubId,
   onBack,
   loaders = defaultLoaders,
-  privacyHidden = false,
-  onTogglePrivacy,
+  showDevelopmentTools = false,
+  currentHistory,
+  onPreviewCurrentEvent,
+  onResetCurrentEvent,
 }: GameTimelineScreenProps) => {
+  const loadCurrentHistory = (): LoadedHistory | null => {
+    if (currentHistory === undefined) return null;
+    const timeline = buildTimeline(currentHistory.frames);
+    const headSequence = currentHistory.frames.find(
+      ({ entry }) => entry.id === currentHistory.headEventId,
+    )?.entry.sequence;
+    const semanticHead = timeline.markers.reduce<(typeof timeline.markers)[number] | null>(
+      (latest, marker) =>
+        headSequence !== undefined && marker.sequence <= headSequence ? marker : latest,
+      null,
+    );
+    return {
+      label: `${currentHistory.label} · Checkpoint #${semanticHead?.sequence ?? headSequence ?? "—"}`,
+      timeline,
+      summary: null,
+      sample: false,
+      legacy: false,
+      current: true,
+      headEventId: semanticHead?.eventId ?? currentHistory.headEventId,
+    };
+  };
   const [summaries, setSummaries] = useState<readonly CompletedGameSessionSummary[] | null>(null);
-  const [selectedGameId, setSelectedGameId] = useState("");
-  const [history, setHistory] = useState<LoadedHistory | null>(null);
+  const [selectedGameId, setSelectedGameId] = useState(
+    currentHistory === undefined ? "" : "current",
+  );
+  const [history, setHistory] = useState<LoadedHistory | null>(loadCurrentHistory);
   const [selectedMarkerId, setSelectedMarkerId] = useState<string | null>(null);
   const [loadingGameName, setLoadingGameName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -354,7 +395,8 @@ const TenantGameTimelineScreen = ({
       .then((next) => {
         if (listRequestRef.current === request) setSummaries(next);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
+        reportError(error, { source: "api", context: "timeline.completed-games.list" });
         if (listRequestRef.current === request) {
           setSummaries([]);
           setError("Completed games are temporarily unavailable.");
@@ -365,9 +407,16 @@ const TenantGameTimelineScreen = ({
     };
   }, [clubId, loaders]);
 
+  useEffect(() => {
+    if (selectedGameId === "current") setHistory(loadCurrentHistory());
+  }, [currentHistory?.headEventId, currentHistory?.label, selectedGameId]);
+
   const timeline = history?.timeline ?? null;
   const selectedMarker =
-    timeline?.markers.find(({ id }) => id === selectedMarkerId) ?? timeline?.markers[0] ?? null;
+    timeline?.markers.find(({ id }) => id === selectedMarkerId) ??
+    timeline?.markers.find(({ eventId }) => eventId === history?.headEventId) ??
+    timeline?.markers[0] ??
+    null;
 
   const showSample = () => {
     sessionRequestRef.current += 1;
@@ -381,6 +430,8 @@ const TenantGameTimelineScreen = ({
       summary: null,
       sample: true,
       legacy: false,
+      current: false,
+      headEventId: null,
     });
     setSelectedMarkerId(null);
   };
@@ -393,6 +444,10 @@ const TenantGameTimelineScreen = ({
     setSelectedMarkerId(null);
     setLoadingGameName(null);
     setError(null);
+    if (gameId === "current") {
+      setHistory(loadCurrentHistory());
+      return;
+    }
     if (gameId === "") return;
     const summary = summaries?.find((candidate) => candidate.gameId === gameId);
     if (summary === undefined) return;
@@ -411,10 +466,13 @@ const TenantGameTimelineScreen = ({
           summary,
           sample: false,
           legacy: replayed.legacy,
+          current: false,
+          headEventId: null,
         });
         setLoadingGameName(null);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
+        reportError(error, { source: "api", context: "timeline.completed-game.load" });
         if (sessionRequestRef.current === request) {
           setLoadingGameName(null);
           setError(`Unable to load ${summary.name}.`);
@@ -430,14 +488,16 @@ const TenantGameTimelineScreen = ({
   const trackStyle = { minWidth: `${columnCount * 68 + 24}px` } satisfies CSSProperties;
 
   return (
-    <main className="timeline-screen" aria-label="Past game timeline">
+    <main className="timeline-screen" aria-label="Game timeline">
       <header className="timeline-header">
         <button type="button" className="timeline-back" onClick={onBack}>
           <ArrowLeft aria-hidden="true" /> Back
         </button>
         <div>
-          <p className="eyebrow">Replay editor · Read only</p>
-          <h1>Past game timeline</h1>
+          <p className="eyebrow">
+            {history?.current ? "Current game · Semantic checkpoints" : "Past games · Read only"}
+          </p>
+          <h1>Game timeline</h1>
         </div>
         <label>
           <span>Completed game</span>
@@ -446,6 +506,7 @@ const TenantGameTimelineScreen = ({
             value={selectedGameId}
             onChange={(event) => selectCompletedGame(event.currentTarget.value)}
           >
+            {currentHistory === undefined ? null : <option value="current">Current game</option>}
             <option value="">Choose a completed game</option>
             {(summaries ?? []).map((summary) => (
               <option key={summary.gameId} value={summary.gameId}>
@@ -454,19 +515,11 @@ const TenantGameTimelineScreen = ({
             ))}
           </select>
         </label>
-        <button type="button" onClick={showSample}>
-          Generate sample game data
-        </button>
-        {onTogglePrivacy === undefined ? null : (
-          <button
-            type="button"
-            aria-label={privacyHidden ? "Show private info" : "Hide private info"}
-            aria-pressed={privacyHidden}
-            onClick={onTogglePrivacy}
-          >
-            {privacyHidden ? <Eye aria-hidden="true" /> : <EyeOff aria-hidden="true" />}
+        {showDevelopmentTools ? (
+          <button type="button" onClick={showSample}>
+            Generate sample game data
           </button>
-        )}
+        ) : null}
       </header>
 
       {error === null ? null : (
@@ -503,9 +556,6 @@ const TenantGameTimelineScreen = ({
                   {new Date(history.summary.playedAt).toLocaleString()}
                 </span>
               )}
-              {columnCount > 12 ? (
-                <span className="timeline-scroll-hint">Scroll timeline →</span>
-              ) : null}
             </div>
             <div className="timeline-track-scroll">
               <div className="timeline-track" style={trackStyle}>
@@ -528,21 +578,20 @@ const TenantGameTimelineScreen = ({
                 </div>
                 <div className="timeline-marker-lane" style={gridStyle}>
                   {timeline.markers.map((marker) => {
-                    const privateMarker = privacyHidden && marker.secret;
-                    const Icon = privateMarker ? Circle : (iconByName[marker.icon] ?? Circle);
+                    const Icon = iconByName[marker.icon] ?? Circle;
                     return (
                       <button
                         key={marker.id}
                         type="button"
-                        className={`timeline-marker ${privateMarker ? "is-private" : `is-${marker.kind}`}${selectedMarker?.id === marker.id ? " is-selected" : ""}`}
+                        className={`timeline-marker is-${marker.kind}${selectedMarker?.id === marker.id ? " is-selected" : ""}`}
                         style={{ gridColumn: marker.frameIndex + 1 }}
-                        aria-label={privateMarker ? "Private event" : marker.ariaLabel}
+                        aria-label={marker.ariaLabel}
                         aria-pressed={selectedMarker?.id === marker.id}
-                        title={privateMarker ? "Private event" : marker.label}
+                        title={marker.label}
                         onClick={() => setSelectedMarkerId(marker.id)}
                       >
                         <Icon aria-hidden="true" />
-                        <span>{privateMarker ? "•" : `#${marker.sequence}`}</span>
+                        <span>#{marker.sequence}</span>
                       </button>
                     );
                   })}
@@ -551,7 +600,13 @@ const TenantGameTimelineScreen = ({
             </div>
           </section>
 
-          <TimelineInspector marker={selectedMarker} privacyHidden={privacyHidden} />
+          <TimelineInspector
+            marker={selectedMarker}
+            current={history.current}
+            currentHeadEventId={history.headEventId}
+            onPreview={onPreviewCurrentEvent}
+            onReset={onResetCurrentEvent}
+          />
         </>
       )}
     </main>
@@ -560,10 +615,16 @@ const TenantGameTimelineScreen = ({
 
 const TimelineInspector = ({
   marker,
-  privacyHidden,
+  current,
+  currentHeadEventId,
+  onPreview,
+  onReset,
 }: {
   readonly marker: TimelineMarker | null;
-  readonly privacyHidden: boolean;
+  readonly current: boolean;
+  readonly currentHeadEventId: string | null;
+  readonly onPreview?: (eventId: string) => void;
+  readonly onReset?: (eventId: string) => void;
 }) => (
   <aside className="timeline-inspector" aria-label="Selected event details">
     {marker === null ? (
@@ -571,35 +632,27 @@ const TimelineInspector = ({
     ) : (
       <>
         <div>
-          <p className="eyebrow">
-            {privacyHidden && marker.secret ? "Private log" : `Log #${marker.sequence}`}
-          </p>
-          <h2>{privacyHidden && marker.secret ? "Private event" : marker.label}</h2>
+          <p className="eyebrow">Log #{marker.sequence}</p>
+          <h2>{marker.label}</h2>
         </div>
         <dl>
           <div>
             <dt>Event</dt>
-            <dd>{privacyHidden && marker.secret ? "Hidden" : marker.eventType}</dd>
+            <dd>{marker.eventType}</dd>
           </div>
           <div>
             <dt>Time</dt>
             <dd>{new Date(marker.createdAt).toLocaleTimeString()}</dd>
           </div>
-          <div>
-            <dt>Visibility</dt>
-            <dd>{marker.secret ? "Host secret" : "Game log"}</dd>
-          </div>
-          {privacyHidden && marker.secret ? null : marker.result === undefined ? null : (
+          {marker.result === undefined ? null : (
             <div>
               <dt>Result</dt>
               <dd>{marker.result}</dd>
             </div>
           )}
         </dl>
-        {privacyHidden && marker.secret ? null : marker.accessibleLabel === marker.label ? null : (
-          <p>{marker.accessibleLabel}</p>
-        )}
-        {privacyHidden && marker.secret ? null : marker.shots === undefined ? null : (
+        {marker.accessibleLabel === marker.label ? null : <p>{marker.accessibleLabel}</p>}
+        {marker.shots === undefined ? null : (
           <ul>
             {marker.shots.map((shot) => (
               <li key={`${shot.shooterSeat}-${shot.targetSeat}`}>
@@ -607,6 +660,21 @@ const TimelineInspector = ({
               </li>
             ))}
           </ul>
+        )}
+        {!current || onPreview === undefined || onReset === undefined ? null : (
+          <div className="timeline-state-actions">
+            <button type="button" onClick={() => onPreview(marker.eventId)}>
+              Preview timeline checkpoint
+            </button>
+            <button
+              type="button"
+              className="danger-action"
+              disabled={marker.eventId === currentHeadEventId}
+              onClick={() => onReset(marker.eventId)}
+            >
+              Reset game to timeline checkpoint
+            </button>
+          </div>
         )}
       </>
     )}

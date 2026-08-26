@@ -8,12 +8,7 @@ const playerAt = (game: GameState, seat: number) => {
 };
 
 const hasCheckOwner = (game: GameState, role: "don" | "sheriff"): boolean =>
-  game.players.some(
-    ({ role: playerRole, seat, status }) =>
-      playerRole === role &&
-      (status === "active" ||
-        (game.nightResult?.kind === "kill" && game.nightResult.targetSeat === seat)),
-  );
+  game.players.some(({ role: playerRole, status }) => playerRole === role && status === "active");
 
 const resultForTargets = (game: GameState, targets: ReadonlySet<number>): NightShotResult => {
   if (targets.size !== 1) return { kind: "miss" };
@@ -40,6 +35,7 @@ export const beginNight = (game: GameState): GameState => {
     game.phase !== "voting-cancelled" &&
     game.phase !== "car-crash" &&
     game.phase !== "car-crash-decision" &&
+    game.phase !== "car-crash-result" &&
     game.phase !== "car-crash-skipped" &&
     game.phase !== "goodbye-speech"
   ) {
@@ -53,6 +49,7 @@ export const beginNight = (game: GameState): GameState => {
     votingRound: undefined,
     carCrashSeats: undefined,
     carCrashVotes: undefined,
+    carCrashResult: undefined,
     goodbyeSeats: undefined,
     goodbyeNext: undefined,
     shotAssignments: {},
@@ -105,6 +102,23 @@ export const toggleMafiaShot = (
   return { ...game, shotAssignments };
 };
 
+export const toggleAllMafiaShotsForTarget = (game: GameState, targetSeat: number): GameState => {
+  if (game.phase !== "night-mafia") {
+    throw new Error("Mafia shots can only be changed during the Mafia night phase");
+  }
+  playerAt(game, targetSeat);
+  const shooters = game.players.filter(
+    ({ status, team }) => status === "active" && team === "black",
+  );
+  const selected = shooters.every(({ seat }) => game.shotAssignments[seat] === targetSeat);
+  const shotAssignments = { ...game.shotAssignments };
+  for (const { seat } of shooters) {
+    if (selected) delete shotAssignments[seat];
+    else shotAssignments[seat] = targetSeat;
+  }
+  return { ...game, shotAssignments };
+};
+
 export const resolveMafiaShots = (
   game: GameState,
 ): { game: GameState; result: NightShotResult; secretShots: readonly ShotAssignment[] } => {
@@ -144,16 +158,6 @@ export const getMafiaShotResult = (game: GameState): NightShotResult => {
   }
   const targets = new Set(shooters.map(({ seat }) => game.shotAssignments[seat]!));
   return resultForTargets(game, targets);
-};
-
-export const reopenMafiaShots = (game: GameState): GameState => {
-  getMafiaShotResult(game);
-  return {
-    ...game,
-    phase: "night-mafia",
-    shotAssignments: {},
-    winner: null,
-  };
 };
 
 export const completeMafiaShots = (game: GameState): GameState => {
@@ -289,7 +293,6 @@ export const completeNight = (game: GameState): GameState => {
     goodbyeSeats: undefined,
     goodbyeNext: undefined,
     nightResult: undefined,
-    dayNotice: "happy",
   };
 };
 

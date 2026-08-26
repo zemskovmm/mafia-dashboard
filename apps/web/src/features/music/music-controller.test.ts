@@ -7,6 +7,7 @@ class FakePlayer implements MusicPlayerAdapter {
   public playCalls = 0;
   public pauseCalls = 0;
   public volumes: number[] = [];
+  public operations: string[] = [];
 
   public play(): void {
     this.playCalls += 1;
@@ -14,11 +15,13 @@ class FakePlayer implements MusicPlayerAdapter {
 
   public pause(): void {
     this.pauseCalls += 1;
+    this.operations.push("pause");
   }
 
   public setVolume(volume: number): void {
     this.volume = volume;
     this.volumes.push(volume);
+    this.operations.push(`volume:${volume}`);
   }
 
   public getVolume(): number {
@@ -67,8 +70,20 @@ describe("MusicController", () => {
     await vi.advanceTimersByTimeAsync(300);
     await fade;
 
-    expect(player.volumes).toEqual([40, 20, 0]);
+    expect(player.volumes).toEqual([40, 20, 0, 60]);
     expect(player.pauseCalls).toBe(1);
+    expect(player.operations.slice(-2)).toEqual(["pause", "volume:60"]);
+  });
+
+  it("restores the prior volume after an immediate fade-out pauses", async () => {
+    const player = new FakePlayer();
+    player.volume = 35;
+    const controller = new MusicController(player, { stepMs: 100 });
+
+    await expect(controller.fadeOut({ durationMs: 0 })).resolves.toBe("completed");
+
+    expect(player.volumes).toEqual([0, 35]);
+    expect(player.operations.slice(-2)).toEqual(["pause", "volume:35"]);
   });
 
   it("cancels an in-progress fade when a new fade starts", async () => {
@@ -82,7 +97,7 @@ describe("MusicController", () => {
 
     await expect(first).resolves.toBe("cancelled");
     await expect(second).resolves.toBe("completed");
-    expect(player.volume).toBe(0);
+    expect(player.volume).toBe(16);
     expect(player.pauseCalls).toBe(1);
   });
 
@@ -119,7 +134,7 @@ describe("MusicController", () => {
 
     await expect(fadeIn).resolves.toBe("cancelled");
     await expect(fadeOut).resolves.toBe("completed");
-    expect(player.volumes).toEqual([0, 30, 0]);
+    expect(player.volumes).toEqual([0, 30, 0, 60]);
     expect(player.pauseCalls).toBe(1);
   });
 });

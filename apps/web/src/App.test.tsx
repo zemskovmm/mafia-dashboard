@@ -1,6 +1,6 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { forwardRef, useState } from "react";
+import { forwardRef, useEffect, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createGameLogEntry,
@@ -9,6 +9,9 @@ import {
 } from "@mafia/game-domain";
 import type { Club, PlayerProfile, RemoteGameSession } from "./api/client.js";
 import { App as WelcomeApp, ClubWorkspace } from "./App.js";
+import { clearErrorConsole, reportError } from "./features/console/error-console.js";
+import { musicPreferencesStorageKey } from "./features/music/music-preferences.js";
+import { GLASS_SETTINGS_STORAGE_KEY } from "./features/theme/glass-settings.js";
 
 const api = vi.hoisted(() => {
   const saveGameSession = vi.fn();
@@ -39,6 +42,8 @@ const gameScreenHarness = vi.hoisted(() => ({
   liveGame: null as GameState | null,
   liveOnGameChange: null as ((game: GameState) => void) | null,
 }));
+
+const musicPlayerHarness = vi.hoisted(() => ({ mounts: 0, unmounts: 0 }));
 
 const hostPlayerId = "00000000-0000-4000-8000-000000000011";
 const testClub: Club = {
@@ -114,6 +119,7 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
     onPlaylistIdChange,
     onPopulateDevelopmentPlayers,
     onOpenAvailablePlayers,
+    showDevelopmentTools = false,
     fullscreenTouchPicker = false,
   }: {
     players: readonly PlayerProfile[];
@@ -130,6 +136,7 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
     onPlaylistIdChange: (playlistId: string) => void;
     onPopulateDevelopmentPlayers?: () => Promise<readonly PlayerProfile[]>;
     onOpenAvailablePlayers?: () => void;
+    showDevelopmentTools?: boolean;
     fullscreenTouchPicker?: boolean;
   }) => {
     const [step, setStep] = useState(initialSessionState?.step ?? "players");
@@ -191,7 +198,7 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
         >
           Enter role giveaway
         </button>
-        {onPopulateDevelopmentPlayers === undefined ? null : (
+        {!showDevelopmentTools || onPopulateDevelopmentPlayers === undefined ? null : (
           <button
             type="button"
             onClick={() => void onPopulateDevelopmentPlayers().catch(() => undefined)}
@@ -216,7 +223,6 @@ vi.mock("./features/game/GameScreen.js", () => ({
     onExitPreview,
     onResetPreview,
     privacyHidden,
-    dayNightIndicatorVisible,
     onFinishGame,
     finishGameState,
   }: {
@@ -230,7 +236,6 @@ vi.mock("./features/game/GameScreen.js", () => ({
     onExitPreview?: () => void;
     onResetPreview?: () => void;
     privacyHidden: boolean;
-    dayNightIndicatorVisible: boolean;
     onFinishGame: () => void;
     finishGameState: "ready" | "saving" | "saved" | "error";
   }) => {
@@ -258,8 +263,9 @@ vi.mock("./features/game/GameScreen.js", () => ({
         <p>Host: {hostName}</p>
         <p>Game day {game.day}</p>
         <p>Game turn {game.currentTurnIndex}</p>
+        <p>Game fouls {game.players.reduce((total, player) => total + player.fouls, 0)}</p>
         <p>Private info {privacyHidden ? "hidden" : "visible"}</p>
-        <p>Day/night indication {dayNightIndicatorVisible ? "enabled" : "disabled"}</p>
+
         <button
           type="button"
           onClick={() => {
@@ -278,12 +284,34 @@ vi.mock("./features/game/GameScreen.js", () => ({
         <button
           type="button"
           onClick={() => {
+            const foulCount = game.players.reduce((total, player) => total + player.fouls, 0);
+            const player = game.players[foulCount % game.players.length];
+            if (onAcceptedEvent !== undefined && player !== undefined) {
+              onAcceptedEvent({
+                type: "foul.issued",
+                payload: { seat: player.seat, foulNumber: player.fouls + 1, redCarded: false },
+                secret: false,
+              });
+            }
+          }}
+        >
+          Record meaningful checkpoint
+        </button>
+        <button
+          type="button"
+          onClick={() => {
             const nextDay = game.day + 1;
             onGameChange({ ...game, day: nextDay });
             onEvent("day.started", { day: nextDay });
           }}
         >
           Start new day
+        </button>
+        <button type="button" onClick={() => onGameChange({ ...game, phase: "voting" })}>
+          Enter voting phase
+        </button>
+        <button type="button" onClick={() => onGameChange({ ...game, phase: "night-mafia" })}>
+          Enter night phase
         </button>
         <button
           type="button"
@@ -312,25 +340,85 @@ vi.mock("./features/game/GameScreen.js", () => ({
 }));
 
 vi.mock("./features/music/YouTubePlaylistPlayer.js", () => ({
-  YouTubePlaylistPlayer: forwardRef(() => <div data-testid="youtube-player" />),
+  YouTubePlaylistPlayer: forwardRef(
+    (
+      {
+        playlistId,
+        rememberedQueueOrder = [],
+        onQueueOrderChange,
+      }: {
+        playlistId: string;
+        rememberedQueueOrder?: readonly string[];
+        onQueueOrderChange?: (playlistId: string, order: readonly string[]) => void;
+      },
+      _ref,
+    ) => {
+      void _ref;
+      useEffect(() => {
+        musicPlayerHarness.mounts += 1;
+        return () => {
+          musicPlayerHarness.unmounts += 1;
+        };
+      }, []);
+      return (
+        <>
+          <div
+            data-testid="youtube-player"
+            data-playlist-id={playlistId}
+            data-remembered-order={rememberedQueueOrder.join(",")}
+          />
+          <button
+            type="button"
+            aria-label="Remember mock queue order"
+            onClick={() => onQueueOrderChange?.(playlistId, ["video-c:2", "video-a:0"])}
+          />
+        </>
+      );
+    },
+  ),
 }));
 
 vi.mock("./features/music/AccountPlaylistPicker.js", () => ({
   AccountPlaylistPicker: ({
     playlistId,
     onPlaylistIdChange,
+    onAccountDisconnected,
+    stagePlaylistIds = {},
+    onStagePlaylistIdsChange,
   }: {
     playlistId: string;
     onPlaylistIdChange: (playlistId: string) => void;
+    onAccountDisconnected: () => void;
+    stagePlaylistIds?: Partial<Record<"day" | "voting" | "night", string>>;
+    onStagePlaylistIdsChange?: (
+      playlistIds: Partial<Record<"day" | "voting" | "night", string>>,
+    ) => void;
   }) => (
-    <select
-      aria-label="YouTube Music playlist"
-      value={playlistId}
-      onChange={(event) => onPlaylistIdChange(event.target.value)}
-    >
-      <option value="">No playlist</option>
-      <option value="dev-playlist">Dev playlist</option>
-    </select>
+    <>
+      <select
+        aria-label="YouTube Music playlist"
+        value={playlistId}
+        onChange={(event) => onPlaylistIdChange(event.target.value)}
+      >
+        <option value="">No playlist</option>
+        <option value="dev-playlist">Dev playlist</option>
+      </select>
+      <button type="button" onClick={onAccountDisconnected}>
+        Disconnect account
+      </button>
+      {onStagePlaylistIdsChange ? (
+        <select
+          aria-label="Voting playlist"
+          value={stagePlaylistIds.voting ?? ""}
+          onChange={(event) =>
+            onStagePlaylistIdsChange({ ...stagePlaylistIds, voting: event.target.value })
+          }
+        >
+          <option value="">Use current playlist</option>
+          <option value="dev-playlist">Dev playlist</option>
+        </select>
+      ) : null}
+    </>
   ),
 }));
 
@@ -367,6 +455,8 @@ const player = (nickname: string, id: string): PlayerProfile => ({
 });
 
 beforeEach(() => {
+  musicPlayerHarness.mounts = 0;
+  musicPlayerHarness.unmounts = 0;
   api.clearAllData.mockReset().mockResolvedValue(undefined);
   api.clearGameSession.mockReset().mockResolvedValue(undefined);
   api.createPlayer.mockReset();
@@ -400,6 +490,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  clearErrorConsole();
   cleanup();
   window.localStorage.clear();
   window.sessionStorage.clear();
@@ -433,6 +524,10 @@ describe("club welcome", () => {
     await user.click(screen.getByRole("button", { name: "Switch to Málaga gold theme" }));
 
     expect(document.documentElement).toHaveAttribute("data-theme", "malaga");
+
+    await user.click(screen.getByRole("button", { name: "Switch to Málaga Glass theme" }));
+
+    expect(document.documentElement).toHaveAttribute("data-theme", "malaga-glass");
 
     await user.click(screen.getByRole("button", { name: "Switch to Midnight theme" }));
 
@@ -600,6 +695,35 @@ describe("club roster gate", () => {
 });
 
 describe("developer menu", () => {
+  it("previews and resets the active game from its current timeline", async () => {
+    const user = userEvent.setup();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    await user.click(screen.getByRole("button", { name: "Record meaningful checkpoint" }));
+    expect(screen.getByText("Game fouls 1")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Past game timeline" }));
+    expect(screen.getByText(/26\.08\.26 #1 · Checkpoint #2/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Foul 1: Player 1/i }));
+    await user.click(screen.getByRole("button", { name: "Preview timeline checkpoint" }));
+    expect(screen.getByRole("heading", { name: "Preview game state" })).toBeInTheDocument();
+    expect(screen.getByText("Preview log 2")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Exit preview" }));
+    expect(screen.getByText("Game fouls 1")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Past game timeline" }));
+    await user.click(screen.getByRole("button", { name: "Imported game checkpoint" }));
+    await user.click(screen.getByRole("button", { name: "Reset game to timeline checkpoint" }));
+
+    await screen.findByText("Game fouls 0");
+    expect(confirm).toHaveBeenLastCalledWith(
+      "Reset the active game to log #1? 1 later active action will leave the current branch. Their history will be preserved.",
+    );
+  });
+
   it("opens the full-screen past-game timeline and returns to the prior workspace", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -607,13 +731,71 @@ describe("developer menu", () => {
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     await user.click(screen.getByRole("button", { name: "Past game timeline" }));
 
-    expect(screen.getByRole("heading", { name: "Past game timeline" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Game timeline" })).toBeInTheDocument();
     expect(screen.queryByLabelText("Application tools")).toBeNull();
     expect(await screen.findByText("No completed games yet.")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /back/i }));
     expect(screen.getAllByRole("heading", { name: "Game setup" })).toHaveLength(2);
     expect(screen.getByLabelText("Application tools")).toBeInTheDocument();
+  });
+
+  it("accepts a meaningful live action after inspecting a Timeline marker", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    await waitFor(() => expect(api.saveGameSession).toHaveBeenCalled());
+    api.saveGameSession.mockClear();
+
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Past game timeline" }));
+    await user.click(screen.getByRole("button", { name: "Imported game checkpoint" }));
+    await user.click(screen.getByRole("button", { name: /back/i }));
+    await user.click(screen.getByRole("button", { name: "Record meaningful checkpoint" }));
+
+    expect(screen.getByText("Game fouls 1")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(api.saveGameSession).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ kind: "append-event" }),
+        testClub.id,
+      ),
+    );
+  });
+
+  it("opens a full-screen error Console from Dev without changing the live session", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    await waitFor(() => expect(api.saveGameSession).toHaveBeenCalled());
+    const beforeConsole = window.sessionStorage.getItem("mafia-dashboard.game-session.v4");
+    reportError(new Error("Captured before Console navigation"), {
+      source: "application",
+      context: "mafia.shots-resolved",
+    });
+
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Console" }));
+    expect(screen.getByRole("heading", { level: 1, name: "Console" })).toBeInTheDocument();
+    expect(screen.getByText("Captured before Console navigation")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Application tools")).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByRole("heading", { name: "Live test game" })).toBeInTheDocument();
+    expect(window.sessionStorage.getItem("mafia-dashboard.game-session.v4")).toBe(beforeConsole);
+  });
+
+  it("captures a handled player API failure in the Console", async () => {
+    const user = userEvent.setup();
+    api.listPlayers.mockRejectedValueOnce(new Error("Players endpoint failed"));
+    render(<App />);
+    await waitFor(() => expect(api.listPlayers).toHaveBeenCalled());
+
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Console" }));
+
+    expect(screen.getByText("Players endpoint failed")).toBeInTheDocument();
+    expect(screen.getByText("players.list")).toBeInTheDocument();
   });
 
   it("cycles the application theme from Dev", async () => {
@@ -635,7 +817,7 @@ describe("developer menu", () => {
     await user.click(screen.getByRole("button", { name: "Use Málaga gold theme" }));
 
     expect(document.documentElement).toHaveAttribute("data-theme", "malaga");
-    expect(screen.getByRole("button", { name: "Use Midnight theme" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Use Málaga Glass theme" })).toBeInTheDocument();
   });
 
   it("uses a dated sequence name for a new game", () => {
@@ -649,37 +831,40 @@ describe("developer menu", () => {
     vi.useRealTimers();
   });
 
-  it("persists the Dev toggle for the table center shadow", async () => {
+  it("gates setup development tools behind the session Dev mode", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
-    await user.click(screen.getByRole("button", { name: "Hide table center shadow" }));
 
-    expect(document.querySelector(".app-shell")).toHaveClass("is-center-shadow-hidden");
-    expect(window.localStorage.getItem("mafia-dashboard.center-shadow")).toBe("hidden");
+    expect(screen.queryByRole("button", { name: "Generate test players" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Enable dev mode" }));
+    expect(screen.getByRole("button", { name: "Generate test players" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Past game timeline" }));
+    expect(screen.getByRole("button", { name: "Generate sample game data" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Disable dev mode" }));
+    expect(screen.queryByRole("button", { name: "Generate test players" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Past game timeline" }));
+    expect(screen.queryByRole("button", { name: "Generate sample game data" })).toBeNull();
   });
 
-  it("persists the optional animated Day/night table indication in the browser", async () => {
+  it("keeps the table center shadow permanent and removes its Dev setting", async () => {
     const user = userEvent.setup();
-    const { unmount } = render(<App />);
-    await user.click(screen.getByRole("button", { name: "Start test game" }));
-    expect(screen.getByText("Day/night indication disabled")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
-    const toggle = screen.getByRole("button", { name: "Show Day/night table indication" });
-    expect(toggle).toHaveAttribute("aria-pressed", "false");
-    await user.click(toggle);
-
-    expect(screen.getByText("Day/night indication enabled")).toBeInTheDocument();
-    expect(window.localStorage.getItem("mafia-dashboard.day-night-indicator")).toBe("visible");
-    expect(screen.getByRole("button", { name: "Hide Day/night table indication" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-
-    unmount();
+    window.localStorage.setItem("mafia-dashboard.center-shadow", "hidden");
     render(<App />);
-    expect(screen.getByText("Day/night indication enabled")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+
+    expect(screen.queryByRole("button", { name: /table center shadow/i })).toBeNull();
+    expect(document.querySelector(".app-shell")).not.toHaveClass("is-center-shadow-hidden");
+  });
+
+  it("does not expose a Day/night table indication setting", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    expect(screen.queryByRole("button", { name: /Day\/night table indication/i })).toBeNull();
+    expect(window.localStorage.getItem("mafia-dashboard.day-night-indicator")).toBeNull();
   });
 
   it("uses the non-editable player picker on touch iPads outside fullscreen", () => {
@@ -853,6 +1038,38 @@ describe("developer menu", () => {
     expect(dock).not.toBeVisible();
   });
 
+  it("groups live Timer, Voting order, and the persistent music player in one side panel", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const player = screen.getByTestId("youtube-player");
+
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+
+    const rail = screen.getByRole("complementary", { name: "Live game controls" });
+    expect(within(rail).getByRole("region", { name: "Timer controls" })).toBeInTheDocument();
+    expect(within(rail).getByRole("region", { name: "Voting order" })).toBeInTheDocument();
+    expect(rail.lastElementChild).toBe(player.closest(".youtube-dock"));
+    expect(screen.getByTestId("youtube-player")).toBe(player);
+  });
+
+  it("keeps the music player mounted while previewing and exiting a log state", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    const player = screen.getByTestId("youtube-player");
+    await user.click(screen.getByRole("button", { name: "Record game action" }));
+    await user.click(screen.getByRole("button", { name: "Open game log" }));
+    await user.click(screen.getByRole("button", { name: "Preview state after log #1" }));
+
+    expect(screen.getByTestId("youtube-player")).toBe(player);
+    expect(player.closest(".youtube-dock")).toHaveAttribute("hidden");
+    expect(musicPlayerHarness).toEqual({ mounts: 1, unmounts: 0 });
+
+    await user.click(screen.getByRole("button", { name: "Exit preview" }));
+    expect(screen.getByTestId("youtube-player")).toBe(player);
+    expect(musicPlayerHarness).toEqual({ mounts: 1, unmounts: 0 });
+  });
+
   it("keeps music player setup behind the Dev menu", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -869,6 +1086,169 @@ describe("developer menu", () => {
     const playlist = screen.getByRole("combobox", { name: "YouTube Music playlist" });
     await user.selectOptions(playlist, "dev-playlist");
     expect(playlist).toHaveValue("dev-playlist");
+  });
+
+  it("persists and resets Málaga Glass effect settings from Dev", async () => {
+    const user = userEvent.setup();
+    render(
+      <ClubWorkspace
+        club={testClub}
+        onExit={() => undefined}
+        onEditClub={() => undefined}
+        onDeleteClub={() => Promise.resolve()}
+        colorTheme="malaga-glass"
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+
+    expect(screen.getByRole("group", { name: "Glass settings" })).toBeInTheDocument();
+    expect(screen.getByText(/using fallback/i)).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "Enable glass effect" })).toBeChecked();
+    for (const name of [
+      "Glass thickness",
+      "Bezel width",
+      "Refractive index",
+      "Specular opacity",
+      "Specular angle",
+      "Fallback opacity",
+    ]) {
+      expect(screen.getByRole("spinbutton", { name })).toBeInTheDocument();
+    }
+    const blur = screen.getByRole("spinbutton", { name: "Glass blur" });
+    await user.clear(blur);
+    await user.type(blur, "12");
+    expect(
+      JSON.parse(window.localStorage.getItem(GLASS_SETTINGS_STORAGE_KEY) ?? "null"),
+    ).toMatchObject({
+      blur: 12,
+    });
+
+    await user.click(screen.getByRole("button", { name: "Reset glass settings" }));
+    expect(blur).toHaveValue(4);
+  });
+
+  it("restores the club's last playlist when no active game session supplies one", () => {
+    window.localStorage.setItem(
+      musicPreferencesStorageKey(testClub.id),
+      JSON.stringify({
+        version: 1,
+        lastPlaylistId: "remembered-playlist",
+        queueOrderByPlaylist: {},
+        stagePlaylistIds: {},
+      }),
+    );
+
+    render(<App />);
+
+    expect(screen.getByText("Playlist: remembered-playlist")).toBeInTheDocument();
+  });
+
+  it("restores and updates each playlist's remembered queue order", async () => {
+    window.localStorage.setItem(
+      musicPreferencesStorageKey(testClub.id),
+      JSON.stringify({
+        version: 1,
+        lastPlaylistId: "PL-base",
+        queueOrderByPlaylist: { "PL-base": ["video-b:1", "video-a:0"] },
+        stagePlaylistIds: {},
+      }),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+    expect(screen.getByTestId("youtube-player")).toHaveAttribute(
+      "data-remembered-order",
+      "video-b:1,video-a:0",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Remember mock queue order" }));
+    expect(
+      JSON.parse(window.localStorage.getItem(musicPreferencesStorageKey(testClub.id)) ?? "null"),
+    ).toMatchObject({
+      queueOrderByPlaylist: { "PL-base": ["video-c:2", "video-a:0"] },
+    });
+  });
+
+  it("remembers a newly selected playlist for this club", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Choose saved playlist" }));
+
+    expect(
+      JSON.parse(window.localStorage.getItem(musicPreferencesStorageKey(testClub.id)) ?? "null"),
+    ).toMatchObject({ version: 1, lastPlaylistId: "saved-playlist" });
+  });
+
+  it("stores stage playlist mappings from Dev music settings", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Music player setup" }));
+
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Voting playlist" }),
+      "dev-playlist",
+    );
+
+    expect(
+      JSON.parse(window.localStorage.getItem(musicPreferencesStorageKey(testClub.id)) ?? "null"),
+    ).toMatchObject({ stagePlaylistIds: { voting: "dev-playlist" } });
+  });
+
+  it("hot-swaps configured playlists as the game enters Day, Voting, and Night", async () => {
+    window.localStorage.setItem(
+      musicPreferencesStorageKey(testClub.id),
+      JSON.stringify({
+        version: 1,
+        lastPlaylistId: "PL-base",
+        queueOrderByPlaylist: {},
+        stagePlaylistIds: { day: "PL-day", voting: "PL-vote", night: "PL-night" },
+      }),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+    const player = screen.getByTestId("youtube-player");
+
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    expect(player).toHaveAttribute("data-playlist-id", "PL-day");
+    await user.click(screen.getByRole("button", { name: "Enter voting phase" }));
+    expect(player).toHaveAttribute("data-playlist-id", "PL-vote");
+    await user.click(screen.getByRole("button", { name: "Enter night phase" }));
+    expect(player).toHaveAttribute("data-playlist-id", "PL-night");
+    expect(screen.getByTestId("youtube-player")).toBe(player);
+    expect(musicPlayerHarness).toEqual({ mounts: 1, unmounts: 0 });
+  });
+
+  it("atomically clears mapped Day playback on account disconnect", async () => {
+    window.localStorage.setItem(
+      musicPreferencesStorageKey(testClub.id),
+      JSON.stringify({
+        version: 1,
+        lastPlaylistId: "PL-base",
+        queueOrderByPlaylist: {},
+        stagePlaylistIds: { day: "PL-day", voting: "PL-vote", night: "PL-night" },
+      }),
+    );
+    const user = userEvent.setup();
+    render(<App />);
+    const player = screen.getByTestId("youtube-player");
+
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    expect(player).toHaveAttribute("data-playlist-id", "PL-day");
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Music player setup" }));
+    await user.click(screen.getByRole("button", { name: "Disconnect account" }));
+    await act(async () => Promise.resolve());
+
+    expect(player).toHaveAttribute("data-playlist-id", "");
+    expect(
+      JSON.parse(window.localStorage.getItem(musicPreferencesStorageKey(testClub.id)) ?? "null"),
+    ).toEqual({
+      version: 1,
+      lastPlaylistId: "",
+      queueOrderByPlaylist: {},
+      stagePlaylistIds: {},
+    });
   });
 
   it("keeps the fade controls directly below the persistent player during setup and live play", async () => {
@@ -1069,6 +1449,54 @@ describe("developer menu", () => {
     expect(window.localStorage.length).toBe(0);
     expect(window.sessionStorage.length).toBe(0);
   });
+
+  it("resets browser-only settings and Console memory when clearing all data", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    window.localStorage.setItem(
+      musicPreferencesStorageKey(testClub.id),
+      JSON.stringify({
+        version: 1,
+        lastPlaylistId: "remembered-playlist",
+        queueOrderByPlaylist: {
+          "": ["stale-default:0"],
+          "remembered-playlist": ["video-b:1"],
+        },
+        stagePlaylistIds: { voting: "dev-playlist" },
+      }),
+    );
+    window.localStorage.setItem(GLASS_SETTINGS_STORAGE_KEY, JSON.stringify({ blur: 12 }));
+    reportError(new Error("Stale Console entry"));
+    render(<App />);
+    const musicPlayer = screen.getByTestId("youtube-player");
+    expect(musicPlayer).toHaveAttribute("data-playlist-id", "remembered-playlist");
+
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    expect(screen.getByRole("spinbutton", { name: "Glass blur" })).toHaveValue(12);
+    await user.click(screen.getByRole("button", { name: "Clear all data" }));
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    const glassBlur = screen.getByRole("spinbutton", { name: "Glass blur" });
+    await user.click(screen.getByRole("button", { name: "Music player setup" }));
+    const votingPlaylist = screen.getByRole("combobox", { name: "Voting playlist" });
+    await user.click(screen.getByRole("button", { name: "Console" }));
+
+    expect({
+      playlistId: musicPlayer.getAttribute("data-playlist-id"),
+      rememberedOrder: musicPlayer.getAttribute("data-remembered-order"),
+      votingPlaylist: (votingPlaylist as HTMLSelectElement).value,
+      glassBlur: Number((glassBlur as HTMLInputElement).value),
+      consoleIsEmpty: screen.queryByText("No errors have been captured.") !== null,
+      localStorageItems: window.localStorage.length,
+    }).toEqual({
+      playlistId: "",
+      rememberedOrder: "",
+      votingPlaylist: "",
+      glassBlur: 4,
+      consoleIsEmpty: true,
+      localStorageItems: 0,
+    });
+    expect(api.clearAllData).not.toHaveBeenCalled();
+  });
 });
 
 describe("authoritative game session lifecycle", () => {
@@ -1102,20 +1530,70 @@ describe("authoritative game session lifecycle", () => {
     );
   });
 
-  it("persists one baseline plus incremental events without per-step game snapshots", async () => {
+  it("keeps intermediate turns in memory and reloads the latest meaningful checkpoint", async () => {
+    const user = userEvent.setup();
+    const firstRender = render(<App />);
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    await waitFor(() => expect(api.saveGameSession).toHaveBeenCalled());
+    api.saveGameSession.mockClear();
+
+    await user.click(screen.getByRole("button", { name: "Record game action" }));
+    expect(screen.getByText("Game turn 1")).toBeInTheDocument();
+    await act(async () => Promise.resolve());
+    expect(api.saveGameSession).not.toHaveBeenCalled();
+    expect(
+      JSON.parse(window.sessionStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+    ).toMatchObject({ entries: [expect.objectContaining({ type: "game.checkpointed" })] });
+    await user.click(screen.getByRole("button", { name: "Open game log" }));
+    expect(screen.queryByText("turn.completed")).toBeNull();
+
+    firstRender.unmount();
+    render(<App />);
+    expect(screen.getByText("Game turn 0")).toBeInTheDocument();
+  });
+
+  it("preserves a provisional ballot when a meaningful event is accepted", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    const liveGame = gameScreenHarness.liveGame;
+    const changeLiveGame = gameScreenHarness.liveOnGameChange;
+    if (liveGame === null || changeLiveGame === null) {
+      throw new Error("Live game mutation callback was not captured");
+    }
+
+    act(() =>
+      changeLiveGame({
+        ...liveGame,
+        phase: "voting",
+        voteAssignments: { 1: 4 },
+      }),
+    );
+    await waitFor(() => expect(gameScreenHarness.liveGame?.voteAssignments).toEqual({ 1: 4 }));
+
+    await user.click(screen.getByRole("button", { name: "Record meaningful checkpoint" }));
+
+    expect(screen.getByText("Game fouls 1")).toBeInTheDocument();
+    expect(gameScreenHarness.liveGame?.voteAssignments).toEqual({ 1: 4 });
+  });
+
+  it("persists one baseline plus meaningful incremental checkpoints without game snapshots", async () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
     await waitFor(() => expect(api.saveGameSession).toHaveBeenCalled());
     api.saveGameSession.mockClear();
 
-    await user.click(screen.getByRole("button", { name: "Record game action" }));
+    await user.click(screen.getByRole("button", { name: "Record meaningful checkpoint" }));
 
     await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledOnce());
     const operation = api.saveGameSession.mock.calls[0]?.[1];
     expect(operation).toMatchObject({
       kind: "append-event",
-      event: expect.objectContaining({ type: "turn.completed", payload: { seat: 1 } }),
+      event: expect.objectContaining({
+        type: "foul.issued",
+        payload: { seat: 1, foulNumber: 1, redCarded: false },
+      }),
     });
     expect(operation).not.toHaveProperty("state");
     expect(operation).not.toHaveProperty("events");
@@ -1130,7 +1608,10 @@ describe("authoritative game session lifecycle", () => {
       }),
       entries: [
         expect.objectContaining({ type: "game.checkpointed" }),
-        expect.objectContaining({ type: "turn.completed", payload: { seat: 1 } }),
+        expect.objectContaining({
+          type: "foul.issued",
+          payload: expect.objectContaining({ seat: 1, foulNumber: 1 }),
+        }),
       ],
     });
   });
@@ -1140,8 +1621,8 @@ describe("authoritative game session lifecycle", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
-    await user.click(screen.getByRole("button", { name: "Record game action" }));
-    expect(screen.getByText("Game turn 1")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Record meaningful checkpoint" }));
+    expect(screen.getByText("Game fouls 1")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Open game log" }));
     await user.click(screen.getByRole("button", { name: "Preview state after log #1" }));
@@ -1153,7 +1634,7 @@ describe("authoritative game session lifecycle", () => {
     ]);
 
     await user.click(screen.getByRole("button", { name: "Exit preview" }));
-    expect(screen.getByText("Game turn 1")).toBeInTheDocument();
+    expect(screen.getByText("Game fouls 1")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Open game log" }));
     await user.click(screen.getByRole("button", { name: "Preview state after log #1" }));
@@ -1162,13 +1643,13 @@ describe("authoritative game session lifecycle", () => {
 
     confirm.mockReturnValue(true);
     await user.click(screen.getByRole("button", { name: "Reset game to this state" }));
-    expect(screen.getByText("Game turn 0")).toBeInTheDocument();
+    expect(screen.getByText("Game fouls 0")).toBeInTheDocument();
     expect(confirm).toHaveBeenLastCalledWith(
       "Reset the active game to log #1? 1 later active action will leave the current branch. Their history will be preserved.",
     );
 
     await user.click(screen.getByRole("button", { name: /undo last action/i }));
-    expect(screen.getByText("Game turn 1")).toBeInTheDocument();
+    expect(screen.getByText("Game fouls 1")).toBeInTheDocument();
   });
 
   it("keeps the live head unchanged when the server rejects a reset", async () => {
@@ -1176,7 +1657,7 @@ describe("authoritative game session lifecycle", () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
-    await user.click(screen.getByRole("button", { name: "Record game action" }));
+    await user.click(screen.getByRole("button", { name: "Record meaningful checkpoint" }));
     await waitFor(() =>
       expect(screen.getByRole("status", { name: "Save status: saved" })).toBeInTheDocument(),
     );
@@ -1191,7 +1672,7 @@ describe("authoritative game session lifecycle", () => {
 
     expect(screen.getByRole("heading", { name: "Preview game state" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Exit preview" }));
-    expect(screen.getByText("Game turn 1")).toBeInTheDocument();
+    expect(screen.getByText("Game fouls 1")).toBeInTheDocument();
     expect(
       JSON.parse(window.sessionStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
     ).toMatchObject({ headEventId: before.headEventId, outbox: [] });
@@ -1223,8 +1704,8 @@ describe("authoritative game session lifecycle", () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
-    await user.click(screen.getByRole("button", { name: "Record game action" }));
-    await user.click(screen.getByRole("button", { name: "Record game action" }));
+    await user.click(screen.getByRole("button", { name: "Record meaningful checkpoint" }));
+    await user.click(screen.getByRole("button", { name: "Record meaningful checkpoint" }));
     const delayedLiveChange = gameScreenHarness.liveOnGameChange;
     const capturedLiveGame = gameScreenHarness.liveGame;
     if (delayedLiveChange === null || capturedLiveGame === null) {
@@ -1232,10 +1713,10 @@ describe("authoritative game session lifecycle", () => {
     }
 
     await user.click(screen.getByRole("button", { name: /undo last action/i }));
-    expect(screen.getByText("Game turn 1")).toBeInTheDocument();
+    expect(screen.getByText("Game fouls 1")).toBeInTheDocument();
     act(() => delayedLiveChange({ ...capturedLiveGame, currentTurnIndex: 99 }));
 
-    expect(screen.getByText("Game turn 1")).toBeInTheDocument();
+    expect(screen.getByText("Game fouls 1")).toBeInTheDocument();
     expect(screen.queryByText("Game turn 99")).toBeNull();
   });
 
@@ -1281,7 +1762,7 @@ describe("authoritative game session lifecycle", () => {
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
     await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledOnce());
-    await user.click(screen.getByRole("button", { name: "Record game action" }));
+    await user.click(screen.getByRole("button", { name: "Record meaningful checkpoint" }));
     expect(screen.getByRole("status", { name: "Save status: saving" })).toBeInTheDocument();
 
     first.resolve({ revision: 1, duplicate: false });
@@ -1407,11 +1888,11 @@ describe("authoritative game session lifecycle", () => {
     ).toMatchObject({ gameId: localGameId, revision: 1, outbox: [] });
   });
 
-  it("restores full live state from the durable browser aggregate after reload", async () => {
+  it("restores the latest meaningful checkpoint from the durable browser aggregate", async () => {
     const user = userEvent.setup();
     const firstRender = render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
-    await user.click(screen.getByRole("button", { name: "Record game action" }));
+    await user.click(screen.getByRole("button", { name: "Record meaningful checkpoint" }));
     await waitFor(() =>
       expect(screen.getByRole("status", { name: "Save status: saved" })).toBeInTheDocument(),
     );
@@ -1422,9 +1903,9 @@ describe("authoritative game session lifecycle", () => {
 
     expect(screen.getByRole("heading", { name: "Live test game" })).toBeInTheDocument();
     expect(screen.getByText("Host: Host Player")).toBeInTheDocument();
-    expect(screen.getByText("Game turn 1")).toBeInTheDocument();
+    expect(screen.getByText("Game fouls 1")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Open game log" }));
-    expect(screen.getByText("turn.completed")).toBeInTheDocument();
+    expect(screen.getByText("foul.issued")).toBeInTheDocument();
     await act(async () => {
       await Promise.resolve();
     });
@@ -1589,14 +2070,14 @@ describe("undo checkpoints", () => {
     await user.click(screen.getByRole("button", { name: "Start test game" }));
     expect(screen.getByRole("button", { name: /undo last action/i })).toBeDisabled();
 
-    await user.click(screen.getByRole("button", { name: "Record game action" }));
-    await user.click(screen.getByRole("button", { name: "Record game action" }));
-    expect(screen.getByText("Game turn 2")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Record meaningful checkpoint" }));
+    await user.click(screen.getByRole("button", { name: "Record meaningful checkpoint" }));
+    expect(screen.getByText("Game fouls 2")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /undo last action/i })).toBeEnabled();
 
     await user.click(screen.getByRole("button", { name: /undo last action/i }));
     await user.click(screen.getByRole("button", { name: /undo last action/i }));
-    expect(screen.getByText("Game turn 0")).toBeInTheDocument();
+    expect(screen.getByText("Game fouls 0")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /undo last action/i })).toBeDisabled();
   });
 
@@ -1605,11 +2086,11 @@ describe("undo checkpoints", () => {
     const firstRender = render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
     for (let index = 0; index < 4; index += 1) {
-      await user.click(screen.getByRole("button", { name: "Record game action" }));
+      await user.click(screen.getByRole("button", { name: "Record meaningful checkpoint" }));
     }
     await user.click(screen.getByRole("button", { name: /undo last action/i }));
     await user.click(screen.getByRole("button", { name: /undo last action/i }));
-    expect(screen.getByText("Game turn 2")).toBeInTheDocument();
+    expect(screen.getByText("Game fouls 2")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /undo last action.*1 available/i })).toBeEnabled();
     await waitFor(() =>
       expect(screen.getByRole("status", { name: "Save status: saved" })).toBeInTheDocument(),
@@ -1618,12 +2099,12 @@ describe("undo checkpoints", () => {
     firstRender.unmount();
     render(<App />);
 
-    expect(screen.getByText("Game turn 2")).toBeInTheDocument();
+    expect(screen.getByText("Game fouls 2")).toBeInTheDocument();
     const remainingUndo = screen.getByRole("button", {
       name: /undo last action.*1 available/i,
     });
     await user.click(remainingUndo);
-    expect(screen.getByText("Game turn 1")).toBeInTheDocument();
+    expect(screen.getByText("Game fouls 1")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /undo last action.*0 available/i })).toBeDisabled();
   });
 
@@ -1633,14 +2114,14 @@ describe("undo checkpoints", () => {
     const firstRender = render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
     for (let index = 0; index < 3; index += 1) {
-      await user.click(screen.getByRole("button", { name: "Record game action" }));
+      await user.click(screen.getByRole("button", { name: "Record meaningful checkpoint" }));
     }
     await user.click(screen.getByRole("button", { name: /undo last action/i }));
     expect(screen.getByRole("button", { name: /undo last action.*2 available/i })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "Open game log" }));
     await user.click(screen.getByRole("button", { name: "Preview state after log #1" }));
     await user.click(screen.getByRole("button", { name: "Reset game to this state" }));
-    expect(screen.getByText("Game turn 0")).toBeInTheDocument();
+    expect(screen.getByText("Game fouls 0")).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getByRole("status", { name: "Save status: saved" })).toBeInTheDocument(),
     );
@@ -1649,7 +2130,7 @@ describe("undo checkpoints", () => {
     render(<App />);
     await user.click(screen.getByRole("button", { name: /undo last action.*1 available/i }));
 
-    expect(screen.getByText("Game turn 2")).toBeInTheDocument();
+    expect(screen.getByText("Game fouls 2")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /undo last action.*2 available/i })).toBeEnabled();
   });
 
@@ -1658,17 +2139,17 @@ describe("undo checkpoints", () => {
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
     for (let index = 0; index < 4; index += 1) {
-      await user.click(screen.getByRole("button", { name: "Record game action" }));
+      await user.click(screen.getByRole("button", { name: "Record meaningful checkpoint" }));
     }
-    expect(screen.getByText("Game turn 4")).toBeInTheDocument();
+    expect(screen.getByText("Game fouls 4")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Open game log" }));
-    expect(screen.getAllByText("turn.completed")).toHaveLength(4);
+    expect(screen.getAllByText("foul.issued")).toHaveLength(4);
 
     for (let index = 0; index < 3; index += 1) {
       await user.click(screen.getByRole("button", { name: /undo last action/i }));
     }
-    expect(screen.getByText("Game turn 1")).toBeInTheDocument();
-    expect(screen.getAllByText("turn.completed")).toHaveLength(1);
+    expect(screen.getByText("Game fouls 1")).toBeInTheDocument();
+    expect(screen.getAllByText("foul.issued")).toHaveLength(1);
     expect(screen.getByRole("button", { name: /undo last action/i })).toBeDisabled();
   });
 });
@@ -1699,6 +2180,8 @@ describe("player workflows", () => {
     });
     render(<App />);
 
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Enable dev mode" }));
     await user.click(screen.getByRole("button", { name: "Generate test players" }));
 
     await waitFor(() => expect(api.createPlayer).toHaveBeenCalledTimes(11));
@@ -1715,6 +2198,8 @@ describe("player workflows", () => {
       .mockRejectedValueOnce(new Error("network unavailable"));
     render(<App />);
 
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Enable dev mode" }));
     await user.click(screen.getByRole("button", { name: "Generate test players" }));
 
     await waitFor(() => expect(api.deletePlayer).toHaveBeenCalledTimes(2));

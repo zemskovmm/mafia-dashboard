@@ -1054,26 +1054,30 @@ describe("server API", () => {
       url: `/api/game-sessions/${gameId}/start`,
       payload: { mutationId: randomUUID(), baseRevision: 1, initialGame, event: started.entry },
     });
-    const turn = createGameLogEntry({
+    const checkpoint = createGameLogEntry({
       gameId,
       id: randomUUID(),
       sequence: 2,
       parentEventId: started.entry.id,
       createdAt: "2026-08-25T00:01:00.000Z",
       before: started.after,
-      draft: { type: "turn.completed", payload: { seat: 1 }, secret: false },
+      draft: {
+        type: "foul.issued",
+        payload: { seat: 1, foulNumber: 1, redCarded: false },
+        secret: false,
+      },
     });
     const mutationId = randomUUID();
 
     const response = await app.inject({
       method: "POST",
       url: `/api/game-sessions/${gameId}/events`,
-      payload: { mutationId, baseRevision: 2, event: turn.entry },
+      payload: { mutationId, baseRevision: 2, event: checkpoint.entry },
     });
     const retry = await app.inject({
       method: "POST",
       url: `/api/game-sessions/${gameId}/events`,
-      payload: { mutationId, baseRevision: 2, event: turn.entry },
+      payload: { mutationId, baseRevision: 2, event: checkpoint.entry },
     });
 
     expect(response.statusCode).toBe(201);
@@ -1081,17 +1085,21 @@ describe("server API", () => {
       revision: 3,
       duplicate: false,
       state: {
-        game: expect.objectContaining({ currentTurnIndex: 1 }),
-        events: [started.entry, turn.entry],
-        headEventId: turn.entry.id,
+        game: expect.objectContaining({
+          players: expect.arrayContaining([expect.objectContaining({ seat: 1, fouls: 1 })]),
+        }),
+        events: [started.entry, checkpoint.entry],
+        headEventId: checkpoint.entry.id,
       },
     });
     expect(retry.statusCode).toBe(200);
     expect(retry.json()).toMatchObject({ revision: 3, duplicate: true });
     const restored = await app.inject({ method: "GET", url: `/api/game-sessions/${gameId}` });
     expect(restored.json().session.state).toMatchObject({
-      game: expect.objectContaining({ currentTurnIndex: 1 }),
-      events: [started.entry, turn.entry],
+      game: expect.objectContaining({
+        players: expect.arrayContaining([expect.objectContaining({ seat: 1, fouls: 1 })]),
+      }),
+      events: [started.entry, checkpoint.entry],
     });
   });
 
@@ -1132,20 +1140,24 @@ describe("server API", () => {
       initialGame,
       event: started.entry,
     });
-    const turn = createGameLogEntry({
+    const checkpoint = createGameLogEntry({
       gameId,
       id: randomUUID(),
       sequence: 2,
       parentEventId: started.entry.id,
       createdAt: "2026-08-25T00:01:00.000Z",
       before: started.after,
-      draft: { type: "turn.completed", payload: { seat: 1 }, secret: false },
+      draft: {
+        type: "foul.issued",
+        payload: { seat: 1, foulNumber: 1, redCarded: false },
+        secret: false,
+      },
     });
     await sessionStore.appendEvent({
       gameId,
       mutationId: randomUUID(),
       baseRevision: 2,
-      event: turn.entry,
+      event: checkpoint.entry,
     });
 
     const response = await app.inject({
@@ -1165,7 +1177,7 @@ describe("server API", () => {
       state: {
         game: expect.objectContaining({ currentTurnIndex: 0 }),
         headEventId: started.entry.id,
-        resetReturnEventId: turn.entry.id,
+        resetReturnEventId: checkpoint.entry.id,
       },
     });
     expect(

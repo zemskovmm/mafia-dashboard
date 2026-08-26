@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { advanceVotingCandidate } from "./day-actions.js";
 import { advanceSetupPhase, createGame } from "./game.js";
 import {
   applyGameEvent,
   createGameLogEntry,
   hashGameState,
+  isMeaningfulGameEventDraft,
   isProvisionalInteractionType,
   replayGameLog,
   type CanonicalGameEventDraft,
@@ -80,6 +82,157 @@ const entry = (
   });
 
 describe("canonical game replay", () => {
+  it("classifies only meaningful semantic checkpoints as persistable history", () => {
+    expect(
+      isMeaningfulGameEventDraft({
+        type: "turn.completed",
+        payload: { seat: 1 },
+        secret: false,
+      }),
+    ).toBe(false);
+    for (const to of [
+      "sheriff-wake",
+      "voting-cancelled",
+      "night-don",
+      "night-sheriff",
+      "best-move",
+    ] as const) {
+      expect(
+        isMeaningfulGameEventDraft({ type: "phase.changed", payload: { to }, secret: false }),
+      ).toBe(false);
+    }
+    expect(
+      isMeaningfulGameEventDraft({
+        type: "phase.changed",
+        payload: { to: "night-mafia" },
+        secret: false,
+      }),
+    ).toBe(true);
+    expect(
+      isMeaningfulGameEventDraft({
+        type: "player.nominated",
+        payload: { nominatorSeat: 3, candidateSeat: 4 },
+        secret: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("folds omitted intermediate turns and private-phase advances into semantic checkpoints", () => {
+    const nominated = applyGameEvent(dayOne(), {
+      type: "player.nominated",
+      payload: { nominatorSeat: 3, candidateSeat: 4 },
+      secret: false,
+    });
+    expect(nominated.currentTurnIndex).toBe(2);
+    expect(nominated.nominations).toEqual([{ nominatorSeat: 3, candidateSeat: 4, order: 1 }]);
+
+    const day = applyGameEvent(planningGame(), {
+      type: "phase.changed",
+      payload: { to: "day" },
+      secret: false,
+    });
+    expect(day).toMatchObject({ phase: "day", day: 1 });
+
+    const night: GameState = { ...dayOne(), phase: "night-mafia", day: 1 };
+    const mafiaPlayers = night.players.filter(
+      ({ status, team }) => status === "active" && team === "black",
+    );
+    const target = night.players.find(({ team, role }) => team === "red" && role !== "sheriff")!;
+    const mafiaResult = applyGameEvent(night, {
+      type: "mafia.shots-resolved",
+      payload: {
+        shots: mafiaPlayers.map(({ seat }) => ({
+          shooterSeat: seat,
+          targetSeat: target.seat,
+          secret: true,
+        })),
+        result: { kind: "kill", targetSeat: target.seat },
+      },
+      secret: true,
+    });
+    const sheriff = mafiaResult.players.find(({ role }) => role === "sheriff")!;
+    const donResult = applyGameEvent(mafiaResult, {
+      type: "don.checked",
+      payload: { targetSeat: sheriff.seat, match: true },
+      secret: true,
+    });
+    expect(donResult.phase).toBe("night-don-result");
+
+    const mafia = donResult.players.find(
+      ({ team, status }) => team === "black" && status === "active",
+    )!;
+    const sheriffResult = applyGameEvent(donResult, {
+      type: "sheriff.checked",
+      payload: { targetSeat: mafia.seat, match: true },
+      secret: true,
+    });
+    expect(sheriffResult.phase).toBe("night-sheriff-result");
+
+    const resolution = {
+      ...dayOne(),
+      day: 1,
+      phase: "night-resolution" as const,
+      players: dayOne().players.map((player) =>
+        player.seat === target.seat ? { ...player, status: "eliminated" as const } : player,
+      ),
+      nightResult: { kind: "kill" as const, targetSeat: target.seat },
+    };
+    const selectedSeats = resolution.players
+      .filter(({ status }) => status === "active")
+      .slice(0, 3)
+      .map(({ seat }) => seat);
+    const mafiaHits = selectedSeats.filter(
+      (seat) => resolution.players.find((player) => player.seat === seat)?.team === "black",
+    ).length;
+    const bestMove = applyGameEvent(resolution, {
+      type: "best-move.completed",
+      payload: { playerSeat: target.seat, selectedSeats, mafiaHits },
+      secret: true,
+    });
+    expect(bestMove).toMatchObject({ phase: "goodbye-speech", day: 2 });
+  });
+
+  it("rejects phase changes that do not advance", () => {
+    expect(() =>
+      applyGameEvent(dayOne(), {
+        type: "phase.changed",
+        payload: { to: "day" },
+        secret: false,
+      }),
+    ).toThrow(/advance/i);
+  });
+
+  it("rejects phase changes that skip a meaningful phase", () => {
+    expect(() =>
+      applyGameEvent(planningGame(), {
+        type: "phase.changed",
+        payload: { to: "night-mafia" },
+        secret: false,
+      }),
+    ).toThrow(/meaningful phase day/i);
+  });
+
+  it("folds a red-card voting cancellation into the following night checkpoint", () => {
+    const nominated = applyGameEvent(dayOne(), {
+      type: "player.nominated",
+      payload: { nominatorSeat: 3, candidateSeat: 4 },
+      secret: false,
+    });
+    const cancelled = applyGameEvent(nominated, {
+      type: "player.red-carded",
+      payload: { seat: 4 },
+      secret: false,
+    });
+
+    expect(() =>
+      applyGameEvent(cancelled, {
+        type: "phase.changed",
+        payload: { to: "night-mafia" },
+        secret: false,
+      }),
+    ).not.toThrow();
+  });
+
   it("hashes canonical UTF-8 state as a prefixed SHA-256 digest", () => {
     expect(hashGameState({ b: 2, a: 1 } as unknown as GameState)).toBe(
       "sha256:43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777",
@@ -204,13 +357,13 @@ describe("canonical game replay", () => {
         secret: false,
       }),
     ).toThrow(/cannot replay a phase change/i);
-    expect(() =>
+    expect(
       applyGameEvent(dayOne(), {
         type: "phase.changed",
         payload: { to: "night-mafia" },
         secret: false,
       }),
-    ).toThrow(/cannot replay a phase change/i);
+    ).toMatchObject({ phase: "night-mafia", day: 1 });
   });
 
   it("rejects malformed event envelopes and non-integer sequences", () => {
@@ -254,6 +407,333 @@ describe("canonical game replay", () => {
 
     expect(after.nominations).toEqual([{ nominatorSeat: 1, candidateSeat: 4, order: 1 }]);
     expect(initial.nominations).toEqual([]);
+  });
+
+  it("reconstructs one omitted day turn before a foul checkpoint", () => {
+    const canonical = dayOne();
+    const root = entry(canonical, 1, {
+      type: "game.checkpointed",
+      payload: {},
+      secret: true,
+    });
+    const live = applyGameEvent(root.after, {
+      type: "turn.completed",
+      payload: { seat: canonical.turnOrder[canonical.currentTurnIndex]! },
+      secret: false,
+    });
+    const target = live.players.find(({ role }) => role === "citizen")!;
+    const direct = applyGameEvent(live, {
+      type: "foul.issued",
+      payload: { seat: target.seat, foulNumber: 1, redCarded: false },
+      secret: false,
+    });
+    const checkpoint = entry(
+      root.after,
+      2,
+      {
+        type: "foul.issued",
+        payload: {
+          seat: target.seat,
+          foulNumber: 1,
+          redCarded: false,
+          phase: live.phase,
+          currentTurnIndex: live.currentTurnIndex,
+        },
+        secret: false,
+      },
+      root.entry.id,
+    );
+
+    const replayed = replayGameLog(baseline(canonical), [root.entry, checkpoint.entry]).game;
+
+    expect(replayed.currentTurnIndex).toBe(direct.currentTurnIndex);
+    expect(replayed.players.find(({ seat }) => seat === target.seat)).toEqual(
+      direct.players.find(({ seat }) => seat === target.seat),
+    );
+  });
+
+  it("reconstructs omitted day completion into voting before a red card", () => {
+    const canonical = applyGameEvent(dayOne(), {
+      type: "player.nominated",
+      payload: { nominatorSeat: 1, candidateSeat: 4 },
+      secret: false,
+    });
+    let live = canonical;
+    while (live.phase === "day") {
+      live = applyGameEvent(live, {
+        type: "turn.completed",
+        payload: { seat: live.turnOrder[live.currentTurnIndex]! },
+        secret: false,
+      });
+    }
+    const target = live.players.find(({ role, seat }) => role === "citizen" && seat !== 4)!;
+    const direct = applyGameEvent(live, {
+      type: "player.red-carded",
+      payload: { seat: target.seat },
+      secret: false,
+    });
+
+    const replayed = applyGameEvent(canonical, {
+      type: "player.red-carded",
+      payload: {
+        seat: target.seat,
+        phase: live.phase,
+        currentTurnIndex: live.currentTurnIndex,
+      },
+      secret: false,
+    });
+
+    expect(live.phase).toBe("voting");
+    expect(replayed).toEqual(direct);
+  });
+
+  it("does not carry generated provisional votes into a contextual foul checkpoint", () => {
+    const canonical = applyGameEvent(dayOne(), {
+      type: "player.nominated",
+      payload: { nominatorSeat: 1, candidateSeat: 4 },
+      secret: false,
+    });
+
+    const replayed = applyGameEvent(canonical, {
+      type: "foul.issued",
+      payload: {
+        seat: 1,
+        foulNumber: 1,
+        redCarded: false,
+        phase: "voting",
+        currentTurnIndex: 0,
+      },
+      secret: false,
+    });
+
+    expect(replayed).toMatchObject({ phase: "voting", currentTurnIndex: 0 });
+    expect(replayed.players.find(({ seat }) => seat === 1)?.fouls).toBe(1);
+    expect(replayed.voteAssignments).toEqual({});
+  });
+
+  it("reconstructs a validated omitted voting-candidate advance before a red card", () => {
+    const firstNomination = applyGameEvent(dayOne(), {
+      type: "player.nominated",
+      payload: { nominatorSeat: 1, candidateSeat: 4 },
+      secret: false,
+    });
+    const canonical = applyGameEvent(firstNomination, {
+      type: "player.nominated",
+      payload: { nominatorSeat: 2, candidateSeat: 6 },
+      secret: false,
+    });
+    let voting = canonical;
+    while (voting.phase === "day") {
+      voting = applyGameEvent(voting, {
+        type: "turn.completed",
+        payload: { seat: voting.turnOrder[voting.currentTurnIndex]! },
+        secret: false,
+      });
+    }
+    const live = advanceVotingCandidate(voting);
+    const target = live.players.find(({ role, seat }) => role === "citizen" && seat !== 4)!;
+    const direct = applyGameEvent(live, {
+      type: "player.red-carded",
+      payload: { seat: target.seat },
+      secret: false,
+    });
+
+    const replayed = applyGameEvent(canonical, {
+      type: "player.red-carded",
+      payload: {
+        seat: target.seat,
+        phase: live.phase,
+        currentTurnIndex: live.currentTurnIndex,
+      },
+      secret: false,
+    });
+
+    expect(live.turnOrder[live.currentTurnIndex]).toBe(6);
+    expect(replayed).toEqual(direct);
+  });
+
+  it("folds an omitted private-phase advance into a foul checkpoint", () => {
+    const night: GameState = { ...dayOne(), phase: "night-mafia" };
+    const mafiaPlayers = night.players.filter(
+      ({ status, team }) => status === "active" && team === "black",
+    );
+    const victim = night.players.find(({ team }) => team === "red")!;
+    const target = night.players.find(({ team, seat }) => team === "red" && seat !== victim.seat)!;
+    const canonical = applyGameEvent(night, {
+      type: "mafia.shots-resolved",
+      payload: {
+        shots: mafiaPlayers.map(({ seat }) => ({
+          shooterSeat: seat,
+          targetSeat: victim.seat,
+          secret: true,
+        })),
+        result: { kind: "kill", targetSeat: victim.seat },
+      },
+      secret: true,
+    });
+    const live = applyGameEvent(canonical, {
+      type: "phase.changed",
+      payload: { to: "night-don" },
+      secret: false,
+    });
+    const direct = applyGameEvent(live, {
+      type: "foul.issued",
+      payload: { seat: target.seat, foulNumber: 1, redCarded: false },
+      secret: false,
+    });
+
+    const replayed = applyGameEvent(canonical, {
+      type: "foul.issued",
+      payload: {
+        seat: target.seat,
+        foulNumber: 1,
+        redCarded: false,
+        phase: live.phase,
+        currentTurnIndex: live.currentTurnIndex,
+      },
+      secret: false,
+    });
+
+    expect(live.phase).toBe("night-don");
+    expect(replayed).toEqual(direct);
+  });
+
+  it("simulates an omitted car-crash turn before a foul checkpoint", () => {
+    const canonical: GameState = {
+      ...dayOne(),
+      phase: "car-crash",
+      nominations: [
+        { nominatorSeat: 1, candidateSeat: 4, order: 1 },
+        { nominatorSeat: 2, candidateSeat: 6, order: 2 },
+      ],
+      turnOrder: [4, 6],
+      currentTurnIndex: 0,
+      votingRound: "repeat",
+      carCrashSeats: [4, 6],
+      carCrashVotes: {},
+    };
+    const live = applyGameEvent(canonical, {
+      type: "turn.completed",
+      payload: { seat: 4 },
+      secret: false,
+    });
+    const direct = applyGameEvent(live, {
+      type: "foul.issued",
+      payload: { seat: 1, foulNumber: 1, redCarded: false },
+      secret: false,
+    });
+
+    const replayed = applyGameEvent(canonical, {
+      type: "foul.issued",
+      payload: {
+        seat: 1,
+        foulNumber: 1,
+        redCarded: false,
+        phase: "car-crash",
+        currentTurnIndex: 1,
+      },
+      secret: false,
+    });
+
+    expect(replayed).toEqual(direct);
+  });
+
+  it("rejects a car-crash context whose turn order contradicts tied nominees", () => {
+    const malformed: GameState = {
+      ...dayOne(),
+      phase: "car-crash",
+      nominations: [
+        { nominatorSeat: 1, candidateSeat: 4, order: 1 },
+        { nominatorSeat: 2, candidateSeat: 6, order: 2 },
+      ],
+      turnOrder: [4, 8],
+      currentTurnIndex: 0,
+      votingRound: "repeat",
+      carCrashSeats: [4, 6],
+      carCrashVotes: {},
+    };
+
+    expect(() =>
+      applyGameEvent(malformed, {
+        type: "foul.issued",
+        payload: {
+          seat: 1,
+          foulNumber: 1,
+          redCarded: false,
+          phase: "car-crash",
+          currentTurnIndex: 1,
+        },
+        secret: false,
+      }),
+    ).toThrow(/car-crash turn order/i);
+  });
+
+  it("rejects a discipline context whose voting cursor contradicts nomination order", () => {
+    const malformedVoting: GameState = {
+      ...dayOne(),
+      phase: "voting",
+      nominations: [
+        { nominatorSeat: 1, candidateSeat: 4, order: 1 },
+        { nominatorSeat: 2, candidateSeat: 8, order: 2 },
+      ],
+      turnOrder: [4, 6],
+      currentTurnIndex: 0,
+      votingRound: "initial",
+    };
+
+    expect(() =>
+      applyGameEvent(malformedVoting, {
+        type: "foul.issued",
+        payload: {
+          seat: 1,
+          foulNumber: 1,
+          redCarded: false,
+          phase: "voting",
+          currentTurnIndex: 1,
+        },
+        secret: false,
+      }),
+    ).toThrow(/voting candidate/i);
+  });
+
+  it("requires discipline phase and current-turn context fields together", () => {
+    expect(() =>
+      applyGameEvent(dayOne(), {
+        type: "foul.issued",
+        payload: {
+          seat: 1,
+          foulNumber: 1,
+          redCarded: false,
+          phase: "day",
+        },
+        secret: false,
+      } as unknown as CanonicalGameEventDraft),
+    ).toThrow(/phase and currentTurnIndex together/i);
+    expect(() =>
+      applyGameEvent(dayOne(), {
+        type: "player.red-carded",
+        payload: { seat: 1, currentTurnIndex: 0 },
+        secret: false,
+      } as unknown as CanonicalGameEventDraft),
+    ).toThrow(/phase and currentTurnIndex together/i);
+  });
+
+  it("rejects a contextual foul checkpoint outside active play", () => {
+    const finished: GameState = { ...dayOne(), phase: "finished", winner: "red" };
+
+    expect(() =>
+      applyGameEvent(finished, {
+        type: "foul.issued",
+        payload: {
+          seat: 1,
+          foulNumber: 1,
+          redCarded: false,
+          phase: "finished",
+          currentTurnIndex: finished.currentTurnIndex,
+        },
+        secret: false,
+      }),
+    ).toThrow(/active play/i);
   });
 
   it("captures fourth-foul red-card consequences in one event", () => {
@@ -566,6 +1046,38 @@ describe("canonical game replay", () => {
     } as GameLogEntry;
 
     expect(replayGameLog(baseline(decision), [legacyEntry]).game).toEqual(legacyAfter);
+  });
+
+  it("replays new car-crash ballots through a review phase before elimination", () => {
+    const decision: GameState = {
+      ...dayOne(),
+      phase: "car-crash-decision",
+      nominations: [
+        { nominatorSeat: 1, candidateSeat: 4, order: 1 },
+        { nominatorSeat: 2, candidateSeat: 6, order: 2 },
+      ],
+      votingRound: "repeat",
+      carCrashSeats: [4, 6],
+      carCrashVotes: {},
+    };
+    const votes = Object.fromEntries(decision.players.map(({ seat }) => [seat, seat <= 6]));
+    const result = { eliminate: true, seats: [4, 6], yesVotes: 6, eligibleVoters: 10 };
+
+    const reviewed = applyGameEvent(decision, {
+      type: "car-crash.ballot-resolved",
+      payload: { votes, result },
+      secret: false,
+    } as CanonicalGameEventDraft);
+    expect(reviewed).toMatchObject({ phase: "car-crash-result", carCrashResult: result });
+    expect(reviewed.players.find(({ seat }) => seat === 4)?.status).toBe("active");
+
+    const continued = applyGameEvent(reviewed, {
+      type: "phase.changed",
+      payload: { to: "goodbye-speech" },
+      secret: false,
+    });
+    expect(continued.players.find(({ seat }) => seat === 4)?.status).toBe("eliminated");
+    expect(continued.phase).toBe("goodbye-speech");
   });
 
   it("supports independent append-only branches from one parent", () => {

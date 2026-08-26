@@ -5,6 +5,7 @@ import {
   type InitialGameBaseline,
 } from "@mafia/game-domain";
 import type { FinalGameResults, GameSessionState } from "./api/client.js";
+import { reportError } from "./features/console/error-console.js";
 
 export interface SessionSaveResponse {
   readonly revision: number;
@@ -318,7 +319,8 @@ const loadEnvelope = (storage: Storage, storageKey: string): PersistedEnvelope =
     if (raw === null) return emptyEnvelope();
     const parsed: unknown = JSON.parse(raw);
     return isPersistedEnvelope(parsed) ? parsed : emptyEnvelope();
-  } catch {
+  } catch (error) {
+    reportError(error, { source: "persistence", context: "game-session-envelope.read" });
     return emptyEnvelope();
   }
 };
@@ -382,7 +384,8 @@ const loadLegacyEnvelope = (
     if (raw === null) return null;
     const parsed: unknown = JSON.parse(raw);
     return isLegacyPersistedEnvelope(parsed) ? parsed : null;
-  } catch {
+  } catch (error) {
+    reportError(error, { source: "persistence", context: "legacy-game-session-envelope.read" });
     return null;
   }
 };
@@ -605,7 +608,9 @@ export class GameSessionOutbox {
     if (this.envelope.clearingGameId === null || this.options.clearRemote === undefined) return;
     void Promise.resolve()
       .then(() => this.clear(this.options.clearRemote!))
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        reportError(error, { source: "persistence", context: "game-session.clear-recovery" });
+      });
   }
 
   public get status(): "saved" | "saving" | "offline" {

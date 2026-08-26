@@ -3,9 +3,13 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../api/client.js";
 import type { PlayerProfile } from "../../api/client.js";
+import { clearErrorConsole, getErrorConsoleSnapshot } from "../console/error-console.js";
 import { PlayersScreen } from "./PlayersScreen.js";
 
-afterEach(cleanup);
+afterEach(() => {
+  clearErrorConsole();
+  cleanup();
+});
 
 const profile = (overrides: Partial<PlayerProfile> = {}): PlayerProfile => ({
   id: "00000000-0000-4000-8000-000000000001",
@@ -161,6 +165,11 @@ describe("PlayersScreen", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/nickname already exists/i);
     expect(nickname).toHaveValue("Duplicate");
+    expect(getErrorConsoleSnapshot()[0]).toMatchObject({
+      source: "api",
+      context: "players.create",
+      message: "Unable to create player",
+    });
   });
 
   it("renders statistics and clears personal fields when consent is withdrawn", async () => {

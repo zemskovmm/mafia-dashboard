@@ -14,6 +14,7 @@ export type GamePhase =
   | "voting-cancelled"
   | "car-crash"
   | "car-crash-decision"
+  | "car-crash-result"
   | "car-crash-skipped"
   | "goodbye-speech"
   | "best-move"
@@ -75,6 +76,7 @@ export interface GameState {
   readonly votingRound?: "initial" | "repeat";
   readonly carCrashSeats?: readonly number[];
   readonly carCrashVotes?: Readonly<Partial<Record<number, boolean>>>;
+  readonly carCrashResult?: CarCrashVoteResult;
   readonly goodbyeSeats?: readonly number[];
   readonly goodbyeNext?: "day" | "night";
   readonly shotAssignments: Readonly<Partial<Record<number, number>>>;

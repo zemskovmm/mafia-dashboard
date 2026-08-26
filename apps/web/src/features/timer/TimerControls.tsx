@@ -1,4 +1,5 @@
-import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { reportError } from "../console/error-console.js";
 import { readCountdown, startCountdown } from "./timer.js";
 import type { CountdownState } from "./timer.js";
 
@@ -6,38 +7,69 @@ export interface TimerControlsHandle {
   start(seconds: 10 | 30 | 60): void;
 }
 
-const playFaintChime = () => {
-  const AudioContextConstructor = window.AudioContext;
-  if (AudioContextConstructor === undefined) {
-    return;
-  }
-  const context = new AudioContextConstructor();
+const scheduleFaintChime = (context: AudioContext, seconds: 10 | 30 | 60): OscillatorNode => {
   const oscillator = context.createOscillator();
   const gain = context.createGain();
+  const warningTime = context.currentTime + Math.max(0, seconds - 10);
   oscillator.frequency.value = 660;
-  gain.gain.setValueAtTime(0.025, context.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.18);
+  gain.gain.setValueAtTime(0.025, warningTime);
+  gain.gain.exponentialRampToValueAtTime(0.0001, warningTime + 0.18);
   oscillator.connect(gain);
   gain.connect(context.destination);
-  oscillator.start();
-  oscillator.stop(context.currentTime + 0.18);
+  oscillator.start(warningTime);
+  oscillator.stop(warningTime + 0.18);
+  return oscillator;
 };
 
 export const TimerControls = forwardRef<TimerControlsHandle>((_, ref) => {
   const [timer, setTimer] = useState<CountdownState | null>(null);
   const [remaining, setRemaining] = useState(0);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const warningOscillatorRef = useRef<OscillatorNode | null>(null);
+
+  const cancelScheduledWarning = useCallback(() => {
+    const oscillator = warningOscillatorRef.current;
+    if (oscillator === null) {
+      return;
+    }
+    try {
+      oscillator.stop();
+    } catch {
+      // It may already have stopped naturally.
+    }
+    try {
+      oscillator.disconnect();
+    } catch {
+      // A disconnected oscillator is already cancelled.
+    }
+    warningOscillatorRef.current = null;
+  }, []);
 
   const start = (seconds: 10 | 30 | 60) => {
+    cancelScheduledWarning();
+    const AudioContextConstructor = window.AudioContext;
+    if (AudioContextConstructor !== undefined) {
+      try {
+        const context = audioContextRef.current ?? new AudioContextConstructor();
+        audioContextRef.current = context;
+        void context.resume().catch((error: unknown) => {
+          reportError(error, { source: "application", context: "timer-audio.resume" });
+        });
+        warningOscillatorRef.current = scheduleFaintChime(context, seconds);
+      } catch (error) {
+        reportError(error, { source: "application", context: "timer-audio.schedule" });
+        // Timers remain usable when Web Audio is unavailable or blocked.
+      }
+    }
     const next = startCountdown(seconds, Date.now());
     const reading = readCountdown(next, Date.now());
     setTimer(reading.timer);
     setRemaining(reading.remainingSeconds);
-    if (reading.emitWarning) {
-      playFaintChime();
-    }
   };
 
   useImperativeHandle(ref, () => ({ start }));
+
+  useEffect(() => cancelScheduledWarning, [cancelScheduledWarning]);
 
   useEffect(() => {
     if (timer === null || timer.status !== "running") {
@@ -50,9 +82,6 @@ export const TimerControls = forwardRef<TimerControlsHandle>((_, ref) => {
         }
         const reading = readCountdown(current, Date.now());
         setRemaining(reading.remainingSeconds);
-        if (reading.emitWarning) {
-          playFaintChime();
-        }
         return reading.timer;
       });
     }, 200);
@@ -63,6 +92,7 @@ export const TimerControls = forwardRef<TimerControlsHandle>((_, ref) => {
     if (timer === null || timer.status === "expired") {
       return;
     }
+    cancelScheduledWarning();
     setTimer(null);
     setRemaining(0);
   };

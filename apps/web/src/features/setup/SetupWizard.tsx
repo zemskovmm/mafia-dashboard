@@ -11,6 +11,7 @@ import {
 } from "@mafia/game-domain";
 import type { GameState, PlayerInput, Role, SetupState } from "@mafia/game-domain";
 import type { PlayerProfile } from "../../api/client.js";
+import { reportError } from "../console/error-console.js";
 import { GameTable } from "../table/GameTable.js";
 
 interface SetupWizardProps {
@@ -531,7 +532,10 @@ export const SetupWizard = ({
                       setHostPlayerId(selected[0]!.id);
                       setSelectedPlayerIds(selected.slice(1).map(({ id }) => id));
                     })
-                    .catch(() => setDevelopmentError(true))
+                    .catch((error: unknown) => {
+                      reportError(error, { source: "api", context: "development-players.select" });
+                      setDevelopmentError(true);
+                    })
                     .finally(() => setPopulatingPlayers(false));
                 }}
               >
@@ -578,7 +582,7 @@ export const SetupWizard = ({
               />
             ))}
           </div>
-          <div className="player-assignment-actions">
+          <div className="player-setup-actions" role="group" aria-label="Player setup actions">
             <button type="button" onClick={onOpenAvailablePlayers}>
               Select available players
             </button>
@@ -590,8 +594,6 @@ export const SetupWizard = ({
             >
               Assign players
             </button>
-          </div>
-          <div className="setup-completion-actions">
             <button
               className="primary-action"
               type="button"

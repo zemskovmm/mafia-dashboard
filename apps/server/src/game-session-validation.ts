@@ -19,6 +19,7 @@ const gamePhase = z.enum([
   "voting-cancelled",
   "car-crash",
   "car-crash-decision",
+  "car-crash-result",
   "car-crash-skipped",
   "goodbye-speech",
   "best-move",
@@ -167,6 +168,14 @@ const gameStateSchema = z
     votingRound: z.enum(["initial", "repeat"]).optional(),
     carCrashSeats: z.array(z.number().int().min(1).max(10)).optional(),
     carCrashVotes: z.record(z.string(), z.boolean()).optional(),
+    carCrashResult: z
+      .object({
+        eliminate: z.boolean(),
+        seats: z.array(z.number().int().min(1).max(10)),
+        yesVotes: z.number().int().min(0),
+        eligibleVoters: z.number().int().min(0),
+      })
+      .optional(),
     goodbyeSeats: z.array(z.number().int().min(1).max(10)).optional(),
     goodbyeNext: z.enum(["day", "night"]).optional(),
     shotAssignments: z.record(z.string(), z.number().int().min(1).max(10)),
@@ -210,6 +219,7 @@ const gameStateSchema = z
         votingRound,
         carCrashSeats = [],
         carCrashVotes = {},
+        carCrashResult,
         goodbyeSeats = [],
         shotAssignments,
         checkResult,
@@ -403,7 +413,8 @@ const gameStateSchema = z
         });
       }
 
-      const carCrashPhase = phase === "car-crash" || phase === "car-crash-decision";
+      const carCrashPhase =
+        phase === "car-crash" || phase === "car-crash-decision" || phase === "car-crash-result";
       if (carCrashPhase) {
         if (carCrashSeats.length < 2 || new Set(carCrashSeats).size !== carCrashSeats.length) {
           context.addIssue({
@@ -448,7 +459,7 @@ const gameStateSchema = z
           message: "Car-crash turn order must contain the tied nominees",
         });
       }
-      if (phase === "car-crash-decision") {
+      if (phase === "car-crash-decision" || phase === "car-crash-result") {
         for (const voterSeatText of Object.keys(carCrashVotes)) {
           const voterSeat = Number(voterSeatText);
           if (String(voterSeat) !== voterSeatText) {
@@ -465,6 +476,40 @@ const gameStateSchema = z
               message: "Only active players may vote in a car crash decision",
             });
           }
+        }
+      }
+      if ((phase === "car-crash-result") !== (carCrashResult !== undefined)) {
+        context.addIssue({
+          code: "custom",
+          path: ["carCrashResult"],
+          message: "A car-crash result must exist only in the result phase",
+        });
+      }
+      if (phase === "car-crash-result" && carCrashResult !== undefined) {
+        const voterSeats = Object.keys(carCrashVotes).map(Number);
+        const yesVotes = Object.values(carCrashVotes).filter(Boolean).length;
+        if (
+          voterSeats.length !== activeSeats.size ||
+          [...activeSeats].some((seat) => !voterSeats.includes(seat))
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["carCrashVotes"],
+            message: "A reviewed car crash requires every active player's vote",
+          });
+        }
+        if (
+          carCrashResult.yesVotes !== yesVotes ||
+          carCrashResult.eligibleVoters !== activeSeats.size ||
+          carCrashResult.eliminate !== yesVotes > activeSeats.size / 2 ||
+          carCrashResult.seats.length !== carCrashSeats.length ||
+          carCrashResult.seats.some((seat, index) => seat !== carCrashSeats[index])
+        ) {
+          context.addIssue({
+            code: "custom",
+            path: ["carCrashResult"],
+            message: "The car-crash result must match its accepted votes and participants",
+          });
         }
       }
 

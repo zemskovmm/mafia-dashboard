@@ -554,6 +554,45 @@ describe("game session validation", () => {
     }
   });
 
+  it("accepts a complete provisional car-crash result phase", () => {
+    const votes = Object.fromEntries(
+      Array.from({ length: 10 }, (_, index) => [index + 1, index < 6]),
+    );
+    const parsed = gameSessionMutationSchema.safeParse({
+      name: "Reviewed car crash",
+      mutationId: uuid(100),
+      baseRevision: 0,
+      state: {
+        setup: null,
+        game: {
+          ...liveGame(1),
+          phase: "car-crash-result",
+          nominations: [
+            { nominatorSeat: 1, candidateSeat: 4, order: 1 },
+            { nominatorSeat: 2, candidateSeat: 6, order: 2 },
+          ],
+          votingRound: "repeat",
+          carCrashSeats: [4, 6],
+          carCrashVotes: votes,
+          carCrashResult: {
+            eliminate: true,
+            seats: [4, 6],
+            yesVotes: 6,
+            eligibleVoters: 10,
+          },
+        },
+        hostPlayerId: uuid(11),
+        hostName: "Host",
+        playlistId: "",
+        log: [],
+        undoHistory: [],
+      },
+      results: null,
+    });
+
+    expect(parsed.success).toBe(true);
+  });
+
   it("rejects a setup whose visible players do not match the selected roster", () => {
     const roles = [
       "sheriff",

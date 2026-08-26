@@ -265,6 +265,16 @@ describe("SetupWizard", () => {
     ).toHaveLength(0);
   });
 
+  it("groups all three player setup actions in their visual order", () => {
+    render(<Harness onComplete={() => undefined} />);
+
+    expect(
+      within(screen.getByRole("group", { name: "Player setup actions" }))
+        .getAllByRole("button")
+        .map((button) => button.textContent?.trim()),
+    ).toEqual(["Select available players", "Assign players", "Start game"]);
+  });
+
   it("generates and selects a host plus ten development players", async () => {
     const user = userEvent.setup();
     const generated = availablePlayers.map((player, index) => ({

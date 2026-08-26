@@ -1,4 +1,4 @@
-/* global URL, document, getComputedStyle, HTMLElement, HTMLInputElement, innerHeight, innerWidth, structuredClone, sessionStorage, crypto, TextEncoder */
+/* global URL, document, getComputedStyle, HTMLElement, HTMLInputElement, innerHeight, innerWidth, structuredClone, sessionStorage, crypto, TextEncoder, ErrorEvent, Event */
 import { chromium, webkit } from "@playwright/test";
 
 const baseUrl = process.env.APP_URL ?? "http://127.0.0.1:8080";
@@ -6,6 +6,10 @@ let browserAppUrl = baseUrl;
 let storageMutationUrl;
 const screenshotPath = process.env.UI_SCREENSHOT ?? "/tmp/mafia-dashboard-setup.png";
 const tableScreenshotPath = process.env.UI_TABLE_SCREENSHOT ?? "/tmp/mafia-dashboard-table.png";
+const sidePanelScreenshotPath =
+  process.env.UI_SIDE_PANEL_SCREENSHOT ?? "/tmp/mafia-dashboard-side-panel.png";
+const glassScreenshotPath =
+  process.env.UI_GLASS_SCREENSHOT ?? "/tmp/mafia-dashboard-malagas-glass.png";
 const playersScreenshotPath =
   process.env.UI_PLAYERS_SCREENSHOT ?? "/tmp/mafia-dashboard-players.png";
 const selectionScreenshotPath =
@@ -95,6 +99,36 @@ const assertNoPageErrors = () => {
 };
 
 await page.addInitScript(() => {
+  window.__mafiaAudioStarts = [];
+  class VerifierAudioContext {
+    currentTime = 5;
+    destination = {};
+    createOscillator() {
+      return {
+        frequency: { value: 0 },
+        connect: () => undefined,
+        disconnect: () => undefined,
+        start: (when = this.currentTime) => window.__mafiaAudioStarts.push(when - this.currentTime),
+        stop: () => undefined,
+      };
+    }
+    createGain() {
+      return {
+        gain: {
+          setValueAtTime: () => undefined,
+          exponentialRampToValueAtTime: () => undefined,
+        },
+        connect: () => undefined,
+      };
+    }
+    resume() {
+      return Promise.resolve();
+    }
+  }
+  Object.defineProperty(window, "AudioContext", {
+    configurable: true,
+    value: VerifierAudioContext,
+  });
   window.__mafiaVerifierCheckpointEnvelope = async (envelope, game) => {
     const root = envelope.entries.find((entry) => entry.parentEventId === null);
     if (root === undefined) throw new Error("Expected a persisted replay root");
@@ -319,6 +353,64 @@ try {
   }
   await setupHeading.waitFor();
   if (headerOnly) {
+    if ((await page.getByText("Development only", { exact: true }).count()) !== 0) {
+      throw new Error("Development-only setup tools must be hidden before Dev mode is enabled");
+    }
+    await page.evaluate(() => {
+      console.error(new Error("Verifier console error"));
+      window.dispatchEvent(
+        new ErrorEvent("error", {
+          message: "Verifier window error",
+          error: new Error("Verifier window error"),
+        }),
+      );
+      const rejection = new Event("unhandledrejection");
+      Object.defineProperty(rejection, "reason", { value: new Error("Verifier promise error") });
+      window.dispatchEvent(rejection);
+    });
+    await page.getByRole("button", { name: "Open developer menu" }).click();
+    await page.getByRole("button", { name: "Enable dev mode" }).waitFor();
+    if ((await page.getByRole("button", { name: /table center shadow/i }).count()) !== 0) {
+      throw new Error("The permanent table-center shadow must not expose a Dev setting");
+    }
+    await page.getByRole("button", { name: "Console" }).click();
+    await page.getByRole("heading", { name: "Console", exact: true }).waitFor();
+    for (const message of [
+      "Verifier console error",
+      "Verifier window error",
+      "Verifier promise error",
+    ]) {
+      await page.getByText(message, { exact: true }).waitFor();
+    }
+    const consoleGeometry = await page.locator(".error-console-screen").evaluate((screen) => {
+      const box = screen.getBoundingClientRect();
+      const list = screen.querySelector(".error-console-list");
+      return {
+        left: box.left,
+        top: box.top,
+        width: box.width,
+        height: box.height,
+        viewportWidth: innerWidth,
+        viewportHeight: innerHeight,
+        documentHeight: document.documentElement.scrollHeight,
+        listScrollable:
+          list instanceof HTMLElement ? list.scrollHeight >= list.clientHeight : false,
+      };
+    });
+    if (
+      Math.abs(consoleGeometry.left) > 1 ||
+      Math.abs(consoleGeometry.top) > 1 ||
+      Math.abs(consoleGeometry.width - consoleGeometry.viewportWidth) > 1 ||
+      Math.abs(consoleGeometry.height - consoleGeometry.viewportHeight) > 1 ||
+      consoleGeometry.documentHeight > consoleGeometry.viewportHeight + 1
+    ) {
+      throw new Error(`Console must fill the fixed viewport: ${JSON.stringify(consoleGeometry)}`);
+    }
+    await page.getByRole("button", { name: "Clear console" }).click();
+    await page.getByText("No errors have been captured.").waitFor();
+    await page.getByRole("button", { name: "Back" }).click();
+    await setupHeading.waitFor();
+
     await page.getByRole("button", { name: "Select available players" }).click();
     const availablePlayers = page.getByRole("button", { name: /^Mark UI Player \d+ available$/ });
     if ((await availablePlayers.count()) !== 11) {
@@ -340,6 +432,50 @@ try {
     );
     if ((await page.getByRole("button", { name: /set up music/i }).count()) !== 0) {
       throw new Error("Music setup must not remain on the game-setup screen");
+    }
+    const playerSetupActions = page.getByRole("group", { name: "Player setup actions" });
+    const actionRowGeometry = await playerSetupActions.getByRole("button").evaluateAll((buttons) =>
+      buttons.map((button) => {
+        const box = button.getBoundingClientRect();
+        return { text: button.textContent?.trim(), top: box.top, left: box.left, right: box.right };
+      }),
+    );
+    if (
+      actionRowGeometry.length !== 3 ||
+      actionRowGeometry.some(({ top }) => Math.abs(top - actionRowGeometry[0].top) > 1) ||
+      actionRowGeometry.some((_, index) =>
+        index === 0 ? false : actionRowGeometry[index - 1].right > actionRowGeometry[index].left,
+      )
+    ) {
+      throw new Error(
+        `Player setup actions must share one non-overlapping row when labels fit: ${JSON.stringify(actionRowGeometry)}`,
+      );
+    }
+    const wrappedActionGeometry = await playerSetupActions.evaluate((group) => {
+      const previousWidth = group.style.width;
+      group.style.width = "220px";
+      const groupBox = group.getBoundingClientRect();
+      const buttons = [...group.querySelectorAll("button")].map((button) => {
+        const box = button.getBoundingClientRect();
+        return { top: box.top, width: box.width };
+      });
+      group.style.width = previousWidth;
+      return { groupWidth: groupBox.width, buttons };
+    });
+    const wrappedRows = wrappedActionGeometry.buttons.reduce((rows, button) => {
+      const key = Math.round(button.top);
+      rows.set(key, [...(rows.get(key) ?? []), button]);
+      return rows;
+    }, new Map());
+    if (
+      wrappedRows.size < 2 ||
+      [...wrappedRows.values()].some(
+        (row) => row.length === 1 && Math.abs(row[0].width - wrappedActionGeometry.groupWidth) > 1,
+      )
+    ) {
+      throw new Error(
+        `Wrapped player setup actions must fill singleton rows: ${JSON.stringify(wrappedActionGeometry)}`,
+      );
     }
     const firstSeat = page.getByRole("combobox", { name: "Seat 1 player" });
     const firstSeatName = await firstSeat.inputValue();
@@ -389,27 +525,9 @@ try {
     await page.screenshot({ path: playerControlsScreenshotPath, fullPage: true });
 
     await page.getByRole("button", { name: "Open developer menu" }).click();
-    const dayNightToggle = page.getByRole("button", {
-      name: "Show Day/night table indication",
-    });
-    if ((await dayNightToggle.getAttribute("aria-pressed")) !== "false") {
-      throw new Error("The Day/night table indication must be optional and off by default");
+    if ((await page.getByRole("button", { name: /Day\/night table indication/i }).count()) !== 0) {
+      throw new Error("The static Day/night tint must not expose a Dev setting");
     }
-    await dayNightToggle.click();
-    if (
-      (await page.evaluate(() =>
-        window.localStorage.getItem("mafia-dashboard.day-night-indicator"),
-      )) !== "visible"
-    ) {
-      throw new Error("The Day/night table indication preference must persist in localStorage");
-    }
-    await page
-      .getByRole("button", { name: "Hide Day/night table indication" })
-      .getAttribute("aria-pressed")
-      .then((pressed) => {
-        if (pressed !== "true")
-          throw new Error("The Day/night toggle must report its enabled state");
-      });
     if ((await page.getByRole("button", { name: "Reload music player" }).count()) !== 0) {
       throw new Error("Reload music player must stay inside the music setup submenu");
     }
@@ -436,6 +554,18 @@ try {
     await page.getByRole("button", { name: "Begin Mafia planning stage" }).click();
     await page.locator(".game-shell.is-table-cycle-night").waitFor();
     await page.waitForTimeout(620);
+    const centerShadowStyle = await page.locator(".table-center").evaluate((center) => {
+      const shadow = getComputedStyle(center, "::before");
+      return { display: shadow.display, backgroundImage: shadow.backgroundImage };
+    });
+    if (
+      centerShadowStyle.display === "none" ||
+      !centerShadowStyle.backgroundImage.includes("radial-gradient")
+    ) {
+      throw new Error(
+        `The permanent table-center shadow is missing: ${JSON.stringify(centerShadowStyle)}`,
+      );
+    }
     const nightCycleStyle = await page.locator(".round-table").evaluate((table) => {
       const ambient = getComputedStyle(table, "::before");
       const mark = getComputedStyle(table, "::after");
@@ -448,14 +578,14 @@ try {
       };
     });
     if (
-      !nightCycleStyle.content.includes("NIGHT") ||
-      !nightCycleStyle.ambientAnimation.includes("table-moonlight-drift") ||
-      !nightCycleStyle.markAnimation.includes("table-night-mark-enter") ||
+      nightCycleStyle.content.includes("NIGHT") ||
+      nightCycleStyle.ambientAnimation !== "none" ||
+      nightCycleStyle.markAnimation !== "none" ||
       !nightCycleStyle.ambientBackground.includes("gradient") ||
       !nightCycleStyle.transitionDuration.includes("0.9s")
     ) {
       throw new Error(
-        `Night indication must be subtle, ambient, and animated: ${JSON.stringify(nightCycleStyle)}`,
+        `Night tint must be static and retain its gradient: ${JSON.stringify(nightCycleStyle)}`,
       );
     }
     const nightCycleScreenshotPath = tableScreenshotPath.replace(/\.png$/i, "-night-cycle.png");
@@ -475,25 +605,272 @@ try {
       };
     });
     if (
-      !dayCycleStyle.content.includes("DAY") ||
-      !dayCycleStyle.ambientAnimation.includes("table-daylight-drift") ||
-      !dayCycleStyle.markAnimation.includes("table-day-mark-enter") ||
+      dayCycleStyle.content.includes("DAY") ||
+      dayCycleStyle.ambientAnimation !== "none" ||
+      dayCycleStyle.markAnimation !== "none" ||
       !dayCycleStyle.ambientBackground.includes("gradient")
     ) {
       throw new Error(
-        `Day indication must be subtle, ambient, and animated: ${JSON.stringify(dayCycleStyle)}`,
+        `Day tint must be static and retain its gradient: ${JSON.stringify(dayCycleStyle)}`,
       );
     }
     const dayCycleScreenshotPath = tableScreenshotPath.replace(/\.png$/i, "-day-cycle.png");
     await page.screenshot({ path: dayCycleScreenshotPath, fullPage: true });
 
+    const sidePanelGeometry = await page.evaluate(() => {
+      const box = (selector) => {
+        const element = document.querySelector(selector);
+        if (!(element instanceof HTMLElement)) throw new Error(`Missing ${selector}`);
+        const bounds = element.getBoundingClientRect();
+        return {
+          left: bounds.left,
+          right: bounds.right,
+          top: bounds.top,
+          bottom: bounds.bottom,
+          width: bounds.width,
+          height: bounds.height,
+        };
+      };
+      const rail = document.querySelector(".live-side-panel.has-live-utilities");
+      if (!(rail instanceof HTMLElement)) throw new Error("Missing unified live side panel");
+      return {
+        main: box(".table-workspace"),
+        rail: box(".live-side-panel.has-live-utilities"),
+        timer: box(".timer-panel"),
+        voting: box(".nomination-panel"),
+        music: box(".live-side-panel .youtube-dock"),
+        handles: [...rail.querySelectorAll(".panel-swipe-handle")].map((element) => {
+          const bounds = element.getBoundingClientRect();
+          return { width: bounds.width, height: bounds.height };
+        }),
+        railPaddingBottom: Number.parseFloat(getComputedStyle(rail).paddingBottom),
+        viewportWidth: innerWidth,
+        documentHeight: document.documentElement.scrollHeight,
+        viewportHeight: innerHeight,
+      };
+    });
+    const near = (actual, expected, tolerance = 1) => Math.abs(actual - expected) <= tolerance;
+    if (
+      !near(sidePanelGeometry.main.left, 14) ||
+      !near(sidePanelGeometry.main.width, 918) ||
+      !near(sidePanelGeometry.rail.left - sidePanelGeometry.main.right, 14) ||
+      !near(sidePanelGeometry.rail.width, 406) ||
+      !near(sidePanelGeometry.viewportWidth - sidePanelGeometry.rail.right, 14)
+    ) {
+      throw new Error(
+        `Unified side-panel geometry violates the 14/918/14/406/14 contract: ${JSON.stringify(
+          sidePanelGeometry,
+        )}`,
+      );
+    }
+    if (
+      !near(sidePanelGeometry.timer.width, sidePanelGeometry.voting.width) ||
+      !near(sidePanelGeometry.timer.width, sidePanelGeometry.music.width)
+    ) {
+      throw new Error(
+        `Timer, Voting, and Music widths differ: ${JSON.stringify(sidePanelGeometry)}`,
+      );
+    }
+    if (
+      sidePanelGeometry.handles.length !== 3 ||
+      sidePanelGeometry.handles.some(({ width, height }) => width < 44 || height < 44)
+    ) {
+      throw new Error(
+        `Panel swipe handles are not touch-sized: ${JSON.stringify(sidePanelGeometry)}`,
+      );
+    }
+    if (
+      !near(
+        sidePanelGeometry.rail.bottom - sidePanelGeometry.music.bottom,
+        sidePanelGeometry.railPaddingBottom,
+      ) ||
+      sidePanelGeometry.documentHeight > sidePanelGeometry.viewportHeight + 1
+    ) {
+      throw new Error(
+        `Music is not pinned inside a non-scrolling rail: ${JSON.stringify(sidePanelGeometry)}`,
+      );
+    }
+
+    const timerHandle = page.getByRole("button", { name: "Timer panel handle" });
+    await timerHandle.dispatchEvent("touchstart", {
+      touches: [{ identifier: 1, clientX: 100, clientY: 20 }],
+    });
+    await timerHandle.dispatchEvent("touchend", {
+      changedTouches: [{ identifier: 1, clientX: 165, clientY: 22 }],
+    });
+    const showTimer = page.getByRole("button", { name: "Show timer" });
+    await showTimer.waitFor();
+    await showTimer.dispatchEvent("touchstart", {
+      touches: [{ identifier: 6, clientX: 100, clientY: 20 }],
+    });
+    await showTimer.dispatchEvent("touchend", {
+      changedTouches: [{ identifier: 6, clientX: 104, clientY: 24 }],
+    });
+    await showTimer.click();
+    await page.getByRole("region", { name: "Timer controls" }).waitFor();
+
+    const votingHandle = page.getByRole("button", { name: "Voting panel handle" });
+    await votingHandle.dispatchEvent("touchstart", {
+      touches: [{ identifier: 2, clientX: 100, clientY: 20 }],
+    });
+    await votingHandle.dispatchEvent("touchend", {
+      changedTouches: [{ identifier: 2, clientX: 165, clientY: 22 }],
+    });
+    const showVoting = page.getByRole("button", { name: "Show voting" });
+    await showVoting.waitFor();
+    await showVoting.dispatchEvent("touchstart", {
+      touches: [{ identifier: 3, clientX: 165, clientY: 20 }],
+    });
+    await showVoting.dispatchEvent("touchend", {
+      changedTouches: [{ identifier: 3, clientX: 100, clientY: 22 }],
+    });
+    await page.getByRole("region", { name: "Voting order" }).waitFor();
+
+    const musicHandle = page.getByRole("button", { name: "Music player panel handle" });
+    const playerNodeId = await page.locator(".youtube-player-video").evaluate((player) => {
+      player.dataset.verifierNode = crypto.randomUUID();
+      return player.dataset.verifierNode;
+    });
+    await musicHandle.dispatchEvent("touchstart", {
+      touches: [{ identifier: 4, clientX: 100, clientY: 100 }],
+    });
+    await musicHandle.dispatchEvent("touchend", {
+      changedTouches: [{ identifier: 4, clientX: 102, clientY: 35 }],
+    });
+    await page.locator(".youtube-dock.is-expanded").waitFor();
+    await page.screenshot({ path: sidePanelScreenshotPath, fullPage: true });
+    await musicHandle.dispatchEvent("touchstart", {
+      touches: [{ identifier: 5, clientX: 100, clientY: 35 }],
+    });
+    await musicHandle.dispatchEvent("touchend", {
+      changedTouches: [{ identifier: 5, clientX: 102, clientY: 100 }],
+    });
+    await page.locator(".youtube-dock:not(.is-expanded)").waitFor();
+    const playerNodeAfterGestures = await page
+      .locator(".youtube-player-video")
+      .getAttribute("data-verifier-node");
+    if (playerNodeAfterGestures !== playerNodeId) {
+      throw new Error("Panel gestures remounted the persistent music player");
+    }
+
+    await page.getByRole("button", { name: "Open developer menu" }).click();
+    await page.getByRole("button", { name: "Use Málaga gold theme" }).click();
+    await page.getByRole("button", { name: "Use Málaga Glass theme" }).click();
+    const expectedGlassMode = browserName === "webkit" ? "fallback" : "refractive";
+    await page.waitForFunction((expectedMode) => {
+      const rail = document.querySelector(".live-side-panel.has-live-utilities");
+      const surface = rail?.querySelector(".live-side-panel-glass");
+      if (!(rail instanceof HTMLElement) || !(surface instanceof HTMLElement)) return false;
+      if (!surface.classList.contains(`is-glass-${expectedMode}`)) return false;
+
+      const style = getComputedStyle(surface);
+      const computedFilter = style.backdropFilter || style.webkitBackdropFilter || "";
+      const filterReference = computedFilter.match(/url\((?:["']?)([^"')]+)(?:["']?)\)/)?.[1];
+      const encodedFilterId = filterReference?.slice(filterReference.lastIndexOf("#") + 1);
+      const filterId = encodedFilterId ? decodeURIComponent(encodedFilterId) : null;
+      const matchingFilter = filterId === null ? null : document.getElementById(filterId);
+
+      return expectedMode === "refractive"
+        ? matchingFilter?.namespaceURI === "http://www.w3.org/2000/svg" &&
+            matchingFilter.localName === "filter" &&
+            rail.contains(matchingFilter)
+        : filterId === null && computedFilter.includes("blur");
+    }, expectedGlassMode);
+    const glassEvidence = await page.evaluate(() => {
+      const rail = document.querySelector(".live-side-panel.has-live-utilities");
+      const surface = rail?.querySelector(".live-side-panel-glass");
+      if (!(surface instanceof HTMLElement)) throw new Error("Live rail glass surface is missing");
+      const style = getComputedStyle(surface);
+      const computedFilter = style.backdropFilter || style.webkitBackdropFilter || "";
+      const filterReference = computedFilter.match(/url\((?:["']?)([^"')]+)(?:["']?)\)/)?.[1];
+      const encodedFilterId = filterReference?.slice(filterReference.lastIndexOf("#") + 1);
+      const filterId = encodedFilterId ? decodeURIComponent(encodedFilterId) : null;
+      const matchingFilter = filterId === null ? null : document.getElementById(filterId);
+      const filterBelongsToRail =
+        rail instanceof HTMLElement &&
+        matchingFilter?.namespaceURI === "http://www.w3.org/2000/svg" &&
+        matchingFilter.localName === "filter" &&
+        rail.contains(matchingFilter);
+      const railBounds = rail?.getBoundingClientRect();
+      const visible = (selector) => {
+        const element = document.querySelector(selector);
+        if (!(element instanceof HTMLElement)) return false;
+        const bounds = element.getBoundingClientRect();
+        return (
+          bounds.width > 0 && bounds.height > 0 && getComputedStyle(element).display !== "none"
+        );
+      };
+      return {
+        theme: document.documentElement.dataset.theme,
+        mode: surface.className,
+        computedFilter,
+        filterId,
+        matchingFilterId: filterBelongsToRail ? matchingFilter.id : null,
+        playerNode: document
+          .querySelector(".youtube-player-video")
+          ?.getAttribute("data-verifier-node"),
+        rail: railBounds
+          ? {
+              left: railBounds.left,
+              top: railBounds.top,
+              width: railBounds.width,
+              height: railBounds.height,
+            }
+          : null,
+        timerVisible: visible(".timer-panel"),
+        votingVisible: visible(".nomination-panel"),
+        musicVisible: visible(".youtube-dock"),
+      };
+    });
+    if (
+      glassEvidence.theme !== "malaga-glass" ||
+      !glassEvidence.mode.includes(`is-glass-${expectedGlassMode}`) ||
+      glassEvidence.playerNode !== playerNodeId ||
+      glassEvidence.rail === null ||
+      !near(glassEvidence.rail.left, sidePanelGeometry.rail.left) ||
+      !near(glassEvidence.rail.top, sidePanelGeometry.rail.top) ||
+      !near(glassEvidence.rail.width, sidePanelGeometry.rail.width) ||
+      !near(glassEvidence.rail.height, sidePanelGeometry.rail.height) ||
+      !glassEvidence.timerVisible ||
+      !glassEvidence.votingVisible ||
+      !glassEvidence.musicVisible ||
+      (browserName === "webkit"
+        ? glassEvidence.filterId !== null || !glassEvidence.computedFilter.includes("blur")
+        : glassEvidence.filterId === null ||
+          glassEvidence.matchingFilterId !== glassEvidence.filterId)
+    ) {
+      throw new Error(`Málaga Glass mode is invalid: ${JSON.stringify(glassEvidence)}`);
+    }
+    await page.getByRole("button", { name: "Close developer menu" }).click();
+    await page.screenshot({ path: glassScreenshotPath, fullPage: true });
+    await page.getByRole("button", { name: "Open developer menu" }).click();
+    await page.getByRole("button", { name: "Use Midnight theme" }).click();
+    await page.getByRole("button", { name: "Close developer menu" }).click();
+
     const durableBeforePreview = await page.evaluate(() =>
       sessionStorage.getItem("mafia-dashboard.game-session.v4"),
     );
+    const persistedCheckpoint = JSON.parse(durableBeforePreview ?? "null");
+    const persistedEvents = Array.isArray(persistedCheckpoint?.entries)
+      ? persistedCheckpoint.entries
+      : [];
+    const intermediateEvents = persistedEvents.filter(
+      (event) =>
+        event?.type === "turn.completed" ||
+        (event?.type === "phase.changed" &&
+          ["sheriff-wake", "night-don", "night-sheriff", "best-move"].includes(event?.payload?.to)),
+    );
+    if (persistedEvents.length !== 2 || intermediateEvents.length !== 0) {
+      throw new Error(
+        `Initial Night and Day must persist only root + Day checkpoints: ${JSON.stringify(
+          persistedEvents.map(({ type, payload }) => ({ type, payload })),
+        )}`,
+      );
+    }
     await page.getByRole("button", { name: "Open game log" }).click();
     await page.getByRole("button", { name: "Preview state after log #1" }).click();
     await page.getByRole("heading", { name: /preview/i }).waitFor();
-    const previewActions = await page.locator("button:not([disabled])").allTextContents();
+    const previewActions = await page.locator("button:not([disabled]):visible").allTextContents();
     if (
       JSON.stringify(previewActions.map((text) => text.trim())) !==
       JSON.stringify(["Exit preview", "Reset game to this state"])
@@ -515,18 +892,48 @@ try {
       throw new Error("Read-only preview changed the durable game head, revision, or outbox");
     }
 
-    await page.getByRole("button", { name: "Open game log" }).click();
-    await page.getByRole("button", { name: "Preview state after log #1" }).click();
+    await page.getByRole("button", { name: "Open developer menu" }).click();
+    await page.getByRole("button", { name: "Enable dev mode" }).click();
+    await page.getByRole("button", { name: "Past game timeline" }).click();
+    await page.getByRole("heading", { name: "Game timeline" }).waitFor();
+    await page.getByText(/Checkpoint #2$/).waitFor();
+    if ((await page.locator(".timeline-marker").count()) !== 2) {
+      throw new Error("The current Timeline must contain exactly root and Day checkpoints");
+    }
+    await page.getByRole("button", { name: "Phase: day" }).click();
+    await page.getByRole("button", { name: "Preview timeline checkpoint" }).click();
+    await page.getByRole("heading", { name: /preview/i }).waitFor();
+    await page.getByRole("button", { name: "Exit preview" }).click();
+    await page.getByRole("heading", { name: "Day 1" }).waitFor();
+
+    await page.getByRole("button", { name: "Open developer menu" }).click();
+    await page.getByRole("button", { name: "Past game timeline" }).click();
+    await page.getByRole("heading", { name: "Game timeline" }).waitFor();
+    await page.getByRole("button", { name: "Imported game checkpoint" }).click();
     page.once("dialog", (dialog) => dialog.accept());
-    await page.getByRole("button", { name: "Reset game to this state" }).click();
+    await page.getByRole("button", { name: "Reset game to timeline checkpoint" }).click();
     await page.getByRole("heading", { name: "Mafia planning stage" }).waitFor();
     await page.getByRole("button", { name: /undo last action/i }).click();
     await page.getByRole("heading", { name: "Day 1" }).waitFor();
 
     await page.getByRole("button", { name: "Open developer menu" }).click();
     await page.getByRole("button", { name: "Past game timeline" }).click();
-    await page.getByRole("heading", { name: "Past game timeline" }).waitFor();
+    await page.getByRole("heading", { name: "Game timeline" }).waitFor();
     await page.getByRole("button", { name: "Generate sample game data" }).click();
+    if (
+      (await page.getByRole("button", { name: /show private info|hide private info/i }).count()) !==
+        0 ||
+      (await page.getByText(/Scroll timeline/i).count()) !== 0 ||
+      (await page.getByText("Visibility", { exact: true }).count()) !== 0 ||
+      (await page.getByRole("button", { name: "Private event" }).count()) !== 0
+    ) {
+      throw new Error("Timeline still exposes retired private-view, Scroll, or Visibility chrome");
+    }
+    if ((await page.getByRole("button", { name: /Don checked/i }).count()) === 0) {
+      throw new Error(
+        "Timeline must show real host-secret check labels without private-view redaction",
+      );
+    }
     for (const label of [
       "Initial night",
       "Day 1",
@@ -546,7 +953,7 @@ try {
     }));
     if (
       timelineGeometry.documentScroll > timelineGeometry.viewportHeight + 1 ||
-      timelineGeometry.markerCount < 8 ||
+      timelineGeometry.markerCount !== 22 ||
       timelineGeometry.regionCount !== 7
     ) {
       throw new Error(
@@ -560,6 +967,18 @@ try {
     await page.screenshot({ path: timelineRightScreenshotPath, fullPage: true });
     await page.getByRole("button", { name: /back/i }).click();
     await page.getByRole("heading", { name: "Day 1" }).waitFor();
+
+    for (const seconds of [60, 30, 10]) {
+      await page.getByRole("button", { name: `Start ${seconds} second timer` }).click();
+      await page.getByRole("button", { name: "Stop timer" }).click();
+    }
+    const timerAudioStarts = await page.evaluate(() => window.__mafiaAudioStarts);
+    if (
+      timerAudioStarts.length !== 3 ||
+      timerAudioStarts.some((delay, index) => Math.abs(delay - [50, 20, 0][index]) > 0.001)
+    ) {
+      throw new Error(`Timer warning chimes were not scheduled at 10 seconds: ${timerAudioStarts}`);
+    }
 
     if ((await page.getByRole("button", { name: /^Red card / }).count()) !== 0) {
       throw new Error("Day player cards must not expose a direct red-card button");
@@ -827,16 +1246,51 @@ try {
       .first()
       .locator(".shooter-button")
       .count();
-    await page.locator("button.player-seat.status-active:has(.role-citizen)").first().click();
+    const targetCard = page.locator("button.player-seat.status-active:has(.role-citizen)").first();
+    await targetCard.click();
+    if ((await page.locator(".shooter-button.is-selected").count()) !== shooterCount) {
+      throw new Error("Clicking a player card must assign every active Mafia shot");
+    }
+    await targetCard.click();
+    if ((await page.locator(".shooter-button.is-selected").count()) !== 0) {
+      throw new Error("Clicking the selected player card again must clear every Mafia shot");
+    }
+    await targetCard.click();
     if (Number(await shotLogCount.innerText()) !== logCountBeforeShots) {
       throw new Error("Assigning Mafia shots must not write to the game log");
+    }
+    const durableBeforeNightTimeline = await page.evaluate(() =>
+      sessionStorage.getItem("mafia-dashboard.game-session.v4"),
+    );
+    await page.getByRole("button", { name: "Open developer menu" }).click();
+    await page.getByRole("button", { name: "Past game timeline" }).click();
+    await page.getByRole("heading", { name: "Game timeline" }).waitFor();
+    await page.locator(".timeline-marker").first().click();
+    await page.getByRole("button", { name: "Back" }).click();
+    await page.getByRole("heading", { name: "Mafia shots" }).waitFor();
+    const evaluateShots = page.getByRole("button", { name: "Evaluate Mafia shots" });
+    const assignmentSummary = await page.locator(".table-night-center strong").innerText();
+    const selectedAfterTimeline = await page.locator(".shooter-button.is-selected").count();
+    const evaluateDisabled = await evaluateShots.isDisabled();
+    const durableAfterNightTimeline = await page.evaluate(() =>
+      sessionStorage.getItem("mafia-dashboard.game-session.v4"),
+    );
+    if (
+      selectedAfterTimeline !== shooterCount ||
+      assignmentSummary !== `${shooterCount} of ${shooterCount} shooters assigned` ||
+      evaluateDisabled ||
+      durableAfterNightTimeline !== durableBeforeNightTimeline
+    ) {
+      throw new Error(
+        `Timeline browsing stranded the Mafia draft: ${JSON.stringify({ assignmentSummary, shooterCount, selectedAfterTimeline, evaluateDisabled, durableChanged: durableAfterNightTimeline !== durableBeforeNightTimeline })}`,
+      );
     }
     const acceptedShotRequest = page.waitForRequest((request) => {
       if (request.method() !== "POST") return false;
       if (!new URL(request.url()).pathname.endsWith("/events")) return false;
       return request.postDataJSON().event?.type === "mafia.shots-resolved";
     });
-    await page.getByRole("button", { name: "Evaluate Mafia shots" }).click();
+    await evaluateShots.click();
     const acceptedShotEvent = (await acceptedShotRequest).postDataJSON().event;
     if (
       acceptedShotEvent?.replayVersion !== 1 ||
@@ -856,8 +1310,9 @@ try {
     ) {
       throw new Error("Mafia evaluation emitted an incomplete canonical secret event");
     }
-    const reEvaluateShots = page.getByRole("button", { name: "Re-evaluate Mafia shots" });
-    await reEvaluateShots.waitFor();
+    if ((await page.getByRole("button", { name: "Re-evaluate Mafia shots" }).count()) !== 0) {
+      throw new Error("Mafia result must not offer Re-evaluate Mafia shots");
+    }
     const logCountAfterEvaluation = Number(await shotLogCount.innerText());
     if (logCountAfterEvaluation - logCountBeforeShots !== 1) {
       throw new Error(
@@ -866,35 +1321,32 @@ try {
     }
     const resultGeometry = await page.locator(".table-night-center").evaluate((center) => {
       const resultCard = center.querySelector(".night-miss-card, .deceased-player-card");
-      const retryButton = center.querySelector(".night-result-actions button");
-      if (!(resultCard instanceof HTMLElement) || !(retryButton instanceof HTMLElement)) {
-        throw new Error("Expected the Mafia result card and re-evaluation button");
-      }
+      if (!(resultCard instanceof HTMLElement)) throw new Error("Expected the Mafia result card");
       const card = resultCard.getBoundingClientRect();
-      const button = retryButton.getBoundingClientRect();
       return {
         cardLeft: card.left,
         cardWidth: card.width,
-        buttonLeft: button.left,
-        buttonWidth: button.width,
+        centerLeft: center.getBoundingClientRect().left,
+        centerWidth: center.getBoundingClientRect().width,
       };
     });
-    if (
-      Math.abs(resultGeometry.cardLeft - resultGeometry.buttonLeft) > 1 ||
-      Math.abs(resultGeometry.cardWidth - resultGeometry.buttonWidth) > 1
-    ) {
-      throw new Error(
-        `Re-evaluate must fill the result-card width: ${JSON.stringify(resultGeometry)}`,
-      );
-    }
     const mafiaResultScreenshotPath = tableScreenshotPath.replace(/\.png$/i, "-mafia-result.png");
     await page.screenshot({ path: mafiaResultScreenshotPath, fullPage: true });
     await page.getByRole("button", { name: "Continue night" }).click();
     await page.getByRole("heading", { name: "Don check" }).waitFor();
+    if ((await page.getByRole("button", { name: /^Red card / }).count()) !== 0) {
+      throw new Error("Don check must use swipe Red without inline Red buttons");
+    }
     await page.getByRole("button", { name: "Skip Don check" }).click();
     await page.getByRole("heading", { name: "Sheriff check" }).waitFor();
+    if ((await page.getByRole("button", { name: /^Red card / }).count()) !== 0) {
+      throw new Error("Sheriff check must use swipe Red without inline Red buttons");
+    }
     await page.getByRole("button", { name: "Skip Sheriff check" }).click();
     await page.getByRole("heading", { name: "Night complete" }).waitFor();
+    if ((await page.locator(".night-miss-card, .deceased-player-card").count()) !== 1) {
+      throw new Error("Night complete must retain the evaluated Mafia result");
+    }
     if ((await page.getByRole("button", { name: /^Red card / }).count()) !== 0) {
       throw new Error("Night complete must not show direct red-card buttons above player cards");
     }
@@ -986,7 +1438,140 @@ try {
     }
     await page.screenshot({ path: carCrashScreenshotPath, fullPage: true });
     await zeroVoteResolve.click();
+    await page.getByRole("heading", { name: "Car crash result" }).waitFor();
+    await page
+      .getByRole("status", { name: "Car-crash result" })
+      .getByText("Players stay")
+      .waitFor();
+    const keptResultActivePlayers = await page.locator(".player-seat.status-active").count();
+    if (
+      (await page.getByRole("button", { name: /^Foul / }).count()) !== keptResultActivePlayers ||
+      (await page.locator(".player-seat.is-provisional-deceased").count()) !== 0
+    ) {
+      throw new Error(
+        "A kept car-crash result must retain every active player's Foul control without provisional deaths",
+      );
+    }
+    await page.getByRole("button", { name: "Continue" }).click();
     await page.locator(".game-shell.phase-night-mafia").waitFor();
+    await page.goto(storageMutationUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(async () => {
+      const storageKey = "mafia-dashboard.game-session.v4";
+      const raw = window.sessionStorage.getItem(storageKey);
+      if (raw === null) throw new Error("Expected a persisted game session");
+      const envelope = JSON.parse(raw);
+      const game = structuredClone(envelope.baseline?.game);
+      if (game === null || game === undefined)
+        throw new Error("Expected a persisted replay baseline");
+      game.phase = "car-crash-decision";
+      game.day = Math.max(1, game.day);
+      game.carCrashSeats = game.players
+        .filter((player) => player.status === "active")
+        .slice(0, 3)
+        .map((player) => player.seat);
+      game.carCrashVotes = {};
+      game.voteAssignments = {};
+      game.votingRound = "repeat";
+      game.winner = null;
+      await window.__mafiaVerifierCheckpointEnvelope(envelope, game);
+      envelope.resetReturnEventId = null;
+      envelope.results = null;
+      envelope.outbox = [];
+      envelope.failed = false;
+      window.sessionStorage.setItem(storageKey, JSON.stringify(envelope));
+    });
+    await page.goto(browserAppUrl, { waitUntil: "networkidle" });
+    await page.locator(".club-playing-card:not(.new-club-card)").first().click();
+    await page.waitForTimeout(950);
+    const eliminateVotes = page.getByRole("button", {
+      name: /^Vote as .* to eliminate all car-crash players$/,
+    });
+    for (let index = 0; index < 6; index += 1) await eliminateVotes.first().click();
+    const decisionActivePlayers = await page.locator(".player-seat.status-active").count();
+    if ((await page.getByRole("button", { name: /^Foul / }).count()) !== decisionActivePlayers) {
+      throw new Error("Car-crash voting must retain every active player's Foul control");
+    }
+    await page.getByRole("button", { name: "Resolve car crash" }).click();
+    await page.getByRole("heading", { name: "Car crash result" }).waitFor();
+    await page.getByRole("status", { name: "Car-crash result" }).getByText("Eliminated").waitFor();
+    if (
+      (await page.locator(".player-seat.is-provisional-deceased").count()) !== 3 ||
+      (await page.getByRole("button", { name: /^Foul / }).count()) !== decisionActivePlayers
+    ) {
+      throw new Error(
+        "Every car-crash participant must be provisional while every active Foul control remains available",
+      );
+    }
+    const carCrashResultScreenshotPath = carCrashScreenshotPath.replace(
+      /\.png$/i,
+      "-eliminated-result.png",
+    );
+    await page.screenshot({ path: carCrashResultScreenshotPath, fullPage: true });
+    await page.getByRole("button", { name: "Continue" }).click();
+    await page.getByRole("heading", { name: "Goodbye speech" }).waitFor();
+    await page.goto(storageMutationUrl, { waitUntil: "domcontentloaded" });
+    await page.evaluate(async () => {
+      const storageKey = "mafia-dashboard.game-session.v4";
+      const raw = window.sessionStorage.getItem(storageKey);
+      if (raw === null) throw new Error("Expected a persisted game session");
+      const envelope = JSON.parse(raw);
+      const game = structuredClone(envelope.baseline?.game);
+      if (game === null || game === undefined)
+        throw new Error("Expected a persisted replay baseline");
+      game.phase = "night-don";
+      game.day = Math.max(1, game.day);
+      game.players = game.players.map((player) =>
+        player.role === "don" || player.role === "sheriff"
+          ? { ...player, status: "eliminated" }
+          : player,
+      );
+      game.carCrashSeats = undefined;
+      game.carCrashVotes = undefined;
+      game.carCrashResult = undefined;
+      game.votingCancellation = undefined;
+      game.goodbyeSeats = undefined;
+      game.goodbyeNext = undefined;
+      game.bestMove = undefined;
+      game.checkResult = undefined;
+      game.winner = null;
+      await window.__mafiaVerifierCheckpointEnvelope(envelope, game);
+      envelope.resetReturnEventId = null;
+      envelope.results = null;
+      envelope.outbox = [];
+      envelope.failed = false;
+      window.sessionStorage.setItem(storageKey, JSON.stringify(envelope));
+    });
+    await page.goto(browserAppUrl, { waitUntil: "networkidle" });
+    await page.locator(".club-playing-card:not(.new-club-card)").first().click();
+    await page.waitForTimeout(950);
+    const assertOnlyCheckAction = async (expected) => {
+      const phaseActions = (
+        await page.locator(".table-advance button:visible").allTextContents()
+      ).map((text) => text.trim());
+      if (
+        JSON.stringify(phaseActions) !== JSON.stringify([expected]) ||
+        (await page.locator(".seat-actions button:visible").count()) !== 0 ||
+        (await page.locator(".table-center button:visible").count()) !== 0
+      ) {
+        throw new Error(
+          `A dead check owner must expose only ${expected}: ${JSON.stringify(phaseActions)}`,
+        );
+      }
+    };
+    await page.getByRole("heading", { name: "Don check" }).waitFor();
+    await assertOnlyCheckAction("Skip Don check");
+    const deadDonScreenshotPath = tableScreenshotPath.replace(/\.png$/i, "-dead-don-check.png");
+    await page.screenshot({ path: deadDonScreenshotPath, fullPage: true });
+    await page.getByRole("button", { name: "Skip Don check" }).click();
+    await page.getByRole("heading", { name: "Sheriff check" }).waitFor();
+    await assertOnlyCheckAction("Skip Sheriff check");
+    const deadSheriffScreenshotPath = tableScreenshotPath.replace(
+      /\.png$/i,
+      "-dead-sheriff-check.png",
+    );
+    await page.screenshot({ path: deadSheriffScreenshotPath, fullPage: true });
+    await page.getByRole("button", { name: "Skip Sheriff check" }).click();
+    await page.getByRole("heading", { name: "Night complete" }).waitFor();
     await page.goto(storageMutationUrl, { waitUntil: "domcontentloaded" });
     const staleGoodbyeFixture = await page.evaluate(async () => {
       const storageKey = "mafia-dashboard.game-session.v4";
@@ -1099,7 +1684,7 @@ try {
     await page.screenshot({ path: finishScreenshotPath, fullPage: true });
     assertNoPageErrors();
     console.log(
-      `Focused iPad gameplay verification: PASS ${JSON.stringify({ playerControlGeometry, actionGeometry, swipeMenuGeometry, statusLayout, voteToggleState, votingHighlightStyle, postNightHighlightStyle, staleGoodbyeHighlightState, goodbyeTransitionStyle, nightCycleStyle, dayCycleStyle, resultGeometry, playerControlsScreenshotPath, nightCycleScreenshotPath, dayCycleScreenshotPath, swipeMenuScreenshotPath, tableScreenshotPath, votingScreenshotPath, autoVotingScreenshotPath, cancellationScreenshotPath, shotToggleScreenshotPath, mafiaResultScreenshotPath, nightCompleteScreenshotPath, bestMoveScreenshotPath, goodbyeScreenshotPath, staleGoodbyeScreenshotPath, finishScreenshotPath, previewScreenshotPath, timelineScreenshotPath, timelineRightScreenshotPath, carCrashScreenshotPath })}`,
+      `Focused iPad gameplay verification: PASS ${JSON.stringify({ consoleGeometry, actionRowGeometry, wrappedActionGeometry, timerAudioStarts, centerShadowStyle, sidePanelGeometry, glassEvidence, playerControlGeometry, actionGeometry, swipeMenuGeometry, statusLayout, voteToggleState, votingHighlightStyle, postNightHighlightStyle, staleGoodbyeHighlightState, goodbyeTransitionStyle, nightCycleStyle, dayCycleStyle, resultGeometry, playerControlsScreenshotPath, sidePanelScreenshotPath, glassScreenshotPath, nightCycleScreenshotPath, dayCycleScreenshotPath, swipeMenuScreenshotPath, tableScreenshotPath, votingScreenshotPath, autoVotingScreenshotPath, cancellationScreenshotPath, shotToggleScreenshotPath, mafiaResultScreenshotPath, nightCompleteScreenshotPath, bestMoveScreenshotPath, goodbyeScreenshotPath, staleGoodbyeScreenshotPath, finishScreenshotPath, previewScreenshotPath, timelineScreenshotPath, timelineRightScreenshotPath, carCrashScreenshotPath, carCrashResultScreenshotPath, deadDonScreenshotPath, deadSheriffScreenshotPath })}`,
     );
     await browser.close();
     process.exit(0);
@@ -1432,10 +2017,16 @@ try {
     );
   }
   for (const seconds of [60, 30, 10]) {
-    await page.getByRole("button", { name: `Start ${seconds} second timer` }).waitFor();
+    await page.getByRole("button", { name: `Start ${seconds} second timer` }).click();
+    await page.getByRole("button", { name: "Stop timer" }).click();
   }
-  await page.getByRole("button", { name: "Start 60 second timer" }).click();
-  await page.getByRole("button", { name: "Stop timer" }).click();
+  const audioStarts = await page.evaluate(() => window.__mafiaAudioStarts);
+  if (
+    audioStarts.length !== 3 ||
+    audioStarts.some((delay, index) => Math.abs(delay - [50, 20, 0][index]) > 0.001)
+  ) {
+    throw new Error(`Timer warning chimes were not scheduled at 10 seconds: ${audioStarts}`);
+  }
   await page.getByRole("button", { name: "Music fade in" }).waitFor();
   await page.getByRole("button", { name: "Quick music fade out" }).waitFor();
   await page.getByRole("button", { name: "Slow music fade out" }).waitFor();

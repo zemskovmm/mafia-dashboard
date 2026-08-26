@@ -128,6 +128,47 @@ describe("VotingStage", () => {
     expect(screen.queryByRole("button", { name: "Keep both nominees" })).toBeNull();
   });
 
+  it.each([
+    {
+      phase: "voting-cancelled" as const,
+      state: { votingCancellation: { reason: "host-skipped" as const } },
+    },
+    {
+      phase: "car-crash-decision" as const,
+      state: { carCrashSeats: [4, 6], carCrashVotes: {} },
+    },
+    {
+      phase: "car-crash-result" as const,
+      state: {
+        carCrashSeats: [4, 6],
+        carCrashVotes: Object.fromEntries(
+          Array.from({ length: 10 }, (_, index) => [index + 1, false]),
+        ),
+        carCrashResult: { eliminate: false, seats: [4, 6], yesVotes: 0, eligibleVoters: 10 },
+      },
+    },
+    {
+      phase: "car-crash-skipped" as const,
+      state: { carCrashSeats: [4, 6], carCrashVotes: {} },
+    },
+  ])("keeps Foul controls visible during $phase", async ({ phase, state }) => {
+    const user = userEvent.setup();
+    const onFoul = vi.fn<(seat: number) => void>();
+    render(
+      <VotingStage
+        game={{ ...votingGame(), phase, ...state }}
+        onGameChange={() => undefined}
+        onResolved={() => undefined}
+        onEvent={() => undefined}
+        onFoul={onFoul}
+      />,
+    );
+
+    expect(screen.getAllByRole("button", { name: /^Foul Player/i })).toHaveLength(10);
+    await user.click(screen.getByRole("button", { name: "Foul Player 1" }));
+    expect(onFoul).toHaveBeenCalledWith(1);
+  });
+
   it("uses a zero-valid eliminate-all ballot without separate decision buttons", async () => {
     const user = userEvent.setup();
     const game: GameState = {
@@ -137,15 +178,21 @@ describe("VotingStage", () => {
       carCrashVotes: {},
     };
 
-    const onResolved = vi.fn<(game: GameState, seats: readonly number[]) => void>();
-    render(
-      <VotingStage
-        game={game}
-        onGameChange={() => undefined}
-        onResolved={onResolved}
-        onEvent={() => undefined}
-      />,
-    );
+    const DecisionHarness = () => {
+      const [current, setCurrent] = useState(game);
+      return (
+        <>
+          <output data-testid="decision-phase">{current.phase}</output>
+          <VotingStage
+            game={current}
+            onGameChange={setCurrent}
+            onResolved={() => undefined}
+            onEvent={() => undefined}
+          />
+        </>
+      );
+    };
+    render(<DecisionHarness />);
 
     expect(screen.getByText("Eliminate all players voting")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Eliminate all nominees" })).toBeNull();
@@ -153,13 +200,11 @@ describe("VotingStage", () => {
     const resolve = screen.getByRole("button", { name: "Resolve car crash" });
     expect(resolve).toBeEnabled();
     await user.click(resolve);
-    expect(onResolved).toHaveBeenCalledWith(
-      {
-        ...game,
-        carCrashVotes: Object.fromEntries(game.players.map(({ seat }) => [seat, false])),
-      },
-      [],
+    expect(screen.getByRole("status", { name: "Car-crash result" })).toHaveTextContent(
+      "Players stay",
     );
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    expect(screen.getByTestId("decision-phase")).toHaveTextContent("night-mafia");
   });
 
   it("keeps Resolve and Skip voting enabled with zero eliminate-all votes", async () => {

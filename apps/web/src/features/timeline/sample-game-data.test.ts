@@ -25,12 +25,20 @@ describe("deterministic sample game history", () => {
 
     expect(SAMPLE_GAME_LABEL).toBe("Sample game · not saved");
     expect(first.baseline.game).toMatchObject({ phase: "mafia-planning", day: 0 });
-    expect(first.activeEntries.slice(0, 3).map(({ type }) => type)).toEqual([
+    expect(first.activeEntries.slice(0, 2).map(({ type }) => type)).toEqual([
       "game.started",
       "phase.changed",
-      "phase.changed",
     ]);
-    expect(first.frames[2]?.after).toMatchObject({ phase: "day", day: 1 });
+    expect(first.frames[1]?.after).toMatchObject({ phase: "day", day: 1 });
+    expect(first.activeEntries.some(({ type }) => type === "turn.completed")).toBe(false);
+    expect(
+      first.activeEntries.some(
+        ({ type, payload }) =>
+          type === "phase.changed" &&
+          "to" in payload &&
+          ["sheriff-wake", "night-don", "night-sheriff", "best-move"].includes(String(payload.to)),
+      ),
+    ).toBe(false);
     expect(replayGameLog(first.baseline, first.activeEntries).frames).toEqual(first.frames);
     expect(JSON.stringify(first)).toBe(JSON.stringify(second));
   });
@@ -55,7 +63,7 @@ describe("deterministic sample game history", () => {
     expect(history.frames.some(({ after }) => after.day === 2 && after.phase === "day")).toBe(true);
   });
 
-  it("continues through a cancelled second vote, a Mafia miss, red cards, and completion", () => {
+  it("continues through a fourth Foul, a Mafia miss, red cards, and completion", () => {
     const history = createSampleGameHistory();
     const fouls = history.activeEntries.filter(isEntryOfType("foul.issued"));
     const shotResults = history.activeEntries
@@ -68,9 +76,7 @@ describe("deterministic sample game history", () => {
       { seat: 9, foulNumber: 3, redCarded: false },
       { seat: 9, foulNumber: 4, redCarded: true },
     ]);
-    expect(
-      history.frames.some(({ after }) => after.phase === "voting-cancelled" && after.day === 2),
-    ).toBe(true);
+    expect(history.frames.some(({ entry }) => entry.type === "turn.completed")).toBe(false);
     expect(shotResults).toEqual(["kill", "miss"]);
     expect(
       history.activeEntries

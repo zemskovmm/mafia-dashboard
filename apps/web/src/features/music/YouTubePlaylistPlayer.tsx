@@ -2,8 +2,10 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "re
 import type { CSSProperties } from "react";
 import { listMusicPlaylistItems } from "../../api/client.js";
 import type { MusicPlaylistItem } from "../../api/client.js";
+import { reportError } from "../console/error-console.js";
 import { MusicController } from "./music-controller.js";
 import type { MusicPlayerAdapter } from "./music-controller.js";
+import { queueEntryKey, restoreQueueOrder } from "./music-preferences.js";
 
 export type YouTubePlaybackState = "idle" | "loading" | "playing" | "paused" | "error";
 
@@ -22,7 +24,14 @@ interface YouTubePlaylistPlayerProps {
   readonly activeVolume?: number;
   readonly onVolumeChange?: (volume: number) => void;
   readonly reloadRequest?: number;
+  readonly rememberedQueueOrder?: readonly string[];
+  readonly onQueueOrderChange?: (playlistId: string, orderedEntryKeys: readonly string[]) => void;
 }
+
+const EMPTY_QUEUE_ORDER: readonly string[] = [];
+
+const queueOrdersEqual = (left: readonly string[], right: readonly string[]): boolean =>
+  left.length === right.length && left.every((entryKey, index) => entryKey === right[index]);
 
 let apiPromise: Promise<void> | null = null;
 const loadApi = (): Promise<void> => {
@@ -81,6 +90,8 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
       activeVolume = 80,
       onVolumeChange = () => undefined,
       reloadRequest = 0,
+      rememberedQueueOrder = EMPTY_QUEUE_ORDER,
+      onQueueOrderChange = () => undefined,
     },
     ref,
   ) => {
@@ -103,17 +114,34 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
       readonly height: number;
     } | null>(null);
     const playerRef = useRef<YT.Player | null>(null);
+    const playerGenerationRef = useRef(0);
     const controllerRef = useRef<MusicController | null>(null);
+    const iframeReadyRef = useRef(false);
     const readyRef = useRef(false);
     const queueRef = useRef<readonly MusicPlaylistItem[]>([]);
+    const providerQueueRef = useRef<{
+      readonly playlistId: string;
+      readonly items: readonly MusicPlaylistItem[];
+    } | null>(null);
+    const appliedRememberedQueueOrderRef = useRef<{
+      readonly playlistId: string;
+      readonly order: readonly string[];
+    } | null>(null);
+    const queueUnavailableRef = useRef(false);
+    const normalizedPlaylistIdRef = useRef(playlistId.trim());
+    const rememberedQueueOrderRef = useRef(rememberedQueueOrder);
+    rememberedQueueOrderRef.current = rememberedQueueOrder;
     const activeVolumeRef = useRef(activeVolume);
     activeVolumeRef.current = activeVolume;
+    const onStateChangeRef = useRef(onStateChange);
+    onStateChangeRef.current = onStateChange;
     const playbackStateRef = useRef<YouTubePlaybackState>("idle");
     const draggedIndexRef = useRef<number | null>(null);
     const pointerDropIndexRef = useRef<number | null>(null);
     const handledReloadRequest = useRef(reloadRequest);
     const elementId = `youtube-mafia-player-${instanceKey}`;
     const normalizedPlaylistId = playlistId.trim();
+    normalizedPlaylistIdRef.current = normalizedPlaylistId;
     const queue = queueState?.playlistId === normalizedPlaylistId ? queueState.items : null;
     const queueUnavailable =
       queueState?.playlistId === normalizedPlaylistId && queueState.unavailable;
@@ -122,61 +150,125 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
     useEffect(() => {
       if (handledReloadRequest.current === reloadRequest) return;
       handledReloadRequest.current = reloadRequest;
+      playerGenerationRef.current += 1;
       setInstanceKey((key) => key + 1);
     }, [reloadRequest]);
 
     useEffect(() => {
       queueRef.current = [];
+      providerQueueRef.current = null;
+      appliedRememberedQueueOrderRef.current = null;
+      queueUnavailableRef.current = false;
       readyRef.current = false;
       setPlayerReady(false);
       setNextItemPosition(null);
       controllerRef.current?.cancelActiveFade();
       setQueueState(null);
       if (normalizedPlaylistId.length === 0) {
-        onStateChange("idle");
+        playerRef.current?.pauseVideo();
+        playbackStateRef.current = "idle";
+        onStateChangeRef.current("idle");
         return undefined;
       }
       let cancelled = false;
-      onStateChange("loading");
+      onStateChangeRef.current("loading");
       void listMusicPlaylistItems(normalizedPlaylistId).then(
         (items) => {
           if (cancelled) return;
-          queueRef.current = items;
-          setQueueState({ playlistId: normalizedPlaylistId, items, unavailable: false });
+          const rememberedOrder = rememberedQueueOrderRef.current;
+          const restoredItems = restoreQueueOrder(rememberedOrder, items);
+          providerQueueRef.current = { playlistId: normalizedPlaylistId, items };
+          appliedRememberedQueueOrderRef.current = {
+            playlistId: normalizedPlaylistId,
+            order: [...rememberedOrder],
+          };
+          queueRef.current = restoredItems;
+          queueUnavailableRef.current = false;
+          setQueueState({
+            playlistId: normalizedPlaylistId,
+            items: restoredItems,
+            unavailable: false,
+          });
+          if (playerRef.current !== null && iframeReadyRef.current) {
+            applyQueue(restoredItems, null);
+          }
         },
         () => {
           if (cancelled) return;
           queueRef.current = [];
+          queueUnavailableRef.current = true;
           setQueueState({ playlistId: normalizedPlaylistId, items: [], unavailable: true });
+          if (playerRef.current !== null && iframeReadyRef.current) {
+            applyPlaylist(normalizedPlaylistId, 0, 0);
+          }
         },
       );
       return () => {
         cancelled = true;
       };
-    }, [normalizedPlaylistId, onStateChange]);
+    }, [normalizedPlaylistId]);
+
+    useEffect(() => {
+      const providerQueue = providerQueueRef.current;
+      if (providerQueue?.playlistId !== normalizedPlaylistId) return;
+      const appliedOrder = appliedRememberedQueueOrderRef.current;
+      if (
+        appliedOrder?.playlistId === normalizedPlaylistId &&
+        queueOrdersEqual(appliedOrder.order, rememberedQueueOrder)
+      )
+        return;
+      const position = currentPosition();
+      const restoredItems = restoreQueueOrder(rememberedQueueOrder, providerQueue.items);
+      appliedRememberedQueueOrderRef.current = {
+        playlistId: normalizedPlaylistId,
+        order: [...rememberedQueueOrder],
+      };
+      queueRef.current = restoredItems;
+      setQueueState({
+        playlistId: normalizedPlaylistId,
+        items: restoredItems,
+        unavailable: false,
+      });
+      setNextItemPosition(null);
+      if (playerRef.current !== null && iframeReadyRef.current) {
+        applyQueue(restoredItems, position);
+      }
+    }, [normalizedPlaylistId, rememberedQueueOrder]);
 
     useEffect(() => {
       if (!queueLoaded || normalizedPlaylistId.length === 0) return undefined;
+      if (playerRef.current !== null) return undefined;
       let cancelled = false;
       void loadApi()
         .then(() => {
-          if (cancelled || window.YT === undefined) return;
-          playerRef.current?.destroy();
+          if (cancelled || window.YT === undefined || playerRef.current !== null) return;
+          iframeReadyRef.current = false;
           readyRef.current = false;
+          const configuredFallbackPlaylistId =
+            queueRef.current.length === 0 ? normalizedPlaylistId : null;
           const playerVars: Record<string, string | number> = {
             playsinline: 1,
             controls: 1,
             rel: 0,
-            ...(queueRef.current.length === 0
-              ? { listType: "playlist", list: normalizedPlaylistId }
+            ...(configuredFallbackPlaylistId !== null
+              ? { listType: "playlist", list: configuredFallbackPlaylistId }
               : {}),
           };
+          const playerGeneration = playerGenerationRef.current + 1;
+          playerGenerationRef.current = playerGeneration;
           playerRef.current = new window.YT.Player(elementId, {
             width: "100%",
             height: "100%",
             playerVars,
             events: {
               onReady: ({ target }) => {
+                if (
+                  playerGenerationRef.current !== playerGeneration ||
+                  playerRef.current !== target ||
+                  normalizedPlaylistIdRef.current.length === 0
+                )
+                  return;
+                iframeReadyRef.current = true;
                 disablePictureInPicture(target);
                 target.setVolume(activeVolumeRef.current);
                 controllerRef.current = new MusicController(new YouTubeAdapter(target));
@@ -187,45 +279,76 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
                     0,
                     0,
                   );
+                } else if (
+                  queueUnavailableRef.current &&
+                  normalizedPlaylistIdRef.current !== configuredFallbackPlaylistId
+                ) {
+                  applyPlaylist(normalizedPlaylistIdRef.current, 0, 0);
                 } else {
                   playbackStateRef.current = "paused";
                   readyRef.current = true;
                   setPlayerReady(true);
-                  onStateChange("paused");
+                  onStateChangeRef.current("paused");
                 }
               },
-              onStateChange: ({ data }) => {
+              onStateChange: ({ target, data }) => {
+                if (
+                  playerGenerationRef.current !== playerGeneration ||
+                  playerRef.current !== target ||
+                  normalizedPlaylistIdRef.current.length === 0
+                )
+                  return;
                 if (data === window.YT?.PlayerState.CUED) {
                   playbackStateRef.current = "paused";
                   readyRef.current = true;
                   setPlayerReady(true);
-                  onStateChange("paused");
+                  onStateChangeRef.current("paused");
                 } else if (data === window.YT?.PlayerState.PLAYING) {
                   playbackStateRef.current = "playing";
                   readyRef.current = true;
                   setPlayerReady(true);
-                  onStateChange("playing");
+                  onStateChangeRef.current("playing");
                 } else if (data === window.YT?.PlayerState.ENDED) {
                   setNextItemPosition(null);
                   playbackStateRef.current = "paused";
-                  onStateChange("paused");
+                  onStateChangeRef.current("paused");
                 } else if (data === window.YT?.PlayerState.PAUSED) {
                   playbackStateRef.current = "paused";
-                  onStateChange("paused");
+                  onStateChangeRef.current("paused");
                 }
               },
-              onError: () => onStateChange("error"),
+              onError: () => {
+                if (
+                  playerGenerationRef.current !== playerGeneration ||
+                  normalizedPlaylistIdRef.current.length === 0
+                )
+                  return;
+                onStateChangeRef.current("error");
+              },
             },
           });
         })
-        .catch(() => onStateChange("error"));
+        .catch((error: unknown) => {
+          reportError(error, { source: "api", context: "music-playlist-items.list" });
+          onStateChangeRef.current("error");
+        });
 
       return () => {
         cancelled = true;
+      };
+    }, [elementId, normalizedPlaylistId, queueLoaded]);
+
+    useEffect(
+      () => () => {
+        playerGenerationRef.current += 1;
         playerRef.current?.destroy();
         playerRef.current = null;
-      };
-    }, [elementId, normalizedPlaylistId, onStateChange, queueLoaded]);
+        controllerRef.current = null;
+        iframeReadyRef.current = false;
+        readyRef.current = false;
+      },
+      [elementId],
+    );
 
     const currentPosition = () => {
       const player = playerRef.current;
@@ -238,28 +361,50 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
       };
     };
 
-    const applyQueue = (
-      next: readonly MusicPlaylistItem[],
-      position: ReturnType<typeof currentPosition>,
-    ) => {
+    function applyPlaylist(playlist: string | readonly string[], index: number, seconds: number) {
       const player = playerRef.current;
       if (player === null) return;
+      readyRef.current = false;
+      setPlayerReady(false);
+      controllerRef.current?.cancelActiveFade();
+      onStateChangeRef.current("loading");
+      if (playbackStateRef.current === "playing") {
+        (
+          player.loadPlaylist as (
+            nextPlaylist: string | readonly string[],
+            nextIndex?: number,
+            startSeconds?: number,
+          ) => void
+        )(playlist, index, seconds);
+      } else {
+        player.cuePlaylist(playlist, index, seconds);
+      }
+    }
+
+    function applyQueue(
+      next: readonly MusicPlaylistItem[],
+      position: ReturnType<typeof currentPosition>,
+    ) {
       const nextIndex =
         position?.item === null || position?.item === undefined
           ? 0
           : Math.max(0, next.indexOf(position.item));
       const seconds = position?.seconds ?? 0;
-      readyRef.current = false;
-      setPlayerReady(false);
-      controllerRef.current?.cancelActiveFade();
-      onStateChange("loading");
-      const videoIds = next.map(({ videoId }) => videoId);
-      if (playbackStateRef.current === "playing") {
-        player.loadPlaylist(videoIds, nextIndex, seconds);
-      } else {
-        player.cuePlaylist(videoIds, nextIndex, seconds);
-      }
-    };
+      applyPlaylist(
+        next.map(({ videoId }) => videoId),
+        nextIndex,
+        seconds,
+      );
+    }
+
+    function emitQueueOrder(next: readonly MusicPlaylistItem[]) {
+      const order = next.map(queueEntryKey);
+      appliedRememberedQueueOrderRef.current = {
+        playlistId: normalizedPlaylistId,
+        order,
+      };
+      onQueueOrderChange(normalizedPlaylistId, order);
+    }
 
     const reorderQueue = (index: number, target: number) => {
       if (queue === null || queueState === null || target < 0 || target >= queue.length) return;
@@ -270,6 +415,7 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
       next.splice(target, 0, moved);
       queueRef.current = next;
       setQueueState((current) => (current === null ? null : { ...current, items: next }));
+      emitQueueOrder(next);
       applyQueue(next, position);
     };
 
@@ -288,6 +434,7 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
       queueRef.current = next;
       setQueueState((state) => (state === null ? null : { ...state, items: next }));
       setNextItemPosition(selected.position);
+      emitQueueOrder(next);
       applyQueue(next, position);
     };
 

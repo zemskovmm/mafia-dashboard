@@ -27,6 +27,7 @@ export const cancelVoting = (
     "voting-cancelled",
     "car-crash",
     "car-crash-decision",
+    "car-crash-result",
     "car-crash-skipped",
   ]);
   if (!cancellablePhases.has(game.phase)) {
@@ -39,6 +40,7 @@ export const cancelVoting = (
     votingRound: undefined,
     carCrashSeats: undefined,
     carCrashVotes: undefined,
+    carCrashResult: undefined,
     votingCancellation,
   };
 };
@@ -162,6 +164,7 @@ export const redCard = (game: GameState, seat: number): GameState => {
     "voting-cancelled",
     "car-crash",
     "car-crash-decision",
+    "car-crash-result",
     "car-crash-skipped",
     "goodbye-speech",
     "best-move",
@@ -189,6 +192,7 @@ export const redCard = (game: GameState, seat: number): GameState => {
     game.phase === "voting-cancelled" ||
     game.phase === "car-crash" ||
     game.phase === "car-crash-decision" ||
+    game.phase === "car-crash-result" ||
     game.phase === "car-crash-skipped"
   ) {
     return cancelVoting(updated, { reason: "red-card" });
@@ -506,4 +510,40 @@ export const resolveCarCrashVote = (game: GameState): CarCrashVoteResult => {
     yesVotes,
     eligibleVoters,
   };
+};
+
+export const acceptCarCrashBallot = (game: GameState): GameState => ({
+  ...game,
+  phase: "car-crash-result",
+  carCrashResult: resolveCarCrashVote(game),
+  winner: null,
+});
+
+export const completeCarCrashResult = (game: GameState): GameState => {
+  if (game.phase !== "car-crash-result" || game.carCrashResult === undefined) {
+    throw new Error("Only a reviewed car-crash result can continue");
+  }
+  if (!game.carCrashResult.eliminate) return beginNight(game);
+
+  const afterElimination = game.carCrashResult.seats.reduce(
+    (state, seat) => markPlayerInactive(state, seat, "eliminated"),
+    game,
+  );
+  const cleared = {
+    ...afterElimination,
+    votingRound: undefined,
+    carCrashSeats: undefined,
+    carCrashVotes: undefined,
+    carCrashResult: undefined,
+  };
+  const winner = evaluateVictory(cleared.players);
+  return winner === null
+    ? {
+        ...cleared,
+        phase: "goodbye-speech",
+        goodbyeSeats: [...game.carCrashResult.seats],
+        goodbyeNext: "night",
+        winner: null,
+      }
+    : { ...cleared, phase: "finished", winner };
 };

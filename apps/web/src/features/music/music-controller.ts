@@ -1,3 +1,5 @@
+import { reportError } from "../console/error-console.js";
+
 export interface MusicPlayerAdapter {
   play(): void | Promise<void>;
   pause(): void;
@@ -114,6 +116,7 @@ export class MusicController {
 
   private failOperation(operation: { readonly active: ActiveFade }, error: unknown): void {
     if (this.activeFade === operation.active) this.activeFade = null;
+    reportError(error, { source: "application", context: "music.fade" });
     operation.active.reject(error);
   }
 
@@ -127,7 +130,10 @@ export class MusicController {
     if (!this.isActive(operation)) return;
     if (durationMs <= 0) {
       this.player.setVolume(targetVolume);
-      if (pauseWhenComplete) this.player.pause();
+      if (pauseWhenComplete) {
+        this.player.pause();
+        this.player.setVolume(startVolume);
+      }
       this.activeFade = null;
       operation.resolve("completed");
       return;
@@ -145,7 +151,10 @@ export class MusicController {
       if (currentStep >= steps) {
         if (operation.timer !== null) clearInterval(operation.timer);
         this.activeFade = null;
-        if (pauseWhenComplete) this.player.pause();
+        if (pauseWhenComplete) {
+          this.player.pause();
+          this.player.setVolume(startVolume);
+        }
         operation.resolve("completed");
       }
     }, this.stepMs);

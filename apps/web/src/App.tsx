@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  applyGameEvent,
   createGameLogEntry,
+  hashGameState,
+  isMeaningfulGameEventDraft,
   replayGameLog,
   type CanonicalGameEventDraft,
   type GameLogEntry,
@@ -47,7 +50,10 @@ import type {
   AppUser,
 } from "./api/client.js";
 import { ClubPortal } from "./features/clubs/ClubPortal.js";
+import { ErrorConsoleScreen } from "./features/console/ErrorConsoleScreen.js";
+import { clearErrorConsole, reportError } from "./features/console/error-console.js";
 import { GameScreen } from "./features/game/GameScreen.js";
+import { LiveSidePanel } from "./features/game/LiveSidePanel.js";
 import {
   getActiveBranch,
   getRemainingUndoBudget,
@@ -56,6 +62,12 @@ import {
 } from "./features/game/game-history.js";
 import { AccountPlaylistPicker } from "./features/music/AccountPlaylistPicker.js";
 import { MusicDock } from "./features/music/MusicDock.js";
+import {
+  readMusicPreferences,
+  writeMusicPreferences,
+  type MusicPreferencesV1,
+} from "./features/music/music-preferences.js";
+import { musicStageForPhase } from "./features/music/music-stage.js";
 import {
   YouTubePlaylistPlayer,
   type YouTubePlaybackState,
@@ -66,6 +78,14 @@ import { buildFinalGameResults } from "./features/players/game-results.js";
 import { SetupWizard, type SetupWizardSessionState } from "./features/setup/SetupWizard.js";
 import { AvailablePlayersScreen } from "./features/setup/AvailablePlayersScreen.js";
 import { GameTimelineScreen } from "./features/timeline/GameTimelineScreen.js";
+import {
+  DEFAULT_GLASS_SETTINGS,
+  GLASS_SETTINGS_BOUNDS,
+  readGlassSettings,
+  writeGlassSettings,
+  type GlassSettings,
+} from "./features/theme/glass-settings.js";
+import { supportsTrueRefraction } from "./features/theme/refractive-support.js";
 import { GameSessionOutbox } from "./session-outbox.js";
 import { createRandomId } from "./utils/random-id.js";
 import { applyColorTheme, readColorTheme, type ColorTheme } from "./theme.js";
@@ -84,7 +104,7 @@ interface LocalLogEntry {
 }
 
 type BackgroundShade = "black" | "grey-33" | "grey-66" | "white";
-type WorkspaceView = "game" | "players" | "timeline";
+type WorkspaceView = "game" | "players" | "timeline" | "console";
 
 const backgroundShadeOrder: readonly BackgroundShade[] = ["black", "grey-33", "grey-66", "white"];
 const backgroundShadeClass: Record<BackgroundShade, string> = {
@@ -99,8 +119,6 @@ const backgroundShadeLabel: Record<BackgroundShade, string> = {
   "grey-66": "66% grey",
   white: "white",
 };
-const centerShadowStorageKey = "mafia-dashboard.center-shadow";
-const dayNightIndicatorStorageKey = "mafia-dashboard.day-night-indicator";
 const defaultClubId = "00000000-0000-4000-8000-000000000101";
 const gameSessionStoragePrefix = "mafia-dashboard.game-session.v4";
 const legacyGameSessionStoragePrefix = "mafia-dashboard.game-session.v3";
@@ -114,7 +132,8 @@ const readAvailablePlayerIds = (storage: Storage, clubId: string): ReadonlySet<s
         ? value.filter((playerId): playerId is string => typeof playerId === "string")
         : [],
     );
-  } catch {
+  } catch (error) {
+    reportError(error, { source: "persistence", context: "available-players.read" });
     return new Set();
   }
 };
@@ -302,6 +321,15 @@ export const ClubWorkspace = ({
   const sessionSync = sessionSyncRef.current;
   const initialCurrent = useRef(sessionSync.current).current;
   const initialState = useRef(asPersistedState(initialCurrent?.state)).current;
+  const initialMusicPreferences = useRef(
+    readMusicPreferences(window.localStorage, club.id),
+  ).current;
+  const initialPlaylistId =
+    initialCurrent !== null &&
+    initialCurrent !== undefined &&
+    initialState.playlistId.trim().length > 0
+      ? initialState.playlistId
+      : initialMusicPreferences.lastPlaylistId || initialState.playlistId;
 
   const [view, setView] = useState<WorkspaceView>("game");
   const [availabilityScreenOpen, setAvailabilityScreenOpen] = useState(false);
@@ -316,7 +344,8 @@ export const ClubWorkspace = ({
         initialState.initialGame,
         getActiveBranch(initialState.events, initialState.headEventId),
       ).game;
-    } catch {
+    } catch (error) {
+      reportError(error, { source: "persistence", context: "game-session.replay-initial" });
       return initialState.game;
     }
   })();
@@ -358,12 +387,67 @@ export const ClubWorkspace = ({
   );
   const [playersError, setPlayersError] = useState(false);
   const [rosterGateError, setRosterGateError] = useState<string | null>(null);
-  const [playlistId, setPlaylistId] = useState(initialState.playlistId);
+  const [playlistId, setPlaylistId] = useState(initialPlaylistId);
+  const [musicPreferences, setMusicPreferences] =
+    useState<MusicPreferencesV1>(initialMusicPreferences);
   const [musicPlayerExpanded, setMusicPlayerExpanded] = useState(false);
   const [musicVolumePresets, setMusicVolumePresets] = useState<readonly [number, number]>([50, 80]);
   const [activeMusicVolume, setActiveMusicVolume] = useState(80);
   const [musicReloadRequest, setMusicReloadRequest] = useState(0);
   const [musicState, setMusicState] = useState<YouTubePlaybackState>("idle");
+
+  const changePlaylistId = useCallback(
+    (nextPlaylistId: string) => {
+      setPlaylistId(nextPlaylistId);
+      setMusicPreferences((current) => {
+        const next = { ...current, lastPlaylistId: nextPlaylistId };
+        writeMusicPreferences(window.localStorage, club.id, next);
+        return next;
+      });
+    },
+    [club.id],
+  );
+  const changeStagePlaylistIds = useCallback(
+    (stagePlaylistIds: MusicPreferencesV1["stagePlaylistIds"]) => {
+      setMusicPreferences((current) => {
+        const next = { ...current, stagePlaylistIds };
+        writeMusicPreferences(window.localStorage, club.id, next);
+        return next;
+      });
+    },
+    [club.id],
+  );
+  const clearMusicAccountState = useCallback(() => {
+    setPlaylistId("");
+    setMusicPreferences((current) => {
+      const next = { ...current, lastPlaylistId: "", stagePlaylistIds: {} };
+      writeMusicPreferences(window.localStorage, club.id, next);
+      return next;
+    });
+  }, [club.id]);
+  const changeQueueOrder = useCallback(
+    (changedPlaylistId: string, order: readonly string[]) => {
+      setMusicPreferences((current) => {
+        const next = {
+          ...current,
+          queueOrderByPlaylist: {
+            ...current.queueOrderByPlaylist,
+            [changedPlaylistId]: order,
+          },
+        };
+        writeMusicPreferences(window.localStorage, club.id, next);
+        return next;
+      });
+    },
+    [club.id],
+  );
+
+  useEffect(() => {
+    if (game === null) return;
+    const stage = musicStageForPhase(game.phase);
+    const mappedPlaylistId = stage === null ? undefined : musicPreferences.stagePlaylistIds[stage];
+    if (mappedPlaylistId && mappedPlaylistId !== playlistId) changePlaylistId(mappedPlaylistId);
+  }, [changePlaylistId, game, musicPreferences.stagePlaylistIds, playlistId]);
 
   const [activeSessions, setActiveSessions] = useState<readonly ActiveGameSessionSummary[]>([]);
   const [activeSessionsError, setActiveSessionsError] = useState(false);
@@ -373,12 +457,10 @@ export const ClubWorkspace = ({
   const [activeDrawer, setActiveDrawer] = useState<"log" | "dev" | null>(null);
   const [musicSetupOpen, setMusicSetupOpen] = useState(false);
   const [backgroundShade, setBackgroundShade] = useState<BackgroundShade>("black");
-  const [centerShadowVisible, setCenterShadowVisible] = useState(
-    () => window.localStorage.getItem(centerShadowStorageKey) !== "hidden",
+  const [glassSettings, setGlassSettings] = useState<GlassSettings>(() =>
+    readGlassSettings(window.localStorage),
   );
-  const [dayNightIndicatorVisible, setDayNightIndicatorVisible] = useState(
-    () => window.localStorage.getItem(dayNightIndicatorStorageKey) === "visible",
-  );
+  const [devModeEnabled, setDevModeEnabled] = useState(false);
   const [privacyHidden, setPrivacyHidden] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(() => currentFullscreenElement() !== null);
   const [clearingAllData, setClearingAllData] = useState(false);
@@ -397,7 +479,9 @@ export const ClubWorkspace = ({
   const previewTargetEventIdRef = useRef<string | null>(null);
   const gameScreenMutationGenerationRef = useRef(0);
   const liveGameBeforePreviewRef = useRef<GameState | null>(null);
+  const hasIntermediateDraftRef = useRef(false);
   const viewBeforeTimelineRef = useRef<Exclude<WorkspaceView, "timeline">>("game");
+  const viewBeforeConsoleRef = useRef<"game" | "players">("game");
   const phaseRef = useRef(initialState.game?.phase ?? setupPhase(initialState.setup?.step));
   const playerRequestRef = useRef(0);
   const activeSessionsRequestRef = useRef(0);
@@ -411,8 +495,22 @@ export const ClubWorkspace = ({
   const activeBranch = (() => {
     try {
       return getActiveBranch(events, headEventId);
-    } catch {
+    } catch (error) {
+      reportError(error, { source: "persistence", context: "game-history.active-branch" });
       return [];
+    }
+  })();
+  const currentTimelineHistory = (() => {
+    if (initialGame === null || headEventId === null) return undefined;
+    try {
+      return {
+        label: sessionName,
+        frames: replayGameLog(initialGame, activeBranch).frames,
+        headEventId,
+      };
+    } catch (error) {
+      reportError(error, { source: "persistence", context: "timeline.current-history" });
+      return undefined;
     }
   })();
   const log: readonly LocalLogEntry[] = [...legacyLog, ...activeBranch.map(toLocalLogEntry)];
@@ -434,7 +532,8 @@ export const ClubWorkspace = ({
         setPlayersError(false);
         if (nextPlayers.length < 11) setView("players");
       }
-    } catch {
+    } catch (error) {
+      reportError(error, { source: "api", context: "players.list" });
       if (playerRequestRef.current === request) setPlayersError(true);
     }
   }, [club.id]);
@@ -448,7 +547,8 @@ export const ClubWorkspace = ({
         setActiveSessions(sessions);
         setActiveSessionsError(false);
       }
-    } catch {
+    } catch (error) {
+      reportError(error, { source: "api", context: "game-sessions.list-active" });
       if (activeSessionsRequestRef.current === request) setActiveSessionsError(true);
     }
   }, [club.id]);
@@ -611,7 +711,9 @@ export const ClubWorkspace = ({
   );
 
   useEffect(() => {
-    void sessionSync.flush().catch(() => undefined);
+    void sessionSync.flush().catch((error: unknown) => {
+      reportError(error, { source: "persistence", context: "game-session.initial-flush" });
+    });
   }, [sessionSync]);
 
   useEffect(() => {
@@ -649,7 +751,9 @@ export const ClubWorkspace = ({
           void refreshPlayers();
         }
       })
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        reportError(error, { source: "persistence", context: "game-session.auto-flush" });
+      });
   }, [
     finalResults,
     events,
@@ -699,6 +803,9 @@ export const ClubWorkspace = ({
 
   const changeGame = (next: GameState) => {
     if (sessionSync.normalizing || previewTargetEventIdRef.current !== null) return;
+    const canonical = canonicalGameRef.current;
+    hasIntermediateDraftRef.current =
+      canonical !== null && hashGameState(next) !== hashGameState(canonical);
     setGame(next);
   };
 
@@ -709,6 +816,13 @@ export const ClubWorkspace = ({
       const before = canonicalGameRef.current;
       const gameId = sessionSync.gameId;
       if (baseline === null || before === null || gameId === null) return;
+      if (!isMeaningfulGameEventDraft(draft)) {
+        const nextDraft = applyGameEvent(game ?? before, draft);
+        hasIntermediateDraftRef.current = true;
+        phaseRef.current = nextDraft.phase;
+        setGame(nextDraft);
+        return;
+      }
       const sequence = Math.max(0, ...eventsRef.current.map((entry) => entry.sequence)) + 1;
       const created = createGameLogEntry({
         gameId,
@@ -719,15 +833,17 @@ export const ClubWorkspace = ({
         before,
         draft,
       });
-      const displayedAfter =
-        draft.type === "foul.issued" && game !== null && created.after.phase === before.phase
-          ? {
-              ...created.after,
-              currentTurnIndex: game.currentTurnIndex,
-              voteAssignments: game.voteAssignments,
-              carCrashVotes: game.carCrashVotes,
-            }
-          : created.after;
+      let displayedAfter = created.after;
+      if (hasIntermediateDraftRef.current && game !== null) {
+        try {
+          displayedAfter = applyGameEvent(game, draft);
+        } catch (error) {
+          reportError(error, { source: "application", context: "game-event.apply-draft" });
+          displayedAfter = created.after;
+        }
+      }
+      hasIntermediateDraftRef.current =
+        hashGameState(displayedAfter) !== hashGameState(created.after);
       const nextEvents = [...eventsRef.current, created.entry];
       eventsRef.current = nextEvents;
       headEventIdRef.current = created.entry.id;
@@ -753,6 +869,7 @@ export const ClubWorkspace = ({
       const baseline = initialGameRef.current;
       if (baseline === null) return;
       gameScreenMutationGenerationRef.current += 1;
+      hasIntermediateDraftRef.current = false;
       const nextGame =
         targetEventId === null
           ? baseline.game
@@ -809,24 +926,13 @@ export const ClubWorkspace = ({
       try {
         await sessionSync.flush();
         return true;
-      } catch {
+      } catch (error) {
+        reportError(error, { source: "persistence", context: "game-session.flush" });
         return false;
       }
     },
     [hostName, hostPlayerId, playlistId, sessionName, sessionSync, setupSession],
   );
-
-  const reopenLastAcceptedEvent = useCallback(async () => {
-    const head = eventsRef.current.find(({ id }) => id === headEventIdRef.current);
-    if (
-      head?.type !== "mafia.shots-resolved" ||
-      head.parentEventId === null ||
-      !(await persistHeadMove(head.parentEventId, resetReturnEventId, null))
-    ) {
-      return;
-    }
-    moveHeadLocally(head.parentEventId);
-  }, [moveHeadLocally, persistHeadMove, resetReturnEventId]);
 
   const previewEventState = useCallback(
     (eventId: string) => {
@@ -854,7 +960,7 @@ export const ClubWorkspace = ({
     async (eventId: string) => {
       const branch = getActiveBranch(eventsRef.current, headEventIdRef.current);
       const targetIndex = branch.findIndex(({ id }) => id === eventId);
-      if (targetIndex < 0) return;
+      if (targetIndex < 0) return false;
       const futureCount = branch.length - targetIndex - 1;
       const target = branch[targetIndex]!;
       if (
@@ -862,10 +968,11 @@ export const ClubWorkspace = ({
           `Reset the active game to log #${target.sequence}? ${futureCount} later active ${futureCount === 1 ? "action" : "actions"} will leave the current branch. Their history will be preserved.`,
         )
       ) {
-        return;
+        return false;
       }
       const previousHead = headEventIdRef.current;
-      if (previousHead === null || !(await persistHeadMove(eventId, previousHead, null))) return;
+      if (previousHead === null || !(await persistHeadMove(eventId, previousHead, null)))
+        return false;
       gameScreenMutationGenerationRef.current += 1;
       setResetReturnUndoBudget(undoBudget);
       moveHeadLocally(eventId);
@@ -876,6 +983,7 @@ export const ClubWorkspace = ({
       setPreviewGame(null);
       liveGameBeforePreviewRef.current = null;
       setActiveDrawer(null);
+      return true;
     },
     [moveHeadLocally, persistHeadMove, undoBudget],
   );
@@ -922,7 +1030,8 @@ export const ClubWorkspace = ({
       await Promise.all([refreshPlayers(), refreshActiveSessions()]);
       await sessionSync.clear(async () => undefined);
       resetLocalState();
-    } catch {
+    } catch (error) {
+      reportError(error, { source: "api", context: "game.finish" });
       setFinishGameState("error");
     }
   };
@@ -1017,6 +1126,7 @@ export const ClubWorkspace = ({
       }
       return created;
     } catch (error) {
+      reportError(error, { source: "api", context: "development-players.populate" });
       await Promise.allSettled(created.map(({ id }) => deletePlayer(id, club.id)));
       throw error;
     } finally {
@@ -1122,7 +1232,8 @@ export const ClubWorkspace = ({
       }
       applyRemoteSession(session);
       setResumeGameId(null);
-    } catch {
+    } catch (error) {
+      reportError(error, { source: "api", context: "game-session.resume" });
       if (resumeRequestRef.current === request) {
         setResumeGameId(null);
         setActiveSessionsError(true);
@@ -1173,7 +1284,8 @@ export const ClubWorkspace = ({
     const clearingGameId = sessionSync.gameId;
     try {
       await sessionSync.clear((gameId, revision) => clearGameSession(gameId, revision, club.id));
-    } catch {
+    } catch (error) {
+      reportError(error, { source: "persistence", context: "game-session.clear" });
       return;
     }
     if (sessionSync.gameId !== null && sessionSync.gameId !== clearingGameId) return;
@@ -1198,7 +1310,8 @@ export const ClubWorkspace = ({
       }
       setSwipedSessionId(null);
       await Promise.all([refreshActiveSessions(), refreshPlayers()]);
-    } catch {
+    } catch (error) {
+      reportError(error, { source: "api", context: "game-session.delete" });
       setActiveSessionsError(true);
     } finally {
       setDeletingSessionId(null);
@@ -1218,13 +1331,16 @@ export const ClubWorkspace = ({
       await sessionSync.clear(async () => undefined);
       window.localStorage.clear();
       window.sessionStorage.clear();
-      setCenterShadowVisible(true);
-      setDayNightIndicatorVisible(false);
+      setMusicPreferences(readMusicPreferences(window.localStorage, club.id));
+      setGlassSettings(DEFAULT_GLASS_SETTINGS);
+      clearErrorConsole();
+      setDevModeEnabled(false);
       setAvailablePlayerIds(new Set());
       resetLocalState();
       window.localStorage.clear();
       setActiveDrawer(null);
-    } catch {
+    } catch (error) {
+      reportError(error, { source: "persistence", context: "application-data.clear" });
       setClearAllDataError(true);
     } finally {
       setClearingAllData(false);
@@ -1244,7 +1360,8 @@ export const ClubWorkspace = ({
       } else {
         await fullscreenDocument.webkitExitFullscreen?.();
       }
-    } catch {
+    } catch (error) {
+      reportError(error, { source: "application", context: "fullscreen.toggle" });
       setIsFullscreen(currentFullscreenElement() !== null);
     }
   };
@@ -1288,8 +1405,33 @@ export const ClubWorkspace = ({
     backgroundShadeOrder[
       (backgroundShadeOrder.indexOf(backgroundShade) + 1) % backgroundShadeOrder.length
     ]!;
-  const nextColorTheme: ColorTheme = colorTheme === "midnight" ? "malaga" : "midnight";
-  const nextColorThemeLabel = nextColorTheme === "malaga" ? "Málaga gold" : "Midnight";
+  const colorThemeOrder: readonly ColorTheme[] = ["midnight", "malaga", "malaga-glass"];
+  const nextColorTheme =
+    colorThemeOrder[(colorThemeOrder.indexOf(colorTheme) + 1) % colorThemeOrder.length] ??
+    "midnight";
+  const nextColorThemeLabel =
+    nextColorTheme === "malaga"
+      ? "Málaga gold"
+      : nextColorTheme === "malaga-glass"
+        ? "Málaga Glass"
+        : "Midnight";
+  const browserBrands = /(?:Chrome|Chromium|CriOS|Edg)\//.test(navigator.userAgent)
+    ? ["Chromium"]
+    : /Safari\//.test(navigator.userAgent)
+      ? ["Safari"]
+      : [];
+  const trueRefractionSupported = supportsTrueRefraction({
+    enabled: glassSettings.enabled,
+    cssSupportsFilterUrl:
+      typeof CSS !== "undefined" &&
+      typeof CSS.supports === "function" &&
+      CSS.supports("backdrop-filter", "url(#refractive-probe)"),
+    browserBrands,
+  });
+  const updateGlassSettings = (next: Partial<GlassSettings>) => {
+    setGlassSettings((current) => writeGlassSettings(window.localStorage, { ...current, ...next }));
+  };
+  const showWorkspaceTools = previewGame === null && (view === "game" || view === "players");
 
   return (
     <div
@@ -1297,9 +1439,9 @@ export const ClubWorkspace = ({
         view === "game" && (game !== null || roleGiveawayActive)
           ? " has-live-game table-layout-shell"
           : ""
-      }${game !== null && view !== "timeline" ? " has-timer-rail" : ""}${
+      }${game !== null && view === "game" ? " has-timer-rail" : ""}${
         showApplicationStatus ? " has-top-level-screen" : ""
-      }${isFullscreen ? " is-fullscreen" : ""}${centerShadowVisible ? "" : " is-center-shadow-hidden"}`}
+      }${isFullscreen ? " is-fullscreen" : ""}`}
       data-background-shade={backgroundShade}
     >
       {showApplicationStatus ? (
@@ -1324,7 +1466,7 @@ export const ClubWorkspace = ({
           <div className="phase-banner">{applicationStatusPhase}</div>
         </header>
       ) : null}
-      {previewGame === null && view !== "timeline" ? (
+      {showWorkspaceTools ? (
         <div className="app-fixed-toolbar" aria-label="Application tools">
           <button
             type="button"
@@ -1399,7 +1541,7 @@ export const ClubWorkspace = ({
           </button>
         </div>
       ) : null}
-      {previewGame === null && view !== "timeline" && activeDrawer === "log" ? (
+      {showWorkspaceTools && activeDrawer === "log" ? (
         <aside className="app-drawer game-log-drawer" role="dialog" aria-label="Game log">
           <h2>Log</h2>
           <div className="game-log-list">
@@ -1443,7 +1585,7 @@ export const ClubWorkspace = ({
           </div>
         </aside>
       ) : null}
-      {previewGame === null && view !== "timeline" && activeDrawer === "dev" ? (
+      {showWorkspaceTools && activeDrawer === "dev" ? (
         <aside
           ref={devDrawerRef}
           className="app-drawer dev-menu-drawer"
@@ -1476,6 +1618,54 @@ export const ClubWorkspace = ({
             <button type="button" onClick={() => onColorThemeChange(nextColorTheme)}>
               Use {nextColorThemeLabel} theme
             </button>
+            <fieldset className="glass-settings" disabled={colorTheme !== "malaga-glass"}>
+              <legend>Glass settings</legend>
+              <p className="muted">
+                {trueRefractionSupported
+                  ? "True refraction available"
+                  : "True refraction unavailable · using fallback"}
+              </p>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={glassSettings.enabled}
+                  onChange={(event) => updateGlassSettings({ enabled: event.target.checked })}
+                />
+                <span>Enable glass effect</span>
+              </label>
+              {(
+                [
+                  ["blur", "Glass blur"],
+                  ["glassThickness", "Glass thickness"],
+                  ["bezelWidth", "Bezel width"],
+                  ["refractiveIndex", "Refractive index"],
+                  ["specularOpacity", "Specular opacity"],
+                  ["specularAngle", "Specular angle"],
+                  ["fallbackOpacity", "Fallback opacity"],
+                ] as const
+              ).map(([key, label]) => (
+                <label key={key}>
+                  <span>{label}</span>
+                  <input
+                    type="number"
+                    aria-label={label}
+                    min={GLASS_SETTINGS_BOUNDS[key].min}
+                    max={GLASS_SETTINGS_BOUNDS[key].max}
+                    step={GLASS_SETTINGS_BOUNDS[key].step}
+                    value={glassSettings[key]}
+                    onChange={(event) => updateGlassSettings({ [key]: Number(event.target.value) })}
+                  />
+                </label>
+              ))}
+              <button
+                type="button"
+                onClick={() =>
+                  setGlassSettings(writeGlassSettings(window.localStorage, DEFAULT_GLASS_SETTINGS))
+                }
+              >
+                Reset glass settings
+              </button>
+            </fieldset>
             <button
               type="button"
               onClick={() => {
@@ -1507,6 +1697,16 @@ export const ClubWorkspace = ({
             >
               Past game timeline
             </button>
+            <button
+              type="button"
+              onClick={() => {
+                viewBeforeConsoleRef.current = view === "players" ? "players" : "game";
+                setActiveDrawer(null);
+                setView("console");
+              }}
+            >
+              Console
+            </button>
             {game === null && setupSession === null && playlistId === defaultPlaylistId ? null : (
               <button type="button" className="danger-action" onClick={() => void clearGameState()}>
                 Clear game state
@@ -1517,37 +1717,10 @@ export const ClubWorkspace = ({
             </button>
             <button
               type="button"
-              onClick={() => {
-                setCenterShadowVisible((visible) => {
-                  const next = !visible;
-                  window.localStorage.setItem(centerShadowStorageKey, next ? "visible" : "hidden");
-                  return next;
-                });
-              }}
+              aria-pressed={devModeEnabled}
+              onClick={() => setDevModeEnabled((enabled) => !enabled)}
             >
-              {centerShadowVisible ? "Hide table center shadow" : "Show table center shadow"}
-            </button>
-            <button
-              type="button"
-              className="dev-setting-toggle"
-              aria-label={`${dayNightIndicatorVisible ? "Hide" : "Show"} Day/night table indication`}
-              aria-pressed={dayNightIndicatorVisible}
-              onClick={() => {
-                setDayNightIndicatorVisible((visible) => {
-                  const next = !visible;
-                  window.localStorage.setItem(
-                    dayNightIndicatorStorageKey,
-                    next ? "visible" : "hidden",
-                  );
-                  return next;
-                });
-              }}
-            >
-              <span>
-                <strong>Day/night indication</strong>
-                <small>Animated ambient light on the table</small>
-              </span>
-              <span className="dev-setting-state">{dayNightIndicatorVisible ? "On" : "Off"}</span>
+              {devModeEnabled ? "Disable dev mode" : "Enable dev mode"}
             </button>
             <button
               type="button"
@@ -1599,7 +1772,13 @@ export const ClubWorkspace = ({
                     </label>
                   ))}
                 </fieldset>
-                <AccountPlaylistPicker playlistId={playlistId} onPlaylistIdChange={setPlaylistId} />
+                <AccountPlaylistPicker
+                  playlistId={playlistId}
+                  onPlaylistIdChange={changePlaylistId}
+                  onAccountDisconnected={clearMusicAccountState}
+                  stagePlaylistIds={musicPreferences.stagePlaylistIds}
+                  onStagePlaylistIdsChange={changeStagePlaylistIds}
+                />
               </section>
             ) : null}
             <button
@@ -1678,12 +1857,23 @@ export const ClubWorkspace = ({
         </aside>
       ) : null}
 
-      {view === "timeline" ? (
+      {view === "console" ? (
+        <ErrorConsoleScreen onBack={() => setView(viewBeforeConsoleRef.current)} />
+      ) : view === "timeline" ? (
         <GameTimelineScreen
           clubId={club.id}
           onBack={() => setView(viewBeforeTimelineRef.current)}
-          privacyHidden={privacyHidden}
-          onTogglePrivacy={() => setPrivacyHidden((hidden) => !hidden)}
+          showDevelopmentTools={devModeEnabled}
+          currentHistory={currentTimelineHistory}
+          onPreviewCurrentEvent={(eventId) => {
+            previewEventState(eventId);
+            setView("game");
+          }}
+          onResetCurrentEvent={(eventId) => {
+            void resetToEventState(eventId).then((reset) => {
+              if (reset) setView("game");
+            });
+          }}
         />
       ) : view === "players" ? (
         <>
@@ -1717,7 +1907,7 @@ export const ClubWorkspace = ({
           <SetupWizard
             key={setupInstanceKey}
             players={availablePlayersForSetup}
-            showDevelopmentTools={import.meta.env.DEV}
+            showDevelopmentTools={devModeEnabled}
             onPopulateDevelopmentPlayers={populateDevelopmentPlayers}
             onOpenAvailablePlayers={() => setAvailabilityScreenOpen(true)}
             privacyHidden={privacyHidden}
@@ -1727,7 +1917,7 @@ export const ClubWorkspace = ({
             musicPlaying={musicState === "playing"}
             musicStatus={musicLabel[musicState]}
             playlistId={playlistId}
-            onPlaylistIdChange={setPlaylistId}
+            onPlaylistIdChange={changePlaylistId}
             volumePresets={musicVolumePresets}
             onVolumePresetsChange={(presets) => {
               setMusicVolumePresets(presets);
@@ -1753,6 +1943,7 @@ export const ClubWorkspace = ({
               eventsRef.current = [started.entry];
               headEventIdRef.current = started.entry.id;
               canonicalGameRef.current = next;
+              hasIntermediateDraftRef.current = false;
               setInitialGame(baseline);
               setEvents([started.entry]);
               setHeadEventId(started.entry.id);
@@ -1783,9 +1974,6 @@ export const ClubWorkspace = ({
           onAcceptedEvent={(draft) => {
             if (canApplyGameScreenMutation()) acceptGameEvent(draft);
           }}
-          onReopenLastAcceptedEvent={() => {
-            if (canApplyGameScreenMutation()) reopenLastAcceptedEvent();
-          }}
           mode={previewGame === null ? "live" : "preview"}
           previewSequence={previewEntry?.sequence}
           onExitPreview={exitPreview}
@@ -1793,7 +1981,6 @@ export const ClubWorkspace = ({
             if (previewTargetEventId !== null) resetToEventState(previewTargetEventId);
           }}
           privacyHidden={privacyHidden}
-          dayNightIndicatorVisible={dayNightIndicatorVisible}
           clubLogo={club.headerLogo}
           clubName={club.name}
           finishGameState={finishGameState}
@@ -1803,10 +1990,17 @@ export const ClubWorkspace = ({
         />
       )}
 
-      {previewGame === null ? (
+      <LiveSidePanel
+        game={view === "game" && previewGame === null ? game : null}
+        hidden={view !== "game" || previewGame !== null}
+        theme={colorTheme}
+        glassSettings={glassSettings}
+        supportsTrueRefraction={trueRefractionSupported}
+      >
         <MusicDock
           expanded={musicPlayerExpanded}
-          hidden={view === "players" || view === "timeline" || previewGame !== null}
+          onExpandedChange={setMusicPlayerExpanded}
+          hidden={view !== "game" || previewGame !== null}
           isPlaying={musicState === "playing"}
           canFadeIn={musicState === "paused"}
           onFadeIn={() => {
@@ -1829,9 +2023,11 @@ export const ClubWorkspace = ({
             activeVolume={activeMusicVolume}
             onVolumeChange={setActiveMusicVolume}
             reloadRequest={musicReloadRequest}
+            rememberedQueueOrder={musicPreferences.queueOrderByPlaylist[playlistId] ?? []}
+            onQueueOrderChange={changeQueueOrder}
           />
         </MusicDock>
-      ) : null}
+      </LiveSidePanel>
     </div>
   );
 };
@@ -1859,7 +2055,8 @@ export const App = () => {
     try {
       setClubs(await listClubs());
       setError(null);
-    } catch {
+    } catch (error) {
+      reportError(error, { source: "api", context: "clubs.list" });
       setError("Clubs are temporarily unavailable.");
     } finally {
       setLoading(false);
@@ -1876,7 +2073,8 @@ export const App = () => {
         setUser(session.user);
         setError(null);
       })
-      .catch(() => {
+      .catch((error: unknown) => {
+        reportError(error, { source: "api", context: "auth.session" });
         if (current) setAuthUnavailable(true);
       })
       .finally(() => {
@@ -1901,7 +2099,8 @@ export const App = () => {
       setSelectedClub(null);
       setEditingClub(null);
       setError(null);
-    } catch {
+    } catch (error) {
+      reportError(error, { source: "api", context: "auth.sign-out" });
       setError("Sign out could not be completed.");
     } finally {
       setLoading(false);
@@ -1919,6 +2118,7 @@ export const App = () => {
       );
       setError(null);
     } catch (saveError) {
+      reportError(saveError, { source: "api", context: "clubs.save" });
       setError("The club could not be saved.");
       throw saveError;
     }
@@ -1942,7 +2142,8 @@ export const App = () => {
       setSelectedClub(null);
       setEditingClub(null);
       setError(null);
-    } catch {
+    } catch (error) {
+      reportError(error, { source: "api", context: "clubs.delete" });
       setError("The club could not be deleted.");
     }
   };

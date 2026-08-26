@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ApiError } from "../../api/client.js";
 import type { PlayerProfile, PlayerProfileInput } from "../../api/client.js";
+import { reportError } from "../console/error-console.js";
 
 interface PlayersScreenProps {
   readonly players: readonly PlayerProfile[];
@@ -245,7 +246,10 @@ const PlayerCard = ({
           setError(null);
           setSaving(true);
           void onUpdate(player.id, toInput(draft))
-            .catch((reason: unknown) => setError(errorMessage(reason)))
+            .catch((reason: unknown) => {
+              reportError(reason, { source: "api", context: "players.update" });
+              setError(errorMessage(reason));
+            })
             .finally(() => setSaving(false));
         }}
       >
@@ -283,7 +287,10 @@ const PlayerCard = ({
                 setError(null);
                 setDeleting(true);
                 void onDelete(player.id)
-                  .catch(() => setError(deleteErrorMessage()))
+                  .catch((reason: unknown) => {
+                    reportError(reason, { source: "api", context: "players.delete" });
+                    setError(deleteErrorMessage());
+                  })
                   .finally(() => setDeleting(false));
               }}
             >
@@ -328,7 +335,10 @@ export const PlayersScreen = ({
             setSaving(true);
             void onCreate(toInput(draft))
               .then(() => setDraft(emptyDraft))
-              .catch((reason: unknown) => setError(errorMessage(reason)))
+              .catch((reason: unknown) => {
+                reportError(reason, { source: "api", context: "players.create" });
+                setError(errorMessage(reason));
+              })
               .finally(() => setSaving(false));
           }}
         >

@@ -60,7 +60,7 @@ const DayHarness = () => {
 };
 
 describe("GameScreen", () => {
-  it("animates the optional table indication between Day and night", () => {
+  it("keeps a static table tint in sync with Day and night", () => {
     const day = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
     const { rerender } = render(
       <GameScreen
@@ -69,15 +69,11 @@ describe("GameScreen", () => {
         onGameChange={() => undefined}
         onEvent={() => undefined}
         privacyHidden={false}
-        dayNightIndicatorVisible
       />,
     );
 
-    expect(document.querySelector(".game-shell")).toHaveClass(
-      "is-day-night-indicator-visible",
-      "is-table-cycle-day",
-    );
-    expect(screen.getByRole("status", { name: "Day table indication" })).toHaveTextContent("Day 1");
+    expect(document.querySelector(".game-shell")).toHaveClass("is-table-cycle-day");
+    expect(screen.queryByRole("status", { name: /table indication/i })).toBeNull();
 
     rerender(
       <GameScreen
@@ -86,14 +82,11 @@ describe("GameScreen", () => {
         onGameChange={() => undefined}
         onEvent={() => undefined}
         privacyHidden={false}
-        dayNightIndicatorVisible
       />,
     );
 
     expect(document.querySelector(".game-shell")).toHaveClass("is-table-cycle-night");
-    expect(screen.getByRole("status", { name: "Night table indication" })).toHaveTextContent(
-      "Night 1",
-    );
+    expect(screen.queryByRole("status", { name: /table indication/i })).toBeNull();
   });
 
   it("shows the selected host at the table", () => {
@@ -126,10 +119,10 @@ describe("GameScreen", () => {
     expect(onEvent).not.toHaveBeenCalledWith("turn.started", expect.anything());
   });
 
-  it("offers a swipe red card for an active player while Mafia is shooting", async () => {
+  it("offers a swipe red card for an active player during a Don check", async () => {
     const user = userEvent.setup();
     const base = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
-    const game: GameState = { ...base, phase: "night-mafia" };
+    const game: GameState = { ...base, phase: "night-don" };
     const target = game.players.find(({ role }) => role === "citizen")!;
     const onGameChange = vi.fn<(next: GameState) => void>();
     render(
@@ -142,7 +135,7 @@ describe("GameScreen", () => {
       />,
     );
     const card = screen.getByRole("button", {
-      name: `Assign all remaining Mafia shots to ${target.name}`,
+      name: `Don check ${target.name}`,
     });
 
     fireEvent.touchStart(card, { touches: [{ clientX: 20, clientY: 50 }] });
@@ -158,6 +151,39 @@ describe("GameScreen", () => {
     );
   });
 
+  it("supplies live phase and turn context with an accepted swipe red card", async () => {
+    const user = userEvent.setup();
+    const base = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+    const game: GameState = { ...base, phase: "night-don", currentTurnIndex: 4 };
+    const target = game.players.find(({ role }) => role === "citizen")!;
+    const onAcceptedEvent = vi.fn();
+    render(
+      <GameScreen
+        game={game}
+        hostName="Host Player"
+        onGameChange={() => undefined}
+        onEvent={() => undefined}
+        onAcceptedEvent={onAcceptedEvent}
+        privacyHidden={false}
+      />,
+    );
+    const card = screen.getByRole("button", { name: `Don check ${target.name}` });
+
+    fireEvent.touchStart(card, { touches: [{ clientX: 20, clientY: 50 }] });
+    fireEvent.touchEnd(card, { changedTouches: [{ clientX: 82, clientY: 52 }] });
+    await user.click(screen.getByRole("button", { name: `Red card ${target.name}` }));
+
+    expect(onAcceptedEvent).toHaveBeenCalledWith({
+      type: "player.red-carded",
+      payload: {
+        seat: target.seat,
+        phase: "night-don",
+        currentTurnIndex: 4,
+      },
+      secret: false,
+    });
+  });
+
   it("locks every nomination button after the current speaker nominates", async () => {
     const user = userEvent.setup();
     render(<DayHarness />);
@@ -168,7 +194,6 @@ describe("GameScreen", () => {
     ).toHaveLength(2);
     expect(screen.getByRole("button", { name: /^nominate player 1$/i })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: /^nominate player 2$/i }));
-    expect(screen.getByText("Initiated by #1 Player 1")).toBeInTheDocument();
     expect(
       screen
         .getAllByRole("button", { name: /nominate player/i })
@@ -177,6 +202,38 @@ describe("GameScreen", () => {
 
     await user.click(screen.getByRole("button", { name: /next player/i }));
     expect(screen.getByRole("button", { name: /nominate player 3/i })).toBeEnabled();
+  });
+
+  it("supplies live phase and turn context with an accepted foul checkpoint", async () => {
+    const user = userEvent.setup();
+    const base = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+    const game: GameState = { ...base, currentTurnIndex: 2 };
+    const target = game.players.find(({ status }) => status === "active")!;
+    const onAcceptedEvent = vi.fn();
+    render(
+      <GameScreen
+        game={game}
+        hostName="Host Player"
+        onGameChange={() => undefined}
+        onEvent={() => undefined}
+        onAcceptedEvent={onAcceptedEvent}
+        privacyHidden={false}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: `Foul ${target.name}` }));
+
+    expect(onAcceptedEvent).toHaveBeenCalledWith({
+      type: "foul.issued",
+      payload: {
+        seat: target.seat,
+        foulNumber: 1,
+        redCarded: false,
+        phase: "day",
+        currentTurnIndex: 2,
+      },
+      secret: false,
+    });
   });
 
   it("presents each car-crash nominee with a 30-second turn", () => {
@@ -205,6 +262,7 @@ describe("GameScreen", () => {
       screen.queryByRole("button", { name: /start player 4 30-second turn/i }),
     ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /next nominee/i })).toBeEnabled();
+    expect(screen.getAllByRole("button", { name: /^foul player/i })).toHaveLength(10);
     expect(screen.getByRole("button", { name: /^seat 1: player 1$/i })).toHaveClass("is-inactive");
     expect(screen.getByRole("button", { name: /^seat 4: player 4$/i })).not.toHaveClass(
       "is-inactive",
@@ -343,7 +401,6 @@ describe("GameScreen", () => {
 
   it("eliminates every nominee approved by the car-crash ballot", async () => {
     const user = userEvent.setup();
-    const onGameChange = vi.fn<(game: GameState) => void>();
     const base = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
     const game: GameState = {
       ...base,
@@ -351,21 +408,41 @@ describe("GameScreen", () => {
       carCrashSeats: [4, 6],
       carCrashVotes: Object.fromEntries(base.players.map(({ seat }) => [seat, true])),
     };
-
-    render(
-      <GameScreen
-        game={game}
-        hostName="Host Player"
-        onGameChange={onGameChange}
-        onEvent={() => undefined}
-        privacyHidden={false}
-      />,
-    );
+    const CarCrashHarness = () => {
+      const [current, setCurrent] = useState(game);
+      return (
+        <GameScreen
+          game={current}
+          hostName="Host Player"
+          onGameChange={setCurrent}
+          onEvent={() => undefined}
+          privacyHidden={false}
+        />
+      );
+    };
+    render(<CarCrashHarness />);
     await user.click(screen.getByRole("button", { name: /resolve car crash/i }));
 
-    const resolved = onGameChange.mock.calls.at(-1)?.[0];
-    expect(resolved?.players.find(({ seat }) => seat === 4)?.status).toBe("eliminated");
-    expect(resolved?.players.find(({ seat }) => seat === 6)?.status).toBe("eliminated");
+    expect(screen.getByRole("heading", { name: "Car crash result" })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Car-crash result" })).toHaveTextContent(
+      "Eliminated",
+    );
+    expect(screen.getByRole("button", { name: "Seat 4: Player 4" })).toHaveClass(
+      "is-provisional-deceased",
+    );
+    expect(screen.getByRole("button", { name: "Seat 6: Player 6" })).toHaveClass(
+      "is-provisional-deceased",
+    );
+    expect(screen.getAllByRole("button", { name: /^Foul Player/i })).toHaveLength(10);
+
+    await user.click(screen.getByRole("button", { name: "Continue" }));
+    expect(screen.getByRole("heading", { name: "Goodbye speech" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Seat 4: Player 4" })).toHaveClass(
+      "status-eliminated",
+    );
+    expect(screen.getByRole("button", { name: "Seat 6: Player 6" })).toHaveClass(
+      "status-eliminated",
+    );
   });
 
   it("does not present an inactive restored current speaker as the active turn", () => {
@@ -514,7 +591,7 @@ describe("GameScreen", () => {
     expect(onResetPreview).toHaveBeenCalledOnce();
   });
 
-  it("shows Happy day, active team counts, and explicitly finishes the winning game", async () => {
+  it("ignores the legacy Happy-day field, shows team counts, and finishes the winning game", async () => {
     const user = userEvent.setup();
     const onFinishGame = vi.fn();
     const day = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
@@ -528,7 +605,7 @@ describe("GameScreen", () => {
         onFinishGame={onFinishGame}
       />,
     );
-    expect(screen.getByText("Happy day")).toBeInTheDocument();
+    expect(screen.queryByText("Happy day")).toBeNull();
     expect(screen.getByLabelText(/active citizens and 3 active Mafia/i)).toBeInTheDocument();
 
     rerender(

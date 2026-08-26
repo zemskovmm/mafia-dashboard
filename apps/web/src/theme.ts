@@ -1,4 +1,4 @@
-export type ColorTheme = "midnight" | "malaga";
+export type ColorTheme = "midnight" | "malaga" | "malaga-glass";
 
 const storageKey = "mafia-dashboard.color-theme";
 
@@ -10,8 +10,10 @@ interface ThemeWriter {
   readonly setItem: (key: string, value: string) => unknown;
 }
 
-export const readColorTheme = (storage: ThemeReader): ColorTheme =>
-  storage.getItem(storageKey) === "malaga" ? "malaga" : "midnight";
+export const readColorTheme = (storage: ThemeReader): ColorTheme => {
+  const stored = storage.getItem(storageKey);
+  return stored === "malaga" || stored === "malaga-glass" ? stored : "midnight";
+};
 
 export const applyColorTheme = (
   root: HTMLElement,

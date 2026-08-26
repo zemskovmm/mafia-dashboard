@@ -2,10 +2,12 @@ import { useEffect, useState } from "react";
 import { ImagePlus, Palette } from "lucide-react";
 import type { AppUser, Club, ClubInput } from "../../api/client.js";
 import type { ColorTheme } from "../../theme.js";
+import { reportError } from "../console/error-console.js";
 
 const colorThemes = [
   { value: "midnight", label: "Midnight" },
   { value: "malaga", label: "Málaga gold" },
+  { value: "malaga-glass", label: "Málaga Glass" },
 ] as const satisfies readonly { readonly value: ColorTheme; readonly label: string }[];
 
 interface ClubPortalProps {
@@ -56,7 +58,8 @@ const ClubEditor = ({
     try {
       setter(await readImage(file));
       setError(null);
-    } catch {
+    } catch (error) {
+      reportError(error, { source: "application", context: "club-image.read" });
       setError("That image could not be read.");
     }
   };

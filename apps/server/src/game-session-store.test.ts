@@ -136,7 +136,7 @@ const createCompletedSession = async (gameId: string, clubId = DEFAULT_CLUB_ID) 
   };
 };
 
-const createStartedDaySessionWithTurns = async (gameId: string) => {
+const createStartedDaySessionWithCheckpoints = async (gameId: string) => {
   const completed = await createCompletedSession(gameId);
   const game = {
     ...completed.state.game,
@@ -183,7 +183,11 @@ const createStartedDaySessionWithTurns = async (gameId: string) => {
     parentEventId: started.entry.id,
     createdAt: "2026-08-18T08:00:00.000Z",
     before: started.after,
-    draft: { type: "turn.completed", payload: { seat: 1 }, secret: false },
+    draft: {
+      type: "foul.issued",
+      payload: { seat: 1, foulNumber: 1, redCarded: false },
+      secret: false,
+    },
   });
   await store.appendEvent({
     gameId,
@@ -198,7 +202,11 @@ const createStartedDaySessionWithTurns = async (gameId: string) => {
     parentEventId: first.entry.id,
     createdAt: "2026-08-18T08:01:00.000Z",
     before: first.after,
-    draft: { type: "turn.completed", payload: { seat: 2 }, secret: false },
+    draft: {
+      type: "foul.issued",
+      payload: { seat: 2, foulNumber: 1, redCarded: false },
+      secret: false,
+    },
   });
   await store.appendEvent({
     gameId,
@@ -706,7 +714,7 @@ describe("GameSessionStore", () => {
     ]);
   });
 
-  it("appends one validated canonical event without replacing prior rows", async () => {
+  it("rejects a valid intermediate replay event instead of storing it as history", async () => {
     const gameId = randomUUID();
     const completed = await createCompletedSession(gameId);
     const liveGame = {
@@ -767,41 +775,24 @@ describe("GameSessionStore", () => {
       }
     ).appendEvent.bind(store);
 
-    const response = await appendEvent({
-      gameId,
-      mutationId: randomUUID(),
-      baseRevision: 2,
-      event: turn.entry,
-    });
-
-    expect(response).toMatchObject({
-      revision: 3,
-      state: { game: expect.objectContaining({ currentTurnIndex: 1 }) },
-    });
-    const events = await pool.query<{
-      id: string;
-      replay_sequence: number | null;
-      parent_event_id: string | null;
-    }>(
-      "SELECT id, replay_sequence, parent_event_id FROM game_events WHERE game_id = $1 ORDER BY sequence",
+    await expect(
+      appendEvent({
+        gameId,
+        mutationId: randomUUID(),
+        baseRevision: 2,
+        event: turn.entry,
+      }),
+    ).rejects.toThrow(/meaningful semantic checkpoint/i);
+    const events = await pool.query<{ replay_sequence: number | null }>(
+      "SELECT replay_sequence FROM game_events WHERE game_id = $1 ORDER BY sequence",
       [gameId],
     );
-    expect(events.rows).toEqual([
-      expect.objectContaining({ replay_sequence: null }),
-      { id: started.entry.id, replay_sequence: 1, parent_event_id: null },
-      { id: turn.entry.id, replay_sequence: 2, parent_event_id: started.entry.id },
-    ]);
-    const stored = await pool.query<{ state: Record<string, unknown> }>(
-      "SELECT state FROM game_sessions WHERE id = $1",
-      [gameId],
-    );
-    expect(stored.rows[0]?.state).not.toHaveProperty("game");
-    expect(stored.rows[0]?.state).not.toHaveProperty("events");
+    expect(events.rows).toEqual([{ replay_sequence: null }, { replay_sequence: 1 }]);
   });
 
   it("moves reset head without deleting future rows and records reset recovery", async () => {
     const gameId = randomUUID();
-    const history = await createStartedDaySessionWithTurns(gameId);
+    const history = await createStartedDaySessionWithCheckpoints(gameId);
     const moveHead = (
       store as unknown as {
         readonly moveHead: (input: {
@@ -861,7 +852,7 @@ describe("GameSessionStore", () => {
 
   it("appends a new branch after reset while retaining inactive future rows", async () => {
     const gameId = randomUUID();
-    const history = await createStartedDaySessionWithTurns(gameId);
+    const history = await createStartedDaySessionWithCheckpoints(gameId);
     await store.moveHead({
       gameId,
       mutationId: randomUUID(),
@@ -876,7 +867,11 @@ describe("GameSessionStore", () => {
       parentEventId: history.started.entry.id,
       createdAt: "2026-08-18T08:02:00.000Z",
       before: history.started.after,
-      draft: { type: "turn.completed", payload: { seat: 1 }, secret: false },
+      draft: {
+        type: "foul.issued",
+        payload: { seat: 3, foulNumber: 1, redCarded: false },
+        secret: false,
+      },
     });
 
     const response = await store.appendEvent({
@@ -889,7 +884,9 @@ describe("GameSessionStore", () => {
     expect(response).toMatchObject({
       revision: 6,
       state: {
-        game: expect.objectContaining({ currentTurnIndex: 1 }),
+        game: expect.objectContaining({
+          players: expect.arrayContaining([expect.objectContaining({ seat: 3, fouls: 1 })]),
+        }),
         headEventId: branch.entry.id,
         resetReturnEventId: null,
       },
@@ -927,7 +924,7 @@ describe("GameSessionStore", () => {
 
   it("never rewrites an inactive canonical event when its ID is reused", async () => {
     const gameId = randomUUID();
-    const history = await createStartedDaySessionWithTurns(gameId);
+    const history = await createStartedDaySessionWithCheckpoints(gameId);
     await store.moveHead({
       gameId,
       mutationId: randomUUID(),
@@ -942,7 +939,11 @@ describe("GameSessionStore", () => {
       parentEventId: history.started.entry.id,
       createdAt: "2026-08-18T09:00:00.000Z",
       before: history.started.after,
-      draft: { type: "turn.completed", payload: { seat: 1 }, secret: false },
+      draft: {
+        type: "foul.issued",
+        payload: { seat: 1, foulNumber: 1, redCarded: false },
+        secret: false,
+      },
     });
 
     await expect(
@@ -975,7 +976,7 @@ describe("GameSessionStore", () => {
 
   it("serializes concurrent appends to one head so exactly one wins", async () => {
     const gameId = randomUUID();
-    const history = await createStartedDaySessionWithTurns(gameId);
+    const history = await createStartedDaySessionWithCheckpoints(gameId);
     await store.moveHead({
       gameId,
       mutationId: randomUUID(),
@@ -992,7 +993,11 @@ describe("GameSessionStore", () => {
           parentEventId: history.started.entry.id,
           createdAt: `2026-08-18T08:0${index + 2}:00.000Z`,
           before: history.started.after,
-          draft: { type: "turn.completed", payload: { seat: 1 }, secret: false },
+          draft: {
+            type: "foul.issued",
+            payload: { seat: 3, foulNumber: 1, redCarded: false },
+            secret: false,
+          },
         }).entry,
     );
 

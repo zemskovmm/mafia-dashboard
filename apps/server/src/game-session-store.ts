@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
   createGameLogEntry,
+  isMeaningfulGameEventDraft,
   replayGameLog,
   type CanonicalGameEventType,
   type GameLogEntry,
@@ -1287,6 +1288,12 @@ export class GameSessionStore {
         const response = await hydrateSession(client, row, clubId, true);
         await client.query("COMMIT");
         return response;
+      }
+      if (!isMeaningfulGameEventDraft(input.event)) {
+        throw new GameSessionOperationError(
+          "game_session_event_intermediate",
+          "Only a meaningful semantic checkpoint may be stored in game history",
+        );
       }
       if (input.baseRevision !== row.revision) throw new GameSessionConflictError(row.revision);
       if (row.status !== "active") {

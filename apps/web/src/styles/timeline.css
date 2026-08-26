@@ -81,14 +81,6 @@
   border: 1px solid rgb(var(--accent-rgb) / 45%);
   border-radius: 999px;
 }
-.timeline-scroll-hint {
-  margin-left: auto;
-  overflow: visible;
-  color: var(--accent-hover);
-  font-size: 0.7rem;
-  font-weight: 700;
-  white-space: nowrap;
-}
 .timeline-track-scroll {
   min-width: 0;
   min-height: 0;
@@ -224,6 +216,14 @@
 }
 .timeline-inspector ul {
   padding-left: 20px;
+}
+.timeline-state-actions {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+.timeline-state-actions button {
+  width: 100%;
 }
 
 @media (max-width: 1050px) {

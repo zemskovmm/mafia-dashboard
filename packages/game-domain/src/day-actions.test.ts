@@ -5,6 +5,8 @@ import {
   assignCarCrashVote,
   assignVote,
   advanceVotingCandidate,
+  acceptCarCrashBallot,
+  completeCarCrashResult,
   completeCurrentTurn,
   countVotes,
   issueFoul,
@@ -468,5 +470,44 @@ describe("day actions", () => {
       yesVotes: 6,
       eligibleVoters: 10,
     });
+
+    const reviewed = acceptCarCrashBallot(fillDecision(6));
+    expect(reviewed).toMatchObject({
+      phase: "car-crash-result",
+      carCrashResult: {
+        eliminate: true,
+        seats: [4, 6],
+        yesVotes: 6,
+        eligibleVoters: 10,
+      },
+      winner: null,
+    });
+    expect(reviewed.players.find(({ seat }) => seat === 4)?.status).toBe("active");
+    expect(reviewed.players.find(({ seat }) => seat === 6)?.status).toBe("active");
+
+    let disciplined = reviewed;
+    for (let foul = 0; foul < 4; foul += 1) disciplined = issueFoul(disciplined, 1);
+    expect(disciplined).toMatchObject({
+      phase: "voting-cancelled",
+      carCrashResult: undefined,
+      votingCancellation: { reason: "red-card" },
+    });
+    expect(disciplined.players.find(({ seat }) => seat === 1)).toMatchObject({
+      fouls: 4,
+      status: "red-carded",
+    });
+
+    const eliminated = completeCarCrashResult(reviewed);
+    expect(eliminated).toMatchObject({
+      phase: "goodbye-speech",
+      goodbyeSeats: [4, 6],
+      goodbyeNext: "night",
+    });
+    expect(eliminated.players.find(({ seat }) => seat === 4)?.status).toBe("eliminated");
+    expect(eliminated.players.find(({ seat }) => seat === 6)?.status).toBe("eliminated");
+
+    const kept = completeCarCrashResult(acceptCarCrashBallot(fillDecision(5)));
+    expect(kept.phase).toBe("night-mafia");
+    expect(kept.players.every(({ status }) => status === "active")).toBe(true);
   });
 });

@@ -5,7 +5,6 @@ import {
   completeGoodbyeSpeech,
   completeCurrentTurn,
   beginNight,
-  countVotes,
   evaluateVictory,
   issueFoul,
   markPlayerInactive,
@@ -16,7 +15,6 @@ import {
 import type { CanonicalGameEventDraft, GameState } from "@mafia/game-domain";
 import { NightStage } from "../night/NightStage.js";
 import { GameTable } from "../table/GameTable.js";
-import { TimerControls } from "../timer/TimerControls.js";
 import { VotingStage } from "../voting/VotingStage.js";
 
 interface GameScreenProps {
@@ -26,13 +24,11 @@ interface GameScreenProps {
   readonly onGameChange: (game: GameState) => void;
   readonly onEvent: (type: string, payload: Record<string, unknown>) => void;
   readonly onAcceptedEvent?: (event: CanonicalGameEventDraft) => void;
-  readonly onReopenLastAcceptedEvent?: () => void;
   readonly mode?: "live" | "preview";
   readonly previewSequence?: number;
   readonly onExitPreview?: () => void;
   readonly onResetPreview?: () => void;
   readonly privacyHidden: boolean;
-  readonly dayNightIndicatorVisible?: boolean;
   readonly onFinishGame?: () => void;
   readonly finishGameState?: "ready" | "saving" | "saved" | "error";
   readonly clubLogo?: string | null;
@@ -65,6 +61,8 @@ const phaseTitle = (game: GameState): string => {
       return "Car crash";
     case "car-crash-decision":
       return isSkippedCarCrash(game) ? "Car crash" : "Car crash decision";
+    case "car-crash-result":
+      return "Car crash result";
     case "car-crash-skipped":
       return "Car crash";
     case "goodbye-speech":
@@ -97,13 +95,11 @@ export const GameScreen = ({
   onGameChange,
   onEvent,
   onAcceptedEvent,
-  onReopenLastAcceptedEvent,
   mode = "live",
   previewSequence,
   onExitPreview = () => undefined,
   onResetPreview = () => undefined,
   privacyHidden,
-  dayNightIndicatorVisible = false,
   onFinishGame = () => undefined,
   finishGameState = "ready",
   clubLogo = null,
@@ -118,18 +114,6 @@ export const GameScreen = ({
   const currentSpeakerHasNominated = game.nominations.some(
     ({ nominatorSeat }) => nominatorSeat === currentPlayer?.seat,
   );
-  const skippedCarCrash = isSkippedCarCrash(game);
-  const votingTotals = countVotes(game);
-  const votingStageActive =
-    game.phase === "voting" ||
-    game.phase === "voting-cancelled" ||
-    game.phase === "car-crash" ||
-    (game.phase === "car-crash-decision" && !skippedCarCrash) ||
-    game.phase === "goodbye-speech";
-  const activeVoteCount =
-    game.phase === "car-crash-decision"
-      ? Object.keys(game.carCrashVotes ?? {}).length
-      : Object.keys(game.voteAssignments).length;
   const activeCitizens = game.players.filter(
     ({ team, status }) => team === "red" && status === "active",
   ).length;
@@ -144,6 +128,7 @@ export const GameScreen = ({
     game.day >= 1 &&
     game.phase !== "mafia-planning" &&
     game.phase !== "sheriff-wake" &&
+    game.phase !== "car-crash-result" &&
     game.phase !== "finished";
   const revealDisciplineAction = (seat: number) => {
     const player = game.players.find((candidate) => candidate.seat === seat);
@@ -162,7 +147,11 @@ export const GameScreen = ({
             if (onAcceptedEvent !== undefined) {
               onAcceptedEvent({
                 type: "player.red-carded",
-                payload: { seat: swipedPlayer.seat },
+                payload: {
+                  seat: swipedPlayer.seat,
+                  phase: game.phase,
+                  currentTurnIndex: game.currentTurnIndex,
+                },
                 secret: false,
               });
             } else {
@@ -220,6 +209,8 @@ export const GameScreen = ({
           seat,
           foulNumber: player.fouls,
           redCarded: player.status === "red-carded",
+          phase: game.phase,
+          currentTurnIndex: game.currentTurnIndex,
         },
         secret: false,
       });
@@ -295,7 +286,6 @@ export const GameScreen = ({
     if (game.phase === "day") {
       return (
         <div className="day-center-stack">
-          {game.dayNotice === "happy" ? <div className="happy-day-note">Happy day</div> : null}
           <span className="table-prompt">Current speaker</span>
           <strong>{currentPlayer?.name ?? "Waiting for active player"}</strong>
         </div>
@@ -430,21 +420,8 @@ export const GameScreen = ({
 
   return (
     <main
-      className={`game-shell phase-${game.phase}${mode === "preview" ? " is-history-preview" : ""}${
-        dayNightIndicatorVisible
-          ? ` is-day-night-indicator-visible is-table-cycle-${tableCycle}`
-          : ""
-      }`}
+      className={`game-shell phase-${game.phase}${mode === "preview" ? " is-history-preview" : ""} is-table-cycle-${tableCycle}`}
     >
-      {dayNightIndicatorVisible ? (
-        <span
-          className="table-cycle-accessible"
-          role="status"
-          aria-label={`${tableCycle === "day" ? "Day" : "Night"} table indication`}
-        >
-          {tableCycle === "day" ? "Day" : "Night"} {game.day}
-        </span>
-      ) : null}
       <header className="game-header">
         {clubLogo === null ? null : (
           <img className="active-club-header-logo" src={clubLogo} alt="" />
@@ -516,6 +493,7 @@ export const GameScreen = ({
           ) : game.phase === "voting" ||
             game.phase === "voting-cancelled" ||
             game.phase === "car-crash-decision" ||
+            game.phase === "car-crash-result" ||
             game.phase === "car-crash-skipped" ? (
             <VotingStage
               game={game}
@@ -560,7 +538,6 @@ export const GameScreen = ({
               onGameChange={onGameChange}
               onEvent={onEvent}
               onAcceptedEvent={onAcceptedEvent}
-              onReopenLastAcceptedEvent={onReopenLastAcceptedEvent}
             />
           ) : (
             <GameTable
@@ -606,7 +583,7 @@ export const GameScreen = ({
                 ),
               }))}
               renderSeatActions={(seat) =>
-                game.phase === "day" && seat.status === "active" ? (
+                (game.phase === "day" || game.phase === "car-crash") && seat.status === "active" ? (
                   <>
                     <button
                       type="button"
@@ -615,34 +592,38 @@ export const GameScreen = ({
                     >
                       Foul
                     </button>
-                    <button
-                      type="button"
-                      aria-label={`Nominate ${seat.name}`}
-                      disabled={
-                        currentPlayer === undefined || seat.nominated || currentSpeakerHasNominated
-                      }
-                      onClick={() => {
-                        if (currentPlayer === undefined) return;
-                        if (onAcceptedEvent !== undefined) {
-                          onAcceptedEvent({
-                            type: "player.nominated",
-                            payload: {
+                    {game.phase === "day" ? (
+                      <button
+                        type="button"
+                        aria-label={`Nominate ${seat.name}`}
+                        disabled={
+                          currentPlayer === undefined ||
+                          seat.nominated ||
+                          currentSpeakerHasNominated
+                        }
+                        onClick={() => {
+                          if (currentPlayer === undefined) return;
+                          if (onAcceptedEvent !== undefined) {
+                            onAcceptedEvent({
+                              type: "player.nominated",
+                              payload: {
+                                nominatorSeat: currentPlayer.seat,
+                                candidateSeat: seat.seat,
+                              },
+                              secret: false,
+                            });
+                          } else {
+                            onGameChange(nominate(game, currentPlayer.seat, seat.seat));
+                            onEvent("player.nominated", {
                               nominatorSeat: currentPlayer.seat,
                               candidateSeat: seat.seat,
-                            },
-                            secret: false,
-                          });
-                        } else {
-                          onGameChange(nominate(game, currentPlayer.seat, seat.seat));
-                          onEvent("player.nominated", {
-                            nominatorSeat: currentPlayer.seat,
-                            candidateSeat: seat.seat,
-                          });
-                        }
-                      }}
-                    >
-                      Vote
-                    </button>
+                            });
+                          }
+                        }}
+                      >
+                        Vote
+                      </button>
+                    ) : null}
                   </>
                 ) : null
               }
@@ -671,48 +652,6 @@ export const GameScreen = ({
             />
           )}
         </section>
-
-        {mode === "live" ? (
-          <aside className="utility-rail">
-            <TimerControls />
-            <section className="nomination-panel">
-              <p className="eyebrow">Voting order</p>
-              {votingStageActive ? (
-                <p className="vote-count-summary">
-                  {activeVoteCount} active {activeVoteCount === 1 ? "vote" : "votes"}
-                </p>
-              ) : null}
-              {game.nominations.length === 0 ? (
-                <p className="muted">No nominations yet</p>
-              ) : (
-                <ol>
-                  {game.nominations.map(({ candidateSeat, nominatorSeat }) => {
-                    const candidate = game.players.find(({ seat }) => seat === candidateSeat);
-                    const initiator = game.players.find(({ seat }) => seat === nominatorSeat);
-                    return (
-                      <li key={candidateSeat}>
-                        <div className="nomination-copy">
-                          <strong>
-                            #{candidateSeat} {candidate?.name ?? `Seat ${candidateSeat}`}
-                          </strong>
-                          <span>
-                            Initiated by #{nominatorSeat}{" "}
-                            {initiator?.name ?? `Seat ${nominatorSeat}`}
-                          </span>
-                        </div>
-                        {votingStageActive ? (
-                          <span className="nomination-total">
-                            {votingTotals[candidateSeat] ?? 0}
-                          </span>
-                        ) : null}
-                      </li>
-                    );
-                  })}
-                </ol>
-              )}
-            </section>
-          </aside>
-        ) : null}
       </div>
     </main>
   );

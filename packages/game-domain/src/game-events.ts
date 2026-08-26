@@ -1,7 +1,9 @@
 import {
+  acceptCarCrashBallot,
   beginCarCrash,
   beginCarCrashDecision,
   beginSkippedCarCrashDecision,
+  completeCarCrashResult,
   issueFoul,
   nominate,
   redCard,
@@ -49,6 +51,7 @@ export const canonicalGameEventTypes = [
   "voting.skipped",
   "voting.resolved",
   "car-crash.resolved",
+  "car-crash.ballot-resolved",
   "mafia.shots-resolved",
   "don.checked",
   "don.check-skipped",
@@ -66,6 +69,10 @@ interface EventDraft<Type extends CanonicalGameEventType, Payload, Secret extend
   readonly secret: Secret;
 }
 
+type WithOptionalDisciplineContext<Payload> =
+  | (Payload & { readonly phase: GamePhase; readonly currentTurnIndex: number })
+  | (Payload & { readonly phase?: never; readonly currentTurnIndex?: never });
+
 export type CanonicalGameEventDraft =
   | EventDraft<"game.started", Record<string, never>, true>
   | EventDraft<"game.checkpointed", Record<string, never>, true>
@@ -77,9 +84,13 @@ export type CanonicalGameEventDraft =
     >
   | EventDraft<
       "foul.issued",
-      { readonly seat: number; readonly foulNumber: number; readonly redCarded: boolean }
+      WithOptionalDisciplineContext<{
+        readonly seat: number;
+        readonly foulNumber: number;
+        readonly redCarded: boolean;
+      }>
     >
-  | EventDraft<"player.red-carded", { readonly seat: number }>
+  | EventDraft<"player.red-carded", WithOptionalDisciplineContext<{ readonly seat: number }>>
   | EventDraft<"voting.skipped", { readonly reason: "host-skipped" }>
   | EventDraft<
       "voting.resolved",
@@ -90,6 +101,13 @@ export type CanonicalGameEventDraft =
     >
   | EventDraft<
       "car-crash.resolved",
+      {
+        readonly votes: Readonly<Record<number, boolean>>;
+        readonly result: CarCrashVoteResult;
+      }
+    >
+  | EventDraft<
+      "car-crash.ballot-resolved",
       {
         readonly votes: Readonly<Record<number, boolean>>;
         readonly result: CarCrashVoteResult;
@@ -155,6 +173,18 @@ export const isProvisionalInteractionType = (value: string): boolean =>
   value.startsWith("timer.") ||
   value.startsWith("music.");
 
+const intermediatePhaseTargets = new Set<GamePhase>([
+  "sheriff-wake",
+  "voting-cancelled",
+  "night-don",
+  "night-sheriff",
+  "best-move",
+]);
+
+export const isMeaningfulGameEventDraft = (event: CanonicalGameEventDraft): boolean =>
+  event.type !== "turn.completed" &&
+  (event.type !== "phase.changed" || !intermediatePhaseTargets.has(event.payload.to));
+
 export const canonicalSecretGameEventTypes = [
   "game.started",
   "game.checkpointed",
@@ -177,6 +207,7 @@ const canonicalGamePhaseSet = new Set<string>([
   "voting-cancelled",
   "car-crash",
   "car-crash-decision",
+  "car-crash-result",
   "car-crash-skipped",
   "goodbye-speech",
   "best-move",
@@ -327,6 +358,19 @@ const assertNightShotResult = (value: unknown, context: string): void => {
   assertSeat(result.targetSeat, `${context}.targetSeat`);
 };
 
+const assertOptionalDisciplineContext = (payload: UnknownRecord, context: string): void => {
+  const hasPhase = Object.hasOwn(payload, "phase");
+  const hasCurrentTurnIndex = Object.hasOwn(payload, "currentTurnIndex");
+  if (hasPhase !== hasCurrentTurnIndex) {
+    throw new Error(`${context} must provide phase and currentTurnIndex together`);
+  }
+  if (!hasPhase) return;
+  if (typeof payload.phase !== "string" || !canonicalGamePhaseSet.has(payload.phase)) {
+    throw new Error(`${context}.phase is not a canonical game phase`);
+  }
+  assertSafeInteger(payload.currentTurnIndex, `${context}.currentTurnIndex`, 0);
+};
+
 const assertCanonicalPayload = (type: CanonicalGameEventType, value: unknown): void => {
   const payload = requireRecord(value, `${type} payload`);
   switch (type) {
@@ -343,9 +387,13 @@ const assertCanonicalPayload = (type: CanonicalGameEventType, value: unknown): v
       }
       return;
     case "turn.completed":
-    case "player.red-carded":
       assertExactKeys(payload, ["seat"], `${type} payload`);
       assertSeat(payload.seat, `${type} payload.seat`);
+      return;
+    case "player.red-carded":
+      assertObjectKeys(payload, ["seat"], ["phase", "currentTurnIndex"], `${type} payload`);
+      assertSeat(payload.seat, `${type} payload.seat`);
+      assertOptionalDisciplineContext(payload, `${type} payload`);
       return;
     case "player.nominated":
       assertExactKeys(payload, ["nominatorSeat", "candidateSeat"], `${type} payload`);
@@ -353,10 +401,16 @@ const assertCanonicalPayload = (type: CanonicalGameEventType, value: unknown): v
       assertSeat(payload.candidateSeat, `${type} payload.candidateSeat`);
       return;
     case "foul.issued":
-      assertExactKeys(payload, ["seat", "foulNumber", "redCarded"], `${type} payload`);
+      assertObjectKeys(
+        payload,
+        ["seat", "foulNumber", "redCarded"],
+        ["phase", "currentTurnIndex"],
+        `${type} payload`,
+      );
       assertSeat(payload.seat, `${type} payload.seat`);
       assertSafeInteger(payload.foulNumber, `${type} payload.foulNumber`, 1);
       assertBoolean(payload.redCarded, `${type} payload.redCarded`);
+      assertOptionalDisciplineContext(payload, `${type} payload`);
       return;
     case "voting.skipped":
       assertExactKeys(payload, ["reason"], `${type} payload`);
@@ -374,6 +428,7 @@ const assertCanonicalPayload = (type: CanonicalGameEventType, value: unknown): v
       assertVoteResult(payload.result, `${type} payload.result`);
       return;
     case "car-crash.resolved":
+    case "car-crash.ballot-resolved":
       assertExactKeys(payload, ["votes", "result"], `${type} payload`);
       assertCanonicalSeatRecord(payload.votes, `${type} payload.votes`, assertBoolean);
       assertCarCrashVoteResult(payload.result, `${type} payload.result`);
@@ -505,6 +560,7 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
       "votingRound",
       "carCrashSeats",
       "carCrashVotes",
+      "carCrashResult",
       "goodbyeSeats",
       "goodbyeNext",
       "checkResult",
@@ -642,6 +698,12 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
     assertSeatArray(game.carCrashSeats, `${context}.carCrashSeats`);
   if (game.carCrashVotes !== undefined) {
     assertCanonicalSeatRecord(game.carCrashVotes, `${context}.carCrashVotes`, assertBoolean);
+  }
+  if (game.carCrashResult !== undefined) {
+    assertCarCrashVoteResult(game.carCrashResult, `${context}.carCrashResult`);
+  }
+  if ((game.phase === "car-crash-result") !== (game.carCrashResult !== undefined)) {
+    throw new Error(`${context}.carCrashResult must exist only in the car-crash result phase`);
   }
   if (game.goodbyeSeats !== undefined)
     assertSeatArray(game.goodbyeSeats, `${context}.goodbyeSeats`);
@@ -861,27 +923,141 @@ const resolveEliminations = (game: GameState, seats: readonly number[]): GameSta
   };
 };
 
-const applyPhaseChange = (game: GameState, to: GamePhase): GameState => {
-  let next: GameState;
+const advancePhaseOnce = (game: GameState): GameState => {
   if (game.phase === "mafia-planning" || game.phase === "sheriff-wake") {
-    next = advanceSetupPhase(game);
-  } else if (game.phase === "voting-cancelled" || game.phase === "car-crash-skipped") {
-    next = beginNight(game);
-  } else if (game.phase === "night-mafia-result") {
-    next = completeMafiaShots(game);
-  } else if (game.phase === "night-don-result") {
-    next = continueDonCheck(game);
-  } else if (game.phase === "night-sheriff-result") {
-    next = continueSheriffCheck(game);
-  } else if (game.phase === "night-resolution") {
-    next = completeNight(game);
-  } else if (game.phase === "goodbye-speech") {
-    next = completeGoodbyeSpeech(game);
-  } else {
-    throw new Error(`Cannot replay a phase change from ${game.phase}`);
+    return advanceSetupPhase(game);
   }
-  if (next.phase !== to) {
+  if (game.phase === "day" || game.phase === "car-crash") return completeCurrentTurn(game);
+  if (game.phase === "voting-cancelled" || game.phase === "car-crash-skipped") {
+    return beginNight(game);
+  }
+  if (game.phase === "car-crash-result") return completeCarCrashResult(game);
+  if (game.phase === "night-mafia-result") return completeMafiaShots(game);
+  if (game.phase === "night-don-result") return continueDonCheck(game);
+  if (game.phase === "night-sheriff-result") return continueSheriffCheck(game);
+  if (game.phase === "night-resolution") return completeNight(game);
+  if (game.phase === "goodbye-speech") return completeGoodbyeSpeech(game);
+  throw new Error(`Cannot replay a phase change from ${game.phase}`);
+};
+
+const applyPhaseChange = (game: GameState, to: GamePhase): GameState => {
+  if (game.phase === to) throw new Error(`Phase change must advance from ${game.phase}`);
+  let next = game;
+  for (let step = 0; step < 20 && next.phase !== to; step += 1) {
+    const phaseBeforeStep = next.phase;
+    next = advancePhaseOnce(next);
+    if (
+      next.phase !== to &&
+      next.phase !== phaseBeforeStep &&
+      !intermediatePhaseTargets.has(next.phase)
+    ) {
+      throw new Error(`Phase change to ${to} cannot skip meaningful phase ${next.phase}`);
+    }
+  }
+  if (next.phase !== to)
     throw new Error(`Phase change expected ${to} but domain produced ${next.phase}`);
+  return next;
+};
+
+const advanceToDaySpeaker = (game: GameState, seat: number): GameState => {
+  let next = game;
+  for (let step = 0; step < next.turnOrder.length && next.phase === "day"; step += 1) {
+    if (next.turnOrder[next.currentTurnIndex] === seat) return next;
+    next = completeCurrentTurn(next);
+  }
+  throw new Error(`Only an upcoming day speaker may create a semantic checkpoint for seat ${seat}`);
+};
+
+const advanceToVoting = (game: GameState): GameState => {
+  let next = game;
+  for (let step = 0; step < 20 && (next.phase === "day" || next.phase === "car-crash"); step += 1) {
+    next = completeCurrentTurn(next);
+  }
+  return next;
+};
+
+const advanceToDonCheck = (game: GameState): GameState =>
+  game.phase === "night-mafia-result" ? completeMafiaShots(game) : game;
+
+const advanceToSheriffCheck = (game: GameState): GameState => {
+  const afterMafia = game.phase === "night-mafia-result" ? completeMafiaShots(game) : game;
+  return afterMafia.phase === "night-don-result" ? continueDonCheck(afterMafia) : afterMafia;
+};
+
+const applyDisciplineContext = (
+  game: GameState,
+  context: { readonly phase?: GamePhase; readonly currentTurnIndex?: number },
+): GameState => {
+  if (context.phase === undefined || context.currentTurnIndex === undefined) return game;
+  if (
+    game.day < 1 ||
+    context.phase === "mafia-planning" ||
+    context.phase === "sheriff-wake" ||
+    context.phase === "finished"
+  ) {
+    throw new Error("Discipline context must describe active play from day one");
+  }
+  let next = game;
+  if (next.phase === "car-crash") {
+    const validTurnOrder =
+      next.carCrashSeats !== undefined &&
+      next.carCrashSeats.length === next.turnOrder.length &&
+      next.nominations.length === next.turnOrder.length &&
+      next.turnOrder.every(
+        (seat, index) =>
+          next.carCrashSeats?.[index] === seat && next.nominations[index]?.candidateSeat === seat,
+      );
+    if (!validTurnOrder) {
+      throw new Error("Discipline context car-crash turn order is invalid");
+    }
+  }
+  for (let step = 0; step <= game.turnOrder.length; step += 1) {
+    if (next.phase === context.phase) {
+      if (
+        (next.phase !== "day" && next.phase !== "car-crash") ||
+        next.currentTurnIndex >= context.currentTurnIndex
+      ) {
+        break;
+      }
+    }
+    if (next.phase !== "day" && next.phase !== "car-crash") break;
+    next = completeCurrentTurn(next);
+  }
+  if (next.phase !== context.phase) {
+    const advanced =
+      next.phase === "night-mafia-result"
+        ? completeMafiaShots(next)
+        : next.phase === "night-don-result"
+          ? continueDonCheck(next)
+          : next.phase === "night-resolution"
+            ? completeNight(next)
+            : null;
+    if (
+      advanced !== null &&
+      advanced.phase === context.phase &&
+      intermediatePhaseTargets.has(advanced.phase)
+    ) {
+      next = advanced;
+    }
+  }
+  if (next.phase === "voting" && context.phase === "voting") {
+    if (game.phase !== "voting") {
+      next = { ...next, voteAssignments: {} };
+    }
+    const validCandidateOrder =
+      next.turnOrder.length === next.nominations.length &&
+      next.turnOrder.every((seat, index) => next.nominations[index]?.candidateSeat === seat);
+    if (
+      !validCandidateOrder ||
+      context.currentTurnIndex < next.currentTurnIndex ||
+      context.currentTurnIndex >= next.turnOrder.length
+    ) {
+      throw new Error("Discipline context voting candidate index is invalid");
+    }
+    next = { ...next, currentTurnIndex: context.currentTurnIndex };
+  }
+  if (next.phase !== context.phase || next.currentTurnIndex !== context.currentTurnIndex) {
+    throw new Error("Discipline context phase/current turn is not reachable from canonical state");
   }
   return next;
 };
@@ -910,9 +1086,13 @@ export const applyGameEvent = (game: GameState, event: CanonicalGameEventDraft):
       return completeCurrentTurn(game);
     }
     case "player.nominated":
-      return nominate(game, event.payload.nominatorSeat, event.payload.candidateSeat);
+      return nominate(
+        advanceToDaySpeaker(game, event.payload.nominatorSeat),
+        event.payload.nominatorSeat,
+        event.payload.candidateSeat,
+      );
     case "foul.issued": {
-      const next = issueFoul(game, event.payload.seat);
+      const next = issueFoul(applyDisciplineContext(game, event.payload), event.payload.seat);
       const player = next.players.find(({ seat }) => seat === event.payload.seat);
       if (
         player?.fouls !== event.payload.foulNumber ||
@@ -923,17 +1103,21 @@ export const applyGameEvent = (game: GameState, event: CanonicalGameEventDraft):
       return next;
     }
     case "player.red-carded":
-      return redCard(game, event.payload.seat);
-    case "voting.skipped":
-      if (game.phase !== "day") {
-        throw new Error("Voting may be skipped only from the day phase");
+      return redCard(applyDisciplineContext(game, event.payload), event.payload.seat);
+    case "voting.skipped": {
+      if (game.phase === "voting-cancelled") {
+        throw new Error("Voting skip requires an unresolved day phase");
       }
-      return skipVoting(game);
+      return skipVoting(
+        game.phase === "day" && game.nominations.length === 0 ? game : advanceToVoting(game),
+      );
+    }
     case "voting.resolved": {
+      const prepared = advanceToVoting(game);
       const voting: GameState = {
-        ...game,
+        ...prepared,
         voteAssignments: { ...event.payload.voteAssignments },
-        currentTurnIndex: game.turnOrder.length - 1,
+        currentTurnIndex: prepared.turnOrder.length - 1,
       };
       const result = resolveVote(voting);
       if (!sameValue(result, event.payload.result)) {
@@ -956,6 +1140,14 @@ export const applyGameEvent = (game: GameState, event: CanonicalGameEventDraft):
       }
       return resolveEliminations(decision, result.eliminate ? result.seats : []);
     }
+    case "car-crash.ballot-resolved": {
+      const decision: GameState = { ...game, carCrashVotes: { ...event.payload.votes } };
+      const result = resolveCarCrashVote(decision);
+      if (!sameValue(result, event.payload.result)) {
+        throw new Error("Car-crash result payload does not match the accepted votes");
+      }
+      return acceptCarCrashBallot(decision);
+    }
     case "mafia.shots-resolved": {
       let shotGame: GameState = { ...game, shotAssignments: {} };
       for (const shot of event.payload.shots) {
@@ -968,30 +1160,31 @@ export const applyGameEvent = (game: GameState, event: CanonicalGameEventDraft):
       return resolution.game;
     }
     case "don.checked": {
-      const result = performDonCheck(game, event.payload.targetSeat);
+      const result = performDonCheck(advanceToDonCheck(game), event.payload.targetSeat);
       if (result.result.match !== event.payload.match) {
         throw new Error("Don check payload does not match the immutable roles");
       }
       return result.game;
     }
     case "don.check-skipped":
-      return skipDonCheck(game);
+      return skipDonCheck(advanceToDonCheck(game));
     case "sheriff.checked": {
-      const result = performSheriffCheck(game, event.payload.targetSeat);
+      const result = performSheriffCheck(advanceToSheriffCheck(game), event.payload.targetSeat);
       if (result.result.match !== event.payload.match) {
         throw new Error("Sheriff check payload does not match the immutable roles");
       }
       return result.game;
     }
     case "sheriff.check-skipped":
-      return skipSheriffCheck(game);
+      return skipSheriffCheck(advanceToSheriffCheck(game));
     case "best-move.completed": {
-      if (game.bestMove?.playerSeat !== event.payload.playerSeat) {
+      const prepared = game.phase === "night-resolution" ? completeNight(game) : game;
+      if (prepared.bestMove?.playerSeat !== event.payload.playerSeat) {
         throw new Error("Best move owner does not match the active state");
       }
       let selected: GameState = {
-        ...game,
-        bestMove: { ...game.bestMove, selectedSeats: [] },
+        ...prepared,
+        bestMove: { ...prepared.bestMove, selectedSeats: [] },
       };
       for (const seat of event.payload.selectedSeats) selected = toggleBestMoveSeat(selected, seat);
       const next = completeBestMove(selected);
