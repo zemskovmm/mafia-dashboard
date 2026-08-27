@@ -48,6 +48,7 @@ import type {
   RemoteGameSession,
   Club,
   ClubInput,
+  ClubUpdateInput,
   AppUser,
 } from "./api/client.js";
 import { ClubPortal } from "./features/clubs/ClubPortal.js";
@@ -1185,6 +1186,7 @@ export const ClubWorkspace = ({
             {
               nickname: `Dev ${adjective} ${alias} ${batchId}-${index + 1}`,
               consent: false,
+              clubManager: false,
               firstName: null,
               lastName: null,
               email: null,
@@ -2211,10 +2213,16 @@ export const App = () => {
     }
   };
 
-  const saveClub = async (clubId: string | null, input: ClubInput) => {
+  const saveClub = async (clubId: string | null, input: ClubInput | ClubUpdateInput) => {
     if (user === null) throw new Error("Sign in before editing a club");
     try {
-      const saved = clubId === null ? await createClub(input) : await updateClub(clubId, input);
+      if (clubId === null && (!("ownerConsent" in input) || input.ownerConsent !== true)) {
+        throw new Error("Owner profile consent is required to create a club");
+      }
+      const saved =
+        clubId === null
+          ? await createClub(input as ClubInput)
+          : await updateClub(clubId, input as ClubUpdateInput);
       setClubs((current) =>
         clubId === null
           ? [...current, saved]

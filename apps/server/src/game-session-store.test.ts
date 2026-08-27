@@ -1407,6 +1407,7 @@ describe("GameSessionStore", () => {
       city: "Granada",
       headerLogo: null,
       cardLogo: null,
+      ownerConsent: true,
     });
     const gameId = randomUUID();
     await store.save({
@@ -1431,6 +1432,7 @@ describe("GameSessionStore", () => {
       city: "Granada",
       headerLogo: null,
       cardLogo: null,
+      ownerConsent: true,
     });
     const gameId = randomUUID();
     await store.save({
@@ -1464,6 +1466,7 @@ describe("GameSessionStore", () => {
       city: "Granada",
       headerLogo: null,
       cardLogo: null,
+      ownerConsent: true,
     });
     const gameId = randomUUID();
     await store.save({
@@ -1524,6 +1527,7 @@ describe("GameSessionStore", () => {
       city: "Granada",
       headerLogo: null,
       cardLogo: null,
+      ownerConsent: true,
     });
     const sharedEventId = randomUUID();
     const foreignGameId = randomUUID();
@@ -1600,6 +1604,7 @@ describe("GameSessionStore", () => {
       city: "Granada",
       headerLogo: null,
       cardLogo: null,
+      ownerConsent: true,
     });
     const gameId = randomUUID();
     const mutationId = randomUUID();

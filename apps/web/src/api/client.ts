@@ -24,6 +24,8 @@ export interface PlayerProfile {
   readonly id: string;
   readonly nickname: string;
   readonly consent: boolean;
+  readonly clubManager: boolean;
+  readonly managerLocked: boolean;
   readonly firstName: string | null;
   readonly lastName: string | null;
   readonly email: string | null;
@@ -46,14 +48,20 @@ export interface AuthSession {
   readonly user: AppUser | null;
 }
 
-export interface ClubInput {
+interface ClubDetails {
   readonly name: string;
   readonly city: string;
   readonly headerLogo: string | null;
   readonly cardLogo: string | null;
 }
 
-export interface Club extends ClubInput {
+export interface ClubInput extends ClubDetails {
+  readonly ownerConsent: true;
+}
+
+export type ClubUpdateInput = ClubDetails;
+
+export interface Club extends ClubDetails {
   readonly id: string;
   readonly role: "owner" | "editor";
   readonly createdAt: string;
@@ -64,6 +72,15 @@ export type PlayerProfileInput =
   | {
       readonly nickname: string;
       readonly consent: false;
+      readonly clubManager: false;
+      readonly firstName: null;
+      readonly lastName: null;
+      readonly email: null;
+    }
+  | {
+      readonly nickname: string;
+      readonly consent: false;
+      readonly clubManager: true;
       readonly firstName: null;
       readonly lastName: null;
       readonly email: null;
@@ -71,6 +88,7 @@ export type PlayerProfileInput =
   | {
       readonly nickname: string;
       readonly consent: true;
+      readonly clubManager: boolean;
       readonly firstName: string;
       readonly lastName: string;
       readonly email: string;
@@ -300,7 +318,7 @@ export const createClub = async (input: ClubInput): Promise<Club> => {
   return ((await response.json()) as { club: Club }).club;
 };
 
-export const updateClub = async (clubId: string, input: ClubInput): Promise<Club> => {
+export const updateClub = async (clubId: string, input: ClubUpdateInput): Promise<Club> => {
   const response = await fetch(`/api/clubs/${clubId}`, {
     method: "PUT",
     headers: { "content-type": "application/json" },

@@ -1,16 +1,21 @@
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
+import type { AppUser } from "./google-auth.js";
 
 export const DEFAULT_CLUB_ID = "00000000-0000-4000-8000-000000000101";
 
-export interface ClubInput {
+interface ClubDetails {
   readonly name: string;
   readonly city: string;
   readonly headerLogo: string | null;
   readonly cardLogo: string | null;
 }
 
-export interface Club extends ClubInput {
+export interface ClubInput extends ClubDetails {
+  readonly ownerConsent: true;
+}
+
+export interface Club extends ClubDetails {
   readonly id: string;
   readonly role: "owner" | "editor";
   readonly createdAt: Date;
@@ -39,6 +44,13 @@ const mapClub = (row: ClubRow): Club => ({
   updatedAt: row.updated_at,
 });
 
+const splitDisplayName = (displayName: string): readonly [string, string] => {
+  const normalized = displayName.trim();
+  const separator = normalized.search(/\s/);
+  if (separator === -1) return [normalized, normalized];
+  return [normalized.slice(0, separator), normalized.slice(separator).trim()];
+};
+
 export class ClubStore {
   public constructor(private readonly pool: Pool) {}
 
@@ -63,10 +75,28 @@ export class ClubStore {
     return result.rowCount !== 0;
   }
 
-  public async create(userId: string, input: ClubInput): Promise<Club> {
+  public async create(userOrId: AppUser | string, input: ClubInput): Promise<Club> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
+      const user =
+        typeof userOrId === "string"
+          ? (
+              await client.query<{
+                id: string;
+                email: string;
+                name: string;
+                picture: string | null;
+              }>(
+                `SELECT id, email, display_name AS name, picture
+                   FROM users
+                  WHERE id = $1`,
+                [userOrId],
+              )
+            ).rows[0]
+          : userOrId;
+      if (user === undefined) throw new Error("Club creator user was not found");
+      const userId = user.id;
       const clubId = randomUUID();
       await client.query(
         `INSERT INTO clubs (id, name, city, header_logo, card_logo, created_by)
@@ -77,6 +107,14 @@ export class ClubStore {
         `INSERT INTO club_memberships (club_id, user_id, role)
          VALUES ($1, $2, 'owner')`,
         [clubId, userId],
+      );
+      const [firstName, lastName] = splitDisplayName(user.name);
+      await client.query(
+        `INSERT INTO players
+           (id, club_id, nickname, first_name, last_name, email,
+            data_processing_consent, consent_at, is_club_manager, user_id)
+         VALUES ($1, $2, 'Owner', $3, $4, $5, TRUE, NOW(), TRUE, $6)`,
+        [randomUUID(), clubId, firstName, lastName, user.email, userId],
       );
       const result = await client.query<ClubRow>(
         `SELECT club.id, club.name, club.city, club.header_logo, club.card_logo,
@@ -96,7 +134,52 @@ export class ClubStore {
     }
   }
 
-  public async update(userId: string, clubId: string, input: ClubInput): Promise<Club | null> {
+  public async claimManagerClubs(userId: string, verifiedEmail: string): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const matching = await client.query<{
+        id: string;
+        club_id: string;
+        user_id: string | null;
+      }>(
+        `SELECT id, club_id, user_id
+           FROM players
+          WHERE is_club_manager
+            AND LOWER(BTRIM(email)) = LOWER(BTRIM($1))
+          ORDER BY club_id, id
+          FOR UPDATE`,
+        [verifiedEmail],
+      );
+      for (const player of matching.rows) {
+        if (player.user_id !== null && player.user_id !== userId) continue;
+        if (player.user_id === null) {
+          await client.query(
+            "UPDATE players SET user_id = $1, updated_at = NOW() WHERE id = $2 AND club_id = $3",
+            [userId, player.id, player.club_id],
+          );
+        }
+        await client.query(
+          `INSERT INTO club_memberships (club_id, user_id, role, manager_player_id)
+           VALUES ($1, $2, 'editor', $3)
+           ON CONFLICT (club_id, user_id) DO NOTHING`,
+          [player.club_id, userId, player.id],
+        );
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async update(
+    userId: string,
+    clubId: string,
+    input: Omit<ClubInput, "ownerConsent">,
+  ): Promise<Club | null> {
     const result = await this.pool.query<ClubRow>(
       `WITH editable AS (
          SELECT club_id, role

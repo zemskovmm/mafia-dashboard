@@ -23,7 +23,12 @@ import {
   gameSessionStartMutationSchema,
   gameSessionMutationSchema,
 } from "./game-session-validation.js";
-import { PlayerStore } from "./player-store.js";
+import {
+  ManagerConsentRequiredError,
+  ManagerLockedError,
+  OwnerProfileForbiddenError,
+  PlayerStore,
+} from "./player-store.js";
 import { YouTubePlaylistAccessError } from "./youtube-oauth.js";
 import type { YouTubeOAuthService } from "./youtube-oauth.js";
 import { ClubStore } from "./club-store.js";
@@ -34,7 +39,9 @@ const clearGameSessionQuery = z.object({ expectedRevision: z.coerce.number().int
 const gameSessionListQuery = z.object({
   status: z.enum(["active", "completed"]).default("active"),
 });
-const playerIdParams = z.object({ playerId: z.uuid() });
+const playerIdParams = z.object({
+  playerId: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i),
+});
 const clubIdParams = z.object({ clubId: z.uuid() });
 const playlistIdParams = z.object({ playlistId: z.string().trim().min(1).max(200) });
 const createGameBody = z.object({ name: z.string().trim().min(1).max(100) });
@@ -62,21 +69,39 @@ const clubBody = z.object({
   headerLogo: z.string().max(1_500_000).nullable(),
   cardLogo: z.string().max(1_500_000).nullable(),
 });
+const createClubBody = clubBody.extend({ ownerConsent: z.literal(true) });
+const noConsentPlayerBody = z.object({
+  nickname,
+  consent: z.literal(false),
+  clubManager: z.literal(false).default(false),
+  firstName: z.null().optional(),
+  lastName: z.null().optional(),
+  email: z.null().optional(),
+});
+const consentedPlayerBody = z.object({
+  nickname,
+  consent: z.literal(true),
+  clubManager: z.boolean().default(false),
+  firstName: z.string().trim().min(1).max(100),
+  lastName: z.string().trim().min(1).max(100),
+  email: z.email().max(254),
+});
+const linkedManagerConsentWithdrawalBody = z.object({
+  nickname,
+  consent: z.literal(false),
+  clubManager: z.literal(true),
+  firstName: z.null().optional(),
+  lastName: z.null().optional(),
+  email: z.null().optional(),
+});
 const playerProfileBody = z.discriminatedUnion("consent", [
-  z.object({
-    nickname,
-    consent: z.literal(false),
-    firstName: z.null().optional(),
-    lastName: z.null().optional(),
-    email: z.null().optional(),
-  }),
-  z.object({
-    nickname,
-    consent: z.literal(true),
-    firstName: z.string().trim().min(1).max(100),
-    lastName: z.string().trim().min(1).max(100),
-    email: z.email().max(254),
-  }),
+  noConsentPlayerBody,
+  consentedPlayerBody,
+]);
+const playerProfileUpdateBody = z.union([
+  noConsentPlayerBody,
+  consentedPlayerBody,
+  linkedManagerConsentWithdrawalBody,
 ]);
 
 const gamePlayerResultBody = z.object({
@@ -161,8 +186,17 @@ const sendGameSessionMutationError = (reply: FastifyReply, error: unknown): Fast
   throw error;
 };
 
-const isUniqueViolation = (error: unknown): error is { readonly code: "23505" } =>
+const isUniqueViolation = (
+  error: unknown,
+): error is { readonly code: "23505"; readonly constraint?: string } =>
   typeof error === "object" && error !== null && "code" in error && error.code === "23505";
+
+const playerConflictCode = (error: { readonly constraint?: string }) =>
+  ["players_club_manager_email_unique_idx", "players_club_linked_user_unique_idx"].includes(
+    error.constraint ?? "",
+  )
+    ? "manager_email_conflict"
+    : "nickname_conflict";
 
 const authStateCookieName = "auth_oauth_state";
 const musicStateCookieName = "music_oauth_state";
@@ -274,8 +308,12 @@ export const buildApp = async ({
     if (user === null) await reply.code(401).send({ error: "authentication_required" });
     return user;
   };
-  const selectedClub = async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = await requireUser(request, reply);
+  const selectedClub = async (
+    request: FastifyRequest,
+    reply: FastifyReply,
+    authenticatedUser?: AppUser,
+  ) => {
+    const user = authenticatedUser ?? (await requireUser(request, reply));
     if (user === null) return null;
     const value = request.headers["x-club-id"];
     const clubId = typeof value === "string" ? value : defaultClubId;
@@ -325,6 +363,7 @@ export const buildApp = async ({
       return reply.code(400).send({ error: "oauth_state_mismatch" });
     }
     const authorization = await googleAuth.completeAuthorization(query.data.code);
+    await clubStore.claimManagerClubs(authorization.user.id, authorization.user.email);
     return reply
       .header("set-cookie", [
         cookie({
@@ -369,11 +408,11 @@ export const buildApp = async ({
   });
 
   app.post("/api/clubs", async (request, reply) => {
-    const body = clubBody.safeParse(request.body);
+    const body = createClubBody.safeParse(request.body);
     if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
     const user = await requireUser(request, reply);
     if (user === null) return;
-    return reply.code(201).send({ club: await clubStore.create(user.id, body.data) });
+    return reply.code(201).send({ club: await clubStore.create(user, body.data) });
   });
 
   app.put("/api/clubs/:clubId", async (request, reply) => {
@@ -517,18 +556,23 @@ export const buildApp = async ({
       );
       return reply.code(201).send({ player });
     } catch (error) {
+      if (error instanceof ManagerConsentRequiredError) {
+        return reply.code(400).send({ error: error.code });
+      }
       if (isUniqueViolation(error)) {
-        return reply.code(409).send({ error: "nickname_conflict" });
+        return reply.code(409).send({ error: playerConflictCode(error) });
       }
       throw error;
     }
   });
 
   app.put("/api/players/:playerId", async (request, reply) => {
-    const clubId = await selectedClub(request, reply);
+    const actor = await requireUser(request, reply);
+    if (actor === null) return;
+    const clubId = await selectedClub(request, reply, actor);
     if (clubId === null) return;
     const params = playerIdParams.safeParse(request.params);
-    const body = playerProfileBody.safeParse(request.body);
+    const body = playerProfileUpdateBody.safeParse(request.body);
     if (!params.success) {
       return reply.code(400).send(validationFailure(params.error.issues));
     }
@@ -545,14 +589,24 @@ export const buildApp = async ({
           email: body.data.email ?? null,
         },
         clubId,
+        actor.id,
       );
       if (player === null) {
         return reply.code(404).send({ error: "player_not_found" });
       }
       return { player };
     } catch (error) {
+      if (error instanceof ManagerConsentRequiredError) {
+        return reply.code(400).send({ error: error.code });
+      }
+      if (error instanceof ManagerLockedError) {
+        return reply.code(409).send({ error: "manager_locked" });
+      }
+      if (error instanceof OwnerProfileForbiddenError) {
+        return reply.code(403).send({ error: error.code });
+      }
       if (isUniqueViolation(error)) {
-        return reply.code(409).send({ error: "nickname_conflict" });
+        return reply.code(409).send({ error: playerConflictCode(error) });
       }
       throw error;
     }
@@ -568,6 +622,7 @@ export const buildApp = async ({
     const result = await playerStore.delete(params.data.playerId, clubId);
     if (result === "not_found") return reply.code(404).send({ error: "player_not_found" });
     if (result === "active_game") return reply.code(409).send({ error: "active_game" });
+    if (result === "manager_locked") return reply.code(409).send({ error: "manager_locked" });
     return reply.code(204).send();
   });
 

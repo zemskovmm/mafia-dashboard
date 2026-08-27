@@ -528,11 +528,12 @@ h2 {
 }
 .player-profile-fields {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 10px;
 }
 .player-profile-fields label {
   display: grid;
+  grid-column: span 2;
   gap: 6px;
   color: var(--muted);
   font-size: 0.72rem;
@@ -3363,8 +3364,7 @@ html:-webkit-full-screen #root {
   .player-profile-fields {
     grid-template-columns: 1fr;
   }
-  .player-profile-fields label:first-child,
-  .player-profile-fields .consent-field {
+  .player-profile-fields label {
     grid-column: auto;
   }
   .setup-shell {

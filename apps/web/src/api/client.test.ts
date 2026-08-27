@@ -18,8 +18,10 @@ import {
   signOut,
   updatePlayer,
 } from "./client.js";
+import type { PlayerProfile, PlayerProfileInput } from "./client.js";
 
 const emptyStatistics = {
+  hostedGames: 0,
   gamesPlayed: 0,
   wins: 0,
   losses: 0,
@@ -34,12 +36,16 @@ const emptyStatistics = {
   totalFouls: 0,
   eliminations: 0,
   redCards: 0,
+  bestMoves: 0,
+  bestMoveMafiaHits: 0,
 };
 
 const player = {
   id: "00000000-0000-4000-8000-000000000001",
   nickname: "Alpha",
   consent: false,
+  clubManager: false,
+  managerLocked: false,
   firstName: null,
   lastName: null,
   email: null,
@@ -48,7 +54,17 @@ const player = {
   updatedAt: "2026-08-17T20:00:00.000Z",
   lastPlayedAt: null,
   statistics: emptyStatistics,
+} satisfies PlayerProfile;
+
+const lockedManagerConsentWithdrawal: PlayerProfileInput = {
+  nickname: "Owner",
+  consent: false,
+  clubManager: true,
+  firstName: null,
+  lastName: null,
+  email: null,
 };
+void lockedManagerConsentWithdrawal;
 
 afterEach(() => {
   vi.useRealTimers();
@@ -130,18 +146,30 @@ describe("player API client", () => {
     const input = {
       nickname: "Alpha",
       consent: false as const,
+      clubManager: false,
       firstName: null,
       lastName: null,
       email: null,
-    };
+    } satisfies PlayerProfileInput;
     await expect(createPlayer(input)).resolves.toEqual(player);
     await expect(updatePlayer(player.id, { ...input, nickname: "Beta" })).resolves.toMatchObject({
       nickname: "Beta",
     });
     expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/players",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify(input),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
       2,
       `/api/players/${player.id}`,
-      expect.objectContaining({ method: "PUT" }),
+      expect.objectContaining({
+        method: "PUT",
+        body: JSON.stringify({ ...input, nickname: "Beta" }),
+      }),
     );
   });
 
@@ -159,6 +187,7 @@ describe("player API client", () => {
     const failure = createPlayer({
       nickname: "Alpha",
       consent: false,
+      clubManager: false,
       firstName: null,
       lastName: null,
       email: null,

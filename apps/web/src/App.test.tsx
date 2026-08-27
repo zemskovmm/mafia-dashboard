@@ -471,6 +471,8 @@ const player = (nickname: string, id: string): PlayerProfile => ({
   id,
   nickname,
   consent: false,
+  clubManager: false,
+  managerLocked: false,
   firstName: null,
   lastName: null,
   email: null,
@@ -613,6 +615,11 @@ describe("club welcome", () => {
     expect(screen.queryByText("Club identity")).not.toBeInTheDocument();
     await user.type(screen.getByLabelText("Club name"), "Mafia Sevilla");
     await user.type(screen.getByLabelText("City"), "Sevilla");
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: "I consent to store my Google name and email in the Owner player profile.",
+      }),
+    );
     await user.click(screen.getByRole("button", { name: "Save club" }));
 
     expect(

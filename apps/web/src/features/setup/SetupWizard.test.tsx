@@ -9,6 +9,8 @@ const availablePlayers: readonly PlayerProfile[] = Array.from({ length: 11 }, (_
   id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
   nickname: `Player ${index + 1}`,
   consent: false,
+  clubManager: false,
+  managerLocked: false,
   firstName: null,
   lastName: null,
   email: null,

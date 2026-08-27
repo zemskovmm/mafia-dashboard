@@ -15,6 +15,8 @@ const profile = (overrides: Partial<PlayerProfile> = {}): PlayerProfile => ({
   id: "00000000-0000-4000-8000-000000000001",
   nickname: "Alpha",
   consent: true,
+  clubManager: false,
+  managerLocked: false,
   firstName: "Ada",
   lastName: "Player",
   email: "ada@example.test",
@@ -45,6 +47,61 @@ const profile = (overrides: Partial<PlayerProfile> = {}): PlayerProfile => ({
 });
 
 describe("PlayersScreen", () => {
+  it("renders a Club manager control for a new player", () => {
+    render(<PlayersScreen players={[]} onCreate={vi.fn()} onUpdate={vi.fn()} />);
+
+    expect(screen.getByRole("checkbox", { name: "New player Club manager" })).toBeInTheDocument();
+  });
+
+  it("requires explicit consent before an unlocked player can become a Club manager", async () => {
+    const user = userEvent.setup();
+    const player = profile({
+      consent: false,
+      firstName: null,
+      lastName: null,
+      email: null,
+    });
+    render(<PlayersScreen players={[player]} onCreate={vi.fn()} onUpdate={vi.fn()} />);
+
+    const card = screen.getByRole("article", { name: /player alpha/i });
+    const consentControl = within(card).getByLabelText("Alpha Agree for data processing");
+    const managerControl = within(card).getByRole("checkbox", { name: "Alpha Club manager" });
+    expect(managerControl).toBeDisabled();
+
+    await user.click(consentControl);
+
+    expect(managerControl).toBeEnabled();
+    expect(managerControl).not.toBeChecked();
+
+    await user.click(managerControl);
+
+    expect(managerControl).toBeChecked();
+    expect(consentControl).toBeChecked();
+  });
+
+  it("submits a new manager with normalized personal fields", async () => {
+    const user = userEvent.setup();
+    const onCreate = vi.fn().mockResolvedValue(undefined);
+    render(<PlayersScreen players={[]} onCreate={onCreate} onUpdate={vi.fn()} />);
+
+    await user.type(screen.getByLabelText("New player nickname"), "  Manager  ");
+    await user.click(screen.getByLabelText("New player Agree for data processing"));
+    await user.click(screen.getByRole("checkbox", { name: "New player Club manager" }));
+    await user.type(screen.getByLabelText("New player first name"), "  Grace  ");
+    await user.type(screen.getByLabelText("New player last name"), "  Host  ");
+    await user.type(screen.getByLabelText("New player email"), "manager@example.test");
+    await user.click(screen.getByRole("button", { name: "Add player" }));
+
+    expect(onCreate).toHaveBeenCalledWith({
+      nickname: "Manager",
+      consent: true,
+      clubManager: true,
+      firstName: "Grace",
+      lastName: "Host",
+      email: "manager@example.test",
+    });
+  });
+
   it("keeps game availability controls out of persistent player-profile cards", () => {
     const player = profile();
     render(
@@ -106,6 +163,81 @@ describe("PlayersScreen", () => {
     expect(onDelete).toHaveBeenCalledWith(profile().id);
   });
 
+  it("keeps creator manager access while allowing personal-data consent withdrawal", async () => {
+    const user = userEvent.setup();
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
+    const creator = profile({
+      clubManager: true,
+      managerLocked: true,
+      statistics: {
+        ...profile().statistics,
+        hostedGames: 0,
+        gamesPlayed: 0,
+      },
+    });
+    render(
+      <PlayersScreen
+        players={[creator]}
+        onCreate={vi.fn()}
+        onUpdate={onUpdate}
+        onDelete={vi.fn()}
+      />,
+    );
+
+    const card = screen.getByRole("article", { name: /player alpha/i });
+    const managerControl = within(card).getByRole("checkbox", { name: "Alpha Club manager" });
+    const consentControl = within(card).getByLabelText("Alpha Agree for data processing");
+    expect(managerControl).toBeChecked();
+    expect(managerControl).toBeDisabled();
+    expect(consentControl).toBeEnabled();
+    expect(within(card).queryByRole("button", { name: "Delete Alpha" })).not.toBeInTheDocument();
+    expect(within(card).getByText(/manager access remains linked/i)).toHaveTextContent(
+      /personal profile data is removed/i,
+    );
+
+    await user.click(consentControl);
+
+    expect(managerControl).toBeChecked();
+    expect(within(card).getByLabelText("Alpha first name")).toBeDisabled();
+    expect(within(card).getByLabelText("Alpha first name")).toHaveValue("");
+    expect(within(card).getByLabelText("Alpha last name")).toHaveValue("");
+    expect(within(card).getByLabelText("Alpha email")).toHaveValue("");
+    await user.click(within(card).getByRole("button", { name: /save alpha/i }));
+
+    expect(onUpdate).toHaveBeenCalledWith(creator.id, {
+      nickname: "Alpha",
+      consent: false,
+      clubManager: true,
+      firstName: null,
+      lastName: null,
+      email: null,
+    });
+  });
+
+  it("lets a normal manager demote the profile", async () => {
+    const user = userEvent.setup();
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
+    const manager = profile({ clubManager: true });
+    render(<PlayersScreen players={[manager]} onCreate={vi.fn()} onUpdate={onUpdate} />);
+
+    const card = screen.getByRole("article", { name: /player alpha/i });
+    const managerControl = within(card).getByRole("checkbox", { name: "Alpha Club manager" });
+    expect(managerControl).toBeChecked();
+    expect(managerControl).toBeEnabled();
+
+    await user.click(managerControl);
+    await user.click(within(card).getByRole("button", { name: /save alpha/i }));
+
+    expect(onUpdate).toHaveBeenCalledWith(manager.id, {
+      nickname: "Alpha",
+      consent: true,
+      clubManager: false,
+      firstName: "Ada",
+      lastName: "Player",
+      email: "ada@example.test",
+    });
+  });
+
   it("creates a nickname-only profile when consent is not granted", async () => {
     const user = userEvent.setup();
     const onCreate = vi.fn().mockResolvedValue(undefined);
@@ -118,6 +250,7 @@ describe("PlayersScreen", () => {
     expect(onCreate).toHaveBeenCalledWith({
       nickname: "Night Owl",
       consent: false,
+      clubManager: false,
       firstName: null,
       lastName: null,
       email: null,
@@ -146,6 +279,7 @@ describe("PlayersScreen", () => {
     expect(onCreate).toHaveBeenCalledWith({
       nickname: "Consented",
       consent: true,
+      clubManager: false,
       firstName: "Grace",
       lastName: "Host",
       email: "grace@example.test",
@@ -172,6 +306,49 @@ describe("PlayersScreen", () => {
     });
   });
 
+  it("explains manager email conflicts", async () => {
+    const user = userEvent.setup();
+    const onUpdate = vi
+      .fn()
+      .mockRejectedValue(new ApiError("Unable to update player", 409, "manager_email_conflict"));
+    render(
+      <PlayersScreen
+        players={[profile({ clubManager: true })]}
+        onCreate={vi.fn()}
+        onUpdate={onUpdate}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /save alpha/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /email is already assigned to another club manager/i,
+    );
+  });
+
+  it("clears manager and personal data when consent is withdrawn", async () => {
+    const user = userEvent.setup();
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
+    const manager = profile({ clubManager: true });
+    render(<PlayersScreen players={[manager]} onCreate={vi.fn()} onUpdate={onUpdate} />);
+
+    const card = screen.getByRole("article", { name: /player alpha/i });
+    await user.click(within(card).getByLabelText("Alpha Agree for data processing"));
+
+    expect(within(card).getByLabelText("Alpha Club manager")).not.toBeChecked();
+    expect(within(card).getByLabelText("Alpha first name")).toBeDisabled();
+    expect(within(card).getByLabelText("Alpha first name")).toHaveValue("");
+    await user.click(within(card).getByRole("button", { name: /save alpha/i }));
+    expect(onUpdate).toHaveBeenCalledWith(manager.id, {
+      nickname: "Alpha",
+      consent: false,
+      clubManager: false,
+      firstName: null,
+      lastName: null,
+      email: null,
+    });
+  });
+
   it("renders statistics and clears personal fields when consent is withdrawn", async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn().mockResolvedValue(undefined);
@@ -192,6 +369,7 @@ describe("PlayersScreen", () => {
     expect(onUpdate).toHaveBeenCalledWith(profile().id, {
       nickname: "Alpha",
       consent: false,
+      clubManager: false,
       firstName: null,
       lastName: null,
       email: null,

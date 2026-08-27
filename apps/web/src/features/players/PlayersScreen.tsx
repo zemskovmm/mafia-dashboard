@@ -14,6 +14,7 @@ interface PlayersScreenProps {
 interface ProfileDraft {
   readonly nickname: string;
   readonly consent: boolean;
+  readonly clubManager: boolean;
   readonly firstName: string;
   readonly lastName: string;
   readonly email: string;
@@ -22,6 +23,7 @@ interface ProfileDraft {
 const emptyDraft: ProfileDraft = {
   nickname: "",
   consent: false,
+  clubManager: false,
   firstName: "",
   lastName: "",
   email: "",
@@ -30,6 +32,7 @@ const emptyDraft: ProfileDraft = {
 const draftFromPlayer = (player: PlayerProfile): ProfileDraft => ({
   nickname: player.nickname,
   consent: player.consent,
+  clubManager: player.clubManager,
   firstName: player.firstName ?? "",
   lastName: player.lastName ?? "",
   email: player.email ?? "",
@@ -40,6 +43,7 @@ const toInput = (draft: ProfileDraft): PlayerProfileInput =>
     ? {
         nickname: draft.nickname.trim(),
         consent: true,
+        clubManager: draft.clubManager,
         firstName: draft.firstName.trim(),
         lastName: draft.lastName.trim(),
         email: draft.email.trim(),
@@ -47,6 +51,7 @@ const toInput = (draft: ProfileDraft): PlayerProfileInput =>
     : {
         nickname: draft.nickname.trim(),
         consent: false,
+        clubManager: draft.clubManager,
         firstName: null,
         lastName: null,
         email: null,
@@ -55,6 +60,9 @@ const toInput = (draft: ProfileDraft): PlayerProfileInput =>
 const errorMessage = (error: unknown): string => {
   if (error instanceof ApiError && error.code === "nickname_conflict") {
     return "That nickname already exists. Choose another nickname.";
+  }
+  if (error instanceof ApiError && error.code === "manager_email_conflict") {
+    return "That email is already assigned to another club manager.";
   }
   return "The player could not be saved. Please try again.";
 };
@@ -73,11 +81,17 @@ const ProfileFields = ({
   draft,
   idPrefix,
   labelPrefix,
+  busy,
+  managerLocked,
+  managerGuidanceId,
   onChange,
 }: {
   readonly draft: ProfileDraft;
   readonly idPrefix: string;
   readonly labelPrefix: string;
+  readonly busy: boolean;
+  readonly managerLocked: boolean;
+  readonly managerGuidanceId?: string;
   readonly onChange: (draft: ProfileDraft) => void;
 }) => {
   const update = (changes: Partial<ProfileDraft>) => onChange({ ...draft, ...changes });
@@ -100,15 +114,34 @@ const ProfileFields = ({
           aria-label={`${labelPrefix} Agree for data processing`}
           type="checkbox"
           checked={draft.consent}
+          aria-describedby={managerLocked ? managerGuidanceId : undefined}
           onChange={(event) =>
             update(
               event.currentTarget.checked
                 ? { consent: true }
-                : { consent: false, firstName: "", lastName: "", email: "" },
+                : {
+                    consent: false,
+                    clubManager: managerLocked ? draft.clubManager : false,
+                    firstName: "",
+                    lastName: "",
+                    email: "",
+                  },
             )
           }
         />
         Agree for data processing
+      </label>
+      <label className="consent-field" htmlFor={`${idPrefix}-club-manager`}>
+        <input
+          id={`${idPrefix}-club-manager`}
+          aria-label={`${labelPrefix} Club manager`}
+          type="checkbox"
+          checked={draft.clubManager}
+          disabled={busy || managerLocked || !draft.consent}
+          aria-describedby={managerLocked ? managerGuidanceId : undefined}
+          onChange={(event) => update({ clubManager: event.currentTarget.checked })}
+        />
+        Club manager
       </label>
       <label htmlFor={`${idPrefix}-first-name`}>
         First name
@@ -173,6 +206,11 @@ const PlayerCard = ({
 
   const statistics = player.statistics;
   const deletionGuidanceId = `player-${player.id}-deletion-guidance`;
+  const blockedReason = player.managerLocked
+    ? "Manager access remains linked to the club creator while personal profile data is removed after consent withdrawal. The Owner player profile cannot be deleted."
+    : deletionProtected
+      ? "This player is selected in the current game and cannot be deleted."
+      : null;
   const winRate =
     statistics.gamesPlayed === 0 ? 0 : Math.round((statistics.wins / statistics.gamesPlayed) * 100);
 
@@ -257,28 +295,33 @@ const PlayerCard = ({
           draft={draft}
           idPrefix={`player-${player.id}`}
           labelPrefix={player.nickname}
+          busy={saving || deleting}
+          managerLocked={player.managerLocked}
+          managerGuidanceId={deletionGuidanceId}
           onChange={setDraft}
         />
+        {blockedReason === null ? null : (
+          <p id={deletionGuidanceId} className="deletion-guidance">
+            {blockedReason}
+          </p>
+        )}
         {error === null ? null : <p role="alert">{error}</p>}
         <button type="submit" disabled={saving || deleting}>
           {saving ? "Saving…" : `Save ${player.nickname}`}
         </button>
-        {onDelete === undefined ? null : (
+        {onDelete === undefined || player.managerLocked ? null : (
           <>
-            {deletionProtected ? (
-              <p id={deletionGuidanceId} className="deletion-guidance">
-                This player is selected in the current game and cannot be deleted.
-              </p>
-            ) : null}
             <button
               type="button"
               className="danger-action"
-              disabled={saving || deleting || deletionProtected}
-              aria-describedby={deletionProtected ? deletionGuidanceId : undefined}
+              disabled={saving || deleting || blockedReason !== null}
+              aria-describedby={blockedReason === null ? undefined : deletionGuidanceId}
               title={
-                deletionProtected
-                  ? "Clear the current game state before deleting this player."
-                  : undefined
+                player.managerLocked
+                  ? "The club creator's player profile cannot be deleted."
+                  : deletionProtected
+                    ? "Clear the current game state before deleting this player."
+                    : undefined
               }
               onClick={() => {
                 if (!window.confirm(deletionConfirmation(player))) {
@@ -346,6 +389,8 @@ export const PlayersScreen = ({
             draft={draft}
             idPrefix="new-player"
             labelPrefix="New player"
+            busy={saving}
+            managerLocked={false}
             onChange={setDraft}
           />
           {error === null ? null : <p role="alert">{error}</p>}

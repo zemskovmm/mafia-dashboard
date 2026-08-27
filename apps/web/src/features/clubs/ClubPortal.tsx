@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ImagePlus, Palette } from "lucide-react";
-import type { AppUser, Club, ClubInput } from "../../api/client.js";
+import type { AppUser, Club, ClubInput, ClubUpdateInput } from "../../api/client.js";
 import type { ColorTheme } from "../../theme.js";
 import { reportError } from "../console/error-console.js";
 
@@ -22,7 +22,7 @@ interface ClubPortalProps {
   readonly onSignOut: () => Promise<void>;
   readonly onColorThemeChange: (theme: ColorTheme) => void;
   readonly onEditingChange: (editing: Club | "new" | null) => void;
-  readonly onSaveClub: (clubId: string | null, input: ClubInput) => Promise<void>;
+  readonly onSaveClub: (clubId: string | null, input: ClubInput | ClubUpdateInput) => Promise<void>;
   readonly onOpenClub: (club: Club) => void;
 }
 
@@ -45,12 +45,13 @@ const ClubEditor = ({
   readonly club: Club | null;
   readonly saving: boolean;
   readonly onCancel: () => void;
-  readonly onSave: (input: ClubInput) => Promise<void>;
+  readonly onSave: (input: ClubInput | ClubUpdateInput) => Promise<void>;
 }) => {
   const [name, setName] = useState(club?.name ?? "");
   const [city, setCity] = useState(club?.city ?? "");
   const [headerLogo, setHeaderLogo] = useState<string | null>(club?.headerLogo ?? null);
   const [cardLogo, setCardLogo] = useState<string | null>(club?.cardLogo ?? null);
+  const [ownerConsent, setOwnerConsent] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const chooseImage = async (file: File | undefined, setter: (image: string | null) => void) => {
@@ -120,6 +121,16 @@ const ClubEditor = ({
           />
         </label>
       </div>
+      {club === null ? (
+        <label>
+          <input
+            type="checkbox"
+            checked={ownerConsent}
+            onChange={(event) => setOwnerConsent(event.target.checked)}
+          />
+          I consent to store my Google name and email in the Owner player profile.
+        </label>
+      ) : null}
       {error === null ? null : <p role="alert">{error}</p>}
       <div className="club-editor-actions">
         <button type="button" onClick={onCancel} disabled={saving}>
@@ -128,8 +139,16 @@ const ClubEditor = ({
         <button
           type="button"
           className="club-save-button"
-          disabled={saving || name.trim() === "" || city.trim() === ""}
-          onClick={() => void onSave({ name, city, headerLogo, cardLogo })}
+          disabled={
+            saving || name.trim() === "" || city.trim() === "" || (club === null && !ownerConsent)
+          }
+          onClick={() =>
+            void onSave(
+              club === null
+                ? { name, city, headerLogo, cardLogo, ownerConsent: true }
+                : { name, city, headerLogo, cardLogo },
+            )
+          }
         >
           {saving ? "Saving club…" : "Save club"}
         </button>
@@ -169,7 +188,7 @@ export const ClubPortal = ({
     }
   }, [clubs, editing, onEditingChange]);
 
-  const save = async (input: ClubInput) => {
+  const save = async (input: ClubInput | ClubUpdateInput) => {
     setSaving(true);
     try {
       await onSaveClub(editing === "new" || editing === null ? null : editing.id, input);

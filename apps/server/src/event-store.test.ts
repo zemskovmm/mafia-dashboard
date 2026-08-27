@@ -192,6 +192,7 @@ describe("PostgreSQL event store", () => {
       city: "Granada",
       headerLogo: null,
       cardLogo: null,
+      ownerConsent: true,
     });
     const gameId = randomUUID();
     const locker = await pool.connect();

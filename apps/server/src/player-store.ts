@@ -8,12 +8,40 @@ import {
 import { initializeSchema } from "./initialize-schema.js";
 import { DEFAULT_CLUB_ID } from "./club-store.js";
 
+export class ManagerLockedError extends Error {
+  public readonly code = "manager_locked";
+
+  public constructor() {
+    super("The club creator manager cannot be demoted");
+    this.name = "ManagerLockedError";
+  }
+}
+
+export class OwnerProfileForbiddenError extends Error {
+  public readonly code = "owner_profile_forbidden";
+
+  public constructor() {
+    super("Only the linked club creator can mutate the locked Owner profile");
+    this.name = "OwnerProfileForbiddenError";
+  }
+}
+
+export class ManagerConsentRequiredError extends Error {
+  public readonly code = "manager_consent_required";
+
+  public constructor() {
+    super("Club managers require consent unless they are the linked club creator");
+    this.name = "ManagerConsentRequiredError";
+  }
+}
+
 export interface PlayerProfileInput {
   readonly nickname: string;
   readonly consent: boolean;
   readonly firstName: string | null;
   readonly lastName: string | null;
   readonly email: string | null;
+  readonly clubManager?: boolean;
 }
 
 interface PlayerStatistics {
@@ -36,8 +64,10 @@ interface PlayerStatistics {
   readonly bestMoveMafiaHits: number;
 }
 
-export interface PlayerProfile extends PlayerProfileInput {
+export interface PlayerProfile extends Omit<PlayerProfileInput, "clubManager"> {
   readonly id: string;
+  readonly clubManager: boolean;
+  readonly managerLocked: boolean;
   readonly consentAt: Date | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
@@ -69,6 +99,8 @@ interface PlayerRow {
   first_name: string | null;
   last_name: string | null;
   email: string | null;
+  is_club_manager: boolean;
+  manager_locked: boolean;
   data_processing_consent: boolean;
   consent_at: Date | null;
   created_at: Date;
@@ -99,6 +131,8 @@ const mapPlayer = (row: PlayerRow): PlayerProfile => ({
   firstName: row.first_name,
   lastName: row.last_name,
   email: row.email,
+  clubManager: row.is_club_manager,
+  managerLocked: row.manager_locked,
   consentAt: row.consent_at,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
@@ -126,6 +160,11 @@ const mapPlayer = (row: PlayerRow): PlayerProfile => ({
 
 const profileSelect = `
   SELECT p.id, p.nickname, p.first_name, p.last_name, p.email,
+         p.is_club_manager,
+         (p.is_club_manager AND EXISTS (
+            SELECT 1 FROM clubs AS club
+             WHERE club.id = p.club_id AND club.created_by = p.user_id
+          )) AS manager_locked,
          p.data_processing_consent, p.consent_at, p.created_at, p.updated_at,
          p.last_played_at,
          (SELECT COUNT(*)::int FROM game_results hosted
@@ -178,20 +217,57 @@ export class PlayerStore {
 
   public async create(input: PlayerProfileInput, clubId = DEFAULT_CLUB_ID): Promise<PlayerProfile> {
     const id = randomUUID();
-    await this.pool.query(
-      `INSERT INTO players
-         (id, club_id, nickname, first_name, last_name, email, data_processing_consent, consent_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $7 THEN NOW() ELSE NULL END)`,
-      [
-        id,
-        clubId,
-        input.nickname.trim(),
-        input.firstName,
-        input.lastName,
-        input.email,
-        input.consent,
-      ],
-    );
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const clubManager = input.clubManager ?? false;
+      if (clubManager && !input.consent) {
+        throw new ManagerConsentRequiredError();
+      }
+      const linkedUser =
+        clubManager && input.email !== null
+          ? (
+              await client.query<{ id: string }>(
+                `SELECT id FROM users
+                  WHERE LOWER(BTRIM(email)) = LOWER(BTRIM($1))
+                  ORDER BY created_at, id
+                  LIMIT 1`,
+                [input.email],
+              )
+            ).rows[0]
+          : undefined;
+      await client.query(
+        `INSERT INTO players
+           (id, club_id, nickname, first_name, last_name, email, data_processing_consent,
+            consent_at, is_club_manager, user_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $7 THEN NOW() ELSE NULL END, $8, $9)`,
+        [
+          id,
+          clubId,
+          input.nickname.trim(),
+          input.firstName,
+          input.lastName,
+          input.email,
+          input.consent,
+          clubManager,
+          linkedUser?.id ?? null,
+        ],
+      );
+      if (linkedUser !== undefined) {
+        await client.query(
+          `INSERT INTO club_memberships (club_id, user_id, role, manager_player_id)
+           VALUES ($1, $2, 'editor', $3)
+           ON CONFLICT (club_id, user_id) DO NOTHING`,
+          [clubId, linkedUser.id, id],
+        );
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
     const player = await this.get(id, clubId);
     if (player === null) throw new Error("Created player was not found");
     return player;
@@ -200,39 +276,114 @@ export class PlayerStore {
   public async update(
     id: string,
     input: PlayerProfileInput,
-    clubId = DEFAULT_CLUB_ID,
+    clubId: string,
+    actorUserId: string,
   ): Promise<PlayerProfile | null> {
-    const result = await this.pool.query(
-      `UPDATE players
-          SET nickname = $2,
-              first_name = $3,
-              last_name = $4,
-              email = $5,
-              data_processing_consent = $6,
-              consent_at = CASE
-                WHEN $6 THEN COALESCE(consent_at, NOW())
-                ELSE NULL
-              END,
-              updated_at = NOW()
-        WHERE id = $1 AND club_id = $7`,
-      [
-        id,
-        input.nickname.trim(),
-        input.firstName,
-        input.lastName,
-        input.email,
-        input.consent,
-        clubId,
-      ],
-    );
-    if (result.rowCount === 0) return null;
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const existing = (
+        await client.query<{
+          user_id: string | null;
+          is_club_manager: boolean;
+          manager_locked: boolean;
+        }>(
+          `SELECT player.user_id,
+                  player.is_club_manager,
+                  (player.is_club_manager AND player.user_id = club.created_by) AS manager_locked
+             FROM players AS player
+             JOIN clubs AS club ON club.id = player.club_id
+            WHERE player.id = $1 AND player.club_id = $2
+            FOR UPDATE OF player`,
+          [id, clubId],
+        )
+      ).rows[0];
+      if (existing === undefined) {
+        await client.query("COMMIT");
+        return null;
+      }
+
+      const clubManager = input.clubManager ?? false;
+      if (existing.manager_locked && existing.user_id !== actorUserId) {
+        throw new OwnerProfileForbiddenError();
+      }
+      if (existing.manager_locked && !clubManager) {
+        throw new ManagerLockedError();
+      }
+      if (clubManager && !input.consent && !existing.manager_locked) {
+        throw new ManagerConsentRequiredError();
+      }
+      const linkedUser =
+        clubManager && input.email !== null
+          ? (
+              await client.query<{ id: string }>(
+                `SELECT id FROM users
+                  WHERE LOWER(BTRIM(email)) = LOWER(BTRIM($1))
+                  ORDER BY created_at, id
+                  LIMIT 1`,
+                [input.email],
+              )
+            ).rows[0]
+          : undefined;
+      const linkedUserId = existing.manager_locked ? existing.user_id : (linkedUser?.id ?? null);
+
+      if (existing.user_id !== null && existing.user_id !== linkedUserId) {
+        await client.query(
+          `DELETE FROM club_memberships
+            WHERE club_id = $1 AND role = 'editor' AND manager_player_id = $2`,
+          [clubId, id],
+        );
+      }
+      await client.query(
+        `UPDATE players
+            SET nickname = $2,
+                first_name = $3,
+                last_name = $4,
+                email = $5,
+                data_processing_consent = $6,
+                consent_at = CASE
+                  WHEN $6 THEN COALESCE(consent_at, NOW())
+                  ELSE NULL
+                END,
+                is_club_manager = $7,
+                user_id = $8,
+                updated_at = NOW()
+          WHERE id = $1 AND club_id = $9`,
+        [
+          id,
+          input.nickname.trim(),
+          input.firstName,
+          input.lastName,
+          input.email,
+          input.consent,
+          clubManager,
+          linkedUserId,
+          clubId,
+        ],
+      );
+
+      if (linkedUserId !== null) {
+        await client.query(
+          `INSERT INTO club_memberships (club_id, user_id, role, manager_player_id)
+           VALUES ($1, $2, 'editor', $3)
+           ON CONFLICT (club_id, user_id) DO NOTHING`,
+          [clubId, linkedUserId, id],
+        );
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
     return this.get(id, clubId);
   }
 
   public async delete(
     id: string,
     clubId = DEFAULT_CLUB_ID,
-  ): Promise<"deleted" | "not_found" | "active_game"> {
+  ): Promise<"deleted" | "not_found" | "active_game" | "manager_locked"> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -247,6 +398,20 @@ export class PlayerStore {
       if (locked.rowCount === 0) {
         await client.query("COMMIT");
         return "not_found";
+      }
+      const playerAccess = (
+        await client.query<{ user_id: string | null; manager_locked: boolean }>(
+          `SELECT player.user_id,
+                  (player.is_club_manager AND player.user_id = club.created_by) AS manager_locked
+             FROM players AS player
+             JOIN clubs AS club ON club.id = player.club_id
+            WHERE player.id = $1 AND player.club_id = $2`,
+          [id, clubId],
+        )
+      ).rows[0]!;
+      if (playerAccess.manager_locked) {
+        await client.query("COMMIT");
+        return "manager_locked";
       }
       const activeGame = await client.query(
         `SELECT 1
@@ -302,6 +467,14 @@ export class PlayerStore {
         await client.query(
           "DELETE FROM game_results WHERE club_id = $2 AND game_id = ANY($1::uuid[])",
           [gameIds, clubId],
+        );
+      }
+      const linkedUserId = playerAccess.user_id;
+      if (linkedUserId !== null) {
+        await client.query(
+          `DELETE FROM club_memberships
+            WHERE club_id = $1 AND role = 'editor' AND manager_player_id = $2`,
+          [clubId, id],
         );
       }
       await client.query("DELETE FROM players WHERE id = $1 AND club_id = $2", [id, clubId]);

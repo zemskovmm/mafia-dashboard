@@ -64,6 +64,24 @@ describe("tenant-composite game schema migration", () => {
       );
 
       await isolatedPool.query(`
+        DROP INDEX IF EXISTS club_memberships_manager_player_unique_idx;
+        ALTER TABLE club_memberships
+          DROP CONSTRAINT IF EXISTS club_memberships_manager_role_ck;
+        ALTER TABLE club_memberships
+          DROP CONSTRAINT IF EXISTS club_memberships_manager_player_fk;
+        ALTER TABLE players
+          DROP CONSTRAINT IF EXISTS players_manager_provenance_unique;
+        ALTER TABLE club_memberships DROP COLUMN IF EXISTS manager_player_id;
+        DELETE FROM players;
+        DROP INDEX IF EXISTS players_club_manager_email_unique_idx;
+        DROP INDEX IF EXISTS players_club_linked_user_unique_idx;
+        ALTER TABLE players DROP CONSTRAINT IF EXISTS players_manager_requires_consent_ck;
+        ALTER TABLE players DROP CONSTRAINT IF EXISTS players_user_fk;
+        ALTER TABLE players DROP COLUMN IF EXISTS user_id;
+        ALTER TABLE players DROP COLUMN IF EXISTS is_club_manager;
+      `);
+
+      await isolatedPool.query(`
         ALTER TABLE game_session_mutations DROP CONSTRAINT game_session_mutations_game_fk;
         ALTER TABLE game_session_players DROP CONSTRAINT game_session_players_game_fk;
         ALTER TABLE game_session_players DROP CONSTRAINT game_session_players_player_fk;
@@ -117,9 +135,56 @@ describe("tenant-composite game schema migration", () => {
       const deletedGameId = randomUUID();
       const mutationId = randomUUID();
       const playerId = randomUUID();
+      const laterMatchingPlayerId = randomUUID();
+      const backfilledOwnerUserId = randomUUID();
+      const backfilledOwnerClubId = randomUUID();
       await isolatedPool.query(
-        "INSERT INTO players (id, club_id, nickname) VALUES ($1, $2, 'Legacy player')",
+        `INSERT INTO players
+           (id, club_id, nickname, first_name, last_name, email,
+            data_processing_consent, consent_at, created_at, updated_at)
+         VALUES ($1, $2, 'Legacy player', 'Legacy', 'Owner',
+                 ' OWNER@MAFIAMALAGA.ES ', TRUE, '2026-08-18T07:00:00Z',
+                 '2026-08-18T07:00:00Z', '2026-08-18T07:00:00Z')`,
         [playerId, DEFAULT_CLUB_ID],
+      );
+      await isolatedPool.query(
+        `INSERT INTO players
+           (id, club_id, nickname, first_name, last_name, email,
+            data_processing_consent, consent_at, created_at, updated_at)
+         VALUES ($1, $2, 'Later matching player', 'Later', 'Match',
+                 'owner@mafiamalaga.es', TRUE, '2026-08-18T08:00:00Z',
+                 '2026-08-18T08:00:00Z', '2026-08-18T08:00:00Z')`,
+        [laterMatchingPlayerId, DEFAULT_CLUB_ID],
+      );
+      await isolatedPool.query(
+        `INSERT INTO users (id, email, display_name, created_at, updated_at)
+         VALUES ($1, 'backfill.owner@example.test', 'Ada Lovelace Byron',
+                 '2026-08-18T06:00:00Z', '2026-08-18T06:00:00Z')`,
+        [backfilledOwnerUserId],
+      );
+      await isolatedPool.query(
+        `INSERT INTO clubs (id, name, city, created_by, created_at, updated_at)
+         VALUES ($1, 'Owner backfill club', 'London', $2,
+                 '2026-08-18T06:30:00Z', '2026-08-18T06:30:00Z')`,
+        [backfilledOwnerClubId, backfilledOwnerUserId],
+      );
+      await isolatedPool.query(`
+        ALTER TABLE club_memberships ADD COLUMN manager_player_id UUID NULL;
+        ALTER TABLE club_memberships
+          ADD CONSTRAINT club_memberships_manager_player_fk
+          FOREIGN KEY (manager_player_id) REFERENCES players (id) ON DELETE CASCADE;
+        ALTER TABLE club_memberships
+          ADD CONSTRAINT club_memberships_manager_role_ck CHECK (
+            manager_player_id IS NULL OR role = 'editor'
+          );
+        CREATE UNIQUE INDEX club_memberships_manager_player_unique_idx
+          ON club_memberships (manager_player_id)
+          WHERE manager_player_id IS NOT NULL;
+      `);
+      await isolatedPool.query(
+        `INSERT INTO club_memberships (club_id, user_id, role, manager_player_id)
+         VALUES ($1, $2, 'editor', $3)`,
+        [backfilledOwnerClubId, legacyOwnerId, playerId],
       );
       await isolatedPool.query(
         `INSERT INTO game_sessions
@@ -163,7 +228,330 @@ describe("tenant-composite game schema migration", () => {
       );
 
       await initializeSchema(isolatedPool);
+      const backfilledOwnerCountAfterFirstRun = await isolatedPool.query<{ count: number }>(
+        "SELECT COUNT(*)::int AS count FROM players WHERE club_id = $1",
+        [backfilledOwnerClubId],
+      );
+      await isolatedPool.query(
+        "UPDATE players SET email = 'creator-edited@example.test' WHERE id = $1",
+        [playerId],
+      );
       await initializeSchema(isolatedPool);
+
+      const managerColumns = await isolatedPool.query<{
+        email: string | null;
+        data_processing_consent: boolean;
+        consent_unchanged: boolean;
+        is_club_manager: boolean;
+        user_id: string | null;
+      }>(
+        `SELECT email,
+                data_processing_consent,
+                consent_at = TIMESTAMPTZ '2026-08-18T07:00:00Z' AS consent_unchanged,
+                is_club_manager,
+                user_id
+           FROM players
+          WHERE id = $1`,
+        [playerId],
+      );
+      expect(managerColumns.rows[0]).toMatchObject({
+        email: "creator-edited@example.test",
+        data_processing_consent: true,
+        consent_unchanged: true,
+        is_club_manager: true,
+        user_id: legacyOwnerId,
+      });
+      expect(
+        await isolatedPool.query("SELECT is_club_manager, user_id FROM players WHERE id = $1", [
+          laterMatchingPlayerId,
+        ]),
+      ).toMatchObject({ rows: [{ is_club_manager: false, user_id: null }] });
+
+      const managerConstraints = await isolatedPool.query<{ indexname: string }>(
+        `SELECT indexname
+           FROM pg_indexes
+          WHERE schemaname = current_schema()
+            AND indexname IN (
+              'players_club_manager_email_unique_idx',
+              'players_club_linked_user_unique_idx'
+            )
+          ORDER BY indexname`,
+      );
+      expect(managerConstraints.rows).toEqual(
+        expect.arrayContaining([
+          { indexname: "players_club_manager_email_unique_idx" },
+          { indexname: "players_club_linked_user_unique_idx" },
+        ]),
+      );
+
+      const managerConstraintNames = await isolatedPool.query<{
+        conname: string;
+        definition: string;
+      }>(
+        `SELECT conname, pg_get_constraintdef(oid) AS definition
+           FROM pg_constraint
+          WHERE conrelid = 'players'::regclass
+            AND conname IN ('players_manager_requires_consent_ck', 'players_user_fk')
+          ORDER BY conname`,
+      );
+      expect(managerConstraintNames.rows.map(({ conname }) => ({ conname }))).toEqual([
+        { conname: "players_manager_requires_consent_ck" },
+        { conname: "players_user_fk" },
+      ]);
+      const managerConsentDefinition = managerConstraintNames.rows.find(
+        ({ conname }) => conname === "players_manager_requires_consent_ck",
+      )!.definition;
+      expect(managerConsentDefinition).toMatch(/NOT is_club_manager/);
+      expect(managerConsentDefinition).toMatch(/data_processing_consent/);
+      expect(managerConsentDefinition).toMatch(/user_id IS NOT NULL/);
+      expect(managerConsentDefinition).not.toMatch(/email/);
+
+      await isolatedPool.query(
+        `UPDATE players
+            SET first_name = NULL,
+                last_name = NULL,
+                email = NULL,
+                data_processing_consent = FALSE,
+                consent_at = NULL
+          WHERE id = $1`,
+        [playerId],
+      );
+      await expect(
+        isolatedPool.query(
+          `UPDATE players
+              SET first_name = NULL,
+                  last_name = NULL,
+                  email = NULL,
+                  data_processing_consent = FALSE,
+                  consent_at = NULL,
+                  is_club_manager = TRUE
+            WHERE id = $1`,
+          [laterMatchingPlayerId],
+        ),
+      ).rejects.toMatchObject({ code: "23514", constraint: "players_manager_requires_consent_ck" });
+
+      await initializeSchema(isolatedPool);
+      await expect(
+        isolatedPool.query(
+          `SELECT data_processing_consent, consent_at, first_name, last_name, email,
+                  is_club_manager, user_id
+             FROM players
+            WHERE id = $1`,
+          [playerId],
+        ),
+      ).resolves.toMatchObject({
+        rows: [
+          {
+            data_processing_consent: false,
+            consent_at: null,
+            first_name: null,
+            last_name: null,
+            email: null,
+            is_club_manager: true,
+            user_id: legacyOwnerId,
+          },
+        ],
+      });
+
+      const membershipProvenanceColumn = await isolatedPool.query<{
+        column_name: string;
+        is_nullable: string;
+      }>(
+        `SELECT column_name, is_nullable
+           FROM information_schema.columns
+          WHERE table_schema = current_schema()
+            AND table_name = 'club_memberships'
+            AND column_name = 'manager_player_id'`,
+      );
+      expect(membershipProvenanceColumn.rows).toEqual([
+        { column_name: "manager_player_id", is_nullable: "YES" },
+      ]);
+
+      const crossClubManagerUserId = randomUUID();
+      const wrongLinkedUserId = randomUUID();
+      const wrongMembershipUserId = randomUUID();
+      const crossClubPlayerId = randomUUID();
+      const wrongUserPlayerId = randomUUID();
+      await isolatedPool.query(
+        `INSERT INTO users (id, email, display_name)
+         VALUES ($1, $2, 'Cross-club manager'),
+                ($3, $4, 'Actual linked manager'),
+                ($5, $6, 'Wrong membership manager')`,
+        [
+          crossClubManagerUserId,
+          `cross-club-${crossClubManagerUserId}@example.test`,
+          wrongLinkedUserId,
+          `actual-${wrongLinkedUserId}@example.test`,
+          wrongMembershipUserId,
+          `wrong-${wrongMembershipUserId}@example.test`,
+        ],
+      );
+      await isolatedPool.query(
+        `INSERT INTO players (id, club_id, nickname, user_id)
+         VALUES ($1, $2, 'Cross-club provenance player', $3),
+                ($4, $2, 'Wrong-user provenance player', $5)`,
+        [
+          crossClubPlayerId,
+          DEFAULT_CLUB_ID,
+          crossClubManagerUserId,
+          wrongUserPlayerId,
+          wrongLinkedUserId,
+        ],
+      );
+      await isolatedPool.query(
+        `INSERT INTO club_memberships (club_id, user_id, role)
+         VALUES ($1, $2, 'editor'), ($3, $4, 'editor')`,
+        [backfilledOwnerClubId, crossClubManagerUserId, DEFAULT_CLUB_ID, wrongMembershipUserId],
+      );
+
+      const provenanceUpdateErrors = await Promise.all(
+        [
+          [backfilledOwnerClubId, crossClubManagerUserId, crossClubPlayerId],
+          [DEFAULT_CLUB_ID, wrongMembershipUserId, wrongUserPlayerId],
+        ].map(async ([clubId, userId, managerPlayerId]) => {
+          try {
+            await isolatedPool.query(
+              `UPDATE club_memberships
+                  SET manager_player_id = $3
+                WHERE club_id = $1 AND user_id = $2`,
+              [clubId, userId, managerPlayerId],
+            );
+            return null;
+          } catch (error) {
+            return error;
+          }
+        }),
+      );
+      expect(provenanceUpdateErrors).toEqual([
+        expect.objectContaining({
+          code: "23503",
+          constraint: "club_memberships_manager_player_fk",
+        }),
+        expect.objectContaining({
+          code: "23503",
+          constraint: "club_memberships_manager_player_fk",
+        }),
+      ]);
+
+      const membershipProvenanceConstraints = await isolatedPool.query<{
+        conname: string;
+        definition: string;
+      }>(
+        `SELECT conname, pg_get_constraintdef(oid) AS definition
+           FROM pg_constraint
+          WHERE conrelid = 'club_memberships'::regclass
+            AND conname IN (
+              'club_memberships_manager_player_fk',
+              'club_memberships_manager_role_ck'
+            )
+          ORDER BY conname`,
+      );
+      expect(membershipProvenanceConstraints.rows).toHaveLength(2);
+      expect(membershipProvenanceConstraints.rows).toEqual(
+        expect.arrayContaining([
+          {
+            conname: "club_memberships_manager_player_fk",
+            definition:
+              "FOREIGN KEY (manager_player_id, club_id, user_id) REFERENCES players(id, club_id, user_id) ON DELETE CASCADE",
+          },
+          expect.objectContaining({
+            conname: "club_memberships_manager_role_ck",
+            definition: expect.stringContaining("manager_player_id IS NULL"),
+          }),
+        ]),
+      );
+      await expect(
+        isolatedPool.query(
+          `SELECT pg_get_constraintdef(oid) AS definition
+             FROM pg_constraint
+            WHERE conrelid = 'players'::regclass
+              AND conname = 'players_manager_provenance_unique'`,
+        ),
+      ).resolves.toMatchObject({
+        rows: [{ definition: "UNIQUE (id, club_id, user_id)" }],
+      });
+
+      const membershipProvenanceIndex = await isolatedPool.query<{ indexdef: string }>(
+        `SELECT indexdef
+           FROM pg_indexes
+          WHERE schemaname = current_schema()
+            AND indexname = 'club_memberships_manager_player_unique_idx'`,
+      );
+      expect(membershipProvenanceIndex.rows).toEqual([
+        {
+          indexdef: expect.stringMatching(
+            /CREATE UNIQUE INDEX .* \(manager_player_id\) WHERE \(manager_player_id IS NOT NULL\)$/,
+          ),
+        },
+      ]);
+
+      await expect(
+        isolatedPool.query(
+          `SELECT role, manager_player_id
+             FROM club_memberships
+            WHERE club_id = $1 AND user_id = $2`,
+          [backfilledOwnerClubId, legacyOwnerId],
+        ),
+      ).resolves.toMatchObject({ rows: [{ role: "editor", manager_player_id: null }] });
+
+      expect(
+        await isolatedPool.query(
+          `SELECT role, manager_player_id
+             FROM club_memberships
+            WHERE club_id = $1 AND user_id = $2`,
+          [DEFAULT_CLUB_ID, legacyOwnerId],
+        ),
+      ).toMatchObject({ rows: [{ role: "owner", manager_player_id: null }] });
+
+      const backfilledOwners = await isolatedPool.query<{
+        id: string;
+        nickname: string;
+        first_name: string | null;
+        last_name: string | null;
+        email: string | null;
+        data_processing_consent: boolean;
+        consent_at: Date | null;
+        is_club_manager: boolean;
+        user_id: string | null;
+      }>(
+        `SELECT player.id,
+                player.nickname,
+                player.first_name,
+                player.last_name,
+                player.email,
+                player.data_processing_consent,
+                player.consent_at,
+                player.is_club_manager,
+                player.user_id
+           FROM players AS player
+          WHERE player.club_id = $1`,
+        [backfilledOwnerClubId],
+      );
+      expect(backfilledOwnerCountAfterFirstRun.rows).toEqual([{ count: 1 }]);
+      expect(backfilledOwners.rows).toEqual([
+        {
+          id: expect.stringMatching(
+            /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+          ),
+          nickname: "Owner",
+          first_name: null,
+          last_name: null,
+          email: null,
+          data_processing_consent: false,
+          consent_at: null,
+          is_club_manager: true,
+          user_id: backfilledOwnerUserId,
+        },
+      ]);
+
+      expect(
+        await isolatedPool.query(
+          `SELECT role, manager_player_id
+             FROM club_memberships
+            WHERE club_id = $1 AND user_id = $2`,
+          [backfilledOwnerClubId, backfilledOwnerUserId],
+        ),
+      ).toMatchObject({ rows: [{ role: "owner", manager_player_id: null }] });
 
       expect(
         await isolatedPool.query(
