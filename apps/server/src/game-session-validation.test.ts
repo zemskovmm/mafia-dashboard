@@ -593,7 +593,7 @@ describe("game session validation", () => {
     expect(parsed.success).toBe(true);
   });
 
-  it("rejects a setup whose visible players do not match the selected roster", () => {
+  it("rejects a setup whose visible players do not match the selected players", () => {
     const roles = [
       "sheriff",
       "citizen",
@@ -607,7 +607,7 @@ describe("game session validation", () => {
       "don",
     ] as const;
     const parsed = gameSessionMutationSchema.safeParse({
-      name: "Mismatched setup roster",
+      name: "Mismatched setup players",
       mutationId: uuid(99),
       baseRevision: 0,
       state: {
@@ -642,7 +642,7 @@ describe("game session validation", () => {
     if (!parsed.success) {
       expect(parsed.error.issues).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ message: "Setup players must match the selected roster" }),
+          expect.objectContaining({ message: "Setup players must match the selected players" }),
         ]),
       );
     }

@@ -20,6 +20,7 @@ import {
   Maximize2,
   Minimize2,
   Save,
+  SlidersHorizontal,
   Undo2,
   Wrench,
 } from "lucide-react";
@@ -56,6 +57,7 @@ import type {
 import { ClubPortal } from "./features/clubs/ClubPortal.js";
 import { ErrorConsoleScreen } from "./features/console/ErrorConsoleScreen.js";
 import { clearErrorConsole, reportError } from "./features/console/error-console.js";
+import { CanaryFirework } from "./features/effects/CanaryFirework.js";
 import { GameScreen } from "./features/game/GameScreen.js";
 import { isCriticalState } from "./features/game/critical-state.js";
 import { LiveSidePanel } from "./features/game/LiveSidePanel.js";
@@ -83,18 +85,11 @@ import { buildFinalGameResults } from "./features/players/game-results.js";
 import { SetupWizard, type SetupWizardSessionState } from "./features/setup/SetupWizard.js";
 import { AvailablePlayersScreen } from "./features/setup/AvailablePlayersScreen.js";
 import { GameTimelineScreen } from "./features/timeline/GameTimelineScreen.js";
-import {
-  DEFAULT_GLASS_SETTINGS,
-  GLASS_SETTINGS_BOUNDS,
-  readGlassSettings,
-  writeGlassSettings,
-  type GlassSettings,
-} from "./features/theme/glass-settings.js";
-import { supportsTrueRefraction } from "./features/theme/refractive-support.js";
+
 import { GameSessionOutbox } from "./session-outbox.js";
 import { SessionRetryController } from "./session-retry.js";
 import { createRandomId } from "./utils/random-id.js";
-import { applyColorTheme, readColorTheme, type ColorTheme } from "./theme.js";
+import { applyThemeColor, DEFAULT_THEME_COLOR, readThemeColor } from "./theme.js";
 import "./styles/app.css";
 import "./styles/clubs.css";
 import "./styles/timeline.css";
@@ -316,15 +311,15 @@ export const ClubWorkspace = ({
   onExit,
   onEditClub,
   onDeleteClub,
-  colorTheme = "midnight",
-  onColorThemeChange = () => undefined,
+  themeColor = DEFAULT_THEME_COLOR,
+  onThemeColorChange = () => undefined,
 }: {
   readonly club: Club;
   readonly onExit: () => void;
   readonly onEditClub: () => void;
   readonly onDeleteClub: () => Promise<void>;
-  readonly colorTheme?: ColorTheme;
-  readonly onColorThemeChange?: (theme: ColorTheme) => void;
+  readonly themeColor?: string;
+  readonly onThemeColorChange?: (color: string) => void;
 }) => {
   const storageKey = gameSessionStorageKey(club.id);
   const legacyStorageKey = legacyGameSessionStorageKey(club.id);
@@ -427,7 +422,7 @@ export const ClubWorkspace = ({
     readAvailablePlayerIds(window.localStorage, club.id),
   );
   const [playersError, setPlayersError] = useState(false);
-  const [rosterGateError, setRosterGateError] = useState<string | null>(null);
+  const [playerGateError, setPlayerGateError] = useState<string | null>(null);
   const [playlistId, setPlaylistId] = useState(initialPlaylistId);
   const [musicPreferences, setMusicPreferences] =
     useState<MusicPreferencesV1>(initialMusicPreferences);
@@ -504,13 +499,14 @@ export const ClubWorkspace = ({
   const [resumeGameId, setResumeGameId] = useState<string | null>(null);
   const [swipedSessionId, setSwipedSessionId] = useState<string | null>(null);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
-  const [activeDrawer, setActiveDrawer] = useState<"log" | "dev" | null>(null);
+  const [activeDrawer, setActiveDrawer] = useState<"log" | "manage" | "dev" | null>(null);
   const [musicSetupOpen, setMusicSetupOpen] = useState(false);
   const [backgroundShade, setBackgroundShade] = useState<BackgroundShade>("black");
-  const [glassSettings, setGlassSettings] = useState<GlassSettings>(() =>
-    readGlassSettings(window.localStorage),
-  );
+
   const [devModeEnabled, setDevModeEnabled] = useState(false);
+  const [devUnlocked, setDevUnlocked] = useState(false);
+  const [canaryBurstKey, setCanaryBurstKey] = useState(0);
+  const [privacyTapStage, setPrivacyTapStage] = useState(0);
   const [privacyHidden, setPrivacyHidden] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(() => currentFullscreenElement() !== null);
   const [clearingAllData, setClearingAllData] = useState(false);
@@ -518,6 +514,10 @@ export const ClubWorkspace = ({
   const [syncRender, setSyncRender] = useState(0);
 
   const musicRef = useRef<YouTubePlayerHandle>(null);
+  const privacyTapsRef = useRef<{ count: number; resetTimer: number | null }>({
+    count: 0,
+    resetTimer: null,
+  });
   const previousMusicGameRef = useRef<GameState | null>(initialDerivedGame);
   const sessionSwipeStartRef = useRef<{ readonly gameId: string; readonly x: number } | null>(null);
   const initialGameRef = useRef<InitialGameBaseline | null>(initialState.initialGame);
@@ -624,6 +624,15 @@ export const ClubWorkspace = ({
       document.removeEventListener("webkitfullscreenchange", syncFullscreenState);
     };
   }, []);
+
+  useEffect(
+    () => () => {
+      if (privacyTapsRef.current.resetTimer !== null) {
+        window.clearTimeout(privacyTapsRef.current.resetTimer);
+      }
+    },
+    [],
+  );
 
   useEffect(
     () =>
@@ -1332,9 +1341,16 @@ export const ClubWorkspace = ({
       window.localStorage.clear();
       window.sessionStorage.clear();
       setMusicPreferences(readMusicPreferences(window.localStorage, club.id));
-      setGlassSettings(DEFAULT_GLASS_SETTINGS);
+
       clearErrorConsole();
       setDevModeEnabled(false);
+      setDevUnlocked(false);
+      setCanaryBurstKey(0);
+      setPrivacyTapStage(0);
+      if (privacyTapsRef.current.resetTimer !== null) {
+        window.clearTimeout(privacyTapsRef.current.resetTimer);
+      }
+      privacyTapsRef.current = { count: 0, resetTimer: null };
       setAvailablePlayerIds(new Set());
       resetLocalState();
       window.localStorage.clear();
@@ -1421,33 +1437,110 @@ export const ClubWorkspace = ({
     backgroundShadeOrder[
       (backgroundShadeOrder.indexOf(backgroundShade) + 1) % backgroundShadeOrder.length
     ]!;
-  const colorThemeOrder: readonly ColorTheme[] = ["midnight", "malaga", "malaga-glass"];
-  const nextColorTheme =
-    colorThemeOrder[(colorThemeOrder.indexOf(colorTheme) + 1) % colorThemeOrder.length] ??
-    "midnight";
-  const nextColorThemeLabel =
-    nextColorTheme === "malaga"
-      ? "Málaga gold"
-      : nextColorTheme === "malaga-glass"
-        ? "Málaga Glass"
-        : "Midnight";
-  const browserBrands = /(?:Chrome|Chromium|CriOS|Edg)\//.test(navigator.userAgent)
-    ? ["Chromium"]
-    : /Safari\//.test(navigator.userAgent)
-      ? ["Safari"]
-      : [];
-  const trueRefractionSupported = supportsTrueRefraction({
-    enabled: glassSettings.enabled,
-    cssSupportsFilterUrl:
-      typeof CSS !== "undefined" &&
-      typeof CSS.supports === "function" &&
-      CSS.supports("backdrop-filter", "url(#refractive-probe)"),
-    browserBrands,
-  });
-  const updateGlassSettings = (next: Partial<GlassSettings>) => {
-    setGlassSettings((current) => writeGlassSettings(window.localStorage, { ...current, ...next }));
-  };
+
   const showWorkspaceTools = previewGame === null && (view === "game" || view === "players");
+  const togglePrivacy = () => {
+    setPrivacyHidden((hidden) => !hidden);
+    const sequence = privacyTapsRef.current;
+    if (sequence.resetTimer !== null) window.clearTimeout(sequence.resetTimer);
+    const count = sequence.count + 1;
+    if (count >= 5) {
+      privacyTapsRef.current = { count: 0, resetTimer: null };
+      setPrivacyTapStage(5);
+      setDevUnlocked(true);
+      setCanaryBurstKey((key) => key + 1);
+      return;
+    }
+    privacyTapsRef.current = {
+      count,
+      resetTimer: window.setTimeout(() => {
+        privacyTapsRef.current = { count: 0, resetTimer: null };
+        setPrivacyTapStage(0);
+      }, 500),
+    };
+    setPrivacyTapStage(count);
+  };
+  const hasCurrentGameState =
+    sessionSync.gameId !== null ||
+    game !== null ||
+    setupSession !== null ||
+    playlistId !== defaultPlaylistId;
+  const musicSetupPanel = musicSetupOpen ? (
+    <section id="manage-music-setup" className="manage-music-setup" aria-label="Music player setup">
+      <div className={`music-status ${musicState === "playing" ? "is-playing" : ""}`}>
+        <span className="status-dot" />
+        <strong>{musicLabel[musicState]}</strong>
+      </div>
+      <button type="button" onClick={() => setMusicReloadRequest((request) => request + 1)}>
+        Reload music player
+      </button>
+      <AccountPlaylistPicker
+        playlistId={playlistId}
+        onPlaylistIdChange={changePlaylistId}
+        onAccountDisconnected={clearMusicAccountState}
+      />
+    </section>
+  ) : null;
+  const activeSessionsPanel = (
+    <section className="manage-active-sessions" aria-label="Active games">
+      <h3>Active games</h3>
+      {activeSessionsError ? (
+        <p role="alert">Active games are temporarily unavailable.</p>
+      ) : activeSessions.length === 0 ? (
+        <p>No active games to resume.</p>
+      ) : (
+        <ul>
+          {activeSessions.map((session) => (
+            <li
+              key={session.gameId}
+              className={swipedSessionId === session.gameId ? "is-delete-revealed" : ""}
+              onTouchStart={(event) => {
+                sessionSwipeStartRef.current = {
+                  gameId: session.gameId,
+                  x: event.touches[0]?.clientX ?? 0,
+                };
+              }}
+              onTouchEnd={(event) => {
+                const start = sessionSwipeStartRef.current;
+                sessionSwipeStartRef.current = null;
+                if (start?.gameId !== session.gameId) return;
+                const delta = (event.changedTouches[0]?.clientX ?? start.x) - start.x;
+                if (delta < -44) setSwipedSessionId(session.gameId);
+                else if (delta > 44) setSwipedSessionId(null);
+              }}
+            >
+              <button
+                type="button"
+                className="session-delete-action"
+                disabled={deletingSessionId === session.gameId}
+                onClick={() => void deleteActiveSession(session)}
+              >
+                {deletingSessionId === session.gameId ? "Deleting…" : "Delete"}
+              </button>
+              <div className="session-swipe-content">
+                <div>
+                  <strong>{session.name}</strong>
+                  <span>
+                    {session.hostName ?? "Host not selected"} · {session.phase} · day {session.day}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  disabled={resumeGameId === session.gameId}
+                  onClick={() => {
+                    setActiveDrawer(null);
+                    void resumeSession(session.gameId);
+                  }}
+                >
+                  {resumeGameId === session.gameId ? "Resuming…" : `Resume ${session.name}`}
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
 
   return (
     <div
@@ -1471,7 +1564,8 @@ export const ClubWorkspace = ({
           )}
           <div>
             <p className="eyebrow">
-              {view === "players" ? "Persistent roster" : `Game setup · ${sessionName}`} · Host view
+              {view === "players" ? "Persistent players" : `Game setup · ${sessionName}`} · Host
+              view
             </p>
             <h1 aria-label={applicationStatusTitle}>
               <span className="active-club-title-name">{club.name}</span>
@@ -1532,12 +1626,13 @@ export const ClubWorkspace = ({
           </button>
           <button
             type="button"
-            className="privacy-button icon-toolbar-button"
+            className={`privacy-button icon-toolbar-button is-tap-${privacyTapStage}`}
             aria-label={privacyHidden ? "Show private info" : "Hide private info"}
             aria-pressed={privacyHidden}
-            onClick={() => setPrivacyHidden((hidden) => !hidden)}
+            onClick={togglePrivacy}
           >
             {privacyHidden ? <Eye aria-hidden="true" /> : <EyeOff aria-hidden="true" />}
+            {canaryBurstKey > 0 ? <CanaryFirework burstKey={canaryBurstKey} /> : null}
           </button>
           <button
             type="button"
@@ -1551,13 +1646,24 @@ export const ClubWorkspace = ({
           </button>
           <button
             type="button"
-            className="dev-toolbar-button icon-toolbar-button"
-            aria-label={activeDrawer === "dev" ? "Close developer menu" : "Open developer menu"}
-            aria-expanded={activeDrawer === "dev"}
-            onClick={() => setActiveDrawer((drawer) => (drawer === "dev" ? null : "dev"))}
+            className="manage-toolbar-button icon-toolbar-button"
+            aria-label={activeDrawer === "manage" ? "Close Manage menu" : "Open Manage menu"}
+            aria-expanded={activeDrawer === "manage"}
+            onClick={() => setActiveDrawer((drawer) => (drawer === "manage" ? null : "manage"))}
           >
-            <Wrench aria-hidden="true" />
+            <SlidersHorizontal aria-hidden="true" />
           </button>
+          {devUnlocked ? (
+            <button
+              type="button"
+              className="dev-toolbar-button icon-toolbar-button"
+              aria-label={activeDrawer === "dev" ? "Close developer menu" : "Open developer menu"}
+              aria-expanded={activeDrawer === "dev"}
+              onClick={() => setActiveDrawer((drawer) => (drawer === "dev" ? null : "dev"))}
+            >
+              <Wrench aria-hidden="true" />
+            </button>
+          ) : null}
         </div>
       ) : null}
       {showWorkspaceTools && activeDrawer === "log" ? (
@@ -1604,16 +1710,54 @@ export const ClubWorkspace = ({
           </div>
         </aside>
       ) : null}
-      {showWorkspaceTools && activeDrawer === "dev" ? (
-        <aside className="app-drawer dev-menu-drawer" role="dialog" aria-label="Developer menu">
-          <div className="dev-menu-header">
-            <h2>Dev menu</h2>
-            <p className="dev-menu-version" aria-label={`Canary version ${webPackage.version}`}>
-              <Bird aria-hidden="true" strokeWidth={2.5} />
-              <span>Canary v{webPackage.version}</span>
-            </p>
+      {showWorkspaceTools && activeDrawer === "manage" ? (
+        <aside className="app-drawer manage-menu-drawer" role="dialog" aria-label="Manage">
+          <h2>Manage</h2>
+          <div className="manage-menu-actions">
+            <button
+              type="button"
+              onClick={() => {
+                if (view === "players" && availablePlayersForSetup.length < 11) {
+                  const missing = 11 - availablePlayersForSetup.length;
+                  setPlayerGateError(
+                    players.length < 11
+                      ? `Add ${11 - players.length} more registered ${11 - players.length === 1 ? "player" : "players"} before starting a new game.`
+                      : `Mark ${missing} more ${missing === 1 ? "player" : "players"} available before starting a new game.`,
+                  );
+                  setActiveDrawer(null);
+                  return;
+                }
+                setPlayerGateError(null);
+                setActiveDrawer(null);
+                if (hasCurrentGameState) void clearGameState();
+                else resetLocalState();
+              }}
+            >
+              Start new game
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setPlayerGateError(null);
+                setAvailabilityScreenOpen(false);
+                setView("players");
+                setActiveDrawer(null);
+              }}
+            >
+              Players screen
+            </button>
+            <button
+              type="button"
+              aria-expanded={musicSetupOpen}
+              aria-controls="manage-music-setup"
+              onClick={() => setMusicSetupOpen((open) => !open)}
+            >
+              {musicSetupOpen ? "Hide music player setup" : "Music player setup"}
+            </button>
           </div>
-          <div className="dev-menu-actions">
+          {musicSetupPanel}
+          {activeSessionsPanel}
+          <div className="manage-menu-actions manage-club-actions">
             <button
               type="button"
               onClick={() => {
@@ -1623,6 +1767,15 @@ export const ClubWorkspace = ({
             >
               Edit club
             </button>
+            <label className="theme-color-field">
+              <span>Glass color</span>
+              <input
+                type="color"
+                aria-label="Glass color"
+                value={themeColor}
+                onChange={(event) => onThemeColorChange(event.currentTarget.value)}
+              />
+            </label>
             {club.role === "owner" ? (
               <button
                 type="button"
@@ -1635,78 +1788,19 @@ export const ClubWorkspace = ({
                 Delete club
               </button>
             ) : null}
-            <button type="button" onClick={() => onColorThemeChange(nextColorTheme)}>
-              Use {nextColorThemeLabel} theme
-            </button>
-            <fieldset className="glass-settings" disabled={colorTheme !== "malaga-glass"}>
-              <legend>Glass settings</legend>
-              <p className="muted">
-                {trueRefractionSupported
-                  ? "True refraction available"
-                  : "True refraction unavailable · using fallback"}
-              </p>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={glassSettings.enabled}
-                  onChange={(event) => updateGlassSettings({ enabled: event.target.checked })}
-                />
-                <span>Enable glass effect</span>
-              </label>
-              {(
-                [
-                  ["blur", "Glass blur"],
-                  ["glassThickness", "Glass thickness"],
-                  ["bezelWidth", "Bezel width"],
-                  ["refractiveIndex", "Refractive index"],
-                  ["specularOpacity", "Specular opacity"],
-                  ["specularAngle", "Specular angle"],
-                  ["fallbackOpacity", "Fallback opacity"],
-                ] as const
-              ).map(([key, label]) => (
-                <label key={key}>
-                  <span>{label}</span>
-                  <input
-                    type="number"
-                    aria-label={label}
-                    min={GLASS_SETTINGS_BOUNDS[key].min}
-                    max={GLASS_SETTINGS_BOUNDS[key].max}
-                    step={GLASS_SETTINGS_BOUNDS[key].step}
-                    value={glassSettings[key]}
-                    onChange={(event) => updateGlassSettings({ [key]: Number(event.target.value) })}
-                  />
-                </label>
-              ))}
-              <button
-                type="button"
-                onClick={() =>
-                  setGlassSettings(writeGlassSettings(window.localStorage, DEFAULT_GLASS_SETTINGS))
-                }
-              >
-                Reset glass settings
-              </button>
-            </fieldset>
-            <button
-              type="button"
-              onClick={() => {
-                if (view === "players" && availablePlayersForSetup.length < 11) {
-                  const missing = 11 - availablePlayersForSetup.length;
-                  setRosterGateError(
-                    players.length < 11
-                      ? `Add ${11 - players.length} more registered ${11 - players.length === 1 ? "player" : "players"} before opening the game screen.`
-                      : `Mark ${missing} more ${missing === 1 ? "player" : "players"} available before opening the game screen.`,
-                  );
-                  setActiveDrawer(null);
-                  return;
-                }
-                setRosterGateError(null);
-                setAvailabilityScreenOpen(false);
-                setView((currentView) => (currentView === "players" ? "game" : "players"));
-                setActiveDrawer(null);
-              }}
-            >
-              {view === "players" ? "Game screen" : "Players screen"}
-            </button>
+          </div>
+        </aside>
+      ) : null}
+      {showWorkspaceTools && activeDrawer === "dev" ? (
+        <aside className="app-drawer dev-menu-drawer" role="dialog" aria-label="Developer menu">
+          <div className="dev-menu-header">
+            <h2>Dev menu</h2>
+            <p className="dev-menu-version" aria-label={`Canary version ${webPackage.version}`}>
+              <Bird aria-hidden="true" strokeWidth={2.5} />
+              <span>Canary v{webPackage.version}</span>
+            </p>
+          </div>
+          <div className="dev-menu-actions">
             <button
               type="button"
               onClick={() => {
@@ -1727,11 +1821,6 @@ export const ClubWorkspace = ({
             >
               Console
             </button>
-            {game === null && setupSession === null && playlistId === defaultPlaylistId ? null : (
-              <button type="button" className="danger-action" onClick={() => void clearGameState()}>
-                Clear game state
-              </button>
-            )}
             <button type="button" onClick={() => setBackgroundShade(nextBackgroundShade)}>
               Use {backgroundShadeLabel[nextBackgroundShade]} background
             </button>
@@ -1744,37 +1833,6 @@ export const ClubWorkspace = ({
             </button>
             <button
               type="button"
-              aria-expanded={musicSetupOpen}
-              aria-controls="dev-music-setup"
-              onClick={() => setMusicSetupOpen((open) => !open)}
-            >
-              {musicSetupOpen ? "Hide music player setup" : "Music player setup"}
-            </button>
-            {musicSetupOpen ? (
-              <section
-                id="dev-music-setup"
-                className="dev-music-setup"
-                aria-label="Music player setup"
-              >
-                <div className={`music-status ${musicState === "playing" ? "is-playing" : ""}`}>
-                  <span className="status-dot" />
-                  <strong>{musicLabel[musicState]}</strong>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setMusicReloadRequest((request) => request + 1)}
-                >
-                  Reload music player
-                </button>
-                <AccountPlaylistPicker
-                  playlistId={playlistId}
-                  onPlaylistIdChange={changePlaylistId}
-                  onAccountDisconnected={clearMusicAccountState}
-                />
-              </section>
-            ) : null}
-            <button
-              type="button"
               className="danger-action"
               disabled={clearingAllData}
               onClick={() => void clearApplicationData()}
@@ -1782,65 +1840,6 @@ export const ClubWorkspace = ({
               {clearingAllData ? "Clearing…" : "Clear all data"}
             </button>
           </div>
-          <section className="dev-active-sessions" aria-labelledby="dev-active-sessions-title">
-            <h3 id="dev-active-sessions-title">Active games</h3>
-            {activeSessionsError ? (
-              <p role="alert">Active games are temporarily unavailable.</p>
-            ) : activeSessions.length === 0 ? (
-              <p>No active games to resume.</p>
-            ) : (
-              <ul>
-                {activeSessions.map((session) => (
-                  <li
-                    key={session.gameId}
-                    className={swipedSessionId === session.gameId ? "is-delete-revealed" : ""}
-                    onTouchStart={(event) => {
-                      sessionSwipeStartRef.current = {
-                        gameId: session.gameId,
-                        x: event.touches[0]?.clientX ?? 0,
-                      };
-                    }}
-                    onTouchEnd={(event) => {
-                      const start = sessionSwipeStartRef.current;
-                      sessionSwipeStartRef.current = null;
-                      if (start?.gameId !== session.gameId) return;
-                      const delta = (event.changedTouches[0]?.clientX ?? start.x) - start.x;
-                      if (delta < -44) setSwipedSessionId(session.gameId);
-                      else if (delta > 44) setSwipedSessionId(null);
-                    }}
-                  >
-                    <button
-                      type="button"
-                      className="session-delete-action"
-                      disabled={deletingSessionId === session.gameId}
-                      onClick={() => void deleteActiveSession(session)}
-                    >
-                      {deletingSessionId === session.gameId ? "Deleting…" : "Delete"}
-                    </button>
-                    <div className="session-swipe-content">
-                      <div>
-                        <strong>{session.name}</strong>
-                        <span>
-                          {session.hostName ?? "Host not selected"} · {session.phase} · day{" "}
-                          {session.day}
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        disabled={resumeGameId === session.gameId}
-                        onClick={() => {
-                          setActiveDrawer(null);
-                          void resumeSession(session.gameId);
-                        }}
-                      >
-                        {resumeGameId === session.gameId ? "Resuming…" : `Resume ${session.name}`}
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
           {clearAllDataError ? (
             <p className="dev-menu-error" role="alert">
               Unable to clear all browser data completely.
@@ -1869,9 +1868,9 @@ export const ClubWorkspace = ({
         />
       ) : view === "players" ? (
         <>
-          {rosterGateError !== null ? (
-            <p className="roster-gate-error" role="alert">
-              {rosterGateError}
+          {playerGateError !== null ? (
+            <p className="player-gate-error" role="alert">
+              {playerGateError}
             </p>
           ) : null}
           {playersError ? (
@@ -1976,13 +1975,7 @@ export const ClubWorkspace = ({
         />
       )}
 
-      <LiveSidePanel
-        game={view === "game" ? (previewGame ?? game) : null}
-        hidden={view !== "game"}
-        theme={colorTheme}
-        glassSettings={glassSettings}
-        supportsTrueRefraction={trueRefractionSupported}
-      >
+      <LiveSidePanel game={view === "game" ? (previewGame ?? game) : null} hidden={view !== "game"}>
         <MusicDock
           expanded={musicPlayerExpanded}
           onExpandedChange={setMusicPlayerExpanded}
@@ -2033,9 +2026,7 @@ export const ClubWorkspace = ({
 };
 
 export const App = () => {
-  const [colorTheme, setColorTheme] = useState<ColorTheme>(() =>
-    readColorTheme(window.localStorage),
-  );
+  const [themeColor, setThemeColor] = useState(() => readThemeColor(window.localStorage));
   const [user, setUser] = useState<AppUser | null>(null);
   const [authConfigured, setAuthConfigured] = useState<boolean | null>(null);
   const [authUnavailable, setAuthUnavailable] = useState(false);
@@ -2047,8 +2038,8 @@ export const App = () => {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    applyColorTheme(document.documentElement, window.localStorage, colorTheme);
-  }, [colorTheme]);
+    applyThemeColor(document.documentElement, window.localStorage, themeColor);
+  }, [themeColor]);
 
   const refreshClubs = useCallback(async () => {
     setLoading(true);
@@ -2179,8 +2170,8 @@ export const App = () => {
             setEditingClub(selectedClub);
           }}
           onDeleteClub={() => removeClub(selectedClub)}
-          colorTheme={colorTheme}
-          onColorThemeChange={setColorTheme}
+          themeColor={themeColor}
+          onThemeColorChange={setThemeColor}
         />
         {openingCurtains ? (
           <div className="club-curtain-opening" aria-hidden="true">
@@ -2197,13 +2188,13 @@ export const App = () => {
       user={user}
       authConfigured={authConfigured}
       authUnavailable={authUnavailable}
-      colorTheme={colorTheme}
+      themeColor={themeColor}
       clubs={clubs}
       loading={loading}
       error={error}
       editing={editingClub}
       onSignOut={endSession}
-      onColorThemeChange={setColorTheme}
+      onThemeColorChange={setThemeColor}
       onEditingChange={setEditingClub}
       onSaveClub={saveClub}
       onOpenClub={openClub}

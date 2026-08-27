@@ -10,7 +10,6 @@
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
-    "@hashintel/refractive": "0.0.4",
     "@mafia/game-domain": "^0.1.0",
     "lucide-react": "^1.33.0",
     "react": "^19.2.8",

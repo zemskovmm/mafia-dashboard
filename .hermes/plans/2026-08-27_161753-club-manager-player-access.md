@@ -4,7 +4,7 @@
 
 **Goal:** Let a club manager mark consented player profiles as “Club manager,” automatically create a protected `Owner` manager profile for each club creator, and make managed clubs appear on the matching Google user’s welcome screen.
 
-**Architecture:** Keep player profiles as the source of manager invitations, linked to application users by verified, case-insensitive email. A linked manager gets a `club_memberships` row, so the existing `GET /api/clubs` query automatically exposes the club on the welcome screen; an unlinked manager is claimed on the first Google sign-in using the same verified email. The creator remains the destructive `owner`; additional club managers receive the existing safer `editor` role, which grants normal club/game/roster access but not club deletion.
+**Architecture:** Keep player profiles as the source of manager invitations, linked to application users by verified, case-insensitive email. A linked manager gets a `club_memberships` row, so the existing `GET /api/clubs` query automatically exposes the club on the welcome screen; an unlinked manager is claimed on the first Google sign-in using the same verified email. The creator remains the destructive `owner`; additional club managers receive the existing safer `editor` role, which grants normal club/game/player access but not club deletion.
 
 **Tech Stack:** PostgreSQL 17 schema migrations, Fastify 5, TypeScript 6, Zod 4, React 19, Vitest, Testing Library.
 
@@ -183,7 +183,7 @@ Run the focused test and then:
 npm run test -w @mafia/server -- src/app.test.ts -t "creates a club"
 ```
 
-Expected: both PASS; update the existing API assertion so the new club roster contains its generated Owner profile before any manually added player.
+Expected: both PASS; update the existing API assertion so the new club players include the generated Owner profile before any manually added player.
 
 **Step 5: Checkpoint**
 
@@ -477,7 +477,7 @@ At desktop and iPad widths, verify the added control does not cause document scr
 
 ## Task 8: Wire manager profile refreshes through ClubWorkspace
 
-**Objective:** Ensure create/update responses refresh the roster and manager state without disturbing existing club/game state.
+**Objective:** Ensure create/update responses refresh the players and manager state without disturbing existing club/game state.
 
 **Files:**
 - Modify/Test: `apps/web/src/App.test.tsx`

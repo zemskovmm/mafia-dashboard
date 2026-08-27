@@ -558,7 +558,7 @@ describe("tenant-composite game schema migration", () => {
           `SELECT
              (SELECT COUNT(*)::int FROM game_sessions WHERE club_id = $1 AND id = $2) AS sessions,
              (SELECT COUNT(*)::int FROM game_session_mutations WHERE club_id = $1 AND game_id = $2) AS mutations,
-             (SELECT COUNT(*)::int FROM game_session_players WHERE club_id = $1 AND game_id = $2) AS roster,
+             (SELECT COUNT(*)::int FROM game_session_players WHERE club_id = $1 AND game_id = $2) AS players,
              (SELECT COUNT(*)::int FROM game_results WHERE club_id = $1 AND game_id = $2) AS results,
              (SELECT COUNT(*)::int FROM game_player_results WHERE club_id = $1 AND game_id = $2) AS player_results,
              (SELECT COUNT(*)::int FROM game_events WHERE club_id = $1 AND game_id = $2) AS replay_rows,
@@ -570,7 +570,7 @@ describe("tenant-composite game schema migration", () => {
           {
             sessions: 1,
             mutations: 1,
-            roster: 1,
+            players: 1,
             results: 1,
             player_results: 1,
             replay_rows: 89,
@@ -626,7 +626,7 @@ describe("tenant-composite game schema migration", () => {
           `SELECT
              (SELECT COUNT(*)::int FROM game_sessions WHERE id = $1) AS sessions,
              (SELECT COUNT(*)::int FROM game_session_mutations WHERE game_id = $1) AS mutations,
-             (SELECT COUNT(*)::int FROM game_session_players WHERE game_id = $1) AS rosters,
+             (SELECT COUNT(*)::int FROM game_session_players WHERE game_id = $1) AS players,
              (SELECT COUNT(*)::int FROM game_results WHERE game_id = $1) AS results,
              (SELECT COUNT(*)::int FROM game_player_results WHERE game_id = $1) AS player_results,
              (SELECT COUNT(*)::int FROM deleted_games WHERE game_id = $2) AS tombstones`,
@@ -637,7 +637,7 @@ describe("tenant-composite game schema migration", () => {
           {
             sessions: 2,
             mutations: 2,
-            rosters: 2,
+            players: 2,
             results: 2,
             player_results: 2,
             tombstones: 2,

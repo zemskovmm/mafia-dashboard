@@ -97,7 +97,7 @@ These may update an in-memory draft but never append events and never create rep
 
 - opening/closing drawers, privacy, swipe, or preview UI;
 - timer/music controls;
-- setup roster edits, role reveal/reroll/manual role selection;
+- setup player edits, role reveal/reroll/manual role selection;
 - assigning/changing individual votes;
 - advancing voting candidates;
 - selecting eliminate/keep before car-crash resolution;
@@ -693,7 +693,7 @@ In one transaction:
 6. store event with computed phase/day/hash metadata;
 7. move `head_event_id` to the new row;
 8. clear `reset_return_event_id` because a new branch has begun;
-9. update active roster/results projections as required;
+9. update active-player/results projections as required;
 10. increment revision and commit.
 
 Never delete/reinsert prior events and never accept a client-supplied full current state as proof.

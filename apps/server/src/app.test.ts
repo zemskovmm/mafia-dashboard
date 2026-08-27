@@ -153,17 +153,17 @@ describe("server API", () => {
       }),
     ).toHaveProperty("statusCode", 201);
 
-    const secondRoster = await app.inject({
+    const secondPlayers = await app.inject({
       method: "GET",
       url: "/api/players",
       headers: { ...authHeaders, "x-club-id": secondClubId },
     });
-    const firstRoster = await app.inject({
+    const firstPlayers = await app.inject({
       method: "GET",
       url: "/api/players",
       headers: { ...authHeaders, "x-club-id": defaultClubId },
     });
-    expect(secondRoster.json().players).toEqual(
+    expect(secondPlayers.json().players).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           nickname: "Owner",
@@ -174,21 +174,21 @@ describe("server API", () => {
         }),
       ]),
     );
-    expect(secondRoster.json().players).toEqual(
+    expect(secondPlayers.json().players).toEqual(
       expect.arrayContaining([expect.objectContaining({ nickname })]),
     );
-    expect(secondRoster.json().players.map((player: { id: string }) => player.id)).toContain(
+    expect(secondPlayers.json().players.map((player: { id: string }) => player.id)).toContain(
       createdPlayer.json().player.id,
     );
-    expect(firstRoster.json().players).toEqual(
+    expect(firstPlayers.json().players).toEqual(
       expect.arrayContaining([expect.objectContaining({ nickname })]),
     );
     expect(
-      firstRoster
+      firstPlayers
         .json()
         .players.find((player: { nickname: string }) => player.nickname === nickname).id,
     ).not.toBe(createdPlayer.json().player.id);
-    expect(firstRoster.json().players.map((player: { id: string }) => player.id)).not.toContain(
+    expect(firstPlayers.json().players.map((player: { id: string }) => player.id)).not.toContain(
       createdPlayer.json().player.id,
     );
 
@@ -944,7 +944,7 @@ describe("server API", () => {
     expect(missing.json()).toEqual({ error: "player_not_found" });
   });
 
-  it("returns active_game and preserves an unfinalized persisted roster on direct player deletion", async () => {
+  it("returns active_game and preserves unfinalized persisted players on direct player deletion", async () => {
     const created = await app.inject({
       method: "POST",
       url: "/api/players",

@@ -1,26 +1,15 @@
 import { useRef, useState, type ReactNode } from "react";
 import type { GameState } from "@mafia/game-domain";
-import { GlassSurface, type GlassTheme } from "../theme/GlassSurface.js";
-import { DEFAULT_GLASS_SETTINGS, type GlassSettings } from "../theme/glass-settings.js";
+import { GlassSurface } from "../theme/GlassSurface.js";
 import { GameUtilityPanels } from "./GameUtilityPanels.js";
 
 interface LiveSidePanelProps {
   readonly game: GameState | null;
   readonly hidden?: boolean;
   readonly children: ReactNode;
-  readonly theme?: GlassTheme;
-  readonly glassSettings?: Readonly<GlassSettings>;
-  readonly supportsTrueRefraction?: boolean;
 }
 
-export const LiveSidePanel = ({
-  game,
-  hidden = false,
-  children,
-  theme = "midnight",
-  glassSettings = DEFAULT_GLASS_SETTINGS,
-  supportsTrueRefraction = false,
-}: LiveSidePanelProps) => {
+export const LiveSidePanel = ({ game, hidden = false, children }: LiveSidePanelProps) => {
   const [utilitiesHidden, setUtilitiesHidden] = useState(false);
   const touchStartRef = useRef<{ readonly x: number; readonly y: number } | null>(null);
   const suppressNextClickRef = useRef(false);
@@ -31,14 +20,7 @@ export const LiveSidePanel = ({
       aria-label="Live game controls"
       hidden={hidden}
     >
-      <GlassSurface
-        aria-hidden="true"
-        className="live-side-panel-glass"
-        theme={theme}
-        settings={glassSettings}
-        supportsTrueRefraction={supportsTrueRefraction}
-        radius={20}
-      />
+      <GlassSurface aria-hidden="true" className="live-side-panel-glass" radius={20} />
       <button
         type="button"
         className="panel-swipe-handle utility-panels-toggle"

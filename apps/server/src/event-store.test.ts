@@ -139,11 +139,11 @@ describe("PostgreSQL event store", () => {
     ]);
   });
 
-  it("tombstones an abandoned game, removes its active setup roster, and rejects late appends", async () => {
+  it("tombstones an abandoned game, removes its active setup players, and rejects late appends", async () => {
     const gameId = randomUUID();
     await store.append({
       gameId,
-      idempotencyKey: "setup-roster",
+      idempotencyKey: "setup-players",
       type: "setup.players-selected",
       phase: "setup-players",
       payload: { hostPlayerId: randomUUID(), players: [] },

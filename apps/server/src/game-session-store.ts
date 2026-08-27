@@ -355,7 +355,7 @@ const hydrateSession = async (
   };
 };
 
-interface RosterState {
+interface PlayerSelectionState {
   readonly setup?: {
     readonly hostPlayerId?: string;
     readonly selectedPlayerIds?: readonly string[];
@@ -385,7 +385,7 @@ const assertPlayersBelongToClub = async (
   }
 };
 
-const replaceActiveRoster = async (
+const replaceActivePlayers = async (
   client: PoolClient,
   clubId: string,
   gameId: string,
@@ -395,8 +395,9 @@ const replaceActiveRoster = async (
     clubId,
     gameId,
   ]);
-  const rosterState = state as RosterState;
-  const hostPlayerId = rosterState.hostPlayerId ?? rosterState.setup?.hostPlayerId;
+  const playerSelectionState = state as PlayerSelectionState;
+  const hostPlayerId =
+    playerSelectionState.hostPlayerId ?? playerSelectionState.setup?.hostPlayerId;
   if (hostPlayerId !== undefined && hostPlayerId !== null && hostPlayerId !== "") {
     await client.query(
       `INSERT INTO game_session_players (club_id, game_id, player_id, seat, is_host)
@@ -405,13 +406,13 @@ const replaceActiveRoster = async (
     );
   }
   const seatedPlayers =
-    rosterState.game?.players?.flatMap(({ id, seat }) =>
+    playerSelectionState.game?.players?.flatMap(({ id, seat }) =>
       typeof id === "string" && typeof seat === "number" ? [{ id, seat }] : [],
     ) ??
-    rosterState.setup?.setup?.players?.flatMap(({ id, seat }) =>
+    playerSelectionState.setup?.setup?.players?.flatMap(({ id, seat }) =>
       typeof id === "string" && typeof seat === "number" ? [{ id, seat }] : [],
     ) ??
-    rosterState.setup?.selectedPlayerIds?.flatMap((id, index) =>
+    playerSelectionState.setup?.selectedPlayerIds?.flatMap((id, index) =>
       id === "" ? [] : [{ id, seat: index + 1 }],
     ) ??
     [];
@@ -662,7 +663,7 @@ const synchronizeLegacyAggregate = async (
   await synchronizeEventLog(client, clubId, gameId, state);
   await replaceResults(client, clubId, gameId, results);
   if (results === null) {
-    await replaceActiveRoster(client, clubId, gameId, {
+    await replaceActivePlayers(client, clubId, gameId, {
       ...state,
       game: deriveCurrentGame(state),
     });
@@ -1232,7 +1233,7 @@ export class GameSessionStore {
           clubId,
         ],
       );
-      await replaceActiveRoster(client, clubId, input.gameId, {
+      await replaceActivePlayers(client, clubId, input.gameId, {
         ...metadata,
         game: input.initialGame.game,
       });
@@ -1344,7 +1345,7 @@ export class GameSessionStore {
         RETURNING ${sessionColumns}`,
         [input.gameId, nextRevision, input.mutationId, input.event.id, clubId],
       );
-      await replaceActiveRoster(client, clubId, input.gameId, {
+      await replaceActivePlayers(client, clubId, input.gameId, {
         ...row.state,
         game: replay.game,
       });
@@ -1524,7 +1525,7 @@ export class GameSessionStore {
         ],
       );
       if (status === "active") {
-        await replaceActiveRoster(client, clubId, input.gameId, {
+        await replaceActivePlayers(client, clubId, input.gameId, {
           ...row.state,
           game: replay.game,
         });

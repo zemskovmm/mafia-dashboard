@@ -1,26 +1,19 @@
 import { useEffect, useState } from "react";
-import { ImagePlus, Palette } from "lucide-react";
+import { ImagePlus } from "lucide-react";
 import type { AppUser, Club, ClubInput, ClubUpdateInput } from "../../api/client.js";
-import type { ColorTheme } from "../../theme.js";
 import { reportError } from "../console/error-console.js";
-
-const colorThemes = [
-  { value: "midnight", label: "Midnight" },
-  { value: "malaga", label: "Málaga gold" },
-  { value: "malaga-glass", label: "Málaga Glass" },
-] as const satisfies readonly { readonly value: ColorTheme; readonly label: string }[];
 
 interface ClubPortalProps {
   readonly user: AppUser | null;
   readonly authConfigured: boolean | null;
   readonly authUnavailable: boolean;
-  readonly colorTheme: ColorTheme;
+  readonly themeColor: string;
   readonly clubs: readonly Club[];
   readonly loading: boolean;
   readonly error: string | null;
   readonly editing: Club | "new" | null;
   readonly onSignOut: () => Promise<void>;
-  readonly onColorThemeChange: (theme: ColorTheme) => void;
+  readonly onThemeColorChange: (color: string) => void;
   readonly onEditingChange: (editing: Club | "new" | null) => void;
   readonly onSaveClub: (clubId: string | null, input: ClubInput | ClubUpdateInput) => Promise<void>;
   readonly onOpenClub: (club: Club) => void;
@@ -161,20 +154,18 @@ export const ClubPortal = ({
   user,
   authConfigured,
   authUnavailable,
-  colorTheme,
+  themeColor,
   clubs,
   loading,
   error,
   editing,
   onSignOut,
-  onColorThemeChange,
+  onThemeColorChange,
   onEditingChange,
   onSaveClub,
   onOpenClub,
 }: ClubPortalProps) => {
   const [saving, setSaving] = useState(false);
-  const currentThemeIndex = colorThemes.findIndex(({ value }) => value === colorTheme);
-  const nextTheme = colorThemes[(currentThemeIndex + 1) % colorThemes.length] ?? colorThemes[0];
   const portalTitle =
     editing === "new"
       ? "Create a new club"
@@ -203,15 +194,15 @@ export const ClubPortal = ({
       <div className="curtain curtain-left" aria-hidden="true" />
       <div className="curtain curtain-right" aria-hidden="true" />
       <section className="club-portal-content">
-        <button
-          type="button"
-          className="theme-cycle-button"
-          aria-label={`Switch to ${nextTheme.label} theme`}
-          title={`Switch to ${nextTheme.label} theme`}
-          onClick={() => onColorThemeChange(nextTheme.value)}
-        >
-          <Palette aria-hidden="true" />
-        </button>
+        <label className="portal-theme-color-field">
+          <span>Glass color</span>
+          <input
+            type="color"
+            aria-label="Glass color"
+            value={themeColor}
+            onChange={(event) => onThemeColorChange(event.currentTarget.value)}
+          />
+        </label>
         <p className="club-portal-suit" aria-hidden="true">
           ♠
         </p>

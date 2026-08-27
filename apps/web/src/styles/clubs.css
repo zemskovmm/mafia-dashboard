@@ -80,27 +80,33 @@
   font-size: 2.4rem;
 }
 
-.theme-cycle-button {
+.portal-theme-color-field {
   position: fixed;
   top: 18px;
   right: 18px;
   z-index: 4;
-  display: grid;
-  width: 42px;
-  min-height: 42px;
-  padding: 0;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 7px 6px 12px;
   color: rgb(var(--portal-muted-rgb) / 72%);
+  font-size: 0.7rem;
+  font-weight: 700;
   background: rgb(0 0 0 / 28%);
-  border-color: rgb(var(--portal-muted-rgb) / 16%);
-  border-radius: 50%;
+  border: 1px solid rgb(var(--portal-muted-rgb) / 16%);
+  border-radius: 999px;
   backdrop-filter: blur(12px);
 }
 
-.theme-cycle-button svg {
-  width: 19px;
-  height: 19px;
-  stroke-width: 1.7;
+.portal-theme-color-field input[type="color"] {
+  width: 34px;
+  height: 34px;
+  min-height: 34px;
+  padding: 2px;
+  overflow: hidden;
+  background: transparent;
+  border-radius: 50%;
+  cursor: pointer;
 }
 
 .google-auth-button {
@@ -568,7 +574,7 @@
   color: var(--amber);
 }
 
-.roster-gate-error {
+.player-gate-error {
   position: fixed;
   z-index: 15;
   right: 20px;
@@ -618,7 +624,7 @@
     padding-top: 66px;
   }
 
-  .theme-cycle-button {
+  .portal-theme-color-field {
     top: 10px;
     right: 10px;
   }

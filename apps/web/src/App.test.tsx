@@ -1,4 +1,12 @@
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render as renderView,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -20,7 +28,7 @@ import {
   reportError,
 } from "./features/console/error-console.js";
 import { musicPreferencesStorageKey } from "./features/music/music-preferences.js";
-import { GLASS_SETTINGS_STORAGE_KEY } from "./features/theme/glass-settings.js";
+import { THEME_COLOR_STORAGE_KEY } from "./theme.js";
 
 const api = vi.hoisted(() => {
   const saveGameSession = vi.fn();
@@ -84,6 +92,14 @@ const App = () => (
     onDeleteClub={() => Promise.resolve()}
   />
 );
+const render = (...args: Parameters<typeof renderView>): ReturnType<typeof renderView> => {
+  const result = renderView(...args);
+  const privacy = screen.queryByRole("button", { name: /private info/i });
+  if (privacy !== null) {
+    for (let tap = 0; tap < 6; tap += 1) fireEvent.click(privacy);
+  }
+  return result;
+};
 const assignedGame = {
   phase: "day",
   day: 1,
@@ -561,6 +577,7 @@ afterEach(() => {
   cleanup();
   window.localStorage.clear();
   window.sessionStorage.clear();
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -584,21 +601,14 @@ describe("club welcome", () => {
     ).toHaveTextContent("Reload this page to try again");
   });
 
-  it("cycles through the available color schemes", async () => {
-    const user = userEvent.setup();
+  it("applies and persists the selected glass color", () => {
     render(<WelcomeApp />);
 
-    await user.click(screen.getByRole("button", { name: "Switch to Málaga gold theme" }));
+    fireEvent.change(screen.getByLabelText("Glass color"), { target: { value: "#7170ff" } });
 
-    expect(document.documentElement).toHaveAttribute("data-theme", "malaga");
-
-    await user.click(screen.getByRole("button", { name: "Switch to Málaga Glass theme" }));
-
-    expect(document.documentElement).toHaveAttribute("data-theme", "malaga-glass");
-
-    await user.click(screen.getByRole("button", { name: "Switch to Midnight theme" }));
-
-    expect(document.documentElement).toHaveAttribute("data-theme", "midnight");
+    expect(document.documentElement.style.getPropertyValue("--theme-base")).toBe("#7170ff");
+    expect(document.documentElement).not.toHaveAttribute("data-theme");
+    expect(window.localStorage.getItem(THEME_COLOR_STORAGE_KEY)).toBe("#7170ff");
   });
 
   it("creates a club, returns to its card list, and opens the workspace through curtains", async () => {
@@ -645,7 +655,7 @@ describe("club welcome", () => {
     );
   });
 
-  it("moves club editing from the welcome card into the workspace Dev menu", async () => {
+  it("moves club editing from the welcome card into the workspace Manage menu", async () => {
     const user = userEvent.setup();
     api.getAuthSession.mockResolvedValue({
       configured: true,
@@ -663,14 +673,14 @@ describe("club welcome", () => {
     expect(screen.queryByRole("button", { name: "Edit Mafia Malaga" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Delete Mafia Malaga" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Mafia Malaga.*Málaga/i }));
-    await user.click(await screen.findByRole("button", { name: "Open developer menu" }));
+    await user.click(await screen.findByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Edit club" }));
 
     expect(screen.getByRole("heading", { name: "Edit Mafia Malaga" })).toBeInTheDocument();
     expect(screen.getByLabelText("Club name")).toHaveValue("Mafia Malaga");
   });
 
-  it("deletes a club from Dev and returns to the welcome screen", async () => {
+  it("deletes a club from Manage and returns to the welcome screen", async () => {
     const user = userEvent.setup();
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     api.getAuthSession.mockResolvedValue({
@@ -687,7 +697,7 @@ describe("club welcome", () => {
     await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i });
 
     await user.click(screen.getByRole("button", { name: /Mafia Malaga.*Málaga/i }));
-    await user.click(await screen.findByRole("button", { name: "Open developer menu" }));
+    await user.click(await screen.findByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Delete club" }));
 
     expect(confirm).toHaveBeenCalledWith(
@@ -742,8 +752,8 @@ describe("club welcome", () => {
   });
 });
 
-describe("club roster gate", () => {
-  it("opens Players, allows welcome exit, and blocks Game below eleven profiles", async () => {
+describe("club player gate", () => {
+  it("opens Players, allows welcome exit, and blocks a new game below eleven profiles", async () => {
     const user = userEvent.setup();
     const onExit = vi.fn();
     api.listPlayers.mockResolvedValue([]);
@@ -769,14 +779,89 @@ describe("club roster gate", () => {
     );
     expect(onExit).toHaveBeenCalledTimes(1);
 
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
-    await user.click(screen.getByRole("button", { name: "Game screen" }));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    await user.click(screen.getByRole("button", { name: "Start new game" }));
     expect(screen.getByRole("alert")).toHaveTextContent("Add 11 more registered players");
     expect(screen.getByRole("heading", { name: "Players & statistics" })).toBeInTheDocument();
   });
 });
 
+describe("manage menu", () => {
+  it("owns ordinary club, game, player, music, and active-game workflows", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+
+    const manage = screen.getByRole("dialog", { name: "Manage" });
+    for (const name of [
+      "Start new game",
+      "Players screen",
+      "Music player setup",
+      "Edit club",
+      "Delete club",
+    ]) {
+      expect(within(manage).getByRole("button", { name })).toBeInTheDocument();
+    }
+    expect(within(manage).getByLabelText("Glass color")).toHaveAttribute("type", "color");
+    expect(within(manage).getByRole("region", { name: "Active games" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    const dev = screen.getByRole("dialog", { name: "Developer menu" });
+    expect(within(dev).queryByRole("button", { name: "Players screen" })).not.toBeInTheDocument();
+    expect(
+      within(dev).queryByRole("button", { name: "Music player setup" }),
+    ).not.toBeInTheDocument();
+    expect(within(dev).queryByRole("button", { name: "Edit club" })).not.toBeInTheDocument();
+    expect(within(dev).queryByRole("button", { name: "Delete club" })).not.toBeInTheDocument();
+    expect(within(dev).queryByRole("region", { name: "Active games" })).not.toBeInTheDocument();
+  });
+});
+
 describe("developer menu", () => {
+  it("stays hidden until five rapid privacy taps launch the canary firework", () => {
+    renderView(<App />);
+
+    expect(screen.queryByRole("button", { name: "Open developer menu" })).not.toBeInTheDocument();
+    const privacy = screen.getByRole("button", { name: "Hide private info" });
+    for (let tap = 0; tap < 4; tap += 1) fireEvent.click(privacy);
+    expect(screen.queryByRole("button", { name: "Open developer menu" })).not.toBeInTheDocument();
+
+    fireEvent.click(privacy);
+
+    expect(screen.getByRole("button", { name: "Open developer menu" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show private info" })).toBe(privacy);
+    expect(document.querySelectorAll("[data-canary-particle]")).toHaveLength(32);
+  });
+
+  it("resets the hidden Dev tap sequence after a slow privacy tap", () => {
+    renderView(<App />);
+    vi.useFakeTimers();
+    const privacy = screen.getByRole("button", { name: "Hide private info" });
+
+    fireEvent.click(privacy);
+    fireEvent.click(privacy);
+    vi.advanceTimersByTime(501);
+    fireEvent.click(privacy);
+    fireEvent.click(privacy);
+    fireEvent.click(privacy);
+
+    expect(screen.queryByRole("button", { name: "Open developer menu" })).not.toBeInTheDocument();
+  });
+
+  it("clears the pending privacy tap window when the workspace unmounts", () => {
+    const view = renderView(<App />);
+    vi.spyOn(window, "setTimeout").mockReturnValue(
+      42 as unknown as ReturnType<typeof window.setTimeout>,
+    );
+    const clearTimeout = vi.spyOn(window, "clearTimeout");
+    fireEvent.click(screen.getByRole("button", { name: "Hide private info" }));
+
+    view.unmount();
+
+    expect(clearTimeout).toHaveBeenCalledWith(42);
+  });
+
   it("shows the canary app version with a bird icon at the top", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -929,7 +1014,7 @@ describe("developer menu", () => {
     expect(screen.getByText("players.list")).toBeInTheDocument();
   });
 
-  it("cycles the application theme from Dev", async () => {
+  it("changes the glass color from Manage", async () => {
     const user = userEvent.setup();
     api.getAuthSession.mockResolvedValue({
       configured: true,
@@ -944,11 +1029,10 @@ describe("developer menu", () => {
     render(<WelcomeApp />);
 
     await user.click(await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i }));
-    await user.click(await screen.findByRole("button", { name: "Open developer menu" }));
-    await user.click(screen.getByRole("button", { name: "Use Málaga gold theme" }));
+    await user.click(await screen.findByRole("button", { name: "Open Manage menu" }));
+    fireEvent.change(screen.getByLabelText("Glass color"), { target: { value: "#7170ff" } });
 
-    expect(document.documentElement).toHaveAttribute("data-theme", "malaga");
-    expect(screen.getByRole("button", { name: "Use Málaga Glass theme" })).toBeInTheDocument();
+    expect(document.documentElement.style.getPropertyValue("--theme-base")).toBe("#7170ff");
   });
 
   it("uses a dated sequence name for a new game", () => {
@@ -998,7 +1082,7 @@ describe("developer menu", () => {
     expect(window.localStorage.getItem("mafia-dashboard.day-night-indicator")).toBeNull();
   });
 
-  it("keeps active game sessions in Dev without player-assignment controls", async () => {
+  it("keeps active game sessions in Manage without player-assignment controls", async () => {
     const user = userEvent.setup();
     api.listActiveGameSessions.mockResolvedValue([
       {
@@ -1014,7 +1098,7 @@ describe("developer menu", () => {
     render(<App />);
     await waitFor(() => expect(api.listActiveGameSessions).toHaveBeenCalledOnce());
 
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     expect(screen.getByRole("region", { name: "Active games" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Resume Dev table" })).toBeInTheDocument();
     expect(
@@ -1022,7 +1106,7 @@ describe("developer menu", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("uses one canonical status bar and opens the game players screen from Dev", async () => {
+  it("uses one canonical status bar and opens player and game setup from Manage", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem(
       `mafia-dashboard.available-player-ids.${testClub.id}`,
@@ -1034,14 +1118,14 @@ describe("developer menu", () => {
     expect(status).toHaveTextContent("Game setup");
     expect(status).toHaveTextContent("Select players");
 
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Players screen" }));
 
     expect(screen.getByRole("banner", { name: "Application status" })).toHaveTextContent(
       "Players & statistics",
     );
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
-    await user.click(screen.getByRole("button", { name: "Game screen" }));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    await user.click(screen.getByRole("button", { name: "Start new game" }));
     expect(screen.getByRole("banner", { name: "Application status" })).toHaveTextContent(
       "Game setup",
     );
@@ -1138,7 +1222,7 @@ describe("developer menu", () => {
     expect(dock).toHaveClass("is-compact");
     expect(dock).toBeVisible();
 
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Players screen" }));
 
     expect(screen.getByTestId("youtube-player")).toBe(player);
@@ -1284,12 +1368,12 @@ describe("developer menu", () => {
     expect(musicPlayerHarness).toMatchObject({ mounts: 1, unmounts: 0 });
   });
 
-  it("keeps music player setup behind the Dev menu", async () => {
+  it("keeps music player setup behind the Manage menu", async () => {
     const user = userEvent.setup();
     render(<App />);
 
     expect(screen.queryByRole("region", { name: "Music player setup" })).toBeNull();
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     expect(screen.queryByRole("button", { name: "Reload music player" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Music player setup" }));
 
@@ -1303,7 +1387,7 @@ describe("developer menu", () => {
     expect(playlist).toHaveValue("dev-playlist");
   });
 
-  it("persists and resets Málaga Glass effect settings from Dev", async () => {
+  it("does not expose runtime glass settings in Dev", async () => {
     const user = userEvent.setup();
     render(
       <ClubWorkspace
@@ -1311,35 +1395,14 @@ describe("developer menu", () => {
         onExit={() => undefined}
         onEditClub={() => undefined}
         onDeleteClub={() => Promise.resolve()}
-        colorTheme="malaga-glass"
+        themeColor="#c39a58"
       />,
     );
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
 
-    expect(screen.getByRole("group", { name: "Glass settings" })).toBeInTheDocument();
-    expect(screen.getByText(/using fallback/i)).toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: "Enable glass effect" })).toBeChecked();
-    for (const name of [
-      "Glass thickness",
-      "Bezel width",
-      "Refractive index",
-      "Specular opacity",
-      "Specular angle",
-      "Fallback opacity",
-    ]) {
-      expect(screen.getByRole("spinbutton", { name })).toBeInTheDocument();
-    }
-    const blur = screen.getByRole("spinbutton", { name: "Glass blur" });
-    await user.clear(blur);
-    await user.type(blur, "12");
-    expect(
-      JSON.parse(window.localStorage.getItem(GLASS_SETTINGS_STORAGE_KEY) ?? "null"),
-    ).toMatchObject({
-      blur: 12,
-    });
-
-    await user.click(screen.getByRole("button", { name: "Reset glass settings" }));
-    expect(blur).toHaveValue(4);
+    expect(screen.queryByRole("group", { name: "Glass settings" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("spinbutton", { name: /Glass/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Reset glass settings" })).not.toBeInTheDocument();
   });
 
   it("restores the club's last playlist when no active game session supplies one", () => {
@@ -1389,7 +1452,7 @@ describe("developer menu", () => {
   it("persists Initial and Endgame tags for the one active playlist", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Music player setup" }));
     await user.selectOptions(
       screen.getByRole("combobox", { name: "YouTube Music playlist" }),
@@ -1433,7 +1496,7 @@ describe("developer menu", () => {
   it("remembers a newly selected playlist for this club", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Music player setup" }));
     await user.selectOptions(
       screen.getByRole("combobox", { name: "YouTube Music playlist" }),
@@ -1493,7 +1556,7 @@ describe("developer menu", () => {
 
     await user.click(screen.getByRole("button", { name: "Start test game" }));
     expect(player).toHaveAttribute("data-playlist-id", "PL-base");
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Music player setup" }));
     await user.click(screen.getByRole("button", { name: "Disconnect account" }));
     await act(async () => Promise.resolve());
@@ -1537,7 +1600,7 @@ describe("developer menu", () => {
     expect(privacy).toBeVisible();
     expect(privacy.querySelector("svg")).not.toBeNull();
 
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Players screen" }));
 
     expect(screen.getByRole("button", { name: "Fullscreen unavailable" })).toBe(fullscreen);
@@ -1668,33 +1731,31 @@ describe("developer menu", () => {
         endgameEntryKeys: ["video-b:1"],
       }),
     );
-    window.localStorage.setItem(GLASS_SETTINGS_STORAGE_KEY, JSON.stringify({ blur: 12 }));
     reportError(new Error("Stale Console entry"));
     render(<App />);
     const musicPlayer = screen.getByTestId("youtube-player");
     expect(musicPlayer).toHaveAttribute("data-playlist-id", "remembered-playlist");
 
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
-    expect(screen.getByRole("spinbutton", { name: "Glass blur" })).toHaveValue(12);
     await user.click(screen.getByRole("button", { name: "Clear all data" }));
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
-    const glassBlur = screen.getByRole("spinbutton", { name: "Glass blur" });
+    const privacy = screen.getByRole("button", { name: "Hide private info" });
+    for (let tap = 0; tap < 5; tap += 1) fireEvent.click(privacy);
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Music player setup" }));
     const playlist = screen.getByRole("combobox", { name: "YouTube Music playlist" });
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     await user.click(screen.getByRole("button", { name: "Console" }));
 
     expect({
       playlistId: musicPlayer.getAttribute("data-playlist-id"),
       rememberedOrder: musicPlayer.getAttribute("data-remembered-order"),
       selectedPlaylist: (playlist as HTMLSelectElement).value,
-      glassBlur: Number((glassBlur as HTMLInputElement).value),
       consoleIsEmpty: screen.queryByText("No errors have been captured.") !== null,
       localStorageItems: window.localStorage.length,
     }).toEqual({
       playlistId: "",
       rememberedOrder: "",
       selectedPlaylist: "",
-      glassBlur: 4,
       consoleIsEmpty: true,
       localStorageItems: 0,
     });
@@ -2140,11 +2201,11 @@ describe("authoritative game session lifecycle", () => {
         ),
     );
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await screen.findByRole("button", { name: "Resume Table A" });
 
     await user.click(screen.getByRole("button", { name: "Resume Table A" }));
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Resume Table B" }));
     sessionB.resolve(remoteSession(sessionBId, "Table B", "Host B", 7, 3));
     await screen.findByText("Host: Host B");
@@ -2187,7 +2248,7 @@ describe("authoritative game session lifecycle", () => {
     ]);
     api.getGameSession.mockReturnValue(remote.promise);
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await screen.findByRole("button", { name: "Resume Remote table" });
 
     await user.click(screen.getByRole("button", { name: "Resume Remote table" }));
@@ -2239,7 +2300,7 @@ describe("authoritative game session lifecycle", () => {
   it("restores setup and playlist progress from the durable browser aggregate", async () => {
     const user = userEvent.setup();
     const firstRender = render(<App />);
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Music player setup" }));
     await user.selectOptions(
       screen.getByRole("combobox", { name: "YouTube Music playlist" }),
@@ -2303,8 +2364,8 @@ describe("authoritative game session lifecycle", () => {
     expect(window.sessionStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
 
     vi.spyOn(window, "confirm").mockReturnValue(true);
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
-    await user.click(screen.getByRole("button", { name: "Clear game state" }));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    await user.click(screen.getByRole("button", { name: "Start new game" }));
     await screen.findByRole("button", { name: "Start test game" });
     expect(window.localStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
 
@@ -2326,8 +2387,8 @@ describe("authoritative game session lifecycle", () => {
     await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledOnce());
     const gameId = api.saveGameSession.mock.calls[0]?.[0] as string;
 
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
-    await user.click(screen.getByRole("button", { name: "Clear game state" }));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    await user.click(screen.getByRole("button", { name: "Start new game" }));
 
     expect(confirm).toHaveBeenCalledWith(
       "Delete this active game from the server? This is irreversible and removes its saved session and game log for every browser.",
@@ -2354,8 +2415,9 @@ describe("authoritative game session lifecycle", () => {
     );
     const clearedGameId = api.saveGameSession.mock.calls[0]?.[0] as string;
 
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
-    await user.click(screen.getByRole("button", { name: "Clear game state" }));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    await user.click(screen.getByRole("button", { name: "Start new game" }));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Music player setup" }));
     await user.selectOptions(
       screen.getByRole("combobox", { name: "YouTube Music playlist" }),
@@ -2392,8 +2454,8 @@ describe("authoritative game session lifecycle", () => {
       ).toBeInTheDocument(),
     );
 
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
-    await user.click(screen.getByRole("button", { name: "Clear game state" }));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    await user.click(screen.getByRole("button", { name: "Start new game" }));
 
     await waitFor(() =>
       expect(screen.getByRole("button", { name: /^Offline ·/ })).toHaveAttribute(
@@ -2559,7 +2621,7 @@ describe("undo checkpoints", () => {
 });
 
 describe("player workflows", () => {
-  it("loads players separately and protects the current roster from deletion", async () => {
+  it("loads players separately and protects current players from deletion", async () => {
     const user = userEvent.setup();
     api.listPlayers.mockResolvedValue([
       ...assignedGame.players.map(({ id, name }) => player(name, id)),
@@ -2567,7 +2629,7 @@ describe("player workflows", () => {
     ]);
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Players screen" }));
 
     expect(screen.getByRole("heading", { name: "Players & statistics" })).toBeInTheDocument();
@@ -2592,7 +2654,7 @@ describe("player workflows", () => {
     expect(new Set(api.createPlayer.mock.calls.map(([input]) => input.nickname)).size).toBe(11);
   });
 
-  it("rolls back a partially created development roster", async () => {
+  it("rolls back partially created development players", async () => {
     const user = userEvent.setup();
     const first = player("Dev First", "00000000-0000-4000-8000-000000000001");
     const second = player("Dev Second", "00000000-0000-4000-8000-000000000002");

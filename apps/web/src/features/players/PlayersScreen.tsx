@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ApiError } from "../../api/client.js";
 import type { PlayerProfile, PlayerProfileInput } from "../../api/client.js";
 import { reportError } from "../console/error-console.js";
+import { GlassSurface } from "../theme/GlassSurface.js";
 
 interface PlayersScreenProps {
   readonly players: readonly PlayerProfile[];
@@ -108,40 +109,46 @@ const ProfileFields = ({
           onChange={(event) => update({ nickname: event.currentTarget.value })}
         />
       </label>
-      <label className="consent-field" htmlFor={`${idPrefix}-consent`}>
-        <input
-          id={`${idPrefix}-consent`}
-          aria-label={`${labelPrefix} Agree for data processing`}
-          type="checkbox"
-          checked={draft.consent}
-          aria-describedby={managerLocked ? managerGuidanceId : undefined}
-          onChange={(event) =>
-            update(
-              event.currentTarget.checked
-                ? { consent: true }
-                : {
-                    consent: false,
-                    clubManager: managerLocked ? draft.clubManager : false,
-                    firstName: "",
-                    lastName: "",
-                    email: "",
-                  },
-            )
-          }
-        />
-        Agree for data processing
+      <label className="player-toggle-field" htmlFor={`${idPrefix}-consent`}>
+        <span>Data processing</span>
+        <span className="player-toggle-control">
+          <input
+            id={`${idPrefix}-consent`}
+            aria-label={`${labelPrefix} Agree for data processing`}
+            type="checkbox"
+            checked={draft.consent}
+            aria-describedby={managerLocked ? managerGuidanceId : undefined}
+            onChange={(event) =>
+              update(
+                event.currentTarget.checked
+                  ? { consent: true }
+                  : {
+                      consent: false,
+                      clubManager: managerLocked ? draft.clubManager : false,
+                      firstName: "",
+                      lastName: "",
+                      email: "",
+                    },
+              )
+            }
+          />
+          Agree for data processing
+        </span>
       </label>
-      <label className="consent-field" htmlFor={`${idPrefix}-club-manager`}>
-        <input
-          id={`${idPrefix}-club-manager`}
-          aria-label={`${labelPrefix} Club manager`}
-          type="checkbox"
-          checked={draft.clubManager}
-          disabled={busy || managerLocked || !draft.consent}
-          aria-describedby={managerLocked ? managerGuidanceId : undefined}
-          onChange={(event) => update({ clubManager: event.currentTarget.checked })}
-        />
-        Club manager
+      <label className="player-toggle-field" htmlFor={`${idPrefix}-club-manager`}>
+        <span>Club manager</span>
+        <span className="player-toggle-control">
+          <input
+            id={`${idPrefix}-club-manager`}
+            aria-label={`${labelPrefix} Club manager`}
+            type="checkbox"
+            checked={draft.clubManager}
+            disabled={busy || managerLocked || !draft.consent}
+            aria-describedby={managerLocked ? managerGuidanceId : undefined}
+            onChange={(event) => update({ clubManager: event.currentTarget.checked })}
+          />
+          Club manager
+        </span>
       </label>
       <label htmlFor={`${idPrefix}-first-name`}>
         First name
@@ -217,15 +224,12 @@ const PlayerCard = ({
   return (
     <article className="player-profile-card" aria-label={`Player ${player.nickname}`}>
       <header>
-        <div>
-          <p className="eyebrow">Player profile</p>
-          <h2>{player.nickname}</h2>
-        </div>
-        <p className="last-played">
-          {player.lastPlayedAt === null
-            ? "Never played"
-            : `Last played ${new Date(player.lastPlayedAt).toLocaleDateString()}`}
-        </p>
+        <h2>{player.nickname}</h2>
+        {player.lastPlayedAt === null ? null : (
+          <p className="last-played">
+            Last played {new Date(player.lastPlayedAt).toLocaleDateString()}
+          </p>
+        )}
       </header>
 
       <div className="statistics-summary">
@@ -306,11 +310,11 @@ const PlayerCard = ({
           </p>
         )}
         {error === null ? null : <p role="alert">{error}</p>}
-        <button type="submit" disabled={saving || deleting}>
-          {saving ? "Saving…" : `Save ${player.nickname}`}
-        </button>
-        {onDelete === undefined || player.managerLocked ? null : (
-          <>
+        <div className="player-card-actions">
+          <button type="submit" disabled={saving || deleting}>
+            {saving ? "Saving…" : `Save ${player.nickname}`}
+          </button>
+          {onDelete === undefined || player.managerLocked ? null : (
             <button
               type="button"
               className="danger-action"
@@ -339,8 +343,8 @@ const PlayerCard = ({
             >
               {deleting ? "Deleting…" : `Delete ${player.nickname}`}
             </button>
-          </>
-        )}
+          )}
+        </div>
       </form>
     </article>
   );
@@ -366,12 +370,23 @@ export const PlayersScreen = ({
 
   return (
     <main className="players-shell">
-      <section className="new-player-panel" aria-labelledby="new-player-title">
-        <div>
-          <p className="eyebrow">Add to roster</p>
-          <h2 id="new-player-title">New player</h2>
+      <GlassSurface
+        as="section"
+        className="new-player-panel"
+        radius={16}
+        specular
+        aria-labelledby="new-player-title"
+      >
+        <div className="new-player-heading">
+          <h2 id="new-player-title" className="eyebrow">
+            New player
+          </h2>
+          <button type="submit" form="new-player-form" className="primary-action" disabled={saving}>
+            {saving ? "Adding…" : "Add player"}
+          </button>
         </div>
         <form
+          id="new-player-form"
           onSubmit={(event) => {
             event.preventDefault();
             setError(null);
@@ -394,16 +409,13 @@ export const PlayersScreen = ({
             onChange={setDraft}
           />
           {error === null ? null : <p role="alert">{error}</p>}
-          <button type="submit" className="primary-action" disabled={saving}>
-            {saving ? "Adding…" : "Add player"}
-          </button>
         </form>
-      </section>
+      </GlassSurface>
 
-      <label className="roster-search" htmlFor="roster-search">
-        <span>Search roster</span>
+      <label className="player-search" htmlFor="player-search">
+        <span>Search players</span>
         <input
-          id="roster-search"
+          id="player-search"
           type="search"
           value={query}
           placeholder="Search by nickname, name, or email"
@@ -412,12 +424,12 @@ export const PlayersScreen = ({
       </label>
 
       {players.length === 0 ? (
-        <section className="empty-roster">
+        <section className="empty-players">
           <h2>No players yet</h2>
           <p>Add at least eleven nicknames before starting a game.</p>
         </section>
       ) : visiblePlayers.length === 0 ? (
-        <section className="empty-roster">
+        <section className="empty-players">
           <h2>No matching players</h2>
           <p>Try another search.</p>
         </section>

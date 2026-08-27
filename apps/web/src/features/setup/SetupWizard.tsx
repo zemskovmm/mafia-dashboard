@@ -492,7 +492,7 @@ export const SetupWizard = ({
             around the table.
           </p>
           {selectablePlayers.length < 11 ? (
-            <p className="roster-guidance">
+            <p className="player-guidance">
               Mark at least 11 players available in Players &amp; statistics before continuing.
             </p>
           ) : null}

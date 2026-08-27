@@ -1,5 +1,4 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import type { ComponentType } from "react";
 import { describe, expect, it } from "vitest";
 import {
   advanceSetupPhase,
@@ -12,7 +11,6 @@ import {
 } from "@mafia/game-domain";
 import type { GameState, PlayerInput } from "@mafia/game-domain";
 import { LiveSidePanel } from "./LiveSidePanel.js";
-import { DEFAULT_GLASS_SETTINGS } from "../theme/glass-settings.js";
 
 const createDayGame = (): GameState => {
   const players: PlayerInput[] = Array.from({ length: 10 }, (_, index) => ({
@@ -87,23 +85,18 @@ describe("LiveSidePanel", () => {
     expect(screen.getByRole("region", { name: "Timer controls" })).toBe(timer);
   });
 
-  it("uses the Málaga Glass fallback as the single live rail surface", () => {
-    const TestPanel = LiveSidePanel as unknown as ComponentType<Record<string, unknown>>;
+  it("uses one CSS-native glass surface for the live rail", () => {
     render(
-      <TestPanel
-        game={createDayGame()}
-        theme="malaga-glass"
-        glassSettings={DEFAULT_GLASS_SETTINGS}
-        supportsTrueRefraction={false}
-      >
+      <LiveSidePanel game={createDayGame()}>
         <div>Music</div>
-      </TestPanel>,
+      </LiveSidePanel>,
     );
 
     const rail = screen.getByRole("complementary", { name: "Live game controls" });
-    expect(rail.querySelector(".live-side-panel-glass")).toHaveClass(
-      "glass-surface",
-      "is-glass-fallback",
-    );
+    const glass = rail.querySelector<HTMLElement>(".live-side-panel-glass");
+    expect(glass).toHaveClass("glass-surface");
+    expect(glass).not.toHaveClass("is-glass-fallback", "is-glass-refractive");
+    expect(glass).not.toHaveAttribute("theme");
+    expect(glass?.style.getPropertyValue("--glass-radius")).toBe("20px");
   });
 });

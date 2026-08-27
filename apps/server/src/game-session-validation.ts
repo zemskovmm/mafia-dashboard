@@ -92,7 +92,7 @@ export const setupSessionStateSchema = z
         context.addIssue({
           code: "custom",
           path: ["selectedPlayerIds"],
-          message: "Setup players must match the selected roster",
+          message: "Setup players must match the selected players",
         });
       }
       const assignmentEntries = Object.entries(setup.assignments);

@@ -1206,14 +1206,14 @@ describe("GameSessionStore", () => {
     expect(reset).toMatchObject({ revision: 5, status: "active", results: null });
     const projections = await pool.query<{
       result_count: number;
-      roster_count: number;
+      player_count: number;
     }>(
       `SELECT
          (SELECT COUNT(*)::int FROM game_results WHERE game_id = $1) AS result_count,
-         (SELECT COUNT(*)::int FROM game_session_players WHERE game_id = $1) AS roster_count`,
+         (SELECT COUNT(*)::int FROM game_session_players WHERE game_id = $1) AS player_count`,
       [gameId],
     );
-    expect(projections.rows).toEqual([{ result_count: 0, roster_count: 11 }]);
+    expect(projections.rows).toEqual([{ result_count: 0, player_count: 11 }]);
 
     const restored = await store.moveHead({
       gameId,
@@ -1232,10 +1232,10 @@ describe("GameSessionStore", () => {
         `SELECT
            (SELECT COUNT(*)::int FROM game_results WHERE game_id = $1) AS result_count,
            (SELECT COUNT(*)::int FROM game_player_results WHERE game_id = $1) AS player_result_count,
-           (SELECT COUNT(*)::int FROM game_session_players WHERE game_id = $1) AS roster_count`,
+           (SELECT COUNT(*)::int FROM game_session_players WHERE game_id = $1) AS player_count`,
         [gameId],
       ),
-    ).toMatchObject({ rows: [{ result_count: 1, player_result_count: 10, roster_count: 0 }] });
+    ).toMatchObject({ rows: [{ result_count: 1, player_result_count: 10, player_count: 0 }] });
   });
 
   it("does not complete an unconfirmed finished head through reset recovery", async () => {
@@ -1644,14 +1644,14 @@ describe("GameSessionStore", () => {
     const activeGraph = await pool.query<{
       club_id: string;
       mutations: number;
-      roster: number;
+      players: number;
       events: number;
     }>(
       `SELECT session.club_id,
               (SELECT COUNT(*)::int FROM game_session_mutations AS mutation
                 WHERE mutation.club_id = session.club_id AND mutation.game_id = session.id) AS mutations,
-              (SELECT COUNT(*)::int FROM game_session_players AS roster
-                WHERE roster.club_id = session.club_id AND roster.game_id = session.id) AS roster,
+              (SELECT COUNT(*)::int FROM game_session_players AS player
+                WHERE player.club_id = session.club_id AND player.game_id = session.id) AS players,
               (SELECT COUNT(*)::int FROM game_events AS event
                 WHERE event.club_id = session.club_id AND event.game_id = session.id) AS events
          FROM game_sessions AS session
@@ -1662,8 +1662,8 @@ describe("GameSessionStore", () => {
     expect(activeGraph.rows).toHaveLength(2);
     expect(activeGraph.rows).toEqual(
       expect.arrayContaining([
-        { club_id: DEFAULT_CLUB_ID, mutations: 1, roster: 1, events: 1 },
-        { club_id: club.id, mutations: 1, roster: 1, events: 1 },
+        { club_id: DEFAULT_CLUB_ID, mutations: 1, players: 1, events: 1 },
+        { club_id: club.id, mutations: 1, players: 1, events: 1 },
       ]),
     );
 
@@ -2162,7 +2162,7 @@ describe("GameSessionStore", () => {
     await expect(store.get(gameId)).resolves.toBeNull();
   });
 
-  it("derives the active roster from setup player foreign keys", async () => {
+  it("derives active players from setup player foreign keys", async () => {
     const gameId = randomUUID();
     const hostPlayerId = randomUUID();
     const seatedPlayerId = randomUUID();
@@ -2174,7 +2174,7 @@ describe("GameSessionStore", () => {
     ]);
     await store.save({
       gameId,
-      name: "Roster table",
+      name: "Player table",
       mutationId: randomUUID(),
       baseRevision: 0,
       state: {
@@ -2191,20 +2191,24 @@ describe("GameSessionStore", () => {
       results: null,
     });
 
-    const roster = await pool.query<{ player_id: string; seat: number | null; is_host: boolean }>(
+    const selectedPlayers = await pool.query<{
+      player_id: string;
+      seat: number | null;
+      is_host: boolean;
+    }>(
       `SELECT player_id, seat, is_host
          FROM game_session_players
         WHERE game_id = $1
         ORDER BY is_host DESC, seat`,
       [gameId],
     );
-    expect(roster.rows).toEqual([
+    expect(selectedPlayers.rows).toEqual([
       { player_id: hostPlayerId, seat: null, is_host: true },
       { player_id: seatedPlayerId, seat: 1, is_host: false },
     ]);
   });
 
-  it("atomically finalizes results and removes the active roster", async () => {
+  it("atomically finalizes results and removes active players", async () => {
     const gameId = randomUUID();
     const completed = await createCompletedSession(gameId);
 
@@ -2221,9 +2225,10 @@ describe("GameSessionStore", () => {
       "SELECT status FROM game_sessions WHERE id = $1",
       [gameId],
     );
-    const roster = await pool.query("SELECT 1 FROM game_session_players WHERE game_id = $1", [
-      gameId,
-    ]);
+    const selectedPlayers = await pool.query(
+      "SELECT 1 FROM game_session_players WHERE game_id = $1",
+      [gameId],
+    );
     const results = await pool.query<{
       winner: string;
       participants: number;
@@ -2242,7 +2247,7 @@ describe("GameSessionStore", () => {
       [gameId],
     );
     expect(session.rows).toEqual([{ status: "completed" }]);
-    expect(roster.rowCount).toBe(0);
+    expect(selectedPlayers.rowCount).toBe(0);
     expect(results.rows).toEqual([{ winner: "red", participants: 10, best_move_hits: 2 }]);
     expect(events.rows).toEqual([
       { sequence: 1, event_type: "game.created" },

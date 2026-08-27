@@ -637,7 +637,7 @@ await user.click(screen.getByRole("button", { name: "Disable dev mode" }));
 expect(screen.queryByRole("button", { name: "Generate test players" })).toBeNull();
 ```
 
-Also open Timeline before and after toggling Dev mode: `Generate sample game data` must follow the same authority. Update existing development-roster tests to enable Dev mode before clicking the player generator.
+Also open Timeline before and after toggling Dev mode: `Generate sample game data` must follow the same authority. Update existing development-player tests to enable Dev mode before clicking the player generator.
 
 **Step 3: Run RED**
 

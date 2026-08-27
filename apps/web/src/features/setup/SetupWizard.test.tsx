@@ -75,7 +75,7 @@ const choosePlayer = async (
   );
 };
 
-const fillRoster = async (user: ReturnType<typeof userEvent.setup>) => {
+const fillPlayerSelection = async (user: ReturnType<typeof userEvent.setup>) => {
   await choosePlayer(user, "Host player", availablePlayers[10]!);
   for (let index = 0; index < 10; index += 1) {
     await choosePlayer(user, `Seat ${index + 1} player`, availablePlayers[index]!);
@@ -88,7 +88,7 @@ describe("SetupWizard", () => {
     const host = availablePlayers[10]!;
     render(<Harness onComplete={() => undefined} />);
 
-    await fillRoster(user);
+    await fillPlayerSelection(user);
 
     expect(screen.getByRole("button", { name: /^start game$/i })).toBeEnabled();
     expect(screen.queryByRole("button", { name: /set up music/i })).not.toBeInTheDocument();
@@ -140,7 +140,7 @@ describe("SetupWizard", () => {
   it("clears an assigned seat with a dedicated control", async () => {
     const user = userEvent.setup();
     render(<Harness onComplete={() => undefined} />);
-    await fillRoster(user);
+    await fillPlayerSelection(user);
 
     await user.click(screen.getByRole("button", { name: "Clear Seat 1" }));
 
@@ -390,7 +390,7 @@ describe("SetupWizard", () => {
 
     const selectors = screen.getAllByRole("combobox", { name: /seat \d+ player/i });
     expect(selectors).toHaveLength(10);
-    await fillRoster(user);
+    await fillPlayerSelection(user);
     expect(startGame).toBeEnabled();
     await user.click(startGame);
 
@@ -442,7 +442,7 @@ describe("SetupWizard", () => {
     expect(onComplete.mock.calls[0]?.[2]).toBe(availablePlayers[10]!.nickname);
   });
 
-  it("prevents duplicate selections and guides an empty roster to player management", async () => {
+  it("prevents duplicate selections and guides empty players to player management", async () => {
     const user = userEvent.setup();
     const { unmount } = render(<Harness onComplete={() => undefined} />);
     await choosePlayer(user, "Seat 1 player", availablePlayers[0]!);

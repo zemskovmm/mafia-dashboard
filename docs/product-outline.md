@@ -241,7 +241,7 @@ Night is a host-private guided sequence.
 
 ## 13. Game log
 
-The full non-auxiliary log is part of every authoritative session mutation. The server preserves immutable sequence-1 `game.created` and transactionally replaces the later tail from the snapshot, so state, log, roster, and results cannot diverge. Each retained entry stores:
+The full non-auxiliary log is part of every authoritative session mutation. The server preserves immutable sequence-1 `game.created` and transactionally replaces the later tail from the snapshot, so state, log, active players, and results cannot diverge. Each retained entry stores:
 
 - event sequence and timestamp;
 - phase;

@@ -65,7 +65,7 @@ Server integration tests expect PostgreSQL at `postgresql://mafia:mafia@127.0.0.
 
 - Guided ten-player setup and real playback gate from YouTube IFrame state
 - Google OpenID Connect sign-in with revocable application sessions and per-club isolation
-- Theme-ready CSS with Midnight and Málaga black/white/gold schemes
+- Customizable CSS-native glass skin with a persisted base color
 - Read-only Google account playlist selection for the host's YouTube Music library
 - Persistent player profiles, ordered nickname selection, and per-player statistics
 - Per-seat random canonical role draw

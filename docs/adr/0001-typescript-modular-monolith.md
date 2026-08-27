@@ -18,7 +18,7 @@ Use one TypeScript npm workspace with three deployable/logical units:
 - `apps/server`: Fastify HTTP API and static production host
 - `packages/game-domain`: framework-independent commands, events, state transitions, and projections
 
-Use PostgreSQL for one authoritative game-session aggregate. Each accepted setup or game action replaces the complete restorable snapshot, its non-auxiliary log tail, active-roster projection, undo history, and final results in one transaction. A revisioned, durable browser outbox retries mutations by UUID and fails closed on conflicts. Validate API boundaries with Zod.
+Use PostgreSQL for one authoritative game-session aggregate. Each accepted setup or game action replaces the complete restorable snapshot, its non-auxiliary log tail, active-player projection, undo history, and final results in one transaction. A revisioned, durable browser outbox retries mutations by UUID and fails closed on conflicts. Validate API boundaries with Zod.
 
 Use Vitest for domain/server/component tests, Testing Library for React behavior, and Playwright for critical browser flows. Build the production SPA into the server image and run the app plus PostgreSQL through Docker Compose.
 

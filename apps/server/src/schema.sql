@@ -838,11 +838,11 @@ ALTER TABLE game_session_mutations ALTER COLUMN club_id SET NOT NULL;
 ALTER TABLE game_session_mutations ALTER COLUMN club_id SET DEFAULT '00000000-0000-4000-8000-000000000101';
 
 ALTER TABLE game_session_players ADD COLUMN IF NOT EXISTS club_id UUID;
-UPDATE game_session_players AS roster
+UPDATE game_session_players AS player
    SET club_id = session.club_id
   FROM game_sessions AS session
- WHERE roster.club_id IS NULL
-   AND roster.game_id = session.id;
+ WHERE player.club_id IS NULL
+   AND player.game_id = session.id;
 ALTER TABLE game_session_players ALTER COLUMN club_id SET NOT NULL;
 ALTER TABLE game_session_players ALTER COLUMN club_id SET DEFAULT '00000000-0000-4000-8000-000000000101';
 

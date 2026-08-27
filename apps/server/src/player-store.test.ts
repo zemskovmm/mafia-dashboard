@@ -1026,7 +1026,7 @@ describe("PlayerStore", () => {
     }
   });
 
-  it("recalculates last-played ordering when a finalized roster is corrected", async () => {
+  it("recalculates last-played ordering when finalized players are corrected", async () => {
     const original = await store.create({
       nickname: nickname("Original"),
       consent: false,
@@ -1081,9 +1081,9 @@ describe("PlayerStore", () => {
     );
   });
 
-  it("rejects deleting a player referenced by an unfinalized persisted setup roster", async () => {
+  it("rejects deleting a player referenced by unfinalized persisted setup players", async () => {
     const player = await store.create({
-      nickname: nickname("Active roster"),
+      nickname: nickname("Active players"),
       consent: false,
       firstName: null,
       lastName: null,
@@ -1092,7 +1092,7 @@ describe("PlayerStore", () => {
     const gameId = randomUUID();
     await new GameSessionStore(pool).save({
       gameId,
-      name: "Active roster",
+      name: "Active players",
       mutationId: randomUUID(),
       baseRevision: 0,
       state: {
@@ -1117,7 +1117,7 @@ describe("PlayerStore", () => {
     await expect(new GameSessionStore(pool).get(gameId)).resolves.toMatchObject({ gameId });
   });
 
-  it("rejects deleting a host referenced by an unfinalized persisted setup roster", async () => {
+  it("rejects deleting a host referenced by unfinalized persisted setup players", async () => {
     const host = await store.create({
       nickname: nickname("Active host"),
       consent: false,

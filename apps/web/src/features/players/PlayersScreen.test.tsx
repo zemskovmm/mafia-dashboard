@@ -47,6 +47,46 @@ const profile = (overrides: Partial<PlayerProfile> = {}): PlayerProfile => ({
 });
 
 describe("PlayersScreen", () => {
+  it("uses one local rotating specular surface only for New player", () => {
+    render(<PlayersScreen players={[profile()]} onCreate={vi.fn()} onUpdate={vi.fn()} />);
+
+    expect(document.querySelector(".new-player-panel")).toHaveClass("glass-surface", "is-specular");
+    expect(screen.getByRole("article", { name: /player alpha/i })).not.toHaveClass("is-specular");
+  });
+
+  it("uses compact headings, aligned toggles, and shared player action rows", () => {
+    render(
+      <PlayersScreen
+        players={[profile({ lastPlayedAt: null })]}
+        onCreate={vi.fn()}
+        onUpdate={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+
+    const newHeading = screen.getByRole("heading", { name: "New player" });
+    expect(newHeading).toHaveClass("eyebrow");
+    expect(screen.queryByText("Add to players")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add player" })).toHaveAttribute(
+      "form",
+      "new-player-form",
+    );
+    for (const control of [
+      screen.getByLabelText("New player Agree for data processing"),
+      screen.getByLabelText("New player Club manager"),
+    ]) {
+      expect(control.closest(".player-toggle-field")).not.toBeNull();
+      expect(control.closest(".player-toggle-control")).not.toBeNull();
+    }
+
+    const card = screen.getByRole("article", { name: /player alpha/i });
+    expect(within(card).queryByText("Player profile")).not.toBeInTheDocument();
+    expect(within(card).queryByText(/Never played|Last played/i)).not.toBeInTheDocument();
+    const actions = card.querySelector(".player-card-actions");
+    expect(actions).toContainElement(within(card).getByRole("button", { name: "Save Alpha" }));
+    expect(actions).toContainElement(within(card).getByRole("button", { name: "Delete Alpha" }));
+  });
+
   it("renders a Club manager control for a new player", () => {
     render(<PlayersScreen players={[]} onCreate={vi.fn()} onUpdate={vi.fn()} />);
 

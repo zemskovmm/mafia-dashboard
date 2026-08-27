@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -26,13 +26,13 @@ describe("ClubPortal", () => {
           user={creator}
           authConfigured
           authUnavailable={false}
-          colorTheme="midnight"
+          themeColor="#c39a58"
           clubs={[]}
           loading={false}
           error={null}
           editing={editing}
           onSignOut={vi.fn().mockResolvedValue(undefined)}
-          onColorThemeChange={vi.fn()}
+          onThemeColorChange={vi.fn()}
           onEditingChange={setEditing}
           onSaveClub={onSaveClub}
           onOpenClub={vi.fn()}
@@ -70,5 +70,35 @@ describe("ClubPortal", () => {
         name: "I consent to store my Google name and email in the Owner player profile.",
       }),
     ).not.toBeChecked();
+  });
+
+  it("changes the one glass skin through a native color picker", () => {
+    const onThemeColorChange = vi.fn();
+
+    render(
+      <ClubPortal
+        user={creator}
+        authConfigured
+        authUnavailable={false}
+        themeColor="#c39a58"
+        clubs={[]}
+        loading={false}
+        error={null}
+        editing={null}
+        onSignOut={vi.fn().mockResolvedValue(undefined)}
+        onThemeColorChange={onThemeColorChange}
+        onEditingChange={vi.fn()}
+        onSaveClub={vi.fn().mockResolvedValue(undefined)}
+        onOpenClub={vi.fn()}
+      />,
+    );
+
+    const picker = screen.getByLabelText("Glass color");
+    expect(picker).toHaveAttribute("type", "color");
+    expect(picker).toHaveValue("#c39a58");
+
+    fireEvent.change(picker, { target: { value: "#7170ff" } });
+    expect(onThemeColorChange).toHaveBeenCalledWith("#7170ff");
+    expect(screen.queryByRole("button", { name: /theme/i })).not.toBeInTheDocument();
   });
 });
