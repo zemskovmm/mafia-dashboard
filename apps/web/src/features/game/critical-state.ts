@@ -1,19 +1,9 @@
 import type { GamePhase, GameState } from "@mafia/game-domain";
 
-const criticalPhases = new Set<GamePhase>([
-  "day",
-  "voting",
-  "voting-cancelled",
-  "car-crash",
-  "car-crash-decision",
-  "car-crash-result",
-  "car-crash-skipped",
-  "goodbye-speech",
-  "best-move",
-]);
+const nonPlayingPhases = new Set<GamePhase>(["mafia-planning", "sheriff-wake", "finished"]);
 
 export const isCriticalState = (game: GameState): boolean => {
-  if (!criticalPhases.has(game.phase) || game.winner !== null) return false;
+  if (nonPlayingPhases.has(game.phase) || game.winner !== null) return false;
   const activeCitizens = game.players.filter(
     ({ team, status }) => team === "red" && status === "active",
   ).length;

@@ -4,7 +4,7 @@
   z-index: 100;
   display: grid;
   place-items: center;
-  min-height: var(--app-viewport-height, 100dvh);
+  min-height: 100dvh;
   overflow: hidden;
   color: var(--portal-text);
   background:
@@ -56,7 +56,7 @@
   z-index: 2;
   display: flex;
   width: min(1040px, 68vw);
-  max-height: calc(var(--app-viewport-height, 100dvh) - 34px);
+  max-height: calc(100dvh - 34px);
   flex-direction: column;
   align-items: center;
   gap: 12px;

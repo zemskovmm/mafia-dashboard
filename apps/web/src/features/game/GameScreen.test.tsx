@@ -60,7 +60,7 @@ const DayHarness = () => {
 };
 
 describe("GameScreen", () => {
-  it("shows Critical under active team counts only for an unmasked critical day", () => {
+  it("shows Critical under active team counts in every critical live phase, even when masked", () => {
     const day = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
     let citizens = 0;
     let mafia = 0;
@@ -94,11 +94,22 @@ describe("GameScreen", () => {
         privacyHidden
       />,
     );
-    expect(screen.queryByRole("status", { name: "Critical" })).toBeNull();
+    expect(screen.getByRole("status", { name: "Critical" })).toBeInTheDocument();
 
     rerender(
       <GameScreen
         game={{ ...critical, phase: "night-mafia" }}
+        hostName="Host Player"
+        onGameChange={() => undefined}
+        onEvent={() => undefined}
+        privacyHidden
+      />,
+    );
+    expect(screen.getByRole("status", { name: "Critical" })).toBeInTheDocument();
+
+    rerender(
+      <GameScreen
+        game={day}
         hostName="Host Player"
         onGameChange={() => undefined}
         onEvent={() => undefined}
@@ -441,8 +452,9 @@ describe("GameScreen", () => {
     await user.click(screen.getByRole("button", { name: /resolve voting/i }));
     expect(screen.getByRole("heading", { name: "Goodbye speech" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /seat 4: player 4/i })).toHaveClass(
-      "is-goodbye-highlight",
+      "is-voting-highlight",
     );
+    expect(document.querySelectorAll(".player-seat.is-voting-highlight")).toHaveLength(1);
     await user.click(screen.getByRole("button", { name: "Begin night" }));
     expect(screen.getByRole("heading", { name: "Mafia shots" })).toBeInTheDocument();
   });
@@ -571,18 +583,20 @@ describe("GameScreen", () => {
 
   it("highlights only the current goodbye speaker when an earlier Best move is retained", () => {
     const base = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
-    const [earlierVictim, currentVictim] = base.players.filter(({ team }) => team === "red");
+    const [earlierVictim, currentVictim, queuedVictim] = base.players.filter(
+      ({ team }) => team === "red",
+    );
     const game: GameState = {
       ...base,
       day: 5,
       phase: "goodbye-speech",
       players: base.players.map((player) =>
-        player.seat === earlierVictim!.seat || player.seat === currentVictim!.seat
+        [earlierVictim!.seat, currentVictim!.seat, queuedVictim!.seat].includes(player.seat)
           ? { ...player, status: "eliminated" }
           : player,
       ),
       bestMove: { playerSeat: earlierVictim!.seat, selectedSeats: [], mafiaHits: 0 },
-      goodbyeSeats: [currentVictim!.seat],
+      goodbyeSeats: [currentVictim!.seat, queuedVictim!.seat],
       goodbyeNext: "day",
     };
 
@@ -601,7 +615,10 @@ describe("GameScreen", () => {
     ).toHaveClass("is-voting-highlight");
     expect(
       screen.getByRole("button", { name: `Seat ${earlierVictim!.seat}: ${earlierVictim!.name}` }),
-    ).not.toHaveClass("is-voting-highlight", "is-goodbye-highlight");
+    ).not.toHaveClass("is-voting-highlight");
+    expect(
+      screen.getByRole("button", { name: `Seat ${queuedVictim!.seat}: ${queuedVictim!.name}` }),
+    ).not.toHaveClass("is-voting-highlight");
     expect(document.querySelectorAll(".player-seat.is-voting-highlight")).toHaveLength(1);
   });
 

@@ -1,15 +1,24 @@
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createGameLogEntry,
+  replayGameLog,
+  resolveMafiaShots,
+  toggleAllMafiaShotsForTarget,
   type CanonicalGameEventDraft,
   type GameState,
+  type InitialGameBaseline,
+  type GameLogEntry,
 } from "@mafia/game-domain";
 import { ApiError, type Club, type PlayerProfile, type RemoteGameSession } from "./api/client.js";
 import { App as WelcomeApp, ClubWorkspace } from "./App.js";
-import { clearErrorConsole, reportError } from "./features/console/error-console.js";
+import {
+  clearErrorConsole,
+  getErrorConsoleSnapshot,
+  reportError,
+} from "./features/console/error-console.js";
 import { musicPreferencesStorageKey } from "./features/music/music-preferences.js";
 import { GLASS_SETTINGS_STORAGE_KEY } from "./features/theme/glass-settings.js";
 
@@ -42,6 +51,7 @@ const gameScreenHarness = vi.hoisted(() => ({
   previewOnGameChange: null as ((game: GameState) => void) | null,
   liveGame: null as GameState | null,
   liveOnGameChange: null as ((game: GameState) => void) | null,
+  liveOnAcceptedEvent: null as ((event: CanonicalGameEventDraft) => void) | null,
 }));
 
 const musicPlayerHarness = vi.hoisted(() => ({
@@ -129,7 +139,6 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
     onPopulateDevelopmentPlayers,
     onOpenAvailablePlayers,
     showDevelopmentTools = false,
-    fullscreenTouchPicker = false,
   }: {
     players: readonly PlayerProfile[];
     onComplete: (game: GameState, hostPlayerId: string, hostName: string) => void;
@@ -145,7 +154,6 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
     onPopulateDevelopmentPlayers?: () => Promise<readonly PlayerProfile[]>;
     onOpenAvailablePlayers?: () => void;
     showDevelopmentTools?: boolean;
-    fullscreenTouchPicker?: boolean;
   }) => {
     const [step, setStep] = useState(initialSessionState?.step ?? "players");
     return (
@@ -156,7 +164,6 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
         <output data-testid="setup-player-pool">
           {players.map(({ nickname }) => nickname).join(",")}
         </output>
-        <output data-testid="touch-player-picker">{String(fullscreenTouchPicker)}</output>
         {onOpenAvailablePlayers === undefined ? null : (
           <button type="button" onClick={onOpenAvailablePlayers}>
             Select available players
@@ -250,6 +257,7 @@ vi.mock("./features/game/GameScreen.js", () => ({
     } else {
       gameScreenHarness.liveGame = game;
       gameScreenHarness.liveOnGameChange = onGameChange;
+      gameScreenHarness.liveOnAcceptedEvent = onAcceptedEvent ?? null;
     }
     return mode === "preview" ? (
       <main>
@@ -502,6 +510,11 @@ const player = (nickname: string, id: string): PlayerProfile => ({
 });
 
 beforeEach(() => {
+  gameScreenHarness.previewGame = null;
+  gameScreenHarness.previewOnGameChange = null;
+  gameScreenHarness.liveGame = null;
+  gameScreenHarness.liveOnGameChange = null;
+  gameScreenHarness.liveOnAcceptedEvent = null;
   musicPlayerHarness.mounts = 0;
   musicPlayerHarness.unmounts = 0;
   musicPlayerHarness.setState = null;
@@ -983,28 +996,6 @@ describe("developer menu", () => {
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     expect(screen.queryByRole("button", { name: /Day\/night table indication/i })).toBeNull();
     expect(window.localStorage.getItem("mafia-dashboard.day-night-indicator")).toBeNull();
-  });
-
-  it("uses the non-editable player picker on touch iPads outside fullscreen", () => {
-    vi.spyOn(navigator, "platform", "get").mockReturnValue("MacIntel");
-    Object.defineProperty(navigator, "maxTouchPoints", { configurable: true, value: 5 });
-
-    render(<App />);
-
-    expect(screen.getByTestId("touch-player-picker")).toHaveTextContent("true");
-    Reflect.deleteProperty(navigator, "maxTouchPoints");
-  });
-
-  it("uses the non-editable player picker on Samsung Android tablets", () => {
-    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(
-      "Mozilla/5.0 (Linux; Android 14; SM-P613) AppleWebKit/537.36 Chrome/140 Safari/537.36",
-    );
-    Object.defineProperty(navigator, "maxTouchPoints", { configurable: true, value: 5 });
-
-    render(<App />);
-
-    expect(screen.getByTestId("touch-player-picker")).toHaveTextContent("true");
-    Reflect.deleteProperty(navigator, "maxTouchPoints");
   });
 
   it("keeps active game sessions in Dev without player-assignment controls", async () => {
@@ -1591,60 +1582,6 @@ describe("developer menu", () => {
     Reflect.deleteProperty(document, "exitFullscreen");
   });
 
-  it("blocks viewport touch panning while preserving internal vertical scrolling", () => {
-    render(<App />);
-    const shell = document.querySelector(".app-shell");
-    expect(shell).toBeInstanceOf(HTMLElement);
-
-    fireEvent.touchStart(shell!, { touches: [{ clientX: 200, clientY: 200 }] });
-    expect(fireEvent.touchMove(shell!, { touches: [{ clientX: 200, clientY: 120 }] })).toBe(false);
-
-    const scroller = document.createElement("div");
-    scroller.style.overflowY = "auto";
-    Object.defineProperties(scroller, {
-      clientHeight: { configurable: true, value: 100 },
-      scrollHeight: { configurable: true, value: 300 },
-      scrollTop: { configurable: true, value: 50, writable: true },
-    });
-    shell!.append(scroller);
-
-    fireEvent.touchStart(scroller, { touches: [{ clientX: 200, clientY: 200 }] });
-    expect(fireEvent.touchMove(scroller, { touches: [{ clientX: 200, clientY: 120 }] })).toBe(true);
-
-    scroller.scrollTop = 200;
-    fireEvent.touchStart(scroller, { touches: [{ clientX: 200, clientY: 200 }] });
-    expect(fireEvent.touchMove(scroller, { touches: [{ clientX: 200, clientY: 120 }] })).toBe(
-      false,
-    );
-  });
-
-  it("tracks the exact visual viewport height used by iPad Safari", () => {
-    let height = 760;
-    let resizeListener: EventListener | null = null;
-    const visualViewport = {
-      get height() {
-        return height;
-      },
-      addEventListener: vi.fn((type: string, listener: EventListener) => {
-        if (type === "resize") resizeListener = listener;
-      }),
-      removeEventListener: vi.fn(),
-    } as unknown as VisualViewport;
-    Object.defineProperty(window, "visualViewport", {
-      configurable: true,
-      value: visualViewport,
-    });
-
-    render(<App />);
-    expect(document.documentElement.style.getPropertyValue("--app-viewport-height")).toBe("760px");
-
-    height = 820;
-    act(() => resizeListener?.(new Event("resize")));
-    expect(document.documentElement.style.getPropertyValue("--app-viewport-height")).toBe("820px");
-
-    Reflect.deleteProperty(window, "visualViewport");
-  });
-
   it("uses the fixed mask control to hide private game information", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -1816,6 +1753,70 @@ describe("authoritative game session lifecycle", () => {
     firstRender.unmount();
     render(<App />);
     expect(screen.getByText("Game turn 0")).toBeInTheDocument();
+  });
+
+  it("evaluates Mafia shots after omitted day turns from the canonical checkpoint", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    await waitFor(() => expect(api.saveGameSession).toHaveBeenCalled());
+    api.saveGameSession.mockClear();
+
+    for (let turn = 0; turn < assignedGame.turnOrder.length; turn += 1) {
+      await user.click(screen.getByRole("button", { name: "Record game action" }));
+    }
+    const displayed = gameScreenHarness.liveGame;
+    const accept = gameScreenHarness.liveOnAcceptedEvent;
+    if (displayed === null || accept === null)
+      throw new Error("Live game callbacks were not captured");
+    expect(displayed.phase).toBe("night-mafia");
+
+    const target = displayed.players.find(
+      ({ team, status }) => team === "red" && status === "active",
+    )!;
+    const assigned = toggleAllMafiaShotsForTarget(displayed, target.seat);
+    const resolution = resolveMafiaShots(assigned);
+    act(() =>
+      accept({
+        type: "mafia.shots-resolved",
+        payload: { shots: resolution.secretShots, result: resolution.result },
+        secret: true,
+      }),
+    );
+
+    await waitFor(() => expect(gameScreenHarness.liveGame?.phase).toBe("night-mafia-result"));
+    await waitFor(() =>
+      expect(api.saveGameSession).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          kind: "append-event",
+          event: expect.objectContaining({ type: "mafia.shots-resolved" }),
+        }),
+        testClub.id,
+      ),
+    );
+    expect(
+      getErrorConsoleSnapshot().some(({ message }) =>
+        message.includes("Mafia shots can only be recorded during the Mafia night phase"),
+      ),
+    ).toBe(false);
+
+    const persisted = JSON.parse(
+      window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null",
+    ) as {
+      baseline: InitialGameBaseline;
+      entries: GameLogEntry[];
+      headEventId: string;
+    };
+    expect(persisted.entries).toHaveLength(2);
+    expect(persisted.entries[1]).toMatchObject({
+      type: "mafia.shots-resolved",
+      parentEventId: persisted.entries[0]!.id,
+    });
+    expect(persisted.headEventId).toBe(persisted.entries[1]!.id);
+    expect(replayGameLog(persisted.baseline, persisted.entries).game).toEqual(
+      gameScreenHarness.liveGame,
+    );
   });
 
   it("preserves a provisional ballot when a meaningful event is accepted", async () => {

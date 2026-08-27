@@ -208,13 +208,6 @@ const currentFullscreenElement = (): Element | null =>
   (document as WebkitFullscreenDocument).webkitFullscreenElement ??
   null;
 
-const isTouchTablet = () =>
-  /iPad/.test(navigator.userAgent) ||
-  (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1) ||
-  (/Android/.test(navigator.userAgent) &&
-    !/Mobile/.test(navigator.userAgent) &&
-    navigator.maxTouchPoints > 0);
-
 const defaultPlaylistId = import.meta.env.VITE_YOUTUBE_PLAYLIST_ID ?? "";
 const developmentAdjectives = ["Crimson", "Midnight", "Velvet", "Golden", "Silent"] as const;
 const developmentAliases = ["Fox", "Raven", "Wolf", "Owl", "Viper"] as const;
@@ -526,8 +519,6 @@ export const ClubWorkspace = ({
 
   const musicRef = useRef<YouTubePlayerHandle>(null);
   const previousMusicGameRef = useRef<GameState | null>(initialDerivedGame);
-  const devDrawerRef = useRef<HTMLElement>(null);
-  const touchTablet = useRef(isTouchTablet()).current;
   const sessionSwipeStartRef = useRef<{ readonly gameId: string; readonly x: number } | null>(null);
   const initialGameRef = useRef<InitialGameBaseline | null>(initialState.initialGame);
   const eventsRef = useRef<readonly GameLogEntry[]>(initialState.events);
@@ -633,104 +624,6 @@ export const ClubWorkspace = ({
       document.removeEventListener("webkitfullscreenchange", syncFullscreenState);
     };
   }, []);
-
-  useEffect(() => {
-    const root = document.documentElement;
-    const visualViewport = window.visualViewport;
-    const syncViewportHeight = () => {
-      root.style.setProperty(
-        "--app-viewport-height",
-        `${visualViewport?.height ?? window.innerHeight}px`,
-      );
-    };
-    syncViewportHeight();
-    window.addEventListener("resize", syncViewportHeight);
-    visualViewport?.addEventListener("resize", syncViewportHeight);
-    return () => {
-      window.removeEventListener("resize", syncViewportHeight);
-      visualViewport?.removeEventListener("resize", syncViewportHeight);
-      root.style.removeProperty("--app-viewport-height");
-    };
-  }, []);
-
-  useEffect(() => {
-    let lastTouch: { readonly x: number; readonly y: number } | null = null;
-    const rememberTouch = (event: TouchEvent) => {
-      const touch = event.touches[0];
-      lastTouch = touch === undefined ? null : { x: touch.clientX, y: touch.clientY };
-    };
-    const scrollableAncestor = (target: EventTarget | null) => {
-      let element = target instanceof Element ? target : null;
-      while (element !== null && element !== document.documentElement) {
-        if (element instanceof HTMLElement) {
-          const overflowY = window.getComputedStyle(element).overflowY;
-          if (
-            (overflowY === "auto" || overflowY === "scroll") &&
-            element.scrollHeight > element.clientHeight + 1
-          ) {
-            return element;
-          }
-        }
-        element = element.parentElement;
-      }
-      return null;
-    };
-    const containViewportPan = (event: TouchEvent) => {
-      const touch = event.touches[0];
-      if (touch === undefined || lastTouch === null) return;
-      const deltaX = touch.clientX - lastTouch.x;
-      const deltaY = touch.clientY - lastTouch.y;
-      lastTouch = { x: touch.clientX, y: touch.clientY };
-      if (Math.abs(deltaY) <= Math.abs(deltaX)) return;
-
-      const scroller = scrollableAncestor(event.target);
-      const canScroll =
-        scroller !== null &&
-        (deltaY > 0
-          ? scroller.scrollTop > 0
-          : scroller.scrollTop + scroller.clientHeight < scroller.scrollHeight - 1);
-      if (!canScroll) event.preventDefault();
-    };
-    const clearTouch = () => {
-      lastTouch = null;
-    };
-
-    document.addEventListener("touchstart", rememberTouch, { passive: true });
-    document.addEventListener("touchmove", containViewportPan, { passive: false });
-    document.addEventListener("touchend", clearTouch, { passive: true });
-    document.addEventListener("touchcancel", clearTouch, { passive: true });
-    return () => {
-      document.removeEventListener("touchstart", rememberTouch);
-      document.removeEventListener("touchmove", containViewportPan);
-      document.removeEventListener("touchend", clearTouch);
-      document.removeEventListener("touchcancel", clearTouch);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (activeDrawer !== "dev") return;
-    const drawer = devDrawerRef.current;
-    if (drawer === null) return;
-    let lastTouchY = 0;
-    const rememberTouch = (event: TouchEvent) => {
-      lastTouchY = event.touches[0]?.clientY ?? lastTouchY;
-    };
-    const containEdgeSwipe = (event: TouchEvent) => {
-      const touchY = event.touches[0]?.clientY;
-      if (touchY === undefined) return;
-      const deltaY = touchY - lastTouchY;
-      const atTop = drawer.scrollTop <= 0;
-      const atBottom = drawer.scrollTop + drawer.clientHeight >= drawer.scrollHeight - 1;
-      if ((atTop && deltaY > 0) || (atBottom && deltaY < 0)) event.preventDefault();
-      lastTouchY = touchY;
-    };
-    drawer.addEventListener("touchstart", rememberTouch, { passive: true });
-    drawer.addEventListener("touchmove", containEdgeSwipe, { passive: false });
-    return () => {
-      drawer.removeEventListener("touchstart", rememberTouch);
-      drawer.removeEventListener("touchmove", containEdgeSwipe);
-    };
-  }, [activeDrawer]);
 
   useEffect(
     () =>
@@ -1712,12 +1605,7 @@ export const ClubWorkspace = ({
         </aside>
       ) : null}
       {showWorkspaceTools && activeDrawer === "dev" ? (
-        <aside
-          ref={devDrawerRef}
-          className="app-drawer dev-menu-drawer"
-          role="dialog"
-          aria-label="Developer menu"
-        >
+        <aside className="app-drawer dev-menu-drawer" role="dialog" aria-label="Developer menu">
           <div className="dev-menu-header">
             <h2>Dev menu</h2>
             <p className="dev-menu-version" aria-label={`Canary version ${webPackage.version}`}>
@@ -2015,7 +1903,6 @@ export const ClubWorkspace = ({
             onPopulateDevelopmentPlayers={populateDevelopmentPlayers}
             onOpenAvailablePlayers={() => setAvailabilityScreenOpen(true)}
             privacyHidden={privacyHidden}
-            fullscreenTouchPicker={touchTablet}
             initialSessionState={setupSession}
             onSessionStateChange={handleSetupSessionChange}
             onEvent={logEvent}

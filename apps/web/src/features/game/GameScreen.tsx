@@ -474,7 +474,7 @@ export const GameScreen = ({
               <span>Citizens {privacyHidden ? "?" : activeCitizens}</span>
               <span>Mafia {privacyHidden ? "?" : activeMafia}</span>
             </span>
-            {!privacyHidden && isCriticalState(game) ? (
+            {isCriticalState(game) ? (
               <span className="critical-state-pill" role="status" aria-label="Critical">
                 Critical
               </span>
@@ -570,14 +570,9 @@ export const GameScreen = ({
                   (game.phase === "mafia-planning" && player.team !== "black") ||
                   (game.phase === "sheriff-wake" && player.role !== "sheriff"),
                 inactive: game.phase === "car-crash" && !game.carCrashSeats?.includes(player.seat),
-                goodbyeHighlight:
-                  (game.phase === "goodbye-speech" && game.goodbyeSeats?.includes(player.seat)) ||
-                  (game.phase === "best-move" && game.bestMove?.playerSeat === player.seat),
                 votingHighlight:
-                  game.goodbyeNext === "day" &&
-                  ((game.phase === "best-move" && game.bestMove?.playerSeat === player.seat) ||
-                    (game.phase === "goodbye-speech" &&
-                      game.goodbyeSeats?.includes(player.seat) === true)),
+                  (game.phase === "best-move" && game.bestMove?.playerSeat === player.seat) ||
+                  (game.phase === "goodbye-speech" && game.goodbyeSeats?.[0] === player.seat),
                 current:
                   (player.seat === currentPlayer?.seat &&
                     player.status === "active" &&

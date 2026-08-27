@@ -25,7 +25,6 @@ interface SetupWizardProps {
   readonly onPopulateDevelopmentPlayers?: () => Promise<readonly PlayerProfile[]>;
   readonly onOpenAvailablePlayers?: () => void;
   readonly privacyHidden?: boolean;
-  readonly fullscreenTouchPicker?: boolean;
 }
 
 type WizardStep = "players" | "roles";
@@ -85,7 +84,6 @@ interface PlayerComboboxProps {
   readonly players: readonly PlayerProfile[];
   readonly unavailablePlayerIds: readonly string[];
   readonly onChange: (playerId: string) => void;
-  readonly fullscreenTouchPicker: boolean;
 }
 
 const PlayerCombobox = ({
@@ -96,13 +94,12 @@ const PlayerCombobox = ({
   players,
   unavailablePlayerIds,
   onChange,
-  fullscreenTouchPicker,
 }: PlayerComboboxProps) => {
   const selectedPlayer = players.find((player) => player.id === value);
   const [query, setQuery] = useState(selectedPlayer?.nickname ?? "");
   const [open, setOpen] = useState(false);
   const [highlightedIndex, setHighlightedIndex] = useState(0);
-  const normalizedQuery = fullscreenTouchPicker && open ? "" : query.trim().toLocaleLowerCase();
+  const normalizedQuery = query.trim().toLocaleLowerCase();
   const unavailable = new Set(unavailablePlayerIds);
   const matchingPlayers = players.filter(
     (player) =>
@@ -142,7 +139,6 @@ const PlayerCombobox = ({
   return (
     <div
       className="player-combobox"
-      tabIndex={fullscreenTouchPicker ? 0 : undefined}
       onBlur={(event) => {
         if (event.currentTarget.contains(event.relatedTarget)) return;
         setOpen(false);
@@ -165,20 +161,10 @@ const PlayerCombobox = ({
               : undefined
           }
           autoComplete="off"
-          inputMode={fullscreenTouchPicker ? "none" : "search"}
-          readOnly={fullscreenTouchPicker}
-          tabIndex={fullscreenTouchPicker ? -1 : undefined}
           value={query}
           placeholder={placeholder}
           onFocus={(event) => {
             event.currentTarget.select();
-            setHighlightedIndex(0);
-            setOpen(true);
-          }}
-          onPointerDown={(event) => {
-            if (!fullscreenTouchPicker) return;
-            event.preventDefault();
-            event.currentTarget.closest<HTMLElement>(".player-combobox")?.focus();
             setHighlightedIndex(0);
             setOpen(true);
           }}
@@ -258,7 +244,6 @@ export const SetupWizard = ({
   onPopulateDevelopmentPlayers,
   onOpenAvailablePlayers = () => undefined,
   privacyHidden = false,
-  fullscreenTouchPicker = false,
 }: SetupWizardProps) => {
   const [step, setStep] = useState<WizardStep>(
     initialSessionState?.step === "roles" && initialSessionState.setup?.step !== "role-draw"
@@ -553,7 +538,6 @@ export const SetupWizard = ({
             players={selectablePlayers}
             unavailablePlayerIds={selectedPlayerIds.filter(Boolean)}
             onChange={setHostPlayerId}
-            fullscreenTouchPicker={fullscreenTouchPicker}
           />
           <div className="player-input-grid">
             {selectedPlayerIds.map((playerId, index) => (
@@ -575,7 +559,6 @@ export const SetupWizard = ({
                   next[index] = nextPlayerId;
                   setSelectedPlayerIds(next);
                 }}
-                fullscreenTouchPicker={fullscreenTouchPicker}
               />
             ))}
           </div>

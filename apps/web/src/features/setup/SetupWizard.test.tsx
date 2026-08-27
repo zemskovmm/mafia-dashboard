@@ -43,17 +43,14 @@ const Harness = ({
   onComplete,
   players = availablePlayers,
   onPopulateDevelopmentPlayers,
-  fullscreenTouchPicker = false,
 }: {
   onComplete: (game: GameState, hostPlayerId: string, hostName: string) => void;
   players?: readonly PlayerProfile[];
   onPopulateDevelopmentPlayers?: () => Promise<readonly PlayerProfile[]>;
-  fullscreenTouchPicker?: boolean;
 }) => (
   <SetupWizard
     players={players}
     onComplete={onComplete}
-    fullscreenTouchPicker={fullscreenTouchPicker}
     {...({
       showDevelopmentTools: onPopulateDevelopmentPlayers !== undefined,
       onPopulateDevelopmentPlayers,
@@ -137,21 +134,6 @@ describe("SetupWizard", () => {
     );
 
     expect(seat).toHaveValue("Player 10");
-    expect(host).toHaveValue("Player 11");
-  });
-
-  it("opens a non-editable touch picker without focusing the input in iPad fullscreen", async () => {
-    const user = userEvent.setup();
-    render(<Harness onComplete={() => undefined} fullscreenTouchPicker />);
-
-    const host = screen.getByRole("combobox", { name: "Host player" });
-    await user.click(host);
-
-    expect(host).toHaveAttribute("readonly");
-    expect(host).toHaveAttribute("inputmode", "none");
-    expect(document.activeElement).not.toBe(host);
-    expect(screen.getByRole("listbox", { name: "Host suggestions" })).toBeInTheDocument();
-    await user.click(screen.getByRole("option", { name: "Player 11" }));
     expect(host).toHaveValue("Player 11");
   });
 

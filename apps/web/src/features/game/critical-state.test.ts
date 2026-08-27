@@ -60,13 +60,6 @@ describe("critical state", () => {
     "car-crash-skipped",
     "goodbye-speech",
     "best-move",
-  ])("applies during daytime phase %s", (phase) => {
-    expect(isCriticalState(withActiveCounts(day, 4, 3, phase))).toBe(true);
-  });
-
-  it.each<GamePhase>([
-    "mafia-planning",
-    "sheriff-wake",
     "night-mafia",
     "night-mafia-result",
     "night-don",
@@ -74,8 +67,14 @@ describe("critical state", () => {
     "night-sheriff",
     "night-sheriff-result",
     "night-resolution",
-    "finished",
-  ])("does not expose team balance during phase %s", (phase) => {
-    expect(isCriticalState(withActiveCounts(day, 4, 3, phase))).toBe(false);
+  ])("applies whenever the balance is critical during phase %s", (phase) => {
+    expect(isCriticalState(withActiveCounts(day, 4, 3, phase))).toBe(true);
   });
+
+  it.each<GamePhase>(["mafia-planning", "sheriff-wake", "finished"])(
+    "does not show Critical outside active play during phase %s",
+    (phase) => {
+      expect(isCriticalState(withActiveCounts(day, 4, 3, phase))).toBe(false);
+    },
+  );
 });

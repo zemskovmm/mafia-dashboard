@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { advanceVotingCandidate } from "./day-actions.js";
+import { advanceVotingCandidate, completeCurrentTurn, nominate } from "./day-actions.js";
 import { advanceSetupPhase, createGame } from "./game.js";
 import {
   applyGameEvent,
@@ -19,6 +19,7 @@ import {
   createSetup,
   drawRoleForSeat,
 } from "./setup.js";
+import { resolveMafiaShots, toggleAllMafiaShotsForTarget } from "./night-actions.js";
 import type { GameState, PlayerInput, SetupState } from "./types.js";
 
 const players = (): PlayerInput[] =>
@@ -190,6 +191,48 @@ describe("canonical game replay", () => {
       secret: true,
     });
     expect(bestMove).toMatchObject({ phase: "goodbye-speech", day: 2 });
+  });
+
+  it("folds omitted no-nomination day turns into the Mafia shot checkpoint", () => {
+    const canonical = dayOne();
+    let displayed = canonical;
+    while (displayed.phase === "day") displayed = completeCurrentTurn(displayed);
+    const target = displayed.players.find(
+      ({ team, status }) => team === "red" && status === "active",
+    )!;
+    displayed = toggleAllMafiaShotsForTarget(displayed, target.seat);
+    const resolution = resolveMafiaShots(displayed);
+    const draft: CanonicalGameEventDraft = {
+      type: "mafia.shots-resolved",
+      payload: { shots: resolution.secretShots, result: resolution.result },
+      secret: true,
+    };
+
+    expect(applyGameEvent(canonical, draft)).toEqual(applyGameEvent(displayed, draft));
+    expect(applyGameEvent(canonical, draft)).toMatchObject({
+      phase: "night-mafia-result",
+      shotAssignments: Object.fromEntries(
+        resolution.secretShots.map(({ shooterSeat, targetSeat }) => [shooterSeat, targetSeat]),
+      ),
+      players: expect.arrayContaining([
+        expect.objectContaining({ seat: target.seat, status: "active" }),
+      ]),
+    });
+  });
+
+  it("does not fold Mafia shots across unresolved voting", () => {
+    const canonical = nominate(dayOne(), 1, 4);
+    const shots = canonical.players
+      .filter(({ team, status }) => team === "black" && status === "active")
+      .map(({ seat }) => ({ shooterSeat: seat, targetSeat: 4, secret: true as const }));
+
+    expect(() =>
+      applyGameEvent(canonical, {
+        type: "mafia.shots-resolved",
+        payload: { shots, result: { kind: "kill", targetSeat: 4 } },
+        secret: true,
+      }),
+    ).toThrow(/Mafia night phase/i);
   });
 
   it("rejects phase changes that do not advance", () => {

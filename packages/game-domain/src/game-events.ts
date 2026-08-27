@@ -976,6 +976,8 @@ const advanceToVoting = (game: GameState): GameState => {
   return next;
 };
 
+const advanceToMafiaShots = (game: GameState): GameState => advanceToVoting(game);
+
 const advanceToDonCheck = (game: GameState): GameState =>
   game.phase === "night-mafia-result" ? completeMafiaShots(game) : game;
 
@@ -1149,7 +1151,7 @@ export const applyGameEvent = (game: GameState, event: CanonicalGameEventDraft):
       return acceptCarCrashBallot(decision);
     }
     case "mafia.shots-resolved": {
-      let shotGame: GameState = { ...game, shotAssignments: {} };
+      let shotGame: GameState = { ...advanceToMafiaShots(game), shotAssignments: {} };
       for (const shot of event.payload.shots) {
         shotGame = recordMafiaShot(shotGame, shot.shooterSeat, shot.targetSeat);
       }
