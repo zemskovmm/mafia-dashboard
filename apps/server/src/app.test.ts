@@ -852,7 +852,7 @@ describe("server API", () => {
       url: `/api/players/${owner.id}`,
       payload: {
         nickname: owner.nickname,
-        consent: true,
+        consent: owner.consent,
         firstName: owner.firstName,
         lastName: owner.lastName,
         email: owner.email,

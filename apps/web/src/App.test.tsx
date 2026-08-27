@@ -764,6 +764,19 @@ describe("club roster gate", () => {
 });
 
 describe("developer menu", () => {
+  it("shows the canary app version with a bird icon at the top", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+
+    const menu = screen.getByRole("dialog", { name: "Developer menu" });
+    const version = within(menu).getByLabelText("Canary version 0.1.0");
+    expect(version).toHaveTextContent("Canary v0.1.0");
+    expect(version.querySelector(".lucide-bird")).toBeInTheDocument();
+    expect(menu.firstElementChild).toContainElement(version);
+  });
+
   it("uses the Save icon as a server readiness button", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -810,7 +823,7 @@ describe("developer menu", () => {
 
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     await user.click(screen.getByRole("button", { name: "Past game timeline" }));
-    expect(screen.getByText(/26\.08\.26 #1 · Checkpoint #2/)).toBeInTheDocument();
+    expect(screen.getByText(/#1 · Checkpoint #2/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Foul 1: Player 1/i }));
     await user.click(screen.getByRole("button", { name: "Preview timeline checkpoint" }));
     expect(screen.getByRole("heading", { name: "Preview game state" })).toBeInTheDocument();

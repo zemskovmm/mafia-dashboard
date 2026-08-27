@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import webPackage from "../package.json";
 import {
   applyGameEvent,
   createGameLogEntry,
@@ -11,6 +12,7 @@ import {
   type InitialGameBaseline,
 } from "@mafia/game-domain";
 import {
+  Bird,
   DoorOpen,
   Eye,
   EyeOff,
@@ -1716,7 +1718,13 @@ export const ClubWorkspace = ({
           role="dialog"
           aria-label="Developer menu"
         >
-          <h2>Dev menu</h2>
+          <div className="dev-menu-header">
+            <h2>Dev menu</h2>
+            <p className="dev-menu-version" aria-label={`Canary version ${webPackage.version}`}>
+              <Bird aria-hidden="true" strokeWidth={2.5} />
+              <span>Canary v{webPackage.version}</span>
+            </p>
+          </div>
           <div className="dev-menu-actions">
             <button
               type="button"

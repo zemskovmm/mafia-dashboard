@@ -2450,6 +2450,36 @@ button.player-seat.is-voting-highlight::after {
   margin-bottom: 14px;
   font-size: 1rem;
 }
+.dev-menu-header {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+.dev-menu-header h2 {
+  margin: 0;
+}
+.dev-menu-version {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  margin: 0;
+  padding: 5px 8px;
+  color: var(--accent-hover);
+  background: rgb(255 255 255 / 4%);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font:
+    600 0.66rem "JetBrains Mono",
+    monospace;
+  line-height: 1;
+}
+.dev-menu-version svg {
+  width: 18px;
+  height: 18px;
+  color: #ffd766;
+}
 .dev-menu-actions {
   display: grid;
   gap: 8px;
