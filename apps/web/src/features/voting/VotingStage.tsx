@@ -15,6 +15,8 @@ import {
   toggleVote,
 } from "@mafia/game-domain";
 import type { CanonicalGameEventDraft, GameState } from "@mafia/game-domain";
+import { useMessages } from "../../i18n/I18nProvider.js";
+import { votingMessages } from "../../i18n/messages/voting.js";
 import { GameTable, type TableSeatView } from "../table/GameTable.js";
 
 interface VotingStageProps {
@@ -36,12 +38,14 @@ export const VotingStage = ({
   onResolved,
   onEvent,
   onAcceptedEvent,
-  hostName = "Host",
+  hostName: suppliedHostName,
   privacyHidden = false,
   onSeatSwipe,
   swipeAction,
   onFoul,
 }: VotingStageProps) => {
+  const { formatList, t } = useMessages(votingMessages);
+  const hostName = suppliedHostName ?? t("host");
   const [, setSelectedVoterSeat] = useState<number | null>(null);
   const totals = countVotes(game);
   const activePlayers = game.players.filter(({ status }) => status === "active");
@@ -57,8 +61,12 @@ export const VotingStage = ({
   const selectedCandidateIndex = game.phase === "voting" ? game.currentTurnIndex : -1;
   const renderFoulAction = (seat: TableSeatView) =>
     seat.status === "active" && onFoul !== undefined ? (
-      <button type="button" aria-label={`Foul ${seat.name}`} onClick={() => onFoul(seat.seat)}>
-        Foul
+      <button
+        type="button"
+        aria-label={t("foulLabel", { name: seat.name })}
+        onClick={() => onFoul(seat.seat)}
+      >
+        {t("foul")}
       </button>
     ) : null;
 
@@ -123,9 +131,7 @@ export const VotingStage = ({
 
   if (game.phase === "voting-cancelled") {
     const cancellationMessage =
-      game.votingCancellation?.reason === "red-card"
-        ? "A player received a red card, so voting is cancelled for this day."
-        : "Voting was skipped by the host.";
+      game.votingCancellation?.reason === "red-card" ? t("redCardCancelled") : t("hostSkipped");
     return (
       <GameTable
         hostName={hostName}
@@ -138,15 +144,15 @@ export const VotingStage = ({
         }))}
         renderSeatActions={renderFoulAction}
         center={
-          <div className="table-vote-center" role="status" aria-label="Voting cancelled">
-            <span className="table-prompt">Voting</span>
-            <strong>Voting cancelled</strong>
+          <div className="table-vote-center" role="status" aria-label={t("votingCancelled")}>
+            <span className="table-prompt">{t("voting")}</span>
+            <strong>{t("votingCancelled")}</strong>
             <span className="voting-cancellation-message">{cancellationMessage}</span>
           </div>
         }
         advance={
           <button type="button" onClick={beginNightFromAcceptedState}>
-            Begin night
+            {t("beginNight")}
           </button>
         }
       />
@@ -170,18 +176,15 @@ export const VotingStage = ({
         }))}
         renderSeatActions={renderFoulAction}
         center={
-          <div className="table-vote-center" role="status" aria-label="Car-crash result">
-            <span className="table-prompt">Car crash</span>
-            <strong>Eliminate-all vote skipped</strong>
-            <span className="car-crash-skip-message">
-              All active players are tied. Eliminating everyone would leave no way to determine a
-              winner.
-            </span>
+          <div className="table-vote-center" role="status" aria-label={t("carCrashResult")}>
+            <span className="table-prompt">{t("carCrash")}</span>
+            <strong>{t("eliminateAllSkipped")}</strong>
+            <span className="car-crash-skip-message">{t("skipMessage")}</span>
           </div>
         }
         advance={
           <button type="button" onClick={beginNightFromAcceptedState}>
-            Begin night
+            {t("beginNight")}
           </button>
         }
       />
@@ -190,9 +193,11 @@ export const VotingStage = ({
 
   if (game.phase === "car-crash-decision") {
     const carCrashSeats = game.carCrashSeats ?? [];
-    const nominees = carCrashSeats
-      .map((seat) => game.players.find((player) => player.seat === seat)?.name ?? `Seat ${seat}`)
-      .join(" and ");
+    const nominees = formatList(
+      carCrashSeats.map(
+        (seat) => game.players.find((player) => player.seat === seat)?.name ?? t("seat", { seat }),
+      ),
+    );
     return (
       <GameTable
         hostName={hostName}
@@ -210,8 +215,8 @@ export const VotingStage = ({
         seatActionLabel={(seat) => {
           const selected = game.carCrashVotes?.[seat.seat] === true;
           return selected
-            ? `Remove ${seat.name}'s eliminate-all vote`
-            : `Vote as ${seat.name} to eliminate all car-crash players`;
+            ? t("removeAllVote", { name: seat.name })
+            : t("voteAsEliminateAll", { name: seat.name });
         }}
         onSeatClick={(voterSeat) => {
           const player = game.players.find(({ seat }) => seat === voterSeat);
@@ -223,11 +228,15 @@ export const VotingStage = ({
           onGameChange({ ...game, carCrashVotes: votes });
         }}
         center={
-          <div className="table-vote-center" role="group" aria-label="Car-crash decision">
-            <span className="table-prompt">Car crash</span>
+          <div className="table-vote-center" role="group" aria-label={t("carCrashDecision")}>
+            <span className="table-prompt">{t("carCrash")}</span>
             <strong>{nominees}</strong>
-            <span>Eliminate all players voting</span>
-            <span>{Object.values(game.carCrashVotes ?? {}).filter(Boolean).length} votes</span>
+            <span>{t("eliminateAllPlayers")}</span>
+            <span>
+              {t("votes", {
+                count: Object.values(game.carCrashVotes ?? {}).filter(Boolean).length,
+              })}
+            </span>
           </div>
         }
         advance={
@@ -259,14 +268,14 @@ export const VotingStage = ({
                 }
               }}
             >
-              Resolve car crash
+              {t("resolveCarCrash")}
             </button>
             <button
               type="button"
               className="table-advance-secondary"
               onClick={skipVotingAsAcceptedState}
             >
-              Skip voting
+              {t("skipVoting")}
             </button>
           </div>
         }
@@ -276,9 +285,11 @@ export const VotingStage = ({
 
   if (game.phase === "car-crash-result" && game.carCrashResult !== undefined) {
     const result = game.carCrashResult;
-    const names = result.seats
-      .map((seat) => game.players.find((player) => player.seat === seat)?.name ?? `Seat ${seat}`)
-      .join(" and ");
+    const names = formatList(
+      result.seats.map(
+        (seat) => game.players.find((player) => player.seat === seat)?.name ?? t("seat", { seat }),
+      ),
+    );
     return (
       <GameTable
         hostName={hostName}
@@ -290,12 +301,15 @@ export const VotingStage = ({
         }))}
         renderSeatActions={renderFoulAction}
         center={
-          <div className="table-vote-center" role="status" aria-label="Car-crash result">
-            <span className="table-prompt">Car crash result</span>
-            <strong>{result.eliminate ? "Eliminated" : "Players stay"}</strong>
+          <div className="table-vote-center" role="status" aria-label={t("carCrashResult")}>
+            <span className="table-prompt">{t("carCrashResult")}</span>
+            <strong>{result.eliminate ? t("eliminated") : t("playersStay")}</strong>
             <span>{names}</span>
             <span>
-              {result.yesVotes} of {result.eligibleVoters} eliminate votes
+              {t("eliminateVotes", {
+                yesVotes: result.yesVotes,
+                eligibleVoters: result.eligibleVoters,
+              })}
             </span>
           </div>
         }
@@ -315,7 +329,7 @@ export const VotingStage = ({
               }
             }}
           >
-            Continue
+            {t("continue")}
           </button>
         }
       />
@@ -339,9 +353,9 @@ export const VotingStage = ({
       renderSeatActions={renderFoulAction}
       seatActionLabel={(seat) => {
         const assigned = game.voteAssignments[seat.seat];
-        if (assigned !== undefined) return `${seat.name} voted for seat ${assigned}`;
-        if (candidate === undefined) return `Seat ${seat.seat}: ${seat.name}`;
-        return `Vote as ${seat.name} for ${candidate.name}`;
+        if (assigned !== undefined) return t("votedForSeat", { name: seat.name, seat: assigned });
+        if (candidate === undefined) return t("seatWithName", { seat: seat.seat, name: seat.name });
+        return t("voteAs", { voter: seat.name, candidate: candidate.name });
       }}
       onSeatClick={(voterSeat) => {
         if (candidate === undefined) return;
@@ -353,14 +367,21 @@ export const VotingStage = ({
         onGameChange(next);
       }}
       center={
-        <div className="table-vote-center" role="group" aria-label="Voting candidate">
+        <div className="table-vote-center" role="group" aria-label={t("candidateLabel")}>
           <span className="table-prompt">
-            Candidate {selectedCandidateIndex + 1} of {game.nominations.length}
+            {t("candidate", {
+              current: selectedCandidateIndex + 1,
+              total: game.nominations.length,
+            })}
           </span>
           <strong>
-            {candidate === undefined ? "No candidate" : `#${candidate.seat} ${candidate.name}`}
+            {candidate === undefined ? t("noCandidate") : `#${candidate.seat} ${candidate.name}`}
           </strong>
-          <span>{selectedCandidate === null ? 0 : (totals[selectedCandidate] ?? 0)} votes</span>
+          <span>
+            {t("votes", {
+              count: selectedCandidate === null ? 0 : (totals[selectedCandidate] ?? 0),
+            })}
+          </span>
         </div>
       }
       advance={
@@ -368,18 +389,18 @@ export const VotingStage = ({
           {selectedCandidateIndex >= 0 && selectedCandidateIndex < game.nominations.length - 1 ? (
             <button
               type="button"
-              aria-label="Next candidate"
+              aria-label={t("nextCandidate")}
               onClick={() => {
                 const next = advanceVotingCandidate(game);
                 setSelectedVoterSeat(null);
                 onGameChange(next);
               }}
             >
-              Next candidate
+              {t("nextCandidate")}
             </button>
           ) : (
             <button type="button" disabled={!allVotesAssigned} onClick={resolve}>
-              Resolve voting
+              {t("resolveVoting")}
             </button>
           )}
           <button
@@ -387,7 +408,7 @@ export const VotingStage = ({
             className="table-advance-secondary"
             onClick={skipVotingAsAcceptedState}
           >
-            Skip voting
+            {t("skipVoting")}
           </button>
         </div>
       }

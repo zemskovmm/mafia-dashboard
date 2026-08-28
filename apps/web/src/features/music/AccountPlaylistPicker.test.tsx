@@ -7,6 +7,7 @@ import {
   getMusicAccountStatus,
   listMusicPlaylists,
 } from "../../api/client.js";
+import { I18nProvider } from "../../i18n/I18nProvider.js";
 import { AccountPlaylistPicker } from "./AccountPlaylistPicker.js";
 
 vi.mock("../../api/client.js", () => ({
@@ -197,5 +198,28 @@ describe("AccountPlaylistPicker", () => {
     expect(disconnectMusicAccount).toHaveBeenCalledOnce();
     expect(onAccountDisconnected).not.toHaveBeenCalled();
     expect(onPlaylistIdChange).not.toHaveBeenCalled();
+  });
+
+  it("renders Russian account loading and manual playlist recovery", async () => {
+    vi.mocked(getMusicAccountStatus).mockResolvedValue({
+      configured: false,
+      connected: false,
+      accountLabel: null,
+    });
+
+    render(
+      <I18nProvider locale="ru">
+        <AccountPlaylistPicker
+          playlistId=""
+          onPlaylistIdChange={vi.fn()}
+          onAccountDisconnected={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+
+    expect(screen.getByText("Проверяем аккаунт YouTube Music…")).toBeInTheDocument();
+    const playlistId = await screen.findByRole("textbox", { name: "ID плейлиста YouTube Music" });
+    expect(playlistId).toHaveAttribute("placeholder", "Вставьте ID плейлиста");
+    expect(screen.getByText(/Доступ к аккаунту Google ещё не настроен/)).toBeInTheDocument();
   });
 });

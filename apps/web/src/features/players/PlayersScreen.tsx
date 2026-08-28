@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { ApiError } from "../../api/client.js";
 import type { PlayerProfile, PlayerProfileInput } from "../../api/client.js";
 import { reportError } from "../console/error-console.js";
+import { useMessages } from "../../i18n/I18nProvider.js";
+import { playersMusicMessages } from "../../i18n/messages/players-music.js";
 import { GlassSurface } from "../theme/GlassSurface.js";
 
 interface PlayersScreenProps {
@@ -58,24 +60,26 @@ const toInput = (draft: ProfileDraft): PlayerProfileInput =>
         email: null,
       };
 
-const errorMessage = (error: unknown): string => {
+type PlayersMusicTranslate = (
+  key: keyof typeof playersMusicMessages.en,
+  values?: Readonly<Record<string, string | number>>,
+) => string;
+
+const errorMessage = (t: PlayersMusicTranslate, error: unknown): string => {
   if (error instanceof ApiError && error.code === "nickname_conflict") {
-    return "That nickname already exists. Choose another nickname.";
+    return t("Nickname conflict");
   }
   if (error instanceof ApiError && error.code === "manager_email_conflict") {
-    return "That email is already assigned to another club manager.";
+    return t("Manager email conflict");
   }
-  return "The player could not be saved. Please try again.";
+  return t("Player save failed");
 };
 
-const deleteErrorMessage = (): string => {
-  return "The player could not be deleted. Please try again.";
-};
-
-const deletionConfirmation = (player: PlayerProfile): string => {
+const deletionConfirmation = (t: PlayersMusicTranslate, player: PlayerProfile): string => {
   const gameCount = player.statistics.hostedGames + player.statistics.gamesPlayed;
-  if (gameCount === 0) return `Delete player "${player.nickname}"? This cannot be undone.`;
-  return `Delete player "${player.nickname}" and ${gameCount} associated ${gameCount === 1 ? "game" : "games"}? Those games will also be removed from every affected player's statistics. This cannot be undone.`;
+  return gameCount === 0
+    ? t("Delete player without games", { nickname: player.nickname })
+    : t("Delete player with games", { count: gameCount, nickname: player.nickname });
 };
 
 const ProfileFields = ({
@@ -95,14 +99,15 @@ const ProfileFields = ({
   readonly managerGuidanceId?: string;
   readonly onChange: (draft: ProfileDraft) => void;
 }) => {
+  const { t } = useMessages(playersMusicMessages);
   const update = (changes: Partial<ProfileDraft>) => onChange({ ...draft, ...changes });
   return (
     <div className="player-profile-fields">
       <label htmlFor={`${idPrefix}-nickname`}>
-        Nickname
+        {t("Nickname")}
         <input
           id={`${idPrefix}-nickname`}
-          aria-label={`${labelPrefix} nickname`}
+          aria-label={t("Player nickname aria", { player: labelPrefix })}
           value={draft.nickname}
           maxLength={80}
           required
@@ -110,11 +115,11 @@ const ProfileFields = ({
         />
       </label>
       <label className="player-toggle-field" htmlFor={`${idPrefix}-consent`}>
-        <span>Data processing</span>
+        <span>{t("Data processing")}</span>
         <span className="player-toggle-control">
           <input
             id={`${idPrefix}-consent`}
-            aria-label={`${labelPrefix} Agree for data processing`}
+            aria-label={`${labelPrefix} ${t("Agree for data processing")}`}
             type="checkbox"
             checked={draft.consent}
             aria-describedby={managerLocked ? managerGuidanceId : undefined}
@@ -132,29 +137,29 @@ const ProfileFields = ({
               )
             }
           />
-          Agree for data processing
+          {t("Agree for data processing")}
         </span>
       </label>
       <label className="player-toggle-field" htmlFor={`${idPrefix}-club-manager`}>
-        <span>Club manager</span>
+        <span>{t("Club manager")}</span>
         <span className="player-toggle-control">
           <input
             id={`${idPrefix}-club-manager`}
-            aria-label={`${labelPrefix} Club manager`}
+            aria-label={`${labelPrefix} ${t("Club manager")}`}
             type="checkbox"
             checked={draft.clubManager}
             disabled={busy || managerLocked || !draft.consent}
             aria-describedby={managerLocked ? managerGuidanceId : undefined}
             onChange={(event) => update({ clubManager: event.currentTarget.checked })}
           />
-          Club manager
+          {t("Club manager")}
         </span>
       </label>
       <label htmlFor={`${idPrefix}-first-name`}>
-        First name
+        {t("First name")}
         <input
           id={`${idPrefix}-first-name`}
-          aria-label={`${labelPrefix} first name`}
+          aria-label={t("Player first name aria", { player: labelPrefix })}
           value={draft.firstName}
           disabled={!draft.consent}
           required={draft.consent}
@@ -163,10 +168,10 @@ const ProfileFields = ({
         />
       </label>
       <label htmlFor={`${idPrefix}-last-name`}>
-        Last name
+        {t("Last name")}
         <input
           id={`${idPrefix}-last-name`}
-          aria-label={`${labelPrefix} last name`}
+          aria-label={t("Player last name aria", { player: labelPrefix })}
           value={draft.lastName}
           disabled={!draft.consent}
           required={draft.consent}
@@ -175,10 +180,10 @@ const ProfileFields = ({
         />
       </label>
       <label htmlFor={`${idPrefix}-email`}>
-        Email
+        {t("Email")}
         <input
           id={`${idPrefix}-email`}
-          aria-label={`${labelPrefix} email`}
+          aria-label={t("Player email aria", { player: labelPrefix })}
           type="email"
           value={draft.email}
           disabled={!draft.consent}
@@ -202,6 +207,7 @@ const PlayerCard = ({
   readonly onDelete: PlayersScreenProps["onDelete"];
   readonly deletionProtected: boolean;
 }) => {
+  const { formatDate, t } = useMessages(playersMusicMessages);
   const [draft, setDraft] = useState(() => draftFromPlayer(player));
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -214,20 +220,23 @@ const PlayerCard = ({
   const statistics = player.statistics;
   const deletionGuidanceId = `player-${player.id}-deletion-guidance`;
   const blockedReason = player.managerLocked
-    ? "Manager access remains linked to the club creator while personal profile data is removed after consent withdrawal. The Owner player profile cannot be deleted."
+    ? t("Manager locked guidance")
     : deletionProtected
-      ? "This player is selected in the current game and cannot be deleted."
+      ? t("Deletion protected guidance")
       : null;
   const winRate =
     statistics.gamesPlayed === 0 ? 0 : Math.round((statistics.wins / statistics.gamesPlayed) * 100);
 
   return (
-    <article className="player-profile-card" aria-label={`Player ${player.nickname}`}>
+    <article
+      className="player-profile-card"
+      aria-label={t("Player {nickname}", { nickname: player.nickname })}
+    >
       <header>
         <h2>{player.nickname}</h2>
         {player.lastPlayedAt === null ? null : (
           <p className="last-played">
-            Last played {new Date(player.lastPlayedAt).toLocaleDateString()}
+            {t("Last played {date}", { date: formatDate(player.lastPlayedAt) })}
           </p>
         )}
       </header>
@@ -235,49 +244,53 @@ const PlayerCard = ({
       <div className="statistics-summary">
         <div>
           <strong>{statistics.hostedGames}</strong>
-          <span>Hosted</span>
+          <span>{t("Hosted")}</span>
         </div>
         <div>
           <strong>{statistics.gamesPlayed}</strong>
-          <span>Games</span>
+          <span>{t("Games")}</span>
         </div>
         <div>
           <strong>{statistics.wins}</strong>
-          <span>Wins</span>
+          <span>{t("Wins")}</span>
         </div>
         <div>
           <strong>{statistics.losses}</strong>
-          <span>Losses</span>
+          <span>{t("Losses")}</span>
         </div>
       </div>
-      <p className="win-rate">{winRate}% win rate</p>
+      <p className="win-rate">{t("Win rate {rate}%", { rate: winRate })}</p>
       <dl className="statistics-details">
         <div>
-          <dt>Teams</dt>
+          <dt>{t("Teams")}</dt>
           <dd>
-            Red {statistics.redWins}/{statistics.redGames} · Black {statistics.blackWins}/
-            {statistics.blackGames}
+            {t("Red")} {statistics.redWins}/{statistics.redGames} · {t("Black")}{" "}
+            {statistics.blackWins}/{statistics.blackGames}
           </dd>
         </div>
         <div>
-          <dt>Roles</dt>
+          <dt>{t("Roles")}</dt>
           <dd>
-            Sheriff {statistics.sheriffGames} · Citizen {statistics.citizenGames} · Mafia{" "}
-            {statistics.mafiaGames} · Don {statistics.donGames}
+            {t("Sheriff")} {statistics.sheriffGames} · {t("Citizen")} {statistics.citizenGames} ·{" "}
+            {t("Mafia")} {statistics.mafiaGames} · {t("Don")} {statistics.donGames}
           </dd>
         </div>
         <div>
-          <dt>Discipline</dt>
+          <dt>{t("Discipline")}</dt>
           <dd>
-            {statistics.totalFouls} fouls · {statistics.eliminations} eliminated ·{" "}
-            {statistics.redCards} red cards
+            {t("Fouls", { count: statistics.totalFouls })} ·{" "}
+            {t("Eliminated", { count: statistics.eliminations })} ·{" "}
+            {t("Red cards", { count: statistics.redCards })}
           </dd>
         </div>
         <div>
-          <dt>Best moves</dt>
+          <dt>{t("Best moves")}</dt>
           <dd>
-            {statistics.bestMoveMafiaHits} Mafia hits across {statistics.bestMoves}{" "}
-            {statistics.bestMoves === 1 ? "move" : "moves"}
+            {t("Best moves summary", {
+              hits: statistics.bestMoveMafiaHits,
+              count: statistics.bestMoves,
+              moves: t("Moves", { count: statistics.bestMoves }),
+            })}
           </dd>
         </div>
       </dl>
@@ -290,7 +303,7 @@ const PlayerCard = ({
           void onUpdate(player.id, toInput(draft))
             .catch((reason: unknown) => {
               reportError(reason, { source: "api", context: "players.update" });
-              setError(errorMessage(reason));
+              setError(errorMessage(t, reason));
             })
             .finally(() => setSaving(false));
         }}
@@ -312,7 +325,7 @@ const PlayerCard = ({
         {error === null ? null : <p role="alert">{error}</p>}
         <div className="player-card-actions">
           <button type="submit" disabled={saving || deleting}>
-            {saving ? "Saving…" : `Save ${player.nickname}`}
+            {saving ? t("Saving…") : t("Save {nickname}", { nickname: player.nickname })}
           </button>
           {onDelete === undefined || player.managerLocked ? null : (
             <button
@@ -322,13 +335,13 @@ const PlayerCard = ({
               aria-describedby={blockedReason === null ? undefined : deletionGuidanceId}
               title={
                 player.managerLocked
-                  ? "The club creator's player profile cannot be deleted."
+                  ? t("Creator cannot be deleted")
                   : deletionProtected
-                    ? "Clear the current game state before deleting this player."
+                    ? t("Clear game before delete")
                     : undefined
               }
               onClick={() => {
-                if (!window.confirm(deletionConfirmation(player))) {
+                if (!window.confirm(deletionConfirmation(t, player))) {
                   return;
                 }
                 setError(null);
@@ -336,12 +349,12 @@ const PlayerCard = ({
                 void onDelete(player.id)
                   .catch((reason: unknown) => {
                     reportError(reason, { source: "api", context: "players.delete" });
-                    setError(deleteErrorMessage());
+                    setError(t("Player delete failed"));
                   })
                   .finally(() => setDeleting(false));
               }}
             >
-              {deleting ? "Deleting…" : `Delete ${player.nickname}`}
+              {deleting ? t("Deleting…") : t("Delete {nickname}", { nickname: player.nickname })}
             </button>
           )}
         </div>
@@ -357,6 +370,7 @@ export const PlayersScreen = ({
   onDelete,
   deletionProtectedPlayerIds,
 }: PlayersScreenProps) => {
+  const { t } = useMessages(playersMusicMessages);
   const [draft, setDraft] = useState<ProfileDraft>(emptyDraft);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -379,10 +393,10 @@ export const PlayersScreen = ({
       >
         <div className="new-player-heading">
           <h2 id="new-player-title" className="eyebrow">
-            New player
+            {t("New player")}
           </h2>
           <button type="submit" form="new-player-form" className="primary-action" disabled={saving}>
-            {saving ? "Adding…" : "Add player"}
+            {saving ? t("Adding…") : t("Add player")}
           </button>
         </div>
         <form
@@ -395,7 +409,7 @@ export const PlayersScreen = ({
               .then(() => setDraft(emptyDraft))
               .catch((reason: unknown) => {
                 reportError(reason, { source: "api", context: "players.create" });
-                setError(errorMessage(reason));
+                setError(errorMessage(t, reason));
               })
               .finally(() => setSaving(false));
           }}
@@ -403,7 +417,7 @@ export const PlayersScreen = ({
           <ProfileFields
             draft={draft}
             idPrefix="new-player"
-            labelPrefix="New player"
+            labelPrefix={t("New player")}
             busy={saving}
             managerLocked={false}
             onChange={setDraft}
@@ -413,28 +427,28 @@ export const PlayersScreen = ({
       </GlassSurface>
 
       <label className="player-search" htmlFor="player-search">
-        <span>Search players</span>
+        <span>{t("Search players")}</span>
         <input
           id="player-search"
           type="search"
           value={query}
-          placeholder="Search by nickname, name, or email"
+          placeholder={t("Search players placeholder")}
           onChange={(event) => setQuery(event.currentTarget.value)}
         />
       </label>
 
       {players.length === 0 ? (
         <section className="empty-players">
-          <h2>No players yet</h2>
-          <p>Add at least eleven nicknames before starting a game.</p>
+          <h2>{t("No players yet")}</h2>
+          <p>{t("Add eleven players")}</p>
         </section>
       ) : visiblePlayers.length === 0 ? (
         <section className="empty-players">
-          <h2>No matching players</h2>
-          <p>Try another search.</p>
+          <h2>{t("No matching players")}</h2>
+          <p>{t("Try another search")}</p>
         </section>
       ) : (
-        <section className="player-card-grid" aria-label="Player profiles">
+        <section className="player-card-grid" aria-label={t("Player profiles")}>
           {visiblePlayers.map((player) => (
             <PlayerCard
               key={player.id}

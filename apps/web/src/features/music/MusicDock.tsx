@@ -1,5 +1,7 @@
 import { useRef, type ReactNode } from "react";
 import { classifyPanelSwipe } from "../game/panel-swipe.js";
+import { useMessages } from "../../i18n/I18nProvider.js";
+import { playersMusicMessages } from "../../i18n/messages/players-music.js";
 import { LiveMusicControls } from "./LiveMusicControls.js";
 
 const PANEL_SWIPE_THRESHOLD = 44;
@@ -27,19 +29,20 @@ export const MusicDock = ({
   onQuickFadeOut,
   onSlowFadeOut,
 }: MusicDockProps) => {
+  const { t } = useMessages(playersMusicMessages);
   const touchStartRef = useRef<{ readonly x: number; readonly y: number } | null>(null);
   const suppressNextClickRef = useRef(false);
 
   return (
     <section
       className={`music-dock youtube-dock is-compact${expanded ? " is-expanded" : ""}`}
-      aria-label="Table music dock"
+      aria-label={t("Table music dock")}
       hidden={hidden}
     >
       <button
         type="button"
         className="panel-swipe-handle music-panel-handle"
-        aria-label="Music player panel handle"
+        aria-label={t("Music player panel handle")}
         aria-expanded={expanded}
         onTouchStart={(event) => {
           const touch = event.touches[0];

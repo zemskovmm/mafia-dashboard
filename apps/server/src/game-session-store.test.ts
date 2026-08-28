@@ -1406,6 +1406,7 @@ describe("GameSessionStore", () => {
       city: "Granada",
       headerLogo: null,
       cardLogo: null,
+      language: "en",
       ownerConsent: true,
     });
     const gameId = randomUUID();
@@ -1431,6 +1432,7 @@ describe("GameSessionStore", () => {
       city: "Granada",
       headerLogo: null,
       cardLogo: null,
+      language: "en",
       ownerConsent: true,
     });
     const gameId = randomUUID();
@@ -1465,6 +1467,7 @@ describe("GameSessionStore", () => {
       city: "Granada",
       headerLogo: null,
       cardLogo: null,
+      language: "en",
       ownerConsent: true,
     });
     const gameId = randomUUID();
@@ -1526,6 +1529,7 @@ describe("GameSessionStore", () => {
       city: "Granada",
       headerLogo: null,
       cardLogo: null,
+      language: "en",
       ownerConsent: true,
     });
     const sharedEventId = randomUUID();
@@ -1603,6 +1607,7 @@ describe("GameSessionStore", () => {
       city: "Granada",
       headerLogo: null,
       cardLogo: null,
+      language: "en",
       ownerConsent: true,
     });
     const gameId = randomUUID();

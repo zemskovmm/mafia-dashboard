@@ -3,6 +3,8 @@ import type { CSSProperties } from "react";
 import { listMusicPlaylistItems } from "../../api/client.js";
 import type { MusicPlaylistItem } from "../../api/client.js";
 import { reportError } from "../console/error-console.js";
+import { useMessages } from "../../i18n/I18nProvider.js";
+import { playersMusicMessages } from "../../i18n/messages/players-music.js";
 import { classifyPanelSwipe } from "../game/panel-swipe.js";
 import { MusicController } from "./music-controller.js";
 import type { MusicPlayerAdapter } from "./music-controller.js";
@@ -108,6 +110,7 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
     },
     ref,
   ) => {
+    const { t } = useMessages(playersMusicMessages);
     const [instanceKey, setInstanceKey] = useState(0);
     const [queueState, setQueueState] = useState<{
       readonly playlistId: string;
@@ -627,16 +630,14 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
     return (
       <section
         className={`youtube-player-frame${expanded ? " is-expanded" : ""}`}
-        aria-label="YouTube playlist player"
+        aria-label={t("YouTube playlist player")}
       >
         <div className="youtube-player-video" id={elementId} />
         {expanded ? (
-          <section className="youtube-session-queue" aria-label="Session playlist queue">
-            <h2>Session queue</h2>
-            {queue === null ? <p>Loading playlist queue…</p> : null}
-            {queueUnavailable ? (
-              <p>Playlist details are unavailable, but playback can still be cued.</p>
-            ) : null}
+          <section className="youtube-session-queue" aria-label={t("Session playlist queue")}>
+            <h2>{t("Session queue")}</h2>
+            {queue === null ? <p>{t("Loading playlist queue")}</p> : null}
+            {queueUnavailable ? <p>{t("Playlist details unavailable")}</p> : null}
             {queue !== null && !queueUnavailable ? (
               <ol>
                 {queue.map((item, index) => {
@@ -664,12 +665,17 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
                       <div
                         className="queue-tag-actions"
                         role="group"
-                        aria-label={`Track types for ${item.title}`}
+                        aria-label={t("Track types for {title}", { title: item.title })}
                       >
                         <button
                           type="button"
                           className="queue-tag-action is-initial"
-                          aria-label={`${initialMarked ? "Unmark" : "Mark"} ${item.title} for Role giveaway`}
+                          aria-label={t(
+                            initialMarked
+                              ? "Unmark {title}: role giveaway"
+                              : "Mark {title}: role giveaway",
+                            { title: item.title },
+                          )}
                           aria-pressed={initialMarked}
                           onClick={() => {
                             onInitialStageEntryKeysChange(
@@ -679,12 +685,17 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
                             setRevealedTagEntryKey(null);
                           }}
                         >
-                          Initial
+                          {t("Initial")}
                         </button>
                         <button
                           type="button"
                           className="queue-tag-action is-endgame"
-                          aria-label={`${endgameMarked ? "Unmark" : "Mark"} ${item.title} for Critical endgame`}
+                          aria-label={t(
+                            endgameMarked
+                              ? "Unmark {title}: critical endgame"
+                              : "Mark {title}: critical endgame",
+                            { title: item.title },
+                          )}
                           aria-pressed={endgameMarked}
                           onClick={() => {
                             onEndgameEntryKeysChange(
@@ -694,7 +705,7 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
                             setRevealedTagEntryKey(null);
                           }}
                         >
-                          Endgame
+                          {t("Endgame")}
                         </button>
                       </div>
                       <div
@@ -732,7 +743,7 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
                       >
                         <span
                           className="queue-drag-handle"
-                          aria-label={`Drag ${item.title}`}
+                          aria-label={t("Drag {title}", { title: item.title })}
                           onPointerDown={(event) => {
                             const row =
                               event.currentTarget.closest<HTMLElement>("[data-queue-index]");
@@ -811,8 +822,8 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
                         <div className="queue-item-actions">
                           <button
                             type="button"
-                            aria-label={`Play ${item.title} next`}
-                            title="Play next"
+                            aria-label={t("Play {title} next", { title: item.title })}
+                            title={t("Play next")}
                             onClick={() => playNext(index)}
                           >
                             <svg aria-hidden="true" viewBox="0 0 24 24">
@@ -822,8 +833,8 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
                           </button>
                           <button
                             type="button"
-                            aria-label={`Play ${item.title} now`}
-                            title="Play now"
+                            aria-label={t("Play {title} now", { title: item.title })}
+                            title={t("Play now")}
                             disabled={!playerReady}
                             onClick={() => playNow(index)}
                           >

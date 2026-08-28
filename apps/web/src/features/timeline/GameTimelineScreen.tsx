@@ -32,17 +32,24 @@ import {
   type CompletedGameSessionSummary,
   type RemoteGameSession,
 } from "../../api/client.js";
+import { useMessages } from "../../i18n/I18nProvider.js";
+import {
+  timelineConsoleMessages,
+  type TimelineConsoleMessageKey,
+} from "../../i18n/messages/timeline-console.js";
 import { reportError } from "../console/error-console.js";
 import { getActiveBranch } from "../game/game-history.js";
 import { createSampleGameHistory } from "./sample-game-data.js";
 import {
   buildTimeline,
+  formatTimelinePhase,
   isVisibleTimelineEvent,
   TIMELINE_REGION_COLORS,
   type TimelineMarker,
   type TimelineModel,
   type TimelineRegion,
   type TimelineRegionKind,
+  type TimelineText,
 } from "./timeline-model.js";
 
 interface TimelineLoaders {
@@ -115,13 +122,17 @@ interface LegacyRegionIdentity {
   readonly day: number;
 }
 
-const legacyRegion = (phase: string, day: number): LegacyRegionIdentity | null => {
+const legacyRegion = (
+  phase: string,
+  day: number,
+  text: TimelineText,
+): LegacyRegionIdentity | null => {
   if (phase === "finished") return null;
   if (day === 0) {
     return {
       id: "initial-night",
       kind: "initial-night",
-      label: "Initial night",
+      label: text.t("Initial night"),
       color: TIMELINE_REGION_COLORS.initialNight,
       day,
     };
@@ -130,7 +141,7 @@ const legacyRegion = (phase: string, day: number): LegacyRegionIdentity | null =
     return {
       id: `night-${day}`,
       kind: "night",
-      label: `Night ${day}`,
+      label: text.t("Night {day}", { day }),
       color: TIMELINE_REGION_COLORS.night,
       day,
     };
@@ -146,7 +157,7 @@ const legacyRegion = (phase: string, day: number): LegacyRegionIdentity | null =
     return {
       id: `voting-${day}`,
       kind: "voting",
-      label: `Voting ${day}`,
+      label: text.t("Voting {day}", { day }),
       color: TIMELINE_REGION_COLORS.voting,
       day,
     };
@@ -154,17 +165,17 @@ const legacyRegion = (phase: string, day: number): LegacyRegionIdentity | null =
   return {
     id: `day-${day}`,
     kind: "day",
-    label: `Day ${day}`,
+    label: text.t("Day {day}", { day }),
     color: TIMELINE_REGION_COLORS.day,
     day,
   };
 };
 
-const legacyPlayerLabel = (game: GameState | null, value: unknown): string => {
-  if (typeof value !== "number" || !Number.isInteger(value)) return "Unknown player";
+const legacyPlayerLabel = (game: GameState | null, value: unknown, text: TimelineText): string => {
+  if (typeof value !== "number" || !Number.isInteger(value)) return text.t("Unknown player");
   const player = game?.players.find(({ seat }) => seat === value);
   const name = typeof player?.name === "string" ? player.name.trim() : "";
-  return name.length > 0 ? name : `Seat ${value}`;
+  return name.length > 0 ? name : text.t("Seat {seat}", { seat: value });
 };
 
 const legacyMarker = (
@@ -172,10 +183,13 @@ const legacyMarker = (
   game: GameState | null,
   frameIndex: number,
   regionId: string | null,
+  text: TimelineText,
 ): TimelineMarker => {
   let kind: TimelineMarker["kind"] = "generic";
   let icon = "circle";
-  let label = raw.type.replace(/[.-]+/g, " ").trim() || "Game event";
+  let label = text.t("Generic event", {
+    event: raw.type.replace(/[.-]+/g, " ").trim() || "Game event",
+  });
   let ariaLabel = label;
   switch (raw.type) {
     case "phase.changed":
@@ -184,18 +198,18 @@ const legacyMarker = (
         icon = "arrow-right";
         label =
           raw.payload.to === "night-mafia"
-            ? "Night"
-            : `Phase: ${raw.payload.to.replaceAll("-", " ")}`;
+            ? text.t("Night")
+            : formatTimelinePhase(raw.payload.to, text);
         ariaLabel = label;
       }
       break;
     case "turn.completed":
       if (typeof raw.payload.seat === "number") {
-        const player = legacyPlayerLabel(game, raw.payload.seat);
+        const player = legacyPlayerLabel(game, raw.payload.seat, text);
         kind = "turn";
         icon = "message-circle";
-        label = `${player} completed turn`;
-        ariaLabel = `${player} completed their turn`;
+        label = text.t("{player} completed turn", { player });
+        ariaLabel = text.t("{player} completed their turn", { player });
       }
       break;
     case "player.nominated":
@@ -203,31 +217,41 @@ const legacyMarker = (
         typeof raw.payload.nominatorSeat === "number" &&
         typeof raw.payload.candidateSeat === "number"
       ) {
-        const nominator = legacyPlayerLabel(game, raw.payload.nominatorSeat);
-        const candidate = legacyPlayerLabel(game, raw.payload.candidateSeat);
+        const nominator = legacyPlayerLabel(game, raw.payload.nominatorSeat, text);
+        const candidate = legacyPlayerLabel(game, raw.payload.candidateSeat, text);
         kind = "nomination";
         icon = "user-plus";
-        label = `${candidate} set for voting`;
-        ariaLabel = `Nomination: ${nominator} set ${candidate} for voting`;
+        label = text.t("{candidate} set for voting", { candidate });
+        ariaLabel = text.t("Nomination: {nominator} set {candidate} for voting", {
+          nominator,
+          candidate,
+        });
       }
       break;
     case "player.red-carded":
       if (typeof raw.payload.seat === "number") {
-        const player = legacyPlayerLabel(game, raw.payload.seat);
+        const player = legacyPlayerLabel(game, raw.payload.seat, text);
         kind = "red-card";
         icon = "badge-x";
-        label = `${player} red-carded`;
-        ariaLabel = `Red card: ${player}`;
+        label = text.t("{player} red-carded", { player });
+        ariaLabel = text.t("Red card: {player}", { player });
       }
       break;
     case "don.checked":
     case "sheriff.checked":
       if (typeof raw.payload.targetSeat === "number" && typeof raw.payload.match === "boolean") {
-        const actor = raw.type === "don.checked" ? "Don" : "Sheriff";
-        const role = raw.type === "don.checked" ? "Sheriff" : "Mafia";
         kind = raw.type === "don.checked" ? "don-check" : "sheriff-check";
         icon = raw.type === "don.checked" ? "eye" : "shield-search";
-        label = `${actor} checked ${legacyPlayerLabel(game, raw.payload.targetSeat)}: ${raw.payload.match ? role : `Not ${role}`}`;
+        label =
+          raw.type === "don.checked"
+            ? text.t("Don checked {target}: {result}", {
+                target: legacyPlayerLabel(game, raw.payload.targetSeat, text),
+                result: text.t(raw.payload.match ? "Sheriff" : "Not Sheriff"),
+              })
+            : text.t("Sheriff checked {target}: {result}", {
+                target: legacyPlayerLabel(game, raw.payload.targetSeat, text),
+                result: text.t(raw.payload.match ? "Mafia" : "Not Mafia"),
+              });
         ariaLabel = label;
       }
       break;
@@ -235,22 +259,26 @@ const legacyMarker = (
     case "sheriff.check-skipped":
       kind = "check-skipped";
       icon = "skip-forward";
-      label = raw.type === "don.check-skipped" ? "Don check skipped" : "Sheriff check skipped";
+      label = text.t(
+        raw.type === "don.check-skipped" ? "Don check skipped" : "Sheriff check skipped",
+      );
       ariaLabel = label;
       break;
     case "voting.skipped":
       kind = "voting-cancelled";
       icon = "ban";
-      label = "Voting skipped";
-      ariaLabel = "Voting skipped by the host";
+      label = text.t("Voting skipped");
+      ariaLabel = text.t("Voting skipped by the host");
       break;
     case "game.completed":
       if (raw.payload.winner === "red" || raw.payload.winner === "black") {
-        const winner = raw.payload.winner === "red" ? "Red" : "Black";
+        const winner = text.t("{team} team won", {
+          team: text.t(raw.payload.winner === "red" ? "Red team" : "Black team"),
+        });
         kind = "completion";
         icon = "trophy";
-        label = `${winner} team won`;
-        ariaLabel = `Game completed: ${winner} team won`;
+        label = winner;
+        ariaLabel = text.t("Game completed: {team}", { team: winner });
       }
       break;
   }
@@ -270,7 +298,7 @@ const legacyMarker = (
   };
 };
 
-const legacyTimeline = (session: RemoteGameSession): TimelineModel => {
+const legacyTimeline = (session: RemoteGameSession, text: TimelineText): TimelineModel => {
   const finalGame = session.state.game as GameState | null;
   const rawLog = session.state.log as readonly LegacyLogEntry[];
   if (rawLog.length === 0) return { regions: [], markers: [], frames: [] };
@@ -293,8 +321,8 @@ const legacyTimeline = (session: RemoteGameSession): TimelineModel => {
     }
     const identity =
       raw.type === "best-move.completed"
-        ? legacyRegion("night-best-move", Math.max(1, day - 1))
-        : legacyRegion(requestedPhase, day);
+        ? legacyRegion("night-best-move", Math.max(1, day - 1), text)
+        : legacyRegion(requestedPhase, day, text);
     const frameIndex = markers.length;
     const previous = regions.at(-1);
     if (identity !== null) {
@@ -316,13 +344,14 @@ const legacyTimeline = (session: RemoteGameSession): TimelineModel => {
         });
       }
     }
-    markers.push(legacyMarker(raw, finalGame, frameIndex, identity?.id ?? null));
+    markers.push(legacyMarker(raw, finalGame, frameIndex, identity?.id ?? null, text));
   }
   return { regions, markers, frames: [] };
 };
 
 const replaySession = (
   session: RemoteGameSession,
+  text: TimelineText,
 ): { readonly timeline: TimelineModel; readonly legacy: boolean } => {
   const baseline = session.state.initialGame as InitialGameBaseline | null | undefined;
   const entries = session.state.events as readonly GameLogEntry[] | undefined;
@@ -331,12 +360,15 @@ const replaySession = (
     throw new Error("Loaded timeline contains events from another game");
   }
   if (baseline == null || entries === undefined || headEventId == null) {
-    const timeline = legacyTimeline(session);
+    const timeline = legacyTimeline(session, text);
     if (timeline.markers.length === 0) throw new Error("This game has no timeline markers");
     return { timeline, legacy: true };
   }
   return {
-    timeline: buildTimeline(replayGameLog(baseline, getActiveBranch(entries, headEventId)).frames),
+    timeline: buildTimeline(
+      replayGameLog(baseline, getActiveBranch(entries, headEventId)).frames,
+      text,
+    ),
     legacy: false,
   };
 };
@@ -354,9 +386,10 @@ const TenantGameTimelineScreen = ({
   onPreviewCurrentEvent,
   onResetCurrentEvent,
 }: GameTimelineScreenProps) => {
+  const i18n = useMessages(timelineConsoleMessages);
   const loadCurrentHistory = (): LoadedHistory | null => {
     if (currentHistory === undefined) return null;
-    const timeline = buildTimeline(currentHistory.frames);
+    const timeline = buildTimeline(currentHistory.frames, i18n);
     const headSequence = currentHistory.frames.find(
       ({ entry }) => entry.id === currentHistory.headEventId,
     )?.entry.sequence;
@@ -366,7 +399,10 @@ const TenantGameTimelineScreen = ({
       null,
     );
     return {
-      label: `${currentHistory.label} · Checkpoint #${semanticHead?.sequence ?? headSequence ?? "—"}`,
+      label: i18n.t("{label} · Checkpoint #{sequence}", {
+        label: currentHistory.label,
+        sequence: semanticHead?.sequence ?? headSequence ?? "—",
+      }),
       timeline,
       summary: null,
       sample: false,
@@ -399,17 +435,17 @@ const TenantGameTimelineScreen = ({
         reportError(error, { source: "api", context: "timeline.completed-games.list" });
         if (listRequestRef.current === request) {
           setSummaries([]);
-          setError("Completed games are temporarily unavailable.");
+          setError(i18n.t("Completed games are temporarily unavailable."));
         }
       });
     return () => {
       if (listRequestRef.current === request) listRequestRef.current += 1;
     };
-  }, [clubId, loaders]);
+  }, [clubId, i18n, loaders]);
 
   useEffect(() => {
     if (selectedGameId === "current") setHistory(loadCurrentHistory());
-  }, [currentHistory?.headEventId, currentHistory?.label, selectedGameId]);
+  }, [currentHistory?.headEventId, currentHistory?.label, i18n, selectedGameId]);
 
   const timeline = history?.timeline ?? null;
   const selectedMarker =
@@ -426,7 +462,7 @@ const TenantGameTimelineScreen = ({
     setError(null);
     setHistory({
       label: sample.label,
-      timeline: buildTimeline(sample.frames),
+      timeline: buildTimeline(sample.frames, i18n),
       summary: null,
       sample: true,
       legacy: false,
@@ -459,7 +495,7 @@ const TenantGameTimelineScreen = ({
         if (session.gameId !== gameId || session.status !== "completed") {
           throw new Error("Loaded session does not match the selected completed game");
         }
-        const replayed = replaySession(session);
+        const replayed = replaySession(session, i18n);
         setHistory({
           label: summary.name,
           timeline: replayed.timeline,
@@ -475,7 +511,7 @@ const TenantGameTimelineScreen = ({
         reportError(error, { source: "api", context: "timeline.completed-game.load" });
         if (sessionRequestRef.current === request) {
           setLoadingGameName(null);
-          setError(`Unable to load ${summary.name}.`);
+          setError(i18n.t("Unable to load {name}.", { name: summary.name }));
         }
       });
   };
@@ -488,36 +524,40 @@ const TenantGameTimelineScreen = ({
   const trackStyle = { minWidth: `${columnCount * 68 + 24}px` } satisfies CSSProperties;
 
   return (
-    <main className="timeline-screen" aria-label="Game timeline">
+    <main className="timeline-screen" aria-label={i18n.t("Game timeline")}>
       <header className="timeline-header">
         <button type="button" className="timeline-back" onClick={onBack}>
-          <ArrowLeft aria-hidden="true" /> Back
+          <ArrowLeft aria-hidden="true" /> {i18n.t("Back")}
         </button>
         <div>
           <p className="eyebrow">
-            {history?.current ? "Current game · Semantic checkpoints" : "Past games · Read only"}
+            {history?.current
+              ? i18n.t("Current game · Semantic checkpoints")
+              : i18n.t("Past games · Read only")}
           </p>
-          <h1>Game timeline</h1>
+          <h1>{i18n.t("Game timeline")}</h1>
         </div>
         <label>
-          <span>Completed game</span>
+          <span>{i18n.t("Completed game")}</span>
           <select
-            aria-label="Completed game"
+            aria-label={i18n.t("Completed game")}
             value={selectedGameId}
             onChange={(event) => selectCompletedGame(event.currentTarget.value)}
           >
-            {currentHistory === undefined ? null : <option value="current">Current game</option>}
-            <option value="">Choose a completed game</option>
+            {currentHistory === undefined ? null : (
+              <option value="current">{i18n.t("Current game")}</option>
+            )}
+            <option value="">{i18n.t("Choose a completed game")}</option>
             {(summaries ?? []).map((summary) => (
               <option key={summary.gameId} value={summary.gameId}>
-                {summary.name} · {summary.winner === "red" ? "Citizens" : "Mafia"}
+                {summary.name} · {summary.winner === "red" ? i18n.t("Citizens") : i18n.t("Mafia")}
               </option>
             ))}
           </select>
         </label>
         {showDevelopmentTools ? (
           <button type="button" onClick={showSample}>
-            Generate sample game data
+            {i18n.t("Generate sample game data")}
           </button>
         ) : null}
       </header>
@@ -528,32 +568,32 @@ const TenantGameTimelineScreen = ({
         </p>
       )}
       {summaries === null && history === null ? (
-        <p className="timeline-loading">Loading completed games…</p>
+        <p className="timeline-loading">{i18n.t("Loading completed games…")}</p>
       ) : null}
       {loadingGameName === null || history !== null ? null : (
-        <p className="timeline-loading">Loading {loadingGameName}…</p>
+        <p className="timeline-loading">{i18n.t("Loading {name}…", { name: loadingGameName })}</p>
       )}
       {summaries?.length === 0 && history === null && error === null ? (
-        <p className="timeline-empty">No completed games yet.</p>
+        <p className="timeline-empty">{i18n.t("No completed games yet.")}</p>
       ) : null}
 
       {history === null || timeline === null ? null : (
         <>
-          <section className="timeline-editor" aria-label="Game event sequence">
+          <section className="timeline-editor" aria-label={i18n.t("Game event sequence")}>
             <div className="timeline-meta">
               <strong>{history.label}</strong>
               {history.sample ? (
-                <span className="timeline-sample-badge">Sample · not saved</span>
+                <span className="timeline-sample-badge">{i18n.t("Sample · not saved")}</span>
               ) : null}
               {history.legacy ? (
                 <span className="timeline-legacy-badge">
-                  Legacy log · state preview unavailable
+                  {i18n.t("Legacy log · state preview unavailable")}
                 </span>
               ) : null}
               {history.summary === null ? null : (
                 <span>
-                  {history.summary.hostName ?? "Unknown host"} ·{" "}
-                  {new Date(history.summary.playedAt).toLocaleString()}
+                  {history.summary.hostName ?? i18n.t("Unknown host")} ·{" "}
+                  {i18n.formatDateTime(history.summary.playedAt)}
                 </span>
               )}
             </div>
@@ -572,7 +612,7 @@ const TenantGameTimelineScreen = ({
                       }
                     >
                       <strong>{region.label}</strong>
-                      <small>{region.frameCount} accepted events</small>
+                      <small>{i18n.t("accepted events", { count: region.frameCount })}</small>
                     </div>
                   ))}
                 </div>
@@ -604,6 +644,7 @@ const TenantGameTimelineScreen = ({
             marker={selectedMarker}
             current={history.current}
             currentHeadEventId={history.headEventId}
+            text={i18n}
             onPreview={onPreviewCurrentEvent}
             onReset={onResetCurrentEvent}
           />
@@ -617,66 +658,84 @@ const TimelineInspector = ({
   marker,
   current,
   currentHeadEventId,
+  text,
   onPreview,
   onReset,
 }: {
   readonly marker: TimelineMarker | null;
   readonly current: boolean;
   readonly currentHeadEventId: string | null;
+  readonly text: TimelineText;
   readonly onPreview?: (eventId: string) => void;
   readonly onReset?: (eventId: string) => void;
-}) => (
-  <aside className="timeline-inspector" aria-label="Selected event details">
-    {marker === null ? (
-      <p>Select an event marker.</p>
-    ) : (
-      <>
-        <div>
-          <p className="eyebrow">Log #{marker.sequence}</p>
-          <h2>{marker.label}</h2>
-        </div>
-        <dl>
+}) => {
+  const resultMessageKeys: Readonly<Record<string, TimelineConsoleMessageKey>> = {
+    winner: "Winner",
+    tie: "Tie",
+    "host-skipped": "Skipped by host",
+    eliminated: "Eliminated",
+    kept: "Kept",
+    kill: "Kill",
+    "no-effect": "No effect",
+    miss: "Miss",
+  };
+  const resultLabel = (result: string): string => {
+    if (/^-?\d+$/.test(result)) return result;
+    return text.t(resultMessageKeys[result] ?? "Unknown result ({value})", { value: result });
+  };
+  return (
+    <aside className="timeline-inspector" aria-label={text.t("Selected event details")}>
+      {marker === null ? (
+        <p>{text.t("Select an event marker.")}</p>
+      ) : (
+        <>
           <div>
-            <dt>Event</dt>
-            <dd>{marker.eventType}</dd>
+            <p className="eyebrow">{text.t("Event #{sequence}", { sequence: marker.sequence })}</p>
+            <h2>{marker.label}</h2>
           </div>
-          <div>
-            <dt>Time</dt>
-            <dd>{new Date(marker.createdAt).toLocaleTimeString()}</dd>
-          </div>
-          {marker.result === undefined ? null : (
+          <dl>
             <div>
-              <dt>Result</dt>
-              <dd>{marker.result}</dd>
+              <dt>{text.t("Event")}</dt>
+              <dd>{marker.label}</dd>
+            </div>
+            <div>
+              <dt>{text.t("Time")}</dt>
+              <dd>{text.formatTime(marker.createdAt)}</dd>
+            </div>
+            {marker.result === undefined ? null : (
+              <div>
+                <dt>{text.t("Result")}</dt>
+                <dd>{resultLabel(marker.result)}</dd>
+              </div>
+            )}
+          </dl>
+          {marker.accessibleLabel === marker.label ? null : <p>{marker.accessibleLabel}</p>}
+          {marker.shots === undefined ? null : (
+            <ul>
+              {marker.shots.map((shot) => (
+                <li key={`${shot.shooterSeat}-${shot.targetSeat}`}>
+                  {shot.shooterLabel} → {shot.targetLabel}
+                </li>
+              ))}
+            </ul>
+          )}
+          {!current || onPreview === undefined || onReset === undefined ? null : (
+            <div className="timeline-state-actions">
+              <button type="button" onClick={() => onPreview(marker.eventId)}>
+                {text.t("Preview timeline checkpoint")}
+              </button>
+              <button
+                type="button"
+                className="danger-action"
+                disabled={marker.eventId === currentHeadEventId}
+                onClick={() => onReset(marker.eventId)}
+              >
+                {text.t("Reset game to timeline checkpoint")}
+              </button>
             </div>
           )}
-        </dl>
-        {marker.accessibleLabel === marker.label ? null : <p>{marker.accessibleLabel}</p>}
-        {marker.shots === undefined ? null : (
-          <ul>
-            {marker.shots.map((shot) => (
-              <li key={`${shot.shooterSeat}-${shot.targetSeat}`}>
-                {shot.shooterLabel} → {shot.targetLabel}
-              </li>
-            ))}
-          </ul>
-        )}
-        {!current || onPreview === undefined || onReset === undefined ? null : (
-          <div className="timeline-state-actions">
-            <button type="button" onClick={() => onPreview(marker.eventId)}>
-              Preview timeline checkpoint
-            </button>
-            <button
-              type="button"
-              className="danger-action"
-              disabled={marker.eventId === currentHeadEventId}
-              onClick={() => onReset(marker.eventId)}
-            >
-              Reset game to timeline checkpoint
-            </button>
-          </div>
-        )}
-      </>
-    )}
-  </aside>
-);
+        </>
+      )}
+    </aside>
+  );
+};

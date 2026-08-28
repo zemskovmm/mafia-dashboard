@@ -2,8 +2,9 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { PlayerProfile } from "../../api/client.js";
+import { I18nProvider } from "../../i18n/I18nProvider.js";
 import { SetupWizard } from "./SetupWizard.js";
-import { createSetup, type GameState } from "@mafia/game-domain";
+import { beginRoleDraw, createSetup, type GameState } from "@mafia/game-domain";
 
 const availablePlayers: readonly PlayerProfile[] = Array.from({ length: 11 }, (_, index) => ({
   id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
@@ -83,6 +84,48 @@ const fillPlayerSelection = async (user: ReturnType<typeof userEvent.setup>) => 
 };
 
 describe("SetupWizard", () => {
+  it("renders the Russian role draw and preserves the emitted role payload", async () => {
+    const user = userEvent.setup();
+    const onEvent = vi.fn();
+    const players = availablePlayers.map((player, index) =>
+      index === 0 ? { ...player, nickname: "Иван" } : player,
+    );
+    const selectedPlayerIds = players.slice(0, 10).map(({ id }) => id);
+    const setup = beginRoleDraw(
+      createSetup(
+        players
+          .slice(0, 10)
+          .map(({ id, nickname }, index) => ({ id, name: nickname, seat: index + 1 })),
+      ),
+      () => 0,
+    );
+    render(
+      <I18nProvider locale="ru">
+        <SetupWizard
+          players={players}
+          onComplete={() => undefined}
+          onEvent={onEvent}
+          initialSessionState={{
+            step: "roles",
+            hostPlayerId: players[10]!.id,
+            selectedPlayerIds,
+            setup,
+          }}
+        />
+      </I18nProvider>,
+    );
+
+    expect(screen.getByRole("heading", { name: "Раздача ролей" })).toBeInTheDocument();
+    expect(screen.getByText("Раздайте роли · осталось 10")).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Стол «Мафия»" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Раздать роль игроку Иван" }));
+    expect(onEvent).toHaveBeenCalledWith(
+      "setup.role-drawn",
+      expect.objectContaining({ seat: 1, role: expect.any(String), secret: true }),
+    );
+  });
+
   it("requires a saved host who is not assigned to a player seat", async () => {
     const user = userEvent.setup();
     const host = availablePlayers[10]!;

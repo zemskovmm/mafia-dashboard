@@ -323,6 +323,8 @@ Mafia Dashboard supports the ten-seat Club Mafia rules in this document. Player 
 
 Canonical events carry a replay-format version, but the UI does not expose a ruleset selector. Best Move is the one settled club-level rules control: it must be enabled by default and configurable per club. The current application has not implemented that setting and therefore runs the fixed Best Move flow described in section 4.14.
 
+The club language is presentation configuration rather than a rules selector. Every host-facing surface supports English and Russian; existing clubs migrate to English, new clubs default from the creator's browser language, and owners or managers/editors can change the club language immediately without changing an active game's canonical state.
+
 ## 7. Moderator workflow requirements
 
 ### 7.1 Setup screen
@@ -487,10 +489,10 @@ A Docker volume provides persistence but is **not** a backup. The production bac
 - **Product boundaries:** no player-phone mode, public/spectator display, notes/drawing surface, or alternate rulesets.
 - **Music and timer:** visible YouTube IFrame playback, a read-only account relationship, an application-owned browser-local session queue, 2-second fade-in, 500-millisecond quick fade-out, 3-second slow fade-out, and the current faint ten-second warning chime.
 - **Rules:** no final speech after a red card, and the tie-vote conventions in section 4.8 are accepted.
+- **Localization:** every host-facing surface supports English and Russian. The pre-club portal follows the browser language; each club then supplies the active language, which owners and managers/editors can change immediately without changing game state. Existing clubs migrate to English, while new clubs default from the creator's browser language.
 
 ### Decided requirements not yet implemented
 
-- **Localization:** the initial product requires English and Russian. The current UI is English-only.
 - **Best Move:** a per-club setting enabled by default is required. Current behavior is fixed and has no club-level setting.
 
 ### Unresolved

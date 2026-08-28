@@ -30,6 +30,114 @@ const constraintDefinitions = async (pool: Pool) =>
     )
   ).rows;
 
+describe("club language schema migration", () => {
+  it("adds a constrained English default to fresh and populated schemas idempotently", async () => {
+    const freshSchema = `club_language_fresh_${randomUUID().replaceAll("-", "")}`;
+    const legacySchema = `club_language_legacy_${randomUUID().replaceAll("-", "")}`;
+    await adminPool.query(`CREATE SCHEMA "${freshSchema}"`);
+    await adminPool.query(`CREATE SCHEMA "${legacySchema}"`);
+    const freshPool = new Pool({
+      connectionString: databaseUrl,
+      options: `-c search_path=${freshSchema}`,
+    });
+    const legacyPool = new Pool({
+      connectionString: databaseUrl,
+      options: `-c search_path=${legacySchema}`,
+    });
+    try {
+      await initializeSchema(freshPool);
+      await legacyPool.query(`
+        CREATE TABLE users (
+          id UUID PRIMARY KEY,
+          email TEXT NOT NULL UNIQUE,
+          display_name TEXT NOT NULL
+        );
+        CREATE TABLE clubs (
+          id UUID PRIMARY KEY,
+          name TEXT NOT NULL,
+          city TEXT NOT NULL,
+          header_logo TEXT NULL,
+          card_logo TEXT NULL,
+          created_by UUID NOT NULL REFERENCES users (id),
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+      `);
+      const legacyUserId = randomUUID();
+      const legacyClubId = randomUUID();
+      await legacyPool.query(
+        `INSERT INTO users (id, email, display_name) VALUES ($1, $2, 'Legacy owner')`,
+        [legacyUserId, `legacy-${randomUUID()}@example.test`],
+      );
+      await legacyPool.query(
+        `INSERT INTO clubs (id, name, city, created_by)
+         VALUES ($1, 'Legacy club', 'Málaga', $2)`,
+        [legacyClubId, legacyUserId],
+      );
+
+      await initializeSchema(legacyPool);
+      const partialClubId = randomUUID();
+      await legacyPool.query(`
+        ALTER TABLE clubs ALTER COLUMN language_code DROP NOT NULL;
+        ALTER TABLE clubs ALTER COLUMN language_code DROP DEFAULT;
+      `);
+      await legacyPool.query(
+        `INSERT INTO clubs (id, name, city, created_by, language_code)
+         VALUES ($1, 'Partial migration club', 'Granada', $2, NULL)`,
+        [partialClubId, legacyUserId],
+      );
+      await initializeSchema(legacyPool);
+
+      for (const pool of [freshPool, legacyPool]) {
+        await expect(
+          pool.query(
+            `SELECT data_type, is_nullable, column_default
+               FROM information_schema.columns
+              WHERE table_schema = current_schema()
+                AND table_name = 'clubs'
+                AND column_name = 'language_code'`,
+          ),
+        ).resolves.toMatchObject({
+          rows: [{ data_type: "text", is_nullable: "NO", column_default: "'en'::text" }],
+        });
+        await expect(
+          pool.query(
+            `SELECT pg_get_constraintdef(oid) AS definition
+               FROM pg_constraint
+              WHERE conrelid = 'clubs'::regclass
+                AND conname = 'clubs_language_code_ck'`,
+          ),
+        ).resolves.toMatchObject({
+          rows: [
+            {
+              definition: expect.stringContaining("language_code"),
+            },
+          ],
+        });
+      }
+      await expect(
+        legacyPool.query("SELECT id, language_code FROM clubs WHERE id IN ($1, $2) ORDER BY id", [
+          legacyClubId,
+          partialClubId,
+        ]),
+      ).resolves.toMatchObject({
+        rows: expect.arrayContaining([
+          { id: legacyClubId, language_code: "en" },
+          { id: partialClubId, language_code: "en" },
+        ]),
+      });
+      await expect(
+        legacyPool.query("UPDATE clubs SET language_code = 'es' WHERE id = $1", [legacyClubId]),
+      ).rejects.toMatchObject({ constraint: "clubs_language_code_ck" });
+    } finally {
+      await freshPool.end();
+      await legacyPool.end();
+      await adminPool.query(`DROP SCHEMA IF EXISTS "${freshSchema}" CASCADE`);
+      await adminPool.query(`DROP SCHEMA IF EXISTS "${legacySchema}" CASCADE`);
+    }
+  });
+});
+
 describe("tenant-composite game schema migration", () => {
   it("migrates fresh and populated legacy schemas idempotently without losing replay rows", async () => {
     const schemaName = `tenant_game_keys_${randomUUID().replaceAll("-", "")}`;

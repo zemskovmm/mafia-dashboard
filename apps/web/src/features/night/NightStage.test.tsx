@@ -13,6 +13,7 @@ import {
   drawRoleForSeat,
 } from "@mafia/game-domain";
 import type { GameState, PlayerInput } from "@mafia/game-domain";
+import { I18nProvider } from "../../i18n/I18nProvider.js";
 import { NightStage } from "./NightStage.js";
 
 const createNightGame = (): GameState => {
@@ -39,6 +40,30 @@ const Harness = ({
 };
 
 describe("NightStage", () => {
+  it("renders a Russian Don result while preserving the checked player's name", () => {
+    const base = createNightGame();
+    const target = base.players.find(({ team }) => team === "red")!;
+    render(
+      <I18nProvider locale="ru">
+        <NightStage
+          game={{
+            ...base,
+            phase: "night-don-result",
+            checkResult: { kind: "don-check", targetSeat: target.seat, match: false, secret: true },
+          }}
+          onGameChange={() => undefined}
+          onEvent={() => undefined}
+        />
+      </I18nProvider>,
+    );
+
+    expect(screen.getByRole("status", { name: "Результат проверки Дона" })).toHaveTextContent(
+      `Дон проверил игрока ${target.name}`,
+    );
+    expect(screen.getByText("Не является Шерифом")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Перейти к проверке Шерифа" })).toBeInTheDocument();
+  });
+
   it("does not show inline Red controls during Don and Sheriff checks", () => {
     const base = createNightGame();
     const target = base.players.find(({ team }) => team === "red")!;

@@ -2,6 +2,7 @@ import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { CompletedGameSessionSummary, RemoteGameSession } from "../../api/client.js";
+import { I18nProvider } from "../../i18n/I18nProvider.js";
 import { GameTimelineScreen } from "./GameTimelineScreen.js";
 import { createSampleGameHistory } from "./sample-game-data.js";
 
@@ -51,6 +52,52 @@ const legacySession = (
 });
 
 describe("GameTimelineScreen", () => {
+  it("uses its scoped Russian messages for timeline chrome, inspector, and marker labels", async () => {
+    const user = userEvent.setup();
+    const sample = createSampleGameHistory();
+    render(
+      <I18nProvider locale="ru">
+        <GameTimelineScreen
+          clubId="00000000-0000-4000-8000-000000000101"
+          onBack={() => undefined}
+          showDevelopmentTools
+          currentHistory={{
+            label: "Текущий стол",
+            frames: sample.frames,
+            headEventId: sample.headEventId,
+          }}
+          onPreviewCurrentEvent={vi.fn()}
+          onResetCurrentEvent={vi.fn()}
+          loaders={{ listCompleted: () => Promise.resolve([]), getSession: vi.fn() }}
+        />
+      </I18nProvider>,
+    );
+
+    expect(screen.getByRole("main", { name: "Хронология игры" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Назад" })).toBeInTheDocument();
+    expect(screen.getByText("Текущая игра · Смысловые контрольные точки")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Хронология игры" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Завершённая игра" })).toHaveValue("current");
+    expect(
+      screen.getByRole("button", { name: "Создать демонстрационную игру" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Нулевая ночь")).toBeInTheDocument();
+    expect(screen.getByText(/Событие: #/)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Игра завершена: Красные победили" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Предпросмотр контрольной точки" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Вернуть игру к контрольной точке" })).toBeDisabled();
+    await user.click(screen.getAllByRole("button", { name: /Выстрелы мафии:/ })[0]!);
+    expect(screen.getByText("Событие")).toBeInTheDocument();
+    expect(screen.getByText("Время")).toBeInTheDocument();
+    expect(screen.getByText("Результат")).toBeInTheDocument();
+    expect(screen.getByText("Убийство")).toBeInTheDocument();
+    expect(screen.queryByText(/mafia\.shots-resolved|^kill$/)).toBeNull();
+  });
+
   it("hides sample generation unless shared development tools are enabled", () => {
     const loaders = { listCompleted: () => Promise.resolve([]), getSession: vi.fn() };
     const { rerender } = render(
@@ -622,7 +669,8 @@ describe("GameTimelineScreen", () => {
     await user.click(secretMarker);
 
     expect(screen.getByRole("heading", { name: "Mafia kill: Player 2" })).toBeInTheDocument();
-    expect(screen.getByText("mafia.shots-resolved")).toBeInTheDocument();
+    expect(screen.getByText("Kill")).toBeInTheDocument();
+    expect(screen.queryByText("mafia.shots-resolved")).toBeNull();
     expect(screen.getByText("Player 8 → Player 2")).toBeInTheDocument();
   });
 

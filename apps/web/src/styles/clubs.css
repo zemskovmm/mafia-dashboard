@@ -409,6 +409,12 @@
   border-radius: 10px;
 }
 
+.club-editor-card .language-selector select {
+  color: var(--portal-text);
+  background: rgb(0 0 0 / 38%);
+  border-color: rgb(var(--portal-muted-rgb) / 17%);
+}
+
 .club-logo-fields {
   display: grid;
   grid-template-columns: 1fr 1fr;

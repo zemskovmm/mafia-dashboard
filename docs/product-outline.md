@@ -297,11 +297,8 @@ Cross-cutting UI state: local running timer, privacy shield, YouTube playback st
 
 ## 16. Product decisions and implementation gaps
 
-Implemented and accepted behavior includes the current 2-second fade-in, 500-millisecond quick fade-out, 3-second slow fade-out, faint ten-second warning chime, no final speech after a red card, and the tie-vote flow in `rules.md`.
+Implemented and accepted behavior includes the current 2-second fade-in, 500-millisecond quick fade-out, 3-second slow fade-out, faint ten-second warning chime, no final speech after a red card, the tie-vote flow in `rules.md`, and complete English/Russian localization of every host-facing surface. Before a club is opened, the portal follows the browser language (`ru` locales use Russian; all others use English). Language is then controlled by the club: existing clubs migrate to English, new clubs default from the creator's browser, owners and managers/editors can change it, and an accepted change applies immediately without altering an active game.
 
-Two decided requirements remain implementation gaps:
-
-1. The initial product requires English and Russian; the current UI is English-only.
-2. Best Move must be a per-club setting enabled by default; current behavior is fixed and has no club-level setting.
+One decided requirement remains an implementation gap: Best Move must be a per-club setting enabled by default; current behavior is fixed and has no club-level setting.
 
 The production backup target, method, retention, and restore procedure remain unresolved owner decisions.

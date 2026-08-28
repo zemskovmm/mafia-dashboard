@@ -3,6 +3,7 @@ import {
   ApiError,
   checkServerReady,
   clearGameSession,
+  createClub,
   createPlayer,
   deleteClub,
   disconnectMusicAccount,
@@ -11,11 +12,13 @@ import {
   getGameSession,
   getMusicAccountStatus,
   listActiveGameSessions,
+  listClubs,
   listCompletedGameSessions,
   listMusicPlaylists,
   listPlayers,
   saveGameSession,
   signOut,
+  updateClub,
   updatePlayer,
 } from "./client.js";
 import type { PlayerProfile, PlayerProfileInput } from "./client.js";
@@ -72,6 +75,79 @@ afterEach(() => {
 });
 
 describe("club API client", () => {
+  it("round-trips the club language contract", async () => {
+    const club = {
+      id: "00000000-0000-4000-8000-000000000101",
+      name: "Mafia Malaga",
+      city: "Málaga",
+      headerLogo: null,
+      cardLogo: null,
+      language: "ru" as const,
+      role: "owner" as const,
+      createdAt: "2026-08-17T20:00:00.000Z",
+      updatedAt: "2026-08-17T20:00:00.000Z",
+    };
+    const created = { ...club, language: "en" as const };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ clubs: [club] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ club: created }), {
+          status: 201,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ club }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(listClubs()).resolves.toEqual([club]);
+    await expect(
+      createClub({
+        name: created.name,
+        city: created.city,
+        headerLogo: null,
+        cardLogo: null,
+        language: "en",
+        ownerConsent: true,
+      }),
+    ).resolves.toEqual(created);
+    await expect(
+      updateClub(club.id, {
+        name: club.name,
+        city: club.city,
+        headerLogo: null,
+        cardLogo: null,
+        language: "ru",
+      }),
+    ).resolves.toEqual(club);
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/clubs",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"language":"en"'),
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      `/api/clubs/${club.id}`,
+      expect.objectContaining({
+        method: "PUT",
+        body: expect.stringContaining('"language":"ru"'),
+      }),
+    );
+  });
+
   it("uses the secure server session for club requests", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
     vi.stubGlobal("fetch", fetchMock);

@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { I18nProvider } from "../../i18n/I18nProvider.js";
 import { YouTubePlaylistPlayer } from "./YouTubePlaylistPlayer.js";
 import type { YouTubePlayerHandle } from "./YouTubePlaylistPlayer.js";
 
@@ -1099,5 +1100,29 @@ describe("YouTubePlaylistPlayer", () => {
     expect(onStateChange).toHaveBeenLastCalledWith("paused");
     expect(player.setVolume).not.toHaveBeenCalled();
     expect(player.cuePlaylist).not.toHaveBeenCalled();
+  });
+
+  it("renders Russian queue loading, tag, and playback controls without translating track titles", async () => {
+    api.listMusicPlaylistItems.mockResolvedValue([
+      { videoId: "video-1", title: "Opening", position: 0, thumbnailUrl: null },
+    ]);
+
+    render(
+      <I18nProvider locale="ru">
+        <YouTubePlaylistPlayer playlistId="PL-russian" onStateChange={vi.fn()} expanded />
+      </I18nProvider>,
+    );
+
+    expect(screen.getByRole("region", { name: "Очередь плейлиста сессии" })).toBeInTheDocument();
+    expect(screen.getByText("Загрузка очереди плейлиста…")).toBeInTheDocument();
+    await screen.findByRole("listitem");
+    expect(
+      screen.getByRole("button", { name: "Отметить Opening: раскрытие роли" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Воспроизвести Opening следующим" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Воспроизвести Opening сейчас" })).toBeDisabled();
+    expect(screen.getByLabelText("Перетащить Opening")).toBeInTheDocument();
   });
 });

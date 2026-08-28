@@ -1,7 +1,28 @@
 import { describe, expect, it } from "vitest";
 import type { ReplayFrame } from "@mafia/game-domain";
+import { timelineConsoleMessages } from "../../i18n/messages/timeline-console.js";
 import { createSampleGameHistory } from "./sample-game-data.js";
 import { buildTimeline } from "./timeline-model.js";
+
+const russianTimelineText = {
+  t: (key: string, values: Readonly<Record<string, string | number>> = {}) => {
+    const message = timelineConsoleMessages.ru[key as keyof typeof timelineConsoleMessages.ru] as
+      string | (Readonly<Record<string, string>> & { readonly other: string });
+    const template =
+      typeof message === "string"
+        ? message
+        : (message[new Intl.PluralRules("ru").select(Number(values.count ?? 0))] ?? message.other);
+    return template.replace(/\{([A-Za-z][A-Za-z0-9]*)\}/g, (token, name: string) =>
+      values[name] === undefined ? token : String(values[name]),
+    );
+  },
+  formatList: (values: readonly string[]) =>
+    new Intl.ListFormat("ru", { type: "conjunction" }).format(values),
+  formatTime: (value: Date | string) =>
+    new Intl.DateTimeFormat("ru", { timeStyle: "medium" }).format(
+      value instanceof Date ? value : new Date(value),
+    ),
+};
 
 describe("replay-frame timeline model", () => {
   it("derives contiguous color regions from replayed before and after states", () => {
@@ -202,5 +223,72 @@ describe("replay-frame timeline model", () => {
       kind: "best-move",
       ariaLabel: "Best move by Player 2: Player 8, Player 9, Player 3; 2 Mafia hits",
     });
+  });
+
+  it("localizes regions and every semantic marker projection through its injected formatter", () => {
+    const history = createSampleGameHistory();
+    const timeline = buildTimeline(history.frames, russianTimelineText);
+    const markerFor = (eventType: string) =>
+      timeline.markers.find((marker) => marker.eventType === eventType);
+    const base = history.frames[0]!;
+    const marker = (type: string, payload: unknown) =>
+      buildTimeline(
+        [{ ...base, entry: { ...base.entry, type, payload } } as unknown as ReplayFrame],
+        russianTimelineText,
+      ).markers[0]!;
+
+    expect(timeline.regions.map(({ label }) => label)).toEqual([
+      "Нулевая ночь",
+      "День 1",
+      "Голосование 1",
+      "Ночь 1",
+      "День 2",
+      "Голосование 2",
+      "Ночь 2",
+    ]);
+    expect(markerFor("player.nominated")).toMatchObject({
+      label: "Player 7 выставлен на голосование",
+      ariaLabel: "Номинация: Player 1 выставил Player 7 на голосование",
+    });
+    expect(markerFor("voting.resolved")?.ariaLabel).toContain(
+      "Результат голосования: Player 7 выбывает из игры",
+    );
+    expect(markerFor("voting.skipped")).toMatchObject({
+      label: "Голосование пропущено",
+      ariaLabel: "Ведущий пропустил голосование",
+    });
+    expect(markerFor("mafia.shots-resolved")).toMatchObject({
+      label: "Мафия убивает: Player 2",
+      ariaLabel: expect.stringContaining("Выстрелы мафии:"),
+    });
+    expect(markerFor("don.checked")?.ariaLabel).toBe("Дон проверил Player 1: Шериф");
+    expect(markerFor("sheriff.checked")?.ariaLabel).toBe("Шериф проверил Player 10: Мафия");
+    expect(
+      timeline.markers.filter(({ eventType }) => eventType === "foul.issued").at(-1)?.label,
+    ).toContain("получил красную карточку");
+    expect(markerFor("player.red-carded")?.ariaLabel).toBe("Красная карточка: Player 8");
+    expect(markerFor("best-move.completed")?.ariaLabel).toContain("Лучший ход");
+    expect(markerFor("game.completed")).toMatchObject({
+      label: "Красные победили",
+      ariaLabel: "Игра завершена: Красные победили",
+    });
+    expect(
+      marker("car-crash.resolved", {
+        result: { eliminate: false, seats: [4, 6] },
+      }),
+    ).toMatchObject({
+      label: "Автокатастрофа: Player 4 и Player 6 остаются в игре",
+    });
+    expect(marker("don.check-skipped", {})).toMatchObject({ label: "Проверка Дона пропущена" });
+    expect(marker("sheriff.check-skipped", {})).toMatchObject({
+      label: "Проверка Шерифа пропущена",
+    });
+    expect(
+      marker("best-move.completed", {
+        playerSeat: 2,
+        selectedSeats: [8, 9, 3],
+        mafiaHits: 2,
+      }).ariaLabel,
+    ).toBe("Лучший ход Player 2: Player 8, Player 9 и Player 3; 2 попадания в мафию");
   });
 });

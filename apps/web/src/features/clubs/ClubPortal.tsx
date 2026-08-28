@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import { ImagePlus } from "lucide-react";
 import type { AppUser, Club, ClubInput, ClubUpdateInput } from "../../api/client.js";
+import { useMessages } from "../../i18n/I18nProvider.js";
+import { LanguageSelector } from "../../i18n/LanguageSelector.js";
+import { shellMessages } from "../../i18n/messages/shell.js";
 import { reportError } from "../console/error-console.js";
 
 interface ClubPortalProps {
@@ -40,10 +43,12 @@ const ClubEditor = ({
   readonly onCancel: () => void;
   readonly onSave: (input: ClubInput | ClubUpdateInput) => Promise<void>;
 }) => {
+  const { locale, t } = useMessages(shellMessages);
   const [name, setName] = useState(club?.name ?? "");
   const [city, setCity] = useState(club?.city ?? "");
   const [headerLogo, setHeaderLogo] = useState<string | null>(club?.headerLogo ?? null);
   const [cardLogo, setCardLogo] = useState<string | null>(club?.cardLogo ?? null);
+  const [language, setLanguage] = useState(club?.language ?? locale);
   const [ownerConsent, setOwnerConsent] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -54,33 +59,34 @@ const ClubEditor = ({
       setError(null);
     } catch (error) {
       reportError(error, { source: "application", context: "club-image.read" });
-      setError("That image could not be read.");
+      setError(t("imageReadFailed"));
     }
   };
 
   return (
-    <section className="club-editor-card" aria-label="Club details">
+    <section className="club-editor-card" aria-label={t("clubDetails")}>
       <label>
-        Club name
+        {t("clubName")}
         <input value={name} maxLength={100} onChange={(event) => setName(event.target.value)} />
       </label>
       <label>
-        City
+        {t("city")}
         <input value={city} maxLength={100} onChange={(event) => setCity(event.target.value)} />
       </label>
+      <LanguageSelector value={language} onChange={setLanguage} />
       <div className="club-logo-fields">
         <label className="club-logo-field">
-          <span>Header logo</span>
+          <span>{t("headerLogo")}</span>
           <span className="club-logo-preview">
             {headerLogo === null ? (
               <span className="club-logo-placeholder">
                 <ImagePlus aria-hidden="true" />
-                Choose image
+                {t("chooseImage")}
               </span>
             ) : (
               <>
-                <img src={headerLogo} alt="Header logo preview" />
-                <span className="club-logo-change">Change</span>
+                <img src={headerLogo} alt={t("headerLogoPreview")} />
+                <span className="club-logo-change">{t("change")}</span>
               </>
             )}
           </span>
@@ -92,17 +98,17 @@ const ClubEditor = ({
           />
         </label>
         <label className="club-logo-field">
-          <span>Playing-card logo</span>
+          <span>{t("playingCardLogo")}</span>
           <span className="club-logo-preview card-logo-preview">
             {cardLogo === null ? (
               <span className="club-logo-placeholder">
                 <ImagePlus aria-hidden="true" />
-                Choose image
+                {t("chooseImage")}
               </span>
             ) : (
               <>
-                <img src={cardLogo} alt="Playing-card logo preview" />
-                <span className="club-logo-change">Change</span>
+                <img src={cardLogo} alt={t("playingCardLogoPreview")} />
+                <span className="club-logo-change">{t("change")}</span>
               </>
             )}
           </span>
@@ -121,13 +127,13 @@ const ClubEditor = ({
             checked={ownerConsent}
             onChange={(event) => setOwnerConsent(event.target.checked)}
           />
-          I consent to store my Google name and email in the Owner player profile.
+          {t("ownerConsent")}
         </label>
       ) : null}
       {error === null ? null : <p role="alert">{error}</p>}
       <div className="club-editor-actions">
         <button type="button" onClick={onCancel} disabled={saving}>
-          Cancel
+          {t("cancel")}
         </button>
         <button
           type="button"
@@ -138,12 +144,12 @@ const ClubEditor = ({
           onClick={() =>
             void onSave(
               club === null
-                ? { name, city, headerLogo, cardLogo, ownerConsent: true }
-                : { name, city, headerLogo, cardLogo },
+                ? { name, city, headerLogo, cardLogo, language, ownerConsent: true }
+                : { name, city, headerLogo, cardLogo, language },
             )
           }
         >
-          {saving ? "Saving club…" : "Save club"}
+          {saving ? t("savingClub") : t("saveClub")}
         </button>
       </div>
     </section>
@@ -165,13 +171,14 @@ export const ClubPortal = ({
   onSaveClub,
   onOpenClub,
 }: ClubPortalProps) => {
+  const { t } = useMessages(shellMessages);
   const [saving, setSaving] = useState(false);
   const portalTitle =
     editing === "new"
-      ? "Create a new club"
+      ? t("createNewClub")
       : editing === null
-        ? "Choose your club"
-        : `Edit ${editing.name}`;
+        ? t("chooseYourClub")
+        : t("editClubTitle", { name: editing.name });
 
   useEffect(() => {
     if (editing !== null && editing !== "new" && !clubs.some(({ id }) => id === editing.id)) {
@@ -195,10 +202,10 @@ export const ClubPortal = ({
       <div className="curtain curtain-right" aria-hidden="true" />
       <section className="club-portal-content">
         <label className="portal-theme-color-field">
-          <span>Glass color</span>
+          <span>{t("glassColor")}</span>
           <input
             type="color"
-            aria-label="Glass color"
+            aria-label={t("glassColor")}
             value={themeColor}
             onChange={(event) => onThemeColorChange(event.currentTarget.value)}
           />
@@ -210,11 +217,11 @@ export const ClubPortal = ({
         {user === null ? (
           loading ? (
             <p className="club-auth-status" role="status">
-              Checking secure session…
+              {t("checkingSecureSession")}
             </p>
           ) : authUnavailable ? (
-            <p className="club-auth-status" role="alert" aria-label="Sign-in status unavailable">
-              Sign-in status is unavailable. Reload this page to try again.
+            <p className="club-auth-status" role="alert" aria-label={t("signInStatusUnavailable")}>
+              {t("signInUnavailableReload")}
             </p>
           ) : authConfigured ? (
             <a className="google-auth-button" href="/api/auth/google/start">
@@ -236,11 +243,11 @@ export const ClubPortal = ({
                   d="M12 5.94c1.47 0 2.79.5 3.82 1.5l2.87-2.87A9.64 9.64 0 0 0 12 2a10 10 0 0 0-8.96 5.44l3.35 2.63C7.18 7.7 9.39 5.94 12 5.94Z"
                 />
               </svg>
-              Continue with Google
+              {t("continueWithGoogle")}
             </a>
           ) : (
             <p className="club-auth-status" role="alert">
-              Google sign-in is not configured for this server.
+              {t("googleSignInNotConfigured")}
             </p>
           )
         ) : editing !== null ? (
@@ -266,10 +273,10 @@ export const ClubPortal = ({
                 <small>{user.email}</small>
               </span>
               <button type="button" disabled={loading} onClick={() => void onSignOut()}>
-                Sign out
+                {t("signOut")}
               </button>
             </div>
-            <div className="club-card-grid" aria-label="Available clubs">
+            <div className="club-card-grid" aria-label={t("availableClubs")}>
               {clubs.map((club, index) => (
                 <article
                   key={club.id}
@@ -279,7 +286,7 @@ export const ClubPortal = ({
                   <button
                     type="button"
                     className="club-card-open"
-                    aria-label={`Open ${club.name} in ${club.city}`}
+                    aria-label={t("openClub", { name: club.name, city: club.city })}
                     onClick={() => onOpenClub(club)}
                   >
                     <span className="club-card-corner" aria-hidden="true">
@@ -304,8 +311,8 @@ export const ClubPortal = ({
                 onClick={() => onEditingChange("new")}
               >
                 <span aria-hidden="true">＋</span>
-                <strong>New club</strong>
-                <small>Create freely</small>
+                <strong>{t("newClub")}</strong>
+                <small>{t("createFreely")}</small>
               </button>
             </div>
           </>

@@ -2638,6 +2638,23 @@ button.player-seat.is-voting-highlight::after {
   padding: 3px;
   cursor: pointer;
 }
+.language-selector {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.manage-club-actions .language-selector {
+  grid-template-columns: minmax(0, 1fr) minmax(120px, 160px);
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.manage-club-actions .language-selector select {
+  height: 36px;
+  min-height: 36px;
+}
 .dev-menu-actions .dev-setting-toggle {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

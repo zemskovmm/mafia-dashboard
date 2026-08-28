@@ -15,6 +15,7 @@ import {
   startVoting,
 } from "@mafia/game-domain";
 import type { GameState, PlayerInput } from "@mafia/game-domain";
+import { I18nProvider } from "../../i18n/I18nProvider.js";
 import { VotingStage } from "./VotingStage.js";
 
 const votingGame = (): GameState => {
@@ -49,6 +50,32 @@ const Harness = ({
 };
 
 describe("VotingStage", () => {
+  it("renders voting controls, labels, and plural status in Russian", () => {
+    render(
+      <I18nProvider locale="ru">
+        <VotingStage
+          game={votingGame()}
+          onGameChange={() => undefined}
+          onResolved={() => undefined}
+          onEvent={() => undefined}
+          onFoul={() => undefined}
+        />
+      </I18nProvider>,
+    );
+
+    expect(screen.getByRole("group", { name: "Кандидат голосования" })).toHaveTextContent(
+      "Кандидат 1 из 2",
+    );
+    expect(screen.getByText("#4 Player 4")).toBeInTheDocument();
+    expect(screen.getByText("0 голосов")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Следующий кандидат" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Пропустить голосование" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Проголосовать игроком Player 1 за Player 4" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Фол: Player 1" })).toBeInTheDocument();
+  });
+
   it("shows a cancellation step when the host skips voting", async () => {
     const user = userEvent.setup();
     const onGameChange = vi.fn<(game: GameState) => void>();
@@ -377,7 +404,7 @@ describe("VotingStage", () => {
     await user.click(screen.getByRole("button", { name: /vote as player 1 for player 4/i }));
     const selectedCard = screen.getByRole("button", { name: /player 1 voted for seat 4/i });
     expect(selectedCard).toHaveClass("is-voting-highlight");
-    expect(screen.getByText("1 votes")).toBeInTheDocument();
+    expect(screen.getByText("1 vote")).toBeInTheDocument();
 
     await user.click(selectedCard);
 

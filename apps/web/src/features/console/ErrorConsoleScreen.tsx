@@ -1,4 +1,6 @@
 import { useSyncExternalStore } from "react";
+import { useMessages } from "../../i18n/I18nProvider.js";
+import { timelineConsoleMessages } from "../../i18n/messages/timeline-console.js";
 import { errorConsole } from "./error-console.js";
 
 export interface ErrorConsoleScreenProps {
@@ -6,6 +8,7 @@ export interface ErrorConsoleScreenProps {
 }
 
 export const ErrorConsoleScreen = ({ onBack }: ErrorConsoleScreenProps) => {
+  const { formatDateTime, t } = useMessages(timelineConsoleMessages);
   const entries = useSyncExternalStore(
     errorConsole.subscribe,
     errorConsole.getSnapshot,
@@ -16,42 +19,45 @@ export const ErrorConsoleScreen = ({ onBack }: ErrorConsoleScreenProps) => {
     <main className="error-console-screen" aria-labelledby="error-console-title">
       <header className="error-console-header">
         <button type="button" onClick={onBack}>
-          Back
+          {t("Back")}
         </button>
-        <h1 id="error-console-title">Console</h1>
+        <h1 id="error-console-title">{t("Console")}</h1>
         <button type="button" onClick={errorConsole.clear}>
-          Clear console
+          {t("Clear console")}
         </button>
       </header>
 
-      <section className="error-console-content" aria-label="Error console entries">
+      <section className="error-console-content" aria-label={t("Error console entries")}>
         {entries.length === 0 ? (
-          <p>No errors have been captured.</p>
+          <p>{t("No errors have been captured.")}</p>
         ) : (
-          <ol className="error-console-list" aria-label="Captured errors">
+          <ol className="error-console-list" aria-label={t("Captured errors")}>
             {entries.map((entry) => (
               <li key={entry.id}>
                 <article
                   className="error-console-entry"
-                  aria-label={`Error from ${entry.source}: ${entry.message}`}
+                  aria-label={t("Error from {source}: {message}", {
+                    source: entry.source,
+                    message: entry.message,
+                  })}
                 >
                   <header>
-                    <time dateTime={entry.createdAt}>
-                      {new Date(entry.createdAt).toLocaleString()}
-                    </time>
+                    <time dateTime={entry.createdAt}>{formatDateTime(entry.createdAt)}</time>
                   </header>
                   <dl>
                     <div>
-                      <dt>Source</dt>
+                      <dt>{t("Source")}</dt>
                       <dd>{entry.source}</dd>
                     </div>
                     <div>
-                      <dt>Context</dt>
-                      <dd>{entry.context ?? "None"}</dd>
+                      <dt>{t("Context")}</dt>
+                      <dd>{entry.context ?? t("None")}</dd>
                     </div>
                   </dl>
                   <p className="error-console-message">{entry.message}</p>
-                  <pre aria-label="Stack trace">{entry.stack ?? "No stack trace available."}</pre>
+                  <pre aria-label={t("Stack trace")}>
+                    {entry.stack ?? t("No stack trace available.")}
+                  </pre>
                 </article>
               </li>
             ))}

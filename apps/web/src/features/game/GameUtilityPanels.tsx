@@ -1,5 +1,7 @@
 import { countVotes } from "@mafia/game-domain";
 import type { GameState } from "@mafia/game-domain";
+import { useMessages } from "../../i18n/I18nProvider.js";
+import { gameMessages } from "../../i18n/messages/game.js";
 import { TimerControls } from "../timer/TimerControls.js";
 
 export interface GameUtilityPanelsProps {
@@ -7,6 +9,7 @@ export interface GameUtilityPanelsProps {
 }
 
 export const GameUtilityPanels = ({ game }: GameUtilityPanelsProps) => {
+  const { t } = useMessages(gameMessages);
   const nominationTotals = game === null ? {} : countVotes(game);
   const activeSeats = (game?.players ?? [])
     .filter(({ status }) => status === "active")
@@ -35,15 +38,15 @@ export const GameUtilityPanels = ({ game }: GameUtilityPanelsProps) => {
         <TimerControls />
       </div>
       <div className="utility-panel-section" data-panel="voting">
-        <section className="nomination-panel" aria-label="Voting order">
-          <p className="eyebrow">Voting order</p>
+        <section className="nomination-panel" aria-label={t("utility.votingOrder")}>
+          <p className="eyebrow">{t("utility.votingOrder")}</p>
           {showVoteTotals ? (
             <p className="vote-count-summary">
-              {activeVoteCount} active {activeVoteCount === 1 ? "vote" : "votes"}
+              {t("utility.activeVotes", { count: activeVoteCount })}
             </p>
           ) : null}
           {game === null || game.nominations.length === 0 ? (
-            <p className="muted">No nominations yet</p>
+            <p className="muted">{t("utility.noNominations")}</p>
           ) : (
             <ol>
               {game.nominations.map(({ candidateSeat, nominatorSeat }) => {
@@ -53,10 +56,14 @@ export const GameUtilityPanels = ({ game }: GameUtilityPanelsProps) => {
                   <li key={candidateSeat}>
                     <span className="nomination-copy">
                       <strong>
-                        #{candidateSeat} {candidate?.name ?? `Seat ${candidateSeat}`}
+                        #{candidateSeat}{" "}
+                        {candidate?.name ?? t("utility.seat", { seat: candidateSeat })}
                       </strong>
                       <span>
-                        Initiated by #{nominatorSeat} {nominator?.name ?? `Seat ${nominatorSeat}`}
+                        {t("utility.initiatedBy", {
+                          seat: nominatorSeat,
+                          name: nominator?.name ?? t("utility.seat", { seat: nominatorSeat }),
+                        })}
                       </span>
                     </span>
                     {showVoteTotals ? (

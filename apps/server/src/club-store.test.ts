@@ -40,6 +40,7 @@ const clubInput = () => ({
   city: "London",
   headerLogo: null,
   cardLogo: null,
+  language: "ru" as const,
   ownerConsent: true as const,
 });
 
@@ -50,6 +51,7 @@ describe("ClubStore manager access", () => {
     const club = await store.create(creator, clubInput());
 
     expect(club.role).toBe("owner");
+    expect(club.language).toBe("ru");
     await expect(playerStore.list(club.id)).resolves.toMatchObject([
       {
         nickname: "Owner",
@@ -181,5 +183,44 @@ describe("ClubStore manager access", () => {
         managerLocked: true,
       },
     ]);
+  });
+
+  it("lets owners and editors update only their club language", async () => {
+    const creator = await createUser("Language Owner");
+    const editor = await createUser("Language Editor");
+    const stranger = await createUser("Language Stranger");
+    const club = await store.create(creator, clubInput());
+    await pool.query(
+      "INSERT INTO club_memberships (club_id, user_id, role) VALUES ($1, $2, 'editor')",
+      [club.id, editor.id],
+    );
+
+    await expect(
+      store.update(editor.id, club.id, {
+        name: club.name,
+        city: club.city,
+        headerLogo: club.headerLogo,
+        cardLogo: club.cardLogo,
+        language: "en",
+      }),
+    ).resolves.toMatchObject({ id: club.id, language: "en", role: "editor" });
+    await expect(
+      store.update(creator.id, club.id, {
+        name: club.name,
+        city: club.city,
+        headerLogo: club.headerLogo,
+        cardLogo: club.cardLogo,
+        language: "ru",
+      }),
+    ).resolves.toMatchObject({ id: club.id, language: "ru", role: "owner" });
+    await expect(
+      store.update(stranger.id, club.id, {
+        name: club.name,
+        city: club.city,
+        headerLogo: club.headerLogo,
+        cardLogo: club.cardLogo,
+        language: "en",
+      }),
+    ).resolves.toBeNull();
   });
 });

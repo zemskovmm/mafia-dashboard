@@ -14,6 +14,8 @@ import {
   toggleMafiaShot,
 } from "@mafia/game-domain";
 import type { CanonicalGameEventDraft, GameState, NightShotResult } from "@mafia/game-domain";
+import { useMessages } from "../../i18n/I18nProvider.js";
+import { nightMessages } from "../../i18n/messages/night.js";
 import { GameTable } from "../table/GameTable.js";
 
 interface NightStageProps {
@@ -32,11 +34,13 @@ export const NightStage = ({
   onGameChange,
   onEvent,
   onAcceptedEvent,
-  hostName = "Host",
+  hostName,
   privacyHidden = false,
   onSeatSwipe,
   swipeAction,
 }: NightStageProps) => {
+  const { t } = useMessages(nightMessages);
+  const tableHostName = hostName ?? t("night.host");
   const activePlayers = game.players.filter(({ status }) => status === "active");
   const hasActiveDon = activePlayers.some(({ role }) => role === "don");
   const hasActiveSheriff = activePlayers.some(({ role }) => role === "sheriff");
@@ -66,7 +70,7 @@ export const NightStage = ({
     const allShotsRecorded = shooters.every(({ seat }) => game.shotAssignments[seat] !== undefined);
     return (
       <GameTable
-        hostName={hostName}
+        hostName={tableHostName}
         privacyHidden={privacyHidden}
         onSeatSwipe={onSeatSwipe}
         swipeAction={swipeAction}
@@ -76,8 +80,8 @@ export const NightStage = ({
         }))}
         seatActionLabel={(seat) =>
           shooters.every(({ seat: shooterSeat }) => game.shotAssignments[shooterSeat] === seat.seat)
-            ? `Remove all Mafia shots from ${seat.name}`
-            : `Assign all Mafia shots to ${seat.name}`
+            ? t("night.removeAllShots", { name: seat.name })
+            : t("night.assignAllShots", { name: seat.name })
         }
         onSeatClick={(targetSeat) => onGameChange(toggleAllMafiaShotsForTarget(game, targetSeat))}
         renderSeatActions={(target) =>
@@ -90,9 +94,10 @@ export const NightStage = ({
                 key={shooter.seat}
                 className={`shooter-button${selected ? " is-selected" : ""}`}
                 aria-pressed={selected}
-                aria-label={`${selected ? "Remove" : "Assign"} shooter ${shooter.seat} ${
-                  selected ? "from" : "to"
-                } target ${target.name}`}
+                aria-label={t(selected ? "night.removeShooter" : "night.assignShooter", {
+                  shooter: shooter.seat,
+                  target: target.name,
+                })}
                 onClick={() => {
                   onGameChange(toggleMafiaShot(game, shooter.seat, target.seat));
                 }}
@@ -104,9 +109,12 @@ export const NightStage = ({
         }
         center={
           <div className="table-night-center">
-            <span className="table-prompt">Mafia shots</span>
+            <span className="table-prompt">{t("night.mafiaShots")}</span>
             <strong>
-              {Object.keys(game.shotAssignments).length} of {shooters.length} shooters assigned
+              {t("night.shotsAssigned", {
+                assigned: Object.keys(game.shotAssignments).length,
+                shooters: shooters.length,
+              })}
             </strong>
           </div>
         }
@@ -131,7 +139,7 @@ export const NightStage = ({
               }
             }}
           >
-            Evaluate Mafia shots
+            {t("night.evaluateShots")}
           </button>
         }
       />
@@ -142,7 +150,7 @@ export const NightStage = ({
     const result = getMafiaShotResult(game);
     return (
       <GameTable
-        hostName={hostName}
+        hostName={tableHostName}
         privacyHidden={privacyHidden}
         onSeatSwipe={onSeatSwipe}
         swipeAction={swipeAction}
@@ -171,7 +179,7 @@ export const NightStage = ({
               }
             }}
           >
-            Continue night
+            {t("night.continue")}
           </button>
         }
       />
@@ -181,7 +189,7 @@ export const NightStage = ({
   if (game.phase === "night-don") {
     return (
       <GameTable
-        hostName={hostName}
+        hostName={tableHostName}
         privacyHidden={privacyHidden}
         onSeatSwipe={hasActiveDon ? onSeatSwipe : undefined}
         swipeAction={hasActiveDon ? swipeAction : undefined}
@@ -189,7 +197,9 @@ export const NightStage = ({
           ...player,
           mafiaShooter: player.status === "active" && player.role === "don",
         }))}
-        seatActionLabel={hasActiveDon ? (seat) => `Don check ${seat.name}` : undefined}
+        seatActionLabel={
+          hasActiveDon ? (seat) => t("night.donCheckTarget", { name: seat.name }) : undefined
+        }
         seatActionDisabled={hasActiveDon ? undefined : () => true}
         onSeatClick={
           hasActiveDon
@@ -209,23 +219,23 @@ export const NightStage = ({
         }
         center={
           <div className="table-check-center">
-            <span className="table-prompt">Don check</span>
-            <strong>Select a player to check for Sheriff</strong>
+            <span className="table-prompt">{t("night.donCheck")}</span>
+            <strong>{t("night.selectDonTarget")}</strong>
           </div>
         }
         advance={
           hasActiveDon ? (
             <div className="table-advance-options">
               <button type="button" disabled>
-                Select a player to continue
+                {t("night.selectPlayer")}
               </button>
               <button type="button" className="table-advance-secondary" onClick={skipDon}>
-                Skip Don check
+                {t("night.skipDon")}
               </button>
             </div>
           ) : (
             <button type="button" className="table-advance-secondary" onClick={skipDon}>
-              Skip Don check
+              {t("night.skipDon")}
             </button>
           )
         }
@@ -238,7 +248,7 @@ export const NightStage = ({
     const hasSheriff = game.players.some(({ role }) => role === "sheriff");
     return (
       <GameTable
-        hostName={hostName}
+        hostName={tableHostName}
         privacyHidden={privacyHidden}
         onSeatSwipe={onSeatSwipe}
         swipeAction={swipeAction}
@@ -248,10 +258,12 @@ export const NightStage = ({
           current: player.seat === game.checkResult?.targetSeat,
         }))}
         center={
-          <div className="table-check-center" role="status" aria-label="Don check result">
-            <span className="table-prompt">Don checked {target?.name ?? "player"}</span>
+          <div className="table-check-center" role="status" aria-label={t("night.donCheckResult")}>
+            <span className="table-prompt">
+              {t("night.donChecked", { name: target?.name ?? t("night.player") })}
+            </span>
             <div className="secret-result">
-              {game.checkResult.match ? "Sheriff found" : "Not the Sheriff"}
+              {game.checkResult.match ? t("night.sheriffFound") : t("night.notSheriff")}
             </div>
           </div>
         }
@@ -268,7 +280,7 @@ export const NightStage = ({
               } else onGameChange(next);
             }}
           >
-            {hasSheriff ? "Proceed to Sheriff check" : "Continue night"}
+            {hasSheriff ? t("night.proceedSheriff") : t("night.continue")}
           </button>
         }
       />
@@ -278,7 +290,7 @@ export const NightStage = ({
   if (game.phase === "night-sheriff") {
     return (
       <GameTable
-        hostName={hostName}
+        hostName={tableHostName}
         privacyHidden={privacyHidden}
         onSeatSwipe={hasActiveSheriff ? onSeatSwipe : undefined}
         swipeAction={hasActiveSheriff ? swipeAction : undefined}
@@ -286,7 +298,11 @@ export const NightStage = ({
           ...player,
           sheriffHighlight: player.status === "active" && player.role === "sheriff",
         }))}
-        seatActionLabel={hasActiveSheriff ? (seat) => `Sheriff check ${seat.name}` : undefined}
+        seatActionLabel={
+          hasActiveSheriff
+            ? (seat) => t("night.sheriffCheckTarget", { name: seat.name })
+            : undefined
+        }
         seatActionDisabled={hasActiveSheriff ? undefined : () => true}
         onSeatClick={
           hasActiveSheriff
@@ -306,23 +322,23 @@ export const NightStage = ({
         }
         center={
           <div className="table-check-center">
-            <span className="table-prompt">Sheriff check</span>
-            <strong>Select a player to check for Mafia</strong>
+            <span className="table-prompt">{t("night.sheriffCheck")}</span>
+            <strong>{t("night.selectSheriffTarget")}</strong>
           </div>
         }
         advance={
           hasActiveSheriff ? (
             <div className="table-advance-options">
               <button type="button" disabled>
-                Select a player to continue
+                {t("night.selectPlayer")}
               </button>
               <button type="button" className="table-advance-secondary" onClick={skipSheriff}>
-                Skip Sheriff check
+                {t("night.skipSheriff")}
               </button>
             </div>
           ) : (
             <button type="button" className="table-advance-secondary" onClick={skipSheriff}>
-              Skip Sheriff check
+              {t("night.skipSheriff")}
             </button>
           )
         }
@@ -334,7 +350,7 @@ export const NightStage = ({
     const target = game.players.find(({ seat }) => seat === game.checkResult?.targetSeat);
     return (
       <GameTable
-        hostName={hostName}
+        hostName={tableHostName}
         privacyHidden={privacyHidden}
         onSeatSwipe={onSeatSwipe}
         swipeAction={swipeAction}
@@ -344,10 +360,16 @@ export const NightStage = ({
           current: player.seat === game.checkResult?.targetSeat,
         }))}
         center={
-          <div className="table-check-center" role="status" aria-label="Sheriff check result">
-            <span className="table-prompt">Sheriff checked {target?.name ?? "player"}</span>
+          <div
+            className="table-check-center"
+            role="status"
+            aria-label={t("night.sheriffCheckResult")}
+          >
+            <span className="table-prompt">
+              {t("night.sheriffChecked", { name: target?.name ?? t("night.player") })}
+            </span>
             <div className="secret-result">
-              {game.checkResult.match ? "Mafia found" : "Not Mafia"}
+              {game.checkResult.match ? t("night.mafiaFound") : t("night.notMafia")}
             </div>
           </div>
         }
@@ -364,7 +386,7 @@ export const NightStage = ({
               } else onGameChange(next);
             }}
           >
-            Continue night
+            {t("night.continue")}
           </button>
         }
       />
@@ -374,14 +396,14 @@ export const NightStage = ({
   if (game.phase === "night-resolution") {
     return (
       <GameTable
-        hostName={hostName}
+        hostName={tableHostName}
         privacyHidden={privacyHidden}
         onSeatSwipe={onSeatSwipe}
         swipeAction={swipeAction}
         seats={game.players}
         center={
           <div className="table-check-center">
-            <span className="table-prompt">Night complete</span>
+            <span className="table-prompt">{t("night.stageComplete")}</span>
             {game.nightResult === undefined ? null : (
               <MafiaShotResultCard game={game} result={game.nightResult} />
             )}
@@ -407,7 +429,7 @@ export const NightStage = ({
               }
             }}
           >
-            Begin day {game.day + 1}
+            {t("night.beginDay", { day: game.day + 1 })}
           </button>
         }
       />
@@ -416,7 +438,7 @@ export const NightStage = ({
 
   return (
     <section className="night-stage">
-      <h2>Night complete</h2>
+      <h2>{t("night.stageComplete")}</h2>
     </section>
   );
 };
@@ -428,6 +450,7 @@ const MafiaShotResultCard = ({
   readonly game: GameState;
   readonly result: NightShotResult;
 }) => {
+  const { t } = useMessages(nightMessages);
   const target =
     result.kind === "miss"
       ? undefined
@@ -435,25 +458,29 @@ const MafiaShotResultCard = ({
 
   if (result.kind === "miss") {
     return (
-      <div className="night-miss-card" role="group" aria-label="Mafia missed">
-        <span className="table-prompt">Mafia missed</span>
-        <strong>No player died</strong>
+      <div className="night-miss-card" role="group" aria-label={t("night.mafiaMissed")}>
+        <span className="table-prompt">{t("night.mafiaMissed")}</span>
+        <strong>{t("night.noPlayerDied")}</strong>
       </div>
     );
   }
   if (result.kind === "no-effect") {
     return (
-      <div className="night-miss-card" role="status" aria-label="Mafia shots had no effect">
-        <span className="table-prompt">No effect</span>
-        <strong>{target?.name ?? `Seat ${result.targetSeat}`} was already out</strong>
+      <div className="night-miss-card" role="status" aria-label={t("night.mafiaNoEffect")}>
+        <span className="table-prompt">{t("night.noEffect")}</span>
+        <strong>
+          {t("night.wasAlreadyOut", {
+            name: target?.name ?? t("night.seat", { seat: result.targetSeat }),
+          })}
+        </strong>
       </div>
     );
   }
   return (
-    <div className="deceased-player-card" role="group" aria-label="Deceased player">
-      <span className="table-prompt">Deceased player</span>
+    <div className="deceased-player-card" role="group" aria-label={t("night.deceasedPlayer")}>
+      <span className="table-prompt">{t("night.deceasedPlayer")}</span>
       <strong>#{target?.seat ?? result.targetSeat}</strong>
-      <span>{target?.name ?? `Seat ${result.targetSeat}`}</span>
+      <span>{target?.name ?? t("night.seat", { seat: result.targetSeat })}</span>
     </div>
   );
 };

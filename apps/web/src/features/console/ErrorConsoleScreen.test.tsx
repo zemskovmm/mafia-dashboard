@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { clearErrorConsole, reportError } from "./error-console.js";
 import { ErrorConsoleScreen } from "./ErrorConsoleScreen.js";
+import { I18nProvider } from "../../i18n/I18nProvider.js";
 
 afterEach(() => {
   clearErrorConsole();
@@ -10,6 +11,39 @@ afterEach(() => {
 });
 
 describe("ErrorConsoleScreen", () => {
+  it("localizes its Russian chrome and dates without altering captured diagnostics", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-26T09:00:00.000Z"));
+    const error = new Error("Raw failure: 42");
+    error.stack = "raw-stack";
+    reportError(error, { source: "api" });
+    render(
+      <I18nProvider locale="ru">
+        <ErrorConsoleScreen onBack={vi.fn()} />
+      </I18nProvider>,
+    );
+
+    expect(screen.getByRole("main", { name: "Консоль" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Консоль" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Назад" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Очистить консоль" })).toBeInTheDocument();
+    const entry = screen.getByRole("article", { name: "Ошибка из api: Raw failure: 42" });
+    expect(within(entry).getByText("Источник")).toBeInTheDocument();
+    expect(within(entry).getByText("Контекст")).toBeInTheDocument();
+    expect(within(entry).getByText("Не указан")).toBeInTheDocument();
+    expect(within(entry).getByText("Raw failure: 42")).toBeInTheDocument();
+    expect(within(entry).getByText("raw-stack")).toBeInTheDocument();
+    expect(within(entry).getByLabelText("Стек вызовов")).toBeInTheDocument();
+    expect(
+      within(entry).getByText(
+        new Intl.DateTimeFormat("ru", {
+          dateStyle: "short",
+          timeStyle: "short",
+        }).format(new Date("2026-08-26T09:00:00.000Z")),
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("renders a semantic full-screen console with an empty state", async () => {
     const user = userEvent.setup();
     const onBack = vi.fn();

@@ -85,6 +85,9 @@ import { buildFinalGameResults } from "./features/players/game-results.js";
 import { SetupWizard, type SetupWizardSessionState } from "./features/setup/SetupWizard.js";
 import { AvailablePlayersScreen } from "./features/setup/AvailablePlayersScreen.js";
 import { GameTimelineScreen } from "./features/timeline/GameTimelineScreen.js";
+import { useMessages, type FeatureI18n, type Locale } from "./i18n/I18nProvider.js";
+import { LanguageSelector } from "./i18n/LanguageSelector.js";
+import { shellMessages, type ShellMessageKey } from "./i18n/messages/shell.js";
 
 import { GameSessionOutbox } from "./session-outbox.js";
 import { SessionRetryController } from "./session-retry.js";
@@ -105,6 +108,10 @@ interface LocalLogEntry {
 
 type BackgroundShade = "black" | "grey-33" | "grey-66" | "white";
 type WorkspaceView = "game" | "players" | "timeline" | "console";
+type PlayerGateError = Readonly<{
+  readonly key: "addRegisteredPlayers" | "markAvailablePlayers";
+  readonly count: number;
+}>;
 
 const backgroundShadeOrder: readonly BackgroundShade[] = ["black", "grey-33", "grey-66", "white"];
 const backgroundShadeClass: Record<BackgroundShade, string> = {
@@ -113,12 +120,65 @@ const backgroundShadeClass: Record<BackgroundShade, string> = {
   "grey-66": " is-background-grey-66",
   white: " is-light-background",
 };
-const backgroundShadeLabel: Record<BackgroundShade, string> = {
-  black: "black",
-  "grey-33": "33% grey",
-  "grey-66": "66% grey",
-  white: "white",
+const backgroundShadeMessageKey: Record<
+  BackgroundShade,
+  "backgroundBlack" | "backgroundGrey33" | "backgroundGrey66" | "backgroundWhite"
+> = {
+  black: "backgroundBlack",
+  "grey-33": "backgroundGrey33",
+  "grey-66": "backgroundGrey66",
+  white: "backgroundWhite",
 };
+type ShellTranslator = FeatureI18n<ShellMessageKey>["t"];
+const phaseMessageKeys: Readonly<Record<string, ShellMessageKey>> = {
+  "setup-players": "phaseSetupPlayers",
+  "mafia-planning": "phaseMafiaPlanning",
+  "sheriff-wake": "phaseSheriffWake",
+  day: "phaseDay",
+  voting: "phaseVoting",
+  "voting-cancelled": "phaseVotingCancelled",
+  "car-crash": "phaseCarCrash",
+  "car-crash-decision": "phaseCarCrashDecision",
+  "car-crash-result": "phaseCarCrashResult",
+  "car-crash-skipped": "phaseCarCrashSkipped",
+  "goodbye-speech": "phaseGoodbyeSpeech",
+  "best-move": "phaseBestMove",
+  "night-mafia": "phaseNightMafia",
+  "night-mafia-result": "phaseNightMafiaResult",
+  "night-don": "phaseNightDon",
+  "night-don-result": "phaseNightDonResult",
+  "night-sheriff": "phaseNightSheriff",
+  "night-sheriff-result": "phaseNightSheriffResult",
+  "night-resolution": "phaseNightResolution",
+  finished: "phaseFinished",
+};
+const eventMessageKeys: Readonly<Record<string, ShellMessageKey>> = {
+  "game.created": "eventGameCreated",
+  "players.selected": "eventPlayersSelected",
+  "setup.players-selected": "eventPlayersSelected",
+  "game.started": "eventGameStarted",
+  "game.checkpointed": "eventGameCheckpointed",
+  "phase.changed": "eventPhaseChanged",
+  "turn.completed": "eventTurnCompleted",
+  "player.nominated": "eventPlayerNominated",
+  "foul.issued": "eventFoulIssued",
+  "player.red-carded": "eventPlayerRedCarded",
+  "voting.skipped": "eventVotingSkipped",
+  "voting.resolved": "eventVotingResolved",
+  "car-crash.resolved": "eventCarCrashResolved",
+  "car-crash.ballot-resolved": "eventCarCrashBallotResolved",
+  "mafia.shots-resolved": "eventMafiaShotsResolved",
+  "don.checked": "eventDonChecked",
+  "don.check-skipped": "eventDonCheckSkipped",
+  "sheriff.checked": "eventSheriffChecked",
+  "sheriff.check-skipped": "eventSheriffCheckSkipped",
+  "best-move.completed": "eventBestMoveCompleted",
+  "game.completed": "eventGameCompleted",
+};
+const phaseLabel = (phase: string, t: ShellTranslator): string =>
+  t(phaseMessageKeys[phase] ?? "unknownPhase", { value: phase });
+const eventLabel = (eventType: string, t: ShellTranslator): string =>
+  t(eventMessageKeys[eventType] ?? "unknownEvent", { value: eventType });
 const defaultClubId = "00000000-0000-4000-8000-000000000101";
 const gameSessionStoragePrefix = "mafia-dashboard.game-session.v4";
 const legacyGameSessionStoragePrefix = "mafia-dashboard.game-session.v3";
@@ -203,8 +263,6 @@ const currentFullscreenElement = (): Element | null =>
   null;
 
 const defaultPlaylistId = import.meta.env.VITE_YOUTUBE_PLAYLIST_ID ?? "";
-const developmentAdjectives = ["Crimson", "Midnight", "Velvet", "Golden", "Silent"] as const;
-const developmentAliases = ["Fox", "Raven", "Wolf", "Owl", "Viper"] as const;
 
 const hasSetupProgress = ({
   step,
@@ -303,6 +361,7 @@ export const ClubWorkspace = ({
   onExit,
   onEditClub,
   onDeleteClub,
+  onLanguageChange = () => Promise.resolve(),
   themeColor = DEFAULT_THEME_COLOR,
   onThemeColorChange = () => undefined,
 }: {
@@ -310,9 +369,11 @@ export const ClubWorkspace = ({
   readonly onExit: () => void;
   readonly onEditClub: () => void;
   readonly onDeleteClub: () => Promise<void>;
+  readonly onLanguageChange?: (language: Locale) => Promise<void>;
   readonly themeColor?: string;
   readonly onThemeColorChange?: (color: string) => void;
 }) => {
+  const { t, formatTime } = useMessages(shellMessages);
   const storageKey = gameSessionStorageKey(club.id);
   const legacyStorageKey = legacyGameSessionStorageKey(club.id);
   migrateGameSessionStorage(window.sessionStorage, window.localStorage, storageKey);
@@ -414,7 +475,9 @@ export const ClubWorkspace = ({
     readAvailablePlayerIds(window.localStorage, club.id),
   );
   const [playersError, setPlayersError] = useState(false);
-  const [playerGateError, setPlayerGateError] = useState<string | null>(null);
+  const [languageSaving, setLanguageSaving] = useState(false);
+  const [languageError, setLanguageError] = useState(false);
+  const [playerGateError, setPlayerGateError] = useState<PlayerGateError | null>(null);
   const [playlistId, setPlaylistId] = useState(initialPlaylistId);
   const [musicPreferences, setMusicPreferences] =
     useState<MusicPreferencesV1>(initialMusicPreferences);
@@ -919,9 +982,7 @@ export const ClubWorkspace = ({
       const futureCount = branch.length - targetIndex - 1;
       const target = branch[targetIndex]!;
       if (
-        !window.confirm(
-          `Reset the active game to log #${target.sequence}? ${futureCount} later active ${futureCount === 1 ? "action" : "actions"} will leave the current branch. Their history will be preserved.`,
-        )
+        !window.confirm(t("resetActiveGame", { sequence: target.sequence, count: futureCount }))
       ) {
         return false;
       }
@@ -1030,11 +1091,11 @@ export const ClubWorkspace = ({
   }, [game, musicState]);
 
   const musicLabel: Record<YouTubePlaybackState, string> = {
-    idle: "Playlist required",
-    loading: "Loading player",
-    playing: "Playing",
-    paused: "Ready · paused",
-    error: "Playback unavailable",
+    idle: t("playlistRequired"),
+    loading: t("loadingPlayer"),
+    playing: t("playing"),
+    paused: t("readyPaused"),
+    error: t("playbackUnavailable"),
   };
 
   const createProfile = async (input: PlayerProfileInput) => {
@@ -1069,16 +1130,35 @@ export const ClubWorkspace = ({
 
   const populateDevelopmentPlayers = async (): Promise<readonly PlayerProfile[]> => {
     const batchId = createRandomId().slice(0, 8);
+    const developmentAdjectives = [
+      t("devAdjectiveCrimson"),
+      t("devAdjectiveMidnight"),
+      t("devAdjectiveVelvet"),
+      t("devAdjectiveGolden"),
+      t("devAdjectiveSilent"),
+    ];
+    const developmentAliases = [
+      t("devAliasFox"),
+      t("devAliasRaven"),
+      t("devAliasWolf"),
+      t("devAliasOwl"),
+      t("devAliasViper"),
+    ];
     const created: PlayerProfile[] = [];
     try {
       for (let index = 0; index < 11; index += 1) {
         const adjective =
-          developmentAdjectives[Math.floor(Math.random() * developmentAdjectives.length)];
-        const alias = developmentAliases[Math.floor(Math.random() * developmentAliases.length)];
+          developmentAdjectives[Math.floor(Math.random() * developmentAdjectives.length)]!;
+        const alias = developmentAliases[Math.floor(Math.random() * developmentAliases.length)]!;
         created.push(
           await createPlayer(
             {
-              nickname: `Dev ${adjective} ${alias} ${batchId}-${index + 1}`,
+              nickname: t("devPlayerName", {
+                adjective,
+                alias,
+                batchId,
+                number: index + 1,
+              }),
               consent: false,
               clubManager: false,
               firstName: null,
@@ -1274,12 +1354,7 @@ export const ClubWorkspace = ({
   ]);
 
   const clearGameState = async () => {
-    if (
-      !window.confirm(
-        "Delete this active game from the server? This is irreversible and removes its saved session and game log for every browser.",
-      )
-    )
-      return;
+    if (!window.confirm(t("deleteActiveGameConfirmation"))) return;
     const clearingGameId = sessionSync.gameId;
     try {
       await sessionSync.clear((gameId, revision) => clearGameSession(gameId, revision, club.id));
@@ -1293,12 +1368,7 @@ export const ClubWorkspace = ({
   };
 
   const deleteActiveSession = async (session: ActiveGameSessionSummary) => {
-    if (
-      !window.confirm(
-        `Delete "${session.name}" and all associated game statistics? This cannot be undone.`,
-      )
-    )
-      return;
+    if (!window.confirm(t("deleteSessionConfirmation", { name: session.name }))) return;
     setDeletingSessionId(session.gameId);
     try {
       if (sessionSync.gameId === session.gameId) {
@@ -1318,12 +1388,7 @@ export const ClubWorkspace = ({
   };
 
   const clearApplicationData = async () => {
-    if (
-      !window.confirm(
-        "Clear all data stored by Mafia Dashboard in this browser? Server players, sessions, results, and music will not be deleted.",
-      )
-    )
-      return;
+    if (!window.confirm(t("clearApplicationDataConfirmation"))) return;
     setClearingAllData(true);
     setClearAllDataError(false);
     try {
@@ -1392,37 +1457,44 @@ export const ClubWorkspace = ({
       ? "offline"
       : persistenceSnapshot.phase;
   const pendingChanges = sessionSync.pendingCount;
-  const pendingLabel = `${pendingChanges} ${pendingChanges === 1 ? "change" : "changes"}`;
+  const pendingLabel = t("pendingChanges", { count: pendingChanges });
   const saveStatusLabel =
     persistenceState === "saved"
-      ? "Saved to server · tap to check connection"
+      ? t("savedToServer")
       : persistenceState === "offline"
         ? persistenceSnapshot.terminalReason === "rejected"
-          ? `Save blocked · ${pendingLabel} safe on this device · tap to retry`
-          : `Offline · ${pendingLabel} safe on this device · tap to retry`
+          ? t("saveBlocked", { pendingLabel })
+          : t("offline", { pendingLabel })
         : persistenceState === "retrying"
-          ? `Save failed · retry ${persistenceSnapshot.attempt} of ${persistenceSnapshot.maxAttempts} · ${pendingLabel} pending`
-          : `Saving · ${pendingLabel} pending`;
+          ? t("saveFailed", {
+              attempt: persistenceSnapshot.attempt,
+              maxAttempts: persistenceSnapshot.maxAttempts,
+              pendingLabel,
+            })
+          : t("saving", { pendingLabel });
   const setupStep = setupSession?.step ?? "players";
   const roleGiveawayActive = view === "game" && game === null && setupStep === "roles";
   const showApplicationStatus =
     view !== "timeline" && (view === "players" || (game === null && !roleGiveawayActive));
   const applicationStatusTitle =
     view === "players"
-      ? "Players & statistics"
+      ? t("playersStatistics")
       : availabilityScreenOpen
-        ? "Available players"
-        : "Game setup";
+        ? t("availablePlayers")
+        : t("gameSetup");
   const applicationStatusPhase =
     view === "players"
       ? players.length < 11
-        ? `Need 11 players · ${players.length} registered`
-        : `${availablePlayersForSetup.length} available · ${players.length} registered`
+        ? t("needPlayers", { needed: 11, registered: players.length })
+        : t("availableRegistered", {
+            available: availablePlayersForSetup.length,
+            registered: players.length,
+          })
       : setupStep === "music"
-        ? "Table music"
+        ? t("tableMusic")
         : availabilityScreenOpen
-          ? `${availablePlayersForSetup.length} available`
-          : "Select players";
+          ? t("availableCount", { count: availablePlayersForSetup.length })
+          : t("selectPlayers");
   const nextBackgroundShade =
     backgroundShadeOrder[
       (backgroundShadeOrder.indexOf(backgroundShade) + 1) % backgroundShadeOrder.length
@@ -1456,13 +1528,17 @@ export const ClubWorkspace = ({
     setupSession !== null ||
     playlistId !== defaultPlaylistId;
   const musicSetupPanel = musicSetupOpen ? (
-    <section id="manage-music-setup" className="manage-music-setup" aria-label="Music player setup">
+    <section
+      id="manage-music-setup"
+      className="manage-music-setup"
+      aria-label={t("musicPlayerSetup")}
+    >
       <div className={`music-status ${musicState === "playing" ? "is-playing" : ""}`}>
         <span className="status-dot" />
         <strong>{musicLabel[musicState]}</strong>
       </div>
       <button type="button" onClick={() => setMusicReloadRequest((request) => request + 1)}>
-        Reload music player
+        {t("reloadMusicPlayer")}
       </button>
       <AccountPlaylistPicker
         playlistId={playlistId}
@@ -1472,12 +1548,12 @@ export const ClubWorkspace = ({
     </section>
   ) : null;
   const activeSessionsPanel = (
-    <section className="manage-active-sessions" aria-label="Active games">
-      <h3>Active games</h3>
+    <section className="manage-active-sessions" aria-label={t("activeGames")}>
+      <h3>{t("activeGames")}</h3>
       {activeSessionsError ? (
-        <p role="alert">Active games are temporarily unavailable.</p>
+        <p role="alert">{t("activeGamesUnavailable")}</p>
       ) : activeSessions.length === 0 ? (
-        <p>No active games to resume.</p>
+        <p>{t("noActiveGames")}</p>
       ) : (
         <ul>
           {activeSessions.map((session) => (
@@ -1505,13 +1581,17 @@ export const ClubWorkspace = ({
                 disabled={deletingSessionId === session.gameId}
                 onClick={() => void deleteActiveSession(session)}
               >
-                {deletingSessionId === session.gameId ? "Deleting…" : "Delete"}
+                {deletingSessionId === session.gameId ? t("deleting") : t("delete")}
               </button>
               <div className="session-swipe-content">
                 <div>
                   <strong>{session.name}</strong>
                   <span>
-                    {session.hostName ?? "Host not selected"} · {session.phase} · day {session.day}
+                    {t("activeSessionSummary", {
+                      host: session.hostName ?? t("hostNotSelected"),
+                      phase: phaseLabel(session.phase, t),
+                      day: session.day,
+                    })}
                   </span>
                 </div>
                 <button
@@ -1522,7 +1602,9 @@ export const ClubWorkspace = ({
                     void resumeSession(session.gameId);
                   }}
                 >
-                  {resumeGameId === session.gameId ? "Resuming…" : `Resume ${session.name}`}
+                  {resumeGameId === session.gameId
+                    ? t("resuming")
+                    : t("resumeSession", { name: session.name })}
                 </button>
               </div>
             </li>
@@ -1547,15 +1629,15 @@ export const ClubWorkspace = ({
         <header
           className="app-status-bar game-header"
           role="banner"
-          aria-label="Application status"
+          aria-label={t("applicationStatus")}
         >
           {club.headerLogo === null ? null : (
             <img className="active-club-header-logo" src={club.headerLogo} alt="" />
           )}
           <div>
             <p className="eyebrow">
-              {view === "players" ? "Persistent players" : `Game setup · ${sessionName}`} · Host
-              view
+              {view === "players" ? t("persistentPlayers") : t("gameSetupSession", { sessionName })}{" "}
+              · {t("hostView")}
             </p>
             <h1 aria-label={applicationStatusTitle}>
               <span className="active-club-title-name">{club.name}</span>
@@ -1567,11 +1649,11 @@ export const ClubWorkspace = ({
         </header>
       ) : null}
       {showWorkspaceTools ? (
-        <div className="app-fixed-toolbar" aria-label="Application tools">
+        <div className="app-fixed-toolbar" aria-label={t("applicationTools")}>
           <button
             type="button"
             className="club-exit-button icon-toolbar-button"
-            aria-label={`Choose another club · current club ${club.name}`}
+            aria-label={t("chooseAnotherClub", { clubName: club.name })}
             onClick={onExit}
           >
             <DoorOpen aria-hidden="true" />
@@ -1594,9 +1676,9 @@ export const ClubWorkspace = ({
             aria-label={
               fullscreenAvailable
                 ? isFullscreen
-                  ? "Exit fullscreen"
-                  : "Enter fullscreen"
-                : "Fullscreen unavailable"
+                  ? t("exitFullscreen")
+                  : t("enterFullscreen")
+                : t("fullscreenUnavailable")
             }
             aria-pressed={isFullscreen}
             disabled={!fullscreenAvailable}
@@ -1607,7 +1689,7 @@ export const ClubWorkspace = ({
           <button
             type="button"
             className="undo-button icon-toolbar-button"
-            aria-label={`Undo last action · ${undoCount} available`}
+            aria-label={t("undoLastAction", { count: undoCount })}
             disabled={undoCount === 0}
             onClick={undoLastGameAction}
           >
@@ -1617,7 +1699,7 @@ export const ClubWorkspace = ({
           <button
             type="button"
             className={`privacy-button icon-toolbar-button is-tap-${privacyTapStage}`}
-            aria-label={privacyHidden ? "Show private info" : "Hide private info"}
+            aria-label={privacyHidden ? t("showPrivateInfo") : t("hidePrivateInfo")}
             aria-pressed={privacyHidden}
             onClick={togglePrivacy}
           >
@@ -1627,7 +1709,7 @@ export const ClubWorkspace = ({
           <button
             type="button"
             className="log-toolbar-button icon-toolbar-button"
-            aria-label={activeDrawer === "log" ? "Close game log" : "Open game log"}
+            aria-label={activeDrawer === "log" ? t("closeGameLog") : t("openGameLog")}
             aria-expanded={activeDrawer === "log"}
             onClick={() => setActiveDrawer((drawer) => (drawer === "log" ? null : "log"))}
           >
@@ -1637,7 +1719,7 @@ export const ClubWorkspace = ({
           <button
             type="button"
             className="manage-toolbar-button icon-toolbar-button"
-            aria-label={activeDrawer === "manage" ? "Close Manage menu" : "Open Manage menu"}
+            aria-label={activeDrawer === "manage" ? t("closeManageMenu") : t("openManageMenu")}
             aria-expanded={activeDrawer === "manage"}
             onClick={() => setActiveDrawer((drawer) => (drawer === "manage" ? null : "manage"))}
           >
@@ -1647,7 +1729,7 @@ export const ClubWorkspace = ({
             <button
               type="button"
               className="dev-toolbar-button icon-toolbar-button"
-              aria-label={activeDrawer === "dev" ? "Close developer menu" : "Open developer menu"}
+              aria-label={activeDrawer === "dev" ? t("closeDeveloperMenu") : t("openDeveloperMenu")}
               aria-expanded={activeDrawer === "dev"}
               onClick={() => setActiveDrawer((drawer) => (drawer === "dev" ? null : "dev"))}
             >
@@ -1657,42 +1739,40 @@ export const ClubWorkspace = ({
         </div>
       ) : null}
       {showWorkspaceTools && activeDrawer === "log" ? (
-        <aside className="app-drawer game-log-drawer" role="dialog" aria-label="Game log">
-          <h2>Log</h2>
+        <aside className="app-drawer game-log-drawer" role="dialog" aria-label={t("gameLog")}>
+          <h2>{t("log")}</h2>
           <div className="game-log-list">
-            {log.length === 0 ? <p>No actions recorded yet.</p> : null}
+            {log.length === 0 ? <p>{t("noActionsRecorded")}</p> : null}
             {[...log].reverse().map((entry) => {
               const previewable = events.some(({ id }) => id === entry.id);
               return (
                 <article key={entry.id}>
                   <span className="log-sequence">#{entry.sequence}</span>
                   <div>
-                    <strong>{entry.type}</strong>
+                    <strong>{eventLabel(entry.type, t)}</strong>
                     <small>
-                      {entry.phase} · {new Date(entry.createdAt).toLocaleTimeString()}
+                      {phaseLabel(entry.phase, t)} · {formatTime(entry.createdAt)}
                     </small>
                     <div className="log-state-actions">
                       <button
                         type="button"
                         disabled={!previewable}
-                        aria-label={`Preview state after log #${entry.sequence}`}
+                        aria-label={t("previewStateAfterLog", { sequence: entry.sequence })}
                         onClick={() => previewEventState(entry.id)}
                       >
-                        Preview state
+                        {t("previewState")}
                       </button>
                       <button
                         type="button"
                         className="danger-action"
                         disabled={!previewable}
-                        aria-label={`Reset game to state after log #${entry.sequence}`}
+                        aria-label={t("resetGameToLog", { sequence: entry.sequence })}
                         onClick={() => resetToEventState(entry.id)}
                       >
-                        Reset
+                        {t("reset")}
                       </button>
                     </div>
-                    {!previewable ? (
-                      <small>State preview unavailable for this legacy entry.</small>
-                    ) : null}
+                    {!previewable ? <small>{t("legacyStatePreviewUnavailable")}</small> : null}
                   </div>
                 </article>
               );
@@ -1701,8 +1781,8 @@ export const ClubWorkspace = ({
         </aside>
       ) : null}
       {showWorkspaceTools && activeDrawer === "manage" ? (
-        <aside className="app-drawer manage-menu-drawer" role="dialog" aria-label="Manage">
-          <h2>Manage</h2>
+        <aside className="app-drawer manage-menu-drawer" role="dialog" aria-label={t("manage")}>
+          <h2>{t("manage")}</h2>
           <div className="manage-menu-actions">
             <button
               type="button"
@@ -1711,8 +1791,8 @@ export const ClubWorkspace = ({
                   const missing = 11 - availablePlayersForSetup.length;
                   setPlayerGateError(
                     players.length < 11
-                      ? `Add ${11 - players.length} more registered ${11 - players.length === 1 ? "player" : "players"} before starting a new game.`
-                      : `Mark ${missing} more ${missing === 1 ? "player" : "players"} available before starting a new game.`,
+                      ? { key: "addRegisteredPlayers", count: 11 - players.length }
+                      : { key: "markAvailablePlayers", count: missing },
                   );
                   setActiveDrawer(null);
                   return;
@@ -1723,7 +1803,7 @@ export const ClubWorkspace = ({
                 else resetLocalState();
               }}
             >
-              Start new game
+              {t("startNewGame")}
             </button>
             <button
               type="button"
@@ -1734,7 +1814,7 @@ export const ClubWorkspace = ({
                 setActiveDrawer(null);
               }}
             >
-              Players screen
+              {t("playersScreen")}
             </button>
             <button
               type="button"
@@ -1742,7 +1822,7 @@ export const ClubWorkspace = ({
               aria-controls="manage-music-setup"
               onClick={() => setMusicSetupOpen((open) => !open)}
             >
-              {musicSetupOpen ? "Hide music player setup" : "Music player setup"}
+              {musicSetupOpen ? t("hideMusicPlayerSetup") : t("musicPlayerSetup")}
             </button>
           </div>
           {musicSetupPanel}
@@ -1755,17 +1835,32 @@ export const ClubWorkspace = ({
                 onEditClub();
               }}
             >
-              Edit club
+              {t("editClub")}
             </button>
             <label className="theme-color-field">
-              <span>Glass color</span>
+              <span>{t("glassColor")}</span>
               <input
                 type="color"
-                aria-label="Glass color"
+                aria-label={t("glassColor")}
                 value={themeColor}
                 onChange={(event) => onThemeColorChange(event.currentTarget.value)}
               />
             </label>
+            <LanguageSelector
+              value={club.language}
+              disabled={languageSaving}
+              onChange={(language) => {
+                setLanguageError(false);
+                setLanguageSaving(true);
+                void onLanguageChange(language)
+                  .catch((error: unknown) => {
+                    reportError(error, { source: "api", context: "clubs.language" });
+                    setLanguageError(true);
+                  })
+                  .finally(() => setLanguageSaving(false));
+              }}
+            />
+            {languageError ? <p role="alert">{t("clubLanguageSaveFailed")}</p> : null}
             {club.role === "owner" ? (
               <button
                 type="button"
@@ -1775,19 +1870,22 @@ export const ClubWorkspace = ({
                   void onDeleteClub();
                 }}
               >
-                Delete club
+                {t("deleteClub")}
               </button>
             ) : null}
           </div>
         </aside>
       ) : null}
       {showWorkspaceTools && activeDrawer === "dev" ? (
-        <aside className="app-drawer dev-menu-drawer" role="dialog" aria-label="Developer menu">
+        <aside className="app-drawer dev-menu-drawer" role="dialog" aria-label={t("developerMenu")}>
           <div className="dev-menu-header">
-            <h2>Dev menu</h2>
-            <p className="dev-menu-version" aria-label={`Canary version ${webPackage.version}`}>
+            <h2>{t("devMenu")}</h2>
+            <p
+              className="dev-menu-version"
+              aria-label={t("canaryVersion", { version: webPackage.version })}
+            >
               <Bird aria-hidden="true" strokeWidth={2.5} />
-              <span>Canary v{webPackage.version}</span>
+              <span>{t("canaryVersionLabel", { version: webPackage.version })}</span>
             </p>
           </div>
           <div className="dev-menu-actions">
@@ -1799,7 +1897,7 @@ export const ClubWorkspace = ({
                 setView("timeline");
               }}
             >
-              Past game timeline
+              {t("pastGameTimeline")}
             </button>
             <button
               type="button"
@@ -1809,17 +1907,19 @@ export const ClubWorkspace = ({
                 setView("console");
               }}
             >
-              Console
+              {t("console")}
             </button>
             <button type="button" onClick={() => setBackgroundShade(nextBackgroundShade)}>
-              Use {backgroundShadeLabel[nextBackgroundShade]} background
+              {t("useBackground", {
+                background: t(backgroundShadeMessageKey[nextBackgroundShade]),
+              })}
             </button>
             <button
               type="button"
               aria-pressed={devModeEnabled}
               onClick={() => setDevModeEnabled((enabled) => !enabled)}
             >
-              {devModeEnabled ? "Disable dev mode" : "Enable dev mode"}
+              {devModeEnabled ? t("disableDevMode") : t("enableDevMode")}
             </button>
             <button
               type="button"
@@ -1827,12 +1927,12 @@ export const ClubWorkspace = ({
               disabled={clearingAllData}
               onClick={() => void clearApplicationData()}
             >
-              {clearingAllData ? "Clearing…" : "Clear all data"}
+              {clearingAllData ? t("clearing") : t("clearAllData")}
             </button>
           </div>
           {clearAllDataError ? (
             <p className="dev-menu-error" role="alert">
-              Unable to clear all browser data completely.
+              {t("clearDataFailed")}
             </p>
           ) : null}
         </aside>
@@ -1860,12 +1960,12 @@ export const ClubWorkspace = ({
         <>
           {playerGateError !== null ? (
             <p className="player-gate-error" role="alert">
-              {playerGateError}
+              {t(playerGateError.key, { count: playerGateError.count })}
             </p>
           ) : null}
           {playersError ? (
             <p className="players-load-error" role="alert">
-              Player profiles are temporarily unavailable.
+              {t("playerProfilesUnavailable")}
             </p>
           ) : null}
           <PlayersScreen
@@ -1939,7 +2039,7 @@ export const ClubWorkspace = ({
           key={`${previewGame === null ? "live" : "preview"}-${renderedGameScreenMutationGeneration}`}
           game={previewGame ?? game}
           gameName={sessionName}
-          hostName={hostName ?? "Host"}
+          hostName={hostName ?? t("host")}
           onGameChange={(nextGame) => {
             if (canApplyGameScreenMutation()) changeGame(nextGame);
           }}
@@ -2016,6 +2116,8 @@ export const ClubWorkspace = ({
 };
 
 export const App = () => {
+  const { locale, setLocale, t } = useMessages(shellMessages);
+  const portalLocale = useRef(locale).current;
   const [themeColor, setThemeColor] = useState(() => readThemeColor(window.localStorage));
   const [user, setUser] = useState<AppUser | null>(null);
   const [authConfigured, setAuthConfigured] = useState<boolean | null>(null);
@@ -2025,7 +2127,11 @@ export const App = () => {
   const [editingClub, setEditingClub] = useState<Club | "new" | null>(null);
   const [openingCurtains, setOpeningCurtains] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ShellMessageKey | null>(null);
+
+  useEffect(() => {
+    setLocale(selectedClub?.language ?? portalLocale);
+  }, [portalLocale, selectedClub?.language, setLocale]);
 
   useEffect(() => {
     applyThemeColor(document.documentElement, window.localStorage, themeColor);
@@ -2038,7 +2144,7 @@ export const App = () => {
       setError(null);
     } catch (error) {
       reportError(error, { source: "api", context: "clubs.list" });
-      setError("Clubs are temporarily unavailable.");
+      setError("clubsUnavailable");
     } finally {
       setLoading(false);
     }
@@ -2083,7 +2189,7 @@ export const App = () => {
       setError(null);
     } catch (error) {
       reportError(error, { source: "api", context: "auth.sign-out" });
-      setError("Sign out could not be completed.");
+      setError("signOutFailed");
     } finally {
       setLoading(false);
     }
@@ -2107,18 +2213,14 @@ export const App = () => {
       setError(null);
     } catch (saveError) {
       reportError(saveError, { source: "api", context: "clubs.save" });
-      setError("The club could not be saved.");
+      setError("clubSaveFailed");
       throw saveError;
     }
   };
 
   const removeClub = async (club: Club) => {
     if (user === null) throw new Error("Sign in before deleting a club");
-    if (
-      !window.confirm(
-        `Delete "${club.name}" and all of its players, games, and statistics? This cannot be undone.`,
-      )
-    ) {
+    if (!window.confirm(t("deleteClubConfirmation", { name: club.name }))) {
       return;
     }
     try {
@@ -2134,7 +2236,7 @@ export const App = () => {
       setError(null);
     } catch (error) {
       reportError(error, { source: "api", context: "clubs.delete" });
-      setError("The club could not be deleted.");
+      setError("clubDeleteFailed");
     }
   };
 
@@ -2143,6 +2245,19 @@ export const App = () => {
     setSelectedClub(club);
     setOpeningCurtains(true);
     window.setTimeout(() => setOpeningCurtains(false), 900);
+  };
+
+  const changeSelectedClubLanguage = async (language: Locale) => {
+    if (selectedClub === null) return;
+    const saved = await updateClub(selectedClub.id, {
+      name: selectedClub.name,
+      city: selectedClub.city,
+      headerLogo: selectedClub.headerLogo,
+      cardLogo: selectedClub.cardLogo,
+      language,
+    });
+    setSelectedClub(saved);
+    setClubs((current) => current.map((club) => (club.id === saved.id ? saved : club)));
   };
 
   if (selectedClub !== null) {
@@ -2160,6 +2275,7 @@ export const App = () => {
             setEditingClub(selectedClub);
           }}
           onDeleteClub={() => removeClub(selectedClub)}
+          onLanguageChange={changeSelectedClubLanguage}
           themeColor={themeColor}
           onThemeColorChange={setThemeColor}
         />
@@ -2181,7 +2297,7 @@ export const App = () => {
       themeColor={themeColor}
       clubs={clubs}
       loading={loading}
-      error={error}
+      error={error === null ? null : t(error)}
       editing={editingClub}
       onSignOut={endSession}
       onThemeColorChange={setThemeColor}

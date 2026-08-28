@@ -12,6 +12,7 @@ import {
   drawRoleForSeat,
 } from "@mafia/game-domain";
 import type { GameState, PlayerInput } from "@mafia/game-domain";
+import { I18nProvider } from "../../i18n/I18nProvider.js";
 import { GameScreen } from "./GameScreen.js";
 
 const createPlanningGame = (): GameState => {
@@ -60,6 +61,27 @@ const DayHarness = () => {
 };
 
 describe("GameScreen", () => {
+  it("renders the live day controls in Russian", () => {
+    const day = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+
+    render(
+      <I18nProvider locale="ru">
+        <GameScreen
+          game={day}
+          hostName="Host Player"
+          onGameChange={() => undefined}
+          onEvent={() => undefined}
+          privacyHidden={false}
+        />
+      </I18nProvider>,
+    );
+
+    expect(screen.getByRole("heading", { name: `День ${day.day}` })).toBeInTheDocument();
+    expect(screen.getByText(/Стол «Мафия»/)).toBeInTheDocument();
+    expect(screen.getByText("Текущий игрок")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Следующий игрок" })).toBeInTheDocument();
+  });
+
   it("shows Critical under active team counts in every critical live phase, even when masked", () => {
     const day = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
     let citizens = 0;

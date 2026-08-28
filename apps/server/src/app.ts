@@ -67,6 +67,7 @@ const clubBody = z.object({
   city: z.string().trim().min(1).max(100),
   headerLogo: z.string().max(1_500_000).nullable(),
   cardLogo: z.string().max(1_500_000).nullable(),
+  language: z.enum(["en", "ru"]),
 });
 const createClubBody = clubBody.extend({ ownerConsent: z.literal(true) });
 const noConsentPlayerBody = z.object({

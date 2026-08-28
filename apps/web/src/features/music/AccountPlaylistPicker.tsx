@@ -6,6 +6,8 @@ import {
 } from "../../api/client.js";
 import type { MusicAccountStatus, MusicPlaylist } from "../../api/client.js";
 import { reportError } from "../console/error-console.js";
+import { useMessages } from "../../i18n/I18nProvider.js";
+import { playersMusicMessages } from "../../i18n/messages/players-music.js";
 
 interface AccountPlaylistPickerProps {
   readonly playlistId: string;
@@ -18,6 +20,7 @@ export const AccountPlaylistPicker = ({
   onPlaylistIdChange,
   onAccountDisconnected,
 }: AccountPlaylistPickerProps) => {
+  const { t } = useMessages(playersMusicMessages);
   const [status, setStatus] = useState<MusicAccountStatus | null>(null);
   const [playlists, setPlaylists] = useState<readonly MusicPlaylist[] | null>(null);
   const [failed, setFailed] = useState(false);
@@ -55,23 +58,21 @@ export const AccountPlaylistPicker = ({
   }, [status]);
 
   if (failed) {
-    return <p className="account-playlist-error">Unable to check the YouTube Music account.</p>;
+    return <p className="account-playlist-error">{t("Music account check failed")}</p>;
   }
   if (status === null) {
-    return <p className="muted">Checking YouTube Music account…</p>;
+    return <p className="muted">{t("Checking music account")}</p>;
   }
   if (!status.configured) {
     return (
       <section className="account-playlist-picker">
-        <h2>YouTube Music playlist</h2>
-        <p className="muted">
-          Google account access is not configured yet. A playlist ID can still be used.
-        </p>
+        <h2>{t("Music playlist")}</h2>
+        <p className="muted">{t("Music account access not configured")}</p>
         <label className="wide-field">
-          <span>YouTube Music playlist ID</span>
+          <span>{t("Music playlist ID")}</span>
           <input
             value={playlistId}
-            placeholder="Paste a playlist ID"
+            placeholder={t("Paste music playlist ID")}
             onChange={(event) => onPlaylistIdChange(event.target.value)}
           />
         </label>
@@ -81,25 +82,29 @@ export const AccountPlaylistPicker = ({
   if (!status.connected) {
     return (
       <section className="account-playlist-picker">
-        <h2>YouTube Music account</h2>
-        <p className="muted">
-          Connect with least-privilege read-only access to choose playlists from your library.
-        </p>
+        <h2>{t("Music account")}</h2>
+        <p className="muted">{t("Music read-only guidance")}</p>
         <a className="oauth-connect" href="/api/music/oauth/start">
-          Connect YouTube Music account
+          {t("Connect music account")}
         </a>
       </section>
     );
   }
   if (playlists === null) {
-    return <p className="muted">Loading playlists for {status.accountLabel}…</p>;
+    return (
+      <p className="muted">
+        {t("Loading playlists for {account}", { account: status.accountLabel ?? "" })}
+      </p>
+    );
   }
   return (
     <section className="account-playlist-picker">
       <div className="account-playlist-heading">
         <div>
-          <h2>YouTube Music library</h2>
-          <p className="muted">Connected as {status.accountLabel}</p>
+          <h2>{t("Music library")}</h2>
+          <p className="muted">
+            {t("Connected as {account}", { account: status.accountLabel ?? "" })}
+          </p>
         </div>
         <button
           type="button"
@@ -119,27 +124,25 @@ export const AccountPlaylistPicker = ({
               .finally(() => setDisconnecting(false));
           }}
         >
-          {disconnecting ? "Disconnecting…" : "Disconnect account"}
+          {disconnecting ? t("Disconnecting…") : t("Disconnect account")}
         </button>
       </div>
       <label className="wide-field">
-        <span>YouTube Music playlist</span>
+        <span>{t("Music playlist")}</span>
         <select
-          aria-label="YouTube Music playlist"
+          aria-label={t("Music playlist")}
           value={playlistId}
           onChange={(event) => onPlaylistIdChange(event.target.value)}
         >
-          <option value="">Choose a playlist</option>
+          <option value="">{t("Choose a playlist")}</option>
           {playlists.map((playlist) => (
             <option key={playlist.id} value={playlist.id}>
-              {playlist.title} · {playlist.itemCount} tracks
+              {playlist.title} · {t("Playlist tracks", { count: playlist.itemCount })}
             </option>
           ))}
         </select>
       </label>
-      {playlists.length === 0 ? (
-        <p className="muted">No playlists were found in this account.</p>
-      ) : null}
+      {playlists.length === 0 ? <p className="muted">{t("No account playlists")}</p> : null}
     </section>
   );
 };

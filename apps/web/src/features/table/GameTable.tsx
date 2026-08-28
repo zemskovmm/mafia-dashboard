@@ -1,6 +1,8 @@
 import type { PlayerStatus, Role } from "@mafia/game-domain";
 import type { CSSProperties, ReactNode } from "react";
 import { useRef } from "react";
+import { useMessages } from "../../i18n/I18nProvider.js";
+import { gameMessages, type GameMessageKey } from "../../i18n/messages/game.js";
 
 export interface TableSeatView {
   readonly seat: number;
@@ -45,6 +47,12 @@ const PersonIcon = () => (
 
 const TABLE_POSITION_COUNT = 11;
 const HOST_ANGLE = 180;
+const roleMessageKeys: Record<Role, GameMessageKey> = {
+  citizen: "role.citizen",
+  don: "role.don",
+  mafia: "role.mafia",
+  sheriff: "role.sheriff",
+};
 
 export const GameTable = ({
   seats,
@@ -60,6 +68,7 @@ export const GameTable = ({
   advance,
   readOnly = false,
 }: GameTableProps) => {
+  const { t } = useMessages(gameMessages);
   const swipeStart = useRef<{
     readonly seat: number;
     readonly x: number;
@@ -67,7 +76,7 @@ export const GameTable = ({
   } | null>(null);
   const suppressClickSeat = useRef<number | null>(null);
   return (
-    <section className="table-stage" aria-label="Mafia table">
+    <section className="table-stage" aria-label={t("game.table")}>
       <div className="round-table">
         <div className="table-center">{center}</div>
         {swipeAction === undefined ? null : <div className="table-swipe-menu">{swipeAction}</div>}
@@ -75,14 +84,15 @@ export const GameTable = ({
           <div className="table-advance">
             {advance ?? (
               <button type="button" disabled>
-                Continue
+                {t("table.continue")}
               </button>
             )}
           </div>
         )}
         {seats.map((seat) => {
           const angle = HOST_ANGLE + (seat.seat * 360) / TABLE_POSITION_COUNT;
-          const label = seatActionLabel?.(seat) ?? `Seat ${seat.seat}: ${seat.name}`;
+          const label =
+            seatActionLabel?.(seat) ?? t("table.seat", { seat: seat.seat, name: seat.name });
           const showRole = seat.role !== undefined && !privacyHidden;
           const className = `table-card player-seat status-${seat.status ?? "active"}${seat.current ? " is-current" : ""}${seat.mafiaShooter ? " is-mafia-shooter" : ""}${seat.sheriffHighlight ? " is-sheriff-highlight" : ""}${seat.goodbyeHighlight ? " is-goodbye-highlight" : ""}${seat.votingHighlight ? " is-voting-highlight" : ""}${seat.dimmed ? " is-dimmed" : ""}${seat.inactive ? " is-inactive" : ""}${seat.provisionalDeceased ? " is-provisional-deceased" : ""}`;
           const content = (
@@ -92,13 +102,21 @@ export const GameTable = ({
               <span className="seat-name">{seat.name}</span>
               <span className="seat-badges">
                 {showRole ? (
-                  <span className={`role-badge role-${seat.role}`}>{seat.role}</span>
+                  <span className={`role-badge role-${seat.role}`}>
+                    {t(roleMessageKeys[seat.role])}
+                  </span>
                 ) : null}
-                {seat.fouls ? <span className="foul-badge">Foul ×{seat.fouls}</span> : null}
-                {seat.muted ? <span className="state-badge">Muted turn</span> : null}
-                {seat.nominated ? <span className="state-badge">Nominated</span> : null}
+                {seat.fouls ? (
+                  <span className="foul-badge">{t("table.foulCount", { count: seat.fouls })}</span>
+                ) : null}
+                {seat.muted ? <span className="state-badge">{t("table.mutedTurn")}</span> : null}
+                {seat.nominated ? (
+                  <span className="state-badge">{t("table.nominated")}</span>
+                ) : null}
                 {seat.voteTargetSeat === undefined ? null : (
-                  <span className="state-badge">Vote → #{seat.voteTargetSeat}</span>
+                  <span className="state-badge">
+                    {t("table.voteTarget", { seat: seat.voteTargetSeat })}
+                  </span>
                 )}
               </span>
               {seat.status === "eliminated" ? (
@@ -176,10 +194,14 @@ export const GameTable = ({
           className="seat-anchor host-anchor"
           style={{ "--seat-angle": `${HOST_ANGLE}deg` } as CSSProperties}
         >
-          <div className="table-card host-seat" role="group" aria-label={`Host: ${hostName}`}>
+          <div
+            className="table-card host-seat"
+            role="group"
+            aria-label={t("table.host", { name: hostName })}
+          >
             <span className="host-crown">◆</span>
             <span className="host-name">{hostName}</span>
-            <span className="host-role">Host</span>
+            <span className="host-role">{t("table.hostRole")}</span>
           </div>
         </div>
       </div>

@@ -1,5 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { reportError } from "../console/error-console.js";
+import { useMessages } from "../../i18n/I18nProvider.js";
+import { gameMessages } from "../../i18n/messages/game.js";
 import { readCountdown, startCountdown } from "./timer.js";
 import type { CountdownState } from "./timer.js";
 
@@ -22,6 +24,7 @@ const scheduleFaintChime = (context: AudioContext, seconds: 10 | 30 | 60): Oscil
 };
 
 export const TimerControls = forwardRef<TimerControlsHandle>((_, ref) => {
+  const { t } = useMessages(gameMessages);
   const [timer, setTimer] = useState<CountdownState | null>(null);
   const [remaining, setRemaining] = useState(0);
   const audioContextRef = useRef<AudioContext | null>(null);
@@ -98,11 +101,11 @@ export const TimerControls = forwardRef<TimerControlsHandle>((_, ref) => {
   };
 
   return (
-    <section className="timer-panel" aria-label="Timer controls">
+    <section className="timer-panel" aria-label={t("timer.controls")}>
       <button
         type="button"
         className="timer-preset-60"
-        aria-label="Start 60 second timer"
+        aria-label={t("timer.start", { seconds: 60 })}
         onClick={() => start(60)}
       >
         +60
@@ -110,20 +113,22 @@ export const TimerControls = forwardRef<TimerControlsHandle>((_, ref) => {
       <button
         type="button"
         className={`timer-display${remaining <= 10 && remaining > 0 ? " is-warning" : ""}`}
-        aria-label={timer === null || timer.status === "expired" ? "Timer face" : "Stop timer"}
+        aria-label={
+          timer === null || timer.status === "expired" ? t("timer.face") : t("timer.stop")
+        }
         disabled={timer === null || timer.status === "expired"}
         onClick={stop}
       >
-        <span className="timer-label">Timer</span>
+        <span className="timer-label">{t("timer.label")}</span>
         <strong>{remaining.toString().padStart(2, "0")}</strong>
-        <span>seconds</span>
+        <span>{t("timer.seconds")}</span>
       </button>
       <div className="timer-side-presets">
         {([30, 10] as const).map((seconds) => (
           <button
             type="button"
             key={seconds}
-            aria-label={`Start ${seconds} second timer`}
+            aria-label={t("timer.start", { seconds })}
             onClick={() => start(seconds)}
           >
             +{seconds}

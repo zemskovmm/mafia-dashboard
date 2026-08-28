@@ -1,6 +1,7 @@
 import { useState, type ComponentType } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { I18nProvider } from "../../i18n/I18nProvider.js";
 import { MusicDock } from "./MusicDock.js";
 
 const callbacks = () => ({
@@ -67,5 +68,20 @@ describe("MusicDock", () => {
     fireEvent.click(handle);
 
     expect(screen.getByTestId("expanded-state")).toHaveTextContent("true");
+  });
+
+  it("uses Russian labels for the dock and its panel handle", () => {
+    render(
+      <I18nProvider locale="ru">
+        <MusicDock {...callbacks()}>
+          <span />
+        </MusicDock>
+      </I18nProvider>,
+    );
+
+    expect(screen.getByRole("region", { name: "Музыкальная панель стола" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Переключатель панели музыкального проигрывателя" }),
+    ).toBeInTheDocument();
   });
 });

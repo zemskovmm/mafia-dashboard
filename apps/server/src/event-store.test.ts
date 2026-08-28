@@ -221,6 +221,7 @@ describe("PostgreSQL event store", () => {
       city: "Granada",
       headerLogo: null,
       cardLogo: null,
+      language: "en",
       ownerConsent: true,
     });
     const gameId = randomUUID();

@@ -1,4 +1,37 @@
 import type { GameState, ReplayFrame } from "@mafia/game-domain";
+import {
+  timelineConsoleMessages,
+  type TimelineConsoleMessageKey,
+} from "../../i18n/messages/timeline-console.js";
+import type { Message, MessageValues } from "../../i18n/messages/types.js";
+
+export interface TimelineText {
+  readonly t: (key: TimelineConsoleMessageKey, values?: MessageValues) => string;
+  readonly formatList: (values: readonly string[]) => string;
+  readonly formatTime: (value: Date | string) => string;
+}
+
+const interpolate = (template: string, values: MessageValues): string =>
+  template.replace(/\{([A-Za-z][A-Za-z0-9]*)\}/g, (token, name: string) =>
+    values[name] === undefined ? token : String(values[name]),
+  );
+
+const englishTimelineText: TimelineText = {
+  t: (key, values = {}) => {
+    const message: Message = timelineConsoleMessages.en[key];
+    const template =
+      typeof message === "string"
+        ? message
+        : (message[new Intl.PluralRules("en").select(Number(values.count ?? 0))] ?? message.other);
+    return interpolate(template, values);
+  },
+  formatList: (values) =>
+    values.length === 2 ? `${values[0]} and ${values[1]}` : values.join(", "),
+  formatTime: (value) =>
+    new Intl.DateTimeFormat("en", { timeStyle: "medium" }).format(
+      value instanceof Date ? value : new Date(value),
+    ),
+};
 
 export const TIMELINE_REGION_COLORS = {
   initialNight: "#1e3a5f",
@@ -95,12 +128,12 @@ interface MarkerDescription {
   readonly result?: string;
 }
 
-const regionForState = (game: GameState): RegionIdentity | null => {
+const regionForState = (game: GameState, text: TimelineText): RegionIdentity | null => {
   if (game.day === 0) {
     return {
       id: "initial-night",
       kind: "initial-night",
-      label: "Initial night",
+      label: text.t("Initial night"),
       color: TIMELINE_REGION_COLORS.initialNight,
       day: 0,
     };
@@ -111,7 +144,7 @@ const regionForState = (game: GameState): RegionIdentity | null => {
     return {
       id: `night-${game.day}`,
       kind: "night",
-      label: `Night ${game.day}`,
+      label: text.t("Night {day}", { day: game.day }),
       color: TIMELINE_REGION_COLORS.night,
       day: game.day,
     };
@@ -127,7 +160,7 @@ const regionForState = (game: GameState): RegionIdentity | null => {
     return {
       id: `voting-${game.day}`,
       kind: "voting",
-      label: `Voting ${game.day}`,
+      label: text.t("Voting {day}", { day: game.day }),
       color: TIMELINE_REGION_COLORS.voting,
       day: game.day,
     };
@@ -135,24 +168,24 @@ const regionForState = (game: GameState): RegionIdentity | null => {
   return {
     id: `day-${game.day}`,
     kind: "day",
-    label: `Day ${game.day}`,
+    label: text.t("Day {day}", { day: game.day }),
     color: TIMELINE_REGION_COLORS.day,
     day: game.day,
   };
 };
 
-const regionForFrame = (frame: ReplayFrame): RegionIdentity | null => {
+const regionForFrame = (frame: ReplayFrame, text: TimelineText): RegionIdentity | null => {
   if (frame.entry.type === "best-move.completed") {
     const day = frame.before.day;
     return {
       id: `night-${day}`,
       kind: "night",
-      label: `Night ${day}`,
+      label: text.t("Night {day}", { day }),
       color: TIMELINE_REGION_COLORS.night,
       day,
     };
   }
-  return regionForState(frame.after) ?? regionForState(frame.before);
+  return regionForState(frame.after, text) ?? regionForState(frame.before, text);
 };
 
 const asRecord = (value: unknown): Readonly<Record<string, unknown>> | null =>
@@ -161,6 +194,35 @@ const asRecord = (value: unknown): Readonly<Record<string, unknown>> | null =>
     : null;
 
 const hiddenPhaseTargets = new Set(["sheriff-wake", "night-don", "night-sheriff", "best-move"]);
+
+const phaseMessageKeys = {
+  "mafia-planning": "Phase mafia planning",
+  "sheriff-wake": "Phase sheriff wake",
+  day: "Phase day",
+  voting: "Phase voting",
+  "voting-cancelled": "Phase voting cancelled",
+  "car-crash": "Phase car crash",
+  "car-crash-decision": "Phase car crash decision",
+  "car-crash-result": "Phase car crash result",
+  "car-crash-skipped": "Phase car crash skipped",
+  "goodbye-speech": "Phase goodbye speech",
+  "best-move": "Phase best move",
+  "night-mafia": "Phase night mafia",
+  "night-mafia-result": "Phase night mafia result",
+  "night-don": "Phase night don",
+  "night-don-result": "Phase night don result",
+  "night-sheriff": "Phase night sheriff",
+  "night-sheriff-result": "Phase night sheriff result",
+  "night-resolution": "Phase night resolution",
+  finished: "Phase finished",
+} as const satisfies Readonly<Record<string, TimelineConsoleMessageKey>>;
+
+export const formatTimelinePhase = (phase: string, text: TimelineText): string =>
+  text.t("Phase: {phase}", {
+    phase: text.t(phaseMessageKeys[phase as keyof typeof phaseMessageKeys] ?? "Generic event", {
+      event: phase.replaceAll("-", " "),
+    }),
+  });
 
 export const isVisibleTimelineEvent = (eventType: string, payload: unknown): boolean => {
   if (eventType === "turn.completed") return false;
@@ -172,14 +234,14 @@ export const isVisibleTimelineEvent = (eventType: string, payload: unknown): boo
 const integer = (value: unknown): number | null =>
   typeof value === "number" && Number.isInteger(value) ? value : null;
 
-const playerLabel = (frame: ReplayFrame, value: unknown): string => {
+const playerLabel = (frame: ReplayFrame, value: unknown, text: TimelineText): string => {
   const seat = integer(value);
-  if (seat === null) return "Unknown player";
+  if (seat === null) return text.t("Unknown player");
   const player =
     frame.after.players.find((candidate) => candidate.seat === seat) ??
     frame.before.players.find((candidate) => candidate.seat === seat);
   const name = typeof player?.name === "string" ? player.name.trim() : "";
-  return name.length > 0 ? name : `Seat ${seat}`;
+  return name.length > 0 ? name : text.t("Seat {seat}", { seat });
 };
 
 const humanizeEventType = (eventType: string): string => {
@@ -187,86 +249,102 @@ const humanizeEventType = (eventType: string): string => {
   return text.length === 0 ? "Game event" : `${text[0]!.toUpperCase()}${text.slice(1)}`;
 };
 
-const genericDescription = (eventType: string): MarkerDescription => {
-  const label = humanizeEventType(eventType);
+const genericDescription = (eventType: string, text: TimelineText): MarkerDescription => {
+  const label = text.t("Generic event", { event: humanizeEventType(eventType) });
   return { kind: "generic", icon: "circle", label, ariaLabel: label };
 };
 
-const voteTotalsLabel = (frame: ReplayFrame, value: unknown): string => {
+const voteTotalsLabel = (frame: ReplayFrame, value: unknown, text: TimelineText): string => {
   const totals = asRecord(value);
   if (totals === null) return "";
   return Object.entries(totals)
     .map(([seat, total]) => {
       const parsedSeat = Number(seat);
       return typeof total === "number" && Number.isFinite(total)
-        ? `${playerLabel(frame, parsedSeat)}: ${total} votes`
+        ? `${playerLabel(frame, parsedSeat, text)}: ${text.t("votes", { count: total })}`
         : null;
     })
     .filter((item): item is string => item !== null)
     .join(", ");
 };
 
-const describeMarker = (frame: ReplayFrame): MarkerDescription => {
+const describeMarker = (frame: ReplayFrame, text: TimelineText): MarkerDescription => {
   const eventType = String(frame.entry.type);
   const payload = asRecord(frame.entry.payload);
-  if (payload === null) return genericDescription(eventType);
+  if (payload === null) return genericDescription(eventType, text);
 
   switch (eventType) {
     case "game.started":
-      return { kind: "start", icon: "play", label: "Game started", ariaLabel: "Game started" };
+      return {
+        kind: "start",
+        icon: "play",
+        label: text.t("Game started"),
+        ariaLabel: text.t("Game started"),
+      };
     case "game.checkpointed":
       return {
         kind: "start",
         icon: "play",
-        label: "Imported game checkpoint",
-        ariaLabel: "Imported game checkpoint",
+        label: text.t("Imported game checkpoint"),
+        ariaLabel: text.t("Imported game checkpoint"),
       };
     case "phase.changed": {
       const to = typeof payload.to === "string" ? payload.to : null;
-      if (to === null) return genericDescription(eventType);
+      if (to === null) return genericDescription(eventType, text);
       if (to === "night-mafia") {
-        return { kind: "phase", icon: "arrow-right", label: "Night", ariaLabel: "Night" };
+        return {
+          kind: "phase",
+          icon: "arrow-right",
+          label: text.t("Night"),
+          ariaLabel: text.t("Night"),
+        };
       }
-      const label = `Phase: ${to.replaceAll("-", " ")}`;
+      const label = formatTimelinePhase(to, text);
       return { kind: "phase", icon: "arrow-right", label, ariaLabel: label };
     }
     case "turn.completed": {
-      if (integer(payload.seat) === null) return genericDescription(eventType);
-      const player = playerLabel(frame, payload.seat);
+      if (integer(payload.seat) === null) return genericDescription(eventType, text);
+      const player = playerLabel(frame, payload.seat, text);
       return {
         kind: "turn",
         icon: "message-circle",
-        label: `${player} completed turn`,
-        ariaLabel: `${player} completed their turn`,
+        label: text.t("{player} completed turn", { player }),
+        ariaLabel: text.t("{player} completed their turn", { player }),
       };
     }
     case "player.nominated": {
       if (integer(payload.nominatorSeat) === null || integer(payload.candidateSeat) === null) {
-        return genericDescription(eventType);
+        return genericDescription(eventType, text);
       }
-      const nominator = playerLabel(frame, payload.nominatorSeat);
-      const candidate = playerLabel(frame, payload.candidateSeat);
+      const nominator = playerLabel(frame, payload.nominatorSeat, text);
+      const candidate = playerLabel(frame, payload.candidateSeat, text);
       return {
         kind: "nomination",
         icon: "user-plus",
-        label: `${candidate} set for voting`,
-        ariaLabel: `Nomination: ${nominator} set ${candidate} for voting`,
+        label: text.t("{candidate} set for voting", { candidate }),
+        ariaLabel: text.t("Nomination: {nominator} set {candidate} for voting", {
+          nominator,
+          candidate,
+        }),
       };
     }
     case "voting.resolved": {
       const result = asRecord(payload.result);
       const seats = Array.isArray(result?.seats) ? result.seats : null;
       if (result === null || seats === null || seats.some((seat) => integer(seat) === null)) {
-        return genericDescription(eventType);
+        return genericDescription(eventType, text);
       }
-      const players = seats.map((seat) => playerLabel(frame, seat)).join(" and ");
-      const outcome = result.kind === "winner" ? `${players} eliminated` : `${players} tied`;
-      const totals = voteTotalsLabel(frame, result.totals);
+      const players = text.formatList(seats.map((seat) => playerLabel(frame, seat, text)));
+      const outcome =
+        result.kind === "winner"
+          ? text.t("Players eliminated", { players, count: seats.length })
+          : text.t("Players tied", { players, count: seats.length });
+      const totals = voteTotalsLabel(frame, result.totals, text);
       return {
         kind: "voting-result",
         icon: "vote",
-        label: `Vote: ${outcome}`,
-        ariaLabel: `Voting result: ${outcome}${totals.length > 0 ? `; ${totals}` : ""}`,
+        label: text.t("Vote: {outcome}", { outcome }),
+        ariaLabel: `${text.t("Voting result: {outcome}", { outcome })}${totals.length > 0 ? `; ${totals}` : ""}`,
         result: typeof result.kind === "string" ? result.kind : "unknown",
       };
     }
@@ -274,8 +352,8 @@ const describeMarker = (frame: ReplayFrame): MarkerDescription => {
       return {
         kind: "voting-cancelled",
         icon: "ban",
-        label: "Voting skipped",
-        ariaLabel: "Voting skipped by the host",
+        label: text.t("Voting skipped"),
+        ariaLabel: text.t("Voting skipped by the host"),
         result: "host-skipped",
       };
     case "car-crash.resolved":
@@ -288,15 +366,17 @@ const describeMarker = (frame: ReplayFrame): MarkerDescription => {
         seats.some((seat) => integer(seat) === null) ||
         typeof result.eliminate !== "boolean"
       ) {
-        return genericDescription(eventType);
+        return genericDescription(eventType, text);
       }
-      const players = seats.map((seat) => playerLabel(frame, seat)).join(" and ");
-      const outcome = result.eliminate ? `${players} eliminated` : `${players} kept`;
+      const players = text.formatList(seats.map((seat) => playerLabel(frame, seat, text)));
+      const outcome = result.eliminate
+        ? text.t("Players eliminated", { players, count: seats.length })
+        : text.t("Players kept", { players, count: seats.length });
       return {
         kind: "car-crash-result",
         icon: "car-front",
-        label: `Car crash: ${outcome}`,
-        ariaLabel: `Car-crash decision: ${outcome}`,
+        label: text.t("Car crash: {outcome}", { outcome }),
+        ariaLabel: text.t("Car-crash decision: {outcome}", { outcome }),
         result: result.eliminate ? "eliminated" : "kept",
       };
     }
@@ -304,77 +384,88 @@ const describeMarker = (frame: ReplayFrame): MarkerDescription => {
       const rawShots = Array.isArray(payload.shots) ? payload.shots : null;
       const result = asRecord(payload.result);
       if (rawShots === null || result === null || typeof result.kind !== "string") {
-        return genericDescription(eventType);
+        return genericDescription(eventType, text);
       }
       const shots: TimelineShot[] = [];
       for (const rawShot of rawShots) {
         const shot = asRecord(rawShot);
         const shooterSeat = integer(shot?.shooterSeat);
         const targetSeat = integer(shot?.targetSeat);
-        if (shooterSeat === null || targetSeat === null) return genericDescription(eventType);
+        if (shooterSeat === null || targetSeat === null) return genericDescription(eventType, text);
         shots.push({
           shooterSeat,
           targetSeat,
-          shooterLabel: playerLabel(frame, shooterSeat),
-          targetLabel: playerLabel(frame, targetSeat),
+          shooterLabel: playerLabel(frame, shooterSeat, text),
+          targetLabel: playerLabel(frame, targetSeat, text),
         });
       }
-      if (shots.length === 0) return genericDescription(eventType);
+      if (shots.length === 0) return genericDescription(eventType, text);
       const pairs = shots
-        .map(({ shooterLabel, targetLabel }) => `${shooterLabel} to ${targetLabel}`)
+        .map(({ shooterLabel, targetLabel }) =>
+          text.t("{shooter} to {target}", {
+            shooter: shooterLabel,
+            target: targetLabel,
+          }),
+        )
         .join("; ");
       let label: string;
       let resultLabel: string;
       if (result.kind === "kill" && integer(result.targetSeat) !== null) {
-        const target = playerLabel(frame, result.targetSeat);
-        label = `Mafia kill: ${target}`;
-        resultLabel = `${target} killed`;
+        const target = playerLabel(frame, result.targetSeat, text);
+        label = text.t("Mafia kill: {target}", { target });
+        resultLabel = text.t("{target} killed", { target });
       } else if (result.kind === "no-effect" && integer(result.targetSeat) !== null) {
-        const target = playerLabel(frame, result.targetSeat);
-        label = `Mafia no effect: ${target}`;
-        resultLabel = `no effect on ${target}`;
+        const target = playerLabel(frame, result.targetSeat, text);
+        label = text.t("Mafia no effect: {target}", { target });
+        resultLabel = text.t("no effect on {target}", { target });
       } else if (result.kind === "miss") {
-        label = "Mafia miss";
-        resultLabel = "miss";
+        label = text.t("Mafia miss");
+        resultLabel = text.t("miss");
       } else {
-        return genericDescription(eventType);
+        return genericDescription(eventType, text);
       }
       return {
         kind: "mafia-shots",
         icon: "crosshair",
         label,
-        ariaLabel: `Mafia shots: ${pairs}. Result: ${resultLabel}`,
+        ariaLabel: text.t("Mafia shots: {pairs}. Result: {result}", { pairs, result: resultLabel }),
         shots,
         result: result.kind,
       };
     }
     case "don.checked": {
       if (integer(payload.targetSeat) === null || typeof payload.match !== "boolean") {
-        return genericDescription(eventType);
+        return genericDescription(eventType, text);
       }
-      const label = `Don checked ${playerLabel(frame, payload.targetSeat)}: ${payload.match ? "Sheriff" : "Not Sheriff"}`;
+      const label = text.t("Don checked {target}: {result}", {
+        target: playerLabel(frame, payload.targetSeat, text),
+        result: text.t(payload.match ? "Sheriff" : "Not Sheriff"),
+      });
       return { kind: "don-check", icon: "eye", label, ariaLabel: label };
     }
     case "don.check-skipped":
       return {
         kind: "check-skipped",
         icon: "skip-forward",
-        label: "Don check skipped",
-        ariaLabel: "Don check skipped",
+        label: text.t("Don check skipped"),
+        ariaLabel: text.t("Don check skipped"),
       };
     case "sheriff.checked": {
       if (integer(payload.targetSeat) === null || typeof payload.match !== "boolean") {
-        return genericDescription(eventType);
+        return genericDescription(eventType, text);
       }
-      const label = `Sheriff checked ${playerLabel(frame, payload.targetSeat)}: ${payload.match ? "Mafia" : "Not Mafia"}`;
+      const label = text.t("Sheriff checked {target}: {result}", {
+        target: playerLabel(frame, payload.targetSeat, text),
+        result: text.t(payload.match ? "Mafia" : "Not Mafia"),
+      });
       return { kind: "sheriff-check", icon: "shield-search", label, ariaLabel: label };
     }
     case "sheriff.check-skipped":
       return {
         kind: "check-skipped",
         icon: "skip-forward",
-        label: "Sheriff check skipped",
-        ariaLabel: "Sheriff check skipped",
+        label: text.t("Sheriff check skipped"),
+        ariaLabel: text.t("Sheriff check skipped"),
       };
     case "foul.issued": {
       const foulNumber = integer(payload.foulNumber);
@@ -383,31 +474,34 @@ const describeMarker = (frame: ReplayFrame): MarkerDescription => {
         foulNumber === null ||
         typeof payload.redCarded !== "boolean"
       ) {
-        return genericDescription(eventType);
+        return genericDescription(eventType, text);
       }
-      const player = playerLabel(frame, payload.seat);
+      const player = playerLabel(frame, payload.seat, text);
       return payload.redCarded
         ? {
             kind: "red-card",
             icon: "badge-x",
-            label: `${player} red-carded (fourth foul)`,
-            ariaLabel: `Foul ${foulNumber}: ${player}; red card issued`,
+            label: text.t("{player} red-carded (fourth foul)", { player }),
+            ariaLabel: text.t("Foul {number}: {player}; red card issued", {
+              number: foulNumber,
+              player,
+            }),
           }
         : {
             kind: "foul",
             icon: "triangle-alert",
-            label: `Foul ${foulNumber}: ${player}`,
-            ariaLabel: `Foul ${foulNumber}: ${player}`,
+            label: text.t("Foul {number}: {player}", { number: foulNumber, player }),
+            ariaLabel: text.t("Foul {number}: {player}", { number: foulNumber, player }),
           };
     }
     case "player.red-carded": {
-      if (integer(payload.seat) === null) return genericDescription(eventType);
-      const player = playerLabel(frame, payload.seat);
+      if (integer(payload.seat) === null) return genericDescription(eventType, text);
+      const player = playerLabel(frame, payload.seat, text);
       return {
         kind: "red-card",
         icon: "badge-x",
-        label: `${player} red-carded`,
-        ariaLabel: `Red card: ${player}`,
+        label: text.t("{player} red-carded", { player }),
+        ariaLabel: text.t("Red card: {player}", { player }),
       };
     }
     case "best-move.completed": {
@@ -420,31 +514,40 @@ const describeMarker = (frame: ReplayFrame): MarkerDescription => {
         selectedSeats.some((seat) => integer(seat) === null) ||
         mafiaHits === null
       ) {
-        return genericDescription(eventType);
+        return genericDescription(eventType, text);
       }
-      const owner = playerLabel(frame, playerSeat);
-      const selections = selectedSeats.map((seat) => playerLabel(frame, seat)).join(", ");
-      const label = `Best move: ${mafiaHits} Mafia ${mafiaHits === 1 ? "hit" : "hits"}`;
+      const owner = playerLabel(frame, playerSeat, text);
+      const selections = text.formatList(
+        selectedSeats.map((seat) => playerLabel(frame, seat, text)),
+      );
+      const hits = text.t("Mafia hits", { count: mafiaHits });
+      const label = text.t("Best move: {hits}", { hits });
       return {
         kind: "best-move",
         icon: "lightbulb",
         label,
-        ariaLabel: `Best move by ${owner}: ${selections}; ${mafiaHits} Mafia ${mafiaHits === 1 ? "hit" : "hits"}`,
+        ariaLabel: text.t("Best move by {owner}: {selections}; {hits}", {
+          owner,
+          selections,
+          hits,
+        }),
         result: String(mafiaHits),
       };
     }
     case "game.completed": {
-      const winner = payload.winner === "red" ? "Red" : payload.winner === "black" ? "Black" : null;
-      if (winner === null) return genericDescription(eventType);
+      const team =
+        payload.winner === "red" ? "Red team" : payload.winner === "black" ? "Black team" : null;
+      if (team === null) return genericDescription(eventType, text);
+      const winner = text.t("{team} team won", { team: text.t(team) });
       return {
         kind: "completion",
         icon: "trophy",
-        label: `${winner} team won`,
-        ariaLabel: `Game completed: ${winner} team won`,
+        label: winner,
+        ariaLabel: text.t("Game completed: {team}", { team: winner }),
       };
     }
     default:
-      return genericDescription(eventType);
+      return genericDescription(eventType, text);
   }
 };
 
@@ -452,8 +555,9 @@ const createMarker = (
   frame: ReplayFrame,
   frameIndex: number,
   regionId: string | null,
+  text: TimelineText,
 ): TimelineMarker => {
-  const description = describeMarker(frame);
+  const description = describeMarker(frame, text);
   return {
     id: `marker-${frame.entry.id}`,
     eventId: frame.entry.id,
@@ -467,7 +571,10 @@ const createMarker = (
   };
 };
 
-export const buildTimeline = (frames: readonly ReplayFrame[]): TimelineModel => {
+export const buildTimeline = (
+  frames: readonly ReplayFrame[],
+  text: TimelineText = englishTimelineText,
+): TimelineModel => {
   const visibleFrames = frames.filter(({ entry }) =>
     isVisibleTimelineEvent(String(entry.type), entry.payload),
   );
@@ -475,7 +582,7 @@ export const buildTimeline = (frames: readonly ReplayFrame[]): TimelineModel => 
   const regionIds: Array<string | null> = [];
 
   visibleFrames.forEach((frame, frameIndex) => {
-    const identity = regionForFrame(frame);
+    const identity = regionForFrame(frame, text);
     regionIds.push(identity?.id ?? null);
     if (identity === null) return;
     const previous = regions.at(-1);
@@ -499,7 +606,7 @@ export const buildTimeline = (frames: readonly ReplayFrame[]): TimelineModel => 
   });
 
   const markers = visibleFrames.map((frame, index) =>
-    createMarker(frame, index, regionIds[index] ?? null),
+    createMarker(frame, index, regionIds[index] ?? null, text),
   );
   const frameModels = visibleFrames.map((replayFrame, index) => ({
     index,

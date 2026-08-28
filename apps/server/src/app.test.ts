@@ -80,7 +80,26 @@ describe("server API", () => {
         city: "Nowhere",
         headerLogo: null,
         cardLogo: null,
+        language: "en",
         ...consent,
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: "validation_failed" });
+  });
+
+  it.each([undefined, "es"])("rejects unsupported club language %s", async (language) => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/clubs",
+      payload: {
+        name: `Invalid language ${randomUUID().slice(0, 8)}`,
+        city: "Nowhere",
+        headerLogo: null,
+        cardLogo: null,
+        ownerConsent: true,
+        ...(language === undefined ? {} : { language }),
       },
     });
 
@@ -108,6 +127,7 @@ describe("server API", () => {
           city: "Nowhere",
           headerLogo: null,
           cardLogo: null,
+          language: "en",
           ownerConsent: true,
         },
       }),
@@ -130,10 +150,12 @@ describe("server API", () => {
         city: "Sevilla",
         headerLogo: null,
         cardLogo: null,
+        language: "ru",
         ownerConsent: true,
       },
     });
     expect(createdClub.statusCode).toBe(201);
+    expect(createdClub.json().club.language).toBe("ru");
     const secondClubId = createdClub.json().club.id as string;
 
     const nickname = `Tenant-${randomUUID().slice(0, 8)}`;
@@ -252,6 +274,77 @@ describe("server API", () => {
         [secondClubId],
       ),
     ).toMatchObject({ rows: [{ players: 0, sessions: 0, events: 0 }] });
+  });
+
+  it("lets an editor update only a club they belong to, including its language", async () => {
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/clubs",
+      payload: {
+        name: `Editor language ${randomUUID().slice(0, 8)}`,
+        city: "Málaga",
+        headerLogo: null,
+        cardLogo: null,
+        language: "en",
+        ownerConsent: true,
+      },
+    });
+    const club = created.json().club as { id: string; name: string; city: string };
+    const editor: AppUser = {
+      id: randomUUID(),
+      email: `language-editor-${randomUUID()}@example.test`,
+      name: "Language Editor",
+      picture: null,
+    };
+    await pool.query(
+      "INSERT INTO users (id, email, display_name, picture) VALUES ($1, $2, $3, $4)",
+      [editor.id, editor.email, editor.name, editor.picture],
+    );
+    await pool.query(
+      "INSERT INTO club_memberships (club_id, user_id, role) VALUES ($1, $2, 'editor')",
+      [club.id, editor.id],
+    );
+    const editorApp = await buildApp({
+      pool,
+      authenticateRequest: async () => editor,
+      defaultClubId: DEFAULT_CLUB_ID,
+    });
+    const outsiderApp = await buildApp({
+      pool,
+      authenticateRequest: async () => ({
+        id: randomUUID(),
+        email: "outsider@example.test",
+        name: "Outsider",
+        picture: null,
+      }),
+      defaultClubId: DEFAULT_CLUB_ID,
+    });
+    await editorApp.ready();
+    await outsiderApp.ready();
+    const payload = {
+      name: club.name,
+      city: club.city,
+      headerLogo: null,
+      cardLogo: null,
+      language: "ru",
+    };
+
+    const updated = await editorApp.inject({
+      method: "PUT",
+      url: `/api/clubs/${club.id}`,
+      payload,
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json().club).toMatchObject({ id: club.id, language: "ru", role: "editor" });
+    await expect(
+      outsiderApp.inject({ method: "PUT", url: `/api/clubs/${club.id}`, payload }),
+    ).resolves.toHaveProperty("statusCode", 404);
+
+    await editorApp.close();
+    await outsiderApp.close();
+    await expect(
+      app.inject({ method: "DELETE", url: `/api/clubs/${club.id}` }),
+    ).resolves.toHaveProperty("statusCode", 204);
   });
 
   it("redirects browser pages from a direct host to the configured secure app origin", async () => {
@@ -663,6 +756,7 @@ describe("server API", () => {
         city: "Granada",
         headerLogo: null,
         cardLogo: null,
+        language: "en",
         ownerConsent: true,
       },
     });
@@ -716,6 +810,7 @@ describe("server API", () => {
         city: "Granada",
         headerLogo: null,
         cardLogo: null,
+        language: "en",
         ownerConsent: true,
       },
     });
@@ -1197,6 +1292,7 @@ describe("server API", () => {
         city: "Granada",
         headerLogo: null,
         cardLogo: null,
+        language: "en",
         ownerConsent: true,
       },
     });

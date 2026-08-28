@@ -45,6 +45,7 @@ const createClub = async () => {
     city: "Granada",
     headerLogo: null,
     cardLogo: null,
+    language: "en",
     ownerConsent: true,
   });
   return { club, creator };

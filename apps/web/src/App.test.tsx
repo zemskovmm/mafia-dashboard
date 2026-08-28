@@ -28,6 +28,7 @@ import {
   reportError,
 } from "./features/console/error-console.js";
 import { musicPreferencesStorageKey } from "./features/music/music-preferences.js";
+import { I18nProvider } from "./i18n/I18nProvider.js";
 import { THEME_COLOR_STORAGE_KEY } from "./theme.js";
 
 const api = vi.hoisted(() => {
@@ -80,6 +81,7 @@ const testClub: Club = {
   city: "Málaga",
   headerLogo: null,
   cardLogo: null,
+  language: "en",
   role: "owner",
   createdAt: "2026-08-21T00:00:00.000Z",
   updatedAt: "2026-08-21T00:00:00.000Z",
@@ -678,6 +680,52 @@ describe("club welcome", () => {
     expect(screen.getByLabelText("Club name")).toHaveValue("Mafia Malaga");
   });
 
+  it("switches from browser locale to club locale and persists live language changes", async () => {
+    const user = userEvent.setup();
+    const russianClub = { ...testClub, language: "ru" as const };
+    const englishClub = { ...russianClub, language: "en" as const };
+    api.getAuthSession.mockResolvedValue({
+      configured: true,
+      user: {
+        id: "00000000-0000-4000-8000-000000000001",
+        email: "owner@mafiamalaga.es",
+        name: "Mafia Malaga owner",
+        picture: null,
+      },
+    });
+    api.listClubs.mockResolvedValue([russianClub]);
+    api.updateClub.mockResolvedValue(englishClub);
+    render(
+      <I18nProvider>
+        <WelcomeApp />
+      </I18nProvider>,
+    );
+
+    await user.click(await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i }));
+    const player = await screen.findByTestId("youtube-player");
+    await user.click(await screen.findByRole("button", { name: "Открыть меню управления" }));
+    const language = screen.getByRole("combobox", { name: "Язык" });
+    expect(language).toHaveValue("ru");
+
+    await user.selectOptions(language, "en");
+    await waitFor(() =>
+      expect(api.updateClub).toHaveBeenCalledWith(russianClub.id, {
+        name: russianClub.name,
+        city: russianClub.city,
+        headerLogo: null,
+        cardLogo: null,
+        language: "en",
+      }),
+    );
+    expect(await screen.findByRole("combobox", { name: "Language" })).toHaveValue("en");
+    expect(screen.getByTestId("youtube-player")).toBe(player);
+
+    await user.click(
+      screen.getByRole("button", { name: "Choose another club · current club Mafia Malaga" }),
+    );
+    expect(await screen.findByRole("heading", { name: "Choose your club" })).toBeInTheDocument();
+  });
+
   it("deletes a club from Manage and returns to the welcome screen", async () => {
     const user = userEvent.setup();
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -747,6 +795,37 @@ describe("club welcome", () => {
     expect(window.sessionStorage.getItem("mafia-dashboard.game-session.v4.other-club")).toBeNull();
     expect(window.sessionStorage.getItem("unrelated")).toBe("keep");
     expect(await screen.findByRole("link", { name: "Continue with Google" })).toBeInTheDocument();
+  });
+});
+
+describe("workspace localization", () => {
+  it("renders Russian shell status, controls, and Manage copy", async () => {
+    const user = userEvent.setup();
+    api.listPlayers.mockResolvedValue([]);
+
+    renderView(
+      <I18nProvider locale="ru">
+        <ClubWorkspace
+          club={{ ...testClub, language: "ru" }}
+          onExit={() => undefined}
+          onEditClub={() => undefined}
+          onDeleteClub={() => Promise.resolve()}
+        />
+      </I18nProvider>,
+    );
+
+    expect(await screen.findByRole("banner", { name: "Статус приложения" })).toHaveTextContent(
+      "Требуется 11 игроков · зарегистрировано: 0",
+    );
+    expect(screen.getByLabelText("Инструменты приложения")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Открыть меню управления" }));
+
+    const manage = screen.getByRole("dialog", { name: "Управление" });
+    expect(within(manage).getByRole("button", { name: "Начать новую игру" })).toBeInTheDocument();
+    expect(within(manage).getByRole("button", { name: "Экран игроков" })).toBeInTheDocument();
+    expect(
+      within(manage).getByRole("button", { name: "Настройка музыкального плеера" }),
+    ).toBeInTheDocument();
   });
 });
 
@@ -1104,6 +1183,32 @@ describe("developer menu", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("localizes canonical active-session phases for a Russian club", async () => {
+    const user = userEvent.setup();
+    api.listActiveGameSessions.mockResolvedValue([
+      {
+        gameId: "00000000-0000-4000-8000-0000000000d4",
+        name: "Ночной стол",
+        revision: 3,
+        hostName: "Host Player",
+        phase: "night-mafia",
+        day: 2,
+        updatedAt: "2026-08-18T12:00:00.000Z",
+      },
+    ]);
+    render(
+      <I18nProvider locale="ru">
+        <App />
+      </I18nProvider>,
+    );
+    await waitFor(() => expect(api.listActiveGameSessions).toHaveBeenCalledOnce());
+
+    await user.click(screen.getByRole("button", { name: "Открыть меню управления" }));
+
+    expect(screen.getByText("Host Player · Выстрелы мафии · день 2")).toBeInTheDocument();
+    expect(screen.queryByText(/night-mafia/)).toBeNull();
+  });
+
   it("uses one canonical status bar and opens player and game setup from Manage", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem(
@@ -1210,6 +1315,24 @@ describe("developer menu", () => {
     const log = screen.getByRole("dialog", { name: "Game log" });
     expect(log).toHaveClass("app-drawer", "game-log-drawer");
     expect(screen.getByRole("heading", { name: "Log" })).toBeInTheDocument();
+  });
+
+  it("localizes canonical game-log event and phase identifiers for a Russian club", async () => {
+    const user = userEvent.setup();
+    render(
+      <I18nProvider locale="ru">
+        <App />
+      </I18nProvider>,
+    );
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    await user.click(screen.getByRole("button", { name: "Record meaningful checkpoint" }));
+
+    await user.click(screen.getByRole("button", { name: "Открыть журнал игры" }));
+
+    expect(screen.getByText("Контрольная точка игры")).toBeInTheDocument();
+    expect(screen.getByText("Выдан фол")).toBeInTheDocument();
+    expect(screen.getAllByText(/^День ·/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/game\.checkpointed|foul\.issued|^day$/)).toBeNull();
   });
 
   it("keeps the compact music player mounted but hides it on Players", async () => {
@@ -2287,7 +2410,7 @@ describe("authoritative game session lifecycle", () => {
     expect(screen.getByText("Host: Host Player")).toBeInTheDocument();
     expect(screen.getByText("Game fouls 1")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Open game log" }));
-    expect(screen.getByText("foul.issued")).toBeInTheDocument();
+    expect(screen.getByText("Foul issued")).toBeInTheDocument();
     await act(async () => {
       await Promise.resolve();
     });
@@ -2606,13 +2729,13 @@ describe("undo checkpoints", () => {
     }
     expect(screen.getByText("Game fouls 4")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Open game log" }));
-    expect(screen.getAllByText("foul.issued")).toHaveLength(4);
+    expect(screen.getAllByText("Foul issued")).toHaveLength(4);
 
     for (let index = 0; index < 3; index += 1) {
       await user.click(screen.getByRole("button", { name: /undo last action/i }));
     }
     expect(screen.getByText("Game fouls 1")).toBeInTheDocument();
-    expect(screen.getAllByText("foul.issued")).toHaveLength(1);
+    expect(screen.getAllByText("Foul issued")).toHaveLength(1);
     expect(screen.getByRole("button", { name: /undo last action/i })).toBeDisabled();
   });
 });

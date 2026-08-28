@@ -53,6 +53,7 @@ interface ClubDetails {
   readonly city: string;
   readonly headerLogo: string | null;
   readonly cardLogo: string | null;
+  readonly language: "en" | "ru";
 }
 
 export interface ClubInput extends ClubDetails {

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../api/client.js";
 import type { PlayerProfile } from "../../api/client.js";
 import { clearErrorConsole, getErrorConsoleSnapshot } from "../console/error-console.js";
+import { I18nProvider } from "../../i18n/I18nProvider.js";
 import { PlayersScreen } from "./PlayersScreen.js";
 
 afterEach(() => {
@@ -414,5 +415,53 @@ describe("PlayersScreen", () => {
       lastName: null,
       email: null,
     });
+  });
+
+  it("renders statistics, fields, localized dates, and Russian deletion plurals", async () => {
+    const user = userEvent.setup();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    confirm.mockClear();
+    const playerWithGames = (nickname: string, gamesPlayed: number) =>
+      profile({
+        id: `00000000-0000-4000-8000-00000000000${gamesPlayed}`,
+        nickname,
+        statistics: { ...profile().statistics, hostedGames: 0, gamesPlayed },
+      });
+    render(
+      <I18nProvider locale="ru">
+        <PlayersScreen
+          players={[
+            playerWithGames("Alpha", 1),
+            playerWithGames("Bravo", 2),
+            playerWithGames("Charlie", 5),
+          ]}
+          onCreate={vi.fn()}
+          onUpdate={vi.fn()}
+          onDelete={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+
+    expect(screen.getByRole("heading", { name: "Новый игрок" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Новый игрок Псевдоним")).toBeInTheDocument();
+    expect(
+      screen.getByPlaceholderText("Поиск по псевдониму, имени или электронной почте"),
+    ).toBeInTheDocument();
+    const alphaCard = screen.getByRole("article", { name: "Игрок Alpha" });
+    expect(within(alphaCard).getByText(/Последняя игра \d{2}\.\d{2}\.\d{4}/)).toBeInTheDocument();
+    expect(within(alphaCard).getByText(/Шериф 1 · Мирный 2 · Мафия 1 · Дон 1/)).toBeInTheDocument();
+    expect(
+      within(alphaCard).getByText(/4 фола · 1 удаление · 0 красных карточек/),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Удалить Alpha" }));
+    await user.click(screen.getByRole("button", { name: "Удалить Bravo" }));
+    await user.click(screen.getByRole("button", { name: "Удалить Charlie" }));
+
+    expect(confirm.mock.calls.map(([message]) => message)).toEqual([
+      "Удалить игрока «Alpha» и 1 связанную игру? Она также будет удалена из статистики всех затронутых игроков. Отменить это действие нельзя.",
+      "Удалить игрока «Bravo» и 2 связанные игры? Они также будут удалены из статистики всех затронутых игроков. Отменить это действие нельзя.",
+      "Удалить игрока «Charlie» и 5 связанных игр? Они также будут удалены из статистики всех затронутых игроков. Отменить это действие нельзя.",
+    ]);
   });
 });

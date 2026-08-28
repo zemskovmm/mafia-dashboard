@@ -11,6 +11,8 @@ import {
 } from "@mafia/game-domain";
 import type { GameState, PlayerInput, Role, SetupState } from "@mafia/game-domain";
 import type { PlayerProfile } from "../../api/client.js";
+import { useMessages } from "../../i18n/I18nProvider.js";
+import { gameMessages, type GameMessageKey } from "../../i18n/messages/game.js";
 import { reportError } from "../console/error-console.js";
 import { GameTable } from "../table/GameTable.js";
 
@@ -28,6 +30,13 @@ interface SetupWizardProps {
 }
 
 type WizardStep = "players" | "roles";
+
+const roleMessageKeys: Record<Role, GameMessageKey> = {
+  citizen: "role.citizen",
+  don: "role.don",
+  mafia: "role.mafia",
+  sheriff: "role.sheriff",
+};
 
 export interface SetupWizardSessionState {
   /** "music" is retained only to restore snapshots created before music setup moved to Dev. */
@@ -95,6 +104,7 @@ const PlayerCombobox = ({
   unavailablePlayerIds,
   onChange,
 }: PlayerComboboxProps) => {
+  const { t } = useMessages(gameMessages);
   const selectedPlayer = players.find((player) => player.id === value);
   const [query, setQuery] = useState(selectedPlayer?.nickname ?? "");
   const [open, setOpen] = useState(false);
@@ -151,7 +161,7 @@ const PlayerCombobox = ({
           id={id}
           type="search"
           role="combobox"
-          aria-label={`${label} player`}
+          aria-label={`${label} ${t("setup.player")}`}
           aria-autocomplete="list"
           aria-controls={listboxId}
           aria-expanded={open}
@@ -180,7 +190,7 @@ const PlayerCombobox = ({
           <button
             type="button"
             className="player-combobox-clear"
-            aria-label={`Clear ${label}`}
+            aria-label={t("setup.clear", { label })}
             onPointerDown={(event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -205,10 +215,10 @@ const PlayerCombobox = ({
           id={listboxId}
           className="player-combobox-list"
           role="listbox"
-          aria-label={`${label} suggestions`}
+          aria-label={t("setup.suggestions", { label })}
         >
           {matchingPlayers.length === 0 ? (
-            <p>No matching players</p>
+            <p>{t("setup.noMatchingPlayers")}</p>
           ) : (
             matchingPlayers.map((player) => (
               <button
@@ -245,6 +255,7 @@ export const SetupWizard = ({
   onOpenAvailablePlayers = () => undefined,
   privacyHidden = false,
 }: SetupWizardProps) => {
+  const { t } = useMessages(gameMessages);
   const [step, setStep] = useState<WizardStep>(
     initialSessionState?.step === "roles" && initialSessionState.setup?.step !== "role-draw"
       ? "players"
@@ -411,15 +422,17 @@ export const SetupWizard = ({
       <main className="game-shell role-draw-screen">
         <header className="game-header">
           <div>
-            <p className="eyebrow">First game stage · Host view</p>
-            <h1>Role giveaway</h1>
+            <p className="eyebrow">{t("setup.firstStage")}</p>
+            <h1>{t("setup.roleDraw")}</h1>
           </div>
-          <div className="phase-banner">Draw roles · {setup.remainingRoles.length} remaining</div>
+          <div className="phase-banner">
+            {t("setup.drawRolesRemaining", { count: setup.remainingRoles.length })}
+          </div>
         </header>
         <div className="live-layout">
           <section className="table-workspace">
             <GameTable
-              hostName={hostPlayer?.nickname ?? "Host"}
+              hostName={hostPlayer?.nickname ?? t("setup.unknownHost")}
               privacyHidden={privacyHidden}
               seats={setup.players.map((player) => ({
                 seat: player.seat,
@@ -428,8 +441,13 @@ export const SetupWizard = ({
               }))}
               seatActionLabel={(seat) =>
                 seat.role === undefined
-                  ? `Draw role for ${seat.name}`
-                  : `${seat.name}: ${seat.role}${setup.remainingRoles.length > 0 ? ". Triple tap to reroll" : ""}`
+                  ? t("setup.drawRole", { name: seat.name })
+                  : t(
+                      setup.remainingRoles.length > 0
+                        ? "setup.roleDrawCardReroll"
+                        : "setup.roleDrawCard",
+                      { name: seat.name, role: t(roleMessageKeys[seat.role]) },
+                    )
               }
               onSeatClick={handleRoleCardTap}
               onSeatSwipe={(seat) => {
@@ -437,32 +455,41 @@ export const SetupWizard = ({
               }}
               center={
                 manualRoleSeat !== null && setup.remainingRoles.length > 0 ? (
-                  <div className="manual-role-menu" role="dialog" aria-label="Choose role">
-                    <span className="table-prompt">Choose role for seat {manualRoleSeat}</span>
+                  <div
+                    className="manual-role-menu"
+                    role="dialog"
+                    aria-label={t("setup.chooseRole")}
+                  >
+                    <span className="table-prompt">
+                      {t("setup.chooseRoleForSeat", { seat: manualRoleSeat })}
+                    </span>
                     <div>
                       {[...new Set(setup.remainingRoles)].map((role) => (
                         <button
                           type="button"
                           key={role}
-                          aria-label={`Assign ${role} to seat ${manualRoleSeat}`}
+                          aria-label={t("setup.assignRole", {
+                            role: t(roleMessageKeys[role]),
+                            seat: manualRoleSeat,
+                          })}
                           onClick={() => selectManualRole(role)}
                         >
-                          {role} ×
+                          {t(roleMessageKeys[role])} ×
                           {setup.remainingRoles.filter((candidate) => candidate === role).length}
                         </button>
                       ))}
                     </div>
                     <button type="button" onClick={() => setManualRoleSeat(null)}>
-                      Cancel
+                      {t("setup.cancel")}
                     </button>
                   </div>
                 ) : setup.remainingRoles.length === 0 ? (
                   <div className="table-check-center">
-                    <span className="table-prompt">Role giveaway</span>
-                    <strong>All roles assigned</strong>
+                    <span className="table-prompt">{t("setup.roleGiveaway")}</span>
+                    <strong>{t("setup.allRolesAssigned")}</strong>
                   </div>
                 ) : (
-                  <span className="table-prompt">Tap a player to reveal their role</span>
+                  <span className="table-prompt">{t("setup.tapRevealRole")}</span>
                 )
               }
               advance={
@@ -471,7 +498,7 @@ export const SetupWizard = ({
                   disabled={setup.remainingRoles.length > 0 || hostPlayer === undefined}
                   onClick={finishRoleDraw}
                 >
-                  Begin Mafia planning stage
+                  {t("setup.startPlanning")}
                 </button>
               }
             />
@@ -485,20 +512,15 @@ export const SetupWizard = ({
     <main className={`setup-shell${step === "players" ? " is-player-setup" : ""}`}>
       {step === "players" ? (
         <section className="wizard-card player-setup-card">
-          <p className="eyebrow">Game setup</p>
-          <h1>Select 10 players + host</h1>
-          <p className="lead">
-            Choose a saved host and ten different saved players. The player order becomes seats 1–10
-            around the table.
-          </p>
+          <p className="eyebrow">{t("setup.gameSetup")}</p>
+          <h1>{t("setup.selectPlayers")}</h1>
+          <p className="lead">{t("setup.selectPlayersLead")}</p>
           {selectablePlayers.length < 11 ? (
-            <p className="player-guidance">
-              Mark at least 11 players available in Players &amp; statistics before continuing.
-            </p>
+            <p className="player-guidance">{t("setup.playerGuidance")}</p>
           ) : null}
           {showDevelopmentTools && onPopulateDevelopmentPlayers !== undefined ? (
             <div className="development-player-tools">
-              <strong>Development only</strong>
+              <strong>{t("setup.devOnly")}</strong>
               <button
                 type="button"
                 disabled={populatingPlayers}
@@ -521,19 +543,15 @@ export const SetupWizard = ({
                     .finally(() => setPopulatingPlayers(false));
                 }}
               >
-                {populatingPlayers
-                  ? "Development only · Generating players…"
-                  : "Development only · Generate and select host + 10 random players"}
+                {populatingPlayers ? t("setup.devGenerating") : t("setup.devGenerate")}
               </button>
-              {developmentError ? (
-                <p role="alert">Development players could not be generated. Please try again.</p>
-              ) : null}
+              {developmentError ? <p role="alert">{t("setup.devError")}</p> : null}
             </div>
           ) : null}
           <PlayerCombobox
             id="host-player"
-            label="Host"
-            placeholder="Choose or search the host"
+            label={t("setup.host")}
+            placeholder={t("setup.searchHost")}
             value={hostPlayerId}
             players={selectablePlayers}
             unavailablePlayerIds={selectedPlayerIds.filter(Boolean)}
@@ -544,8 +562,8 @@ export const SetupWizard = ({
               <PlayerCombobox
                 id={`seat-${index + 1}-player`}
                 key={index}
-                label={`Seat ${index + 1}`}
-                placeholder="Choose or search a nickname"
+                label={t("setup.seat", { seat: index + 1 })}
+                placeholder={t("setup.searchNickname")}
                 value={playerId}
                 players={selectablePlayers}
                 unavailablePlayerIds={[
@@ -562,9 +580,13 @@ export const SetupWizard = ({
               />
             ))}
           </div>
-          <div className="player-setup-actions" role="group" aria-label="Player setup actions">
+          <div
+            className="player-setup-actions"
+            role="group"
+            aria-label={t("setup.playerSetupActions")}
+          >
             <button type="button" onClick={onOpenAvailablePlayers}>
-              Select available players
+              {t("setup.selectAvailable")}
             </button>
             <button
               type="button"
@@ -572,7 +594,7 @@ export const SetupWizard = ({
               disabled={selectablePlayers.length < 11}
               onClick={randomlyFillSeats}
             >
-              Assign players
+              {t("setup.assignPlayers")}
             </button>
             <button
               className="primary-action"
@@ -580,7 +602,7 @@ export const SetupWizard = ({
               disabled={!playersReady}
               onClick={startRoleDraw}
             >
-              Start game
+              {t("setup.startGame")}
             </button>
           </div>
         </section>

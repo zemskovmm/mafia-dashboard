@@ -3,12 +3,14 @@ import type { Pool } from "pg";
 import type { AppUser } from "./google-auth.js";
 
 export const DEFAULT_CLUB_ID = "00000000-0000-4000-8000-000000000101";
+export type ClubLanguage = "en" | "ru";
 
 interface ClubDetails {
   readonly name: string;
   readonly city: string;
   readonly headerLogo: string | null;
   readonly cardLogo: string | null;
+  readonly language: ClubLanguage;
 }
 
 export interface ClubInput extends ClubDetails {
@@ -28,6 +30,7 @@ interface ClubRow {
   city: string;
   header_logo: string | null;
   card_logo: string | null;
+  language_code: ClubLanguage;
   role: "owner" | "editor";
   created_at: Date;
   updated_at: Date;
@@ -39,6 +42,7 @@ const mapClub = (row: ClubRow): Club => ({
   city: row.city,
   headerLogo: row.header_logo,
   cardLogo: row.card_logo,
+  language: row.language_code,
   role: row.role,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
@@ -56,7 +60,7 @@ export class ClubStore {
 
   public async listForUser(userId: string): Promise<readonly Club[]> {
     const result = await this.pool.query<ClubRow>(
-      `SELECT club.id, club.name, club.city, club.header_logo, club.card_logo,
+      `SELECT club.id, club.name, club.city, club.header_logo, club.card_logo, club.language_code,
               membership.role, club.created_at, club.updated_at
          FROM clubs AS club
          JOIN club_memberships AS membership ON membership.club_id = club.id
@@ -99,9 +103,17 @@ export class ClubStore {
       const userId = user.id;
       const clubId = randomUUID();
       await client.query(
-        `INSERT INTO clubs (id, name, city, header_logo, card_logo, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [clubId, input.name.trim(), input.city.trim(), input.headerLogo, input.cardLogo, userId],
+        `INSERT INTO clubs (id, name, city, header_logo, card_logo, language_code, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          clubId,
+          input.name.trim(),
+          input.city.trim(),
+          input.headerLogo,
+          input.cardLogo,
+          input.language,
+          userId,
+        ],
       );
       await client.query(
         `INSERT INTO club_memberships (club_id, user_id, role)
@@ -117,7 +129,7 @@ export class ClubStore {
         [randomUUID(), clubId, firstName, lastName, user.email, userId],
       );
       const result = await client.query<ClubRow>(
-        `SELECT club.id, club.name, club.city, club.header_logo, club.card_logo,
+        `SELECT club.id, club.name, club.city, club.header_logo, club.card_logo, club.language_code,
                 membership.role, club.created_at, club.updated_at
            FROM clubs AS club
            JOIN club_memberships AS membership ON membership.club_id = club.id
@@ -187,15 +199,25 @@ export class ClubStore {
           WHERE user_id = $1 AND club_id = $2 AND role IN ('owner', 'editor')
        ), updated AS (
          UPDATE clubs AS club
-            SET name = $3, city = $4, header_logo = $5, card_logo = $6, updated_at = NOW()
+            SET name = $3, city = $4, header_logo = $5, card_logo = $6,
+                language_code = $7, updated_at = NOW()
            FROM editable
           WHERE club.id = editable.club_id
           RETURNING club.*
        )
        SELECT updated.id, updated.name, updated.city, updated.header_logo, updated.card_logo,
+              updated.language_code,
               editable.role, updated.created_at, updated.updated_at
          FROM updated, editable`,
-      [userId, clubId, input.name.trim(), input.city.trim(), input.headerLogo, input.cardLogo],
+      [
+        userId,
+        clubId,
+        input.name.trim(),
+        input.city.trim(),
+        input.headerLogo,
+        input.cardLogo,
+        input.language,
+      ],
     );
     return result.rows[0] === undefined ? null : mapClub(result.rows[0]);
   }

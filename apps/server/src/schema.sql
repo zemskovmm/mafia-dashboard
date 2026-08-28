@@ -36,10 +36,27 @@ CREATE TABLE IF NOT EXISTS clubs (
   city TEXT NOT NULL CHECK (BTRIM(city) <> ''),
   header_logo TEXT NULL,
   card_logo TEXT NULL,
+  language_code TEXT NOT NULL DEFAULT 'en' CONSTRAINT clubs_language_code_ck CHECK (language_code IN ('en', 'ru')),
   created_by UUID NOT NULL REFERENCES users (id) ON DELETE RESTRICT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE clubs ADD COLUMN IF NOT EXISTS language_code TEXT NOT NULL DEFAULT 'en';
+UPDATE clubs SET language_code = 'en' WHERE language_code IS NULL;
+ALTER TABLE clubs ALTER COLUMN language_code SET DEFAULT 'en';
+ALTER TABLE clubs ALTER COLUMN language_code SET NOT NULL;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'clubs'::REGCLASS
+       AND conname = 'clubs_language_code_ck'
+  ) THEN
+    ALTER TABLE clubs
+      ADD CONSTRAINT clubs_language_code_ck CHECK (language_code IN ('en', 'ru'));
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS club_memberships (
   club_id UUID NOT NULL REFERENCES clubs (id) ON DELETE CASCADE,

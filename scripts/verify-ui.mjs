@@ -60,6 +60,7 @@ const testClub = {
   city: "Málaga",
   headerLogo: null,
   cardLogo: null,
+  language: "en",
   role: "owner",
   createdAt: "2026-08-21T00:00:00.000Z",
   updatedAt: "2026-08-21T00:00:00.000Z",

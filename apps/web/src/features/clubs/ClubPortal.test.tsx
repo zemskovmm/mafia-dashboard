@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Club } from "../../api/client.js";
+import { I18nProvider } from "../../i18n/I18nProvider.js";
 import { ClubPortal } from "./ClubPortal.js";
 
 afterEach(cleanup);
@@ -15,6 +16,34 @@ const creator = {
 };
 
 describe("ClubPortal", () => {
+  it("renders the Russian club form and authentication copy", () => {
+    render(
+      <I18nProvider locale="ru">
+        <ClubPortal
+          user={creator}
+          authConfigured
+          authUnavailable={false}
+          themeColor="#c39a58"
+          clubs={[]}
+          loading={false}
+          error={null}
+          editing="new"
+          onSignOut={vi.fn().mockResolvedValue(undefined)}
+          onThemeColorChange={vi.fn()}
+          onEditingChange={vi.fn()}
+          onSaveClub={vi.fn().mockResolvedValue(undefined)}
+          onOpenClub={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+
+    expect(screen.getByRole("heading", { name: "Создать новый клуб" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Название клуба")).toBeInTheDocument();
+    expect(screen.getByLabelText("Город")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /Я согласен/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Сохранить клуб" })).toBeDisabled();
+  });
+
   it("requires explicit Owner profile consent for each club creation", async () => {
     const user = userEvent.setup();
     const onSaveClub = vi.fn().mockResolvedValue(undefined);
@@ -61,6 +90,7 @@ describe("ClubPortal", () => {
         city: "Sevilla",
         headerLogo: null,
         cardLogo: null,
+        language: "en",
         ownerConsent: true,
       }),
     );
@@ -70,6 +100,42 @@ describe("ClubPortal", () => {
         name: "I consent to store my Google name and email in the Owner player profile.",
       }),
     ).not.toBeChecked();
+  });
+
+  it("defaults a new club to the browser language and submits an explicit language", async () => {
+    const user = userEvent.setup();
+    const onSaveClub = vi.fn().mockResolvedValue(undefined);
+    render(
+      <I18nProvider locale="ru">
+        <ClubPortal
+          user={creator}
+          authConfigured
+          authUnavailable={false}
+          themeColor="#c39a58"
+          clubs={[]}
+          loading={false}
+          error={null}
+          editing="new"
+          onSignOut={vi.fn().mockResolvedValue(undefined)}
+          onThemeColorChange={vi.fn()}
+          onEditingChange={vi.fn()}
+          onSaveClub={onSaveClub}
+          onOpenClub={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+
+    expect(screen.getByRole("combobox", { name: "Язык" })).toHaveValue("ru");
+    await user.type(screen.getByLabelText("Название клуба"), "Mafia Moscow");
+    await user.type(screen.getByLabelText("Город"), "Москва");
+    await user.click(screen.getByRole("checkbox"));
+    await user.click(screen.getByRole("button", { name: "Сохранить клуб" }));
+    await waitFor(() =>
+      expect(onSaveClub).toHaveBeenCalledWith(
+        null,
+        expect.objectContaining({ language: "ru", ownerConsent: true }),
+      ),
+    );
   });
 
   it("changes the one glass skin through a native color picker", () => {
