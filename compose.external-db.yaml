@@ -1,0 +1,6 @@
+services:
+  db:
+    profiles: [bundled-db]
+
+  migrate:
+    depends_on: !reset {}

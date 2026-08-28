@@ -6,6 +6,7 @@ import { buildApp } from "./app.js";
 import { DEFAULT_CLUB_ID } from "./club-store.js";
 import { GameSessionStore } from "./game-session-store.js";
 import type { AppUser, GoogleAuthService } from "./google-auth.js";
+import { initializeSchema } from "./initialize-schema.js";
 import type { YouTubeOAuthService } from "./youtube-oauth.js";
 
 const pool = new Pool({
@@ -18,6 +19,7 @@ const authenticatedUser: AppUser = {
   name: "Mafia Malaga owner",
   picture: null,
 };
+await initializeSchema(pool);
 const app = await buildApp({
   pool,
   authenticateRequest: async () => authenticatedUser,

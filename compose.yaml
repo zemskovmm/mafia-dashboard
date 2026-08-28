@@ -1,3 +1,12 @@
+x-app-image: &app-image
+  image: ${APP_IMAGE:-mafia-dashboard:local}
+
+x-bounded-logging: &bounded-logging
+  driver: local
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   db:
     image: postgres:17-alpine
@@ -14,14 +23,26 @@ services:
       retries: 20
       start_period: 5s
     restart: unless-stopped
+    logging: *bounded-logging
+
+  migrate:
+    <<: *app-image
+    command: ["node", "apps/server/dist/migrate.js"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
 
   app:
+    <<: *app-image
     build:
       context: .
       args:
         VITE_YOUTUBE_PLAYLIST_ID: ${VITE_YOUTUBE_PLAYLIST_ID:-}
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-mafia}:${POSTGRES_PASSWORD:-mafia-local-only}@db:5432/${POSTGRES_DB:-mafia}
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
       STATIC_DIR: /app/apps/web/dist
       PORT: 3000
       PUBLIC_APP_URL: ${PUBLIC_APP_URL:-}
@@ -30,8 +51,8 @@ services:
       GOOGLE_OAUTH_REDIRECT_URI: ${GOOGLE_OAUTH_REDIRECT_URI:-}
       MUSIC_TOKEN_ENCRYPTION_KEY: ${MUSIC_TOKEN_ENCRYPTION_KEY:-}
     depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     ports:
       - "${APP_BIND:-127.0.0.1}:${APP_PORT:-8080}:3000"
     healthcheck:
@@ -47,6 +68,7 @@ services:
       retries: 12
       start_period: 8s
     restart: unless-stopped
+    logging: *bounded-logging
 
 volumes:
   mafia-postgres:

@@ -12,6 +12,7 @@ This repository contains the implemented touch-first TypeScript web application,
 - [`docs/product-outline.md`](docs/product-outline.md) — approved setup wizard, round-table UI, music/timer behavior, phase flow, and interaction contracts.
 - [`docs/adr/0001-typescript-modular-monolith.md`](docs/adr/0001-typescript-modular-monolith.md) — initial SPA/API/PostgreSQL architecture decision.
 - [`docs/azure-deployment.md`](docs/azure-deployment.md) — Azure Container Apps, private PostgreSQL, GitHub OIDC deployment, and rollback runbook.
+- [`docs/self-hosted-deployment.md`](docs/self-hosted-deployment.md) — single-host Docker Compose, one-shot migrations, external TLS, bounded logs, upgrades, and rollback.
 - [GitHub issues](https://github.com/zemskovmm/mafia-dashboard/issues) — dependency-aware implementation backlog.
 
 ## Architecture direction
@@ -26,7 +27,8 @@ The application is a TypeScript npm workspace with a React/Vite SPA, Fastify API
 4. Start the application:
 
    ```bash
-   docker compose up --build
+   docker compose build app
+   docker compose up --detach --no-build --wait
    ```
 
 5. Open the configured `PUBLIC_APP_URL`. To allow tablets/laptops on the trusted LAN, set `APP_BIND=0.0.0.0` and use a private HTTPS origin such as Tailscale HTTPS. Apply local firewall and TLS policy before exposing the service beyond a trusted network.
@@ -54,7 +56,10 @@ docker compose down --volumes
 npm install
 npm run dev
 npm run check
+npm run verify:compose
 ```
+
+`npm run dev` applies the idempotent schema migration before starting the server and web watchers. The production Compose stack and Azure deployment instead run the same migration bundle as a one-shot job before the web process starts.
 
 Server integration tests expect PostgreSQL at `postgresql://mafia:mafia@127.0.0.1:54329/mafia_test`, or use `TEST_DATABASE_URL` to override it.
 

@@ -2,6 +2,7 @@ import { Pool } from "pg";
 import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { GoogleAuthService } from "./google-auth.js";
+import { createShutdown, registerShutdownSignals } from "./server-lifecycle.js";
 import { YouTubeOAuthService } from "./youtube-oauth.js";
 
 const config = loadConfig();
@@ -20,12 +21,17 @@ const app = await buildApp({
   publicAppUrl: config.PUBLIC_APP_URL,
 });
 
-const shutdown = async () => {
-  await app.close();
-  await pool.end();
+const shutdown = createShutdown(app, pool);
+let shutdownFailureReported = false;
+const handleSignal = () => {
+  void shutdown().catch((error: unknown) => {
+    if (shutdownFailureReported) return;
+    shutdownFailureReported = true;
+    console.error("Graceful shutdown failed", error);
+    process.exitCode = 1;
+  });
 };
 
-process.once("SIGINT", () => void shutdown());
-process.once("SIGTERM", () => void shutdown());
+registerShutdownSignals(process, handleSignal);
 
 await app.listen({ host: config.HOST, port: config.PORT });

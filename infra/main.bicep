@@ -34,7 +34,8 @@ var environmentName = '${namePrefix}-env'
 var appName = '${namePrefix}-app'
 var databaseName = 'mafia'
 var privateDnsZoneName = '${uniqueSuffix}.postgres.database.azure.com'
-var databaseUrl = 'postgresql://${postgresAdminUser}:${postgresPassword}@${postgres.properties.fullyQualifiedDomainName}:5432/${databaseName}?sslmode=verify-full'
+var encodedPostgresPassword = uriComponent(postgresPassword)
+var databaseUrl = 'postgresql://${postgresAdminUser}:${encodedPostgresPassword}@${postgres.properties.fullyQualifiedDomainName}:5432/${databaseName}?sslmode=verify-full'
 var googleConfigured = !empty(googleClientId) && !empty(googleClientSecret) && !empty(publicAppUrl)
 var musicConfigured = googleConfigured && !empty(musicTokenEncryptionKey)
 var ghcrConfigured = !empty(ghcrUsername) && !empty(ghcrToken)
@@ -122,6 +123,12 @@ var appEnv = concat(
       ]
     : []
 )
+var migrationEnv = [
+  {
+    name: 'DATABASE_URL'
+    secretRef: 'database-url'
+  }
+]
 
 resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
   name: '${namePrefix}-vnet'
@@ -273,6 +280,23 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = if (deployApp) {
       secrets: appSecrets
     }
     template: {
+      initContainers: [
+        {
+          name: 'migrate'
+          image: image
+          command: [
+            'node'
+          ]
+          args: [
+            'apps/server/dist/migrate.js'
+          ]
+          env: migrationEnv
+          resources: {
+            cpu: json('0.25')
+            memory: '0.5Gi'
+          }
+        }
+      ]
       containers: [
         {
           name: 'app'

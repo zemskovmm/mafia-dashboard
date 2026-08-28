@@ -61,9 +61,12 @@ The Azure workflow:
 3. logs into Azure using GitHub OIDC;
 4. deploys the private network, PostgreSQL, and Container Apps environment;
 5. publishes `ghcr.io/zemskovmm/mafia-dashboard:<full-git-sha>`;
-6. deploys that immutable image;
-7. discovers the generated Container Apps HTTPS hostname and applies it as `PUBLIC_APP_URL`;
-8. verifies the Container App configuration and `/health/ready`.
+6. deploys a revision containing that immutable image as both a migration init container and the web container;
+7. requires the init migration to complete before the revision's web container starts;
+8. discovers the generated Container Apps HTTPS hostname and applies it as `PUBLIC_APP_URL`;
+9. verifies the Container App configuration and `/health/ready`.
+
+On initial provisioning, the workflow can update the Container App once more after Azure has generated the HTTPS hostname so the final revision receives the canonical `PUBLIC_APP_URL`.
 
 Manual deployment is available from **Actions → Deploy Azure → Run workflow**.
 
@@ -82,6 +85,7 @@ Until those exact URLs are authorized by Google, the Azure application is health
 
 ```bash
 npm run check
+npm run verify:compose
 az bicep build --file infra/main.bicep
 az deployment group validate \
   --resource-group <resource-group> \
@@ -95,5 +99,7 @@ Never commit deployment parameter files containing real passwords or OAuth secre
 ## Rollback
 
 Each deployment uses the full Git SHA as the image tag. To roll back, manually run the workflow from the known-good commit or redeploy the previous GHCR image tag. Do not delete previous image tags until the replacement revision is healthy.
+
+Each revision runs the advisory-locked, transaction-protected migration init container before the app container. A failed migration prevents that revision from becoming ready.
 
 Database rollback is separate: application rollback must not automatically restore PostgreSQL. Use Flexible Server point-in-time restore only for an incompatible or destructive database change.

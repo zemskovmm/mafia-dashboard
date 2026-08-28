@@ -261,7 +261,6 @@ export const buildApp = async ({
   const gameSessionStore = new GameSessionStore(pool);
   const playerStore = new PlayerStore(pool);
   const clubStore = new ClubStore(pool);
-  await store.initialize();
   const secureCookies = publicAppUrl?.startsWith("https://") === true;
 
   if (publicAppUrl !== undefined) {

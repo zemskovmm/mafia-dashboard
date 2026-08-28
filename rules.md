@@ -438,6 +438,8 @@ Operational requirements:
 - use secure cookies, CSRF protection, rate limiting on authentication, and TLS;
 - export completed games to JSON/CSV for portability.
 
+The implemented Docker Compose and Azure baselines run the schema bundle as a one-shot migration before application traffic. The self-hosted TLS, logging, upgrade, shutdown, and rollback procedures are documented in [`docs/self-hosted-deployment.md`](docs/self-hosted-deployment.md).
+
 A Docker volume provides persistence but is **not** a backup. The production backup target, method, retention, and restore procedure remain unresolved owner decisions. Whichever approach is chosen MUST protect backup data like the live database and include periodic restore tests.
 
 ## 10. Non-functional acceptance criteria

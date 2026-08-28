@@ -28,3 +28,10 @@
 
 - Use focused tests while iterating.
 - Run `npm run check` before finalizing repository changes.
+
+## Backlog delivery
+
+- When Michael explicitly requests backlog execution, use the open GitHub issue backlog and select the highest-priority implementation-ready item unless he names another item or selection rule.
+- Rely on issue-focused local tests plus `npm run check`; do not open a pull request or wait for CI/review unless explicitly requested.
+- After all local acceptance criteria pass, commit the scoped changes, push the current branch, verify the remote commit, and close the issue with the verified local results.
+- Outside an explicit backlog-execution request, the default no-commit/no-push/no-close rule still applies.
