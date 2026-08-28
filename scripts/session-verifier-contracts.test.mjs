@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   assertEnvelopeMatchesSession,
   assertHeadOperation,
@@ -242,6 +243,41 @@ test("async tracker surfaces delayed failures with their operation label", async
   reject(new Error("stale revision"));
 
   await assert.rejects(draining, /late retry readback.*stale revision/i);
+});
+
+test("async tracker retains failures that settle between drains", async () => {
+  const tracker = createAsyncTracker();
+  await tracker.drain();
+
+  tracker.track("late retry readback", Promise.reject(new Error("HTTP 500")));
+  await delay(0);
+
+  await assert.rejects(tracker.drain(), /late retry readback.*HTTP 500/i);
+  await tracker.drain();
+});
+
+test("async tracker reports failures in registration order", async () => {
+  const tracker = createAsyncTracker();
+  let rejectFirst;
+  tracker.track(
+    "first request",
+    new Promise((_resolve, reject) => {
+      rejectFirst = reject;
+    }),
+  );
+  tracker.track("second request", Promise.reject(new Error("second failed")));
+  const draining = tracker.drain();
+  await delay(0);
+  rejectFirst(new Error("first failed"));
+
+  await assert.rejects(draining, (error) => {
+    assert(error instanceof AggregateError);
+    assert.deepEqual(
+      error.errors.map(({ message }) => message),
+      ["first request: first failed", "second request: second failed"],
+    );
+    return true;
+  });
 });
 
 test("cleanup runs every action and aggregates labeled failures in order", async () => {

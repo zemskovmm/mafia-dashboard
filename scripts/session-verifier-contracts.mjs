@@ -115,20 +115,23 @@ export const assertSessionPostcondition = (session, expected, replay) => {
 
 export const createAsyncTracker = () => {
   const pending = new Set();
+  const trackedWork = [];
   return {
     track(label, work) {
+      const record = { error: null };
       const tracked = Promise.resolve(work)
-        .then(() => null)
-        .catch((error) => new Error(`${label}: ${messageOf(error)}`, { cause: error }))
+        .catch((error) => {
+          record.error = new Error(`${label}: ${messageOf(error)}`, { cause: error });
+        })
         .finally(() => pending.delete(tracked));
+      trackedWork.push(record);
       pending.add(tracked);
     },
     async drain() {
-      const errors = [];
       while (pending.size > 0) {
-        const results = await Promise.all([...pending]);
-        errors.push(...results.filter((result) => result instanceof Error));
+        await Promise.all([...pending]);
       }
+      const errors = trackedWork.splice(0).flatMap(({ error }) => (error === null ? [] : [error]));
       if (errors.length > 0) {
         throw new AggregateError(
           errors,
