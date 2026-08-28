@@ -15,7 +15,8 @@
   "scripts": {
     "dev": "npm run migrate -w @mafia/server && concurrently --kill-others-on-fail --names server,web \"npm run dev -w @mafia/server\" \"npm run dev -w @mafia/web\"",
     "build": "npm run build --workspaces --if-present",
-    "test": "npm run test --workspaces --if-present",
+    "test": "npm run test:verifier-contracts && npm run test --workspaces --if-present",
+    "test:verifier-contracts": "node --test scripts/session-verifier-contracts.test.mjs",
     "verify:oauth": "node scripts/verify-oauth.mjs",
     "verify:compose": "node scripts/verify-production-compose.mjs",
     "verify:session": "node scripts/verify-session-state.mjs",

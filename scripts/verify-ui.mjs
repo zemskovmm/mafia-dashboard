@@ -1,5 +1,6 @@
 /* global URL, document, getComputedStyle, HTMLElement, HTMLInputElement, innerHeight, innerWidth, structuredClone, sessionStorage, crypto, TextEncoder, ErrorEvent, Event */
 import { chromium, webkit } from "@playwright/test";
+import { createHeadOperationExpectations } from "./session-verifier-contracts.mjs";
 
 const baseUrl = process.env.APP_URL ?? "http://127.0.0.1:8080";
 let browserAppUrl = baseUrl;
@@ -87,12 +88,14 @@ const page = await browser.newPage({
 });
 const pageErrors = [];
 const routeErrors = [];
+const headOperationExpectations = createHeadOperationExpectations();
 page.on("console", (message) => console.log(`browser console [${message.type()}]`));
 page.on("pageerror", (error) => {
   pageErrors.push(error.message);
   console.error(`browser page error: ${error.message}`);
 });
 const assertNoPageErrors = () => {
+  headOperationExpectations.assertDrained();
   if (pageErrors.length > 0) {
     throw new Error(`Browser page errors occurred: ${pageErrors.join(" | ")}`);
   }
@@ -305,15 +308,23 @@ await page.route("**/api/game-sessions/**", async (route) => {
   if (request.method() === "POST") {
     const operation = request.postDataJSON();
     const operationName = new URL(request.url()).pathname.split("/").at(-1);
-    const valid =
-      Number.isSafeInteger(operation.baseRevision) &&
-      typeof operation.mutationId === "string" &&
-      ((operationName === "start" &&
-        (operation.event?.type === "game.started" ||
-          operation.event?.type === "game.checkpointed")) ||
+    let valid =
+      Number.isSafeInteger(operation.baseRevision) && typeof operation.mutationId === "string";
+    if (operationName === "head") {
+      try {
+        headOperationExpectations.consume(operation);
+      } catch (error) {
+        routeErrors.push(error instanceof Error ? error.message : String(error));
+        valid = false;
+      }
+    } else {
+      valid &&=
+        (operationName === "start" &&
+          (operation.event?.type === "game.started" ||
+            operation.event?.type === "game.checkpointed")) ||
         (operationName === "events" && typeof operation.event?.type === "string") ||
-        (operationName === "head" && typeof operation.targetEventId === "string") ||
-        (operationName === "complete" && operation.results != null));
+        (operationName === "complete" && operation.results != null);
+    }
     if (!valid) {
       routeErrors.push(`POST ${new URL(request.url()).pathname}`);
       await route.fulfill({ status: 400, contentType: "application/json", body: "{}" });
@@ -949,9 +960,22 @@ try {
         )}`,
       );
     }
+    const rootCheckpoint = persistedEvents[0];
+    const dayCheckpoint = persistedEvents[1];
+    if (
+      rootCheckpoint?.phaseAfter !== "mafia-planning" ||
+      rootCheckpoint.dayAfter !== 0 ||
+      dayCheckpoint?.phaseAfter !== "day" ||
+      dayCheckpoint.dayAfter !== 1
+    ) {
+      throw new Error(
+        "Preview verifier fixtures do not describe the canonical root and Day 1 states",
+      );
+    }
     await page.getByRole("button", { name: "Open game log" }).click();
     await page.getByRole("button", { name: "Preview state after log #1" }).click();
     await page.getByRole("heading", { name: /preview/i }).waitFor();
+    await page.getByRole("heading", { name: "Mafia planning stage" }).waitFor();
     const previewActions = await page
       .locator("main button:not([disabled]):visible")
       .allTextContents();
@@ -989,6 +1013,7 @@ try {
     await page.getByRole("button", { name: "Phase: day" }).click();
     await page.getByRole("button", { name: "Preview timeline checkpoint" }).click();
     await page.getByRole("heading", { name: /preview/i }).waitFor();
+    await page.getByRole("heading", { name: "Day 1" }).waitFor();
     await page.getByRole("button", { name: "Exit preview" }).click();
     await page.getByRole("heading", { name: "Day 1" }).waitFor();
 
@@ -996,11 +1021,46 @@ try {
     await page.getByRole("button", { name: "Past game timeline" }).click();
     await page.getByRole("heading", { name: "Game timeline" }).waitFor();
     await page.getByRole("button", { name: "Imported game checkpoint" }).click();
+    const resetTarget = rootCheckpoint;
+    if (resetTarget === undefined || persistedCheckpoint.headEventId === null) {
+      throw new Error("Reset verifier fixture has no canonical target or active head");
+    }
+    headOperationExpectations.expect({
+      baseRevision: persistedCheckpoint.revision,
+      targetEventId: resetTarget.id,
+      reason: "reset",
+    });
+    const resetSave = page.waitForResponse((response) => {
+      if (
+        response.request().method() !== "POST" ||
+        !new URL(response.url()).pathname.endsWith("/head")
+      ) {
+        return false;
+      }
+      return response.request().postDataJSON()?.reason === "reset";
+    });
     page.once("dialog", (dialog) => dialog.accept());
     await page.getByRole("button", { name: "Reset game to timeline checkpoint" }).click();
     await page.getByRole("heading", { name: "Mafia planning stage" }).waitFor();
+    if (!(await resetSave).ok()) throw new Error("Reset verifier operation failed");
+    headOperationExpectations.expect({
+      baseRevision: persistedCheckpoint.revision + 1,
+      targetEventId: persistedCheckpoint.headEventId,
+      reason: "restore-reset",
+    });
+    const restoreSave = page.waitForResponse((response) => {
+      if (
+        response.request().method() !== "POST" ||
+        !new URL(response.url()).pathname.endsWith("/head")
+      ) {
+        return false;
+      }
+      return response.request().postDataJSON()?.reason === "restore-reset";
+    });
     await page.getByRole("button", { name: /undo last action/i }).click();
     await page.getByRole("heading", { name: "Day 1" }).waitFor();
+    if (!(await restoreSave).ok()) throw new Error("Reset recovery verifier operation failed");
+    headOperationExpectations.assertDrained();
 
     await page.getByRole("button", { name: "Open developer menu" }).click();
     await page.getByRole("button", { name: "Past game timeline" }).click();

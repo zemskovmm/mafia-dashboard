@@ -3,6 +3,12 @@ import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { replayGameLog } from "@mafia/game-domain";
 import { chromium, request as playwrightRequest } from "@playwright/test";
+import {
+  assertEnvelopeMatchesSession,
+  assertSessionPostcondition,
+  createAsyncTracker,
+  runCleanupActions,
+} from "./session-verifier-contracts.mjs";
 
 const configuredUrl = process.env.APP_URL;
 if (!configuredUrl) {
@@ -125,6 +131,7 @@ const createdPlayerIds = [];
 const createdPlayers = new Map();
 const createdGameIds = new Set();
 const cleanupErrors = [];
+const responseTracker = createAsyncTracker();
 
 const createContext = async () => {
   const context = await browser.newContext({
@@ -269,6 +276,14 @@ const assertPageTarget = (page) => {
   }
 };
 
+const readAuthoritativeSession = async (gameId, label) => {
+  const response = await apiContext.get(`${apiBaseUrl}/api/game-sessions/${gameId}`, {
+    maxRedirects: 0,
+  });
+  if (!response.ok()) throw new Error(`${label}: HTTP ${response.status()}`);
+  return (await response.json()).session;
+};
+
 let verificationError = null;
 try {
   const authResponse = await apiContext.get("/api/auth/session", { maxRedirects: 0 });
@@ -322,27 +337,43 @@ try {
     reportSessionFailure(error instanceof Error ? error : new Error(String(error)));
   };
   firstPage.on("response", (response) => {
-    void (async () => {
-      const responseUrl = new URL(response.url());
-      const sessionMatch = responseUrl.pathname.match(/^\/api\/game-sessions\/([^/]+)(?:\/|$)/);
-      if (sessionMatch === null || !createdGameIds.has(decodeURIComponent(sessionMatch[1]))) return;
-      if (response.ok()) return;
-      reportFailure(
-        new Error(
+    const responseUrl = new URL(response.url());
+    responseTracker.track(
+      `${response.request().method()} ${responseUrl.pathname}`,
+      (async () => {
+        const sessionMatch = responseUrl.pathname.match(/^\/api\/game-sessions\/([^/]+)(?:\/|$)/);
+        if (sessionMatch === null || !createdGameIds.has(decodeURIComponent(sessionMatch[1]))) {
+          return;
+        }
+        if (response.ok()) return;
+        throw new Error(
           `Game-session request failed: HTTP ${response.status()} ${response.request().method()} ${responseUrl.pathname}`,
-        ),
-      );
-    })().catch(reportFailure);
+        );
+      })(),
+    );
   });
-  const waitForSaved = async () => {
+  const waitForSaved = async (requiredResponse) => {
     const result = await Promise.race([
-      firstPage
-        .getByRole("status", { name: "Save status: saved" })
-        .waitFor()
-        .then(() => null),
+      (async () => {
+        const response = await requiredResponse;
+        if (!response.ok()) {
+          throw new Error(
+            `Required game-session mutation failed: HTTP ${response.status()} ${response.request().method()} ${new URL(response.url()).pathname}`,
+          );
+        }
+        await firstPage.getByRole("status", { name: "Save status: saved" }).waitFor();
+        return null;
+      })(),
       firstSessionFailure,
     ]);
     if (result instanceof Error) throw result;
+    await firstPage.waitForLoadState("networkidle");
+    try {
+      await responseTracker.drain();
+    } catch (error) {
+      reportFailure(error);
+      throw error;
+    }
   };
   await firstPage.goto(targetUrl.href, { waitUntil: "networkidle" });
   assertPageTarget(firstPage);
@@ -372,10 +403,20 @@ try {
       .first()
       .click();
   }
+  const startSave = firstPage.waitForResponse((response) => {
+    if (
+      response.request().method() !== "POST" ||
+      !new URL(response.url()).pathname.endsWith("/start")
+    ) {
+      return false;
+    }
+    const request = response.request().postDataJSON();
+    return request.event?.type === "game.started" || request.event?.type === "game.checkpointed";
+  });
   await firstPage.getByRole("button", { name: "Begin Mafia planning stage" }).click();
   await firstPage.getByRole("button", { name: "Continue to Sheriff wake-up" }).click();
   await firstPage.getByRole("button", { name: "Begin day one" }).click();
-  await waitForSaved();
+  await waitForSaved(startSave);
   const turnSave = firstPage.waitForResponse((response) => {
     if (
       response.request().method() !== "POST" ||
@@ -387,8 +428,7 @@ try {
     return request.event?.type === "turn.completed";
   });
   await firstPage.getByRole("button", { name: "Next player" }).click();
-  if (!(await turnSave).ok()) throw new Error("The state-changing turn was not persisted");
-  await waitForSaved();
+  await waitForSaved(turnSave);
 
   const activeResponse = await apiContext.get(`${apiBaseUrl}/api/game-sessions`, {
     maxRedirects: 0,
@@ -446,6 +486,19 @@ try {
   }
   const acceptedTurn = activeEvents.find(({ type }) => type === "turn.completed");
   if (acceptedTurn?.parentEventId == null) throw new Error("Reset probe has no parent event");
+  const resetGame = replayGameLog(
+    storedSession.state.initialGame,
+    activeEvents.filter(({ id }) => id !== acceptedTurn.id),
+  ).game;
+  const resetPostcondition = {
+    gameId,
+    revision: storedSession.revision + 1,
+    status: "active",
+    results: null,
+    headEventId: acceptedTurn.parentEventId,
+    resetReturnEventId: acceptedTurn.id,
+    game: resetGame,
+  };
   const resetResponse = await apiContext.post(`${apiBaseUrl}/api/game-sessions/${gameId}/head`, {
     maxRedirects: 0,
     data: {
@@ -457,35 +510,37 @@ try {
   });
   if (!resetResponse.ok()) throw new Error("Authoritative reset probe failed");
   const resetSession = await resetResponse.json();
-  if (
-    resetSession.state.headEventId !== acceptedTurn.parentEventId ||
-    resetSession.state.resetReturnEventId !== acceptedTurn.id ||
-    resetSession.state.game?.currentTurnIndex !== 0 ||
-    resetSession.results !== null ||
-    resetSession.status !== "active"
-  ) {
-    throw new Error("Authoritative reset did not retract exactly one accepted event");
-  }
+  assertSessionPostcondition(resetSession, resetPostcondition, replayGameLog);
+  const resetReadback = await readAuthoritativeSession(
+    gameId,
+    "Authoritative reset readback failed",
+  );
+  assertSessionPostcondition(resetReadback, resetPostcondition, replayGameLog);
+  const restorePostcondition = {
+    gameId,
+    revision: resetReadback.revision + 1,
+    status: "active",
+    results: null,
+    headEventId: acceptedTurn.id,
+    resetReturnEventId: null,
+    game: replayed.game,
+  };
   const restoreResponse = await apiContext.post(`${apiBaseUrl}/api/game-sessions/${gameId}/head`, {
     maxRedirects: 0,
     data: {
       mutationId: randomUUID(),
-      baseRevision: resetSession.revision,
+      baseRevision: resetReadback.revision,
       targetEventId: acceptedTurn.id,
       reason: "restore-reset",
     },
   });
   if (!restoreResponse.ok()) throw new Error("Authoritative reset recovery failed");
-  authoritativeSession = await restoreResponse.json();
-  if (
-    authoritativeSession.state.headEventId !== acceptedTurn.id ||
-    authoritativeSession.state.resetReturnEventId !== null ||
-    authoritativeSession.state.game?.currentTurnIndex !== 1 ||
-    authoritativeSession.results !== null ||
-    authoritativeSession.status !== "active"
-  ) {
-    throw new Error("Authoritative reset recovery did not restore the active branch");
-  }
+  assertSessionPostcondition(await restoreResponse.json(), restorePostcondition, replayGameLog);
+  authoritativeSession = await readAuthoritativeSession(
+    gameId,
+    "Authoritative reset recovery readback failed",
+  );
+  assertSessionPostcondition(authoritativeSession, restorePostcondition, replayGameLog);
   await firstContext.close();
 
   const restartedContext = await createContext();
@@ -506,13 +561,7 @@ try {
     const raw = window.sessionStorage.getItem("mafia-dashboard.game-session.v4");
     return raw === null ? null : JSON.parse(raw);
   });
-  if (
-    restoredEnvelope?.gameId !== gameId ||
-    restoredEnvelope?.revision !== authoritativeSession.revision ||
-    restoredEnvelope?.outbox?.length !== 0
-  ) {
-    throw new Error("Resume did not reset durable client metadata to the server revision");
-  }
+  assertEnvelopeMatchesSession(restoredEnvelope, authoritativeSession, replayGameLog);
   await restartedPage.screenshot({ path: screenshotPath, fullPage: true });
 
   restartedPage.once("dialog", (dialog) => dialog.accept());
@@ -541,15 +590,20 @@ try {
 } catch (error) {
   verificationError = error instanceof Error ? error : new Error(String(error));
 } finally {
-  const cleanupAttempt = async (action) => {
+  const cleanupAttempt = async (label, action) => {
     try {
-      await action();
+      await runCleanupActions([{ label, run: action }]);
     } catch (error) {
-      cleanupErrors.push(error instanceof Error ? error : new Error(String(error)));
+      cleanupErrors.push(
+        ...(error instanceof AggregateError
+          ? error.errors
+          : [error instanceof Error ? error : new Error(String(error))]),
+      );
     }
   };
   let listedPlayers = [];
-  await cleanupAttempt(async () => {
+  await cleanupAttempt("browser response drain", () => responseTracker.drain());
+  await cleanupAttempt("verification player discovery", async () => {
     const playerList = await apiContext.get("/api/players", { maxRedirects: 0 });
     if (!playerList.ok()) {
       throw new Error(`Unable to inspect verification player cleanup: HTTP ${playerList.status()}`);
@@ -561,7 +615,7 @@ try {
     }
   });
   for (const path of ["/api/game-sessions", "/api/game-sessions?status=completed"]) {
-    await cleanupAttempt(async () => {
+    await cleanupAttempt(`verification session discovery ${path}`, async () => {
       const response = await apiContext.get(path, { maxRedirects: 0 });
       if (!response.ok())
         throw new Error(`Unable to discover verifier sessions: HTTP ${response.status()}`);
@@ -573,7 +627,7 @@ try {
     });
   }
   for (const gameId of createdGameIds) {
-    await cleanupAttempt(async () => {
+    await cleanupAttempt(`verification session cleanup ${gameId}`, async () => {
       const stored = await apiContext.get(`/api/game-sessions/${gameId}`, { maxRedirects: 0 });
       if (stored.status() === 404) return;
       if (!stored.ok()) {
@@ -608,7 +662,7 @@ try {
     });
   }
   for (const [playerId, expectedNickname] of [...createdPlayers].reverse()) {
-    await cleanupAttempt(async () => {
+    await cleanupAttempt(`verification player cleanup ${playerId}`, async () => {
       const storedPlayer = listedPlayers.find(({ id }) => id === playerId);
       if (storedPlayer === undefined) return;
       if (storedPlayer.nickname !== expectedNickname) {
@@ -620,7 +674,7 @@ try {
       }
     });
   }
-  await cleanupAttempt(async () => {
+  await cleanupAttempt("verification player cleanup readback", async () => {
     const readback = await apiContext.get("/api/players", { maxRedirects: 0 });
     if (!readback.ok()) throw new Error("Unable to verify player cleanup");
     const remaining = (await readback.json()).players;
@@ -633,8 +687,8 @@ try {
       throw new Error("Verifier-owned players remain after cleanup");
     }
   });
-  await cleanupAttempt(() => apiContext.dispose());
-  await cleanupAttempt(() => browser.close());
+  await cleanupAttempt("API context close", () => apiContext.dispose());
+  await cleanupAttempt("browser close", () => browser.close());
 }
 
 const failures = [...(verificationError === null ? [] : [verificationError]), ...cleanupErrors];
