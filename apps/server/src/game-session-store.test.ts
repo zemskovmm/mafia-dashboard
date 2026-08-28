@@ -70,13 +70,12 @@ const createCompletedSession = async (gameId: string, clubId = DEFAULT_CLUB_ID) 
   const hostPlayerId = randomUUID();
   const playerIds = Array.from({ length: 10 }, () => randomUUID());
   const allIds = [hostPlayerId, ...playerIds];
-  for (const [index, id] of allIds.entries()) {
-    await pool.query("INSERT INTO players (id, club_id, nickname) VALUES ($1, $2, $3)", [
-      id,
-      clubId,
-      `Aggregate ${gameId} ${index}`,
-    ]);
-  }
+  await pool.query(
+    `INSERT INTO players (id, club_id, nickname)
+     SELECT fixture.id, $2, fixture.nickname
+       FROM UNNEST($1::uuid[], $3::text[]) AS fixture(id, nickname)`,
+    [allIds, clubId, allIds.map((_id, index) => `Aggregate ${gameId} ${index}`)],
+  );
   const roles = ["sheriff", ...Array(6).fill("citizen"), "mafia", "mafia", "don"] as const;
   const players = playerIds.map((id, index) => ({
     id,
@@ -478,17 +477,7 @@ describe("GameSessionStore", () => {
       },
       results: null,
     });
-    const normalize = (
-      store as unknown as {
-        readonly normalize: (input: {
-          readonly gameId: string;
-          readonly mutationId: string;
-          readonly baseRevision: number;
-        }) => Promise<{ readonly revision: number; readonly duplicate: boolean }>;
-      }
-    ).normalize.bind(store);
-
-    const normalized = await normalize({
+    const normalized = await store.normalize({
       gameId,
       mutationId: randomUUID(),
       baseRevision: 1,
@@ -547,6 +536,276 @@ describe("GameSessionStore", () => {
     });
   });
 
+  it("keeps setup-only normalization explicit, repeatable, and startable", async () => {
+    const gameId = randomUUID();
+    const completed = await createCompletedSession(gameId);
+    await store.save({
+      gameId,
+      name: "Normalized setup table",
+      mutationId: randomUUID(),
+      baseRevision: 0,
+      state: {
+        ...emptyState,
+        hostPlayerId: completed.hostPlayerId,
+        hostName: "Setup Host",
+      },
+      results: null,
+    });
+    const firstMutationId = randomUUID();
+
+    const first = await store.normalize({ gameId, mutationId: firstMutationId, baseRevision: 1 });
+    const retry = await store.normalize({ gameId, mutationId: firstMutationId, baseRevision: 1 });
+    const second = await store.normalize({
+      gameId,
+      mutationId: randomUUID(),
+      baseRevision: 2,
+    });
+
+    expect(first).toMatchObject({ revision: 2, duplicate: false, state: { game: null } });
+    expect(retry).toMatchObject({ revision: 2, duplicate: true, state: { game: null } });
+    expect(second).toMatchObject({ revision: 3, duplicate: false, state: { game: null } });
+    const stored = await pool.query<{
+      state: Record<string, unknown>;
+      initial_game: unknown;
+      replay_base_event_id: string | null;
+      head_event_id: string | null;
+    }>(
+      `SELECT state, initial_game, replay_base_event_id, head_event_id
+         FROM game_sessions
+        WHERE id = $1`,
+      [gameId],
+    );
+    expect(stored.rows).toEqual([
+      {
+        state: {
+          setup: null,
+          game: null,
+          hostPlayerId: completed.hostPlayerId,
+          hostName: "Setup Host",
+          playlistId: "",
+        },
+        initial_game: null,
+        replay_base_event_id: null,
+        head_event_id: null,
+      },
+    ]);
+    const initialGame = { replayVersion: 1 as const, game: completed.state.game };
+    const started = createGameLogEntry({
+      gameId,
+      id: randomUUID(),
+      sequence: 1,
+      parentEventId: null,
+      createdAt: "2026-08-28T17:30:00.000Z",
+      before: initialGame.game,
+      draft: { type: "game.checkpointed", payload: {} },
+    });
+
+    await expect(
+      store.start({
+        gameId,
+        mutationId: randomUUID(),
+        baseRevision: 3,
+        initialGame,
+        event: started.entry,
+      }),
+    ).resolves.toMatchObject({ revision: 4, state: { headEventId: started.entry.id } });
+  });
+
+  it("repairs an initial baseline without a lifecycle root exactly once", async () => {
+    const gameId = randomUUID();
+    const completed = await createCompletedSession(gameId);
+    const { bestMove, ...completedGame } = completed.state.game;
+    if (bestMove === undefined) throw new Error("Completed fixture is missing its best move");
+    const initialGame = {
+      replayVersion: 1 as const,
+      game: {
+        ...completedGame,
+        phase: "day" as const,
+        day: 1,
+        winner: null,
+        turnOrder: Array.from({ length: 10 }, (_, index) => index + 1),
+        currentTurnIndex: 0,
+      },
+    };
+    await store.save({
+      gameId,
+      name: "Partial baseline table",
+      mutationId: randomUUID(),
+      baseRevision: 0,
+      state: {
+        ...emptyState,
+        hostPlayerId: completed.hostPlayerId,
+        hostName: "Partial Baseline Host",
+      },
+      results: null,
+    });
+    await pool.query("UPDATE game_sessions SET initial_game = $2::jsonb WHERE id = $1", [
+      gameId,
+      JSON.stringify(initialGame),
+    ]);
+    const historical = await pool.query<{ id: string }>(
+      "SELECT id FROM game_events WHERE game_id = $1 AND replay_sequence IS NULL",
+      [gameId],
+    );
+    const historicalEventId = historical.rows[0]?.id;
+    if (historicalEventId === undefined) throw new Error("Setup event was not persisted");
+
+    const first = await store.normalize({
+      gameId,
+      mutationId: randomUUID(),
+      baseRevision: 1,
+    });
+    const second = await store.normalize({
+      gameId,
+      mutationId: randomUUID(),
+      baseRevision: 2,
+    });
+    const rootId = first.state.headEventId;
+    if (rootId == null) throw new Error("Normalization did not create a lifecycle root");
+
+    expect(first).toMatchObject({
+      revision: 2,
+      state: {
+        game: initialGame.game,
+        initialGame,
+        events: [
+          expect.objectContaining({
+            gameId,
+            sequence: 1,
+            parentEventId: null,
+            type: "game.checkpointed",
+          }),
+        ],
+      },
+    });
+    expect(second).toMatchObject({
+      revision: 3,
+      state: {
+        events: [expect.objectContaining({ id: rootId })],
+        headEventId: rootId,
+      },
+    });
+    const rows = await pool.query<{ id: string; sequence: number; replay_sequence: number | null }>(
+      `SELECT id, sequence, replay_sequence
+         FROM game_events
+        WHERE game_id = $1
+        ORDER BY sequence`,
+      [gameId],
+    );
+    expect(rows.rows).toEqual([
+      { id: historicalEventId, sequence: 1, replay_sequence: null },
+      { id: rootId, sequence: 2, replay_sequence: 1 },
+    ]);
+    const checkpoint = createGameLogEntry({
+      gameId,
+      id: randomUUID(),
+      sequence: 2,
+      parentEventId: rootId,
+      createdAt: "2026-08-28T17:31:00.000Z",
+      before: first.state.game!,
+      draft: {
+        type: "foul.issued",
+        payload: { seat: 1, foulNumber: 1, redCarded: false },
+      },
+    });
+
+    await expect(
+      store.appendEvent({
+        gameId,
+        mutationId: randomUUID(),
+        baseRevision: 3,
+        event: checkpoint.entry,
+      }),
+    ).resolves.toMatchObject({ revision: 4, state: { headEventId: checkpoint.entry.id } });
+  });
+
+  it("rejects corrupt partial replay roots without changing aggregate or mutation state", async () => {
+    const gameId = randomUUID();
+    const completed = await createCompletedSession(gameId);
+    const initialGame = { replayVersion: 1 as const, game: completed.state.game };
+    await store.save({
+      gameId,
+      name: "Corrupt partial roots",
+      mutationId: randomUUID(),
+      baseRevision: 0,
+      state: {
+        ...emptyState,
+        hostPlayerId: completed.hostPlayerId,
+        hostName: "Corrupt Roots Host",
+      },
+      results: null,
+    });
+    const roots = [0, 1].map((index) =>
+      createGameLogEntry({
+        gameId,
+        id: randomUUID(),
+        sequence: index + 1,
+        parentEventId: null,
+        createdAt: `2026-08-28T17:3${index + 2}:00.000Z`,
+        before: initialGame.game,
+        draft: { type: "game.checkpointed", payload: {} },
+      }),
+    );
+    await pool.query(
+      `UPDATE game_sessions
+          SET state = $2::jsonb, initial_game = $3::jsonb
+        WHERE id = $1`,
+      [
+        gameId,
+        JSON.stringify({
+          setup: null,
+          hostPlayerId: completed.hostPlayerId,
+          hostName: "Corrupt Roots Host",
+          playlistId: "",
+          events: roots.map(({ entry }) => entry),
+        }),
+        JSON.stringify(initialGame),
+      ],
+    );
+    const before = await pool.query<{
+      revision: number;
+      last_mutation_id: string;
+      state: unknown;
+      initial_game: unknown;
+      replay_base_event_id: string | null;
+      head_event_id: string | null;
+    }>(
+      `SELECT revision, last_mutation_id, state, initial_game,
+              replay_base_event_id, head_event_id
+         FROM game_sessions
+        WHERE id = $1`,
+      [gameId],
+    );
+    const mutationId = randomUUID();
+
+    await expect(store.normalize({ gameId, mutationId, baseRevision: 1 })).rejects.toMatchObject({
+      name: "GameSessionOperationError",
+      code: "game_session_replay_invalid",
+    });
+
+    const after = await pool.query(
+      `SELECT revision, last_mutation_id, state, initial_game,
+              replay_base_event_id, head_event_id
+         FROM game_sessions
+        WHERE id = $1`,
+      [gameId],
+    );
+    expect(after.rows).toEqual(before.rows);
+    await expect(
+      pool.query(
+        `SELECT mutation_id
+           FROM game_session_mutations
+          WHERE game_id = $1 AND mutation_id = $2`,
+        [gameId, mutationId],
+      ),
+    ).resolves.toMatchObject({ rows: [] });
+    await expect(
+      pool.query("SELECT id FROM game_events WHERE game_id = $1 AND replay_sequence IS NOT NULL", [
+        gameId,
+      ]),
+    ).resolves.toMatchObject({ rows: [] });
+  });
+
   it("normalizes a legacy current snapshot as one honest compatibility checkpoint", async () => {
     const gameId = randomUUID();
     const completed = await createCompletedSession(gameId);
@@ -568,29 +827,37 @@ describe("GameSessionStore", () => {
       state: { ...completed.state, log: legacyLog },
       results: null,
     });
-    const normalize = (
-      store as unknown as {
-        readonly normalize: (input: {
-          readonly gameId: string;
-          readonly mutationId: string;
-          readonly baseRevision: number;
-        }) => Promise<{
-          readonly revision: number;
-          readonly replayBaseEventId?: string | null;
-          readonly previewableFromEventId?: string | null;
-        }>;
-      }
-    ).normalize.bind(store);
-
-    const normalized = await normalize({
+    const mutationId = randomUUID();
+    const normalized = await store.normalize({
+      gameId,
+      mutationId,
+      baseRevision: 1,
+    });
+    const retry = await store.normalize({ gameId, mutationId, baseRevision: 1 });
+    const renormalized = await store.normalize({
       gameId,
       mutationId: randomUUID(),
-      baseRevision: 1,
+      baseRevision: 2,
     });
 
     expect(normalized.revision).toBe(2);
     expect(normalized.replayBaseEventId).toMatch(/^[0-9a-f-]{36}$/);
     expect(normalized.previewableFromEventId).toBe(normalized.replayBaseEventId);
+    expect(retry).toMatchObject({
+      revision: 2,
+      duplicate: true,
+      replayBaseEventId: normalized.replayBaseEventId,
+      state: { legacyLog },
+    });
+    expect(renormalized).toMatchObject({
+      revision: 3,
+      duplicate: false,
+      replayBaseEventId: normalized.replayBaseEventId,
+      state: {
+        legacyLog,
+        events: [expect.objectContaining({ id: normalized.replayBaseEventId })],
+      },
+    });
     const stored = await pool.query<{
       state: Record<string, unknown>;
       initial_game: { replayVersion: number; game: unknown };
@@ -658,26 +925,7 @@ describe("GameSessionStore", () => {
       before: initialGame.game,
       draft: { type: "game.checkpointed", payload: {} },
     });
-    const start = (
-      store as unknown as {
-        readonly start: (input: {
-          readonly gameId: string;
-          readonly mutationId: string;
-          readonly baseRevision: number;
-          readonly initialGame: typeof initialGame;
-          readonly event: typeof started.entry;
-        }) => Promise<{
-          readonly revision: number;
-          readonly state: {
-            readonly game: unknown;
-            readonly events?: readonly Record<string, unknown>[];
-            readonly log: readonly Record<string, unknown>[];
-          };
-        }>;
-      }
-    ).start.bind(store);
-
-    const response = await start({
+    const response = await store.start({
       gameId,
       mutationId: randomUUID(),
       baseRevision: 1,
@@ -766,19 +1014,8 @@ describe("GameSessionStore", () => {
       before: started.after,
       draft: { type: "turn.completed", payload: { seat: 1 } },
     });
-    const appendEvent = (
-      store as unknown as {
-        readonly appendEvent: (input: {
-          readonly gameId: string;
-          readonly mutationId: string;
-          readonly baseRevision: number;
-          readonly event: typeof turn.entry;
-        }) => Promise<{ readonly revision: number; readonly state: { readonly game: unknown } }>;
-      }
-    ).appendEvent.bind(store);
-
     await expect(
-      appendEvent({
+      store.appendEvent({
         gameId,
         mutationId: randomUUID(),
         baseRevision: 2,
@@ -795,26 +1032,7 @@ describe("GameSessionStore", () => {
   it("moves reset head without deleting future rows and records reset recovery", async () => {
     const gameId = randomUUID();
     const history = await createStartedDaySessionWithCheckpoints(gameId);
-    const moveHead = (
-      store as unknown as {
-        readonly moveHead: (input: {
-          readonly gameId: string;
-          readonly mutationId: string;
-          readonly baseRevision: number;
-          readonly targetEventId: string;
-          readonly reason: "undo" | "reset" | "restore-reset";
-        }) => Promise<{
-          readonly revision: number;
-          readonly state: {
-            readonly game: { readonly currentTurnIndex: number };
-            readonly headEventId?: string | null;
-            readonly resetReturnEventId?: string | null;
-          };
-        }>;
-      }
-    ).moveHead.bind(store);
-
-    const response = await moveHead({
+    const response = await store.moveHead({
       gameId,
       mutationId: randomUUID(),
       baseRevision: 4,
@@ -1075,29 +1293,15 @@ describe("GameSessionStore", () => {
       ...completed.results,
       playedAt: completedEvent.entry.createdAt,
     };
-    const complete = (
-      store as unknown as {
-        readonly complete: (input: {
-          readonly gameId: string;
-          readonly mutationId: string;
-          readonly baseRevision: number;
-          readonly results: typeof completed.results;
-        }) => Promise<{
-          readonly revision: number;
-          readonly status: string;
-          readonly results: unknown;
-        }>;
-      }
-    ).complete.bind(store);
     const mutationId = randomUUID();
 
-    const response = await complete({
+    const response = await store.complete({
       gameId,
       mutationId,
       baseRevision: 3,
       results: completionResults,
     });
-    const retry = await complete({
+    const retry = await store.complete({
       gameId,
       mutationId,
       baseRevision: 3,
@@ -1111,7 +1315,7 @@ describe("GameSessionStore", () => {
     });
     expect(retry).toMatchObject({ revision: 4, duplicate: true });
     await expect(
-      complete({
+      store.complete({
         gameId,
         mutationId: randomUUID(),
         baseRevision: 4,

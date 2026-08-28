@@ -34,35 +34,39 @@ interface StoredUndoSnapshot {
   readonly sequence: number;
 }
 
-interface StoredCanonicalGameEvent {
-  readonly replayVersion: 1;
-  readonly id: string;
-  readonly gameId: string;
-  readonly sequence: number;
-  readonly parentEventId: string | null;
-  readonly type: CanonicalGameEventType;
-  readonly payload: Readonly<Record<string, unknown>>;
-  readonly phaseBefore: GamePhase;
-  readonly phaseAfter: GamePhase;
-  readonly dayBefore: number;
-  readonly dayAfter: number;
-  readonly stateHashAfter: string;
-  readonly createdAt: string;
+interface StoredSetupState {
+  readonly hostPlayerId?: string;
+  readonly selectedPlayerIds?: readonly string[];
+  readonly setup?: {
+    readonly players?: readonly { readonly id?: string; readonly seat?: number }[];
+    readonly [key: string]: unknown;
+  } | null;
+  readonly [key: string]: unknown;
 }
 
-interface StoredGameSessionState {
-  readonly setup: unknown | null;
+interface PersistedGameSessionState {
+  readonly setup?: StoredSetupState | null;
+  readonly game?: GameState | null;
+  readonly hostPlayerId?: string | null;
+  readonly hostName?: string | null;
+  readonly playlistId?: string;
+  readonly log?: readonly StoredGameLogEntry[];
+  readonly undoHistory?: readonly StoredUndoSnapshot[];
+  readonly initialGame?: InitialGameBaseline | null;
+  readonly events?: readonly GameLogEntry[];
+  readonly headEventId?: string | null;
+  readonly resetReturnEventId?: string | null;
+  readonly legacyLog?: readonly StoredGameLogEntry[];
+}
+
+interface StoredGameSessionState extends PersistedGameSessionState {
+  readonly setup: StoredSetupState | null;
   readonly game: GameState | null;
   readonly hostPlayerId: string | null;
   readonly hostName: string | null;
   readonly playlistId: string;
   readonly log: readonly StoredGameLogEntry[];
   readonly undoHistory: readonly StoredUndoSnapshot[];
-  readonly initialGame?: InitialGameBaseline | null;
-  readonly events?: readonly StoredCanonicalGameEvent[];
-  readonly headEventId?: string | null;
-  readonly resetReturnEventId?: string | null;
-  readonly legacyLog?: readonly StoredGameLogEntry[];
 }
 
 export interface StoredGameResults {
@@ -181,7 +185,7 @@ interface SessionRow {
   revision: number;
   status: "active" | "completed";
   updated_at: Date;
-  state: StoredGameSessionState;
+  state: PersistedGameSessionState;
   results: StoredGameResults | null;
   initial_game: InitialGameBaseline | null;
   replay_base_event_id: string | null;
@@ -275,15 +279,31 @@ const activeEventsFor = (
   return reversed.reverse();
 };
 
-const activeEventsForState = (state: StoredGameSessionState): readonly GameLogEntry[] =>
-  activeEventsFor(
-    (state.events ?? []) as unknown as readonly GameLogEntry[],
-    state.headEventId ?? null,
-  );
+const activeEventsForState = (state: PersistedGameSessionState): readonly GameLogEntry[] =>
+  activeEventsFor(state.events ?? [], state.headEventId ?? null);
 
-const deriveCurrentGame = (state: StoredGameSessionState): GameState | null => {
-  if (state.initialGame == null) return state.game;
+const deriveCurrentGame = (state: PersistedGameSessionState): GameState | null => {
+  if (state.initialGame == null) return state.game ?? null;
   return replayGameLog(state.initialGame, activeEventsForState(state)).game;
+};
+
+const materializeSessionState = (
+  state: PersistedGameSessionState,
+  game = deriveCurrentGame(state),
+): StoredGameSessionState => ({
+  ...state,
+  setup: state.setup ?? null,
+  game,
+  hostPlayerId: state.hostPlayerId ?? null,
+  hostName: state.hostName ?? null,
+  playlistId: state.playlistId ?? "",
+  log: state.log ?? [],
+  undoHistory: state.undoHistory ?? [],
+});
+
+const setupPhase = (setup: unknown): string => {
+  if (setup === null || typeof setup !== "object" || !("step" in setup)) return "setup-players";
+  return typeof setup.step === "string" ? `setup-${setup.step}` : "setup-players";
 };
 
 const mapSession = (row: SessionRow, duplicate: boolean): StoredGameSession => ({
@@ -293,7 +313,7 @@ const mapSession = (row: SessionRow, duplicate: boolean): StoredGameSession => (
   duplicate,
   status: row.status,
   updatedAt: row.updated_at,
-  state: { ...row.state, game: deriveCurrentGame(row.state) },
+  state: materializeSessionState(row.state),
   results: row.results,
 });
 
@@ -340,7 +360,7 @@ const hydrateSession = async (
       log,
       undoHistory: [],
       initialGame,
-      events: events as unknown as readonly StoredCanonicalGameEvent[],
+      events,
       headEventId,
       resetReturnEventId: row.reset_return_event_id,
     },
@@ -349,20 +369,6 @@ const hydrateSession = async (
     previewableFromEventId: row.replay_base_event_id,
   };
 };
-
-interface PlayerSelectionState {
-  readonly setup?: {
-    readonly hostPlayerId?: string;
-    readonly selectedPlayerIds?: readonly string[];
-    readonly setup?: {
-      readonly players?: readonly { readonly id?: string; readonly seat?: number }[];
-    } | null;
-  } | null;
-  readonly game?: {
-    readonly players?: readonly { readonly id?: string; readonly seat?: number }[];
-  } | null;
-  readonly hostPlayerId?: string | null;
-}
 
 const assertPlayersBelongToClub = async (
   client: PoolClient,
@@ -390,24 +396,13 @@ const replaceActivePlayers = async (
     clubId,
     gameId,
   ]);
-  const playerSelectionState = state as PlayerSelectionState;
-  const hostPlayerId =
-    playerSelectionState.hostPlayerId ?? playerSelectionState.setup?.hostPlayerId;
-  if (hostPlayerId !== undefined && hostPlayerId !== null && hostPlayerId !== "") {
-    await client.query(
-      `INSERT INTO game_session_players (club_id, game_id, player_id, seat, is_host)
-       VALUES ($1, $2, $3, NULL, TRUE)`,
-      [clubId, gameId, hostPlayerId],
-    );
-  }
+  const hostPlayerId = state.hostPlayerId ?? state.setup?.hostPlayerId;
   const seatedPlayers =
-    playerSelectionState.game?.players?.flatMap(({ id, seat }) =>
+    state.game?.players.map(({ id, seat }) => ({ id, seat })) ??
+    state.setup?.setup?.players?.flatMap(({ id, seat }) =>
       typeof id === "string" && typeof seat === "number" ? [{ id, seat }] : [],
     ) ??
-    playerSelectionState.setup?.setup?.players?.flatMap(({ id, seat }) =>
-      typeof id === "string" && typeof seat === "number" ? [{ id, seat }] : [],
-    ) ??
-    playerSelectionState.setup?.selectedPlayerIds?.flatMap((id, index) =>
+    state.setup?.selectedPlayerIds?.flatMap((id, index) =>
       id === "" ? [] : [{ id, seat: index + 1 }],
     ) ??
     [];
@@ -415,13 +410,26 @@ const replaceActivePlayers = async (
     ...(hostPlayerId === undefined || hostPlayerId === null ? [] : [hostPlayerId]),
     ...seatedPlayers.map(({ id }) => id),
   ]);
-  for (const player of seatedPlayers) {
-    await client.query(
-      `INSERT INTO game_session_players (club_id, game_id, player_id, seat, is_host)
-       VALUES ($1, $2, $3, $4, FALSE)`,
-      [clubId, gameId, player.id, player.seat],
-    );
-  }
+  const activePlayers = [
+    ...(hostPlayerId === undefined || hostPlayerId === null || hostPlayerId === ""
+      ? []
+      : [{ id: hostPlayerId, seat: null, isHost: true }]),
+    ...seatedPlayers.map(({ id, seat }) => ({ id, seat, isHost: false })),
+  ];
+  if (activePlayers.length === 0) return;
+  await client.query(
+    `INSERT INTO game_session_players (club_id, game_id, player_id, seat, is_host)
+     SELECT $1, $2, player.id, player.seat, player.is_host
+       FROM UNNEST($3::uuid[], $4::integer[], $5::boolean[])
+         AS player(id, seat, is_host)`,
+    [
+      clubId,
+      gameId,
+      activePlayers.map(({ id }) => id),
+      activePlayers.map(({ seat }) => seat),
+      activePlayers.map(({ isHost }) => isHost),
+    ],
+  );
 };
 
 const synchronizeEventLog = async (
@@ -432,7 +440,7 @@ const synchronizeEventLog = async (
 ): Promise<void> => {
   if (state.events !== undefined) {
     for (const entry of state.events) {
-      await writeCanonicalEvent(client, clubId, entry as unknown as GameLogEntry);
+      await writeCanonicalEvent(client, clubId, entry);
     }
     return;
   }
@@ -608,7 +616,7 @@ const replaceResults = async (
 };
 
 const assertResultsMatchGame = (
-  state: StoredGameSessionState,
+  state: PersistedGameSessionState,
   game: GameState,
   results: StoredGameResults,
 ): void => {
@@ -668,16 +676,17 @@ const synchronizeLegacyAggregate = async (
 };
 
 const metadataOnlyState = (
-  state: StoredGameSessionState,
+  state: PersistedGameSessionState,
   legacyLog = state.legacyLog,
-): StoredGameSessionState =>
-  ({
-    setup: state.setup ?? null,
-    hostPlayerId: state.hostPlayerId ?? null,
-    hostName: state.hostName ?? null,
-    playlistId: state.playlistId ?? "",
-    ...(legacyLog === undefined || legacyLog.length === 0 ? {} : { legacyLog }),
-  }) as unknown as StoredGameSessionState;
+  includeGameNull = false,
+): PersistedGameSessionState => ({
+  setup: state.setup ?? null,
+  ...(includeGameNull ? { game: null } : {}),
+  hostPlayerId: state.hostPlayerId ?? null,
+  hostName: state.hostName ?? null,
+  playlistId: state.playlistId ?? "",
+  ...(legacyLog === undefined || legacyLog.length === 0 ? {} : { legacyLog }),
+});
 
 interface StoredCanonicalEventRow {
   readonly id: string;
@@ -802,7 +811,7 @@ const mutationRequest = (input: SaveGameSessionInput) => ({
 });
 
 const assertSaveReplayShape = (input: SaveGameSessionInput): void => {
-  const events = (input.state.events ?? []) as unknown as readonly GameLogEntry[];
+  const events = input.state.events ?? [];
   if (events.some(({ gameId }) => gameId !== input.gameId)) {
     throw new GameSessionOperationError(
       "game_session_event_conflict",
@@ -956,21 +965,16 @@ export class GameSessionStore {
     );
     return Promise.all(
       result.rows.map(async (row) => {
-        const state = row.state as StoredGameSessionState & {
-          readonly setup?: { readonly step?: string } | null;
-        };
         const game =
           row.initial_game === null
-            ? deriveCurrentGame(state)
+            ? deriveCurrentGame(row.state)
             : (await hydrateSession(this.pool, row, clubId, false)).state.game;
         return {
           gameId: row.id,
           name: row.name,
           revision: row.revision,
-          hostName: row.state.hostName,
-          phase:
-            game?.phase ??
-            (state.setup?.step === undefined ? "setup-players" : `setup-${state.setup.step}`),
+          hostName: row.state.hostName ?? null,
+          phase: game?.phase ?? setupPhase(row.state.setup),
           day: game?.day ?? 0,
           updatedAt: row.updated_at,
         };
@@ -1003,7 +1007,7 @@ export class GameSessionStore {
           gameId: row.id,
           name: row.name,
           revision: row.revision,
-          hostName: row.state.hostName,
+          hostName: row.state.hostName ?? null,
           winner: row.results.winner,
           playedAt: row.results.playedAt,
           day: game?.day ?? 0,
@@ -1060,23 +1064,25 @@ export class GameSessionStore {
       if (input.baseRevision !== row.revision) throw new GameSessionConflictError(row.revision);
 
       let initialGame = row.initial_game ?? row.state.initialGame ?? null;
-      const suppliedEvents = (row.state.events ?? []) as unknown as readonly GameLogEntry[];
+      const suppliedEvents = row.state.events ?? [];
       const existingEvents = await readCanonicalEvents(client, clubId, input.gameId);
       let events = suppliedEvents.length === 0 ? existingEvents : suppliedEvents;
       let legacyLog = row.state.legacyLog;
-      if (initialGame === null && row.state.game !== null) {
+      if (initialGame === null && row.state.game != null) {
         initialGame = { replayVersion: 1, game: row.state.game };
+        legacyLog = [...(row.state.legacyLog ?? []), ...(row.state.log ?? [])];
+      }
+      if (initialGame !== null && events.length === 0) {
         const checkpoint = createGameLogEntry({
           gameId: input.gameId,
           id: randomUUID(),
           sequence: 1,
           parentEventId: null,
           createdAt: new Date().toISOString(),
-          before: row.state.game,
+          before: initialGame.game,
           draft: { type: "game.checkpointed", payload: {} },
         });
         events = [checkpoint.entry];
-        legacyLog = [...(row.state.legacyLog ?? []), ...(row.state.log ?? [])];
       }
       if (events.some((event) => event.gameId !== input.gameId)) {
         throw new GameSessionOperationError(
@@ -1113,7 +1119,7 @@ export class GameSessionStore {
           input.gameId,
           nextRevision,
           input.mutationId,
-          JSON.stringify(metadataOnlyState(row.state, legacyLog)),
+          JSON.stringify(metadataOnlyState(row.state, legacyLog, initialGame === null)),
           initialGame === null ? null : JSON.stringify(initialGame),
           roots[0]?.id ?? row.replay_base_event_id,
           headEventId,
@@ -1182,7 +1188,7 @@ export class GameSessionStore {
           "The game session already has an immutable replay baseline",
         );
       }
-      if (row.state.game !== null) {
+      if (row.state.game != null) {
         throw new GameSessionOperationError(
           "game_session_normalization_required",
           "Normalize the legacy current snapshot before appending incremental history",
@@ -1222,10 +1228,12 @@ export class GameSessionStore {
           clubId,
         ],
       );
-      await replaceActivePlayers(client, clubId, input.gameId, {
-        ...metadata,
-        game: input.initialGame.game,
-      });
+      await replaceActivePlayers(
+        client,
+        clubId,
+        input.gameId,
+        materializeSessionState(metadata, input.initialGame.game),
+      );
       await client.query(
         `INSERT INTO game_session_mutations (club_id, game_id, mutation_id, revision, request)
          VALUES ($1, $2, $3, $4, $5::jsonb)`,
@@ -1334,10 +1342,12 @@ export class GameSessionStore {
         RETURNING ${sessionColumns}`,
         [input.gameId, nextRevision, input.mutationId, input.event.id, clubId],
       );
-      await replaceActivePlayers(client, clubId, input.gameId, {
-        ...row.state,
-        game: replay.game,
-      });
+      await replaceActivePlayers(
+        client,
+        clubId,
+        input.gameId,
+        materializeSessionState(row.state, replay.game),
+      );
       await client.query(
         `INSERT INTO game_session_mutations (club_id, game_id, mutation_id, revision, request)
          VALUES ($1, $2, $3, $4, $5::jsonb)`,
@@ -1480,7 +1490,11 @@ export class GameSessionStore {
         results = null;
       }
       if (input.reason === "restore-reset" && row.reset_return_was_completed) {
-        const restored = resultsFromCompletedGame(replay.game, target, row.state.hostPlayerId);
+        const restored = resultsFromCompletedGame(
+          replay.game,
+          target,
+          row.state.hostPlayerId ?? null,
+        );
         if (restored !== null) {
           await replaceResults(client, clubId, input.gameId, restored);
           await client.query(
@@ -1514,10 +1528,12 @@ export class GameSessionStore {
         ],
       );
       if (status === "active") {
-        await replaceActivePlayers(client, clubId, input.gameId, {
-          ...row.state,
-          game: replay.game,
-        });
+        await replaceActivePlayers(
+          client,
+          clubId,
+          input.gameId,
+          materializeSessionState(row.state, replay.game),
+        );
       }
       await client.query(
         `INSERT INTO game_session_mutations (club_id, game_id, mutation_id, revision, request)

@@ -13,6 +13,19 @@ afterAll(async () => {
   await adminPool.end();
 });
 
+const createIsolatedPool = async (schemaName: string): Promise<Pool> => {
+  await adminPool.query(`CREATE SCHEMA "${schemaName}"`);
+  return new Pool({
+    connectionString: databaseUrl,
+    options: `-c search_path=${schemaName}`,
+  });
+};
+
+const dropIsolatedPool = async (schemaName: string, pool: Pool): Promise<void> => {
+  await pool.end();
+  await adminPool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
+};
+
 const constraintDefinitions = async (pool: Pool) =>
   (
     await pool.query<{ table_name: string; definition: string }>(
@@ -34,16 +47,8 @@ describe("club language schema migration", () => {
   it("adds a constrained English default to fresh and populated schemas idempotently", async () => {
     const freshSchema = `club_language_fresh_${randomUUID().replaceAll("-", "")}`;
     const legacySchema = `club_language_legacy_${randomUUID().replaceAll("-", "")}`;
-    await adminPool.query(`CREATE SCHEMA "${freshSchema}"`);
-    await adminPool.query(`CREATE SCHEMA "${legacySchema}"`);
-    const freshPool = new Pool({
-      connectionString: databaseUrl,
-      options: `-c search_path=${freshSchema}`,
-    });
-    const legacyPool = new Pool({
-      connectionString: databaseUrl,
-      options: `-c search_path=${legacySchema}`,
-    });
+    const freshPool = await createIsolatedPool(freshSchema);
+    const legacyPool = await createIsolatedPool(legacySchema);
     try {
       await initializeSchema(freshPool);
       await legacyPool.query(`
@@ -130,10 +135,73 @@ describe("club language schema migration", () => {
         legacyPool.query("UPDATE clubs SET language_code = 'es' WHERE id = $1", [legacyClubId]),
       ).rejects.toMatchObject({ constraint: "clubs_language_code_ck" });
     } finally {
-      await freshPool.end();
-      await legacyPool.end();
-      await adminPool.query(`DROP SCHEMA IF EXISTS "${freshSchema}" CASCADE`);
-      await adminPool.query(`DROP SCHEMA IF EXISTS "${legacySchema}" CASCADE`);
+      await dropIsolatedPool(freshSchema, freshPool);
+      await dropIsolatedPool(legacySchema, legacyPool);
+    }
+  });
+});
+
+describe("replay metadata constraint migration", () => {
+  it("enforces replay and day bounds on fresh and upgrade-created columns", async () => {
+    const schemaName = `replay_metadata_bounds_${randomUUID().replaceAll("-", "")}`;
+    const isolatedPool = await createIsolatedPool(schemaName);
+    const constraints = [
+      ["game_events_replay_sequence_positive_ck", "replay_sequence", -1],
+      ["game_events_day_before_nonnegative_ck", "day_before", -1],
+      ["game_events_day_after_nonnegative_ck", "day_after", -1],
+    ] as const;
+    const expectBounds = async () => {
+      const installed = await isolatedPool.query<{ conname: string }>(
+        `SELECT conname
+           FROM pg_constraint
+          WHERE conrelid = 'game_events'::regclass
+            AND conname = ANY($1::text[])
+          ORDER BY conname`,
+        [constraints.map(([name]) => name)],
+      );
+      expect(installed.rows.map(({ conname }) => conname)).toEqual(
+        constraints.map(([name]) => name).sort(),
+      );
+      for (const [constraint, column, value] of constraints) {
+        const metadata = {
+          replay_sequence: 1,
+          day_before: 0,
+          day_after: 0,
+          [column]: value,
+        };
+        await expect(
+          isolatedPool.query(
+            `INSERT INTO game_events
+               (id, game_id, sequence, idempotency_key, event_type, phase, payload,
+                replay_sequence, phase_after, day_before, day_after, state_hash_after)
+             VALUES ($1::uuid, $2, 1, $1::text, 'game.checkpointed', 'day', '{}'::jsonb,
+                     $3, 'day', $4, $5, 'deadbeef')`,
+            [
+              randomUUID(),
+              randomUUID(),
+              metadata.replay_sequence,
+              metadata.day_before,
+              metadata.day_after,
+            ],
+          ),
+        ).rejects.toMatchObject({ code: "23514", constraint });
+      }
+    };
+
+    try {
+      await initializeSchema(isolatedPool);
+      await expectBounds();
+
+      await isolatedPool.query(`
+        ALTER TABLE game_events DROP COLUMN replay_sequence CASCADE;
+        ALTER TABLE game_events DROP COLUMN day_before CASCADE;
+        ALTER TABLE game_events DROP COLUMN day_after CASCADE;
+      `);
+      await initializeSchema(isolatedPool);
+      await initializeSchema(isolatedPool);
+      await expectBounds();
+    } finally {
+      await dropIsolatedPool(schemaName, isolatedPool);
     }
   });
 });
@@ -141,11 +209,7 @@ describe("club language schema migration", () => {
 describe("tenant-composite game schema migration", () => {
   it("migrates fresh and populated legacy schemas idempotently without losing replay rows", async () => {
     const schemaName = `tenant_game_keys_${randomUUID().replaceAll("-", "")}`;
-    await adminPool.query(`CREATE SCHEMA "${schemaName}"`);
-    const isolatedPool = new Pool({
-      connectionString: databaseUrl,
-      options: `-c search_path=${schemaName}`,
-    });
+    const isolatedPool = await createIsolatedPool(schemaName);
     try {
       await initializeSchema(isolatedPool);
       expect(await constraintDefinitions(isolatedPool)).toEqual(
@@ -753,8 +817,7 @@ describe("tenant-composite game schema migration", () => {
         ],
       });
     } finally {
-      await isolatedPool.end();
-      await adminPool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
+      await dropIsolatedPool(schemaName, isolatedPool);
     }
   });
 });

@@ -111,10 +111,10 @@ CREATE TABLE IF NOT EXISTS game_events (
   payload JSONB NOT NULL DEFAULT '{}'::jsonb,
   parent_event_id UUID NULL,
   replay_version INTEGER NOT NULL DEFAULT 1,
-  replay_sequence INTEGER NULL CHECK (replay_sequence > 0),
+  replay_sequence INTEGER NULL,
   phase_after TEXT NULL,
-  day_before INTEGER NULL CHECK (day_before >= 0),
-  day_after INTEGER NULL CHECK (day_after >= 0),
+  day_before INTEGER NULL,
+  day_after INTEGER NULL,
   state_hash_after TEXT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   CONSTRAINT game_events_pkey PRIMARY KEY (club_id, id),
@@ -130,6 +130,39 @@ ALTER TABLE game_events ADD COLUMN IF NOT EXISTS phase_after TEXT NULL;
 ALTER TABLE game_events ADD COLUMN IF NOT EXISTS day_before INTEGER NULL;
 ALTER TABLE game_events ADD COLUMN IF NOT EXISTS day_after INTEGER NULL;
 ALTER TABLE game_events ADD COLUMN IF NOT EXISTS state_hash_after TEXT NULL;
+ALTER TABLE game_events DROP CONSTRAINT IF EXISTS game_events_replay_sequence_check;
+ALTER TABLE game_events DROP CONSTRAINT IF EXISTS game_events_day_before_check;
+ALTER TABLE game_events DROP CONSTRAINT IF EXISTS game_events_day_after_check;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'game_events'::REGCLASS
+       AND conname = 'game_events_replay_sequence_positive_ck'
+  ) THEN
+    ALTER TABLE game_events
+      ADD CONSTRAINT game_events_replay_sequence_positive_ck
+      CHECK (replay_sequence > 0);
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'game_events'::REGCLASS
+       AND conname = 'game_events_day_before_nonnegative_ck'
+  ) THEN
+    ALTER TABLE game_events
+      ADD CONSTRAINT game_events_day_before_nonnegative_ck
+      CHECK (day_before >= 0);
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'game_events'::REGCLASS
+       AND conname = 'game_events_day_after_nonnegative_ck'
+  ) THEN
+    ALTER TABLE game_events
+      ADD CONSTRAINT game_events_day_after_nonnegative_ck
+      CHECK (day_after >= 0);
+  END IF;
+END $$;
 ALTER TABLE game_events DROP COLUMN IF EXISTS secret;
 UPDATE game_events
    SET club_id = '00000000-0000-4000-8000-000000000101'
