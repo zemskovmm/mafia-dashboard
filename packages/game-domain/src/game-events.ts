@@ -63,10 +63,9 @@ export const canonicalGameEventTypes = [
 
 export type CanonicalGameEventType = (typeof canonicalGameEventTypes)[number];
 
-interface EventDraft<Type extends CanonicalGameEventType, Payload, Secret extends boolean = false> {
+interface EventDraft<Type extends CanonicalGameEventType, Payload> {
   readonly type: Type;
   readonly payload: Payload;
-  readonly secret: Secret;
 }
 
 type WithOptionalDisciplineContext<Payload> =
@@ -74,8 +73,8 @@ type WithOptionalDisciplineContext<Payload> =
   | (Payload & { readonly phase?: never; readonly currentTurnIndex?: never });
 
 export type CanonicalGameEventDraft =
-  | EventDraft<"game.started", Record<string, never>, true>
-  | EventDraft<"game.checkpointed", Record<string, never>, true>
+  | EventDraft<"game.started", Record<string, never>>
+  | EventDraft<"game.checkpointed", Record<string, never>>
   | EventDraft<"phase.changed", { readonly to: GamePhase }>
   | EventDraft<"turn.completed", { readonly seat: number }>
   | EventDraft<
@@ -115,21 +114,19 @@ export type CanonicalGameEventDraft =
     >
   | EventDraft<
       "mafia.shots-resolved",
-      { readonly shots: readonly ShotAssignment[]; readonly result: NightShotResult },
-      true
+      { readonly shots: readonly ShotAssignment[]; readonly result: NightShotResult }
     >
-  | EventDraft<"don.checked", { readonly targetSeat: number; readonly match: boolean }, true>
-  | EventDraft<"don.check-skipped", Record<string, never>, true>
-  | EventDraft<"sheriff.checked", { readonly targetSeat: number; readonly match: boolean }, true>
-  | EventDraft<"sheriff.check-skipped", Record<string, never>, true>
+  | EventDraft<"don.checked", { readonly targetSeat: number; readonly match: boolean }>
+  | EventDraft<"don.check-skipped", Record<string, never>>
+  | EventDraft<"sheriff.checked", { readonly targetSeat: number; readonly match: boolean }>
+  | EventDraft<"sheriff.check-skipped", Record<string, never>>
   | EventDraft<
       "best-move.completed",
       {
         readonly playerSeat: number;
         readonly selectedSeats: readonly number[];
         readonly mafiaHits: number;
-      },
-      true
+      }
     >
   | EventDraft<"game.completed", { readonly winner: "red" | "black" }>;
 
@@ -185,20 +182,36 @@ export const isMeaningfulGameEventDraft = (event: CanonicalGameEventDraft): bool
   event.type !== "turn.completed" &&
   (event.type !== "phase.changed" || !intermediatePhaseTargets.has(event.payload.to));
 
-export const canonicalSecretGameEventTypes = [
-  "game.started",
-  "game.checkpointed",
-  "mafia.shots-resolved",
-  "don.checked",
-  "don.check-skipped",
-  "sheriff.checked",
-  "sheriff.check-skipped",
-  "best-move.completed",
-] as const satisfies readonly CanonicalGameEventType[];
+export const canonicalGameEventSecrecy = {
+  "game.started": true,
+  "game.checkpointed": true,
+  "phase.changed": false,
+  "turn.completed": false,
+  "player.nominated": false,
+  "foul.issued": false,
+  "player.red-carded": false,
+  "voting.skipped": false,
+  "voting.resolved": false,
+  "car-crash.resolved": false,
+  "car-crash.ballot-resolved": false,
+  "mafia.shots-resolved": true,
+  "don.checked": true,
+  "don.check-skipped": true,
+  "sheriff.checked": true,
+  "sheriff.check-skipped": true,
+  "best-move.completed": true,
+  "game.completed": false,
+} as const satisfies Readonly<Record<CanonicalGameEventType, boolean>>;
+
+export const canonicalSecretGameEventTypes = canonicalGameEventTypes.filter(
+  (type) => canonicalGameEventSecrecy[type],
+);
 
 type UnknownRecord = Record<string, unknown>;
 
-const canonicalSecretGameEventTypeSet = new Set<string>(canonicalSecretGameEventTypes);
+export const isSecretGameEventType = (value: string): boolean =>
+  !isCanonicalGameEventType(value) || canonicalGameEventSecrecy[value];
+
 const canonicalGamePhaseSet = new Set<string>([
   "mafia-planning",
   "sheriff-wake",
@@ -482,14 +495,9 @@ export const assertCanonicalGameEventDraft: (
   value: unknown,
 ) => asserts value is CanonicalGameEventDraft = (value) => {
   const event = requireRecord(value, "Canonical event draft");
-  assertExactKeys(event, ["type", "payload", "secret"], "Canonical event draft");
+  assertExactKeys(event, ["type", "payload"], "Canonical event draft");
   if (typeof event.type !== "string" || !isCanonicalGameEventType(event.type)) {
     throw new Error("Canonical event type is invalid");
-  }
-  assertBoolean(event.secret, `${event.type} secret`);
-  const expectedSecret = canonicalSecretGameEventTypeSet.has(event.type);
-  if (event.secret !== expectedSecret) {
-    throw new Error(`${event.type} must be marked secret=${String(expectedSecret)}`);
   }
   assertCanonicalPayload(event.type, event.payload);
 };
@@ -497,7 +505,6 @@ export const assertCanonicalGameEventDraft: (
 const gameLogEntryKeys = [
   "type",
   "payload",
-  "secret",
   "replayVersion",
   "id",
   "gameId",
@@ -760,17 +767,9 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
 export const assertGameLogEntry: (value: unknown) => asserts value is GameLogEntry = (value) => {
   const entry = requireRecord(value, "Game event envelope");
   assertExactKeys(entry, gameLogEntryKeys, "Game event envelope");
-  const legacyBestMove =
-    (entry.type === "best-move.completed" ||
-      entry.type === "don.checked" ||
-      entry.type === "sheriff.checked") &&
-    entry.secret === false &&
-    typeof entry.stateHashAfter === "string" &&
-    /^[0-9a-f]{8}$/.test(entry.stateHashAfter);
   assertCanonicalGameEventDraft({
     type: entry.type,
     payload: entry.payload,
-    secret: legacyBestMove ? true : entry.secret,
   });
   if (entry.replayVersion !== CURRENT_REPLAY_VERSION) {
     throw new Error(`Unsupported replay version ${String(entry.replayVersion)}`);
@@ -1246,23 +1245,6 @@ export const createGameLogEntry = (
 };
 
 const applyReplayEvent = (game: GameState, entry: GameLogEntry): GameState => {
-  const persistedEntry = entry as unknown as {
-    readonly type: CanonicalGameEventType;
-    readonly payload: Readonly<Record<string, unknown>>;
-    readonly secret: boolean;
-    readonly stateHashAfter: string;
-  };
-  if (
-    /^[0-9a-f]{8}$/.test(persistedEntry.stateHashAfter) &&
-    persistedEntry.type === "best-move.completed" &&
-    persistedEntry.secret === false
-  ) {
-    return applyGameEvent(game, {
-      type: "best-move.completed",
-      payload: persistedEntry.payload,
-      secret: true,
-    } as CanonicalGameEventDraft);
-  }
   if (
     /^[0-9a-f]{8}$/.test(entry.stateHashAfter) &&
     (entry.type === "don.checked" || entry.type === "sheriff.checked")
@@ -1302,7 +1284,6 @@ const applyReplayEvent = (game: GameState, entry: GameLogEntry): GameState => {
             .map(({ seat }) => [seat, entry.payload.votes[seat] === true]),
         ),
       },
-      secret: entry.secret,
     });
     return after.carCrashVotes === undefined
       ? after
@@ -1311,7 +1292,6 @@ const applyReplayEvent = (game: GameState, entry: GameLogEntry): GameState => {
   return applyGameEvent(game, {
     type: entry.type,
     payload: entry.payload,
-    secret: entry.secret,
   } as CanonicalGameEventDraft);
 };
 

@@ -92,7 +92,6 @@ CREATE TABLE IF NOT EXISTS game_events (
   phase TEXT NOT NULL,
   seat INTEGER NULL CHECK (seat BETWEEN 1 AND 10),
   payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-  secret BOOLEAN NOT NULL DEFAULT FALSE,
   parent_event_id UUID NULL,
   replay_version INTEGER NOT NULL DEFAULT 1,
   replay_sequence INTEGER NULL CHECK (replay_sequence > 0),
@@ -114,6 +113,7 @@ ALTER TABLE game_events ADD COLUMN IF NOT EXISTS phase_after TEXT NULL;
 ALTER TABLE game_events ADD COLUMN IF NOT EXISTS day_before INTEGER NULL;
 ALTER TABLE game_events ADD COLUMN IF NOT EXISTS day_after INTEGER NULL;
 ALTER TABLE game_events ADD COLUMN IF NOT EXISTS state_hash_after TEXT NULL;
+ALTER TABLE game_events DROP COLUMN IF EXISTS secret;
 UPDATE game_events
    SET club_id = '00000000-0000-4000-8000-000000000101'
  WHERE club_id IS NULL;

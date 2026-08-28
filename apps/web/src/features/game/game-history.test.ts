@@ -60,27 +60,22 @@ const fixture = () => {
   const root = append(baseline.game, 1, null, {
     type: "game.checkpointed",
     payload: {},
-    secret: true,
   });
   const first = append(root.after, 2, root.entry.id, {
     type: "player.nominated",
     payload: { nominatorSeat: 1, candidateSeat: 4 },
-    secret: false,
   });
   const second = append(first.after, 3, first.entry.id, {
     type: "turn.completed",
     payload: { seat: 1 },
-    secret: false,
   });
   const left = append(second.after, 4, second.entry.id, {
     type: "foul.issued",
     payload: { seat: 5, foulNumber: 1, redCarded: false },
-    secret: false,
   });
   const right = append(second.after, 5, second.entry.id, {
     type: "foul.issued",
     payload: { seat: 6, foulNumber: 1, redCarded: false },
-    secret: false,
   });
   return { baseline, root, first, second, left, right };
 };

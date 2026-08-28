@@ -56,6 +56,7 @@ describe("deterministic sample game history", () => {
       result: { kind: "winner", seats: [7], totals: { 7: 10 } },
     });
     expect(entry("mafia.shots-resolved")?.payload).toMatchObject({
+      shots: expect.arrayContaining([expect.objectContaining({ secret: true })]),
       result: { kind: "kill", targetSeat: 2 },
     });
     expect(entry("don.checked")?.payload).toEqual({ targetSeat: 1, match: true });

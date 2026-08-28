@@ -947,7 +947,6 @@ describe("PlayerStore", () => {
       phase: "day",
       seat: 1,
       payload: { seat: 1, seconds: 60 },
-      secret: false,
     });
     await waitForBlockedQuery("SELECT pg_advisory_xact_lock");
 
@@ -1296,7 +1295,6 @@ describe("PlayerStore", () => {
           phase: "day",
           seat: 1,
           payload: { seat: 1, seconds: 60 },
-          secret: false,
         })
         .then(
           () => "appended" as const,

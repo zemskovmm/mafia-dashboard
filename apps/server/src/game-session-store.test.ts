@@ -114,7 +114,6 @@ const createCompletedSession = async (gameId: string, clubId = DEFAULT_CLUB_ID) 
           type: "game.finished",
           phase: "finished",
           payload: { winner: "red" },
-          secret: false,
           createdAt: "2026-08-18T08:00:00.000Z",
         },
       ],
@@ -167,7 +166,7 @@ const createStartedDaySessionWithCheckpoints = async (gameId: string) => {
     parentEventId: null,
     createdAt: "2026-08-18T07:59:00.000Z",
     before: game,
-    draft: { type: "game.checkpointed", payload: {}, secret: true },
+    draft: { type: "game.checkpointed", payload: {} },
   });
   await store.start({
     gameId,
@@ -186,7 +185,6 @@ const createStartedDaySessionWithCheckpoints = async (gameId: string) => {
     draft: {
       type: "foul.issued",
       payload: { seat: 1, foulNumber: 1, redCarded: false },
-      secret: false,
     },
   });
   await store.appendEvent({
@@ -205,7 +203,6 @@ const createStartedDaySessionWithCheckpoints = async (gameId: string) => {
     draft: {
       type: "foul.issued",
       payload: { seat: 2, foulNumber: 1, redCarded: false },
-      secret: false,
     },
   });
   await store.appendEvent({
@@ -269,14 +266,14 @@ describe("GameSessionStore", () => {
       await pool.query(
         `INSERT INTO game_events
            (id, game_id, sequence, idempotency_key, event_type, phase, phase_after,
-            day_before, day_after, payload, secret, state_hash_after)
+            day_before, day_after, payload, state_hash_after)
          VALUES
            ($1, $4, 1, 'legacy-created', 'game.created', 'setup-players', NULL,
-            NULL, NULL, '{}'::jsonb, FALSE, NULL),
+            NULL, NULL, '{}'::jsonb, NULL),
            ($2, $4, 2, 'canonical-started', 'game.started', 'day', 'day',
-            1, 1, '{}'::jsonb, TRUE, $5),
+            1, 1, '{}'::jsonb, $5),
            ($3, $4, 3, 'canonical-turn', 'turn.completed', 'day', 'day',
-            1, 1, '{"seat": 1}'::jsonb, FALSE, $6)`,
+            1, 1, '{"seat": 1}'::jsonb, $6)`,
         [createdId, startedId, turnId, gameId, "deadbeef", "cafebabe"],
       );
 
@@ -331,7 +328,7 @@ describe("GameSessionStore", () => {
       parentEventId: null,
       createdAt: "2026-08-18T07:59:00.000Z",
       before: initialGame.game,
-      draft: { type: "game.checkpointed", payload: {}, secret: true },
+      draft: { type: "game.checkpointed", payload: {} },
     });
     const legacyStarted = {
       ...started.entry,
@@ -381,7 +378,7 @@ describe("GameSessionStore", () => {
       parentEventId: null,
       createdAt: "2026-08-18T07:59:00.000Z",
       before: initialGame.game,
-      draft: { type: "game.checkpointed", payload: {}, secret: true },
+      draft: { type: "game.checkpointed", payload: {} },
     });
     await pool.query(
       "ALTER TABLE game_events DROP CONSTRAINT IF EXISTS game_events_replay_metadata_ck",
@@ -407,16 +404,15 @@ describe("GameSessionStore", () => {
       );
       await pool.query(
         `INSERT INTO game_events
-           (id, game_id, sequence, idempotency_key, event_type, phase, payload, secret,
+           (id, game_id, sequence, idempotency_key, event_type, phase, payload,
             replay_sequence, created_at)
-         VALUES ($1::uuid, $2, 1, $1::text, $3, $4, $5::jsonb, $6, 1, $7)`,
+         VALUES ($1::uuid, $2, 1, $1::text, $3, $4, $5::jsonb, 1, $6)`,
         [
           started.entry.id,
           gameId,
           started.entry.type,
           started.entry.phaseBefore,
           JSON.stringify(started.entry.payload),
-          started.entry.secret,
           started.entry.createdAt,
         ],
       );
@@ -561,7 +557,6 @@ describe("GameSessionStore", () => {
         type: "legacy.action",
         phase: "finished",
         payload: { historical: true },
-        secret: false,
         createdAt: "2026-08-18T07:58:00.000Z",
       },
     ] as const;
@@ -661,7 +656,7 @@ describe("GameSessionStore", () => {
       parentEventId: null,
       createdAt: "2026-08-18T07:59:00.000Z",
       before: initialGame.game,
-      draft: { type: "game.checkpointed", payload: {}, secret: true },
+      draft: { type: "game.checkpointed", payload: {} },
     });
     const start = (
       store as unknown as {
@@ -671,7 +666,14 @@ describe("GameSessionStore", () => {
           readonly baseRevision: number;
           readonly initialGame: typeof initialGame;
           readonly event: typeof started.entry;
-        }) => Promise<{ readonly revision: number; readonly state: { readonly game: unknown } }>;
+        }) => Promise<{
+          readonly revision: number;
+          readonly state: {
+            readonly game: unknown;
+            readonly events?: readonly Record<string, unknown>[];
+            readonly log: readonly Record<string, unknown>[];
+          };
+        }>;
       }
     ).start.bind(store);
 
@@ -746,7 +748,7 @@ describe("GameSessionStore", () => {
       parentEventId: null,
       createdAt: "2026-08-18T07:59:00.000Z",
       before: liveGame,
-      draft: { type: "game.checkpointed", payload: {}, secret: true },
+      draft: { type: "game.checkpointed", payload: {} },
     });
     await store.start({
       gameId,
@@ -762,7 +764,7 @@ describe("GameSessionStore", () => {
       parentEventId: started.entry.id,
       createdAt: "2026-08-18T08:00:00.000Z",
       before: started.after,
-      draft: { type: "turn.completed", payload: { seat: 1 }, secret: false },
+      draft: { type: "turn.completed", payload: { seat: 1 } },
     });
     const appendEvent = (
       store as unknown as {
@@ -870,7 +872,6 @@ describe("GameSessionStore", () => {
       draft: {
         type: "foul.issued",
         payload: { seat: 3, foulNumber: 1, redCarded: false },
-        secret: false,
       },
     });
 
@@ -942,7 +943,6 @@ describe("GameSessionStore", () => {
       draft: {
         type: "foul.issued",
         payload: { seat: 1, foulNumber: 1, redCarded: false },
-        secret: false,
       },
     });
 
@@ -996,7 +996,6 @@ describe("GameSessionStore", () => {
           draft: {
             type: "foul.issued",
             payload: { seat: 3, foulNumber: 1, redCarded: false },
-            secret: false,
           },
         }).entry,
     );
@@ -1048,7 +1047,7 @@ describe("GameSessionStore", () => {
       parentEventId: null,
       createdAt: "2026-08-18T07:59:00.000Z",
       before: initialGame.game,
-      draft: { type: "game.checkpointed", payload: {}, secret: true },
+      draft: { type: "game.checkpointed", payload: {} },
     });
     await store.start({
       gameId,
@@ -1064,7 +1063,7 @@ describe("GameSessionStore", () => {
       parentEventId: started.entry.id,
       createdAt: "2026-08-18T08:00:00.000Z",
       before: started.after,
-      draft: { type: "game.completed", payload: { winner: "red" }, secret: false },
+      draft: { type: "game.completed", payload: { winner: "red" } },
     });
     await store.appendEvent({
       gameId,
@@ -1164,7 +1163,7 @@ describe("GameSessionStore", () => {
       parentEventId: null,
       createdAt: "2026-08-18T07:59:00.000Z",
       before: initialGame.game,
-      draft: { type: "game.checkpointed", payload: {}, secret: true },
+      draft: { type: "game.checkpointed", payload: {} },
     });
     await store.start({
       gameId,
@@ -1180,7 +1179,7 @@ describe("GameSessionStore", () => {
       parentEventId: started.entry.id,
       createdAt: "2026-08-18T08:00:00.000Z",
       before: started.after,
-      draft: { type: "game.completed", payload: { winner: "red" }, secret: false },
+      draft: { type: "game.completed", payload: { winner: "red" } },
     });
     await store.appendEvent({
       gameId,
@@ -1261,7 +1260,7 @@ describe("GameSessionStore", () => {
       parentEventId: null,
       createdAt: "2026-08-18T07:59:00.000Z",
       before: initialGame.game,
-      draft: { type: "game.checkpointed", payload: {}, secret: true },
+      draft: { type: "game.checkpointed", payload: {} },
     });
     await store.start({
       gameId,
@@ -1277,7 +1276,7 @@ describe("GameSessionStore", () => {
       parentEventId: root.entry.id,
       createdAt: "2026-08-18T08:00:00.000Z",
       before: root.after,
-      draft: { type: "game.completed", payload: { winner: "red" }, secret: false },
+      draft: { type: "game.completed", payload: { winner: "red" } },
     });
     await store.appendEvent({
       gameId,
@@ -1316,7 +1315,7 @@ describe("GameSessionStore", () => {
       parentEventId: null,
       createdAt: "2026-08-18T07:59:00.000Z",
       before: completed.state.game,
-      draft: { type: "game.checkpointed", payload: {}, secret: true },
+      draft: { type: "game.checkpointed", payload: {} },
     });
     await store.save({
       gameId,
@@ -1344,7 +1343,7 @@ describe("GameSessionStore", () => {
       parentEventId: started.entry.id,
       createdAt: "2026-08-18T08:00:00.000Z",
       before: started.after,
-      draft: { type: "game.completed", payload: { winner: "red" }, secret: false },
+      draft: { type: "game.completed", payload: { winner: "red" } },
     });
     await store.appendEvent({
       gameId,
@@ -1560,7 +1559,7 @@ describe("GameSessionStore", () => {
       parentEventId: null,
       createdAt: "2026-08-18T07:59:00.000Z",
       before: foreignInitialGame.game,
-      draft: { type: "game.checkpointed", payload: {}, secret: true },
+      draft: { type: "game.checkpointed", payload: {} },
     });
     const localRoot = createGameLogEntry({
       gameId: localGameId,
@@ -1569,7 +1568,7 @@ describe("GameSessionStore", () => {
       parentEventId: null,
       createdAt: "2026-08-18T08:00:00.000Z",
       before: localInitialGame.game,
-      draft: { type: "game.checkpointed", payload: {}, secret: true },
+      draft: { type: "game.checkpointed", payload: {} },
     });
 
     await store.start({
@@ -1740,7 +1739,6 @@ describe("GameSessionStore", () => {
       type: "turn.completed",
       phase: "day",
       payload: { seat: 1 },
-      secret: false,
       createdAt: "2026-08-18T08:00:00.000Z",
     } as const;
     const abandoned = {
@@ -1749,7 +1747,6 @@ describe("GameSessionStore", () => {
       type: "foul.issued",
       phase: "day",
       payload: { seat: 2 },
-      secret: false,
       createdAt: "2026-08-18T08:01:00.000Z",
     } as const;
     const replacement = {
@@ -1758,7 +1755,6 @@ describe("GameSessionStore", () => {
       type: "foul.issued",
       phase: "day",
       payload: { seat: 3 },
-      secret: false,
       createdAt: "2026-08-18T08:02:00.000Z",
     } as const;
     await store.save({
@@ -1870,7 +1866,7 @@ describe("GameSessionStore", () => {
       parentEventId: null,
       createdAt: "2026-08-18T07:59:00.000Z",
       before: initialGame.game,
-      draft: { type: "game.checkpointed", payload: {}, secret: true },
+      draft: { type: "game.checkpointed", payload: {} },
     });
     await store.start({
       gameId,
@@ -1917,7 +1913,7 @@ describe("GameSessionStore", () => {
       parentEventId: null,
       createdAt: "2026-08-18T07:59:00.000Z",
       before: initialGame.game,
-      draft: { type: "game.checkpointed", payload: {}, secret: true },
+      draft: { type: "game.checkpointed", payload: {} },
     });
     await store.start({
       gameId,
@@ -1974,7 +1970,7 @@ describe("GameSessionStore", () => {
       parentEventId: null,
       createdAt: "2026-08-18T07:59:00.000Z",
       before: initialGame.game,
-      draft: { type: "game.checkpointed", payload: {}, secret: true },
+      draft: { type: "game.checkpointed", payload: {} },
     });
     await store.start({
       gameId,

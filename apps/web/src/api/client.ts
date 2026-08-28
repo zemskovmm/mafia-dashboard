@@ -221,7 +221,6 @@ export interface GameEventRecord {
   readonly type: string;
   readonly phase: string;
   readonly payload: Readonly<Record<string, unknown>>;
-  readonly secret: boolean;
   readonly createdAt: string;
 }
 

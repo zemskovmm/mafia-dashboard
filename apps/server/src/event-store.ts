@@ -7,6 +7,7 @@ import {
 } from "./game-lifecycle.js";
 import { initializeSchema } from "./initialize-schema.js";
 import { DEFAULT_CLUB_ID } from "./club-store.js";
+import { isSecretGameEventType } from "@mafia/game-domain";
 
 export interface GameEventInput {
   readonly clubId?: string;
@@ -16,7 +17,6 @@ export interface GameEventInput {
   readonly phase: string;
   readonly seat?: number;
   readonly payload: Readonly<Record<string, unknown>>;
-  readonly secret: boolean;
 }
 
 export interface GameEvent extends GameEventInput {
@@ -38,7 +38,6 @@ interface EventRow {
   phase: string;
   seat: number | null;
   payload: Record<string, unknown>;
-  secret: boolean;
   created_at: Date;
   parent_event_id: string | null;
   replay_version: number;
@@ -54,7 +53,6 @@ const mapRow = (row: EventRow): GameEvent => ({
   phase: row.phase,
   ...(row.seat === null ? {} : { seat: row.seat }),
   payload: row.payload,
-  secret: row.secret,
   createdAt: row.created_at,
   duplicate: false,
   parentEventId: row.parent_event_id,
@@ -69,7 +67,7 @@ const findByIdempotencyKey = async (
   idempotencyKey: string,
 ): Promise<GameEvent | null> => {
   const result = await client.query<EventRow>(
-    `SELECT id, game_id, sequence, idempotency_key, event_type, phase, seat, payload, secret,
+    `SELECT id, game_id, sequence, idempotency_key, event_type, phase, seat, payload,
             created_at, parent_event_id, replay_version, state_hash_after
        FROM game_events
       WHERE club_id = $1 AND game_id = $2 AND idempotency_key = $3`,
@@ -119,10 +117,10 @@ export class EventStore {
 
       const result = await client.query<EventRow>(
         `INSERT INTO game_events
-           (id, club_id, game_id, sequence, idempotency_key, event_type, phase, seat, payload, secret)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)
+           (id, club_id, game_id, sequence, idempotency_key, event_type, phase, seat, payload)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
          RETURNING id, game_id, sequence, idempotency_key, event_type, phase, seat, payload,
-                   secret, created_at, parent_event_id, replay_version, state_hash_after`,
+                   created_at, parent_event_id, replay_version, state_hash_after`,
         [
           randomUUID(),
           clubId,
@@ -133,7 +131,6 @@ export class EventStore {
           input.phase,
           input.seat ?? null,
           JSON.stringify(input.payload),
-          input.secret,
         ],
       );
       const row = result.rows[0];
@@ -217,7 +214,7 @@ export class EventStore {
     clubId = DEFAULT_CLUB_ID,
   ): Promise<readonly GameEvent[]> {
     const result = await this.pool.query<EventRow>(
-      `SELECT id, game_id, sequence, idempotency_key, event_type, phase, seat, payload, secret,
+      `SELECT id, game_id, sequence, idempotency_key, event_type, phase, seat, payload,
               created_at, parent_event_id, replay_version, state_hash_after
          FROM game_events
         WHERE club_id = $1 AND game_id = $2
@@ -230,7 +227,7 @@ export class EventStore {
       return {
         ...event,
         stateHashAfter: null,
-        ...(event.secret ? { payload: { redacted: true } } : {}),
+        ...(isSecretGameEventType(event.type) ? { payload: { redacted: true } } : {}),
       };
     });
   }

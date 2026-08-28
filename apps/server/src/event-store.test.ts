@@ -45,7 +45,6 @@ describe("PostgreSQL event store", () => {
       type: "game.created",
       phase: "setup-players",
       payload: { name: "Friday game" },
-      secret: false,
     });
     const second = await store.append({
       gameId,
@@ -53,7 +52,6 @@ describe("PostgreSQL event store", () => {
       type: "players.selected",
       phase: "setup-players",
       payload: { seats: 10 },
-      secret: false,
     });
 
     expect(first.sequence).toBe(1);
@@ -73,7 +71,6 @@ describe("PostgreSQL event store", () => {
       phase: "day",
       seat: 3,
       payload: { seat: 3, seconds: 60 },
-      secret: false,
     } as const;
 
     const first = await store.append(input);
@@ -84,23 +81,61 @@ describe("PostgreSQL event store", () => {
     expect(await store.read(gameId)).toHaveLength(1);
   });
 
-  it("redacts secret payloads from public reads", async () => {
+  it("redacts private event types from public reads without storing a secrecy flag", async () => {
     const gameId = randomUUID();
-    await store.append({
-      gameId,
-      idempotencyKey: "don-check",
-      type: "don.checked",
-      phase: "night-don",
-      seat: 4,
-      payload: { targetSeat: 2, match: true },
-      secret: true,
-    });
+    for (const [index, type] of [
+      "don.checked",
+      "sheriff.checked",
+      "best-move.completed",
+    ].entries()) {
+      await store.append({
+        gameId,
+        idempotencyKey: `private-${index}`,
+        type,
+        phase: "night-don",
+        seat: 4,
+        payload: { privateValue: type },
+      });
+    }
 
     const host = await store.read(gameId, { includeSecrets: true });
     const publicEvents = await store.read(gameId, { includeSecrets: false });
 
-    expect(host[0]?.payload).toEqual({ targetSeat: 2, match: true });
-    expect(publicEvents[0]?.payload).toEqual({ redacted: true });
+    expect(host.map(({ payload }) => payload)).toEqual([
+      { privateValue: "don.checked" },
+      { privateValue: "sheriff.checked" },
+      { privateValue: "best-move.completed" },
+    ]);
+    expect(publicEvents.map(({ payload }) => payload)).toEqual([
+      { redacted: true },
+      { redacted: true },
+      { redacted: true },
+    ]);
+  });
+
+  it("keeps canonical public payloads visible and fails closed for unknown event types", async () => {
+    const gameId = randomUUID();
+    await store.append({
+      gameId,
+      idempotencyKey: "public",
+      type: "player.nominated",
+      phase: "day",
+      payload: { candidateSeat: 2 },
+    });
+    await store.append({
+      gameId,
+      idempotencyKey: "unknown",
+      type: "future.private-event",
+      phase: "day",
+      payload: { hidden: true },
+    });
+
+    const publicEvents = await store.read(gameId, { includeSecrets: false });
+
+    expect(publicEvents.map(({ payload }) => payload)).toEqual([
+      { candidateSeat: 2 },
+      { redacted: true },
+    ]);
   });
 
   it("truncates the undone event tail by idempotency key while preserving game.created", async () => {
@@ -111,7 +146,6 @@ describe("PostgreSQL event store", () => {
       type: "game.created",
       phase: "setup-players",
       payload: {},
-      secret: false,
     });
     await store.append({
       gameId,
@@ -119,7 +153,6 @@ describe("PostgreSQL event store", () => {
       type: "turn.completed",
       phase: "day",
       payload: { day: 2 },
-      secret: false,
     });
     await store.append({
       gameId,
@@ -127,7 +160,6 @@ describe("PostgreSQL event store", () => {
       type: "foul.issued",
       phase: "day",
       payload: { seat: 1 },
-      secret: false,
     });
 
     await store.truncateFrom(gameId, "undo-from-here");
@@ -147,7 +179,6 @@ describe("PostgreSQL event store", () => {
       type: "setup.players-selected",
       phase: "setup-players",
       payload: { hostPlayerId: randomUUID(), players: [] },
-      secret: false,
     });
 
     await store.deleteGame(gameId);
@@ -160,7 +191,6 @@ describe("PostgreSQL event store", () => {
         type: "turn.started",
         phase: "day",
         payload: {},
-        secret: false,
       }),
     ).rejects.toMatchObject({ code: "game_deleted" });
   });
@@ -176,7 +206,6 @@ describe("PostgreSQL event store", () => {
           type: "log.test",
           phase: "day",
           payload: { index },
-          secret: false,
         }),
       ),
     );
@@ -214,7 +243,6 @@ describe("PostgreSQL event store", () => {
         type: "game.created",
         phase: "setup-players",
         payload: {},
-        secret: false,
       });
       foreign = store.append({
         clubId: club.id,
@@ -223,7 +251,6 @@ describe("PostgreSQL event store", () => {
         type: "game.created",
         phase: "setup-players",
         payload: {},
-        secret: false,
       });
       foreignOutcome = await Promise.race([
         foreign.then(() => "completed"),
@@ -267,7 +294,6 @@ describe("PostgreSQL event store", () => {
         type: "turn.started",
         phase: "day",
         payload: {},
-        secret: false,
       });
       await waitForAdvisoryWaiters(2);
       await locker.query("COMMIT");

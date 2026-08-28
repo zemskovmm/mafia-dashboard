@@ -100,7 +100,6 @@ interface LocalLogEntry {
   readonly type: string;
   readonly phase: string;
   readonly payload: Record<string, unknown>;
-  readonly secret: boolean;
   readonly createdAt: string;
 }
 
@@ -221,12 +220,6 @@ const hasSetupProgress = ({
 const setupPhase = (step: SetupWizardSessionState["step"] | undefined) =>
   step === "roles" ? "setup-roles" : step === "music" ? "setup-music" : "setup-players";
 
-const isSecretEvent = (type: string, payload: Record<string, unknown>) =>
-  payload.secret === true ||
-  type === "setup.role-drawn" ||
-  type.includes("shot") ||
-  type.includes("checked");
-
 const isAuxiliaryEvent = (type: string) =>
   type.startsWith("timer.") || type.startsWith("music.") || type.startsWith("setup.");
 
@@ -249,7 +242,6 @@ const toLocalLogEntry = (entry: GameLogEntry): LocalLogEntry => ({
   type: entry.type,
   phase: entry.phaseBefore,
   payload: entry.payload as Record<string, unknown>,
-  secret: entry.secret,
   createdAt: entry.createdAt,
 });
 
@@ -755,7 +747,6 @@ export const ClubWorkspace = ({
         type,
         phase: phaseRef.current,
         payload,
-        secret: isSecretEvent(type, payload),
         createdAt: new Date().toISOString(),
       };
       const nextLog = [...legacyLogRef.current, entry];
@@ -956,7 +947,6 @@ export const ClubWorkspace = ({
     acceptGameEvent({
       type: "game.completed",
       payload: { winner: game.winner ?? "red" },
-      secret: false,
     });
     const completionEvent = eventsRef.current.at(-1);
     const results = buildFinalGameResults(
@@ -1921,7 +1911,7 @@ export const ClubWorkspace = ({
                 parentEventId: null,
                 createdAt: new Date().toISOString(),
                 before: next,
-                draft: { type: "game.checkpointed", payload: {}, secret: true },
+                draft: { type: "game.checkpointed", payload: {} },
               });
               initialGameRef.current = baseline;
               eventsRef.current = [started.entry];

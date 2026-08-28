@@ -78,7 +78,7 @@ const normalizationResponse = (
     parentEventId: null,
     createdAt: "2026-08-25T00:00:00.000Z",
     before: game,
-    draft: { type: "game.checkpointed", payload: {}, secret: true },
+    draft: { type: "game.checkpointed", payload: {} },
   });
   return {
     gameId,
@@ -118,7 +118,7 @@ describe("GameSessionOutbox", () => {
       parentEventId: null,
       createdAt: "2026-08-25T00:00:00.000Z",
       before: game,
-      draft: { type: "game.checkpointed", payload: {}, secret: true },
+      draft: { type: "game.checkpointed", payload: {} },
     });
     const turn = createGameLogEntry({
       gameId: "00000000-0000-4000-8000-000000000901",
@@ -130,7 +130,6 @@ describe("GameSessionOutbox", () => {
       draft: {
         type: "turn.completed",
         payload: { seat: started.after.turnOrder[0]! },
-        secret: false,
       },
     });
     const canonicalState = (events: readonly { readonly id: string }[]) =>
@@ -1478,7 +1477,7 @@ describe("GameSessionOutbox", () => {
       parentEventId: null,
       createdAt: "2026-08-25T00:00:00.000Z",
       before: game,
-      draft: { type: "game.checkpointed", payload: {}, secret: true },
+      draft: { type: "game.checkpointed", payload: {} },
     });
     const child = createGameLogEntry({
       gameId,
@@ -1490,7 +1489,6 @@ describe("GameSessionOutbox", () => {
       draft: {
         type: "turn.completed",
         payload: { seat: root.after.turnOrder[0]! },
-        secret: false,
       },
     });
     const canonicalState = (events: readonly (typeof root.entry | typeof child.entry)[]) =>

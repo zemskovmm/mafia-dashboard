@@ -102,18 +102,16 @@ export const createSampleGameHistory = (): SampleGameHistory => {
     return created.entry;
   };
 
-  append({ type: "game.started", payload: {}, secret: true });
-  append({ type: "phase.changed", payload: { to: "day" }, secret: false });
+  append({ type: "game.started", payload: {} });
+  append({ type: "phase.changed", payload: { to: "day" } });
 
   append({
     type: "player.nominated",
     payload: { nominatorSeat: 1, candidateSeat: 7 },
-    secret: false,
   });
   append({
     type: "foul.issued",
     payload: { seat: 9, foulNumber: 1, redCarded: false },
-    secret: false,
   });
   const dayOneVotes = Object.fromEntries(
     game.players.filter(({ status }) => status === "active").map(({ seat }) => [seat, 7]),
@@ -124,9 +122,8 @@ export const createSampleGameHistory = (): SampleGameHistory => {
       voteAssignments: dayOneVotes,
       result: { kind: "winner", seats: [7], totals: { 7: 10 } },
     },
-    secret: false,
   });
-  append({ type: "phase.changed", payload: { to: "night-mafia" }, secret: false });
+  append({ type: "phase.changed", payload: { to: "night-mafia" } });
 
   append({
     type: "mafia.shots-resolved",
@@ -138,30 +135,25 @@ export const createSampleGameHistory = (): SampleGameHistory => {
       })),
       result: { kind: "kill", targetSeat: 2 },
     },
-    secret: true,
   });
   append({
     type: "don.checked",
     payload: { targetSeat: 1, match: true },
-    secret: true,
   });
   append({
     type: "sheriff.checked",
     payload: { targetSeat: 10, match: true },
-    secret: true,
   });
-  append({ type: "phase.changed", payload: { to: "night-resolution" }, secret: false });
+  append({ type: "phase.changed", payload: { to: "night-resolution" } });
   append({
     type: "best-move.completed",
     payload: { playerSeat: 2, selectedSeats: [8, 9, 3], mafiaHits: 2 },
-    secret: true,
   });
-  append({ type: "phase.changed", payload: { to: "day" }, secret: false });
+  append({ type: "phase.changed", payload: { to: "day" } });
 
   append({
     type: "player.nominated",
     payload: { nominatorSeat: 3, candidateSeat: 10 },
-    secret: false,
   });
 
   const resetGame = game;
@@ -169,7 +161,6 @@ export const createSampleGameHistory = (): SampleGameHistory => {
   append({
     type: "foul.issued",
     payload: { seat: 10, foulNumber: 1, redCarded: false },
-    secret: false,
   });
   game = resetGame;
   parentEventId = resetHeadEventId;
@@ -178,15 +169,13 @@ export const createSampleGameHistory = (): SampleGameHistory => {
     append({
       type: "foul.issued",
       payload: { seat: 9, foulNumber, redCarded: foulNumber === 4 },
-      secret: false,
     });
   }
   append({
     type: "voting.skipped",
     payload: { reason: "host-skipped" },
-    secret: false,
   });
-  append({ type: "phase.changed", payload: { to: "night-mafia" }, secret: false });
+  append({ type: "phase.changed", payload: { to: "night-mafia" } });
   append({
     type: "mafia.shots-resolved",
     payload: {
@@ -196,19 +185,16 @@ export const createSampleGameHistory = (): SampleGameHistory => {
       ],
       result: { kind: "miss" },
     },
-    secret: true,
   });
   append({
     type: "player.red-carded",
     payload: { seat: 8 },
-    secret: false,
   });
   append({
     type: "player.red-carded",
     payload: { seat: 10 },
-    secret: false,
   });
-  append({ type: "game.completed", payload: { winner: "red" }, secret: false });
+  append({ type: "game.completed", payload: { winner: "red" } });
 
   const headEventId = parentEventId!;
   const activeEntries = getActiveBranch(entries, headEventId);

@@ -3,15 +3,19 @@ import { advanceVotingCandidate, completeCurrentTurn, nominate } from "./day-act
 import { advanceSetupPhase, createGame } from "./game.js";
 import {
   applyGameEvent,
+  canonicalGameEventTypes,
+  canonicalSecretGameEventTypes,
   createGameLogEntry,
   hashGameState,
   isMeaningfulGameEventDraft,
   isProvisionalInteractionType,
+  isSecretGameEventType,
   replayGameLog,
   type CanonicalGameEventDraft,
   type GameLogEntry,
   type InitialGameBaseline,
 } from "./game-events.js";
+import * as gameEvents from "./game-events.js";
 import {
   beginRoleDraw,
   completeRoleDraw,
@@ -83,12 +87,29 @@ const entry = (
   });
 
 describe("canonical game replay", () => {
+  it("derives secrecy from event type and fails closed for unknown types", () => {
+    const secrecy = (
+      gameEvents as typeof gameEvents & {
+        readonly canonicalGameEventSecrecy?: Readonly<Record<string, boolean>>;
+      }
+    ).canonicalGameEventSecrecy;
+
+    expect(secrecy).toBeDefined();
+    if (secrecy === undefined) return;
+    expect(Object.keys(secrecy)).toEqual([...canonicalGameEventTypes]);
+    const secretTypes = new Set<string>(canonicalSecretGameEventTypes);
+    for (const type of canonicalGameEventTypes) {
+      expect(isSecretGameEventType(type)).toBe(secrecy[type]);
+      expect(secretTypes.has(type)).toBe(secrecy[type]);
+    }
+    expect(isSecretGameEventType("legacy.unknown")).toBe(true);
+  });
+
   it("classifies only meaningful semantic checkpoints as persistable history", () => {
     expect(
       isMeaningfulGameEventDraft({
         type: "turn.completed",
         payload: { seat: 1 },
-        secret: false,
       }),
     ).toBe(false);
     for (const to of [
@@ -98,22 +119,18 @@ describe("canonical game replay", () => {
       "night-sheriff",
       "best-move",
     ] as const) {
-      expect(
-        isMeaningfulGameEventDraft({ type: "phase.changed", payload: { to }, secret: false }),
-      ).toBe(false);
+      expect(isMeaningfulGameEventDraft({ type: "phase.changed", payload: { to } })).toBe(false);
     }
     expect(
       isMeaningfulGameEventDraft({
         type: "phase.changed",
         payload: { to: "night-mafia" },
-        secret: false,
       }),
     ).toBe(true);
     expect(
       isMeaningfulGameEventDraft({
         type: "player.nominated",
         payload: { nominatorSeat: 3, candidateSeat: 4 },
-        secret: false,
       }),
     ).toBe(true);
   });
@@ -122,7 +139,6 @@ describe("canonical game replay", () => {
     const nominated = applyGameEvent(dayOne(), {
       type: "player.nominated",
       payload: { nominatorSeat: 3, candidateSeat: 4 },
-      secret: false,
     });
     expect(nominated.currentTurnIndex).toBe(2);
     expect(nominated.nominations).toEqual([{ nominatorSeat: 3, candidateSeat: 4, order: 1 }]);
@@ -130,7 +146,6 @@ describe("canonical game replay", () => {
     const day = applyGameEvent(planningGame(), {
       type: "phase.changed",
       payload: { to: "day" },
-      secret: false,
     });
     expect(day).toMatchObject({ phase: "day", day: 1 });
 
@@ -149,13 +164,11 @@ describe("canonical game replay", () => {
         })),
         result: { kind: "kill", targetSeat: target.seat },
       },
-      secret: true,
     });
     const sheriff = mafiaResult.players.find(({ role }) => role === "sheriff")!;
     const donResult = applyGameEvent(mafiaResult, {
       type: "don.checked",
       payload: { targetSeat: sheriff.seat, match: true },
-      secret: true,
     });
     expect(donResult.phase).toBe("night-don-result");
 
@@ -165,7 +178,6 @@ describe("canonical game replay", () => {
     const sheriffResult = applyGameEvent(donResult, {
       type: "sheriff.checked",
       payload: { targetSeat: mafia.seat, match: true },
-      secret: true,
     });
     expect(sheriffResult.phase).toBe("night-sheriff-result");
 
@@ -188,7 +200,6 @@ describe("canonical game replay", () => {
     const bestMove = applyGameEvent(resolution, {
       type: "best-move.completed",
       payload: { playerSeat: target.seat, selectedSeats, mafiaHits },
-      secret: true,
     });
     expect(bestMove).toMatchObject({ phase: "goodbye-speech", day: 2 });
   });
@@ -205,7 +216,6 @@ describe("canonical game replay", () => {
     const draft: CanonicalGameEventDraft = {
       type: "mafia.shots-resolved",
       payload: { shots: resolution.secretShots, result: resolution.result },
-      secret: true,
     };
 
     expect(applyGameEvent(canonical, draft)).toEqual(applyGameEvent(displayed, draft));
@@ -230,7 +240,6 @@ describe("canonical game replay", () => {
       applyGameEvent(canonical, {
         type: "mafia.shots-resolved",
         payload: { shots, result: { kind: "kill", targetSeat: 4 } },
-        secret: true,
       }),
     ).toThrow(/Mafia night phase/i);
   });
@@ -240,7 +249,6 @@ describe("canonical game replay", () => {
       applyGameEvent(dayOne(), {
         type: "phase.changed",
         payload: { to: "day" },
-        secret: false,
       }),
     ).toThrow(/advance/i);
   });
@@ -250,7 +258,6 @@ describe("canonical game replay", () => {
       applyGameEvent(planningGame(), {
         type: "phase.changed",
         payload: { to: "night-mafia" },
-        secret: false,
       }),
     ).toThrow(/meaningful phase day/i);
   });
@@ -259,19 +266,16 @@ describe("canonical game replay", () => {
     const nominated = applyGameEvent(dayOne(), {
       type: "player.nominated",
       payload: { nominatorSeat: 3, candidateSeat: 4 },
-      secret: false,
     });
     const cancelled = applyGameEvent(nominated, {
       type: "player.red-carded",
       payload: { seat: 4 },
-      secret: false,
     });
 
     expect(() =>
       applyGameEvent(cancelled, {
         type: "phase.changed",
         payload: { to: "night-mafia" },
-        secret: false,
       }),
     ).not.toThrow();
   });
@@ -288,67 +292,29 @@ describe("canonical game replay", () => {
     );
   });
 
-  it("rejects a secret event whose caller marks it public", () => {
-    const game = { ...dayOne(), phase: "night-don" as const };
-    const target = game.players.find(({ role }) => role === "sheriff")!;
-
-    expect(() =>
-      applyGameEvent(game, {
-        type: "don.checked",
-        payload: { targetSeat: target.seat, match: true },
-        secret: false,
-      } as unknown as CanonicalGameEventDraft),
-    ).toThrow(/secret/i);
-    expect(() =>
-      applyGameEvent(game, {
-        type: "don.checked",
-        payload: { targetSeat: target.seat, match: true },
-        secret: true,
-      }),
-    ).not.toThrow();
-    expect(() =>
-      applyGameEvent(dayOne(), {
-        type: "game.started",
-        payload: {},
-        secret: false,
-      } as unknown as CanonicalGameEventDraft),
-    ).toThrow(/secret/i);
-    expect(() =>
-      applyGameEvent(dayOne(), {
-        type: "turn.completed",
-        payload: { seat: 1 },
-        secret: true,
-      } as unknown as CanonicalGameEventDraft),
-    ).toThrow(/secret/i);
-  });
-
   it("rejects unknown event types and ignored payload fields", () => {
     expect(() =>
       applyGameEvent(dayOne(), {
         type: "player.nominated",
         payload: { nominatorSeat: 1, candidateSeat: 4, note: "ignored" },
-        secret: false,
       } as unknown as CanonicalGameEventDraft),
     ).toThrow(/payload/i);
     expect(() =>
       applyGameEvent(dayOne(), {
         type: "player.red-carded",
         payload: { seat: 4, source: "ignored" },
-        secret: false,
       } as unknown as CanonicalGameEventDraft),
     ).toThrow(/payload/i);
     expect(() =>
       applyGameEvent(dayOne(), {
         type: "game.corrupted",
         payload: {},
-        secret: false,
       } as unknown as CanonicalGameEventDraft),
     ).toThrow(/event type/i);
     expect(() =>
       applyGameEvent(dayOne(), {
         type: "player.nominated",
         payload: { nominatorSeat: 1, candidateSeat: 11 },
-        secret: false,
       }),
     ).toThrow(/between 1 and 10/i);
     expect(() =>
@@ -363,7 +329,6 @@ describe("canonical game replay", () => {
             ],
             result: { kind: "miss" },
           },
-          secret: true,
         },
       ),
     ).toThrow(/duplicate shooterSeat/i);
@@ -397,14 +362,12 @@ describe("canonical game replay", () => {
       applyGameEvent(voting, {
         type: "phase.changed",
         payload: { to: "night-mafia" },
-        secret: false,
       }),
     ).toThrow(/cannot replay a phase change/i);
     expect(
       applyGameEvent(dayOne(), {
         type: "phase.changed",
         payload: { to: "night-mafia" },
-        secret: false,
       }),
     ).toMatchObject({ phase: "night-mafia", day: 1 });
   });
@@ -414,7 +377,6 @@ describe("canonical game replay", () => {
     const first = entry(initial, 1, {
       type: "player.nominated",
       payload: { nominatorSeat: 1, candidateSeat: 4 },
-      secret: false,
     });
 
     expect(() =>
@@ -425,7 +387,7 @@ describe("canonical game replay", () => {
         parentEventId: first.entry.id,
         createdAt: "2026-08-25T00:02:00.000Z",
         before: first.after,
-        draft: { type: "turn.completed", payload: { seat: 1 }, secret: false },
+        draft: { type: "turn.completed", payload: { seat: 1 } },
       }),
     ).toThrow(/sequence/i);
     expect(() =>
@@ -443,7 +405,6 @@ describe("canonical game replay", () => {
     const draft: CanonicalGameEventDraft = {
       type: "player.nominated",
       payload: { nominatorSeat: 1, candidateSeat: 4 },
-      secret: false,
     };
 
     const after = applyGameEvent(initial, draft);
@@ -457,18 +418,15 @@ describe("canonical game replay", () => {
     const root = entry(canonical, 1, {
       type: "game.checkpointed",
       payload: {},
-      secret: true,
     });
     const live = applyGameEvent(root.after, {
       type: "turn.completed",
       payload: { seat: canonical.turnOrder[canonical.currentTurnIndex]! },
-      secret: false,
     });
     const target = live.players.find(({ role }) => role === "citizen")!;
     const direct = applyGameEvent(live, {
       type: "foul.issued",
       payload: { seat: target.seat, foulNumber: 1, redCarded: false },
-      secret: false,
     });
     const checkpoint = entry(
       root.after,
@@ -482,7 +440,6 @@ describe("canonical game replay", () => {
           phase: live.phase,
           currentTurnIndex: live.currentTurnIndex,
         },
-        secret: false,
       },
       root.entry.id,
     );
@@ -499,21 +456,18 @@ describe("canonical game replay", () => {
     const canonical = applyGameEvent(dayOne(), {
       type: "player.nominated",
       payload: { nominatorSeat: 1, candidateSeat: 4 },
-      secret: false,
     });
     let live = canonical;
     while (live.phase === "day") {
       live = applyGameEvent(live, {
         type: "turn.completed",
         payload: { seat: live.turnOrder[live.currentTurnIndex]! },
-        secret: false,
       });
     }
     const target = live.players.find(({ role, seat }) => role === "citizen" && seat !== 4)!;
     const direct = applyGameEvent(live, {
       type: "player.red-carded",
       payload: { seat: target.seat },
-      secret: false,
     });
 
     const replayed = applyGameEvent(canonical, {
@@ -523,7 +477,6 @@ describe("canonical game replay", () => {
         phase: live.phase,
         currentTurnIndex: live.currentTurnIndex,
       },
-      secret: false,
     });
 
     expect(live.phase).toBe("voting");
@@ -534,7 +487,6 @@ describe("canonical game replay", () => {
     const canonical = applyGameEvent(dayOne(), {
       type: "player.nominated",
       payload: { nominatorSeat: 1, candidateSeat: 4 },
-      secret: false,
     });
 
     const replayed = applyGameEvent(canonical, {
@@ -546,7 +498,6 @@ describe("canonical game replay", () => {
         phase: "voting",
         currentTurnIndex: 0,
       },
-      secret: false,
     });
 
     expect(replayed).toMatchObject({ phase: "voting", currentTurnIndex: 0 });
@@ -558,19 +509,16 @@ describe("canonical game replay", () => {
     const firstNomination = applyGameEvent(dayOne(), {
       type: "player.nominated",
       payload: { nominatorSeat: 1, candidateSeat: 4 },
-      secret: false,
     });
     const canonical = applyGameEvent(firstNomination, {
       type: "player.nominated",
       payload: { nominatorSeat: 2, candidateSeat: 6 },
-      secret: false,
     });
     let voting = canonical;
     while (voting.phase === "day") {
       voting = applyGameEvent(voting, {
         type: "turn.completed",
         payload: { seat: voting.turnOrder[voting.currentTurnIndex]! },
-        secret: false,
       });
     }
     const live = advanceVotingCandidate(voting);
@@ -578,7 +526,6 @@ describe("canonical game replay", () => {
     const direct = applyGameEvent(live, {
       type: "player.red-carded",
       payload: { seat: target.seat },
-      secret: false,
     });
 
     const replayed = applyGameEvent(canonical, {
@@ -588,7 +535,6 @@ describe("canonical game replay", () => {
         phase: live.phase,
         currentTurnIndex: live.currentTurnIndex,
       },
-      secret: false,
     });
 
     expect(live.turnOrder[live.currentTurnIndex]).toBe(6);
@@ -612,17 +558,14 @@ describe("canonical game replay", () => {
         })),
         result: { kind: "kill", targetSeat: victim.seat },
       },
-      secret: true,
     });
     const live = applyGameEvent(canonical, {
       type: "phase.changed",
       payload: { to: "night-don" },
-      secret: false,
     });
     const direct = applyGameEvent(live, {
       type: "foul.issued",
       payload: { seat: target.seat, foulNumber: 1, redCarded: false },
-      secret: false,
     });
 
     const replayed = applyGameEvent(canonical, {
@@ -634,7 +577,6 @@ describe("canonical game replay", () => {
         phase: live.phase,
         currentTurnIndex: live.currentTurnIndex,
       },
-      secret: false,
     });
 
     expect(live.phase).toBe("night-don");
@@ -658,12 +600,10 @@ describe("canonical game replay", () => {
     const live = applyGameEvent(canonical, {
       type: "turn.completed",
       payload: { seat: 4 },
-      secret: false,
     });
     const direct = applyGameEvent(live, {
       type: "foul.issued",
       payload: { seat: 1, foulNumber: 1, redCarded: false },
-      secret: false,
     });
 
     const replayed = applyGameEvent(canonical, {
@@ -675,7 +615,6 @@ describe("canonical game replay", () => {
         phase: "car-crash",
         currentTurnIndex: 1,
       },
-      secret: false,
     });
 
     expect(replayed).toEqual(direct);
@@ -706,7 +645,6 @@ describe("canonical game replay", () => {
           phase: "car-crash",
           currentTurnIndex: 1,
         },
-        secret: false,
       }),
     ).toThrow(/car-crash turn order/i);
   });
@@ -734,7 +672,6 @@ describe("canonical game replay", () => {
           phase: "voting",
           currentTurnIndex: 1,
         },
-        secret: false,
       }),
     ).toThrow(/voting candidate/i);
   });
@@ -749,14 +686,12 @@ describe("canonical game replay", () => {
           redCarded: false,
           phase: "day",
         },
-        secret: false,
       } as unknown as CanonicalGameEventDraft),
     ).toThrow(/phase and currentTurnIndex together/i);
     expect(() =>
       applyGameEvent(dayOne(), {
         type: "player.red-carded",
         payload: { seat: 1, currentTurnIndex: 0 },
-        secret: false,
       } as unknown as CanonicalGameEventDraft),
     ).toThrow(/phase and currentTurnIndex together/i);
   });
@@ -774,7 +709,6 @@ describe("canonical game replay", () => {
           phase: "finished",
           currentTurnIndex: finished.currentTurnIndex,
         },
-        secret: false,
       }),
     ).toThrow(/active play/i);
   });
@@ -786,14 +720,12 @@ describe("canonical game replay", () => {
       game = applyGameEvent(game, {
         type: "foul.issued",
         payload: { seat: target.seat, foulNumber: number, redCarded: false },
-        secret: false,
       });
     }
 
     const after = applyGameEvent(game, {
       type: "foul.issued",
       payload: { seat: target.seat, foulNumber: 4, redCarded: true },
-      secret: false,
     });
 
     expect(after.players.find(({ seat }) => seat === target.seat)).toMatchObject({
@@ -802,7 +734,7 @@ describe("canonical game replay", () => {
     });
   });
 
-  it("reconstructs a secret Best move independently of provisional selections", () => {
+  it("reconstructs Best move independently of provisional selections", () => {
     const initial = dayOne();
     const owner = initial.players[0]!;
     const targets = initial.players.filter(({ seat }) => seat !== owner.seat).slice(0, 3);
@@ -816,28 +748,22 @@ describe("canonical game replay", () => {
     const draft = {
       type: "best-move.completed" as const,
       payload: { playerSeat: owner.seat, selectedSeats, mafiaHits },
-      secret: true as const,
     };
 
     expect(applyGameEvent(bestMove, draft)).toMatchObject({
       phase: "goodbye-speech",
       bestMove: { playerSeat: owner.seat, selectedSeats, mafiaHits },
     });
-    expect(() => applyGameEvent(bestMove, { ...draft, secret: false } as never)).toThrow(
-      /secret=true/i,
-    );
   });
 
   it("replays evaluated Mafia shots as one event", () => {
     const skipped = applyGameEvent(dayOne(), {
       type: "voting.skipped",
       payload: { reason: "host-skipped" },
-      secret: false,
     });
     const night = applyGameEvent(skipped, {
       type: "phase.changed",
       payload: { to: "night-mafia" },
-      secret: false,
     });
     const shooters = night.players.filter(({ team }) => team === "black");
     const target = night.players.find(({ team }) => team === "red")!;
@@ -850,7 +776,6 @@ describe("canonical game replay", () => {
     const evaluated = applyGameEvent(night, {
       type: "mafia.shots-resolved",
       payload: { shots, result: { kind: "kill", targetSeat: target.seat } },
-      secret: true,
     });
 
     expect(evaluated.phase).toBe("night-mafia-result");
@@ -865,7 +790,6 @@ describe("canonical game replay", () => {
     const root = entry(initial, 1, {
       type: "game.checkpointed",
       payload: {},
-      secret: true,
     });
     const first = entry(
       root.after,
@@ -873,14 +797,13 @@ describe("canonical game replay", () => {
       {
         type: "player.nominated",
         payload: { nominatorSeat: 1, candidateSeat: 4 },
-        secret: false,
       },
       root.entry.id,
     );
     const second = entry(
       first.after,
       3,
-      { type: "turn.completed", payload: { seat: 1 }, secret: false },
+      { type: "turn.completed", payload: { seat: 1 } },
       first.entry.id,
     );
 
@@ -912,7 +835,6 @@ describe("canonical game replay", () => {
     const first = entry(initial, 1, {
       type: "player.nominated",
       payload: { nominatorSeat: 1, candidateSeat: 4 },
-      secret: false,
     });
     const legacyEntry = { ...first.entry, stateHashAfter: legacyStateHash(first.after) };
 
@@ -925,14 +847,13 @@ describe("canonical game replay", () => {
     const first = entry(initial, 1, {
       type: "player.nominated",
       payload: { nominatorSeat: 1, candidateSeat: 4 },
-      secret: false,
     });
     const legacyParent = { ...first.entry, stateHashAfter: legacyStateHash(first.after) };
 
     const second = entry(
       first.after,
       2,
-      { type: "turn.completed", payload: { seat: 1 }, secret: false },
+      { type: "turn.completed", payload: { seat: 1 } },
       legacyParent.id,
     );
 
@@ -946,7 +867,6 @@ describe("canonical game replay", () => {
     const root = entry(initial, 1, {
       type: "game.checkpointed",
       payload: {},
-      secret: true,
     });
     const next = entry(
       root.after,
@@ -954,7 +874,6 @@ describe("canonical game replay", () => {
       {
         type: "player.nominated",
         payload: { nominatorSeat: 1, candidateSeat: 4 },
-        secret: false,
       },
       root.entry.id,
     );
@@ -999,13 +918,11 @@ describe("canonical game replay", () => {
     const cancelled = applyGameEvent(dayOne(), {
       type: "voting.skipped",
       payload: { reason: "host-skipped" },
-      secret: false,
     });
     expect(() =>
       applyGameEvent(cancelled, {
         type: "voting.skipped",
         payload: { reason: "host-skipped" },
-        secret: false,
       }),
     ).toThrow(/day phase/i);
   });
@@ -1039,7 +956,6 @@ describe("canonical game replay", () => {
       parentEventId: null,
       type: "sheriff.checked",
       payload: { targetSeat: target.seat, match: true },
-      secret: true,
       phaseBefore: before.phase,
       phaseAfter: after.phase,
       dayBefore: before.day,
@@ -1049,11 +965,6 @@ describe("canonical game replay", () => {
     };
 
     expect(replayGameLog(baseline(before), [legacyEntry]).game).toEqual(after);
-    expect(
-      replayGameLog(baseline(before), [
-        { ...legacyEntry, secret: false } as unknown as GameLogEntry,
-      ]).game,
-    ).toEqual(after);
     expect(() =>
       replayGameLog(baseline({ ...before, phase: "day" }), [
         { ...legacyEntry, phaseBefore: "day" },
@@ -1075,7 +986,6 @@ describe("canonical game replay", () => {
         votes,
         result: { eliminate: true, seats: [4, 6], yesVotes: 6, eligibleVoters: 10 },
       },
-      secret: false,
     });
     const legacyVotes = Object.fromEntries(Object.entries(votes).filter(([, vote]) => vote));
     const legacyAfter =
@@ -1109,7 +1019,6 @@ describe("canonical game replay", () => {
     const reviewed = applyGameEvent(decision, {
       type: "car-crash.ballot-resolved",
       payload: { votes, result },
-      secret: false,
     } as CanonicalGameEventDraft);
     expect(reviewed).toMatchObject({ phase: "car-crash-result", carCrashResult: result });
     expect(reviewed.players.find(({ seat }) => seat === 4)?.status).toBe("active");
@@ -1117,7 +1026,6 @@ describe("canonical game replay", () => {
     const continued = applyGameEvent(reviewed, {
       type: "phase.changed",
       payload: { to: "goodbye-speech" },
-      secret: false,
     });
     expect(continued.players.find(({ seat }) => seat === 4)?.status).toBe("eliminated");
     expect(continued.phase).toBe("goodbye-speech");
@@ -1125,27 +1033,26 @@ describe("canonical game replay", () => {
 
   it("supports independent append-only branches from one parent", () => {
     const initial = dayOne();
-    const root = entry(initial, 1, { type: "game.checkpointed", payload: {}, secret: true });
+    const root = entry(initial, 1, { type: "game.checkpointed", payload: {} });
     const parent = entry(
       root.after,
       2,
       {
         type: "player.nominated",
         payload: { nominatorSeat: 1, candidateSeat: 4 },
-        secret: false,
       },
       root.entry.id,
     );
     const left = entry(
       parent.after,
       3,
-      { type: "turn.completed", payload: { seat: 1 }, secret: false },
+      { type: "turn.completed", payload: { seat: 1 } },
       parent.entry.id,
     );
     const right = entry(
       parent.after,
       4,
-      { type: "foul.issued", payload: { seat: 5, foulNumber: 1, redCarded: false }, secret: false },
+      { type: "foul.issued", payload: { seat: 5, foulNumber: 1, redCarded: false } },
       parent.entry.id,
     );
 
@@ -1162,21 +1069,20 @@ describe("canonical game replay", () => {
 
   it("allows append-sequence gaps along a valid branch", () => {
     const initial = dayOne();
-    const root = entry(initial, 1, { type: "game.checkpointed", payload: {}, secret: true });
+    const root = entry(initial, 1, { type: "game.checkpointed", payload: {} });
     const parent = entry(
       root.after,
       2,
       {
         type: "player.nominated",
         payload: { nominatorSeat: 1, candidateSeat: 4 },
-        secret: false,
       },
       root.entry.id,
     );
     const child = entry(
       parent.after,
       4,
-      { type: "turn.completed", payload: { seat: 1 }, secret: false },
+      { type: "turn.completed", payload: { seat: 1 } },
       parent.entry.id,
     );
 
@@ -1190,12 +1096,11 @@ describe("canonical game replay", () => {
     const first = entry(initial, 1, {
       type: "player.nominated",
       payload: { nominatorSeat: 1, candidateSeat: 4 },
-      secret: false,
     });
     const second = entry(
       first.after,
       2,
-      { type: "turn.completed", payload: { seat: 1 }, secret: false },
+      { type: "turn.completed", payload: { seat: 1 } },
       first.entry.id,
     );
 
@@ -1215,13 +1120,12 @@ describe("canonical game replay", () => {
       applyGameEvent(dayOne(), {
         type: "game.completed",
         payload: { winner: "red" },
-        secret: false,
       }),
     ).toThrow(/finished/i);
     expect(() =>
       applyGameEvent(
         { ...dayOne(), phase: "finished", winner: "red" },
-        { type: "game.completed", payload: { winner: "black" }, secret: false },
+        { type: "game.completed", payload: { winner: "black" } },
       ),
     ).toThrow(/winner/i);
     expect(isProvisionalInteractionType("vote.removed")).toBe(true);

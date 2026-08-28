@@ -52,7 +52,6 @@ describe("replay-frame timeline model", () => {
     });
     expect(markerFor("voting.resolved")?.ariaLabel).toContain("Player 7 eliminated");
     expect(markerFor("don.checked")?.ariaLabel).toBe("Don checked Player 1: Sheriff");
-    expect(markerFor("don.checked")).not.toHaveProperty("secret");
     expect(markerFor("sheriff.checked")?.ariaLabel).toBe("Sheriff checked Player 10: Mafia");
     expect(
       timeline.markers

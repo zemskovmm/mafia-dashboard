@@ -133,7 +133,6 @@ describe("GameTimelineScreen", () => {
                 sequence: visibleHead.entry.sequence + 1,
                 type: "turn.completed",
                 payload: { seat: 1 },
-                secret: false,
               },
               before: visibleHead.after,
               after: visibleHead.after,
@@ -217,7 +216,6 @@ describe("GameTimelineScreen", () => {
               type: "don.checked",
               phase: "night-don-result",
               payload: { targetSeat: 1, match: true },
-              secret: true,
               createdAt: "2026-08-24T18:01:00.000Z",
             },
           ]),
@@ -273,7 +271,6 @@ describe("GameTimelineScreen", () => {
             type: "don.checked",
             phase: "night-don-result",
             payload: { targetSeat: 1, match: true },
-            secret: true,
             createdAt: "2026-08-24T18:01:00.000Z",
           },
         ]),
@@ -338,7 +335,6 @@ describe("GameTimelineScreen", () => {
             type: "don.checked",
             phase: "night-don-result",
             payload: { targetSeat: 1, match: true },
-            secret: true,
             createdAt: "2026-08-24T18:01:00.000Z",
           },
         ]),
@@ -425,7 +421,6 @@ describe("GameTimelineScreen", () => {
                     type: "don.checked",
                     phase: "night-don-result",
                     payload: { targetSeat: 1, match: true },
-                    secret: true,
                     createdAt: "2026-08-24T18:01:00.000Z",
                   },
                 ],
@@ -532,7 +527,6 @@ describe("GameTimelineScreen", () => {
             type: "don.checked",
             phase: "night-don-result",
             payload: { targetSeat: 1, match: true },
-            secret: true,
             createdAt: "2026-08-24T18:01:00.000Z",
           },
         ]),
@@ -550,7 +544,6 @@ describe("GameTimelineScreen", () => {
             type: "player.red-carded",
             phase: "day",
             payload: { seat: 8, source: "host" },
-            secret: false,
             createdAt: "2026-08-24T19:01:00.000Z",
           },
         ]),
@@ -606,7 +599,7 @@ describe("GameTimelineScreen", () => {
     expect(screen.getAllByRole("button", { name: "Night" })).toHaveLength(2);
   });
 
-  it("always renders canonical secret events without a Timeline private-view control", async () => {
+  it("renders canonical private event details", async () => {
     const user = userEvent.setup();
     const sample = createSampleGameHistory();
     render(
@@ -625,15 +618,12 @@ describe("GameTimelineScreen", () => {
     const secretMarker = screen.getByRole("button", {
       name: /Mafia shots: Player 8 to Player 2.*Result: Player 2 killed/i,
     });
-    expect(screen.queryByText("Scroll timeline →")).toBeNull();
     expect(document.querySelector(".timeline-track-scroll")).toBeInTheDocument();
     await user.click(secretMarker);
 
     expect(screen.getByRole("heading", { name: "Mafia kill: Player 2" })).toBeInTheDocument();
     expect(screen.getByText("mafia.shots-resolved")).toBeInTheDocument();
     expect(screen.getByText("Player 8 → Player 2")).toBeInTheDocument();
-    expect(screen.getByLabelText("Selected event details")).not.toHaveTextContent("Visibility");
-    expect(screen.queryByRole("button", { name: /private info/i })).toBeNull();
   });
 
   it("loads a selected completed game and ignores a superseded response", async () => {
@@ -728,7 +718,6 @@ describe("GameTimelineScreen", () => {
                     type: "vote.assigned",
                     phase: "voting",
                     payload: { voterSeat: 2, candidateSeat: 7 },
-                    secret: false,
                     createdAt: "2026-08-24T17:59:00.000Z",
                   },
                   {
@@ -737,7 +726,6 @@ describe("GameTimelineScreen", () => {
                     type: "player.nominated",
                     phase: "day",
                     payload: { nominatorSeat: 1, candidateSeat: 7, day: 1 },
-                    secret: false,
                     createdAt: "2026-08-24T18:00:00.000Z",
                   },
                 ],

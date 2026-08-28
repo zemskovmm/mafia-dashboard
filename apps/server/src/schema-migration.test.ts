@@ -219,10 +219,10 @@ describe("tenant-composite game schema migration", () => {
       ]);
       await isolatedPool.query(
         `INSERT INTO game_events
-           (id, club_id, game_id, sequence, idempotency_key, event_type, phase, payload, secret)
+           (id, club_id, game_id, sequence, idempotency_key, event_type, phase, payload)
          SELECT md5('legacy-replay-' || ordinal::text)::uuid, $1, $2, ordinal,
                 'legacy-' || ordinal::text, 'legacy.replay', 'day',
-                jsonb_build_object('ordinal', ordinal), FALSE
+                jsonb_build_object('ordinal', ordinal)
            FROM generate_series(1, 89) AS ordinal`,
         [DEFAULT_CLUB_ID, gameId],
       );

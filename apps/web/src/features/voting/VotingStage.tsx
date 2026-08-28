@@ -67,7 +67,6 @@ export const VotingStage = ({
       onAcceptedEvent({
         type: "phase.changed",
         payload: { to: "night-mafia" },
-        secret: false,
       });
       return;
     }
@@ -81,7 +80,6 @@ export const VotingStage = ({
       onAcceptedEvent({
         type: "voting.skipped",
         payload: { reason: "host-skipped" },
-        secret: false,
       });
       return;
     }
@@ -101,7 +99,6 @@ export const VotingStage = ({
       onAcceptedEvent({
         type: "voting.resolved",
         payload: { voteAssignments, result },
-        secret: false,
       });
       return;
     }
@@ -249,7 +246,6 @@ export const VotingStage = ({
                   onAcceptedEvent({
                     type: "car-crash.ballot-resolved",
                     payload: { votes, result },
-                    secret: false,
                   });
                 } else {
                   onGameChange(acceptCarCrashBallot(acceptedGame));
@@ -312,7 +308,6 @@ export const VotingStage = ({
                 onAcceptedEvent({
                   type: "phase.changed",
                   payload: { to: next.phase },
-                  secret: false,
                 });
               } else {
                 onGameChange(next);

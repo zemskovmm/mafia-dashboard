@@ -67,7 +67,7 @@ describe("game session validation", () => {
       parentEventId: null,
       createdAt: "2026-08-25T00:00:00.000Z",
       before: initialGame.game,
-      draft: { type: "game.checkpointed", payload: {}, secret: true },
+      draft: { type: "game.checkpointed", payload: {} },
     });
     const schema = (
       validationSchemas as unknown as {
@@ -101,7 +101,7 @@ describe("game session validation", () => {
       parentEventId: uuid(82),
       createdAt: "2026-08-25T00:01:00.000Z",
       before,
-      draft: { type: "turn.completed", payload: { seat: 1 }, secret: false },
+      draft: { type: "turn.completed", payload: { seat: 1 } },
     });
     const schema = (
       validationSchemas as unknown as {
@@ -120,7 +120,7 @@ describe("game session validation", () => {
     expect(schema?.safeParse({ ...valid, events: [entry] }).success).toBe(false);
   });
 
-  it("enforces canonical payload, visibility, and hash contracts at runtime", () => {
+  it("enforces canonical payload and hash contracts at runtime", () => {
     const gameId = uuid(84);
     const before = liveGame(1);
     const { entry } = createGameLogEntry({
@@ -130,7 +130,7 @@ describe("game session validation", () => {
       parentEventId: uuid(82),
       createdAt: "2026-08-25T00:01:00.000Z",
       before,
-      draft: { type: "turn.completed", payload: { seat: 1 }, secret: false },
+      draft: { type: "turn.completed", payload: { seat: 1 } },
     });
     const schema = validationSchemas.gameSessionEventMutationSchema;
     const request = { mutationId: uuid(81), baseRevision: 5, event: entry };
@@ -141,29 +141,27 @@ describe("game session validation", () => {
         event: { ...entry, stateHashAfter: `sha256:${"a".repeat(64)}` },
       }).success,
     ).toBe(true);
+
     expect(
       schema.safeParse({
         ...request,
-        event: { ...entry, secret: true },
+        event: {
+          ...entry,
+          type: "mafia.shots-resolved",
+          payload: {
+            shots: [{ shooterSeat: 8, targetSeat: 1, secret: true }],
+            result: { kind: "kill", targetSeat: 1 },
+          },
+        },
       }).success,
-    ).toBe(false);
+    ).toBe(true);
     expect(
       schema.safeParse({
         ...request,
         event: { ...entry, payload: { seat: 1, injected: true } },
       }).success,
     ).toBe(false);
-    expect(
-      schema.safeParse({
-        ...request,
-        event: {
-          ...entry,
-          type: "don.checked",
-          payload: { targetSeat: 1, match: true },
-          secret: false,
-        },
-      }).success,
-    ).toBe(false);
+
     expect(
       schema.safeParse({
         ...request,
@@ -710,7 +708,6 @@ describe("game session validation", () => {
             type: "day.started",
             phase: "day",
             payload: { day: 2 },
-            secret: false,
             createdAt: "2026-08-18T10:00:00.000Z",
           },
         ],

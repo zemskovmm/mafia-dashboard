@@ -662,7 +662,6 @@ const gameLogEntrySchema = z.object({
   type: durableGameEventTypeSchema,
   phase: z.string().trim().min(1).max(100),
   payload: z.record(z.string(), z.unknown()),
-  secret: z.boolean(),
   createdAt: z.iso.datetime({ offset: true }),
 });
 
@@ -707,35 +706,30 @@ const canonicalGameEventSchema = z.discriminatedUnion("type", [
     .extend({
       type: z.literal("game.started"),
       payload: emptyCanonicalPayload,
-      secret: z.literal(true),
     })
     .strict(),
   canonicalEventMetadata
     .extend({
       type: z.literal("game.checkpointed"),
       payload: emptyCanonicalPayload,
-      secret: z.literal(true),
     })
     .strict(),
   canonicalEventMetadata
     .extend({
       type: z.literal("phase.changed"),
       payload: z.object({ to: gamePhase }).strict(),
-      secret: z.literal(false),
     })
     .strict(),
   canonicalEventMetadata
     .extend({
       type: z.literal("turn.completed"),
       payload: z.object({ seat: canonicalSeat }).strict(),
-      secret: z.literal(false),
     })
     .strict(),
   canonicalEventMetadata
     .extend({
       type: z.literal("player.nominated"),
       payload: z.object({ nominatorSeat: canonicalSeat, candidateSeat: canonicalSeat }).strict(),
-      secret: z.literal(false),
     })
     .strict(),
   canonicalEventMetadata
@@ -748,21 +742,18 @@ const canonicalGameEventSchema = z.discriminatedUnion("type", [
           redCarded: z.boolean(),
         })
         .strict(),
-      secret: z.literal(false),
     })
     .strict(),
   canonicalEventMetadata
     .extend({
       type: z.literal("player.red-carded"),
       payload: z.object({ seat: canonicalSeat }).strict(),
-      secret: z.literal(false),
     })
     .strict(),
   canonicalEventMetadata
     .extend({
       type: z.literal("voting.skipped"),
       payload: z.object({ reason: z.literal("host-skipped") }).strict(),
-      secret: z.literal(false),
     })
     .strict(),
   canonicalEventMetadata
@@ -774,7 +765,6 @@ const canonicalGameEventSchema = z.discriminatedUnion("type", [
           result: voteResultSchema,
         })
         .strict(),
-      secret: z.literal(false),
     })
     .strict(),
   canonicalEventMetadata
@@ -786,7 +776,6 @@ const canonicalGameEventSchema = z.discriminatedUnion("type", [
           result: carCrashVoteResultSchema,
         })
         .strict(),
-      secret: z.literal(false),
     })
     .strict(),
   canonicalEventMetadata
@@ -806,35 +795,30 @@ const canonicalGameEventSchema = z.discriminatedUnion("type", [
           result: nightShotResultSchema,
         })
         .strict(),
-      secret: z.literal(true),
     })
     .strict(),
   canonicalEventMetadata
     .extend({
       type: z.literal("don.checked"),
       payload: z.object({ targetSeat: canonicalSeat, match: z.boolean() }).strict(),
-      secret: z.literal(true),
     })
     .strict(),
   canonicalEventMetadata
     .extend({
       type: z.literal("don.check-skipped"),
       payload: emptyCanonicalPayload,
-      secret: z.literal(true),
     })
     .strict(),
   canonicalEventMetadata
     .extend({
       type: z.literal("sheriff.checked"),
       payload: z.object({ targetSeat: canonicalSeat, match: z.boolean() }).strict(),
-      secret: z.literal(true),
     })
     .strict(),
   canonicalEventMetadata
     .extend({
       type: z.literal("sheriff.check-skipped"),
       payload: emptyCanonicalPayload,
-      secret: z.literal(true),
     })
     .strict(),
   canonicalEventMetadata
@@ -847,14 +831,12 @@ const canonicalGameEventSchema = z.discriminatedUnion("type", [
           mafiaHits: z.number().int().min(0).max(3),
         })
         .strict(),
-      secret: z.literal(true),
     })
     .strict(),
   canonicalEventMetadata
     .extend({
       type: z.literal("game.completed"),
       payload: z.object({ winner: team }).strict(),
-      secret: z.literal(false),
     })
     .strict(),
 ]);

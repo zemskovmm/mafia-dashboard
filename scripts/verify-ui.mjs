@@ -154,7 +154,6 @@ await page.addInitScript(() => {
       parentEventId: null,
       type: "game.checkpointed",
       payload: {},
-      secret: true,
       phaseBefore: game.phase,
       phaseAfter: game.phase,
       dayBefore: game.day,
@@ -1381,7 +1380,6 @@ try {
     if (
       acceptedShotEvent?.replayVersion !== 1 ||
       acceptedShotEvent?.type !== "mafia.shots-resolved" ||
-      acceptedShotEvent?.secret !== true ||
       typeof acceptedShotEvent?.parentEventId !== "string" ||
       !Number.isInteger(acceptedShotEvent?.sequence) ||
       acceptedShotEvent.sequence < 2 ||
@@ -1394,7 +1392,7 @@ try {
       ) ||
       typeof acceptedShotEvent?.payload?.result?.kind !== "string"
     ) {
-      throw new Error("Mafia evaluation emitted an incomplete canonical secret event");
+      throw new Error("Mafia evaluation emitted an invalid canonical private event");
     }
     if ((await page.getByRole("button", { name: "Re-evaluate Mafia shots" }).count()) !== 0) {
       throw new Error("Mafia result must not offer Re-evaluate Mafia shots");

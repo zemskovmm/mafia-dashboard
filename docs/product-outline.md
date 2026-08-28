@@ -248,7 +248,7 @@ Live play has one immutable initial game baseline plus immutable parent-linked s
 - phase and day before/after the action;
 - affected seat data in the payload where applicable;
 - event type;
-- secret payload classification where applicable;
+- type-derived private payload handling, with private payloads redacted from public projections;
 - mutation-safe UUID;
 - state hash after the action.
 

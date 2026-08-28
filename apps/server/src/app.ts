@@ -51,7 +51,6 @@ const appendEventBody = z.object({
   phase: z.string().trim().min(1).max(100),
   seat: z.number().int().min(1).max(10).optional(),
   payload: z.record(z.string(), z.unknown()),
-  secret: z.boolean(),
 });
 const truncateEventsBody = z.object({
   fromIdempotencyKey: z.string().trim().min(1).max(200),
@@ -802,7 +801,6 @@ export const buildApp = async ({
       type: "game.created",
       phase: "setup-players",
       payload: { name: parsed.data.name },
-      secret: false,
     });
     return reply.code(201).send({ gameId, event });
   });

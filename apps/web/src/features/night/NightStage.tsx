@@ -43,7 +43,7 @@ export const NightStage = ({
   const skipDon = () => {
     const next = skipDonCheck(game);
     if (onAcceptedEvent !== undefined) {
-      onAcceptedEvent({ type: "don.check-skipped", payload: {}, secret: true });
+      onAcceptedEvent({ type: "don.check-skipped", payload: {} });
     } else {
       onGameChange(next);
       onEvent("don.check-skipped", { day: game.day });
@@ -52,7 +52,7 @@ export const NightStage = ({
   const skipSheriff = () => {
     const next = skipSheriffCheck(game);
     if (onAcceptedEvent !== undefined) {
-      onAcceptedEvent({ type: "sheriff.check-skipped", payload: {}, secret: true });
+      onAcceptedEvent({ type: "sheriff.check-skipped", payload: {} });
     } else {
       onGameChange(next);
       onEvent("sheriff.check-skipped", { day: game.day });
@@ -120,7 +120,6 @@ export const NightStage = ({
                 onAcceptedEvent({
                   type: "mafia.shots-resolved",
                   payload: { shots: resolution.secretShots, result: resolution.result },
-                  secret: true,
                 });
               } else {
                 onEvent("mafia.shots-resolved", {
@@ -166,7 +165,6 @@ export const NightStage = ({
                 onAcceptedEvent({
                   type: "phase.changed",
                   payload: { to: next.phase },
-                  secret: false,
                 });
               } else {
                 onGameChange(next);
@@ -201,7 +199,6 @@ export const NightStage = ({
                   onAcceptedEvent({
                     type: "don.checked",
                     payload: { targetSeat, match: check.result.match },
-                    secret: true,
                   });
                 } else {
                   onGameChange(check.game);
@@ -267,7 +264,6 @@ export const NightStage = ({
                 onAcceptedEvent({
                   type: "phase.changed",
                   payload: { to: next.phase },
-                  secret: false,
                 });
               } else onGameChange(next);
             }}
@@ -300,7 +296,6 @@ export const NightStage = ({
                   onAcceptedEvent({
                     type: "sheriff.checked",
                     payload: { targetSeat, match: check.result.match },
-                    secret: true,
                   });
                 } else {
                   onGameChange(check.game);
@@ -365,7 +360,6 @@ export const NightStage = ({
                 onAcceptedEvent({
                   type: "phase.changed",
                   payload: { to: next.phase },
-                  secret: false,
                 });
               } else onGameChange(next);
             }}
@@ -402,7 +396,6 @@ export const NightStage = ({
                 onAcceptedEvent({
                   type: "phase.changed",
                   payload: { to: next.phase },
-                  secret: false,
                 });
               } else {
                 onGameChange(next);

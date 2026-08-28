@@ -165,7 +165,6 @@ const isGameLogEntry = (value: unknown): value is GameLogEntry =>
   isNullableUuid(value.parentEventId) &&
   typeof value.type === "string" &&
   isRecord(value.payload) &&
-  typeof value.secret === "boolean" &&
   typeof value.phaseBefore === "string" &&
   typeof value.phaseAfter === "string" &&
   isNonNegativeInteger(value.dayBefore) &&

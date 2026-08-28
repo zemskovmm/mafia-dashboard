@@ -301,7 +301,6 @@ describe("server API", () => {
       sequence: 1,
       type: "game.created",
       phase: "setup-players",
-      secret: false,
       payload: { name: "Friday table" },
     });
   });
@@ -317,7 +316,6 @@ describe("server API", () => {
         phase: "day",
         seat: 3,
         payload: { seat: 3, seconds: 60 },
-        secret: false,
       },
     });
     expect(response.statusCode).toBe(201);
@@ -331,7 +329,6 @@ describe("server API", () => {
         phase: "day",
         seat: 3,
         payload: { seat: 3, seconds: 60 },
-        secret: false,
       },
     });
     expect(duplicate.statusCode).toBe(200);
@@ -357,7 +354,6 @@ describe("server API", () => {
         type: "turn.completed",
         phase: "day",
         payload: { day: 2 },
-        secret: false,
       },
     });
     await app.inject({
@@ -368,7 +364,6 @@ describe("server API", () => {
         type: "foul.issued",
         phase: "day",
         payload: { seat: 1 },
-        secret: false,
       },
     });
 
@@ -396,7 +391,6 @@ describe("server API", () => {
         phase: "day",
         seat: 11,
         payload: {},
-        secret: false,
       },
     });
 
@@ -405,7 +399,7 @@ describe("server API", () => {
     expect(log.json().events).toEqual([]);
   });
 
-  it("redacts secret payloads and integrity hashes from public log requests", async () => {
+  it("redacts private event payloads and integrity hashes from public log requests", async () => {
     const gameId = randomUUID();
     await app.inject({
       method: "POST",
@@ -416,7 +410,6 @@ describe("server API", () => {
         phase: "night-sheriff",
         seat: 5,
         payload: { targetSeat: 8, match: true },
-        secret: true,
       },
     });
     const stateHashAfter = `sha256:${"a".repeat(64)}`;
@@ -1394,7 +1387,7 @@ describe("server API", () => {
       parentEventId: null,
       createdAt: "2026-08-25T00:00:00.000Z",
       before: fixture.game,
-      draft: { type: "game.checkpointed", payload: {}, secret: true },
+      draft: { type: "game.checkpointed", payload: {} },
     });
 
     const response = await app.inject({
@@ -1508,7 +1501,7 @@ describe("server API", () => {
       parentEventId: null,
       createdAt: "2026-08-25T00:00:00.000Z",
       before: fixture.game,
-      draft: { type: "game.checkpointed", payload: {}, secret: true },
+      draft: { type: "game.checkpointed", payload: {} },
     });
     await app.inject({
       method: "POST",
@@ -1525,7 +1518,6 @@ describe("server API", () => {
       draft: {
         type: "foul.issued",
         payload: { seat: 1, foulNumber: 1, redCarded: false },
-        secret: false,
       },
     });
     const mutationId = randomUUID();
@@ -1592,7 +1584,7 @@ describe("server API", () => {
       parentEventId: null,
       createdAt: "2026-08-25T00:00:00.000Z",
       before: fixture.game,
-      draft: { type: "game.checkpointed", payload: {}, secret: true },
+      draft: { type: "game.checkpointed", payload: {} },
     });
     await sessionStore.start({
       gameId,
@@ -1611,7 +1603,6 @@ describe("server API", () => {
       draft: {
         type: "foul.issued",
         payload: { seat: 1, foulNumber: 1, redCarded: false },
-        secret: false,
       },
     });
     await sessionStore.appendEvent({
@@ -1678,7 +1669,7 @@ describe("server API", () => {
       parentEventId: null,
       createdAt: "2026-08-25T00:00:00.000Z",
       before: finished,
-      draft: { type: "game.checkpointed", payload: {}, secret: true },
+      draft: { type: "game.checkpointed", payload: {} },
     });
     await sessionStore.start({
       gameId,
@@ -1694,7 +1685,7 @@ describe("server API", () => {
       parentEventId: started.entry.id,
       createdAt: "2026-08-25T00:02:00.000Z",
       before: started.after,
-      draft: { type: "game.completed", payload: { winner: "red" }, secret: false },
+      draft: { type: "game.completed", payload: { winner: "red" } },
     });
     await sessionStore.appendEvent({
       gameId,
@@ -1803,7 +1794,6 @@ describe("server API", () => {
           type: "foul.issued",
           phase: "day",
           payload: { seat: 1 },
-          secret: false,
         },
       }),
       await app.inject({
@@ -1840,7 +1830,6 @@ describe("server API", () => {
           type,
           phase: "day",
           payload: {},
-          secret: false,
         },
       });
       expect(response.statusCode).toBe(400);
@@ -1903,7 +1892,6 @@ describe("server API", () => {
               type: "timer.paused",
               phase: "day",
               payload: {},
-              secret: false,
               createdAt: "2026-08-18T08:00:00.000Z",
             },
           ],

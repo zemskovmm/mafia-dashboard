@@ -300,7 +300,7 @@ vi.mock("./features/game/GameScreen.js", () => ({
           onClick={() => {
             const seat = game.turnOrder[game.currentTurnIndex];
             if (onAcceptedEvent !== undefined && seat !== undefined) {
-              onAcceptedEvent({ type: "turn.completed", payload: { seat }, secret: false });
+              onAcceptedEvent({ type: "turn.completed", payload: { seat } });
             } else {
               const nextTurn = game.currentTurnIndex + 1;
               onGameChange({ ...game, currentTurnIndex: nextTurn });
@@ -319,7 +319,6 @@ vi.mock("./features/game/GameScreen.js", () => ({
               onAcceptedEvent({
                 type: "foul.issued",
                 payload: { seat: player.seat, foulNumber: player.fouls + 1, redCarded: false },
-                secret: false,
               });
             }
           }}
@@ -350,7 +349,6 @@ vi.mock("./features/game/GameScreen.js", () => ({
                 onAcceptedEvent({
                   type: "player.red-carded",
                   payload: { seat: player.seat },
-                  secret: false,
                 });
               }
             } else onGameChange({ ...game, phase: "finished", winner: "red" });
@@ -1841,7 +1839,6 @@ describe("authoritative game session lifecycle", () => {
       accept({
         type: "mafia.shots-resolved",
         payload: { shots: resolution.secretShots, result: resolution.result },
-        secret: true,
       }),
     );
 
@@ -2510,7 +2507,7 @@ const normalizedRemoteSession = (session: RemoteGameSession): RemoteGameSession 
     parentEventId: null,
     createdAt: "2026-08-18T09:00:00.000Z",
     before: game,
-    draft: { type: "game.checkpointed", payload: {}, secret: true },
+    draft: { type: "game.checkpointed", payload: {} },
   });
   return {
     ...session,

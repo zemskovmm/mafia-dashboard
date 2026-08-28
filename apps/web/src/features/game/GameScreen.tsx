@@ -153,7 +153,6 @@ export const GameScreen = ({
                   phase: game.phase,
                   currentTurnIndex: game.currentTurnIndex,
                 },
-                secret: false,
               });
             } else {
               const next = redCard(game, swipedPlayer.seat);
@@ -182,7 +181,7 @@ export const GameScreen = ({
   const continueSetup = () => {
     const next = advanceSetupPhase(game);
     if (onAcceptedEvent !== undefined) {
-      onAcceptedEvent({ type: "phase.changed", payload: { to: next.phase }, secret: false });
+      onAcceptedEvent({ type: "phase.changed", payload: { to: next.phase } });
     } else {
       onGameChange(next);
       onEvent("phase.changed", { from: game.phase, to: next.phase });
@@ -192,7 +191,7 @@ export const GameScreen = ({
   const finishTurn = () => {
     if (currentSeat === undefined) return;
     if (onAcceptedEvent !== undefined) {
-      onAcceptedEvent({ type: "turn.completed", payload: { seat: currentSeat }, secret: false });
+      onAcceptedEvent({ type: "turn.completed", payload: { seat: currentSeat } });
     } else {
       const next = completeCurrentTurn(game);
       onGameChange(next);
@@ -213,7 +212,6 @@ export const GameScreen = ({
           phase: game.phase,
           currentTurnIndex: game.currentTurnIndex,
         },
-        secret: false,
       });
     } else {
       onGameChange(next);
@@ -335,7 +333,6 @@ export const GameScreen = ({
                   selectedSeats: game.bestMove.selectedSeats,
                   mafiaHits: next.bestMove?.mafiaHits ?? 0,
                 },
-                secret: true,
               });
             } else {
               onGameChange(next);
@@ -361,7 +358,6 @@ export const GameScreen = ({
               onAcceptedEvent({
                 type: "phase.changed",
                 payload: { to: next.phase },
-                secret: false,
               });
             } else {
               onGameChange(next);
@@ -613,7 +609,6 @@ export const GameScreen = ({
                                 nominatorSeat: currentPlayer.seat,
                                 candidateSeat: seat.seat,
                               },
-                              secret: false,
                             });
                           } else {
                             onGameChange(nominate(game, currentPlayer.seat, seat.seat));

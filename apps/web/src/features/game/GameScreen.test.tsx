@@ -239,7 +239,6 @@ describe("GameScreen", () => {
         phase: "night-don",
         currentTurnIndex: 4,
       },
-      secret: false,
     });
   });
 
@@ -291,7 +290,6 @@ describe("GameScreen", () => {
         phase: "day",
         currentTurnIndex: 2,
       },
-      secret: false,
     });
   });
 

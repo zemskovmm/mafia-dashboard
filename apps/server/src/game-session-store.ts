@@ -25,7 +25,6 @@ interface StoredGameLogEntry {
   readonly type: string;
   readonly phase: string;
   readonly payload: Readonly<Record<string, unknown>>;
-  readonly secret: boolean;
   readonly createdAt: string;
 }
 
@@ -43,7 +42,6 @@ interface StoredCanonicalGameEvent {
   readonly parentEventId: string | null;
   readonly type: CanonicalGameEventType;
   readonly payload: Readonly<Record<string, unknown>>;
-  readonly secret: boolean;
   readonly phaseBefore: GamePhase;
   readonly phaseAfter: GamePhase;
   readonly dayBefore: number;
@@ -212,7 +210,6 @@ interface CanonicalEventRow {
   parent_event_id: string | null;
   event_type: CanonicalGameEventType;
   payload: Readonly<Record<string, unknown>>;
-  secret: boolean;
   phase: GamePhase;
   phase_after: GamePhase;
   day_before: number;
@@ -230,7 +227,7 @@ const readCanonicalEvents = async (
   gameId: string,
 ): Promise<readonly GameLogEntry[]> => {
   const result = await queryable.query<CanonicalEventRow>(
-    `SELECT id, game_id, replay_sequence, parent_event_id, event_type, payload, secret,
+    `SELECT id, game_id, replay_sequence, parent_event_id, event_type, payload,
             phase, phase_after, day_before, day_after, replay_version, state_hash_after,
             created_at
        FROM game_events
@@ -248,7 +245,6 @@ const readCanonicalEvents = async (
         parentEventId: row.parent_event_id,
         type: row.event_type,
         payload: row.payload,
-        secret: row.secret,
         phaseBefore: row.phase,
         phaseAfter: row.phase_after,
         dayBefore: row.day_before,
@@ -325,7 +321,6 @@ const hydrateSession = async (
           type: event.type,
           phase: event.phaseAfter,
           payload: event.payload as Readonly<Record<string, unknown>>,
-          secret: event.secret,
           createdAt: event.createdAt,
         }));
   return {
@@ -451,10 +446,9 @@ const synchronizeEventLog = async (
       phase: string;
       seat: number | null;
       payload: Readonly<Record<string, unknown>>;
-      secret: boolean;
       created_at: Date;
     }>(
-      `SELECT id, game_id, event_type, phase, seat, payload, secret, created_at
+      `SELECT id, game_id, event_type, phase, seat, payload, created_at
          FROM game_events
         WHERE club_id = $1
           AND (id = $3 OR (game_id = $2 AND idempotency_key = $3::text))
@@ -471,7 +465,6 @@ const synchronizeEventLog = async (
         existingRow.phase === entry.phase &&
         existingRow.seat === seat &&
         isDeepStrictEqual(existingRow.payload, entry.payload) &&
-        existingRow.secret === entry.secret &&
         existingRow.created_at.toISOString() === entry.createdAt
       ) {
         continue;
@@ -491,9 +484,9 @@ const synchronizeEventLog = async (
     if (sequence === undefined) throw new Error("Unable to allocate a game event sequence");
     const inserted = await client.query(
       `INSERT INTO game_events
-         (id, club_id, game_id, sequence, idempotency_key, event_type, phase, seat, payload, secret,
+         (id, club_id, game_id, sequence, idempotency_key, event_type, phase, seat, payload,
           created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11)`,
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10)`,
       [
         entry.id,
         clubId,
@@ -504,7 +497,6 @@ const synchronizeEventLog = async (
         entry.phase,
         seat,
         JSON.stringify(entry.payload),
-        entry.secret,
         entry.createdAt,
       ],
     );
@@ -699,7 +691,6 @@ interface StoredCanonicalEventRow {
   readonly day_after: number;
   readonly seat: number | null;
   readonly payload: Readonly<Record<string, unknown>>;
-  readonly secret: boolean;
   readonly parent_event_id: string | null;
   readonly replay_version: number;
   readonly replay_sequence: number;
@@ -730,7 +721,6 @@ const storedEventMatches = (
   row.day_after === event.dayAfter &&
   row.seat === seat &&
   isDeepStrictEqual(row.payload, event.payload) &&
-  row.secret === event.secret &&
   row.parent_event_id === event.parentEventId &&
   row.replay_version === event.replayVersion &&
   row.replay_sequence === event.sequence &&
@@ -748,7 +738,7 @@ const writeCanonicalEvent = async (
       : null;
   const existing = await client.query<StoredCanonicalEventRow>(
     `SELECT id, club_id, game_id, idempotency_key, event_type, phase, phase_after,
-            day_before, day_after, seat, payload, secret, parent_event_id, replay_version,
+            day_before, day_after, seat, payload, parent_event_id, replay_version,
             replay_sequence, state_hash_after, created_at
        FROM game_events
       WHERE club_id = $2
@@ -774,11 +764,11 @@ const writeCanonicalEvent = async (
   const inserted = await client.query<{ id: string }>(
     `INSERT INTO game_events
        (id, club_id, game_id, sequence, idempotency_key, event_type, phase, phase_after,
-        day_before, day_after, seat, payload, secret, parent_event_id, replay_version,
+        day_before, day_after, seat, payload, parent_event_id, replay_version,
         replay_sequence, state_hash_after, created_at)
      VALUES
-       ($1, $2, $3, $4, $18, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14, $15,
-        $16, $17)
+       ($1, $2, $3, $4, $17, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14,
+        $15, $16)
      ON CONFLICT DO NOTHING
      RETURNING id`,
     [
@@ -793,7 +783,6 @@ const writeCanonicalEvent = async (
       event.dayAfter,
       seat,
       JSON.stringify(event.payload),
-      event.secret,
       event.parentEventId,
       event.replayVersion,
       event.sequence,
@@ -1084,7 +1073,7 @@ export class GameSessionStore {
           parentEventId: null,
           createdAt: new Date().toISOString(),
           before: row.state.game,
-          draft: { type: "game.checkpointed", payload: {}, secret: true },
+          draft: { type: "game.checkpointed", payload: {} },
         });
         events = [checkpoint.entry];
         legacyLog = [...(row.state.legacyLog ?? []), ...(row.state.log ?? [])];
@@ -1777,8 +1766,8 @@ export class GameSessionStore {
       );
       await client.query(
         `INSERT INTO game_events
-           (id, club_id, game_id, sequence, idempotency_key, event_type, phase, payload, secret)
-         VALUES ($1, $2, $3, 1, 'game-created', 'game.created', 'setup-players', $4::jsonb, FALSE)`,
+           (id, club_id, game_id, sequence, idempotency_key, event_type, phase, payload)
+         VALUES ($1, $2, $3, 1, 'game-created', 'game.created', 'setup-players', $4::jsonb)`,
         [randomUUID(), clubId, input.gameId, JSON.stringify({ name: canonicalName })],
       );
       await synchronizeLegacyAggregate(client, clubId, input.gameId, input.state, input.results);
