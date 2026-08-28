@@ -1,6 +1,6 @@
 .git
 .github
-.hermes
+.AI
 node_modules
 **/node_modules
 **/dist
@@ -10,5 +10,4 @@ test-results
 .env
 .env.*
 !.env.example
-.claude
 .DS_Store

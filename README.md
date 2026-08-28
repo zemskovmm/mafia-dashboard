@@ -1,25 +1,22 @@
 # Mafia Dashboard
 
-A self-hosted web dashboard for moderating in-person Sport / Club Mafia games.
+A self-hosted web dashboard for moderating in-person Club Mafia games.
 
 ## Status
 
-The project has entered implementation. The earlier Swift/Xcode prototype has been removed; this repository contains the touch-first web application only.
+This repository contains the implemented touch-first TypeScript web application, its PostgreSQL service, and deployment configuration.
 
 ## Documentation
 
-- [`rules.md`](rules.md) — researched game rules, canonical MVP behavior, moderator workflows, data model, deployment baseline, and open product decisions.
+- [`rules.md`](rules.md) — canonical Club Mafia behavior, moderator workflows, data model, deployment baseline, and recorded product decisions/gaps.
 - [`docs/product-outline.md`](docs/product-outline.md) — approved setup wizard, round-table UI, music/timer behavior, phase flow, and interaction contracts.
 - [`docs/adr/0001-typescript-modular-monolith.md`](docs/adr/0001-typescript-modular-monolith.md) — initial SPA/API/PostgreSQL architecture decision.
 - [`docs/azure-deployment.md`](docs/azure-deployment.md) — Azure Container Apps, private PostgreSQL, GitHub OIDC deployment, and rollback runbook.
-- [Implementation plan](.hermes/plans/2026-08-17_162513-mafia-dashboard-spa.md) — staged TDD execution plan and verification matrix.
-- [Player/statistics and account-music plan](.hermes/plans/2026-08-17_180401-player-profiles-statistics-youtube-music.md) — persistent profile, statistics, setup-dropdown, and supported OAuth playlist design.
 - [GitHub issues](https://github.com/zemskovmm/mafia-dashboard/issues) — dependency-aware implementation backlog.
-- [Issue #1](https://github.com/zemskovmm/mafia-dashboard/issues/1) — owner decisions required before implementation.
 
 ## Architecture direction
 
-The application is a TypeScript npm workspace with a React/Vite SPA, Fastify API, pure game-domain package, and one revisioned PostgreSQL game-session aggregate. The deployment target is Docker Compose with an application container and PostgreSQL persistence.
+The application is a TypeScript npm workspace with a React/Vite SPA, Fastify API, pure game-domain package, and a revisioned PostgreSQL game-session aggregate. Setup state is persisted directly; live play is derived from an immutable game baseline and parent-linked semantic events. Local development uses Docker Compose; production deploys to Azure Container Apps with private PostgreSQL Flexible Server persistence.
 
 ## Run locally with Docker
 
@@ -66,16 +63,17 @@ Server integration tests expect PostgreSQL at `postgresql://mafia:mafia@127.0.0.
 - Guided ten-player setup and real playback gate from YouTube IFrame state
 - Google OpenID Connect sign-in with revocable application sessions and per-club isolation
 - Customizable CSS-native glass skin with a persisted base color
-- Read-only Google account playlist selection for the host's YouTube Music library
+- Read-only Google account playlist selection plus a browser-local application session queue with repeated entries, drag reordering, and **Play next** / **Play now** controls
 - Persistent player profiles, ordered nickname selection, and per-player statistics
 - Per-seat random canonical role draw
 - Round-table host dashboard with privacy shield
 - 60/30/10-second timers and faint ten-second warning
 - Foul, red-card, nomination, individual voting, Mafia shot, Don check, and Sheriff check controls
-- Rotating day order, automatic win detection, and atomic PostgreSQL game-session snapshots after every setup/game-state action
+- Rotating day order, automatic win detection, and atomic PostgreSQL persistence of setup state followed by an immutable game baseline and parent-linked semantic events
 - Durable browser outbox plus **Active games** resume for full setup/live state, host, playlist, log, and undo recovery
-- Three-action ordinary undo with every new day as a checkpoint; timer and music controls remain non-durable UI state
+- Replay validation of parent links and state hashes, one active event head, and retained inactive future branches
+- Three-action ordinary undo by moving the active head, with every new day as a checkpoint; timer and music controls remain non-durable UI state
 
-Owner input still needed for a production table session: preferred fade durations/chime, red-card final-speech rule, initial languages, and any tie-vote rule that differs from `rules.md`.
+The current 2-second fade-in, 500-millisecond quick fade-out, 3-second slow fade-out, faint ten-second warning chime, no-final-speech red-card behavior, and `rules.md` tie conventions are accepted. The initial product must support English and Russian, but the current UI is English-only. Best Move must become a per-club setting enabled by default, but the current flow is not configurable per club. The production backup direction remains unresolved.
 
 YouTube Music does not expose a separate embeddable web player API. Account playlist selection uses a separate read-only Google OAuth grant plus the YouTube Data API; playback remains in a visible YouTube IFrame. Application sign-in and YouTube library authorization share the configured Google client but use separate callbacks and separate local session/token storage.

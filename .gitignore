@@ -1,9 +1,6 @@
 # macOS
 .DS_Store
 
-# Local agent configuration
-.claude/settings.local.json
-
 # Local environment and secrets
 .env
 .env.*

@@ -2,11 +2,11 @@
 
 ## 1. Product definition
 
-Mafia Dashboard is a host-operated, touch-first single-page application for running an in-person ten-player Sport / Club Mafia game. It is designed for landscape tablets and laptops and runs from a local Dockerized server with PostgreSQL persistence.
+Mafia Dashboard is a host-operated, touch-first single-page application for running an in-person ten-player Club Mafia game. It is designed for landscape tablets and laptops, runs locally through Docker Compose, and deploys to Azure Container Apps with PostgreSQL persistence.
 
-Players do not need accounts or phones in the first release. The host controls setup, music, timers, turns, nominations, voting, night actions, penalties, eliminations, and corrections from one device. Every accepted setup or game-state action is included in the authoritative session snapshot and non-auxiliary game log; timer and music controls remain local UI state.
+Players do not use accounts or phones. The authenticated host controls setup, music, timers, turns, nominations, voting, night actions, penalties, eliminations, and corrections from one device. Setup metadata is persisted in the revisioned session. Live play is reconstructed from one immutable game baseline and the active branch of parent-linked semantic events; timer and music controls remain local UI state.
 
-## 2. First-release goals
+## 2. Current product goals
 
 - Make the current game phase and next legal host action obvious.
 - Represent ten seated players around a round table plus a distinct host position.
@@ -18,7 +18,7 @@ Players do not need accounts or phones in the first release. The host controls s
 - Recover the complete active setup or game, host, playlist, log, and undo history after browser or container restart by choosing it in **Active games**.
 - Keep role assignments, Mafia shots, and Don/Sheriff checks private to the host.
 
-## 3. Explicit non-goals for the first release
+## 3. Product boundaries
 
 - Remote player clients or role delivery to player phones
 - Video chat or online gameplay
@@ -26,12 +26,11 @@ Players do not need accounts or phones in the first release. The host controls s
 - Editing the owner’s real YouTube playlist through Google OAuth
 - Multiple simultaneous hosts
 - Tournament scoring and standings
-- Free-form custom roles
-- Native Swift/iOS application
+- Free-form custom roles, alternate player counts, or alternate rulesets
 
 ## 4. Information architecture
 
-The SPA has three persistent regions:
+The SPA has four persistent regions:
 
 1. **Game header** — game name/status, current phase, day/night number, privacy shield, connection/save state.
 2. **Workspace** — setup wizard before the game; round table and phase controls during play.
@@ -127,7 +126,7 @@ Primary hit targets are at least 48×48 CSS pixels. A destructive action require
 ### 7.1 Playback integration
 
 - Playback uses the official YouTube IFrame Player API in the browser.
-- The connected account picker lists owned playlists with the read-only YouTube Data API scope; arbitrary YouTube video queueing is not exposed.
+- The connected account picker lists owned playlists with the read-only YouTube Data API scope; it does not write to the account playlist.
 - The host may also enter an ordinary YouTube playlist ID without connecting a Google account.
 - The host’s explicit button press satisfies browser user-gesture requirements where supported.
 - The app treats player state events as authoritative; button presses alone never mark music as playing.
@@ -138,25 +137,27 @@ Primary hit targets are at least 48×48 CSS pixels. A destructive action require
 
 ### 7.2 Fade behavior
 
-- Fade-in starts at volume 0, begins/resumes playback, then increments volume to the configured target.
-- Quick fade-out uses a short configurable duration and then pauses playback at volume 0.
-- Slow fade-out uses a longer configurable duration and then pauses playback at volume 0.
+- Fade-in starts at volume 0, begins/resumes playback, and reaches the prior audible target over the accepted 2-second duration.
+- Quick fade-out runs for 500 milliseconds and then pauses playback at volume 0.
+- Slow fade-out runs for 3 seconds and then pauses playback at volume 0.
 - Starting a new fade cancels the previous fade cleanly.
-- Fade progress and playback transitions are local UI state. Music start/stop/failure, fades, and queue navigation do not produce durable game events; only the chosen playlist ID belongs to the restorable session snapshot.
+- Fade progress and playback transitions are local UI state. Music start/stop/failure, fades, and queue navigation do not produce durable game events; only the chosen playlist ID belongs to the restorable server-side game session.
 
 ### 7.3 Queue behavior
 
-The MVP plays the selected YouTube playlist as supplied by YouTube. It preserves playlist order and repeated occurrences of the same video, and it does not expose application-owned add, remove, or reorder controls. Account authorization may list/select existing owned playlists with read access; changing the actual playlist on the user’s account remains out of scope because it requires separate YouTube Data API write scopes.
+The app loads the selected playlist into an application-owned in-session queue. Every supplied occurrence is preserved independently, including repeated occurrences of the same video. The expanded queue supports drag reordering and **Play next** / **Play now** controls. Queue order and track tags are best-effort browser-local preferences scoped to the club; they are not server-side game events.
+
+The queue changes only IFrame playback order. Account authorization remains read-only, and no queue action adds, removes, or reorders items in the owner’s real YouTube playlist.
 
 ## 8. Timer behavior
 
 - Preset buttons: **+60**, **+30**, and **+10**.
 - Pressing a preset immediately starts/replaces the active countdown after confirmation if another timer is running.
-- **Stop** cancels the countdown and resets it to zero; pause/resume is not part of the MVP.
+- **Stop** cancels the countdown and resets it to zero; pause/resume is not part of the current timer control.
 - When remaining time first reaches 10 seconds, play one faint chime and show a subtle warning state.
 - A 10-second timer plays the warning once at start.
 - Timer position derives from a local start timestamp, not accumulated browser interval counts.
-- Reload/reconnect resets the auxiliary timer; timer state is not part of the durable game snapshot.
+- Reload/reconnect resets the auxiliary timer; timer state is not part of durable server-side game history.
 - Timer start, stop/reset, ticks, and expiry are not added to the durable game log.
 - Timer expiry never silently advances a game phase.
 
@@ -183,7 +184,7 @@ The MVP plays the selected YouTube playlist as supplied by YouTube. It preserves
 
 - **Foul:** increments foul count and logs the reason/note when provided.
 - **Third foul:** creates one pending muted turn. That next turn lasts 10 seconds and permits only one nomination.
-- **Red card:** immediately removes the player, with confirmation, no final speech in MVP, and an immediate victory check.
+- **Red card:** immediately removes the player, with confirmation, no final speech, and an immediate victory check.
 - **Nominate:** during the current player’s eligible window, choose one other active player. Each candidate appears once in first-nomination order.
 
 ## 10. Voting
@@ -241,14 +242,15 @@ Night is a host-private guided sequence.
 
 ## 13. Game log
 
-The full non-auxiliary log is part of every authoritative session mutation. The server preserves immutable sequence-1 `game.created` and transactionally replaces the later tail from the snapshot, so state, log, active players, and results cannot diverge. Each retained entry stores:
+Live play has one immutable initial game baseline plus immutable parent-linked semantic events. The server appends each accepted event, advances `head_event_id`, and updates active-player/result projections in one transaction. The active head selects the branch replayed as current state; events on inactive future branches remain stored. Replay validates event shape, parent linkage, legal phase/day transitions, and the state hash after each event. Each retained entry stores:
 
-- event sequence and timestamp;
-- phase;
+- replay sequence, parent event ID, and timestamp;
+- phase and day before/after the action;
 - affected seat data in the payload where applicable;
 - event type;
 - secret payload classification where applicable;
-- mutation-safe UUID.
+- mutation-safe UUID;
+- state hash after the action.
 
 Required durable event families include:
 
@@ -260,7 +262,7 @@ Required durable event families include:
 - Mafia shots, Don/Sheriff checks, and secret results;
 - elimination and victory.
 
-Timer starts/stops/ticks and music playback/fades/navigation are auxiliary controls and are never durable log entries. An ordinary undo restores its prior full game snapshot and removes that action's log tail. Only the latest three ordinary actions are retained. Beginning day one and every later completed-night day increment clear undo history; no undo crosses a day boundary.
+Timer starts/stops/ticks and music playback/fades/navigation are auxiliary controls and are never durable log entries. Ordinary undo moves the active head to its parent without deleting the event or its inactive future branch. At most the latest three ordinary actions may be undone, and an undo cannot cross an event that advances the day. Timeline reset and restore-reset also move the active head among retained events. If the head moves behind `game.completed` within the allowed boundary, completed-game projections are retracted and the session becomes active again.
 
 ## 14. Phase model
 
@@ -293,13 +295,13 @@ Cross-cutting UI state: local running timer, privacy shield, YouTube playback st
 - Animation respects `prefers-reduced-motion`.
 - Faint timer audio has a visible equivalent and a test button.
 
-## 16. Owner inputs still needed
+## 16. Product decisions and implementation gaps
 
-These are configurable and do not block the initial build:
+Implemented and accepted behavior includes the current 2-second fade-in, 500-millisecond quick fade-out, 3-second slow fade-out, faint ten-second warning chime, no final speech after a red card, and the tie-vote flow in `rules.md`.
 
-1. YouTube playlist URL/ID.
-2. Preferred fade-in, quick fade-out, and slow fade-out durations.
-3. Preferred warning sound or permission to ship a subtle generated chime.
-4. Whether a red-carded player should receive any final speech.
-5. Whether the first release needs English only or English plus Russian.
-6. Exact tie-vote and first-night “best move” convention if it differs from `rules.md`.
+Two decided requirements remain implementation gaps:
+
+1. The initial product requires English and Russian; the current UI is English-only.
+2. Best Move must be a per-club setting enabled by default; current behavior is fixed and has no club-level setting.
+
+The production backup target, method, retention, and restore procedure remain unresolved owner decisions.

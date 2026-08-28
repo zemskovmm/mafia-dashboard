@@ -94,6 +94,6 @@ Never commit deployment parameter files containing real passwords or OAuth secre
 
 ## Rollback
 
-Each deployment uses the full Git SHA as the image tag. To roll back, manually run the workflow from the known-good commit or redeploy the previous ACR image tag. Do not delete previous image tags until the replacement revision is healthy.
+Each deployment uses the full Git SHA as the image tag. To roll back, manually run the workflow from the known-good commit or redeploy the previous GHCR image tag. Do not delete previous image tags until the replacement revision is healthy.
 
 Database rollback is separate: application rollback must not automatically restore PostgreSQL. Use Flexible Server point-in-time restore only for an incompatible or destructive database change.
