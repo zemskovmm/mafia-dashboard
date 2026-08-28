@@ -110,6 +110,10 @@ export const createSampleGameHistory = (): SampleGameHistory => {
     payload: { nominatorSeat: 1, candidateSeat: 7 },
   });
   append({
+    type: "player.nominated",
+    payload: { nominatorSeat: 2, candidateSeat: 6 },
+  });
+  append({
     type: "foul.issued",
     payload: { seat: 9, foulNumber: 1, redCarded: false },
   });
@@ -120,7 +124,7 @@ export const createSampleGameHistory = (): SampleGameHistory => {
     type: "voting.resolved",
     payload: {
       voteAssignments: dayOneVotes,
-      result: { kind: "winner", seats: [7], totals: { 7: 10 } },
+      result: { kind: "winner", seats: [7], totals: { 7: 10, 6: 0 } },
     },
   });
   append({ type: "phase.changed", payload: { to: "night-mafia" } });

@@ -6,6 +6,8 @@ import {
   completeCurrentTurn,
   beginNight,
   evaluateVictory,
+  getActiveNominations,
+  isVotingRequired,
   issueFoul,
   markPlayerInactive,
   nominate,
@@ -114,6 +116,9 @@ export const GameScreen = ({
     ({ seat, status }) => seat === currentSeat && status === "active",
   );
   const isLastDayTurn = game.phase === "day" && game.currentTurnIndex === game.turnOrder.length - 1;
+  const votingRequired =
+    game.redCardIssuedThisDay !== true &&
+    isVotingRequired(game.day, getActiveNominations(game).length);
   const currentSpeakerHasNominated = game.nominations.some(
     ({ nominatorSeat }) => nominatorSeat === currentPlayer?.seat,
   );
@@ -395,7 +400,7 @@ export const GameScreen = ({
       return (
         <button type="button" disabled={currentPlayer === undefined} onClick={finishTurn}>
           {isLastDayTurn
-            ? game.nominations.length > 0 && game.redCardIssuedThisDay !== true
+            ? votingRequired
               ? t("game.beginVoting")
               : t("game.beginNight")
             : t("game.nextPlayer")}
@@ -453,7 +458,7 @@ export const GameScreen = ({
         {game.phase === "day" && currentPlayer !== undefined ? (
           <div className="phase-banner current-turn-copy">
             {isLastDayTurn
-              ? game.nominations.length > 0 && game.redCardIssuedThisDay !== true
+              ? votingRequired
                 ? t("game.finalTurnVoting", { name: currentPlayer.name })
                 : t("game.finalTurnNight", { name: currentPlayer.name })
               : t("game.currentTurn", { name: currentPlayer.name })}

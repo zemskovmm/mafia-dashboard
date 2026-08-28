@@ -413,6 +413,7 @@ describe("GameScreen", () => {
     const base = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
     const game: GameState = {
       ...base,
+      day: 2,
       phase: "voting",
       nominations: [{ nominatorSeat: 1, candidateSeat: 4, order: 1 }],
       turnOrder: [4],
@@ -443,11 +444,81 @@ describe("GameScreen", () => {
     expect(onEvent).toHaveBeenCalledWith("foul.issued", { seat: 1 });
   });
 
-  it("keeps a single nominee in voting and shows a yellow goodbye speech before night", async () => {
+  it("skips voting for one nominee on day one", async () => {
     const user = userEvent.setup();
     const base = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
     const initial: GameState = {
       ...base,
+      nominations: [{ nominatorSeat: 1, candidateSeat: 4, order: 1 }],
+      currentTurnIndex: base.turnOrder.length - 1,
+    };
+    const DayOneHarness = () => {
+      const [game, setGame] = useState(initial);
+      return (
+        <GameScreen
+          game={game}
+          hostName="Host Player"
+          onGameChange={setGame}
+          onEvent={() => undefined}
+          privacyHidden={false}
+        />
+      );
+    };
+    render(<DayOneHarness />);
+
+    expect(screen.getByText("Final turn: Player 10 · Night next")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Begin night" }));
+
+    expect(screen.getByRole("heading", { name: "Mafia shots" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Voting" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Resolve voting" })).not.toBeInTheDocument();
+    const nominee = screen.getByRole("button", {
+      name: "Assign all Mafia shots to Player 4",
+    });
+    expect(nominee).not.toHaveClass("is-inactive");
+    expect(nominee).toHaveClass("status-active");
+  });
+
+  it("ignores inactive nominations in day-one final-turn controls", async () => {
+    const user = userEvent.setup();
+    const base = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+    const initial: GameState = {
+      ...base,
+      players: base.players.map((player) =>
+        player.seat === 6 ? { ...player, status: "eliminated" as const } : player,
+      ),
+      nominations: [
+        { nominatorSeat: 1, candidateSeat: 4, order: 1 },
+        { nominatorSeat: 2, candidateSeat: 6, order: 2 },
+      ],
+      currentTurnIndex: base.turnOrder.length - 1,
+    };
+    const InactiveNomineeHarness = () => {
+      const [game, setGame] = useState(initial);
+      return (
+        <GameScreen
+          game={game}
+          hostName="Host Player"
+          onGameChange={setGame}
+          onEvent={() => undefined}
+          privacyHidden={false}
+        />
+      );
+    };
+    render(<InactiveNomineeHarness />);
+
+    expect(screen.getByText("Final turn: Player 10 · Night next")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Begin voting" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Begin night" }));
+    expect(screen.getByRole("heading", { name: "Mafia shots" })).toBeInTheDocument();
+  });
+
+  it("keeps a single nominee in later-day voting and shows a yellow goodbye speech", async () => {
+    const user = userEvent.setup();
+    const base = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+    const initial: GameState = {
+      ...base,
+      day: 2,
       phase: "voting",
       nominations: [{ nominatorSeat: 1, candidateSeat: 4, order: 1 }],
       turnOrder: [4],

@@ -48,12 +48,17 @@ describe("deterministic sample game history", () => {
     const entry = (type: (typeof history.activeEntries)[number]["type"]) =>
       history.activeEntries.find((candidate) => candidate.type === type);
 
-    expect(entry("player.nominated")?.payload).toEqual({
-      nominatorSeat: 1,
-      candidateSeat: 7,
-    });
+    expect(
+      history.activeEntries
+        .filter(isEntryOfType("player.nominated"))
+        .slice(0, 2)
+        .map(({ payload }) => payload),
+    ).toEqual([
+      { nominatorSeat: 1, candidateSeat: 7 },
+      { nominatorSeat: 2, candidateSeat: 6 },
+    ]);
     expect(entry("voting.resolved")?.payload).toMatchObject({
-      result: { kind: "winner", seats: [7], totals: { 7: 10 } },
+      result: { kind: "winner", seats: [7], totals: { 7: 10, 6: 0 } },
     });
     expect(entry("mafia.shots-resolved")?.payload).toMatchObject({
       shots: expect.arrayContaining([expect.objectContaining({ secret: true })]),

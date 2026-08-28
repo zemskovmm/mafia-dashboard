@@ -10,7 +10,7 @@ const currentSpeakerSeat = (game: GameState): number => {
   return seat;
 };
 
-const activeNominations = (game: GameState): GameState["nominations"] =>
+export const getActiveNominations = (game: GameState): GameState["nominations"] =>
   game.nominations
     .filter(({ candidateSeat }) =>
       game.players.some(({ seat, status }) => seat === candidateSeat && status === "active"),
@@ -48,12 +48,15 @@ export const cancelVoting = (
 export const skipVoting = (game: GameState): GameState =>
   cancelVoting(game, { reason: "host-skipped" });
 
+export const isVotingRequired = (day: number, nominationCount: number): boolean =>
+  nominationCount > 0 && (day > 1 || nominationCount > 1);
+
 const completeDay = (game: GameState): GameState => {
-  const nominations = activeNominations(game);
+  const nominations = getActiveNominations(game);
   if (game.redCardIssuedThisDay === true) {
     return cancelVoting({ ...game, nominations }, { reason: "red-card" });
   }
-  if (nominations.length === 0) return beginNight({ ...game, nominations });
+  if (!isVotingRequired(game.day, nominations.length)) return beginNight({ ...game, nominations });
   const voting: GameState = {
     ...game,
     phase: "voting",
@@ -182,7 +185,7 @@ export const redCard = (game: GameState, seat: number): GameState => {
   const afterRedCard = markPlayerInactive(game, seat, "red-carded");
   const updated: GameState = {
     ...afterRedCard,
-    nominations: activeNominations(afterRedCard),
+    nominations: getActiveNominations(afterRedCard),
     redCardIssuedThisDay: game.phase === "day" ? true : game.redCardIssuedThisDay,
   };
   const winner = evaluateVictory(updated.players);

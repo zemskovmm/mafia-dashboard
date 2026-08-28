@@ -828,7 +828,7 @@ describe("game session validation", () => {
       state: {
         setup: null,
         game: {
-          ...liveGame(1),
+          ...liveGame(2),
           phase: "voting",
           nominations: [{ nominatorSeat: 1, candidateSeat: 2, order: 1 }],
           shotAssignments: { "8": 2 },

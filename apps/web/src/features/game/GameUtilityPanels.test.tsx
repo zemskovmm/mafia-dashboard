@@ -42,6 +42,7 @@ describe("GameUtilityPanels", () => {
   it("shows current vote totals only during voting-related phases", () => {
     const base: GameState = {
       ...createDayGame(),
+      day: 2,
       nominations: [{ candidateSeat: 2, nominatorSeat: 1, order: 1 }],
       voteAssignments: { 1: 2 },
     };

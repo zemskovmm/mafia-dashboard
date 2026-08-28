@@ -315,6 +315,20 @@ vi.mock("./features/game/GameScreen.js", () => ({
         <button
           type="button"
           onClick={() => {
+            const nominatorSeat = game.turnOrder[game.currentTurnIndex];
+            if (onAcceptedEvent !== undefined && nominatorSeat !== undefined) {
+              onAcceptedEvent({
+                type: "player.nominated",
+                payload: { nominatorSeat, candidateSeat: 4 },
+              });
+            }
+          }}
+        >
+          Record nomination
+        </button>
+        <button
+          type="button"
+          onClick={() => {
             const foulCount = game.players.reduce((total, player) => total + player.fouls, 0);
             const player = game.players[foulCount % game.players.length];
             if (onAcceptedEvent !== undefined && player !== undefined) {
@@ -1937,11 +1951,24 @@ describe("authoritative game session lifecycle", () => {
     expect(screen.getByText("Game turn 0")).toBeInTheDocument();
   });
 
-  it("evaluates Mafia shots after omitted day turns from the canonical checkpoint", async () => {
+  it("persists a day-one nominee and folds omitted turns into the Mafia shot checkpoint", async () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
     await waitFor(() => expect(api.saveGameSession).toHaveBeenCalled());
+    api.saveGameSession.mockClear();
+
+    await user.click(screen.getByRole("button", { name: "Record nomination" }));
+    await waitFor(() =>
+      expect(api.saveGameSession).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          kind: "append-event",
+          event: expect.objectContaining({ type: "player.nominated" }),
+        }),
+        testClub.id,
+      ),
+    );
     api.saveGameSession.mockClear();
 
     for (let turn = 0; turn < assignedGame.turnOrder.length; turn += 1) {
@@ -1989,12 +2016,16 @@ describe("authoritative game session lifecycle", () => {
       entries: GameLogEntry[];
       headEventId: string;
     };
-    expect(persisted.entries).toHaveLength(2);
+    expect(persisted.entries).toHaveLength(3);
     expect(persisted.entries[1]).toMatchObject({
-      type: "mafia.shots-resolved",
+      type: "player.nominated",
       parentEventId: persisted.entries[0]!.id,
     });
-    expect(persisted.headEventId).toBe(persisted.entries[1]!.id);
+    expect(persisted.entries[2]).toMatchObject({
+      type: "mafia.shots-resolved",
+      parentEventId: persisted.entries[1]!.id,
+    });
+    expect(persisted.headEventId).toBe(persisted.entries[2]!.id);
     expect(replayGameLog(persisted.baseline, persisted.entries).game).toEqual(
       gameScreenHarness.liveGame,
     );
@@ -2013,7 +2044,11 @@ describe("authoritative game session lifecycle", () => {
     act(() =>
       changeLiveGame({
         ...liveGame,
+        day: 2,
         phase: "voting",
+        nominations: [{ nominatorSeat: 1, candidateSeat: 4, order: 1 }],
+        turnOrder: [4],
+        currentTurnIndex: 0,
         voteAssignments: { 1: 4 },
       }),
     );

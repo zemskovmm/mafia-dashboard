@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { advanceVotingCandidate, completeCurrentTurn, nominate } from "./day-actions.js";
+import { advanceVotingCandidate, completeCurrentTurn } from "./day-actions.js";
 import { advanceSetupPhase, createGame } from "./game.js";
 import {
   applyGameEvent,
@@ -230,8 +230,43 @@ describe("canonical game replay", () => {
     });
   });
 
+  it("folds a single day-one nominee and omitted turns into the Mafia shot checkpoint", () => {
+    const canonical = applyGameEvent(dayOne(), {
+      type: "player.nominated",
+      payload: { nominatorSeat: 1, candidateSeat: 4 },
+    });
+    let displayed = canonical;
+    while (displayed.phase === "day") displayed = completeCurrentTurn(displayed);
+    expect(displayed).toMatchObject({
+      phase: "night-mafia",
+      nominations: [],
+      voteAssignments: {},
+    });
+    expect(displayed.players.find(({ seat }) => seat === 4)?.status).toBe("active");
+
+    const target = displayed.players.find(
+      ({ team, status }) => team === "red" && status === "active",
+    )!;
+    displayed = toggleAllMafiaShotsForTarget(displayed, target.seat);
+    const resolution = resolveMafiaShots(displayed);
+    const draft: CanonicalGameEventDraft = {
+      type: "mafia.shots-resolved",
+      payload: { shots: resolution.secretShots, result: resolution.result },
+    };
+
+    expect(applyGameEvent(canonical, draft)).toEqual(applyGameEvent(displayed, draft));
+    expect(applyGameEvent(canonical, draft).voteAssignments).toEqual({});
+  });
+
   it("does not fold Mafia shots across unresolved voting", () => {
-    const canonical = nominate(dayOne(), 1, 4);
+    const firstNomination = applyGameEvent(dayOne(), {
+      type: "player.nominated",
+      payload: { nominatorSeat: 1, candidateSeat: 4 },
+    });
+    const canonical = applyGameEvent(firstNomination, {
+      type: "player.nominated",
+      payload: { nominatorSeat: 2, candidateSeat: 6 },
+    });
     const shots = canonical.players
       .filter(({ team, status }) => team === "black" && status === "active")
       .map(({ seat }) => ({ shooterSeat: seat, targetSeat: 4, secret: true as const }));
@@ -352,6 +387,7 @@ describe("canonical game replay", () => {
   it("rejects a phase change that bypasses unresolved voting", () => {
     const voting: GameState = {
       ...dayOne(),
+      day: 2,
       phase: "voting",
       nominations: [{ nominatorSeat: 1, candidateSeat: 4, order: 1 }],
       turnOrder: [4],
@@ -453,9 +489,13 @@ describe("canonical game replay", () => {
   });
 
   it("reconstructs omitted day completion into voting before a red card", () => {
-    const canonical = applyGameEvent(dayOne(), {
+    const firstNomination = applyGameEvent(dayOne(), {
       type: "player.nominated",
       payload: { nominatorSeat: 1, candidateSeat: 4 },
+    });
+    const canonical = applyGameEvent(firstNomination, {
+      type: "player.nominated",
+      payload: { nominatorSeat: 2, candidateSeat: 6 },
     });
     let live = canonical;
     while (live.phase === "day") {
@@ -484,10 +524,13 @@ describe("canonical game replay", () => {
   });
 
   it("does not carry generated provisional votes into a contextual foul checkpoint", () => {
-    const canonical = applyGameEvent(dayOne(), {
-      type: "player.nominated",
-      payload: { nominatorSeat: 1, candidateSeat: 4 },
-    });
+    const canonical = applyGameEvent(
+      { ...dayOne(), day: 2 },
+      {
+        type: "player.nominated",
+        payload: { nominatorSeat: 1, candidateSeat: 4 },
+      },
+    );
 
     const replayed = applyGameEvent(canonical, {
       type: "foul.issued",

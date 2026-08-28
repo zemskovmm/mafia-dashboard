@@ -43,6 +43,16 @@ const completedSetup = (): SetupState => {
 
 const dayOne = (): GameState => advanceSetupPhase(advanceSetupPhase(createGame(completedSetup())));
 
+const completeDayWithNominees = (day: number, candidateSeats: readonly number[]): GameState => {
+  let game: GameState = { ...dayOne(), day };
+  for (const candidateSeat of candidateSeats) {
+    game = nominate(game, game.turnOrder[game.currentTurnIndex]!, candidateSeat);
+    game = completeCurrentTurn(game);
+  }
+  while (game.phase === "day") game = completeCurrentTurn(game);
+  return game;
+};
+
 describe("day actions", () => {
   it("accepts nominations only from the current speaker and preserves unique candidate order", () => {
     let game = dayOne();
@@ -216,16 +226,31 @@ describe("day actions", () => {
     }
   });
 
-  it("keeps a one-person voting screen and assigns every active vote", () => {
-    let game = nominate(dayOne(), 1, 4);
+  it.each([
+    { day: 1, nominees: [] as const, phase: "night-mafia", votingOrder: undefined, votes: 0 },
+    { day: 1, nominees: [4] as const, phase: "night-mafia", votingOrder: undefined, votes: 0 },
+    { day: 1, nominees: [4, 6] as const, phase: "voting", votingOrder: [4, 6], votes: 0 },
+    { day: 2, nominees: [] as const, phase: "night-mafia", votingOrder: undefined, votes: 0 },
+    { day: 2, nominees: [4] as const, phase: "voting", votingOrder: [4], votes: 10 },
+    { day: 2, nominees: [4, 6] as const, phase: "voting", votingOrder: [4, 6], votes: 0 },
+  ] as const)(
+    "day completion matrix: day $day with $nominees.length nominees enters $phase",
+    ({ day, nominees, phase, votingOrder, votes }) => {
+      const game = completeDayWithNominees(day, nominees);
 
-    while (game.phase === "day") game = completeCurrentTurn(game);
-
-    expect(game.phase).toBe("voting");
-    expect(game.players.find(({ seat }) => seat === 4)?.status).toBe("active");
-    expect(game.turnOrder).toEqual([4]);
-    expect(Object.values(game.voteAssignments)).toEqual(Array.from({ length: 10 }, () => 4));
-  });
+      expect(game.phase).toBe(phase);
+      expect(game.players.find(({ seat }) => seat === 4)?.status).toBe("active");
+      expect(Object.keys(game.voteAssignments)).toHaveLength(votes);
+      if (votingOrder === undefined) {
+        expect(game.nominations).toEqual([]);
+        expect(game.voteAssignments).toEqual({});
+      } else {
+        expect(game.turnOrder).toEqual(votingOrder);
+        expect(game.nominations.map(({ candidateSeat }) => candidateSeat)).toEqual(votingOrder);
+      }
+      if (votes > 0) expect(Object.values(game.voteAssignments)).toEqual(Array(votes).fill(4));
+    },
+  );
 
   it("removes a red-carded nominee instead of entering an unresolvable vote", () => {
     let game = nominate(dayOne(), 1, 4);
