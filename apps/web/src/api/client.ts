@@ -24,7 +24,7 @@ export interface PlayerProfile {
   readonly id: string;
   readonly nickname: string;
   readonly consent: boolean;
-  readonly clubManager: boolean;
+  readonly clubAccess: "none" | "user" | "manager";
   readonly managerLocked: boolean;
   readonly firstName: string | null;
   readonly lastName: string | null;
@@ -64,7 +64,7 @@ export type ClubUpdateInput = ClubDetails;
 
 export interface Club extends ClubDetails {
   readonly id: string;
-  readonly role: "owner" | "editor";
+  readonly role: "manager" | "user";
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -73,7 +73,7 @@ export type PlayerProfileInput =
   | {
       readonly nickname: string;
       readonly consent: false;
-      readonly clubManager: false;
+      readonly clubAccess: "none";
       readonly firstName: null;
       readonly lastName: null;
       readonly email: null;
@@ -81,7 +81,7 @@ export type PlayerProfileInput =
   | {
       readonly nickname: string;
       readonly consent: false;
-      readonly clubManager: true;
+      readonly clubAccess: "manager";
       readonly firstName: null;
       readonly lastName: null;
       readonly email: null;
@@ -89,7 +89,7 @@ export type PlayerProfileInput =
   | {
       readonly nickname: string;
       readonly consent: true;
-      readonly clubManager: boolean;
+      readonly clubAccess: "none" | "user" | "manager";
       readonly firstName: string;
       readonly lastName: string;
       readonly email: string;

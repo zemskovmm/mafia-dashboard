@@ -16,7 +16,7 @@ const profile = (overrides: Partial<PlayerProfile> = {}): PlayerProfile => ({
   id: "00000000-0000-4000-8000-000000000001",
   nickname: "Alpha",
   consent: true,
-  clubManager: false,
+  clubAccess: "none",
   managerLocked: false,
   firstName: "Ada",
   lastName: "Player",
@@ -72,13 +72,10 @@ describe("PlayersScreen", () => {
       "form",
       "new-player-form",
     );
-    for (const control of [
-      screen.getByLabelText("New player Agree for data processing"),
-      screen.getByLabelText("New player Club manager"),
-    ]) {
-      expect(control.closest(".player-toggle-field")).not.toBeNull();
-      expect(control.closest(".player-toggle-control")).not.toBeNull();
-    }
+    const consent = screen.getByLabelText("New player Agree for data processing");
+    expect(consent.closest(".player-toggle-field")).not.toBeNull();
+    expect(consent.closest(".player-toggle-control")).not.toBeNull();
+    expect(screen.getByRole("combobox", { name: "New player Club access" })).toHaveValue("none");
 
     const card = screen.getByRole("article", { name: /player alpha/i });
     expect(within(card).queryByText("Player profile")).not.toBeInTheDocument();
@@ -88,10 +85,13 @@ describe("PlayersScreen", () => {
     expect(actions).toContainElement(within(card).getByRole("button", { name: "Delete Alpha" }));
   });
 
-  it("renders a Club manager control for a new player", () => {
+  it("renders explicit none, user, and manager access options for a new player", () => {
     render(<PlayersScreen players={[]} onCreate={vi.fn()} onUpdate={vi.fn()} />);
 
-    expect(screen.getByRole("checkbox", { name: "New player Club manager" })).toBeInTheDocument();
+    const access = screen.getByRole("combobox", { name: "New player Club access" });
+    expect(access).toHaveValue("none");
+    expect(within(access).getByRole("option", { name: "Regular user" })).toHaveValue("user");
+    expect(within(access).getByRole("option", { name: "Club manager" })).toHaveValue("manager");
   });
 
   it("requires explicit consent before an unlocked player can become a Club manager", async () => {
@@ -106,17 +106,17 @@ describe("PlayersScreen", () => {
 
     const card = screen.getByRole("article", { name: /player alpha/i });
     const consentControl = within(card).getByLabelText("Alpha Agree for data processing");
-    const managerControl = within(card).getByRole("checkbox", { name: "Alpha Club manager" });
+    const managerControl = within(card).getByRole("combobox", { name: "Alpha Club access" });
     expect(managerControl).toBeDisabled();
 
     await user.click(consentControl);
 
     expect(managerControl).toBeEnabled();
-    expect(managerControl).not.toBeChecked();
+    expect(managerControl).toHaveValue("none");
 
-    await user.click(managerControl);
+    await user.selectOptions(managerControl, "manager");
 
-    expect(managerControl).toBeChecked();
+    expect(managerControl).toHaveValue("manager");
     expect(consentControl).toBeChecked();
   });
 
@@ -127,7 +127,10 @@ describe("PlayersScreen", () => {
 
     await user.type(screen.getByLabelText("New player nickname"), "  Manager  ");
     await user.click(screen.getByLabelText("New player Agree for data processing"));
-    await user.click(screen.getByRole("checkbox", { name: "New player Club manager" }));
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "New player Club access" }),
+      "manager",
+    );
     await user.type(screen.getByLabelText("New player first name"), "  Grace  ");
     await user.type(screen.getByLabelText("New player last name"), "  Host  ");
     await user.type(screen.getByLabelText("New player email"), "manager@example.test");
@@ -136,7 +139,7 @@ describe("PlayersScreen", () => {
     expect(onCreate).toHaveBeenCalledWith({
       nickname: "Manager",
       consent: true,
-      clubManager: true,
+      clubAccess: "manager",
       firstName: "Grace",
       lastName: "Host",
       email: "manager@example.test",
@@ -208,7 +211,7 @@ describe("PlayersScreen", () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn().mockResolvedValue(undefined);
     const creator = profile({
-      clubManager: true,
+      clubAccess: "manager",
       managerLocked: true,
       statistics: {
         ...profile().statistics,
@@ -226,9 +229,9 @@ describe("PlayersScreen", () => {
     );
 
     const card = screen.getByRole("article", { name: /player alpha/i });
-    const managerControl = within(card).getByRole("checkbox", { name: "Alpha Club manager" });
+    const managerControl = within(card).getByRole("combobox", { name: "Alpha Club access" });
     const consentControl = within(card).getByLabelText("Alpha Agree for data processing");
-    expect(managerControl).toBeChecked();
+    expect(managerControl).toHaveValue("manager");
     expect(managerControl).toBeDisabled();
     expect(consentControl).toBeEnabled();
     expect(within(card).queryByRole("button", { name: "Delete Alpha" })).not.toBeInTheDocument();
@@ -238,7 +241,7 @@ describe("PlayersScreen", () => {
 
     await user.click(consentControl);
 
-    expect(managerControl).toBeChecked();
+    expect(managerControl).toHaveValue("manager");
     expect(within(card).getByLabelText("Alpha first name")).toBeDisabled();
     expect(within(card).getByLabelText("Alpha first name")).toHaveValue("");
     expect(within(card).getByLabelText("Alpha last name")).toHaveValue("");
@@ -248,7 +251,7 @@ describe("PlayersScreen", () => {
     expect(onUpdate).toHaveBeenCalledWith(creator.id, {
       nickname: "Alpha",
       consent: false,
-      clubManager: true,
+      clubAccess: "manager",
       firstName: null,
       lastName: null,
       email: null,
@@ -258,21 +261,21 @@ describe("PlayersScreen", () => {
   it("lets a normal manager demote the profile", async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn().mockResolvedValue(undefined);
-    const manager = profile({ clubManager: true });
+    const manager = profile({ clubAccess: "manager" });
     render(<PlayersScreen players={[manager]} onCreate={vi.fn()} onUpdate={onUpdate} />);
 
     const card = screen.getByRole("article", { name: /player alpha/i });
-    const managerControl = within(card).getByRole("checkbox", { name: "Alpha Club manager" });
-    expect(managerControl).toBeChecked();
+    const managerControl = within(card).getByRole("combobox", { name: "Alpha Club access" });
+    expect(managerControl).toHaveValue("manager");
     expect(managerControl).toBeEnabled();
 
-    await user.click(managerControl);
+    await user.selectOptions(managerControl, "none");
     await user.click(within(card).getByRole("button", { name: /save alpha/i }));
 
     expect(onUpdate).toHaveBeenCalledWith(manager.id, {
       nickname: "Alpha",
       consent: true,
-      clubManager: false,
+      clubAccess: "none",
       firstName: "Ada",
       lastName: "Player",
       email: "ada@example.test",
@@ -291,7 +294,7 @@ describe("PlayersScreen", () => {
     expect(onCreate).toHaveBeenCalledWith({
       nickname: "Night Owl",
       consent: false,
-      clubManager: false,
+      clubAccess: "none",
       firstName: null,
       lastName: null,
       email: null,
@@ -320,7 +323,7 @@ describe("PlayersScreen", () => {
     expect(onCreate).toHaveBeenCalledWith({
       nickname: "Consented",
       consent: true,
-      clubManager: false,
+      clubAccess: "none",
       firstName: "Grace",
       lastName: "Host",
       email: "grace@example.test",
@@ -351,10 +354,12 @@ describe("PlayersScreen", () => {
     const user = userEvent.setup();
     const onUpdate = vi
       .fn()
-      .mockRejectedValue(new ApiError("Unable to update player", 409, "manager_email_conflict"));
+      .mockRejectedValue(
+        new ApiError("Unable to update player", 409, "club_access_email_conflict"),
+      );
     render(
       <PlayersScreen
-        players={[profile({ clubManager: true })]}
+        players={[profile({ clubAccess: "manager" })]}
         onCreate={vi.fn()}
         onUpdate={onUpdate}
       />,
@@ -363,27 +368,27 @@ describe("PlayersScreen", () => {
     await user.click(screen.getByRole("button", { name: /save alpha/i }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      /email is already assigned to another club manager/i,
+      /email is already assigned to another player with club access/i,
     );
   });
 
   it("clears manager and personal data when consent is withdrawn", async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn().mockResolvedValue(undefined);
-    const manager = profile({ clubManager: true });
+    const manager = profile({ clubAccess: "manager" });
     render(<PlayersScreen players={[manager]} onCreate={vi.fn()} onUpdate={onUpdate} />);
 
     const card = screen.getByRole("article", { name: /player alpha/i });
     await user.click(within(card).getByLabelText("Alpha Agree for data processing"));
 
-    expect(within(card).getByLabelText("Alpha Club manager")).not.toBeChecked();
+    expect(within(card).getByLabelText("Alpha Club access")).toHaveValue("none");
     expect(within(card).getByLabelText("Alpha first name")).toBeDisabled();
     expect(within(card).getByLabelText("Alpha first name")).toHaveValue("");
     await user.click(within(card).getByRole("button", { name: /save alpha/i }));
     expect(onUpdate).toHaveBeenCalledWith(manager.id, {
       nickname: "Alpha",
       consent: false,
-      clubManager: false,
+      clubAccess: "none",
       firstName: null,
       lastName: null,
       email: null,
@@ -410,7 +415,7 @@ describe("PlayersScreen", () => {
     expect(onUpdate).toHaveBeenCalledWith(profile().id, {
       nickname: "Alpha",
       consent: false,
-      clubManager: false,
+      clubAccess: "none",
       firstName: null,
       lastName: null,
       email: null,

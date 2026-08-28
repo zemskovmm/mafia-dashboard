@@ -44,13 +44,13 @@ const clubInput = () => ({
   ownerConsent: true as const,
 });
 
-describe("ClubStore manager access", () => {
-  it("atomically creates the creator's protected Owner manager profile", async () => {
+describe("ClubStore access roles", () => {
+  it("atomically creates the creator's protected manager profile", async () => {
     const creator = await createUser();
 
     const club = await store.create(creator, clubInput());
 
-    expect(club.role).toBe("owner");
+    expect(club.role).toBe("manager");
     expect(club.language).toBe("ru");
     await expect(playerStore.list(club.id)).resolves.toMatchObject([
       {
@@ -59,13 +59,13 @@ describe("ClubStore manager access", () => {
         firstName: "Ada",
         lastName: "Lovelace Byron",
         email: creator.email,
-        clubManager: true,
+        clubAccess: "manager",
         managerLocked: true,
       },
     ]);
     await expect(
       pool.query(
-        `SELECT membership.role, player.is_club_manager, player.user_id
+        `SELECT membership.role, player.club_access, player.user_id
            FROM club_memberships AS membership
            JOIN players AS player
              ON player.club_id = membership.club_id
@@ -74,11 +74,11 @@ describe("ClubStore manager access", () => {
         [club.id, creator.id],
       ),
     ).resolves.toMatchObject({
-      rows: [{ role: "owner", is_club_manager: true, user_id: creator.id }],
+      rows: [{ role: "manager", club_access: "manager", user_id: creator.id }],
     });
   });
 
-  it("claims pending manager clubs case-insensitively and idempotently", async () => {
+  it("claims pending user or manager access case-insensitively and idempotently", async () => {
     const creator = await createUser();
     const club = await store.create(creator, clubInput());
     const manager = await createUser("Grace Hopper");
@@ -86,17 +86,17 @@ describe("ClubStore manager access", () => {
     await pool.query(
       `INSERT INTO players
          (id, club_id, nickname, first_name, last_name, email,
-          data_processing_consent, consent_at, is_club_manager)
-       VALUES ($1, $2, $3, 'Grace', 'Hopper', $4, TRUE, NOW(), TRUE)`,
+          data_processing_consent, consent_at, club_access)
+       VALUES ($1, $2, $3, 'Grace', 'Hopper', $4, TRUE, NOW(), 'user')`,
       [playerId, club.id, `Manager ${randomUUID().slice(0, 8)}`, manager.email.toUpperCase()],
     );
 
-    await store.claimManagerClubs(manager.id, manager.email);
-    await store.claimManagerClubs(manager.id, manager.email);
+    await store.claimClubAccess(manager.id, manager.email);
+    await store.claimClubAccess(manager.id, manager.email);
 
     await expect(
       pool.query(
-        `SELECT player.user_id, membership.role, membership.manager_player_id
+        `SELECT player.user_id, membership.role, membership.access_player_id
            FROM players AS player
            LEFT JOIN club_memberships AS membership
              ON membership.club_id = player.club_id
@@ -105,14 +105,14 @@ describe("ClubStore manager access", () => {
         [playerId],
       ),
     ).resolves.toMatchObject({
-      rows: [{ user_id: manager.id, role: "editor", manager_player_id: playerId }],
+      rows: [{ user_id: manager.id, role: "user", access_player_id: playerId }],
     });
     await expect(store.listForUser(manager.id)).resolves.toEqual(
-      expect.arrayContaining([expect.objectContaining({ id: club.id, role: "editor" })]),
+      expect.arrayContaining([expect.objectContaining({ id: club.id, role: "user" })]),
     );
   });
 
-  it("keeps an existing independent membership unmarked when claiming a pending manager", async () => {
+  it("keeps an existing independent membership unmarked when claiming pending access", async () => {
     const creator = await createUser();
     const club = await store.create(creator, clubInput());
     const manager = await createUser("Independent Claimant");
@@ -120,20 +120,20 @@ describe("ClubStore manager access", () => {
     await pool.query(
       `INSERT INTO players
          (id, club_id, nickname, first_name, last_name, email,
-          data_processing_consent, consent_at, is_club_manager)
-       VALUES ($1, $2, $3, 'Independent', 'Claimant', $4, TRUE, NOW(), TRUE)`,
+          data_processing_consent, consent_at, club_access)
+       VALUES ($1, $2, $3, 'Independent', 'Claimant', $4, TRUE, NOW(), 'manager')`,
       [playerId, club.id, `Manager ${randomUUID().slice(0, 8)}`, manager.email],
     );
     await pool.query(
-      "INSERT INTO club_memberships (club_id, user_id, role) VALUES ($1, $2, 'editor')",
+      "INSERT INTO club_memberships (club_id, user_id, role) VALUES ($1, $2, 'user')",
       [club.id, manager.id],
     );
 
-    await store.claimManagerClubs(manager.id, manager.email);
+    await store.claimClubAccess(manager.id, manager.email);
 
     await expect(
       pool.query(
-        `SELECT player.user_id, membership.role, membership.manager_player_id
+        `SELECT player.user_id, membership.role, membership.access_player_id
            FROM players AS player
            JOIN club_memberships AS membership
              ON membership.club_id = player.club_id
@@ -142,17 +142,17 @@ describe("ClubStore manager access", () => {
         [playerId],
       ),
     ).resolves.toMatchObject({
-      rows: [{ user_id: manager.id, role: "editor", manager_player_id: null }],
+      rows: [{ user_id: manager.id, role: "user", access_player_id: null }],
     });
   });
 
-  it("does not steal linked managers or downgrade owner memberships", async () => {
+  it("does not steal linked managers or downgrade creator memberships", async () => {
     const creator = await createUser();
     const club = await store.create(creator, clubInput());
     const otherUser = await createUser("Other Claimant");
 
-    await store.claimManagerClubs(creator.id, creator.email.toUpperCase());
-    await store.claimManagerClubs(otherUser.id, creator.email);
+    await store.claimClubAccess(creator.id, creator.email.toUpperCase());
+    await store.claimClubAccess(otherUser.id, creator.email);
 
     await expect(
       pool.query(
@@ -164,7 +164,7 @@ describe("ClubStore manager access", () => {
           WHERE player.club_id = $1 AND player.nickname = 'Owner'`,
         [club.id],
       ),
-    ).resolves.toMatchObject({ rows: [{ user_id: creator.id, role: "owner" }] });
+    ).resolves.toMatchObject({ rows: [{ user_id: creator.id, role: "manager" }] });
     await expect(store.listForUser(otherUser.id)).resolves.toEqual([]);
   });
 
@@ -179,19 +179,19 @@ describe("ClubStore manager access", () => {
         firstName: "Prince",
         lastName: "Prince",
         email: creator.email,
-        clubManager: true,
+        clubAccess: "manager",
         managerLocked: true,
       },
     ]);
   });
 
-  it("lets owners and editors update only their club language", async () => {
+  it("lets managers, but not users or strangers, update their club", async () => {
     const creator = await createUser("Language Owner");
     const editor = await createUser("Language Editor");
     const stranger = await createUser("Language Stranger");
     const club = await store.create(creator, clubInput());
     await pool.query(
-      "INSERT INTO club_memberships (club_id, user_id, role) VALUES ($1, $2, 'editor')",
+      "INSERT INTO club_memberships (club_id, user_id, role) VALUES ($1, $2, 'user')",
       [club.id, editor.id],
     );
 
@@ -203,7 +203,7 @@ describe("ClubStore manager access", () => {
         cardLogo: club.cardLogo,
         language: "en",
       }),
-    ).resolves.toMatchObject({ id: club.id, language: "en", role: "editor" });
+    ).resolves.toBeNull();
     await expect(
       store.update(creator.id, club.id, {
         name: club.name,
@@ -212,7 +212,7 @@ describe("ClubStore manager access", () => {
         cardLogo: club.cardLogo,
         language: "ru",
       }),
-    ).resolves.toMatchObject({ id: club.id, language: "ru", role: "owner" });
+    ).resolves.toMatchObject({ id: club.id, language: "ru", role: "manager" });
     await expect(
       store.update(stranger.id, club.id, {
         name: club.name,

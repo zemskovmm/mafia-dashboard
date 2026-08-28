@@ -47,7 +47,7 @@ const player = {
   id: "00000000-0000-4000-8000-000000000001",
   nickname: "Alpha",
   consent: false,
-  clubManager: false,
+  clubAccess: "none",
   managerLocked: false,
   firstName: null,
   lastName: null,
@@ -62,7 +62,7 @@ const player = {
 const lockedManagerConsentWithdrawal: PlayerProfileInput = {
   nickname: "Owner",
   consent: false,
-  clubManager: true,
+  clubAccess: "manager",
   firstName: null,
   lastName: null,
   email: null,
@@ -83,7 +83,7 @@ describe("club API client", () => {
       headerLogo: null,
       cardLogo: null,
       language: "ru" as const,
-      role: "owner" as const,
+      role: "manager" as const,
       createdAt: "2026-08-17T20:00:00.000Z",
       updatedAt: "2026-08-17T20:00:00.000Z",
     };
@@ -222,7 +222,7 @@ describe("player API client", () => {
     const input = {
       nickname: "Alpha",
       consent: false as const,
-      clubManager: false,
+      clubAccess: "none",
       firstName: null,
       lastName: null,
       email: null,
@@ -263,7 +263,7 @@ describe("player API client", () => {
     const failure = createPlayer({
       nickname: "Alpha",
       consent: false,
-      clubManager: false,
+      clubAccess: "none",
       firstName: null,
       lastName: null,
       email: null,

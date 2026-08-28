@@ -100,15 +100,15 @@ describe("PlayerStore", () => {
         firstName: "Existing",
         lastName: "Manager",
         email: manager.email.toUpperCase(),
-        clubManager: true,
+        clubAccess: "manager",
       },
       club.id,
     );
 
-    expect(player).toMatchObject({ clubManager: true, managerLocked: false });
+    expect(player).toMatchObject({ clubAccess: "manager", managerLocked: false });
     await expect(
       pool.query(
-        `SELECT player.user_id, membership.role, membership.manager_player_id
+        `SELECT player.user_id, membership.role, membership.access_player_id
            FROM players AS player
            LEFT JOIN club_memberships AS membership
              ON membership.club_id = player.club_id
@@ -117,8 +117,52 @@ describe("PlayerStore", () => {
         [player.id, club.id],
       ),
     ).resolves.toMatchObject({
-      rows: [{ user_id: manager.id, role: "editor", manager_player_id: player.id }],
+      rows: [{ user_id: manager.id, role: "manager", access_player_id: player.id }],
     });
+  });
+
+  it("grants, changes, and revokes player-linked user access", async () => {
+    const { club, creator } = await createClub();
+    const user = await createUser("Regular User");
+    const input = {
+      nickname: nickname("Regular user"),
+      consent: true,
+      firstName: "Regular",
+      lastName: "User",
+      email: user.email,
+      clubAccess: "user" as const,
+    };
+
+    const player = await store.create(input, club.id);
+    expect(player).toMatchObject({ clubAccess: "user", managerLocked: false });
+    await expect(
+      pool.query(
+        "SELECT role, access_player_id FROM club_memberships WHERE club_id = $1 AND user_id = $2",
+        [club.id, user.id],
+      ),
+    ).resolves.toMatchObject({
+      rows: [{ role: "user", access_player_id: player.id }],
+    });
+
+    await expect(
+      store.update(player.id, { ...input, clubAccess: "manager" }, club.id, creator.id),
+    ).resolves.toMatchObject({ clubAccess: "manager" });
+    await expect(
+      pool.query("SELECT role FROM club_memberships WHERE club_id = $1 AND user_id = $2", [
+        club.id,
+        user.id,
+      ]),
+    ).resolves.toMatchObject({ rows: [{ role: "manager" }] });
+
+    await expect(
+      store.update(player.id, { ...input, clubAccess: "none" }, club.id, creator.id),
+    ).resolves.toMatchObject({ clubAccess: "none" });
+    await expect(
+      pool.query("SELECT role FROM club_memberships WHERE club_id = $1 AND user_id = $2", [
+        club.id,
+        user.id,
+      ]),
+    ).resolves.toMatchObject({ rows: [] });
   });
 
   it("promotes an existing consented player and grants editor access", async () => {
@@ -143,26 +187,26 @@ describe("PlayerStore", () => {
         firstName: "Promoted",
         lastName: "Manager",
         email: manager.email,
-        clubManager: true,
+        clubAccess: "manager",
       },
       club.id,
       creator.id,
     );
 
-    expect(promoted).toMatchObject({ clubManager: true, managerLocked: false });
+    expect(promoted).toMatchObject({ clubAccess: "manager", managerLocked: false });
     await expect(
       pool.query("SELECT role FROM club_memberships WHERE club_id = $1 AND user_id = $2", [
         club.id,
         manager.id,
       ]),
-    ).resolves.toMatchObject({ rows: [{ role: "editor" }] });
+    ).resolves.toMatchObject({ rows: [{ role: "manager" }] });
   });
 
   it("preserves independent editor access after manager demotion", async () => {
     const { club } = await createClub();
     const manager = await createUser("Independent Editor");
     await pool.query(
-      "INSERT INTO club_memberships (club_id, user_id, role) VALUES ($1, $2, 'editor')",
+      "INSERT INTO club_memberships (club_id, user_id, role) VALUES ($1, $2, 'manager')",
       [club.id, manager.id],
     );
     const player = await store.create(
@@ -181,18 +225,18 @@ describe("PlayerStore", () => {
       firstName: player.firstName,
       lastName: player.lastName,
       email: player.email,
-      clubManager: true,
+      clubAccess: "manager" as const,
     };
 
     await store.update(player.id, managerInput, club.id, manager.id);
     const demoted = await store.update(
       player.id,
-      { ...managerInput, clubManager: false },
+      { ...managerInput, clubAccess: "none" },
       club.id,
       manager.id,
     );
 
-    expect(demoted).toMatchObject({ clubManager: false, managerLocked: false });
+    expect(demoted).toMatchObject({ clubAccess: "none", managerLocked: false });
     await expect(
       pool.query(
         `SELECT player.user_id, membership.role
@@ -203,14 +247,14 @@ describe("PlayerStore", () => {
           WHERE player.id = $2 AND player.club_id = $3`,
         [manager.id, player.id, club.id],
       ),
-    ).resolves.toMatchObject({ rows: [{ user_id: null, role: "editor" }] });
+    ).resolves.toMatchObject({ rows: [{ user_id: null, role: "manager" }] });
   });
 
   it("preserves independent editor access after manager deletion", async () => {
     const { club } = await createClub();
     const manager = await createUser("Independent Deleted Editor");
     await pool.query(
-      "INSERT INTO club_memberships (club_id, user_id, role) VALUES ($1, $2, 'editor')",
+      "INSERT INTO club_memberships (club_id, user_id, role) VALUES ($1, $2, 'manager')",
       [club.id, manager.id],
     );
     const player = await store.create(
@@ -220,7 +264,7 @@ describe("PlayerStore", () => {
         firstName: "Independent",
         lastName: "Deleted",
         email: manager.email,
-        clubManager: true,
+        clubAccess: "manager",
       },
       club.id,
     );
@@ -228,13 +272,13 @@ describe("PlayerStore", () => {
     await expect(store.delete(player.id, club.id)).resolves.toBe("deleted");
     await expect(
       pool.query(
-        `SELECT role, manager_player_id
+        `SELECT role, access_player_id
            FROM club_memberships
           WHERE club_id = $1 AND user_id = $2`,
         [club.id, manager.id],
       ),
     ).resolves.toMatchObject({
-      rows: [{ role: "editor", manager_player_id: null }],
+      rows: [{ role: "manager", access_player_id: null }],
     });
   });
 
@@ -248,7 +292,7 @@ describe("PlayerStore", () => {
         firstName: "Deleted",
         lastName: "Manager",
         email: manager.email,
-        clubManager: true,
+        clubAccess: "manager",
       },
       club.id,
     );
@@ -276,7 +320,7 @@ describe("PlayerStore", () => {
         firstName: "Edited",
         lastName: "Owner",
         email: otherUser.email,
-        clubManager: true,
+        clubAccess: "manager",
       },
       club.id,
       creator.id,
@@ -284,7 +328,7 @@ describe("PlayerStore", () => {
 
     expect(updated).toMatchObject({
       email: otherUser.email,
-      clubManager: true,
+      clubAccess: "manager",
       managerLocked: true,
     });
     await expect(
@@ -305,7 +349,7 @@ describe("PlayerStore", () => {
     const { club, creator } = await createClub();
     const editor = await createUser("Owner Profile Editor");
     await pool.query(
-      "INSERT INTO club_memberships (club_id, user_id, role) VALUES ($1, $2, 'editor')",
+      "INSERT INTO club_memberships (club_id, user_id, role) VALUES ($1, $2, 'manager')",
       [club.id, editor.id],
     );
     const owner = (await store.list(club.id)).find(({ managerLocked }) => managerLocked)!;
@@ -317,7 +361,7 @@ describe("PlayerStore", () => {
         firstName: null,
         lastName: null,
         email: null,
-        clubManager: true,
+        clubAccess: "manager",
       },
       club.id,
       creator.id,
@@ -333,7 +377,7 @@ describe("PlayerStore", () => {
           firstName: "Editor",
           lastName: "Rewrite",
           email: editor.email,
-          clubManager: true,
+          clubAccess: "manager",
         },
         club.id,
         editor.id,
@@ -362,7 +406,7 @@ describe("PlayerStore", () => {
       firstName: owner.firstName,
       lastName: owner.lastName,
       email: owner.email,
-      clubManager: false,
+      clubAccess: "none" as const,
     };
 
     await expect(store.update(owner.id, demotion, club.id, creator.id)).rejects.toMatchObject({
@@ -370,7 +414,7 @@ describe("PlayerStore", () => {
       code: "manager_locked",
     });
     await expect(store.get(owner.id, club.id)).resolves.toMatchObject({
-      clubManager: true,
+      clubAccess: "manager",
       managerLocked: true,
     });
     await expect(
@@ -378,7 +422,7 @@ describe("PlayerStore", () => {
         club.id,
         creator.id,
       ]),
-    ).resolves.toMatchObject({ rows: [{ role: "owner" }] });
+    ).resolves.toMatchObject({ rows: [{ role: "manager" }] });
   });
 
   it("lets the linked creator withdraw and restore consent without removing manager access", async () => {
@@ -393,7 +437,7 @@ describe("PlayerStore", () => {
         firstName: null,
         lastName: null,
         email: null,
-        clubManager: true,
+        clubAccess: "manager",
       },
       club.id,
       creator.id,
@@ -405,13 +449,13 @@ describe("PlayerStore", () => {
       firstName: null,
       lastName: null,
       email: null,
-      clubManager: true,
+      clubAccess: "manager",
       managerLocked: true,
     });
     await expect(
       pool.query(
-        `SELECT player.user_id, player.is_club_manager, membership.role,
-                membership.manager_player_id
+        `SELECT player.user_id, player.club_access, membership.role,
+                membership.access_player_id
            FROM players AS player
            JOIN club_memberships AS membership
              ON membership.club_id = player.club_id
@@ -423,9 +467,9 @@ describe("PlayerStore", () => {
       rows: [
         {
           user_id: creator.id,
-          is_club_manager: true,
-          role: "owner",
-          manager_player_id: null,
+          club_access: "manager",
+          role: "manager",
+          access_player_id: null,
         },
       ],
     });
@@ -438,7 +482,7 @@ describe("PlayerStore", () => {
         firstName: "Club",
         lastName: "Creator",
         email: creator.email,
-        clubManager: true,
+        clubAccess: "manager",
       },
       club.id,
       creator.id,
@@ -449,7 +493,7 @@ describe("PlayerStore", () => {
       firstName: "Club",
       lastName: "Creator",
       email: creator.email,
-      clubManager: true,
+      clubAccess: "manager",
       managerLocked: true,
     });
   });
@@ -460,7 +504,7 @@ describe("PlayerStore", () => {
 
     await expect(store.delete(owner.id, club.id)).resolves.toBe("manager_locked");
     await expect(store.get(owner.id, club.id)).resolves.toMatchObject({
-      clubManager: true,
+      clubAccess: "manager",
       managerLocked: true,
     });
     await expect(
@@ -468,7 +512,7 @@ describe("PlayerStore", () => {
         club.id,
         creator.id,
       ]),
-    ).resolves.toMatchObject({ rows: [{ role: "owner" }] });
+    ).resolves.toMatchObject({ rows: [{ role: "manager" }] });
   });
 
   it("keeps an unknown manager pending without granting membership", async () => {
@@ -482,12 +526,12 @@ describe("PlayerStore", () => {
         firstName: "Pending",
         lastName: "Manager",
         email,
-        clubManager: true,
+        clubAccess: "manager",
       },
       club.id,
     );
 
-    expect(player).toMatchObject({ clubManager: true, managerLocked: false, email });
+    expect(player).toMatchObject({ clubAccess: "manager", managerLocked: false, email });
     await expect(
       pool.query("SELECT user_id FROM players WHERE id = $1 AND club_id = $2", [
         player.id,
@@ -506,7 +550,7 @@ describe("PlayerStore", () => {
         firstName: "Pending",
         lastName: "Manager",
         email: `unknown-${randomUUID()}@example.test`,
-        clubManager: true,
+        clubAccess: "manager",
       },
       club.id,
     );
@@ -519,14 +563,14 @@ describe("PlayerStore", () => {
         firstName: "Relinked",
         lastName: "Manager",
         email: manager.email,
-        clubManager: true,
+        clubAccess: "manager",
       },
       club.id,
       creator.id,
     );
 
     expect(updated).toMatchObject({
-      clubManager: true,
+      clubAccess: "manager",
       managerLocked: false,
       email: manager.email,
     });
@@ -540,7 +584,7 @@ describe("PlayerStore", () => {
           WHERE player.id = $1 AND player.club_id = $2`,
         [player.id, club.id],
       ),
-    ).resolves.toMatchObject({ rows: [{ user_id: manager.id, role: "editor" }] });
+    ).resolves.toMatchObject({ rows: [{ user_id: manager.id, role: "manager" }] });
   });
 
   it("demotes a non-creator manager without affecting its other-club access", async () => {
@@ -553,7 +597,7 @@ describe("PlayerStore", () => {
       firstName: "Tenant",
       lastName: "Manager",
       email: manager.email,
-      clubManager: true,
+      clubAccess: "manager" as const,
     };
     const firstPlayer = await store.create(input, first.club.id);
     const secondPlayer = await store.create(
@@ -563,12 +607,12 @@ describe("PlayerStore", () => {
 
     const demoted = await store.update(
       firstPlayer.id,
-      { ...input, nickname: firstPlayer.nickname, clubManager: false },
+      { ...input, nickname: firstPlayer.nickname, clubAccess: "none" },
       first.club.id,
       first.creator.id,
     );
 
-    expect(demoted).toMatchObject({ clubManager: false, managerLocked: false });
+    expect(demoted).toMatchObject({ clubAccess: "none", managerLocked: false });
     await expect(
       pool.query(
         `SELECT player.club_id, player.user_id, membership.role
@@ -583,7 +627,7 @@ describe("PlayerStore", () => {
     ).resolves.toMatchObject({
       rows: expect.arrayContaining([
         { club_id: first.club.id, user_id: null, role: null },
-        { club_id: second.club.id, user_id: manager.id, role: "editor" },
+        { club_id: second.club.id, user_id: manager.id, role: "manager" },
       ]),
     });
   });

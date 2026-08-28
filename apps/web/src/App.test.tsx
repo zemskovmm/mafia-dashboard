@@ -82,7 +82,7 @@ const testClub: Club = {
   headerLogo: null,
   cardLogo: null,
   language: "en",
-  role: "owner",
+  role: "manager",
   createdAt: "2026-08-21T00:00:00.000Z",
   updatedAt: "2026-08-21T00:00:00.000Z",
 };
@@ -509,7 +509,7 @@ const player = (nickname: string, id: string): PlayerProfile => ({
   id,
   nickname,
   consent: false,
-  clubManager: false,
+  clubAccess: "none",
   managerLocked: false,
   firstName: null,
   lastName: null,
@@ -809,6 +809,39 @@ describe("club welcome", () => {
     expect(window.sessionStorage.getItem("mafia-dashboard.game-session.v4.other-club")).toBeNull();
     expect(window.sessionStorage.getItem("unrelated")).toBe("keep");
     expect(await screen.findByRole("link", { name: "Continue with Google" })).toBeInTheDocument();
+  });
+});
+
+describe("workspace role authorization", () => {
+  it("keeps regular users in the game workflow without manager, music, timeline, or Dev controls", async () => {
+    const user = userEvent.setup();
+    render(
+      <ClubWorkspace
+        club={{ ...testClub, role: "user" }}
+        onExit={vi.fn()}
+        onEditClub={vi.fn()}
+        onDeleteClub={vi.fn().mockResolvedValue(undefined)}
+      />,
+    );
+
+    const manage = await screen.findByRole("button", { name: "Open Manage menu" });
+    expect(screen.queryByRole("button", { name: "Open game log" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Open Developer menu" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Select available players" }));
+    expect(
+      within(screen.getByRole("main")).getByRole("heading", { name: "Available players" }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Close available players" }));
+    expect(musicPlayerHarness.mounts).toBe(0);
+
+    await user.click(manage);
+    expect(screen.getByRole("button", { name: "Start new game" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Active games" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Players screen" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Music player setup" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit club" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete club" })).toBeNull();
+    expect(screen.queryByLabelText("Glass color")).toBeNull();
   });
 });
 

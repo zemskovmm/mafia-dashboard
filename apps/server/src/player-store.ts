@@ -26,14 +26,16 @@ export class OwnerProfileForbiddenError extends Error {
   }
 }
 
-export class ManagerConsentRequiredError extends Error {
-  public readonly code = "manager_consent_required";
+export class ClubAccessConsentRequiredError extends Error {
+  public readonly code = "club_access_consent_required";
 
   public constructor() {
-    super("Club managers require consent unless they are the linked club creator");
-    this.name = "ManagerConsentRequiredError";
+    super("Club access requires consent unless this is the linked club creator");
+    this.name = "ClubAccessConsentRequiredError";
   }
 }
+
+export type PlayerClubAccess = "none" | "user" | "manager";
 
 export interface PlayerProfileInput {
   readonly nickname: string;
@@ -41,7 +43,7 @@ export interface PlayerProfileInput {
   readonly firstName: string | null;
   readonly lastName: string | null;
   readonly email: string | null;
-  readonly clubManager?: boolean;
+  readonly clubAccess?: PlayerClubAccess;
 }
 
 interface PlayerStatistics {
@@ -64,9 +66,9 @@ interface PlayerStatistics {
   readonly bestMoveMafiaHits: number;
 }
 
-export interface PlayerProfile extends Omit<PlayerProfileInput, "clubManager"> {
+export interface PlayerProfile extends Omit<PlayerProfileInput, "clubAccess"> {
   readonly id: string;
-  readonly clubManager: boolean;
+  readonly clubAccess: PlayerClubAccess;
   readonly managerLocked: boolean;
   readonly consentAt: Date | null;
   readonly createdAt: Date;
@@ -99,7 +101,7 @@ interface PlayerRow {
   first_name: string | null;
   last_name: string | null;
   email: string | null;
-  is_club_manager: boolean;
+  club_access: PlayerClubAccess;
   manager_locked: boolean;
   data_processing_consent: boolean;
   consent_at: Date | null;
@@ -131,7 +133,7 @@ const mapPlayer = (row: PlayerRow): PlayerProfile => ({
   firstName: row.first_name,
   lastName: row.last_name,
   email: row.email,
-  clubManager: row.is_club_manager,
+  clubAccess: row.club_access,
   managerLocked: row.manager_locked,
   consentAt: row.consent_at,
   createdAt: row.created_at,
@@ -160,8 +162,8 @@ const mapPlayer = (row: PlayerRow): PlayerProfile => ({
 
 const profileSelect = `
   SELECT p.id, p.nickname, p.first_name, p.last_name, p.email,
-         p.is_club_manager,
-         (p.is_club_manager AND EXISTS (
+         p.club_access,
+         (p.club_access = 'manager' AND EXISTS (
             SELECT 1 FROM clubs AS club
              WHERE club.id = p.club_id AND club.created_by = p.user_id
           )) AS manager_locked,
@@ -220,12 +222,12 @@ export class PlayerStore {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const clubManager = input.clubManager ?? false;
-      if (clubManager && !input.consent) {
-        throw new ManagerConsentRequiredError();
+      const clubAccess = input.clubAccess ?? "none";
+      if (clubAccess !== "none" && !input.consent) {
+        throw new ClubAccessConsentRequiredError();
       }
       const linkedUser =
-        clubManager && input.email !== null
+        clubAccess !== "none" && input.email !== null
           ? (
               await client.query<{ id: string }>(
                 `SELECT id FROM users
@@ -239,7 +241,7 @@ export class PlayerStore {
       await client.query(
         `INSERT INTO players
            (id, club_id, nickname, first_name, last_name, email, data_processing_consent,
-            consent_at, is_club_manager, user_id)
+            consent_at, club_access, user_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7, CASE WHEN $7 THEN NOW() ELSE NULL END, $8, $9)`,
         [
           id,
@@ -249,16 +251,18 @@ export class PlayerStore {
           input.lastName,
           input.email,
           input.consent,
-          clubManager,
+          clubAccess,
           linkedUser?.id ?? null,
         ],
       );
       if (linkedUser !== undefined) {
         await client.query(
-          `INSERT INTO club_memberships (club_id, user_id, role, manager_player_id)
-           VALUES ($1, $2, 'editor', $3)
-           ON CONFLICT (club_id, user_id) DO NOTHING`,
-          [clubId, linkedUser.id, id],
+          `INSERT INTO club_memberships (club_id, user_id, role, access_player_id)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (club_id, user_id) DO UPDATE
+             SET role = EXCLUDED.role
+           WHERE club_memberships.access_player_id = EXCLUDED.access_player_id`,
+          [clubId, linkedUser.id, clubAccess, id],
         );
       }
       await client.query("COMMIT");
@@ -285,12 +289,12 @@ export class PlayerStore {
       const existing = (
         await client.query<{
           user_id: string | null;
-          is_club_manager: boolean;
+          club_access: PlayerClubAccess;
           manager_locked: boolean;
         }>(
           `SELECT player.user_id,
-                  player.is_club_manager,
-                  (player.is_club_manager AND player.user_id = club.created_by) AS manager_locked
+                  player.club_access,
+                  (player.club_access = 'manager' AND player.user_id = club.created_by) AS manager_locked
              FROM players AS player
              JOIN clubs AS club ON club.id = player.club_id
             WHERE player.id = $1 AND player.club_id = $2
@@ -303,18 +307,18 @@ export class PlayerStore {
         return null;
       }
 
-      const clubManager = input.clubManager ?? false;
+      const clubAccess = input.clubAccess ?? "none";
       if (existing.manager_locked && existing.user_id !== actorUserId) {
         throw new OwnerProfileForbiddenError();
       }
-      if (existing.manager_locked && !clubManager) {
+      if (existing.manager_locked && clubAccess !== "manager") {
         throw new ManagerLockedError();
       }
-      if (clubManager && !input.consent && !existing.manager_locked) {
-        throw new ManagerConsentRequiredError();
+      if (clubAccess !== "none" && !input.consent && !existing.manager_locked) {
+        throw new ClubAccessConsentRequiredError();
       }
       const linkedUser =
-        clubManager && input.email !== null
+        clubAccess !== "none" && input.email !== null
           ? (
               await client.query<{ id: string }>(
                 `SELECT id FROM users
@@ -330,7 +334,7 @@ export class PlayerStore {
       if (existing.user_id !== null && existing.user_id !== linkedUserId) {
         await client.query(
           `DELETE FROM club_memberships
-            WHERE club_id = $1 AND role = 'editor' AND manager_player_id = $2`,
+            WHERE club_id = $1 AND access_player_id = $2`,
           [clubId, id],
         );
       }
@@ -345,7 +349,7 @@ export class PlayerStore {
                   WHEN $6 THEN COALESCE(consent_at, NOW())
                   ELSE NULL
                 END,
-                is_club_manager = $7,
+                club_access = $7,
                 user_id = $8,
                 updated_at = NOW()
           WHERE id = $1 AND club_id = $9`,
@@ -356,7 +360,7 @@ export class PlayerStore {
           input.lastName,
           input.email,
           input.consent,
-          clubManager,
+          clubAccess,
           linkedUserId,
           clubId,
         ],
@@ -364,10 +368,12 @@ export class PlayerStore {
 
       if (linkedUserId !== null) {
         await client.query(
-          `INSERT INTO club_memberships (club_id, user_id, role, manager_player_id)
-           VALUES ($1, $2, 'editor', $3)
-           ON CONFLICT (club_id, user_id) DO NOTHING`,
-          [clubId, linkedUserId, id],
+          `INSERT INTO club_memberships (club_id, user_id, role, access_player_id)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (club_id, user_id) DO UPDATE
+             SET role = EXCLUDED.role
+           WHERE club_memberships.access_player_id = EXCLUDED.access_player_id`,
+          [clubId, linkedUserId, clubAccess, id],
         );
       }
       await client.query("COMMIT");
@@ -402,7 +408,7 @@ export class PlayerStore {
       const playerAccess = (
         await client.query<{ user_id: string | null; manager_locked: boolean }>(
           `SELECT player.user_id,
-                  (player.is_club_manager AND player.user_id = club.created_by) AS manager_locked
+                  (player.club_access = 'manager' AND player.user_id = club.created_by) AS manager_locked
              FROM players AS player
              JOIN clubs AS club ON club.id = player.club_id
             WHERE player.id = $1 AND player.club_id = $2`,
@@ -473,7 +479,7 @@ export class PlayerStore {
       if (linkedUserId !== null) {
         await client.query(
           `DELETE FROM club_memberships
-            WHERE club_id = $1 AND role = 'editor' AND manager_player_id = $2`,
+            WHERE club_id = $1 AND access_player_id = $2`,
           [clubId, id],
         );
       }

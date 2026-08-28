@@ -394,8 +394,8 @@ A relational database fits the domain because games have strongly related, audit
 Current persisted entities:
 
 - `users` and hashed-token `user_sessions`;
-- `clubs` and `club_memberships` for owner/editor access;
-- `players`, including optional manager linkage;
+- `clubs` and `club_memberships` for manager/user access;
+- `players`, including explicit pending/effective club access and optional membership provenance;
 - `game_sessions`, containing revisioned setup metadata, the immutable initial game baseline, active/reset heads, and session status;
 - `game_events`, the authoritative parent-linked semantic event graph whose inactive branches are retained when the active head moves;
 - `game_session_mutations` for revisioned idempotent request handling;

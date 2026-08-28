@@ -4,6 +4,7 @@ import type { AppUser } from "./google-auth.js";
 
 export const DEFAULT_CLUB_ID = "00000000-0000-4000-8000-000000000101";
 export type ClubLanguage = "en" | "ru";
+export type ClubRole = "manager" | "user";
 
 interface ClubDetails {
   readonly name: string;
@@ -19,7 +20,7 @@ export interface ClubInput extends ClubDetails {
 
 export interface Club extends ClubDetails {
   readonly id: string;
-  readonly role: "owner" | "editor";
+  readonly role: ClubRole;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }
@@ -31,7 +32,7 @@ interface ClubRow {
   header_logo: string | null;
   card_logo: string | null;
   language_code: ClubLanguage;
-  role: "owner" | "editor";
+  role: ClubRole;
   created_at: Date;
   updated_at: Date;
 }
@@ -72,11 +73,15 @@ export class ClubStore {
   }
 
   public async isMember(userId: string, clubId: string): Promise<boolean> {
-    const result = await this.pool.query(
-      "SELECT 1 FROM club_memberships WHERE user_id = $1 AND club_id = $2",
+    return (await this.getRole(userId, clubId)) !== null;
+  }
+
+  public async getRole(userId: string, clubId: string): Promise<ClubRole | null> {
+    const result = await this.pool.query<{ role: ClubRole }>(
+      "SELECT role FROM club_memberships WHERE user_id = $1 AND club_id = $2",
       [userId, clubId],
     );
-    return result.rowCount !== 0;
+    return result.rows[0]?.role ?? null;
   }
 
   public async create(userOrId: AppUser | string, input: ClubInput): Promise<Club> {
@@ -117,15 +122,15 @@ export class ClubStore {
       );
       await client.query(
         `INSERT INTO club_memberships (club_id, user_id, role)
-         VALUES ($1, $2, 'owner')`,
+         VALUES ($1, $2, 'manager')`,
         [clubId, userId],
       );
       const [firstName, lastName] = splitDisplayName(user.name);
       await client.query(
         `INSERT INTO players
            (id, club_id, nickname, first_name, last_name, email,
-            data_processing_consent, consent_at, is_club_manager, user_id)
-         VALUES ($1, $2, 'Owner', $3, $4, $5, TRUE, NOW(), TRUE, $6)`,
+            data_processing_consent, consent_at, club_access, user_id)
+         VALUES ($1, $2, 'Owner', $3, $4, $5, TRUE, NOW(), 'manager', $6)`,
         [randomUUID(), clubId, firstName, lastName, user.email, userId],
       );
       const result = await client.query<ClubRow>(
@@ -146,18 +151,19 @@ export class ClubStore {
     }
   }
 
-  public async claimManagerClubs(userId: string, verifiedEmail: string): Promise<void> {
+  public async claimClubAccess(userId: string, verifiedEmail: string): Promise<void> {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
       const matching = await client.query<{
         id: string;
         club_id: string;
+        club_access: ClubRole;
         user_id: string | null;
       }>(
-        `SELECT id, club_id, user_id
+        `SELECT id, club_id, club_access, user_id
            FROM players
-          WHERE is_club_manager
+          WHERE club_access <> 'none'
             AND LOWER(BTRIM(email)) = LOWER(BTRIM($1))
           ORDER BY club_id, id
           FOR UPDATE`,
@@ -172,10 +178,12 @@ export class ClubStore {
           );
         }
         await client.query(
-          `INSERT INTO club_memberships (club_id, user_id, role, manager_player_id)
-           VALUES ($1, $2, 'editor', $3)
-           ON CONFLICT (club_id, user_id) DO NOTHING`,
-          [player.club_id, userId, player.id],
+          `INSERT INTO club_memberships (club_id, user_id, role, access_player_id)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (club_id, user_id) DO UPDATE
+             SET role = EXCLUDED.role
+           WHERE club_memberships.access_player_id = EXCLUDED.access_player_id`,
+          [player.club_id, userId, player.club_access, player.id],
         );
       }
       await client.query("COMMIT");
@@ -196,7 +204,7 @@ export class ClubStore {
       `WITH editable AS (
          SELECT club_id, role
            FROM club_memberships
-          WHERE user_id = $1 AND club_id = $2 AND role IN ('owner', 'editor')
+          WHERE user_id = $1 AND club_id = $2 AND role = 'manager'
        ), updated AS (
          UPDATE clubs AS club
             SET name = $3, city = $4, header_logo = $5, card_logo = $6,
@@ -229,7 +237,7 @@ export class ClubStore {
       const owned = await client.query(
         `SELECT 1
            FROM club_memberships
-          WHERE user_id = $1 AND club_id = $2 AND role = 'owner'
+          WHERE user_id = $1 AND club_id = $2 AND role = 'manager'
           FOR UPDATE`,
         [userId, clubId],
       );

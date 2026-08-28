@@ -61,11 +61,24 @@ END $$;
 CREATE TABLE IF NOT EXISTS club_memberships (
   club_id UUID NOT NULL REFERENCES clubs (id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
-  role TEXT NOT NULL CHECK (role IN ('owner', 'editor')),
-  manager_player_id UUID NULL,
+  role TEXT NOT NULL,
+  access_player_id UUID NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT club_memberships_role_ck CHECK (role IN ('manager', 'user')),
   PRIMARY KEY (club_id, user_id)
 );
+
+ALTER TABLE club_memberships
+  DROP CONSTRAINT IF EXISTS club_memberships_manager_role_ck;
+ALTER TABLE club_memberships
+  DROP CONSTRAINT IF EXISTS club_memberships_role_check;
+ALTER TABLE club_memberships
+  DROP CONSTRAINT IF EXISTS club_memberships_role_ck;
+UPDATE club_memberships
+   SET role = 'manager'
+ WHERE role IN ('owner', 'editor');
+ALTER TABLE club_memberships
+  ADD CONSTRAINT club_memberships_role_ck CHECK (role IN ('manager', 'user'));
 
 CREATE TABLE IF NOT EXISTS deleted_clubs (
   club_id UUID PRIMARY KEY,
@@ -92,7 +105,7 @@ INSERT INTO club_memberships (club_id, user_id, role)
 SELECT
   '00000000-0000-4000-8000-000000000101',
   '00000000-0000-4000-8000-000000000001',
-  'owner'
+  'manager'
 WHERE EXISTS (
   SELECT 1 FROM clubs
    WHERE id = '00000000-0000-4000-8000-000000000101'
@@ -552,7 +565,7 @@ CREATE TABLE IF NOT EXISTS players (
   email TEXT NULL,
   data_processing_consent BOOLEAN NOT NULL DEFAULT FALSE,
   consent_at TIMESTAMPTZ NULL,
-  is_club_manager BOOLEAN NOT NULL DEFAULT FALSE,
+  club_access TEXT NOT NULL DEFAULT 'none',
   user_id UUID NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -578,16 +591,31 @@ CREATE TABLE IF NOT EXISTS players (
     )
   ),
   CONSTRAINT players_user_fk FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE SET NULL,
-  CONSTRAINT players_manager_requires_consent_ck CHECK (
-    NOT is_club_manager
+  CONSTRAINT players_access_requires_consent_ck CHECK (
+    club_access = 'none'
     OR data_processing_consent
     OR user_id IS NOT NULL
-  )
+  ),
+  CONSTRAINT players_club_access_ck CHECK (club_access IN ('none', 'user', 'manager'))
 );
 
 ALTER TABLE players ADD COLUMN IF NOT EXISTS club_id UUID;
-ALTER TABLE players ADD COLUMN IF NOT EXISTS is_club_manager BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE players ADD COLUMN IF NOT EXISTS club_access TEXT NOT NULL DEFAULT 'none';
 ALTER TABLE players ADD COLUMN IF NOT EXISTS user_id UUID NULL;
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM information_schema.columns
+     WHERE table_schema = current_schema()
+       AND table_name = 'players'
+       AND column_name = 'is_club_manager'
+  ) THEN
+    UPDATE players
+       SET club_access = 'manager'
+     WHERE is_club_manager;
+  END IF;
+END $$;
 UPDATE players
    SET club_id = '00000000-0000-4000-8000-000000000101'
  WHERE club_id IS NULL;
@@ -606,60 +634,79 @@ BEGIN
   END IF;
 END $$;
 
+DROP INDEX IF EXISTS players_club_manager_email_unique_idx;
 ALTER TABLE players DROP CONSTRAINT IF EXISTS players_manager_requires_consent_ck;
+ALTER TABLE players DROP CONSTRAINT IF EXISTS players_access_requires_consent_ck;
 ALTER TABLE players
-  ADD CONSTRAINT players_manager_requires_consent_ck CHECK (
-    NOT is_club_manager
+  ADD CONSTRAINT players_access_requires_consent_ck CHECK (
+    club_access = 'none'
     OR data_processing_consent
     OR user_id IS NOT NULL
   );
+ALTER TABLE players DROP CONSTRAINT IF EXISTS players_club_access_ck;
+ALTER TABLE players
+  ADD CONSTRAINT players_club_access_ck CHECK (club_access IN ('none', 'user', 'manager'));
+ALTER TABLE players DROP COLUMN IF EXISTS is_club_manager;
 
-ALTER TABLE club_memberships ADD COLUMN IF NOT EXISTS manager_player_id UUID NULL;
+ALTER TABLE club_memberships ADD COLUMN IF NOT EXISTS access_player_id UUID NULL;
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM information_schema.columns
+     WHERE table_schema = current_schema()
+       AND table_name = 'club_memberships'
+       AND column_name = 'manager_player_id'
+  ) THEN
+    UPDATE club_memberships
+       SET access_player_id = manager_player_id
+     WHERE access_player_id IS NULL;
+  END IF;
+END $$;
 DO $$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
      WHERE conrelid = 'players'::regclass
-       AND conname = 'players_manager_provenance_unique'
+       AND conname = 'players_access_provenance_unique'
   ) THEN
     ALTER TABLE players
-      ADD CONSTRAINT players_manager_provenance_unique UNIQUE (id, club_id, user_id);
+      ADD CONSTRAINT players_access_provenance_unique UNIQUE (id, club_id, user_id);
   END IF;
 END $$;
 
 ALTER TABLE club_memberships
   DROP CONSTRAINT IF EXISTS club_memberships_manager_player_fk;
+ALTER TABLE club_memberships
+  DROP CONSTRAINT IF EXISTS club_memberships_access_player_fk;
+ALTER TABLE players
+  DROP CONSTRAINT IF EXISTS players_manager_provenance_unique;
 UPDATE club_memberships AS membership
-   SET manager_player_id = NULL
- WHERE membership.manager_player_id IS NOT NULL
+   SET access_player_id = NULL
+ WHERE membership.access_player_id IS NOT NULL
    AND NOT EXISTS (
      SELECT 1
        FROM players AS player
-      WHERE player.id = membership.manager_player_id
+      WHERE player.id = membership.access_player_id
         AND player.club_id = membership.club_id
         AND player.user_id = membership.user_id
    );
+UPDATE players AS player
+   SET club_access = membership.role
+  FROM club_memberships AS membership
+ WHERE membership.access_player_id = player.id
+   AND membership.club_id = player.club_id
+   AND membership.user_id = player.user_id;
 ALTER TABLE club_memberships
-  ADD CONSTRAINT club_memberships_manager_player_fk
-  FOREIGN KEY (manager_player_id, club_id, user_id)
+  ADD CONSTRAINT club_memberships_access_player_fk
+  FOREIGN KEY (access_player_id, club_id, user_id)
   REFERENCES players (id, club_id, user_id)
   ON DELETE CASCADE;
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'club_memberships'::regclass
-       AND conname = 'club_memberships_manager_role_ck'
-  ) THEN
-    ALTER TABLE club_memberships
-      ADD CONSTRAINT club_memberships_manager_role_ck CHECK (
-        manager_player_id IS NULL OR role = 'editor'
-      );
-  END IF;
-END $$;
-CREATE UNIQUE INDEX IF NOT EXISTS club_memberships_manager_player_unique_idx
-  ON club_memberships (manager_player_id)
-  WHERE manager_player_id IS NOT NULL;
+DROP INDEX IF EXISTS club_memberships_manager_player_unique_idx;
+CREATE UNIQUE INDEX IF NOT EXISTS club_memberships_access_player_unique_idx
+  ON club_memberships (access_player_id)
+  WHERE access_player_id IS NOT NULL;
+ALTER TABLE club_memberships DROP COLUMN IF EXISTS manager_player_id;
 
 WITH creator_matches AS MATERIALIZED (
   SELECT DISTINCT ON (club.id)
@@ -677,7 +724,7 @@ WITH creator_matches AS MATERIALIZED (
      SELECT 1
        FROM players AS existing_manager
       WHERE existing_manager.club_id = club.id
-        AND existing_manager.is_club_manager
+        AND existing_manager.club_access = 'manager'
         AND existing_manager.user_id = club.created_by
    )
    ORDER BY club.id,
@@ -686,7 +733,7 @@ WITH creator_matches AS MATERIALIZED (
             player.id
 )
 UPDATE players AS player
-   SET is_club_manager = TRUE,
+   SET club_access = 'manager',
        user_id = creator.user_id
   FROM creator_matches AS creator
  WHERE player.id = creator.player_id;
@@ -700,7 +747,7 @@ INSERT INTO players (
   email,
   data_processing_consent,
   consent_at,
-  is_club_manager,
+  club_access,
   user_id,
   created_at,
   updated_at
@@ -720,7 +767,7 @@ SELECT
   NULL,
   FALSE,
   NULL,
-  TRUE,
+  'manager',
   club.created_by,
   club.created_at,
   club.created_at
@@ -753,16 +800,16 @@ WHERE NOT EXISTS (
   SELECT 1
     FROM players AS manager
    WHERE manager.club_id = club.id
-     AND manager.is_club_manager
+     AND manager.club_access = 'manager'
      AND manager.user_id = club.created_by
 )
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO club_memberships (club_id, user_id, role, created_at)
-SELECT club.id, club.created_by, 'owner', club.created_at
+SELECT club.id, club.created_by, 'manager', club.created_at
   FROM clubs AS club
 ON CONFLICT (club_id, user_id) DO UPDATE
-  SET role = 'owner', manager_player_id = NULL;
+  SET role = 'manager', access_player_id = NULL;
 
 DROP INDEX IF EXISTS players_nickname_unique_idx;
 DO $$
@@ -780,9 +827,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS players_club_nickname_unique_idx
   ON players (club_id, LOWER(BTRIM(nickname)));
 CREATE INDEX IF NOT EXISTS players_club_last_played_nickname_idx
   ON players (club_id, last_played_at DESC, nickname);
-CREATE UNIQUE INDEX IF NOT EXISTS players_club_manager_email_unique_idx
+CREATE UNIQUE INDEX IF NOT EXISTS players_club_access_email_unique_idx
   ON players (club_id, LOWER(BTRIM(email)))
-  WHERE is_club_manager;
+  WHERE club_access <> 'none';
 CREATE UNIQUE INDEX IF NOT EXISTS players_club_linked_user_unique_idx
   ON players (club_id, user_id)
   WHERE user_id IS NOT NULL;

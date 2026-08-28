@@ -193,7 +193,7 @@ describe("server API", () => {
           nickname: "Owner",
           consent: true,
           email: authenticatedUser.email,
-          clubManager: true,
+          clubAccess: "manager",
           managerLocked: true,
         }),
       ]),
@@ -278,12 +278,12 @@ describe("server API", () => {
     ).toMatchObject({ rows: [{ players: 0, sessions: 0, events: 0 }] });
   });
 
-  it("lets an editor update only a club they belong to, including its language", async () => {
+  it("lets regular users run games while server-blocking manager-only mutations", async () => {
     const created = await app.inject({
       method: "POST",
       url: "/api/clubs",
       payload: {
-        name: `Editor language ${randomUUID().slice(0, 8)}`,
+        name: `User authorization ${randomUUID().slice(0, 8)}`,
         city: "Málaga",
         headerLogo: null,
         cardLogo: null,
@@ -292,23 +292,23 @@ describe("server API", () => {
       },
     });
     const club = created.json().club as { id: string; name: string; city: string };
-    const editor: AppUser = {
+    const regularUser: AppUser = {
       id: randomUUID(),
-      email: `language-editor-${randomUUID()}@example.test`,
-      name: "Language Editor",
+      email: `regular-user-${randomUUID()}@example.test`,
+      name: "Regular User",
       picture: null,
     };
     await pool.query(
       "INSERT INTO users (id, email, display_name, picture) VALUES ($1, $2, $3, $4)",
-      [editor.id, editor.email, editor.name, editor.picture],
+      [regularUser.id, regularUser.email, regularUser.name, regularUser.picture],
     );
     await pool.query(
-      "INSERT INTO club_memberships (club_id, user_id, role) VALUES ($1, $2, 'editor')",
-      [club.id, editor.id],
+      "INSERT INTO club_memberships (club_id, user_id, role) VALUES ($1, $2, 'user')",
+      [club.id, regularUser.id],
     );
-    const editorApp = await buildApp({
+    const userApp = await buildApp({
       pool,
-      authenticateRequest: async () => editor,
+      authenticateRequest: async () => regularUser,
       defaultClubId: DEFAULT_CLUB_ID,
     });
     const outsiderApp = await buildApp({
@@ -321,7 +321,7 @@ describe("server API", () => {
       }),
       defaultClubId: DEFAULT_CLUB_ID,
     });
-    await editorApp.ready();
+    await userApp.ready();
     await outsiderApp.ready();
     const payload = {
       name: club.name,
@@ -331,18 +331,90 @@ describe("server API", () => {
       language: "ru",
     };
 
-    const updated = await editorApp.inject({
+    const headers = { "x-club-id": club.id };
+    const updated = await userApp.inject({
       method: "PUT",
       url: `/api/clubs/${club.id}`,
       payload,
     });
-    expect(updated.statusCode).toBe(200);
-    expect(updated.json().club).toMatchObject({ id: club.id, language: "ru", role: "editor" });
+    expect(updated.statusCode).toBe(403);
+    expect(updated.json()).toEqual({ error: "club_manager_required" });
+    await expect(
+      userApp.inject({ method: "GET", url: "/api/players", headers }),
+    ).resolves.toHaveProperty("statusCode", 200);
+    await expect(
+      userApp.inject({
+        method: "POST",
+        url: "/api/players",
+        headers,
+        payload: {
+          nickname: `Denied ${randomUUID().slice(0, 8)}`,
+          consent: false,
+          clubAccess: "none",
+          firstName: null,
+          lastName: null,
+          email: null,
+        },
+      }),
+    ).resolves.toHaveProperty("statusCode", 403);
+    const createdGame = await userApp.inject({
+      method: "POST",
+      url: "/api/games",
+      headers,
+      payload: { name: "Regular user game" },
+    });
+    expect(createdGame.statusCode).toBe(201);
+    const gameId = createdGame.json().gameId as string;
+    const userEvents = await userApp.inject({
+      method: "GET",
+      url: `/api/games/${gameId}/events?visibility=host`,
+      headers,
+    });
+    const managerEvents = await app.inject({
+      method: "GET",
+      url: `/api/games/${gameId}/events?visibility=host`,
+      headers,
+    });
+    expect(userEvents.statusCode).toBe(200);
+    expect(userEvents.json()).toEqual(managerEvents.json());
+    const sessionGameId = randomUUID();
+    await expect(
+      userApp.inject({
+        method: "PUT",
+        url: `/api/game-sessions/${sessionGameId}`,
+        headers,
+        payload: {
+          name: "Regular user session",
+          mutationId: randomUUID(),
+          baseRevision: 0,
+          state: {
+            setup: null,
+            game: null,
+            hostPlayerId: null,
+            hostName: null,
+            playlistId: "",
+            log: [],
+            undoHistory: [],
+          },
+          results: null,
+        },
+      }),
+    ).resolves.toHaveProperty("statusCode", 201);
+    await expect(
+      userApp.inject({
+        method: "GET",
+        url: `/api/game-sessions/${sessionGameId}`,
+        headers,
+      }),
+    ).resolves.toHaveProperty("statusCode", 200);
+    await expect(
+      userApp.inject({ method: "DELETE", url: `/api/clubs/${club.id}` }),
+    ).resolves.toHaveProperty("statusCode", 403);
     await expect(
       outsiderApp.inject({ method: "PUT", url: `/api/clubs/${club.id}`, payload }),
-    ).resolves.toHaveProperty("statusCode", 404);
+    ).resolves.toHaveProperty("statusCode", 403);
 
-    await editorApp.close();
+    await userApp.close();
     await outsiderApp.close();
     await expect(
       app.inject({ method: "DELETE", url: `/api/clubs/${club.id}` }),
@@ -540,7 +612,7 @@ describe("server API", () => {
         firstName: null,
         lastName: null,
         email: null,
-        clubManager: true,
+        clubAccess: "manager",
       },
     });
     expect(invalidManagerWithoutConsent.statusCode).toBe(400);
@@ -574,7 +646,7 @@ describe("server API", () => {
     expect(created.json().player).toMatchObject({
       nickname,
       consent: false,
-      clubManager: false,
+      clubAccess: "none",
       managerLocked: false,
       firstName: null,
       lastName: null,
@@ -623,11 +695,11 @@ describe("server API", () => {
         firstName: "API",
         lastName: "Manager",
         email: manager.email.toUpperCase(),
-        clubManager: true,
+        clubAccess: "manager",
       },
     });
     expect(created.statusCode).toBe(201);
-    expect(created.json().player).toMatchObject({ clubManager: true, managerLocked: false });
+    expect(created.json().player).toMatchObject({ clubAccess: "manager", managerLocked: false });
 
     const updated = await app.inject({
       method: "PUT",
@@ -638,14 +710,14 @@ describe("server API", () => {
         firstName: "API",
         lastName: "Manager",
         email: manager.email,
-        clubManager: true,
+        clubAccess: "manager",
       },
     });
     expect(updated.statusCode).toBe(200);
-    expect(updated.json().player).toMatchObject({ clubManager: true, managerLocked: false });
+    expect(updated.json().player).toMatchObject({ clubAccess: "manager", managerLocked: false });
   });
 
-  it("returns manager_consent_required when an unlinked player is promoted without consent", async () => {
+  it("returns club_access_consent_required when an unlinked player is promoted without consent", async () => {
     const created = await app.inject({
       method: "POST",
       url: "/api/players",
@@ -668,22 +740,22 @@ describe("server API", () => {
         firstName: null,
         lastName: null,
         email: null,
-        clubManager: true,
+        clubAccess: "manager",
       },
     });
 
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({ error: "manager_consent_required" });
+    expect(response.json()).toEqual({ error: "club_access_consent_required" });
   });
 
-  it("returns manager_email_conflict separately from nickname conflicts", async () => {
+  it("returns club_access_email_conflict separately from nickname conflicts", async () => {
     const email = `pending-conflict-${randomUUID()}@example.test`;
     const profile = {
       consent: true,
       firstName: "Pending",
       lastName: "Manager",
       email,
-      clubManager: true,
+      clubAccess: "manager",
     };
     const first = await app.inject({
       method: "POST",
@@ -698,7 +770,7 @@ describe("server API", () => {
 
     expect(first.statusCode).toBe(201);
     expect(conflict.statusCode).toBe(409);
-    expect(conflict.json()).toEqual({ error: "manager_email_conflict" });
+    expect(conflict.json()).toEqual({ error: "club_access_email_conflict" });
 
     const updateTarget = await app.inject({
       method: "POST",
@@ -715,7 +787,7 @@ describe("server API", () => {
       payload: { ...profile, nickname: updateTarget.json().player.nickname },
     });
     expect(updateConflict.statusCode).toBe(409);
-    expect(updateConflict.json()).toEqual({ error: "manager_email_conflict" });
+    expect(updateConflict.json()).toEqual({ error: "club_access_email_conflict" });
 
     const linkedUserId = randomUUID();
     const previousEmail = `linked-manager-${randomUUID()}@example.test`;
@@ -746,7 +818,7 @@ describe("server API", () => {
       },
     });
     expect(linkedUserConflict.statusCode).toBe(409);
-    expect(linkedUserConflict.json()).toEqual({ error: "manager_email_conflict" });
+    expect(linkedUserConflict.json()).toEqual({ error: "club_access_email_conflict" });
   });
 
   it("allows the linked creator to withdraw Owner profile consent", async () => {
@@ -784,7 +856,7 @@ describe("server API", () => {
         firstName: null,
         lastName: null,
         email: null,
-        clubManager: true,
+        clubAccess: "manager",
       },
     });
 
@@ -795,7 +867,7 @@ describe("server API", () => {
       firstName: null,
       lastName: null,
       email: null,
-      clubManager: true,
+      clubAccess: "manager",
       managerLocked: true,
     });
     await expect(
@@ -857,7 +929,7 @@ describe("server API", () => {
       [editor.id, editor.email, editor.name, editor.picture],
     );
     await pool.query(
-      "INSERT INTO club_memberships (club_id, user_id, role) VALUES ($1, $2, 'editor')",
+      "INSERT INTO club_memberships (club_id, user_id, role) VALUES ($1, $2, 'manager')",
       [clubId, editor.id],
     );
     const editorApp = await buildApp({
@@ -877,7 +949,7 @@ describe("server API", () => {
           firstName: "Editor",
           lastName: "Rewrite",
           email: editor.email,
-          clubManager: true,
+          clubAccess: "manager",
         },
       });
       const afterAttempt = (
@@ -899,7 +971,7 @@ describe("server API", () => {
           firstName: null,
           lastName: null,
           email: null,
-          clubManager: false,
+          clubAccess: "none",
         },
       });
       const normalNickname = `${normalPlayer.json().player.nickname}-updated`;
@@ -913,7 +985,7 @@ describe("server API", () => {
           firstName: null,
           lastName: null,
           email: null,
-          clubManager: false,
+          clubAccess: "none",
         },
       });
 
@@ -946,7 +1018,7 @@ describe("server API", () => {
         firstName: owner.firstName,
         lastName: owner.lastName,
         email: owner.email,
-        clubManager: false,
+        clubAccess: "none",
       },
     });
     const deletion = await app.inject({
@@ -1279,7 +1351,7 @@ describe("server API", () => {
     await oauthApp.close();
   });
 
-  it("claims an invited manager before completing Google sign-in", async () => {
+  it("claims approved regular-user access before completing Google sign-in", async () => {
     const invitee: AppUser = {
       id: randomUUID(),
       email: `google-invitee-${randomUUID()}@example.test`,
@@ -1309,7 +1381,7 @@ describe("server API", () => {
         firstName: "Google",
         lastName: "Invitee",
         email: invitee.email.toUpperCase(),
-        clubManager: true,
+        clubAccess: "user",
       },
     });
     expect(invitation.statusCode).toBe(201);
@@ -1374,7 +1446,7 @@ describe("server API", () => {
     });
     expect(clubs.statusCode).toBe(200);
     expect(clubs.json().clubs).toEqual(
-      expect.arrayContaining([expect.objectContaining({ id: invitedClubId, role: "editor" })]),
+      expect.arrayContaining([expect.objectContaining({ id: invitedClubId, role: "user" })]),
     );
 
     const signedOut = await authApp.inject({

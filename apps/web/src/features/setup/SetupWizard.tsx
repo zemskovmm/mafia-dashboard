@@ -252,7 +252,7 @@ export const SetupWizard = ({
   onSessionStateChange,
   showDevelopmentTools = false,
   onPopulateDevelopmentPlayers,
-  onOpenAvailablePlayers = () => undefined,
+  onOpenAvailablePlayers,
   privacyHidden = false,
 }: SetupWizardProps) => {
   const { t } = useMessages(gameMessages);
@@ -585,9 +585,11 @@ export const SetupWizard = ({
             role="group"
             aria-label={t("setup.playerSetupActions")}
           >
-            <button type="button" onClick={onOpenAvailablePlayers}>
-              {t("setup.selectAvailable")}
-            </button>
+            {onOpenAvailablePlayers === undefined ? null : (
+              <button type="button" onClick={onOpenAvailablePlayers}>
+                {t("setup.selectAvailable")}
+              </button>
+            )}
             <button
               type="button"
               className="primary-action"

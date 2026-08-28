@@ -24,7 +24,7 @@ import {
   gameSessionMutationSchema,
 } from "./game-session-validation.js";
 import {
-  ManagerConsentRequiredError,
+  ClubAccessConsentRequiredError,
   ManagerLockedError,
   OwnerProfileForbiddenError,
   PlayerStore,
@@ -73,7 +73,7 @@ const createClubBody = clubBody.extend({ ownerConsent: z.literal(true) });
 const noConsentPlayerBody = z.object({
   nickname,
   consent: z.literal(false),
-  clubManager: z.literal(false).default(false),
+  clubAccess: z.literal("none").default("none"),
   firstName: z.null().optional(),
   lastName: z.null().optional(),
   email: z.null().optional(),
@@ -81,7 +81,7 @@ const noConsentPlayerBody = z.object({
 const consentedPlayerBody = z.object({
   nickname,
   consent: z.literal(true),
-  clubManager: z.boolean().default(false),
+  clubAccess: z.enum(["none", "user", "manager"]).default("none"),
   firstName: z.string().trim().min(1).max(100),
   lastName: z.string().trim().min(1).max(100),
   email: z.email().max(254),
@@ -89,7 +89,7 @@ const consentedPlayerBody = z.object({
 const linkedManagerConsentWithdrawalBody = z.object({
   nickname,
   consent: z.literal(false),
-  clubManager: z.literal(true),
+  clubAccess: z.literal("manager"),
   firstName: z.null().optional(),
   lastName: z.null().optional(),
   email: z.null().optional(),
@@ -192,10 +192,10 @@ const isUniqueViolation = (
   typeof error === "object" && error !== null && "code" in error && error.code === "23505";
 
 const playerConflictCode = (error: { readonly constraint?: string }) =>
-  ["players_club_manager_email_unique_idx", "players_club_linked_user_unique_idx"].includes(
+  ["players_club_access_email_unique_idx", "players_club_linked_user_unique_idx"].includes(
     error.constraint ?? "",
   )
-    ? "manager_email_conflict"
+    ? "club_access_email_conflict"
     : "nickname_conflict";
 
 const authStateCookieName = "auth_oauth_state";
@@ -307,7 +307,7 @@ export const buildApp = async ({
     if (user === null) await reply.code(401).send({ error: "authentication_required" });
     return user;
   };
-  const selectedClub = async (
+  const selectedClubContext = async (
     request: FastifyRequest,
     reply: FastifyReply,
     authenticatedUser?: AppUser,
@@ -320,11 +320,30 @@ export const buildApp = async ({
       await reply.code(400).send({ error: "club_required" });
       return null;
     }
-    if (!(await clubStore.isMember(user.id, clubId))) {
+    const role = await clubStore.getRole(user.id, clubId);
+    if (role === null) {
       await reply.code(403).send({ error: "club_access_denied" });
       return null;
     }
-    return clubId;
+    return { clubId, role };
+  };
+  const selectedClub = async (
+    request: FastifyRequest,
+    reply: FastifyReply,
+    authenticatedUser?: AppUser,
+  ) => (await selectedClubContext(request, reply, authenticatedUser))?.clubId ?? null;
+  const selectedManagerClub = async (
+    request: FastifyRequest,
+    reply: FastifyReply,
+    authenticatedUser?: AppUser,
+  ) => {
+    const context = await selectedClubContext(request, reply, authenticatedUser);
+    if (context === null) return null;
+    if (context.role !== "manager") {
+      await reply.code(403).send({ error: "club_manager_required" });
+      return null;
+    }
+    return context.clubId;
   };
 
   app.get("/api/auth/session", async (request) => ({
@@ -362,7 +381,7 @@ export const buildApp = async ({
       return reply.code(400).send({ error: "oauth_state_mismatch" });
     }
     const authorization = await googleAuth.completeAuthorization(query.data.code);
-    await clubStore.claimManagerClubs(authorization.user.id, authorization.user.email);
+    await clubStore.claimClubAccess(authorization.user.id, authorization.user.email);
     return reply
       .header("set-cookie", [
         cookie({
@@ -421,6 +440,9 @@ export const buildApp = async ({
     if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
     const user = await requireUser(request, reply);
     if (user === null) return;
+    const role = await clubStore.getRole(user.id, params.data.clubId);
+    if (role === null) return reply.code(403).send({ error: "club_access_denied" });
+    if (role !== "manager") return reply.code(403).send({ error: "club_manager_required" });
     const club = await clubStore.update(user.id, params.data.clubId, body.data);
     return club === null ? reply.code(404).send({ error: "club_not_found" }) : reply.send({ club });
   });
@@ -430,6 +452,9 @@ export const buildApp = async ({
     if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
     const user = await requireUser(request, reply);
     if (user === null) return;
+    const role = await clubStore.getRole(user.id, params.data.clubId);
+    if (role === null) return reply.code(403).send({ error: "club_access_denied" });
+    if (role !== "manager") return reply.code(403).send({ error: "club_manager_required" });
     return (await clubStore.delete(user.id, params.data.clubId))
       ? reply.code(204).send()
       : reply.code(404).send({ error: "club_not_found" });
@@ -537,7 +562,7 @@ export const buildApp = async ({
   });
 
   app.post("/api/players", async (request, reply) => {
-    const clubId = await selectedClub(request, reply);
+    const clubId = await selectedManagerClub(request, reply);
     if (clubId === null) return;
     const parsed = playerProfileBody.safeParse(request.body);
     if (!parsed.success) {
@@ -555,7 +580,7 @@ export const buildApp = async ({
       );
       return reply.code(201).send({ player });
     } catch (error) {
-      if (error instanceof ManagerConsentRequiredError) {
+      if (error instanceof ClubAccessConsentRequiredError) {
         return reply.code(400).send({ error: error.code });
       }
       if (isUniqueViolation(error)) {
@@ -568,7 +593,7 @@ export const buildApp = async ({
   app.put("/api/players/:playerId", async (request, reply) => {
     const actor = await requireUser(request, reply);
     if (actor === null) return;
-    const clubId = await selectedClub(request, reply, actor);
+    const clubId = await selectedManagerClub(request, reply, actor);
     if (clubId === null) return;
     const params = playerIdParams.safeParse(request.params);
     const body = playerProfileUpdateBody.safeParse(request.body);
@@ -595,7 +620,7 @@ export const buildApp = async ({
       }
       return { player };
     } catch (error) {
-      if (error instanceof ManagerConsentRequiredError) {
+      if (error instanceof ClubAccessConsentRequiredError) {
         return reply.code(400).send({ error: error.code });
       }
       if (error instanceof ManagerLockedError) {
@@ -612,7 +637,7 @@ export const buildApp = async ({
   });
 
   app.delete("/api/players/:playerId", async (request, reply) => {
-    const clubId = await selectedClub(request, reply);
+    const clubId = await selectedManagerClub(request, reply);
     if (clubId === null) return;
     const params = playerIdParams.safeParse(request.params);
     if (!params.success) {

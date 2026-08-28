@@ -374,6 +374,7 @@ export const ClubWorkspace = ({
   readonly onThemeColorChange?: (color: string) => void;
 }) => {
   const { t, formatTime } = useMessages(shellMessages);
+  const isManager = club.role === "manager";
   const storageKey = gameSessionStorageKey(club.id);
   const legacyStorageKey = legacyGameSessionStorageKey(club.id);
   migrateGameSessionStorage(window.sessionStorage, window.localStorage, storageKey);
@@ -635,13 +636,13 @@ export const ClubWorkspace = ({
       if (playerRequestRef.current === request) {
         setPlayers(nextPlayers);
         setPlayersError(false);
-        if (nextPlayers.length < 11) setView("players");
+        if (isManager && nextPlayers.length < 11) setView("players");
       }
     } catch (error) {
       reportError(error, { source: "api", context: "players.list" });
       if (playerRequestRef.current === request) setPlayersError(true);
     }
-  }, [club.id]);
+  }, [club.id, isManager]);
 
   const refreshActiveSessions = useCallback(async () => {
     const request = activeSessionsRequestRef.current + 1;
@@ -1160,7 +1161,7 @@ export const ClubWorkspace = ({
                 number: index + 1,
               }),
               consent: false,
-              clubManager: false,
+              clubAccess: "none",
               firstName: null,
               lastName: null,
               email: null,
@@ -1503,6 +1504,10 @@ export const ClubWorkspace = ({
   const showWorkspaceTools = previewGame === null && (view === "game" || view === "players");
   const togglePrivacy = () => {
     setPrivacyHidden((hidden) => !hidden);
+    if (!isManager) {
+      setPrivacyTapStage(0);
+      return;
+    }
     const sequence = privacyTapsRef.current;
     if (sequence.resetTimer !== null) window.clearTimeout(sequence.resetTimer);
     const count = sequence.count + 1;
@@ -1706,16 +1711,18 @@ export const ClubWorkspace = ({
             {privacyHidden ? <Eye aria-hidden="true" /> : <EyeOff aria-hidden="true" />}
             {canaryBurstKey > 0 ? <CanaryFirework burstKey={canaryBurstKey} /> : null}
           </button>
-          <button
-            type="button"
-            className="log-toolbar-button icon-toolbar-button"
-            aria-label={activeDrawer === "log" ? t("closeGameLog") : t("openGameLog")}
-            aria-expanded={activeDrawer === "log"}
-            onClick={() => setActiveDrawer((drawer) => (drawer === "log" ? null : "log"))}
-          >
-            <ListTree aria-hidden="true" />
-            <span className="toolbar-count">{log.length}</span>
-          </button>
+          {isManager ? (
+            <button
+              type="button"
+              className="log-toolbar-button icon-toolbar-button"
+              aria-label={activeDrawer === "log" ? t("closeGameLog") : t("openGameLog")}
+              aria-expanded={activeDrawer === "log"}
+              onClick={() => setActiveDrawer((drawer) => (drawer === "log" ? null : "log"))}
+            >
+              <ListTree aria-hidden="true" />
+              <span className="toolbar-count">{log.length}</span>
+            </button>
+          ) : null}
           <button
             type="button"
             className="manage-toolbar-button icon-toolbar-button"
@@ -1725,7 +1732,7 @@ export const ClubWorkspace = ({
           >
             <SlidersHorizontal aria-hidden="true" />
           </button>
-          {devUnlocked ? (
+          {isManager && devUnlocked ? (
             <button
               type="button"
               className="dev-toolbar-button icon-toolbar-button"
@@ -1738,7 +1745,7 @@ export const ClubWorkspace = ({
           ) : null}
         </div>
       ) : null}
-      {showWorkspaceTools && activeDrawer === "log" ? (
+      {isManager && showWorkspaceTools && activeDrawer === "log" ? (
         <aside className="app-drawer game-log-drawer" role="dialog" aria-label={t("gameLog")}>
           <h2>{t("log")}</h2>
           <div className="game-log-list">
@@ -1805,63 +1812,67 @@ export const ClubWorkspace = ({
             >
               {t("startNewGame")}
             </button>
-            <button
-              type="button"
-              onClick={() => {
-                setPlayerGateError(null);
-                setAvailabilityScreenOpen(false);
-                setView("players");
-                setActiveDrawer(null);
-              }}
-            >
-              {t("playersScreen")}
-            </button>
-            <button
-              type="button"
-              aria-expanded={musicSetupOpen}
-              aria-controls="manage-music-setup"
-              onClick={() => setMusicSetupOpen((open) => !open)}
-            >
-              {musicSetupOpen ? t("hideMusicPlayerSetup") : t("musicPlayerSetup")}
-            </button>
+            {isManager ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPlayerGateError(null);
+                    setAvailabilityScreenOpen(false);
+                    setView("players");
+                    setActiveDrawer(null);
+                  }}
+                >
+                  {t("playersScreen")}
+                </button>
+                <button
+                  type="button"
+                  aria-expanded={musicSetupOpen}
+                  aria-controls="manage-music-setup"
+                  onClick={() => setMusicSetupOpen((open) => !open)}
+                >
+                  {musicSetupOpen ? t("hideMusicPlayerSetup") : t("musicPlayerSetup")}
+                </button>
+              </>
+            ) : null}
           </div>
-          {musicSetupPanel}
+          {isManager ? musicSetupPanel : null}
           {activeSessionsPanel}
-          <div className="manage-menu-actions manage-club-actions">
-            <button
-              type="button"
-              onClick={() => {
-                setActiveDrawer(null);
-                onEditClub();
-              }}
-            >
-              {t("editClub")}
-            </button>
-            <label className="theme-color-field">
-              <span>{t("glassColor")}</span>
-              <input
-                type="color"
-                aria-label={t("glassColor")}
-                value={themeColor}
-                onChange={(event) => onThemeColorChange(event.currentTarget.value)}
+          {isManager ? (
+            <div className="manage-menu-actions manage-club-actions">
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveDrawer(null);
+                  onEditClub();
+                }}
+              >
+                {t("editClub")}
+              </button>
+              <label className="theme-color-field">
+                <span>{t("glassColor")}</span>
+                <input
+                  type="color"
+                  aria-label={t("glassColor")}
+                  value={themeColor}
+                  onChange={(event) => onThemeColorChange(event.currentTarget.value)}
+                />
+              </label>
+              <LanguageSelector
+                value={club.language}
+                disabled={languageSaving}
+                onChange={(language) => {
+                  setLanguageError(false);
+                  setLanguageSaving(true);
+                  void onLanguageChange(language)
+                    .catch((error: unknown) => {
+                      reportError(error, { source: "api", context: "clubs.language" });
+                      setLanguageError(true);
+                    })
+                    .finally(() => setLanguageSaving(false));
+                }}
               />
-            </label>
-            <LanguageSelector
-              value={club.language}
-              disabled={languageSaving}
-              onChange={(language) => {
-                setLanguageError(false);
-                setLanguageSaving(true);
-                void onLanguageChange(language)
-                  .catch((error: unknown) => {
-                    reportError(error, { source: "api", context: "clubs.language" });
-                    setLanguageError(true);
-                  })
-                  .finally(() => setLanguageSaving(false));
-              }}
-            />
-            {languageError ? <p role="alert">{t("clubLanguageSaveFailed")}</p> : null}
-            {club.role === "owner" ? (
+              {languageError ? <p role="alert">{t("clubLanguageSaveFailed")}</p> : null}
               <button
                 type="button"
                 className="danger-action"
@@ -1872,11 +1883,11 @@ export const ClubWorkspace = ({
               >
                 {t("deleteClub")}
               </button>
-            ) : null}
-          </div>
+            </div>
+          ) : null}
         </aside>
       ) : null}
-      {showWorkspaceTools && activeDrawer === "dev" ? (
+      {isManager && showWorkspaceTools && activeDrawer === "dev" ? (
         <aside className="app-drawer dev-menu-drawer" role="dialog" aria-label={t("developerMenu")}>
           <div className="dev-menu-header">
             <h2>{t("devMenu")}</h2>
@@ -1938,9 +1949,9 @@ export const ClubWorkspace = ({
         </aside>
       ) : null}
 
-      {view === "console" ? (
+      {isManager && view === "console" ? (
         <ErrorConsoleScreen onBack={() => setView(viewBeforeConsoleRef.current)} />
-      ) : view === "timeline" ? (
+      ) : isManager && view === "timeline" ? (
         <GameTimelineScreen
           clubId={club.id}
           onBack={() => setView(viewBeforeTimelineRef.current)}
@@ -1956,7 +1967,7 @@ export const ClubWorkspace = ({
             });
           }}
         />
-      ) : view === "players" ? (
+      ) : isManager && view === "players" ? (
         <>
           {playerGateError !== null ? (
             <p className="player-gate-error" role="alert">
@@ -1988,7 +1999,7 @@ export const ClubWorkspace = ({
           <SetupWizard
             key={setupInstanceKey}
             players={availablePlayersForSetup}
-            showDevelopmentTools={devModeEnabled}
+            showDevelopmentTools={isManager && devModeEnabled}
             onPopulateDevelopmentPlayers={populateDevelopmentPlayers}
             onOpenAvailablePlayers={() => setAvailabilityScreenOpen(true)}
             privacyHidden={privacyHidden}
@@ -2066,50 +2077,52 @@ export const ClubWorkspace = ({
       )}
 
       <LiveSidePanel game={view === "game" ? (previewGame ?? game) : null} hidden={view !== "game"}>
-        <MusicDock
-          expanded={musicPlayerExpanded}
-          onExpandedChange={setMusicPlayerExpanded}
-          hidden={view !== "game"}
-          isPlaying={musicState === "playing"}
-          canFadeIn={musicState === "paused"}
-          onFadeIn={() => {
-            void musicRef.current?.fadeIn();
-          }}
-          onQuickFadeOut={() => {
-            void musicRef.current?.quickFadeOut();
-          }}
-          onSlowFadeOut={() => {
-            void musicRef.current?.slowFadeOut();
-          }}
-        >
-          <YouTubePlaylistPlayer
-            ref={musicRef}
-            playlistId={playlistId}
-            onStateChange={handleMusicState}
+        {isManager ? (
+          <MusicDock
             expanded={musicPlayerExpanded}
-            reloadRequest={musicReloadRequest}
-            rememberedQueueOrder={
-              musicPreferences.lastPlaylistId === playlistId ? musicPreferences.queueOrder : []
-            }
-            onQueueOrderChange={changeQueueOrder}
-            initialStageEntryKeys={
-              musicPreferences.lastPlaylistId === playlistId
-                ? musicPreferences.initialStageEntryKeys
-                : []
-            }
-            onInitialStageEntryKeysChange={(changedPlaylistId, entryKeys) =>
-              changeQueueTags("initialStageEntryKeys", changedPlaylistId, entryKeys)
-            }
-            endgameEntryKeys={
-              musicPreferences.lastPlaylistId === playlistId
-                ? musicPreferences.endgameEntryKeys
-                : []
-            }
-            onEndgameEntryKeysChange={(changedPlaylistId, entryKeys) =>
-              changeQueueTags("endgameEntryKeys", changedPlaylistId, entryKeys)
-            }
-          />
-        </MusicDock>
+            onExpandedChange={setMusicPlayerExpanded}
+            hidden={view !== "game"}
+            isPlaying={musicState === "playing"}
+            canFadeIn={musicState === "paused"}
+            onFadeIn={() => {
+              void musicRef.current?.fadeIn();
+            }}
+            onQuickFadeOut={() => {
+              void musicRef.current?.quickFadeOut();
+            }}
+            onSlowFadeOut={() => {
+              void musicRef.current?.slowFadeOut();
+            }}
+          >
+            <YouTubePlaylistPlayer
+              ref={musicRef}
+              playlistId={playlistId}
+              onStateChange={handleMusicState}
+              expanded={musicPlayerExpanded}
+              reloadRequest={musicReloadRequest}
+              rememberedQueueOrder={
+                musicPreferences.lastPlaylistId === playlistId ? musicPreferences.queueOrder : []
+              }
+              onQueueOrderChange={changeQueueOrder}
+              initialStageEntryKeys={
+                musicPreferences.lastPlaylistId === playlistId
+                  ? musicPreferences.initialStageEntryKeys
+                  : []
+              }
+              onInitialStageEntryKeysChange={(changedPlaylistId, entryKeys) =>
+                changeQueueTags("initialStageEntryKeys", changedPlaylistId, entryKeys)
+              }
+              endgameEntryKeys={
+                musicPreferences.lastPlaylistId === playlistId
+                  ? musicPreferences.endgameEntryKeys
+                  : []
+              }
+              onEndgameEntryKeysChange={(changedPlaylistId, entryKeys) =>
+                changeQueueTags("endgameEntryKeys", changedPlaylistId, entryKeys)
+              }
+            />
+          </MusicDock>
+        ) : null}
       </LiveSidePanel>
     </div>
   );

@@ -17,7 +17,7 @@ interface PlayersScreenProps {
 interface ProfileDraft {
   readonly nickname: string;
   readonly consent: boolean;
-  readonly clubManager: boolean;
+  readonly clubAccess: "none" | "user" | "manager";
   readonly firstName: string;
   readonly lastName: string;
   readonly email: string;
@@ -26,7 +26,7 @@ interface ProfileDraft {
 const emptyDraft: ProfileDraft = {
   nickname: "",
   consent: false,
-  clubManager: false,
+  clubAccess: "none",
   firstName: "",
   lastName: "",
   email: "",
@@ -35,7 +35,7 @@ const emptyDraft: ProfileDraft = {
 const draftFromPlayer = (player: PlayerProfile): ProfileDraft => ({
   nickname: player.nickname,
   consent: player.consent,
-  clubManager: player.clubManager,
+  clubAccess: player.clubAccess,
   firstName: player.firstName ?? "",
   lastName: player.lastName ?? "",
   email: player.email ?? "",
@@ -46,7 +46,7 @@ const toInput = (draft: ProfileDraft): PlayerProfileInput =>
     ? {
         nickname: draft.nickname.trim(),
         consent: true,
-        clubManager: draft.clubManager,
+        clubAccess: draft.clubAccess,
         firstName: draft.firstName.trim(),
         lastName: draft.lastName.trim(),
         email: draft.email.trim(),
@@ -54,7 +54,7 @@ const toInput = (draft: ProfileDraft): PlayerProfileInput =>
     : {
         nickname: draft.nickname.trim(),
         consent: false,
-        clubManager: draft.clubManager,
+        clubAccess: draft.clubAccess === "manager" ? "manager" : "none",
         firstName: null,
         lastName: null,
         email: null,
@@ -69,8 +69,8 @@ const errorMessage = (t: PlayersMusicTranslate, error: unknown): string => {
   if (error instanceof ApiError && error.code === "nickname_conflict") {
     return t("Nickname conflict");
   }
-  if (error instanceof ApiError && error.code === "manager_email_conflict") {
-    return t("Manager email conflict");
+  if (error instanceof ApiError && error.code === "club_access_email_conflict") {
+    return t("Club access email conflict");
   }
   return t("Player save failed");
 };
@@ -129,7 +129,7 @@ const ProfileFields = ({
                   ? { consent: true }
                   : {
                       consent: false,
-                      clubManager: managerLocked ? draft.clubManager : false,
+                      clubAccess: managerLocked ? draft.clubAccess : "none",
                       firstName: "",
                       lastName: "",
                       email: "",
@@ -140,20 +140,22 @@ const ProfileFields = ({
           {t("Agree for data processing")}
         </span>
       </label>
-      <label className="player-toggle-field" htmlFor={`${idPrefix}-club-manager`}>
-        <span>{t("Club manager")}</span>
-        <span className="player-toggle-control">
-          <input
-            id={`${idPrefix}-club-manager`}
-            aria-label={`${labelPrefix} ${t("Club manager")}`}
-            type="checkbox"
-            checked={draft.clubManager}
-            disabled={busy || managerLocked || !draft.consent}
-            aria-describedby={managerLocked ? managerGuidanceId : undefined}
-            onChange={(event) => update({ clubManager: event.currentTarget.checked })}
-          />
-          {t("Club manager")}
-        </span>
+      <label htmlFor={`${idPrefix}-club-access`}>
+        {t("Club access")}
+        <select
+          id={`${idPrefix}-club-access`}
+          aria-label={`${labelPrefix} ${t("Club access")}`}
+          value={draft.clubAccess}
+          disabled={busy || managerLocked || !draft.consent}
+          aria-describedby={managerLocked ? managerGuidanceId : undefined}
+          onChange={(event) =>
+            update({ clubAccess: event.currentTarget.value as ProfileDraft["clubAccess"] })
+          }
+        >
+          <option value="none">{t("No club access")}</option>
+          <option value="user">{t("Regular user")}</option>
+          <option value="manager">{t("Club manager")}</option>
+        </select>
       </label>
       <label htmlFor={`${idPrefix}-first-name`}>
         {t("First name")}
