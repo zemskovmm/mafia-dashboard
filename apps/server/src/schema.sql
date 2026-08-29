@@ -148,6 +148,14 @@ ALTER TABLE game_events DROP CONSTRAINT IF EXISTS game_events_day_before_check;
 ALTER TABLE game_events DROP CONSTRAINT IF EXISTS game_events_day_after_check;
 DO $$
 BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'game_events'::REGCLASS
+       AND conname = 'game_events_replay_sequence_positive_ck'
+       AND pg_get_constraintdef(oid) <> 'CHECK ((replay_sequence > 0))'
+  ) THEN
+    ALTER TABLE game_events DROP CONSTRAINT game_events_replay_sequence_positive_ck;
+  END IF;
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
      WHERE conrelid = 'game_events'::REGCLASS
@@ -157,6 +165,14 @@ BEGIN
       ADD CONSTRAINT game_events_replay_sequence_positive_ck
       CHECK (replay_sequence > 0);
   END IF;
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'game_events'::REGCLASS
+       AND conname = 'game_events_day_before_nonnegative_ck'
+       AND pg_get_constraintdef(oid) <> 'CHECK ((day_before >= 0))'
+  ) THEN
+    ALTER TABLE game_events DROP CONSTRAINT game_events_day_before_nonnegative_ck;
+  END IF;
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
      WHERE conrelid = 'game_events'::REGCLASS
@@ -165,6 +181,14 @@ BEGIN
     ALTER TABLE game_events
       ADD CONSTRAINT game_events_day_before_nonnegative_ck
       CHECK (day_before >= 0);
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'game_events'::REGCLASS
+       AND conname = 'game_events_day_after_nonnegative_ck'
+       AND pg_get_constraintdef(oid) <> 'CHECK ((day_after >= 0))'
+  ) THEN
+    ALTER TABLE game_events DROP CONSTRAINT game_events_day_after_nonnegative_ck;
   END IF;
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
@@ -228,8 +252,37 @@ BEGIN
   END IF;
 END $$;
 
-CREATE INDEX IF NOT EXISTS game_events_club_game_sequence_idx
-  ON game_events (club_id, game_id, sequence);
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+      FROM pg_index AS candidate
+      JOIN pg_class AS candidate_relation ON candidate_relation.oid = candidate.indexrelid
+      JOIN pg_index AS covered
+        ON covered.indexrelid = TO_REGCLASS('game_events_club_game_sequence_unique')
+      JOIN pg_class AS covered_relation ON covered_relation.oid = covered.indexrelid
+     WHERE candidate.indexrelid = TO_REGCLASS('game_events_club_game_sequence_idx')
+       AND candidate.indrelid = 'game_events'::REGCLASS
+       AND covered.indrelid = candidate.indrelid
+       AND NOT candidate.indisunique
+       AND covered.indisunique
+       AND candidate.indpred IS NULL
+       AND candidate.indexprs IS NULL
+       AND candidate.indnkeyatts = covered.indnkeyatts
+       AND candidate.indnatts = covered.indnatts
+       AND candidate.indkey = covered.indkey
+       AND candidate.indcollation = covered.indcollation
+       AND candidate.indclass = covered.indclass
+       AND candidate.indoption = covered.indoption
+       AND candidate_relation.relam = covered_relation.relam
+       AND NOT EXISTS (
+         SELECT 1 FROM pg_constraint
+          WHERE conindid = candidate.indexrelid
+       )
+  ) THEN
+    DROP INDEX game_events_club_game_sequence_idx;
+  END IF;
+END $$;
 CREATE INDEX IF NOT EXISTS game_events_game_parent_idx
   ON game_events (game_id, parent_event_id);
 CREATE INDEX IF NOT EXISTS game_events_club_game_parent_idx
@@ -340,7 +393,8 @@ BEGIN
       FROM pg_constraint
      WHERE conrelid = 'game_events'::REGCLASS
        AND conname = 'game_events_replay_metadata_ck'
-       AND pg_get_constraintdef(oid) NOT LIKE '%[0-9a-f]{8}%'
+       AND pg_get_constraintdef(oid) <>
+         'CHECK (((replay_sequence IS NULL) OR ((replay_version = 1) AND (phase_after IS NOT NULL) AND (day_before IS NOT NULL) AND (day_after IS NOT NULL) AND (state_hash_after ~ ''^([0-9a-f]{8}|sha256:[0-9a-f]{64})$''::text))))'
   ) THEN
     ALTER TABLE game_events DROP CONSTRAINT game_events_replay_metadata_ck;
   END IF;
@@ -385,6 +439,7 @@ UPDATE game_events AS event
          event.replay_sequence,
          CASE
            WHEN stored.event_data ->> 'sequence' ~ '^[1-9][0-9]*$'
+            AND pg_input_is_valid(stored.event_data ->> 'sequence', 'integer')
              THEN (stored.event_data ->> 'sequence')::INTEGER
          END
        ),
@@ -425,6 +480,7 @@ UPDATE game_events AS event
          event.day_before,
          CASE
            WHEN stored.event_data ->> 'dayBefore' ~ '^[0-9]+$'
+            AND pg_input_is_valid(stored.event_data ->> 'dayBefore', 'integer')
              THEN (stored.event_data ->> 'dayBefore')::INTEGER
          END
        ),
@@ -432,6 +488,7 @@ UPDATE game_events AS event
          event.day_after,
          CASE
            WHEN stored.event_data ->> 'dayAfter' ~ '^[0-9]+$'
+            AND pg_input_is_valid(stored.event_data ->> 'dayAfter', 'integer')
              THEN (stored.event_data ->> 'dayAfter')::INTEGER
          END
        ),
@@ -445,7 +502,53 @@ UPDATE game_events AS event
   FROM stored_events AS stored
  WHERE event.club_id = stored.club_id
    AND event.game_id = stored.game_id
-   AND event.id::TEXT = stored.event_data ->> 'id';
+   AND event.id::TEXT = stored.event_data ->> 'id'
+   AND (
+     (
+       event.replay_sequence IS NULL
+       AND stored.event_data ->> 'sequence' ~ '^[1-9][0-9]*$'
+       AND pg_input_is_valid(stored.event_data ->> 'sequence', 'integer')
+     )
+     OR (
+       event.parent_event_id IS NULL
+       AND stored.event_data ->> 'parentEventId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+     )
+     OR (stored.event_data ->> 'replayVersion' = '1' AND event.replay_version <> 1)
+     OR (
+       stored.event_data ->> 'phaseBefore' IN (
+         'mafia-planning', 'sheriff-wake', 'day', 'voting', 'voting-cancelled',
+         'car-crash', 'car-crash-decision', 'car-crash-skipped', 'goodbye-speech',
+         'best-move', 'night-mafia', 'night-mafia-result', 'night-don',
+         'night-don-result', 'night-sheriff', 'night-sheriff-result',
+         'night-resolution', 'finished'
+       )
+       AND event.phase IS DISTINCT FROM stored.event_data ->> 'phaseBefore'
+     )
+     OR (
+       event.phase_after IS NULL
+       AND stored.event_data ->> 'phaseAfter' IN (
+         'mafia-planning', 'sheriff-wake', 'day', 'voting', 'voting-cancelled',
+         'car-crash', 'car-crash-decision', 'car-crash-skipped', 'goodbye-speech',
+         'best-move', 'night-mafia', 'night-mafia-result', 'night-don',
+         'night-don-result', 'night-sheriff', 'night-sheriff-result',
+         'night-resolution', 'finished'
+       )
+     )
+     OR (
+       event.day_before IS NULL
+       AND stored.event_data ->> 'dayBefore' ~ '^[0-9]+$'
+       AND pg_input_is_valid(stored.event_data ->> 'dayBefore', 'integer')
+     )
+     OR (
+       event.day_after IS NULL
+       AND stored.event_data ->> 'dayAfter' ~ '^[0-9]+$'
+       AND pg_input_is_valid(stored.event_data ->> 'dayAfter', 'integer')
+     )
+     OR (
+       event.state_hash_after IS NULL
+       AND stored.event_data ->> 'stateHashAfter' ~ '^([0-9a-f]{8}|sha256:[0-9a-f]{64})$'
+     )
+   );
 
 UPDATE game_events
    SET replay_sequence = NULL,
@@ -623,6 +726,15 @@ ALTER TABLE players ALTER COLUMN club_id SET NOT NULL;
 ALTER TABLE players ALTER COLUMN club_id SET DEFAULT '00000000-0000-4000-8000-000000000101';
 DO $$
 BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'players'::regclass
+       AND conname = 'players_user_fk'
+       AND pg_get_constraintdef(oid) <>
+         $definition$FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL$definition$
+  ) THEN
+    ALTER TABLE players DROP CONSTRAINT players_user_fk;
+  END IF;
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
      WHERE conrelid = 'players'::regclass
@@ -636,16 +748,47 @@ END $$;
 
 DROP INDEX IF EXISTS players_club_manager_email_unique_idx;
 ALTER TABLE players DROP CONSTRAINT IF EXISTS players_manager_requires_consent_ck;
-ALTER TABLE players DROP CONSTRAINT IF EXISTS players_access_requires_consent_ck;
-ALTER TABLE players
-  ADD CONSTRAINT players_access_requires_consent_ck CHECK (
-    club_access = 'none'
-    OR data_processing_consent
-    OR user_id IS NOT NULL
-  );
-ALTER TABLE players DROP CONSTRAINT IF EXISTS players_club_access_ck;
-ALTER TABLE players
-  ADD CONSTRAINT players_club_access_ck CHECK (club_access IN ('none', 'user', 'manager'));
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'players'::regclass
+       AND conname = 'players_access_requires_consent_ck'
+       AND pg_get_constraintdef(oid) <>
+         $definition$CHECK (((club_access = 'none'::text) OR data_processing_consent OR (user_id IS NOT NULL)))$definition$
+  ) THEN
+    ALTER TABLE players DROP CONSTRAINT players_access_requires_consent_ck;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'players'::regclass
+       AND conname = 'players_access_requires_consent_ck'
+  ) THEN
+    ALTER TABLE players
+      ADD CONSTRAINT players_access_requires_consent_ck CHECK (
+        club_access = 'none'
+        OR data_processing_consent
+        OR user_id IS NOT NULL
+      );
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'players'::regclass
+       AND conname = 'players_club_access_ck'
+       AND pg_get_constraintdef(oid) <>
+         $definition$CHECK ((club_access = ANY (ARRAY['none'::text, 'user'::text, 'manager'::text])))$definition$
+  ) THEN
+    ALTER TABLE players DROP CONSTRAINT players_club_access_ck;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'players'::regclass
+       AND conname = 'players_club_access_ck'
+  ) THEN
+    ALTER TABLE players
+      ADD CONSTRAINT players_club_access_ck CHECK (club_access IN ('none', 'user', 'manager'));
+  END IF;
+END $$;
 ALTER TABLE players DROP COLUMN IF EXISTS is_club_manager;
 
 ALTER TABLE club_memberships ADD COLUMN IF NOT EXISTS access_player_id UUID NULL;
@@ -663,8 +806,30 @@ BEGIN
      WHERE access_player_id IS NULL;
   END IF;
 END $$;
+ALTER TABLE club_memberships
+  DROP CONSTRAINT IF EXISTS club_memberships_manager_player_fk;
+ALTER TABLE players
+  DROP CONSTRAINT IF EXISTS players_manager_provenance_unique;
 DO $$
 BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'club_memberships'::regclass
+       AND conname = 'club_memberships_access_player_fk'
+       AND pg_get_constraintdef(oid) <>
+         $definition$FOREIGN KEY (access_player_id, club_id, user_id) REFERENCES players(id, club_id, user_id) ON DELETE CASCADE$definition$
+  ) THEN
+    ALTER TABLE club_memberships DROP CONSTRAINT club_memberships_access_player_fk;
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'players'::regclass
+       AND conname = 'players_access_provenance_unique'
+       AND pg_get_constraintdef(oid) <>
+         $definition$UNIQUE (id, club_id, user_id)$definition$
+  ) THEN
+    ALTER TABLE players DROP CONSTRAINT players_access_provenance_unique;
+  END IF;
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint
      WHERE conrelid = 'players'::regclass
@@ -674,13 +839,6 @@ BEGIN
       ADD CONSTRAINT players_access_provenance_unique UNIQUE (id, club_id, user_id);
   END IF;
 END $$;
-
-ALTER TABLE club_memberships
-  DROP CONSTRAINT IF EXISTS club_memberships_manager_player_fk;
-ALTER TABLE club_memberships
-  DROP CONSTRAINT IF EXISTS club_memberships_access_player_fk;
-ALTER TABLE players
-  DROP CONSTRAINT IF EXISTS players_manager_provenance_unique;
 UPDATE club_memberships AS membership
    SET access_player_id = NULL
  WHERE membership.access_player_id IS NOT NULL
@@ -697,11 +855,20 @@ UPDATE players AS player
  WHERE membership.access_player_id = player.id
    AND membership.club_id = player.club_id
    AND membership.user_id = player.user_id;
-ALTER TABLE club_memberships
-  ADD CONSTRAINT club_memberships_access_player_fk
-  FOREIGN KEY (access_player_id, club_id, user_id)
-  REFERENCES players (id, club_id, user_id)
-  ON DELETE CASCADE;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'club_memberships'::regclass
+       AND conname = 'club_memberships_access_player_fk'
+  ) THEN
+    ALTER TABLE club_memberships
+      ADD CONSTRAINT club_memberships_access_player_fk
+      FOREIGN KEY (access_player_id, club_id, user_id)
+      REFERENCES players (id, club_id, user_id)
+      ON DELETE CASCADE;
+  END IF;
+END $$;
 DROP INDEX IF EXISTS club_memberships_manager_player_unique_idx;
 CREATE UNIQUE INDEX IF NOT EXISTS club_memberships_access_player_unique_idx
   ON club_memberships (access_player_id)

@@ -180,6 +180,87 @@ describe("club authorization role migration", () => {
       await dropIsolatedPool(populatedSchema, populatedPool);
     }
   });
+
+  it("preserves canonical access constraint identities across repeated initialization", async () => {
+    const schemaName = `access_constraint_identity_${randomUUID().replaceAll("-", "")}`;
+    const isolatedPool = await createIsolatedPool(schemaName);
+    const expectedDefinitions = [
+      {
+        conname: "club_memberships_access_player_fk",
+        definition:
+          "FOREIGN KEY (access_player_id, club_id, user_id) REFERENCES players(id, club_id, user_id) ON DELETE CASCADE",
+      },
+      {
+        conname: "players_access_provenance_unique",
+        definition: "UNIQUE (id, club_id, user_id)",
+      },
+      {
+        conname: "players_access_requires_consent_ck",
+        definition:
+          "CHECK (((club_access = 'none'::text) OR data_processing_consent OR (user_id IS NOT NULL)))",
+      },
+      {
+        conname: "players_club_access_ck",
+        definition:
+          "CHECK ((club_access = ANY (ARRAY['none'::text, 'user'::text, 'manager'::text])))",
+      },
+      {
+        conname: "players_user_fk",
+        definition: "FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL",
+      },
+    ];
+    const constraintRows = async () =>
+      (
+        await isolatedPool.query<{ conname: string; definition: string; oid: string }>(
+          `SELECT conname, pg_get_constraintdef(oid) AS definition, oid::text
+             FROM pg_constraint
+            WHERE conname = ANY($1::text[])
+              AND conrelid IN ('players'::regclass, 'club_memberships'::regclass)
+            ORDER BY conname`,
+          [expectedDefinitions.map(({ conname }) => conname)],
+        )
+      ).rows;
+
+    try {
+      await initializeSchema(isolatedPool);
+      const canonicalConstraints = await constraintRows();
+      expect(
+        canonicalConstraints.map(({ conname, definition }) => ({ conname, definition })),
+      ).toEqual(expectedDefinitions);
+
+      await initializeSchema(isolatedPool);
+      expect(await constraintRows()).toEqual(canonicalConstraints);
+
+      await isolatedPool.query(`
+        ALTER TABLE club_memberships DROP CONSTRAINT club_memberships_access_player_fk;
+        ALTER TABLE players
+          DROP CONSTRAINT players_access_provenance_unique,
+          DROP CONSTRAINT players_access_requires_consent_ck,
+          DROP CONSTRAINT players_club_access_ck,
+          DROP CONSTRAINT players_user_fk,
+          ADD CONSTRAINT players_access_provenance_unique UNIQUE (id, club_id),
+          ADD CONSTRAINT players_access_requires_consent_ck CHECK (club_access <> ''),
+          ADD CONSTRAINT players_club_access_ck CHECK (club_access <> ''),
+          ADD CONSTRAINT players_user_fk FOREIGN KEY (user_id) REFERENCES users (id);
+        ALTER TABLE club_memberships
+          ADD CONSTRAINT club_memberships_access_player_fk
+          FOREIGN KEY (club_id, user_id) REFERENCES club_memberships (club_id, user_id);
+      `);
+      const weakConstraintOids = (await constraintRows()).map(({ oid }) => oid);
+
+      await initializeSchema(isolatedPool);
+      const reconciledConstraints = await constraintRows();
+      expect(
+        reconciledConstraints.map(({ conname, definition }) => ({ conname, definition })),
+      ).toEqual(expectedDefinitions);
+      expect(reconciledConstraints.map(({ oid }) => oid)).not.toEqual(weakConstraintOids);
+
+      await initializeSchema(isolatedPool);
+      expect(await constraintRows()).toEqual(reconciledConstraints);
+    } finally {
+      await dropIsolatedPool(schemaName, isolatedPool);
+    }
+  });
 });
 
 describe("club language schema migration", () => {
@@ -339,6 +420,267 @@ describe("replay metadata constraint migration", () => {
       await initializeSchema(isolatedPool);
       await initializeSchema(isolatedPool);
       await expectBounds();
+    } finally {
+      await dropIsolatedPool(schemaName, isolatedPool);
+    }
+  });
+
+  it("ignores oversized legacy replay numerics without aborting initialization", async () => {
+    const schemaName = `replay_numeric_overflow_${randomUUID().replaceAll("-", "")}`;
+    const isolatedPool = await createIsolatedPool(schemaName);
+    const gameId = randomUUID();
+    const eventId = randomUUID();
+    const oversizedInteger = "99999999999999999999999999999999999999999999999999";
+    try {
+      await initializeSchema(isolatedPool);
+      await isolatedPool.query(
+        `INSERT INTO game_sessions
+           (id, name, revision, last_mutation_id, state, status)
+         VALUES ($1, 'Oversized legacy replay metadata', 1, $2, $3, 'active')`,
+        [
+          gameId,
+          randomUUID(),
+          {
+            events: [
+              {
+                id: eventId,
+                gameId,
+                sequence: oversizedInteger,
+                replayVersion: 1,
+                phaseBefore: "day",
+                phaseAfter: "day",
+                dayBefore: oversizedInteger,
+                dayAfter: oversizedInteger,
+                stateHashAfter: "deadbeef",
+              },
+            ],
+          },
+        ],
+      );
+      await isolatedPool.query(
+        `INSERT INTO game_events
+           (id, game_id, sequence, idempotency_key, event_type, phase, payload)
+         VALUES ($1::uuid, $2, 1, $1::text, 'legacy.replay', 'day', '{}'::jsonb)`,
+        [eventId, gameId],
+      );
+
+      await initializeSchema(isolatedPool);
+      await initializeSchema(isolatedPool);
+
+      await expect(
+        isolatedPool.query(
+          `SELECT replay_sequence, day_before, day_after
+             FROM game_events
+            WHERE game_id = $1 AND id = $2`,
+          [gameId, eventId],
+        ),
+      ).resolves.toMatchObject({
+        rows: [{ replay_sequence: null, day_before: null, day_after: null }],
+      });
+    } finally {
+      await dropIsolatedPool(schemaName, isolatedPool);
+    }
+  });
+
+  it("replaces weak replay bounds once and preserves canonical constraint identities", async () => {
+    const schemaName = `replay_constraint_reconciliation_${randomUUID().replaceAll("-", "")}`;
+    const isolatedPool = await createIsolatedPool(schemaName);
+    const expectedDefinitions = [
+      {
+        conname: "game_events_day_after_nonnegative_ck",
+        definition: "CHECK ((day_after >= 0))",
+      },
+      {
+        conname: "game_events_day_before_nonnegative_ck",
+        definition: "CHECK ((day_before >= 0))",
+      },
+      {
+        conname: "game_events_replay_metadata_ck",
+        definition:
+          "CHECK (((replay_sequence IS NULL) OR ((replay_version = 1) AND (phase_after IS NOT NULL) AND (day_before IS NOT NULL) AND (day_after IS NOT NULL) AND (state_hash_after ~ '^([0-9a-f]{8}|sha256:[0-9a-f]{64})$'::text))))",
+      },
+      {
+        conname: "game_events_replay_sequence_positive_ck",
+        definition: "CHECK ((replay_sequence > 0))",
+      },
+    ];
+    const constraintRows = async () =>
+      (
+        await isolatedPool.query<{ conname: string; definition: string; oid: string }>(
+          `SELECT conname, pg_get_constraintdef(oid) AS definition, oid::text
+             FROM pg_constraint
+            WHERE conrelid = 'game_events'::regclass
+              AND conname = ANY($1::text[])
+            ORDER BY conname`,
+          [expectedDefinitions.map(({ conname }) => conname)],
+        )
+      ).rows;
+
+    try {
+      await initializeSchema(isolatedPool);
+      await isolatedPool.query(`
+        ALTER TABLE game_events
+          DROP CONSTRAINT game_events_replay_sequence_positive_ck,
+          DROP CONSTRAINT game_events_day_before_nonnegative_ck,
+          DROP CONSTRAINT game_events_day_after_nonnegative_ck,
+          DROP CONSTRAINT game_events_replay_metadata_ck,
+          ADD CONSTRAINT game_events_replay_sequence_positive_ck CHECK (replay_sequence >= -1),
+          ADD CONSTRAINT game_events_day_before_nonnegative_ck CHECK (day_before >= -1),
+          ADD CONSTRAINT game_events_day_after_nonnegative_ck CHECK (day_after >= -1),
+          ADD CONSTRAINT game_events_replay_metadata_ck CHECK (
+            replay_sequence IS NULL
+            OR state_hash_after ~ '^([0-9a-f]{8}|sha256:[0-9a-f]{64})$'
+          );
+      `);
+      const weakConstraintOids = (await constraintRows()).map(({ oid }) => oid);
+
+      await initializeSchema(isolatedPool);
+      const canonicalConstraints = await constraintRows();
+      expect(
+        canonicalConstraints.map(({ conname, definition }) => ({ conname, definition })),
+      ).toEqual(expectedDefinitions);
+      expect(canonicalConstraints.map(({ oid }) => oid)).not.toEqual(weakConstraintOids);
+
+      await initializeSchema(isolatedPool);
+      expect(await constraintRows()).toEqual(canonicalConstraints);
+    } finally {
+      await dropIsolatedPool(schemaName, isolatedPool);
+    }
+  });
+
+  it("does not rewrite canonical replay rows that already match legacy JSON", async () => {
+    const schemaName = `canonical_replay_updates_${randomUUID().replaceAll("-", "")}`;
+    const isolatedPool = await createIsolatedPool(schemaName);
+    const gameId = randomUUID();
+    const eventId = randomUUID();
+    try {
+      await initializeSchema(isolatedPool);
+      await isolatedPool.query(
+        `INSERT INTO game_sessions
+           (id, name, revision, last_mutation_id, state, status)
+         VALUES ($1, 'Canonical replay update probe', 1, $2, $3, 'active')`,
+        [
+          gameId,
+          randomUUID(),
+          {
+            events: [
+              {
+                id: eventId,
+                gameId,
+                sequence: 1,
+                replayVersion: 1,
+                phaseBefore: "day",
+                phaseAfter: "day",
+                dayBefore: 0,
+                dayAfter: 0,
+                stateHashAfter: "deadbeef",
+              },
+            ],
+          },
+        ],
+      );
+      await isolatedPool.query(
+        `INSERT INTO game_events
+           (id, game_id, sequence, idempotency_key, event_type, phase, payload,
+            replay_sequence, phase_after, day_before, day_after, state_hash_after)
+         VALUES ($1::uuid, $2, 1, $1::text, 'game.started', 'day', '{}'::jsonb,
+                 1, 'day', 0, 0, 'deadbeef')`,
+        [eventId, gameId],
+      );
+      await isolatedPool.query(`
+        CREATE TABLE game_event_update_audit (event_id UUID NOT NULL);
+        CREATE FUNCTION record_game_event_update() RETURNS TRIGGER
+          LANGUAGE plpgsql
+          AS $trigger$
+        BEGIN
+          INSERT INTO game_event_update_audit (event_id) VALUES (NEW.id);
+          RETURN NEW;
+        END
+        $trigger$;
+        CREATE TRIGGER game_event_update_probe
+          AFTER UPDATE ON game_events
+          FOR EACH ROW EXECUTE FUNCTION record_game_event_update();
+      `);
+
+      await initializeSchema(isolatedPool);
+      await initializeSchema(isolatedPool);
+
+      await expect(
+        isolatedPool.query(
+          "SELECT COUNT(*)::int AS updates FROM game_event_update_audit WHERE event_id = $1",
+          [eventId],
+        ),
+      ).resolves.toMatchObject({ rows: [{ updates: 0 }] });
+    } finally {
+      await dropIsolatedPool(schemaName, isolatedPool);
+    }
+  });
+
+  it("removes the redundant event sequence index while retaining the unique constraint", async () => {
+    const schemaName = `event_sequence_index_${randomUUID().replaceAll("-", "")}`;
+    const isolatedPool = await createIsolatedPool(schemaName);
+    try {
+      await initializeSchema(isolatedPool);
+      await isolatedPool.query(
+        `CREATE INDEX IF NOT EXISTS game_events_club_game_sequence_idx
+           ON game_events (club_id, game_id, sequence)`,
+      );
+
+      await initializeSchema(isolatedPool);
+
+      await expect(
+        isolatedPool.query(
+          `SELECT index_relation.relname AS index_name,
+                  index_row.indisunique AS is_unique,
+                  constraint_row.conname AS constraint_name
+             FROM pg_index AS index_row
+             JOIN pg_class AS index_relation ON index_relation.oid = index_row.indexrelid
+             LEFT JOIN pg_constraint AS constraint_row ON constraint_row.conindid = index_row.indexrelid
+            WHERE index_row.indrelid = 'game_events'::regclass
+              AND index_relation.relname IN (
+                'game_events_club_game_sequence_idx',
+                'game_events_club_game_sequence_unique'
+              )
+            ORDER BY index_relation.relname`,
+        ),
+      ).resolves.toMatchObject({
+        rows: [
+          {
+            index_name: "game_events_club_game_sequence_unique",
+            is_unique: true,
+            constraint_name: "game_events_club_game_sequence_unique",
+          },
+        ],
+      });
+
+      await isolatedPool.query(
+        `CREATE UNIQUE INDEX game_events_club_game_sequence_idx
+           ON game_events (club_id, game_id, sequence)`,
+      );
+      await initializeSchema(isolatedPool);
+      await expect(
+        isolatedPool.query(
+          `SELECT index_row.indisunique AS is_unique
+             FROM pg_index AS index_row
+            WHERE index_row.indexrelid = TO_REGCLASS('game_events_club_game_sequence_idx')`,
+        ),
+      ).resolves.toMatchObject({ rows: [{ is_unique: true }] });
+
+      await isolatedPool.query("DROP INDEX game_events_club_game_sequence_idx");
+      await isolatedPool.query(
+        `CREATE INDEX game_events_club_game_sequence_idx
+           ON game_events (club_id, game_id, id)`,
+      );
+      await initializeSchema(isolatedPool);
+      await expect(
+        isolatedPool.query(
+          `SELECT PG_GET_INDEXDEF(index_row.indexrelid) AS definition
+             FROM pg_index AS index_row
+            WHERE index_row.indexrelid = TO_REGCLASS('game_events_club_game_sequence_idx')`,
+        ),
+      ).resolves.toMatchObject({
+        rows: [{ definition: expect.stringMatching(/\(club_id, game_id, id\)$/) }],
+      });
     } finally {
       await dropIsolatedPool(schemaName, isolatedPool);
     }
