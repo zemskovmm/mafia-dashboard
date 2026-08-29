@@ -1,12 +1,19 @@
 /* global URL, document, fetch */
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { replayGameLog } from "@mafia/game-domain";
 import { chromium, request as playwrightRequest } from "@playwright/test";
 import {
   assertEnvelopeMatchesSession,
+  assertExactOrigin,
+  assertNamesAvailable,
+  assertNewResource,
   assertSessionPostcondition,
+  assertVerifierTarget,
+  classifyBrowserApiRequest,
   createAsyncTracker,
+  deleteAndVerifyAbsent,
   runCleanupActions,
 } from "./session-verifier-contracts.mjs";
 
@@ -14,27 +21,13 @@ const configuredUrl = process.env.APP_URL;
 if (!configuredUrl) {
   throw new Error("APP_URL is required, for example https://mbp16.tail102fab.ts.net");
 }
-const localHosts = new Set(["127.0.0.1", "localhost", "::1"]);
+const localHosts = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 const remoteAllowed = process.env.SESSION_VERIFY_ALLOW_REMOTE === "1";
 const configuredExpectedOrigin = process.env.SESSION_VERIFY_EXPECTED_ORIGIN?.trim();
-const expectedRemoteOrigin =
-  configuredExpectedOrigin === undefined ? null : new URL(configuredExpectedOrigin).origin;
-const assertAllowedTarget = (target) => {
-  if (localHosts.has(target.hostname)) return;
-  if (!remoteAllowed) {
-    throw new Error(
-      "Remote session verification is destructive; set SESSION_VERIFY_ALLOW_REMOTE=1 only for an isolated test deployment",
-    );
-  }
-  if (target.protocol !== "https:") throw new Error("Remote session verification requires HTTPS");
-  if (expectedRemoteOrigin === null || target.origin !== expectedRemoteOrigin) {
-    throw new Error("SESSION_VERIFY_EXPECTED_ORIGIN must exactly match every remote origin");
-  }
-};
-const resolveAppUrl = async (value) => {
+const resolveAppUrl = async (value, expectedOrigin) => {
   let current = new URL(value);
   for (let redirect = 0; redirect < 5; redirect += 1) {
-    assertAllowedTarget(current);
+    assertExactOrigin(current, expectedOrigin);
     const response = await fetch(current, {
       redirect: "manual",
       headers: { accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" },
@@ -47,16 +40,19 @@ const resolveAppUrl = async (value) => {
     if (next.protocol !== "http:" && next.protocol !== "https:") {
       throw new Error("APP_URL redirected to an unsupported protocol");
     }
-    if (current.protocol === "https:" && next.protocol !== "https:") {
-      throw new Error("APP_URL redirected from HTTPS to an insecure origin");
-    }
+    assertExactOrigin(next, expectedOrigin);
     current = next;
   }
   throw new Error("APP_URL exceeded the redirect limit");
 };
 
 const configuredTargetUrl = new URL(configuredUrl);
-assertAllowedTarget(configuredTargetUrl);
+assertVerifierTarget({
+  configuredUrl,
+  browserUrl: configuredUrl,
+  remoteAllowed,
+  expectedOrigin: configuredExpectedOrigin,
+});
 const configuredHostHeader = process.env.SESSION_VERIFY_HOST_HEADER?.trim();
 if (
   configuredHostHeader !== undefined &&
@@ -64,14 +60,16 @@ if (
 ) {
   throw new Error("SESSION_VERIFY_HOST_HEADER must be a bare DNS hostname");
 }
-const targetUrl =
-  configuredHostHeader === undefined
-    ? await resolveAppUrl(configuredUrl)
-    : (() => {
-        const localBrowserUrl = new URL(configuredTargetUrl);
-        localBrowserUrl.hostname = configuredHostHeader;
-        return localBrowserUrl;
-      })();
+if (configuredHostHeader !== undefined && configuredHostHeader !== configuredTargetUrl.hostname) {
+  throw new Error("SESSION_VERIFY_HOST_HEADER cannot split browser and API deployment identity");
+}
+const targetUrl = await resolveAppUrl(configuredUrl, configuredTargetUrl.origin);
+assertVerifierTarget({
+  configuredUrl,
+  browserUrl: targetUrl.href,
+  remoteAllowed,
+  expectedOrigin: configuredExpectedOrigin,
+});
 const apiBaseUrl = configuredTargetUrl.origin;
 const remoteTarget = !localHosts.has(configuredTargetUrl.hostname);
 const authCookie = process.env.SESSION_AUTH_COOKIE?.trim();
@@ -127,9 +125,10 @@ const apiContext = await playwrightRequest.newContext({
       : { cookie: `${parsedAuthCookie.name}=${parsedAuthCookie.value}` }),
   },
 });
-const createdPlayerIds = [];
-const createdPlayers = new Map();
+const createdPlayerIds = new Set();
 const createdGameIds = new Set();
+const preexistingPlayerIds = new Set();
+const preexistingGameIds = new Set();
 const cleanupErrors = [];
 const responseTracker = createAsyncTracker();
 
@@ -193,15 +192,60 @@ const createContext = async () => {
       PlayerState: { PLAYING: 1, PAUSED: 2, ENDED: 0, BUFFERING: 3, CUED: 5 },
     };
   });
-  await context.route("**/api/**", async (route) => {
-    if (new URL(route.request().url()).origin !== targetUrl.origin) {
-      await route.abort("blockedbyclient");
-      return;
+  const reportBlockedRequest = async (route, error) => {
+    cleanupErrors.push(error instanceof Error ? error : new Error(String(error)));
+    await route.abort("blockedbyclient");
+  };
+  const fulfillMock = async (route, response) => {
+    try {
+      const classification = classifyBrowserApiRequest({
+        method: route.request().method(),
+        url: route.request().url(),
+        expectedOrigin: targetUrl.origin,
+        ownedGameIds: createdGameIds,
+      });
+      if (classification.kind !== "safe") {
+        throw new Error("Verifier mocks accept safe requests only");
+      }
+      await route.fulfill(response);
+    } catch (error) {
+      await reportBlockedRequest(route, error);
     }
-    await route.continue();
+  };
+  await context.route("**/*", async (route) => {
+    try {
+      const request = route.request();
+      const classification = classifyBrowserApiRequest({
+        method: request.method(),
+        url: request.url(),
+        expectedOrigin: targetUrl.origin,
+        ownedGameIds: createdGameIds,
+      });
+      if (classification.kind === "session-creation") {
+        if (preexistingGameIds.has(classification.gameId)) {
+          throw new Error("Refusing to mutate a pre-existing game session ID");
+        }
+        const response = await route.fetch({ maxRedirects: 0 });
+        const session = await response.json();
+        const createdGameId = assertNewResource({
+          label: "game session",
+          status: response.status(),
+          id: session.gameId,
+          expectedId: classification.gameId,
+          preexistingIds: preexistingGameIds,
+          claimedIds: createdGameIds,
+        });
+        createdGameIds.add(createdGameId);
+        await route.fulfill({ response });
+        return;
+      }
+      await route.continue();
+    } catch (error) {
+      await reportBlockedRequest(route, error);
+    }
   });
   await context.route("**/api/music/oauth/status", async (route) => {
-    await route.fulfill({
+    await fulfillMock(route, {
       contentType: "application/json",
       body: JSON.stringify({
         configured: true,
@@ -211,13 +255,13 @@ const createContext = async () => {
     });
   });
   await context.route("**/api/music/playlists", async (route) => {
-    await route.fulfill({
+    await fulfillMock(route, {
       contentType: "application/json",
       body: JSON.stringify({ playlists: [playlist] }),
     });
   });
   await context.route("**/api/music/playlists/*/items", async (route) => {
-    await route.fulfill({
+    await fulfillMock(route, {
       contentType: "application/json",
       body: JSON.stringify({
         items: [
@@ -231,40 +275,6 @@ const createContext = async () => {
         ],
       }),
     });
-  });
-  await context.route("**/api/game-sessions/**", async (route) => {
-    const request = route.request();
-    const requestUrl = new URL(request.url());
-    if (requestUrl.origin !== targetUrl.origin) {
-      await route.abort("blockedbyclient");
-      return;
-    }
-    const match = requestUrl.pathname.match(/^\/api\/game-sessions\/([^/]+)(?:\/|$)/);
-    const matchedGameId = match === null ? null : decodeURIComponent(match[1]);
-    if (
-      request.method() === "PATCH" ||
-      (request.method() === "DELETE" &&
-        (matchedGameId === null || !createdGameIds.has(matchedGameId)))
-    ) {
-      cleanupErrors.push(new Error("Refusing an unowned or unsupported game-session mutation"));
-      await route.abort("blockedbyclient");
-      return;
-    }
-    if (
-      matchedGameId !== null &&
-      (request.method() === "PUT" || request.method() === "POST") &&
-      !createdGameIds.has(matchedGameId)
-    ) {
-      const gameId = matchedGameId;
-      const existing = await apiContext.get(`/api/game-sessions/${gameId}`, { maxRedirects: 0 });
-      if (existing.status() !== 404) {
-        cleanupErrors.push(new Error("Refusing to mutate a pre-existing game session ID"));
-        await route.abort("blockedbyclient");
-        return;
-      }
-      createdGameIds.add(gameId);
-    }
-    await route.continue();
   });
   return context;
 };
@@ -284,6 +294,15 @@ const readAuthoritativeSession = async (gameId, label) => {
   return (await response.json()).session;
 };
 
+const waitForAuthoritativePhase = async (gameId, expectedPhase) => {
+  for (let attempt = 0; attempt < 300; attempt += 1) {
+    const session = await readAuthoritativeSession(gameId, `Waiting for ${expectedPhase}`);
+    if (session.state.game?.phase === expectedPhase) return session;
+    await delay(100);
+  }
+  throw new Error(`Timed out waiting for authoritative ${expectedPhase} phase`);
+};
+
 let verificationError = null;
 try {
   const authResponse = await apiContext.get("/api/auth/session", { maxRedirects: 0 });
@@ -300,6 +319,22 @@ try {
   if (selectedClub === undefined) {
     throw new Error("SESSION_CLUB_ID is not an accessible club for the authenticated user");
   }
+  const playerSnapshotResponse = await apiContext.get("/api/players", { maxRedirects: 0 });
+  if (!playerSnapshotResponse.ok()) throw new Error("Player ownership preflight failed");
+  const playerSnapshot = (await playerSnapshotResponse.json()).players;
+  if (!Array.isArray(playerSnapshot)) throw new Error("Player ownership snapshot is malformed");
+  for (const player of playerSnapshot) preexistingPlayerIds.add(player.id.toLowerCase());
+  assertNamesAvailable(
+    playerNames,
+    playerSnapshot.map(({ nickname }) => nickname),
+  );
+  for (const path of ["/api/game-sessions", "/api/game-sessions?status=completed"]) {
+    const sessionSnapshotResponse = await apiContext.get(path, { maxRedirects: 0 });
+    if (!sessionSnapshotResponse.ok()) throw new Error("Game-session ownership preflight failed");
+    const sessions = (await sessionSnapshotResponse.json()).sessions;
+    if (!Array.isArray(sessions)) throw new Error("Game-session ownership snapshot is malformed");
+    for (const session of sessions) preexistingGameIds.add(session.gameId.toLowerCase());
+  }
   const firstContext = await createContext();
   const players = [];
   for (const nickname of playerNames) {
@@ -313,16 +348,28 @@ try {
         email: null,
       },
     });
-    if (!response.ok()) {
-      throw new Error(`Unable to create a verification player: HTTP ${response.status()}`);
+    if (response.status() !== 201) {
+      assertNewResource({
+        label: "player",
+        status: response.status(),
+        id: null,
+        preexistingIds: preexistingPlayerIds,
+        claimedIds: createdPlayerIds,
+      });
     }
     const { player } = await response.json();
-    if (player.nickname !== nickname) {
+    if (player?.nickname !== nickname) {
       throw new Error("Verification player response did not match the requested nickname");
     }
+    const playerId = assertNewResource({
+      label: "player",
+      status: response.status(),
+      id: player.id,
+      preexistingIds: preexistingPlayerIds,
+      claimedIds: createdPlayerIds,
+    });
     players.push(player);
-    createdPlayerIds.push(player.id);
-    createdPlayers.set(player.id, nickname);
+    createdPlayerIds.add(playerId);
   }
 
   const firstPage = await firstContext.newPage();
@@ -361,7 +408,6 @@ try {
             `Required game-session mutation failed: HTTP ${response.status()} ${response.request().method()} ${new URL(response.url()).pathname}`,
           );
         }
-        await firstPage.getByRole("status", { name: "Save status: saved" }).waitFor();
         return null;
       })(),
       firstSessionFailure,
@@ -392,10 +438,10 @@ try {
   await firstPage.getByRole("button", { name: "Assign players" }).click();
   const startGame = firstPage.getByRole("button", { name: "Start game" });
   await startGame.waitFor();
-  await firstPage.getByRole("button", { name: "Open developer menu" }).click();
+  await firstPage.getByRole("button", { name: "Open Manage menu" }).click();
   await firstPage.getByRole("button", { name: "Music player setup" }).click();
   await firstPage.getByLabel("YouTube Music playlist").selectOption(playlist.id);
-  await firstPage.getByRole("button", { name: "Close developer menu" }).click();
+  await firstPage.getByRole("button", { name: "Close Manage menu" }).click();
   await startGame.click();
   for (let roleIndex = 0; roleIndex < 10; roleIndex += 1) {
     await firstPage
@@ -417,18 +463,11 @@ try {
   await firstPage.getByRole("button", { name: "Continue to Sheriff wake-up" }).click();
   await firstPage.getByRole("button", { name: "Begin day one" }).click();
   await waitForSaved(startSave);
-  const turnSave = firstPage.waitForResponse((response) => {
-    if (
-      response.request().method() !== "POST" ||
-      !new globalThis.URL(response.url()).pathname.endsWith("/events")
-    ) {
-      return false;
-    }
-    const request = response.request().postDataJSON();
-    return request.event?.type === "turn.completed";
-  });
-  await firstPage.getByRole("button", { name: "Next player" }).click();
-  await waitForSaved(turnSave);
+  if (createdGameIds.size !== 1) {
+    throw new Error("Expected exactly one run-owned game session after start");
+  }
+  const [gameId] = createdGameIds;
+  const gameName = (await waitForAuthoritativePhase(gameId, "day")).name;
 
   const activeResponse = await apiContext.get(`${apiBaseUrl}/api/game-sessions`, {
     maxRedirects: 0,
@@ -436,13 +475,14 @@ try {
   if (!activeResponse.ok()) throw new Error("Active session listing failed");
   const { sessions } = await activeResponse.json();
   const verificationSessions = Array.isArray(sessions)
-    ? sessions.filter(({ hostName }) => hostName === players[10].nickname)
+    ? sessions.filter(({ gameId }) => createdGameIds.has(gameId.toLowerCase()))
     : [];
   if (verificationSessions.length !== 1) {
     throw new Error("Expected exactly one run-owned active server session before restart");
   }
-  const gameId = verificationSessions[0].gameId;
-  const gameName = verificationSessions[0].name;
+  if (verificationSessions[0].gameId.toLowerCase() !== gameId) {
+    throw new Error("Active session listing returned the wrong run-owned game ID");
+  }
   const storedResponse = await apiContext.get(`${apiBaseUrl}/api/game-sessions/${gameId}`, {
     maxRedirects: 0,
   });
@@ -474,29 +514,43 @@ try {
     storedSession.state.hostName !== players[10].nickname ||
     storedSession.state.playlistId !== playlist.id ||
     storedSession.state.game?.phase !== "day" ||
-    storedSession.state.game?.currentTurnIndex !== 1 ||
+    storedSession.state.game?.currentTurnIndex !== 0 ||
     storedSession.state.undoHistory.length !== 0 ||
     storedSession.state.initialGame?.replayVersion !== 1 ||
     activeEvents.length === 0 ||
     !activeEvents.some(({ type }) => type === "game.started" || type === "game.checkpointed") ||
-    !activeEvents.some(({ type }) => type === "turn.completed") ||
+    !activeEvents.some(({ type }) => type === "phase.changed") ||
     !isDeepStrictEqual(replayed.game, storedSession.state.game)
   ) {
-    throw new Error("The authoritative server session is not fully restorable");
+    throw new Error(
+      `The authoritative server session is not fully restorable: ${JSON.stringify({
+        hostPlayerId: storedSession.state.hostPlayerId,
+        hostName: storedSession.state.hostName,
+        playlistId: storedSession.state.playlistId,
+        phase: storedSession.state.game?.phase,
+        currentTurnIndex: storedSession.state.game?.currentTurnIndex,
+        undoCount: storedSession.state.undoHistory.length,
+        replayVersion: storedSession.state.initialGame?.replayVersion,
+        eventTypes: activeEvents.map(({ type }) => type),
+        replayMatches: isDeepStrictEqual(replayed.game, storedSession.state.game),
+      })}`,
+    );
   }
-  const acceptedTurn = activeEvents.find(({ type }) => type === "turn.completed");
-  if (acceptedTurn?.parentEventId == null) throw new Error("Reset probe has no parent event");
+  const acceptedEvent = activeEvents.at(-1);
+  if (acceptedEvent?.type !== "phase.changed" || acceptedEvent.parentEventId == null) {
+    throw new Error("Reset probe has no accepted phase event with a parent");
+  }
   const resetGame = replayGameLog(
     storedSession.state.initialGame,
-    activeEvents.filter(({ id }) => id !== acceptedTurn.id),
+    activeEvents.filter(({ id }) => id !== acceptedEvent.id),
   ).game;
   const resetPostcondition = {
     gameId,
     revision: storedSession.revision + 1,
     status: "active",
     results: null,
-    headEventId: acceptedTurn.parentEventId,
-    resetReturnEventId: acceptedTurn.id,
+    headEventId: acceptedEvent.parentEventId,
+    resetReturnEventId: acceptedEvent.id,
     game: resetGame,
   };
   const resetResponse = await apiContext.post(`${apiBaseUrl}/api/game-sessions/${gameId}/head`, {
@@ -504,7 +558,7 @@ try {
     data: {
       mutationId: randomUUID(),
       baseRevision: storedSession.revision,
-      targetEventId: acceptedTurn.parentEventId,
+      targetEventId: acceptedEvent.parentEventId,
       reason: "reset",
     },
   });
@@ -521,7 +575,7 @@ try {
     revision: resetReadback.revision + 1,
     status: "active",
     results: null,
-    headEventId: acceptedTurn.id,
+    headEventId: acceptedEvent.id,
     resetReturnEventId: null,
     game: replayed.game,
   };
@@ -530,7 +584,7 @@ try {
     data: {
       mutationId: randomUUID(),
       baseRevision: resetReadback.revision,
-      targetEventId: acceptedTurn.id,
+      targetEventId: acceptedEvent.id,
       reason: "restore-reset",
     },
   });
@@ -550,23 +604,20 @@ try {
   await restartedPage
     .getByRole("button", { name: `Open ${selectedClub.name} in ${selectedClub.city}`, exact: true })
     .click();
-  await restartedPage.getByRole("button", { name: "Open developer menu" }).click();
+  await restartedPage.getByRole("button", { name: "Open Manage menu" }).click();
   await restartedPage.getByRole("button", { name: `Resume ${gameName}` }).click();
   await restartedPage.getByRole("heading", { name: "Day 1" }).waitFor();
   await restartedPage.getByRole("group", { name: `Host: ${players[10].nickname}` }).waitFor();
-  await restartedPage.getByRole("button", { name: /undo last action.*1 available/i }).waitFor();
-  await restartedPage.getByRole("button", { name: "Open game log" }).click();
-  await restartedPage.getByText("turn.completed", { exact: true }).waitFor();
   const restoredEnvelope = await restartedPage.evaluate(() => {
-    const raw = window.sessionStorage.getItem("mafia-dashboard.game-session.v4");
+    const raw = window.localStorage.getItem("mafia-dashboard.game-session.v4");
     return raw === null ? null : JSON.parse(raw);
   });
   assertEnvelopeMatchesSession(restoredEnvelope, authoritativeSession, replayGameLog);
   await restartedPage.screenshot({ path: screenshotPath, fullPage: true });
 
   restartedPage.once("dialog", (dialog) => dialog.accept());
-  await restartedPage.getByRole("button", { name: "Open developer menu" }).click();
-  await restartedPage.getByRole("button", { name: "Clear game state" }).click();
+  await restartedPage.getByRole("button", { name: "Open Manage menu" }).click();
+  await restartedPage.getByRole("button", { name: "Start new game" }).click();
   await restartedPage.getByRole("heading", { name: "Select 10 players + host" }).waitFor();
   const afterClear = await apiContext.get(`${apiBaseUrl}/api/game-sessions`, {
     maxRedirects: 0,
@@ -574,7 +625,7 @@ try {
   const clearedSessions = (await afterClear.json()).sessions;
   if (
     !Array.isArray(clearedSessions) ||
-    clearedSessions.some(({ hostName }) => hostName === players[10].nickname)
+    clearedSessions.some(({ gameId: activeGameId }) => activeGameId.toLowerCase() === gameId)
   ) {
     throw new Error("Cleared session remains active on the server");
   }
@@ -583,7 +634,7 @@ try {
   });
   if (tombstoned.status() !== 404) throw new Error("Cleared session remains server-restorable");
   const remainingEnvelope = await restartedPage.evaluate(() =>
-    window.sessionStorage.getItem("mafia-dashboard.game-session.v4"),
+    window.localStorage.getItem("mafia-dashboard.game-session.v4"),
   );
   if (remainingEnvelope !== null) throw new Error("Cleared session remains in the client outbox");
   await restartedContext.close();
@@ -601,31 +652,7 @@ try {
       );
     }
   };
-  let listedPlayers = [];
   await cleanupAttempt("browser response drain", () => responseTracker.drain());
-  await cleanupAttempt("verification player discovery", async () => {
-    const playerList = await apiContext.get("/api/players", { maxRedirects: 0 });
-    if (!playerList.ok()) {
-      throw new Error(`Unable to inspect verification player cleanup: HTTP ${playerList.status()}`);
-    }
-    listedPlayers = (await playerList.json()).players;
-    if (!Array.isArray(listedPlayers)) throw new Error("Player cleanup listing is malformed");
-    for (const player of listedPlayers) {
-      if (playerNames.includes(player.nickname)) createdPlayers.set(player.id, player.nickname);
-    }
-  });
-  for (const path of ["/api/game-sessions", "/api/game-sessions?status=completed"]) {
-    await cleanupAttempt(`verification session discovery ${path}`, async () => {
-      const response = await apiContext.get(path, { maxRedirects: 0 });
-      if (!response.ok())
-        throw new Error(`Unable to discover verifier sessions: HTTP ${response.status()}`);
-      const sessions = (await response.json()).sessions;
-      if (!Array.isArray(sessions)) throw new Error("Session cleanup listing is malformed");
-      for (const session of sessions) {
-        if (session.hostName === playerNames[10]) createdGameIds.add(session.gameId);
-      }
-    });
-  }
   for (const gameId of createdGameIds) {
     await cleanupAttempt(`verification session cleanup ${gameId}`, async () => {
       const stored = await apiContext.get(`/api/game-sessions/${gameId}`, { maxRedirects: 0 });
@@ -634,20 +661,6 @@ try {
         throw new Error(`Unable to inspect verification session cleanup: HTTP ${stored.status()}`);
       }
       const { session } = await stored.json();
-      const statePlayerIds = [
-        ...(session.state?.setup?.players ?? []),
-        ...(session.state?.game?.players ?? []),
-        ...(session.state?.initialGame?.game?.players ?? []),
-        ...(session.state?.hostPlayerId == null ? [] : [{ id: session.state.hostPlayerId }]),
-      ].map(({ id }) => id);
-      const ownedPlayerIds = new Set(statePlayerIds);
-      if (
-        session.state?.hostName !== playerNames[10] ||
-        ownedPlayerIds.size !== playerNames.length ||
-        [...ownedPlayerIds].some((id) => !createdPlayers.has(id))
-      ) {
-        throw new Error("Refusing to clean up a session not owned by this verifier run");
-      }
       const response = await apiContext.delete(
         `/api/game-sessions/${gameId}?expectedRevision=${session.revision}`,
         { maxRedirects: 0 },
@@ -661,32 +674,17 @@ try {
       }
     });
   }
-  for (const [playerId, expectedNickname] of [...createdPlayers].reverse()) {
-    await cleanupAttempt(`verification player cleanup ${playerId}`, async () => {
-      const storedPlayer = listedPlayers.find(({ id }) => id === playerId);
-      if (storedPlayer === undefined) return;
-      if (storedPlayer.nickname !== expectedNickname) {
-        throw new Error("Refusing to clean up a player not owned by this verifier run");
-      }
-      const response = await apiContext.delete(`/api/players/${playerId}`, { maxRedirects: 0 });
-      if (!response.ok() && response.status() !== 404) {
-        throw new Error(`Unable to clean up a verification player: HTTP ${response.status()}`);
-      }
-    });
+  for (const playerId of [...createdPlayerIds].reverse()) {
+    await cleanupAttempt(`verification player cleanup ${playerId}`, () =>
+      deleteAndVerifyAbsent("Verifier-owned player", async () =>
+        (
+          await apiContext.delete(`/api/players/${playerId}`, {
+            maxRedirects: 0,
+          })
+        ).status(),
+      ),
+    );
   }
-  await cleanupAttempt("verification player cleanup readback", async () => {
-    const readback = await apiContext.get("/api/players", { maxRedirects: 0 });
-    if (!readback.ok()) throw new Error("Unable to verify player cleanup");
-    const remaining = (await readback.json()).players;
-    if (
-      !Array.isArray(remaining) ||
-      remaining.some(
-        ({ id, nickname }) => createdPlayerIds.includes(id) || playerNames.includes(nickname),
-      )
-    ) {
-      throw new Error("Verifier-owned players remain after cleanup");
-    }
-  });
   await cleanupAttempt("API context close", () => apiContext.dispose());
   await cleanupAttempt("browser close", () => browser.close());
 }

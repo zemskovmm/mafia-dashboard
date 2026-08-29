@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
+import * as contracts from "./session-verifier-contracts.mjs";
 import {
   assertEnvelopeMatchesSession,
   assertHeadOperation,
@@ -81,6 +82,226 @@ const expectedHeadOperation = {
   targetEventId: ids.root,
   reason: "reset",
 };
+
+test("exact origin guards reject matching API paths on another origin", () => {
+  assert.doesNotThrow(() =>
+    contracts.assertExactOrigin("https://verified.example/api/clubs", "https://verified.example"),
+  );
+  assert.throws(
+    () =>
+      contracts.assertExactOrigin("https://attacker.example/api/clubs", "https://verified.example"),
+    /origin/i,
+  );
+});
+
+test("remote verifier targets require an isolated opt-in and exact HTTPS origin", () => {
+  const valid = {
+    configuredUrl: "https://verified.example",
+    browserUrl: "https://verified.example/dashboard",
+    remoteAllowed: true,
+    expectedOrigin: "https://verified.example",
+  };
+  assert.equal(contracts.assertVerifierTarget(valid), "https://verified.example");
+  assert.throws(
+    () => contracts.assertVerifierTarget({ ...valid, remoteAllowed: false }),
+    /isolated/i,
+  );
+  assert.throws(
+    () => contracts.assertVerifierTarget({ ...valid, expectedOrigin: "https://verified.example/" }),
+    /exact expected origin/i,
+  );
+  assert.throws(
+    () =>
+      contracts.assertVerifierTarget({
+        ...valid,
+        configuredUrl: "http://verified.example",
+        browserUrl: "http://verified.example",
+        expectedOrigin: "http://verified.example",
+      }),
+    /HTTPS/i,
+  );
+});
+
+test("IPv6 loopback remains a local verifier target without remote opt-in", () => {
+  assert.equal(
+    contracts.assertVerifierTarget({
+      configuredUrl: "http://[::1]:8080",
+      browserUrl: "http://[::1]:8080/dashboard",
+      remoteAllowed: false,
+    }),
+    "http://[::1]:8080",
+  );
+});
+
+test("verifier targets reject browser and API deployment identity splits", () => {
+  assert.throws(
+    () =>
+      contracts.assertVerifierTarget({
+        configuredUrl: "https://verified.example",
+        browserUrl: "https://localhost:8443",
+        remoteAllowed: true,
+        expectedOrigin: "https://verified.example",
+      }),
+    /browser\/API origin mismatch/i,
+  );
+  assert.throws(
+    () =>
+      contracts.assertVerifierTarget({
+        configuredUrl: "http://127.0.0.1:8080",
+        browserUrl: "http://localhost:8080",
+        remoteAllowed: false,
+      }),
+    /browser\/API origin mismatch/i,
+  );
+});
+
+test("browser API policy blocks unexpected unsafe requests and unowned sessions", () => {
+  const gameId = "00000000-0000-4000-8000-000000000201";
+  const ownedGameIds = new Set([gameId]);
+  const classify = (method, path) =>
+    contracts.classifyBrowserApiRequest({
+      method,
+      url: `https://verified.example${path}`,
+      expectedOrigin: "https://verified.example",
+      ownedGameIds,
+    });
+
+  assert.deepEqual(classify("GET", "/api/players"), { kind: "safe" });
+  assert.deepEqual(
+    contracts.classifyBrowserApiRequest({
+      method: "GET",
+      url: "https://fonts.googleapis.com/css2",
+      expectedOrigin: "https://verified.example",
+      ownedGameIds,
+    }),
+    { kind: "external-safe" },
+  );
+  assert.deepEqual(classify("POST", `/api/game-sessions/${gameId}/events`), {
+    kind: "owned-session-mutation",
+    gameId,
+  });
+  assert.throws(
+    () => classify("POST", `/api/game-sessions/${gameId}/events?unreviewed=1`),
+    /unexpected unsafe browser request/i,
+  );
+  assert.throws(() => classify("DELETE", "/api/players/not-owned"), /unsafe browser request/i);
+  assert.throws(() => classify("POST", "/unreviewed-write"), /unsafe browser request/i);
+  assert.throws(() => classify("POST", "/api"), /unsafe browser request/i);
+  assert.throws(
+    () => classify("POST", "/api/game-sessions/00000000-0000-4000-8000-000000000202/events"),
+    /unowned game session/i,
+  );
+  assert.throws(
+    () =>
+      contracts.classifyBrowserApiRequest({
+        method: "GET",
+        url: "https://attacker.example/api/players",
+        expectedOrigin: "https://verified.example",
+        ownedGameIds,
+      }),
+    /origin mismatch/i,
+  );
+});
+
+test("browser API policy exposes only exact session creation and owned mutation routes", () => {
+  const ownedId = "00000000-0000-4000-8000-000000000201";
+  const newId = "00000000-0000-4000-8000-000000000202";
+  const classify = (method, path) =>
+    contracts.classifyBrowserApiRequest({
+      method,
+      url: `https://verified.example${path}`,
+      expectedOrigin: "https://verified.example",
+      ownedGameIds: new Set([ownedId]),
+    });
+
+  assert.deepEqual(classify("PUT", `/api/game-sessions/${newId}`), {
+    kind: "session-creation",
+    gameId: newId,
+  });
+  assert.deepEqual(classify("PUT", `/api/game-sessions/${ownedId}`), {
+    kind: "owned-session-mutation",
+    gameId: ownedId,
+  });
+  assert.deepEqual(classify("DELETE", `/api/game-sessions/${ownedId}?expectedRevision=7`), {
+    kind: "owned-session-mutation",
+    gameId: ownedId,
+  });
+  assert.throws(
+    () => classify("DELETE", `/api/game-sessions/${newId}?expectedRevision=7`),
+    /unowned game session/i,
+  );
+  assert.throws(() => classify("PATCH", `/api/game-sessions/${ownedId}`), /unexpected unsafe/i);
+});
+
+test("ownership checks canonicalize case-variant UUID references before dispatch", () => {
+  const gameId = "a0000000-0000-4000-8000-000000000201";
+  const requestId = gameId.toUpperCase();
+  const classify = (ownedGameIds) =>
+    contracts.classifyBrowserApiRequest({
+      method: "PUT",
+      url: `https://verified.example/api/game-sessions/${requestId}`,
+      expectedOrigin: "https://verified.example",
+      ownedGameIds,
+    });
+
+  const candidate = classify(new Set());
+  assert.deepEqual(candidate, { kind: "session-creation", gameId });
+  assert.equal(new Set([gameId]).has(candidate.gameId), true);
+  assert.deepEqual(classify(new Set([gameId])), { kind: "owned-session-mutation", gameId });
+  assert.throws(
+    () =>
+      contracts.assertNewResource({
+        label: "player",
+        status: 201,
+        id: requestId,
+        preexistingIds: new Set([gameId]),
+      }),
+    /pre-existing ID/i,
+  );
+});
+
+test("ownership snapshots reject duplicate and pre-existing creation names", () => {
+  assert.doesNotThrow(() =>
+    contracts.assertNamesAvailable(["Verifier One", "Verifier Two"], ["Existing Player"]),
+  );
+  assert.throws(
+    () => contracts.assertNamesAvailable(["Verifier One", "Verifier One"], []),
+    /duplicate requested name/i,
+  );
+  assert.throws(
+    () => contracts.assertNamesAvailable(["Verifier One"], ["Verifier One"]),
+    /pre-existing name/i,
+  );
+});
+
+test("created-resource ownership requires 201, the requested ID, and snapshot absence", () => {
+  const requestedId = "00000000-0000-4000-8000-000000000202";
+  const candidate = {
+    label: "game session",
+    status: 201,
+    id: requestedId,
+    expectedId: requestedId,
+    preexistingIds: new Set(["00000000-0000-4000-8000-000000000201"]),
+  };
+  assert.equal(contracts.assertNewResource(candidate), requestedId);
+  assert.throws(() => contracts.assertNewResource({ ...candidate, status: 200 }), /201 Created/i);
+  assert.throws(
+    () =>
+      contracts.assertNewResource({
+        ...candidate,
+        id: "00000000-0000-4000-8000-000000000203",
+      }),
+    /requested ID/i,
+  );
+  assert.throws(
+    () => contracts.assertNewResource({ ...candidate, preexistingIds: new Set([requestedId]) }),
+    /pre-existing ID/i,
+  );
+  assert.throws(
+    () => contracts.assertNewResource({ ...candidate, claimedIds: new Set([requestedId]) }),
+    /already claimed/i,
+  );
+});
 
 test("head operations require the exact expected contract", async (t) => {
   assert.doesNotThrow(() => assertHeadOperation(validHeadOperation, expectedHeadOperation));
@@ -170,6 +391,12 @@ test("durable envelopes must match the complete authoritative canonical session"
       );
     });
   }
+});
+
+test("durable envelopes normalize an omitted authoritative legacy log to empty", () => {
+  const withoutLegacyLog = clone(session);
+  delete withoutLegacyLog.state.legacyLog;
+  assert.doesNotThrow(() => assertEnvelopeMatchesSession(envelope, withoutLegacyLog, replay));
 });
 
 test("authoritative readbacks must satisfy the fresh reset postcondition", () => {
@@ -317,6 +544,25 @@ test("cleanup runs every action and aggregates labeled failures in order", async
   assert.deepEqual(calls, ["sessions", "players", "browser"]);
 });
 
+test("exact cleanup deletes a proven ID even when listings omit it and confirms absence", async () => {
+  const statuses = [204, 404];
+  let calls = 0;
+  await contracts.deleteAndVerifyAbsent("verification player", async () => {
+    calls += 1;
+    return statuses.shift();
+  });
+  assert.equal(calls, 2);
+
+  await assert.rejects(
+    contracts.deleteAndVerifyAbsent("verification player", async () => 204),
+    /remains after cleanup/i,
+  );
+  await assert.rejects(
+    contracts.deleteAndVerifyAbsent("verification player", async () => 500),
+    /HTTP 500/i,
+  );
+});
+
 test("runtime verifiers enforce the shared contracts at their success boundaries", async () => {
   const [sessionVerifier, uiVerifier] = await Promise.all([
     readFile(new URL("./verify-session-state.mjs", import.meta.url), "utf8"),
@@ -327,9 +573,23 @@ test("runtime verifiers enforce the shared contracts at their success boundaries
   assert.match(sessionVerifier, /assertSessionPostcondition\(authoritativeSession/);
   assert.match(sessionVerifier, /assertEnvelopeMatchesSession\(restoredEnvelope/);
   assert.match(sessionVerifier, /await waitForSaved\(startSave\)/);
-  assert.match(sessionVerifier, /await waitForSaved\(turnSave\)/);
   assert.match(sessionVerifier, /responseTracker\.drain\(\)/);
   assert.match(sessionVerifier, /runCleanupActions\(/);
+  assert.match(sessionVerifier, /deleteAndVerifyAbsent\(/);
+  assert.match(sessionVerifier, /assertVerifierTarget\(/);
+  assert.match(sessionVerifier, /classifyBrowserApiRequest\(/);
+  assert.match(sessionVerifier, /context\.route\("\*\*\/\*"/);
+  assert.match(sessionVerifier, /assertNamesAvailable\(/);
+  assert.match(sessionVerifier, /assertNewResource\(/);
+  assert.match(sessionVerifier, /Open Manage menu/);
+  assert.match(sessionVerifier, /const acceptedEvent = activeEvents\.at\(-1\)/);
+  assert.match(sessionVerifier, /waitForAuthoritativePhase\(/);
+  assert.match(
+    sessionVerifier,
+    /window\.localStorage\.getItem\("mafia-dashboard\.game-session\.v4"\)/,
+  );
+  assert.match(uiVerifier, /assertExactOrigin\(route\.request\(\)\.url\(\), expectedOrigin\)/);
+  assert.match(uiVerifier, /await unlockDeveloperMenu\(page\)/);
   assert.match(uiVerifier, /headOperationExpectations\.consume\(operation\)/);
   assert.match(uiVerifier, /headOperationExpectations\.assertDrained\(\)/);
   assert.match(uiVerifier, /rootCheckpoint\?\.phaseAfter !== "mafia-planning"/);

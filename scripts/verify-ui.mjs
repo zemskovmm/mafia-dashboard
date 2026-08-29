@@ -1,10 +1,26 @@
 /* global URL, document, getComputedStyle, HTMLElement, HTMLInputElement, innerHeight, innerWidth, structuredClone, sessionStorage, crypto, TextEncoder, ErrorEvent, Event */
 import { chromium, webkit } from "@playwright/test";
-import { createHeadOperationExpectations } from "./session-verifier-contracts.mjs";
+import {
+  assertExactOrigin,
+  createHeadOperationExpectations,
+} from "./session-verifier-contracts.mjs";
 
 const baseUrl = process.env.APP_URL ?? "http://127.0.0.1:8080";
+const expectedOrigin = new URL(baseUrl).origin;
 let browserAppUrl = baseUrl;
 let storageMutationUrl;
+const fulfillMock = async (route, response) => {
+  assertExactOrigin(route.request().url(), expectedOrigin);
+  await route.fulfill(response);
+};
+const unlockDeveloperMenu = async (page) => {
+  const menuButton = page.getByRole("button", { name: "Open developer menu" });
+  if (!(await menuButton.isVisible())) {
+    const privacy = page.getByRole("button", { name: /^(Hide|Show) private info$/ });
+    for (let tap = 0; tap < 5; tap += 1) await privacy.dispatchEvent("click");
+  }
+  await menuButton.waitFor();
+};
 const screenshotPath = process.env.UI_SCREENSHOT ?? "/tmp/mafia-dashboard-setup.png";
 const tableScreenshotPath = process.env.UI_TABLE_SCREENSHOT ?? "/tmp/mafia-dashboard-table.png";
 const sidePanelScreenshotPath =
@@ -62,7 +78,7 @@ const testClub = {
   headerLogo: null,
   cardLogo: null,
   language: "en",
-  role: "owner",
+  role: "manager",
   createdAt: "2026-08-21T00:00:00.000Z",
   updatedAt: "2026-08-21T00:00:00.000Z",
 };
@@ -174,17 +190,18 @@ await page.addInitScript(() => {
 
 await page.route("**/api/**", async (route) => {
   const request = route.request();
+  assertExactOrigin(request.url(), expectedOrigin);
   const pathname = new URL(request.url()).pathname;
   if (!pathname.startsWith("/api/")) {
     await route.fallback();
     return;
   }
   routeErrors.push(`${request.method()} ${pathname}`);
-  await route.fulfill({ status: 500, contentType: "application/json", body: "{}" });
+  await fulfillMock(route, { status: 500, contentType: "application/json", body: "{}" });
 });
 
 await page.route("**/api/auth/session", async (route) => {
-  await route.fulfill({
+  await fulfillMock(route, {
     contentType: "application/json",
     body: JSON.stringify({
       configured: true,
@@ -198,19 +215,19 @@ await page.route("**/api/auth/session", async (route) => {
   });
 });
 await page.route("**/api/clubs", async (route) => {
-  await route.fulfill({
+  await fulfillMock(route, {
     contentType: "application/json",
     body: JSON.stringify({ clubs: [testClub] }),
   });
 });
 await page.route("**/api/music/oauth/status", async (route) => {
-  await route.fulfill({
+  await fulfillMock(route, {
     contentType: "application/json",
     body: JSON.stringify({ configured: true, connected: true, accountLabel: "ui@example.com" }),
   });
 });
 await page.route("**/api/music/playlists", async (route) => {
-  await route.fulfill({
+  await fulfillMock(route, {
     contentType: "application/json",
     body: JSON.stringify({
       playlists: [{ id: "test-playlist", title: "UI Verification", itemCount: 12 }],
@@ -218,7 +235,7 @@ await page.route("**/api/music/playlists", async (route) => {
   });
 });
 await page.route("**/api/music/playlists/*/items", async (route) => {
-  await route.fulfill({
+  await fulfillMock(route, {
     contentType: "application/json",
     body: JSON.stringify({
       items: [
@@ -264,10 +281,10 @@ await page.route("**/api/music/playlists/*/items", async (route) => {
 await page.route("**/api/players*", async (route) => {
   if (route.request().method() !== "GET") {
     routeErrors.push(`${route.request().method()} ${new URL(route.request().url()).pathname}`);
-    await route.fulfill({ status: 400, contentType: "application/json", body: "{}" });
+    await fulfillMock(route, { status: 400, contentType: "application/json", body: "{}" });
     return;
   }
-  await route.fulfill({
+  await fulfillMock(route, {
     contentType: "application/json",
     body: JSON.stringify({ players: testPlayers }),
   });
@@ -276,7 +293,7 @@ await page.route("**/api/game-sessions", async (route) => {
   if (route.request().method() !== "GET") {
     routeErrors.push(`${route.request().method()} /api/game-sessions`);
   }
-  await route.fulfill({
+  await fulfillMock(route, {
     contentType: "application/json",
     body: JSON.stringify({ sessions: [] }),
   });
@@ -285,7 +302,7 @@ await page.route("**/api/game-sessions?*", async (route) => {
   if (route.request().method() !== "GET") {
     routeErrors.push(`${route.request().method()} /api/game-sessions?status`);
   }
-  await route.fulfill({
+  await fulfillMock(route, {
     contentType: "application/json",
     body: JSON.stringify({ sessions: [] }),
   });
@@ -299,10 +316,10 @@ await page.route("**/api/game-sessions/**", async (route) => {
       /^\d+$/.test(requestUrl.searchParams.get("expectedRevision") ?? "");
     if (!validDelete) {
       routeErrors.push(`DELETE ${requestUrl.pathname}`);
-      await route.fulfill({ status: 400, contentType: "application/json", body: "{}" });
+      await fulfillMock(route, { status: 400, contentType: "application/json", body: "{}" });
       return;
     }
-    await route.fulfill({ status: 204, body: "" });
+    await fulfillMock(route, { status: 204, body: "" });
     return;
   }
   if (request.method() === "POST") {
@@ -327,10 +344,10 @@ await page.route("**/api/game-sessions/**", async (route) => {
     }
     if (!valid) {
       routeErrors.push(`POST ${new URL(request.url()).pathname}`);
-      await route.fulfill({ status: 400, contentType: "application/json", body: "{}" });
+      await fulfillMock(route, { status: 400, contentType: "application/json", body: "{}" });
       return;
     }
-    await route.fulfill({
+    await fulfillMock(route, {
       contentType: "application/json",
       body: JSON.stringify({
         revision: operation.baseRevision + 1,
@@ -340,7 +357,7 @@ await page.route("**/api/game-sessions/**", async (route) => {
     return;
   }
   if (request.method() !== "PUT") {
-    await route.fulfill({ status: 404, contentType: "application/json", body: "{}" });
+    await fulfillMock(route, { status: 404, contentType: "application/json", body: "{}" });
     return;
   }
   const mutation = request.postDataJSON();
@@ -351,11 +368,11 @@ await page.route("**/api/game-sessions/**", async (route) => {
     mutation.state?.headEventId !== undefined
   ) {
     routeErrors.push(`PUT ${new URL(request.url()).pathname}`);
-    await route.fulfill({ status: 400, contentType: "application/json", body: "{}" });
+    await fulfillMock(route, { status: 400, contentType: "application/json", body: "{}" });
     return;
   }
   const gameId = new globalThis.URL(request.url()).pathname.split("/").at(-1);
-  await route.fulfill({
+  await fulfillMock(route, {
     status: mutation.baseRevision === 0 ? 201 : 200,
     contentType: "application/json",
     body: JSON.stringify({
@@ -376,6 +393,7 @@ await page.route("**/api/game-sessions/**", async (route) => {
 
 try {
   await page.goto(browserAppUrl, { waitUntil: "networkidle" });
+  assertExactOrigin(page.url(), expectedOrigin);
   browserAppUrl = page.url();
   storageMutationUrl = new URL("/health/ready", browserAppUrl).href;
   if ((await page.title()) !== "Mafia Dashboard") throw new Error("Unexpected page title");
@@ -384,6 +402,7 @@ try {
     await page.locator(".club-playing-card:not(.new-club-card)").first().click();
     await page.waitForTimeout(950);
   }
+  await unlockDeveloperMenu(page);
   const setupHeading = page.getByRole("heading", { name: "Select 10 players + host" });
   if (!(await setupHeading.isVisible())) {
     await page.getByRole("heading", { name: "Players & statistics" }).waitFor();
@@ -595,6 +614,8 @@ try {
     if ((await page.getByRole("button", { name: "Reload music player" }).count()) !== 0) {
       throw new Error("Reload music player must stay inside the music setup submenu");
     }
+    await page.getByRole("button", { name: "Close developer menu" }).click();
+    await page.getByRole("button", { name: "Open Manage menu" }).click();
     await page.getByRole("button", { name: "Music player setup" }).click();
     const musicSetup = page.getByRole("region", { name: "Music player setup" });
     await musicSetup.waitFor();
@@ -608,7 +629,7 @@ try {
       throw new Error("Dev music setup must expose one playlist and no app volume presets");
     }
     await page.screenshot({ path: screenshotPath, fullPage: true });
-    await page.getByRole("button", { name: "Close developer menu" }).click();
+    await page.getByRole("button", { name: "Close Manage menu" }).click();
     await startGame.click();
     for (let roleIndex = 0; roleIndex < 10; roleIndex += 1) {
       await page
@@ -1848,6 +1869,11 @@ try {
   await page.getByRole("button", { name: "Assign players" }).click();
   const playerSelectors = page.getByRole("combobox", { name: /^Seat \d+ player$/ });
   if ((await playerSelectors.count()) !== 10) throw new Error("Expected ten player selectors");
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll('input[aria-label^="Seat "][aria-label$=" player"]')].every(
+      (input) => input instanceof HTMLInputElement && input.value !== "",
+    ),
+  );
   const selectedPlayerNames = await playerSelectors.evaluateAll((selectors) =>
     selectors.map((selector) => {
       if (!(selector instanceof HTMLInputElement)) throw new Error("Expected player input");
@@ -1863,7 +1889,9 @@ try {
     new Set(selectedPlayers.map(({ id }) => id)).size !== 10 ||
     selectedPlayers.some(({ id }) => id === testPlayers[10].id)
   ) {
-    throw new Error("Assigned seats must contain ten unique non-host players");
+    throw new Error(
+      `Assigned seats must contain ten unique non-host players: ${JSON.stringify(selectedPlayerNames)}`,
+    );
   }
   await page.screenshot({ path: selectionScreenshotPath, fullPage: true });
 
@@ -1922,13 +1950,13 @@ try {
       PlayerState: { PLAYING: 1, PAUSED: 2, ENDED: 0, BUFFERING: 3, CUED: 5 },
     };
   });
-  await page.getByRole("button", { name: "Open developer menu" }).click();
+  await page.getByRole("button", { name: "Open Manage menu" }).click();
   await page.getByRole("button", { name: "Music player setup" }).click();
   const musicSetup = page.getByRole("region", { name: "Music player setup" });
   await musicSetup.getByLabel("YouTube Music playlist").selectOption("test-playlist");
   await page.getByText("Ready · paused").waitFor();
   await page.screenshot({ path: screenshotPath, fullPage: true });
-  await page.getByRole("button", { name: "Close developer menu" }).click();
+  await page.getByRole("button", { name: "Close Manage menu" }).click();
   const queueHandle = page.getByRole("button", { name: "Music player panel handle" });
   await queueHandle.click();
   const queue = page.getByRole("region", { name: "Session playlist queue" });

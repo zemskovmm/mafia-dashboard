@@ -1,9 +1,124 @@
+/* global URL */
 import { isDeepStrictEqual } from "node:util";
 
 const uuidPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 const headOperationKeys = ["baseRevision", "mutationId", "reason", "targetEventId"];
+const localHosts = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+const canonicalUuid = (value) => value.toLowerCase();
 
 const messageOf = (error) => (error instanceof Error ? error.message : String(error));
+
+export const assertExactOrigin = (url, expectedOrigin) => {
+  const actualOrigin = new URL(url).origin;
+  if (actualOrigin !== expectedOrigin) {
+    throw new Error(
+      `Verifier request origin mismatch: expected ${expectedOrigin}, received ${actualOrigin}`,
+    );
+  }
+};
+
+export const assertVerifierTarget = ({
+  configuredUrl,
+  browserUrl,
+  remoteAllowed,
+  expectedOrigin,
+}) => {
+  const configured = new URL(configuredUrl);
+  const browser = new URL(browserUrl);
+  if (configured.origin !== browser.origin) {
+    throw new Error(
+      `Verifier browser/API origin mismatch: expected ${configured.origin}, received ${browser.origin}`,
+    );
+  }
+  if (!localHosts.has(configured.hostname)) {
+    if (!remoteAllowed) throw new Error("Remote verifier target requires explicit isolated opt-in");
+    if (configured.protocol !== "https:") throw new Error("Remote verifier target requires HTTPS");
+    if (
+      typeof expectedOrigin !== "string" ||
+      expectedOrigin !== new URL(expectedOrigin).origin ||
+      expectedOrigin !== configured.origin
+    ) {
+      throw new Error("Remote verifier target requires an exact expected origin");
+    }
+  }
+  return configured.origin;
+};
+
+export const classifyBrowserApiRequest = ({ method, url, expectedOrigin, ownedGameIds }) => {
+  const normalizedMethod = method.toUpperCase();
+  const requestUrl = new URL(url);
+  if (["GET", "HEAD", "OPTIONS"].includes(normalizedMethod)) {
+    if (requestUrl.origin === expectedOrigin) return { kind: "safe" };
+    if (requestUrl.pathname === "/api" || requestUrl.pathname.startsWith("/api/")) {
+      assertExactOrigin(requestUrl, expectedOrigin);
+    }
+    return { kind: "external-safe" };
+  }
+
+  assertExactOrigin(requestUrl, expectedOrigin);
+  const { pathname } = requestUrl;
+  const sessionRoot = pathname.match(/^\/api\/game-sessions\/([0-9a-f-]+)$/i);
+  if (sessionRoot !== null && uuidPattern.test(sessionRoot[1])) {
+    const gameId = canonicalUuid(sessionRoot[1]);
+    if (normalizedMethod === "PUT" && requestUrl.search === "") {
+      return ownedGameIds.has(gameId)
+        ? { kind: "owned-session-mutation", gameId }
+        : { kind: "session-creation", gameId };
+    }
+    if (normalizedMethod === "DELETE" && /^\?expectedRevision=\d+$/.test(requestUrl.search)) {
+      if (!ownedGameIds.has(gameId)) {
+        throw new Error("Refusing an unsafe browser request for an unowned game session");
+      }
+      return { kind: "owned-session-mutation", gameId };
+    }
+  }
+  const sessionMutation = pathname.match(
+    /^\/api\/game-sessions\/([0-9a-f-]+)\/(normalize|start|events|head|complete)$/i,
+  );
+  if (normalizedMethod === "POST" && sessionMutation !== null && requestUrl.search === "") {
+    const gameId = canonicalUuid(sessionMutation[1]);
+    if (!uuidPattern.test(gameId) || !ownedGameIds.has(gameId)) {
+      throw new Error("Refusing an unsafe browser request for an unowned game session");
+    }
+    return { kind: "owned-session-mutation", gameId };
+  }
+
+  throw new Error(`Refusing unexpected unsafe browser request: ${normalizedMethod} ${pathname}`);
+};
+
+export const assertNamesAvailable = (requestedNames, existingNames) => {
+  const requested = new Set();
+  const existing = new Set(existingNames);
+  for (const name of requestedNames) {
+    if (requested.has(name)) throw new Error(`Duplicate requested name: ${name}`);
+    if (existing.has(name)) throw new Error(`Refusing to reuse a pre-existing name: ${name}`);
+    requested.add(name);
+  }
+};
+
+export const assertNewResource = ({
+  label,
+  status,
+  id,
+  expectedId,
+  preexistingIds,
+  claimedIds = new Set(),
+}) => {
+  if (status !== 201) throw new Error(`${label} creation must return 201 Created`);
+  if (typeof id !== "string" || !uuidPattern.test(id)) {
+    throw new Error(`${label} creation returned an invalid ID`);
+  }
+  const canonicalId = canonicalUuid(id);
+  if (expectedId !== undefined && canonicalId !== canonicalUuid(expectedId)) {
+    throw new Error(`${label} creation did not return the requested ID`);
+  }
+  if (preexistingIds.has(canonicalId)) {
+    throw new Error(`${label} creation returned a pre-existing ID`);
+  }
+  if (claimedIds.has(canonicalId))
+    throw new Error(`${label} creation returned an already claimed ID`);
+  return canonicalId;
+};
 
 const assertEqual = (label, actual, expected) => {
   if (!isDeepStrictEqual(actual, expected)) {
@@ -37,7 +152,7 @@ const canonicalMetadata = (state) => ({
   hostPlayerId: state.hostPlayerId,
   hostName: state.hostName,
   playlistId: state.playlistId,
-  legacyLog: state.legacyLog,
+  legacyLog: state.legacyLog ?? [],
 });
 
 export const assertHeadOperation = (actual, expected) => {
@@ -152,4 +267,15 @@ export const runCleanupActions = async (actions) => {
     }
   }
   if (errors.length > 0) throw new AggregateError(errors, "Verifier cleanup failed");
+};
+
+export const deleteAndVerifyAbsent = async (label, remove) => {
+  const deletionStatus = await remove();
+  if (deletionStatus !== 204 && deletionStatus !== 404) {
+    throw new Error(`${label} cleanup failed: HTTP ${deletionStatus}`);
+  }
+  const readbackStatus = await remove();
+  if (readbackStatus !== 404) {
+    throw new Error(`${label} remains after cleanup: HTTP ${readbackStatus}`);
+  }
 };
