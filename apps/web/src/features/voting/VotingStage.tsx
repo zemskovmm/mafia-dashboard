@@ -53,10 +53,6 @@ export const VotingStage = ({
     ({ seat }) => game.voteAssignments[seat] !== undefined,
   );
 
-  const carCrashSeatSet = new Set(game.carCrashSeats ?? []);
-  const allActivePlayersTied =
-    carCrashSeatSet.size === activePlayers.length &&
-    activePlayers.every(({ seat }) => carCrashSeatSet.has(seat));
   const selectedCandidate = game.phase === "voting" ? getCurrentVotingCandidateSeat(game) : null;
   const selectedCandidateIndex = game.phase === "voting" ? game.currentTurnIndex : -1;
   const renderFoulAction = (seat: TableSeatView) =>
@@ -159,10 +155,7 @@ export const VotingStage = ({
     );
   }
 
-  if (
-    game.phase === "car-crash-skipped" ||
-    (game.phase === "car-crash-decision" && allActivePlayersTied)
-  ) {
+  if (game.phase === "car-crash-skipped") {
     return (
       <GameTable
         hostName={hostName}

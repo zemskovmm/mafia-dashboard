@@ -1,4 +1,5 @@
 import { evaluateVictory, getDayOrder, markPlayerInactive } from "./game.js";
+import { transitionToNight } from "./night-transition.js";
 import type { GameState, NightShotResult, SecretCheckResult, ShotAssignment } from "./types.js";
 
 const playerAt = (game: GameState, seat: number) => {
@@ -33,32 +34,12 @@ export const beginNight = (game: GameState): GameState => {
     game.phase !== "day" &&
     game.phase !== "voting" &&
     game.phase !== "voting-cancelled" &&
-    game.phase !== "car-crash" &&
-    game.phase !== "car-crash-decision" &&
-    game.phase !== "car-crash-result" &&
     game.phase !== "car-crash-skipped" &&
     game.phase !== "goodbye-speech"
   ) {
     throw new Error(`Cannot begin night from phase ${game.phase}`);
   }
-  return {
-    ...game,
-    phase: "night-mafia",
-    nominations: [],
-    voteAssignments: {},
-    votingRound: undefined,
-    carCrashSeats: undefined,
-    carCrashVotes: undefined,
-    carCrashResult: undefined,
-    goodbyeSeats: undefined,
-    goodbyeNext: undefined,
-    shotAssignments: {},
-    checkResult: undefined,
-    nightResult: undefined,
-    dayNotice: undefined,
-    redCardIssuedThisDay: undefined,
-    votingCancellation: undefined,
-  };
+  return transitionToNight(game);
 };
 
 export const recordMafiaShot = (

@@ -45,6 +45,43 @@ const completedSetup = (): SetupState => {
 const dayOne = (): GameState => advanceSetupPhase(advanceSetupPhase(createGame(completedSetup())));
 
 describe("night actions", () => {
+  it.each(["car-crash", "car-crash-decision", "car-crash-result"] as const)(
+    "rejects beginning night from unresolved %s state",
+    (phase) => {
+      expect(() => beginNight({ ...dayOne(), phase })).toThrow(
+        `Cannot begin night from phase ${phase}`,
+      );
+    },
+  );
+
+  it.each([false, true])(
+    "requires the dedicated completion path for a reviewed car-crash result (eliminate: %s)",
+    (eliminate) => {
+      expect(() =>
+        beginNight({
+          ...dayOne(),
+          phase: "car-crash-result",
+          carCrashResult: {
+            eliminate,
+            seats: [4, 6],
+            yesVotes: eliminate ? 6 : 5,
+            eligibleVoters: 10,
+          },
+        }),
+      ).toThrow("Cannot begin night from phase car-crash-result");
+    },
+  );
+
+  it("begins night from resolved voting and car-crash checkpoints", () => {
+    for (const phase of ["voting-cancelled", "car-crash-skipped"] as const) {
+      expect(beginNight({ ...dayOne(), phase })).toMatchObject({
+        phase: "night-mafia",
+        carCrashSeats: undefined,
+        votingCancellation: undefined,
+      });
+    }
+  });
+
   it("kills only when every active Mafia-aligned shooter selects the same active target", () => {
     let game = beginNight(dayOne());
     const shooters = game.players.filter(({ team }) => team === "black").map(({ seat }) => seat);

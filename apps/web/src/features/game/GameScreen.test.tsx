@@ -264,6 +264,36 @@ describe("GameScreen", () => {
     });
   });
 
+  it("removes and disables swipe red-card actions at night resolution", () => {
+    const base = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+    const target = base.players.find(({ role }) => role === "citizen")!;
+    const props = {
+      hostName: "Host Player",
+      onGameChange: () => undefined,
+      onEvent: () => undefined,
+      privacyHidden: false,
+    };
+    const { rerender } = render(<GameScreen {...props} game={{ ...base, phase: "night-don" }} />);
+    const checkCard = screen.getByRole("button", { name: `Don check ${target.name}` });
+    fireEvent.touchStart(checkCard, { touches: [{ clientX: 20, clientY: 50 }] });
+    fireEvent.touchEnd(checkCard, { changedTouches: [{ clientX: 82, clientY: 52 }] });
+    expect(screen.getByRole("button", { name: `Red card ${target.name}` })).toBeInTheDocument();
+
+    rerender(<GameScreen {...props} game={{ ...base, phase: "night-resolution" }} />);
+    expect(
+      screen.queryByRole("button", { name: `Red card ${target.name}` }),
+    ).not.toBeInTheDocument();
+
+    const resolutionCard = screen.getByRole("button", {
+      name: `Seat ${target.seat}: ${target.name}`,
+    });
+    fireEvent.touchStart(resolutionCard, { touches: [{ clientX: 20, clientY: 50 }] });
+    fireEvent.touchEnd(resolutionCard, { changedTouches: [{ clientX: 82, clientY: 52 }] });
+    expect(
+      screen.queryByRole("button", { name: `Red card ${target.name}` }),
+    ).not.toBeInTheDocument();
+  });
+
   it("locks every nomination button after the current speaker nominates", async () => {
     const user = userEvent.setup();
     render(<DayHarness />);
@@ -348,7 +378,7 @@ describe("GameScreen", () => {
     );
   });
 
-  it("presents an all-player car crash as a skipped ballot instead of a decision", () => {
+  it("does not bypass an unresolved all-player car-crash decision", () => {
     const base = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
     const activeSeats = base.players
       .filter(({ status }) => status === "active")
@@ -371,8 +401,9 @@ describe("GameScreen", () => {
     );
 
     expect(screen.getByRole("heading", { name: "Car crash" })).toBeInTheDocument();
-    expect(screen.getByText("Eliminate-all vote skipped")).toBeInTheDocument();
-    expect(screen.queryByRole("group", { name: "Car-crash decision" })).not.toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Car-crash decision" })).toBeInTheDocument();
+    expect(screen.queryByText("Eliminate-all vote skipped")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Begin night" })).not.toBeInTheDocument();
   });
 
   it("keeps a red-card cancellation on the voting screen until night is confirmed", async () => {

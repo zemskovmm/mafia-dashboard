@@ -137,6 +137,7 @@ export const GameScreen = ({
     game.phase !== "mafia-planning" &&
     game.phase !== "sheriff-wake" &&
     game.phase !== "car-crash-result" &&
+    game.phase !== "night-resolution" &&
     game.phase !== "finished";
   const revealDisciplineAction = (seat: number) => {
     const player = game.players.find((candidate) => candidate.seat === seat);

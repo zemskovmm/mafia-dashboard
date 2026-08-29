@@ -1,5 +1,6 @@
 import { evaluateVictory, markPlayerInactive } from "./game.js";
 import { beginNight } from "./night-actions.js";
+import { transitionToNight } from "./night-transition.js";
 import type { CarCrashVoteResult, GameState, VoteResult } from "./types.js";
 
 const currentSpeakerSeat = (game: GameState): number => {
@@ -526,7 +527,7 @@ export const completeCarCrashResult = (game: GameState): GameState => {
   if (game.phase !== "car-crash-result" || game.carCrashResult === undefined) {
     throw new Error("Only a reviewed car-crash result can continue");
   }
-  if (!game.carCrashResult.eliminate) return beginNight(game);
+  if (!game.carCrashResult.eliminate) return transitionToNight(game);
 
   const afterElimination = game.carCrashResult.seats.reduce(
     (state, seat) => markPlayerInactive(state, seat, "eliminated"),

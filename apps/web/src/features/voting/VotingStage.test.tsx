@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
   advanceSetupPhase,
+  applyGameEvent,
   beginRoleDraw,
   completeCurrentTurn,
   completeRoleDraw,
@@ -14,7 +15,7 @@ import {
   nominate,
   startVoting,
 } from "@mafia/game-domain";
-import type { GameState, PlayerInput } from "@mafia/game-domain";
+import type { CanonicalGameEventDraft, GameState, PlayerInput } from "@mafia/game-domain";
 import { I18nProvider } from "../../i18n/I18nProvider.js";
 import { VotingStage } from "./VotingStage.js";
 
@@ -100,6 +101,46 @@ describe("VotingStage", () => {
     expect(onEvent).toHaveBeenCalledWith("voting.skipped", {
       day: 1,
       reason: "host-skipped",
+    });
+  });
+
+  it.each([
+    ["voting", () => votingGame()],
+    [
+      "car-crash-decision",
+      () => ({
+        ...votingGame(),
+        phase: "car-crash-decision" as const,
+        carCrashSeats: [4, 6],
+        carCrashVotes: {},
+      }),
+    ],
+  ])("emits a replayable voting skip from %s", async (_phase, createState) => {
+    const user = userEvent.setup();
+    const game = createState();
+    const onAcceptedEvent = vi.fn<(event: CanonicalGameEventDraft) => void>();
+    render(
+      <VotingStage
+        game={game}
+        onGameChange={() => undefined}
+        onResolved={() => undefined}
+        onEvent={() => undefined}
+        onAcceptedEvent={onAcceptedEvent}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Skip voting" }));
+
+    expect(onAcceptedEvent).toHaveBeenCalledWith({
+      type: "voting.skipped",
+      payload: { reason: "host-skipped" },
+    });
+    const event = onAcceptedEvent.mock.calls[0]?.[0];
+    expect(event).toBeDefined();
+    if (event === undefined) throw new Error("Expected an accepted voting event");
+    expect(applyGameEvent(game, event)).toMatchObject({
+      phase: "voting-cancelled",
+      votingCancellation: { reason: "host-skipped" },
     });
   });
 
@@ -367,19 +408,20 @@ describe("VotingStage", () => {
       .map(({ seat }) => seat);
     const game: GameState = {
       ...base,
-      phase: "car-crash-decision",
+      phase: "car-crash-skipped",
       carCrashSeats: activeSeats,
-      carCrashVotes: {},
+      carCrashVotes: undefined,
       voteAssignments: {},
     };
-    const onGameChange = vi.fn<(game: GameState) => void>();
+    const onAcceptedEvent = vi.fn<(event: CanonicalGameEventDraft) => void>();
 
     render(
       <VotingStage
         game={game}
-        onGameChange={onGameChange}
+        onGameChange={() => undefined}
         onResolved={() => undefined}
         onEvent={() => undefined}
+        onAcceptedEvent={onAcceptedEvent}
       />,
     );
 
@@ -394,7 +436,46 @@ describe("VotingStage", () => {
     ).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Begin night" }));
-    expect(onGameChange).toHaveBeenCalledWith(expect.objectContaining({ phase: "night-mafia" }));
+    expect(onAcceptedEvent).toHaveBeenCalledWith({
+      type: "phase.changed",
+      payload: { to: "night-mafia" },
+    });
+    const event = onAcceptedEvent.mock.calls[0]?.[0];
+    expect(event).toBeDefined();
+    if (event === undefined) throw new Error("Expected an accepted phase change");
+    expect(applyGameEvent(game, event)).toMatchObject({
+      phase: "night-mafia",
+      carCrashSeats: undefined,
+      carCrashVotes: undefined,
+    });
+  });
+
+  it("does not bypass an unresolved all-player car-crash decision", () => {
+    const base = votingGame();
+    const activeSeats = base.players
+      .filter(({ status }) => status === "active")
+      .map(({ seat }) => seat);
+    const game: GameState = {
+      ...base,
+      phase: "car-crash-decision",
+      carCrashSeats: activeSeats,
+      carCrashVotes: {},
+      voteAssignments: {},
+    };
+
+    render(
+      <VotingStage
+        game={game}
+        onGameChange={() => undefined}
+        onResolved={() => undefined}
+        onEvent={() => undefined}
+      />,
+    );
+
+    expect(screen.getByRole("group", { name: "Car-crash decision" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Resolve car crash" })).toBeInTheDocument();
+    expect(screen.queryByText("Eliminate-all vote skipped")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Begin night" })).not.toBeInTheDocument();
   });
 
   it("toggles a player's vote by tapping the same card again", async () => {
