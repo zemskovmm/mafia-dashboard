@@ -1067,6 +1067,10 @@ export const applyGameEvent = (game: GameState, event: CanonicalGameEventDraft):
   assertCanonicalGameEventDraft(event);
   switch (event.type) {
     case "game.started":
+      if (game.phase !== "mafia-planning") {
+        throw new Error("game.started requires a mafia-planning state");
+      }
+      return game;
     case "game.checkpointed":
       return game;
     case "game.completed":
@@ -1245,6 +1249,34 @@ export const createGameLogEntry = (
 };
 
 const applyReplayEvent = (game: GameState, entry: GameLogEntry): GameState => {
+  if (/^[0-9a-f]{8}$/.test(entry.stateHashAfter) && entry.type === "best-move.completed") {
+    const prepared = game.phase === "night-resolution" ? completeNight(game) : game;
+    const selectedSeats = [...entry.payload.selectedSeats];
+    if (
+      prepared.phase !== "best-move" ||
+      prepared.bestMove?.playerSeat !== entry.payload.playerSeat ||
+      selectedSeats.length !== 3 ||
+      new Set(selectedSeats).size !== selectedSeats.length
+    ) {
+      throw new Error("Legacy Best move has invalid phase, owner, or selections");
+    }
+    const selected = selectedSeats.map((seat) =>
+      prepared.players.find((player) => player.seat === seat),
+    );
+    if (selected.some((player) => player === undefined)) {
+      throw new Error("Legacy Best move contains an invalid player");
+    }
+    const mafiaHits = selected.filter((player) => player?.team === "black").length;
+    if (entry.payload.mafiaHits !== mafiaHits) {
+      throw new Error("Legacy Best move hit count does not match the immutable roles");
+    }
+    return {
+      ...prepared,
+      phase: "goodbye-speech",
+      bestMove: { playerSeat: entry.payload.playerSeat, selectedSeats, mafiaHits },
+      dayNotice: undefined,
+    };
+  }
   if (
     /^[0-9a-f]{8}$/.test(entry.stateHashAfter) &&
     (entry.type === "don.checked" || entry.type === "sheriff.checked")

@@ -905,6 +905,49 @@ describe("canonical game replay", () => {
     );
   });
 
+  it("rejects game.started outside Mafia planning at every domain write boundary", () => {
+    const day = dayOne();
+    const draft = { type: "game.started" as const, payload: {} };
+
+    expect(() => applyGameEvent(day, draft)).toThrow(/mafia-planning/i);
+    expect(() => entry(day, 1, draft)).toThrow(/mafia-planning/i);
+
+    const planning = planningGame();
+    const started = entry(planning, 1, draft);
+    expect(started.after).toEqual(planning);
+    expect(replayGameLog(baseline(planning), [started.entry]).game).toEqual(planning);
+  });
+
+  it("restores every documented setup lifecycle checkpoint", () => {
+    const planning = planningGame();
+    const started = entry(planning, 1, { type: "game.started", payload: {} });
+    const sheriffWake = entry(
+      started.after,
+      2,
+      { type: "phase.changed", payload: { to: "sheriff-wake" } },
+      started.entry.id,
+    );
+    const day = entry(
+      sheriffWake.after,
+      3,
+      { type: "phase.changed", payload: { to: "day" } },
+      sheriffWake.entry.id,
+    );
+
+    const replayed = replayGameLog(baseline(planning), [
+      started.entry,
+      sheriffWake.entry,
+      day.entry,
+    ]);
+
+    expect(replayed.frames.map(({ before, after }) => [before.phase, after.phase])).toEqual([
+      ["mafia-planning", "mafia-planning"],
+      ["mafia-planning", "sheriff-wake"],
+      ["sheriff-wake", "day"],
+    ]);
+    expect(replayed.game).toEqual(day.after);
+  });
+
   it("rejects integrity downgrades and malformed modern lifecycle roots", () => {
     const initial = dayOne();
     const root = entry(initial, 1, {
@@ -970,26 +1013,35 @@ describe("canonical game replay", () => {
     ).toThrow(/day phase/i);
   });
 
-  it("replays a legacy check made by an owner eliminated before that night", () => {
+  it("replays a legacy Best Move containing its owner and an inactive selection", () => {
     const initial = dayOne();
-    const sheriff = initial.players.find(({ role }) => role === "sheriff")!;
-    const target = initial.players.find(({ team }) => team === "black")!;
+    const owner = initial.players[0]!;
+    const inactive = initial.players[1]!;
+    const active = initial.players[2]!;
+    const players = initial.players.map((player) =>
+      player.seat === owner.seat || player.seat === inactive.seat
+        ? { ...player, status: "eliminated" as const }
+        : player,
+    );
     const before: GameState = {
       ...initial,
-      phase: "night-sheriff",
-      players: initial.players.map((player) =>
-        player.seat === sheriff.seat ? { ...player, status: "eliminated" as const } : player,
-      ),
+      day: 2,
+      phase: "best-move",
+      players,
+      turnOrder: initial.turnOrder.filter((seat) => seat !== owner.seat && seat !== inactive.seat),
+      goodbyeSeats: [owner.seat],
+      goodbyeNext: "day",
+      bestMove: { playerSeat: owner.seat, selectedSeats: [] },
     };
+    const selectedSeats = [owner.seat, inactive.seat, active.seat];
+    const mafiaHits = selectedSeats.filter(
+      (seat) => players.find((player) => player.seat === seat)?.team === "black",
+    ).length;
     const after: GameState = {
       ...before,
-      phase: "night-sheriff-result",
-      checkResult: {
-        kind: "sheriff-check",
-        targetSeat: target.seat,
-        match: true,
-        secret: true,
-      },
+      phase: "goodbye-speech",
+      bestMove: { playerSeat: owner.seat, selectedSeats, mafiaHits },
+      dayNotice: undefined,
     };
     const legacyEntry: GameLogEntry = {
       replayVersion: 1,
@@ -997,22 +1049,83 @@ describe("canonical game replay", () => {
       gameId: "00000000-0000-4000-8000-000000000999",
       sequence: 1,
       parentEventId: null,
-      type: "sheriff.checked",
-      payload: { targetSeat: target.seat, match: true },
+      type: "best-move.completed",
+      payload: { playerSeat: owner.seat, selectedSeats, mafiaHits },
       phaseBefore: before.phase,
       phaseAfter: after.phase,
       dayBefore: before.day,
       dayAfter: after.day,
       stateHashAfter: legacyStateHash(after),
-      createdAt: "2026-08-18T08:01:00.000Z",
+      createdAt: "2026-08-18T08:00:00.000Z",
     };
 
     expect(replayGameLog(baseline(before), [legacyEntry]).game).toEqual(after);
-    expect(() =>
-      replayGameLog(baseline({ ...before, phase: "day" }), [
-        { ...legacyEntry, phaseBefore: "day" },
-      ]),
-    ).toThrow(/cannot replay from day/i);
+  });
+
+  it("replays legacy Don and Sheriff checks made by eliminated role owners", () => {
+    const variants = [
+      {
+        type: "don.checked",
+        phase: "night-don",
+        resultPhase: "night-don-result",
+        ownerRole: "don",
+        targetRole: "sheriff",
+        resultKind: "don-check",
+      },
+      {
+        type: "sheriff.checked",
+        phase: "night-sheriff",
+        resultPhase: "night-sheriff-result",
+        ownerRole: "sheriff",
+        targetRole: "mafia",
+        resultKind: "sheriff-check",
+      },
+    ] as const;
+
+    for (const variant of variants) {
+      const initial = dayOne();
+      const owner = initial.players.find(({ role }) => role === variant.ownerRole)!;
+      const target = initial.players.find(({ role }) => role === variant.targetRole)!;
+      const before: GameState = {
+        ...initial,
+        phase: variant.phase,
+        players: initial.players.map((player) =>
+          player.seat === owner.seat ? { ...player, status: "eliminated" as const } : player,
+        ),
+      };
+      const after: GameState = {
+        ...before,
+        phase: variant.resultPhase,
+        checkResult: {
+          kind: variant.resultKind,
+          targetSeat: target.seat,
+          match: true,
+          secret: true,
+        },
+      };
+      const legacyEntry: GameLogEntry = {
+        replayVersion: 1,
+        id: id(1),
+        gameId: "00000000-0000-4000-8000-000000000999",
+        sequence: 1,
+        parentEventId: null,
+        type: variant.type,
+        payload: { targetSeat: target.seat, match: true },
+        phaseBefore: before.phase,
+        phaseAfter: after.phase,
+        dayBefore: before.day,
+        dayAfter: after.day,
+        stateHashAfter: legacyStateHash(after),
+        createdAt: "2026-08-18T08:01:00.000Z",
+      };
+
+      expect(replayGameLog(baseline(before), [legacyEntry]).game).toEqual(after);
+      expect(() =>
+        replayGameLog(baseline({ ...before, phase: "day" }), [
+          { ...legacyEntry, phaseBefore: "day" },
+        ]),
+      ).toThrow(/cannot replay from day/i);
+    }
   });
 
   it("replays legacy car-crash decisions whose omitted voters meant no", () => {

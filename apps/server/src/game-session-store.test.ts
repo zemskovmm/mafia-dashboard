@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { createGameLogEntry } from "@mafia/game-domain";
+import { createGameLogEntry, type GameLogEntry, type GameState } from "@mafia/game-domain";
 import { GameSessionStore } from "./game-session-store.js";
 import { ClubStore, DEFAULT_CLUB_ID } from "./club-store.js";
 
@@ -362,6 +362,144 @@ describe("GameSessionStore", () => {
         game: initialGame.game,
         events: [{ id: legacyStarted.id, stateHashAfter: legacyStarted.stateHashAfter }],
         headEventId: legacyStarted.id,
+      },
+    });
+  });
+
+  it("hydrates a persisted legacy Best Move chain without rewriting its events", async () => {
+    const gameId = randomUUID();
+    const completed = await createCompletedSession(gameId);
+    const owner = completed.state.game.players[0]!;
+    const inactive = completed.state.game.players[1]!;
+    const activeMafia = completed.state.game.players.find(
+      ({ team, status }) => team === "black" && status === "active",
+    )!;
+    const players = completed.state.game.players.map((player) =>
+      player.seat === owner.seat || player.seat === inactive.seat
+        ? { ...player, status: "eliminated" as const }
+        : player,
+    );
+    const before = {
+      ...completed.state.game,
+      phase: "best-move",
+      winner: null,
+      players,
+      turnOrder: completed.state.game.turnOrder.filter(
+        (seat) => seat !== owner.seat && seat !== inactive.seat,
+      ),
+      goodbyeSeats: [owner.seat],
+      goodbyeNext: "day",
+      bestMove: { playerSeat: owner.seat, selectedSeats: [] },
+    } satisfies GameState;
+    const selectedSeats = [owner.seat, inactive.seat, activeMafia.seat];
+    const after = {
+      ...before,
+      phase: "goodbye-speech",
+      bestMove: { playerSeat: owner.seat, selectedSeats, mafiaHits: 1 },
+      dayNotice: undefined,
+    } satisfies GameState;
+    const initialGame = { replayVersion: 1 as const, game: before };
+    const started = createGameLogEntry({
+      gameId,
+      id: randomUUID(),
+      sequence: 1,
+      parentEventId: null,
+      createdAt: "2026-08-18T07:59:00.000Z",
+      before,
+      draft: { type: "game.checkpointed", payload: {} },
+    });
+    const legacyStarted = {
+      ...started.entry,
+      stateHashAfter: legacyHashGameState(started.after),
+    };
+    const legacyBestMove = {
+      replayVersion: 1,
+      id: randomUUID(),
+      gameId,
+      sequence: 2,
+      parentEventId: legacyStarted.id,
+      type: "best-move.completed",
+      payload: { playerSeat: owner.seat, selectedSeats, mafiaHits: 1 },
+      phaseBefore: before.phase,
+      phaseAfter: after.phase,
+      dayBefore: before.day,
+      dayAfter: after.day,
+      stateHashAfter: legacyHashGameState(after),
+      createdAt: "2026-08-18T08:00:00.000Z",
+    } satisfies GameLogEntry;
+
+    await store.save({
+      gameId,
+      name: "Legacy Best Move hydration",
+      mutationId: randomUUID(),
+      baseRevision: 0,
+      state: {
+        ...emptyState,
+        hostPlayerId: completed.hostPlayerId,
+        hostName: "Legacy Best Move Host",
+      },
+      results: null,
+    });
+    await store.start({
+      gameId,
+      mutationId: randomUUID(),
+      baseRevision: 1,
+      initialGame,
+      event: legacyStarted,
+    });
+    await pool.query(
+      `INSERT INTO game_events
+         (id, club_id, game_id, sequence, idempotency_key, event_type, phase, phase_after,
+          day_before, day_after, payload, parent_event_id, replay_version, replay_sequence,
+          state_hash_after, created_at)
+       VALUES (
+         $1, $2, $3,
+         (SELECT COALESCE(MAX(sequence), 0) + 1
+            FROM game_events
+           WHERE club_id = $2 AND game_id = $3),
+         $13, $4, $5, $6, $7, $8, $9::jsonb, $10, 1, 2, $11, $12
+       )`,
+      [
+        legacyBestMove.id,
+        DEFAULT_CLUB_ID,
+        gameId,
+        legacyBestMove.type,
+        legacyBestMove.phaseBefore,
+        legacyBestMove.phaseAfter,
+        legacyBestMove.dayBefore,
+        legacyBestMove.dayAfter,
+        JSON.stringify(legacyBestMove.payload),
+        legacyBestMove.parentEventId,
+        legacyBestMove.stateHashAfter,
+        legacyBestMove.createdAt,
+        legacyBestMove.id,
+      ],
+    );
+    await pool.query("UPDATE game_sessions SET head_event_id = $1 WHERE id = $2 AND club_id = $3", [
+      legacyBestMove.id,
+      gameId,
+      DEFAULT_CLUB_ID,
+    ]);
+
+    await store.initialize();
+    const restored = await store.get(gameId);
+
+    expect(restored).toMatchObject({
+      state: {
+        game: after,
+        headEventId: legacyBestMove.id,
+        events: [
+          { id: legacyStarted.id, stateHashAfter: legacyStarted.stateHashAfter },
+          {
+            id: legacyBestMove.id,
+            payload: legacyBestMove.payload,
+            stateHashAfter: legacyBestMove.stateHashAfter,
+          },
+        ],
+        log: [
+          { id: legacyStarted.id, type: "game.checkpointed" },
+          { id: legacyBestMove.id, type: "best-move.completed" },
+        ],
       },
     });
   });
