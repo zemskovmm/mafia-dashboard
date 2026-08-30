@@ -1400,7 +1400,12 @@ export class GameSessionOutbox {
             return desired;
           })();
           const authoritativeHead = (() => {
-            if (mutation.kind !== "move-head" || remainingOutbox.length > 0) return null;
+            if (
+              mutation.kind !== "move-head" ||
+              remainingOutbox.some(({ kind }) => kind !== "metadata")
+            ) {
+              return null;
+            }
             if (
               response.gameId !== gameId ||
               response.name === undefined ||
@@ -1435,8 +1440,11 @@ export class GameSessionOutbox {
                   ...(authoritativeHead === null
                     ? {}
                     : {
-                        name: authoritativeHead.name,
-                        metadata: authoritativeHead.metadata,
+                        name: remainingOutbox.length === 0 ? authoritativeHead.name : durable.name,
+                        metadata:
+                          remainingOutbox.length === 0
+                            ? authoritativeHead.metadata
+                            : durable.metadata,
                         baseline: authoritativeHead.baseline,
                         entries: authoritativeHead.entries,
                         headEventId: authoritativeHead.headEventId,
@@ -1444,7 +1452,9 @@ export class GameSessionOutbox {
                         results: authoritativeHead.results,
                       }),
                   outbox:
-                    canonicalName === undefined || canonicalName === ""
+                    (authoritativeHead !== null && remainingOutbox.length > 0) ||
+                    canonicalName === undefined ||
+                    canonicalName === ""
                       ? remainingOutbox
                       : remainingOutbox.map((queued) => ({ ...queued, name: canonicalName })),
                   failed: false,

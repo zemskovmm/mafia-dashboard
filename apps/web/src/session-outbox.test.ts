@@ -193,6 +193,67 @@ describe("GameSessionOutbox", () => {
     expect(outbox.takeNormalizedCurrent()?.results).toBeNull();
   });
 
+  it("rebases newer metadata over an acknowledged authoritative head", async () => {
+    const storage = memoryStorage();
+    const { gameId, mutationId, root, returned, sessionState } = resetReturnScenario();
+    const headResponse = deferred<SessionSaveResponse>();
+    const save = vi
+      .fn()
+      .mockImplementationOnce(() => headResponse.promise)
+      .mockImplementationOnce((_gameId: string, operation: { baseRevision: number }) =>
+        Promise.resolve({ revision: operation.baseRevision + 1, duplicate: false }),
+      );
+    const outbox = new GameSessionOutbox({ storage, createId: () => mutationId, save });
+    outbox.restore(
+      gameId,
+      5,
+      "Reset table",
+      sessionState(root.entry.id, returned.entry.id, root.after),
+      null,
+    );
+    const optimisticResults = resultsFor(returned.after, returned.entry.createdAt);
+    outbox.enqueue(
+      "Reset table",
+      sessionState(returned.entry.id, null, returned.after),
+      optimisticResults,
+    );
+    const flush = outbox.flush();
+    await vi.waitFor(() => expect(save).toHaveBeenCalledOnce());
+    const otherContext = new GameSessionOutbox({
+      storage,
+      createId: () => "00000000-0000-4000-8000-000000000805",
+      save: vi.fn(),
+    });
+    otherContext.enqueue(
+      "Reset table",
+      {
+        ...sessionState(returned.entry.id, null, returned.after),
+        playlistId: "PL-newer-context",
+      },
+      optimisticResults,
+    );
+    headResponse.resolve({
+      gameId,
+      name: "Reset table",
+      revision: 6,
+      duplicate: false,
+      state: sessionState(root.entry.id, returned.entry.id, root.after),
+      results: null,
+    });
+
+    await flush;
+
+    expect(save.mock.calls.map(([, operation]) => operation.kind)).toEqual([
+      "move-head",
+      "metadata",
+    ]);
+    expect(outbox.current?.state.playlistId).toBe("PL-newer-context");
+    expect(outbox.current?.state.headEventId).toBe(root.entry.id);
+    expect(outbox.current?.results).toBeNull();
+    expect(outbox.pendingCount).toBe(0);
+    expect(outbox.takeNormalizedCurrent()?.state.headEventId).toBe(root.entry.id);
+  });
+
   it("accepts the current authoritative revision for an older duplicate head retry", async () => {
     const storage = memoryStorage();
     const { gameId, mutationId, root, returned, sessionState } = resetReturnScenario();
