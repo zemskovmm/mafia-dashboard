@@ -33,6 +33,7 @@ import { YouTubePlaylistAccessError } from "./youtube-oauth.js";
 import type { YouTubeOAuthService } from "./youtube-oauth.js";
 import { ClubStore } from "./club-store.js";
 import type { AppUser, GoogleAuthService } from "./google-auth.js";
+import { createFixedWindowLimiter, hasExactOrigin, isUnsafeMethod } from "./http-security.js";
 
 const gameIdParams = z.object({ gameId: z.uuid() });
 const clearGameSessionQuery = z.object({ expectedRevision: z.coerce.number().int().nonnegative() });
@@ -244,6 +245,7 @@ export const buildApp = async ({
   defaultClubId,
   youtubeOAuth,
   publicAppUrl,
+  authRateLimit,
 }: {
   readonly pool: Pool;
   readonly staticDir?: string;
@@ -252,8 +254,28 @@ export const buildApp = async ({
   readonly defaultClubId?: string;
   readonly youtubeOAuth?: YouTubeOAuthService;
   readonly publicAppUrl?: string;
+  readonly authRateLimit?: {
+    readonly limit?: number;
+    readonly windowMs?: number;
+    readonly maxEntries?: number;
+    readonly now?: () => number;
+  };
 }) => {
   const app = Fastify({ logger: false, bodyLimit: 4 * 1024 * 1024 });
+  app.setErrorHandler((error, _request, reply) => {
+    const statusCode =
+      typeof error === "object" &&
+      error !== null &&
+      "statusCode" in error &&
+      typeof error.statusCode === "number"
+        ? error.statusCode
+        : undefined;
+    if (statusCode !== undefined && statusCode < 500) {
+      return reply.code(statusCode).send({ error: "request_failed" });
+    }
+    app.log.error("Internal request failure");
+    return reply.code(500).send({ error: "internal_server_error" });
+  });
   app.addHook("onRequest", async (_request, reply) => {
     reply.header("permissions-policy", "picture-in-picture=()");
   });
@@ -262,10 +284,33 @@ export const buildApp = async ({
   const playerStore = new PlayerStore(pool);
   const clubStore = new ClubStore(pool);
   const secureCookies = publicAppUrl?.startsWith("https://") === true;
+  const authAttemptLimiter = createFixedWindowLimiter({
+    limit: authRateLimit?.limit ?? 10,
+    windowMs: authRateLimit?.windowMs ?? 10 * 60 * 1_000,
+    maxEntries: authRateLimit?.maxEntries,
+    now: authRateLimit?.now,
+  });
+  const consumeAuthAttempt = (request: FastifyRequest, reply: FastifyReply): boolean => {
+    const result = authAttemptLimiter.consume(request.ip);
+    if (result.allowed) return true;
+    void reply
+      .header("retry-after", String(result.retryAfterSeconds))
+      .code(429)
+      .send({ error: "auth_rate_limited" });
+    return false;
+  };
 
   if (publicAppUrl !== undefined) {
     const publicUrl = new URL(publicAppUrl);
     app.addHook("onRequest", async (request, reply) => {
+      if (
+        request.url.startsWith("/api/") &&
+        isUnsafeMethod(request.method) &&
+        readCookie(request.headers.cookie, sessionCookieName) !== null &&
+        !hasExactOrigin(request.headers.origin, publicUrl.origin)
+      ) {
+        return reply.code(403).send({ error: "csrf_origin_mismatch" });
+      }
       const acceptsHtml = request.headers.accept?.includes("text/html") === true;
       const isPageRequest = !request.url.startsWith("/api/") && !request.url.startsWith("/health/");
       if (
@@ -355,6 +400,7 @@ export const buildApp = async ({
     if (googleAuth === undefined) {
       return reply.code(503).send({ error: "google_auth_not_configured" });
     }
+    if (!consumeAuthAttempt(_request, reply)) return;
     const state = randomBytes(32).toString("base64url");
     return reply
       .header(
@@ -380,6 +426,7 @@ export const buildApp = async ({
     if (!matchesState(expectedState, query.data.state)) {
       return reply.code(400).send({ error: "oauth_state_mismatch" });
     }
+    if (!consumeAuthAttempt(request, reply)) return;
     const authorization = await googleAuth.completeAuthorization(query.data.code);
     await clubStore.claimClubAccess(authorization.user.id, authorization.user.email);
     return reply

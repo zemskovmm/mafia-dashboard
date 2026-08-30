@@ -578,6 +578,7 @@ test("runtime verifiers enforce the shared contracts at their success boundaries
   assert.match(sessionVerifier, /deleteAndVerifyAbsent\(/);
   assert.match(sessionVerifier, /assertVerifierTarget\(/);
   assert.match(sessionVerifier, /classifyBrowserApiRequest\(/);
+  assert.match(sessionVerifier, /origin: targetUrl\.origin/);
   assert.match(sessionVerifier, /context\.route\("\*\*\/\*"/);
   assert.match(sessionVerifier, /assertNamesAvailable\(/);
   assert.match(sessionVerifier, /assertNewResource\(/);

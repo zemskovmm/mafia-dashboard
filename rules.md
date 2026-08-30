@@ -470,8 +470,9 @@ A Docker volume provides persistence but is **not** a backup. The production bac
 
 - Only authenticated moderators can create or modify games.
 - Private game data is filtered server-side.
-- Application session tokens are random, stored only as hashes, and revocable.
+- Application session tokens are random, stored only as hashes, expire after a fixed non-sliding 30 days, and are independently revocable by signing out that session.
 - Session cookies are `HttpOnly`, `Secure` in production, and use an appropriate `SameSite` policy.
+- Cookie-authenticated unsafe API requests require an exact browser-origin match, and Google sign-in attempts are throttled per source.
 - No credentials, role assignments, or private checks appear in URLs, analytics, logs, or client error reports.
 - Backups receive the same protection as the live database.
 

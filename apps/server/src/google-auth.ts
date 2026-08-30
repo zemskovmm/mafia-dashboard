@@ -21,6 +21,8 @@ export interface CompletedGoogleAuthorization {
   readonly expiresAt: Date;
 }
 
+export const APPLICATION_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
+
 const tokenResponse = z.object({
   access_token: z.string().min(1),
 });
@@ -67,6 +69,7 @@ export class GoogleAuthService {
     private readonly pool: Pool,
     private readonly config: GoogleAuthConfig,
     private readonly fetcher: typeof fetch = fetch,
+    private readonly now: () => Date = () => new Date(),
   ) {}
 
   public createAuthorizationUrl(state: string): string {
@@ -136,7 +139,7 @@ export class GoogleAuthService {
     if (user === undefined) throw new Error("Google user could not be persisted");
 
     const sessionToken = randomBytes(32).toString("base64url");
-    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1_000);
+    const expiresAt = new Date(this.now().getTime() + APPLICATION_SESSION_TTL_MS);
     await this.pool.query("DELETE FROM user_sessions WHERE expires_at <= NOW()");
     await this.pool.query(
       `INSERT INTO user_sessions (id, token_hash, user_id, expires_at)

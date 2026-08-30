@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { EventStore } from "./event-store.js";
-import { GoogleAuthService } from "./google-auth.js";
+import { APPLICATION_SESSION_TTL_MS, GoogleAuthService } from "./google-auth.js";
 
 const config = {
   clientId: "client-id.apps.googleusercontent.com",
@@ -42,6 +42,8 @@ describe("GoogleAuthService", () => {
 
   it("exchanges the code, upserts the stable Google subject, and stores only a session hash", async () => {
     let storedSessionHash: Buffer | null = null;
+    let storedExpiresAt: Date | null = null;
+    const now = new Date("2026-08-30T12:00:00.000Z");
     const userRow = {
       id: "00000000-0000-4000-8000-000000000099",
       email: "owner@example.test",
@@ -54,6 +56,7 @@ describe("GoogleAuthService", () => {
         if (sql.includes("INSERT INTO users")) return { rows: [userRow], rowCount: 1 };
         if (sql.includes("INSERT INTO user_sessions")) {
           storedSessionHash = values?.[1] as Buffer;
+          storedExpiresAt = values?.[3] as Date;
           return { rows: [], rowCount: 1 };
         }
         if (sql.includes("FROM user_sessions AS session")) {
@@ -83,7 +86,7 @@ describe("GoogleAuthService", () => {
           { status: 200, headers: { "content-type": "application/json" } },
         ),
       );
-    const service = new GoogleAuthService(pool, config, fetcher);
+    const service = new GoogleAuthService(pool, config, fetcher, () => now);
 
     const signedIn = await service.completeAuthorization("authorization-code");
     const restored = await service.getUserForSession(signedIn.sessionToken);
@@ -111,6 +114,8 @@ describe("GoogleAuthService", () => {
     expect((storedSessionHash as Buffer | null)?.toString("base64url")).not.toBe(
       signedIn.sessionToken,
     );
+    expect(signedIn.expiresAt).toEqual(new Date(now.getTime() + APPLICATION_SESSION_TTL_MS));
+    expect(storedExpiresAt).toEqual(signedIn.expiresAt);
   });
 
   it("rejects identities whose email is not verified", async () => {
@@ -169,5 +174,40 @@ describe("GoogleAuthService", () => {
     );
     expect(stored.rows[0]?.count).toBe(1);
     await integrationPool.query("DELETE FROM users WHERE google_subject = $1", [profile.sub]);
+  });
+
+  it("revokes only the presented application session", async () => {
+    const userId = randomUUID();
+    const subject = `google-subject-${randomUUID()}`;
+    const email = `sessions-${randomUUID()}@example.test`;
+    const firstToken = randomUUID();
+    const secondToken = randomUUID();
+    await integrationPool.query(
+      `INSERT INTO users (id, google_subject, email, display_name)
+       VALUES ($1, $2, $3, 'Session owner')`,
+      [userId, subject, email],
+    );
+    await integrationPool.query(
+      `INSERT INTO user_sessions (id, token_hash, user_id, expires_at)
+       VALUES ($1, $2, $3, NOW() + INTERVAL '1 day'),
+              ($4, $5, $3, NOW() + INTERVAL '1 day')`,
+      [
+        randomUUID(),
+        createHash("sha256").update(firstToken).digest(),
+        userId,
+        randomUUID(),
+        createHash("sha256").update(secondToken).digest(),
+      ],
+    );
+    const service = new GoogleAuthService(integrationPool, config, vi.fn());
+
+    await service.endSession(firstToken);
+
+    await expect(service.getUserForSession(firstToken)).resolves.toBeNull();
+    await expect(service.getUserForSession(secondToken)).resolves.toMatchObject({
+      id: userId,
+      email,
+    });
+    await integrationPool.query("DELETE FROM users WHERE id = $1", [userId]);
   });
 });

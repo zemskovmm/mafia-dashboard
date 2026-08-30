@@ -1408,6 +1408,7 @@ describe("server API", () => {
       pool,
       googleAuth,
       publicAppUrl: "https://mafia.example.test",
+      authRateLimit: { limit: 2, windowMs: 10_000 },
     });
     await authApp.ready();
 
@@ -1431,6 +1432,9 @@ describe("server API", () => {
       "mafia_session=application-session-token",
     );
     expect(googleAuth.completeAuthorization).toHaveBeenCalledWith("google-code");
+    const throttled = await authApp.inject({ method: "GET", url: "/api/auth/google/start" });
+    expect(throttled.statusCode).toBe(429);
+    expect(throttled.json()).toEqual({ error: "auth_rate_limited" });
 
     const session = await authApp.inject({
       method: "GET",
@@ -1452,7 +1456,10 @@ describe("server API", () => {
     const signedOut = await authApp.inject({
       method: "DELETE",
       url: "/api/auth/session",
-      headers: { cookie: "mafia_session=application-session-token" },
+      headers: {
+        cookie: "mafia_session=application-session-token",
+        origin: "https://mafia.example.test",
+      },
     });
     expect(signedOut.statusCode).toBe(204);
     expect(googleAuth.endSession).toHaveBeenCalledWith("application-session-token");
@@ -2077,5 +2084,268 @@ describe("server API", () => {
       "rowCount",
       0,
     );
+  });
+
+  it("requires the exact public origin before a session-cookie mutation", async () => {
+    const endSession = vi.fn(async () => undefined);
+    const googleAuth = {
+      configured: true,
+      getUserForSession: vi.fn(async () => authenticatedUser),
+      endSession,
+    } as unknown as GoogleAuthService;
+    const protectedApp = await buildApp({
+      pool,
+      googleAuth,
+      publicAppUrl: "https://mafia.example.test",
+    });
+    await protectedApp.ready();
+
+    for (const origin of [
+      undefined,
+      "not a URL",
+      "http://mafia.example.test",
+      "https://evil.test",
+    ]) {
+      const response = await protectedApp.inject({
+        method: "DELETE",
+        url: "/api/auth/session",
+        headers: {
+          cookie: "mafia_session=private-session-token",
+          ...(origin === undefined ? {} : { origin }),
+        },
+      });
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toEqual({ error: "csrf_origin_mismatch" });
+    }
+    expect(endSession).not.toHaveBeenCalled();
+
+    const accepted = await protectedApp.inject({
+      method: "DELETE",
+      url: "/api/auth/session",
+      headers: {
+        cookie: "mafia_session=private-session-token",
+        origin: "https://mafia.example.test",
+      },
+    });
+    expect(accepted.statusCode).toBe(204);
+    expect(endSession).toHaveBeenCalledWith("private-session-token");
+    await protectedApp.close();
+  });
+
+  it("throttles Google sign-in attempts with a stable retry contract", async () => {
+    const googleAuth = {
+      configured: true,
+      createAuthorizationUrl: vi.fn(
+        (state: string) => `https://accounts.example.test?state=${state}`,
+      ),
+    } as unknown as GoogleAuthService;
+    const throttledApp = await buildApp({
+      pool,
+      googleAuth,
+      publicAppUrl: "https://mafia.example.test",
+      authRateLimit: { limit: 2, windowMs: 10_000 },
+    });
+    await throttledApp.ready();
+
+    const first = await throttledApp.inject({ method: "GET", url: "/api/auth/google/start" });
+    const second = await throttledApp.inject({ method: "GET", url: "/api/auth/google/start" });
+    const rejected = await throttledApp.inject({ method: "GET", url: "/api/auth/google/start" });
+
+    expect(first.statusCode).toBe(302);
+    expect(second.statusCode).toBe(302);
+    expect(rejected.statusCode).toBe(429);
+    expect(rejected.headers["retry-after"]).toBe("10");
+    expect(rejected.json()).toEqual({ error: "auth_rate_limited" });
+    expect(googleAuth.createAuthorizationUrl).toHaveBeenCalledTimes(2);
+    await throttledApp.close();
+  });
+
+  it("does not expose unexpected failure details to clients", async () => {
+    const secretMarker = "private-role-and-check-result";
+    const googleAuth = {
+      configured: true,
+      getUserForSession: vi.fn(async () => {
+        throw new Error(secretMarker);
+      }),
+    } as unknown as GoogleAuthService;
+    const errorApp = await buildApp({ pool, googleAuth });
+    await errorApp.ready();
+
+    const response = await errorApp.inject({
+      method: "GET",
+      url: "/api/auth/session",
+      headers: { cookie: "mafia_session=private-session-token" },
+    });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toEqual({ error: "internal_server_error" });
+    expect(response.body).not.toContain(secretMarker);
+    expect(response.body).not.toContain("private-session-token");
+    await errorApp.close();
+  });
+
+  it("requires authentication on every protected API route", async () => {
+    const id = "00000000-0000-4000-8000-000000000099";
+    const club = {
+      name: "Protected club",
+      city: "Málaga",
+      headerLogo: null,
+      cardLogo: null,
+      language: "en",
+    };
+    const routes = [
+      { method: "GET", url: "/api/clubs" },
+      { method: "POST", url: "/api/clubs", payload: { ...club, ownerConsent: true } },
+      { method: "PUT", url: `/api/clubs/${id}`, payload: club },
+      { method: "DELETE", url: `/api/clubs/${id}` },
+      { method: "GET", url: "/api/music/oauth/status" },
+      { method: "GET", url: "/api/music/oauth/start" },
+      { method: "GET", url: "/api/music/oauth/callback?code=code&state=state" },
+      { method: "GET", url: "/api/music/playlists" },
+      { method: "GET", url: "/api/music/playlists/playlist/items" },
+      { method: "DELETE", url: "/api/music/oauth/connection" },
+      { method: "GET", url: "/api/players" },
+      { method: "POST", url: "/api/players" },
+      { method: "PUT", url: `/api/players/${id}` },
+      { method: "DELETE", url: `/api/players/${id}` },
+      { method: "GET", url: "/api/game-sessions" },
+      { method: "GET", url: `/api/game-sessions/${id}` },
+      { method: "PUT", url: `/api/game-sessions/${id}` },
+      { method: "POST", url: `/api/game-sessions/${id}/normalize` },
+      { method: "POST", url: `/api/game-sessions/${id}/start` },
+      { method: "POST", url: `/api/game-sessions/${id}/events` },
+      { method: "POST", url: `/api/game-sessions/${id}/head` },
+      { method: "POST", url: `/api/game-sessions/${id}/complete` },
+      { method: "DELETE", url: `/api/game-sessions/${id}?expectedRevision=0` },
+      { method: "POST", url: "/api/games" },
+      { method: "DELETE", url: `/api/games/${id}` },
+      { method: "POST", url: `/api/games/${id}/events/truncate` },
+      { method: "POST", url: `/api/games/${id}/events` },
+      { method: "GET", url: `/api/games/${id}/events` },
+      { method: "PUT", url: `/api/games/${id}/results` },
+      { method: "DELETE", url: `/api/games/${id}/results` },
+    ] as const;
+    const anonymousApp = await buildApp({
+      pool,
+      authenticateRequest: async () => null,
+      defaultClubId: DEFAULT_CLUB_ID,
+    });
+    await anonymousApp.ready();
+
+    for (const route of routes) {
+      const response = await anonymousApp.inject({
+        method: route.method,
+        url: route.url,
+        ...("payload" in route ? { payload: route.payload } : {}),
+      });
+      expect(response.statusCode, `${route.method} ${route.url}`).toBe(401);
+      expect(response.json(), `${route.method} ${route.url}`).toEqual({
+        error: "authentication_required",
+      });
+    }
+    await anonymousApp.close();
+  });
+
+  it("enforces club membership and manager-only route classes", async () => {
+    const regularUser = {
+      id: randomUUID(),
+      email: `regular-${randomUUID()}@example.test`,
+      name: "Regular user",
+      picture: null,
+    };
+    const outsider = {
+      id: randomUUID(),
+      email: `outsider-${randomUUID()}@example.test`,
+      name: "Outsider",
+      picture: null,
+    };
+    for (const user of [regularUser, outsider]) {
+      await pool.query(
+        "INSERT INTO users (id, email, display_name, picture) VALUES ($1, $2, $3, $4)",
+        [user.id, user.email, user.name, user.picture],
+      );
+    }
+    await pool.query(
+      "INSERT INTO club_memberships (club_id, user_id, role) VALUES ($1, $2, 'user')",
+      [DEFAULT_CLUB_ID, regularUser.id],
+    );
+    const regularApp = await buildApp({
+      pool,
+      authenticateRequest: async () => regularUser,
+      defaultClubId: DEFAULT_CLUB_ID,
+    });
+    const outsiderApp = await buildApp({
+      pool,
+      authenticateRequest: async () => outsider,
+      defaultClubId: DEFAULT_CLUB_ID,
+    });
+    await Promise.all([regularApp.ready(), outsiderApp.ready()]);
+    const id = "00000000-0000-4000-8000-000000000099";
+    const club = {
+      name: "Protected club",
+      city: "Málaga",
+      headerLogo: null,
+      cardLogo: null,
+      language: "en",
+    };
+    const managerRoutes = [
+      { method: "PUT", url: `/api/clubs/${DEFAULT_CLUB_ID}`, payload: club },
+      { method: "DELETE", url: `/api/clubs/${DEFAULT_CLUB_ID}` },
+      { method: "POST", url: "/api/players" },
+      { method: "PUT", url: `/api/players/${id}` },
+      { method: "DELETE", url: `/api/players/${id}` },
+    ] as const;
+    const memberRoutes = [
+      ...managerRoutes,
+      { method: "GET", url: "/api/players" },
+      { method: "GET", url: "/api/game-sessions" },
+      { method: "GET", url: `/api/game-sessions/${id}` },
+      { method: "PUT", url: `/api/game-sessions/${id}` },
+      { method: "POST", url: `/api/game-sessions/${id}/normalize` },
+      { method: "POST", url: `/api/game-sessions/${id}/start` },
+      { method: "POST", url: `/api/game-sessions/${id}/events` },
+      { method: "POST", url: `/api/game-sessions/${id}/head` },
+      { method: "POST", url: `/api/game-sessions/${id}/complete` },
+      { method: "DELETE", url: `/api/game-sessions/${id}?expectedRevision=0` },
+      { method: "POST", url: "/api/games" },
+      { method: "DELETE", url: `/api/games/${id}` },
+      { method: "POST", url: `/api/games/${id}/events/truncate` },
+      { method: "POST", url: `/api/games/${id}/events` },
+      { method: "GET", url: `/api/games/${id}/events` },
+      { method: "PUT", url: `/api/games/${id}/results` },
+      { method: "DELETE", url: `/api/games/${id}/results` },
+    ] as const;
+
+    for (const route of memberRoutes) {
+      const response = await outsiderApp.inject({
+        method: route.method,
+        url: route.url,
+        ...("payload" in route ? { payload: route.payload } : {}),
+      });
+      expect(response.statusCode, `${route.method} ${route.url}`).toBe(403);
+      expect(response.json(), `${route.method} ${route.url}`).toEqual({
+        error: "club_access_denied",
+      });
+    }
+    for (const route of managerRoutes) {
+      const response = await regularApp.inject({
+        method: route.method,
+        url: route.url,
+        ...("payload" in route ? { payload: route.payload } : {}),
+      });
+      expect(response.statusCode, `${route.method} ${route.url}`).toBe(403);
+      expect(response.json(), `${route.method} ${route.url}`).toEqual({
+        error: "club_manager_required",
+      });
+    }
+    expect(await regularApp.inject({ method: "GET", url: "/api/players" })).toHaveProperty(
+      "statusCode",
+      200,
+    );
+
+    await Promise.all([regularApp.close(), outsiderApp.close()]);
+    await pool.query("DELETE FROM users WHERE id = ANY($1::uuid[])", [
+      [regularUser.id, outsider.id],
+    ]);
   });
 });

@@ -120,6 +120,7 @@ const apiContext = await playwrightRequest.newContext({
   baseURL: apiBaseUrl,
   extraHTTPHeaders: {
     ...apiHeaders,
+    origin: targetUrl.origin,
     ...(parsedAuthCookie === null
       ? {}
       : { cookie: `${parsedAuthCookie.name}=${parsedAuthCookie.value}` }),
