@@ -2203,6 +2203,73 @@ describe("authoritative game session lifecycle", () => {
     );
   });
 
+  it("replaces an optimistic reset with the authoritative head returned by a duplicate retry", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    await user.click(screen.getByRole("button", { name: "Record meaningful checkpoint" }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
+      ).toBeInTheDocument(),
+    );
+    const persisted = JSON.parse(
+      window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null",
+    ) as {
+      gameId: string;
+      name: string;
+      metadata: {
+        setup: unknown | null;
+        hostPlayerId: string | null;
+        hostName: string | null;
+        playlistId: string;
+        legacyLog: readonly unknown[];
+      };
+      baseline: InitialGameBaseline;
+      entries: readonly GameLogEntry[];
+    };
+    const authoritativeHead = persisted.entries.at(-1)!;
+    const authoritativeGame = replayGameLog(persisted.baseline, persisted.entries).game;
+    api.saveGameSession.mockImplementation(
+      (_gameId: string, operation: { baseRevision: number; kind: string }) =>
+        operation.kind === "move-head"
+          ? Promise.resolve({
+              gameId: persisted.gameId,
+              name: persisted.name,
+              revision: operation.baseRevision + 2,
+              duplicate: true,
+              state: {
+                setup: persisted.metadata.setup,
+                game: authoritativeGame,
+                hostPlayerId: persisted.metadata.hostPlayerId,
+                hostName: persisted.metadata.hostName,
+                playlistId: persisted.metadata.playlistId,
+                log: persisted.metadata.legacyLog,
+                undoHistory: [],
+                initialGame: persisted.baseline,
+                events: persisted.entries,
+                headEventId: authoritativeHead.id,
+                resetReturnEventId: null,
+                legacyLog: persisted.metadata.legacyLog,
+              },
+              results: null,
+            })
+          : Promise.resolve({ revision: operation.baseRevision + 1, duplicate: false }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Open game log" }));
+    await user.click(screen.getByRole("button", { name: "Preview state after log #1" }));
+    await user.click(screen.getByRole("button", { name: "Reset game to this state" }));
+
+    await waitFor(() => expect(screen.getByText("Game fouls 1")).toBeInTheDocument());
+    expect(api.saveGameSession).toHaveBeenCalledWith(
+      persisted.gameId,
+      expect.objectContaining({ kind: "move-head", reason: "reset" }),
+      testClub.id,
+    );
+  });
+
   it("ignores a delayed component-local mutation captured during preview after exit", async () => {
     const user = userEvent.setup();
     render(<App />);

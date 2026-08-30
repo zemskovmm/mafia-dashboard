@@ -6,6 +6,7 @@ import {
 } from "@mafia/game-domain";
 import type { FinalGameResults, GameSessionState } from "./api/client.js";
 import { reportError } from "./features/console/error-console.js";
+import { buildFinalGameResults } from "./features/players/game-results.js";
 
 export interface SessionSaveResponse {
   readonly revision: number;
@@ -400,6 +401,86 @@ const canonicalJsonValue = (value: unknown): unknown => {
   );
 };
 
+const outboxDependencyGraphError = (envelope: PersistedEnvelope): Error | null => {
+  if (envelope.outbox.length === 0) return null;
+  const entryById = new Map(envelope.entries.map((entry) => [entry.id, entry]));
+  const mutationIds = new Set(envelope.outbox.map(({ mutationId }) => mutationId));
+  const queuedEventIndexes = new Map<string, number>();
+  envelope.outbox.forEach((operation, index) => {
+    if (operation.kind === "start" || operation.kind === "append-event") {
+      queuedEventIndexes.set(operation.event.id, index);
+    }
+  });
+  const sequences = new Set(envelope.entries.map(({ sequence }) => sequence));
+  if (entryById.size !== envelope.entries.length) {
+    return new Error("Invalid game session outbox dependency graph: duplicate event ID");
+  }
+  if (mutationIds.size !== envelope.outbox.length) {
+    return new Error("Invalid game session outbox dependency graph: duplicate mutation ID");
+  }
+  if (
+    queuedEventIndexes.size !==
+    envelope.outbox.filter(({ kind }) => kind === "start" || kind === "append-event").length
+  ) {
+    return new Error("Invalid game session outbox dependency graph: duplicate queued event");
+  }
+  if (sequences.size !== envelope.entries.length) {
+    return new Error("Invalid game session outbox dependency graph: duplicate event sequence");
+  }
+  const roots = envelope.entries.filter(({ parentEventId }) => parentEventId === null);
+  if (
+    envelope.entries.length > 0 &&
+    (roots.length !== 1 ||
+      (roots[0]?.type !== "game.started" && roots[0]?.type !== "game.checkpointed"))
+  ) {
+    return new Error("Invalid game session outbox dependency graph: invalid lifecycle root");
+  }
+  for (const entry of envelope.entries) {
+    const parent = entry.parentEventId === null ? null : entryById.get(entry.parentEventId);
+    if (
+      (entry.parentEventId !== null && parent === undefined) ||
+      (parent !== null && parent !== undefined && parent.sequence >= entry.sequence)
+    ) {
+      return new Error("Invalid game session outbox dependency graph: disconnected event");
+    }
+  }
+  for (const [index, operation] of envelope.outbox.entries()) {
+    if (operation.kind === "move-head" && !entryById.has(operation.targetEventId)) {
+      return new Error("Invalid game session outbox dependency graph: stale head target");
+    }
+    const dependencyEventId =
+      operation.kind === "append-event"
+        ? operation.event.parentEventId
+        : operation.kind === "move-head"
+          ? operation.targetEventId
+          : null;
+    const dependencyIndex =
+      dependencyEventId === null ? undefined : queuedEventIndexes.get(dependencyEventId);
+    if (dependencyIndex !== undefined && dependencyIndex >= index) {
+      return new Error("Invalid game session outbox dependency graph: reversed event dependency");
+    }
+    if (operation.kind === "start" || operation.kind === "append-event") {
+      const stored = entryById.get(operation.event.id);
+      if (
+        stored === undefined ||
+        JSON.stringify(canonicalJsonValue(stored)) !==
+          JSON.stringify(canonicalJsonValue(operation.event)) ||
+        (operation.kind === "start" && operation.event.parentEventId !== null) ||
+        (operation.kind === "append-event" && operation.event.parentEventId === null)
+      ) {
+        return new Error("Invalid game session outbox dependency graph: incompatible event");
+      }
+      if (
+        operation.kind === "start" &&
+        envelope.entries.some(({ id }) => !queuedEventIndexes.has(id))
+      ) {
+        return new Error("Invalid game session outbox dependency graph: repeated game start");
+      }
+    }
+  }
+  return null;
+};
+
 const sameCurrent = (left: CurrentSession | null, right: CurrentSession): boolean =>
   left !== null &&
   JSON.stringify(canonicalJsonValue(left)) === JSON.stringify(canonicalJsonValue(right));
@@ -440,6 +521,7 @@ const currentFromEnvelope = (envelope: PersistedEnvelope): CurrentSession | null
 interface DesiredSession {
   readonly name: string;
   readonly metadata: SessionMetadata;
+  readonly materializedGame: unknown | null;
   readonly baseline: InitialGameBaseline | null;
   readonly entries: readonly GameLogEntry[];
   readonly headEventId: string | null;
@@ -455,6 +537,7 @@ const desiredSession = (
 ): DesiredSession => ({
   name,
   metadata: metadataFromState(state),
+  materializedGame: state.game,
   baseline:
     state.initialGame ??
     (state.game === null ? null : { replayVersion: 1, game: state.game as GameState }),
@@ -501,7 +584,32 @@ const validateDesiredReplay = (
   if (desired.resetReturnEventId !== null && !byId.has(desired.resetReturnEventId)) {
     throw new Error("Game session reset-return event is missing");
   }
-  replayGameLog(desired.baseline, active);
+  const replayed = replayGameLog(desired.baseline, active).game;
+  if (
+    desired.materializedGame !== null &&
+    JSON.stringify(canonicalJsonValue(desired.materializedGame)) !==
+      JSON.stringify(canonicalJsonValue(replayed))
+  ) {
+    throw new Error("Game session authoritative aggregate disagrees with canonical replay");
+  }
+  if (desired.results !== null) {
+    const completion = active.at(-1);
+    const expectedResults =
+      completion?.type === "game.completed" && desired.metadata.hostPlayerId !== null
+        ? buildFinalGameResults(
+            replayed,
+            new Date(completion.createdAt),
+            desired.metadata.hostPlayerId,
+          )
+        : null;
+    if (
+      expectedResults === null ||
+      JSON.stringify(canonicalJsonValue(desired.results)) !==
+        JSON.stringify(canonicalJsonValue(expectedResults))
+    ) {
+      throw new Error("Game session results disagree with canonical replay");
+    }
+  }
 };
 
 const currentFromDesired = (desired: DesiredSession): CurrentSession => ({
@@ -1098,6 +1206,18 @@ export class GameSessionOutbox {
   public flush(): Promise<void> {
     if (this.flushPromise !== null) return this.flushPromise;
     this.synchronizeDurableState();
+    const dependencyError = outboxDependencyGraphError(this.envelope);
+    if (dependencyError !== null) {
+      if (!this.envelope.failed) {
+        this.envelope = { ...this.envelope, failed: true };
+        this.persist();
+        reportError(dependencyError, {
+          source: "persistence",
+          context: "game-session-outbox.dependencies",
+        });
+      }
+      return Promise.reject(dependencyError);
+    }
     if ((this.legacyEnvelope?.outbox.length ?? 0) === 0 && this.envelope.outbox.length === 0) {
       return Promise.resolve();
     }
@@ -1232,9 +1352,6 @@ export class GameSessionOutbox {
             );
             validateDesiredReplay(gameId, responseDesired, responseDesired.entries.length > 0);
           }
-          if (response.revision !== mutation.baseRevision + 1) {
-            throw new Error("Unexpected game session revision");
-          }
           const durable = loadEnvelope(this.options.storage, this.storageKey);
           if (durable.gameId !== gameId) {
             this.envelope = durable;
@@ -1250,6 +1367,18 @@ export class GameSessionOutbox {
             durableIndex === -1
               ? durable.outbox
               : durable.outbox.filter((_, index) => index !== durableIndex);
+          const isCurrentDuplicateHead =
+            mutation.kind === "move-head" &&
+            response.duplicate &&
+            response.revision >= mutation.baseRevision + 1 &&
+            response.gameId === gameId &&
+            response.state !== undefined &&
+            response.results !== undefined &&
+            durableIndex !== -1 &&
+            remainingOutbox.length === 0;
+          if (response.revision !== mutation.baseRevision + 1 && !isCurrentDuplicateHead) {
+            throw new Error("Unexpected game session revision");
+          }
           const normalized = (() => {
             if (mutation.kind !== "normalize") return null;
             if (
@@ -1267,6 +1396,20 @@ export class GameSessionOutbox {
               response.state,
               response.results,
             );
+            validateDesiredReplay(gameId, desired, true);
+            return desired;
+          })();
+          const authoritativeHead = (() => {
+            if (mutation.kind !== "move-head" || remainingOutbox.length > 0) return null;
+            if (
+              response.gameId !== gameId ||
+              response.name === undefined ||
+              response.state === undefined ||
+              response.results === undefined
+            ) {
+              return null;
+            }
+            const desired = desiredSession(response.name, response.state, response.results);
             validateDesiredReplay(gameId, desired, true);
             return desired;
           })();
@@ -1289,13 +1432,26 @@ export class GameSessionOutbox {
                         resetReturnEventId: normalized.resetReturnEventId,
                         results: normalized.results,
                       }),
+                  ...(authoritativeHead === null
+                    ? {}
+                    : {
+                        name: authoritativeHead.name,
+                        metadata: authoritativeHead.metadata,
+                        baseline: authoritativeHead.baseline,
+                        entries: authoritativeHead.entries,
+                        headEventId: authoritativeHead.headEventId,
+                        resetReturnEventId: authoritativeHead.resetReturnEventId,
+                        results: authoritativeHead.results,
+                      }),
                   outbox:
                     canonicalName === undefined || canonicalName === ""
                       ? remainingOutbox
                       : remainingOutbox.map((queued) => ({ ...queued, name: canonicalName })),
                   failed: false,
                 };
-          if (normalized !== null && durableIndex !== -1) this.normalizationAvailable = true;
+          if ((normalized !== null || authoritativeHead !== null) && durableIndex !== -1) {
+            this.normalizationAvailable = true;
+          }
           activeMutation = null;
           this.persist();
         }
@@ -1329,6 +1485,7 @@ export class GameSessionOutbox {
         ) {
           try {
             const gameId = this.envelope.gameId;
+            const mutationId = activeMutation.mutationId;
             const remote = assertSessionSaveResponse(await this.options.read(gameId));
             if (
               remote.gameId !== gameId ||
@@ -1337,30 +1494,57 @@ export class GameSessionOutbox {
             ) {
               throw new Error("Authoritative session response is incomplete", { cause: error });
             }
+            if (remote.revision < activeMutation.baseRevision) {
+              throw new Error("Authoritative session response predates the queued head move", {
+                cause: error,
+              });
+            }
             const desired = desiredSession(
               remote.name ?? activeMutation.name,
               remote.state,
               remote.results,
             );
             validateDesiredReplay(gameId, desired, true);
-            this.envelope = {
-              version: 4,
-              gameId,
-              revision: remote.revision,
-              name: desired.name,
-              metadata: desired.metadata,
-              baseline: desired.baseline,
-              entries: desired.entries,
-              headEventId: desired.headEventId,
-              resetReturnEventId: desired.resetReturnEventId,
-              results: desired.results,
-              outbox: [],
-              failed: false,
-              clearFailed: false,
-              clearingGameId: null,
-            };
-            this.normalizationAvailable = true;
-            this.persist();
+            const durable = loadEnvelope(this.options.storage, this.storageKey);
+            const durableMutationIndex = durable.outbox.findIndex(
+              (mutation) => mutation.mutationId === mutationId,
+            );
+            const remainingOutbox = durable.outbox.filter(
+              (_, index) => index !== durableMutationIndex,
+            );
+            if (
+              durable.gameId === gameId &&
+              durableMutationIndex === 0 &&
+              remainingOutbox.every(({ kind }) => kind === "metadata")
+            ) {
+              this.envelope = {
+                version: 4,
+                gameId,
+                revision: remote.revision,
+                name: remainingOutbox.length === 0 ? desired.name : durable.name,
+                metadata: remainingOutbox.length === 0 ? desired.metadata : durable.metadata,
+                baseline: desired.baseline,
+                entries: desired.entries,
+                headEventId: desired.headEventId,
+                resetReturnEventId: desired.resetReturnEventId,
+                results: desired.results,
+                outbox: remainingOutbox.map((mutation, index) => ({
+                  ...mutation,
+                  baseRevision: remote.revision + index,
+                })),
+                failed: remainingOutbox.length > 0,
+                clearFailed: false,
+                clearingGameId: null,
+              };
+              this.normalizationAvailable = true;
+              this.persist();
+            } else if (durable.gameId === gameId && durableMutationIndex !== -1) {
+              this.envelope = { ...durable, failed: true };
+              this.persist();
+            } else {
+              this.envelope = durable;
+              this.notify();
+            }
             throw error;
           } catch (readError) {
             if (readError === error) throw error;

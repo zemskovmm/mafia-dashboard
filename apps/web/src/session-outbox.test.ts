@@ -8,8 +8,9 @@ import {
   createSeededRandom,
   createSetup,
   drawRoleForSeat,
+  type GameLogEntry,
 } from "@mafia/game-domain";
-import type { GameSessionState } from "./api/client.js";
+import type { FinalGameResults, GameSessionState } from "./api/client.js";
 import { GameSessionOutbox, type SessionSaveResponse } from "./session-outbox.js";
 
 const deferred = <T>() => {
@@ -63,6 +64,63 @@ const canonicalGame = () => {
   return { ...advanceSetupPhase(advanceSetupPhase(game)), day: 2 };
 };
 
+const resultsFor = (
+  game: ReturnType<typeof canonicalGame>,
+  playedAt: string,
+): FinalGameResults => ({
+  hostPlayerId: "host-player",
+  winner: "red",
+  playedAt,
+  players: game.players.map((player) => ({
+    playerId: player.id,
+    seat: player.seat,
+    role: player.role,
+    team: player.team,
+    status: player.status,
+    fouls: player.fouls,
+    bestMoveHits: null,
+  })),
+});
+
+const resetReturnScenario = () => {
+  const gameId = "00000000-0000-4000-8000-000000000801";
+  const mutationId = "00000000-0000-4000-8000-000000000802";
+  const game = { ...canonicalGame(), phase: "finished" as const, winner: "red" as const };
+  const baseline = { replayVersion: 1 as const, game };
+  const root = createGameLogEntry({
+    gameId,
+    id: "00000000-0000-4000-8000-000000000803",
+    sequence: 1,
+    parentEventId: null,
+    createdAt: "2026-08-30T00:00:00.000Z",
+    before: game,
+    draft: { type: "game.checkpointed", payload: {} },
+  });
+  const returned = createGameLogEntry({
+    gameId,
+    id: "00000000-0000-4000-8000-000000000804",
+    sequence: 2,
+    parentEventId: root.entry.id,
+    createdAt: "2026-08-30T00:01:00.000Z",
+    before: root.after,
+    draft: { type: "game.completed", payload: { winner: "red" } },
+  });
+  const sessionState = (
+    headEventId: string,
+    resetReturnEventId: string | null,
+    materializedGame: unknown,
+  ): GameSessionState => ({
+    ...state("PL-reset"),
+    game: materializedGame,
+    hostPlayerId: "host-player",
+    initialGame: baseline,
+    events: [root.entry, returned.entry],
+    headEventId,
+    resetReturnEventId,
+  });
+  return { gameId, mutationId, root, returned, sessionState };
+};
+
 const normalizationResponse = (
   gameId: string,
   revision: number,
@@ -96,6 +154,363 @@ const normalizationResponse = (
 };
 
 describe("GameSessionOutbox", () => {
+  it("adopts authoritative null results after an acknowledged reset return", async () => {
+    const storage = memoryStorage();
+    const { gameId, mutationId, root, returned, sessionState } = resetReturnScenario();
+    const save = vi.fn().mockResolvedValue({
+      gameId,
+      name: "Reset table",
+      revision: 6,
+      duplicate: false,
+      state: sessionState(returned.entry.id, null, returned.after),
+      results: null,
+    });
+    const outbox = new GameSessionOutbox({
+      storage,
+      createId: () => mutationId,
+      save,
+    });
+    outbox.restore(
+      gameId,
+      5,
+      "Reset table",
+      sessionState(root.entry.id, returned.entry.id, root.after),
+      null,
+    );
+    outbox.enqueue(
+      "Reset table",
+      sessionState(returned.entry.id, null, returned.after),
+      resultsFor(returned.after, returned.entry.createdAt),
+    );
+
+    await outbox.flush();
+
+    expect(save).toHaveBeenCalledWith(
+      gameId,
+      expect.objectContaining({ kind: "move-head", reason: "restore-reset" }),
+    );
+    expect(outbox.current?.results).toBeNull();
+    expect(outbox.takeNormalizedCurrent()?.results).toBeNull();
+  });
+
+  it("accepts the current authoritative revision for an older duplicate head retry", async () => {
+    const storage = memoryStorage();
+    const { gameId, mutationId, root, returned, sessionState } = resetReturnScenario();
+    const save = vi.fn().mockResolvedValue({
+      gameId,
+      name: "Reset table",
+      revision: 8,
+      duplicate: true,
+      state: sessionState(root.entry.id, returned.entry.id, root.after),
+      results: null,
+    });
+    const outbox = new GameSessionOutbox({ storage, createId: () => mutationId, save });
+    outbox.restore(
+      gameId,
+      5,
+      "Reset table",
+      sessionState(root.entry.id, returned.entry.id, root.after),
+      null,
+    );
+    outbox.enqueue(
+      "Reset table",
+      sessionState(returned.entry.id, null, returned.after),
+      resultsFor(returned.after, returned.entry.createdAt),
+    );
+
+    await outbox.flush();
+
+    expect(outbox.revision).toBe(8);
+    expect(outbox.current?.state.headEventId).toBe(root.entry.id);
+    expect(outbox.current?.results).toBeNull();
+    expect(outbox.pendingCount).toBe(0);
+  });
+
+  it("rejects an acknowledged head response whose aggregate disagrees with canonical replay", async () => {
+    const storage = memoryStorage();
+    const { gameId, mutationId, root, returned, sessionState } = resetReturnScenario();
+    const save = vi.fn().mockResolvedValue({
+      gameId,
+      name: "Reset table",
+      revision: 6,
+      duplicate: false,
+      state: sessionState(returned.entry.id, null, {
+        ...returned.after,
+        day: returned.after.day + 1,
+      }),
+      results: null,
+    });
+    const outbox = new GameSessionOutbox({ storage, createId: () => mutationId, save });
+    outbox.restore(
+      gameId,
+      5,
+      "Reset table",
+      sessionState(root.entry.id, returned.entry.id, root.after),
+      null,
+    );
+    outbox.enqueue(
+      "Reset table",
+      sessionState(returned.entry.id, null, returned.after),
+      resultsFor(returned.after, returned.entry.createdAt),
+    );
+
+    await expect(outbox.flush()).rejects.toThrow("authoritative aggregate");
+
+    expect(outbox.pendingCount).toBe(1);
+    expect(outbox.status).toBe("offline");
+  });
+
+  it("rejects acknowledged results that disagree with the canonical completion", async () => {
+    const storage = memoryStorage();
+    const { gameId, mutationId, root, returned, sessionState } = resetReturnScenario();
+    const canonicalResults = resultsFor(returned.after, returned.entry.createdAt);
+    const save = vi.fn().mockResolvedValue({
+      gameId,
+      name: "Reset table",
+      revision: 6,
+      duplicate: false,
+      state: sessionState(returned.entry.id, null, returned.after),
+      results: { ...canonicalResults, winner: "black" },
+    });
+    const outbox = new GameSessionOutbox({ storage, createId: () => mutationId, save });
+    outbox.restore(
+      gameId,
+      5,
+      "Reset table",
+      sessionState(root.entry.id, returned.entry.id, root.after),
+      null,
+    );
+    outbox.enqueue(
+      "Reset table",
+      sessionState(returned.entry.id, null, returned.after),
+      canonicalResults,
+    );
+
+    await expect(outbox.flush()).rejects.toThrow("results disagree");
+
+    expect(outbox.pendingCount).toBe(1);
+    expect(outbox.status).toBe("offline");
+  });
+
+  it.each([
+    [
+      "missing head target",
+      (persisted: { entries: { parentEventId: string | null }[]; outbox: object[] }) => {
+        Object.assign(persisted.outbox[0]!, {
+          targetEventId: "00000000-0000-4000-8000-000000000899",
+        });
+      },
+    ],
+    [
+      "second lifecycle root",
+      (persisted: { entries: { parentEventId: string | null }[] }) => {
+        persisted.entries[1]!.parentEventId = null;
+      },
+    ],
+  ])("quarantines a persisted outbox with a %s", async (_label, corrupt) => {
+    const storage = memoryStorage();
+    const { gameId, mutationId, root, returned, sessionState } = resetReturnScenario();
+    const staged = new GameSessionOutbox({
+      storage,
+      createId: () => mutationId,
+      save: vi.fn(),
+    });
+    staged.restore(
+      gameId,
+      5,
+      "Reset table",
+      sessionState(root.entry.id, returned.entry.id, root.after),
+      null,
+    );
+    staged.enqueue(
+      "Reset table",
+      sessionState(returned.entry.id, null, returned.after),
+      resultsFor(returned.after, returned.entry.createdAt),
+    );
+    const storageKey = "mafia-dashboard.game-session.v4";
+    const persisted = JSON.parse(storage.getItem(storageKey)!) as {
+      failed: boolean;
+      entries: { parentEventId: string | null }[];
+      outbox: object[];
+    };
+    corrupt(persisted);
+    storage.setItem(storageKey, JSON.stringify(persisted));
+    const save = vi.fn().mockResolvedValue({ revision: 6, duplicate: false });
+    const outbox = new GameSessionOutbox({ storage, createId: vi.fn(), save });
+
+    await expect(outbox.flush()).rejects.toThrow("dependency graph");
+
+    expect(save).not.toHaveBeenCalled();
+    expect(outbox.pendingCount).toBe(1);
+    expect(outbox.status).toBe("offline");
+    expect(JSON.parse(storage.getItem(storageKey)!).failed).toBe(true);
+  });
+
+  it("quarantines queued events whose persisted dependency order is reversed", async () => {
+    const storage = memoryStorage();
+    const gameId = "00000000-0000-4000-8000-000000000851";
+    const ids = [
+      gameId,
+      "00000000-0000-4000-8000-000000000852",
+      "00000000-0000-4000-8000-000000000853",
+      "00000000-0000-4000-8000-000000000856",
+    ];
+    const game = canonicalGame();
+    const baseline = { replayVersion: 1 as const, game };
+    const root = createGameLogEntry({
+      gameId,
+      id: "00000000-0000-4000-8000-000000000854",
+      sequence: 1,
+      parentEventId: null,
+      createdAt: "2026-08-30T00:00:00.000Z",
+      before: game,
+      draft: { type: "game.checkpointed", payload: {} },
+    });
+    const child = createGameLogEntry({
+      gameId,
+      id: "00000000-0000-4000-8000-000000000855",
+      sequence: 2,
+      parentEventId: root.entry.id,
+      createdAt: "2026-08-30T00:01:00.000Z",
+      before: root.after,
+      draft: { type: "turn.completed", payload: { seat: root.after.turnOrder[0]! } },
+    });
+    const canonicalState = (events: readonly GameLogEntry[]): GameSessionState => ({
+      ...state("PL-order"),
+      initialGame: baseline,
+      events,
+      headEventId: events.at(-1)?.id ?? null,
+    });
+    const staged = new GameSessionOutbox({
+      storage,
+      createId: () => ids.shift()!,
+      save: vi.fn(),
+    });
+    staged.enqueue("Ordered table", canonicalState([root.entry]), null);
+    staged.enqueue("Ordered table", canonicalState([root.entry, child.entry]), null);
+    const storageKey = "mafia-dashboard.game-session.v4";
+    const persisted = JSON.parse(storage.getItem(storageKey)!) as {
+      revision: number;
+      outbox: { baseRevision: number; kind: string }[];
+    };
+    const startIndex = persisted.outbox.findIndex(({ kind }) => kind === "start");
+    const appendIndex = persisted.outbox.findIndex(({ kind }) => kind === "append-event");
+    [persisted.outbox[startIndex], persisted.outbox[appendIndex]] = [
+      persisted.outbox[appendIndex]!,
+      persisted.outbox[startIndex]!,
+    ];
+    persisted.outbox.forEach((operation, index) => {
+      operation.baseRevision = persisted.revision + index;
+    });
+    storage.setItem(storageKey, JSON.stringify(persisted));
+    const save = vi.fn();
+    const outbox = new GameSessionOutbox({ storage, createId: vi.fn(), save });
+
+    await expect(outbox.flush()).rejects.toThrow("dependency graph");
+
+    expect(save).not.toHaveBeenCalled();
+    expect(outbox.pendingCount).toBe(3);
+    expect(outbox.status).toBe("offline");
+  });
+
+  it("rebases newer same-game metadata after failed head readback without erasing it", async () => {
+    const storage = memoryStorage();
+    const { gameId, mutationId, root, returned, sessionState } = resetReturnScenario();
+    const saveResponse = deferred<SessionSaveResponse>();
+    const readResponse = deferred<SessionSaveResponse>();
+    const save = vi.fn(() => saveResponse.promise);
+    const read = vi.fn(() => readResponse.promise);
+    const outbox = new GameSessionOutbox({ storage, createId: () => mutationId, save, read });
+    outbox.restore(
+      gameId,
+      5,
+      "Reset table",
+      sessionState(root.entry.id, returned.entry.id, root.after),
+      null,
+    );
+    const optimisticResults = resultsFor(returned.after, returned.entry.createdAt);
+    outbox.enqueue(
+      "Reset table",
+      sessionState(returned.entry.id, null, returned.after),
+      optimisticResults,
+    );
+    const flush = outbox.flush();
+    await vi.waitFor(() => expect(save).toHaveBeenCalledOnce());
+
+    const otherContext = new GameSessionOutbox({
+      storage,
+      createId: () => "00000000-0000-4000-8000-000000000805",
+      save: vi.fn(),
+    });
+    otherContext.enqueue(
+      "Reset table",
+      {
+        ...sessionState(returned.entry.id, null, returned.after),
+        playlistId: "PL-newer-context",
+      },
+      optimisticResults,
+    );
+    saveResponse.reject(new Error("head rejected"));
+    await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
+    readResponse.resolve({
+      gameId,
+      name: "Reset table",
+      revision: 5,
+      duplicate: false,
+      state: sessionState(root.entry.id, returned.entry.id, root.after),
+      results: null,
+    });
+
+    await expect(flush).rejects.toThrow("head rejected");
+
+    const reloaded = new GameSessionOutbox({ storage, createId: vi.fn(), save: vi.fn() });
+    expect(reloaded.current?.state.playlistId).toBe("PL-newer-context");
+    expect(reloaded.current?.state.headEventId).toBe(root.entry.id);
+    expect(reloaded.current?.results).toBeNull();
+    expect(reloaded.pendingCount).toBe(1);
+    expect(reloaded.status).toBe("offline");
+    expect(JSON.parse(storage.getItem("mafia-dashboard.game-session.v4")!).outbox).toEqual([
+      expect.objectContaining({
+        kind: "metadata",
+        baseRevision: 5,
+        metadata: expect.objectContaining({ playlistId: "PL-newer-context" }),
+      }),
+    ]);
+  });
+
+  it("refuses a failed-head readback that predates the queued base revision", async () => {
+    const storage = memoryStorage();
+    const { gameId, mutationId, root, returned, sessionState } = resetReturnScenario();
+    const save = vi.fn().mockRejectedValue(new Error("head rejected"));
+    const read = vi.fn().mockResolvedValue({
+      gameId,
+      name: "Reset table",
+      revision: 4,
+      duplicate: false,
+      state: sessionState(root.entry.id, returned.entry.id, root.after),
+      results: null,
+    });
+    const outbox = new GameSessionOutbox({ storage, createId: () => mutationId, save, read });
+    outbox.restore(
+      gameId,
+      5,
+      "Reset table",
+      sessionState(root.entry.id, returned.entry.id, root.after),
+      null,
+    );
+    outbox.enqueue(
+      "Reset table",
+      sessionState(returned.entry.id, null, returned.after),
+      resultsFor(returned.after, returned.entry.createdAt),
+    );
+
+    await expect(outbox.flush()).rejects.toThrow("head rejected");
+
+    expect(outbox.revision).toBe(5);
+    expect(outbox.pendingCount).toBe(1);
+    expect(outbox.status).toBe("offline");
+  });
+
   it("persists canonical games as v4 operations without cumulative state snapshots", () => {
     const storage = memoryStorage();
     const ids = [
