@@ -48,6 +48,8 @@ https://mafia.example.com/api/music/oauth/callback
 
 `PUBLIC_APP_URL` is also the CSRF trust boundary: every cookie-authenticated `POST`, `PUT`, `PATCH`, or `DELETE` request must carry that exact browser origin. Keep the reverse proxy and browser on the same canonical origin; alternate hostnames or ports are rejected. Application sessions are absolute and non-sliding for 30 days, and sign-out revokes only the presented session so other explicitly signed-in devices remain active. Google sign-in initiation and valid callback completion share an in-process limit of 10 attempts per source IP every 10 minutes. The supported deployments run at most one application replica; revisit the limiter storage before enabling horizontal scale.
 
+The complete HTTP policy, trust boundaries, scanning gates, and accepted residual risks are documented in [`security-and-privacy.md`](security-and-privacy.md).
+
 `DATABASE_URL` is required and passed unchanged to both the migration and app containers. Keep `POSTGRES_PASSWORD` as the raw database password, but percent-encode that password in the URL userinfo when it contains reserved characters such as `@`, `:`, `/`, `?`, or `#`.
 
 `APP_BIND=127.0.0.1` keeps the HTTP application private to the host. Compose does not publish PostgreSQL at all.

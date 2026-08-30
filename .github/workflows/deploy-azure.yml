@@ -12,8 +12,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
-  id-token: write
 
 concurrency:
   group: azure-production
@@ -40,22 +38,25 @@ jobs:
     env:
       TEST_DATABASE_URL: postgresql://mafia:mafia@127.0.0.1:5432/mafia_test
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm run audit:security
+      - run: npm run ci:install
       - run: npm run check
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
+      - name: Scan repository dependencies, secrets, and configuration
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          context: .
-          platforms: linux/amd64
-          push: false
-          tags: mafia-dashboard:verify
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          version: v0.74.0
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: 1
+          format: table
 
   publish:
     needs: verify
@@ -64,27 +65,66 @@ jobs:
       vars.AZURE_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      image: ${{ steps.publish.outputs.image }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE_REF: ghcr.io/${{ github.repository }}:${{ github.sha }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Sign in to GitHub Container Registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push immutable image
-        uses: docker/build-push-action@v6
+      - name: Build immutable image for scanning
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           platforms: linux/amd64
-          push: true
-          tags: ghcr.io/${{ github.repository }}:${{ github.sha }}
+          load: true
+          push: false
+          tags: ${{ env.IMAGE_REF }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Scan the exact image that will be published
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          version: v0.74.0
+          scan-type: image
+          image-ref: ${{ env.IMAGE_REF }}
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: 1
+          format: table
+      - name: Push the scanned immutable image
+        id: publish
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          push_output=$(docker push "$IMAGE_REF" 2>&1)
+          printf '%s\n' "$push_output"
+          if [[ "$push_output" =~ digest:\ (sha256:[0-9a-f]{64}) ]]; then
+            digest="${BASH_REMATCH[1]}"
+          else
+            echo "Docker push did not report an image digest" >&2
+            exit 1
+          fi
+          remote_digest=$(docker buildx imagetools inspect "$IMAGE_REF" --format '{{.Manifest.Digest}}')
+          if [[ "$remote_digest" != "$digest" ]]; then
+            echo "Published tag no longer resolves to the pushed digest" >&2
+            exit 1
+          fi
+          image_ref="${IMAGE_REF%:*}@$digest"
+          echo "image=$image_ref" >> "$GITHUB_OUTPUT"
 
   deploy:
     needs: publish
@@ -94,7 +134,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: production
+    permissions:
+      contents: read
+      id-token: write
     env:
+      DEPLOY_IMAGE: ${{ needs.publish.outputs.image }}
       AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
       AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
       AZURE_NAME_PREFIX: ${{ vars.AZURE_NAME_PREFIX }}
@@ -105,8 +149,8 @@ jobs:
       GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
       MUSIC_TOKEN_ENCRYPTION_KEY: ${{ secrets.MUSIC_TOKEN_ENCRYPTION_KEY }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: azure/login@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
@@ -174,7 +218,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           app_name='${{ steps.foundation.outputs.app_name }}'
-          image="ghcr.io/${GITHUB_REPOSITORY}:${GITHUB_SHA}"
+          image="$DEPLOY_IMAGE"
           existing_fqdn=$(az containerapp show \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --name "$app_name" \

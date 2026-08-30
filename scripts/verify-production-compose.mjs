@@ -204,6 +204,7 @@ try {
   const requestHeaders = {
     "content-type": "application/json",
     cookie: `mafia_session=${sessionToken}`,
+    origin: `http://127.0.0.1:${port}`,
     "x-club-id": clubId,
   };
   const createGame = await fetch(`http://127.0.0.1:${port}/api/games`, {

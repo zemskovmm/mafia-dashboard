@@ -564,9 +564,10 @@ test("exact cleanup deletes a proven ID even when listings omit it and confirms 
 });
 
 test("runtime verifiers enforce the shared contracts at their success boundaries", async () => {
-  const [sessionVerifier, uiVerifier] = await Promise.all([
+  const [sessionVerifier, uiVerifier, composeVerifier] = await Promise.all([
     readFile(new URL("./verify-session-state.mjs", import.meta.url), "utf8"),
     readFile(new URL("./verify-ui.mjs", import.meta.url), "utf8"),
+    readFile(new URL("./verify-production-compose.mjs", import.meta.url), "utf8"),
   ]);
 
   assert.match(sessionVerifier, /assertSessionPostcondition\(resetReadback/);
@@ -595,4 +596,5 @@ test("runtime verifiers enforce the shared contracts at their success boundaries
   assert.match(uiVerifier, /headOperationExpectations\.assertDrained\(\)/);
   assert.match(uiVerifier, /rootCheckpoint\?\.phaseAfter !== "mafia-planning"/);
   assert.match(uiVerifier, /dayCheckpoint\?\.phaseAfter !== "day"/);
+  assert.match(composeVerifier, /origin: `http:\/\/127\.0\.0\.1:\$\{port\}`/);
 });

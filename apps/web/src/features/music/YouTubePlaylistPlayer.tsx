@@ -276,6 +276,7 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
             playsinline: 1,
             controls: 1,
             rel: 0,
+            origin: window.location.origin,
             ...(configuredFallbackPlaylistId !== null
               ? { listType: "playlist", list: configuredFallbackPlaylistId }
               : {}),

@@ -70,6 +70,10 @@ On initial provisioning, the workflow can update the Container App once more aft
 
 Manual deployment is available from **Actions → Deploy Azure → Run workflow**.
 
+## Security gates
+
+The separate `Security` workflow runs on pull requests, pushes to `main`, a weekly schedule, and manual dispatch. The deployment workflow independently repeats the dependency and repository scan, then builds the commit-tagged image, scans that exact local image, and pushes it only after the image gate passes. Job permissions scope package writes only to publishing and Azure OIDC only to deployment. All external actions are pinned to immutable commits. See [`security-and-privacy.md`](security-and-privacy.md) for the threat model, exact controls, verification commands, and residual risks.
+
 ## Google OAuth callbacks
 
 After the first Azure deployment, obtain the URL from the workflow summary. Add both callback URLs to the Google OAuth Web application client:
@@ -98,7 +102,7 @@ Never commit deployment parameter files containing real passwords or OAuth secre
 
 ## Rollback
 
-Each deployment uses the full Git SHA as the image tag. To roll back, manually run the workflow from the known-good commit or redeploy the previous GHCR image tag. Do not delete previous image tags until the replacement revision is healthy.
+The publish job uses the full Git SHA as a traceable GHCR tag, captures and verifies the pushed manifest digest, and deploys Azure from `ghcr.io/...@sha256:<digest>`. Record the deployed digest with the release evidence. To roll back, redeploy the previous known-good digest; rerunning an old commit creates and scans a new artifact and is not an artifact-identical rollback. Do not delete manifests referenced by healthy or rollback-eligible revisions.
 
 Each revision runs the advisory-locked, transaction-protected migration init container before the app container. A failed migration prevents that revision from becoming ready.
 

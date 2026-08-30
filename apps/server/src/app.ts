@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { GameLogEntry, InitialGameBaseline } from "@mafia/game-domain";
+import helmet from "@fastify/helmet";
 import staticFiles from "@fastify/static";
 import Fastify from "fastify";
 import type { FastifyReply, FastifyRequest } from "fastify";
@@ -262,6 +263,32 @@ export const buildApp = async ({
   };
 }) => {
   const app = Fastify({ logger: false, bodyLimit: 4 * 1024 * 1024 });
+  const secureCookies = publicAppUrl !== undefined && new URL(publicAppUrl).protocol === "https:";
+  await app.register(helmet, {
+    crossOriginEmbedderPolicy: false,
+    frameguard: { action: "deny" },
+    hsts: secureCookies ? { maxAge: 31_536_000, includeSubDomains: false, preload: false } : false,
+    referrerPolicy: { policy: "strict-origin-when-cross-origin" },
+    contentSecurityPolicy: {
+      useDefaults: false,
+      directives: {
+        defaultSrc: ["'self'"],
+        baseUri: ["'self'"],
+        objectSrc: ["'none'"],
+        frameAncestors: ["'none'"],
+        scriptSrc: ["'self'", "https://www.youtube.com"],
+        frameSrc: ["https://www.youtube.com", "https://www.youtube-nocookie.com"],
+        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+        fontSrc: ["'self'", "https://fonts.gstatic.com"],
+        imgSrc: ["'self'", "data:", "blob:", "https:"],
+        connectSrc: ["'self'"],
+        formAction: ["'self'"],
+        manifestSrc: ["'self'"],
+        workerSrc: ["'self'", "blob:"],
+        upgradeInsecureRequests: secureCookies ? [] : null,
+      },
+    },
+  });
   app.setErrorHandler((error, _request, reply) => {
     const statusCode =
       typeof error === "object" &&
@@ -276,14 +303,14 @@ export const buildApp = async ({
     app.log.error("Internal request failure");
     return reply.code(500).send({ error: "internal_server_error" });
   });
-  app.addHook("onRequest", async (_request, reply) => {
+  app.addHook("onRequest", async (request, reply) => {
     reply.header("permissions-policy", "picture-in-picture=()");
+    if (request.url.startsWith("/api/")) reply.header("cache-control", "no-store");
   });
   const store = new EventStore(pool);
   const gameSessionStore = new GameSessionStore(pool);
   const playerStore = new PlayerStore(pool);
   const clubStore = new ClubStore(pool);
-  const secureCookies = publicAppUrl?.startsWith("https://") === true;
   const authAttemptLimiter = createFixedWindowLimiter({
     limit: authRateLimit?.limit ?? 10,
     windowMs: authRateLimit?.windowMs ?? 10 * 60 * 1_000,

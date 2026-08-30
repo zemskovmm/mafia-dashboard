@@ -473,7 +473,9 @@ A Docker volume provides persistence but is **not** a backup. The production bac
 - Application session tokens are random, stored only as hashes, expire after a fixed non-sliding 30 days, and are independently revocable by signing out that session.
 - Session cookies are `HttpOnly`, `Secure` in production, and use an appropriate `SameSite` policy.
 - Cookie-authenticated unsafe API requests require an exact browser-origin match, and Google sign-in attempts are throttled per source.
+- Responses enforce a tested content-security and browser-hardening policy; sensitive API responses are not cacheable.
 - No credentials, role assignments, or private checks appear in URLs, analytics, logs, or client error reports.
+- Dependency, static, repository, workflow, and production-image security gates block high/critical findings before release.
 - Backups receive the same protection as the live database.
 
 ### Testability

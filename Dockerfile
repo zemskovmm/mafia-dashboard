@@ -1,11 +1,12 @@
-FROM node:22-alpine AS build
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS build
 WORKDIR /app
 
 COPY package.json package-lock.json ./
 COPY apps/web/package.json apps/web/package.json
 COPY apps/server/package.json apps/server/package.json
 COPY packages/game-domain/package.json packages/game-domain/package.json
-RUN npm ci
+RUN npm run audit:security
+RUN npm run ci:install
 
 COPY tsconfig.base.json eslint.config.js .prettierrc.json ./
 COPY apps apps
@@ -13,10 +14,14 @@ COPY packages packages
 ARG VITE_YOUTUBE_PLAYLIST_ID=""
 ENV VITE_YOUTUBE_PLAYLIST_ID=${VITE_YOUTUBE_PLAYLIST_ID}
 RUN npm run build
-RUN npm prune --omit=dev
+RUN npm prune --omit=dev --ignore-scripts
 
-FROM node:22-alpine AS runtime
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS runtime
 WORKDIR /app
+RUN apk upgrade --no-cache \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-v* \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+    /usr/local/bin/yarn /usr/local/bin/yarnpkg /sbin/apk
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=3000 \
