@@ -1,8 +1,25 @@
 import type { Pool } from "pg";
 import { describe, expect, it, vi } from "vitest";
 import { buildApp } from "./app.js";
+import type { GoogleAuthService } from "./google-auth.js";
 
 const pool = { query: vi.fn() } as unknown as Pool;
+
+const buildLimitedAuthApp = async (trustedProxyHops: 0 | 1 = 0) => {
+  const googleAuth = {
+    createAuthorizationUrl: vi.fn(
+      (state: string) => `https://accounts.example.test?state=${state}`,
+    ),
+  } as unknown as GoogleAuthService;
+  const app = await buildApp({
+    pool,
+    googleAuth,
+    trustedProxyHops,
+    authRateLimit: { limit: 1, windowMs: 10_000 },
+  });
+  await app.ready();
+  return app;
+};
 
 const expectSecurityHeaders = (
   headers: Record<string, string | string[] | number | undefined>,
@@ -29,6 +46,92 @@ const expectSecurityHeaders = (
 };
 
 describe("server HTTP security policy", () => {
+  it("ignores forwarding headers from direct peers", async () => {
+    const app = await buildLimitedAuthApp();
+
+    const first = await app.inject({
+      method: "GET",
+      url: "/api/auth/google/start",
+      remoteAddress: "192.0.2.10",
+      headers: { "x-forwarded-for": "198.51.100.10" },
+    });
+    const spoofed = await app.inject({
+      method: "GET",
+      url: "/api/auth/google/start",
+      remoteAddress: "192.0.2.10",
+      headers: { "x-forwarded-for": "198.51.100.11" },
+    });
+
+    expect(first.statusCode).toBe(302);
+    expect(spoofed.statusCode).toBe(429);
+    await app.close();
+  });
+
+  it("distinguishes direct peers by socket address", async () => {
+    const app = await buildLimitedAuthApp();
+
+    const first = await app.inject({
+      method: "GET",
+      url: "/api/auth/google/start",
+      remoteAddress: "192.0.2.10",
+      headers: { "x-forwarded-for": "198.51.100.10" },
+    });
+    const second = await app.inject({
+      method: "GET",
+      url: "/api/auth/google/start",
+      remoteAddress: "192.0.2.11",
+      headers: { "x-forwarded-for": "198.51.100.10" },
+    });
+
+    expect(first.statusCode).toBe(302);
+    expect(second.statusCode).toBe(302);
+    await app.close();
+  });
+
+  it("gives clients behind one trusted proxy independent auth limiter buckets", async () => {
+    const app = await buildLimitedAuthApp(1);
+
+    const first = await app.inject({
+      method: "GET",
+      url: "/api/auth/google/start",
+      remoteAddress: "10.0.0.5",
+      headers: { "x-forwarded-for": "198.51.100.10" },
+    });
+    const second = await app.inject({
+      method: "GET",
+      url: "/api/auth/google/start",
+      remoteAddress: "10.0.0.5",
+      headers: { "x-forwarded-for": "198.51.100.11" },
+    });
+
+    expect(first.statusCode).toBe(302);
+    expect(second.statusCode).toBe(302);
+    await app.close();
+  });
+
+  it("ignores untrusted forwarding prefixes behind one proxy", async () => {
+    const app = await buildLimitedAuthApp(1);
+
+    const first = await app.inject({
+      method: "GET",
+      url: "/api/auth/google/start",
+      remoteAddress: "10.0.0.5",
+      headers: { "x-forwarded-for": "203.0.113.10, 198.51.100.10" },
+    });
+    const spoofed = await app.inject({
+      method: "GET",
+      url: "/api/auth/google/start",
+      remoteAddress: "10.0.0.5",
+      headers: { "x-forwarded-for": "203.0.113.11, 198.51.100.10" },
+    });
+
+    expect(first.statusCode).toBe(302);
+    expect(spoofed.statusCode).toBe(429);
+    expect(spoofed.headers["retry-after"]).toBe("10");
+    expect(spoofed.json()).toEqual({ error: "auth_rate_limited" });
+    await app.close();
+  });
+
   it.each([
     ["http://mafia.example.test", false],
     ["https://mafia.example.test", true],

@@ -246,6 +246,7 @@ export const buildApp = async ({
   defaultClubId,
   youtubeOAuth,
   publicAppUrl,
+  trustedProxyHops = 0,
   authRateLimit,
 }: {
   readonly pool: Pool;
@@ -255,6 +256,7 @@ export const buildApp = async ({
   readonly defaultClubId?: string;
   readonly youtubeOAuth?: YouTubeOAuthService;
   readonly publicAppUrl?: string;
+  readonly trustedProxyHops?: 0 | 1;
   readonly authRateLimit?: {
     readonly limit?: number;
     readonly windowMs?: number;
@@ -262,7 +264,11 @@ export const buildApp = async ({
     readonly now?: () => number;
   };
 }) => {
-  const app = Fastify({ logger: false, bodyLimit: 4 * 1024 * 1024 });
+  const app = Fastify({
+    logger: false,
+    bodyLimit: 4 * 1024 * 1024,
+    trustProxy: trustedProxyHops === 1 ? 1 : false,
+  });
   const secureCookies = publicAppUrl !== undefined && new URL(publicAppUrl).protocol === "https:";
   await app.register(helmet, {
     crossOriginEmbedderPolicy: false,

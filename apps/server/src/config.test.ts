@@ -2,6 +2,18 @@ import { describe, expect, it } from "vitest";
 import { loadConfig } from "./config.js";
 
 describe("loadConfig", () => {
+  it("does not trust forwarding headers by default", () => {
+    expect(loadConfig({}).TRUST_PROXY_HOPS).toBe(0);
+  });
+
+  it("accepts one trusted proxy hop", () => {
+    expect(loadConfig({ TRUST_PROXY_HOPS: "1" }).TRUST_PROXY_HOPS).toBe(1);
+  });
+
+  it("rejects trust beyond the supported single proxy hop", () => {
+    expect(() => loadConfig({ TRUST_PROXY_HOPS: "2" })).toThrow();
+  });
+
   it("builds Google sign-in configuration from the public app URL", () => {
     const config = loadConfig({
       PUBLIC_APP_URL: "https://mafia.example.test",

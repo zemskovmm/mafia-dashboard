@@ -44,7 +44,7 @@ Role/check/shot data is intentionally available to both authenticated roles with
 | Regular user reaches manager behavior | Manager-only route and UI guards                                                    | Role-matrix API/UI tests                               |
 | CSRF with ambient session cookie      | Exact `Origin` required for unsafe cookie-authenticated `/api/` requests            | `apps/server/src/app.test.ts`, `http-security.test.ts` |
 | OAuth callback substitution           | Random state in secure HttpOnly callback cookie and constant-time comparison        | Google/YouTube OAuth route tests                       |
-| Login resource abuse                  | Bounded fail-closed fixed-window source limiter shared by start and valid callback  | `http-security.test.ts`, `app.test.ts`                 |
+| Login resource abuse                  | Bounded fail-closed fixed-window source limiter with explicit zero/one-hop trust    | `http-security.test.ts`, `app-security.test.ts`        |
 | Session database theft                | Only SHA-256 token hashes stored; fixed 30-day non-sliding lifetime                 | `google-auth.test.ts`                                  |
 | XSS/injected active content           | Strict CSP, no object/embed, no framing, security-focused ESLint rules              | `app-security.test.ts`, `npm run lint`                 |
 | Clickjacking                          | `frame-ancestors 'none'` and `X-Frame-Options: DENY`                                | `app-security.test.ts`                                 |
@@ -74,6 +74,12 @@ All HTTP responses receive the Helmet baseline. The policy includes:
 - `Cache-Control: no-store` for every API response.
 
 `style-src 'unsafe-inline'` remains necessary for current React inline styles. `img-src https:` remains necessary because Google profile and YouTube thumbnail hosts are provider-controlled. These are explicit compatibility allowances, not blanket script or connection access.
+
+### Client address and proxy trust
+
+`TRUST_PROXY_HOPS` accepts only `0` or `1` and defaults to `0`. Direct deployments therefore key authentication attempts by the socket peer and ignore forwarding headers. Azure Container Apps and the documented Caddy deployment set it to `1` because exactly one controlled ingress is the only path to the application; Fastify then uses only the rightmost forwarded address and ignores caller-controlled prefixes. The Caddy topology also requires loopback-only application binding and Caddy's default forwarding-header sanitization. Unbounded proxy trust and arbitrary multi-hop chains are unsupported.
+
+This policy only selects the key for the existing fail-closed fixed-window limiter. Limiter state remains in one application process and must be replaced with shared state before horizontal scaling.
 
 ## Supply-chain gates
 

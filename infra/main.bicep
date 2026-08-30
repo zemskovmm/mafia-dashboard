@@ -86,6 +86,10 @@ var appEnv = concat(
       value: '3000'
     }
     {
+      name: 'TRUST_PROXY_HOPS'
+      value: '1'
+    }
+    {
       name: 'STATIC_DIR'
       value: '/app/apps/web/dist'
     }

@@ -9,6 +9,10 @@ const environment = z
     DATABASE_URL: z.url().default("postgresql://mafia:mafia@127.0.0.1:5432/mafia"),
     HOST: z.string().default("0.0.0.0"),
     PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
+    TRUST_PROXY_HOPS: z
+      .enum(["0", "1"])
+      .default("0")
+      .transform((value) => Number(value) as 0 | 1),
     STATIC_DIR: z.string().optional(),
     PUBLIC_APP_URL: z.preprocess(emptyToUndefined, z.url().optional()),
     GOOGLE_CLIENT_ID: z.preprocess(emptyToUndefined, z.string().min(1).optional()),

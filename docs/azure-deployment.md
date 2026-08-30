@@ -70,6 +70,12 @@ On initial provisioning, the workflow can update the Container App once more aft
 
 Manual deployment is available from **Actions → Deploy Azure → Run workflow**.
 
+## Trusted ingress and authentication limiting
+
+Azure Container Apps managed HTTPS ingress is the only public route to the application container. The deployment therefore sets `TRUST_PROXY_HOPS=1`: Fastify uses the rightmost `X-Forwarded-For` address supplied by that single ingress for the authentication-attempt limiter. [Container Apps documents](https://learn.microsoft.com/azure/container-apps/ingress-overview#http-headers) that ingress appends the request sender and that only this rightmost address is supplied by Container Apps; caller-controlled values to its left are not trusted.
+
+Do not replace this with unbounded proxy trust. Adding Front Door, a CDN, or another ingress changes the hop model and requires a separately validated policy before deployment. The limiter remains in-process and supports the current 0–1 replica configuration only.
+
 ## Security gates
 
 The separate `Security` workflow runs on pull requests, pushes to `main`, a weekly schedule, and manual dispatch. The deployment workflow independently repeats the dependency and repository scan, then builds the commit-tagged image, scans that exact local image, and pushes it only after the image gate passes. Job permissions scope package writes only to publishing and Azure OIDC only to deployment. All external actions are pinned to immutable commits. See [`security-and-privacy.md`](security-and-privacy.md) for the threat model, exact controls, verification commands, and residual risks.

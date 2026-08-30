@@ -19,6 +19,7 @@ const app = await buildApp({
   googleAuth,
   youtubeOAuth,
   publicAppUrl: config.PUBLIC_APP_URL,
+  trustedProxyHops: config.TRUST_PROXY_HOPS,
 });
 
 const shutdown = createShutdown(app, pool);

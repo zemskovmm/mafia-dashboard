@@ -28,6 +28,7 @@ Set at least:
 APP_IMAGE=ghcr.io/zemskovmm/mafia-dashboard@sha256:<verified-digest>
 APP_BIND=127.0.0.1
 APP_PORT=8080
+TRUST_PROXY_HOPS=1
 PUBLIC_APP_URL=https://mafia.example.com
 POSTGRES_USER=mafia
 POSTGRES_PASSWORD=<long-random-password>
@@ -46,7 +47,7 @@ https://mafia.example.com/api/auth/google/callback
 https://mafia.example.com/api/music/oauth/callback
 ```
 
-`PUBLIC_APP_URL` is also the CSRF trust boundary: every cookie-authenticated `POST`, `PUT`, `PATCH`, or `DELETE` request must carry that exact browser origin. Keep the reverse proxy and browser on the same canonical origin; alternate hostnames or ports are rejected. Application sessions are absolute and non-sliding for 30 days, and sign-out revokes only the presented session so other explicitly signed-in devices remain active. Google sign-in initiation and valid callback completion share an in-process limit of 10 attempts per source IP every 10 minutes. The supported deployments run at most one application replica; revisit the limiter storage before enabling horizontal scale.
+`PUBLIC_APP_URL` is also the CSRF trust boundary: every cookie-authenticated `POST`, `PUT`, `PATCH`, or `DELETE` request must carry that exact browser origin. Keep the reverse proxy and browser on the same canonical origin; alternate hostnames or ports are rejected. Application sessions are absolute and non-sliding for 30 days, and sign-out revokes only the presented session so other explicitly signed-in devices remain active. Google sign-in initiation and valid callback completion share an in-process limit of 10 attempts per source IP every 10 minutes. `TRUST_PROXY_HOPS=1` makes that source the rightmost address supplied by the one supported reverse proxy; earlier forwarding values remain untrusted. The supported deployments run at most one application replica; revisit the limiter storage before enabling horizontal scale.
 
 The complete HTTP policy, trust boundaries, scanning gates, and accepted residual risks are documented in [`security-and-privacy.md`](security-and-privacy.md).
 
@@ -132,7 +133,7 @@ mafia.example.com {
 }
 ```
 
-Validate certificate issuance and renewal, preserve the original `Host` and forwarded protocol headers, and allow inbound traffic only to ports 80/443. Never expose port 3000 inside the container, the host loopback port, or PostgreSQL directly to the public internet.
+Validate certificate issuance and renewal, preserve the original `Host` and forwarded protocol headers, and allow inbound traffic only to ports 80/443. Caddy's `reverse_proxy` defaults discard caller-supplied `X-Forwarded-*` values before setting the client address; do not override that behavior. `TRUST_PROXY_HOPS=1` is safe only while Caddy is the sole proxy and `APP_BIND=127.0.0.1` prevents direct public access to the application. Use `TRUST_PROXY_HOPS=0` for direct access, and reassess the trust chain before adding a CDN or another proxy. Never expose port 3000 inside the container, the host loopback port, or PostgreSQL directly to the public internet.
 
 After configuring the proxy, verify the public origin:
 

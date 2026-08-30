@@ -34,7 +34,7 @@ The application is a TypeScript npm workspace with a React/Vite SPA, Fastify API
 
 5. Open the configured `PUBLIC_APP_URL`. To allow tablets/laptops on the trusted LAN, set `APP_BIND=0.0.0.0` and use a private HTTPS origin such as Tailscale HTTPS. Apply local firewall and TLS policy before exposing the service beyond a trusted network.
 
-Cookie-authenticated mutations require an exact `Origin` match with `PUBLIC_APP_URL`. Google sign-in initiation and valid callback completion share a per-source limit of 10 attempts per 10 minutes; rejected attempts return `429` with `Retry-After`.
+Cookie-authenticated mutations require an exact `Origin` match with `PUBLIC_APP_URL`. Google sign-in initiation and valid callback completion share a per-source limit of 10 attempts per 10 minutes; rejected attempts return `429` with `Retry-After`. Keep `TRUST_PROXY_HOPS=0` for direct access. The production runbooks set it to `1` only where one controlled ingress is the sole path to the application.
 
 Health checks:
 
