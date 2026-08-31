@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { createGameLogEntry, type GameLogEntry, type GameState } from "@mafia/game-domain";
 import { GameSessionStore } from "./game-session-store.js";
@@ -134,8 +134,8 @@ const createCompletedSession = async (gameId: string, clubId = DEFAULT_CLUB_ID) 
   };
 };
 
-const createStartedDaySessionWithCheckpoints = async (gameId: string) => {
-  const completed = await createCompletedSession(gameId);
+const createStartedDaySessionWithCheckpoints = async (gameId: string, clubId = DEFAULT_CLUB_ID) => {
+  const completed = await createCompletedSession(gameId, clubId);
   const game = {
     ...completed.state.game,
     phase: "day" as const,
@@ -146,6 +146,7 @@ const createStartedDaySessionWithCheckpoints = async (gameId: string) => {
     currentTurnIndex: 0,
   };
   await store.save({
+    clubId,
     gameId,
     name: "Head operation table",
     mutationId: randomUUID(),
@@ -168,6 +169,7 @@ const createStartedDaySessionWithCheckpoints = async (gameId: string) => {
     draft: { type: "game.checkpointed", payload: {} },
   });
   await store.start({
+    clubId,
     gameId,
     mutationId: randomUUID(),
     baseRevision: 1,
@@ -187,6 +189,7 @@ const createStartedDaySessionWithCheckpoints = async (gameId: string) => {
     },
   });
   await store.appendEvent({
+    clubId,
     gameId,
     mutationId: randomUUID(),
     baseRevision: 2,
@@ -205,12 +208,79 @@ const createStartedDaySessionWithCheckpoints = async (gameId: string) => {
     },
   });
   await store.appendEvent({
+    clubId,
     gameId,
     mutationId: randomUUID(),
     baseRevision: 3,
     event: second.entry,
   });
   return { completed, initialGame, started, first, second };
+};
+
+const createCanonicalCompletedSession = async (
+  gameId: string,
+  clubId = DEFAULT_CLUB_ID,
+  persistResults = true,
+) => {
+  const completed = await createCompletedSession(gameId, clubId);
+  await store.save({
+    clubId,
+    gameId,
+    name: "Completed query table",
+    mutationId: randomUUID(),
+    baseRevision: 0,
+    state: {
+      ...emptyState,
+      hostPlayerId: completed.hostPlayerId,
+      hostName: "Completed Query Host",
+    },
+    results: null,
+  });
+  const initialGame = { replayVersion: 1 as const, game: completed.state.game };
+  const started = createGameLogEntry({
+    gameId,
+    id: randomUUID(),
+    sequence: 1,
+    parentEventId: null,
+    createdAt: "2026-08-18T07:59:00.000Z",
+    before: initialGame.game,
+    draft: { type: "game.checkpointed", payload: {} },
+  });
+  await store.start({
+    clubId,
+    gameId,
+    mutationId: randomUUID(),
+    baseRevision: 1,
+    initialGame,
+    event: started.entry,
+  });
+  const completion = createGameLogEntry({
+    gameId,
+    id: randomUUID(),
+    sequence: 2,
+    parentEventId: started.entry.id,
+    createdAt: "2026-08-18T08:00:00.000Z",
+    before: started.after,
+    draft: { type: "game.completed", payload: { winner: "red" } },
+  });
+  await store.appendEvent({
+    clubId,
+    gameId,
+    mutationId: randomUUID(),
+    baseRevision: 2,
+    event: completion.entry,
+  });
+  const results = { ...completed.results, playedAt: completion.entry.createdAt };
+  if (persistResults) {
+    await store.complete({
+      clubId,
+      gameId,
+      mutationId: randomUUID(),
+      baseRevision: 3,
+      results,
+    });
+  }
+  return { completed, completion, results };
 };
 
 describe("GameSessionStore", () => {
@@ -672,6 +742,108 @@ describe("GameSessionStore", () => {
         headEventId: stored.rows[0]?.head_event_id,
       },
     });
+  });
+
+  it("normalizes supplied JSON replay events without an unused canonical read", async () => {
+    const club = await new ClubStore(pool).create(legacyOwnerId, {
+      name: `Normalization query count ${randomUUID().slice(0, 8)}`,
+      city: "Granada",
+      headerLogo: null,
+      cardLogo: null,
+      language: "en",
+      ownerConsent: true,
+    });
+    const gameId = randomUUID();
+    const completed = await createCompletedSession(gameId, club.id);
+    const initialGame = { replayVersion: 1 as const, game: completed.state.game };
+    const started = createGameLogEntry({
+      gameId,
+      id: randomUUID(),
+      sequence: 1,
+      parentEventId: null,
+      createdAt: "2026-08-18T07:59:00.000Z",
+      before: initialGame.game,
+      draft: { type: "game.checkpointed", payload: {} },
+    });
+    await pool.query(
+      `INSERT INTO game_sessions
+         (id, club_id, name, revision, last_mutation_id, state, status)
+       VALUES ($1, $2, 'Supplied replay events', 1, $3, $4::jsonb, 'active')`,
+      [
+        gameId,
+        club.id,
+        randomUUID(),
+        JSON.stringify({
+          ...emptyState,
+          hostPlayerId: completed.hostPlayerId,
+          hostName: "Supplied Event Host",
+          initialGame,
+          events: [started.entry],
+          headEventId: started.entry.id,
+        }),
+      ],
+    );
+
+    const recordingPool = new Pool({ connectionString: databaseUrl });
+    let calls = (): readonly unknown[][] => [];
+    let restoreQuery: () => void = () => undefined;
+    recordingPool.on("connect", (client) => {
+      const query = vi.spyOn(client, "query");
+      calls = () => query.mock.calls;
+      restoreQuery = () => query.mockRestore();
+    });
+    const recordingStore = new GameSessionStore(recordingPool);
+    try {
+      const normalized = await recordingStore.normalize({
+        clubId: club.id,
+        gameId,
+        mutationId: randomUUID(),
+        baseRevision: 1,
+      });
+      const canonicalReads = calls().filter(
+        ([statement]) =>
+          typeof statement === "string" &&
+          statement.includes("FROM game_events") &&
+          statement.includes("replay_sequence IS NOT NULL"),
+      );
+
+      expect(canonicalReads).toHaveLength(1);
+      expect(normalized).toMatchObject({
+        revision: 2,
+        state: {
+          game: initialGame.game,
+          initialGame,
+          events: [expect.objectContaining({ id: started.entry.id })],
+          headEventId: started.entry.id,
+        },
+      });
+      await expect(
+        pool.query<{ id: string }>(
+          `SELECT id
+             FROM game_events
+            WHERE club_id = $1 AND game_id = $2 AND replay_sequence IS NOT NULL`,
+          [club.id, gameId],
+        ),
+      ).resolves.toMatchObject({ rows: [{ id: started.entry.id }] });
+      await expect(
+        pool.query<{ state: Record<string, unknown> }>(
+          "SELECT state FROM game_sessions WHERE club_id = $1 AND id = $2",
+          [club.id, gameId],
+        ),
+      ).resolves.toMatchObject({
+        rows: [
+          {
+            state: expect.not.objectContaining({
+              events: expect.anything(),
+              initialGame: expect.anything(),
+            }),
+          },
+        ],
+      });
+    } finally {
+      restoreQuery();
+      await recordingPool.end();
+    }
   });
 
   it("keeps setup-only normalization explicit, repeatable, and startable", async () => {
@@ -2713,5 +2885,145 @@ describe("GameSessionStore", () => {
       expect.objectContaining({ gameId: olderId, name: "Older", hostName: "Older host" }),
     ]);
     expect(active.some(({ gameId }) => gameId === completedId)).toBe(false);
+  });
+
+  it("keeps active-session query count constant as replay sessions grow", async () => {
+    const club = await new ClubStore(pool).create(legacyOwnerId, {
+      name: `Active query count ${randomUUID().slice(0, 8)}`,
+      city: "Granada",
+      headerLogo: null,
+      cardLogo: null,
+      language: "en",
+      ownerConsent: true,
+    });
+    const gameIds = Array.from({ length: 3 }, () => randomUUID());
+    for (const gameId of gameIds) await createStartedDaySessionWithCheckpoints(gameId, club.id);
+
+    const recordingPool = new Pool({ connectionString: databaseUrl });
+    const recordingStore = new GameSessionStore(recordingPool);
+    const query = vi.spyOn(recordingPool, "query");
+    try {
+      const active = await recordingStore.listActive(club.id);
+
+      expect(query).toHaveBeenCalledTimes(2);
+      expect(new Set(active.map(({ gameId }) => gameId))).toEqual(new Set(gameIds));
+      expect(active).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ phase: "day", day: 1, hostName: "Head Host" }),
+        ]),
+      );
+    } finally {
+      query.mockRestore();
+      await recordingPool.end();
+    }
+  });
+
+  it("keeps completed-session query count constant as replay sessions grow", async () => {
+    const club = await new ClubStore(pool).create(legacyOwnerId, {
+      name: `Completed query count ${randomUUID().slice(0, 8)}`,
+      city: "Granada",
+      headerLogo: null,
+      cardLogo: null,
+      language: "en",
+      ownerConsent: true,
+    });
+    const gameIds = Array.from({ length: 3 }, () => randomUUID());
+    for (const gameId of gameIds) await createCanonicalCompletedSession(gameId, club.id);
+
+    const recordingPool = new Pool({ connectionString: databaseUrl });
+    const recordingStore = new GameSessionStore(recordingPool);
+    const query = vi.spyOn(recordingPool, "query");
+    try {
+      const completed = await recordingStore.listCompleted(club.id);
+
+      expect(query).toHaveBeenCalledTimes(2);
+      expect(new Set(completed.map(({ gameId }) => gameId))).toEqual(new Set(gameIds));
+      expect(completed).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            winner: "red",
+            day: 2,
+            eventCount: 3,
+            hostName: "Completed Query Host",
+          }),
+        ]),
+      );
+    } finally {
+      query.mockRestore();
+      await recordingPool.end();
+    }
+  });
+
+  it("persists every completion player projection with one insert statement", async () => {
+    const club = await new ClubStore(pool).create(legacyOwnerId, {
+      name: `Completion insert count ${randomUUID().slice(0, 8)}`,
+      city: "Granada",
+      headerLogo: null,
+      cardLogo: null,
+      language: "en",
+      ownerConsent: true,
+    });
+    const gameId = randomUUID();
+    const candidate = await createCanonicalCompletedSession(gameId, club.id, false);
+    const mutationId = randomUUID();
+    const recordingPool = new Pool({ connectionString: databaseUrl });
+    let calls = (): readonly unknown[][] => [];
+    let restoreQuery: () => void = () => undefined;
+    recordingPool.on("connect", (client) => {
+      const query = vi.spyOn(client, "query");
+      calls = () => query.mock.calls;
+      restoreQuery = () => query.mockRestore();
+    });
+    const recordingStore = new GameSessionStore(recordingPool);
+    try {
+      const completed = await recordingStore.complete({
+        clubId: club.id,
+        gameId,
+        mutationId,
+        baseRevision: 3,
+        results: candidate.results,
+      });
+      const playerResultInserts = calls().filter(([statement]) =>
+        typeof statement === "string"
+          ? statement.includes("INSERT INTO game_player_results")
+          : false,
+      );
+
+      expect(playerResultInserts).toHaveLength(1);
+      expect(completed).toMatchObject({
+        status: "completed",
+        revision: 4,
+        results: candidate.results,
+      });
+      await expect(
+        pool.query<{ count: number }>(
+          "SELECT COUNT(*)::int AS count FROM game_player_results WHERE club_id = $1 AND game_id = $2",
+          [club.id, gameId],
+        ),
+      ).resolves.toMatchObject({ rows: [{ count: 10 }] });
+
+      const callsBeforeRetry = calls().length;
+      await expect(
+        recordingStore.complete({
+          clubId: club.id,
+          gameId,
+          mutationId,
+          baseRevision: 3,
+          results: candidate.results,
+        }),
+      ).resolves.toMatchObject({ duplicate: true, revision: 4 });
+      expect(
+        calls()
+          .slice(callsBeforeRetry)
+          .filter(([statement]) =>
+            typeof statement === "string"
+              ? statement.includes("INSERT INTO game_player_results")
+              : false,
+          ),
+      ).toHaveLength(0);
+    } finally {
+      restoreQuery();
+      await recordingPool.end();
+    }
   });
 });

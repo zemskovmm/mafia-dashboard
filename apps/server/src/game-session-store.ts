@@ -225,38 +225,51 @@ interface CanonicalEventRow {
 
 type Queryable = Pick<Pool, "query"> | Pick<PoolClient, "query">;
 
-const readCanonicalEvents = async (
+const mapCanonicalEvent = (row: CanonicalEventRow): GameLogEntry =>
+  ({
+    replayVersion: row.replay_version,
+    id: row.id,
+    gameId: row.game_id,
+    sequence: row.replay_sequence,
+    parentEventId: row.parent_event_id,
+    type: row.event_type,
+    payload: row.payload,
+    phaseBefore: row.phase,
+    phaseAfter: row.phase_after,
+    dayBefore: row.day_before,
+    dayAfter: row.day_after,
+    stateHashAfter: row.state_hash_after,
+    createdAt: row.created_at.toISOString(),
+  }) as GameLogEntry;
+
+const readCanonicalEventsByGame = async (
   queryable: Queryable,
   clubId: string,
-  gameId: string,
-): Promise<readonly GameLogEntry[]> => {
+  gameIds: readonly string[],
+): Promise<ReadonlyMap<string, readonly GameLogEntry[]>> => {
+  const uniqueGameIds = [...new Set(gameIds)];
+  const eventsByGame = new Map<string, GameLogEntry[]>(uniqueGameIds.map((gameId) => [gameId, []]));
+  if (uniqueGameIds.length === 0) return eventsByGame;
   const result = await queryable.query<CanonicalEventRow>(
     `SELECT id, game_id, replay_sequence, parent_event_id, event_type, payload,
             phase, phase_after, day_before, day_after, replay_version, state_hash_after,
             created_at
        FROM game_events
-      WHERE club_id = $1 AND game_id = $2 AND replay_sequence IS NOT NULL
-      ORDER BY replay_sequence`,
-    [clubId, gameId],
+      WHERE club_id = $1 AND game_id = ANY($2::uuid[]) AND replay_sequence IS NOT NULL
+      ORDER BY game_id, replay_sequence`,
+    [clubId, uniqueGameIds],
   );
-  return result.rows.map(
-    (row): GameLogEntry =>
-      ({
-        replayVersion: row.replay_version,
-        id: row.id,
-        gameId: row.game_id,
-        sequence: row.replay_sequence,
-        parentEventId: row.parent_event_id,
-        type: row.event_type,
-        payload: row.payload,
-        phaseBefore: row.phase,
-        phaseAfter: row.phase_after,
-        dayBefore: row.day_before,
-        dayAfter: row.day_after,
-        stateHashAfter: row.state_hash_after,
-        createdAt: row.created_at.toISOString(),
-      }) as GameLogEntry,
-  );
+  for (const row of result.rows) eventsByGame.get(row.game_id)?.push(mapCanonicalEvent(row));
+  return eventsByGame;
+};
+
+const readCanonicalEvents = async (
+  queryable: Queryable,
+  clubId: string,
+  gameId: string,
+): Promise<readonly GameLogEntry[]> => {
+  const eventsByGame = await readCanonicalEventsByGame(queryable, clubId, [gameId]);
+  return eventsByGame.get(gameId) ?? [];
 };
 
 const activeEventsFor = (
@@ -317,14 +330,12 @@ const mapSession = (row: SessionRow, duplicate: boolean): StoredGameSession => (
   results: row.results,
 });
 
-const hydrateSession = async (
-  queryable: Queryable,
+const hydrateSessionFromEvents = (
   row: SessionRow,
-  clubId: string,
+  events: readonly GameLogEntry[],
   duplicate: boolean,
   revision = row.revision,
-): Promise<StoredGameSession> => {
-  const events = await readCanonicalEvents(queryable, clubId, row.id);
+): StoredGameSession => {
   const initialGame = row.initial_game;
   const headEventId = row.head_event_id;
   const activeEvents = activeEventsFor(events, headEventId);
@@ -369,6 +380,20 @@ const hydrateSession = async (
     previewableFromEventId: row.replay_base_event_id,
   };
 };
+
+const hydrateSession = async (
+  queryable: Queryable,
+  row: SessionRow,
+  clubId: string,
+  duplicate: boolean,
+  revision = row.revision,
+): Promise<StoredGameSession> =>
+  hydrateSessionFromEvents(
+    row,
+    await readCanonicalEvents(queryable, clubId, row.id),
+    duplicate,
+    revision,
+  );
 
 const assertPlayersBelongToClub = async (
   client: PoolClient,
@@ -592,26 +617,28 @@ const replaceResults = async (
     clubId,
     gameId,
   ]);
-  for (const player of results.players) {
-    await client.query(
-      `INSERT INTO game_player_results
-         (club_id, game_id, player_id, seat, role, team, final_status, fouls, won,
-          best_move_hits)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $6 = $9, $10)`,
-      [
-        clubId,
-        gameId,
-        player.playerId,
-        player.seat,
-        player.role,
-        player.team,
-        player.status,
-        player.fouls,
-        results.winner,
-        player.bestMoveHits ?? null,
-      ],
-    );
-  }
+  await client.query(
+    `INSERT INTO game_player_results
+       (club_id, game_id, player_id, seat, role, team, final_status, fouls, won,
+        best_move_hits)
+     SELECT $1, $2, player.player_id, player.seat, player.role, player.team,
+            player.final_status, player.fouls, player.team = $3, player.best_move_hits
+       FROM UNNEST(
+         $4::uuid[], $5::int[], $6::text[], $7::text[], $8::text[], $9::int[], $10::int[]
+       ) AS player(player_id, seat, role, team, final_status, fouls, best_move_hits)`,
+    [
+      clubId,
+      gameId,
+      results.winner,
+      results.players.map(({ playerId }) => playerId),
+      results.players.map(({ seat }) => seat),
+      results.players.map(({ role }) => role),
+      results.players.map(({ team }) => team),
+      results.players.map(({ status }) => status),
+      results.players.map(({ fouls }) => fouls),
+      results.players.map(({ bestMoveHits }) => bestMoveHits ?? null),
+    ],
+  );
   await updateLastPlayed(client, clubId, [...affected]);
 };
 
@@ -963,23 +990,23 @@ export class GameSessionStore {
         ORDER BY updated_at DESC, id`,
       [clubId],
     );
-    return Promise.all(
-      result.rows.map(async (row) => {
-        const game =
-          row.initial_game === null
-            ? deriveCurrentGame(row.state)
-            : (await hydrateSession(this.pool, row, clubId, false)).state.game;
-        return {
-          gameId: row.id,
-          name: row.name,
-          revision: row.revision,
-          hostName: row.state.hostName ?? null,
-          phase: game?.phase ?? setupPhase(row.state.setup),
-          day: game?.day ?? 0,
-          updatedAt: row.updated_at,
-        };
-      }),
-    );
+    const replayGameIds = result.rows.flatMap((row) => (row.initial_game === null ? [] : [row.id]));
+    const eventsByGame = await readCanonicalEventsByGame(this.pool, clubId, replayGameIds);
+    return result.rows.map((row) => {
+      const game =
+        row.initial_game === null
+          ? deriveCurrentGame(row.state)
+          : hydrateSessionFromEvents(row, eventsByGame.get(row.id) ?? [], false).state.game;
+      return {
+        gameId: row.id,
+        name: row.name,
+        revision: row.revision,
+        hostName: row.state.hostName ?? null,
+        phase: game?.phase ?? setupPhase(row.state.setup),
+        day: game?.day ?? 0,
+        updatedAt: row.updated_at,
+      };
+    });
   }
 
   public async listCompleted(
@@ -987,35 +1014,38 @@ export class GameSessionStore {
   ): Promise<readonly CompletedGameSessionSummary[]> {
     const result = await this.pool.query<CompletedSessionRow>(
       `SELECT ${sessionColumns},
-              (SELECT COUNT(*)::int
-                 FROM game_events AS event
-                WHERE event.club_id = game_sessions.club_id
-                  AND event.game_id = game_sessions.id) AS event_count
+              COALESCE(event_counts.event_count, 0)::int AS event_count
          FROM game_sessions
-        WHERE status = 'completed' AND club_id = $1
+         LEFT JOIN (
+           SELECT game_id, COUNT(*)::int AS event_count
+             FROM game_events
+            WHERE club_id = $1
+            GROUP BY game_id
+         ) AS event_counts ON event_counts.game_id = game_sessions.id
+        WHERE status = 'completed' AND game_sessions.club_id = $1
         ORDER BY updated_at DESC, id`,
       [clubId],
     );
-    const summaries = await Promise.all(
-      result.rows.map(async (row): Promise<CompletedGameSessionSummary | null> => {
-        if (row.results === null) return null;
-        const game =
-          row.initial_game === null
-            ? deriveCurrentGame(row.state)
-            : (await hydrateSession(this.pool, row, clubId, false)).state.game;
-        return {
-          gameId: row.id,
-          name: row.name,
-          revision: row.revision,
-          hostName: row.state.hostName ?? null,
-          winner: row.results.winner,
-          playedAt: row.results.playedAt,
-          day: game?.day ?? 0,
-          eventCount: row.event_count,
-          updatedAt: row.updated_at,
-        };
-      }),
-    );
+    const replayGameIds = result.rows.flatMap((row) => (row.initial_game === null ? [] : [row.id]));
+    const eventsByGame = await readCanonicalEventsByGame(this.pool, clubId, replayGameIds);
+    const summaries = result.rows.map((row): CompletedGameSessionSummary | null => {
+      if (row.results === null) return null;
+      const game =
+        row.initial_game === null
+          ? deriveCurrentGame(row.state)
+          : hydrateSessionFromEvents(row, eventsByGame.get(row.id) ?? [], false).state.game;
+      return {
+        gameId: row.id,
+        name: row.name,
+        revision: row.revision,
+        hostName: row.state.hostName ?? null,
+        winner: row.results.winner,
+        playedAt: row.results.playedAt,
+        day: game?.day ?? 0,
+        eventCount: row.event_count,
+        updatedAt: row.updated_at,
+      };
+    });
     return summaries.flatMap((summary) => (summary === null ? [] : [summary]));
   }
 
@@ -1065,8 +1095,10 @@ export class GameSessionStore {
 
       let initialGame = row.initial_game ?? row.state.initialGame ?? null;
       const suppliedEvents = row.state.events ?? [];
-      const existingEvents = await readCanonicalEvents(client, clubId, input.gameId);
-      let events = suppliedEvents.length === 0 ? existingEvents : suppliedEvents;
+      let events =
+        suppliedEvents.length === 0
+          ? await readCanonicalEvents(client, clubId, input.gameId)
+          : suppliedEvents;
       let legacyLog = row.state.legacyLog;
       if (initialGame === null && row.state.game != null) {
         initialGame = { replayVersion: 1, game: row.state.game };
