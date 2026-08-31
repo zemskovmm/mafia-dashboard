@@ -1521,11 +1521,18 @@ describe("server API", () => {
       url: `/api/game-sessions/${gameId}`,
       payload: { name: "Restorable table", mutationId, baseRevision: 0, state, results: null },
     });
+    const retried = await app.inject({
+      method: "PUT",
+      url: `/api/game-sessions/${gameId}`,
+      payload: { name: "Restorable table", mutationId, baseRevision: 0, state, results: null },
+    });
     const listed = await app.inject({ method: "GET", url: "/api/game-sessions" });
     const restored = await app.inject({ method: "GET", url: `/api/game-sessions/${gameId}` });
 
     expect(saved.statusCode).toBe(201);
     expect(saved.json()).toMatchObject({ gameId, revision: 1, duplicate: false });
+    expect(retried.statusCode).toBe(200);
+    expect(retried.json()).toEqual({ ...saved.json(), duplicate: true });
     expect(listed.json().sessions).toEqual(
       expect.arrayContaining([expect.objectContaining({ gameId, name: "Restorable table" })]),
     );

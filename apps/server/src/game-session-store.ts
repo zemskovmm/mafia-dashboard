@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
+  assertGameLogEntry,
   createGameLogEntry,
   isMeaningfulGameEventDraft,
   replayGameLog,
@@ -226,22 +227,32 @@ interface CanonicalEventRow {
 
 type Queryable = Pick<Pool, "query"> | Pick<PoolClient, "query">;
 
-const mapCanonicalEvent = (row: CanonicalEventRow): GameLogEntry =>
-  ({
-    replayVersion: row.replay_version,
-    id: row.id,
-    gameId: row.game_id,
-    sequence: row.replay_sequence,
-    parentEventId: row.parent_event_id,
-    type: row.event_type,
-    payload: row.payload,
-    phaseBefore: row.phase,
-    phaseAfter: row.phase_after,
-    dayBefore: row.day_before,
-    dayAfter: row.day_after,
-    stateHashAfter: row.state_hash_after,
-    createdAt: row.created_at.toISOString(),
-  }) as GameLogEntry;
+const mapCanonicalEvent = (row: CanonicalEventRow): GameLogEntry => {
+  try {
+    const event = {
+      replayVersion: row.replay_version,
+      id: row.id,
+      gameId: row.game_id,
+      sequence: row.replay_sequence,
+      parentEventId: row.parent_event_id,
+      type: row.event_type,
+      payload: row.payload,
+      phaseBefore: row.phase,
+      phaseAfter: row.phase_after,
+      dayBefore: row.day_before,
+      dayAfter: row.day_after,
+      stateHashAfter: row.state_hash_after,
+      createdAt: row.created_at.toISOString(),
+    };
+    assertGameLogEntry(event);
+    return event;
+  } catch {
+    throw new GameSessionOperationError(
+      "game_session_replay_invalid",
+      "Stored canonical event is invalid",
+    );
+  }
+};
 
 const readCanonicalEventsByGame = async (
   queryable: Queryable,
@@ -301,19 +312,50 @@ const deriveCurrentGame = (state: PersistedGameSessionState): GameState | null =
   return replayGameLog(state.initialGame, activeEventsForState(state)).game;
 };
 
+const assertPersistedPlayerSelection = (state: PersistedGameSessionState): void => {
+  const selectedPlayerIds = state.setup?.selectedPlayerIds as unknown;
+  const setupPlayers = state.setup?.setup?.players as unknown;
+  const hasInvalidSetupPlayer =
+    Array.isArray(setupPlayers) &&
+    setupPlayers.some(
+      (player) =>
+        player === null ||
+        typeof player !== "object" ||
+        Array.isArray(player) ||
+        ("id" in player && player.id !== undefined && typeof player.id !== "string") ||
+        ("seat" in player &&
+          player.seat !== undefined &&
+          (!Number.isInteger(player.seat) || Number(player.seat) < 1 || Number(player.seat) > 10)),
+    );
+  if (
+    (selectedPlayerIds !== undefined &&
+      (!Array.isArray(selectedPlayerIds) ||
+        selectedPlayerIds.some((playerId) => typeof playerId !== "string"))) ||
+    (setupPlayers !== undefined && (!Array.isArray(setupPlayers) || hasInvalidSetupPlayer))
+  ) {
+    throw new GameSessionOperationError(
+      "game_session_replay_invalid",
+      "Stored player selection is invalid",
+    );
+  }
+};
+
 const materializeSessionState = (
   state: PersistedGameSessionState,
-  game = deriveCurrentGame(state),
-): StoredGameSessionState => ({
-  ...state,
-  setup: state.setup ?? null,
-  game,
-  hostPlayerId: state.hostPlayerId ?? null,
-  hostName: state.hostName ?? null,
-  playlistId: state.playlistId ?? "",
-  log: state.log ?? [],
-  undoHistory: state.undoHistory ?? [],
-});
+  game?: GameState | null,
+): StoredGameSessionState => {
+  assertPersistedPlayerSelection(state);
+  return {
+    ...state,
+    setup: state.setup ?? null,
+    game: game === undefined ? deriveCurrentGame(state) : game,
+    hostPlayerId: state.hostPlayerId ?? null,
+    hostName: state.hostName ?? null,
+    playlistId: state.playlistId ?? "",
+    log: state.log ?? [],
+    undoHistory: state.undoHistory ?? [],
+  };
+};
 
 const setupPhase = (setup: unknown): string => {
   if (setup === null || typeof setup !== "object" || !("step" in setup)) return "setup-players";
@@ -337,9 +379,12 @@ const hydrateSessionFromEvents = (
   duplicate: boolean,
   revision = row.revision,
 ): StoredGameSession => {
-  const initialGame = row.initial_game;
-  const headEventId = row.head_event_id;
-  const activeEvents = activeEventsFor(events, headEventId);
+  assertPersistedPlayerSelection(row.state);
+  const suppliedEvents = decodePersistedReplayEvents(row.state.events);
+  const replayEvents = events.length === 0 ? suppliedEvents : events;
+  const initialGame = row.initial_game ?? row.state.initialGame ?? null;
+  const headEventId = row.head_event_id ?? row.state.headEventId ?? null;
+  const activeEvents = activeEventsFor(replayEvents, headEventId);
   const game =
     row.state.game ??
     (initialGame === null ? null : replayGameLog(initialGame, activeEvents, row.id).game);
@@ -370,7 +415,7 @@ const hydrateSessionFromEvents = (
       log,
       undoHistory: [],
       initialGame,
-      events,
+      events: replayEvents,
       headEventId,
       resetReturnEventId: row.reset_return_event_id,
     },
@@ -410,6 +455,36 @@ const assertPlayersBelongToClub = async (
   }
 };
 
+type PlayerProjection =
+  | { readonly mode: "canonical-game"; readonly players: readonly { id: string; seat: number }[] }
+  | { readonly mode: "setup-roster"; readonly players: readonly { id: string; seat: number }[] }
+  | { readonly mode: "selected-ids"; readonly players: readonly { id: string; seat: number }[] };
+
+const playerProjectionFor = (state: StoredGameSessionState): PlayerProjection => {
+  assertPersistedPlayerSelection(state);
+  if (state.game !== null) {
+    return {
+      mode: "canonical-game",
+      players: state.game.players.map(({ id, seat }) => ({ id, seat })),
+    };
+  }
+  if (state.setup?.setup?.players !== undefined) {
+    return {
+      mode: "setup-roster",
+      players: state.setup.setup.players.flatMap(({ id, seat }) =>
+        typeof id === "string" && typeof seat === "number" ? [{ id, seat }] : [],
+      ),
+    };
+  }
+  return {
+    mode: "selected-ids",
+    players:
+      state.setup?.selectedPlayerIds?.flatMap((id, index) =>
+        id === "" ? [] : [{ id, seat: index + 1 }],
+      ) ?? [],
+  };
+};
+
 const replaceActivePlayers = async (
   client: PoolClient,
   clubId: string,
@@ -421,15 +496,7 @@ const replaceActivePlayers = async (
     gameId,
   ]);
   const hostPlayerId = state.hostPlayerId ?? state.setup?.hostPlayerId;
-  const seatedPlayers =
-    state.game?.players.map(({ id, seat }) => ({ id, seat })) ??
-    state.setup?.setup?.players?.flatMap(({ id, seat }) =>
-      typeof id === "string" && typeof seat === "number" ? [{ id, seat }] : [],
-    ) ??
-    state.setup?.selectedPlayerIds?.flatMap((id, index) =>
-      id === "" ? [] : [{ id, seat: index + 1 }],
-    ) ??
-    [];
+  const { players: seatedPlayers } = playerProjectionFor(state);
   await assertPlayersBelongToClub(client, clubId, [
     ...(hostPlayerId === undefined || hostPlayerId === null ? [] : [hostPlayerId]),
     ...seatedPlayers.map(({ id }) => id),
@@ -721,6 +788,117 @@ const metadataOnlyState = (
   ...(legacyLog === undefined || legacyLog.length === 0 ? {} : { legacyLog }),
 });
 
+type NormalizationPlan =
+  | {
+      readonly mode: "setup-only";
+      readonly initialGame: null;
+      readonly events: readonly GameLogEntry[];
+      readonly legacyLog?: readonly StoredGameLogEntry[];
+    }
+  | {
+      readonly mode: "legacy-snapshot";
+      readonly initialGame: InitialGameBaseline;
+      readonly events: readonly GameLogEntry[];
+      readonly legacyLog: readonly StoredGameLogEntry[];
+    }
+  | {
+      readonly mode: "legacy-json-replay" | "canonical-replay";
+      readonly initialGame: InitialGameBaseline | null;
+      readonly events: readonly GameLogEntry[];
+      readonly legacyLog?: readonly StoredGameLogEntry[];
+    };
+
+const replayInvalid = (message: string): GameSessionOperationError =>
+  new GameSessionOperationError("game_session_replay_invalid", message);
+
+const decodePersistedReplayEvents = (value: unknown): readonly GameLogEntry[] => {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw replayInvalid("Stored JSON replay events are invalid");
+  try {
+    for (const event of value) assertGameLogEntry(event);
+  } catch {
+    throw replayInvalid("Stored JSON replay events are invalid");
+  }
+  return value;
+};
+
+const needsCanonicalReplayRead = (
+  row: SessionRow,
+  suppliedEvents: readonly GameLogEntry[],
+): boolean =>
+  suppliedEvents.length === 0 ||
+  row.initial_game !== null ||
+  row.replay_base_event_id !== null ||
+  row.head_event_id !== null;
+
+const normalizationPlanFor = (
+  row: SessionRow,
+  suppliedEvents: readonly GameLogEntry[],
+  canonicalEvents: readonly GameLogEntry[],
+): NormalizationPlan => {
+  if (
+    row.initial_game !== null &&
+    row.state.initialGame != null &&
+    !isDeepStrictEqual(row.initial_game, row.state.initialGame)
+  ) {
+    throw replayInvalid("JSON and canonical replay baselines contradict each other");
+  }
+  if (
+    row.head_event_id !== null &&
+    row.state.headEventId != null &&
+    row.head_event_id !== row.state.headEventId
+  ) {
+    throw replayInvalid("JSON and canonical replay heads contradict each other");
+  }
+  if (
+    suppliedEvents.length > 0 &&
+    canonicalEvents.length > 0 &&
+    !isDeepStrictEqual(suppliedEvents, canonicalEvents)
+  ) {
+    throw replayInvalid("JSON and canonical replay sources contradict each other");
+  }
+
+  const initialGame = row.initial_game ?? row.state.initialGame ?? null;
+  if (canonicalEvents.length > 0) {
+    return {
+      mode: "canonical-replay",
+      initialGame,
+      events: canonicalEvents,
+      legacyLog: row.state.legacyLog,
+    };
+  }
+  if (suppliedEvents.length > 0) {
+    return {
+      mode: "legacy-json-replay",
+      initialGame,
+      events: suppliedEvents,
+      legacyLog: row.state.legacyLog,
+    };
+  }
+  if (initialGame !== null) {
+    return {
+      mode: row.initial_game === null ? "legacy-json-replay" : "canonical-replay",
+      initialGame,
+      events: [],
+      legacyLog: row.state.legacyLog,
+    };
+  }
+  if (row.state.game != null) {
+    return {
+      mode: "legacy-snapshot",
+      initialGame: { replayVersion: 1, game: row.state.game },
+      events: [],
+      legacyLog: [...(row.state.legacyLog ?? []), ...(row.state.log ?? [])],
+    };
+  }
+  return {
+    mode: "setup-only",
+    initialGame: null,
+    events: [],
+    legacyLog: row.state.legacyLog,
+  };
+};
+
 interface StoredCanonicalEventRow {
   readonly id: string;
   readonly club_id: string;
@@ -841,6 +1019,42 @@ const mutationRequest = (input: SaveGameSessionInput) => ({
   state: input.state,
   results: input.results,
 });
+
+const isMutationRetry = async (
+  client: PoolClient,
+  clubId: string,
+  gameId: string,
+  mutationId: string,
+  request: unknown,
+): Promise<boolean> => {
+  const duplicate = await client.query<{ request: unknown | null }>(
+    `SELECT request
+       FROM game_session_mutations
+      WHERE club_id = $3 AND game_id = $1 AND mutation_id = $2`,
+    [gameId, mutationId, clubId],
+  );
+  const duplicateRow = duplicate.rows[0];
+  if (duplicateRow === undefined) return false;
+  if (duplicateRow.request !== null && !isDeepStrictEqual(duplicateRow.request, request)) {
+    throw new GameSessionMutationMismatchError();
+  }
+  return true;
+};
+
+const recordMutation = async (
+  client: PoolClient,
+  clubId: string,
+  gameId: string,
+  mutationId: string,
+  revision: number,
+  request: unknown,
+): Promise<void> => {
+  await client.query(
+    `INSERT INTO game_session_mutations (club_id, game_id, mutation_id, revision, request)
+     VALUES ($1, $2, $3, $4, $5::jsonb)`,
+    [clubId, gameId, mutationId, revision, JSON.stringify(request)],
+  );
+};
 
 const assertSnapshotGameIdentity = (input: SaveGameSessionInput): void => {
   if (input.state.events?.some(({ gameId }) => gameId !== input.gameId)) {
@@ -1069,35 +1283,22 @@ export class GameSessionStore {
       );
       const row = current.rows[0];
       if (row === undefined) throw new GameSessionNotFoundError();
-
-      const duplicate = await client.query<{ revision: number; request: unknown | null }>(
-        `SELECT revision, request
-           FROM game_session_mutations
-          WHERE club_id = $3 AND game_id = $1 AND mutation_id = $2`,
-        [input.gameId, input.mutationId, clubId],
-      );
-      const duplicateRow = duplicate.rows[0];
-      if (duplicateRow !== undefined) {
-        if (duplicateRow.request !== null && !isDeepStrictEqual(duplicateRow.request, request)) {
-          throw new GameSessionMutationMismatchError();
-        }
+      if (await isMutationRetry(client, clubId, input.gameId, input.mutationId, request)) {
         const response = await hydrateSession(client, row, clubId, true);
         await client.query("COMMIT");
         return response;
       }
       if (input.baseRevision !== row.revision) throw new GameSessionConflictError(row.revision);
 
-      let initialGame = row.initial_game ?? row.state.initialGame ?? null;
-      const suppliedEvents = row.state.events ?? [];
-      let events =
-        suppliedEvents.length === 0
-          ? await readCanonicalEvents(client, clubId, input.gameId)
-          : suppliedEvents;
-      let legacyLog = row.state.legacyLog;
-      if (initialGame === null && row.state.game != null) {
-        initialGame = { replayVersion: 1, game: row.state.game };
-        legacyLog = [...(row.state.legacyLog ?? []), ...(row.state.log ?? [])];
-      }
+      const suppliedEvents = decodePersistedReplayEvents(row.state.events);
+      const readCanonicalBeforeWrite = needsCanonicalReplayRead(row, suppliedEvents);
+      const canonicalEvents = readCanonicalBeforeWrite
+        ? await readCanonicalEvents(client, clubId, input.gameId)
+        : [];
+      const plan = normalizationPlanFor(row, suppliedEvents, canonicalEvents);
+      const initialGame = plan.initialGame;
+      let events = plan.events;
+      const legacyLog = plan.legacyLog;
       if (initialGame !== null && events.length === 0) {
         const checkpoint = createGameLogEntry({
           gameId: input.gameId,
@@ -1153,14 +1354,12 @@ export class GameSessionStore {
           clubId,
         ],
       );
-      await client.query(
-        `INSERT INTO game_session_mutations (club_id, game_id, mutation_id, revision, request)
-         VALUES ($1, $2, $3, $4, $5::jsonb)`,
-        [clubId, input.gameId, input.mutationId, nextRevision, JSON.stringify(request)],
-      );
+      await recordMutation(client, clubId, input.gameId, input.mutationId, nextRevision, request);
       const updatedRow = updated.rows[0];
       if (updatedRow === undefined) throw new Error("The normalized game session was not returned");
-      const response = await hydrateSession(client, updatedRow, clubId, false);
+      const response = readCanonicalBeforeWrite
+        ? hydrateSessionFromEvents(updatedRow, events, false)
+        : await hydrateSession(client, updatedRow, clubId, false);
       await client.query("COMMIT");
       return response;
     } catch (error) {
@@ -1194,15 +1393,7 @@ export class GameSessionStore {
       );
       const row = current.rows[0];
       if (row === undefined) throw new GameSessionNotFoundError();
-      const duplicate = await client.query<{ revision: number; request: unknown | null }>(
-        "SELECT revision, request FROM game_session_mutations WHERE club_id = $3 AND game_id = $1 AND mutation_id = $2",
-        [input.gameId, input.mutationId, clubId],
-      );
-      const duplicateRow = duplicate.rows[0];
-      if (duplicateRow !== undefined) {
-        if (duplicateRow.request !== null && !isDeepStrictEqual(duplicateRow.request, request)) {
-          throw new GameSessionMutationMismatchError();
-        }
+      if (await isMutationRetry(client, clubId, input.gameId, input.mutationId, request)) {
         const response = await hydrateSession(client, row, clubId, true);
         await client.query("COMMIT");
         return response;
@@ -1260,11 +1451,7 @@ export class GameSessionStore {
         input.gameId,
         materializeSessionState(metadata, input.initialGame.game),
       );
-      await client.query(
-        `INSERT INTO game_session_mutations (club_id, game_id, mutation_id, revision, request)
-         VALUES ($1, $2, $3, $4, $5::jsonb)`,
-        [clubId, input.gameId, input.mutationId, nextRevision, JSON.stringify(request)],
-      );
+      await recordMutation(client, clubId, input.gameId, input.mutationId, nextRevision, request);
       const updatedRow = updated.rows[0];
       if (updatedRow === undefined) throw new Error("The started game session was not returned");
       const response = await hydrateSession(client, updatedRow, clubId, false);
@@ -1300,15 +1487,7 @@ export class GameSessionStore {
       );
       const row = current.rows[0];
       if (row === undefined) throw new GameSessionNotFoundError();
-      const duplicate = await client.query<{ revision: number; request: unknown | null }>(
-        "SELECT revision, request FROM game_session_mutations WHERE club_id = $3 AND game_id = $1 AND mutation_id = $2",
-        [input.gameId, input.mutationId, clubId],
-      );
-      const duplicateRow = duplicate.rows[0];
-      if (duplicateRow !== undefined) {
-        if (duplicateRow.request !== null && !isDeepStrictEqual(duplicateRow.request, request)) {
-          throw new GameSessionMutationMismatchError();
-        }
+      if (await isMutationRetry(client, clubId, input.gameId, input.mutationId, request)) {
         const response = await hydrateSession(client, row, clubId, true);
         await client.query("COMMIT");
         return response;
@@ -1374,11 +1553,7 @@ export class GameSessionStore {
         input.gameId,
         materializeSessionState(row.state, replay.game),
       );
-      await client.query(
-        `INSERT INTO game_session_mutations (club_id, game_id, mutation_id, revision, request)
-         VALUES ($1, $2, $3, $4, $5::jsonb)`,
-        [clubId, input.gameId, input.mutationId, nextRevision, JSON.stringify(request)],
-      );
+      await recordMutation(client, clubId, input.gameId, input.mutationId, nextRevision, request);
       const updatedRow = updated.rows[0];
       if (updatedRow === undefined) throw new Error("The appended game session was not returned");
       const response = await hydrateSession(client, updatedRow, clubId, false);
@@ -1415,15 +1590,7 @@ export class GameSessionStore {
       );
       const row = current.rows[0];
       if (row === undefined) throw new GameSessionNotFoundError();
-      const duplicate = await client.query<{ revision: number; request: unknown | null }>(
-        "SELECT revision, request FROM game_session_mutations WHERE club_id = $3 AND game_id = $1 AND mutation_id = $2",
-        [input.gameId, input.mutationId, clubId],
-      );
-      const duplicateRow = duplicate.rows[0];
-      if (duplicateRow !== undefined) {
-        if (duplicateRow.request !== null && !isDeepStrictEqual(duplicateRow.request, request)) {
-          throw new GameSessionMutationMismatchError();
-        }
+      if (await isMutationRetry(client, clubId, input.gameId, input.mutationId, request)) {
         const response = await hydrateSession(client, row, clubId, true);
         await client.query("COMMIT");
         return response;
@@ -1561,11 +1728,7 @@ export class GameSessionStore {
           materializeSessionState(row.state, replay.game),
         );
       }
-      await client.query(
-        `INSERT INTO game_session_mutations (club_id, game_id, mutation_id, revision, request)
-         VALUES ($1, $2, $3, $4, $5::jsonb)`,
-        [clubId, input.gameId, input.mutationId, nextRevision, JSON.stringify(request)],
-      );
+      await recordMutation(client, clubId, input.gameId, input.mutationId, nextRevision, request);
       const updatedRow = updated.rows[0];
       if (updatedRow === undefined) throw new Error("The moved game session was not returned");
       const response = await hydrateSession(client, updatedRow, clubId, false);
@@ -1601,15 +1764,7 @@ export class GameSessionStore {
       );
       const row = current.rows[0];
       if (row === undefined) throw new GameSessionNotFoundError();
-      const duplicate = await client.query<{ revision: number; request: unknown | null }>(
-        "SELECT revision, request FROM game_session_mutations WHERE club_id = $3 AND game_id = $1 AND mutation_id = $2",
-        [input.gameId, input.mutationId, clubId],
-      );
-      const duplicateRow = duplicate.rows[0];
-      if (duplicateRow !== undefined) {
-        if (duplicateRow.request !== null && !isDeepStrictEqual(duplicateRow.request, request)) {
-          throw new GameSessionMutationMismatchError();
-        }
+      if (await isMutationRetry(client, clubId, input.gameId, input.mutationId, request)) {
         const response = await hydrateSession(client, row, clubId, true);
         await client.query("COMMIT");
         return response;
@@ -1654,11 +1809,7 @@ export class GameSessionStore {
         RETURNING ${sessionColumns}`,
         [input.gameId, nextRevision, input.mutationId, JSON.stringify(input.results), clubId],
       );
-      await client.query(
-        `INSERT INTO game_session_mutations (club_id, game_id, mutation_id, revision, request)
-         VALUES ($1, $2, $3, $4, $5::jsonb)`,
-        [clubId, input.gameId, input.mutationId, nextRevision, JSON.stringify(request)],
-      );
+      await recordMutation(client, clubId, input.gameId, input.mutationId, nextRevision, request);
       const updatedRow = updated.rows[0];
       if (updatedRow === undefined) throw new Error("The completed game session was not returned");
       const response = await hydrateSession(client, updatedRow, clubId, false);

@@ -1191,6 +1191,234 @@ describe("GameSessionStore", () => {
     ).resolves.toMatchObject({ rows: [] });
   });
 
+  it("rejects malformed canonical event rows at the persistence boundary", async () => {
+    const gameId = randomUUID();
+    const history = await createStartedDaySessionWithCheckpoints(gameId);
+    await pool.query("UPDATE game_events SET payload = 'null'::jsonb WHERE id = $1", [
+      history.first.entry.id,
+    ]);
+    try {
+      const mutationId = randomUUID();
+      const before = await pool.query(
+        `SELECT revision, last_mutation_id, state, initial_game, head_event_id
+           FROM game_sessions
+          WHERE id = $1`,
+        [gameId],
+      );
+      const beforeEvents = await pool.query(
+        `SELECT id, payload, replay_sequence
+           FROM game_events
+          WHERE game_id = $1
+          ORDER BY sequence`,
+        [gameId],
+      );
+      const beforePlayers = await pool.query(
+        `SELECT player_id, seat, is_host
+           FROM game_session_players
+          WHERE game_id = $1
+          ORDER BY is_host DESC, seat`,
+        [gameId],
+      );
+
+      await expect(store.normalize({ gameId, mutationId, baseRevision: 4 })).rejects.toMatchObject({
+        name: "GameSessionOperationError",
+        code: "game_session_replay_invalid",
+      });
+
+      const after = await pool.query(
+        `SELECT revision, last_mutation_id, state, initial_game, head_event_id
+           FROM game_sessions
+          WHERE id = $1`,
+        [gameId],
+      );
+      expect(after.rows).toEqual(before.rows);
+      await expect(
+        pool.query(
+          `SELECT id, payload, replay_sequence
+             FROM game_events
+            WHERE game_id = $1
+            ORDER BY sequence`,
+          [gameId],
+        ),
+      ).resolves.toMatchObject({ rows: beforeEvents.rows });
+      await expect(
+        pool.query(
+          `SELECT player_id, seat, is_host
+             FROM game_session_players
+            WHERE game_id = $1
+            ORDER BY is_host DESC, seat`,
+          [gameId],
+        ),
+      ).resolves.toMatchObject({ rows: beforePlayers.rows });
+      await expect(
+        pool.query(
+          "SELECT mutation_id FROM game_session_mutations WHERE game_id = $1 AND mutation_id = $2",
+          [gameId, mutationId],
+        ),
+      ).resolves.toMatchObject({ rows: [] });
+    } finally {
+      await pool.query("UPDATE game_events SET payload = $2::jsonb WHERE id = $1", [
+        history.first.entry.id,
+        JSON.stringify(history.first.entry.payload),
+      ]);
+    }
+  });
+
+  it("rejects malformed legacy JSON replay entries on read", async () => {
+    const gameId = randomUUID();
+    const completed = await createCompletedSession(gameId);
+    await store.save({
+      gameId,
+      name: "Malformed JSON replay",
+      mutationId: randomUUID(),
+      baseRevision: 0,
+      state: emptyState,
+      results: null,
+    });
+    await pool.query("UPDATE game_sessions SET state = $2::jsonb WHERE id = $1", [
+      gameId,
+      JSON.stringify({
+        ...emptyState,
+        initialGame: { replayVersion: 1, game: completed.state.game },
+        events: [null],
+        headEventId: randomUUID(),
+      }),
+    ]);
+    try {
+      await expect(store.get(gameId)).rejects.toMatchObject({
+        name: "GameSessionOperationError",
+        code: "game_session_replay_invalid",
+      });
+    } finally {
+      await pool.query("DELETE FROM game_sessions WHERE id = $1", [gameId]);
+    }
+  });
+
+  it("rejects non-finite canonical event timestamps at the persistence boundary", async () => {
+    const gameId = randomUUID();
+    const history = await createStartedDaySessionWithCheckpoints(gameId);
+    await pool.query("UPDATE game_events SET created_at = 'infinity' WHERE id = $1", [
+      history.first.entry.id,
+    ]);
+    try {
+      await expect(store.get(gameId)).rejects.toMatchObject({
+        name: "GameSessionOperationError",
+        code: "game_session_replay_invalid",
+      });
+    } finally {
+      await pool.query("UPDATE game_events SET created_at = $2 WHERE id = $1", [
+        history.first.entry.id,
+        history.first.entry.createdAt,
+      ]);
+    }
+  });
+
+  it("rejects malformed persisted player selections at the persistence boundary", async () => {
+    const gameId = randomUUID();
+    await store.save({
+      gameId,
+      name: "Malformed player selection",
+      mutationId: randomUUID(),
+      baseRevision: 0,
+      state: emptyState,
+      results: null,
+    });
+    await pool.query("UPDATE game_sessions SET state = $2::jsonb WHERE id = $1", [
+      gameId,
+      JSON.stringify({
+        ...emptyState,
+        setup: {
+          step: "players",
+          hostPlayerId: "",
+          selectedPlayerIds: [42],
+          setup: null,
+        },
+      }),
+    ]);
+    try {
+      await expect(store.get(gameId)).rejects.toMatchObject({
+        name: "GameSessionOperationError",
+        code: "game_session_replay_invalid",
+      });
+    } finally {
+      await pool.query("DELETE FROM game_sessions WHERE id = $1", [gameId]);
+    }
+  });
+
+  it("rejects contradictory JSON and canonical replay sources without writing", async () => {
+    const gameId = randomUUID();
+    const history = await createStartedDaySessionWithCheckpoints(gameId);
+    const alternateRoot = createGameLogEntry({
+      gameId,
+      id: randomUUID(),
+      sequence: 1,
+      parentEventId: null,
+      createdAt: "2026-08-18T08:05:00.000Z",
+      before: history.initialGame.game,
+      draft: { type: "game.checkpointed", payload: {} },
+    });
+    await pool.query(
+      `UPDATE game_sessions
+          SET state = $2::jsonb, head_event_id = $3
+        WHERE id = $1`,
+      [
+        gameId,
+        JSON.stringify({
+          ...emptyState,
+          hostPlayerId: history.completed.hostPlayerId,
+          hostName: "Contradictory Replay Host",
+          initialGame: history.initialGame,
+          events: [alternateRoot.entry],
+          headEventId: alternateRoot.entry.id,
+        }),
+        alternateRoot.entry.id,
+      ],
+    );
+    try {
+      const beforeSession = await pool.query(
+        `SELECT revision, last_mutation_id, state, initial_game,
+                replay_base_event_id, head_event_id
+           FROM game_sessions
+          WHERE id = $1`,
+        [gameId],
+      );
+      const beforeEvents = await pool.query(
+        "SELECT id, replay_sequence FROM game_events WHERE game_id = $1 ORDER BY sequence",
+        [gameId],
+      );
+      const mutationId = randomUUID();
+
+      await expect(store.normalize({ gameId, mutationId, baseRevision: 4 })).rejects.toMatchObject({
+        name: "GameSessionOperationError",
+        code: "game_session_replay_invalid",
+      });
+
+      await expect(
+        pool.query(
+          `SELECT revision, last_mutation_id, state, initial_game,
+                  replay_base_event_id, head_event_id
+             FROM game_sessions
+            WHERE id = $1`,
+          [gameId],
+        ),
+      ).resolves.toMatchObject({ rows: beforeSession.rows });
+      await expect(
+        pool.query(
+          "SELECT id, replay_sequence FROM game_events WHERE game_id = $1 ORDER BY sequence",
+          [gameId],
+        ),
+      ).resolves.toMatchObject({ rows: beforeEvents.rows });
+      await expect(
+        pool.query(
+          "SELECT mutation_id FROM game_session_mutations WHERE game_id = $1 AND mutation_id = $2",
+          [gameId, mutationId],
+        ),
+      ).resolves.toMatchObject({ rows: [] });
+    } finally {
+      await pool.query("DELETE FROM game_sessions WHERE id = $1", [gameId]);
+    }
+  });
+
   it("normalizes a legacy current snapshot as one honest compatibility checkpoint", async () => {
     const gameId = randomUUID();
     const completed = await createCompletedSession(gameId);
@@ -2850,6 +3078,71 @@ describe("GameSessionStore", () => {
       { player_id: hostPlayerId, seat: null, is_host: true },
       { player_id: seatedPlayerId, seat: 1, is_host: false },
     ]);
+  });
+
+  it("uses canonical game players before setup rosters and selected IDs", async () => {
+    const gameId = randomUUID();
+    const completed = await createCompletedSession(gameId);
+    const setupPlayerId = randomUUID();
+    const selectedPlayerId = randomUUID();
+    await pool.query(`INSERT INTO players (id, nickname) VALUES ($1, $2), ($3, $4)`, [
+      setupPlayerId,
+      `Setup ${setupPlayerId}`,
+      selectedPlayerId,
+      `Selected ${selectedPlayerId}`,
+    ]);
+    const setup = {
+      step: "roles",
+      hostPlayerId: completed.hostPlayerId,
+      selectedPlayerIds: [selectedPlayerId],
+      setup: { players: [{ id: setupPlayerId, seat: 1 }] },
+    } as const;
+    const projectedPlayers = async () =>
+      (
+        await pool.query<{ player_id: string; seat: number }>(
+          `SELECT player_id, seat
+             FROM game_session_players
+            WHERE game_id = $1 AND NOT is_host
+            ORDER BY seat`,
+          [gameId],
+        )
+      ).rows;
+
+    await store.save({
+      gameId,
+      name: "Projection precedence",
+      mutationId: randomUUID(),
+      baseRevision: 0,
+      state: { ...completed.state, setup },
+      results: null,
+    });
+    expect(await projectedPlayers()).toEqual(
+      completed.state.game.players.map(({ id, seat }) => ({ player_id: id, seat })),
+    );
+
+    await store.save({
+      gameId,
+      name: "Projection precedence",
+      mutationId: randomUUID(),
+      baseRevision: 1,
+      state: { ...emptyState, hostPlayerId: completed.hostPlayerId, setup },
+      results: null,
+    });
+    expect(await projectedPlayers()).toEqual([{ player_id: setupPlayerId, seat: 1 }]);
+
+    await store.save({
+      gameId,
+      name: "Projection precedence",
+      mutationId: randomUUID(),
+      baseRevision: 2,
+      state: {
+        ...emptyState,
+        hostPlayerId: completed.hostPlayerId,
+        setup: { ...setup, setup: null },
+      },
+      results: null,
+    });
+    expect(await projectedPlayers()).toEqual([{ player_id: selectedPlayerId, seat: 1 }]);
   });
 
   it("atomically finalizes results and removes active players", async () => {
