@@ -1336,14 +1336,19 @@ describe("developer menu", () => {
     ).toEqual([firstPlayer.id]);
   });
 
-  it("uses the live table shell for the role giveaway stage", async () => {
+  it("resets workspace scrolling when role giveaway enters the live table", async () => {
     const user = userEvent.setup();
     render(<App />);
+    const appShell = document.querySelector<HTMLElement>(".app-shell")!;
+    appShell.scrollTop = 120;
+    appShell.scrollLeft = 40;
 
     await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
 
     expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
-    expect(document.querySelector(".app-shell")).toHaveClass("has-live-game", "table-layout-shell");
+    expect(appShell).toHaveClass("has-live-game", "table-layout-shell");
+    expect(appShell.scrollTop).toBe(0);
+    expect(appShell.scrollLeft).toBe(0);
   });
 
   it("keeps the save indicator inside the fixed application toolbar", () => {

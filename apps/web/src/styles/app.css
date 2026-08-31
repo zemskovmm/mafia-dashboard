@@ -2786,7 +2786,7 @@ button.player-seat.is-voting-highlight::after {
   line-height: 1.4;
 }
 
-@media (min-width: 1160px) and (min-height: 780px) {
+@media (min-width: 1160px) and (min-height: 720px) {
   .app-shell {
     --header-top: max(14px, env(safe-area-inset-top));
     --layout-gutter: 14px;
@@ -3163,6 +3163,10 @@ html:-webkit-full-screen #root {
     width: 310px;
     min-width: 0;
   }
+  .app-shell.is-fullscreen.table-layout-shell .game-header > :first-child {
+    width: calc(310px - 88px);
+    margin-left: 88px;
+  }
   .app-status-bar .eyebrow,
   .table-layout-shell .game-header .eyebrow {
     margin: 0 0 1px;
@@ -3312,6 +3316,76 @@ html:-webkit-full-screen #root {
     height: calc(100dvh - var(--s6-content-top) - var(--s6-edge));
     min-height: 0;
     margin: 0;
+  }
+  .live-side-panel.has-live-utilities {
+    position: fixed;
+    z-index: 80;
+    top: var(--s6-content-top);
+    right: var(--s6-edge);
+    bottom: var(--s6-edge);
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    width: var(--s6-rail-width);
+    min-height: 0;
+    padding: 0;
+    overflow: hidden;
+    border-radius: 14px;
+  }
+  .live-side-panel-glass {
+    position: absolute;
+    z-index: 0;
+    inset: 0;
+    pointer-events: none;
+  }
+  .live-side-panel.has-live-utilities > :not(.live-side-panel-glass) {
+    position: relative;
+    z-index: 1;
+    flex: 0 0 auto;
+    width: 100%;
+    min-width: 0;
+  }
+  .live-side-panel.has-live-utilities > #game-utility-panels {
+    padding: 7px 7px 0;
+  }
+  .live-side-panel.has-live-utilities .timer-panel,
+  .live-side-panel.has-live-utilities .nomination-panel {
+    padding: 0;
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+  }
+  .live-side-panel.has-live-utilities .utility-panel-section[data-panel="voting"] {
+    margin-top: 7px;
+  }
+  .live-side-panel.has-live-utilities .youtube-dock.is-compact {
+    position: static;
+    right: auto;
+    bottom: auto;
+    flex: 0 0 auto;
+    width: 100%;
+    max-height: 100%;
+    margin: auto 0 0;
+    border: 0;
+    border-top: 1px solid var(--border);
+    border-radius: 0 0 14px 14px;
+    box-shadow: none;
+  }
+  .live-side-panel.has-live-utilities .youtube-dock.is-compact.is-expanded {
+    position: static;
+    top: auto;
+    right: auto;
+    bottom: auto;
+    flex: 1 1 auto;
+    grid-template-rows: 44px minmax(0, 1fr) auto;
+    width: 100%;
+    height: auto;
+    min-height: 0;
+    margin-top: 0;
+  }
+  .live-side-panel.has-live-utilities .music-panel-handle {
+    position: relative;
+    z-index: 2;
   }
   .table-workspace,
   .table-layout-shell .table-workspace {

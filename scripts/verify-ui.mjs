@@ -1974,7 +1974,7 @@ try {
     ) {
       throw new Error("Queue browser fixture did not reveal the track-type tray");
     }
-    await content.click();
+    await content.dispatchEvent("click");
   };
   await revealTrackTypes(finaleRow, finaleContent, 9);
   await finaleRow
@@ -2234,6 +2234,21 @@ try {
   }
   await page.getByRole("group", { name: `Host: ${testNicknames[10]}` }).waitFor();
   const geometry = await page.evaluate(() => {
+    const box = (selector) => {
+      const element = document.querySelector(selector);
+      if (!(element instanceof HTMLElement)) throw new Error(`Missing ${selector}`);
+      const bounds = element.getBoundingClientRect();
+      return {
+        left: bounds.left,
+        right: bounds.right,
+        top: bounds.top,
+        bottom: bounds.bottom,
+        width: bounds.width,
+        height: bounds.height,
+      };
+    };
+    const appShell = document.querySelector(".app-shell");
+    if (!(appShell instanceof HTMLElement)) throw new Error("Missing application shell");
     const table = document.querySelector(".round-table");
     if (!(table instanceof HTMLElement)) throw new Error("Missing round table");
     const headerTitle = document.querySelector(".game-header > :first-child");
@@ -2253,6 +2268,19 @@ try {
         centerY: box.top + box.height / 2,
       };
     });
+    const seatActions = [...document.querySelectorAll(".seat-actions")].map((element) => {
+      const bounds = element.getBoundingClientRect();
+      return {
+        left: bounds.left,
+        right: bounds.right,
+        top: bounds.top,
+        bottom: bounds.bottom,
+        owner: element
+          .closest(".seat-anchor")
+          ?.querySelector(".table-card")
+          ?.getAttribute("aria-label"),
+      };
+    });
     const phaseBannerBox = document.querySelector(".phase-banner")?.getBoundingClientRect();
     const phaseBannerObstructions =
       phaseBannerBox === undefined
@@ -2267,7 +2295,19 @@ try {
             );
           });
     return {
+      appScroll: { left: appShell.scrollLeft, top: appShell.scrollTop },
       cards,
+      seatActions,
+      essential: {
+        game: box(".game-shell"),
+        header: box(".game-header"),
+        toolbar: box(".app-fixed-toolbar"),
+        table: box(".table-workspace"),
+        rail: box(".live-side-panel.has-live-utilities"),
+        timer: box(".timer-panel"),
+        voting: box(".nomination-panel"),
+        music: box(".live-side-panel .youtube-dock"),
+      },
       headerTitle: {
         left: headerTitleBox.left,
         right: headerTitleBox.right,
@@ -2282,6 +2322,23 @@ try {
     };
   });
   if (geometry.cards.length !== 11) throw new Error("Expected ten player cards and one host card");
+  if (geometry.appScroll.left !== 0 || geometry.appScroll.top !== 0) {
+    throw new Error(
+      `Live application shell retained scrolling: ${JSON.stringify(geometry.appScroll)}`,
+    );
+  }
+  for (const [name, bounds] of Object.entries(geometry.essential)) {
+    if (
+      bounds.width <= 0 ||
+      bounds.height <= 0 ||
+      bounds.left < -1 ||
+      bounds.top < -1 ||
+      bounds.right > geometry.viewportWidth + 1 ||
+      bounds.bottom > geometry.viewportHeight + 1
+    ) {
+      throw new Error(`${name} is outside the fixed viewport: ${JSON.stringify(bounds)}`);
+    }
+  }
   const fullscreenExitSafeArea = { right: 88, bottom: 88 };
   if (
     geometry.headerTitle.left < fullscreenExitSafeArea.right &&
@@ -2331,6 +2388,27 @@ try {
   for (const card of geometry.cards) {
     if (card.top < 0 || card.bottom > geometry.viewportHeight) {
       throw new Error(`${card.label ?? "Table card"} is outside the fixed viewport`);
+    }
+  }
+  for (const actions of geometry.seatActions) {
+    if (
+      actions.left < 0 ||
+      actions.right > geometry.viewportWidth ||
+      actions.top < 0 ||
+      actions.bottom > geometry.viewportHeight
+    ) {
+      throw new Error(`Seat actions are outside the fixed viewport: ${JSON.stringify(actions)}`);
+    }
+    for (const card of geometry.cards) {
+      if (card.label === actions.owner) continue;
+      const overlaps =
+        Math.min(actions.right, card.right) - Math.max(actions.left, card.left) > 1 &&
+        Math.min(actions.bottom, card.bottom) - Math.max(actions.top, card.top) > 1;
+      if (overlaps) {
+        throw new Error(
+          `${actions.owner ?? "Seat"} actions overlap ${card.label ?? "another card"}`,
+        );
+      }
     }
   }
   const hostCenter = geometry.cards.find(({ label }) => label?.startsWith("Host:"));

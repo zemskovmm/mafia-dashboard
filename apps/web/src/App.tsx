@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import webPackage from "../package.json";
 import {
   applyGameEvent,
@@ -569,6 +569,7 @@ export const ClubWorkspace = ({
   const [clearAllDataError, setClearAllDataError] = useState(false);
   const [syncRender, setSyncRender] = useState(0);
 
+  const appShellRef = useRef<HTMLDivElement>(null);
   const musicRef = useRef<YouTubePlayerHandle>(null);
   const privacyTapsRef = useRef<{ count: number; resetTimer: number | null }>({
     count: 0,
@@ -1475,6 +1476,12 @@ export const ClubWorkspace = ({
           : t("saving", { pendingLabel });
   const setupStep = setupSession?.step ?? "players";
   const roleGiveawayActive = view === "game" && game === null && setupStep === "roles";
+  const tableLayoutActive = view === "game" && (game !== null || roleGiveawayActive);
+  useLayoutEffect(() => {
+    if (!tableLayoutActive || appShellRef.current === null) return;
+    appShellRef.current.scrollTop = 0;
+    appShellRef.current.scrollLeft = 0;
+  }, [tableLayoutActive]);
   const showApplicationStatus =
     view !== "timeline" && (view === "players" || (game === null && !roleGiveawayActive));
   const applicationStatusTitle =
@@ -1621,10 +1628,9 @@ export const ClubWorkspace = ({
 
   return (
     <div
+      ref={appShellRef}
       className={`app-shell${backgroundShadeClass[backgroundShade]}${
-        view === "game" && (game !== null || roleGiveawayActive)
-          ? " has-live-game table-layout-shell"
-          : ""
+        tableLayoutActive ? " has-live-game table-layout-shell" : ""
       }${showApplicationStatus ? " has-top-level-screen" : ""}${
         isFullscreen ? " is-fullscreen" : ""
       }`}
