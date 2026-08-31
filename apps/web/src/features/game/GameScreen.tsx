@@ -33,6 +33,7 @@ interface GameScreenProps {
   readonly previewSequence?: number;
   readonly onExitPreview?: () => void;
   readonly onResetPreview?: () => void;
+  readonly canResetPreview?: boolean;
   readonly privacyHidden: boolean;
   readonly onFinishGame?: () => void;
   readonly finishGameState?: "ready" | "saving" | "saved" | "queued";
@@ -102,6 +103,7 @@ export const GameScreen = ({
   previewSequence,
   onExitPreview = () => undefined,
   onResetPreview = () => undefined,
+  canResetPreview = true,
   privacyHidden,
   onFinishGame = () => undefined,
   finishGameState = "ready",
@@ -240,7 +242,12 @@ export const GameScreen = ({
           <button type="button" onClick={onExitPreview}>
             {t("game.exitPreview")}
           </button>
-          <button type="button" className="danger-action" onClick={onResetPreview}>
+          <button
+            type="button"
+            className="danger-action"
+            disabled={!canResetPreview}
+            onClick={onResetPreview}
+          >
             {t("game.resetPreview")}
           </button>
         </div>

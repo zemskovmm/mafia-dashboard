@@ -882,7 +882,7 @@ const gameSessionStateSchema = z
     initialGame: initialGameBaselineSchema.nullable().optional(),
     events: z.array(canonicalGameEventSchema).optional(),
     headEventId: z.uuid().nullable().optional(),
-    resetReturnEventId: z.uuid().nullable().optional(),
+    resetReturnEventId: z.null().optional(),
     legacyLog: z.array(gameLogEntrySchema).optional(),
     undoHistory: z
       .array(
@@ -893,6 +893,7 @@ const gameSessionStateSchema = z
         }),
       )
       .max(3),
+    undoBudget: z.number().int().min(0).max(3).optional(),
   })
   .superRefine(
     (
@@ -909,9 +910,8 @@ const gameSessionStateSchema = z
       },
       context,
     ) => {
-      let currentGame: GameState | null = game;
       try {
-        currentGame = deriveReplayState({
+        deriveReplayState({
           game,
           initialGame: initialGame as InitialGameBaseline | null | undefined,
           events: events as unknown as readonly GameLogEntry[],
@@ -924,6 +924,7 @@ const gameSessionStateSchema = z
           message: error instanceof Error ? error.message : "Game history cannot be replayed",
         });
       }
+      const currentGame = game;
       if ((hostPlayerId === null) !== (hostName === null)) {
         context.addIssue({
           code: "custom",
@@ -1004,6 +1005,13 @@ const gameSessionStateSchema = z
       if (new Set(events.map(({ id }) => id)).size !== events.length) {
         context.addIssue({ code: "custom", path: ["events"], message: "Event IDs must be unique" });
       }
+      if (events.length > 0 && (headEventId === undefined || headEventId === null)) {
+        context.addIssue({
+          code: "custom",
+          path: ["headEventId"],
+          message: "Canonical history requires an active head",
+        });
+      }
       if (
         headEventId !== undefined &&
         headEventId !== null &&
@@ -1014,6 +1022,22 @@ const gameSessionStateSchema = z
           path: ["headEventId"],
           message: "The active head must reference a stored event",
         });
+      }
+      if (headEventId !== undefined && headEventId !== null) {
+        const byId = new Map(events.map((event) => [event.id, event]));
+        const retained = new Set<string>();
+        let eventId: string | null = headEventId;
+        while (eventId !== null && !retained.has(eventId)) {
+          retained.add(eventId);
+          eventId = byId.get(eventId)?.parentEventId ?? null;
+        }
+        if (retained.size !== events.length) {
+          context.addIssue({
+            code: "custom",
+            path: ["events"],
+            message: "Canonical history must contain only the retained active prefix",
+          });
+        }
       }
     },
   );
@@ -1153,22 +1177,12 @@ export const gameSessionMutationSchema = z
   .object({
     name: z.string().trim().min(1).max(100),
     mutationId: z.uuid(),
-    baseRevision: z.number().int().min(0),
+    baseRevision: z.number().int().min(0).optional(),
     state: gameSessionStateSchema,
     results: finalGameResultsSchema.nullable(),
   })
   .superRefine(({ state, results }, context) => {
-    let currentGame: GameState | null;
-    try {
-      currentGame = deriveReplayState({
-        game: state.game,
-        initialGame: state.initialGame as InitialGameBaseline | null | undefined,
-        events: state.events as unknown as readonly GameLogEntry[] | undefined,
-        headEventId: state.headEventId,
-      });
-    } catch {
-      return;
-    }
+    const currentGame = state.game;
     const finished = currentGame?.phase === "finished";
     if (results !== null && !finished) {
       context.addIssue({

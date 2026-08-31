@@ -6,10 +6,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import * as contracts from "./session-verifier-contracts.mjs";
 import {
   assertEnvelopeMatchesSession,
-  assertHeadOperation,
   assertSessionPostcondition,
   createAsyncTracker,
-  createHeadOperationExpectations,
   runCleanupActions,
 } from "./session-verifier-contracts.mjs";
 
@@ -46,6 +44,8 @@ const envelope = {
     playlistId: "playlist",
     legacyLog: [],
   },
+  game: { phase: "day", day: 1, turn: 1 },
+  undoBudget: 2,
   baseline,
   entries,
   headEventId: ids.turn,
@@ -62,6 +62,7 @@ const session = {
   state: {
     ...envelope.metadata,
     game: { phase: "day", day: 1, turn: 1 },
+    undoBudget: 2,
     initialGame: baseline,
     events: entries,
     headEventId: ids.turn,
@@ -70,18 +71,6 @@ const session = {
 };
 
 const clone = (value) => structuredClone(value);
-
-const validHeadOperation = {
-  mutationId: ids.mutation,
-  baseRevision: 7,
-  targetEventId: ids.root,
-  reason: "reset",
-};
-const expectedHeadOperation = {
-  baseRevision: 7,
-  targetEventId: ids.root,
-  reason: "reset",
-};
 
 test("exact origin guards reject matching API paths on another origin", () => {
   assert.doesNotThrow(() =>
@@ -176,10 +165,10 @@ test("browser API policy blocks unexpected unsafe requests and unowned sessions"
     }),
     { kind: "external-safe" },
   );
-  assert.deepEqual(classify("POST", `/api/game-sessions/${gameId}/events`), {
-    kind: "owned-session-mutation",
-    gameId,
-  });
+  assert.throws(
+    () => classify("POST", `/api/game-sessions/${gameId}/events`),
+    /unexpected unsafe browser request/i,
+  );
   assert.throws(
     () => classify("POST", `/api/game-sessions/${gameId}/events?unreviewed=1`),
     /unexpected unsafe browser request/i,
@@ -189,7 +178,7 @@ test("browser API policy blocks unexpected unsafe requests and unowned sessions"
   assert.throws(() => classify("POST", "/api"), /unsafe browser request/i);
   assert.throws(
     () => classify("POST", "/api/game-sessions/00000000-0000-4000-8000-000000000202/events"),
-    /unowned game session/i,
+    /unexpected unsafe browser request/i,
   );
   assert.throws(
     () =>
@@ -303,50 +292,6 @@ test("created-resource ownership requires 201, the requested ID, and snapshot ab
   );
 });
 
-test("head operations require the exact expected contract", async (t) => {
-  assert.doesNotThrow(() => assertHeadOperation(validHeadOperation, expectedHeadOperation));
-
-  const invalid = {
-    "wrong target": { ...validHeadOperation, targetEventId: ids.turn },
-    "wrong reason": { ...validHeadOperation, reason: "restore-reset" },
-    "stale revision": { ...validHeadOperation, baseRevision: 6 },
-    "missing mutation id": { ...validHeadOperation, mutationId: undefined },
-    "invalid mutation id": { ...validHeadOperation, mutationId: "mutation" },
-    "cumulative game snapshot": { ...validHeadOperation, game: { phase: "day" } },
-    "unknown key": { ...validHeadOperation, extra: true },
-  };
-  for (const [name, operation] of Object.entries(invalid)) {
-    await t.test(name, () => {
-      assert.throws(() => assertHeadOperation(operation, expectedHeadOperation), /head operation/i);
-    });
-  }
-});
-
-test("head operation expectations are ordered and must be drained", () => {
-  const expectations = createHeadOperationExpectations();
-  expectations.expect(expectedHeadOperation);
-  expectations.expect({ ...expectedHeadOperation, baseRevision: 8, reason: "restore-reset" });
-
-  assert.throws(
-    () =>
-      expectations.consume({
-        ...validHeadOperation,
-        baseRevision: 8,
-        reason: "restore-reset",
-      }),
-    /head operation/i,
-  );
-  expectations.consume(validHeadOperation);
-  assert.throws(() => expectations.assertDrained(), /1 expected head operation/i);
-  expectations.consume({
-    ...validHeadOperation,
-    baseRevision: 8,
-    reason: "restore-reset",
-  });
-  assert.doesNotThrow(() => expectations.assertDrained());
-  assert.throws(() => expectations.consume(validHeadOperation), /unexpected head operation/i);
-});
-
 test("durable envelopes must match the complete authoritative canonical session", async (t) => {
   assert.doesNotThrow(() => assertEnvelopeMatchesSession(envelope, session, replay));
 
@@ -375,11 +320,11 @@ test("durable envelopes must match the complete authoritative canonical session"
       clone(envelope),
       { ...clone(session), state: { ...clone(session.state), resetReturnEventId: ids.turn } },
     ],
-    "replayed game": [
-      clone(envelope),
+    game: [
+      { ...clone(envelope), game: { phase: "day", day: 1, turn: 0 } },
       {
         ...clone(session),
-        state: { ...clone(session.state), game: { phase: "day", day: 1, turn: 0 } },
+        state: clone(session.state),
       },
     ],
   };
@@ -406,7 +351,7 @@ test("authoritative readbacks must satisfy the fresh reset postcondition", () =>
     status: "active",
     results: null,
     headEventId: ids.root,
-    resetReturnEventId: ids.turn,
+    resetReturnEventId: null,
     game: { phase: "day", day: 1, turn: 0 },
   };
   const readback = {
@@ -416,7 +361,7 @@ test("authoritative readbacks must satisfy the fresh reset postcondition", () =>
       ...session.state,
       game: expected.game,
       headEventId: ids.root,
-      resetReturnEventId: ids.turn,
+      resetReturnEventId: null,
     },
   };
 
@@ -571,7 +516,7 @@ test("runtime verifiers enforce the shared contracts at their success boundaries
   ]);
 
   assert.match(sessionVerifier, /assertSessionPostcondition\(resetReadback/);
-  assert.match(sessionVerifier, /assertSessionPostcondition\(authoritativeSession/);
+  assert.match(sessionVerifier, /authoritativeSession = resetReadback/);
   assert.match(sessionVerifier, /assertEnvelopeMatchesSession\(restoredEnvelope/);
   assert.match(sessionVerifier, /await waitForSaved\(startSave\)/);
   assert.match(sessionVerifier, /responseTracker\.drain\(\)/);
@@ -592,9 +537,12 @@ test("runtime verifiers enforce the shared contracts at their success boundaries
   );
   assert.match(uiVerifier, /assertExactOrigin\(route\.request\(\)\.url\(\), expectedOrigin\)/);
   assert.match(uiVerifier, /await unlockDeveloperMenu\(page\)/);
-  assert.match(uiVerifier, /headOperationExpectations\.consume\(operation\)/);
-  assert.match(uiVerifier, /headOperationExpectations\.assertDrained\(\)/);
+  assert.match(uiVerifier, /snapshotRevision \+= 1/);
+  assert.match(uiVerifier, /Destructive snapshot Reset failed/);
   assert.match(uiVerifier, /rootCheckpoint\?\.phaseAfter !== "mafia-planning"/);
   assert.match(uiVerifier, /dayCheckpoint\?\.phaseAfter !== "day"/);
   assert.match(composeVerifier, /origin: `http:\/\/127\.0\.0\.1:\$\{port\}`/);
+  assert.match(composeVerifier, /\/tmp\/mafia-app\.pid/);
+  assert.match(composeVerifier, /kill -KILL/);
+  assert.match(composeVerifier, /restartCountAfter <= restartCountBefore/);
 });

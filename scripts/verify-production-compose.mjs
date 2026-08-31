@@ -1,12 +1,22 @@
 /* global URL, fetch, AbortSignal */
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
 
 const cwd = fileURLToPath(new URL("..", import.meta.url));
 const project = `mafia-dashboard-smoke-${process.pid}`;
 const image = `mafia-dashboard:smoke-${process.pid}`;
+const overridePath = join(tmpdir(), `${project}-crash-override.yaml`);
+const crashCommand =
+  'node apps/server/dist/main.js & child=$$!; printf "%s" "$$child" > /tmp/mafia-app.pid; wait "$$child"; exit $$?';
+writeFileSync(
+  overridePath,
+  `services:\n  app:\n    entrypoint: ["/bin/sh", "-c"]\n    command: [${JSON.stringify(crashCommand)}]\n`,
+);
 
 const findFreePort = () =>
   new Promise((resolve, reject) => {
@@ -28,23 +38,33 @@ const gameName = `Compose smoke ${process.pid}`;
 const sessionToken = randomUUID();
 const sessionHash = createHash("sha256").update(sessionToken).digest("hex");
 const clubId = "00000000-0000-4000-8000-000000000101";
+const postgresPassword = "mafia-smoke-only";
+const databaseUrl = `postgresql://mafia:${postgresPassword}@db:5432/mafia`;
 const env = {
   ...process.env,
   APP_BIND: "127.0.0.1",
   APP_IMAGE: image,
   APP_PORT: String(port),
-  DATABASE_URL: "postgresql://mafia:mafia-smoke-only@db:5432/mafia",
+  DATABASE_URL: databaseUrl,
   GOOGLE_CLIENT_ID: "compose-smoke.apps.googleusercontent.com",
   GOOGLE_CLIENT_SECRET: "compose-smoke-secret",
   GOOGLE_OAUTH_REDIRECT_URI: "",
   MUSIC_TOKEN_ENCRYPTION_KEY: "",
   POSTGRES_DB: "mafia",
-  POSTGRES_PASSWORD: "mafia-smoke-only",
+  POSTGRES_PASSWORD: postgresPassword,
   POSTGRES_USER: "mafia",
   PUBLIC_APP_URL: `http://127.0.0.1:${port}`,
   VITE_YOUTUBE_PLAYLIST_ID: "",
 };
-const prefix = ["compose", "--project-name", project];
+const prefix = [
+  "compose",
+  "--project-name",
+  project,
+  "--file",
+  join(cwd, "compose.yaml"),
+  "--file",
+  overridePath,
+];
 
 const requireCondition = (condition, message) => {
   if (!condition) throw new Error(message);
@@ -71,6 +91,50 @@ const serviceState = (name) => {
   return JSON.parse(output.split("\n")[0]);
 };
 
+const restartCount = (name) => {
+  const containerId = run(["ps", "--quiet", name], { capture: true }).stdout.trim();
+  if (containerId === "") throw new Error(`Compose service ${name} has no container ID`);
+  const inspected = spawnSync("docker", ["inspect", "--format", "{{.RestartCount}}", containerId], {
+    cwd,
+    encoding: "utf8",
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (inspected.error !== undefined) throw inspected.error;
+  if (inspected.status !== 0) {
+    throw new Error(`Unable to inspect ${name} restart count: ${inspected.stderr}`);
+  }
+  return Number(inspected.stdout.trim());
+};
+
+const sigkillContainerProcess = (name) => {
+  const killed = run(
+    ["exec", "--no-TTY", name, "sh", "-c", 'kill -KILL "$(cat /tmp/mafia-app.pid)"'],
+    { allowFailure: true, capture: true },
+  );
+  if (killed.status !== 0) {
+    throw new Error(`Unable to SIGKILL ${name}: ${killed.stderr || killed.stdout}`);
+  }
+};
+
+const waitForRestartPolicy = async (name) => {
+  const containerId = run(["ps", "--quiet", name], { capture: true }).stdout.trim();
+  if (containerId === "") throw new Error(`Compose service ${name} has no container ID`);
+  const inspected = spawnSync(
+    "docker",
+    ["inspect", "--format", "{{.State.StartedAt}}", containerId],
+    { cwd, encoding: "utf8", env, stdio: ["ignore", "pipe", "pipe"] },
+  );
+  if (inspected.error !== undefined) throw inspected.error;
+  if (inspected.status !== 0) {
+    throw new Error(`Unable to inspect ${name} start time: ${inspected.stderr}`);
+  }
+  const startedAt = Date.parse(inspected.stdout.trim());
+  if (!Number.isFinite(startedAt)) throw new Error(`Invalid ${name} start time`);
+  const remaining = 11_000 - (Date.now() - startedAt);
+  if (remaining > 0) await new Promise((resolve) => setTimeout(resolve, remaining));
+};
+
 const assertExitedZero = (name) => {
   const state = serviceState(name);
   if (state.State !== "exited" || Number(state.ExitCode) !== 0) {
@@ -90,6 +154,19 @@ const waitUntilReady = async () => {
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   throw new Error(`Application did not become ready at ${url}`);
+};
+
+const waitForRestart = async (name, before) => {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    try {
+      const current = restartCount(name);
+      if (current > before) return current;
+    } catch {
+      // Docker may briefly hide the restarting container.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`The ${name} container did not automatically restart after SIGKILL`);
 };
 
 let validationFailed = false;
@@ -182,7 +259,19 @@ try {
     throw new Error("Unable to clean up the deliberately failed migration attempt");
   }
 
-  run(["up", "--detach", "--no-build", "--pull", "never", "--wait"]);
+  const startup = run(["up", "--detach", "--no-build", "--pull", "never", "--wait"], {
+    allowFailure: true,
+    capture: true,
+  });
+  if (startup.status !== 0) {
+    const logs = run(["logs", "--no-color", "migrate", "app"], {
+      allowFailure: true,
+      capture: true,
+    });
+    throw new Error(
+      `Production Compose startup failed:\n${startup.stderr || startup.stdout}\n${logs.stdout || logs.stderr}`,
+    );
+  }
   assertExitedZero("migrate");
   await waitUntilReady();
 
@@ -217,10 +306,14 @@ try {
   }
   const { gameId } = await createGame.json();
 
-  run(["stop", "--timeout", "10", "app"]);
-  assertExitedZero("app");
-  run(["start", "app"]);
+  await waitForRestartPolicy("app");
+  const restartCountBefore = restartCount("app");
+  sigkillContainerProcess("app");
+  const restartCountAfter = await waitForRestart("app", restartCountBefore);
   await waitUntilReady();
+  if (restartCountAfter <= restartCountBefore) {
+    throw new Error("The application container did not automatically restart after SIGKILL");
+  }
 
   const readEvents = await fetch(
     `http://127.0.0.1:${port}/api/games/${gameId}/events?visibility=host`,
@@ -256,7 +349,10 @@ const imageCleanup = spawnSync("docker", ["image", "rm", image], {
   env,
   stdio: ["ignore", "pipe", "pipe"],
 });
-if (validationFailed) throw validationFailure;
+if (validationFailed) {
+  rmSync(overridePath, { force: true });
+  throw validationFailure;
+}
 if (cleanup.status !== 0) {
   throw new Error(`Compose cleanup failed: ${cleanup.stderr || cleanup.stdout}`);
 }
@@ -267,6 +363,7 @@ const resources = run(["ps", "--all", "--quiet"], { capture: true });
 if (resources.stdout.trim() !== "") {
   throw new Error(`Compose resources remain after cleanup: ${resources.stdout.trim()}`);
 }
+rmSync(overridePath, { force: true });
 const imageStillExists = spawnSync("docker", ["image", "inspect", image], {
   cwd,
   env,

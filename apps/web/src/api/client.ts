@@ -118,6 +118,7 @@ export interface GameSessionState {
   readonly playlistId: string;
   readonly log: readonly unknown[];
   readonly undoHistory: readonly unknown[];
+  readonly undoBudget?: number;
   readonly initialGame?: InitialGameBaseline | null;
   readonly events?: readonly GameLogEntry[];
   readonly headEventId?: string | null;
@@ -170,6 +171,11 @@ export type GameSessionOperation =
   | (GameSessionOperationBase & {
       readonly kind: "complete";
       readonly results: FinalGameResults;
+    })
+  | (GameSessionOperationBase & {
+      readonly kind: "snapshot";
+      readonly state: GameSessionState;
+      readonly results: FinalGameResults | null;
     });
 
 export interface GameSessionOperationResponse {
@@ -480,6 +486,17 @@ export const saveGameSessionOperation = async (
           url: `/api/game-sessions/${gameId}/complete`,
           method: "POST",
           body: { ...base, results: operation.results },
+        } as const;
+      case "snapshot":
+        return {
+          url: `/api/game-sessions/${gameId}`,
+          method: "PUT",
+          body: {
+            name: operation.name,
+            mutationId: operation.mutationId,
+            state: operation.state,
+            results: operation.results,
+          },
         } as const;
     }
   })();

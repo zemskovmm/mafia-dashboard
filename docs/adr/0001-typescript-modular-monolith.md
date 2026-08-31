@@ -32,11 +32,11 @@ The YouTube IFrame Player API runs only in the browser. Revisioned session metad
 
 - A client-generated game UUID exists before the first network mutation.
 - Pre-game setup metadata remains revisioned session state. Starting live play records one immutable initial game baseline and one canonical root event.
-- Every accepted meaningful game action appends an immutable semantic event with a parent event ID, monotonic replay sequence, phase/day metadata, and resulting state hash.
-- The server validates replay, writes the event, advances `head_event_id`, and synchronizes active-player or completion projections atomically under a per-game lock. A revisioned durable browser outbox retries mutations by UUID and fails closed on conflicts.
-- The active head selects the parent-linked branch used to reconstruct current state. Moving the head leaves events on inactive future branches intact.
-- Ordinary undo moves one parent within the latest three actions and cannot cross an event that advances the day. Timeline reset and restore-reset also move the head among retained events.
-- Moving the head behind a completed result retracts the completion projections and makes the session active again; restoring a completed reset head recreates those projections.
+- Every browser persistence generation contains the complete current `GameState`, setup metadata, Undo allowance, semantic event prefix, and optional final results.
+- The browser snapshot is authoritative. PostgreSQL accepts the last uploaded schema/invariant/club/privacy-valid snapshot regardless of the browser's previously observed server revision, mirrors its exact event prefix, and synchronizes active-player or completion projections atomically under a per-game lock.
+- Semantic events retain parent, sequence, phase/day, and state-hash metadata for Log, Timeline, Preview, and internal replay validation; replay does not replace the snapshot's current game state.
+- Ordinary Undo and Timeline Reset permanently truncate the browser snapshot and mirrored event prefix. They create no game event, retain no future branch, and provide no Reset Return. Undo remains limited to three actions and cannot cross a new-day checkpoint.
+- Clicking **Finish game** locks Undo and Reset in the client and persists the completed snapshot and projections.
 - Timers provide start presets and stop only. Timer ticks, starts/stops, music playback, and fades are not durable events.
 
 ## Considered alternatives

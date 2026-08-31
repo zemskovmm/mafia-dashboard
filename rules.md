@@ -372,20 +372,13 @@ The night screen MUST minimize accidental leaks:
 - distinguish pending action from resolved result;
 - prevent selecting eliminated targets unless a rules override is recorded.
 
-### 7.4 Undo and correction
+### 7.4 Undo and Reset
 
-The moderator MUST be able to correct recent actions. Live play starts from one immutable baseline and stores each meaningful action as an immutable semantic event whose parent is the active head at acceptance time. Ordinary undo moves the active head to its parent; it does not delete the undone event or its inactive future branch and is not itself added as a game event. Undo is limited to the latest three ordinary actions and cannot cross an event that advances the game day. Timeline reset and restore-reset also move the active head among retained events. A separate audited administrative correction may use compensating events.
+The moderator MUST be able to correct recent actions from the authoritative browser snapshot. The browser persists the complete current `GameState` after every domain change and keeps semantic events as the structured Log/Timeline history. Ordinary Undo permanently removes the latest undoable event and every later event; Timeline Reset permanently retains only the selected root-to-checkpoint prefix. Undo and Reset do not create their own game events and there is no Reset Return or administrative correction event.
 
-Each audited administrative correction records:
+Undo is limited to the latest three ordinary actions and cannot cross an event that advances the game day. Reset consumes the current Undo allowance. Both actions remain available after a winning state is reached, but become unavailable immediately after the moderator clicks **Finish game**. The auxiliary timer resets locally rather than being reconstructed from game history.
 
-- actor;
-- time;
-- original event;
-- replacement or reversal;
-- reason;
-- resulting phase/state.
-
-The system MUST replay the active branch and recalculate nominations, votes, active players, win conditions, and completion projections after a head move or correction. Moving the head behind a completed result retracts that result while the allowed correction remains active. The auxiliary timer is reset locally rather than reconstructed from game history.
+The browser snapshot is persisted before network activity. PostgreSQL mirrors the last uploaded valid snapshot even when its client revision is older than the server revision. The server still validates snapshot shape, game invariants, club-owned participants, semantic-history integrity, and secret-data boundaries, then rebuilds active-player or completion projections atomically.
 
 ## 8. Persistence model
 
@@ -396,8 +389,8 @@ Current persisted entities:
 - `users` and hashed-token `user_sessions`;
 - `clubs` and `club_memberships` for manager/user access;
 - `players`, including explicit pending/effective club access and optional membership provenance;
-- `game_sessions`, containing revisioned setup metadata, the immutable initial game baseline, active/reset heads, and session status;
-- `game_events`, the authoritative parent-linked semantic event graph whose inactive branches are retained when the active head moves;
+- `game_sessions`, containing the authoritative full browser snapshot, revision metadata, and session status;
+- `game_events`, mirroring the snapshot's exact semantic Log/Timeline prefix;
 - `game_session_mutations` for revisioned idempotent request handling;
 - `game_session_players` as the active-game participant projection;
 - `game_results` and `game_player_results` as retractable completion projections;
@@ -407,11 +400,11 @@ Important invariants:
 
 - one player per seat per game;
 - one role per player per game;
-- exactly one active event head and therefore one current logical game state;
-- event replay sequence is monotonic within a game, while parent links define active and inactive branches;
+- exactly one linear semantic event prefix and one browser-authoritative current game state;
+- event replay sequence is monotonic within the retained prefix; Undo and Reset permanently remove the discarded tail;
 - replay validates event envelopes, parent links, phase/day transitions, and state hashes;
 - secret fields are never returned by public APIs;
-- completion projections follow the active head and are retracted when an allowed undo or timeline reset moves behind `game.completed`;
+- completion projections mirror the latest valid browser snapshot;
 - application-level authorization is enforced on every game route, not only in the UI.
 
 ## 9. Self-hosted deployment baseline

@@ -545,57 +545,41 @@ try {
     storedSession.state.initialGame,
     activeEvents.filter(({ id }) => id !== acceptedEvent.id),
   ).game;
+  const resetEntries = activeEvents.slice(0, -1);
+  const resetState = {
+    ...storedSession.state,
+    game: resetGame,
+    events: resetEntries,
+    headEventId: acceptedEvent.parentEventId,
+    resetReturnEventId: null,
+    undoBudget: 0,
+  };
   const resetPostcondition = {
     gameId,
     revision: storedSession.revision + 1,
     status: "active",
     results: null,
     headEventId: acceptedEvent.parentEventId,
-    resetReturnEventId: acceptedEvent.id,
+    resetReturnEventId: null,
     game: resetGame,
   };
-  const resetResponse = await apiContext.post(`${apiBaseUrl}/api/game-sessions/${gameId}/head`, {
+  const resetResponse = await apiContext.put(`${apiBaseUrl}/api/game-sessions/${gameId}`, {
     maxRedirects: 0,
     data: {
+      name: storedSession.name,
       mutationId: randomUUID(),
-      baseRevision: storedSession.revision,
-      targetEventId: acceptedEvent.parentEventId,
-      reason: "reset",
+      state: resetState,
+      results: null,
     },
   });
-  if (!resetResponse.ok()) throw new Error("Authoritative reset probe failed");
-  const resetSession = await resetResponse.json();
-  assertSessionPostcondition(resetSession, resetPostcondition, replayGameLog);
+  if (!resetResponse.ok()) throw new Error("Authoritative snapshot reset probe failed");
+  assertSessionPostcondition(await resetResponse.json(), resetPostcondition, replayGameLog);
   const resetReadback = await readAuthoritativeSession(
     gameId,
     "Authoritative reset readback failed",
   );
   assertSessionPostcondition(resetReadback, resetPostcondition, replayGameLog);
-  const restorePostcondition = {
-    gameId,
-    revision: resetReadback.revision + 1,
-    status: "active",
-    results: null,
-    headEventId: acceptedEvent.id,
-    resetReturnEventId: null,
-    game: replayed.game,
-  };
-  const restoreResponse = await apiContext.post(`${apiBaseUrl}/api/game-sessions/${gameId}/head`, {
-    maxRedirects: 0,
-    data: {
-      mutationId: randomUUID(),
-      baseRevision: resetReadback.revision,
-      targetEventId: acceptedEvent.id,
-      reason: "restore-reset",
-    },
-  });
-  if (!restoreResponse.ok()) throw new Error("Authoritative reset recovery failed");
-  assertSessionPostcondition(await restoreResponse.json(), restorePostcondition, replayGameLog);
-  authoritativeSession = await readAuthoritativeSession(
-    gameId,
-    "Authoritative reset recovery readback failed",
-  );
-  assertSessionPostcondition(authoritativeSession, restorePostcondition, replayGameLog);
+  authoritativeSession = resetReadback;
   await firstContext.close();
 
   const restartedContext = await createContext();

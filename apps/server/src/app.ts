@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import type { GameLogEntry, InitialGameBaseline } from "@mafia/game-domain";
+
 import helmet from "@fastify/helmet";
 import staticFiles from "@fastify/static";
 import Fastify from "fastify";
@@ -17,11 +17,6 @@ import {
 } from "./game-session-store.js";
 import {
   durableGameEventTypeSchema,
-  gameSessionCompleteMutationSchema,
-  gameSessionEventMutationSchema,
-  gameSessionHeadMutationSchema,
-  gameSessionNormalizeMutationSchema,
-  gameSessionStartMutationSchema,
   gameSessionMutationSchema,
 } from "./game-session-validation.js";
 import {
@@ -257,6 +252,7 @@ export const buildApp = async ({
   readonly youtubeOAuth?: YouTubeOAuthService;
   readonly publicAppUrl?: string;
   readonly trustedProxyHops?: 0 | 1;
+
   readonly authRateLimit?: {
     readonly limit?: number;
     readonly windowMs?: number;
@@ -767,103 +763,6 @@ export const buildApp = async ({
         ...body.data,
       });
       return reply.code(session.duplicate || session.revision > 1 ? 200 : 201).send(session);
-    } catch (error) {
-      return sendGameSessionMutationError(reply, error);
-    }
-  });
-
-  app.post("/api/game-sessions/:gameId/normalize", async (request, reply) => {
-    const clubId = await selectedClub(request, reply);
-    if (clubId === null) return;
-    const params = gameIdParams.safeParse(request.params);
-    const body = gameSessionNormalizeMutationSchema.safeParse(request.body);
-    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
-    if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
-    try {
-      return await gameSessionStore.normalize({
-        clubId,
-        gameId: params.data.gameId,
-        ...body.data,
-      });
-    } catch (error) {
-      return sendGameSessionMutationError(reply, error);
-    }
-  });
-
-  app.post("/api/game-sessions/:gameId/start", async (request, reply) => {
-    const clubId = await selectedClub(request, reply);
-    if (clubId === null) return;
-    const params = gameIdParams.safeParse(request.params);
-    const body = gameSessionStartMutationSchema.safeParse(request.body);
-    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
-    if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
-    try {
-      const session = await gameSessionStore.start({
-        clubId,
-        gameId: params.data.gameId,
-        mutationId: body.data.mutationId,
-        baseRevision: body.data.baseRevision,
-        initialGame: body.data.initialGame as InitialGameBaseline,
-        event: body.data.event as unknown as GameLogEntry,
-      });
-      return reply.code(session.duplicate ? 200 : 201).send(session);
-    } catch (error) {
-      return sendGameSessionMutationError(reply, error);
-    }
-  });
-
-  app.post("/api/game-sessions/:gameId/events", async (request, reply) => {
-    const clubId = await selectedClub(request, reply);
-    if (clubId === null) return;
-    const params = gameIdParams.safeParse(request.params);
-    const body = gameSessionEventMutationSchema.safeParse(request.body);
-    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
-    if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
-    try {
-      const session = await gameSessionStore.appendEvent({
-        clubId,
-        gameId: params.data.gameId,
-        mutationId: body.data.mutationId,
-        baseRevision: body.data.baseRevision,
-        event: body.data.event as unknown as GameLogEntry,
-      });
-      return reply.code(session.duplicate ? 200 : 201).send(session);
-    } catch (error) {
-      return sendGameSessionMutationError(reply, error);
-    }
-  });
-
-  app.post("/api/game-sessions/:gameId/head", async (request, reply) => {
-    const clubId = await selectedClub(request, reply);
-    if (clubId === null) return;
-    const params = gameIdParams.safeParse(request.params);
-    const body = gameSessionHeadMutationSchema.safeParse(request.body);
-    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
-    if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
-    try {
-      return await gameSessionStore.moveHead({
-        clubId,
-        gameId: params.data.gameId,
-        ...body.data,
-      });
-    } catch (error) {
-      return sendGameSessionMutationError(reply, error);
-    }
-  });
-
-  app.post("/api/game-sessions/:gameId/complete", async (request, reply) => {
-    const clubId = await selectedClub(request, reply);
-    if (clubId === null) return;
-    const params = gameIdParams.safeParse(request.params);
-    const body = gameSessionCompleteMutationSchema.safeParse(request.body);
-    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
-    if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
-    try {
-      return await gameSessionStore.complete({
-        clubId,
-        gameId: params.data.gameId,
-        ...body.data,
-      });
     } catch (error) {
       return sendGameSessionMutationError(reply, error);
     }

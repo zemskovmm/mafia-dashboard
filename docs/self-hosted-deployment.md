@@ -207,7 +207,7 @@ From a source checkout with Docker running:
 npm run verify:compose
 ```
 
-The script uses a unique Compose project, temporary port, disposable database volume, and throwaway image tag. It verifies the production image build, failed-migration startup blocking, health checks, one-shot and idempotent migrations, clean `SIGTERM` shutdown, an accepted game event across application restart, and PostgreSQL persistence, then removes its containers, network, volume, and image.
+The script uses a unique Compose project, temporary port, disposable database volume, and throwaway image tag. It verifies the production image build, failed-migration startup blocking, health checks, one-shot and idempotent migrations, clean `SIGTERM` shutdown, automatic application restart after `SIGKILL`, exact accepted-event readback after that crash, and PostgreSQL persistence, then removes its containers, network, volume, and image.
 
 Run the full repository gate separately:
 

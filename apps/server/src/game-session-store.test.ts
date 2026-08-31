@@ -2409,7 +2409,7 @@ describe("GameSessionStore", () => {
     await expect(store.get(gameId)).resolves.toMatchObject({ revision: 2 });
   });
 
-  it("keeps legacy PUT for setup but refuses cumulative replacement after dedicated start", async () => {
+  it("accepts a stale full browser snapshot after dedicated start and mirrors it as current state", async () => {
     const gameId = randomUUID();
     const completed = await createCompletedSession(gameId);
     await store.save({
@@ -2441,32 +2441,66 @@ describe("GameSessionStore", () => {
       initialGame,
       event: started.entry,
     });
+    const later = createGameLogEntry({
+      gameId,
+      id: randomUUID(),
+      sequence: 2,
+      parentEventId: started.entry.id,
+      createdAt: "2026-08-18T08:00:00.000Z",
+      before: started.after,
+      draft: { type: "game.completed", payload: { winner: "red" } },
+    });
+    await store.appendEvent({
+      gameId,
+      mutationId: randomUUID(),
+      baseRevision: 2,
+      event: later.entry,
+    });
 
-    await expect(
-      store.save({
-        gameId,
-        name: "Legacy setup only",
-        mutationId: randomUUID(),
-        baseRevision: 2,
-        state: {
-          ...completed.state,
-          game: completed.state.game,
-        },
-        results: null,
-      }),
-    ).rejects.toMatchObject({
-      name: "GameSessionOperationError",
-      code: "game_session_incremental_required",
+    const snapshotState = {
+      ...completed.state,
+      game: completed.state.game,
+      initialGame,
+      events: [started.entry],
+      headEventId: started.entry.id,
+      resetReturnEventId: null,
+    };
+    const saved = await store.save({
+      gameId,
+      name: "Legacy setup only",
+      mutationId: randomUUID(),
+      baseRevision: 0,
+      state: snapshotState,
+      results: null,
+    });
+
+    expect(saved).toMatchObject({
+      revision: 4,
+      duplicate: false,
+      state: snapshotState,
     });
     const events = await pool.query<{ id: string }>(
       "SELECT id FROM game_events WHERE game_id = $1 AND replay_sequence IS NOT NULL",
       [gameId],
     );
     expect(events.rows).toEqual([{ id: started.entry.id }]);
-    await expect(store.get(gameId)).resolves.toMatchObject({ revision: 2 });
+    await expect(store.get(gameId)).resolves.toMatchObject({ revision: 4, state: snapshotState });
+    await store.save({
+      gameId,
+      name: "Legacy setup only",
+      mutationId: randomUUID(),
+      state: { ...completed.state, game: completed.state.game },
+      results: null,
+    });
+    await expect(
+      pool.query<{ count: number }>(
+        "SELECT COUNT(*)::int AS count FROM game_events WHERE game_id = $1 AND replay_sequence IS NOT NULL",
+        [gameId],
+      ),
+    ).resolves.toMatchObject({ rows: [{ count: 0 }] });
   });
 
-  it("refuses legacy PUT replacement even when it supplies canonical events", async () => {
+  it("rejects a browser snapshot that mutates immutable event content", async () => {
     const gameId = randomUUID();
     const completed = await createCompletedSession(gameId);
     await store.save({
@@ -2515,7 +2549,24 @@ describe("GameSessionStore", () => {
       }),
     ).rejects.toMatchObject({
       name: "GameSessionOperationError",
-      code: "game_session_incremental_required",
+      code: "game_session_event_conflict",
+    });
+    await expect(
+      store.save({
+        gameId,
+        name: "Protected replay",
+        mutationId: randomUUID(),
+        state: {
+          ...completed.state,
+          initialGame,
+          events: [{ ...started.entry, gameId: randomUUID() }],
+          headEventId: started.entry.id,
+        },
+        results: null,
+      }),
+    ).rejects.toMatchObject({
+      name: "GameSessionOperationError",
+      code: "game_session_event_conflict",
     });
     const stored = await pool.query<{ created_at: Date }>(
       "SELECT created_at FROM game_events WHERE id = $1",
@@ -2612,7 +2663,7 @@ describe("GameSessionStore", () => {
     });
   });
 
-  it("rejects a stale base revision without overwriting the newer snapshot", async () => {
+  it("lets the last valid browser snapshot win over a newer server revision", async () => {
     const gameId = randomUUID();
     const first = await store.save({
       gameId,
@@ -2632,17 +2683,18 @@ describe("GameSessionStore", () => {
       results: null,
     });
 
-    await expect(
-      store.save({
-        gameId,
-        name: "Conflict table",
-        mutationId: randomUUID(),
-        baseRevision: first.revision,
-        state: { ...emptyState, playlistId: "playlist-stale" },
-        results: null,
-      }),
-    ).rejects.toMatchObject({ name: "GameSessionConflictError", currentRevision: 2 });
-    await expect(store.get(gameId)).resolves.toMatchObject({ revision: 2, state: newerState });
+    const lastState = { ...emptyState, playlistId: "playlist-last" };
+    const saved = await store.save({
+      gameId,
+      name: "Conflict table",
+      mutationId: randomUUID(),
+      baseRevision: first.revision,
+      state: lastState,
+      results: null,
+    });
+
+    expect(saved).toMatchObject({ revision: 3, state: lastState });
+    await expect(store.get(gameId)).resolves.toMatchObject({ revision: 3, state: lastState });
   });
 
   it("rejects a stale clear without tombstoning the newer session", async () => {

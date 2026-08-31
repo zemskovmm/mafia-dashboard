@@ -308,20 +308,24 @@ describe("game session aggregate API client", () => {
     await readiness;
   });
 
-  it("routes incremental session operations to dedicated mutation endpoints", async () => {
+  it("uploads the complete authoritative browser snapshot without a revision precondition", async () => {
     const gameId = "00000000-0000-4000-8000-000000000002";
+    const state = {
+      setup: null,
+      game: null,
+      hostPlayerId: null,
+      hostName: null,
+      playlistId: "PL",
+      log: [],
+      undoHistory: [],
+    };
     const operation = {
-      kind: "metadata",
+      kind: "snapshot",
       name: "Table",
       mutationId: "00000000-0000-4000-8000-000000000003",
       baseRevision: 0,
-      metadata: {
-        setup: null,
-        hostPlayerId: null,
-        hostName: null,
-        playlistId: "PL",
-        legacyLog: [],
-      },
+      state,
+      results: null,
     };
     const response = { revision: 1, duplicate: false, name: "Table" };
     const fetchMock = vi.fn().mockResolvedValue(
@@ -349,17 +353,7 @@ describe("game session aggregate API client", () => {
         body: JSON.stringify({
           name: operation.name,
           mutationId: operation.mutationId,
-          baseRevision: operation.baseRevision,
-          state: {
-            setup: operation.metadata.setup,
-            game: null,
-            hostPlayerId: operation.metadata.hostPlayerId,
-            hostName: operation.metadata.hostName,
-            playlistId: operation.metadata.playlistId,
-            log: operation.metadata.legacyLog,
-            undoHistory: [],
-            legacyLog: operation.metadata.legacyLog,
-          },
+          state,
           results: null,
         }),
       }),

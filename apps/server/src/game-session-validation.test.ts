@@ -261,6 +261,79 @@ describe("game session validation", () => {
     expect(parsed.success).toBe(true);
   });
 
+  it("treats the full game snapshot as authoritative when semantic history replays to another valid state", () => {
+    const gameId = uuid(92);
+    const baselineGame = liveGame(1);
+    const initialGame = { replayVersion: 1 as const, game: baselineGame };
+    const { entry } = createGameLogEntry({
+      gameId,
+      id: uuid(93),
+      sequence: 1,
+      parentEventId: null,
+      createdAt: "2026-08-31T15:00:00.000Z",
+      before: baselineGame,
+      draft: { type: "game.checkpointed", payload: {} },
+    });
+    const snapshot = liveGame(3);
+    const finished = {
+      ...snapshot,
+      phase: "finished" as const,
+      winner: "red" as const,
+      players: snapshot.players.map((player) =>
+        player.team === "black" ? { ...player, status: "eliminated" as const } : player,
+      ),
+      turnOrder: snapshot.turnOrder.filter((seat) => seat <= 7),
+    };
+    const results = {
+      hostPlayerId: uuid(11),
+      winner: "red" as const,
+      playedAt: "2026-08-31T15:01:00.000Z",
+      players: finished.players.map(({ id, seat, role, team, status, fouls }) => ({
+        playerId: id,
+        seat,
+        role,
+        team,
+        status,
+        fouls,
+        bestMoveHits: null,
+      })),
+    };
+
+    const parsed = gameSessionMutationSchema.safeParse({
+      name: "Authoritative browser snapshot",
+      mutationId: uuid(94),
+      state: {
+        setup: null,
+        game: finished,
+        hostPlayerId: uuid(11),
+        hostName: "Host",
+        playlistId: "",
+        log: [],
+        undoHistory: [],
+        initialGame,
+        events: [entry],
+        headEventId: entry.id,
+      },
+      results,
+    });
+
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) return;
+    const inactiveRoot = { ...entry, id: uuid(95) };
+    expect(
+      gameSessionMutationSchema.safeParse({
+        ...parsed.data,
+        state: { ...parsed.data.state, events: [entry, inactiveRoot] },
+      }).success,
+    ).toBe(false);
+    expect(
+      gameSessionMutationSchema.safeParse({
+        ...parsed.data,
+        state: { ...parsed.data.state, resetReturnEventId: uuid(96) },
+      }).success,
+    ).toBe(false);
+  });
+
   it("conserves the role deck for partial manual role assignments", () => {
     const selectedPlayerIds = Array.from({ length: 10 }, (_, index) => uuid(index + 1));
     const valid = {

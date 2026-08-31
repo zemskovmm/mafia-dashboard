@@ -778,6 +778,24 @@ describe("GameScreen", () => {
     expect(onResetPreview).toHaveBeenCalledOnce();
   });
 
+  it("disables Reset in preview after Finish game has been clicked", () => {
+    const day = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+    render(
+      <GameScreen
+        game={day}
+        hostName="Host Player"
+        onGameChange={() => undefined}
+        onEvent={() => undefined}
+        privacyHidden={false}
+        mode="preview"
+        previewSequence={7}
+        canResetPreview={false}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Reset game to this state" })).toBeDisabled();
+  });
+
   it("ignores the legacy Happy-day field, shows team counts, and finishes the winning game", async () => {
     const user = userEvent.setup();
     const onFinishGame = vi.fn();

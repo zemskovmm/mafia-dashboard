@@ -2,7 +2,6 @@
 import { isDeepStrictEqual } from "node:util";
 
 const uuidPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
-const headOperationKeys = ["baseRevision", "mutationId", "reason", "targetEventId"];
 const localHosts = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 const canonicalUuid = (value) => value.toLowerCase();
 
@@ -72,17 +71,6 @@ export const classifyBrowserApiRequest = ({ method, url, expectedOrigin, ownedGa
       return { kind: "owned-session-mutation", gameId };
     }
   }
-  const sessionMutation = pathname.match(
-    /^\/api\/game-sessions\/([0-9a-f-]+)\/(normalize|start|events|head|complete)$/i,
-  );
-  if (normalizedMethod === "POST" && sessionMutation !== null && requestUrl.search === "") {
-    const gameId = canonicalUuid(sessionMutation[1]);
-    if (!uuidPattern.test(gameId) || !ownedGameIds.has(gameId)) {
-      throw new Error("Refusing an unsafe browser request for an unowned game session");
-    }
-    return { kind: "owned-session-mutation", gameId };
-  }
-
   throw new Error(`Refusing unexpected unsafe browser request: ${normalizedMethod} ${pathname}`);
 };
 
@@ -155,49 +143,6 @@ const canonicalMetadata = (state) => ({
   legacyLog: state.legacyLog ?? [],
 });
 
-export const assertHeadOperation = (actual, expected) => {
-  if (typeof actual !== "object" || actual === null || Array.isArray(actual)) {
-    throw new Error("Head operation must be an object");
-  }
-  const actualKeys = Object.keys(actual).sort();
-  if (!isDeepStrictEqual(actualKeys, headOperationKeys)) {
-    throw new Error(
-      `Head operation keys mismatch: expected ${headOperationKeys.join(", ")}, received ${actualKeys.join(", ")}`,
-    );
-  }
-  if (typeof actual.mutationId !== "string" || !uuidPattern.test(actual.mutationId)) {
-    throw new Error("Head operation mutationId must be a UUID");
-  }
-  for (const field of ["baseRevision", "targetEventId", "reason"]) {
-    if (!isDeepStrictEqual(actual[field], expected[field])) {
-      throw new Error(
-        `Head operation ${field} mismatch: expected ${JSON.stringify(expected[field])}, received ${JSON.stringify(actual[field])}`,
-      );
-    }
-  }
-};
-
-export const createHeadOperationExpectations = () => {
-  const expected = [];
-  return {
-    expect(operation) {
-      expected.push(operation);
-    },
-    consume(actual) {
-      const next = expected[0];
-      if (next === undefined)
-        throw new Error("Unexpected head operation with no pending expectation");
-      assertHeadOperation(actual, next);
-      expected.shift();
-    },
-    assertDrained() {
-      if (expected.length > 0) {
-        throw new Error(`${expected.length} expected head operation(s) were not observed`);
-      }
-    },
-  };
-};
-
 export const assertEnvelopeMatchesSession = (envelope, session, replay) => {
   assertEqual("game id", envelope.gameId, session.gameId);
   assertEqual("name", envelope.name, session.name);
@@ -205,14 +150,15 @@ export const assertEnvelopeMatchesSession = (envelope, session, replay) => {
   assertEqual("status", envelope.results === null ? "active" : "completed", session.status);
   assertEqual("results", envelope.results, session.results);
   assertEqual("metadata", envelope.metadata, canonicalMetadata(session.state));
+  assertEqual("game", envelope.game, session.state.game);
+  assertEqual("undo budget", envelope.undoBudget ?? 0, session.state.undoBudget ?? 0);
   assertEqual("baseline", envelope.baseline, session.state.initialGame);
   assertEqual("entries", envelope.entries, session.state.events);
   assertEqual("head", envelope.headEventId, session.state.headEventId);
   assertEqual("reset return", envelope.resetReturnEventId, session.state.resetReturnEventId);
   assertEqual("outbox", envelope.outbox, []);
   const activeEntries = activeEntriesFor(envelope.entries, envelope.headEventId);
-  const replayed = replay(envelope.baseline, activeEntries);
-  assertEqual("replayed game", replayed.game, session.state.game);
+  replay(envelope.baseline, activeEntries);
 };
 
 export const assertSessionPostcondition = (session, expected, replay) => {

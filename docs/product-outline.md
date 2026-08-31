@@ -4,7 +4,7 @@
 
 Mafia Dashboard is a host-operated, touch-first single-page application for running an in-person ten-player Club Mafia game. It is designed for landscape tablets and laptops, runs locally through Docker Compose, and deploys to Azure Container Apps with PostgreSQL persistence.
 
-Players do not use accounts or phones. The authenticated host controls setup, music, timers, turns, nominations, voting, night actions, penalties, eliminations, and corrections from one device. Setup metadata is persisted in the revisioned session. Live play is reconstructed from one immutable game baseline and the active branch of parent-linked semantic events; timer and music controls remain local UI state.
+Players do not use accounts or phones. The authenticated host controls setup, music, timers, turns, nominations, voting, night actions, penalties, eliminations, and corrections from one device. The browser persists the authoritative full setup/live snapshot; semantic events provide validated Log, Timeline, and Preview history, while timer and music controls remain local UI state.
 
 ## 2. Current product goals
 
@@ -242,7 +242,7 @@ Night is a host-private guided sequence.
 
 ## 13. Game log
 
-Live play has one immutable initial game baseline plus immutable parent-linked semantic events. The server appends each accepted event, advances `head_event_id`, and updates active-player/result projections in one transaction. The active head selects the branch replayed as current state; events on inactive future branches remain stored. Replay validates event shape, parent linkage, legal phase/day transitions, and the state hash after each event. Each retained entry stores:
+The browser's complete persisted game-session snapshot is authoritative for live play. PostgreSQL mirrors the last uploaded valid snapshot and its exact semantic event prefix; a newer server revision does not defeat a later valid browser upload. Semantic events remain the structured source for Log, Timeline, and Preview, while replay validates their shape, parent linkage, legal phase/day transitions, and state hashes without replacing the snapshot's current `GameState`. Each retained entry stores:
 
 - replay sequence, parent event ID, and timestamp;
 - phase and day before/after the action;
@@ -262,7 +262,7 @@ Required durable event families include:
 - Mafia shots, Don/Sheriff checks, and secret results;
 - elimination and victory.
 
-Timer starts/stops/ticks and music playback/fades/navigation are auxiliary controls and are never durable log entries. Ordinary undo moves the active head to its parent without deleting the event or its inactive future branch. At most the latest three ordinary actions may be undone, and an undo cannot cross an event that advances the day. Timeline reset and restore-reset also move the active head among retained events. If the head moves behind `game.completed` within the allowed boundary, completed-game projections are retracted and the session becomes active again.
+Timer starts/stops/ticks and music playback/fades/navigation are auxiliary controls and are never durable log entries. Ordinary Undo permanently removes the latest undoable event and its tail. Timeline Reset permanently retains only the selected root-to-checkpoint prefix. Neither action creates a log event, and there is no Reset Return. At most the latest three ordinary actions may be undone, and Undo cannot cross an event that advances the day. Undo and Reset become unavailable immediately after the host clicks **Finish game**.
 
 ## 14. Phase model
 

@@ -1,9 +1,6 @@
 /* global URL, document, getComputedStyle, HTMLElement, HTMLInputElement, innerHeight, innerWidth, structuredClone, sessionStorage, crypto, TextEncoder, ErrorEvent, Event */
 import { chromium, webkit } from "@playwright/test";
-import {
-  assertExactOrigin,
-  createHeadOperationExpectations,
-} from "./session-verifier-contracts.mjs";
+import { assertExactOrigin } from "./session-verifier-contracts.mjs";
 
 const baseUrl = process.env.APP_URL ?? "http://127.0.0.1:8080";
 const expectedOrigin = new URL(baseUrl).origin;
@@ -104,14 +101,13 @@ const page = await browser.newPage({
 });
 const pageErrors = [];
 const routeErrors = [];
-const headOperationExpectations = createHeadOperationExpectations();
+
 page.on("console", (message) => console.log(`browser console [${message.type()}]`));
 page.on("pageerror", (error) => {
   pageErrors.push(error.message);
   console.error(`browser page error: ${error.message}`);
 });
 const assertNoPageErrors = () => {
-  headOperationExpectations.assertDrained();
   if (pageErrors.length > 0) {
     throw new Error(`Browser page errors occurred: ${pageErrors.join(" | ")}`);
   }
@@ -307,6 +303,7 @@ await page.route("**/api/game-sessions?*", async (route) => {
     body: JSON.stringify({ sessions: [] }),
   });
 });
+let snapshotRevision = 0;
 await page.route("**/api/game-sessions/**", async (route) => {
   const request = route.request();
   if (request.method() === "DELETE") {
@@ -322,63 +319,34 @@ await page.route("**/api/game-sessions/**", async (route) => {
     await fulfillMock(route, { status: 204, body: "" });
     return;
   }
-  if (request.method() === "POST") {
-    const operation = request.postDataJSON();
-    const operationName = new URL(request.url()).pathname.split("/").at(-1);
-    let valid =
-      Number.isSafeInteger(operation.baseRevision) && typeof operation.mutationId === "string";
-    if (operationName === "head") {
-      try {
-        headOperationExpectations.consume(operation);
-      } catch (error) {
-        routeErrors.push(error instanceof Error ? error.message : String(error));
-        valid = false;
-      }
-    } else {
-      valid &&=
-        (operationName === "start" &&
-          (operation.event?.type === "game.started" ||
-            operation.event?.type === "game.checkpointed")) ||
-        (operationName === "events" && typeof operation.event?.type === "string") ||
-        (operationName === "complete" && operation.results != null);
-    }
-    if (!valid) {
-      routeErrors.push(`POST ${new URL(request.url()).pathname}`);
-      await fulfillMock(route, { status: 400, contentType: "application/json", body: "{}" });
-      return;
-    }
-    await fulfillMock(route, {
-      contentType: "application/json",
-      body: JSON.stringify({
-        revision: operation.baseRevision + 1,
-        duplicate: false,
-      }),
-    });
-    return;
-  }
   if (request.method() !== "PUT") {
     await fulfillMock(route, { status: 404, contentType: "application/json", body: "{}" });
     return;
   }
   const mutation = request.postDataJSON();
-  if (
-    mutation.state?.game !== null ||
-    mutation.state?.initialGame !== undefined ||
-    mutation.state?.events !== undefined ||
-    mutation.state?.headEventId !== undefined
-  ) {
-    routeErrors.push(`PUT ${new URL(request.url()).pathname}`);
+  const requestPath = new URL(request.url()).pathname;
+  const valid =
+    /^\/api\/game-sessions\/[0-9a-f-]{36}$/i.test(requestPath) &&
+    typeof mutation.name === "string" &&
+    typeof mutation.mutationId === "string" &&
+    mutation.state !== null &&
+    typeof mutation.state === "object" &&
+    Object.hasOwn(mutation.state, "game") &&
+    Object.hasOwn(mutation, "results");
+  if (!valid) {
+    routeErrors.push(`PUT ${requestPath}`);
     await fulfillMock(route, { status: 400, contentType: "application/json", body: "{}" });
     return;
   }
-  const gameId = new globalThis.URL(request.url()).pathname.split("/").at(-1);
+  snapshotRevision += 1;
+  const gameId = requestPath.split("/").at(-1);
   await fulfillMock(route, {
-    status: mutation.baseRevision === 0 ? 201 : 200,
+    status: snapshotRevision === 1 ? 201 : 200,
     contentType: "application/json",
     body: JSON.stringify({
       gameId,
       name: mutation.name,
-      revision: mutation.baseRevision + 1,
+      revision: snapshotRevision,
       duplicate: false,
       status: mutation.results === null ? "active" : "completed",
       hostName: mutation.state.hostName,
@@ -1046,42 +1014,21 @@ try {
     if (resetTarget === undefined || persistedCheckpoint.headEventId === null) {
       throw new Error("Reset verifier fixture has no canonical target or active head");
     }
-    headOperationExpectations.expect({
-      baseRevision: persistedCheckpoint.revision,
-      targetEventId: resetTarget.id,
-      reason: "reset",
-    });
     const resetSave = page.waitForResponse((response) => {
-      if (
-        response.request().method() !== "POST" ||
-        !new URL(response.url()).pathname.endsWith("/head")
-      ) {
-        return false;
-      }
-      return response.request().postDataJSON()?.reason === "reset";
+      if (response.request().method() !== "PUT") return false;
+      const requestPath = new URL(response.url()).pathname;
+      const snapshot = response.request().postDataJSON();
+      return (
+        requestPath === `/api/game-sessions/${persistedCheckpoint.gameId}` &&
+        snapshot?.state?.headEventId === resetTarget.id &&
+        snapshot?.state?.resetReturnEventId === null &&
+        snapshot?.state?.events?.at(-1)?.id === resetTarget.id
+      );
     });
     page.once("dialog", (dialog) => dialog.accept());
     await page.getByRole("button", { name: "Reset game to timeline checkpoint" }).click();
     await page.getByRole("heading", { name: "Mafia planning stage" }).waitFor();
-    if (!(await resetSave).ok()) throw new Error("Reset verifier operation failed");
-    headOperationExpectations.expect({
-      baseRevision: persistedCheckpoint.revision + 1,
-      targetEventId: persistedCheckpoint.headEventId,
-      reason: "restore-reset",
-    });
-    const restoreSave = page.waitForResponse((response) => {
-      if (
-        response.request().method() !== "POST" ||
-        !new URL(response.url()).pathname.endsWith("/head")
-      ) {
-        return false;
-      }
-      return response.request().postDataJSON()?.reason === "restore-reset";
-    });
-    await page.getByRole("button", { name: /undo last action/i }).click();
-    await page.getByRole("heading", { name: "Day 1" }).waitFor();
-    if (!(await restoreSave).ok()) throw new Error("Reset recovery verifier operation failed");
-    headOperationExpectations.assertDrained();
+    if (!(await resetSave).ok()) throw new Error("Destructive snapshot Reset failed");
 
     await page.getByRole("button", { name: "Open developer menu" }).click();
     await page.getByRole("button", { name: "Past game timeline" }).click();

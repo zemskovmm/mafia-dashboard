@@ -7,9 +7,9 @@ const englishShellMessages = {
   backgroundGrey66: "66% grey",
   backgroundWhite: "white",
   resetActiveGame: {
-    one: "Reset the active game to log #{sequence}? {count} later active action will leave the current branch. Their history will be preserved.",
+    one: "Reset the active game to log #{sequence}? {count} later action will be permanently deleted.",
     other:
-      "Reset the active game to log #{sequence}? {count} later active actions will leave the current branch. Their history will be preserved.",
+      "Reset the active game to log #{sequence}? {count} later actions will be permanently deleted.",
   },
   playlistRequired: "Playlist required",
   loadingPlayer: "Loading player",
@@ -196,11 +196,11 @@ const russianShellMessages = {
   backgroundGrey66: "серый 66%",
   backgroundWhite: "белый",
   resetActiveGame: {
-    one: "Вернуть текущую игру к записи журнала №{sequence}? {count} последующее действие будет исключено из текущей ветки. Его история сохранится.",
-    few: "Вернуть текущую игру к записи журнала №{sequence}? {count} последующих действия будут исключены из текущей ветки. Их история сохранится.",
-    many: "Вернуть текущую игру к записи журнала №{sequence}? {count} последующих действий будут исключены из текущей ветки. Их история сохранится.",
+    one: "Вернуть текущую игру к записи журнала №{sequence}? {count} последующее действие будет удалено навсегда.",
+    few: "Вернуть текущую игру к записи журнала №{sequence}? {count} последующих действия будут удалены навсегда.",
+    many: "Вернуть текущую игру к записи журнала №{sequence}? {count} последующих действий будут удалены навсегда.",
     other:
-      "Вернуть текущую игру к записи журнала №{sequence}? {count} последующих действий будут исключены из текущей ветки. Их история сохранится.",
+      "Вернуть текущую игру к записи журнала №{sequence}? {count} последующих действий будут удалены навсегда.",
   },
   playlistRequired: "Нужен плейлист",
   loadingPlayer: "Загрузка плеера",

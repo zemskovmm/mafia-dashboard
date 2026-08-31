@@ -78,9 +78,9 @@ Server integration tests expect PostgreSQL at `postgresql://mafia:mafia@127.0.0.
 - 60/30/10-second timers and faint ten-second warning
 - Foul, red-card, nomination, individual voting, Mafia shot, Don check, and Sheriff check controls
 - Rotating day order, automatic win detection, and atomic PostgreSQL persistence of setup state followed by an immutable game baseline and parent-linked semantic events
-- Durable browser outbox plus **Active games** resume for full setup/live state, host, playlist, log, and undo recovery
-- Replay validation of parent links and state hashes, one active event head, and retained inactive future branches
-- Three-action ordinary undo by moving the active head, with every new day as a checkpoint; timer and music controls remain non-durable UI state
+- Browser-authoritative full session snapshots plus **Active games** resume for setup/live state, host, playlist, Log/Timeline history, and Undo recovery
+- Server validation of snapshot invariants plus semantic-event parent links and state hashes; PostgreSQL mirrors the last uploaded valid browser snapshot
+- Destructive three-action Undo and Timeline Reset with every new day as a checkpoint; discarded event tails are permanently removed and timer/music controls remain non-durable UI state
 
 The current 2-second fade-in, 500-millisecond quick fade-out, 3-second slow fade-out, faint ten-second warning chime, no-final-speech red-card behavior, and `rules.md` tie conventions are accepted. The initial product must support English and Russian, but the current UI is English-only. Best Move must become a per-club setting enabled by default, but the current flow is not configurable per club. The production backup direction remains unresolved.
 

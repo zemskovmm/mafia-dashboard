@@ -335,6 +335,7 @@ const asPersistedState = (state: GameSessionState | undefined): PersistedState =
         readonly headEventId?: string | null;
         readonly resetReturnEventId?: string | null;
         readonly legacyLog?: readonly LocalLogEntry[];
+        readonly undoBudget?: number;
       })
     | undefined;
   const storedLog = (state?.log as readonly LocalLogEntry[] | undefined) ?? [];
@@ -346,6 +347,7 @@ const asPersistedState = (state: GameSessionState | undefined): PersistedState =
     playlistId: state?.playlistId ?? defaultPlaylistId,
     log: storedLog,
     undoHistory: [],
+    undoBudget: incremental?.undoBudget,
     initialGame:
       incremental?.initialGame ??
       (migrated.game === null ? null : { replayVersion: 1, game: migrated.game }),
@@ -423,6 +425,7 @@ export const ClubWorkspace = ({
     () => initialCurrent?.name ?? nextGameName(window.localStorage, new Date()),
   );
   const initialDerivedGame = (() => {
+    if (initialState.game !== null) return initialState.game;
     if (initialState.initialGame === null) return initialState.game;
     if (initialState.headEventId === null) return initialState.initialGame.game;
     try {
@@ -447,14 +450,12 @@ export const ClubWorkspace = ({
   );
   const [previewTargetEventId, setPreviewTargetEventId] = useState<string | null>(null);
   const [previewGame, setPreviewGame] = useState<GameState | null>(null);
-  const [undoBudget, setUndoBudget] = useState(() =>
-    initialState.resetReturnEventId === null
-      ? getRemainingUndoBudget(initialState.events, initialState.headEventId)
-      : 0,
+  const [undoBudget, setUndoBudget] = useState(
+    () =>
+      initialState.undoBudget ??
+      getRemainingUndoBudget(initialState.events, initialState.headEventId),
   );
-  const [resetReturnUndoBudget, setResetReturnUndoBudget] = useState(() =>
-    getRemainingUndoBudget(initialState.events, initialState.resetReturnEventId),
-  );
+
   const [setupSession, setSetupSession] = useState<SetupWizardSessionState | null>(
     initialState.setup,
   );
@@ -622,7 +623,7 @@ export const ClubWorkspace = ({
   })();
   const log: readonly LocalLogEntry[] = [...legacyLog, ...activeBranch.map(toLocalLogEntry)];
   const undoHistory = undoBudget === 0 ? [] : getUndoableEvents(activeBranch).slice(-undoBudget);
-  const undoCount = resetReturnEventId === null ? undoHistory.length : 1;
+  const undoCount = finalResults === null ? undoHistory.length : 0;
   const previewEntry = events.find(({ id }) => id === previewTargetEventId);
   const renderedGameScreenMutationGeneration = gameScreenMutationGenerationRef.current;
   const canApplyGameScreenMutation = () =>
@@ -754,12 +755,13 @@ export const ClubWorkspace = ({
       sessionName,
       {
         setup: setupSession,
-        game: initialGame === null ? canonicalGameRef.current : null,
+        game,
         hostPlayerId,
         hostName,
         playlistId,
         log,
         undoHistory: [],
+        undoBudget,
         initialGame,
         events,
         headEventId,
@@ -772,6 +774,7 @@ export const ClubWorkspace = ({
   }, [
     finalResults,
     events,
+    game,
     headEventId,
     hostName,
     hostPlayerId,
@@ -784,6 +787,7 @@ export const ClubWorkspace = ({
     sessionName,
     sessionSync,
     setupSession,
+    undoBudget,
   ]);
 
   useEffect(() => {
@@ -917,43 +921,6 @@ export const ClubWorkspace = ({
     [hostPlayerId],
   );
 
-  const queueHeadMove = useCallback(
-    (
-      targetEventId: string,
-      nextResetReturnEventId: string | null,
-      nextResults: FinalGameResults | null,
-    ): boolean => {
-      const baseline = initialGameRef.current;
-      if (baseline === null) return false;
-      try {
-        sessionSync.enqueue(
-          sessionName,
-          {
-            setup: setupSession,
-            game: null,
-            hostPlayerId,
-            hostName,
-            playlistId,
-            log: legacyLogRef.current,
-            undoHistory: [],
-            initialGame: baseline,
-            events: eventsRef.current,
-            headEventId: targetEventId,
-            resetReturnEventId: nextResetReturnEventId,
-            legacyLog: legacyLogRef.current,
-          } as GameSessionState,
-          nextResults,
-        );
-        sessionRetry.requestAutoSync();
-        return true;
-      } catch (error) {
-        reportError(error, { source: "persistence", context: "game-session.queue-head" });
-        return false;
-      }
-    },
-    [hostName, hostPlayerId, playlistId, sessionName, sessionRetry, sessionSync, setupSession],
-  );
-
   const previewEventState = useCallback(
     (eventId: string) => {
       const baseline = initialGameRef.current;
@@ -978,6 +945,7 @@ export const ClubWorkspace = ({
 
   const resetToEventState = useCallback(
     async (eventId: string) => {
+      if (finalResults !== null) return false;
       const branch = getActiveBranch(eventsRef.current, headEventIdRef.current);
       const targetIndex = branch.findIndex(({ id }) => id === eventId);
       if (targetIndex < 0) return false;
@@ -988,12 +956,12 @@ export const ClubWorkspace = ({
       ) {
         return false;
       }
-      const previousHead = headEventIdRef.current;
-      if (previousHead === null || !queueHeadMove(eventId, previousHead, null)) return false;
+      const retained = branch.slice(0, targetIndex + 1);
+      eventsRef.current = retained;
+      setEvents(retained);
       gameScreenMutationGenerationRef.current += 1;
-      setResetReturnUndoBudget(undoBudget);
       moveHeadLocally(eventId);
-      setResetReturnEventId(previousHead);
+      setResetReturnEventId(null);
       setUndoBudget(0);
       previewTargetEventIdRef.current = null;
       setPreviewTargetEventId(null);
@@ -1002,7 +970,7 @@ export const ClubWorkspace = ({
       setActiveDrawer(null);
       return true;
     },
-    [moveHeadLocally, queueHeadMove, undoBudget],
+    [finalResults, moveHeadLocally],
   );
 
   const finishGame = () => {
@@ -1023,7 +991,7 @@ export const ClubWorkspace = ({
       sessionName,
       {
         setup: setupSession,
-        game: initialGame === null ? canonicalGameRef.current : null,
+        game,
         hostPlayerId,
         hostName,
         playlistId,
@@ -1032,6 +1000,7 @@ export const ClubWorkspace = ({
           ...getActiveBranch(eventsRef.current, headEventIdRef.current).map(toLocalLogEntry),
         ],
         undoHistory: [],
+        undoBudget,
         initialGame: initialGameRef.current,
         events: eventsRef.current,
         headEventId: headEventIdRef.current,
@@ -1044,26 +1013,12 @@ export const ClubWorkspace = ({
   };
 
   const undoLastGameAction = () => {
-    if (resetReturnEventId !== null) {
-      const baseline = initialGameRef.current;
-      const target = eventsRef.current.find(({ id }) => id === resetReturnEventId);
-      if (baseline === null || target === undefined || hostPlayerId === null) return;
-      const restoredGame = replayToEvent(baseline, eventsRef.current, resetReturnEventId);
-      const restoredResults = buildFinalGameResults(
-        restoredGame,
-        new Date(target.createdAt),
-        hostPlayerId,
-      );
-      if (!queueHeadMove(resetReturnEventId, null, restoredResults)) return;
-      moveHeadLocally(resetReturnEventId);
-      setResetReturnEventId(null);
-      setUndoBudget(resetReturnUndoBudget);
-      setResetReturnUndoBudget(0);
-      return;
-    }
+    if (finalResults !== null) return;
     const entry = undoHistory.at(-1);
     if (entry?.parentEventId == null) return;
-    if (!queueHeadMove(entry.parentEventId, null, null)) return;
+    const retained = getActiveBranch(eventsRef.current, entry.parentEventId);
+    eventsRef.current = retained;
+    setEvents(retained);
     moveHeadLocally(entry.parentEventId);
     setUndoBudget((current) => Math.max(0, current - 1));
   };
@@ -1200,7 +1155,6 @@ export const ClubWorkspace = ({
 
   const applyRemoteSession = useCallback(
     (session: RemoteGameSession) => {
-      const restored = asPersistedState(session.state);
       sessionSync.restore(
         session.gameId,
         session.revision,
@@ -1208,17 +1162,19 @@ export const ClubWorkspace = ({
         session.state,
         session.results,
       );
+      const restored = asPersistedState(sessionSync.current?.state);
       gameScreenMutationGenerationRef.current += 1;
       setSessionName(session.name);
       const restoredGame =
-        restored.initialGame === null
-          ? restored.game
+        restored.game ??
+        (restored.initialGame === null
+          ? null
           : restored.headEventId === null
             ? restored.initialGame.game
             : replayGameLog(
                 restored.initialGame,
                 getActiveBranch(restored.events, restored.headEventId),
-              ).game;
+              ).game);
       setGame(restoredGame);
       setInitialGame(restored.initialGame);
       initialGameRef.current = restored.initialGame;
@@ -1231,13 +1187,9 @@ export const ClubWorkspace = ({
       legacyLogRef.current = restored.legacyLog;
       setResetReturnEventId(restored.resetReturnEventId);
       setUndoBudget(
-        restored.resetReturnEventId === null
-          ? getRemainingUndoBudget(restored.events, restored.headEventId)
-          : 0,
+        restored.undoBudget ?? getRemainingUndoBudget(restored.events, restored.headEventId),
       );
-      setResetReturnUndoBudget(
-        getRemainingUndoBudget(restored.events, restored.resetReturnEventId),
-      );
+
       setSetupSession(restored.setup);
       setHostPlayerId(restored.hostPlayerId);
       setHostName(restored.hostName);
@@ -1312,7 +1264,6 @@ export const ClubWorkspace = ({
     legacyLogRef.current = [];
     setResetReturnEventId(null);
     setUndoBudget(0);
-    setResetReturnUndoBudget(0);
     gameScreenMutationGenerationRef.current += 1;
     previewTargetEventIdRef.current = null;
     setPreviewTargetEventId(null);
@@ -1778,7 +1729,7 @@ export const ClubWorkspace = ({
                       <button
                         type="button"
                         className="danger-action"
-                        disabled={!previewable}
+                        disabled={!previewable || finalResults !== null}
                         aria-label={t("resetGameToLog", { sequence: entry.sequence })}
                         onClick={() => resetToEventState(entry.id)}
                       >
@@ -1967,11 +1918,15 @@ export const ClubWorkspace = ({
             previewEventState(eventId);
             setView("game");
           }}
-          onResetCurrentEvent={(eventId) => {
-            void resetToEventState(eventId).then((reset) => {
-              if (reset) setView("game");
-            });
-          }}
+          {...(finalResults === null
+            ? {
+                onResetCurrentEvent: (eventId: string) => {
+                  void resetToEventState(eventId).then((reset) => {
+                    if (reset) setView("game");
+                  });
+                },
+              }
+            : {})}
         />
       ) : isManager && view === "players" ? (
         <>
@@ -2040,7 +1995,6 @@ export const ClubWorkspace = ({
               setHeadEventId(started.entry.id);
               setResetReturnEventId(null);
               setUndoBudget(0);
-              setResetReturnUndoBudget(0);
               phaseRef.current = next.phase;
               setSetupSession(null);
               setHostPlayerId(selectedHostPlayerId);
@@ -2069,6 +2023,7 @@ export const ClubWorkspace = ({
           mode={previewGame === null ? "live" : "preview"}
           previewSequence={previewEntry?.sequence}
           onExitPreview={exitPreview}
+          canResetPreview={finalResults === null}
           onResetPreview={() => {
             if (previewTargetEventId !== null) resetToEventState(previewTargetEventId);
           }}

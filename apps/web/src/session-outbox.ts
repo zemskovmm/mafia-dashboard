@@ -6,7 +6,6 @@ import {
 } from "@mafia/game-domain";
 import type { FinalGameResults, GameSessionState } from "./api/client.js";
 import { reportError } from "./features/console/error-console.js";
-import { buildFinalGameResults } from "./features/players/game-results.js";
 
 export interface SessionSaveResponse {
   readonly revision: number;
@@ -96,6 +95,11 @@ export type GameSessionOperation =
   | (OperationBase & {
       readonly kind: "complete";
       readonly results: FinalGameResults;
+    })
+  | (OperationBase & {
+      readonly kind: "snapshot";
+      readonly state: GameSessionState;
+      readonly results: FinalGameResults | null;
     });
 
 interface PersistedEnvelope {
@@ -104,6 +108,8 @@ interface PersistedEnvelope {
   readonly revision: number;
   readonly name: string | null;
   readonly metadata: SessionMetadata;
+  readonly game?: unknown | null;
+  readonly undoBudget?: number;
   readonly baseline: InitialGameBaseline | null;
   readonly entries: readonly GameLogEntry[];
   readonly headEventId: string | null;
@@ -131,6 +137,8 @@ const emptyEnvelope = (): PersistedEnvelope => ({
   revision: 0,
   name: null,
   metadata: emptyMetadata(),
+  game: null,
+  undoBudget: 0,
   baseline: null,
   entries: [],
   headEventId: null,
@@ -248,6 +256,11 @@ const isGameSessionOperation = (value: unknown): value is GameSessionOperation =
       );
     case "complete":
       return isFinalGameResults(value.results);
+    case "snapshot":
+      return (
+        isGameSessionState(value.state) &&
+        (value.results === null || isFinalGameResults(value.results))
+      );
     default:
       return false;
   }
@@ -276,6 +289,11 @@ const isPersistedEnvelope = (value: unknown): value is PersistedEnvelope => {
     !isNonNegativeInteger(value.revision) ||
     !isNullableString(value.name) ||
     !isSessionMetadata(value.metadata) ||
+    !(value.game === undefined || value.game === null || isRecord(value.game)) ||
+    !(
+      value.undoBudget === undefined ||
+      (isNonNegativeInteger(value.undoBudget) && (value.undoBudget as number) <= 3)
+    ) ||
     !(value.baseline === null || isInitialGameBaseline(value.baseline)) ||
     !Array.isArray(value.entries) ||
     !value.entries.every(isGameLogEntry) ||
@@ -502,12 +520,13 @@ const currentFromEnvelope = (envelope: PersistedEnvelope): CurrentSession | null
     name: envelope.name,
     state: {
       setup: envelope.metadata.setup,
-      game: envelope.baseline === null ? null : null,
+      game: envelope.game ?? null,
       hostPlayerId: envelope.metadata.hostPlayerId,
       hostName: envelope.metadata.hostName,
       playlistId: envelope.metadata.playlistId,
       log: envelope.metadata.legacyLog,
       undoHistory: [],
+      undoBudget: envelope.undoBudget ?? 0,
       initialGame: envelope.baseline,
       events: envelope.entries,
       headEventId: envelope.headEventId,
@@ -522,6 +541,7 @@ interface DesiredSession {
   readonly name: string;
   readonly metadata: SessionMetadata;
   readonly materializedGame: unknown | null;
+  readonly undoBudget: number;
   readonly baseline: InitialGameBaseline | null;
   readonly entries: readonly GameLogEntry[];
   readonly headEventId: string | null;
@@ -538,6 +558,7 @@ const desiredSession = (
   name,
   metadata: metadataFromState(state),
   materializedGame: state.game,
+  undoBudget: state.undoBudget ?? 0,
   baseline:
     state.initialGame ??
     (state.game === null ? null : { replayVersion: 1, game: state.game as GameState }),
@@ -584,44 +605,20 @@ const validateDesiredReplay = (
   if (desired.resetReturnEventId !== null && !byId.has(desired.resetReturnEventId)) {
     throw new Error("Game session reset-return event is missing");
   }
-  const replayed = replayGameLog(desired.baseline, active).game;
-  if (
-    desired.materializedGame !== null &&
-    JSON.stringify(canonicalJsonValue(desired.materializedGame)) !==
-      JSON.stringify(canonicalJsonValue(replayed))
-  ) {
-    throw new Error("Game session authoritative aggregate disagrees with canonical replay");
-  }
-  if (desired.results !== null) {
-    const completion = active.at(-1);
-    const expectedResults =
-      completion?.type === "game.completed" && desired.metadata.hostPlayerId !== null
-        ? buildFinalGameResults(
-            replayed,
-            new Date(completion.createdAt),
-            desired.metadata.hostPlayerId,
-          )
-        : null;
-    if (
-      expectedResults === null ||
-      JSON.stringify(canonicalJsonValue(desired.results)) !==
-        JSON.stringify(canonicalJsonValue(expectedResults))
-    ) {
-      throw new Error("Game session results disagree with canonical replay");
-    }
-  }
+  replayGameLog(desired.baseline, active);
 };
 
 const currentFromDesired = (desired: DesiredSession): CurrentSession => ({
   name: desired.name,
   state: {
     setup: desired.metadata.setup,
-    game: null,
+    game: desired.materializedGame,
     hostPlayerId: desired.metadata.hostPlayerId,
     hostName: desired.metadata.hostName,
     playlistId: desired.metadata.playlistId,
     log: desired.metadata.legacyLog,
     undoHistory: [],
+    undoBudget: desired.undoBudget,
     initialGame: desired.baseline,
     events: desired.entries,
     headEventId: desired.headEventId,
@@ -630,6 +627,109 @@ const currentFromDesired = (desired: DesiredSession): CurrentSession => ({
   },
   results: desired.results,
 });
+
+const activePrefix = (
+  entries: readonly GameLogEntry[],
+  headEventId: string | null,
+): readonly GameLogEntry[] => {
+  if (headEventId === null) return [];
+  const byId = new Map(entries.map((entry) => [entry.id, entry]));
+  const reversed: GameLogEntry[] = [];
+  const seen = new Set<string>();
+  let eventId: string | null = headEventId;
+  while (eventId !== null) {
+    if (seen.has(eventId)) throw new Error("Game session canonical history contains a cycle");
+    seen.add(eventId);
+    const entry = byId.get(eventId);
+    if (entry === undefined) throw new Error("Game session canonical history is disconnected");
+    reversed.push(entry);
+    eventId = entry.parentEventId;
+  }
+  return reversed.reverse();
+};
+
+const migratedUndoBudget = (
+  retained: readonly GameLogEntry[],
+  allEntries: readonly GameLogEntry[],
+): number => {
+  const head = retained.at(-1);
+  if (head === undefined) return 0;
+  let checkpointIndex = -1;
+  retained.forEach((entry, index) => {
+    if (entry.dayAfter > entry.dayBefore) checkpointIndex = index;
+  });
+  const undoable = retained
+    .slice(checkpointIndex + 1)
+    .filter(
+      ({ type }) =>
+        type !== "game.started" && type !== "game.checkpointed" && type !== "game.completed",
+    )
+    .slice(-3).length;
+  const maximumSequence = Math.max(...allEntries.map(({ sequence }) => sequence));
+  return Math.min(undoable, Math.max(0, 3 - Math.max(0, maximumSequence - head.sequence)));
+};
+
+const snapshotStateFromEnvelope = (
+  envelope: PersistedEnvelope,
+  entries: readonly GameLogEntry[],
+  game: unknown | null,
+): GameSessionState => ({
+  setup: envelope.metadata.setup,
+  game,
+  hostPlayerId: envelope.metadata.hostPlayerId,
+  hostName: envelope.metadata.hostName,
+  playlistId: envelope.metadata.playlistId,
+  log: envelope.metadata.legacyLog,
+  undoHistory: [],
+  undoBudget: envelope.undoBudget ?? 0,
+  initialGame: envelope.baseline,
+  events: entries,
+  headEventId: envelope.headEventId,
+  resetReturnEventId: null,
+  legacyLog: envelope.metadata.legacyLog,
+});
+
+const migrateEnvelopeToSnapshotAuthority = (
+  envelope: PersistedEnvelope,
+  createId: () => string,
+): PersistedEnvelope => {
+  if (envelope.name === null || envelope.gameId === null) return envelope;
+  const entries = activePrefix(envelope.entries, envelope.headEventId);
+  const undoBudget = envelope.undoBudget ?? migratedUndoBudget(entries, envelope.entries);
+  const game =
+    envelope.game ??
+    (envelope.baseline === null
+      ? null
+      : envelope.headEventId === null
+        ? envelope.baseline.game
+        : replayGameLog(envelope.baseline, entries).game);
+  const migrated =
+    envelope.game === undefined ||
+    envelope.undoBudget === undefined ||
+    envelope.resetReturnEventId !== null ||
+    entries.length !== envelope.entries.length ||
+    envelope.outbox.some(({ kind }) => kind !== "snapshot");
+  if (!migrated) return envelope;
+  const migratedEnvelope = { ...envelope, undoBudget };
+  const state = snapshotStateFromEnvelope(migratedEnvelope, entries, game);
+  return {
+    ...migratedEnvelope,
+    game,
+    undoBudget,
+    entries,
+    resetReturnEventId: null,
+    outbox: [
+      {
+        kind: "snapshot",
+        name: envelope.name,
+        mutationId: createId(),
+        baseRevision: envelope.revision,
+        state,
+        results: envelope.results,
+      },
+    ],
+  };
+};
 
 export class GameSessionOutbox {
   private envelope: PersistedEnvelope;
@@ -652,8 +752,12 @@ export class GameSessionOutbox {
       options.legacyStorageKey === undefined
         ? null
         : options.storage.getItem(options.legacyStorageKey);
-    this.envelope = loadEnvelope(options.storage, this.storageKey);
+    this.envelope = migrateEnvelopeToSnapshotAuthority(
+      loadEnvelope(options.storage, this.storageKey),
+      options.createId,
+    );
     if (this.envelope.name !== null) {
+      this.persist();
       if (options.legacyStorageKey !== undefined) {
         if (this.envelope.outbox.some(({ kind }) => kind === "normalize")) {
           this.migratingLegacyKey = options.legacyStorageKey;
@@ -678,32 +782,33 @@ export class GameSessionOutbox {
       legacy.current.state,
       legacy.current.results,
     );
-    const normalizationOperation =
-      legacy.gameId === null
-        ? undefined
-        : (legacy.normalizationOperation ?? {
-            kind: "normalize" as const,
-            name: desired.name,
-            mutationId: options.createId(),
-            baseRevision: legacy.revision,
-          });
-    if (normalizationOperation !== undefined && legacy.normalizationOperation === undefined) {
-      const serialized = JSON.stringify({ ...legacy, normalizationOperation });
-      options.storage.setItem(options.legacyStorageKey, serialized);
-      this.legacyStorageSnapshot = serialized;
-    }
+    const state = currentFromDesired(desired).state;
     this.envelope = {
       version: 4,
       gameId: legacy.gameId,
       revision: legacy.revision,
       name: desired.name,
       metadata: desired.metadata,
+      game: desired.materializedGame,
+      undoBudget: desired.undoBudget,
       baseline: desired.baseline,
       entries: desired.entries,
       headEventId: desired.headEventId,
-      resetReturnEventId: desired.resetReturnEventId,
+      resetReturnEventId: null,
       results: desired.results,
-      outbox: legacy.gameId === null ? [] : [normalizationOperation!],
+      outbox:
+        legacy.gameId === null
+          ? []
+          : [
+              {
+                kind: "snapshot",
+                name: desired.name,
+                mutationId: options.createId(),
+                baseRevision: legacy.revision,
+                state,
+                results: desired.results,
+              },
+            ],
       failed: legacy.failed,
       clearFailed: legacy.clearFailed,
       clearingGameId: legacy.clearingGameId,
@@ -854,11 +959,10 @@ export class GameSessionOutbox {
   }
 
   public enqueue(name: string, state: GameSessionState, results: FinalGameResults | null): void {
-    const synchronized = this.synchronizeDurableState();
+    this.synchronizeDurableState();
     if (this.legacyEnvelope !== null) {
       const current = { name, state, results };
       if (sameCurrent(this.legacyEnvelope.current, current)) return;
-      if (synchronized) throw new Error("Legacy session changed in another browser context");
       const mutation: LegacyGameSessionMutation = {
         name,
         mutationId: this.options.createId(),
@@ -886,50 +990,6 @@ export class GameSessionOutbox {
     ) {
       throw new Error("Local game changes target a different durable game");
     }
-    if (synchronized) {
-      const desiredById = new Map(desired.entries.map((entry) => [entry.id, entry]));
-      const preservesDurableEntries = this.envelope.entries.every((entry) => {
-        const desiredEntry = desiredById.get(entry.id);
-        return (
-          desiredEntry !== undefined &&
-          JSON.stringify(canonicalJsonValue(desiredEntry)) ===
-            JSON.stringify(canonicalJsonValue(entry))
-        );
-      });
-      const preservesBaseline =
-        this.envelope.baseline === null ||
-        JSON.stringify(canonicalJsonValue(this.envelope.baseline)) ===
-          JSON.stringify(canonicalJsonValue(desired.baseline));
-      const preservesResults =
-        this.envelope.results === null ||
-        JSON.stringify(canonicalJsonValue(this.envelope.results)) ===
-          JSON.stringify(canonicalJsonValue(desired.results));
-      let extendsDurableHead = this.envelope.headEventId === null;
-      for (
-        let cursor = desired.headEventId;
-        !extendsDurableHead && cursor !== null;
-        cursor = desiredById.get(cursor)?.parentEventId ?? null
-      ) {
-        extendsDurableHead = cursor === this.envelope.headEventId;
-      }
-      if (
-        desired.entries.length === 0 ||
-        !preservesDurableEntries ||
-        !preservesBaseline ||
-        !preservesResults ||
-        !extendsDurableHead
-      ) {
-        throw new Error(
-          `Local session diverged from another browser context (${[
-            `entries:${preservesDurableEntries}`,
-            `baseline:${preservesBaseline}`,
-            `results:${preservesResults}`,
-            `head:${extendsDurableHead}`,
-            `desired:${desired.entries.length}`,
-          ].join(",")})`,
-        );
-      }
-    }
     const currentGameId = this.envelope.gameId;
     let source = this.envelope;
     if (
@@ -942,98 +1002,32 @@ export class GameSessionOutbox {
     }
     const gameId = source.gameId ?? this.options.createId();
     validateDesiredReplay(gameId, desired);
-    const outbox = [...source.outbox];
-    let nextBaseRevision = source.revision + outbox.length;
-    const push = <Operation extends Omit<GameSessionOperation, keyof OperationBase>>(
-      operation: Operation,
-    ) => {
-      outbox.push({
-        ...operation,
+    const retainedOutbox =
+      this.flushPromise === null
+        ? source.outbox.filter(({ kind }) => kind !== "snapshot")
+        : [
+            ...source.outbox.slice(0, 1),
+            ...source.outbox.slice(1).filter(({ kind }) => kind !== "snapshot"),
+          ];
+    const outbox: GameSessionOperation[] = [
+      ...retainedOutbox,
+      {
+        kind: "snapshot",
         name,
         mutationId: this.options.createId(),
-        baseRevision: nextBaseRevision,
-      } as GameSessionOperation);
-      nextBaseRevision += 1;
-    };
-
-    if (
-      source.name !== name ||
-      !sameCurrent(
-        source.name === null
-          ? null
-          : {
-              name: source.name,
-              state: {
-                setup: source.metadata.setup,
-                game: null,
-                hostPlayerId: source.metadata.hostPlayerId,
-                hostName: source.metadata.hostName,
-                playlistId: source.metadata.playlistId,
-                log: source.metadata.legacyLog,
-                undoHistory: [],
-              },
-              results: null,
-            },
-        {
-          name,
-          state: {
-            setup: desired.metadata.setup,
-            game: null,
-            hostPlayerId: desired.metadata.hostPlayerId,
-            hostName: desired.metadata.hostName,
-            playlistId: desired.metadata.playlistId,
-            log: desired.metadata.legacyLog,
-            undoHistory: [],
-          },
-          results: null,
-        },
-      )
-    ) {
-      push({ kind: "metadata", metadata: desired.metadata });
-    }
-
-    let effectiveHead = source.headEventId;
-    let restoresCompletion = false;
-    if (source.baseline === null && desired.baseline !== null) {
-      if (desired.normalize) {
-        push({ kind: "normalize" });
-      } else {
-        const root = desired.entries.find(({ parentEventId }) => parentEventId === null);
-        if (root === undefined) throw new Error("A replayable game requires a root event");
-        push({ kind: "start", baseline: desired.baseline, event: root });
-        effectiveHead = root.id;
-        for (const entry of desired.entries.filter(({ id }) => id !== root.id)) {
-          push({ kind: "append-event", event: entry });
-          effectiveHead = entry.id;
-        }
-      }
-    } else if (source.baseline !== null) {
-      const knownIds = new Set(source.entries.map(({ id }) => id));
-      for (const entry of desired.entries.filter(({ id }) => !knownIds.has(id))) {
-        push({ kind: "append-event", event: entry });
-        effectiveHead = entry.id;
-      }
-    }
-
-    if (desired.headEventId !== null && desired.headEventId !== effectiveHead) {
-      const reason =
-        desired.resetReturnEventId !== null
-          ? "reset"
-          : source.resetReturnEventId !== null && desired.headEventId === source.resetReturnEventId
-            ? "restore-reset"
-            : "undo";
-      restoresCompletion = reason === "restore-reset";
-      push({ kind: "move-head", targetEventId: desired.headEventId, reason });
-    }
-    if (source.results === null && desired.results !== null && !restoresCompletion) {
-      push({ kind: "complete", results: desired.results });
-    }
+        baseRevision: source.revision + retainedOutbox.length,
+        state,
+        results,
+      },
+    ];
 
     this.envelope = {
       ...source,
       gameId,
       name,
       metadata: desired.metadata,
+      game: desired.materializedGame,
+      undoBudget: desired.undoBudget,
       baseline: desired.baseline,
       entries: desired.entries,
       headEventId: desired.headEventId,
@@ -1079,24 +1073,40 @@ export class GameSessionOutbox {
     this.flushPromise = null;
     const desired = desiredSession(name, state, results);
     validateDesiredReplay(gameId, desired);
+    const entries = activePrefix(desired.entries, desired.headEventId);
+    const migrated =
+      desired.resetReturnEventId !== null || entries.length !== desired.entries.length;
+    const restoredState: GameSessionState = {
+      ...state,
+      game: desired.materializedGame,
+      undoBudget: desired.undoBudget,
+      initialGame: desired.baseline,
+      events: entries,
+      headEventId: desired.headEventId,
+      resetReturnEventId: null,
+    };
     this.envelope = {
       version: 4,
       gameId,
       revision,
       name,
       metadata: desired.metadata,
+      game: desired.materializedGame,
+      undoBudget: desired.undoBudget,
       baseline: desired.baseline,
-      entries: desired.entries,
+      entries,
       headEventId: desired.headEventId,
-      resetReturnEventId: desired.resetReturnEventId,
+      resetReturnEventId: null,
       results,
-      outbox: desired.normalize
+      outbox: migrated
         ? [
             {
-              kind: "normalize",
+              kind: "snapshot",
               name,
               mutationId: this.options.createId(),
               baseRevision: revision,
+              state: restoredState,
+              results,
             },
           ]
         : [],
@@ -1293,37 +1303,33 @@ export class GameSessionOutbox {
           const current = legacy.current;
           if (current === null) throw new Error("Legacy session metadata is missing");
           const desired = desiredSession(current.name, current.state, current.results);
-          const normalizationOperation =
-            legacy.gameId === null
-              ? undefined
-              : (legacy.normalizationOperation ?? {
-                  kind: "normalize" as const,
-                  name: desired.name,
-                  mutationId: this.options.createId(),
-                  baseRevision: legacy.revision,
-                });
-          if (
-            normalizationOperation !== undefined &&
-            legacy.normalizationOperation === undefined &&
-            this.migratingLegacyKey !== null
-          ) {
-            this.options.storage.setItem(
-              this.migratingLegacyKey,
-              JSON.stringify({ ...legacy, normalizationOperation }),
-            );
-          }
+          const state = currentFromDesired(desired).state;
           this.envelope = {
             version: 4,
             gameId: legacy.gameId,
             revision: legacy.revision,
             name: desired.name,
             metadata: desired.metadata,
+            game: desired.materializedGame,
+            undoBudget: desired.undoBudget,
             baseline: desired.baseline,
             entries: desired.entries,
             headEventId: desired.headEventId,
-            resetReturnEventId: desired.resetReturnEventId,
+            resetReturnEventId: null,
             results: desired.results,
-            outbox: legacy.gameId === null ? [] : [normalizationOperation!],
+            outbox:
+              legacy.gameId === null
+                ? []
+                : [
+                    {
+                      kind: "snapshot",
+                      name: desired.name,
+                      mutationId: this.options.createId(),
+                      baseRevision: legacy.revision,
+                      state,
+                      results: desired.results,
+                    },
+                  ],
             failed: false,
             clearFailed: legacy.clearFailed,
             clearingGameId: legacy.clearingGameId,
@@ -1367,6 +1373,43 @@ export class GameSessionOutbox {
             durableIndex === -1
               ? durable.outbox
               : durable.outbox.filter((_, index) => index !== durableIndex);
+          const duplicateSnapshotMismatch =
+            mutation.kind === "snapshot" &&
+            response.duplicate &&
+            response.state !== undefined &&
+            response.results !== undefined &&
+            durableIndex !== -1 &&
+            remainingOutbox.length === 0 &&
+            !sameCurrent(
+              {
+                name: response.name ?? mutation.name,
+                state: response.state,
+                results: response.results,
+              },
+              { name: mutation.name, state: mutation.state, results: mutation.results },
+            );
+          if (duplicateSnapshotMismatch) {
+            const retriedName =
+              canonicalName === undefined || canonicalName === "" ? mutation.name : canonicalName;
+            const replacement: GameSessionOperation = {
+              ...mutation,
+              name: retriedName,
+              mutationId: this.options.createId(),
+              baseRevision: response.revision,
+            };
+            this.envelope = {
+              ...durable,
+              revision: Math.max(durable.revision, response.revision),
+              name: durable.name,
+              outbox: durable.outbox.map((queued, index) =>
+                index === durableIndex ? replacement : queued,
+              ),
+              failed: false,
+            };
+            activeMutation = null;
+            this.persist();
+            continue;
+          }
           const isCurrentDuplicateHead =
             mutation.kind === "move-head" &&
             response.duplicate &&
@@ -1376,7 +1419,11 @@ export class GameSessionOutbox {
             response.results !== undefined &&
             durableIndex !== -1 &&
             remainingOutbox.length === 0;
-          if (response.revision !== mutation.baseRevision + 1 && !isCurrentDuplicateHead) {
+          if (
+            mutation.kind !== "snapshot" &&
+            response.revision !== mutation.baseRevision + 1 &&
+            !isCurrentDuplicateHead
+          ) {
             throw new Error("Unexpected game session revision");
           }
           const normalized = (() => {

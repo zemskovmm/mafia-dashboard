@@ -11,7 +11,6 @@ import userEvent from "@testing-library/user-event";
 import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  createGameLogEntry,
   replayGameLog,
   resolveMafiaShots,
   toggleAllMafiaShotsForTarget,
@@ -1060,7 +1059,7 @@ describe("developer menu", () => {
 
     await screen.findByText("Game fouls 0");
     expect(confirm).toHaveBeenLastCalledWith(
-      "Reset the active game to log #1? 1 later active action will leave the current branch. Their history will be preserved.",
+      "Reset the active game to log #1? 1 later action will be permanently deleted.",
     );
   });
 
@@ -1097,7 +1096,12 @@ describe("developer menu", () => {
     await waitFor(() =>
       expect(api.saveGameSession).toHaveBeenCalledWith(
         expect.any(String),
-        expect.objectContaining({ kind: "append-event" }),
+        expect.objectContaining({
+          kind: "snapshot",
+          state: expect.objectContaining({
+            events: expect.arrayContaining([expect.objectContaining({ type: "foul.issued" })]),
+          }),
+        }),
         testClub.id,
       ),
     );
@@ -1955,19 +1959,19 @@ describe("authoritative game session lifecycle", () => {
       expect.objectContaining({
         mutationId: expect.stringMatching(/^[0-9a-f-]{36}$/),
         baseRevision: 0,
-        kind: "metadata",
-        metadata: expect.objectContaining({
+        kind: "snapshot",
+        state: expect.objectContaining({
           setup: expect.objectContaining({ step: "music" }),
           hostPlayerId,
           hostName: "Host Player",
-          legacyLog: [],
+          log: [],
         }),
       }),
       testClub.id,
     );
   });
 
-  it("keeps intermediate turns in memory and reloads the latest meaningful checkpoint", async () => {
+  it("persists the complete browser state after an intermediate turn without adding a semantic event", async () => {
     const user = userEvent.setup();
     const firstRender = render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
@@ -1976,17 +1980,30 @@ describe("authoritative game session lifecycle", () => {
 
     await user.click(screen.getByRole("button", { name: "Record game action" }));
     expect(screen.getByText("Game turn 1")).toBeInTheDocument();
-    await act(async () => Promise.resolve());
-    expect(api.saveGameSession).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(api.saveGameSession).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({
+          kind: "snapshot",
+          state: expect.objectContaining({
+            game: expect.objectContaining({ currentTurnIndex: 1 }),
+          }),
+        }),
+        testClub.id,
+      ),
+    );
     expect(
       JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
-    ).toMatchObject({ entries: [expect.objectContaining({ type: "game.checkpointed" })] });
+    ).toMatchObject({
+      game: expect.objectContaining({ currentTurnIndex: 1 }),
+      entries: [expect.objectContaining({ type: "game.checkpointed" })],
+    });
     await user.click(screen.getByRole("button", { name: "Open game log" }));
     expect(screen.queryByText("turn.completed")).toBeNull();
 
     firstRender.unmount();
     render(<App />);
-    expect(screen.getByText("Game turn 0")).toBeInTheDocument();
+    expect(screen.getByText("Game turn 1")).toBeInTheDocument();
   });
 
   it("persists a day-one nominee and folds omitted turns into the Mafia shot checkpoint", async () => {
@@ -2001,8 +2018,10 @@ describe("authoritative game session lifecycle", () => {
       expect(api.saveGameSession).toHaveBeenCalledWith(
         expect.any(String),
         expect.objectContaining({
-          kind: "append-event",
-          event: expect.objectContaining({ type: "player.nominated" }),
+          kind: "snapshot",
+          state: expect.objectContaining({
+            events: expect.arrayContaining([expect.objectContaining({ type: "player.nominated" })]),
+          }),
         }),
         testClub.id,
       ),
@@ -2035,8 +2054,12 @@ describe("authoritative game session lifecycle", () => {
       expect(api.saveGameSession).toHaveBeenCalledWith(
         expect.any(String),
         expect.objectContaining({
-          kind: "append-event",
-          event: expect.objectContaining({ type: "mafia.shots-resolved" }),
+          kind: "snapshot",
+          state: expect.objectContaining({
+            events: expect.arrayContaining([
+              expect.objectContaining({ type: "mafia.shots-resolved" }),
+            ]),
+          }),
         }),
         testClub.id,
       ),
@@ -2098,7 +2121,7 @@ describe("authoritative game session lifecycle", () => {
     expect(gameScreenHarness.liveGame?.voteAssignments).toEqual({ 1: 4 });
   });
 
-  it("persists one baseline plus meaningful incremental checkpoints without game snapshots", async () => {
+  it("persists a full game snapshot alongside semantic Log and Timeline events", async () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
@@ -2110,19 +2133,26 @@ describe("authoritative game session lifecycle", () => {
     await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledOnce());
     const operation = api.saveGameSession.mock.calls[0]?.[1];
     expect(operation).toMatchObject({
-      kind: "append-event",
-      event: expect.objectContaining({
-        type: "foul.issued",
-        payload: { seat: 1, foulNumber: 1, redCarded: false },
+      kind: "snapshot",
+      state: expect.objectContaining({
+        game: expect.objectContaining({
+          players: expect.arrayContaining([expect.objectContaining({ seat: 1, fouls: 1 })]),
+        }),
+        events: [
+          expect.objectContaining({ type: "game.checkpointed" }),
+          expect.objectContaining({
+            type: "foul.issued",
+            payload: { seat: 1, foulNumber: 1, redCarded: false },
+          }),
+        ],
       }),
     });
-    expect(operation).not.toHaveProperty("state");
-    expect(operation).not.toHaveProperty("events");
-    expect(operation).not.toHaveProperty("log");
-    expect(operation).not.toHaveProperty("undoHistory");
     expect(
       JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
     ).toMatchObject({
+      game: expect.objectContaining({
+        players: expect.arrayContaining([expect.objectContaining({ seat: 1, fouls: 1 })]),
+      }),
       baseline: expect.objectContaining({
         replayVersion: 1,
         game: expect.objectContaining({ currentTurnIndex: 0, day: 1 }),
@@ -2137,7 +2167,7 @@ describe("authoritative game session lifecycle", () => {
     });
   });
 
-  it("previews a Log state without mutation and resets by moving the active head", async () => {
+  it("previews a Log state without mutation and destructively resets the browser snapshot", async () => {
     const user = userEvent.setup();
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     render(<App />);
@@ -2167,11 +2197,12 @@ describe("authoritative game session lifecycle", () => {
     await user.click(screen.getByRole("button", { name: "Reset game to this state" }));
     expect(screen.getByText("Game fouls 0")).toBeInTheDocument();
     expect(confirm).toHaveBeenLastCalledWith(
-      "Reset the active game to log #1? 1 later active action will leave the current branch. Their history will be preserved.",
+      "Reset the active game to log #1? 1 later action will be permanently deleted.",
     );
 
-    await user.click(screen.getByRole("button", { name: /undo last action/i }));
-    expect(screen.getByText("Game fouls 1")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /undo last action/i })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Open game log" }));
+    expect(screen.queryByText("Foul issued")).toBeNull();
   });
 
   it("applies a reset locally while its server operation remains queued", async () => {
@@ -2200,7 +2231,17 @@ describe("authoritative game session lifecycle", () => {
     );
     expect(persisted.headEventId).not.toBe(before.headEventId);
     expect(persisted.outbox).toEqual(
-      expect.arrayContaining([expect.objectContaining({ kind: "move-head" })]),
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "snapshot",
+          state: expect.objectContaining({
+            game: expect.objectContaining({
+              players: expect.arrayContaining([expect.objectContaining({ seat: 1, fouls: 0 })]),
+            }),
+            events: [expect.objectContaining({ type: "game.checkpointed" })],
+          }),
+        }),
+      ]),
     );
     expect(screen.getByRole("button", { name: /^Save failed · retry 1 of 3/ })).toHaveAttribute(
       "data-status",
@@ -2208,7 +2249,7 @@ describe("authoritative game session lifecycle", () => {
     );
   });
 
-  it("replaces an optimistic reset with the authoritative head returned by a duplicate retry", async () => {
+  it("keeps the destructive browser reset when a duplicate response contains older server state", async () => {
     const user = userEvent.setup();
     vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<App />);
@@ -2236,41 +2277,45 @@ describe("authoritative game session lifecycle", () => {
     };
     const authoritativeHead = persisted.entries.at(-1)!;
     const authoritativeGame = replayGameLog(persisted.baseline, persisted.entries).game;
-    api.saveGameSession.mockImplementation(
-      (_gameId: string, operation: { baseRevision: number; kind: string }) =>
-        operation.kind === "move-head"
-          ? Promise.resolve({
-              gameId: persisted.gameId,
-              name: persisted.name,
-              revision: operation.baseRevision + 2,
-              duplicate: true,
-              state: {
-                setup: persisted.metadata.setup,
-                game: authoritativeGame,
-                hostPlayerId: persisted.metadata.hostPlayerId,
-                hostName: persisted.metadata.hostName,
-                playlistId: persisted.metadata.playlistId,
-                log: persisted.metadata.legacyLog,
-                undoHistory: [],
-                initialGame: persisted.baseline,
-                events: persisted.entries,
-                headEventId: authoritativeHead.id,
-                resetReturnEventId: null,
-                legacyLog: persisted.metadata.legacyLog,
-              },
-              results: null,
-            })
-          : Promise.resolve({ revision: operation.baseRevision + 1, duplicate: false }),
-    );
+    api.saveGameSession
+      .mockResolvedValueOnce({
+        gameId: persisted.gameId,
+        name: persisted.name,
+        revision: 8,
+        duplicate: true,
+        state: {
+          setup: persisted.metadata.setup,
+          game: authoritativeGame,
+          hostPlayerId: persisted.metadata.hostPlayerId,
+          hostName: persisted.metadata.hostName,
+          playlistId: persisted.metadata.playlistId,
+          log: persisted.metadata.legacyLog,
+          undoHistory: [],
+          initialGame: persisted.baseline,
+          events: persisted.entries,
+          headEventId: authoritativeHead.id,
+          resetReturnEventId: null,
+          legacyLog: persisted.metadata.legacyLog,
+        },
+        results: null,
+      })
+      .mockImplementation((_gameId: string, operation: { baseRevision: number }) =>
+        Promise.resolve({ revision: operation.baseRevision + 1, duplicate: false }),
+      );
 
     await user.click(screen.getByRole("button", { name: "Open game log" }));
     await user.click(screen.getByRole("button", { name: "Preview state after log #1" }));
     await user.click(screen.getByRole("button", { name: "Reset game to this state" }));
 
-    await waitFor(() => expect(screen.getByText("Game fouls 1")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Game fouls 0")).toBeInTheDocument());
     expect(api.saveGameSession).toHaveBeenCalledWith(
       persisted.gameId,
-      expect.objectContaining({ kind: "move-head", reason: "reset" }),
+      expect.objectContaining({
+        kind: "snapshot",
+        state: expect.objectContaining({
+          events: [expect.objectContaining({ type: "game.checkpointed" })],
+        }),
+      }),
       testClub.id,
     );
   });
@@ -2327,25 +2372,26 @@ describe("authoritative game session lifecycle", () => {
     await user.click(screen.getByRole("button", { name: "Finish test game" }));
     await waitFor(() => expect(api.saveGameSession).toHaveBeenCalled());
     expect(api.saveGameSession.mock.calls.at(-1)?.[1]).toMatchObject({
-      kind: "append-event",
-      event: expect.objectContaining({ phaseAfter: "finished", type: "player.red-carded" }),
+      kind: "snapshot",
+      state: expect.objectContaining({
+        game: expect.objectContaining({ phase: "finished" }),
+        events: expect.arrayContaining([
+          expect.objectContaining({ phaseAfter: "finished", type: "player.red-carded" }),
+        ]),
+      }),
     });
 
     await user.click(screen.getByRole("button", { name: "Finish the game" }));
     await waitFor(() =>
       expect(api.saveGameSession.mock.calls.at(-1)?.[1]).toMatchObject({
-        kind: "complete",
+        kind: "snapshot",
         results: expect.objectContaining({ hostPlayerId, winner: "red" }),
+        state: expect.objectContaining({
+          events: expect.arrayContaining([expect.objectContaining({ type: "game.completed" })]),
+        }),
       }),
     );
-    expect(api.saveGameSession.mock.calls.map(([, saved]) => saved)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          kind: "append-event",
-          event: expect.objectContaining({ type: "game.completed" }),
-        }),
-      ]),
-    );
+    expect(screen.getByRole("button", { name: /undo last action/i })).toBeDisabled();
     expect(await screen.findByRole("button", { name: "Start test game" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Game safely saved" })).not.toBeInTheDocument();
   });
@@ -2374,7 +2420,12 @@ describe("authoritative game session lifecycle", () => {
     expect(screen.getByRole("button", { name: "Game saved offline" })).toBeDisabled();
     expect(
       JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null").outbox,
-    ).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "complete" })]));
+    ).toEqual([
+      expect.objectContaining({
+        kind: "snapshot",
+        results: expect.objectContaining({ hostPlayerId, winner: "red" }),
+      }),
+    ]);
 
     api.saveGameSession.mockImplementation((_gameId: string, operation: { baseRevision: number }) =>
       Promise.resolve({ revision: operation.baseRevision + 1, duplicate: false }),
@@ -2383,7 +2434,9 @@ describe("authoritative game session lifecycle", () => {
 
     expect(await screen.findByRole("button", { name: "Start test game" })).toBeInTheDocument();
     expect(
-      api.saveGameSession.mock.calls.filter(([, operation]) => operation.kind === "complete"),
+      api.saveGameSession.mock.calls.filter(
+        ([, operation]) => operation.kind === "snapshot" && operation.results !== null,
+      ),
     ).toHaveLength(1);
     expect(window.localStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
   });
@@ -2449,17 +2502,7 @@ describe("authoritative game session lifecycle", () => {
     api.getGameSession.mockImplementation((gameId: string) =>
       gameId === sessionAId ? sessionA.promise : sessionB.promise,
     );
-    const normalizedB = normalizedRemoteSession(
-      remoteSession(sessionBId, "Table B", "Host B", 7, 3),
-    );
-    api.saveGameSessionOperation.mockImplementation(
-      (_gameId: string, operation: { baseRevision: number; kind: string }) =>
-        Promise.resolve(
-          operation.kind === "normalize"
-            ? { ...normalizedB, revision: operation.baseRevision + 1 }
-            : { revision: operation.baseRevision + 1, duplicate: false },
-        ),
-    );
+
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await screen.findByRole("button", { name: "Resume Table A" });
@@ -2476,16 +2519,12 @@ describe("authoritative game session lifecycle", () => {
 
     expect(screen.getByText("Host: Host B")).toBeInTheDocument();
     expect(screen.getByText("Game day 3")).toBeInTheDocument();
-    await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledOnce());
-    expect(api.saveGameSession.mock.calls[0]?.[1]).toMatchObject({
-      baseRevision: 7,
-      kind: "normalize",
-    });
+    expect(api.saveGameSession).not.toHaveBeenCalled();
     expect(
       JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
     ).toMatchObject({
       gameId: sessionBId,
-      revision: 8,
+      revision: 7,
       baseline: { game: expect.objectContaining({ day: 3 }) },
       outbox: [],
     });
@@ -2759,32 +2798,6 @@ const remoteSession = (
   results: null,
 });
 
-const normalizedRemoteSession = (session: RemoteGameSession): RemoteGameSession => {
-  const game = session.state.game as GameState | null;
-  if (game === null) throw new Error("A normalization fixture requires a game");
-  const baseline = { replayVersion: 1 as const, game };
-  const started = createGameLogEntry({
-    gameId: session.gameId,
-    id: "00000000-0000-4000-8000-0000000000dd",
-    sequence: 1,
-    parentEventId: null,
-    createdAt: "2026-08-18T09:00:00.000Z",
-    before: game,
-    draft: { type: "game.checkpointed", payload: {} },
-  });
-  return {
-    ...session,
-    state: {
-      ...session.state,
-      game: null,
-      initialGame: baseline,
-      events: [started.entry],
-      headEventId: started.entry.id,
-      resetReturnEventId: null,
-    },
-  };
-};
-
 describe("undo checkpoints", () => {
   it("does not let cursor Undo cross the immutable game baseline", async () => {
     const user = userEvent.setup();
@@ -2832,7 +2845,7 @@ describe("undo checkpoints", () => {
     expect(screen.getByRole("button", { name: /undo last action.*0 available/i })).toBeDisabled();
   });
 
-  it("preserves the pre-reset undo budget across reload and reset return", async () => {
+  it("persists a destructive Reset across reload without a Reset Return action", async () => {
     const user = userEvent.setup();
     vi.spyOn(window, "confirm").mockReturnValue(true);
     const firstRender = render(<App />);
@@ -2854,10 +2867,15 @@ describe("undo checkpoints", () => {
 
     firstRender.unmount();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: /undo last action.*1 available/i }));
-
-    expect(screen.getByText("Game fouls 2")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /undo last action.*2 available/i })).toBeEnabled();
+    expect(screen.getByText("Game fouls 0")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /undo last action.*0 available/i })).toBeDisabled();
+    expect(
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+    ).toMatchObject({
+      resetReturnEventId: null,
+      undoBudget: 0,
+      entries: [expect.objectContaining({ type: "game.checkpointed" })],
+    });
   });
 
   it("retains only three ordinary actions and undo removes matching log state", async () => {
