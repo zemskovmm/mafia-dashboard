@@ -26,6 +26,37 @@ const dropIsolatedPool = async (schemaName: string, pool: Pool): Promise<void> =
   await adminPool.query(`DROP SCHEMA IF EXISTS "${schemaName}" CASCADE`);
 };
 
+interface IsolatedSchema {
+  readonly name: string;
+  readonly pool: Pool;
+}
+
+const withIsolatedSchema = async <T>(
+  prefix: string,
+  run: (schema: IsolatedSchema) => Promise<T>,
+): Promise<T> => {
+  const name = `${prefix}_${randomUUID().replaceAll("-", "")}`;
+  const isolatedPool = await createIsolatedPool(name);
+  let result: { readonly value: T } | undefined;
+  let runError: unknown;
+  try {
+    result = { value: await run({ name, pool: isolatedPool }) };
+  } catch (error) {
+    runError = error;
+  }
+
+  let cleanupError: unknown;
+  try {
+    await dropIsolatedPool(name, isolatedPool);
+  } catch (error) {
+    cleanupError = error;
+  }
+  const errors = [runError, cleanupError].filter((error) => error !== undefined);
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, `Failed ${prefix} fixture and cleanup`);
+  return result!.value;
+};
+
 const constraintDefinitions = async (pool: Pool) =>
   (
     await pool.query<{ table_name: string; definition: string }>(
@@ -43,17 +74,40 @@ const constraintDefinitions = async (pool: Pool) =>
     )
   ).rows;
 
+describe("isolated schema lifecycle", () => {
+  it("cleans the pool and schema when a fixture callback fails", async () => {
+    let fixture: IsolatedSchema | undefined;
+    try {
+      await expect(
+        withIsolatedSchema("cleanup_failure", async (schema) => {
+          fixture = schema;
+          await initializeSchema(schema.pool);
+          throw new Error("fixture callback failed");
+        }),
+      ).rejects.toThrow("fixture callback failed");
+      await expect(
+        adminPool.query<{ schema_name: string | null }>(
+          "SELECT to_regnamespace($1)::text AS schema_name",
+          [fixture!.name],
+        ),
+      ).resolves.toMatchObject({ rows: [{ schema_name: null }] });
+    } finally {
+      if (fixture !== undefined) {
+        await fixture.pool.end().catch(() => undefined);
+        await adminPool.query(`DROP SCHEMA IF EXISTS "${fixture.name}" CASCADE`);
+      }
+    }
+  });
+});
+
 describe("club authorization role migration", () => {
   it("reconciles fresh and populated schemas to manager/user access idempotently", async () => {
-    const freshSchema = `club_roles_fresh_${randomUUID().replaceAll("-", "")}`;
-    const populatedSchema = `club_roles_populated_${randomUUID().replaceAll("-", "")}`;
-    const freshPool = await createIsolatedPool(freshSchema);
-    const populatedPool = await createIsolatedPool(populatedSchema);
-    try {
-      await initializeSchema(freshPool);
-      await initializeSchema(populatedPool);
+    await withIsolatedSchema("club_roles_fresh", async ({ pool: freshPool }) =>
+      withIsolatedSchema("club_roles_populated", async ({ pool: populatedPool }) => {
+        await initializeSchema(freshPool);
+        await initializeSchema(populatedPool);
 
-      await populatedPool.query(`
+        await populatedPool.query(`
         DROP INDEX IF EXISTS club_memberships_access_player_unique_idx;
         ALTER TABLE club_memberships
           DROP CONSTRAINT IF EXISTS club_memberships_access_player_fk;
@@ -80,105 +134,103 @@ describe("club authorization role migration", () => {
           WHERE is_club_manager;
       `);
 
-      const managerId = randomUUID();
-      const managerPlayerId = randomUUID();
-      await populatedPool.query(
-        `INSERT INTO users (id, email, display_name)
+        const managerId = randomUUID();
+        const managerPlayerId = randomUUID();
+        await populatedPool.query(
+          `INSERT INTO users (id, email, display_name)
          VALUES ($1, $2, 'Legacy editor')`,
-        [managerId, `legacy-editor-${managerId}@example.test`],
-      );
-      await populatedPool.query(
-        `INSERT INTO players
+          [managerId, `legacy-editor-${managerId}@example.test`],
+        );
+        await populatedPool.query(
+          `INSERT INTO players
            (id, club_id, nickname, first_name, last_name, email,
             data_processing_consent, consent_at, is_club_manager, user_id)
          VALUES ($1, $2, 'Legacy editor', 'Legacy', 'Editor', $3,
                  TRUE, NOW(), TRUE, $4)`,
-        [managerPlayerId, DEFAULT_CLUB_ID, `legacy-editor-${managerId}@example.test`, managerId],
-      );
-      await populatedPool.query(
-        `INSERT INTO club_memberships (club_id, user_id, role, manager_player_id)
+          [managerPlayerId, DEFAULT_CLUB_ID, `legacy-editor-${managerId}@example.test`, managerId],
+        );
+        await populatedPool.query(
+          `INSERT INTO club_memberships (club_id, user_id, role, manager_player_id)
          VALUES ($1, $2, 'editor', $3)`,
-        [DEFAULT_CLUB_ID, managerId, managerPlayerId],
-      );
+          [DEFAULT_CLUB_ID, managerId, managerPlayerId],
+        );
 
-      await initializeSchema(populatedPool);
-      const regularUserId = randomUUID();
-      await populatedPool.query(
-        "INSERT INTO users (id, email, display_name) VALUES ($1, $2, 'Regular user')",
-        [regularUserId, `regular-${regularUserId}@example.test`],
-      );
-      await populatedPool.query(
-        "INSERT INTO club_memberships (club_id, user_id, role) VALUES ($1, $2, 'user')",
-        [DEFAULT_CLUB_ID, regularUserId],
-      );
-      await initializeSchema(populatedPool);
-      await expect(
-        populatedPool.query(
-          "SELECT role FROM club_memberships WHERE club_id = $1 AND user_id = $2",
+        await initializeSchema(populatedPool);
+        const regularUserId = randomUUID();
+        await populatedPool.query(
+          "INSERT INTO users (id, email, display_name) VALUES ($1, $2, 'Regular user')",
+          [regularUserId, `regular-${regularUserId}@example.test`],
+        );
+        await populatedPool.query(
+          "INSERT INTO club_memberships (club_id, user_id, role) VALUES ($1, $2, 'user')",
           [DEFAULT_CLUB_ID, regularUserId],
-        ),
-      ).resolves.toMatchObject({ rows: [{ role: "user" }] });
-
-      for (const pool of [freshPool, populatedPool]) {
+        );
+        await initializeSchema(populatedPool);
         await expect(
-          pool.query(
-            `SELECT pg_get_constraintdef(oid) AS definition
+          populatedPool.query(
+            "SELECT role FROM club_memberships WHERE club_id = $1 AND user_id = $2",
+            [DEFAULT_CLUB_ID, regularUserId],
+          ),
+        ).resolves.toMatchObject({ rows: [{ role: "user" }] });
+
+        for (const pool of [freshPool, populatedPool]) {
+          await expect(
+            pool.query(
+              `SELECT pg_get_constraintdef(oid) AS definition
                FROM pg_constraint
               WHERE conrelid = 'club_memberships'::regclass
                 AND conname = 'club_memberships_role_ck'`,
-          ),
-        ).resolves.toMatchObject({
-          rows: [{ definition: expect.stringMatching(/manager.*user|user.*manager/) }],
-        });
-        await expect(
-          pool.query(
-            `SELECT column_name
+            ),
+          ).resolves.toMatchObject({
+            rows: [{ definition: expect.stringMatching(/manager.*user|user.*manager/) }],
+          });
+          await expect(
+            pool.query(
+              `SELECT column_name
                FROM information_schema.columns
               WHERE table_schema = current_schema()
                 AND table_name = 'players'
                 AND column_name IN ('club_access', 'is_club_manager')
               ORDER BY column_name`,
-          ),
-        ).resolves.toMatchObject({ rows: [{ column_name: "club_access" }] });
-        await expect(
-          pool.query(
-            `SELECT column_name
+            ),
+          ).resolves.toMatchObject({ rows: [{ column_name: "club_access" }] });
+          await expect(
+            pool.query(
+              `SELECT column_name
                FROM information_schema.columns
               WHERE table_schema = current_schema()
                 AND table_name = 'club_memberships'
                 AND column_name IN ('access_player_id', 'manager_player_id')
               ORDER BY column_name`,
-          ),
-        ).resolves.toMatchObject({ rows: [{ column_name: "access_player_id" }] });
-      }
+            ),
+          ).resolves.toMatchObject({ rows: [{ column_name: "access_player_id" }] });
+        }
 
-      await expect(
-        populatedPool.query(
-          `SELECT membership.role, membership.access_player_id, player.club_access
+        await expect(
+          populatedPool.query(
+            `SELECT membership.role, membership.access_player_id, player.club_access
              FROM club_memberships AS membership
              JOIN players AS player ON player.id = membership.access_player_id
             WHERE membership.club_id = $1 AND membership.user_id = $2`,
-          [DEFAULT_CLUB_ID, managerId],
-        ),
-      ).resolves.toMatchObject({
-        rows: [
-          {
-            role: "manager",
-            access_player_id: managerPlayerId,
-            club_access: "manager",
-          },
-        ],
-      });
-      await expect(
-        populatedPool.query(
-          "SELECT role FROM club_memberships WHERE club_id = $1 AND user_id = $2",
-          [DEFAULT_CLUB_ID, legacyOwnerId],
-        ),
-      ).resolves.toMatchObject({ rows: [{ role: "manager" }] });
-    } finally {
-      await dropIsolatedPool(freshSchema, freshPool);
-      await dropIsolatedPool(populatedSchema, populatedPool);
-    }
+            [DEFAULT_CLUB_ID, managerId],
+          ),
+        ).resolves.toMatchObject({
+          rows: [
+            {
+              role: "manager",
+              access_player_id: managerPlayerId,
+              club_access: "manager",
+            },
+          ],
+        });
+        await expect(
+          populatedPool.query(
+            "SELECT role FROM club_memberships WHERE club_id = $1 AND user_id = $2",
+            [DEFAULT_CLUB_ID, legacyOwnerId],
+          ),
+        ).resolves.toMatchObject({ rows: [{ role: "manager" }] });
+      }),
+    );
   });
 
   it("preserves canonical access constraint identities across repeated initialization", async () => {
@@ -265,13 +317,10 @@ describe("club authorization role migration", () => {
 
 describe("club language schema migration", () => {
   it("adds a constrained English default to fresh and populated schemas idempotently", async () => {
-    const freshSchema = `club_language_fresh_${randomUUID().replaceAll("-", "")}`;
-    const legacySchema = `club_language_legacy_${randomUUID().replaceAll("-", "")}`;
-    const freshPool = await createIsolatedPool(freshSchema);
-    const legacyPool = await createIsolatedPool(legacySchema);
-    try {
-      await initializeSchema(freshPool);
-      await legacyPool.query(`
+    await withIsolatedSchema("club_language_fresh", async ({ pool: freshPool }) =>
+      withIsolatedSchema("club_language_legacy", async ({ pool: legacyPool }) => {
+        await initializeSchema(freshPool);
+        await legacyPool.query(`
         CREATE TABLE users (
           id UUID PRIMARY KEY,
           email TEXT NOT NULL UNIQUE,
@@ -288,76 +337,74 @@ describe("club language schema migration", () => {
           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
       `);
-      const legacyUserId = randomUUID();
-      const legacyClubId = randomUUID();
-      await legacyPool.query(
-        `INSERT INTO users (id, email, display_name) VALUES ($1, $2, 'Legacy owner')`,
-        [legacyUserId, `legacy-${randomUUID()}@example.test`],
-      );
-      await legacyPool.query(
-        `INSERT INTO clubs (id, name, city, created_by)
+        const legacyUserId = randomUUID();
+        const legacyClubId = randomUUID();
+        await legacyPool.query(
+          `INSERT INTO users (id, email, display_name) VALUES ($1, $2, 'Legacy owner')`,
+          [legacyUserId, `legacy-${randomUUID()}@example.test`],
+        );
+        await legacyPool.query(
+          `INSERT INTO clubs (id, name, city, created_by)
          VALUES ($1, 'Legacy club', 'Málaga', $2)`,
-        [legacyClubId, legacyUserId],
-      );
+          [legacyClubId, legacyUserId],
+        );
 
-      await initializeSchema(legacyPool);
-      const partialClubId = randomUUID();
-      await legacyPool.query(`
+        await initializeSchema(legacyPool);
+        const partialClubId = randomUUID();
+        await legacyPool.query(`
         ALTER TABLE clubs ALTER COLUMN language_code DROP NOT NULL;
         ALTER TABLE clubs ALTER COLUMN language_code DROP DEFAULT;
       `);
-      await legacyPool.query(
-        `INSERT INTO clubs (id, name, city, created_by, language_code)
+        await legacyPool.query(
+          `INSERT INTO clubs (id, name, city, created_by, language_code)
          VALUES ($1, 'Partial migration club', 'Granada', $2, NULL)`,
-        [partialClubId, legacyUserId],
-      );
-      await initializeSchema(legacyPool);
+          [partialClubId, legacyUserId],
+        );
+        await initializeSchema(legacyPool);
 
-      for (const pool of [freshPool, legacyPool]) {
-        await expect(
-          pool.query(
-            `SELECT data_type, is_nullable, column_default
+        for (const pool of [freshPool, legacyPool]) {
+          await expect(
+            pool.query(
+              `SELECT data_type, is_nullable, column_default
                FROM information_schema.columns
               WHERE table_schema = current_schema()
                 AND table_name = 'clubs'
                 AND column_name = 'language_code'`,
-          ),
-        ).resolves.toMatchObject({
-          rows: [{ data_type: "text", is_nullable: "NO", column_default: "'en'::text" }],
-        });
-        await expect(
-          pool.query(
-            `SELECT pg_get_constraintdef(oid) AS definition
+            ),
+          ).resolves.toMatchObject({
+            rows: [{ data_type: "text", is_nullable: "NO", column_default: "'en'::text" }],
+          });
+          await expect(
+            pool.query(
+              `SELECT pg_get_constraintdef(oid) AS definition
                FROM pg_constraint
               WHERE conrelid = 'clubs'::regclass
                 AND conname = 'clubs_language_code_ck'`,
-          ),
+            ),
+          ).resolves.toMatchObject({
+            rows: [
+              {
+                definition: expect.stringContaining("language_code"),
+              },
+            ],
+          });
+        }
+        await expect(
+          legacyPool.query("SELECT id, language_code FROM clubs WHERE id IN ($1, $2) ORDER BY id", [
+            legacyClubId,
+            partialClubId,
+          ]),
         ).resolves.toMatchObject({
-          rows: [
-            {
-              definition: expect.stringContaining("language_code"),
-            },
-          ],
+          rows: expect.arrayContaining([
+            { id: legacyClubId, language_code: "en" },
+            { id: partialClubId, language_code: "en" },
+          ]),
         });
-      }
-      await expect(
-        legacyPool.query("SELECT id, language_code FROM clubs WHERE id IN ($1, $2) ORDER BY id", [
-          legacyClubId,
-          partialClubId,
-        ]),
-      ).resolves.toMatchObject({
-        rows: expect.arrayContaining([
-          { id: legacyClubId, language_code: "en" },
-          { id: partialClubId, language_code: "en" },
-        ]),
-      });
-      await expect(
-        legacyPool.query("UPDATE clubs SET language_code = 'es' WHERE id = $1", [legacyClubId]),
-      ).rejects.toMatchObject({ constraint: "clubs_language_code_ck" });
-    } finally {
-      await dropIsolatedPool(freshSchema, freshPool);
-      await dropIsolatedPool(legacySchema, legacyPool);
-    }
+        await expect(
+          legacyPool.query("UPDATE clubs SET language_code = 'es' WHERE id = $1", [legacyClubId]),
+        ).rejects.toMatchObject({ constraint: "clubs_language_code_ck" });
+      }),
+    );
   });
 });
 
@@ -687,12 +734,19 @@ describe("replay metadata constraint migration", () => {
   });
 });
 
-describe("tenant-composite game schema migration", () => {
-  it("migrates fresh and populated legacy schemas idempotently without losing replay rows", async () => {
-    const schemaName = `tenant_game_keys_${randomUUID().replaceAll("-", "")}`;
-    const isolatedPool = await createIsolatedPool(schemaName);
-    try {
-      await initializeSchema(isolatedPool);
+type TenantMigrationConcern =
+  | "composite-keys"
+  | "consent-provenance"
+  | "owner-backfill"
+  | "replay-retention"
+  | "cross-club-collisions";
+
+const verifyTenantMigrationConcern = async (concern: TenantMigrationConcern): Promise<void> => {
+  const schemaName = `tenant_game_keys_${randomUUID().replaceAll("-", "")}`;
+  const isolatedPool = await createIsolatedPool(schemaName);
+  try {
+    await initializeSchema(isolatedPool);
+    if (concern === "composite-keys") {
       expect(await constraintDefinitions(isolatedPool)).toEqual(
         expect.arrayContaining([
           { table_name: "deleted_games", definition: "PRIMARY KEY (club_id, game_id)" },
@@ -715,8 +769,9 @@ describe("tenant-composite game schema migration", () => {
           },
         ]),
       );
+    }
 
-      await isolatedPool.query(`
+    await isolatedPool.query(`
         DROP INDEX IF EXISTS club_memberships_manager_player_unique_idx;
         DROP INDEX IF EXISTS club_memberships_access_player_unique_idx;
         ALTER TABLE club_memberships
@@ -749,7 +804,7 @@ describe("tenant-composite game schema migration", () => {
         ALTER TABLE players DROP COLUMN IF EXISTS club_access;
       `);
 
-      await isolatedPool.query(`
+    await isolatedPool.query(`
         ALTER TABLE game_session_mutations DROP CONSTRAINT game_session_mutations_game_fk;
         ALTER TABLE game_session_players DROP CONSTRAINT game_session_players_game_fk;
         ALTER TABLE game_session_players DROP CONSTRAINT game_session_players_player_fk;
@@ -799,44 +854,44 @@ describe("tenant-composite game schema migration", () => {
             FOREIGN KEY (player_id) REFERENCES players (id) ON DELETE RESTRICT;
       `);
 
-      const gameId = randomUUID();
-      const deletedGameId = randomUUID();
-      const mutationId = randomUUID();
-      const playerId = randomUUID();
-      const laterMatchingPlayerId = randomUUID();
-      const backfilledOwnerUserId = randomUUID();
-      const backfilledOwnerClubId = randomUUID();
-      await isolatedPool.query(
-        `INSERT INTO players
+    const gameId = randomUUID();
+    const deletedGameId = randomUUID();
+    const mutationId = randomUUID();
+    const playerId = randomUUID();
+    const laterMatchingPlayerId = randomUUID();
+    const backfilledOwnerUserId = randomUUID();
+    const backfilledOwnerClubId = randomUUID();
+    await isolatedPool.query(
+      `INSERT INTO players
            (id, club_id, nickname, first_name, last_name, email,
             data_processing_consent, consent_at, created_at, updated_at)
          VALUES ($1, $2, 'Legacy player', 'Legacy', 'Owner',
                  ' OWNER@MAFIAMALAGA.ES ', TRUE, '2026-08-18T07:00:00Z',
                  '2026-08-18T07:00:00Z', '2026-08-18T07:00:00Z')`,
-        [playerId, DEFAULT_CLUB_ID],
-      );
-      await isolatedPool.query(
-        `INSERT INTO players
+      [playerId, DEFAULT_CLUB_ID],
+    );
+    await isolatedPool.query(
+      `INSERT INTO players
            (id, club_id, nickname, first_name, last_name, email,
             data_processing_consent, consent_at, created_at, updated_at)
          VALUES ($1, $2, 'Later matching player', 'Later', 'Match',
                  'owner@mafiamalaga.es', TRUE, '2026-08-18T08:00:00Z',
                  '2026-08-18T08:00:00Z', '2026-08-18T08:00:00Z')`,
-        [laterMatchingPlayerId, DEFAULT_CLUB_ID],
-      );
-      await isolatedPool.query(
-        `INSERT INTO users (id, email, display_name, created_at, updated_at)
+      [laterMatchingPlayerId, DEFAULT_CLUB_ID],
+    );
+    await isolatedPool.query(
+      `INSERT INTO users (id, email, display_name, created_at, updated_at)
          VALUES ($1, 'backfill.owner@example.test', 'Ada Lovelace Byron',
                  '2026-08-18T06:00:00Z', '2026-08-18T06:00:00Z')`,
-        [backfilledOwnerUserId],
-      );
-      await isolatedPool.query(
-        `INSERT INTO clubs (id, name, city, created_by, created_at, updated_at)
+      [backfilledOwnerUserId],
+    );
+    await isolatedPool.query(
+      `INSERT INTO clubs (id, name, city, created_by, created_at, updated_at)
          VALUES ($1, 'Owner backfill club', 'London', $2,
                  '2026-08-18T06:30:00Z', '2026-08-18T06:30:00Z')`,
-        [backfilledOwnerClubId, backfilledOwnerUserId],
-      );
-      await isolatedPool.query(`
+      [backfilledOwnerClubId, backfilledOwnerUserId],
+    );
+    await isolatedPool.query(`
         ALTER TABLE club_memberships ADD COLUMN manager_player_id UUID NULL;
         ALTER TABLE club_memberships
           ADD CONSTRAINT club_memberships_manager_player_fk
@@ -849,63 +904,64 @@ describe("tenant-composite game schema migration", () => {
           ON club_memberships (manager_player_id)
           WHERE manager_player_id IS NOT NULL;
       `);
-      await isolatedPool.query(
-        `INSERT INTO club_memberships (club_id, user_id, role, manager_player_id)
+    await isolatedPool.query(
+      `INSERT INTO club_memberships (club_id, user_id, role, manager_player_id)
          VALUES ($1, $2, 'editor', $3)`,
-        [backfilledOwnerClubId, legacyOwnerId, playerId],
-      );
-      await isolatedPool.query(
-        `INSERT INTO game_sessions
+      [backfilledOwnerClubId, legacyOwnerId, playerId],
+    );
+    await isolatedPool.query(
+      `INSERT INTO game_sessions
            (id, club_id, name, revision, last_mutation_id, state, status)
          VALUES ($1, $2, 'Legacy populated session', 1, $3, '{}'::jsonb, 'active')`,
-        [gameId, DEFAULT_CLUB_ID, mutationId],
-      );
-      await isolatedPool.query(
-        `INSERT INTO game_session_mutations (game_id, mutation_id, revision, request)
+      [gameId, DEFAULT_CLUB_ID, mutationId],
+    );
+    await isolatedPool.query(
+      `INSERT INTO game_session_mutations (game_id, mutation_id, revision, request)
          VALUES ($1, $2, 1, '{}'::jsonb)`,
-        [gameId, mutationId],
-      );
-      await isolatedPool.query(
-        `INSERT INTO game_session_players (game_id, player_id, seat, is_host)
+      [gameId, mutationId],
+    );
+    await isolatedPool.query(
+      `INSERT INTO game_session_players (game_id, player_id, seat, is_host)
          VALUES ($1, $2, NULL, TRUE)`,
-        [gameId, playerId],
-      );
-      await isolatedPool.query(
-        `INSERT INTO game_results (game_id, club_id, winner, played_at, host_player_id)
+      [gameId, playerId],
+    );
+    await isolatedPool.query(
+      `INSERT INTO game_results (game_id, club_id, winner, played_at, host_player_id)
          VALUES ($1, $2, 'red', '2026-08-18T08:00:00Z', $3)`,
-        [gameId, DEFAULT_CLUB_ID, playerId],
-      );
-      await isolatedPool.query(
-        `INSERT INTO game_player_results
+      [gameId, DEFAULT_CLUB_ID, playerId],
+    );
+    await isolatedPool.query(
+      `INSERT INTO game_player_results
            (game_id, player_id, seat, role, team, final_status, fouls, won)
          VALUES ($1, $2, 1, 'citizen', 'red', 'active', 0, TRUE)`,
-        [gameId, playerId],
-      );
-      await isolatedPool.query("INSERT INTO deleted_games (game_id, club_id) VALUES ($1, $2)", [
-        deletedGameId,
-        DEFAULT_CLUB_ID,
-      ]);
-      await isolatedPool.query(
-        `INSERT INTO game_events
+      [gameId, playerId],
+    );
+    await isolatedPool.query("INSERT INTO deleted_games (game_id, club_id) VALUES ($1, $2)", [
+      deletedGameId,
+      DEFAULT_CLUB_ID,
+    ]);
+    await isolatedPool.query(
+      `INSERT INTO game_events
            (id, club_id, game_id, sequence, idempotency_key, event_type, phase, payload)
          SELECT md5('legacy-replay-' || ordinal::text)::uuid, $1, $2, ordinal,
                 'legacy-' || ordinal::text, 'legacy.replay', 'day',
                 jsonb_build_object('ordinal', ordinal)
            FROM generate_series(1, 89) AS ordinal`,
-        [DEFAULT_CLUB_ID, gameId],
-      );
+      [DEFAULT_CLUB_ID, gameId],
+    );
 
-      await initializeSchema(isolatedPool);
-      const backfilledOwnerCountAfterFirstRun = await isolatedPool.query<{ count: number }>(
-        "SELECT COUNT(*)::int AS count FROM players WHERE club_id = $1",
-        [backfilledOwnerClubId],
-      );
-      await isolatedPool.query(
-        "UPDATE players SET email = 'creator-edited@example.test' WHERE id = $1",
-        [playerId],
-      );
-      await initializeSchema(isolatedPool);
+    await initializeSchema(isolatedPool);
+    const backfilledOwnerCountAfterFirstRun = await isolatedPool.query<{ count: number }>(
+      "SELECT COUNT(*)::int AS count FROM players WHERE club_id = $1",
+      [backfilledOwnerClubId],
+    );
+    await isolatedPool.query(
+      "UPDATE players SET email = 'creator-edited@example.test' WHERE id = $1",
+      [playerId],
+    );
+    await initializeSchema(isolatedPool);
 
+    if (concern === "consent-provenance") {
       const managerColumns = await isolatedPool.query<{
         email: string | null;
         data_processing_consent: boolean;
@@ -1164,7 +1220,9 @@ describe("tenant-composite game schema migration", () => {
           [DEFAULT_CLUB_ID, legacyOwnerId],
         ),
       ).toMatchObject({ rows: [{ role: "manager", access_player_id: null }] });
+    }
 
+    if (concern === "owner-backfill") {
       const backfilledOwners = await isolatedPool.query<{
         id: string;
         nickname: string;
@@ -1214,7 +1272,9 @@ describe("tenant-composite game schema migration", () => {
           [backfilledOwnerClubId, backfilledOwnerUserId],
         ),
       ).toMatchObject({ rows: [{ role: "manager", access_player_id: null }] });
+    }
 
+    if (concern === "replay-retention") {
       expect(
         await isolatedPool.query(
           `SELECT
@@ -1240,7 +1300,9 @@ describe("tenant-composite game schema migration", () => {
           },
         ],
       });
+    }
 
+    if (concern === "cross-club-collisions") {
       const secondClubId = randomUUID();
       const secondPlayerId = randomUUID();
       await isolatedPool.query(
@@ -1306,8 +1368,18 @@ describe("tenant-composite game schema migration", () => {
           },
         ],
       });
-    } finally {
-      await dropIsolatedPool(schemaName, isolatedPool);
     }
-  });
+  } finally {
+    await dropIsolatedPool(schemaName, isolatedPool);
+  }
+};
+
+describe("tenant-composite game schema migration", () => {
+  it.each<{ readonly name: string; readonly concern: TenantMigrationConcern }>([
+    { name: "installs composite tenant keys", concern: "composite-keys" },
+    { name: "preserves manager consent and provenance", concern: "consent-provenance" },
+    { name: "backfills owner profiles idempotently", concern: "owner-backfill" },
+    { name: "retains legacy replay rows", concern: "replay-retention" },
+    { name: "allows cross-club identifier collisions", concern: "cross-club-collisions" },
+  ])("$name", async ({ concern }) => verifyTenantMigrationConcern(concern));
 });

@@ -12,19 +12,22 @@ const databaseUrl =
 const pool = new Pool({ connectionString: databaseUrl });
 const store = new GameSessionStore(pool);
 
-const waitForPlayerLockWaiter = async (): Promise<void> => {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+const waitForPlayerLockWaiter = async (blockerPid: number, attempts = 100): Promise<void> => {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     const waiting = await pool.query(
       `SELECT 1
-         FROM pg_stat_activity
-        WHERE datname = current_database()
-          AND wait_event_type = 'Lock'
-          AND (query LIKE '%UPDATE players AS p%' OR query LIKE '%SELECT id FROM players%')`,
+         FROM pg_stat_activity AS waiter
+        WHERE waiter.datname = current_database()
+          AND waiter.pid <> pg_backend_pid()
+          AND $1 = ANY(pg_blocking_pids(waiter.pid))`,
+      [blockerPid],
     );
     if (waiting.rowCount !== 0) return;
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
-  throw new Error("Timed out waiting for the player projection lock");
+  throw new Error(
+    `Timed out waiting for a player projection lock blocked by backend ${blockerPid}`,
+  );
 };
 
 beforeAll(async () => {
@@ -64,6 +67,38 @@ const legacyHashGameState = (game: unknown): string => {
     hash = Math.imul(hash, 0x01000193);
   }
   return (hash >>> 0).toString(16).padStart(8, "0");
+};
+
+const fixedLegacyGameState = {
+  phase: "day",
+  day: 1,
+  players: [
+    "sheriff",
+    "citizen",
+    "citizen",
+    "citizen",
+    "citizen",
+    "citizen",
+    "citizen",
+    "mafia",
+    "mafia",
+    "don",
+  ].map((role, index) => ({
+    id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    name: `Historical Player ${index + 1}`,
+    seat: index + 1,
+    role,
+    team: index >= 7 ? "black" : "red",
+    status: "active",
+    fouls: 0,
+    mutePending: false,
+  })),
+  turnOrder: Array.from({ length: 10 }, (_, index) => index + 1),
+  currentTurnIndex: 0,
+  nominations: [],
+  voteAssignments: {},
+  shotAssignments: {},
+  winner: null,
 };
 
 const createCompletedSession = async (gameId: string, clubId = DEFAULT_CLUB_ID) => {
@@ -217,6 +252,42 @@ const createStartedDaySessionWithCheckpoints = async (gameId: string, clubId = D
   return { completed, initialGame, started, first, second };
 };
 
+const createValidOperationFixtures = async (gameId: string, clubId: string) => {
+  const completed = await createCompletedSession(gameId, clubId);
+  const game = {
+    ...completed.state.game,
+    phase: "day" as const,
+    day: 1,
+    winner: null,
+    bestMove: undefined,
+    turnOrder: Array.from({ length: 10 }, (_, index) => index + 1),
+    currentTurnIndex: 0,
+  };
+  const initialGame = { replayVersion: 1 as const, game };
+  const root = createGameLogEntry({
+    gameId,
+    id: randomUUID(),
+    sequence: 1,
+    parentEventId: null,
+    createdAt: "2026-08-18T07:59:00.000Z",
+    before: game,
+    draft: { type: "game.checkpointed", payload: {} },
+  });
+  const event = createGameLogEntry({
+    gameId,
+    id: randomUUID(),
+    sequence: 2,
+    parentEventId: root.entry.id,
+    createdAt: "2026-08-18T08:00:00.000Z",
+    before: root.after,
+    draft: {
+      type: "foul.issued",
+      payload: { seat: 1, foulNumber: 1, redCarded: false },
+    },
+  });
+  return { initialGame, root, event, results: completed.results };
+};
+
 const createCanonicalCompletedSession = async (
   gameId: string,
   clubId = DEFAULT_CLUB_ID,
@@ -284,6 +355,10 @@ const createCanonicalCompletedSession = async (
 };
 
 describe("GameSessionStore", () => {
+  it("pins the legacy FNV hash to a fixed historical game snapshot", () => {
+    expect(legacyHashGameState(fixedLegacyGameState)).toBe("3143cd5f");
+  });
+
   it("installs the additive replay reconstruction columns and scoped indexes idempotently", async () => {
     await store.initialize();
 
@@ -1950,6 +2025,7 @@ describe("GameSessionStore", () => {
       ownerConsent: true,
     });
     const gameId = randomUUID();
+    const fixtures = await createValidOperationFixtures(gameId, club.id);
     await store.save({
       clubId: club.id,
       gameId,
@@ -1966,8 +2042,8 @@ describe("GameSessionStore", () => {
         gameId,
         mutationId: randomUUID(),
         baseRevision: 0,
-        initialGame: {} as never,
-        event: {} as never,
+        initialGame: fixtures.initialGame,
+        event: fixtures.root.entry,
       }),
     ).rejects.toMatchObject({
       name: "GameSessionNotFoundError",
@@ -1985,6 +2061,7 @@ describe("GameSessionStore", () => {
       ownerConsent: true,
     });
     const gameId = randomUUID();
+    const fixtures = await createValidOperationFixtures(gameId, club.id);
     await store.save({
       clubId: club.id,
       gameId,
@@ -2002,22 +2079,22 @@ describe("GameSessionStore", () => {
           gameId,
           mutationId: randomUUID(),
           baseRevision: 1,
-          initialGame: {} as never,
-          event: {} as never,
+          initialGame: fixtures.initialGame,
+          event: fixtures.root.entry,
         }),
       () =>
         store.appendEvent({
           gameId,
           mutationId: randomUUID(),
           baseRevision: 1,
-          event: {} as never,
+          event: fixtures.event.entry,
         }),
       () =>
         store.moveHead({
           gameId,
           mutationId: randomUUID(),
           baseRevision: 1,
-          targetEventId: randomUUID(),
+          targetEventId: fixtures.root.entry.id,
           reason: "reset",
         }),
       () =>
@@ -2025,7 +2102,7 @@ describe("GameSessionStore", () => {
           gameId,
           mutationId: randomUUID(),
           baseRevision: 1,
-          results: {} as never,
+          results: fixtures.results,
         }),
     ];
     for (const operation of operations) {
@@ -2822,6 +2899,37 @@ describe("GameSessionStore", () => {
     ]);
   });
 
+  it("does not accept a player waiter blocked by another backend", async () => {
+    const playerId = randomUUID();
+    await pool.query("INSERT INTO players (id, nickname) VALUES ($1, $2)", [
+      playerId,
+      `Unrelated waiter ${playerId}`,
+    ]);
+    const unrelatedBlocker = await pool.connect();
+    const targetBlocker = await pool.connect();
+    let waiter: Promise<unknown> | undefined;
+    try {
+      await unrelatedBlocker.query("BEGIN");
+      await unrelatedBlocker.query("SELECT id FROM players WHERE id = $1 FOR UPDATE", [playerId]);
+      const targetPid = await targetBlocker.query<{ pid: number }>(
+        "SELECT pg_backend_pid() AS pid",
+      );
+      waiter = pool.query(
+        "SELECT id FROM players WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE",
+        [[playerId]],
+      );
+
+      await expect(waitForPlayerLockWaiter(targetPid.rows[0]!.pid, 5)).rejects.toThrow(
+        `Timed out waiting for a player projection lock blocked by backend ${targetPid.rows[0]!.pid}`,
+      );
+    } finally {
+      await unrelatedBlocker.query("ROLLBACK");
+      unrelatedBlocker.release();
+      targetBlocker.release();
+      await waiter;
+    }
+  });
+
   it("recomputes player timestamps after a concurrent result commits", async () => {
     const clearedGameId = randomUUID();
     const completed = await createCompletedSession(clearedGameId);
@@ -2857,8 +2965,9 @@ describe("GameSessionStore", () => {
         [newerGameId, participantId],
       );
 
+      const blockerPid = await blocker.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
       const clearing = store.clear(clearedGameId, 1);
-      await waitForPlayerLockWaiter();
+      await waitForPlayerLockWaiter(blockerPid.rows[0]!.pid);
       await blocker.query("COMMIT");
       committed = true;
       await clearing;
@@ -2900,7 +3009,40 @@ describe("GameSessionStore", () => {
   });
 
   it("lists only active restorable sessions with the latest update first", async () => {
-    await pool.query("UPDATE game_sessions SET updated_at = '2000-01-01T00:00:00Z'");
+    const targetClub = await new ClubStore(pool).create(legacyOwnerId, {
+      name: `Ordered sessions ${randomUUID().slice(0, 8)}`,
+      city: "Granada",
+      headerLogo: null,
+      cardLogo: null,
+      language: "en",
+      ownerConsent: true,
+    });
+    const foreignClub = await new ClubStore(pool).create(legacyOwnerId, {
+      name: `Foreign ordered sessions ${randomUUID().slice(0, 8)}`,
+      city: "Granada",
+      headerLogo: null,
+      cardLogo: null,
+      language: "en",
+      ownerConsent: true,
+    });
+    const foreignId = randomUUID();
+    await store.save({
+      clubId: foreignClub.id,
+      gameId: foreignId,
+      name: "Foreign newer",
+      mutationId: randomUUID(),
+      baseRevision: 0,
+      state: emptyState,
+      results: null,
+    });
+    await pool.query(
+      "UPDATE game_sessions SET updated_at = '2097-01-01T00:00:00Z' WHERE club_id = $1 AND id = $2",
+      [foreignClub.id, foreignId],
+    );
+    const foreignBefore = await pool.query<{ status: string; updated_at: Date }>(
+      "SELECT status, updated_at FROM game_sessions WHERE club_id = $1 AND id = $2",
+      [foreignClub.id, foreignId],
+    );
     const olderId = randomUUID();
     const newerId = randomUUID();
     const completedId = randomUUID();
@@ -2910,6 +3052,7 @@ describe("GameSessionStore", () => {
       [completedId, "Completed"],
     ] as const) {
       await store.save({
+        clubId: targetClub.id,
         gameId,
         name,
         mutationId: randomUUID(),
@@ -2926,17 +3069,24 @@ describe("GameSessionStore", () => {
             ELSE updated_at
           END,
           status = CASE WHEN id = $3 THEN 'completed' ELSE status END
-        WHERE id = ANY($4::uuid[])`,
-      [olderId, newerId, completedId, [olderId, newerId, completedId]],
+        WHERE club_id = $5 AND id = ANY($4::uuid[])`,
+      [olderId, newerId, completedId, [olderId, newerId, completedId], targetClub.id],
     );
 
-    const active = await store.listActive();
+    const active = await store.listActive(targetClub.id);
 
     expect(active.slice(0, 2)).toEqual([
       expect.objectContaining({ gameId: newerId, name: "Newer", hostName: "Newer host" }),
       expect.objectContaining({ gameId: olderId, name: "Older", hostName: "Older host" }),
     ]);
     expect(active.some(({ gameId }) => gameId === completedId)).toBe(false);
+    expect(active.some(({ gameId }) => gameId === foreignId)).toBe(false);
+    await expect(
+      pool.query<{ status: string; updated_at: Date }>(
+        "SELECT status, updated_at FROM game_sessions WHERE club_id = $1 AND id = $2",
+        [foreignClub.id, foreignId],
+      ),
+    ).resolves.toMatchObject({ rows: foreignBefore.rows });
   });
 
   it("keeps active-session query count constant as replay sessions grow", async () => {
