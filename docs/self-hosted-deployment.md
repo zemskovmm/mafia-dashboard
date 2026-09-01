@@ -174,10 +174,16 @@ The named `mafia-postgres` volume survives ordinary container replacement and ap
 docker compose down --volumes
 ```
 
+## PostgreSQL backup and recovery
+
+Configure and prove the production backup before accepting traffic. [`postgresql-backup-and-recovery.md`](postgresql-backup-and-recovery.md) defines the PostgreSQL 17 custom-archive workflow, daily schedule, local/off-server retention, failure-alert integration, isolated semantic restore test, upgrade implications, and disaster-recovery cutover.
+
+The bundled-database workflow uses the profile-gated `compose.postgres-tools.yaml` client service; external databases use the same shell entry points with protected libpq configuration. A successful dump or persistent Docker volume alone is not accepted recovery evidence.
+
 ## Upgrade
 
 1. Record the currently deployed `APP_IMAGE` digest and confirm the application is ready.
-2. Complete the chosen database recovery checkpoint or backup procedure.
+2. Run the documented backup workflow and confirm both the off-server copy and a current restore test.
 3. Set `APP_IMAGE` to the new verified digest.
 4. Pull and start the release:
 
@@ -207,9 +213,10 @@ From a source checkout with Docker running:
 
 ```bash
 npm run verify:compose
+npm run verify:backup
 ```
 
-The script uses a unique Compose project, temporary port, disposable database volume, and throwaway image tag. It verifies the production image build, failed-migration startup blocking, health checks, one-shot and idempotent migrations, clean `SIGTERM` shutdown, automatic application restart after `SIGKILL`, exact accepted-event readback after that crash, and PostgreSQL persistence, then removes its containers, network, volume, and image.
+The Compose verifier uses a unique project, temporary port, disposable database volume, and throwaway image tag. It verifies the production image build, failed-migration startup blocking, health checks, one-shot and idempotent migrations, clean `SIGTERM` shutdown, automatic application restart after `SIGKILL`, exact accepted-event readback after that crash, and PostgreSQL persistence, then removes its containers, network, volume, and image. The backup verifier separately runs a real PostgreSQL 17 custom dump, byte-verified off-server copy, isolated semantic restore, independent readback, failure path, and cleanup.
 
 Run the full repository gate separately:
 

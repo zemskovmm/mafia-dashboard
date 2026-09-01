@@ -301,4 +301,4 @@ Implemented and accepted behavior includes the current 2-second fade-in, 500-mil
 
 One decided requirement remains an implementation gap: Best Move must be a per-club setting enabled by default; current behavior is fixed and has no club-level setting.
 
-The production backup target, method, retention, and restore procedure remain unresolved owner decisions.
+Production recovery uses PostgreSQL custom archives with configurable 14-day local and 30-day off-server retention defaults, daily scheduling, weekly isolated semantic restore tests, and the disaster-recovery procedure in `postgresql-backup-and-recovery.md`. Point-in-time recovery remains outside the single-server baseline.

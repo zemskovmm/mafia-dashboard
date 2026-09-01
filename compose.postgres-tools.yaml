@@ -1,0 +1,25 @@
+services:
+  postgres-tools:
+    image: postgres:17-alpine
+    profiles: [postgres-tools]
+    entrypoint: []
+    command: ["sh", "-c", "echo 'use docker compose run postgres-tools COMMAND' >&2; exit 64"]
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGUSER: ${POSTGRES_USER:-mafia}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      PGDATABASE: ${POSTGRES_DB:-mafia}
+      POSTGRES_MAJOR: 17
+      BACKUP_DIR: /backups/local
+      BACKUP_OFFSITE_DIR: /backups/offsite
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+      BACKUP_OFFSITE_RETENTION_DAYS: ${BACKUP_OFFSITE_RETENTION_DAYS:-30}
+    volumes:
+      - ./scripts:/opt/mafia/scripts:ro
+      - ${BACKUP_LOCAL_DIR:?Set BACKUP_LOCAL_DIR in .env}:/backups/local
+      - ${BACKUP_OFFSITE_DIR:?Set BACKUP_OFFSITE_DIR in .env}:/backups/offsite
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"

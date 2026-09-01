@@ -16,3 +16,4 @@ test-results/
 
 # Local database and container state
 postgres-data/
+backups/

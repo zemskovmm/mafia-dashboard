@@ -431,9 +431,9 @@ Operational requirements:
 - use secure cookies, CSRF protection, rate limiting on authentication, and TLS;
 - export completed games to JSON/CSV for portability.
 
-The implemented Docker Compose and Azure baselines run the schema bundle as a one-shot migration before application traffic. The self-hosted TLS, logging, upgrade, shutdown, and rollback procedures are documented in [`docs/self-hosted-deployment.md`](docs/self-hosted-deployment.md).
+The implemented Docker Compose and Azure baselines run the schema bundle as a one-shot migration before application traffic. The self-hosted TLS, logging, upgrade, shutdown, and rollback procedures are documented in [`docs/self-hosted-deployment.md`](docs/self-hosted-deployment.md). Scheduled PostgreSQL custom archives, off-server retention, semantic restore verification, and disaster recovery are documented in [`docs/postgresql-backup-and-recovery.md`](docs/postgresql-backup-and-recovery.md).
 
-A Docker volume provides persistence but is **not** a backup. The production backup target, method, retention, and restore procedure remain unresolved owner decisions. Whichever approach is chosen MUST protect backup data like the live database and include periodic restore tests.
+A Docker volume provides persistence but is **not** a backup. The production baseline uses daily PostgreSQL custom archives, configurable 14-day local and 30-day off-server retention defaults, weekly isolated semantic restore tests, encrypted/restricted storage, and non-zero failure alerts. This logical backup does not include cluster-global roles or point-in-time recovery.
 
 ## 10. Non-functional acceptance criteria
 
@@ -495,7 +495,7 @@ A Docker volume provides persistence but is **not** a backup. The production bac
 
 ### Unresolved
 
-- **Production backups:** target, method, retention, and restore operations remain undecided. Existing migration safety and deployment rollback requirements still apply independently.
+- **Point-in-time recovery:** the single-server production baseline uses daily logical archives; base backups plus WAL archiving remain a separate decision if a 24-hour recovery-point window is unacceptable.
 
 ## 12. Source comparison and references
 

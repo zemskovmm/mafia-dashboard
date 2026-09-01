@@ -13,6 +13,7 @@ This repository contains the implemented touch-first TypeScript web application,
 - [`docs/adr/0001-typescript-modular-monolith.md`](docs/adr/0001-typescript-modular-monolith.md) — initial SPA/API/PostgreSQL architecture decision.
 - [`docs/azure-deployment.md`](docs/azure-deployment.md) — Azure Container Apps, private PostgreSQL, GitHub OIDC deployment, and rollback runbook.
 - [`docs/self-hosted-deployment.md`](docs/self-hosted-deployment.md) — single-host Docker Compose, one-shot migrations, external TLS, bounded logs, upgrades, and rollback.
+- [`docs/postgresql-backup-and-recovery.md`](docs/postgresql-backup-and-recovery.md) — scheduled PostgreSQL backups, off-server retention, restore verification, and disaster recovery.
 - [`docs/security-and-privacy.md`](docs/security-and-privacy.md) — threat model, security controls, supply-chain gates, verification, and residual risks.
 - [GitHub issues](https://github.com/zemskovmm/mafia-dashboard/issues) — dependency-aware implementation backlog.
 
@@ -60,6 +61,7 @@ npm install
 npm run dev
 npm run check
 npm run verify:compose
+npm run verify:backup
 ```
 
 `npm run dev` applies the idempotent schema migration before starting the server and web watchers. The production Compose stack and Azure deployment instead run the same migration bundle as a one-shot job before the web process starts.
@@ -82,6 +84,6 @@ Server integration tests expect PostgreSQL at `postgresql://mafia:mafia@127.0.0.
 - Server validation of snapshot invariants plus semantic-event parent links and state hashes; PostgreSQL mirrors the last uploaded valid browser snapshot
 - Destructive three-action Undo and Timeline Reset with every new day as a checkpoint; discarded event tails are permanently removed and timer/music controls remain non-durable UI state
 
-The current 2-second fade-in, 500-millisecond quick fade-out, 3-second slow fade-out, faint ten-second warning chime, no-final-speech red-card behavior, and `rules.md` tie conventions are accepted. The initial product must support English and Russian, but the current UI is English-only. Best Move must become a per-club setting enabled by default, but the current flow is not configurable per club. The production backup direction remains unresolved.
+The current 2-second fade-in, 500-millisecond quick fade-out, 3-second slow fade-out, faint ten-second warning chime, no-final-speech red-card behavior, and `rules.md` tie conventions are accepted. The initial product must support English and Russian, but the current UI is English-only. Best Move must become a per-club setting enabled by default, but the current flow is not configurable per club. Production PostgreSQL backups use verified custom archives, independent local/off-server retention, and isolated semantic restore tests.
 
 YouTube Music does not expose a separate embeddable web player API. Account playlist selection uses a separate read-only Google OAuth grant plus the YouTube Data API; playback remains in a visible YouTube IFrame. Application sign-in and YouTube library authorization share the configured Google client but use separate callbacks and separate local session/token storage.
