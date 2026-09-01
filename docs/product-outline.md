@@ -103,17 +103,20 @@ Primary hit targets are at least 48×48 CSS pixels. A destructive action require
 - A seat cannot draw twice; assigned roles and remaining counts are host-private.
 - Continue appears in the center only after all ten seats have one role.
 
-### Step 4 — Mafia negotiation
+### Step 4 — Night zero: Mafia free seating
 
-- The screen changes to a low-glare night state with a prominent `MAFIA NEGOTIATION` phase banner.
-- The center action confirms entry into the stage.
+- The screen changes to a low-glare night state with a prominent `NIGHT ZERO · MAFIA FREE SEATING` phase banner.
+- Mafia establish their target order during free seating; the center action advances to the
+  night-zero Sheriff wake-up.
 - The host uses the `+60` timer control to start negotiation.
 - Starting or stopping the timer is local UI behavior and is not added to the durable game log; timer expiry does not advance the phase automatically.
 
-### Step 5 — Sheriff wake-up
+### Step 5 — Night zero: Sheriff wake-up
 
-- The night screen changes to `SHERIFF — 10 SECONDS`.
+- The night screen changes to `NIGHT ZERO · SHERIFF — 10 SECONDS`.
 - The host starts the 10-second timer.
+- Night zero does not add Don or Sheriff target checks; recorded checks begin in the ordinary
+  nightly sequence after day one.
 - Finishing this step enables **Begin day one**.
 
 ### Step 6 — First day
@@ -207,11 +210,13 @@ Night is a host-private guided sequence.
 ### 11.1 Mafia shots
 
 - The app lists each active Mafia-aligned shooter: both Mafia roles and Don while active.
-- Select a shooter, then tap that shooter’s intended active target.
-- Each active shooter must have exactly one recorded target before resolution.
-- If all active shooters selected the same active target, the target is eliminated.
-- Missing, invalid, or conflicting shots result in a miss and no elimination.
-- Individual shooter choices remain secret; the public log shows only success/miss and the eliminated target when applicable.
+- Select a shooter, then tap that shooter’s intended seated target.
+- Each active shooter may have at most one recorded target when the host resolves the shots.
+- If all active shooters selected the same active target, the target is eliminated; the same
+  selection against an inactive seated player has no effect.
+- Missing or conflicting shots result in a miss and no elimination; unseated targets are rejected.
+- Individual shooter-to-target assignments are retained for replay; the timeline summarizes the
+  collective result and eliminated target when applicable.
 
 ### 11.2 Don check
 

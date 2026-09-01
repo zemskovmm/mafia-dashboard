@@ -102,14 +102,17 @@ describe("night actions", () => {
     ).toBe("eliminated");
   });
 
-  it("records a miss for conflicting shots and rejects missing or duplicate shots", () => {
+  it("records a miss for missing or conflicting shots and rejects duplicate shots", () => {
     let game = beginNight(dayOne());
     const shooters = game.players.filter(({ team }) => team === "black").map(({ seat }) => seat);
     const targets = game.players.filter(({ team }) => team === "red").map(({ seat }) => seat);
 
     game = recordMafiaShot(game, shooters[0]!, targets[0]!);
     expect(() => recordMafiaShot(game, shooters[0]!, targets[1]!)).toThrow(/already recorded/i);
-    expect(() => resolveMafiaShots(game)).toThrow(/every active mafia/i);
+    expect(resolveMafiaShots(game)).toMatchObject({
+      result: { kind: "miss" },
+      secretShots: [{ shooterSeat: shooters[0], targetSeat: targets[0], secret: true }],
+    });
 
     game = recordMafiaShot(game, shooters[1]!, targets[1]!);
     game = recordMafiaShot(game, shooters[2]!, targets[0]!);
@@ -232,6 +235,29 @@ describe("night actions", () => {
     expect(goodbye).toMatchObject({
       phase: "goodbye-speech",
       day: 3,
+      goodbyeSeats: [victim.seat],
+      goodbyeNext: "day",
+    });
+  });
+
+  it("skips first-night Best move when the game snapshot disables it", () => {
+    const base = dayOne();
+    const victim = base.players.find(({ team }) => team === "red")!;
+    const killed = markPlayerInactive(
+      { ...base, bestMoveEnabled: false },
+      victim.seat,
+      "eliminated",
+    );
+
+    expect(
+      completeNight({
+        ...killed,
+        phase: "night-resolution",
+        nightResult: { kind: "kill", targetSeat: victim.seat },
+      }),
+    ).toMatchObject({
+      phase: "goodbye-speech",
+      day: 2,
       goodbyeSeats: [victim.seat],
       goodbyeNext: "day",
     });

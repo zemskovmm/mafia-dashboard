@@ -41,6 +41,7 @@ const clubInput = () => ({
   headerLogo: null,
   cardLogo: null,
   language: "ru" as const,
+  bestMoveEnabled: false,
   ownerConsent: true as const,
 });
 
@@ -52,6 +53,7 @@ describe("ClubStore access roles", () => {
 
     expect(club.role).toBe("manager");
     expect(club.language).toBe("ru");
+    expect(club.bestMoveEnabled).toBe(false);
     await expect(playerStore.list(club.id)).resolves.toMatchObject([
       {
         nickname: "Owner",
@@ -202,6 +204,7 @@ describe("ClubStore access roles", () => {
         headerLogo: club.headerLogo,
         cardLogo: club.cardLogo,
         language: "en",
+        bestMoveEnabled: true,
       }),
     ).resolves.toBeNull();
     await expect(
@@ -211,8 +214,14 @@ describe("ClubStore access roles", () => {
         headerLogo: club.headerLogo,
         cardLogo: club.cardLogo,
         language: "ru",
+        bestMoveEnabled: true,
       }),
-    ).resolves.toMatchObject({ id: club.id, language: "ru", role: "manager" });
+    ).resolves.toMatchObject({
+      id: club.id,
+      language: "ru",
+      bestMoveEnabled: true,
+      role: "manager",
+    });
     await expect(
       store.update(stranger.id, club.id, {
         name: club.name,
@@ -220,6 +229,7 @@ describe("ClubStore access roles", () => {
         headerLogo: club.headerLogo,
         cardLogo: club.cardLogo,
         language: "en",
+        bestMoveEnabled: false,
       }),
     ).resolves.toBeNull();
   });

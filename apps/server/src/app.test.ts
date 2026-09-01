@@ -118,12 +118,29 @@ describe("server API", () => {
         headerLogo: null,
         cardLogo: null,
         language: "ru",
+        bestMoveEnabled: false,
         ownerConsent: true,
       },
     });
     expect(createdClub.statusCode).toBe(201);
     expect(createdClub.json().club.language).toBe("ru");
+    expect(createdClub.json().club.bestMoveEnabled).toBe(false);
     const secondClubId = createdClub.json().club.id as string;
+
+    const preservedSetting = await app.inject({
+      method: "PUT",
+      url: `/api/clubs/${secondClubId}`,
+      headers: authHeaders,
+      payload: {
+        name: createdClub.json().club.name,
+        city: "Sevilla",
+        headerLogo: null,
+        cardLogo: null,
+        language: "ru",
+      },
+    });
+    expect(preservedSetting.statusCode).toBe(200);
+    expect(preservedSetting.json().club.bestMoveEnabled).toBe(false);
 
     const nickname = `Tenant-${randomUUID().slice(0, 8)}`;
     const createdPlayer = await app.inject({

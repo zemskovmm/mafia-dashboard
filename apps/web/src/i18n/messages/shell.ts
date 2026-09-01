@@ -169,6 +169,7 @@ const englishShellMessages = {
   change: "Change",
   playingCardLogo: "Playing-card logo",
   playingCardLogoPreview: "Playing-card logo preview",
+  bestMoveEnabled: "Enable Best move",
   ownerConsent: "I consent to store my Google name and email in the Owner player profile.",
   cancel: "Cancel",
   savingClub: "Saving club…",
@@ -365,6 +366,7 @@ const russianShellMessages = {
   change: "Изменить",
   playingCardLogo: "Логотип игральной карты",
   playingCardLogoPreview: "Предпросмотр логотипа игральной карты",
+  bestMoveEnabled: "Включить «Лучший ход»",
   ownerConsent:
     "Я согласен на хранение моих имени и адреса электронной почты Google в профиле игрока «Владелец».",
   cancel: "Отмена",

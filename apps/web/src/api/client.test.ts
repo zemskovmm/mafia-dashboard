@@ -75,7 +75,7 @@ afterEach(() => {
 });
 
 describe("club API client", () => {
-  it("round-trips the club language contract", async () => {
+  it("round-trips the club settings contract", async () => {
     const club = {
       id: "00000000-0000-4000-8000-000000000101",
       name: "Mafia Malaga",
@@ -83,11 +83,12 @@ describe("club API client", () => {
       headerLogo: null,
       cardLogo: null,
       language: "ru" as const,
+      bestMoveEnabled: false,
       role: "manager" as const,
       createdAt: "2026-08-17T20:00:00.000Z",
       updatedAt: "2026-08-17T20:00:00.000Z",
     };
-    const created = { ...club, language: "en" as const };
+    const created = { ...club, language: "en" as const, bestMoveEnabled: true };
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
@@ -118,6 +119,7 @@ describe("club API client", () => {
         headerLogo: null,
         cardLogo: null,
         language: "en",
+        bestMoveEnabled: true,
         ownerConsent: true,
       }),
     ).resolves.toEqual(created);
@@ -128,6 +130,7 @@ describe("club API client", () => {
         headerLogo: null,
         cardLogo: null,
         language: "ru",
+        bestMoveEnabled: false,
       }),
     ).resolves.toEqual(club);
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -135,7 +138,7 @@ describe("club API client", () => {
       "/api/clubs",
       expect.objectContaining({
         method: "POST",
-        body: expect.stringContaining('"language":"en"'),
+        body: expect.stringContaining('"bestMoveEnabled":true'),
       }),
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -143,7 +146,7 @@ describe("club API client", () => {
       `/api/clubs/${club.id}`,
       expect.objectContaining({
         method: "PUT",
-        body: expect.stringContaining('"language":"ru"'),
+        body: expect.stringContaining('"bestMoveEnabled":false'),
       }),
     );
   });

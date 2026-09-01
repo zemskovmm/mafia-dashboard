@@ -66,6 +66,7 @@ export interface ShotAssignment {
 export interface GameState {
   readonly phase: GamePhase;
   readonly day: number;
+  readonly bestMoveEnabled?: boolean;
   readonly players: readonly PlayerState[];
   readonly turnOrder: readonly number[];
   readonly currentTurnIndex: number;

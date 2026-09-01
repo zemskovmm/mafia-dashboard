@@ -169,6 +169,17 @@ describe("NightStage", () => {
     ).toHaveLength(shooters.length);
   });
 
+  it("allows the host to evaluate missing Mafia shots as a miss", async () => {
+    const user = userEvent.setup();
+    render(<Harness initial={createNightGame()} />);
+
+    const evaluate = screen.getByRole("button", { name: /evaluate mafia shots/i });
+    expect(evaluate).toBeEnabled();
+    await user.click(evaluate);
+
+    expect(screen.getByRole("group", { name: "Mafia missed" })).toHaveTextContent("No player died");
+  });
+
   it("allows every remaining shot to target a deceased player and reports no effect", async () => {
     const user = userEvent.setup();
     const base = createNightGame();

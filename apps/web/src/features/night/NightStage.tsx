@@ -67,7 +67,6 @@ export const NightStage = ({
     const shooters = activePlayers
       .filter(({ team }) => team === "black")
       .sort((left, right) => left.seat - right.seat);
-    const allShotsRecorded = shooters.every(({ seat }) => game.shotAssignments[seat] !== undefined);
     return (
       <GameTable
         hostName={tableHostName}
@@ -121,7 +120,6 @@ export const NightStage = ({
         advance={
           <button
             type="button"
-            disabled={!allShotsRecorded}
             onClick={() => {
               const resolution = resolveMafiaShots(game);
               if (onAcceptedEvent !== undefined) {

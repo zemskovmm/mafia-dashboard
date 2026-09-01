@@ -508,20 +508,11 @@ describe("game session validation", () => {
     );
   });
 
-  it("rejects incomplete or aliased Mafia result assignments while accepting inactive targets", () => {
+  it("accepts incomplete Mafia result assignments while rejecting aliases", () => {
     const base = liveGame(1);
-    const invalidGames = [
-      { ...base, phase: "night-mafia-result", shotAssignments: { "8": 1, "9": 1 } },
-      {
-        ...base,
-        phase: "night-mafia-result",
-        shotAssignments: { "08": 1, "9": 1, "10": 1 },
-      },
-    ];
-
-    for (const game of invalidGames) {
-      const parsed = gameSessionMutationSchema.safeParse({
-        name: "Invalid Mafia result",
+    const parse = (game: unknown) =>
+      gameSessionMutationSchema.safeParse({
+        name: "Mafia result",
         mutationId: uuid(96),
         baseRevision: 0,
         state: {
@@ -535,8 +526,17 @@ describe("game session validation", () => {
         },
         results: null,
       });
-      expect(parsed.success).toBe(false);
-    }
+
+    expect(
+      parse({ ...base, phase: "night-mafia-result", shotAssignments: { "8": 1, "9": 1 } }).success,
+    ).toBe(true);
+    expect(
+      parse({
+        ...base,
+        phase: "night-mafia-result",
+        shotAssignments: { "08": 1, "9": 1, "10": 1 },
+      }).success,
+    ).toBe(false);
 
     const inactiveTarget = {
       ...base,

@@ -575,11 +575,15 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
       "dayNotice",
       "redCardIssuedThisDay",
       "bestMove",
+      "bestMoveEnabled",
     ],
     context,
   );
   assertGamePhase(game.phase, `${context}.phase`);
   assertSafeInteger(game.day, `${context}.day`, 0);
+  if (game.bestMoveEnabled !== undefined) {
+    assertBoolean(game.bestMoveEnabled, `${context}.bestMoveEnabled`);
+  }
   if (!Array.isArray(game.players) || game.players.length !== 10) {
     throw new Error(`${context}.players must contain exactly 10 players`);
   }

@@ -32,6 +32,11 @@ const completedSetup = (): SetupState => {
 };
 
 describe("game phases and victory", () => {
+  it("snapshots the Best move rule and defaults it on", () => {
+    expect(createGame(completedSetup()).bestMoveEnabled).toBe(true);
+    expect(createGame(completedSetup(), { bestMoveEnabled: false }).bestMoveEnabled).toBe(false);
+  });
+
   it("advances through negotiation and Sheriff wake-up into day one", () => {
     const game = createGame(completedSetup());
     expect(game.phase).toBe("mafia-planning");

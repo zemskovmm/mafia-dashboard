@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS clubs (
   header_logo TEXT NULL,
   card_logo TEXT NULL,
   language_code TEXT NOT NULL DEFAULT 'en' CONSTRAINT clubs_language_code_ck CHECK (language_code IN ('en', 'ru')),
+  best_move_enabled BOOLEAN NOT NULL DEFAULT TRUE,
   created_by UUID NOT NULL REFERENCES users (id) ON DELETE RESTRICT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -46,6 +47,10 @@ ALTER TABLE clubs ADD COLUMN IF NOT EXISTS language_code TEXT NOT NULL DEFAULT '
 UPDATE clubs SET language_code = 'en' WHERE language_code IS NULL;
 ALTER TABLE clubs ALTER COLUMN language_code SET DEFAULT 'en';
 ALTER TABLE clubs ALTER COLUMN language_code SET NOT NULL;
+ALTER TABLE clubs ADD COLUMN IF NOT EXISTS best_move_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+UPDATE clubs SET best_move_enabled = TRUE WHERE best_move_enabled IS NULL;
+ALTER TABLE clubs ALTER COLUMN best_move_enabled SET DEFAULT TRUE;
+ALTER TABLE clubs ALTER COLUMN best_move_enabled SET NOT NULL;
 DO $$
 BEGIN
   IF NOT EXISTS (

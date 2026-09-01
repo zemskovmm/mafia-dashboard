@@ -54,6 +54,7 @@ interface ClubDetails {
   readonly headerLogo: string | null;
   readonly cardLogo: string | null;
   readonly language: "en" | "ru";
+  readonly bestMoveEnabled: boolean;
 }
 
 export interface ClubInput extends ClubDetails {

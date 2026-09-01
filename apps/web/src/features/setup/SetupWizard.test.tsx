@@ -421,6 +421,7 @@ describe("SetupWizard", () => {
     render(
       <SetupWizard
         players={availablePlayers}
+        bestMoveEnabled={false}
         onComplete={onComplete}
         onStartGame={onStartGame}
         onEvent={onEvent}
@@ -468,6 +469,7 @@ describe("SetupWizard", () => {
     expect(onComplete).toHaveBeenCalledTimes(1);
     const completedGame = onComplete.mock.calls[0]?.[0];
     expect(completedGame?.phase).toBe("mafia-planning");
+    expect(completedGame?.bestMoveEnabled).toBe(false);
     expect(completedGame?.players.map(({ role }) => role).sort()).toEqual(
       [
         "citizen",

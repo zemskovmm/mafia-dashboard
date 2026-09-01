@@ -72,6 +72,9 @@ describe("ClubPortal", () => {
     render(<Harness />);
     await user.type(screen.getByLabelText("Club name"), "Mafia Sevilla");
     await user.type(screen.getByLabelText("City"), "Sevilla");
+    const bestMove = screen.getByRole("checkbox", { name: "Enable Best move" });
+    expect(bestMove).toBeChecked();
+    await user.click(bestMove);
 
     const consent = screen.getByRole("checkbox", {
       name: "I consent to store my Google name and email in the Owner player profile.",
@@ -91,6 +94,7 @@ describe("ClubPortal", () => {
         headerLogo: null,
         cardLogo: null,
         language: "en",
+        bestMoveEnabled: false,
         ownerConsent: true,
       }),
     );
@@ -128,7 +132,7 @@ describe("ClubPortal", () => {
     expect(screen.getByRole("combobox", { name: "Язык" })).toHaveValue("ru");
     await user.type(screen.getByLabelText("Название клуба"), "Mafia Moscow");
     await user.type(screen.getByLabelText("Город"), "Москва");
-    await user.click(screen.getByRole("checkbox"));
+    await user.click(screen.getByRole("checkbox", { name: /Я согласен/ }));
     await user.click(screen.getByRole("button", { name: "Сохранить клуб" }));
     await waitFor(() =>
       expect(onSaveClub).toHaveBeenCalledWith(

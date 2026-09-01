@@ -180,13 +180,19 @@ describe("GameScreen", () => {
     const onEvent = vi.fn<(type: string, payload: Record<string, unknown>) => void>();
     render(<Harness onEvent={onEvent} />);
 
-    expect(screen.getByRole("heading", { name: /mafia planning stage/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: /night zero · mafia free seating/i }),
+    ).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: /seat \d+: player/i })).toHaveLength(10);
     expect(screen.getByRole("group", { name: /host: host player/i })).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /continue to sheriff wake-up/i }));
+    await user.click(
+      screen.getByRole("button", { name: /continue night zero to sheriff wake-up/i }),
+    );
 
-    expect(screen.getByRole("heading", { name: /sheriff wake-up/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: /night zero · sheriff wake-up/i }),
+    ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /begin day one/i }));
 
     expect(screen.getByRole("heading", { name: /day 1/i })).toBeInTheDocument();

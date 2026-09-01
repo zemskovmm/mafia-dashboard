@@ -369,6 +369,27 @@ describe("canonical game replay", () => {
     ).toThrow(/duplicate shooterSeat/i);
   });
 
+  it("replays an incomplete Mafia assignment as a canonical miss", () => {
+    const game: GameState = { ...dayOne(), phase: "night-mafia" };
+    const shooter = game.players.find(
+      ({ status, team }) => status === "active" && team === "black",
+    )!;
+    const target = game.players.find(({ status, team }) => status === "active" && team === "red")!;
+
+    expect(
+      applyGameEvent(game, {
+        type: "mafia.shots-resolved",
+        payload: {
+          shots: [{ shooterSeat: shooter.seat, targetSeat: target.seat, secret: true }],
+          result: { kind: "miss" },
+        },
+      }),
+    ).toMatchObject({
+      phase: "night-mafia-result",
+      shotAssignments: { [shooter.seat]: target.seat },
+    });
+  });
+
   it("rejects malformed replay baselines even when the event list is empty", () => {
     expect(() => replayGameLog({ replayVersion: 1, game: {} as GameState }, [])).toThrow(
       /initial game baseline\.game/i,

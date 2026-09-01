@@ -81,6 +81,7 @@ const testClub: Club = {
   headerLogo: null,
   cardLogo: null,
   language: "en",
+  bestMoveEnabled: true,
   role: "manager",
   createdAt: "2026-08-21T00:00:00.000Z",
   updatedAt: "2026-08-21T00:00:00.000Z",
@@ -728,6 +729,7 @@ describe("club welcome", () => {
         headerLogo: null,
         cardLogo: null,
         language: "en",
+        bestMoveEnabled: true,
       }),
     );
     expect(await screen.findByRole("combobox", { name: "Language" })).toHaveValue("en");

@@ -1960,6 +1960,7 @@ export const ClubWorkspace = ({
           <SetupWizard
             key={setupInstanceKey}
             players={availablePlayersForSetup}
+            bestMoveEnabled={club.bestMoveEnabled}
             showDevelopmentTools={isManager && devModeEnabled}
             onPopulateDevelopmentPlayers={populateDevelopmentPlayers}
             onOpenAvailablePlayers={() => setAvailabilityScreenOpen(true)}
@@ -2229,6 +2230,7 @@ export const App = () => {
       headerLogo: selectedClub.headerLogo,
       cardLogo: selectedClub.cardLogo,
       language,
+      bestMoveEnabled: selectedClub.bestMoveEnabled,
     });
     setSelectedClub(saved);
     setClubs((current) => current.map((club) => (club.id === saved.id ? saved : club)));

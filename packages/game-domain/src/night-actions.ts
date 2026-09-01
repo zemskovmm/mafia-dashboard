@@ -109,20 +109,19 @@ export const resolveMafiaShots = (
   const shooters = game.players.filter(
     ({ team, status }) => team === "black" && status === "active",
   );
-  if (shooters.some(({ seat }) => game.shotAssignments[seat] === undefined)) {
-    throw new Error("Every active Mafia-aligned player must record one shot");
-  }
-
-  const secretShots: ShotAssignment[] = shooters.map(({ seat }) => ({
-    shooterSeat: seat,
-    targetSeat: game.shotAssignments[seat]!,
-    secret: true,
-  }));
+  const secretShots: ShotAssignment[] = shooters.flatMap(({ seat }) => {
+    const targetSeat = game.shotAssignments[seat];
+    return targetSeat === undefined ? [] : [{ shooterSeat: seat, targetSeat, secret: true }];
+  });
   const targets = new Set(secretShots.map(({ targetSeat }) => targetSeat));
+  const result =
+    secretShots.length === shooters.length
+      ? resultForTargets(game, targets)
+      : { kind: "miss" as const };
 
   return {
     game: { ...game, phase: "night-mafia-result" },
-    result: resultForTargets(game, targets),
+    result,
     secretShots,
   };
 };
@@ -134,10 +133,12 @@ export const getMafiaShotResult = (game: GameState): NightShotResult => {
   const shooters = game.players.filter(
     ({ team, status }) => team === "black" && status === "active",
   );
-  if (shooters.some(({ seat }) => game.shotAssignments[seat] === undefined)) {
-    throw new Error("Every active Mafia-aligned player must record one shot");
-  }
-  const targets = new Set(shooters.map(({ seat }) => game.shotAssignments[seat]!));
+  const assignedTargets = shooters.flatMap(({ seat }) => {
+    const targetSeat = game.shotAssignments[seat];
+    return targetSeat === undefined ? [] : [targetSeat];
+  });
+  if (assignedTargets.length !== shooters.length) return { kind: "miss" };
+  const targets = new Set(assignedTargets);
   return resultForTargets(game, targets);
 };
 
@@ -253,7 +254,7 @@ export const completeNight = (game: GameState): GameState => {
     redCardIssuedThisDay: undefined,
   };
   if (game.nightResult?.kind === "kill") {
-    return game.day === 1
+    return game.day === 1 && game.bestMoveEnabled !== false
       ? {
           ...dayState,
           phase: "best-move",

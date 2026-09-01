@@ -18,6 +18,7 @@ import { GameTable } from "../table/GameTable.js";
 
 interface SetupWizardProps {
   readonly players: readonly PlayerProfile[];
+  readonly bestMoveEnabled?: boolean;
   readonly onComplete: (game: GameState, hostPlayerId: string, hostName: string) => void;
   readonly onStartGame?: () => void;
   readonly onEvent?: (type: string, payload: Record<string, unknown>) => void;
@@ -245,6 +246,7 @@ const PlayerCombobox = ({
 
 export const SetupWizard = ({
   players: availablePlayers,
+  bestMoveEnabled = true,
   onComplete,
   onStartGame = () => undefined,
   onEvent = () => undefined,
@@ -412,7 +414,7 @@ export const SetupWizard = ({
 
   const finishRoleDraw = () => {
     if (setup === null || hostPlayer === undefined) return;
-    const game = createGame(completeRoleDraw(setup));
+    const game = createGame(completeRoleDraw(setup), { bestMoveEnabled });
     onEvent("setup.completed", { phase: game.phase });
     onComplete(game, hostPlayerId, hostPlayer.nickname);
   };

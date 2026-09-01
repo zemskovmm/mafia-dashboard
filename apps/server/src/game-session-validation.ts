@@ -148,6 +148,7 @@ const gameStateSchema = z
   .object({
     phase: gamePhase,
     day: z.number().int().min(0),
+    bestMoveEnabled: z.boolean().optional(),
     players: z.array(playerState).length(10),
     turnOrder: z.array(z.number().int().min(1).max(10)).max(10),
     currentTurnIndex: z.number().int().min(0).max(10),
@@ -530,15 +531,8 @@ const gameStateSchema = z
         });
       }
       if (phase === "night-mafia" || phase === "night-mafia-result") {
-        const activeBlackSeats = new Set(
-          players
-            .filter(({ status, team }) => status === "active" && team === "black")
-            .map(({ seat }) => seat),
-        );
-        const assignedShooterSeats = new Set<number>();
         for (const [shooterSeatText, targetSeat] of shotEntries) {
           const shooterSeat = Number(shooterSeatText);
-          assignedShooterSeats.add(shooterSeat);
           if (String(shooterSeat) !== shooterSeatText) {
             context.addIssue({
               code: "custom",
@@ -561,17 +555,6 @@ const gameStateSchema = z
               message: "Night shots must target seated players",
             });
           }
-        }
-        if (
-          phase === "night-mafia-result" &&
-          (assignedShooterSeats.size !== activeBlackSeats.size ||
-            [...activeBlackSeats].some((seat) => !assignedShooterSeats.has(seat)))
-        ) {
-          context.addIssue({
-            code: "custom",
-            path: ["shotAssignments"],
-            message: "Every active Mafia-aligned player must have exactly one evaluated shot",
-          });
         }
       }
       const expectedCheckKind =

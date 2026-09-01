@@ -12,9 +12,11 @@ interface ClubDetails {
   readonly headerLogo: string | null;
   readonly cardLogo: string | null;
   readonly language: ClubLanguage;
+  readonly bestMoveEnabled: boolean;
 }
 
-export interface ClubInput extends ClubDetails {
+export interface ClubInput extends Omit<ClubDetails, "bestMoveEnabled"> {
+  readonly bestMoveEnabled?: boolean;
   readonly ownerConsent: true;
 }
 
@@ -32,6 +34,7 @@ interface ClubRow {
   header_logo: string | null;
   card_logo: string | null;
   language_code: ClubLanguage;
+  best_move_enabled: boolean;
   role: ClubRole;
   created_at: Date;
   updated_at: Date;
@@ -44,6 +47,7 @@ const mapClub = (row: ClubRow): Club => ({
   headerLogo: row.header_logo,
   cardLogo: row.card_logo,
   language: row.language_code,
+  bestMoveEnabled: row.best_move_enabled,
   role: row.role,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
@@ -62,6 +66,7 @@ export class ClubStore {
   public async listForUser(userId: string): Promise<readonly Club[]> {
     const result = await this.pool.query<ClubRow>(
       `SELECT club.id, club.name, club.city, club.header_logo, club.card_logo, club.language_code,
+              club.best_move_enabled,
               membership.role, club.created_at, club.updated_at
          FROM clubs AS club
          JOIN club_memberships AS membership ON membership.club_id = club.id
@@ -108,8 +113,9 @@ export class ClubStore {
       const userId = user.id;
       const clubId = randomUUID();
       await client.query(
-        `INSERT INTO clubs (id, name, city, header_logo, card_logo, language_code, created_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        `INSERT INTO clubs
+           (id, name, city, header_logo, card_logo, language_code, best_move_enabled, created_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
         [
           clubId,
           input.name.trim(),
@@ -117,6 +123,7 @@ export class ClubStore {
           input.headerLogo,
           input.cardLogo,
           input.language,
+          input.bestMoveEnabled ?? true,
           userId,
         ],
       );
@@ -135,6 +142,7 @@ export class ClubStore {
       );
       const result = await client.query<ClubRow>(
         `SELECT club.id, club.name, club.city, club.header_logo, club.card_logo, club.language_code,
+                club.best_move_enabled,
                 membership.role, club.created_at, club.updated_at
            FROM clubs AS club
            JOIN club_memberships AS membership ON membership.club_id = club.id
@@ -208,13 +216,15 @@ export class ClubStore {
        ), updated AS (
          UPDATE clubs AS club
             SET name = $3, city = $4, header_logo = $5, card_logo = $6,
-                language_code = $7, updated_at = NOW()
+                language_code = $7,
+                best_move_enabled = COALESCE($8, club.best_move_enabled),
+                updated_at = NOW()
            FROM editable
           WHERE club.id = editable.club_id
           RETURNING club.*
        )
        SELECT updated.id, updated.name, updated.city, updated.header_logo, updated.card_logo,
-              updated.language_code,
+              updated.language_code, updated.best_move_enabled,
               editable.role, updated.created_at, updated.updated_at
          FROM updated, editable`,
       [
@@ -225,6 +235,7 @@ export class ClubStore {
         input.headerLogo,
         input.cardLogo,
         input.language,
+        input.bestMoveEnabled,
       ],
     );
     return result.rows[0] === undefined ? null : mapClub(result.rows[0]);

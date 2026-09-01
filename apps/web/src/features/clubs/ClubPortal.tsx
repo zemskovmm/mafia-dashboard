@@ -49,6 +49,7 @@ const ClubEditor = ({
   const [headerLogo, setHeaderLogo] = useState<string | null>(club?.headerLogo ?? null);
   const [cardLogo, setCardLogo] = useState<string | null>(club?.cardLogo ?? null);
   const [language, setLanguage] = useState(club?.language ?? locale);
+  const [bestMoveEnabled, setBestMoveEnabled] = useState(club?.bestMoveEnabled ?? true);
   const [ownerConsent, setOwnerConsent] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -120,6 +121,14 @@ const ClubEditor = ({
           />
         </label>
       </div>
+      <label>
+        <input
+          type="checkbox"
+          checked={bestMoveEnabled}
+          onChange={(event) => setBestMoveEnabled(event.target.checked)}
+        />
+        {t("bestMoveEnabled")}
+      </label>
       {club === null ? (
         <label>
           <input
@@ -144,8 +153,16 @@ const ClubEditor = ({
           onClick={() =>
             void onSave(
               club === null
-                ? { name, city, headerLogo, cardLogo, language, ownerConsent: true }
-                : { name, city, headerLogo, cardLogo, language },
+                ? {
+                    name,
+                    city,
+                    headerLogo,
+                    cardLogo,
+                    language,
+                    bestMoveEnabled,
+                    ownerConsent: true,
+                  }
+                : { name, city, headerLogo, cardLogo, language, bestMoveEnabled },
             )
           }
         >

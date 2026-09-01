@@ -488,8 +488,8 @@ describe("club authorization role migration", () => {
   });
 });
 
-describe("club language schema migration", () => {
-  it("adds a constrained English default to fresh and populated schemas idempotently", async () => {
+describe("club settings schema migration", () => {
+  it("adds constrained language and Best move defaults idempotently", async () => {
     await withIsolatedSchema("club_language_fresh", async ({ pool: freshPool }) =>
       withIsolatedSchema("club_language_legacy", async ({ pool: legacyPool }) => {
         await initializeSchema(freshPool);
@@ -527,10 +527,12 @@ describe("club language schema migration", () => {
         await legacyPool.query(`
         ALTER TABLE clubs ALTER COLUMN language_code DROP NOT NULL;
         ALTER TABLE clubs ALTER COLUMN language_code DROP DEFAULT;
+        ALTER TABLE clubs ALTER COLUMN best_move_enabled DROP NOT NULL;
+        ALTER TABLE clubs ALTER COLUMN best_move_enabled DROP DEFAULT;
       `);
         await legacyPool.query(
-          `INSERT INTO clubs (id, name, city, created_by, language_code)
-         VALUES ($1, 'Partial migration club', 'Granada', $2, NULL)`,
+          `INSERT INTO clubs (id, name, city, created_by, language_code, best_move_enabled)
+         VALUES ($1, 'Partial migration club', 'Granada', $2, NULL, NULL)`,
           [partialClubId, legacyUserId],
         );
         await initializeSchema(legacyPool);
@@ -549,6 +551,17 @@ describe("club language schema migration", () => {
           });
           await expect(
             pool.query(
+              `SELECT data_type, is_nullable, column_default
+               FROM information_schema.columns
+              WHERE table_schema = current_schema()
+                AND table_name = 'clubs'
+                AND column_name = 'best_move_enabled'`,
+            ),
+          ).resolves.toMatchObject({
+            rows: [{ data_type: "boolean", is_nullable: "NO", column_default: "true" }],
+          });
+          await expect(
+            pool.query(
               `SELECT pg_get_constraintdef(oid) AS definition
                FROM pg_constraint
               WHERE conrelid = 'clubs'::regclass
@@ -563,14 +576,17 @@ describe("club language schema migration", () => {
           });
         }
         await expect(
-          legacyPool.query("SELECT id, language_code FROM clubs WHERE id IN ($1, $2) ORDER BY id", [
-            legacyClubId,
-            partialClubId,
-          ]),
+          legacyPool.query(
+            `SELECT id, language_code, best_move_enabled
+               FROM clubs
+              WHERE id IN ($1, $2)
+              ORDER BY id`,
+            [legacyClubId, partialClubId],
+          ),
         ).resolves.toMatchObject({
           rows: expect.arrayContaining([
-            { id: legacyClubId, language_code: "en" },
-            { id: partialClubId, language_code: "en" },
+            { id: legacyClubId, language_code: "en", best_move_enabled: true },
+            { id: partialClubId, language_code: "en", best_move_enabled: true },
           ]),
         });
         await expect(

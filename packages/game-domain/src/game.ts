@@ -27,7 +27,10 @@ export const getDayOrder = (players: readonly PlayerState[], day: number): numbe
   return clockwiseSeats.filter((seat) => activeSeats.has(seat));
 };
 
-export const createGame = (setup: SetupState): GameState => {
+export const createGame = (
+  setup: SetupState,
+  { bestMoveEnabled = true }: { readonly bestMoveEnabled?: boolean } = {},
+): GameState => {
   if (setup.step !== "mafia-planning" || Object.keys(setup.assignments).length !== 10) {
     throw new Error("Role setup must be complete before a game is created");
   }
@@ -50,6 +53,7 @@ export const createGame = (setup: SetupState): GameState => {
   return {
     phase: "mafia-planning",
     day: 0,
+    bestMoveEnabled,
     players,
     turnOrder: [],
     currentTurnIndex: 0,
