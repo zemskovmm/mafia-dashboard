@@ -1,16 +1,16 @@
 # Issue 32 Immutable-Candidate Qualification Plan
 
-> **For Hermes:** Execute this plan task-by-task after explicit approval. Use an independent review subagent for the frozen candidate. Stop and return to plan mode if any product defect or material scope change appears.
+> **For Hermes:** Execute this plan after the approved snapshot-verifier repair. Use an independent review subagent for the frozen candidate. Stop if any further change would leave the three-file verifier boundary.
 
-**Goal:** Prove that one unchanged, immutable Git tree satisfies every local closure criterion of GitHub issue #32.
+**Goal:** Prove that one immutable Git tree containing only the approved verifier repair satisfies every local closure criterion of GitHub issue #32.
 
-**Architecture:** Preserve the approved plans in Git history, then stage only their lifecycle deletion and freeze the resulting index as a Git tree object. Export that tree to a disposable clean room so ignored files, local dependencies, and the unrelated untracked plan cannot influence results. Exercise focused replay/persistence tests, the full repository gate, PostgreSQL 17 migration and legacy-hydration paths, production Compose, Playwright UI checks, and authenticated session restart/cleanup against disposable infrastructure; submit the same tree to independent review.
+**Architecture:** Preserve the revised plan set in Git history, execute the separately bounded verifier repair, then stage only the three verifier files plus plan-lifecycle deletions and freeze the resulting index as a Git tree object. Export that tree to a disposable clean room so ignored files, local dependencies, and the unrelated untracked plan cannot influence results. Exercise focused replay/persistence tests, the full repository gate, PostgreSQL 17 migration and legacy-hydration paths, production Compose, Playwright UI checks, and authenticated session restart/cleanup against disposable infrastructure; submit the same tree to independent review.
 
 **Tech Stack:** Git, npm workspaces, Node.js 22, Vitest, PostgreSQL 17, Docker/Compose, Playwright Chromium/WebKit, Fastify/React, Hermes subagent review.
 
-**Plain-language summary:** We will archive the approved plan, freeze the current code as an exact Git tree, test that tree from a clean directory with disposable databases and browsers, and obtain an independent approval without editing product code.
+**Plain-language summary:** After fixing the stale verifier expectation, we will freeze the exact repaired code, test it from a clean directory with disposable databases and browsers, and obtain independent approval before delivery.
 
-**Non-goals:** Fixing defects found during qualification; adding tests merely to create a diff; changing application code, schema, scripts, docs, dependencies, or workflows; testing production; modifying or deleting `.AI/plans/2026-08-29_134707-reconcile-stale-in-progress-github-issues.md`; closing or commenting on #32.
+**Non-goals:** Changing application code, schemas, docs, dependencies, workflows, or deployment; fixing unrelated defects; testing production; modifying or deleting `.AI/plans/2026-08-29_134707-reconcile-stale-in-progress-github-issues.md`; closing or commenting on #32 before qualification passes.
 
 ---
 
@@ -30,38 +30,42 @@
 
 **Expected result:** A synchronized `main` and still-valid verification-only issue boundary.
 
-### Task 2: Preserve the approved plan set in Git history
+### Task 2: Preserve the revised plan set in Git history
 
 **Objective:** Make the approved execution contract recoverable before qualification begins.
 
 **Files:**
-- Add exactly: `.AI/plans/2026-09-02_003432-issue-32-plan-set.md`
-- Add exactly: `.AI/plans/2026-09-02_003433-issue-32-qualification.md`
-- Add exactly: `.AI/plans/2026-09-02_003434-issue-32-delivery.md`
+- Modify exactly: `.AI/plans/2026-09-02_003432-issue-32-plan-set.md`
+- Modify exactly: `.AI/plans/2026-09-02_003433-issue-32-qualification.md`
+- Modify exactly: `.AI/plans/2026-09-02_003434-issue-32-delivery.md`
+- Add exactly: `.AI/plans/2026-09-02_010619-issue-32-snapshot-verifier-repair.md`
 
 **Steps:**
-1. Stage only the three exact paths above; do not use broad `git add`.
-2. Inspect `git diff --cached --name-status` and reject any additional path.
-3. Commit with `docs(ai): plan issue 32 immutable qualification`.
-4. Confirm the unrelated untracked plan is still present and unmodified.
+1. Require the prior plan-only commit `cdb7a9d1cbe838bbd4e4b8dc4a14f8cc54989e00` to remain the local parent and `origin/main` to remain at `7a81cfb75d250e2615210b58908668ebbfc54162`.
+2. Stage only the four exact paths above; do not use broad `git add`.
+3. Inspect `git diff --cached --name-status` and reject any additional path.
+4. Commit with `docs(ai): plan issue 32 snapshot verifier repair`.
+5. Confirm the unrelated untracked plan is still present and unmodified.
 
-**Expected result:** One plan-only commit, with no source or unrelated artifact included.
+**Expected result:** A second plan-only commit records the evidence-driven repair boundary, with no source or unrelated artifact included.
 
-### Task 3: Freeze the product candidate and create a clean room
+### Task 3: Execute the approved verifier repair, then freeze the candidate
 
 **Objective:** Produce the one immutable tree used by every remaining gate and by independent review.
 
 **Files:**
-- Delete from the candidate exactly the three issue-32 plan files listed in Task 2, per repository plan-lifecycle policy
+- Modify only the three verifier files authorized by `2026-09-02_010619-issue-32-snapshot-verifier-repair.md`
+- Delete from the candidate exactly the four issue-32 plan files listed in Task 2, per repository plan-lifecycle policy
 - Create runtime artifacts only beneath `/tmp`
 
 **Steps:**
-1. Remove only the three issue-32 plan files and stage their deletions with exact pathspecs.
-2. Inspect `git diff --cached --name-status`; require exactly three deletions and no product changes.
-3. Capture `candidate_tree=$(git write-tree)` and retain it with the evidence log.
-4. Export that tree, not the working directory, into a new `/tmp/mafia-dashboard-issue-32.*` directory using `git archive "$candidate_tree"`.
-5. In the clean room run `npm run ci:install`; require a lockfile-only installation and successful esbuild rebuild.
-6. Record `git rev-parse HEAD`, the plan commit SHA, the candidate tree SHA, clean-room path, Node/npm versions, and Docker version. Do not record credentials or the ephemeral session token.
+1. Execute `2026-09-02_010619-issue-32-snapshot-verifier-repair.md` with an observed RED and GREEN before any candidate freeze.
+2. Remove only the four issue-32 plan files and stage the three approved verifier files plus four plan deletions with exact pathspecs.
+3. Inspect `git diff --cached --name-status`; require exactly those seven paths and no application/product changes.
+4. Capture `candidate_tree=$(git write-tree)` and retain it with the evidence log.
+5. Export that tree, not the working directory, into a new `/tmp/mafia-dashboard-issue-32.*` directory using `git archive "$candidate_tree"`.
+6. In the clean room run `npm run ci:install`; require a lockfile-only installation and successful esbuild rebuild.
+7. Record `git rev-parse HEAD`, both plan commit SHAs, the candidate tree SHA, clean-room path, Node/npm versions, and Docker version. Do not record credentials or the ephemeral session token.
 
 **Expected result:** A dependency-clean export whose contents are exactly identified by `candidate_tree`.
 
@@ -145,7 +149,7 @@
 2. Delegate an independent review with issue #32's body, the exact tree SHA, child-issue closure context, and qualification results. Require review of club isolation, secret-event handling, canonical replay, idempotent persistence, migration convergence, verifier ownership/cleanup, and false-pass risks.
 3. Require a structured verdict with findings by severity and explicit `approve`/`block` status tied to the tree SHA.
 4. If any blocker/high-severity defect or unverified acceptance criterion remains, do not edit under this plan. Preserve evidence, return to clarification/plan mode, and route the defect to the appropriate child/follow-up issue.
-5. If approved, confirm `git write-tree` still equals `candidate_tree` and `git diff --cached --name-status` still contains only the three planned deletions.
+5. If approved, confirm `git write-tree` still equals `candidate_tree` and `git diff --cached --name-status` still contains only the three approved verifier files and four planned deletions.
 
 **Expected result:** An independent approval names the exact unchanged candidate tree and no unresolved blocker remains.
 
@@ -156,7 +160,7 @@
 - Test data, containers, volumes, and temporary directories are cleaned up and verified absent.
 - An independent reviewer approves the exact tree SHA with no blocker/high finding.
 - The primary index still writes the same `candidate_tree`; only the issue-32 plan deletions are staged.
-- No application, test, docs, dependency, workflow, or deployment file is changed.
+- No application, schema, docs, dependency, workflow, or deployment file is changed; only the three approved verifier paths differ.
 
 ## Risks and stop conditions
 
