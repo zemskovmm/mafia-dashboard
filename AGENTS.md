@@ -24,6 +24,11 @@
 - Keep changes scoped.
 - Do not commit, push, close issues, or mutate deployments unless explicitly requested.
 
+## Implementation planning
+
+- Every saved implementation plan and every plan-approval request must include a brief plain-language summary of the upcoming changes.
+- The summary supplements rather than replaces detailed scope, acceptance criteria, risks, and verification.
+
 ## Verification
 
 - Use focused tests while iterating.
