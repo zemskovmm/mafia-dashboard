@@ -25,7 +25,9 @@ export type GamePhase =
   | "night-sheriff"
   | "night-sheriff-result"
   | "night-resolution"
-  | "finished";
+  | "finished"
+  | "draw"
+  | "cancelled";
 
 export type Winner = Team | null;
 
@@ -67,6 +69,8 @@ export interface GameState {
   readonly phase: GamePhase;
   readonly day: number;
   readonly bestMoveEnabled?: boolean;
+  readonly cyclesWithoutElimination?: number;
+  readonly eliminationOccurredThisCycle?: boolean;
   readonly players: readonly PlayerState[];
   readonly turnOrder: readonly number[];
   readonly currentTurnIndex: number;

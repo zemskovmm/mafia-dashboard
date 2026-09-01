@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   advanceSetupPhase,
+  cancelGame,
+  confirmDraw,
   createGame,
   evaluateVictory,
   getDayOrder,
   getRoleTeam,
   markPlayerInactive,
+  shouldSuggestDraw,
 } from "./game.js";
 import {
   beginRoleDraw,
@@ -32,9 +35,49 @@ const completedSetup = (): SetupState => {
 };
 
 describe("game phases and victory", () => {
+  it("initializes draw-cycle tracking without suggesting a draw", () => {
+    const game = createGame(completedSetup());
+
+    expect(game.cyclesWithoutElimination).toBe(0);
+    expect(game.eliminationOccurredThisCycle).toBe(false);
+    expect(shouldSuggestDraw(game)).toBe(false);
+  });
+
+  it("requires explained draw and cancellation rulings and makes them terminal", () => {
+    const active = {
+      ...advanceSetupPhase(advanceSetupPhase(createGame(completedSetup()))),
+      cyclesWithoutElimination: 3,
+    };
+    const drawn = confirmDraw(active, "Three quiet cycles");
+
+    expect(drawn).toMatchObject({
+      phase: "draw",
+      winner: null,
+    });
+    expect(shouldSuggestDraw(active)).toBe(true);
+    expect(shouldSuggestDraw(drawn)).toBe(false);
+    expect(cancelGame(active, "Venue closed")).toMatchObject({
+      phase: "cancelled",
+      winner: null,
+    });
+    expect(() => confirmDraw(active, "   ")).toThrow(/reason/i);
+    expect(() => cancelGame(active, "")).toThrow(/reason/i);
+    expect(() => cancelGame(confirmDraw(active, "Agreed draw"), "Changed mind")).toThrow(
+      /terminal/i,
+    );
+  });
+
   it("snapshots the Best move rule and defaults it on", () => {
     expect(createGame(completedSetup()).bestMoveEnabled).toBe(true);
     expect(createGame(completedSetup(), { bestMoveEnabled: false }).bestMoveEnabled).toBe(false);
+
+    const clubRules = { bestMoveEnabled: false };
+    const active = createGame(completedSetup(), clubRules);
+    clubRules.bestMoveEnabled = true;
+    expect(active.bestMoveEnabled).toBe(false);
+    expect({ ...active, phase: "finished" as const, winner: "red" as const }.bestMoveEnabled).toBe(
+      false,
+    );
   });
 
   it("advances through negotiation and Sheriff wake-up into day one", () => {

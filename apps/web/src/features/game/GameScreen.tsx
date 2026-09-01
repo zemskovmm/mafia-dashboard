@@ -89,6 +89,10 @@ const phaseTitle = (game: GameState, t: GameTranslator): string => {
       return t("game.nightComplete");
     case "finished":
       return game.winner === "red" ? t("game.citizensWon") : t("game.mafiaWon");
+    case "draw":
+      return t("game.drawn");
+    case "cancelled":
+      return t("game.cancelled");
   }
 };
 
@@ -140,7 +144,9 @@ export const GameScreen = ({
     game.phase !== "sheriff-wake" &&
     game.phase !== "car-crash-result" &&
     game.phase !== "night-resolution" &&
-    game.phase !== "finished";
+    game.phase !== "finished" &&
+    game.phase !== "draw" &&
+    game.phase !== "cancelled";
   const revealDisciplineAction = (seat: number) => {
     const player = game.players.find((candidate) => candidate.seat === seat);
     setSwipedSeat(disciplineAvailable && player?.status === "active" ? seat : null);
@@ -264,6 +270,14 @@ export const GameScreen = ({
         </div>
       );
     }
+    if (game.phase === "draw" || game.phase === "cancelled") {
+      return (
+        <div className="winner-card" role="status">
+          <span className="table-prompt">{t("game.finished")}</span>
+          <strong>{game.phase === "draw" ? t("game.drawn") : t("game.cancelled")}</strong>
+        </div>
+      );
+    }
     if (game.phase === "best-move" && game.bestMove !== undefined) {
       return (
         <div className="best-move-center">
@@ -324,6 +338,7 @@ export const GameScreen = ({
 
   const tableAdvance = (() => {
     if (mode === "preview") return undefined;
+    if (game.phase === "draw" || game.phase === "cancelled") return undefined;
     if (game.phase === "finished") {
       return (
         <button type="button" disabled={finishGameState !== "ready"} onClick={onFinishGame}>

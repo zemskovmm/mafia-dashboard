@@ -11,11 +11,13 @@ import {
   isProvisionalInteractionType,
   isSecretGameEventType,
   replayGameLog,
+  tryApplyGameEvent,
   type CanonicalGameEventDraft,
   type GameLogEntry,
   type InitialGameBaseline,
 } from "./game-events.js";
 import * as gameEvents from "./game-events.js";
+import { GameRuleError } from "./rule-error.js";
 import {
   beginRoleDraw,
   completeRoleDraw,
@@ -286,6 +288,44 @@ describe("canonical game replay", () => {
         payload: { to: "day" },
       }),
     ).toThrow(/advance/i);
+  });
+
+  it("returns structured rule errors without mutating the supplied projection", () => {
+    const game = dayOne();
+    const before = structuredClone(game);
+    const result = tryApplyGameEvent(game, {
+      type: "phase.changed",
+      payload: { to: "day" },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: {
+        code: "invalid-phase",
+        details: { eventType: "phase.changed", phase: "day", day: 1 },
+      },
+    });
+    expect(
+      tryApplyGameEvent(
+        { ...game, phase: "draw" },
+        {
+          type: "turn.completed",
+          payload: { seat: 1 },
+        },
+      ),
+    ).toMatchObject({ ok: false, error: { code: "terminal-game" } });
+
+    try {
+      applyGameEvent(game, { type: "phase.changed", payload: { to: "day" } });
+      expect.fail("Expected the illegal action to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(GameRuleError);
+      expect(error).toMatchObject({
+        code: "invalid-phase",
+        details: { eventType: "phase.changed", phase: "day", day: 1 },
+      });
+    }
+    expect(game).toEqual(before);
   });
 
   it("rejects phase changes that skip a meaningful phase", () => {
@@ -1290,6 +1330,52 @@ describe("canonical game replay", () => {
         { ...second.entry, gameId: "00000000-0000-4000-8000-000000000998" },
       ]),
     ).toThrow(/game/i);
+  });
+
+  it("replays explained draw and cancellation rulings as public terminal events", () => {
+    const initial = dayOne();
+    const root = entry(initial, 1, { type: "game.checkpointed", payload: {} });
+    const drawn = entry(
+      root.after,
+      2,
+      { type: "game.drawn", payload: { reason: "Three quiet cycles" } },
+      root.entry.id,
+    );
+
+    expect(drawn.after).toMatchObject({ phase: "draw", winner: null });
+    expect(replayGameLog(baseline(initial), [root.entry, drawn.entry]).game).toEqual(drawn.after);
+    expect(isMeaningfulGameEventDraft(drawn.entry)).toBe(true);
+    expect(isSecretGameEventType("game.drawn")).toBe(false);
+
+    const planning = planningGame();
+    const planningRoot = entry(planning, 1, { type: "game.checkpointed", payload: {} });
+    const cancelled = entry(
+      planningRoot.after,
+      2,
+      { type: "game.cancelled", payload: { reason: "Venue closed" } },
+      planningRoot.entry.id,
+    );
+    expect(cancelled.after).toMatchObject({ phase: "cancelled", day: 0, winner: null });
+    expect(replayGameLog(baseline(planning), [planningRoot.entry, cancelled.entry]).game).toEqual(
+      cancelled.after,
+    );
+    expect(() =>
+      applyGameEvent(initial, { type: "game.drawn", payload: { reason: "   " } }),
+    ).toThrow(/reason/i);
+
+    const laterEvent: GameLogEntry = {
+      ...drawn.entry,
+      type: "turn.completed",
+      payload: { seat: 1 },
+      id: id(3),
+      sequence: 3,
+      parentEventId: drawn.entry.id,
+      phaseBefore: "draw",
+      phaseAfter: "draw",
+    };
+    expect(() => replayGameLog(baseline(initial), [root.entry, drawn.entry, laterEvent])).toThrow(
+      /terminal/i,
+    );
   });
 
   it("validates completion markers and classifies vote removal as provisional", () => {

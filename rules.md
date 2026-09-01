@@ -46,7 +46,7 @@ The product does **not** provide player accounts, automatic role delivery to pho
 - **Rules are fixed.** The application implements the Club Mafia rules in this document rather than exposing alternate-ruleset selectors.
 - **The event log is authoritative.** Live state is replayed from an immutable baseline through the active branch of parent-linked semantic events so actions can be audited and safely undone.
 - **Secrets stay private.** Private roles and checks must not leak to non-host UI, player-visible logs, browser notifications, or URLs.
-- **A moderator remains the arbiter.** The app validates normal flow but MUST allow an explained override for unusual rulings.
+- **A moderator remains the arbiter.** The app validates normal flow; exceptional draw and cancellation rulings require an explanation, while ordinary corrections use Undo or Timeline Reset rather than an arbitrary state override.
 - **No silent data loss.** Every accepted action is persisted and visibly acknowledged.
 - **Fast recovery.** Refreshing the page or restarting the app MUST restore the active game. The auxiliary timer resets locally.
 
@@ -101,7 +101,7 @@ The dashboard MUST evaluate victory immediately after each elimination, disquali
 - **Black wins** when active black players are equal to or greater than active red players.
 - **Draw** is available as a moderator ruling. In Club Mafia v1 it is automatically suggested if three consecutive complete night/day cycles produce no elimination, but the moderator must confirm it because club rules differ on this edge case.[S4]
 
-No further phase starts after a win or confirmed draw.
+No further phase starts after a win, confirmed draw, or cancellation.
 
 ## 4. Game state machine
 
@@ -124,6 +124,8 @@ DRAFT
 ```
 
 Exceptional terminal states are `CANCELLED` and `DRAW`. A game may be paused from any live state without changing its logical phase.
+
+The implemented domain projection records consecutive complete cycles without an elimination and whether the current cycle has already produced an elimination. The draw suggestion becomes active at three consecutive quiet cycles, but only an explicit `game.drawn` event with a non-empty moderator reason enters `DRAW`. `game.cancelled` likewise requires a reason. Both events are public semantic checkpoints and may appear only once at the active replay head.
 
 ### 4.2 Preconditions
 
@@ -276,7 +278,7 @@ Current implemented behavior runs Best Move when there is an eligible victim on 
 - the moderator records the ordered trio;
 - the victim still receives their normal final speech after morning.
 
-The settled requirement is a per-club Best Move setting enabled by default. That club setting is not yet implemented, so current behavior remains fixed rather than club-configurable.[S4]
+Best Move is a per-club setting enabled by default. Its resolved value is copied into `GameState` when the game starts, so later club-setting changes cannot alter an active or completed game.[S4]
 
 ## 5. Fouls and discipline
 
@@ -321,7 +323,7 @@ The product SHOULD use neutral UI wording such as “eliminated” and “night 
 
 Mafia Dashboard supports the ten-seat Club Mafia rules in this document. Player count, role distribution, role reveal, speech order, nominations, voting, tie resolution, night actions, checks, draw suggestion, and foul policy are not alternate-ruleset selectors.
 
-Canonical events carry a replay-format version, but the UI does not expose a ruleset selector. Best Move is the one settled club-level rules control: it must be enabled by default and configurable per club. The current application has not implemented that setting and therefore runs the fixed Best Move flow described in section 4.14.
+Canonical events carry a replay-format version, but the UI does not expose a ruleset selector. Best Move is the one settled club-level rules control: it is enabled by default, configurable per club, and snapshotted into each new game before play begins.
 
 The club language is presentation configuration rather than a rules selector. Every host-facing surface supports English and Russian; existing clubs migrate to English, new clubs default from the creator's browser language, and owners or managers/editors can change the club language immediately without changing an active game's canonical state.
 
@@ -370,7 +372,7 @@ The night screen MUST minimize accidental leaks:
 - make target selection large and seat-number based;
 - require confirmation for night resolution;
 - distinguish pending action from resolved result;
-- prevent selecting eliminated targets unless a rules override is recorded.
+- permit a deliberate shot at an inactive target and resolve it as the documented no-effect outcome.
 
 ### 7.4 Undo and Reset
 
@@ -403,6 +405,8 @@ Important invariants:
 - exactly one linear semantic event prefix and one browser-authoritative current game state;
 - event replay sequence is monotonic within the retained prefix; Undo and Reset permanently remove the discarded tail;
 - replay validates event envelopes, parent links, phase/day transitions, and state hashes;
+- canonical illegal actions expose a stable `GameRuleError` code and safe context without mutating the supplied projection;
+- draw and cancellation events retain their moderator reason and terminate the active event prefix;
 - secret fields are never returned by public APIs;
 - completion projections mirror the latest valid browser snapshot;
 - application-level authorization is enforced on every game route, not only in the UI.

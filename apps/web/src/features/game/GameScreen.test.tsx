@@ -852,4 +852,23 @@ describe("GameScreen", () => {
     );
     expect(screen.getByRole("button", { name: "Game saved offline" })).toBeDisabled();
   });
+
+  it.each([
+    ["draw", "Game drawn"],
+    ["cancelled", "Game cancelled"],
+  ] as const)("renders a terminal %s state without winner persistence controls", (phase, label) => {
+    const day = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+    render(
+      <GameScreen
+        game={{ ...day, phase, winner: null }}
+        hostName="Host Player"
+        onGameChange={() => undefined}
+        onEvent={() => undefined}
+        privacyHidden={false}
+      />,
+    );
+
+    expect(screen.getByRole("status")).toHaveTextContent(label);
+    expect(screen.queryByRole("button", { name: "Finish the game" })).toBeNull();
+  });
 });

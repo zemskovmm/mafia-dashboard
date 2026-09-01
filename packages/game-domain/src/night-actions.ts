@@ -245,6 +245,10 @@ export const completeNight = (game: GameState): GameState => {
   const dayState: GameState = {
     ...game,
     day,
+    cyclesWithoutElimination: game.eliminationOccurredThisCycle
+      ? 0
+      : (game.cyclesWithoutElimination ?? 0) + 1,
+    eliminationOccurredThisCycle: false,
     turnOrder: getDayOrder(game.players, day),
     currentTurnIndex: 0,
     nominations: [],

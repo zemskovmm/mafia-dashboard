@@ -175,6 +175,13 @@ const regionForState = (game: GameState, text: TimelineText): RegionIdentity | n
 };
 
 const regionForFrame = (frame: ReplayFrame, text: TimelineText): RegionIdentity | null => {
+  if (
+    frame.entry.type === "game.completed" ||
+    frame.entry.type === "game.drawn" ||
+    frame.entry.type === "game.cancelled"
+  ) {
+    return null;
+  }
   if (frame.entry.type === "best-move.completed") {
     const day = frame.before.day;
     return {
@@ -544,6 +551,20 @@ const describeMarker = (frame: ReplayFrame, text: TimelineText): MarkerDescripti
         icon: "trophy",
         label: winner,
         ariaLabel: text.t("Game completed: {team}", { team: winner }),
+      };
+    }
+    case "game.drawn":
+    case "game.cancelled": {
+      const reason = typeof payload.reason === "string" ? payload.reason : null;
+      if (reason === null) return genericDescription(eventType, text);
+      const drawn = eventType === "game.drawn";
+      return {
+        kind: "completion",
+        icon: drawn ? "handshake" : "ban",
+        label: text.t(drawn ? "Game drawn" : "Game cancelled"),
+        ariaLabel: text.t(drawn ? "Game drawn: {reason}" : "Game cancelled: {reason}", {
+          reason,
+        }),
       };
     }
     default:

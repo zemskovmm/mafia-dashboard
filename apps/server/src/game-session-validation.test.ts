@@ -113,6 +113,22 @@ describe("game session validation", () => {
     const valid = { mutationId: uuid(81), baseRevision: 5, event: entry };
 
     expect(schema?.safeParse(valid).success).toBe(true);
+    const drawn = createGameLogEntry({
+      gameId,
+      id: uuid(80),
+      sequence: 2,
+      parentEventId: uuid(82),
+      createdAt: "2026-08-25T00:02:00.000Z",
+      before,
+      draft: { type: "game.drawn", payload: { reason: "Three quiet cycles" } },
+    }).entry;
+    expect(schema?.safeParse({ ...valid, event: drawn }).success).toBe(true);
+    expect(
+      schema?.safeParse({
+        ...valid,
+        event: { ...drawn, payload: { reason: "   " } },
+      }).success,
+    ).toBe(false);
     expect(schema?.safeParse({ ...valid, event: [entry, entry] }).success).toBe(false);
     expect(
       schema?.safeParse({ ...valid, event: { ...entry, type: "vote.assigned" } }).success,

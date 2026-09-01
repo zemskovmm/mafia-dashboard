@@ -54,6 +54,8 @@ export const createGame = (
     phase: "mafia-planning",
     day: 0,
     bestMoveEnabled,
+    cyclesWithoutElimination: 0,
+    eliminationOccurredThisCycle: false,
     players,
     turnOrder: [],
     currentTurnIndex: 0,
@@ -108,10 +110,64 @@ export const markPlayerInactive = (
 
   return {
     ...game,
+    eliminationOccurredThisCycle: true,
     players: game.players.map((candidate) =>
       candidate.seat === seat ? { ...candidate, status } : candidate,
     ),
   };
+};
+
+export const isTerminalGamePhase = (phase: GameState["phase"]): boolean =>
+  phase === "finished" || phase === "draw" || phase === "cancelled";
+
+export const shouldSuggestDraw = (game: GameState): boolean =>
+  !isTerminalGamePhase(game.phase) && (game.cyclesWithoutElimination ?? 0) >= 3;
+
+const assertRulingReason = (reason: string): void => {
+  if (reason.length === 0 || reason !== reason.trim() || reason.length > 500) {
+    throw new Error("A moderator ruling requires a trimmed reason of at most 500 characters");
+  }
+};
+
+const terminalize = (game: GameState, phase: "draw" | "cancelled"): GameState => ({
+  ...game,
+  phase,
+  turnOrder: [],
+  currentTurnIndex: 0,
+  nominations: [],
+  voteAssignments: {},
+  votingCancellation: undefined,
+  votingRound: undefined,
+  carCrashSeats: undefined,
+  carCrashVotes: undefined,
+  carCrashResult: undefined,
+  goodbyeSeats: undefined,
+  goodbyeNext: undefined,
+  shotAssignments: {},
+  checkResult: undefined,
+  nightResult: undefined,
+  dayNotice: undefined,
+  redCardIssuedThisDay: undefined,
+  bestMove: undefined,
+  winner: null,
+});
+
+const assertNotTerminal = (game: GameState): void => {
+  if (isTerminalGamePhase(game.phase))
+    throw new Error("A terminal game cannot accept more actions");
+};
+
+export const confirmDraw = (game: GameState, reason: string): GameState => {
+  assertNotTerminal(game);
+  if (game.day < 1) throw new Error("A draw requires active play");
+  assertRulingReason(reason);
+  return terminalize(game, "draw");
+};
+
+export const cancelGame = (game: GameState, reason: string): GameState => {
+  assertNotTerminal(game);
+  assertRulingReason(reason);
+  return terminalize(game, "cancelled");
 };
 
 export const evaluateVictory = (players: readonly PlayerState[]): Winner => {

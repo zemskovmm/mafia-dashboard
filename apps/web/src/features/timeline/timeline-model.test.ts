@@ -110,6 +110,31 @@ describe("replay-frame timeline model", () => {
     ).toBe(true);
   });
 
+  it.each([
+    ["game.drawn", "draw", "Game drawn", "Game drawn: Three quiet cycles"],
+    ["game.cancelled", "cancelled", "Game cancelled", "Game cancelled: Venue closed"],
+  ] as const)("labels the %s terminal event and its reason", (type, phase, label, ariaLabel) => {
+    const completion = createSampleGameHistory().frames.at(-1)!;
+    const reason = type === "game.drawn" ? "Three quiet cycles" : "Venue closed";
+    const terminal = {
+      ...completion,
+      entry: {
+        ...completion.entry,
+        type,
+        payload: { reason },
+        phaseAfter: phase,
+      },
+      after: { ...completion.after, phase, winner: null },
+    } as ReplayFrame;
+
+    expect(buildTimeline([terminal]).markers[0]).toMatchObject({
+      kind: "completion",
+      label,
+      ariaLabel,
+      regionId: null,
+    });
+  });
+
   it("groups every accepted Mafia resolution into one marker with all shooter-target pairs", () => {
     const timeline = buildTimeline(createSampleGameHistory().frames);
     const shotMarkers = timeline.markers.filter(

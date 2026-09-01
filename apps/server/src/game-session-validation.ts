@@ -31,6 +31,8 @@ const gamePhase = z.enum([
   "night-sheriff-result",
   "night-resolution",
   "finished",
+  "draw",
+  "cancelled",
 ]);
 
 const playerInput = z.object({
@@ -149,6 +151,8 @@ const gameStateSchema = z
     phase: gamePhase,
     day: z.number().int().min(0),
     bestMoveEnabled: z.boolean().optional(),
+    cyclesWithoutElimination: z.number().int().min(0).optional(),
+    eliminationOccurredThisCycle: z.boolean().optional(),
     players: z.array(playerState).length(10),
     turnOrder: z.array(z.number().int().min(1).max(10)).max(10),
     currentTurnIndex: z.number().int().min(0).max(10),
@@ -820,6 +824,34 @@ const canonicalGameEventSchema = z.discriminatedUnion("type", [
     .extend({
       type: z.literal("game.completed"),
       payload: z.object({ winner: team }).strict(),
+    })
+    .strict(),
+  canonicalEventMetadata
+    .extend({
+      type: z.literal("game.drawn"),
+      payload: z
+        .object({
+          reason: z
+            .string()
+            .min(1)
+            .max(500)
+            .refine((value) => value === value.trim()),
+        })
+        .strict(),
+    })
+    .strict(),
+  canonicalEventMetadata
+    .extend({
+      type: z.literal("game.cancelled"),
+      payload: z
+        .object({
+          reason: z
+            .string()
+            .min(1)
+            .max(500)
+            .refine((value) => value === value.trim()),
+        })
+        .strict(),
     })
     .strict(),
 ]);

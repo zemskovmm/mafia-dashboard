@@ -11,7 +11,14 @@ import {
   resolveVote,
   skipVoting,
 } from "./day-actions.js";
-import { advanceSetupPhase, evaluateVictory, markPlayerInactive } from "./game.js";
+import {
+  advanceSetupPhase,
+  cancelGame,
+  confirmDraw,
+  evaluateVictory,
+  isTerminalGamePhase,
+  markPlayerInactive,
+} from "./game.js";
 import {
   beginNight,
   completeBestMove,
@@ -29,6 +36,7 @@ import {
   toggleBestMoveSeat,
 } from "./night-actions.js";
 import { completeCurrentTurn } from "./day-actions.js";
+import { toGameRuleError, type GameRuleError } from "./rule-error.js";
 import type {
   CarCrashVoteResult,
   GamePhase,
@@ -59,6 +67,8 @@ export const canonicalGameEventTypes = [
   "sheriff.check-skipped",
   "best-move.completed",
   "game.completed",
+  "game.drawn",
+  "game.cancelled",
 ] as const;
 
 export type CanonicalGameEventType = (typeof canonicalGameEventTypes)[number];
@@ -128,7 +138,9 @@ export type CanonicalGameEventDraft =
         readonly mafiaHits: number;
       }
     >
-  | EventDraft<"game.completed", { readonly winner: "red" | "black" }>;
+  | EventDraft<"game.completed", { readonly winner: "red" | "black" }>
+  | EventDraft<"game.drawn", { readonly reason: string }>
+  | EventDraft<"game.cancelled", { readonly reason: string }>;
 
 export interface InitialGameBaseline {
   readonly replayVersion: typeof CURRENT_REPLAY_VERSION;
@@ -201,6 +213,8 @@ export const canonicalGameEventSecrecy = {
   "sheriff.check-skipped": true,
   "best-move.completed": true,
   "game.completed": false,
+  "game.drawn": false,
+  "game.cancelled": false,
 } as const satisfies Readonly<Record<CanonicalGameEventType, boolean>>;
 
 export const canonicalSecretGameEventTypes = canonicalGameEventTypes.filter(
@@ -232,6 +246,8 @@ const canonicalGamePhaseSet = new Set<string>([
   "night-sheriff-result",
   "night-resolution",
   "finished",
+  "draw",
+  "cancelled",
 ] satisfies readonly GamePhase[]);
 
 const requireRecord = (value: unknown, context: string): UnknownRecord => {
@@ -488,6 +504,20 @@ const assertCanonicalPayload = (type: CanonicalGameEventType, value: unknown): v
         throw new Error(`${type} payload.winner is invalid`);
       }
       return;
+    case "game.drawn":
+    case "game.cancelled":
+      assertExactKeys(payload, ["reason"], `${type} payload`);
+      if (
+        typeof payload.reason !== "string" ||
+        payload.reason.length === 0 ||
+        payload.reason !== payload.reason.trim() ||
+        payload.reason.length > 500
+      ) {
+        throw new Error(
+          `${type} payload.reason must be a trimmed reason of at most 500 characters`,
+        );
+      }
+      return;
   }
 };
 
@@ -576,6 +606,8 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
       "redCardIssuedThisDay",
       "bestMove",
       "bestMoveEnabled",
+      "cyclesWithoutElimination",
+      "eliminationOccurredThisCycle",
     ],
     context,
   );
@@ -583,6 +615,12 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
   assertSafeInteger(game.day, `${context}.day`, 0);
   if (game.bestMoveEnabled !== undefined) {
     assertBoolean(game.bestMoveEnabled, `${context}.bestMoveEnabled`);
+  }
+  if (game.cyclesWithoutElimination !== undefined) {
+    assertSafeInteger(game.cyclesWithoutElimination, `${context}.cyclesWithoutElimination`, 0);
+  }
+  if (game.eliminationOccurredThisCycle !== undefined) {
+    assertBoolean(game.eliminationOccurredThisCycle, `${context}.eliminationOccurredThisCycle`);
   }
   if (!Array.isArray(game.players) || game.players.length !== 10) {
     throw new Error(`${context}.players must contain exactly 10 players`);
@@ -998,7 +1036,7 @@ const applyDisciplineContext = (
     game.day < 1 ||
     context.phase === "mafia-planning" ||
     context.phase === "sheriff-wake" ||
-    context.phase === "finished"
+    isTerminalGamePhase(context.phase)
   ) {
     throw new Error("Discipline context must describe active play from day one");
   }
@@ -1067,8 +1105,15 @@ const applyDisciplineContext = (
   return next;
 };
 
-export const applyGameEvent = (game: GameState, event: CanonicalGameEventDraft): GameState => {
+const applyValidatedGameEvent = (game: GameState, event: CanonicalGameEventDraft): GameState => {
   assertCanonicalGameEventDraft(event);
+  if (
+    isTerminalGamePhase(game.phase) &&
+    event.type !== "game.checkpointed" &&
+    !(game.phase === "finished" && event.type === "game.completed")
+  ) {
+    throw new Error("A terminal game is outside active play and cannot accept more actions");
+  }
   switch (event.type) {
     case "game.started":
       if (game.phase !== "mafia-planning") {
@@ -1085,6 +1130,10 @@ export const applyGameEvent = (game: GameState, event: CanonicalGameEventDraft):
         throw new Error("The completion winner does not match the finished game");
       }
       return game;
+    case "game.drawn":
+      return confirmDraw(game, event.payload.reason);
+    case "game.cancelled":
+      return cancelGame(game, event.payload.reason);
     case "phase.changed":
       return applyPhaseChange(game, event.payload.to);
     case "turn.completed": {
@@ -1203,6 +1252,34 @@ export const applyGameEvent = (game: GameState, event: CanonicalGameEventDraft):
       return next;
     }
   }
+};
+
+export type GameActionResult =
+  | { readonly ok: true; readonly game: GameState }
+  | { readonly ok: false; readonly error: GameRuleError };
+
+export const tryApplyGameEvent = (
+  game: GameState,
+  event: CanonicalGameEventDraft,
+): GameActionResult => {
+  try {
+    return { ok: true, game: applyValidatedGameEvent(game, event) };
+  } catch (error) {
+    return {
+      ok: false,
+      error: toGameRuleError(error, {
+        eventType: typeof event?.type === "string" ? event.type : "unknown",
+        phase: game.phase,
+        day: game.day,
+      }),
+    };
+  }
+};
+
+export const applyGameEvent = (game: GameState, event: CanonicalGameEventDraft): GameState => {
+  const result = tryApplyGameEvent(game, event);
+  if (!result.ok) throw result.error;
+  return result.game;
 };
 
 interface CreateGameLogEntryInput {
@@ -1362,14 +1439,16 @@ export const replayGameLog = (
     if (entries[0]!.type === "game.started" && baseline.game.phase !== "mafia-planning") {
       throw new Error("game.started requires a mafia-planning baseline");
     }
-    const completionIndexes = entries.flatMap(({ type }, index) =>
-      type === "game.completed" ? [index] : [],
+    const terminalIndexes = entries.flatMap(({ type }, index) =>
+      type === "game.completed" || type === "game.drawn" || type === "game.cancelled"
+        ? [index]
+        : [],
     );
     if (
-      completionIndexes.length > 1 ||
-      (completionIndexes.length === 1 && completionIndexes[0] !== entries.length - 1)
+      terminalIndexes.length > 1 ||
+      (terminalIndexes.length === 1 && terminalIndexes[0] !== entries.length - 1)
     ) {
-      throw new Error("game.completed may appear only once at the active head");
+      throw new Error("A terminal game event may appear only once at the active head");
     }
   }
   for (const entry of entries) {

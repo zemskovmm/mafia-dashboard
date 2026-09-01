@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { advanceSetupPhase, createGame, markPlayerInactive } from "./game.js";
+import { advanceSetupPhase, createGame, markPlayerInactive, shouldSuggestDraw } from "./game.js";
 import {
   beginNight,
   completeMafiaShots,
@@ -238,6 +238,39 @@ describe("night actions", () => {
       goodbyeSeats: [victim.seat],
       goodbyeNext: "day",
     });
+  });
+
+  it("suggests a draw after three complete cycles without an elimination", () => {
+    let game: GameState = { ...dayOne(), phase: "night-resolution" };
+
+    for (let completedCycles = 1; completedCycles <= 3; completedCycles += 1) {
+      game = completeNight(game);
+      expect(game.cyclesWithoutElimination).toBe(completedCycles);
+      expect(game.eliminationOccurredThisCycle).toBe(false);
+      expect(shouldSuggestDraw(game)).toBe(completedCycles === 3);
+      game = { ...game, phase: "night-resolution" };
+    }
+  });
+
+  it("resets the draw counter after an elimination and supports legacy projections", () => {
+    const legacy = dayOne();
+    const { cyclesWithoutElimination, eliminationOccurredThisCycle, ...legacyProjection } = legacy;
+    expect(cyclesWithoutElimination).toBe(0);
+    expect(eliminationOccurredThisCycle).toBe(false);
+
+    const firstCycle = completeNight({ ...legacyProjection, phase: "night-resolution" });
+    expect(firstCycle.cyclesWithoutElimination).toBe(1);
+
+    const victim = firstCycle.players.find(({ team }) => team === "red")!;
+    const withElimination = markPlayerInactive(
+      { ...firstCycle, phase: "night-resolution", cyclesWithoutElimination: 2 },
+      victim.seat,
+      "eliminated",
+    );
+    const reset = completeNight(withElimination);
+    expect(reset.cyclesWithoutElimination).toBe(0);
+    expect(reset.eliminationOccurredThisCycle).toBe(false);
+    expect(shouldSuggestDraw(reset)).toBe(false);
   });
 
   it("skips first-night Best move when the game snapshot disables it", () => {
