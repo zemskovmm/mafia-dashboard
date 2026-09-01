@@ -2023,13 +2023,18 @@ describe("GameSessionStore", () => {
     const projections = await pool.query<{
       result_count: number;
       player_count: number;
+      assigned_role_count: number;
     }>(
       `SELECT
          (SELECT COUNT(*)::int FROM game_results WHERE game_id = $1) AS result_count,
-         (SELECT COUNT(*)::int FROM game_session_players WHERE game_id = $1) AS player_count`,
+         (SELECT COUNT(*)::int FROM game_session_players WHERE game_id = $1) AS player_count,
+         (SELECT COUNT(*)::int FROM game_session_players
+           WHERE game_id = $1 AND role IS NOT NULL) AS assigned_role_count`,
       [gameId],
     );
-    expect(projections.rows).toEqual([{ result_count: 0, player_count: 11 }]);
+    expect(projections.rows).toEqual([
+      { result_count: 0, player_count: 11, assigned_role_count: 10 },
+    ]);
 
     const restored = await store.moveHead({
       gameId,
@@ -3067,16 +3072,17 @@ describe("GameSessionStore", () => {
       player_id: string;
       seat: number | null;
       is_host: boolean;
+      role: string | null;
     }>(
-      `SELECT player_id, seat, is_host
+      `SELECT player_id, seat, is_host, role
          FROM game_session_players
         WHERE game_id = $1
         ORDER BY is_host DESC, seat`,
       [gameId],
     );
     expect(selectedPlayers.rows).toEqual([
-      { player_id: hostPlayerId, seat: null, is_host: true },
-      { player_id: seatedPlayerId, seat: 1, is_host: false },
+      { player_id: hostPlayerId, seat: null, is_host: true, role: null },
+      { player_id: seatedPlayerId, seat: 1, is_host: false, role: null },
     ]);
   });
 
@@ -3095,12 +3101,12 @@ describe("GameSessionStore", () => {
       step: "roles",
       hostPlayerId: completed.hostPlayerId,
       selectedPlayerIds: [selectedPlayerId],
-      setup: { players: [{ id: setupPlayerId, seat: 1 }] },
+      setup: { players: [{ id: setupPlayerId, seat: 1 }], assignments: { 1: "mafia" } },
     } as const;
     const projectedPlayers = async () =>
       (
-        await pool.query<{ player_id: string; seat: number }>(
-          `SELECT player_id, seat
+        await pool.query<{ player_id: string; seat: number; role: string | null }>(
+          `SELECT player_id, seat, role
              FROM game_session_players
             WHERE game_id = $1 AND NOT is_host
             ORDER BY seat`,
@@ -3117,7 +3123,7 @@ describe("GameSessionStore", () => {
       results: null,
     });
     expect(await projectedPlayers()).toEqual(
-      completed.state.game.players.map(({ id, seat }) => ({ player_id: id, seat })),
+      completed.state.game.players.map(({ id, seat, role }) => ({ player_id: id, seat, role })),
     );
 
     await store.save({
@@ -3128,7 +3134,9 @@ describe("GameSessionStore", () => {
       state: { ...emptyState, hostPlayerId: completed.hostPlayerId, setup },
       results: null,
     });
-    expect(await projectedPlayers()).toEqual([{ player_id: setupPlayerId, seat: 1 }]);
+    expect(await projectedPlayers()).toEqual([
+      { player_id: setupPlayerId, seat: 1, role: "mafia" },
+    ]);
 
     await store.save({
       gameId,
@@ -3142,7 +3150,9 @@ describe("GameSessionStore", () => {
       },
       results: null,
     });
-    expect(await projectedPlayers()).toEqual([{ player_id: selectedPlayerId, seat: 1 }]);
+    expect(await projectedPlayers()).toEqual([
+      { player_id: selectedPlayerId, seat: 1, role: null },
+    ]);
   });
 
   it("atomically finalizes results and removes active players", async () => {

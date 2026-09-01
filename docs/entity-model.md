@@ -88,9 +88,21 @@ erDiagram
         int last_number
     }
 
+    GAME_RULESETS {
+        string id PK
+        int version PK
+        int player_count
+        int sheriff_count
+        int citizen_count
+        int mafia_count
+        int don_count
+    }
+
     GAME_SESSIONS {
         uuid club_id PK, FK
         uuid id PK
+        string ruleset_id FK
+        int ruleset_version FK
         string name
         int revision
         uuid last_mutation_id
@@ -137,6 +149,7 @@ erDiagram
         uuid player_id PK, FK
         int seat "nullable for host"
         boolean is_host
+        string role "nullable before assignment and for host"
     }
 
     GAME_RESULTS {
@@ -184,6 +197,7 @@ erDiagram
     CLUBS ||--o{ DELETED_GAMES : tombstones
     CLUBS ||--o{ GAME_DAILY_COUNTERS : numbers
     CLUBS ||--o{ GAME_SESSIONS : owns
+    GAME_RULESETS ||--o{ GAME_SESSIONS : governs
     GAME_SESSIONS ||--o{ GAME_SESSION_MUTATIONS : deduplicates
     GAME_SESSIONS ||--o{ GAME_SESSION_PLAYERS : selects
     PLAYERS ||--o{ GAME_SESSION_PLAYERS : participates
@@ -197,6 +211,9 @@ erDiagram
 ### Physical-key notes
 
 - Club isolation is part of the composite keys and composite foreign keys for sessions, mutations, selected players, results, and player results. A matching `club_id` is therefore required across those relationships.
+- `game_rulesets` contains the immutable fixed-ruleset identity used by current sessions. Each session has a required composite reference to the canonical `club-mafia` version `1` row; custom rulesets and historical ruleset snapshot behavior remain outside the current model.
+- `game_session_players` is an internal relational projection of the authoritative session snapshot. Its composite keys enforce one row per player and one seated row per seat in each club/game. Database checks require hosts to have neither a seat nor a role, require non-hosts to have a seat, and restrict assigned roles to the canonical role vocabulary. A role may remain null before that seat draws a card.
+- The full `game_sessions.state` snapshot remains the restorable authority. Projection rows are rebuilt atomically on every accepted mutation, removed on completion, and never form a separate public or sanitized API representation. Authenticated `manager` and `user` members receive the same complete session data; membership and club isolation control access.
 - `club_memberships.manager_player_id`, `club_id`, and `user_id` form a nullable composite foreign key to the manager player's `(id, club_id, user_id)` identity. The partial unique index on `manager_player_id` limits a manager player to at most one membership.
 - `game_events` is an event store for both session and non-session game aggregates. `game_events.game_id` deliberately has no foreign key to `game_sessions`.
 - `game_events.parent_event_id` and the three event IDs on `game_sessions` are logical replay links. Their former foreign keys are explicitly removed by the schema so retained branches and non-session aggregates remain valid.

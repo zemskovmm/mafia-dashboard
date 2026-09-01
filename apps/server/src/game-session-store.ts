@@ -10,6 +10,7 @@ import {
   type GamePhase,
   type GameState,
   type InitialGameBaseline,
+  type Role,
 } from "@mafia/game-domain";
 import type { Pool, PoolClient } from "pg";
 import {
@@ -40,6 +41,7 @@ interface StoredSetupState {
   readonly selectedPlayerIds?: readonly string[];
   readonly setup?: {
     readonly players?: readonly { readonly id?: string; readonly seat?: number }[];
+    readonly assignments?: Readonly<Partial<Record<number, Role>>>;
     readonly [key: string]: unknown;
   } | null;
   readonly [key: string]: unknown;
@@ -456,23 +458,34 @@ const assertPlayersBelongToClub = async (
 };
 
 type PlayerProjection =
-  | { readonly mode: "canonical-game"; readonly players: readonly { id: string; seat: number }[] }
-  | { readonly mode: "setup-roster"; readonly players: readonly { id: string; seat: number }[] }
-  | { readonly mode: "selected-ids"; readonly players: readonly { id: string; seat: number }[] };
+  | {
+      readonly mode: "canonical-game";
+      readonly players: readonly { id: string; seat: number; role: Role }[];
+    }
+  | {
+      readonly mode: "setup-roster";
+      readonly players: readonly { id: string; seat: number; role: Role | null }[];
+    }
+  | {
+      readonly mode: "selected-ids";
+      readonly players: readonly { id: string; seat: number; role: null }[];
+    };
 
 const playerProjectionFor = (state: StoredGameSessionState): PlayerProjection => {
   assertPersistedPlayerSelection(state);
   if (state.game !== null) {
     return {
       mode: "canonical-game",
-      players: state.game.players.map(({ id, seat }) => ({ id, seat })),
+      players: state.game.players.map(({ id, seat, role }) => ({ id, seat, role })),
     };
   }
   if (state.setup?.setup?.players !== undefined) {
     return {
       mode: "setup-roster",
       players: state.setup.setup.players.flatMap(({ id, seat }) =>
-        typeof id === "string" && typeof seat === "number" ? [{ id, seat }] : [],
+        typeof id === "string" && typeof seat === "number"
+          ? [{ id, seat, role: state.setup?.setup?.assignments?.[seat] ?? null }]
+          : [],
       ),
     };
   }
@@ -480,7 +493,7 @@ const playerProjectionFor = (state: StoredGameSessionState): PlayerProjection =>
     mode: "selected-ids",
     players:
       state.setup?.selectedPlayerIds?.flatMap((id, index) =>
-        id === "" ? [] : [{ id, seat: index + 1 }],
+        id === "" ? [] : [{ id, seat: index + 1, role: null }],
       ) ?? [],
   };
 };
@@ -504,21 +517,22 @@ const replaceActivePlayers = async (
   const activePlayers = [
     ...(hostPlayerId === undefined || hostPlayerId === null || hostPlayerId === ""
       ? []
-      : [{ id: hostPlayerId, seat: null, isHost: true }]),
-    ...seatedPlayers.map(({ id, seat }) => ({ id, seat, isHost: false })),
+      : [{ id: hostPlayerId, seat: null, isHost: true, role: null }]),
+    ...seatedPlayers.map(({ id, seat, role }) => ({ id, seat, isHost: false, role })),
   ];
   if (activePlayers.length === 0) return;
   await client.query(
-    `INSERT INTO game_session_players (club_id, game_id, player_id, seat, is_host)
-     SELECT $1, $2, player.id, player.seat, player.is_host
-       FROM UNNEST($3::uuid[], $4::integer[], $5::boolean[])
-         AS player(id, seat, is_host)`,
+    `INSERT INTO game_session_players (club_id, game_id, player_id, seat, is_host, role)
+     SELECT $1, $2, player.id, player.seat, player.is_host, player.role
+       FROM UNNEST($3::uuid[], $4::integer[], $5::boolean[], $6::text[])
+         AS player(id, seat, is_host, role)`,
     [
       clubId,
       gameId,
       activePlayers.map(({ id }) => id),
       activePlayers.map(({ seat }) => seat),
       activePlayers.map(({ isHost }) => isHost),
+      activePlayers.map(({ role }) => role),
     ],
   );
 };

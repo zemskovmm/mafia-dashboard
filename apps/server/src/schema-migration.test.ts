@@ -100,6 +100,179 @@ describe("isolated schema lifecycle", () => {
   });
 });
 
+describe("normalized game schema migration", () => {
+  it("installs the fixed ruleset and database-enforced session assignment constraints", async () => {
+    await withIsolatedSchema("normalized_game_fresh", async ({ pool }) => {
+      await initializeSchema(pool);
+
+      await expect(
+        pool.query(
+          `SELECT id, version, player_count, sheriff_count, citizen_count, mafia_count, don_count
+             FROM game_rulesets`,
+        ),
+      ).resolves.toMatchObject({
+        rows: [
+          {
+            id: "club-mafia",
+            version: 1,
+            player_count: 10,
+            sheriff_count: 1,
+            citizen_count: 6,
+            mafia_count: 2,
+            don_count: 1,
+          },
+        ],
+      });
+
+      const gameId = randomUUID();
+      const playerId = randomUUID();
+      await pool.query("INSERT INTO players (id, nickname) VALUES ($1, 'Constraint player')", [
+        playerId,
+      ]);
+      await pool.query(
+        `INSERT INTO game_sessions
+           (id, name, revision, last_mutation_id, state, status)
+         VALUES ($1, 'Ruleset session', 1, $2, '{}'::jsonb, 'active')`,
+        [gameId, randomUUID()],
+      );
+      await expect(
+        pool.query(
+          `INSERT INTO game_sessions
+             (id, name, revision, last_mutation_id, state, status, ruleset_id, ruleset_version)
+           VALUES ($1, 'Unknown ruleset', 1, $2, '{}'::jsonb, 'active', 'unknown', 1)`,
+          [randomUUID(), randomUUID()],
+        ),
+      ).rejects.toMatchObject({ code: "23503" });
+      await expect(
+        pool.query(
+          `INSERT INTO game_session_players (game_id, player_id, seat, is_host, role)
+           VALUES ($1, $2, 1, FALSE, 'doctor')`,
+          [gameId, playerId],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+      await expect(
+        pool.query(
+          `INSERT INTO game_session_players (game_id, player_id, seat, is_host, role)
+           VALUES ($1, $2, 1, TRUE, 'sheriff')`,
+          [gameId, playerId],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+      await expect(
+        pool.query(
+          `INSERT INTO game_session_players (game_id, player_id, seat, is_host, role)
+           VALUES ($1, $2, NULL, FALSE, NULL)`,
+          [gameId, playerId],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+    });
+  });
+
+  it("backfills representative populated sessions and converges idempotently", async () => {
+    await withIsolatedSchema("normalized_game_populated", async ({ pool }) => {
+      await initializeSchema(pool);
+      await pool.query(`
+        ALTER TABLE game_sessions DROP COLUMN IF EXISTS ruleset_id;
+        ALTER TABLE game_sessions DROP COLUMN IF EXISTS ruleset_version;
+        ALTER TABLE game_session_players DROP COLUMN IF EXISTS role;
+        DROP TABLE IF EXISTS game_rulesets CASCADE;
+      `);
+
+      const canonicalGameId = randomUUID();
+      const partialSetupId = randomUUID();
+      const canonicalPlayerId = randomUUID();
+      const partialPlayerId = randomUUID();
+      const hostPlayerId = randomUUID();
+      await pool.query(
+        `INSERT INTO players (id, nickname)
+         VALUES ($1, 'Canonical player'), ($2, 'Partial player'), ($3, 'Session host')`,
+        [canonicalPlayerId, partialPlayerId, hostPlayerId],
+      );
+      const canonicalState = {
+        game: { players: [{ id: canonicalPlayerId, seat: 1, role: "sheriff" }] },
+        setup: {
+          setup: {
+            players: [{ id: canonicalPlayerId, seat: 1 }],
+            assignments: { 1: "citizen" },
+          },
+        },
+      };
+      const partialState = {
+        game: null,
+        hostPlayerId,
+        setup: {
+          setup: {
+            players: [{ id: partialPlayerId, seat: 2 }],
+            assignments: { 2: "mafia" },
+          },
+        },
+      };
+      await pool.query(
+        `INSERT INTO game_sessions
+           (id, name, revision, last_mutation_id, state, status)
+         VALUES ($1, 'Canonical migration', 1, $2, $3::jsonb, 'active'),
+                ($4, 'Partial migration', 1, $5, $6::jsonb, 'active')`,
+        [
+          canonicalGameId,
+          randomUUID(),
+          JSON.stringify(canonicalState),
+          partialSetupId,
+          randomUUID(),
+          JSON.stringify(partialState),
+        ],
+      );
+      await pool.query(
+        `INSERT INTO game_session_players (game_id, player_id, seat, is_host)
+         VALUES ($1, $2, 1, FALSE), ($3, $4, 2, FALSE), ($3, $5, NULL, TRUE)`,
+        [canonicalGameId, canonicalPlayerId, partialSetupId, partialPlayerId, hostPlayerId],
+      );
+
+      await initializeSchema(pool);
+      const normalized = async () =>
+        (
+          await pool.query(
+            `SELECT session.id, session.ruleset_id, session.ruleset_version, session.state,
+                    player.player_id, player.seat, player.is_host, player.role
+               FROM game_sessions AS session
+               JOIN game_session_players AS player
+                 ON player.club_id = session.club_id AND player.game_id = session.id
+              WHERE session.id = ANY($1::uuid[])
+              ORDER BY session.id, player.is_host, player.seat`,
+            [[canonicalGameId, partialSetupId]],
+          )
+        ).rows;
+      const afterFirstRun = await normalized();
+      expect(afterFirstRun).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: canonicalGameId,
+            player_id: canonicalPlayerId,
+            ruleset_id: "club-mafia",
+            ruleset_version: 1,
+            state: canonicalState,
+            role: "sheriff",
+          }),
+          expect.objectContaining({
+            id: partialSetupId,
+            player_id: partialPlayerId,
+            state: partialState,
+            role: "mafia",
+          }),
+          expect.objectContaining({
+            id: partialSetupId,
+            player_id: hostPlayerId,
+            is_host: true,
+            seat: null,
+            role: null,
+          }),
+        ]),
+      );
+
+      await initializeSchema(pool);
+      expect(await normalized()).toEqual(afterFirstRun);
+    });
+  });
+});
+
 describe("club authorization role migration", () => {
   it("reconciles fresh and populated schemas to manager/user access idempotently", async () => {
     await withIsolatedSchema("club_roles_fresh", async ({ pool: freshPool }) =>

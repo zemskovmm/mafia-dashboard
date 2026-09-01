@@ -73,6 +73,8 @@ Startup order is enforced:
 
 A failed or interrupted migration exits non-zero and prevents the app service from starting. Re-running the migration is safe because the schema is idempotent and transaction-protected.
 
+Schema changes are forward-only reconciliations; the repository does not ship automatic down migrations. Additive tables and columns must retain compatibility with the previous application image through defaults or nullability until the replacement is healthy. Migration coverage exercises a clean install, a representative populated upgrade, and a second run that must converge without data churn. The ruleset/active-role reconciliation, for example, preserves the authoritative JSON snapshot while backfilling its relational projection.
+
 ### Recover from a failed migration
 
 1. Keep `app` stopped; never bypass its `service_completed_successfully` dependency.
@@ -197,7 +199,7 @@ docker compose pull app migrate
 docker compose up --detach --no-build --wait
 ```
 
-An application rollback does not reverse database changes. If a release introduces an incompatible or destructive migration, stop and use the separately tested database restore procedure; do not guess at manual schema reversal.
+An application rollback does not reverse database changes. The fixed-ruleset and active-role projection migration is additive, so the preceding application ignores its new table and columns and can be restored without reversing PostgreSQL. This is not a general compatibility promise: if a release introduces an incompatible or destructive migration, stop and use the separately tested database restore procedure; do not guess at manual schema reversal.
 
 ## Local production smoke verification
 

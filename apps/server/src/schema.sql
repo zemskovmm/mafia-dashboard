@@ -351,9 +351,48 @@ BEGIN
   END IF;
 END $$;
 
+CREATE TABLE IF NOT EXISTS game_rulesets (
+  id TEXT NOT NULL CHECK (BTRIM(id) <> ''),
+  version INTEGER NOT NULL CHECK (version > 0),
+  player_count INTEGER NOT NULL CHECK (player_count > 0),
+  sheriff_count INTEGER NOT NULL CHECK (sheriff_count >= 0),
+  citizen_count INTEGER NOT NULL CHECK (citizen_count >= 0),
+  mafia_count INTEGER NOT NULL CHECK (mafia_count >= 0),
+  don_count INTEGER NOT NULL CHECK (don_count >= 0),
+  CONSTRAINT game_rulesets_pkey PRIMARY KEY (id, version),
+  CONSTRAINT game_rulesets_role_count_ck CHECK (
+    sheriff_count + citizen_count + mafia_count + don_count = player_count
+  )
+);
+
+INSERT INTO game_rulesets
+  (id, version, player_count, sheriff_count, citizen_count, mafia_count, don_count)
+VALUES ('club-mafia', 1, 10, 1, 6, 2, 1)
+ON CONFLICT (id, version) DO UPDATE
+  SET player_count = EXCLUDED.player_count,
+      sheriff_count = EXCLUDED.sheriff_count,
+      citizen_count = EXCLUDED.citizen_count,
+      mafia_count = EXCLUDED.mafia_count,
+      don_count = EXCLUDED.don_count
+WHERE (
+  game_rulesets.player_count,
+  game_rulesets.sheriff_count,
+  game_rulesets.citizen_count,
+  game_rulesets.mafia_count,
+  game_rulesets.don_count
+) IS DISTINCT FROM (
+  EXCLUDED.player_count,
+  EXCLUDED.sheriff_count,
+  EXCLUDED.citizen_count,
+  EXCLUDED.mafia_count,
+  EXCLUDED.don_count
+);
+
 CREATE TABLE IF NOT EXISTS game_sessions (
   id UUID NOT NULL,
   club_id UUID NOT NULL DEFAULT '00000000-0000-4000-8000-000000000101' CONSTRAINT game_sessions_club_fk REFERENCES clubs (id) ON DELETE RESTRICT,
+  ruleset_id TEXT NOT NULL DEFAULT 'club-mafia',
+  ruleset_version INTEGER NOT NULL DEFAULT 1,
   name TEXT NOT NULL CHECK (BTRIM(name) <> ''),
   revision INTEGER NOT NULL CHECK (revision > 0),
   last_mutation_id UUID NOT NULL,
@@ -368,7 +407,10 @@ CREATE TABLE IF NOT EXISTS game_sessions (
   replay_version INTEGER NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT game_sessions_pkey PRIMARY KEY (club_id, id)
+  CONSTRAINT game_sessions_pkey PRIMARY KEY (club_id, id),
+  CONSTRAINT game_sessions_ruleset_fk
+    FOREIGN KEY (ruleset_id, ruleset_version) REFERENCES game_rulesets (id, version)
+    ON UPDATE RESTRICT ON DELETE RESTRICT
 );
 
 ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS results JSONB NULL;
@@ -380,11 +422,32 @@ ALTER TABLE game_sessions
   ADD COLUMN IF NOT EXISTS reset_return_was_completed BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS replay_version INTEGER NOT NULL DEFAULT 1;
 ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS club_id UUID;
+ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS ruleset_id TEXT;
+ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS ruleset_version INTEGER;
 UPDATE game_sessions
-   SET club_id = '00000000-0000-4000-8000-000000000101'
- WHERE club_id IS NULL;
+   SET club_id = COALESCE(club_id, '00000000-0000-4000-8000-000000000101'),
+       ruleset_id = COALESCE(ruleset_id, 'club-mafia'),
+       ruleset_version = COALESCE(ruleset_version, 1)
+ WHERE club_id IS NULL OR ruleset_id IS NULL OR ruleset_version IS NULL;
 ALTER TABLE game_sessions ALTER COLUMN club_id SET NOT NULL;
 ALTER TABLE game_sessions ALTER COLUMN club_id SET DEFAULT '00000000-0000-4000-8000-000000000101';
+ALTER TABLE game_sessions ALTER COLUMN ruleset_id SET NOT NULL;
+ALTER TABLE game_sessions ALTER COLUMN ruleset_id SET DEFAULT 'club-mafia';
+ALTER TABLE game_sessions ALTER COLUMN ruleset_version SET NOT NULL;
+ALTER TABLE game_sessions ALTER COLUMN ruleset_version SET DEFAULT 1;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'game_sessions'::regclass
+       AND conname = 'game_sessions_ruleset_fk'
+  ) THEN
+    ALTER TABLE game_sessions
+      ADD CONSTRAINT game_sessions_ruleset_fk
+      FOREIGN KEY (ruleset_id, ruleset_version) REFERENCES game_rulesets (id, version)
+      ON UPDATE RESTRICT ON DELETE RESTRICT;
+  END IF;
+END $$;
 
 DO $$
 BEGIN
@@ -1007,13 +1070,17 @@ CREATE TABLE IF NOT EXISTS game_session_players (
   player_id UUID NOT NULL,
   seat INTEGER NULL CHECK (seat BETWEEN 1 AND 10),
   is_host BOOLEAN NOT NULL,
+  role TEXT NULL,
   CONSTRAINT game_session_players_pkey PRIMARY KEY (club_id, game_id, player_id),
   CONSTRAINT game_session_players_game_seat_unique UNIQUE (club_id, game_id, seat),
   CONSTRAINT game_session_players_game_fk
     FOREIGN KEY (club_id, game_id) REFERENCES game_sessions (club_id, id) ON DELETE CASCADE,
   CONSTRAINT game_session_players_player_fk
     FOREIGN KEY (club_id, player_id) REFERENCES players (club_id, id) ON DELETE RESTRICT,
-  CHECK ((is_host AND seat IS NULL) OR (NOT is_host AND seat IS NOT NULL))
+  CONSTRAINT game_session_players_role_ck
+    CHECK (role IS NULL OR role IN ('sheriff', 'citizen', 'mafia', 'don')),
+  CONSTRAINT game_session_players_shape_ck
+    CHECK ((is_host AND seat IS NULL AND role IS NULL) OR (NOT is_host AND seat IS NOT NULL))
 );
 
 CREATE INDEX IF NOT EXISTS game_session_players_player_idx
@@ -1102,6 +1169,7 @@ ALTER TABLE game_session_mutations ALTER COLUMN club_id SET NOT NULL;
 ALTER TABLE game_session_mutations ALTER COLUMN club_id SET DEFAULT '00000000-0000-4000-8000-000000000101';
 
 ALTER TABLE game_session_players ADD COLUMN IF NOT EXISTS club_id UUID;
+ALTER TABLE game_session_players ADD COLUMN IF NOT EXISTS role TEXT NULL;
 UPDATE game_session_players AS player
    SET club_id = session.club_id
   FROM game_sessions AS session
@@ -1109,6 +1177,65 @@ UPDATE game_session_players AS player
    AND player.game_id = session.id;
 ALTER TABLE game_session_players ALTER COLUMN club_id SET NOT NULL;
 ALTER TABLE game_session_players ALTER COLUMN club_id SET DEFAULT '00000000-0000-4000-8000-000000000101';
+
+UPDATE game_session_players AS projection
+   SET role = COALESCE(
+     (
+       SELECT game_player ->> 'role'
+         FROM jsonb_array_elements(
+           CASE
+             WHEN jsonb_typeof(session.state -> 'game' -> 'players') = 'array'
+               THEN session.state -> 'game' -> 'players'
+             ELSE '[]'::JSONB
+           END
+         ) AS game_player
+        WHERE game_player ->> 'id' = projection.player_id::TEXT
+          AND game_player ->> 'role' IN ('sheriff', 'citizen', 'mafia', 'don')
+        LIMIT 1
+     ),
+     (
+       SELECT assignment.value #>> '{}'
+         FROM jsonb_each(
+           CASE
+             WHEN jsonb_typeof(session.state -> 'setup' -> 'setup' -> 'assignments') = 'object'
+               THEN session.state -> 'setup' -> 'setup' -> 'assignments'
+             ELSE '{}'::JSONB
+           END
+         ) AS assignment
+        WHERE assignment.key = projection.seat::TEXT
+          AND assignment.value #>> '{}' IN ('sheriff', 'citizen', 'mafia', 'don')
+        LIMIT 1
+     )
+   )
+  FROM game_sessions AS session
+ WHERE projection.club_id = session.club_id
+   AND projection.game_id = session.id
+   AND NOT projection.is_host
+   AND projection.role IS NULL;
+
+UPDATE game_session_players SET role = NULL WHERE is_host AND role IS NOT NULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'game_session_players'::regclass
+       AND conname = 'game_session_players_role_ck'
+  ) THEN
+    ALTER TABLE game_session_players
+      ADD CONSTRAINT game_session_players_role_ck
+      CHECK (role IS NULL OR role IN ('sheriff', 'citizen', 'mafia', 'don'));
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'game_session_players'::regclass
+       AND conname = 'game_session_players_shape_ck'
+  ) THEN
+    ALTER TABLE game_session_players
+      ADD CONSTRAINT game_session_players_shape_ck
+      CHECK ((is_host AND seat IS NULL AND role IS NULL) OR (NOT is_host AND seat IS NOT NULL));
+  END IF;
+END $$;
 
 ALTER TABLE game_player_results ADD COLUMN IF NOT EXISTS club_id UUID;
 UPDATE game_player_results AS player_result

@@ -33,7 +33,7 @@ The YouTube IFrame Player API runs only in the browser. Revisioned session metad
 - A client-generated game UUID exists before the first network mutation.
 - Pre-game setup metadata remains revisioned session state. Starting live play records one immutable initial game baseline and one canonical root event.
 - Every browser persistence generation contains the complete current `GameState`, setup metadata, Undo allowance, semantic event prefix, and optional final results.
-- The browser snapshot is authoritative. PostgreSQL accepts the last uploaded schema/invariant/club/privacy-valid snapshot regardless of the browser's previously observed server revision, mirrors its exact event prefix, and synchronizes active-player or completion projections atomically under a per-game lock.
+- The browser snapshot is authoritative. PostgreSQL accepts the last uploaded schema/invariant/club/privacy-valid snapshot regardless of the browser's previously observed server revision, mirrors its exact event prefix, and atomically synchronizes the fixed ruleset identity plus active seat/role or completion projections under a per-game lock.
 - Semantic events retain parent, sequence, phase/day, and state-hash metadata for Log, Timeline, Preview, and internal replay validation; replay does not replace the snapshot's current game state.
 - Ordinary Undo and Timeline Reset permanently truncate the browser snapshot and mirrored event prefix. They create no game event, retain no future branch, and provide no Reset Return. Undo remains limited to three actions and cannot cross a new-day checkpoint.
 - Clicking **Finish game** locks Undo and Reset in the client and persists the completed snapshot and projections.
@@ -67,7 +67,7 @@ Rejected for the current product. The account integration uses read-only scope t
 
 - One language and shared types across domain, server, and SPA.
 - Pure rules can be developed with strict TDD.
-- Explicit server-side secret filtering.
+- Membership-gated, club-isolated access without divergent manager/user game projections.
 - Small local deployment footprint.
 - Straightforward production Docker image.
 - No premature real-time or distributed-system dependencies.

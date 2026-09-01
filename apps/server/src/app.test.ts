@@ -365,13 +365,25 @@ describe("server API", () => {
         },
       }),
     ).resolves.toHaveProperty("statusCode", 201);
+    const userSession = await userApp.inject({
+      method: "GET",
+      url: `/api/game-sessions/${sessionGameId}`,
+      headers,
+    });
+    const managerSession = await app.inject({
+      method: "GET",
+      url: `/api/game-sessions/${sessionGameId}`,
+      headers,
+    });
+    expect(userSession.statusCode).toBe(200);
+    expect(userSession.json()).toEqual(managerSession.json());
     await expect(
-      userApp.inject({
+      outsiderApp.inject({
         method: "GET",
         url: `/api/game-sessions/${sessionGameId}`,
         headers,
       }),
-    ).resolves.toHaveProperty("statusCode", 200);
+    ).resolves.toHaveProperty("statusCode", 403);
     await expect(
       userApp.inject({ method: "DELETE", url: `/api/clubs/${club.id}` }),
     ).resolves.toHaveProperty("statusCode", 403);
