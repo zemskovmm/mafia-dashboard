@@ -248,16 +248,16 @@ The custom archive is portable across supported upgrades, but compatibility is p
 
 ## Verified drill evidence
 
-On 2026-09-01, `npm run verify:backup` executed the actual shell entry points against a disposable `postgres:17-alpine` server, the real schema, and non-secret representative relational data. It also rejected a deliberately corrupted event-parent chain, exercised a missing-database failure, and proved that both failure paths cleaned their isolated state without publishing a corrupt artifact. Redacted output:
+On 2026-09-01, `npm run verify:backup` executed the actual shell entry points against a disposable `postgres:17-alpine` server, the real schema, and a non-secret completed game with relational event, participant, game-result, and player-result projections. It also rejected a deliberately corrupted event-parent chain, exercised a missing-database failure, and proved that both failure paths cleaned their isolated state without publishing a corrupt artifact. Redacted output:
 
 ```text
 postgres_client=pg_dump (PostgreSQL) 17.11
 postgres_server=17.11
-archive=mafia-dashboard-20260901T120549Z.dump
-archive_bytes=43371
+archive=mafia-dashboard-20260901T121625Z.dump
+archive_bytes=43486
 offsite_copy=byte_verified
 isolated_restore_test=semantic_checks_passed
-representative_game=00000000-0000-4000-8000-000000000901 revision=7 canonical_events=2 participants=1
+representative_game=00000000-0000-4000-8000-000000000901 revision=7 canonical_events=2 participants=1 winner=red result_rows=1
 isolated_database_cleanup=verified
 semantic_failure_path=invalid_parent_chain_rejected
 failure_path=no_finalized_artifact

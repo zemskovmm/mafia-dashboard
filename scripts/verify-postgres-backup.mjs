@@ -119,7 +119,7 @@ try {
     VALUES ('${playerId}', '${clubId}', 'Backup drill player');
 
     INSERT INTO game_sessions
-      (id, club_id, name, revision, last_mutation_id, state, status, initial_game, head_event_id)
+      (id, club_id, name, revision, last_mutation_id, state, results, status, initial_game, head_event_id)
     VALUES (
       '${gameId}',
       '${clubId}',
@@ -127,7 +127,8 @@ try {
       7,
       '00000000-0000-4000-8000-000000000905',
       '{"game":{"players":[{"id":"${playerId}","seat":1,"role":"citizen"}]}}'::jsonb,
-      'active',
+      '{"winner":"red"}'::jsonb,
+      'completed',
       '{}'::jsonb,
       '${eventTwo}'
     );
@@ -143,6 +144,15 @@ try {
 
     INSERT INTO game_session_players (club_id, game_id, player_id, seat, is_host, role)
     VALUES ('${clubId}', '${gameId}', '${playerId}', 1, FALSE, 'citizen');
+
+    INSERT INTO game_results (game_id, club_id, winner, played_at)
+    VALUES ('${gameId}', '${clubId}', 'red', '2026-09-01T00:00:00Z');
+
+    INSERT INTO game_player_results
+      (club_id, game_id, player_id, seat, role, team, final_status, fouls, won)
+    VALUES (
+      '${clubId}', '${gameId}', '${playerId}', 1, 'citizen', 'red', 'active', 0, TRUE
+    );
   `;
   runInDatabase(["-i", container, "psql", "-X", "-v", "ON_ERROR_STOP=1"], { input: seed });
 
@@ -191,8 +201,10 @@ try {
     `/drill/backups/${archiveName}`,
   ]);
   assert.match(restoreTestOutput, /restore_test_status=ok/);
+  assert.match(restoreTestOutput, /game_status=completed/);
   assert.match(restoreTestOutput, /canonical_event_count=2/);
   assert.match(restoreTestOutput, /participant_count=1/);
+  assert.match(restoreTestOutput, /result_count=1/);
   evidence.push("isolated_restore_test=semantic_checks_passed");
 
   const independentTarget = "mafia_restore_verify";
@@ -214,15 +226,21 @@ try {
           (SELECT COUNT(*) FROM game_events AS event
             WHERE event.club_id = session.club_id AND event.game_id = session.id),
           (SELECT COUNT(*) FROM game_session_players AS player
-            WHERE player.club_id = session.club_id AND player.game_id = session.id))
+            WHERE player.club_id = session.club_id AND player.game_id = session.id),
+          result.winner, player_result.player_id, player_result.seat, player_result.role,
+          player_result.team, player_result.final_status, player_result.fouls, player_result.won)
          FROM game_sessions AS session
+         JOIN game_results AS result
+           ON result.club_id = session.club_id AND result.game_id = session.id
+         JOIN game_player_results AS player_result
+           ON player_result.club_id = session.club_id AND player_result.game_id = session.id
         WHERE session.club_id = '${clubId}' AND session.id = '${gameId}'`,
     ]);
-    assert.equal(semanticCheck, `${gameId}|7|2|1`);
-    const [restoredGameId, restoredRevision, restoredEvents, restoredParticipants] =
+    assert.equal(semanticCheck, `${gameId}|7|2|1|red|${playerId}|1|citizen|red|active|0|t`);
+    const [restoredGameId, restoredRevision, restoredEvents, restoredParticipants, restoredWinner] =
       semanticCheck.split("|");
     evidence.push(
-      `representative_game=${restoredGameId} revision=${restoredRevision} canonical_events=${restoredEvents} participants=${restoredParticipants}`,
+      `representative_game=${restoredGameId} revision=${restoredRevision} canonical_events=${restoredEvents} participants=${restoredParticipants} winner=${restoredWinner} result_rows=1`,
     );
   } finally {
     runInDatabase([container, "dropdb", "--if-exists", "--force", independentTarget]);
