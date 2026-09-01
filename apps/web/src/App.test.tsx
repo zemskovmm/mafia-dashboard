@@ -2801,6 +2801,12 @@ const remoteSession = (
 });
 
 describe("undo checkpoints", () => {
+  const acceptLiveEvent = (draft: CanonicalGameEventDraft) => {
+    const accept = gameScreenHarness.liveOnAcceptedEvent;
+    if (accept === null) throw new Error("Live accepted-event callback was not captured");
+    act(() => accept(draft));
+  };
+
   it("does not let cursor Undo cross the immutable game baseline", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -2816,6 +2822,122 @@ describe("undo checkpoints", () => {
     await user.click(screen.getByRole("button", { name: /undo last action/i }));
     expect(screen.getByText("Game fouls 0")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /undo last action/i })).toBeDisabled();
+  });
+
+  it("reconstructs the third-foul penalty before and after it is consumed", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    const targetSeat = 2;
+
+    for (let foulNumber = 1; foulNumber <= 3; foulNumber += 1) {
+      acceptLiveEvent({
+        type: "foul.issued",
+        payload: { seat: targetSeat, foulNumber, redCarded: false },
+      });
+      await waitFor(() =>
+        expect(
+          gameScreenHarness.liveGame?.players.find(({ seat }) => seat === targetSeat)?.fouls,
+        ).toBe(foulNumber),
+      );
+    }
+    expect(
+      gameScreenHarness.liveGame?.players.find(({ seat }) => seat === targetSeat)?.mutePending,
+    ).toBe(true);
+
+    await user.click(screen.getByRole("button", { name: /undo last action/i }));
+    expect(
+      gameScreenHarness.liveGame?.players.find(({ seat }) => seat === targetSeat),
+    ).toMatchObject({ fouls: 2, mutePending: false, status: "active" });
+
+    acceptLiveEvent({
+      type: "foul.issued",
+      payload: { seat: targetSeat, foulNumber: 3, redCarded: false },
+    });
+    api.saveGameSession.mockClear();
+    await user.click(screen.getByRole("button", { name: "Record game action" }));
+    await user.click(screen.getByRole("button", { name: "Record game action" }));
+    expect(
+      gameScreenHarness.liveGame?.players.find(({ seat }) => seat === targetSeat),
+    ).toMatchObject({ fouls: 3, mutePending: false, status: "active" });
+    await waitFor(() =>
+      expect(api.saveGameSession.mock.calls.at(-1)?.[1]).toMatchObject({
+        kind: "snapshot",
+        state: expect.objectContaining({
+          game: expect.objectContaining({ currentTurnIndex: 2 }),
+          events: [
+            expect.objectContaining({ type: "game.checkpointed" }),
+            expect.objectContaining({ type: "foul.issued" }),
+            expect.objectContaining({ type: "foul.issued" }),
+            expect.objectContaining({ type: "foul.issued" }),
+          ],
+        }),
+      }),
+    );
+
+    api.saveGameSession.mockClear();
+    await user.click(screen.getByRole("button", { name: /undo last action/i }));
+    expect(gameScreenHarness.liveGame).toMatchObject({ phase: "day", currentTurnIndex: 0 });
+    expect(
+      gameScreenHarness.liveGame?.players.find(({ seat }) => seat === targetSeat),
+    ).toMatchObject({ fouls: 2, mutePending: false, status: "active" });
+    expect(screen.getByRole("button", { name: /undo last action.*2 available/i })).toBeEnabled();
+    await waitFor(() =>
+      expect(api.saveGameSession.mock.calls.at(-1)?.[1]).toMatchObject({
+        kind: "snapshot",
+        state: expect.objectContaining({
+          game: expect.objectContaining({ currentTurnIndex: 0 }),
+          events: [
+            expect.objectContaining({ type: "game.checkpointed" }),
+            expect.objectContaining({ type: "foul.issued" }),
+            expect.objectContaining({ type: "foul.issued" }),
+          ],
+        }),
+      }),
+    );
+  });
+
+  it("restores eligibility and victory when the winning red card is undone", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    const blackSeats = gameScreenHarness.liveGame?.players
+      .filter(({ team }) => team === "black")
+      .map(({ seat }) => seat);
+    if (blackSeats === undefined || blackSeats.length === 0) {
+      throw new Error("Test game has no Mafia players");
+    }
+
+    for (const seat of blackSeats) {
+      acceptLiveEvent({ type: "player.red-carded", payload: { seat } });
+      await waitFor(() =>
+        expect(
+          gameScreenHarness.liveGame?.players.find((player) => player.seat === seat)?.status,
+        ).toBe("red-carded"),
+      );
+    }
+    expect(gameScreenHarness.liveGame).toMatchObject({ phase: "finished", winner: "red" });
+
+    api.saveGameSession.mockClear();
+    await user.click(screen.getByRole("button", { name: /undo last action/i }));
+
+    const restoredSeat = blackSeats.at(-1)!;
+    expect(gameScreenHarness.liveGame).toMatchObject({ phase: "day", winner: null });
+    expect(
+      gameScreenHarness.liveGame?.players.find(({ seat }) => seat === restoredSeat)?.status,
+    ).toBe("active");
+    await waitFor(() => expect(api.saveGameSession).toHaveBeenCalled());
+    expect(api.saveGameSession.mock.calls.at(-1)?.[1]).toMatchObject({
+      kind: "snapshot",
+      state: expect.objectContaining({
+        events: [
+          expect.objectContaining({ type: "game.checkpointed" }),
+          ...blackSeats
+            .slice(0, -1)
+            .map(() => expect.objectContaining({ type: "player.red-carded" })),
+        ],
+      }),
+    });
   });
 
   it("preserves the remaining ordinary undo budget across reload", async () => {

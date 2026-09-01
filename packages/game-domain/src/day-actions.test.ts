@@ -110,6 +110,62 @@ describe("day actions", () => {
     expect(beginNight(game)).toMatchObject({ phase: "night-mafia", nominations: [] });
   });
 
+  it("applies the same eligibility consequences to manual and fourth-foul red cards", () => {
+    const base = dayOne();
+    const target = base.players.find(({ seat, team }) => seat !== 1 && team === "red")!;
+    const manual = redCard(base, target.seat);
+    let fourthFoul = base;
+    for (let foul = 0; foul < 4; foul += 1) fourthFoul = issueFoul(fourthFoul, target.seat);
+
+    expect(fourthFoul).toMatchObject({
+      phase: manual.phase,
+      turnOrder: manual.turnOrder,
+      currentTurnIndex: manual.currentTurnIndex,
+      redCardIssuedThisDay: manual.redCardIssuedThisDay,
+      winner: manual.winner,
+    });
+    expect(fourthFoul.players.find(({ seat }) => seat === target.seat)).toMatchObject({
+      fouls: 4,
+      status: "red-carded",
+    });
+    expect(manual.phase).toBe("day");
+    expect(manual.goodbyeSeats ?? []).not.toContain(target.seat);
+    expect(fourthFoul.phase).toBe("day");
+    expect(fourthFoul.goodbyeSeats ?? []).not.toContain(target.seat);
+  });
+
+  it.each(["manual", "fourth-foul"] as const)(
+    "does not grant final words after a %s red card during an existing goodbye speech",
+    (kind) => {
+      const base = dayOne();
+      const [speechOwner, target] = base.players.filter(({ team }) => team === "red");
+      const goodbye: GameState = {
+        ...base,
+        phase: "goodbye-speech",
+        players: base.players.map((player) =>
+          player.seat === speechOwner!.seat ? { ...player, status: "eliminated" as const } : player,
+        ),
+        goodbyeSeats: [speechOwner!.seat],
+        goodbyeNext: "night",
+      };
+
+      let disciplined = goodbye;
+      if (kind === "manual") disciplined = redCard(disciplined, target!.seat);
+      else {
+        for (let foul = 0; foul < 4; foul += 1) {
+          disciplined = issueFoul(disciplined, target!.seat);
+        }
+      }
+
+      expect(disciplined.phase).toBe("goodbye-speech");
+      expect(disciplined.goodbyeSeats).toEqual([speechOwner!.seat]);
+      expect(disciplined.goodbyeSeats).not.toContain(target!.seat);
+      expect(disciplined.players.find(({ seat }) => seat === target!.seat)?.status).toBe(
+        "red-carded",
+      );
+    },
+  );
+
   it("suppresses voting after any manual red card during the day", () => {
     let game = nominate(dayOne(), 1, 4);
     const redCardSeat = game.players.find(
