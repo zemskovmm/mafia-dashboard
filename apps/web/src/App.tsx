@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 import webPackage from "../package.json";
 import {
   applyGameEvent,
@@ -571,6 +578,9 @@ export const ClubWorkspace = ({
   const [syncRender, setSyncRender] = useState(0);
 
   const appShellRef = useRef<HTMLDivElement>(null);
+  const drawerRef = useRef<HTMLElement>(null);
+  const drawerTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const previousDrawerRef = useRef<typeof activeDrawer>(null);
   const musicRef = useRef<YouTubePlayerHandle>(null);
   const privacyTapsRef = useRef<{ count: number; resetTimer: number | null }>({
     count: 0,
@@ -600,6 +610,24 @@ export const ClubWorkspace = ({
   const fullscreenAvailable =
     typeof fullscreenTarget.requestFullscreen === "function" ||
     typeof fullscreenTarget.webkitRequestFullscreen === "function";
+
+  useEffect(() => {
+    const previousDrawer = previousDrawerRef.current;
+    if (activeDrawer === null) {
+      if (previousDrawer !== null && drawerTriggerRef.current?.isConnected)
+        drawerTriggerRef.current.focus();
+    } else {
+      drawerRef.current?.querySelector<HTMLElement>("h2")?.focus();
+    }
+    previousDrawerRef.current = activeDrawer;
+  }, [activeDrawer]);
+
+  const closeDrawerOnEscape = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    setActiveDrawer(null);
+  };
+
   const activeBranch = (() => {
     try {
       return getActiveBranch(events, headEventId);
@@ -1674,7 +1702,11 @@ export const ClubWorkspace = ({
               className="log-toolbar-button icon-toolbar-button"
               aria-label={activeDrawer === "log" ? t("closeGameLog") : t("openGameLog")}
               aria-expanded={activeDrawer === "log"}
-              onClick={() => setActiveDrawer((drawer) => (drawer === "log" ? null : "log"))}
+              aria-controls="game-log-drawer"
+              onClick={(event) => {
+                drawerTriggerRef.current = event.currentTarget;
+                setActiveDrawer((drawer) => (drawer === "log" ? null : "log"));
+              }}
             >
               <ListTree aria-hidden="true" />
               <span className="toolbar-count">{log.length}</span>
@@ -1685,7 +1717,11 @@ export const ClubWorkspace = ({
             className="manage-toolbar-button icon-toolbar-button"
             aria-label={activeDrawer === "manage" ? t("closeManageMenu") : t("openManageMenu")}
             aria-expanded={activeDrawer === "manage"}
-            onClick={() => setActiveDrawer((drawer) => (drawer === "manage" ? null : "manage"))}
+            aria-controls="manage-menu-drawer"
+            onClick={(event) => {
+              drawerTriggerRef.current = event.currentTarget;
+              setActiveDrawer((drawer) => (drawer === "manage" ? null : "manage"));
+            }}
           >
             <SlidersHorizontal aria-hidden="true" />
           </button>
@@ -1695,7 +1731,11 @@ export const ClubWorkspace = ({
               className="dev-toolbar-button icon-toolbar-button"
               aria-label={activeDrawer === "dev" ? t("closeDeveloperMenu") : t("openDeveloperMenu")}
               aria-expanded={activeDrawer === "dev"}
-              onClick={() => setActiveDrawer((drawer) => (drawer === "dev" ? null : "dev"))}
+              aria-controls="dev-menu-drawer"
+              onClick={(event) => {
+                drawerTriggerRef.current = event.currentTarget;
+                setActiveDrawer((drawer) => (drawer === "dev" ? null : "dev"));
+              }}
             >
               <Wrench aria-hidden="true" />
             </button>
@@ -1703,8 +1743,15 @@ export const ClubWorkspace = ({
         </div>
       ) : null}
       {isManager && showWorkspaceTools && activeDrawer === "log" ? (
-        <aside className="app-drawer game-log-drawer" role="dialog" aria-label={t("gameLog")}>
-          <h2>{t("log")}</h2>
+        <aside
+          ref={drawerRef}
+          id="game-log-drawer"
+          className="app-drawer game-log-drawer"
+          role="dialog"
+          aria-label={t("gameLog")}
+          onKeyDown={closeDrawerOnEscape}
+        >
+          <h2 tabIndex={-1}>{t("log")}</h2>
           <div className="game-log-list">
             {log.length === 0 ? <p>{t("noActionsRecorded")}</p> : null}
             {[...log].reverse().map((entry) => {
@@ -1745,8 +1792,15 @@ export const ClubWorkspace = ({
         </aside>
       ) : null}
       {showWorkspaceTools && activeDrawer === "manage" ? (
-        <aside className="app-drawer manage-menu-drawer" role="dialog" aria-label={t("manage")}>
-          <h2>{t("manage")}</h2>
+        <aside
+          ref={drawerRef}
+          id="manage-menu-drawer"
+          className="app-drawer manage-menu-drawer"
+          role="dialog"
+          aria-label={t("manage")}
+          onKeyDown={closeDrawerOnEscape}
+        >
+          <h2 tabIndex={-1}>{t("manage")}</h2>
           <div className="manage-menu-actions">
             <button
               type="button"
@@ -1845,9 +1899,16 @@ export const ClubWorkspace = ({
         </aside>
       ) : null}
       {isManager && showWorkspaceTools && activeDrawer === "dev" ? (
-        <aside className="app-drawer dev-menu-drawer" role="dialog" aria-label={t("developerMenu")}>
+        <aside
+          ref={drawerRef}
+          id="dev-menu-drawer"
+          className="app-drawer dev-menu-drawer"
+          role="dialog"
+          aria-label={t("developerMenu")}
+          onKeyDown={closeDrawerOnEscape}
+        >
           <div className="dev-menu-header">
-            <h2>{t("devMenu")}</h2>
+            <h2 tabIndex={-1}>{t("devMenu")}</h2>
             <p
               className="dev-menu-version"
               aria-label={t("canaryVersion", { version: webPackage.version })}

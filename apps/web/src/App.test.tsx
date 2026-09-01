@@ -694,6 +694,21 @@ describe("club welcome", () => {
     expect(screen.getByLabelText("Club name")).toHaveValue("Mafia Malaga");
   });
 
+  it("moves focus into a toolbar drawer and restores it when Escape closes the drawer", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const trigger = await screen.findByRole("button", { name: "Open Manage menu" });
+
+    await user.click(trigger);
+
+    const drawer = screen.getByRole("dialog", { name: "Manage" });
+    expect(within(drawer).getByRole("heading", { name: "Manage" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+
+    expect(screen.queryByRole("dialog", { name: "Manage" })).toBeNull();
+    expect(trigger).toHaveFocus();
+  });
+
   it("switches from browser locale to club locale and persists live language changes", async () => {
     const user = userEvent.setup();
     const russianClub = { ...testClub, language: "ru" as const };

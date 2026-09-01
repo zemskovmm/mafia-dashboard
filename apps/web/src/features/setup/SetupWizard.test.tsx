@@ -127,6 +127,40 @@ describe("SetupWizard", () => {
     );
   });
 
+  it("opens and closes manual role assignment from the keyboard", () => {
+    const players = availablePlayers.slice(0, 10);
+    const setup = beginRoleDraw(
+      createSetup(
+        players.map(({ id, nickname }, index) => ({ id, name: nickname, seat: index + 1 })),
+      ),
+      () => 0,
+    );
+    render(
+      <SetupWizard
+        players={availablePlayers}
+        onComplete={() => undefined}
+        onEvent={() => undefined}
+        initialSessionState={{
+          step: "roles",
+          hostPlayerId: availablePlayers[10]!.id,
+          selectedPlayerIds: players.map(({ id }) => id),
+          setup,
+        }}
+      />,
+    );
+    const card = screen.getByRole("button", { name: "Draw role for Player 1" });
+    card.focus();
+
+    fireEvent.keyDown(card, { key: "ContextMenu" });
+
+    const assign = screen.getAllByRole("button", { name: /Assign .* to seat 1/ })[0]!;
+    expect(assign).toHaveFocus();
+    fireEvent.keyDown(assign, { key: "Escape" });
+
+    expect(screen.queryByRole("dialog", { name: "Choose role" })).toBeNull();
+    expect(card).toHaveFocus();
+  });
+
   it("requires a saved host who is not assigned to a player seat", async () => {
     const user = userEvent.setup();
     const host = availablePlayers[10]!;
@@ -464,6 +498,9 @@ describe("SetupWizard", () => {
     }
 
     expect(screen.getByText("Draw roles · 0 remaining")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Player 1: sheriff/i })).not.toHaveAttribute(
+      "aria-haspopup",
+    );
     await user.click(screen.getByRole("button", { name: "Begin Mafia planning stage" }));
 
     expect(onComplete).toHaveBeenCalledTimes(1);

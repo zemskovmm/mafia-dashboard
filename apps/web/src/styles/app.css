@@ -174,7 +174,10 @@ button:hover:not(:disabled) {
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
-summary:focus-visible {
+textarea:focus-visible,
+summary:focus-visible,
+a:focus-visible,
+[tabindex]:focus-visible {
   outline: 3px solid rgb(from var(--accent) r g b / 55%);
   outline-offset: 3px;
 }
@@ -1107,7 +1110,7 @@ h2 {
 }
 .table-swipe-red-card,
 .table-swipe-close {
-  min-height: 34px;
+  min-height: 48px;
 }
 .table-swipe-red-card {
   padding: 5px 13px;
@@ -1122,7 +1125,7 @@ h2 {
   background: linear-gradient(145deg, #ee4d5b, #941e2a);
 }
 .table-swipe-close {
-  width: 34px;
+  width: 48px;
   padding: 0;
   color: rgb(255 255 255 / 64%);
   font-size: 2rem;
@@ -1680,10 +1683,20 @@ button.player-seat.is-voting-highlight::after {
   width: 100%;
   transform: translateX(-50%);
 }
+.seat-anchor:is([data-seat="5"], [data-seat="6"]) .seat-actions {
+  top: calc(100% + 5px);
+  bottom: auto;
+}
+.seat-anchor[data-seat="1"] .seat-actions {
+  transform: translateX(-35%);
+}
+.seat-anchor[data-seat="10"] .seat-actions {
+  transform: translateX(-65%);
+}
 .seat-actions button {
   flex: 1 1 0;
   min-width: 0;
-  min-height: 38px;
+  min-height: 48px;
   padding: 0 5px;
   border-radius: 5px;
   font-size: 0.6rem;
@@ -1854,7 +1867,7 @@ button.player-seat.is-voting-highlight::after {
 .panel-swipe-handle {
   display: grid;
   place-items: center;
-  min-height: 44px;
+  min-height: 48px;
   padding: 4px;
   touch-action: none;
   background: transparent;
@@ -1926,7 +1939,12 @@ button.player-seat.is-voting-highlight::after {
   gap: 8px;
 }
 .timer-side-presets button {
-  min-height: 0;
+  min-height: 48px;
+}
+.nomination-panel button,
+.table-advance button,
+.live-music-controls button {
+  min-height: 48px;
 }
 .nomination-panel ol {
   display: grid;
@@ -2313,7 +2331,7 @@ button.player-seat.is-voting-highlight::after {
   gap: 5px;
 }
 .live-music-controls button {
-  min-height: 42px;
+  min-height: 48px;
   padding: 0 5px;
   font-size: 0.68rem;
 }
@@ -2326,9 +2344,9 @@ button.player-seat.is-voting-highlight::after {
   gap: 6px;
 }
 .app-fixed-toolbar button {
-  width: 44px;
-  height: 44px;
-  min-height: 44px;
+  width: 48px;
+  height: 48px;
+  min-height: 48px;
   padding: 0;
   white-space: nowrap;
   background: rgb(15 16 17 / 96%);
@@ -2338,16 +2356,16 @@ button.player-seat.is-voting-highlight::after {
   position: relative;
   display: grid;
   place-items: center;
-  width: 44px;
-  height: 44px;
-  min-width: 44px;
-  min-height: 44px;
+  width: 48px;
+  height: 48px;
+  min-width: 48px;
+  min-height: 48px;
   padding: 0;
   border-radius: 12px;
   line-height: 0;
 }
 .app-fixed-toolbar .undo-button {
-  width: 44px;
+  width: 48px;
 }
 .app-fixed-toolbar .icon-toolbar-button svg {
   width: 21px;
@@ -2818,20 +2836,20 @@ button.player-seat.is-voting-highlight::after {
     top: var(--header-top);
   }
   .app-fixed-toolbar button {
-    width: 46px;
-    height: 46px;
-    min-height: 46px;
+    width: 48px;
+    height: 48px;
+    min-height: 48px;
     border-radius: 12px;
   }
   .app-fixed-toolbar .icon-toolbar-button {
-    width: 46px;
-    height: 46px;
-    min-width: 46px;
-    min-height: 46px;
+    width: 48px;
+    height: 48px;
+    min-width: 48px;
+    min-height: 48px;
   }
   .app-fixed-toolbar .save-indicator {
-    height: 46px;
-    min-height: 46px;
+    height: 48px;
+    min-height: 48px;
     padding: 0;
     border-radius: 12px;
   }
@@ -2987,6 +3005,7 @@ button.player-seat.is-voting-highlight::after {
   }
   .table-layout-shell .round-table {
     --table-size: min(52vw, calc(100dvh - 300px), 720px);
+    --table-radius: min(calc(var(--table-size) * 0.68), 394px);
   }
   .live-side-panel.has-live-utilities {
     position: fixed;
@@ -3137,7 +3156,7 @@ html:-webkit-full-screen #root {
     --s6-header-height: 44px;
     --s6-content-top: 58px;
     --s6-rail-width: 335px;
-    --s6-toolbar-width: 332px;
+    --s6-toolbar-width: 360px;
     --s6-main-width: calc(100vw - var(--s6-rail-width) - var(--s6-edge) * 3);
     --dock-edge-inset: var(--s6-edge);
     width: 100%;
@@ -3209,10 +3228,10 @@ html:-webkit-full-screen #root {
   .app-fixed-toolbar button,
   .app-fixed-toolbar .icon-toolbar-button,
   .app-fixed-toolbar .save-indicator {
-    width: 44px;
-    height: 44px;
-    min-width: 44px;
-    min-height: 44px;
+    width: 48px;
+    height: 48px;
+    min-width: 48px;
+    min-height: 48px;
     border-radius: 11px;
   }
   .app-fixed-toolbar .icon-toolbar-button svg {
@@ -3356,7 +3375,7 @@ html:-webkit-full-screen #root {
     border-radius: 0;
   }
   .live-side-panel.has-live-utilities .utility-panel-section[data-panel="voting"] {
-    margin-top: 7px;
+    margin-top: 28px;
   }
   .live-side-panel.has-live-utilities .youtube-dock.is-compact {
     position: static;
@@ -3377,7 +3396,7 @@ html:-webkit-full-screen #root {
     right: auto;
     bottom: auto;
     flex: 1 1 auto;
-    grid-template-rows: 44px minmax(0, 1fr) auto;
+    grid-template-rows: 48px minmax(0, 1fr) auto;
     width: 100%;
     height: auto;
     min-height: 0;
@@ -3408,13 +3427,13 @@ html:-webkit-full-screen #root {
   .round-table,
   .table-layout-shell .round-table {
     --table-size: min(39vw, calc(100dvh - 200px), 390px);
-    --table-radius: calc(var(--table-size) * 0.495);
+    --table-radius: calc(var(--table-size) * 0.58);
     border-width: 8px;
   }
   .seat-anchor,
   .table-layout-shell .seat-anchor {
     top: 50%;
-    width: 84px;
+    width: 96px;
   }
   .table-card {
     height: 76px;
@@ -3454,10 +3473,30 @@ html:-webkit-full-screen #root {
   .seat-actions button {
     width: auto;
     min-width: 0;
-    height: 32px;
-    min-height: 32px;
+    height: 48px;
+    min-height: 48px;
     padding: 0 2px;
     font-size: 0.5rem;
+  }
+  .seat-anchor:is([data-seat="1"], [data-seat="10"]) .seat-actions {
+    top: calc(100% + 5px);
+    bottom: auto;
+    transform: translateX(-50%);
+  }
+  .seat-anchor:is([data-seat="2"], [data-seat="3"]) .seat-actions,
+  .seat-anchor:is([data-seat="8"], [data-seat="9"]) .seat-actions {
+    top: 50%;
+    bottom: auto;
+    width: 48px;
+    flex-direction: column;
+    transform: translateY(-50%);
+  }
+  .seat-anchor:is([data-seat="2"], [data-seat="3"]) .seat-actions {
+    left: calc(100% + 5px);
+  }
+  .seat-anchor:is([data-seat="8"], [data-seat="9"]) .seat-actions {
+    right: calc(100% + 5px);
+    left: auto;
   }
   .table-center {
     --center-shadow-size: 145px;
@@ -3532,7 +3571,7 @@ html:-webkit-full-screen #root {
     gap: 5px;
   }
   .timer-display {
-    min-height: 86px;
+    min-height: 101px;
     padding: 5px;
   }
   .timer-display strong {
@@ -3570,7 +3609,7 @@ html:-webkit-full-screen #root {
     padding: 6px;
   }
   .live-music-controls button {
-    min-height: 34px;
+    min-height: 48px;
     font-size: 0.56rem;
   }
 }

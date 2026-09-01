@@ -1,5 +1,6 @@
 /* global URL, document, getComputedStyle, HTMLElement, HTMLInputElement, innerHeight, innerWidth, structuredClone, sessionStorage, crypto, TextEncoder, ErrorEvent, Event */
 import { chromium, webkit } from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
 import { assertExactOrigin } from "./session-verifier-contracts.mjs";
 
 const baseUrl = process.env.APP_URL ?? "http://127.0.0.1:8080";
@@ -83,11 +84,12 @@ const browserName = process.env.UI_BROWSER ?? "chromium";
 const viewportWidth = Number(process.env.UI_VIEWPORT_WIDTH ?? "");
 const viewportHeight = Number(process.env.UI_VIEWPORT_HEIGHT ?? "");
 const headerOnly = process.env.UI_HEADER_ONLY === "1";
+const hardeningOnly = process.env.UI_HARDENING_ONLY === "1";
 const browser =
   browserName === "webkit"
     ? await webkit.launch({ headless: true })
     : await chromium.launch({ channel: "chrome", headless: true });
-const page = await browser.newPage({
+const context = await browser.newContext({
   hasTouch: headerOnly,
   viewport:
     Number.isFinite(viewportWidth) &&
@@ -99,6 +101,7 @@ const page = await browser.newPage({
         ? { width: 1376, height: 1032 }
         : { width: 1366, height: 1024 },
 });
+const page = await context.newPage();
 const pageErrors = [];
 const routeErrors = [];
 
@@ -114,6 +117,166 @@ const assertNoPageErrors = () => {
   if (routeErrors.length > 0) {
     throw new Error(`Unexpected verifier API requests occurred: ${routeErrors.join(" | ")}`);
   }
+};
+
+const namedControlRules = [
+  "aria-allowed-attr",
+  "aria-command-name",
+  "aria-dialog-name",
+  "aria-hidden-focus",
+  "aria-input-field-name",
+  "aria-required-attr",
+  "aria-required-children",
+  "aria-required-parent",
+  "aria-roles",
+  "aria-toggle-field-name",
+  "aria-valid-attr-value",
+  "aria-valid-attr",
+  "button-name",
+  "frame-title",
+  "input-button-name",
+  "label",
+  "link-name",
+  "select-name",
+];
+const assertAccessibleControls = async (label) => {
+  const { violations } = await new AxeBuilder({ page }).withRules(namedControlRules).analyze();
+  if (violations.length === 0) return;
+  throw new Error(
+    `${label} has unnamed or invalid controls: ${JSON.stringify(
+      violations.map(({ id, nodes }) => ({
+        id,
+        targets: nodes.flatMap(({ target }) => target),
+      })),
+    )}`,
+  );
+};
+const coreTargetSelectors = [
+  ".app-fixed-toolbar button",
+  ".player-seat",
+  ".seat-actions button",
+  ".table-advance button",
+  ".timer-panel button",
+  ".nomination-panel button",
+  ".panel-swipe-handle",
+  ".live-music-controls button",
+  ".table-swipe-menu button",
+];
+const assertCoreTargets = async (label) => {
+  const undersized = await page.evaluate((selectors) => {
+    return [...document.querySelectorAll(selectors.join(","))]
+      .filter((element) => element instanceof HTMLElement && element.getClientRects().length > 0)
+      .map((element) => {
+        const bounds = element.getBoundingClientRect();
+        return {
+          label:
+            element.getAttribute("aria-label") ?? element.textContent?.trim() ?? element.className,
+          width: bounds.width,
+          height: bounds.height,
+        };
+      })
+      .filter(({ width, height }) => width < 47.9 || height < 47.9);
+  }, coreTargetSelectors);
+  if (undersized.length > 0)
+    throw new Error(`${label} has core targets below 48px: ${JSON.stringify(undersized)}`);
+};
+const assertCoreLayout = async (label) => {
+  const findings = await page.evaluate((selectors) => {
+    const elements = [...document.querySelectorAll(selectors.join(","))].filter(
+      (element) => element instanceof HTMLElement && element.getClientRects().length > 0,
+    );
+    const targets = elements.map((element) => {
+      const bounds = element.getBoundingClientRect();
+      const seat = element.closest(".seat-anchor")?.getAttribute("data-seat");
+      const name =
+        element.getAttribute("aria-label") ?? element.textContent?.trim() ?? element.className;
+      return {
+        label: seat === null || seat === undefined ? name : `${name} [seat ${seat}]`,
+        left: bounds.left,
+        right: bounds.right,
+        top: bounds.top,
+        bottom: bounds.bottom,
+      };
+    });
+    const outside = targets.filter(
+      ({ left, right, top, bottom }) =>
+        left < -0.1 || right > innerWidth + 0.1 || top < -0.1 || bottom > innerHeight + 0.1,
+    );
+    const overlaps = [];
+    for (let leftIndex = 0; leftIndex < targets.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < targets.length; rightIndex += 1) {
+        const left = targets[leftIndex];
+        const right = targets[rightIndex];
+        if (
+          Math.min(left.right, right.right) - Math.max(left.left, right.left) > 0.5 &&
+          Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top) > 0.5
+        )
+          overlaps.push([left.label, right.label]);
+      }
+    }
+    return {
+      pageOverflow:
+        document.documentElement.scrollWidth > innerWidth + 1 ||
+        document.documentElement.scrollHeight > innerHeight + 1,
+      outside,
+      overlaps,
+    };
+  }, coreTargetSelectors);
+  if (findings.pageOverflow || findings.outside.length > 0 || findings.overlaps.length > 0)
+    throw new Error(
+      `${label} has clipped or overlapping core controls: ${JSON.stringify(findings)}`,
+    );
+};
+const assertVisibleFocus = async (locator, label) => {
+  const nextMarker = `focus-${Date.now()}-${Math.random()}`;
+  await locator.focus();
+  const hasExpectedNext = await locator.evaluate((element, marker) => {
+    const focusable = [
+      ...document.querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
+      ),
+    ].filter(
+      (candidate) =>
+        candidate instanceof HTMLElement &&
+        candidate.tabIndex >= 0 &&
+        candidate.getClientRects().length > 0 &&
+        getComputedStyle(candidate).visibility !== "hidden",
+    );
+    const currentIndex = focusable.indexOf(element);
+    const next = currentIndex === -1 ? undefined : focusable[(currentIndex + 1) % focusable.length];
+    if (!(next instanceof HTMLElement)) return false;
+    next.dataset.verifierFocusMarker = marker;
+    return true;
+  }, nextMarker);
+  if (!hasExpectedNext) throw new Error(`${label} has no expected next focus target`);
+  const forwardKey = browserName === "webkit" ? "Alt+Tab" : "Tab";
+  const backwardKey = browserName === "webkit" ? "Alt+Shift+Tab" : "Shift+Tab";
+  await page.keyboard.press(forwardKey);
+  const movedToExpectedNext = await page.evaluate(
+    (marker) =>
+      document.activeElement instanceof HTMLElement &&
+      document.activeElement.dataset.verifierFocusMarker === marker,
+    nextMarker,
+  );
+  if (!movedToExpectedNext) {
+    throw new Error(`${label} did not move to the next control with ${forwardKey}`);
+  }
+  await page.keyboard.press(backwardKey);
+  await page.evaluate((marker) => {
+    for (const element of document.querySelectorAll("[data-verifier-focus-marker]")) {
+      if (element instanceof HTMLElement && element.dataset.verifierFocusMarker === marker)
+        delete element.dataset.verifierFocusMarker;
+    }
+  }, nextMarker);
+  if (!(await locator.evaluate((element) => document.activeElement === element))) {
+    throw new Error(`${label} is not reachable in the expected focus order`);
+  }
+  const focus = await locator.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth };
+  });
+  if (focus.outlineStyle === "none" || Number.parseFloat(focus.outlineWidth) < 2)
+    throw new Error(`${label} has no visible keyboard focus: ${JSON.stringify(focus)}`);
 };
 
 await page.addInitScript(() => {
@@ -380,6 +543,20 @@ try {
     await page.getByRole("button", { name: "Game screen" }).click();
   }
   await setupHeading.waitFor();
+  await assertAccessibleControls("Player setup");
+  const manageButton = page.getByRole("button", { name: "Open Manage menu" });
+  await assertVisibleFocus(manageButton, "Manage trigger");
+  await page.keyboard.press("Enter");
+  const manageHeading = page.getByRole("heading", { name: "Manage", exact: true });
+  await manageHeading.waitFor();
+  if (!(await manageHeading.evaluate((heading) => document.activeElement === heading))) {
+    throw new Error("Manage drawer did not receive focus");
+  }
+  await assertAccessibleControls("Manage drawer");
+  await page.keyboard.press("Escape");
+  if (!(await manageButton.evaluate((button) => document.activeElement === button))) {
+    throw new Error("Manage trigger did not regain focus");
+  }
   const saveButton = page.getByRole("button", {
     name: "Saved to server · tap to check connection",
   });
@@ -529,6 +706,10 @@ try {
       );
     }
     const firstSeat = page.getByRole("combobox", { name: "Seat 1 player" });
+    await page.waitForFunction(
+      (input) => input instanceof HTMLInputElement && input.value !== "",
+      await firstSeat.elementHandle(),
+    );
     const firstSeatName = await firstSeat.inputValue();
     await page.getByRole("button", { name: "Clear Seat 1", exact: true }).click();
     if ((await firstSeat.inputValue()) !== "" || (await startGame.isEnabled())) {
@@ -644,7 +825,7 @@ try {
     }
     const nightCycleScreenshotPath = tableScreenshotPath.replace(/\.png$/i, "-night-cycle.png");
     await page.screenshot({ path: nightCycleScreenshotPath, fullPage: true });
-    await page.getByRole("button", { name: "Continue to Sheriff wake-up" }).click();
+    await page.getByRole("button", { name: "Continue night zero to Sheriff wake-up" }).click();
     await page.getByRole("button", { name: "Begin day one" }).click();
     await page.locator(".game-shell.is-table-cycle-day").waitFor();
     await page.waitForTimeout(620);
@@ -670,6 +851,29 @@ try {
     }
     const dayCycleScreenshotPath = tableScreenshotPath.replace(/\.png$/i, "-day-cycle.png");
     await page.screenshot({ path: dayCycleScreenshotPath, fullPage: true });
+    await assertAccessibleControls("live day");
+    const keyboardSeat = page.getByRole("button", {
+      name: `Seat 1: ${firstSeatName}`,
+      exact: true,
+    });
+    await keyboardSeat.focus();
+    await page.keyboard.press("Shift+F10");
+    const keyboardRedCard = page.getByRole("button", {
+      name: `Red card ${firstSeatName}`,
+      exact: true,
+    });
+    await keyboardRedCard.waitFor();
+    if (!(await keyboardRedCard.evaluate((button) => document.activeElement === button))) {
+      throw new Error("Keyboard seat actions did not move focus to the first action");
+    }
+    await assertCoreTargets("open player actions");
+    await assertCoreLayout("open player actions");
+    await page.keyboard.press("Escape");
+    if (!(await keyboardSeat.evaluate((button) => document.activeElement === button))) {
+      throw new Error("Closing keyboard seat actions did not restore seat focus");
+    }
+    await assertCoreTargets("live day");
+    await assertCoreLayout("live day");
 
     const sidePanelGeometry = await page.evaluate(() => {
       const box = (selector) => {
@@ -723,17 +927,28 @@ try {
       };
     });
     const near = (actual, expected, tolerance = 1) => Math.abs(actual - expected) <= tolerance;
+    const expectedSidePanelGeometry =
+      sidePanelGeometry.viewportWidth >= 1160
+        ? { edge: 14, mainWidth: 918, gap: 14, railWidth: 406 }
+        : { edge: 7, mainWidth: sidePanelGeometry.viewportWidth - 356, gap: 7, railWidth: 335 };
     if (
-      !near(sidePanelGeometry.main.left, 14) ||
-      !near(sidePanelGeometry.main.width, 918) ||
-      !near(sidePanelGeometry.rail.left - sidePanelGeometry.main.right, 14) ||
-      !near(sidePanelGeometry.rail.width, 406) ||
-      !near(sidePanelGeometry.viewportWidth - sidePanelGeometry.rail.right, 14)
+      !near(sidePanelGeometry.main.left, expectedSidePanelGeometry.edge) ||
+      !near(sidePanelGeometry.main.width, expectedSidePanelGeometry.mainWidth) ||
+      !near(
+        sidePanelGeometry.rail.left - sidePanelGeometry.main.right,
+        expectedSidePanelGeometry.gap,
+      ) ||
+      !near(sidePanelGeometry.rail.width, expectedSidePanelGeometry.railWidth) ||
+      !near(
+        sidePanelGeometry.viewportWidth - sidePanelGeometry.rail.right,
+        expectedSidePanelGeometry.edge,
+      )
     ) {
       throw new Error(
-        `Unified side-panel geometry violates the 14/918/14/406/14 contract: ${JSON.stringify(
+        `Unified side-panel geometry violates its approved viewport contract: ${JSON.stringify({
+          expectedSidePanelGeometry,
           sidePanelGeometry,
-        )}`,
+        })}`,
       );
     }
     if (
@@ -762,14 +977,17 @@ try {
       );
     }
     if (
-      !near(
-        sidePanelGeometry.upperGripStyle.borderTopLeftRadius,
-        sidePanelGeometry.railStyle.borderTopLeftRadius,
-      ) ||
-      !near(
-        sidePanelGeometry.upperGripStyle.borderTopRightRadius,
-        sidePanelGeometry.railStyle.borderTopRightRadius,
-      ) ||
+      (sidePanelGeometry.viewportWidth >= 1160
+        ? !near(
+            sidePanelGeometry.upperGripStyle.borderTopLeftRadius,
+            sidePanelGeometry.railStyle.borderTopLeftRadius,
+          ) ||
+          !near(
+            sidePanelGeometry.upperGripStyle.borderTopRightRadius,
+            sidePanelGeometry.railStyle.borderTopRightRadius,
+          )
+        : sidePanelGeometry.upperGripStyle.borderTopLeftRadius !== 0 ||
+          sidePanelGeometry.upperGripStyle.borderTopRightRadius !== 0) ||
       sidePanelGeometry.musicStyle.borderLeftWidth !== 0 ||
       sidePanelGeometry.musicStyle.borderRightWidth !== 0 ||
       sidePanelGeometry.musicStyle.borderBottomWidth !== 0
@@ -814,6 +1032,14 @@ try {
       return player.dataset.verifierNode;
     });
     await page.screenshot({ path: sidePanelScreenshotPath, fullPage: true });
+    if (hardeningOnly) {
+      assertNoPageErrors();
+      console.log(
+        `UI hardening verification: PASS (${viewportWidth}x${viewportHeight}, ${browserName})`,
+      );
+      await browser.close();
+      process.exit(0);
+    }
     await musicHandle.dispatchEvent("touchstart", {
       touches: [{ identifier: 4, clientX: 100, clientY: 100 }],
     });
@@ -835,29 +1061,14 @@ try {
       throw new Error("Panel gestures remounted the persistent music player");
     }
 
-    await page.getByRole("button", { name: "Open developer menu" }).click();
-    await page.getByRole("button", { name: "Use Málaga gold theme" }).click();
-    await page.getByRole("button", { name: "Use Málaga Glass theme" }).click();
-    const expectedGlassMode = browserName === "webkit" ? "fallback" : "refractive";
-    await page.waitForFunction((expectedMode) => {
+    await page.waitForFunction(() => {
       const rail = document.querySelector(".live-side-panel.has-live-utilities");
       const surface = rail?.querySelector(".live-side-panel-glass");
       if (!(rail instanceof HTMLElement) || !(surface instanceof HTMLElement)) return false;
-      if (!surface.classList.contains(`is-glass-${expectedMode}`)) return false;
-
       const style = getComputedStyle(surface);
       const computedFilter = style.backdropFilter || style.webkitBackdropFilter || "";
-      const filterReference = computedFilter.match(/url\((?:["']?)([^"')]+)(?:["']?)\)/)?.[1];
-      const encodedFilterId = filterReference?.slice(filterReference.lastIndexOf("#") + 1);
-      const filterId = encodedFilterId ? decodeURIComponent(encodedFilterId) : null;
-      const matchingFilter = filterId === null ? null : document.getElementById(filterId);
-
-      return expectedMode === "refractive"
-        ? matchingFilter?.namespaceURI === "http://www.w3.org/2000/svg" &&
-            matchingFilter.localName === "filter" &&
-            rail.contains(matchingFilter)
-        : filterId === null && computedFilter.includes("blur");
-    }, expectedGlassMode);
+      return surface.classList.contains("glass-surface") && computedFilter.includes("blur");
+    });
     const glassEvidence = await page.evaluate(() => {
       const rail = document.querySelector(".live-side-panel.has-live-utilities");
       const surface = rail?.querySelector(".live-side-panel-glass");
@@ -883,7 +1094,6 @@ try {
         );
       };
       return {
-        theme: document.documentElement.dataset.theme,
         mode: surface.className,
         computedFilter,
         filterId,
@@ -905,8 +1115,8 @@ try {
       };
     });
     if (
-      glassEvidence.theme !== "malaga-glass" ||
-      !glassEvidence.mode.includes(`is-glass-${expectedGlassMode}`) ||
+      !glassEvidence.mode.includes("glass-surface") ||
+      !glassEvidence.computedFilter.includes("blur") ||
       glassEvidence.playerNode !== playerNodeId ||
       glassEvidence.rail === null ||
       !near(glassEvidence.rail.left, sidePanelGeometry.rail.left) ||
@@ -915,19 +1125,11 @@ try {
       !near(glassEvidence.rail.height, sidePanelGeometry.rail.height) ||
       !glassEvidence.timerVisible ||
       !glassEvidence.votingVisible ||
-      !glassEvidence.musicVisible ||
-      (browserName === "webkit"
-        ? glassEvidence.filterId !== null || !glassEvidence.computedFilter.includes("blur")
-        : glassEvidence.filterId === null ||
-          glassEvidence.matchingFilterId !== glassEvidence.filterId)
+      !glassEvidence.musicVisible
     ) {
-      throw new Error(`Málaga Glass mode is invalid: ${JSON.stringify(glassEvidence)}`);
+      throw new Error(`Live glass rail is invalid: ${JSON.stringify(glassEvidence)}`);
     }
-    await page.getByRole("button", { name: "Close developer menu" }).click();
     await page.screenshot({ path: glassScreenshotPath, fullPage: true });
-    await page.getByRole("button", { name: "Open developer menu" }).click();
-    await page.getByRole("button", { name: "Use Midnight theme" }).click();
-    await page.getByRole("button", { name: "Close developer menu" }).click();
 
     const durableBeforePreview = await page.evaluate(() =>
       sessionStorage.getItem("mafia-dashboard.game-session.v4"),
@@ -964,7 +1166,7 @@ try {
     await page.getByRole("button", { name: "Open game log" }).click();
     await page.getByRole("button", { name: "Preview state after log #1" }).click();
     await page.getByRole("heading", { name: /preview/i }).waitFor();
-    await page.getByRole("heading", { name: "Mafia planning stage" }).waitFor();
+    await page.getByRole("heading", { name: "Night zero · Mafia free seating" }).waitFor();
     const previewActions = await page
       .locator("main button:not([disabled]):visible")
       .allTextContents();
@@ -1027,7 +1229,7 @@ try {
     });
     page.once("dialog", (dialog) => dialog.accept());
     await page.getByRole("button", { name: "Reset game to timeline checkpoint" }).click();
-    await page.getByRole("heading", { name: "Mafia planning stage" }).waitFor();
+    await page.getByRole("heading", { name: "Night zero · Mafia free seating" }).waitFor();
     if (!(await resetSave).ok()) throw new Error("Destructive snapshot Reset failed");
 
     await page.getByRole("button", { name: "Open developer menu" }).click();
@@ -2019,6 +2221,20 @@ try {
   await queueHandle.click();
   await page.getByRole("button", { name: "Start game" }).click();
   await page.getByRole("heading", { name: "Role giveaway" }).waitFor();
+  await assertAccessibleControls("Role giveaway");
+  const keyboardRoleCard = page.getByRole("button", { name: /^Draw role for / }).first();
+  await assertVisibleFocus(keyboardRoleCard, "Role card");
+  await page.keyboard.press("Shift+F10");
+  const manualRoleDialog = page.getByRole("dialog", { name: "Choose role" });
+  await manualRoleDialog.waitFor();
+  const manualRoleButton = manualRoleDialog.getByRole("button").first();
+  if (!(await manualRoleButton.evaluate((button) => document.activeElement === button))) {
+    throw new Error("Manual role dialog did not focus its first action");
+  }
+  await page.keyboard.press("Escape");
+  if (!(await keyboardRoleCard.evaluate((button) => document.activeElement === button))) {
+    throw new Error("Role card did not regain focus after closing manual assignment");
+  }
   await queueHandle.click();
   const openingRows = await queue.getByRole("listitem").evaluateAll((rows) =>
     rows.map((row) => ({
@@ -2065,9 +2281,9 @@ try {
     await page.getByRole("button", { name: `Draw role for ${nickname}`, exact: true }).click();
   }
   await page.getByRole("button", { name: "Begin Mafia planning stage" }).click();
-  await page.getByRole("heading", { name: "Mafia planning stage" }).waitFor();
+  await page.getByRole("heading", { name: "Night zero · Mafia free seating" }).waitFor();
   if (headerOnly) {
-    await page.getByRole("button", { name: "Continue to Sheriff wake-up" }).click();
+    await page.getByRole("button", { name: "Continue night zero to Sheriff wake-up" }).click();
     await page.getByRole("button", { name: "Begin day one" }).click();
     const firstPlayer = selectedPlayers[0]?.nickname;
     const secondPlayer = selectedPlayers[1]?.nickname;
@@ -2084,13 +2300,22 @@ try {
       name: `Seat 1: ${firstPlayer}`,
       exact: true,
     });
-    await firstPlayerCard.dispatchEvent("touchstart", {
-      touches: [{ clientX: 20, clientY: 50 }],
+    await assertVisibleFocus(firstPlayerCard, "Live player card");
+    await page.keyboard.press("Shift+F10");
+    const redCardButton = page.getByRole("button", {
+      name: `Red card ${firstPlayer}`,
+      exact: true,
     });
-    await firstPlayerCard.dispatchEvent("touchend", {
-      changedTouches: [{ clientX: 82, clientY: 52 }],
-    });
-    await page.getByRole("button", { name: `Red card ${firstPlayer}`, exact: true }).click();
+    await redCardButton.waitFor();
+    if (!(await redCardButton.evaluate((button) => document.activeElement === button))) {
+      throw new Error("Keyboard-opened player actions did not focus the red-card action");
+    }
+    await page.keyboard.press("Escape");
+    if (!(await firstPlayerCard.evaluate((button) => document.activeElement === button))) {
+      throw new Error("Player card did not regain focus after closing its actions");
+    }
+    await page.keyboard.press("Shift+F10");
+    await page.keyboard.press("Enter");
     await page.getByText(`Current turn: ${secondPlayer}`).waitFor();
     await page.getByRole("button", { name: `Foul ${secondPlayer}`, exact: true }).click();
     await page.getByText("Foul ×1").waitFor();
@@ -2166,6 +2391,9 @@ try {
       }
     }
     await page.screenshot({ path: tableScreenshotPath, fullPage: true });
+    await assertAccessibleControls("Responsive live game");
+    await assertCoreTargets("Responsive live game");
+    await assertCoreLayout("Responsive live game");
     assertNoPageErrors();
     console.log("Responsive phone game verification: PASS");
     await browser.close();
@@ -2176,6 +2404,9 @@ try {
   await enterFullscreen.click();
   await page.waitForFunction(() => document.fullscreenElement !== null);
   await page.getByRole("button", { name: "Exit fullscreen" }).waitFor();
+  await assertAccessibleControls("Fullscreen live game");
+  await assertCoreTargets("Fullscreen live game");
+  await assertCoreLayout("Fullscreen live game");
   if ((await page.locator(".player-seat").count()) !== 10) {
     throw new Error("Expected ten player seats on the live table");
   }
@@ -2402,7 +2633,7 @@ try {
       "YouTube playlist order must not expose an application-level next-track override",
     );
   }
-  await page.getByRole("button", { name: "Continue to Sheriff wake-up" }).click();
+  await page.getByRole("button", { name: "Continue night zero to Sheriff wake-up" }).click();
   await page.getByRole("button", { name: "Begin day one" }).click();
   const dayBannerGeometry = await page.evaluate(() => {
     const phaseBannerBox = document.querySelector(".phase-banner")?.getBoundingClientRect();

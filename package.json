@@ -26,6 +26,7 @@
     "verify:backup": "node scripts/verify-postgres-backup.mjs",
     "verify:session": "node scripts/verify-session-state.mjs",
     "verify:ui": "node scripts/verify-ui.mjs",
+    "verify:ui-hardening": "node scripts/verify-ui-hardening.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "eslint . --max-warnings=0",
     "format": "prettier --write .",
@@ -33,6 +34,7 @@
     "check": "npm run audit:security && npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.62.1",
     "concurrently": "^10.0.5",

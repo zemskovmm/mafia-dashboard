@@ -175,6 +175,14 @@ describe("GameScreen", () => {
     expect(screen.getByText("Host Player")).toBeInTheDocument();
   });
 
+  it("does not advertise player context actions while discipline is unavailable", () => {
+    render(<Harness onEvent={() => undefined} />);
+
+    expect(screen.getByRole("button", { name: "Seat 1: Player 1" })).not.toHaveAttribute(
+      "aria-haspopup",
+    );
+  });
+
   it("signals setup phases and enters the rotating first day", async () => {
     const user = userEvent.setup();
     const onEvent = vi.fn<(type: string, payload: Record<string, unknown>) => void>();
@@ -236,6 +244,31 @@ describe("GameScreen", () => {
         ]),
       }),
     );
+  });
+
+  it("closes the keyboard red-card menu with Escape", () => {
+    const base = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+    const game: GameState = { ...base, phase: "night-don" };
+    const target = game.players.find(({ role }) => role === "citizen")!;
+    render(
+      <GameScreen
+        game={game}
+        hostName="Host Player"
+        onGameChange={() => undefined}
+        onEvent={() => undefined}
+        privacyHidden={false}
+      />,
+    );
+    const card = screen.getByRole("button", { name: `Don check ${target.name}` });
+    card.focus();
+    fireEvent.keyDown(card, { key: "F10", shiftKey: true });
+    const redCard = screen.getByRole("button", { name: `Red card ${target.name}` });
+    expect(redCard).toHaveFocus();
+
+    fireEvent.keyDown(redCard, { key: "Escape" });
+
+    expect(screen.queryByRole("button", { name: `Red card ${target.name}` })).toBeNull();
+    expect(card).toHaveFocus();
   });
 
   it("supplies live phase and turn context with an accepted swipe red card", async () => {

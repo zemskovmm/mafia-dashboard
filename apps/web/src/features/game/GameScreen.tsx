@@ -149,7 +149,9 @@ export const GameScreen = ({
     game.phase !== "cancelled";
   const revealDisciplineAction = (seat: number) => {
     const player = game.players.find((candidate) => candidate.seat === seat);
-    setSwipedSeat(disciplineAvailable && player?.status === "active" ? seat : null);
+    setSwipedSeat((current) =>
+      disciplineAvailable && player?.status === "active" && current !== seat ? seat : null,
+    );
   };
   const swipeAction =
     disciplineAvailable && swipedPlayer !== undefined ? (
@@ -554,7 +556,7 @@ export const GameScreen = ({
               game={game}
               hostName={hostName}
               privacyHidden={privacyHidden}
-              onSeatSwipe={revealDisciplineAction}
+              onSeatSwipe={disciplineAvailable ? revealDisciplineAction : undefined}
               swipeAction={swipeAction}
               onFoul={foulPlayer}
               onGameChange={onGameChange}
@@ -588,7 +590,7 @@ export const GameScreen = ({
               game={game}
               hostName={hostName}
               privacyHidden={privacyHidden}
-              onSeatSwipe={revealDisciplineAction}
+              onSeatSwipe={disciplineAvailable ? revealDisciplineAction : undefined}
               swipeAction={swipeAction}
               onGameChange={onGameChange}
               onEvent={onEvent}
@@ -598,7 +600,7 @@ export const GameScreen = ({
             <GameTable
               hostName={hostName}
               privacyHidden={privacyHidden}
-              onSeatSwipe={revealDisciplineAction}
+              onSeatSwipe={disciplineAvailable ? revealDisciplineAction : undefined}
               swipeAction={swipeAction}
               seats={game.players.map((player) => ({
                 seat: player.seat,

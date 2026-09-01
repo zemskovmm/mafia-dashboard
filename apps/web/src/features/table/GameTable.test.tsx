@@ -1,12 +1,29 @@
 import { useState } from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import { GameTable, type TableSeatView } from "./GameTable.js";
 
 const seats: TableSeatView[] = Array.from({ length: 10 }, (_, index) => ({
   seat: index + 1,
   name: `Player ${index + 1}`,
 }));
+
+const ContextActionHarness = () => {
+  const [swipedSeat, setSwipedSeat] = useState<number | null>(null);
+  return (
+    <GameTable
+      seats={seats}
+      onSeatSwipe={(seat) => setSwipedSeat((current) => (current === seat ? null : seat))}
+      swipeAction={
+        swipedSeat === null ? undefined : (
+          <button type="button" className="table-swipe-red-card">
+            Red card Player {swipedSeat}
+          </button>
+        )
+      }
+    />
+  );
+};
 
 describe("GameTable", () => {
   it("places the host and ten players in eleven equally spaced circular slots", () => {
@@ -106,5 +123,50 @@ describe("GameTable", () => {
     expect(screen.getByRole("button", { name: "Red card Player 1" }).parentElement).toHaveClass(
       "table-swipe-menu",
     );
+  });
+
+  it("opens a seat context action with Shift+F10 and focuses its first control", async () => {
+    render(<ContextActionHarness />);
+    const player = screen.getByRole("button", { name: "Seat 1: Player 1" });
+    player.focus();
+
+    fireEvent.keyDown(player, { key: "F10", shiftKey: true });
+
+    const action = screen.getByRole("button", { name: "Red card Player 1" });
+    await waitFor(() => expect(action).toHaveFocus());
+    expect(screen.getByRole("dialog", { name: "Player actions" })).toContainElement(action);
+    expect(player).toHaveAttribute("aria-haspopup", "dialog");
+  });
+
+  it("closes a keyboard-opened seat context action with Escape and restores seat focus", async () => {
+    render(<ContextActionHarness />);
+    const player = screen.getByRole("button", { name: "Seat 1: Player 1" });
+    player.focus();
+    fireEvent.keyDown(player, { key: "ContextMenu" });
+    const action = screen.getByRole("button", { name: "Red card Player 1" });
+    await waitFor(() => expect(action).toHaveFocus());
+
+    fireEvent.keyDown(action, { key: "Escape" });
+
+    await waitFor(() => expect(player).toHaveFocus());
+    expect(screen.queryByRole("button", { name: "Red card Player 1" })).toBeNull();
+  });
+
+  it.each([
+    ["eliminated", { status: "eliminated" as const }],
+    ["otherwise inactive", { inactive: true }],
+  ])("does not advertise or open context actions for %s seats", (_, state) => {
+    const onSeatSwipe = vi.fn();
+    render(
+      <GameTable
+        seats={seats.map((seat) => (seat.seat === 1 ? { ...seat, ...state } : seat))}
+        onSeatSwipe={onSeatSwipe}
+      />,
+    );
+    const player = screen.getByRole("button", { name: "Seat 1: Player 1" });
+
+    expect(player).not.toHaveAttribute("aria-haspopup");
+    fireEvent.keyDown(player, { key: "F10", shiftKey: true });
+    expect(onSeatSwipe).not.toHaveBeenCalled();
   });
 });

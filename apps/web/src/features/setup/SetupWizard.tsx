@@ -452,15 +452,19 @@ export const SetupWizard = ({
                     )
               }
               onSeatClick={handleRoleCardTap}
-              onSeatSwipe={(seat) => {
-                if (setup.remainingRoles.length > 0) setManualRoleSeat(seat);
-              }}
+              onSeatSwipe={
+                setup.remainingRoles.length > 0
+                  ? (seat) => setManualRoleSeat((current) => (current === seat ? null : seat))
+                  : undefined
+              }
+              contextActionOpen={manualRoleSeat !== null}
               center={
                 manualRoleSeat !== null && setup.remainingRoles.length > 0 ? (
                   <div
                     className="manual-role-menu"
                     role="dialog"
                     aria-label={t("setup.chooseRole")}
+                    data-context-action
                   >
                     <span className="table-prompt">
                       {t("setup.chooseRoleForSeat", { seat: manualRoleSeat })}

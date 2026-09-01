@@ -1,6 +1,6 @@
 import type { PlayerStatus, Role } from "@mafia/game-domain";
 import type { CSSProperties, ReactNode } from "react";
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { gameMessages, type GameMessageKey } from "../../i18n/messages/game.js";
 
@@ -33,6 +33,7 @@ interface GameTableProps {
   readonly onSeatSwipe?: (seat: number) => void;
   readonly renderSeatActions?: (seat: TableSeatView) => ReactNode;
   readonly swipeAction?: ReactNode;
+  readonly contextActionOpen?: boolean;
   readonly center?: ReactNode;
   readonly advance?: ReactNode;
   readonly readOnly?: boolean;
@@ -64,22 +65,58 @@ export const GameTable = ({
   onSeatSwipe,
   renderSeatActions,
   swipeAction,
+  contextActionOpen,
   center,
   advance,
   readOnly = false,
 }: GameTableProps) => {
   const { t } = useMessages(gameMessages);
+  const tableRef = useRef<HTMLElement | null>(null);
+  const seatButtonsRef = useRef(new Map<number, HTMLButtonElement>());
+  const [keyboardContextSeat, setKeyboardContextSeat] = useState<number | null>(null);
+  const actionOpen = contextActionOpen ?? swipeAction !== undefined;
   const swipeStart = useRef<{
     readonly seat: number;
     readonly x: number;
     readonly y: number;
   } | null>(null);
   const suppressClickSeat = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (keyboardContextSeat === null) return;
+    if (actionOpen) {
+      tableRef.current
+        ?.querySelector<HTMLButtonElement>("[data-context-action] button:not(:disabled)")
+        ?.focus();
+      return;
+    }
+    seatButtonsRef.current.get(keyboardContextSeat)?.focus();
+    setKeyboardContextSeat(null);
+  }, [actionOpen, keyboardContextSeat]);
+
   return (
-    <section className="table-stage" aria-label={t("game.table")}>
+    <section
+      ref={tableRef}
+      className="table-stage"
+      aria-label={t("game.table")}
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || keyboardContextSeat === null || !actionOpen) return;
+        event.preventDefault();
+        onSeatSwipe?.(keyboardContextSeat);
+      }}
+    >
       <div className="round-table">
         <div className="table-center">{center}</div>
-        {swipeAction === undefined ? null : <div className="table-swipe-menu">{swipeAction}</div>}
+        {swipeAction === undefined ? null : (
+          <div
+            className="table-swipe-menu"
+            role="dialog"
+            aria-label={t("table.playerActions")}
+            data-context-action
+          >
+            {swipeAction}
+          </div>
+        )}
         {readOnly ? null : (
           <div className="table-advance">
             {advance ?? (
@@ -93,6 +130,12 @@ export const GameTable = ({
           const angle = HOST_ANGLE + (seat.seat * 360) / TABLE_POSITION_COUNT;
           const label =
             seatActionLabel?.(seat) ?? t("table.seat", { seat: seat.seat, name: seat.name });
+          const disabled = seatActionDisabled?.(seat) ?? false;
+          const contextActionAvailable =
+            onSeatSwipe !== undefined &&
+            !disabled &&
+            !seat.inactive &&
+            (seat.status ?? "active") === "active";
           const showRole = seat.role !== undefined && !privacyHidden;
           const className = `table-card player-seat status-${seat.status ?? "active"}${seat.current ? " is-current" : ""}${seat.mafiaShooter ? " is-mafia-shooter" : ""}${seat.sheriffHighlight ? " is-sheriff-highlight" : ""}${seat.goodbyeHighlight ? " is-goodbye-highlight" : ""}${seat.votingHighlight ? " is-voting-highlight" : ""}${seat.dimmed ? " is-dimmed" : ""}${seat.inactive ? " is-inactive" : ""}${seat.provisionalDeceased ? " is-provisional-deceased" : ""}`;
           const content = (
@@ -128,6 +171,7 @@ export const GameTable = ({
             <div
               key={seat.seat}
               className="seat-anchor"
+              data-seat={seat.seat}
               style={{ "--seat-angle": `${angle}deg` } as CSSProperties}
             >
               {readOnly ? (
@@ -141,13 +185,18 @@ export const GameTable = ({
                 </div>
               ) : (
                 <button
+                  ref={(element) => {
+                    if (element === null) seatButtonsRef.current.delete(seat.seat);
+                    else seatButtonsRef.current.set(seat.seat, element);
+                  }}
                   type="button"
-                  disabled={seatActionDisabled?.(seat) ?? false}
+                  disabled={disabled}
                   className={className}
                   aria-label={label}
                   aria-current={seat.current ? "step" : undefined}
+                  aria-haspopup={contextActionAvailable ? "dialog" : undefined}
                   onTouchStart={(event) => {
-                    if (onSeatSwipe === undefined) return;
+                    if (!contextActionAvailable) return;
                     const touch = event.touches[0];
                     if (touch !== undefined) {
                       swipeStart.current = { seat: seat.seat, x: touch.clientX, y: touch.clientY };
@@ -156,7 +205,7 @@ export const GameTable = ({
                   onTouchEnd={(event) => {
                     const start = swipeStart.current;
                     swipeStart.current = null;
-                    if (start?.seat !== seat.seat || onSeatSwipe === undefined) return;
+                    if (start?.seat !== seat.seat || !contextActionAvailable) return;
                     const touch = event.changedTouches[0];
                     if (touch === undefined) return;
                     const deltaX = touch.clientX - start.x;
@@ -172,6 +221,16 @@ export const GameTable = ({
                   }}
                   onTouchCancel={() => {
                     swipeStart.current = null;
+                  }}
+                  onKeyDown={(event) => {
+                    if (
+                      !contextActionAvailable ||
+                      (event.key !== "ContextMenu" && !(event.key === "F10" && event.shiftKey))
+                    )
+                      return;
+                    event.preventDefault();
+                    setKeyboardContextSeat(seat.seat);
+                    onSeatSwipe(seat.seat);
                   }}
                   onClick={() => {
                     if (suppressClickSeat.current === seat.seat) {
