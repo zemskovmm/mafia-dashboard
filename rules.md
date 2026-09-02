@@ -378,7 +378,7 @@ The night screen MUST minimize accidental leaks:
 
 The moderator MUST be able to correct recent actions from the authoritative browser snapshot. The browser persists the complete current `GameState` after every domain change and keeps semantic events as the structured Log/Timeline history. Ordinary Undo permanently removes the latest undoable event and every later event; Timeline Reset permanently retains only the selected root-to-checkpoint prefix. Undo and Reset do not create their own game events and there is no Reset Return or administrative correction event.
 
-Undo is limited to the latest three ordinary actions and cannot cross an event that advances the game day. Reset consumes the current Undo allowance. Both actions remain available after a winning state is reached, but become unavailable immediately after the moderator clicks **Finish game**. The auxiliary timer resets locally rather than being reconstructed from game history.
+Undo is limited to the latest three ordinary actions and cannot cross an event that advances the game day. Reset consumes the current Undo allowance. Both actions remain available after a winning state is reached, but become unavailable immediately after the moderator clicks **Finish game**. A confirmed draw or cancellation is terminal immediately because its ruling already includes the required reason. After any completion is persisted, normal snapshot, event, head-move, normalization, start, completion, and delete/clear requests cannot edit, reopen, or remove it; only an exact idempotent retry of the accepted terminal request succeeds. The auxiliary timer resets locally rather than being reconstructed from game history.
 
 The browser snapshot is persisted before network activity. PostgreSQL mirrors the last uploaded valid snapshot even when its client revision is older than the server revision. The server still validates snapshot shape, game invariants, club-owned participants, semantic-history integrity, and secret-data boundaries, then rebuilds active-player or completion projections atomically.
 
@@ -394,8 +394,8 @@ Current persisted entities:
 - `game_sessions`, containing the authoritative full browser snapshot, revision metadata, and session status;
 - `game_events`, mirroring the snapshot's exact semantic Log/Timeline prefix;
 - `game_session_mutations` for revisioned idempotent request handling;
-- `game_session_players` as the active-game participant projection;
-- `game_results` and `game_player_results` as retractable completion projections;
+- `game_session_players` as the durable host/participant projection used by active games and history filters;
+- `game_results` and `game_player_results` as durable terminal and statistics projections;
 - encrypted `youtube_oauth_credentials` for the separate read-only account grant.
 
 Important invariants:
@@ -406,9 +406,10 @@ Important invariants:
 - event replay sequence is monotonic within the retained prefix; Undo and Reset permanently remove the discarded tail;
 - replay validates event envelopes, parent links, phase/day transitions, and state hashes;
 - canonical illegal actions expose a stable `GameRuleError` code and safe context without mutating the supplied projection;
-- draw and cancellation events retain their moderator reason and terminate the active event prefix;
+- red wins, black wins, reasoned draws, and reasoned cancellations become durable completed-game records with their snapshotted ruleset identity;
+- completed history can be filtered by inclusive UTC calendar dates, participating player, and terminal result;
 - secret fields are never returned by public APIs;
-- completion projections mirror the latest valid browser snapshot;
+- completion projections mirror the accepted terminal browser snapshot and cannot be rewritten, reopened, or deleted through normal routes;
 - application-level authorization is enforced on every game route, not only in the UI.
 
 ## 9. Self-hosted deployment baseline
@@ -432,8 +433,7 @@ Operational requirements:
 - persist database data outside the disposable container layer;
 - choose, document, and test a PostgreSQL backup and restore approach before production; PostgreSQL documents SQL dumps, file-system backups, and continuous archiving as distinct options.[S11]
 - document upgrades and rollback;
-- use secure cookies, CSRF protection, rate limiting on authentication, and TLS;
-- export completed games to JSON/CSV for portability.
+- use secure cookies, CSRF protection, rate limiting on authentication, and TLS.
 
 The implemented Docker Compose and Azure baselines run the schema bundle as a one-shot migration before application traffic. The self-hosted TLS, logging, upgrade, shutdown, and rollback procedures are documented in [`docs/self-hosted-deployment.md`](docs/self-hosted-deployment.md). Scheduled PostgreSQL custom archives, off-server retention, semantic restore verification, and disaster recovery are documented in [`docs/postgresql-backup-and-recovery.md`](docs/postgresql-backup-and-recovery.md).
 

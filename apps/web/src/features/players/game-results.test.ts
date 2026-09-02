@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   beginRoleDraw,
+  cancelGame,
   completeRoleDraw,
+  confirmDraw,
   createGame,
   createSeededRandom,
   createSetup,
@@ -49,7 +51,9 @@ describe("buildFinalGameResults", () => {
     );
     expect(results).toMatchObject({
       hostPlayerId: "00000000-0000-4000-8000-000000000011",
+      outcome: "red",
       winner: "red",
+      reason: null,
       playedAt: "2026-08-17T22:00:00.000Z",
     });
     expect(results?.players).toHaveLength(10);
@@ -66,5 +70,40 @@ describe("buildFinalGameResults", () => {
       bestMoveHits: 2,
     });
     expect(results?.players[1]).toMatchObject({ status: "red-carded", bestMoveHits: null });
+  });
+
+  it.each([
+    ["draw", "Three quiet cycles", confirmDraw],
+    ["cancelled", "Venue closed", cancelGame],
+  ] as const)(
+    "captures a %s terminal record with its canonical reason",
+    (outcome, reason, endGame) => {
+      const terminal = endGame({ ...createAssignedGame(), day: 1 }, reason);
+
+      expect(
+        buildFinalGameResults(
+          terminal,
+          new Date("2026-08-17T22:00:00.000Z"),
+          "00000000-0000-4000-8000-000000000011",
+          reason,
+        ),
+      ).toMatchObject({
+        outcome,
+        winner: null,
+        reason,
+        playedAt: "2026-08-17T22:00:00.000Z",
+        players: expect.arrayContaining([expect.objectContaining({ seat: 1 })]),
+      });
+    },
+  );
+
+  it("rejects terminal results whose reason is not the canonical event reason", () => {
+    expect(
+      buildFinalGameResults(
+        confirmDraw({ ...createAssignedGame(), day: 1 }, "Three quiet cycles"),
+        new Date("2026-08-17T22:00:00.000Z"),
+        "00000000-0000-4000-8000-000000000011",
+      ),
+    ).toBeNull();
   });
 });

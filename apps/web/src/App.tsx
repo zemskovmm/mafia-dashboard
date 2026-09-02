@@ -13,6 +13,7 @@ import {
   createGameLogEntry,
   hashGameState,
   isMeaningfulGameEventDraft,
+  isTerminalGamePhase,
   replayGameLog,
   type CanonicalGameEventDraft,
   type GameLogEntry,
@@ -925,12 +926,25 @@ export const ClubWorkspace = ({
         setUndoBudget((current) => (created.after.day > before.day ? 0 : Math.min(3, current + 1)));
       }
       setGame(displayedAfter);
-      if (created.after.phase !== "finished") {
+      if (
+        (created.entry.type === "game.drawn" || created.entry.type === "game.cancelled") &&
+        hostPlayerId !== null
+      ) {
+        setFinalResults(
+          buildFinalGameResults(
+            created.after,
+            new Date(created.entry.createdAt),
+            hostPlayerId,
+            created.entry.payload.reason,
+          ),
+        );
+        setFinishGameState("saving");
+      } else if (created.after.phase !== "finished") {
         setFinalResults(null);
         setFinishGameState("ready");
       }
     },
-    [game, sessionSync],
+    [game, hostPlayerId, sessionSync],
   );
 
   const moveHeadLocally = useCallback(
@@ -949,13 +963,13 @@ export const ClubWorkspace = ({
       setHeadEventId(targetEventId);
       setGame(nextGame);
       const target = eventsRef.current.find(({ id }) => id === targetEventId);
-      if (
-        nextGame.phase === "finished" &&
-        target?.type === "game.completed" &&
-        hostPlayerId !== null
-      ) {
+      if (target !== undefined && hostPlayerId !== null && isTerminalGamePhase(nextGame.phase)) {
+        const reason =
+          target.type === "game.drawn" || target.type === "game.cancelled"
+            ? target.payload.reason
+            : null;
         setFinalResults(
-          buildFinalGameResults(nextGame, new Date(target?.createdAt ?? Date.now()), hostPlayerId),
+          buildFinalGameResults(nextGame, new Date(target.createdAt), hostPlayerId, reason),
         );
         setFinishGameState("saved");
       } else {
@@ -2047,6 +2061,7 @@ export const ClubWorkspace = ({
       ) : isManager && view === "timeline" ? (
         <GameTimelineScreen
           clubId={club.id}
+          players={players}
           onBack={() => setView(viewBeforeTimelineRef.current)}
           showDevelopmentTools={devModeEnabled}
           currentHistory={currentTimelineHistory}

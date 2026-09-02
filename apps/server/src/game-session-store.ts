@@ -76,7 +76,9 @@ interface StoredGameSessionState extends PersistedGameSessionState {
 
 export interface StoredGameResults {
   readonly hostPlayerId: string;
-  readonly winner: "red" | "black";
+  readonly outcome?: "red" | "black" | "draw" | "cancelled";
+  readonly winner: "red" | "black" | null;
+  readonly reason?: string | null;
   readonly playedAt: string;
   readonly players: readonly {
     readonly playerId: string;
@@ -88,31 +90,6 @@ export interface StoredGameResults {
     readonly bestMoveHits?: number | null;
   }[];
 }
-
-const resultsFromCompletedGame = (
-  game: GameState,
-  event: GameLogEntry,
-  hostPlayerId: string | null,
-): StoredGameResults | null => {
-  if (game.phase !== "finished" || game.winner === null || hostPlayerId === null) return null;
-  return {
-    hostPlayerId,
-    winner: game.winner,
-    playedAt: event.createdAt,
-    players: game.players.map((player) => ({
-      playerId: player.id,
-      seat: player.seat,
-      role: player.role,
-      team: player.role === "mafia" || player.role === "don" ? "black" : "red",
-      status: player.status,
-      fouls: player.fouls,
-      bestMoveHits:
-        game.bestMove?.playerSeat === player.seat && game.bestMove.mafiaHits !== undefined
-          ? game.bestMove.mafiaHits
-          : null,
-    })),
-  };
-};
 
 export interface NormalizeGameSessionInput {
   readonly clubId?: string;
@@ -155,6 +132,8 @@ export interface StoredGameSession {
   readonly revision: number;
   readonly duplicate: boolean;
   readonly status: "active" | "completed";
+  readonly rulesetId: string;
+  readonly rulesetVersion: number;
   readonly updatedAt: Date;
   readonly state: StoredGameSessionState;
   readonly results: StoredGameResults | null;
@@ -177,15 +156,28 @@ export interface CompletedGameSessionSummary {
   readonly name: string;
   readonly revision: number;
   readonly hostName: string | null;
-  readonly winner: "red" | "black";
+  readonly outcome: "red" | "black" | "draw" | "cancelled";
+  readonly winner: "red" | "black" | null;
+  readonly reason: string | null;
+  readonly rulesetId: string;
+  readonly rulesetVersion: number;
   readonly playedAt: string;
   readonly day: number;
   readonly eventCount: number;
   readonly updatedAt: Date;
 }
 
+export interface CompletedGameSessionFilters {
+  readonly from?: string;
+  readonly to?: string;
+  readonly playerId?: string;
+  readonly outcome?: "red" | "black" | "draw" | "cancelled";
+}
+
 interface SessionRow {
   id: string;
+  ruleset_id: string;
+  ruleset_version: number;
   name: string;
   revision: number;
   status: "active" | "completed";
@@ -202,6 +194,10 @@ interface SessionRow {
 
 interface CompletedSessionRow extends SessionRow {
   event_count: number;
+  completion_outcome: "red" | "black" | "draw" | "cancelled";
+  completion_winner: "red" | "black" | null;
+  completion_reason: string | null;
+  completion_played_at: Date;
 }
 
 interface DuplicateSessionRow extends SessionRow {
@@ -209,7 +205,7 @@ interface DuplicateSessionRow extends SessionRow {
 }
 
 const sessionColumns =
-  "id, name, revision, status, updated_at, state, results, initial_game, " +
+  "id, ruleset_id, ruleset_version, name, revision, status, updated_at, state, results, initial_game, " +
   "replay_base_event_id, head_event_id, reset_return_event_id, reset_return_was_completed, replay_version";
 
 interface CanonicalEventRow {
@@ -365,15 +361,32 @@ const setupPhase = (setup: unknown): string => {
   return typeof setup.step === "string" ? `setup-${setup.step}` : "setup-players";
 };
 
+const completionOutcome = (results: StoredGameResults): "red" | "black" | "draw" | "cancelled" => {
+  const outcome = results.outcome ?? results.winner;
+  if (outcome === null) throw new Error("Stored completion is missing its outcome");
+  return outcome;
+};
+
+const normalizeStoredResults = (results: StoredGameResults | null): StoredGameResults | null =>
+  results === null
+    ? null
+    : {
+        ...results,
+        outcome: completionOutcome(results),
+        reason: results.reason ?? null,
+      };
+
 const mapSession = (row: SessionRow, duplicate: boolean): StoredGameSession => ({
   gameId: row.id,
   name: row.name,
   revision: row.revision,
   duplicate,
   status: row.status,
+  rulesetId: row.ruleset_id,
+  rulesetVersion: row.ruleset_version,
   updatedAt: row.updated_at,
   state: materializeSessionState(row.state),
-  results: row.results,
+  results: normalizeStoredResults(row.results),
 });
 
 const hydrateSessionFromEvents = (
@@ -407,6 +420,8 @@ const hydrateSessionFromEvents = (
     revision,
     duplicate,
     status: row.status,
+    rulesetId: row.ruleset_id,
+    rulesetVersion: row.ruleset_version,
     updatedAt: row.updated_at,
     state: {
       ...row.state,
@@ -422,7 +437,7 @@ const hydrateSessionFromEvents = (
       headEventId,
       resetReturnEventId: row.reset_return_event_id,
     },
-    results: row.results,
+    results: normalizeStoredResults(row.results),
     replayBaseEventId: row.replay_base_event_id,
     previewableFromEventId: row.replay_base_event_id,
   };
@@ -656,6 +671,7 @@ const updateLastPlayed = async (
                     FROM game_results AS hosted
                    WHERE hosted.club_id = p.club_id
                      AND hosted.host_player_id = p.id
+                     AND hosted.outcome <> 'cancelled'
                 ) AS history
             ),
             updated_at = NOW()
@@ -690,43 +706,60 @@ const replaceResults = async (
     results.hostPlayerId,
     ...results.players.map(({ playerId }) => playerId),
   ]);
-  affected.add(results.hostPlayerId);
-  for (const player of results.players) affected.add(player.playerId);
+  const outcome = completionOutcome(results);
+  if (outcome !== "cancelled") affected.add(results.hostPlayerId);
+  if (outcome !== "cancelled") {
+    for (const player of results.players) affected.add(player.playerId);
+  }
   await client.query(
-    `INSERT INTO game_results (game_id, club_id, winner, played_at, host_player_id)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO game_results (game_id, club_id, outcome, winner, reason, played_at, host_player_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      ON CONFLICT (club_id, game_id) DO UPDATE
-       SET winner = EXCLUDED.winner,
+       SET outcome = EXCLUDED.outcome,
+           winner = EXCLUDED.winner,
+           reason = EXCLUDED.reason,
            played_at = EXCLUDED.played_at,
            host_player_id = EXCLUDED.host_player_id`,
-    [gameId, clubId, results.winner, results.playedAt, results.hostPlayerId],
+    [
+      gameId,
+      clubId,
+      outcome,
+      results.winner,
+      results.reason ?? null,
+      results.playedAt,
+      results.hostPlayerId,
+    ],
   );
   await client.query("DELETE FROM game_player_results WHERE club_id = $1 AND game_id = $2", [
     clubId,
     gameId,
   ]);
-  await client.query(
-    `INSERT INTO game_player_results
+  if (outcome !== "cancelled")
+    await client.query(
+      `INSERT INTO game_player_results
        (club_id, game_id, player_id, seat, role, team, final_status, fouls, won,
         best_move_hits)
      SELECT $1, $2, player.player_id, player.seat, player.role, player.team,
-            player.final_status, player.fouls, player.team = $3, player.best_move_hits
+            player.final_status, player.fouls,
+            CASE WHEN $3 = 'draw' THEN NULL ELSE player.team = $4 END,
+            player.best_move_hits
        FROM UNNEST(
-         $4::uuid[], $5::int[], $6::text[], $7::text[], $8::text[], $9::int[], $10::int[]
+         $5::uuid[], $6::int[], $7::text[], $8::text[], $9::text[], $10::int[], $11::int[]
        ) AS player(player_id, seat, role, team, final_status, fouls, best_move_hits)`,
-    [
-      clubId,
-      gameId,
-      results.winner,
-      results.players.map(({ playerId }) => playerId),
-      results.players.map(({ seat }) => seat),
-      results.players.map(({ role }) => role),
-      results.players.map(({ team }) => team),
-      results.players.map(({ status }) => status),
-      results.players.map(({ fouls }) => fouls),
-      results.players.map(({ bestMoveHits }) => bestMoveHits ?? null),
-    ],
-  );
+      [
+        clubId,
+        gameId,
+        outcome,
+        results.winner,
+        results.players.map(({ playerId }) => playerId),
+        results.players.map(({ seat }) => seat),
+        results.players.map(({ role }) => role),
+        results.players.map(({ team }) => team),
+        results.players.map(({ status }) => status),
+        results.players.map(({ fouls }) => fouls),
+        results.players.map(({ bestMoveHits }) => bestMoveHits ?? null),
+      ],
+    );
   await updateLastPlayed(client, clubId, [...affected]);
 };
 
@@ -735,16 +768,17 @@ const assertResultsMatchGame = (
   game: GameState,
   results: StoredGameResults,
 ): void => {
+  const expectedOutcome = game.phase === "finished" ? game.winner : game.phase;
   if (
-    game.phase !== "finished" ||
-    game.winner === null ||
+    (game.phase !== "finished" && game.phase !== "draw" && game.phase !== "cancelled") ||
+    completionOutcome(results) !== expectedOutcome ||
     results.winner !== game.winner ||
     results.hostPlayerId !== state.hostPlayerId ||
     results.players.length !== game.players.length
   ) {
     throw new GameSessionOperationError(
       "game_session_results_mismatch",
-      "Completion results must match the replayed finished head",
+      "Completion results must match the replayed terminal head",
     );
   }
   const playersById = new Map(game.players.map((player) => [player.id, player]));
@@ -777,17 +811,10 @@ const synchronizeLegacyAggregate = async (
 ): Promise<void> => {
   await synchronizeEventLog(client, clubId, gameId, state);
   await replaceResults(client, clubId, gameId, results);
-  if (results === null) {
-    await replaceActivePlayers(client, clubId, gameId, {
-      ...state,
-      game: deriveCurrentGame(state),
-    });
-  } else {
-    await client.query("DELETE FROM game_session_players WHERE club_id = $1 AND game_id = $2", [
-      clubId,
-      gameId,
-    ]);
-  }
+  await replaceActivePlayers(client, clubId, gameId, {
+    ...state,
+    game: deriveCurrentGame(state),
+  });
 };
 
 const metadataOnlyState = (
@@ -1118,6 +1145,15 @@ export class GameSessionNotFoundError extends GameSessionOperationError {
   }
 }
 
+const assertActiveSession = (row: Pick<SessionRow, "status">): void => {
+  if (row.status === "completed") {
+    throw new GameSessionOperationError(
+      "game_session_completed",
+      "Completed sessions cannot be changed",
+    );
+  }
+};
+
 export class GameSessionMutationMismatchError extends Error {
   public override readonly name = "GameSessionMutationMismatchError";
 
@@ -1151,11 +1187,13 @@ export class GameSessionStore {
       await client.query("BEGIN");
       await lockAggregateProjectionTables(client);
       await lockClubGame(client, clubId, gameId);
-      const current = await client.query<{ revision: number }>(
-        "SELECT revision FROM game_sessions WHERE id = $1 AND club_id = $2 FOR UPDATE",
+      const current = await client.query<{ revision: number; status: "active" | "completed" }>(
+        "SELECT revision, status FROM game_sessions WHERE id = $1 AND club_id = $2 FOR UPDATE",
         [gameId, clubId],
       );
-      const currentRevision = current.rows[0]?.revision ?? 0;
+      const currentRow = current.rows[0];
+      if (currentRow !== undefined) assertActiveSession(currentRow);
+      const currentRevision = currentRow?.revision ?? 0;
       if (expectedRevision !== undefined && currentRevision !== expectedRevision) {
         const deleted = await client.query(
           "SELECT 1 FROM deleted_games WHERE game_id = $1 AND club_id = $2",
@@ -1234,11 +1272,19 @@ export class GameSessionStore {
 
   public async listCompleted(
     clubId = DEFAULT_CLUB_ID,
+    filters: CompletedGameSessionFilters = {},
   ): Promise<readonly CompletedGameSessionSummary[]> {
     const result = await this.pool.query<CompletedSessionRow>(
       `SELECT ${sessionColumns},
-              COALESCE(event_counts.event_count, 0)::int AS event_count
+              COALESCE(event_counts.event_count, 0)::int AS event_count,
+              completion.outcome AS completion_outcome,
+              completion.winner AS completion_winner,
+              completion.reason AS completion_reason,
+              completion.played_at AS completion_played_at
          FROM game_sessions
+         JOIN game_results AS completion
+           ON completion.club_id = game_sessions.club_id
+          AND completion.game_id = game_sessions.id
          LEFT JOIN (
            SELECT game_id, COUNT(*)::int AS event_count
              FROM game_events
@@ -1246,8 +1292,25 @@ export class GameSessionStore {
             GROUP BY game_id
          ) AS event_counts ON event_counts.game_id = game_sessions.id
         WHERE status = 'completed' AND game_sessions.club_id = $1
+          AND ($2::date IS NULL OR completion.played_at >= ($2::date::timestamp AT TIME ZONE 'UTC'))
+          AND ($3::date IS NULL OR completion.played_at < (($3::date + 1)::timestamp AT TIME ZONE 'UTC'))
+          AND ($4::uuid IS NULL OR EXISTS (
+            SELECT 1
+              FROM game_session_players AS participant
+             WHERE participant.club_id = game_sessions.club_id
+               AND participant.game_id = game_sessions.id
+               AND participant.player_id = $4
+               AND NOT participant.is_host
+          ))
+          AND ($5::text IS NULL OR completion.outcome = $5)
         ORDER BY updated_at DESC, id`,
-      [clubId],
+      [
+        clubId,
+        filters.from ?? null,
+        filters.to ?? null,
+        filters.playerId ?? null,
+        filters.outcome ?? null,
+      ],
     );
     const replayGameIds = result.rows.flatMap((row) => (row.initial_game === null ? [] : [row.id]));
     const eventsByGame = await readCanonicalEventsByGame(this.pool, clubId, replayGameIds);
@@ -1262,8 +1325,12 @@ export class GameSessionStore {
         name: row.name,
         revision: row.revision,
         hostName: row.state.hostName ?? null,
-        winner: row.results.winner,
-        playedAt: row.results.playedAt,
+        outcome: row.completion_outcome,
+        winner: row.completion_winner,
+        reason: row.completion_reason,
+        rulesetId: row.ruleset_id,
+        rulesetVersion: row.ruleset_version,
+        playedAt: row.completion_played_at.toISOString(),
         day: game?.day ?? 0,
         eventCount: row.event_count,
         updatedAt: row.updated_at,
@@ -1303,6 +1370,7 @@ export class GameSessionStore {
         await client.query("COMMIT");
         return response;
       }
+      assertActiveSession(row);
       if (input.baseRevision !== row.revision) throw new GameSessionConflictError(row.revision);
 
       const suppliedEvents = decodePersistedReplayEvents(row.state.events);
@@ -1413,6 +1481,7 @@ export class GameSessionStore {
         await client.query("COMMIT");
         return response;
       }
+      assertActiveSession(row);
       if (input.baseRevision !== row.revision) throw new GameSessionConflictError(row.revision);
       if (row.initial_game !== null || row.replay_base_event_id !== null) {
         throw new GameSessionOperationError(
@@ -1507,6 +1576,7 @@ export class GameSessionStore {
         await client.query("COMMIT");
         return response;
       }
+      assertActiveSession(row);
       if (!isMeaningfulGameEventDraft(input.event)) {
         throw new GameSessionOperationError(
           "game_session_event_intermediate",
@@ -1514,12 +1584,6 @@ export class GameSessionStore {
         );
       }
       if (input.baseRevision !== row.revision) throw new GameSessionConflictError(row.revision);
-      if (row.status !== "active") {
-        throw new GameSessionOperationError(
-          "game_session_completed",
-          "Completed sessions cannot accept new replay events",
-        );
-      }
       if (row.initial_game === null || row.head_event_id === null) {
         throw new GameSessionOperationError(
           "game_session_not_started",
@@ -1613,6 +1677,7 @@ export class GameSessionStore {
         await client.query("COMMIT");
         return response;
       }
+      assertActiveSession(row);
       if (input.baseRevision !== row.revision) throw new GameSessionConflictError(row.revision);
       if (
         row.initial_game === null ||
@@ -1685,67 +1750,23 @@ export class GameSessionStore {
           : input.reason === "restore-reset"
             ? null
             : row.reset_return_event_id;
-      const nextResetReturnWasCompleted =
-        input.reason === "reset"
-          ? changed
-            ? row.status === "completed"
-            : row.reset_return_was_completed
-          : input.reason === "restore-reset"
-            ? false
-            : row.reset_return_was_completed;
-      let status = row.status;
-      let results = row.results;
-      if (changed && row.status === "completed") {
-        await replaceResults(client, clubId, input.gameId, null);
-        status = "active";
-        results = null;
-      }
-      if (input.reason === "restore-reset" && row.reset_return_was_completed) {
-        const restored = resultsFromCompletedGame(
-          replay.game,
-          target,
-          row.state.hostPlayerId ?? null,
-        );
-        if (restored !== null) {
-          await replaceResults(client, clubId, input.gameId, restored);
-          await client.query(
-            "DELETE FROM game_session_players WHERE club_id = $1 AND game_id = $2",
-            [clubId, input.gameId],
-          );
-          status = "completed";
-          results = restored;
-        }
-      }
 
       const nextRevision = row.revision + 1;
       const updated = await client.query<SessionRow>(
         `UPDATE game_sessions
             SET revision = $2, last_mutation_id = $3, head_event_id = $4,
-                reset_return_event_id = $5, reset_return_was_completed = $6,
-                status = $7, results = $8::jsonb,
+                reset_return_event_id = $5, reset_return_was_completed = FALSE,
                 updated_at = NOW()
-          WHERE id = $1 AND club_id = $9
+          WHERE id = $1 AND club_id = $6
         RETURNING ${sessionColumns}`,
-        [
-          input.gameId,
-          nextRevision,
-          input.mutationId,
-          target.id,
-          nextResetReturnEventId,
-          nextResetReturnWasCompleted,
-          status,
-          results === null ? null : JSON.stringify(results),
-          clubId,
-        ],
+        [input.gameId, nextRevision, input.mutationId, target.id, nextResetReturnEventId, clubId],
       );
-      if (status === "active") {
-        await replaceActivePlayers(
-          client,
-          clubId,
-          input.gameId,
-          materializeSessionState(row.state, replay.game),
-        );
-      }
+      await replaceActivePlayers(
+        client,
+        clubId,
+        input.gameId,
+        materializeSessionState(row.state, replay.game),
+      );
       await recordMutation(client, clubId, input.gameId, input.mutationId, nextRevision, request);
       const updatedRow = updated.rows[0];
       if (updatedRow === undefined) throw new Error("The moved game session was not returned");
@@ -1787,6 +1808,7 @@ export class GameSessionStore {
         await client.query("COMMIT");
         return response;
       }
+      assertActiveSession(row);
       if (input.baseRevision !== row.revision) throw new GameSessionConflictError(row.revision);
       if (row.initial_game === null || row.head_event_id === null) {
         throw new GameSessionOperationError(
@@ -1796,14 +1818,26 @@ export class GameSessionStore {
       }
       const events = await readCanonicalEvents(client, clubId, input.gameId);
       const completionEvent = events.find(({ id }) => id === row.head_event_id);
+      const outcome = completionOutcome(input.results);
+      const terminalEventType =
+        outcome === "red" || outcome === "black"
+          ? "game.completed"
+          : outcome === "draw"
+            ? "game.drawn"
+            : "game.cancelled";
+      const eventReason =
+        completionEvent?.type === "game.drawn" || completionEvent?.type === "game.cancelled"
+          ? completionEvent.payload.reason
+          : null;
       if (
         row.status !== "active" ||
-        completionEvent?.type !== "game.completed" ||
-        input.results.playedAt !== completionEvent.createdAt
+        completionEvent?.type !== terminalEventType ||
+        input.results.playedAt !== completionEvent.createdAt ||
+        (input.results.reason ?? null) !== eventReason
       ) {
         throw new GameSessionOperationError(
           "game_session_completion_invalid",
-          "Completion requires an active game.completed head and its event timestamp",
+          "Completion requires the matching active terminal head, timestamp, and reason",
         );
       }
       const replay = replayGameLog(
@@ -1813,19 +1847,22 @@ export class GameSessionStore {
       );
       assertResultsMatchGame(row.state, replay.game, input.results);
       await replaceResults(client, clubId, input.gameId, input.results);
-      await client.query("DELETE FROM game_session_players WHERE club_id = $1 AND game_id = $2", [
+      await replaceActivePlayers(
+        client,
         clubId,
         input.gameId,
-      ]);
+        materializeSessionState(row.state, replay.game),
+      );
 
       const nextRevision = row.revision + 1;
+      const results = normalizeStoredResults(input.results);
       const updated = await client.query<SessionRow>(
         `UPDATE game_sessions
             SET revision = $2, last_mutation_id = $3, status = 'completed',
                 results = $4::jsonb, updated_at = NOW()
           WHERE id = $1 AND club_id = $5
         RETURNING ${sessionColumns}`,
-        [input.gameId, nextRevision, input.mutationId, JSON.stringify(input.results), clubId],
+        [input.gameId, nextRevision, input.mutationId, JSON.stringify(results), clubId],
       );
       await recordMutation(client, clubId, input.gameId, input.mutationId, nextRevision, request);
       const updatedRow = updated.rows[0];
@@ -1852,7 +1889,8 @@ export class GameSessionStore {
       await assertClubGameNotDeleted(client, clubId, input.gameId);
 
       const duplicate = await client.query<DuplicateSessionRow>(
-        `SELECT session.id, session.name, session.revision, session.status,
+        `SELECT session.id, session.ruleset_id, session.ruleset_version,
+                session.name, session.revision, session.status,
                 session.updated_at, session.state, session.results, session.initial_game,
                 session.replay_base_event_id, session.head_event_id,
                 session.reset_return_event_id, session.reset_return_was_completed,
@@ -1887,6 +1925,7 @@ export class GameSessionStore {
       );
       const currentRow = current.rows[0];
       if (currentRow !== undefined) {
+        assertActiveSession(currentRow);
         const nextRevision = currentRow.revision + 1;
         const status = input.results === null ? "active" : "completed";
         const replayBaseEventId =

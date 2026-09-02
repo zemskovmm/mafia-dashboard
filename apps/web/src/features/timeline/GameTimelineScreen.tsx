@@ -29,6 +29,7 @@ import {
 import {
   getGameSession,
   listCompletedGameSessions,
+  type CompletedGameSessionFilters,
   type CompletedGameSessionSummary,
   type RemoteGameSession,
 } from "../../api/client.js";
@@ -53,13 +54,17 @@ import {
 } from "./timeline-model.js";
 
 interface TimelineLoaders {
-  readonly listCompleted: (clubId: string) => Promise<readonly CompletedGameSessionSummary[]>;
+  readonly listCompleted: (
+    clubId: string,
+    filters: CompletedGameSessionFilters,
+  ) => Promise<readonly CompletedGameSessionSummary[]>;
   readonly getSession: (gameId: string, clubId: string) => Promise<RemoteGameSession>;
 }
 
 interface GameTimelineScreenProps {
   readonly clubId: string;
   readonly onBack: () => void;
+  readonly players?: readonly { readonly id: string; readonly nickname: string }[];
   readonly loaders?: TimelineLoaders;
   readonly showDevelopmentTools?: boolean;
   readonly currentHistory?: {
@@ -82,7 +87,7 @@ interface LoadedHistory {
 }
 
 const defaultLoaders: TimelineLoaders = {
-  listCompleted: (clubId) => listCompletedGameSessions(clubId),
+  listCompleted: (clubId, filters) => listCompletedGameSessions(clubId, filters),
   getSession: (gameId, clubId) => getGameSession(gameId, clubId),
 };
 
@@ -380,6 +385,7 @@ export const GameTimelineScreen = (props: GameTimelineScreenProps) => (
 const TenantGameTimelineScreen = ({
   clubId,
   onBack,
+  players = [],
   loaders = defaultLoaders,
   showDevelopmentTools = false,
   currentHistory,
@@ -419,15 +425,36 @@ const TenantGameTimelineScreen = ({
   const [selectedMarkerId, setSelectedMarkerId] = useState<string | null>(null);
   const [loadingGameName, setLoadingGameName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [playerId, setPlayerId] = useState("");
+  const [outcome, setOutcome] = useState("");
   const listRequestRef = useRef(0);
   const sessionRequestRef = useRef(0);
+
+  const resetHistoricalSelection = () => {
+    sessionRequestRef.current += 1;
+    setSelectedGameId(currentHistory === undefined ? "" : "current");
+    setHistory(loadCurrentHistory());
+    setSelectedMarkerId(null);
+    setLoadingGameName(null);
+  };
 
   useEffect(() => {
     const request = listRequestRef.current + 1;
     listRequestRef.current = request;
     setError(null);
+    setSummaries(null);
+    const filters: CompletedGameSessionFilters = {
+      ...(from === "" ? {} : { from }),
+      ...(to === "" ? {} : { to }),
+      ...(playerId === "" ? {} : { playerId }),
+      ...(outcome === ""
+        ? {}
+        : { outcome: outcome as NonNullable<CompletedGameSessionFilters["outcome"]> }),
+    };
     void loaders
-      .listCompleted(clubId)
+      .listCompleted(clubId, filters)
       .then((next) => {
         if (listRequestRef.current === request) setSummaries(next);
       })
@@ -441,7 +468,7 @@ const TenantGameTimelineScreen = ({
     return () => {
       if (listRequestRef.current === request) listRequestRef.current += 1;
     };
-  }, [clubId, i18n, loaders]);
+  }, [clubId, from, i18n, loaders, outcome, playerId, to]);
 
   useEffect(() => {
     if (selectedGameId === "current") setHistory(loadCurrentHistory());
@@ -550,7 +577,12 @@ const TenantGameTimelineScreen = ({
             <option value="">{i18n.t("Choose a completed game")}</option>
             {(summaries ?? []).map((summary) => (
               <option key={summary.gameId} value={summary.gameId}>
-                {summary.name} · {summary.winner === "red" ? i18n.t("Citizens") : i18n.t("Mafia")}
+                {summary.name} ·{" "}
+                {summary.outcome === "red"
+                  ? i18n.t("Citizens")
+                  : summary.outcome === "black"
+                    ? i18n.t("Mafia")
+                    : i18n.t(summary.outcome === "draw" ? "Game drawn" : "Game cancelled")}
               </option>
             ))}
           </select>
@@ -561,6 +593,81 @@ const TenantGameTimelineScreen = ({
           </button>
         ) : null}
       </header>
+
+      <section className="timeline-filters" aria-label={i18n.t("History filters")}>
+        <label>
+          <span>{i18n.t("From date")}</span>
+          <input
+            type="date"
+            aria-label={i18n.t("From date")}
+            value={from}
+            onChange={(event) => {
+              resetHistoricalSelection();
+              setFrom(event.currentTarget.value);
+            }}
+          />
+        </label>
+        <label>
+          <span>{i18n.t("To date")}</span>
+          <input
+            type="date"
+            aria-label={i18n.t("To date")}
+            value={to}
+            onChange={(event) => {
+              resetHistoricalSelection();
+              setTo(event.currentTarget.value);
+            }}
+          />
+        </label>
+        <label>
+          <span>{i18n.t("Player")}</span>
+          <select
+            aria-label={i18n.t("Player")}
+            value={playerId}
+            onChange={(event) => {
+              resetHistoricalSelection();
+              setPlayerId(event.currentTarget.value);
+            }}
+          >
+            <option value="">{i18n.t("All players")}</option>
+            {players.map((player) => (
+              <option key={player.id} value={player.id}>
+                {player.nickname}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          <span>{i18n.t("Result")}</span>
+          <select
+            aria-label={i18n.t("Result")}
+            value={outcome}
+            onChange={(event) => {
+              resetHistoricalSelection();
+              setOutcome(event.currentTarget.value);
+            }}
+          >
+            <option value="">{i18n.t("All results")}</option>
+            <option value="red">{i18n.t("Citizens won")}</option>
+            <option value="black">{i18n.t("Mafia won")}</option>
+            <option value="draw">{i18n.t("Game drawn")}</option>
+            <option value="cancelled">{i18n.t("Game cancelled")}</option>
+          </select>
+        </label>
+        <button
+          type="button"
+          disabled={from === "" && to === "" && playerId === "" && outcome === ""}
+          onClick={() => {
+            resetHistoricalSelection();
+            setFrom("");
+            setTo("");
+            setPlayerId("");
+            setOutcome("");
+          }}
+        >
+          {i18n.t("Clear filters")}
+        </button>
+      </section>
 
       {error === null ? null : (
         <p className="timeline-error" role="alert">
@@ -593,7 +700,8 @@ const TenantGameTimelineScreen = ({
               {history.summary === null ? null : (
                 <span>
                   {history.summary.hostName ?? i18n.t("Unknown host")} ·{" "}
-                  {i18n.formatDateTime(history.summary.playedAt)}
+                  {i18n.formatDateTime(history.summary.playedAt)} · {history.summary.rulesetId} v
+                  {history.summary.rulesetVersion}
                 </span>
               )}
             </div>

@@ -5,12 +5,28 @@ export const buildFinalGameResults = (
   game: GameState,
   playedAt: Date,
   hostPlayerId: string,
+  reason: string | null = null,
 ): FinalGameResults | null => {
-  if (game.phase !== "finished" || game.winner === null) return null;
+  const outcome =
+    game.phase === "finished"
+      ? game.winner
+      : game.phase === "draw" || game.phase === "cancelled"
+        ? game.phase
+        : null;
+  const reasonedOutcome = outcome === "draw" || outcome === "cancelled";
+  if (
+    outcome === null ||
+    (reasonedOutcome &&
+      (reason === null || reason.length === 0 || reason.length > 500 || reason !== reason.trim()))
+  ) {
+    return null;
+  }
 
   return {
     hostPlayerId,
-    winner: game.winner,
+    outcome,
+    winner: outcome === "red" || outcome === "black" ? outcome : null,
+    reason: reasonedOutcome ? reason : null,
     playedAt: playedAt.toISOString(),
     players: game.players.map((player) => ({
       playerId: player.id,

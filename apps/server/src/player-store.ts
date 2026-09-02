@@ -111,6 +111,7 @@ interface PlayerRow {
   hosted_games: number;
   games_played: number;
   wins: number;
+  losses: number;
   red_games: number;
   red_wins: number;
   black_games: number;
@@ -143,7 +144,7 @@ const mapPlayer = (row: PlayerRow): PlayerProfile => ({
     hostedGames: row.hosted_games,
     gamesPlayed: row.games_played,
     wins: row.wins,
-    losses: row.games_played - row.wins,
+    losses: row.losses,
     redGames: row.red_games,
     redWins: row.red_wins,
     blackGames: row.black_games,
@@ -170,10 +171,13 @@ const profileSelect = `
          p.data_processing_consent, p.consent_at, p.created_at, p.updated_at,
          p.last_played_at,
          (SELECT COUNT(*)::int FROM game_results hosted
-           WHERE hosted.club_id = p.club_id AND hosted.host_player_id = p.id)
+           WHERE hosted.club_id = p.club_id
+             AND hosted.host_player_id = p.id
+             AND hosted.outcome <> 'cancelled')
            AS hosted_games,
          COUNT(r.player_id)::int AS games_played,
          COUNT(r.player_id) FILTER (WHERE r.won)::int AS wins,
+         COUNT(r.player_id) FILTER (WHERE r.won = FALSE)::int AS losses,
          COUNT(r.player_id) FILTER (WHERE r.team = 'red')::int AS red_games,
          COUNT(r.player_id) FILTER (WHERE r.team = 'red' AND r.won)::int AS red_wins,
          COUNT(r.player_id) FILTER (WHERE r.team = 'black')::int AS black_games,
@@ -421,8 +425,11 @@ export class PlayerStore {
       }
       const activeGame = await client.query(
         `SELECT 1
-           FROM game_session_players
-          WHERE club_id = $2 AND player_id = $1
+           FROM game_session_players AS projection
+           JOIN game_sessions AS session
+             ON session.club_id = projection.club_id AND session.id = projection.game_id
+          WHERE projection.club_id = $2 AND projection.player_id = $1
+            AND session.status = 'active'
           LIMIT 1`,
         [id, clubId],
       );
@@ -434,6 +441,8 @@ export class PlayerStore {
         `SELECT game_id FROM game_player_results WHERE club_id = $2 AND player_id = $1
          UNION
          SELECT game_id FROM game_results WHERE club_id = $2 AND host_player_id = $1
+         UNION
+         SELECT game_id FROM game_session_players WHERE club_id = $2 AND player_id = $1
          ORDER BY game_id`,
         [id, clubId],
       );
@@ -450,7 +459,11 @@ export class PlayerStore {
                  SELECT host_player_id AS player_id
                    FROM game_results
                   WHERE club_id = $2 AND game_id = ANY($1::uuid[])
-                    AND host_player_id IS NOT NULL`,
+                    AND host_player_id IS NOT NULL
+                 UNION
+                 SELECT player_id
+                   FROM game_session_players
+                  WHERE club_id = $2 AND game_id = ANY($1::uuid[])`,
                 [gameIds, clubId],
               )
             ).rows.map(({ player_id }) => player_id);
@@ -502,6 +515,7 @@ export class PlayerStore {
                           FROM game_results AS hosted
                          WHERE hosted.club_id = p.club_id
                            AND hosted.host_player_id = p.id
+                           AND hosted.outcome <> 'cancelled'
                       ) AS history
                   ),
                   updated_at = NOW()
@@ -544,10 +558,12 @@ export class PlayerStore {
         [input.gameId, clubId],
       );
       await client.query(
-        `INSERT INTO game_results (game_id, club_id, winner, played_at, host_player_id)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO game_results (game_id, club_id, outcome, winner, played_at, host_player_id)
+         VALUES ($1, $2, $3, $3, $4, $5)
          ON CONFLICT (club_id, game_id) DO UPDATE
-           SET winner = EXCLUDED.winner,
+           SET outcome = EXCLUDED.outcome,
+               winner = EXCLUDED.winner,
+               reason = NULL,
                played_at = EXCLUDED.played_at,
                host_player_id = EXCLUDED.host_player_id`,
         [input.gameId, clubId, input.winner, input.playedAt, hostPlayerId],

@@ -930,19 +930,24 @@ describe("GameScreen", () => {
   it.each([
     ["draw", "Game drawn"],
     ["cancelled", "Game cancelled"],
-  ] as const)("renders a terminal %s state without winner persistence controls", (phase, label) => {
-    const day = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
-    render(
-      <GameScreen
-        game={{ ...day, phase, winner: null }}
-        hostName="Host Player"
-        onGameChange={() => undefined}
-        onEvent={() => undefined}
-        privacyHidden={false}
-      />,
-    );
+  ] as const)(
+    "renders a saved terminal %s state without winner persistence controls",
+    (phase, label) => {
+      const day = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+      render(
+        <GameScreen
+          game={{ ...day, phase, winner: null }}
+          hostName="Host Player"
+          onGameChange={() => undefined}
+          onEvent={() => undefined}
+          privacyHidden={false}
+          finishGameState="saved"
+        />,
+      );
 
-    expect(screen.getByRole("status")).toHaveTextContent(label);
-    expect(screen.queryByRole("button", { name: "Finish the game" })).toBeNull();
-  });
+      expect(screen.getByRole("status")).toHaveTextContent(label);
+      expect(screen.getByRole("status")).toHaveTextContent("Game safely saved");
+      expect(screen.queryByRole("button", { name: "Finish the game" })).toBeNull();
+    },
+  );
 });

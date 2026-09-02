@@ -2469,6 +2469,35 @@ describe("authoritative game session lifecycle", () => {
     expect(screen.queryByRole("button", { name: "Game safely saved" })).not.toBeInTheDocument();
   });
 
+  it.each([
+    ["game.drawn", "draw", "Three quiet cycles"],
+    ["game.cancelled", "cancelled", "Venue closed"],
+  ] as const)(
+    "persists a reasoned %s event as a terminal result",
+    async (type, outcome, reason) => {
+      const user = userEvent.setup();
+      render(<App />);
+      await user.click(screen.getByRole("button", { name: "Start test game" }));
+      await waitFor(() => expect(api.saveGameSession).toHaveBeenCalled());
+      api.saveGameSession.mockClear();
+
+      act(() => gameScreenHarness.liveOnAcceptedEvent?.({ type, payload: { reason } }));
+
+      await waitFor(() =>
+        expect(api.saveGameSession.mock.calls.at(-1)?.[1]).toMatchObject({
+          kind: "snapshot",
+          results: { outcome, winner: null, reason },
+          state: expect.objectContaining({
+            game: expect.objectContaining({ phase: outcome }),
+            events: expect.arrayContaining([
+              expect.objectContaining({ type, payload: { reason } }),
+            ]),
+          }),
+        }),
+      );
+    },
+  );
+
   it("finishes locally while offline and uploads exactly once after Save is pressed", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -2858,6 +2887,8 @@ const remoteSession = (
   revision,
   duplicate: false,
   status: "active",
+  rulesetId: "club-mafia",
+  rulesetVersion: 1,
   updatedAt: "2026-08-18T09:00:00.000Z",
   state: {
     setup: null,

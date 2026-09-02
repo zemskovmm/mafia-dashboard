@@ -164,6 +164,30 @@ describe("normalized game schema migration", () => {
           [gameId, playerId],
         ),
       ).rejects.toMatchObject({ code: "23514" });
+      await expect(
+        pool.query(
+          `INSERT INTO game_results (game_id, outcome, winner, reason, played_at)
+           VALUES ($1, 'draw', NULL, 'Three quiet cycles', NOW())
+           RETURNING outcome, winner, reason`,
+          [gameId],
+        ),
+      ).resolves.toMatchObject({
+        rows: [{ outcome: "draw", winner: null, reason: "Three quiet cycles" }],
+      });
+      await expect(
+        pool.query(
+          `INSERT INTO game_results (game_id, outcome, winner, reason, played_at)
+           VALUES ($1, 'cancelled', 'red', 'Venue closed', NOW())`,
+          [randomUUID()],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
+      await expect(
+        pool.query(
+          `INSERT INTO game_results (game_id, outcome, winner, reason, played_at)
+           VALUES ($1, 'draw', NULL, NULL, NOW())`,
+          [randomUUID()],
+        ),
+      ).rejects.toMatchObject({ code: "23514" });
     });
   });
 
@@ -179,13 +203,16 @@ describe("normalized game schema migration", () => {
 
       const canonicalGameId = randomUUID();
       const partialSetupId = randomUUID();
+      const completedGameId = randomUUID();
       const canonicalPlayerId = randomUUID();
       const partialPlayerId = randomUUID();
+      const completedPlayerId = randomUUID();
       const hostPlayerId = randomUUID();
       await pool.query(
         `INSERT INTO players (id, nickname)
-         VALUES ($1, 'Canonical player'), ($2, 'Partial player'), ($3, 'Session host')`,
-        [canonicalPlayerId, partialPlayerId, hostPlayerId],
+         VALUES ($1, 'Canonical player'), ($2, 'Partial player'),
+                ($3, 'Completed player'), ($4, 'Session host')`,
+        [canonicalPlayerId, partialPlayerId, completedPlayerId, hostPlayerId],
       );
       const canonicalState = {
         game: { players: [{ id: canonicalPlayerId, seat: 1, role: "sheriff" }] },
@@ -210,7 +237,8 @@ describe("normalized game schema migration", () => {
         `INSERT INTO game_sessions
            (id, name, revision, last_mutation_id, state, status)
          VALUES ($1, 'Canonical migration', 1, $2, $3::jsonb, 'active'),
-                ($4, 'Partial migration', 1, $5, $6::jsonb, 'active')`,
+                ($4, 'Partial migration', 1, $5, $6::jsonb, 'active'),
+                ($7, 'Completed migration', 1, $8, $9::jsonb, 'completed')`,
         [
           canonicalGameId,
           randomUUID(),
@@ -218,6 +246,9 @@ describe("normalized game schema migration", () => {
           partialSetupId,
           randomUUID(),
           JSON.stringify(partialState),
+          completedGameId,
+          randomUUID(),
+          JSON.stringify({ game: null }),
         ],
       );
       await pool.query(
@@ -225,19 +256,32 @@ describe("normalized game schema migration", () => {
          VALUES ($1, $2, 1, FALSE), ($3, $4, 2, FALSE), ($3, $5, NULL, TRUE)`,
         [canonicalGameId, canonicalPlayerId, partialSetupId, partialPlayerId, hostPlayerId],
       );
+      await pool.query(
+        `INSERT INTO game_results
+           (game_id, outcome, winner, reason, played_at, host_player_id)
+         VALUES ($1, 'red', 'red', NULL, NOW(), $2)`,
+        [completedGameId, hostPlayerId],
+      );
+      await pool.query(
+        `INSERT INTO game_player_results
+           (game_id, player_id, seat, role, team, final_status, fouls, won, best_move_hits)
+         VALUES ($1, $2, 1, 'citizen', 'red', 'active', 0, TRUE, NULL)`,
+        [completedGameId, completedPlayerId],
+      );
 
       await initializeSchema(pool);
       const normalized = async () =>
         (
           await pool.query(
             `SELECT session.id, session.ruleset_id, session.ruleset_version, session.state,
-                    player.player_id, player.seat, player.is_host, player.role
+                    player.player_id, player.seat, player.is_host, player.role,
+                    player.xmin::text AS row_version
                FROM game_sessions AS session
                JOIN game_session_players AS player
                  ON player.club_id = session.club_id AND player.game_id = session.id
               WHERE session.id = ANY($1::uuid[])
               ORDER BY session.id, player.is_host, player.seat`,
-            [[canonicalGameId, partialSetupId]],
+            [[canonicalGameId, partialSetupId, completedGameId]],
           )
         ).rows;
       const afterFirstRun = await normalized();
@@ -262,6 +306,20 @@ describe("normalized game schema migration", () => {
             player_id: hostPlayerId,
             is_host: true,
             seat: null,
+            role: null,
+          }),
+          expect.objectContaining({
+            id: completedGameId,
+            player_id: completedPlayerId,
+            seat: 1,
+            is_host: false,
+            role: "citizen",
+          }),
+          expect.objectContaining({
+            id: completedGameId,
+            player_id: hostPlayerId,
+            seat: null,
+            is_host: true,
             role: null,
           }),
         ]),
@@ -1115,8 +1173,8 @@ const verifyTenantMigrationConcern = async (concern: TenantMigrationConcern): Pr
       [gameId, playerId],
     );
     await isolatedPool.query(
-      `INSERT INTO game_results (game_id, club_id, winner, played_at, host_player_id)
-         VALUES ($1, $2, 'red', '2026-08-18T08:00:00Z', $3)`,
+      `INSERT INTO game_results (game_id, club_id, outcome, winner, played_at, host_player_id)
+         VALUES ($1, $2, 'red', 'red', '2026-08-18T08:00:00Z', $3)`,
       [gameId, DEFAULT_CLUB_ID, playerId],
     );
     await isolatedPool.query(
@@ -1520,8 +1578,8 @@ const verifyTenantMigrationConcern = async (concern: TenantMigrationConcern): Pr
         [secondClubId, gameId, secondPlayerId],
       );
       await isolatedPool.query(
-        `INSERT INTO game_results (club_id, game_id, winner, played_at, host_player_id)
-         VALUES ($1, $2, 'black', '2026-08-18T09:00:00Z', $3)`,
+        `INSERT INTO game_results (club_id, game_id, outcome, winner, played_at, host_player_id)
+         VALUES ($1, $2, 'black', 'black', '2026-08-18T09:00:00Z', $3)`,
         [secondClubId, gameId, secondPlayerId],
       );
       await isolatedPool.query(

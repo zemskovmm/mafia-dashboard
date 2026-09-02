@@ -467,6 +467,31 @@ describe("game session aggregate API client", () => {
       headers: { "x-club-id": clubId },
     });
   });
+
+  it("encodes completed-history filters in a stable query order", async () => {
+    const clubId = "00000000-0000-4000-8000-000000000101";
+    const playerId = "00000000-0000-4000-8000-000000000002";
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ sessions: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await listCompletedGameSessions(clubId, {
+      from: "2026-08-01",
+      to: "2026-08-31",
+      playerId,
+      outcome: "draw",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/game-sessions?status=completed&from=2026-08-01&to=2026-08-31&playerId=${playerId}&outcome=draw`,
+      { headers: { "x-club-id": clubId } },
+    );
+  });
+
   it("sends the expected revision when clearing a session", async () => {
     const gameId = "00000000-0000-4000-8000-000000000002";
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));

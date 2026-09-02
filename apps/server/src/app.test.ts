@@ -36,6 +36,75 @@ afterAll(async () => {
 
 describe("server API", () => {
   it.each([
+    "/api/game-sessions?status=completed&from=21-08-2026",
+    "/api/game-sessions?status=completed&to=2026-08-32",
+    "/api/game-sessions?status=completed&from=2026-08-22&to=2026-08-21",
+    "/api/game-sessions?status=completed&playerId=not-a-uuid",
+    "/api/game-sessions?status=completed&outcome=unknown",
+    "/api/game-sessions?status=active&outcome=red",
+  ])("rejects an invalid completed-history query: %s", async (url) => {
+    const response = await app.inject({ method: "GET", url });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: "validation_failed" });
+  });
+
+  it("accepts composable completed-history filters", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: `/api/game-sessions?status=completed&from=2026-08-21&to=2026-08-21&playerId=${randomUUID()}&outcome=draw`,
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ sessions: [] });
+  });
+
+  it("returns the exact completed-session retry but rejects new mutation and deletion", async () => {
+    const gameId = randomUUID();
+    const payload = {
+      name: "Completion retry contract",
+      mutationId: randomUUID(),
+      baseRevision: 0,
+      state: {
+        setup: null,
+        game: null,
+        hostPlayerId: null,
+        hostName: null,
+        playlistId: "",
+        log: [],
+        undoHistory: [],
+      },
+      results: null,
+    };
+    expect(
+      await app.inject({ method: "PUT", url: `/api/game-sessions/${gameId}`, payload }),
+    ).toHaveProperty("statusCode", 201);
+    await pool.query("UPDATE game_sessions SET status = 'completed' WHERE id = $1", [gameId]);
+
+    const retry = await app.inject({
+      method: "PUT",
+      url: `/api/game-sessions/${gameId}`,
+      payload,
+    });
+    const changed = await app.inject({
+      method: "PUT",
+      url: `/api/game-sessions/${gameId}`,
+      payload: { ...payload, mutationId: randomUUID(), baseRevision: 1 },
+    });
+    const deletion = await app.inject({
+      method: "DELETE",
+      url: `/api/game-sessions/${gameId}?expectedRevision=1`,
+    });
+
+    expect(retry.statusCode).toBe(200);
+    expect(retry.json()).toMatchObject({ revision: 1, duplicate: true, status: "completed" });
+    expect(changed.statusCode).toBe(409);
+    expect(changed.json()).toEqual({ error: "game_session_completed" });
+    expect(deletion.statusCode).toBe(409);
+    expect(deletion.json()).toEqual({ error: "game_session_completed" });
+  });
+
+  it.each([
     ["missing", {}],
     ["false", { ownerConsent: false }],
   ])("rejects club creation with %s Owner consent", async (_label, consent) => {

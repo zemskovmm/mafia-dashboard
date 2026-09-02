@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { CompletedGameSessionSummary, RemoteGameSession } from "../../api/client.js";
@@ -21,7 +21,11 @@ const completedSummary = (gameId: string, name: string): CompletedGameSessionSum
   name,
   revision: 1,
   hostName: `${name} host`,
+  outcome: "red",
   winner: "red",
+  reason: null,
+  rulesetId: "club-mafia",
+  rulesetVersion: 1,
   playedAt: "2026-08-24T18:00:00.000Z",
   day: 2,
   eventCount: 1,
@@ -38,6 +42,8 @@ const legacySession = (
   revision: summary.revision,
   duplicate: false,
   status: "completed",
+  rulesetId: summary.rulesetId,
+  rulesetVersion: summary.rulesetVersion,
   updatedAt: summary.updatedAt,
   state: {
     setup: null,
@@ -52,6 +58,38 @@ const legacySession = (
 });
 
 describe("GameTimelineScreen", () => {
+  it("loads completed history with composable date, player, and result filters", async () => {
+    const user = userEvent.setup();
+    const clubId = "00000000-0000-4000-8000-000000000101";
+    const playerId = "00000000-0000-4000-8000-000000000201";
+    const listCompleted = vi.fn().mockResolvedValue([]);
+    render(
+      <GameTimelineScreen
+        clubId={clubId}
+        onBack={() => undefined}
+        players={[{ id: playerId, nickname: "Player One" }]}
+        loaders={{ listCompleted, getSession: vi.fn() }}
+      />,
+    );
+    await waitFor(() => expect(listCompleted).toHaveBeenCalledWith(clubId, {}));
+
+    await user.type(screen.getByLabelText("From date"), "2026-08-01");
+    await user.type(screen.getByLabelText("To date"), "2026-08-31");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Player" }), playerId);
+    await user.selectOptions(screen.getByRole("combobox", { name: "Result" }), "draw");
+
+    await waitFor(() =>
+      expect(listCompleted).toHaveBeenLastCalledWith(clubId, {
+        from: "2026-08-01",
+        to: "2026-08-31",
+        playerId,
+        outcome: "draw",
+      }),
+    );
+    await user.click(screen.getByRole("button", { name: "Clear filters" }));
+    await waitFor(() => expect(listCompleted).toHaveBeenLastCalledWith(clubId, {}));
+  });
+
   it("uses its scoped Russian messages for timeline chrome, inspector, and marker labels", async () => {
     const user = userEvent.setup();
     const sample = createSampleGameHistory();
@@ -93,7 +131,7 @@ describe("GameTimelineScreen", () => {
     await user.click(screen.getAllByRole("button", { name: /Выстрелы мафии:/ })[0]!);
     expect(screen.getByText("Событие")).toBeInTheDocument();
     expect(screen.getByText("Время")).toBeInTheDocument();
-    expect(screen.getByText("Результат")).toBeInTheDocument();
+    expect(screen.getAllByText("Результат")).toHaveLength(2);
     expect(screen.getByText("Убийство")).toBeInTheDocument();
     expect(screen.queryByText(/mafia\.shots-resolved|^kill$/)).toBeNull();
   });
@@ -506,6 +544,8 @@ describe("GameTimelineScreen", () => {
               revision: 1,
               duplicate: false,
               status: "completed",
+              rulesetId: selected.rulesetId,
+              rulesetVersion: selected.rulesetVersion,
               updatedAt: selected.updatedAt,
               state: {
                 setup: null,
@@ -684,7 +724,11 @@ describe("GameTimelineScreen", () => {
         name: "First",
         revision: 1,
         hostName: "Host A",
+        outcome: "red" as const,
         winner: "red" as const,
+        reason: null,
+        rulesetId: "club-mafia",
+        rulesetVersion: 1,
         playedAt: "2026-08-24T18:00:00.000Z",
         day: 2,
         eventCount: 10,
@@ -695,7 +739,11 @@ describe("GameTimelineScreen", () => {
         name: "Second",
         revision: 1,
         hostName: "Host B",
+        outcome: "black" as const,
         winner: "black" as const,
+        reason: null,
+        rulesetId: "club-mafia",
+        rulesetVersion: 1,
         playedAt: "2026-08-24T19:00:00.000Z",
         day: 3,
         eventCount: 12,
@@ -732,7 +780,11 @@ describe("GameTimelineScreen", () => {
       name: "Legacy",
       revision: 5,
       hostName: "Host",
+      outcome: "red" as const,
       winner: "red" as const,
+      reason: null,
+      rulesetId: "club-mafia",
+      rulesetVersion: 1,
       playedAt: "2026-08-24T20:00:00.000Z",
       day: 2,
       eventCount: 2,
@@ -752,6 +804,8 @@ describe("GameTimelineScreen", () => {
               revision: 5,
               duplicate: false,
               status: "completed",
+              rulesetId: summary.rulesetId,
+              rulesetVersion: summary.rulesetVersion,
               updatedAt: summary.updatedAt,
               state: {
                 setup: null,

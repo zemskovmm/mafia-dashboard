@@ -1,6 +1,6 @@
 .timeline-screen {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) minmax(170px, 24vh);
+  grid-template-rows: auto auto minmax(0, 1fr) minmax(170px, 24vh);
   width: 100%;
   height: 100dvh;
   min-height: 0;
@@ -40,10 +40,30 @@
 .timeline-back svg {
   width: 18px;
 }
+.timeline-filters {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(140px, 1fr)) auto;
+  gap: 12px;
+  align-items: end;
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--border);
+  background: rgb(12 14 18 / 90%);
+}
+.timeline-filters label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+.timeline-filters input,
+.timeline-filters select,
+.timeline-filters button {
+  min-height: 44px;
+}
 .timeline-loading,
 .timeline-empty,
 .timeline-error {
-  grid-row: 2 / 4;
+  grid-row: 3 / 5;
   place-self: center;
   margin: 0;
   padding: 18px;
@@ -228,7 +248,7 @@
 
 @media (max-width: 1050px) {
   .timeline-screen {
-    grid-template-rows: auto minmax(0, 1fr) minmax(150px, 27vh);
+    grid-template-rows: auto auto minmax(0, 1fr) minmax(150px, 27vh);
   }
   .timeline-header {
     grid-template-columns: auto minmax(180px, 1fr) minmax(190px, 250px);
@@ -238,6 +258,10 @@
     grid-column: 2 / 4;
     justify-self: stretch;
   }
+  .timeline-filters {
+    grid-template-columns: repeat(2, minmax(160px, 1fr)) auto;
+    padding: 8px 12px;
+  }
   .timeline-editor {
     padding: 10px 12px 0;
   }
@@ -246,5 +270,14 @@
     gap: 12px;
     margin: 10px 12px 12px;
     padding: 11px 12px;
+  }
+}
+
+@media (max-width: 600px) {
+  .timeline-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .timeline-filters button {
+    grid-column: 1 / -1;
   }
 }

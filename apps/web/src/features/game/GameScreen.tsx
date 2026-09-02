@@ -275,6 +275,15 @@ export const GameScreen = ({
         <div className="winner-card" role="status">
           <span className="table-prompt">{t("game.finished")}</span>
           <strong>{game.phase === "draw" ? t("game.drawn") : t("game.cancelled")}</strong>
+          {finishGameState === "ready" ? null : (
+            <span className="finish-game-local">
+              {finishGameState === "saving"
+                ? t("game.saving")
+                : finishGameState === "queued"
+                  ? t("game.saveStateLocal")
+                  : t("game.safelySaved")}
+            </span>
+          )}
         </div>
       );
     }

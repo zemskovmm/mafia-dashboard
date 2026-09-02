@@ -33,9 +33,30 @@ import { createFixedWindowLimiter, hasExactOrigin, isUnsafeMethod } from "./http
 
 const gameIdParams = z.object({ gameId: z.uuid() });
 const clearGameSessionQuery = z.object({ expectedRevision: z.coerce.number().int().nonnegative() });
-const gameSessionListQuery = z.object({
-  status: z.enum(["active", "completed"]).default("active"),
-});
+const gameSessionListQuery = z
+  .object({
+    status: z.enum(["active", "completed"]).default("active"),
+    from: z.iso.date().optional(),
+    to: z.iso.date().optional(),
+    playerId: z.uuid().optional(),
+    outcome: z.enum(["red", "black", "draw", "cancelled"]).optional(),
+  })
+  .strict()
+  .superRefine(({ status, from, to, playerId, outcome }, context) => {
+    if (from !== undefined && to !== undefined && from > to) {
+      context.addIssue({ code: "custom", path: ["to"], message: "to must not precede from" });
+    }
+    if (
+      status !== "completed" &&
+      [from, to, playerId, outcome].some((value) => value !== undefined)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["status"],
+        message: "History filters require status=completed",
+      });
+    }
+  });
 const playerIdParams = z.object({
   playerId: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i),
 });
@@ -267,7 +288,7 @@ export const buildApp = async ({
   const app = Fastify({
     logger: false,
     bodyLimit: 4 * 1024 * 1024,
-    trustProxy: trustedProxyHops === 1 ? 1 : false,
+    trustProxy: trustedProxyHops === 1 ? (_address, hop) => hop === 0 : false,
   });
   const secureCookies = publicAppUrl !== undefined && new URL(publicAppUrl).protocol === "https:";
   await app.register(helmet, {
@@ -738,7 +759,12 @@ export const buildApp = async ({
     return {
       sessions:
         query.data.status === "completed"
-          ? await gameSessionStore.listCompleted(clubId)
+          ? await gameSessionStore.listCompleted(clubId, {
+              ...(query.data.from === undefined ? {} : { from: query.data.from }),
+              ...(query.data.to === undefined ? {} : { to: query.data.to }),
+              ...(query.data.playerId === undefined ? {} : { playerId: query.data.playerId }),
+              ...(query.data.outcome === undefined ? {} : { outcome: query.data.outcome }),
+            })
           : await gameSessionStore.listActive(clubId),
     };
   });
@@ -783,13 +809,7 @@ export const buildApp = async ({
       await gameSessionStore.clear(params.data.gameId, query.data.expectedRevision, clubId);
       return reply.code(204).send();
     } catch (error) {
-      if (error instanceof GameSessionConflictError) {
-        return reply.code(409).send({
-          error: "game_session_revision_conflict",
-          currentRevision: error.currentRevision,
-        });
-      }
-      throw error;
+      return sendGameSessionMutationError(reply, error);
     }
   });
 

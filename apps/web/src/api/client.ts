@@ -98,7 +98,9 @@ export type PlayerProfileInput =
 
 export interface FinalGameResults {
   readonly hostPlayerId: string;
-  readonly winner: "red" | "black";
+  readonly outcome?: "red" | "black" | "draw" | "cancelled";
+  readonly winner: "red" | "black" | null;
+  readonly reason?: string | null;
   readonly playedAt: string;
   readonly players: readonly {
     readonly playerId: string;
@@ -204,6 +206,8 @@ export interface RemoteGameSession {
   readonly revision: number;
   readonly duplicate: boolean;
   readonly status: "active" | "completed";
+  readonly rulesetId: string;
+  readonly rulesetVersion: number;
   readonly updatedAt: string;
   readonly state: GameSessionState;
   readonly results: FinalGameResults | null;
@@ -214,11 +218,22 @@ export interface CompletedGameSessionSummary {
   readonly name: string;
   readonly revision: number;
   readonly hostName: string | null;
-  readonly winner: "red" | "black";
+  readonly outcome: "red" | "black" | "draw" | "cancelled";
+  readonly winner: "red" | "black" | null;
+  readonly reason: string | null;
+  readonly rulesetId: string;
+  readonly rulesetVersion: number;
   readonly playedAt: string;
   readonly day: number;
   readonly eventCount: number;
   readonly updatedAt: string;
+}
+
+export interface CompletedGameSessionFilters {
+  readonly from?: string;
+  readonly to?: string;
+  readonly playerId?: string;
+  readonly outcome?: "red" | "black" | "draw" | "cancelled";
 }
 
 export interface GameEventRecord {
@@ -521,8 +536,14 @@ export const listActiveGameSessions = async (
 
 export const listCompletedGameSessions = async (
   clubId?: string,
+  filters: CompletedGameSessionFilters = {},
 ): Promise<readonly CompletedGameSessionSummary[]> => {
-  const response = await fetch("/api/game-sessions?status=completed", {
+  const query = new URLSearchParams({ status: "completed" });
+  if (filters.from !== undefined) query.set("from", filters.from);
+  if (filters.to !== undefined) query.set("to", filters.to);
+  if (filters.playerId !== undefined) query.set("playerId", filters.playerId);
+  if (filters.outcome !== undefined) query.set("outcome", filters.outcome);
+  const response = await fetch(`/api/game-sessions?${query}`, {
     headers: clubHeaders(clubId),
   });
   if (!response.ok) return throwApiError(response, "Unable to load completed game sessions");

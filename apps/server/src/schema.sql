@@ -1090,20 +1090,51 @@ CREATE TABLE IF NOT EXISTS game_session_players (
 
 CREATE INDEX IF NOT EXISTS game_session_players_player_idx
   ON game_session_players (player_id, game_id);
-
 CREATE TABLE IF NOT EXISTS game_results (
   game_id UUID NOT NULL,
   club_id UUID NOT NULL DEFAULT '00000000-0000-4000-8000-000000000101' CONSTRAINT game_results_club_fk REFERENCES clubs (id) ON DELETE RESTRICT,
-  winner TEXT NOT NULL CHECK (winner IN ('red', 'black')),
+  outcome TEXT NOT NULL,
+  winner TEXT NULL,
+  reason TEXT NULL,
   played_at TIMESTAMPTZ NOT NULL,
   host_player_id UUID NULL,
   CONSTRAINT game_results_pkey PRIMARY KEY (club_id, game_id),
+  CONSTRAINT game_results_outcome_ck CHECK (outcome IN ('red', 'black', 'draw', 'cancelled')),
+  CONSTRAINT game_results_shape_ck CHECK (
+    (outcome IN ('red', 'black') AND winner IS NOT NULL AND winner = outcome AND reason IS NULL)
+    OR (outcome IN ('draw', 'cancelled') AND winner IS NULL AND reason IS NOT NULL AND reason = BTRIM(reason) AND BTRIM(reason) <> '' AND LENGTH(reason) <= 500)
+  ),
   CONSTRAINT game_results_host_player_fk
     FOREIGN KEY (club_id, host_player_id) REFERENCES players (club_id, id) ON DELETE RESTRICT
 );
 
 ALTER TABLE game_results ADD COLUMN IF NOT EXISTS host_player_id UUID NULL;
 ALTER TABLE game_results ADD COLUMN IF NOT EXISTS club_id UUID;
+ALTER TABLE game_results ADD COLUMN IF NOT EXISTS outcome TEXT;
+ALTER TABLE game_results ADD COLUMN IF NOT EXISTS reason TEXT NULL;
+UPDATE game_results SET outcome = winner WHERE outcome IS NULL;
+ALTER TABLE game_results ALTER COLUMN outcome SET NOT NULL;
+ALTER TABLE game_results ALTER COLUMN winner DROP NOT NULL;
+ALTER TABLE game_results DROP CONSTRAINT IF EXISTS game_results_winner_check;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'game_results'::regclass AND conname = 'game_results_outcome_ck'
+  ) THEN
+    ALTER TABLE game_results ADD CONSTRAINT game_results_outcome_ck
+      CHECK (outcome IN ('red', 'black', 'draw', 'cancelled'));
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'game_results'::regclass AND conname = 'game_results_shape_ck'
+  ) THEN
+    ALTER TABLE game_results ADD CONSTRAINT game_results_shape_ck CHECK (
+      (outcome IN ('red', 'black') AND winner IS NOT NULL AND winner = outcome AND reason IS NULL)
+      OR (outcome IN ('draw', 'cancelled') AND winner IS NULL AND reason IS NOT NULL AND reason = BTRIM(reason) AND BTRIM(reason) <> '' AND LENGTH(reason) <= 500)
+    );
+  END IF;
+END $$;
 UPDATE game_results
    SET club_id = '00000000-0000-4000-8000-000000000101'
  WHERE club_id IS NULL;
@@ -1140,6 +1171,8 @@ END $$;
 
 CREATE INDEX IF NOT EXISTS game_results_club_played_idx
   ON game_results (club_id, played_at DESC);
+CREATE INDEX IF NOT EXISTS game_results_club_outcome_played_idx
+  ON game_results (club_id, outcome, played_at DESC);
 CREATE INDEX IF NOT EXISTS game_results_host_idx
   ON game_results (host_player_id, played_at DESC);
 
@@ -1152,7 +1185,7 @@ CREATE TABLE IF NOT EXISTS game_player_results (
   team TEXT NOT NULL CHECK (team IN ('red', 'black')),
   final_status TEXT NOT NULL CHECK (final_status IN ('active', 'eliminated', 'red-carded')),
   fouls INTEGER NOT NULL CHECK (fouls >= 0),
-  won BOOLEAN NOT NULL,
+  won BOOLEAN NULL,
   CONSTRAINT game_player_results_pkey PRIMARY KEY (club_id, game_id, player_id),
   CONSTRAINT game_player_results_game_seat_unique UNIQUE (club_id, game_id, seat),
   CONSTRAINT game_player_results_game_fk
@@ -1163,6 +1196,7 @@ CREATE TABLE IF NOT EXISTS game_player_results (
 
 ALTER TABLE game_player_results
   ADD COLUMN IF NOT EXISTS best_move_hits INTEGER NULL CHECK (best_move_hits BETWEEN 0 AND 3);
+ALTER TABLE game_player_results ALTER COLUMN won DROP NOT NULL;
 
 ALTER TABLE game_session_mutations ADD COLUMN IF NOT EXISTS club_id UUID;
 UPDATE game_session_mutations AS mutation
@@ -1453,6 +1487,30 @@ END $$;
 
 CREATE INDEX IF NOT EXISTS game_player_results_player_idx
   ON game_player_results (player_id, game_id);
+CREATE INDEX IF NOT EXISTS game_session_players_club_history_player_idx
+  ON game_session_players (club_id, player_id, game_id)
+  WHERE NOT is_host;
+
+INSERT INTO game_session_players (club_id, game_id, player_id, seat, is_host, role)
+SELECT result.club_id, result.game_id, result.player_id, result.seat, FALSE, result.role
+  FROM game_player_results AS result
+  JOIN game_sessions AS session
+    ON session.club_id = result.club_id AND session.id = result.game_id
+ON CONFLICT (club_id, game_id, player_id) DO UPDATE
+  SET seat = EXCLUDED.seat, is_host = FALSE, role = EXCLUDED.role
+WHERE (game_session_players.seat, game_session_players.is_host, game_session_players.role)
+      IS DISTINCT FROM (EXCLUDED.seat, FALSE, EXCLUDED.role);
+
+INSERT INTO game_session_players (club_id, game_id, player_id, seat, is_host, role)
+SELECT result.club_id, result.game_id, result.host_player_id, NULL, TRUE, NULL
+  FROM game_results AS result
+  JOIN game_sessions AS session
+    ON session.club_id = result.club_id AND session.id = result.game_id
+ WHERE result.host_player_id IS NOT NULL
+ON CONFLICT (club_id, game_id, player_id) DO UPDATE
+  SET seat = NULL, is_host = TRUE, role = NULL
+WHERE (game_session_players.seat, game_session_players.is_host, game_session_players.role)
+      IS DISTINCT FROM (NULL, TRUE, NULL);
 
 CREATE TABLE IF NOT EXISTS youtube_oauth_credentials (
   user_id UUID PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,

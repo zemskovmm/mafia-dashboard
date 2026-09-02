@@ -187,7 +187,17 @@ const isInitialGameBaseline = (value: unknown): value is InitialGameBaseline =>
 const isFinalGameResults = (value: unknown): value is FinalGameResults =>
   isRecord(value) &&
   typeof value.hostPlayerId === "string" &&
-  (value.winner === "red" || value.winner === "black") &&
+  (() => {
+    const outcome = value.outcome ?? value.winner;
+    return outcome === "red" || outcome === "black"
+      ? value.winner === outcome && (value.reason === undefined || value.reason === null)
+      : (outcome === "draw" || outcome === "cancelled") &&
+          value.winner === null &&
+          typeof value.reason === "string" &&
+          value.reason.length > 0 &&
+          value.reason.length <= 500 &&
+          value.reason === value.reason.trim();
+  })() &&
   typeof value.playedAt === "string" &&
   Array.isArray(value.players) &&
   value.players.every(

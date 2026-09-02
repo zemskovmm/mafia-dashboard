@@ -1020,7 +1020,7 @@ describe("PlayerStore", () => {
       [gameId, "Historical aggregate", previousMutationId, JSON.stringify(emptyHistoricalState)],
     );
     await pool.query(
-      "INSERT INTO game_results (game_id, winner, played_at) VALUES ($1, 'red', NOW())",
+      "INSERT INTO game_results (game_id, outcome, winner, played_at) VALUES ($1, 'red', 'red', NOW())",
       [gameId],
     );
     await pool.query(

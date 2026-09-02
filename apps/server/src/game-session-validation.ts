@@ -1060,7 +1060,15 @@ const gameSessionStateSchema = z
 const finalGameResultsSchema = z
   .object({
     hostPlayerId: z.uuid(),
-    winner: team,
+    outcome: z.enum(["red", "black", "draw", "cancelled"]).optional(),
+    winner: team.nullable(),
+    reason: z
+      .string()
+      .min(1)
+      .max(500)
+      .refine((value) => value === value.trim(), "Reason must be trimmed")
+      .nullable()
+      .optional(),
     playedAt: z.iso.datetime({ offset: true }),
     players: z
       .array(
@@ -1076,7 +1084,29 @@ const finalGameResultsSchema = z
       )
       .length(10),
   })
-  .superRefine(({ hostPlayerId, players }, context) => {
+  .superRefine(({ hostPlayerId, outcome, winner, reason, players }, context) => {
+    const resolvedOutcome = outcome ?? winner;
+    if (resolvedOutcome === null) {
+      context.addIssue({
+        code: "custom",
+        path: ["outcome"],
+        message: "A completion outcome is required",
+      });
+    } else if (resolvedOutcome === "red" || resolvedOutcome === "black") {
+      if (winner !== resolvedOutcome || (reason !== undefined && reason !== null)) {
+        context.addIssue({
+          code: "custom",
+          path: ["winner"],
+          message: "A winning completion must match its winner and have no ruling reason",
+        });
+      }
+    } else if (winner !== null || reason === undefined || reason === null) {
+      context.addIssue({
+        code: "custom",
+        path: ["reason"],
+        message: "A draw or cancellation requires a reason and cannot have a winner",
+      });
+    }
     if (players.some(({ playerId }) => playerId === hostPlayerId)) {
       context.addIssue({
         code: "custom",
@@ -1113,7 +1143,13 @@ const finalGameResultsSchema = z
         });
       }
     }
-  });
+  })
+  .transform(({ outcome, winner, reason, ...results }) => ({
+    ...results,
+    outcome: outcome ?? winner!,
+    winner,
+    reason: reason ?? null,
+  }));
 
 const sessionOperationBase = {
   mutationId: z.uuid(),
@@ -1198,22 +1234,59 @@ export const gameSessionMutationSchema = z
   })
   .superRefine(({ state, results }, context) => {
     const currentGame = state.game;
-    const finished = currentGame?.phase === "finished";
-    if (results !== null && !finished) {
+    const terminal =
+      currentGame?.phase === "finished" ||
+      currentGame?.phase === "draw" ||
+      currentGame?.phase === "cancelled";
+    if (results !== null && !terminal) {
       context.addIssue({
         code: "custom",
         path: ["results"],
-        message: "Final results require a finished game",
+        message: "Final results require a terminal game",
       });
       return;
     }
     if (results === null || currentGame === null) return;
-    if (results.hostPlayerId !== state.hostPlayerId || results.winner !== currentGame.winner) {
+    const expectedOutcome =
+      currentGame.phase === "finished" ? currentGame.winner : currentGame.phase;
+    if (
+      results.hostPlayerId !== state.hostPlayerId ||
+      results.outcome !== expectedOutcome ||
+      results.winner !== currentGame.winner
+    ) {
       context.addIssue({
         code: "custom",
         path: ["results"],
         message: "Results do not match the game snapshot",
       });
+    }
+    const headEvent = state.events?.find(({ id }) => id === state.headEventId);
+    const terminalHead =
+      headEvent?.type === "game.completed" ||
+      headEvent?.type === "game.drawn" ||
+      headEvent?.type === "game.cancelled";
+    if (results.outcome === "draw" || results.outcome === "cancelled" || terminalHead) {
+      const expectedType =
+        results.outcome === "red" || results.outcome === "black"
+          ? "game.completed"
+          : results.outcome === "draw"
+            ? "game.drawn"
+            : "game.cancelled";
+      const headReason =
+        headEvent?.type === "game.drawn" || headEvent?.type === "game.cancelled"
+          ? headEvent.payload.reason
+          : null;
+      if (
+        headEvent?.type !== expectedType ||
+        headEvent?.createdAt !== results.playedAt ||
+        headReason !== results.reason
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["results"],
+          message: "Results must match the canonical terminal event",
+        });
+      }
     }
     const gamePlayers = new Map(currentGame.players.map((player) => [player.id, player]));
     for (const result of results.players) {

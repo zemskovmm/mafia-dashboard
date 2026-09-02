@@ -9,6 +9,7 @@ import {
 } from "@mafia/game-domain";
 import { GameSessionStore } from "./game-session-store.js";
 import { ClubStore, DEFAULT_CLUB_ID } from "./club-store.js";
+import { PlayerStore } from "./player-store.js";
 
 const legacyOwnerId = "00000000-0000-4000-8000-000000000001";
 
@@ -2045,7 +2046,7 @@ describe("GameSessionStore", () => {
         baseRevision: 4,
         results: completionResults,
       }),
-    ).rejects.toMatchObject({ code: "game_session_completion_invalid" });
+    ).rejects.toMatchObject({ code: "game_session_completed" });
     const stored = await pool.query<{
       status: string;
       state: Record<string, unknown>;
@@ -2068,7 +2069,111 @@ describe("GameSessionStore", () => {
     expect(stored.rows[0]?.state).not.toHaveProperty("events");
   });
 
-  it("retracts completion projections when the head moves before completion", async () => {
+  it.each([
+    ["draw", "game.drawn", "Three quiet cycles", 10],
+    ["cancelled", "game.cancelled", "Venue closed", 0],
+  ] as const)(
+    "persists a %s terminal record with ruleset identity and idempotent restart recovery",
+    async (outcome, eventType, reason, aggregateParticipants) => {
+      const gameId = randomUUID();
+      const fixture = await createStartedDaySessionWithCheckpoints(gameId);
+      const terminal = createGameLogEntry({
+        gameId,
+        id: randomUUID(),
+        sequence: 4,
+        parentEventId: fixture.second.entry.id,
+        createdAt: "2026-08-18T08:02:00.000Z",
+        before: fixture.second.after,
+        draft: { type: eventType, payload: { reason } },
+      });
+      await store.appendEvent({
+        gameId,
+        mutationId: randomUUID(),
+        baseRevision: 4,
+        event: terminal.entry,
+      });
+      const results = {
+        hostPlayerId: fixture.completed.hostPlayerId,
+        outcome,
+        winner: null,
+        reason,
+        playedAt: terminal.entry.createdAt,
+        players: terminal.after.players.map(({ id, seat, role, team, status, fouls }) => ({
+          playerId: id,
+          seat,
+          role,
+          team,
+          status,
+          fouls,
+          bestMoveHits: null,
+        })),
+      };
+      const mutationId = randomUUID();
+
+      const completed = await store.complete({
+        gameId,
+        mutationId,
+        baseRevision: 5,
+        results,
+      });
+      const retry = await store.complete({ gameId, mutationId, baseRevision: 5, results });
+      const restartedStore = new GameSessionStore(pool);
+      const restored = await restartedStore.get(gameId);
+      const summaries = await restartedStore.listCompleted();
+      const projection = await pool.query<{
+        outcome: string;
+        reason: string;
+        participants: number;
+      }>(
+        `SELECT result.outcome, result.reason,
+                COUNT(player_result.player_id)::int AS participants
+           FROM game_results AS result
+           LEFT JOIN game_player_results AS player_result
+             ON player_result.club_id = result.club_id AND player_result.game_id = result.game_id
+          WHERE result.game_id = $1
+          GROUP BY result.outcome, result.reason`,
+        [gameId],
+      );
+      const playerStore = new PlayerStore(pool);
+      const participant = await playerStore.get(results.players[0]!.playerId);
+      const host = await playerStore.get(results.hostPlayerId);
+
+      expect(completed).toMatchObject({
+        status: "completed",
+        rulesetId: "club-mafia",
+        rulesetVersion: 1,
+        results,
+      });
+      expect(retry).toMatchObject({ revision: completed.revision, duplicate: true });
+      expect(restored).toMatchObject({
+        status: "completed",
+        rulesetId: "club-mafia",
+        rulesetVersion: 1,
+        results,
+      });
+      expect(summaries).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            gameId,
+            outcome,
+            winner: null,
+            reason,
+            rulesetId: "club-mafia",
+            rulesetVersion: 1,
+          }),
+        ]),
+      );
+      expect(projection.rows).toEqual([{ outcome, reason, participants: aggregateParticipants }]);
+      expect(participant?.statistics).toMatchObject(
+        outcome === "draw"
+          ? { gamesPlayed: 1, wins: 0, losses: 0 }
+          : { gamesPlayed: 0, wins: 0, losses: 0 },
+      );
+      expect(host?.statistics.hostedGames).toBe(outcome === "draw" ? 1 : 0);
+    },
+  );
+
+  it("rejects head movement after completion and keeps projections immutable", async () => {
     const gameId = randomUUID();
     const completed = await createCompletedSession(gameId);
     await store.save({
@@ -2122,52 +2227,105 @@ describe("GameSessionStore", () => {
       results: completed.results,
     });
 
-    const reset = await store.moveHead({
-      gameId,
-      mutationId: randomUUID(),
-      baseRevision: 4,
-      targetEventId: started.entry.id,
-      reason: "reset",
-    });
-
-    expect(reset).toMatchObject({ revision: 5, status: "active", results: null });
+    await expect(
+      store.moveHead({
+        gameId,
+        mutationId: randomUUID(),
+        baseRevision: 4,
+        targetEventId: started.entry.id,
+        reason: "reset",
+      }),
+    ).rejects.toMatchObject({ code: "game_session_completed" });
     const projections = await pool.query<{
       result_count: number;
+      player_result_count: number;
       player_count: number;
-      assigned_role_count: number;
     }>(
       `SELECT
          (SELECT COUNT(*)::int FROM game_results WHERE game_id = $1) AS result_count,
-         (SELECT COUNT(*)::int FROM game_session_players WHERE game_id = $1) AS player_count,
-         (SELECT COUNT(*)::int FROM game_session_players
-           WHERE game_id = $1 AND role IS NOT NULL) AS assigned_role_count`,
+         (SELECT COUNT(*)::int FROM game_player_results WHERE game_id = $1) AS player_result_count,
+         (SELECT COUNT(*)::int FROM game_session_players WHERE game_id = $1) AS player_count`,
       [gameId],
     );
     expect(projections.rows).toEqual([
-      { result_count: 0, player_count: 11, assigned_role_count: 10 },
+      { result_count: 1, player_result_count: 10, player_count: 11 },
     ]);
+  });
 
-    const restored = await store.moveHead({
+  it("rejects every new mutation kind after completion while allowing the exact retry", async () => {
+    const gameId = randomUUID();
+    const completed = await createCompletedSession(gameId);
+    const mutationId = randomUUID();
+    const saved = {
       gameId,
-      mutationId: randomUUID(),
-      baseRevision: 5,
-      targetEventId: completionEvent.entry.id,
-      reason: "restore-reset",
-    });
-    expect(restored).toMatchObject({
-      revision: 6,
+      name: "Immutable completed table",
+      mutationId,
+      baseRevision: 0,
+      state: completed.state,
+      results: completed.results,
+    };
+    await store.save(saved);
+    await expect(store.save(saved)).resolves.toMatchObject({ revision: 1, duplicate: true });
+    const baseline = { replayVersion: 1 as const, game: completed.state.game };
+    const event = createGameLogEntry({
+      gameId,
+      id: randomUUID(),
+      sequence: 1,
+      parentEventId: null,
+      createdAt: completed.results.playedAt,
+      before: baseline.game,
+      draft: { type: "game.checkpointed", payload: {} },
+    }).entry;
+    const attempts = [
+      () => store.normalize({ gameId, mutationId: randomUUID(), baseRevision: 1 }),
+      () =>
+        store.start({
+          gameId,
+          mutationId: randomUUID(),
+          baseRevision: 1,
+          initialGame: baseline,
+          event,
+        }),
+      () =>
+        store.appendEvent({
+          gameId,
+          mutationId: randomUUID(),
+          baseRevision: 1,
+          event: { ...event, sequence: 2, parentEventId: event.id },
+        }),
+      () =>
+        store.moveHead({
+          gameId,
+          mutationId: randomUUID(),
+          baseRevision: 1,
+          targetEventId: event.id,
+          reason: "reset",
+        }),
+      () =>
+        store.complete({
+          gameId,
+          mutationId: randomUUID(),
+          baseRevision: 1,
+          results: completed.results,
+        }),
+      () =>
+        store.save({
+          ...saved,
+          mutationId: randomUUID(),
+          baseRevision: 1,
+          results: null,
+        }),
+      () => store.clear(gameId, 1),
+    ];
+
+    for (const attempt of attempts) {
+      await expect(attempt()).rejects.toMatchObject({ code: "game_session_completed" });
+    }
+    await expect(store.get(gameId)).resolves.toMatchObject({
+      revision: 1,
       status: "completed",
-      results: { winner: "red", playedAt: completionEvent.entry.createdAt },
+      results: { winner: "red" },
     });
-    expect(
-      await pool.query(
-        `SELECT
-           (SELECT COUNT(*)::int FROM game_results WHERE game_id = $1) AS result_count,
-           (SELECT COUNT(*)::int FROM game_player_results WHERE game_id = $1) AS player_result_count,
-           (SELECT COUNT(*)::int FROM game_session_players WHERE game_id = $1) AS player_count`,
-        [gameId],
-      ),
-    ).toMatchObject({ rows: [{ result_count: 1, player_result_count: 10, player_count: 0 }] });
   });
 
   it("does not complete an unconfirmed finished head through reset recovery", async () => {
@@ -2331,6 +2489,74 @@ describe("GameSessionStore", () => {
         }),
       ]),
     );
+  });
+
+  it("filters completed history by inclusive UTC dates, participant, and outcome", async () => {
+    const redId = randomUUID();
+    const blackId = randomUUID();
+    const drawId = randomUUID();
+    const red = await createCompletedSession(redId);
+    const black = await createCompletedSession(blackId);
+    const draw = await createCompletedSession(drawId);
+    const save = async (
+      gameId: string,
+      fixture: Awaited<ReturnType<typeof createCompletedSession>>,
+      outcome: "red" | "black" | "draw",
+      playedAt: string,
+    ) => {
+      const winner = outcome === "draw" ? null : outcome;
+      await store.save({
+        gameId,
+        name: `Filtered ${outcome}`,
+        mutationId: randomUUID(),
+        baseRevision: 0,
+        state: {
+          ...fixture.state,
+          game: {
+            ...fixture.state.game,
+            phase: outcome === "draw" ? "draw" : "finished",
+            winner,
+          },
+        },
+        results: {
+          ...fixture.results,
+          outcome,
+          winner,
+          reason: outcome === "draw" ? "Three quiet cycles" : null,
+          playedAt,
+        },
+      });
+    };
+    await save(redId, red, "red", "2026-08-20T00:00:00.000Z");
+    await save(blackId, black, "black", "2026-08-21T23:59:59.999Z");
+    await save(drawId, draw, "draw", "2026-08-22T00:00:00.000Z");
+
+    const onDate = await store.listCompleted(DEFAULT_CLUB_ID, {
+      from: "2026-08-21",
+      to: "2026-08-21",
+    });
+    expect(onDate.map(({ gameId }) => gameId)).toContain(blackId);
+    expect(onDate.every(({ playedAt }) => playedAt.startsWith("2026-08-21"))).toBe(true);
+    expect(
+      (
+        await store.listCompleted(DEFAULT_CLUB_ID, {
+          playerId: black.results.players[0]!.playerId,
+        })
+      ).map(({ gameId }) => gameId),
+    ).toEqual([blackId]);
+    const draws = await store.listCompleted(DEFAULT_CLUB_ID, { outcome: "draw" });
+    expect(draws.map(({ gameId }) => gameId)).toContain(drawId);
+    expect(draws.every(({ outcome }) => outcome === "draw")).toBe(true);
+    expect(
+      (
+        await store.listCompleted(DEFAULT_CLUB_ID, {
+          from: "2026-08-21",
+          to: "2026-08-21",
+          playerId: black.results.players[0]!.playerId,
+          outcome: "black",
+        })
+      ).map(({ gameId }) => gameId),
+    ).toEqual([blackId]);
   });
 
   it("isolates active sessions by club", async () => {
@@ -2646,8 +2872,13 @@ describe("GameSessionStore", () => {
       ]),
     });
 
-    await store.clear(gameId, 2, DEFAULT_CLUB_ID);
-    await expect(store.get(gameId, DEFAULT_CLUB_ID)).resolves.toBeNull();
+    await expect(store.clear(gameId, 2, DEFAULT_CLUB_ID)).rejects.toMatchObject({
+      code: "game_session_completed",
+    });
+    await expect(store.clear(gameId, 2, club.id)).rejects.toMatchObject({
+      code: "game_session_completed",
+    });
+    await expect(store.get(gameId, DEFAULT_CLUB_ID)).resolves.toMatchObject({ revision: 2 });
     await expect(store.get(gameId, club.id)).resolves.toMatchObject({ revision: 2 });
     expect(
       await pool.query(
@@ -2662,13 +2893,12 @@ describe("GameSessionStore", () => {
     ).toMatchObject({
       rows: [{ sessions: 1, mutations: 2, results: 1, player_results: 10, events: 2 }],
     });
-    await store.clear(gameId, 2, club.id);
     expect(
       await pool.query<{ club_id: string }>(
         "SELECT club_id FROM deleted_games WHERE game_id = $1 ORDER BY club_id",
         [gameId],
       ),
-    ).toMatchObject({ rows: [{ club_id: DEFAULT_CLUB_ID }, { club_id: club.id }] });
+    ).toMatchObject({ rows: [] });
   });
 
   it("keeps legacy PUT event synchronization append-only", async () => {
@@ -3266,7 +3496,7 @@ describe("GameSessionStore", () => {
     ]);
   });
 
-  it("atomically finalizes results and removes active players", async () => {
+  it("atomically finalizes results and retains the historical participant projection", async () => {
     const gameId = randomUUID();
     const completed = await createCompletedSession(gameId);
 
@@ -3305,7 +3535,7 @@ describe("GameSessionStore", () => {
       [gameId],
     );
     expect(session.rows).toEqual([{ status: "completed" }]);
-    expect(selectedPlayers.rowCount).toBe(0);
+    expect(selectedPlayers.rowCount).toBe(11);
     expect(results.rows).toEqual([{ winner: "red", participants: 10, best_move_hits: 2 }]);
     expect(events.rows).toEqual([
       { sequence: 1, event_type: "game.created" },
@@ -3341,63 +3571,6 @@ describe("GameSessionStore", () => {
       unrelatedBlocker.release();
       targetBlocker.release();
       await waiter;
-    }
-  });
-
-  it("recomputes player timestamps after a concurrent result commits", async () => {
-    const clearedGameId = randomUUID();
-    const completed = await createCompletedSession(clearedGameId);
-    await store.save({
-      gameId: clearedGameId,
-      name: "Cleared table",
-      mutationId: randomUUID(),
-      baseRevision: 0,
-      state: completed.state,
-      results: completed.results,
-    });
-    const hostPlayerId = completed.hostPlayerId;
-    const participantId = completed.results.players[0]!.playerId;
-    const newerGameId = randomUUID();
-    const newerPlayedAt = new Date("2026-08-18T09:00:00.000Z");
-    const blocker = await pool.connect();
-    let committed = false;
-    try {
-      await blocker.query("BEGIN");
-      await blocker.query(
-        "SELECT id FROM players WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE",
-        [[hostPlayerId, participantId]],
-      );
-      await blocker.query(
-        `INSERT INTO game_results (game_id, winner, played_at, host_player_id)
-         VALUES ($1, 'red', $2, $3)`,
-        [newerGameId, newerPlayedAt, hostPlayerId],
-      );
-      await blocker.query(
-        `INSERT INTO game_player_results
-           (game_id, player_id, seat, role, team, final_status, fouls, won)
-         VALUES ($1, $2, 1, 'citizen', 'red', 'active', 0, TRUE)`,
-        [newerGameId, participantId],
-      );
-
-      const blockerPid = await blocker.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
-      const clearing = store.clear(clearedGameId, 1);
-      await waitForPlayerLockWaiter(blockerPid.rows[0]!.pid);
-      await blocker.query("COMMIT");
-      committed = true;
-      await clearing;
-
-      const players = await pool.query<{ id: string; last_played_at: Date | null }>(
-        "SELECT id, last_played_at FROM players WHERE id = ANY($1::uuid[]) ORDER BY id",
-        [[hostPlayerId, participantId]],
-      );
-      expect(players.rows).toHaveLength(2);
-      expect(players.rows.map(({ last_played_at }) => last_played_at?.toISOString())).toEqual([
-        newerPlayedAt.toISOString(),
-        newerPlayedAt.toISOString(),
-      ]);
-    } finally {
-      if (!committed) await blocker.query("ROLLBACK");
-      blocker.release();
     }
   });
 

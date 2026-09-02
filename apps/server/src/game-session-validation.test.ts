@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { createGameLogEntry } from "@mafia/game-domain";
-import { gameSessionMutationSchema, setupSessionStateSchema } from "./game-session-validation.js";
+import {
+  gameSessionCompleteMutationSchema,
+  gameSessionMutationSchema,
+  setupSessionStateSchema,
+} from "./game-session-validation.js";
 import * as validationSchemas from "./game-session-validation.js";
 
 const uuid = (index: number) => `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
@@ -246,6 +250,131 @@ describe("game session validation", () => {
     expect(schema?.safeParse(valid).success).toBe(true);
     expect(schema?.safeParse({ ...valid, results: null }).success).toBe(false);
     expect(schema?.safeParse({ ...valid, state: { game } }).success).toBe(false);
+  });
+
+  it("validates winner, draw, and cancellation completion shapes while accepting legacy wins", () => {
+    const game = liveGame(1);
+    const players = game.players.map(({ id, seat, role, team, status, fouls }) => ({
+      playerId: id,
+      seat,
+      role,
+      team,
+      status,
+      fouls,
+      bestMoveHits: null,
+    }));
+    const base = {
+      mutationId: uuid(78),
+      baseRevision: 7,
+      results: {
+        hostPlayerId: uuid(11),
+        playedAt: "2026-08-25T00:02:00.000Z",
+        players,
+      },
+    };
+
+    expect(
+      gameSessionCompleteMutationSchema.safeParse({
+        ...base,
+        results: { ...base.results, outcome: "red", winner: "red", reason: null },
+      }).success,
+    ).toBe(true);
+    expect(
+      gameSessionCompleteMutationSchema.safeParse({
+        ...base,
+        results: { ...base.results, outcome: "draw", winner: null, reason: "Three quiet cycles" },
+      }).success,
+    ).toBe(true);
+    expect(
+      gameSessionCompleteMutationSchema.safeParse({
+        ...base,
+        results: { ...base.results, outcome: "cancelled", winner: null, reason: "Venue closed" },
+      }).success,
+    ).toBe(true);
+    expect(
+      gameSessionCompleteMutationSchema.safeParse({
+        ...base,
+        results: { ...base.results, outcome: "draw", winner: null, reason: null },
+      }).success,
+    ).toBe(false);
+    expect(
+      gameSessionCompleteMutationSchema.safeParse({
+        ...base,
+        results: { ...base.results, outcome: "draw", winner: null, reason: " padded " },
+      }).success,
+    ).toBe(false);
+    expect(
+      gameSessionCompleteMutationSchema.safeParse({
+        ...base,
+        results: { ...base.results, outcome: "red", winner: "black", reason: null },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("requires a reasoned snapshot result to match its canonical terminal event", () => {
+    const gameId = uuid(120);
+    const before = liveGame(1);
+    const initialGame = { replayVersion: 1 as const, game: before };
+    const root = createGameLogEntry({
+      gameId,
+      id: uuid(121),
+      sequence: 1,
+      parentEventId: null,
+      createdAt: "2026-08-25T00:01:00.000Z",
+      before,
+      draft: { type: "game.checkpointed", payload: {} },
+    });
+    const drawn = createGameLogEntry({
+      gameId,
+      id: uuid(122),
+      sequence: 2,
+      parentEventId: root.entry.id,
+      createdAt: "2026-08-25T00:02:00.000Z",
+      before: root.after,
+      draft: { type: "game.drawn", payload: { reason: "Three quiet cycles" } },
+    });
+    const results = {
+      hostPlayerId: uuid(11),
+      outcome: "draw" as const,
+      winner: null,
+      reason: "Three quiet cycles",
+      playedAt: drawn.entry.createdAt,
+      players: drawn.after.players.map(({ id, seat, role, team, status, fouls }) => ({
+        playerId: id,
+        seat,
+        role,
+        team,
+        status,
+        fouls,
+        bestMoveHits: null,
+      })),
+    };
+    const request = {
+      name: "Canonical draw",
+      mutationId: uuid(123),
+      baseRevision: 2,
+      state: {
+        setup: null,
+        game: drawn.after,
+        hostPlayerId: uuid(11),
+        hostName: "Host",
+        playlistId: "",
+        log: [],
+        undoHistory: [],
+        initialGame,
+        events: [root.entry, drawn.entry],
+        headEventId: drawn.entry.id,
+      },
+      results,
+    };
+
+    expect(gameSessionMutationSchema.safeParse(request).success).toBe(true);
+    expect(
+      gameSessionMutationSchema.safeParse({
+        ...request,
+        results: { ...results, reason: "Different ruling" },
+      }).success,
+    ).toBe(false);
   });
 
   it("allows a winning session to wait for explicit result confirmation", () => {
