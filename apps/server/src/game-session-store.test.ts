@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
-import { createGameLogEntry, type GameLogEntry, type GameState } from "@mafia/game-domain";
+import {
+  createGameLogEntry,
+  hashGameState,
+  type GameLogEntry,
+  type GameState,
+} from "@mafia/game-domain";
 import { GameSessionStore } from "./game-session-store.js";
 import { ClubStore, DEFAULT_CLUB_ID } from "./club-store.js";
 
@@ -357,6 +362,112 @@ const createCanonicalCompletedSession = async (
 describe("GameSessionStore", () => {
   it("pins the legacy FNV hash to a fixed historical game snapshot", () => {
     expect(legacyHashGameState(fixedLegacyGameState)).toBe("3143cd5f");
+  });
+
+  it("rejects a newly appended event that uses pre-fix mute semantics", async () => {
+    const gameId = randomUUID();
+    const completed = await createCompletedSession(gameId);
+    const candidate = completed.state.game.players.find(({ role }) => role === "citizen")!;
+    const voteAssignments = Object.fromEntries(
+      completed.state.game.players.map(({ seat }) => [seat, candidate.seat]),
+    );
+    const voting: GameState = {
+      ...completed.state.game,
+      phase: "voting",
+      day: 1,
+      players: completed.state.game.players.map((player) =>
+        player.seat === candidate.seat ? { ...player, mutePending: true } : player,
+      ),
+      turnOrder: [candidate.seat],
+      currentTurnIndex: 0,
+      nominations: [{ nominatorSeat: 1, candidateSeat: candidate.seat, order: 1 }],
+      voteAssignments,
+      votingRound: "initial",
+      bestMove: undefined,
+      winner: null,
+    };
+    try {
+      await store.save({
+        gameId,
+        name: "Current rule semantics",
+        mutationId: randomUUID(),
+        baseRevision: 0,
+        state: {
+          ...emptyState,
+          hostPlayerId: completed.hostPlayerId,
+          hostName: "Current Rule Host",
+        },
+        results: null,
+      });
+      const root = createGameLogEntry({
+        gameId,
+        id: randomUUID(),
+        sequence: 1,
+        parentEventId: null,
+        createdAt: "2026-09-02T12:00:00.000Z",
+        before: voting,
+        draft: { type: "game.checkpointed", payload: {} },
+      });
+      await store.start({
+        gameId,
+        mutationId: randomUUID(),
+        baseRevision: 1,
+        initialGame: { replayVersion: 1, game: voting },
+        event: root.entry,
+      });
+      const current = createGameLogEntry({
+        gameId,
+        id: randomUUID(),
+        sequence: 2,
+        parentEventId: root.entry.id,
+        createdAt: "2026-09-02T12:01:00.000Z",
+        before: root.after,
+        draft: {
+          type: "voting.resolved",
+          payload: {
+            voteAssignments,
+            result: {
+              kind: "winner",
+              seats: [candidate.seat],
+              totals: { [candidate.seat]: voting.players.length },
+            },
+          },
+        },
+      });
+      const oldAfter: GameState = {
+        ...voting,
+        phase: "goodbye-speech",
+        players: voting.players.map((player) =>
+          player.seat === candidate.seat ? { ...player, status: "eliminated" as const } : player,
+        ),
+        eliminationOccurredThisCycle: true,
+        goodbyeSeats: [candidate.seat],
+        goodbyeNext: "night",
+      };
+      const oldEvent: GameLogEntry = {
+        ...current.entry,
+        phaseAfter: oldAfter.phase,
+        stateHashAfter: hashGameState(oldAfter),
+      };
+
+      await expect(
+        store.appendEvent({
+          gameId,
+          mutationId: randomUUID(),
+          baseRevision: 2,
+          event: oldEvent,
+        }),
+      ).rejects.toMatchObject({
+        name: "GameSessionOperationError",
+        code: "game_session_replay_invalid",
+      });
+      await expect(store.get(gameId)).resolves.toMatchObject({
+        revision: 2,
+        state: { headEventId: root.entry.id },
+      });
+    } finally {
+      await pool.query("DELETE FROM game_sessions WHERE id = $1", [gameId]);
+    }
   });
 
   it("installs the additive replay reconstruction columns and scoped indexes idempotently", async () => {

@@ -240,6 +240,55 @@ describe("night actions", () => {
     });
   });
 
+  it("expires every pending mute before exposing the next day", () => {
+    const base = dayOne();
+    const nextDay = completeNight({
+      ...base,
+      phase: "night-resolution",
+      players: base.players.map((player) =>
+        player.seat === 2 || player.seat === 7 ? { ...player, mutePending: true } : player,
+      ),
+      nightResult: { kind: "miss" },
+    });
+
+    expect(nextDay).toMatchObject({ phase: "day", day: 2 });
+    expect(nextDay.players.every(({ mutePending }) => !mutePending)).toBe(true);
+  });
+
+  it.each([
+    ["Best Move", true, "best-move"],
+    ["goodbye speech", false, "goodbye-speech"],
+  ] as const)("expires an overnight victim's stale mute before %s", (_, bestMoveEnabled, phase) => {
+    const base = dayOne();
+    const victim = base.players.find(({ role }) => role === "citizen")!;
+    const killed = markPlayerInactive(
+      {
+        ...base,
+        bestMoveEnabled,
+        players: base.players.map((player) =>
+          player.seat === victim.seat ? { ...player, mutePending: true } : player,
+        ),
+      },
+      victim.seat,
+      "eliminated",
+    );
+
+    const nextDay = completeNight({
+      ...killed,
+      phase: "night-resolution",
+      nightResult: { kind: "kill", targetSeat: victim.seat },
+    });
+
+    expect(nextDay).toMatchObject({
+      phase,
+      day: 2,
+      goodbyeSeats: [victim.seat],
+      players: expect.arrayContaining([
+        expect.objectContaining({ seat: victim.seat, mutePending: false }),
+      ]),
+    });
+  });
+
   it("suggests a draw after three complete cycles without an elimination", () => {
     let game: GameState = { ...dayOne(), phase: "night-resolution" };
 

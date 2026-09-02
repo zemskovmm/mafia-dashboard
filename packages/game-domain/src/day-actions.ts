@@ -523,31 +523,40 @@ export const acceptCarCrashBallot = (game: GameState): GameState => ({
   winner: null,
 });
 
+export const completeEliminations = (game: GameState, seats: readonly number[]): GameState => {
+  const afterElimination = seats.reduce(
+    (state, seat) => markPlayerInactive(state, seat, "eliminated"),
+    game,
+  );
+  const winner = evaluateVictory(afterElimination.players);
+  if (winner !== null) return { ...afterElimination, phase: "finished", winner };
+
+  const goodbyeSeats = seats.filter(
+    (seat) => !afterElimination.players.find((player) => player.seat === seat)?.mutePending,
+  );
+  if (goodbyeSeats.length === 0) return transitionToNight(afterElimination);
+  return {
+    ...afterElimination,
+    phase: "goodbye-speech",
+    goodbyeSeats,
+    goodbyeNext: "night",
+    winner: null,
+  };
+};
+
 export const completeCarCrashResult = (game: GameState): GameState => {
   if (game.phase !== "car-crash-result" || game.carCrashResult === undefined) {
     throw new Error("Only a reviewed car-crash result can continue");
   }
   if (!game.carCrashResult.eliminate) return transitionToNight(game);
 
-  const afterElimination = game.carCrashResult.seats.reduce(
-    (state, seat) => markPlayerInactive(state, seat, "eliminated"),
-    game,
-  );
+  const seats = game.carCrashResult.seats;
   const cleared = {
-    ...afterElimination,
+    ...game,
     votingRound: undefined,
     carCrashSeats: undefined,
     carCrashVotes: undefined,
     carCrashResult: undefined,
   };
-  const winner = evaluateVictory(cleared.players);
-  return winner === null
-    ? {
-        ...cleared,
-        phase: "goodbye-speech",
-        goodbyeSeats: [...game.carCrashResult.seats],
-        goodbyeNext: "night",
-        winner: null,
-      }
-    : { ...cleared, phase: "finished", winner };
+  return completeEliminations(cleared, seats);
 };

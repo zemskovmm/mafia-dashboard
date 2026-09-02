@@ -242,14 +242,18 @@ export const completeNight = (game: GameState): GameState => {
     throw new Error("Night can only complete after all available checks");
   }
   const day = game.day + 1;
+  const players = game.players.map((player) =>
+    player.mutePending ? { ...player, mutePending: false } : player,
+  );
   const dayState: GameState = {
     ...game,
     day,
+    players,
     cyclesWithoutElimination: game.eliminationOccurredThisCycle
       ? 0
       : (game.cyclesWithoutElimination ?? 0) + 1,
     eliminationOccurredThisCycle: false,
-    turnOrder: getDayOrder(game.players, day),
+    turnOrder: getDayOrder(players, day),
     currentTurnIndex: 0,
     nominations: [],
     voteAssignments: {},

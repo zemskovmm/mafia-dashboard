@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { advanceVotingCandidate, completeCurrentTurn } from "./day-actions.js";
-import { advanceSetupPhase, createGame } from "./game.js";
+import { advanceSetupPhase, createGame, markPlayerInactive } from "./game.js";
 import {
+  applyCurrentGameLogEntry,
   applyGameEvent,
   canonicalGameEventTypes,
   canonicalSecretGameEventTypes,
@@ -230,6 +231,210 @@ describe("canonical game replay", () => {
         expect.objectContaining({ seat: target.seat, status: "active" }),
       ]),
     });
+  });
+
+  it("suppresses a muted voting winner's goodbye in canonical event application", () => {
+    let initial = dayOne();
+    const candidate = initial.players.find(({ role }) => role === "citizen")!;
+    for (let foulNumber = 1; foulNumber <= 3; foulNumber += 1) {
+      initial = applyGameEvent(initial, {
+        type: "foul.issued",
+        payload: { seat: candidate.seat, foulNumber, redCarded: false },
+      });
+    }
+    const voteAssignments = Object.fromEntries(
+      initial.players.map(({ seat }) => [seat, candidate.seat]),
+    );
+    const voting: GameState = {
+      ...initial,
+      phase: "voting",
+      nominations: [{ nominatorSeat: 1, candidateSeat: candidate.seat, order: 1 }],
+      turnOrder: [candidate.seat],
+      currentTurnIndex: 0,
+      voteAssignments,
+      votingRound: "initial",
+    };
+
+    const draft: CanonicalGameEventDraft = {
+      type: "voting.resolved",
+      payload: {
+        voteAssignments,
+        result: {
+          kind: "winner",
+          seats: [candidate.seat],
+          totals: { [candidate.seat]: initial.players.length },
+        },
+      },
+    };
+    const corrected = applyGameEvent(voting, draft);
+    expect(corrected).toMatchObject({
+      phase: "night-mafia",
+      goodbyeSeats: undefined,
+      goodbyeNext: undefined,
+      players: expect.arrayContaining([
+        expect.objectContaining({ seat: candidate.seat, status: "eliminated" }),
+      ]),
+    });
+    const root = entry(voting, 1, { type: "game.checkpointed", payload: {} });
+    const resolved = entry(root.after, 2, draft, root.entry.id);
+    expect(applyCurrentGameLogEntry(root.after, resolved.entry)).toEqual(corrected);
+    expect(replayGameLog(baseline(voting), [root.entry, resolved.entry]).game).toEqual(corrected);
+  });
+
+  it("replays pre-fix votes that retained a muted goodbye speaker", () => {
+    const initial = dayOne();
+    const candidate = initial.players.find(({ role }) => role === "citizen")!;
+    const voteAssignments = Object.fromEntries(
+      initial.players.map(({ seat }) => [seat, candidate.seat]),
+    );
+    const voting: GameState = {
+      ...initial,
+      phase: "voting",
+      players: initial.players.map((player) =>
+        player.seat === candidate.seat ? { ...player, mutePending: true } : player,
+      ),
+      nominations: [{ nominatorSeat: 1, candidateSeat: candidate.seat, order: 1 }],
+      turnOrder: [candidate.seat],
+      currentTurnIndex: 0,
+      voteAssignments,
+      votingRound: "initial",
+    };
+    const root = entry(voting, 1, { type: "game.checkpointed", payload: {} });
+    const draft: CanonicalGameEventDraft = {
+      type: "voting.resolved",
+      payload: {
+        voteAssignments,
+        result: {
+          kind: "winner",
+          seats: [candidate.seat],
+          totals: { [candidate.seat]: initial.players.length },
+        },
+      },
+    };
+    const current = entry(root.after, 2, draft, root.entry.id);
+    const oldAfter: GameState = {
+      ...markPlayerInactive(root.after, candidate.seat, "eliminated"),
+      phase: "goodbye-speech",
+      goodbyeSeats: [candidate.seat],
+      goodbyeNext: "night",
+    };
+    const storedEntry: GameLogEntry = {
+      ...current.entry,
+      phaseAfter: oldAfter.phase,
+      stateHashAfter: hashGameState(oldAfter),
+    };
+
+    expect(replayGameLog(baseline(voting), [root.entry, storedEntry]).game).toEqual(oldAfter);
+    expect(() => applyCurrentGameLogEntry(root.after, storedEntry)).toThrow(
+      /current rule semantics/i,
+    );
+    const legacyRoot: GameLogEntry = {
+      ...root.entry,
+      stateHashAfter: legacyStateHash(root.after),
+    };
+    const legacyStored: GameLogEntry = {
+      ...storedEntry,
+      stateHashAfter: legacyStateHash(oldAfter),
+    };
+    expect(replayGameLog(baseline(voting), [legacyRoot, legacyStored]).game).toEqual(oldAfter);
+  });
+
+  it("replays pre-fix day increments that retained pending mutes", () => {
+    const initial = dayOne();
+    const before: GameState = {
+      ...initial,
+      phase: "night-resolution",
+      players: initial.players.map((player) =>
+        player.seat === 2 || player.seat === 7 ? { ...player, mutePending: true } : player,
+      ),
+      nightResult: { kind: "miss" },
+    };
+    const root = entry(before, 1, { type: "game.checkpointed", payload: {} });
+    const current = entry(
+      root.after,
+      2,
+      { type: "phase.changed", payload: { to: "day" } },
+      root.entry.id,
+    );
+    expect(replayGameLog(baseline(before), [root.entry, current.entry]).game).toEqual(
+      current.after,
+    );
+    const oldAfter: GameState = {
+      ...current.after,
+      players: current.after.players.map((player) =>
+        player.seat === 2 || player.seat === 7 ? { ...player, mutePending: true } : player,
+      ),
+    };
+    const storedEntry: GameLogEntry = {
+      ...current.entry,
+      stateHashAfter: hashGameState(oldAfter),
+    };
+
+    expect(replayGameLog(baseline(before), [root.entry, storedEntry]).game).toEqual(oldAfter);
+    const legacyRoot: GameLogEntry = {
+      ...root.entry,
+      stateHashAfter: legacyStateHash(root.after),
+    };
+    const legacyStored: GameLogEntry = {
+      ...storedEntry,
+      stateHashAfter: legacyStateHash(oldAfter),
+    };
+    expect(replayGameLog(baseline(before), [legacyRoot, legacyStored]).game).toEqual(oldAfter);
+  });
+
+  it("replays pre-fix Best Moves that retained the victim's pending mute", () => {
+    const initial = dayOne();
+    const victim = initial.players.find(({ role }) => role === "citizen")!;
+    const killed = markPlayerInactive(initial, victim.seat, "eliminated");
+    const before = {
+      ...killed,
+      phase: "night-resolution" as const,
+      players: killed.players.map((player) =>
+        player.seat === victim.seat ? { ...player, mutePending: true } : player,
+      ),
+      nightResult: { kind: "kill" as const, targetSeat: victim.seat },
+    };
+    const selectedSeats = before.players
+      .filter(({ status }) => status === "active")
+      .slice(0, 3)
+      .map(({ seat }) => seat);
+    const mafiaHits = selectedSeats.filter(
+      (seat) => before.players.find((player) => player.seat === seat)?.team === "black",
+    ).length;
+    const root = entry(before, 1, { type: "game.checkpointed", payload: {} });
+    const current = entry(
+      root.after,
+      2,
+      {
+        type: "best-move.completed",
+        payload: { playerSeat: victim.seat, selectedSeats, mafiaHits },
+      },
+      root.entry.id,
+    );
+    expect(replayGameLog(baseline(before), [root.entry, current.entry]).game).toEqual(
+      current.after,
+    );
+    const oldAfter: GameState = {
+      ...current.after,
+      players: current.after.players.map((player) =>
+        player.seat === victim.seat ? { ...player, mutePending: true } : player,
+      ),
+    };
+    const storedEntry: GameLogEntry = {
+      ...current.entry,
+      stateHashAfter: hashGameState(oldAfter),
+    };
+
+    expect(replayGameLog(baseline(before), [root.entry, storedEntry]).game).toEqual(oldAfter);
+    const legacyRoot: GameLogEntry = {
+      ...root.entry,
+      stateHashAfter: legacyStateHash(root.after),
+    };
+    const legacyStored: GameLogEntry = {
+      ...storedEntry,
+      stateHashAfter: legacyStateHash(oldAfter),
+    };
+    expect(replayGameLog(baseline(before), [legacyRoot, legacyStored]).game).toEqual(oldAfter);
   });
 
   it("folds a single day-one nominee and omitted turns into the Mafia shot checkpoint", () => {
@@ -1246,6 +1451,81 @@ describe("canonical game replay", () => {
     });
     expect(continued.players.find(({ seat }) => seat === 4)?.status).toBe("eliminated");
     expect(continued.phase).toBe("goodbye-speech");
+  });
+
+  it("suppresses muted car-crash goodbye speakers in canonical phase advancement", () => {
+    const initial = dayOne();
+    const reviewed: GameState = {
+      ...initial,
+      phase: "car-crash-result",
+      players: initial.players.map((player) =>
+        player.seat === 4 ? { ...player, mutePending: true } : player,
+      ),
+      carCrashSeats: [4, 6],
+      carCrashVotes: {},
+      carCrashResult: {
+        eliminate: true,
+        seats: [4, 6],
+        yesVotes: 6,
+        eligibleVoters: 10,
+      },
+    };
+
+    const draft: CanonicalGameEventDraft = {
+      type: "phase.changed",
+      payload: { to: "goodbye-speech" },
+    };
+    const corrected = applyGameEvent(reviewed, draft);
+    expect(corrected).toMatchObject({
+      phase: "goodbye-speech",
+      goodbyeSeats: [6],
+      goodbyeNext: "night",
+    });
+    const root = entry(reviewed, 1, { type: "game.checkpointed", payload: {} });
+    const resolved = entry(root.after, 2, draft, root.entry.id);
+    expect(replayGameLog(baseline(reviewed), [root.entry, resolved.entry]).game).toEqual(corrected);
+  });
+
+  it("replays pre-fix car-crash goodbyes with a muted speaker", () => {
+    const initial = dayOne();
+    const reviewed: GameState = {
+      ...initial,
+      phase: "car-crash-result",
+      players: initial.players.map((player) =>
+        player.seat === 4 ? { ...player, mutePending: true } : player,
+      ),
+      carCrashSeats: [4, 6],
+      carCrashVotes: {},
+      carCrashResult: {
+        eliminate: true,
+        seats: [4, 6],
+        yesVotes: 6,
+        eligibleVoters: 10,
+      },
+    };
+    const root = entry(reviewed, 1, { type: "game.checkpointed", payload: {} });
+    const current = entry(
+      root.after,
+      2,
+      { type: "phase.changed", payload: { to: "goodbye-speech" } },
+      root.entry.id,
+    );
+    const oldAfter: GameState = { ...current.after, goodbyeSeats: [4, 6] };
+    const storedEntry: GameLogEntry = {
+      ...current.entry,
+      stateHashAfter: hashGameState(oldAfter),
+    };
+
+    expect(replayGameLog(baseline(reviewed), [root.entry, storedEntry]).game).toEqual(oldAfter);
+    const legacyRoot: GameLogEntry = {
+      ...root.entry,
+      stateHashAfter: legacyStateHash(root.after),
+    };
+    const legacyStored: GameLogEntry = {
+      ...storedEntry,
+      stateHashAfter: legacyStateHash(oldAfter),
+    };
+    expect(replayGameLog(baseline(reviewed), [legacyRoot, legacyStored]).game).toEqual(oldAfter);
   });
 
   it("supports independent append-only branches from one parent", () => {

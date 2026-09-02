@@ -4,6 +4,7 @@ import {
   beginCarCrashDecision,
   beginSkippedCarCrashDecision,
   completeCarCrashResult,
+  completeEliminations,
   issueFoul,
   nominate,
   redCard,
@@ -11,14 +12,7 @@ import {
   resolveVote,
   skipVoting,
 } from "./day-actions.js";
-import {
-  advanceSetupPhase,
-  cancelGame,
-  confirmDraw,
-  evaluateVictory,
-  isTerminalGamePhase,
-  markPlayerInactive,
-} from "./game.js";
+import { advanceSetupPhase, cancelGame, confirmDraw, isTerminalGamePhase } from "./game.js";
 import {
   beginNight,
   completeBestMove,
@@ -945,24 +939,26 @@ const legacyHashGameState = (game: GameState): string => {
 const matchesStateHash = (game: GameState, hash: string): boolean =>
   hash.startsWith("sha256:") ? hashGameState(game) === hash : legacyHashGameState(game) === hash;
 
-const sameValue = (left: unknown, right: unknown): boolean =>
-  JSON.stringify(canonicalJsonValue(left)) === JSON.stringify(canonicalJsonValue(right));
+const matchesRecordedState = (game: GameState, entry: GameLogEntry): boolean =>
+  game.phase === entry.phaseAfter &&
+  game.day === entry.dayAfter &&
+  matchesStateHash(game, entry.stateHashAfter);
 
-const resolveEliminations = (game: GameState, seats: readonly number[]): GameState => {
-  const afterElimination = seats.reduce(
-    (state, seat) => markPlayerInactive(state, seat, "eliminated"),
-    game,
-  );
-  const winner = evaluateVictory(afterElimination.players);
-  if (winner !== null) return { ...afterElimination, phase: "finished", winner };
-  if (seats.length === 0) return beginNight(afterElimination);
+const withMutePendingFrom = (game: GameState, source: GameState): GameState => {
+  const pendingBySeat = new Map(source.players.map(({ seat, mutePending }) => [seat, mutePending]));
   return {
-    ...afterElimination,
-    phase: "goodbye-speech",
-    goodbyeSeats: [...seats],
-    goodbyeNext: "night",
+    ...game,
+    players: game.players.map((player) => {
+      const mutePending = pendingBySeat.get(player.seat);
+      return mutePending !== undefined && mutePending !== player.mutePending
+        ? { ...player, mutePending }
+        : player;
+    }),
   };
 };
+
+const sameValue = (left: unknown, right: unknown): boolean =>
+  JSON.stringify(canonicalJsonValue(left)) === JSON.stringify(canonicalJsonValue(right));
 
 const advancePhaseOnce = (game: GameState): GameState => {
   if (game.phase === "mafia-planning" || game.phase === "sheriff-wake") {
@@ -1188,7 +1184,7 @@ const applyValidatedGameEvent = (game: GameState, event: CanonicalGameEventDraft
       if (result.kind === "eliminate-all-skipped") {
         return beginSkippedCarCrashDecision(voting, result.seats);
       }
-      return resolveEliminations(voting, result.seats);
+      return completeEliminations(voting, result.seats);
     }
     case "car-crash.resolved": {
       const decision: GameState = { ...game, carCrashVotes: { ...event.payload.votes } };
@@ -1196,7 +1192,7 @@ const applyValidatedGameEvent = (game: GameState, event: CanonicalGameEventDraft
       if (!sameValue(result, event.payload.result)) {
         throw new Error("Car-crash result payload does not match the accepted votes");
       }
-      return resolveEliminations(decision, result.eliminate ? result.seats : []);
+      return completeEliminations(decision, result.eliminate ? result.seats : []);
     }
     case "car-crash.ballot-resolved": {
       const decision: GameState = { ...game, carCrashVotes: { ...event.payload.votes } };
@@ -1329,7 +1325,7 @@ export const createGameLogEntry = (
   };
 };
 
-const applyReplayEvent = (game: GameState, entry: GameLogEntry): GameState => {
+const applyReplayEventCore = (game: GameState, entry: GameLogEntry): GameState => {
   if (/^[0-9a-f]{8}$/.test(entry.stateHashAfter) && entry.type === "best-move.completed") {
     const prepared = game.phase === "night-resolution" ? completeNight(game) : game;
     const selectedSeats = [...entry.payload.selectedSeats];
@@ -1406,6 +1402,70 @@ const applyReplayEvent = (game: GameState, entry: GameLogEntry): GameState => {
     type: entry.type,
     payload: entry.payload,
   } as CanonicalGameEventDraft);
+};
+
+export const applyCurrentGameLogEntry = (game: GameState, entry: GameLogEntry): GameState => {
+  assertGameLogEntry(entry);
+  if (entry.phaseBefore !== game.phase || entry.dayBefore !== game.day) {
+    throw new Error(`Event ${entry.id} does not start from the current game state`);
+  }
+  const after = applyGameEvent(game, {
+    type: entry.type,
+    payload: entry.payload,
+  } as CanonicalGameEventDraft);
+  if (!matchesRecordedState(after, entry)) {
+    throw new Error(`Event ${entry.id} does not match current rule semantics`);
+  }
+  return after;
+};
+
+const applyReplayEvent = (game: GameState, entry: GameLogEntry): GameState => {
+  const current = applyReplayEventCore(game, entry);
+  if (matchesRecordedState(current, entry)) return current;
+
+  // Historical chains may retain pre-fix mute state; new appends use applyCurrentGameLogEntry.
+  const eliminatedSeats = (() => {
+    if (entry.type === "voting.resolved" && entry.payload.result.kind === "winner") {
+      return entry.payload.result.seats;
+    }
+    if (entry.type === "car-crash.resolved" && entry.payload.result.eliminate) {
+      return entry.payload.result.seats;
+    }
+    if (
+      entry.type === "phase.changed" &&
+      game.phase === "car-crash-result" &&
+      game.carCrashResult?.eliminate
+    ) {
+      return game.carCrashResult.seats;
+    }
+    return [];
+  })();
+  const mutedEliminations = new Set(
+    eliminatedSeats.filter(
+      (seat) => current.players.find((player) => player.seat === seat)?.mutePending,
+    ),
+  );
+  if (mutedEliminations.size > 0) {
+    const withoutEliminationMutes: GameState = {
+      ...game,
+      players: game.players.map((player) =>
+        mutedEliminations.has(player.seat) ? { ...player, mutePending: false } : player,
+      ),
+    };
+    const preFix = applyReplayEventCore(withoutEliminationMutes, entry);
+    const restored = withMutePendingFrom(preFix, current);
+    if (matchesRecordedState(restored, entry)) return restored;
+  }
+
+  if (
+    current.day > game.day &&
+    (entry.type === "phase.changed" || entry.type === "best-move.completed")
+  ) {
+    const preFix = withMutePendingFrom(current, game);
+    if (matchesRecordedState(preFix, entry)) return preFix;
+  }
+
+  return current;
 };
 
 export const replayGameLog = (

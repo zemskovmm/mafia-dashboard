@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import {
+  applyCurrentGameLogEntry,
   assertGameLogEntry,
   createGameLogEntry,
   isMeaningfulGameEventDraft,
@@ -1544,11 +1545,14 @@ export class GameSessionStore {
           "The active head does not belong to this game and club",
         );
       }
-      const replay = replayGameLog(
-        row.initial_game,
-        [...activeEventsFor(events, row.head_event_id), input.event],
-        input.gameId,
-      );
+      const activeEvents = activeEventsFor(events, row.head_event_id);
+      const currentGame = replayGameLog(row.initial_game, activeEvents, input.gameId).game;
+      let nextGame: GameState;
+      try {
+        nextGame = applyCurrentGameLogEntry(currentGame, input.event);
+      } catch {
+        throw replayInvalid("New canonical event does not match current rule semantics");
+      }
       await writeCanonicalEvent(client, clubId, input.event);
 
       const nextRevision = row.revision + 1;
@@ -1565,7 +1569,7 @@ export class GameSessionStore {
         client,
         clubId,
         input.gameId,
-        materializeSessionState(row.state, replay.game),
+        materializeSessionState(row.state, nextGame),
       );
       await recordMutation(client, clubId, input.gameId, input.mutationId, nextRevision, request);
       const updatedRow = updated.rows[0];

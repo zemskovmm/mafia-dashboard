@@ -297,10 +297,10 @@ Consequences:
 
 - foul 1: warning;
 - foul 2: warning;
-- foul 3: the player’s next normal 60-second speech becomes a 10-second nomination-only turn;
+- foul 3: the player’s next normal 60-second speech that day becomes a 10-second nomination-only turn; if the player is eliminated by that day’s vote before consuming it, they receive no final speech;
 - foul 4: immediate disqualification with no final speech.[S3][S4]
 
-The app MUST track whether the third-foul speech penalty has been consumed; the count alone is insufficient.
+The app MUST track whether the third-foul speech penalty has been consumed; the count alone is insufficient. Any unconsumed penalty expires when the next day begins, before Best Move, morning final speeches, or ordinary day speeches, so it cannot suppress an overnight victim’s new-day final speech.
 
 ### 5.2 Immediate disqualification
 

@@ -2,14 +2,12 @@ import { useState } from "react";
 import {
   advanceSetupPhase,
   completeBestMove,
+  completeEliminations,
   completeGoodbyeSpeech,
   completeCurrentTurn,
-  beginNight,
-  evaluateVictory,
   getActiveNominations,
   isVotingRequired,
   issueFoul,
-  markPlayerInactive,
   nominate,
   redCard,
   toggleBestMoveSeat,
@@ -563,23 +561,7 @@ export const GameScreen = ({
               onEvent={onEvent}
               onAcceptedEvent={onAcceptedEvent}
               onResolved={(votingGame, seats) => {
-                const afterElimination = seats.reduce(
-                  (state, seat) => markPlayerInactive(state, seat, "eliminated"),
-                  votingGame,
-                );
-                const winner = evaluateVictory(afterElimination.players);
-                const next =
-                  winner !== null
-                    ? { ...afterElimination, phase: "finished" as const, winner }
-                    : seats.length === 0
-                      ? beginNight(afterElimination)
-                      : {
-                          ...afterElimination,
-                          phase: "goodbye-speech" as const,
-                          goodbyeSeats: seats,
-                          goodbyeNext: "night" as const,
-                        };
-                onGameChange(next);
+                onGameChange(completeEliminations(votingGame, seats));
                 for (const seat of seats) {
                   onEvent("player.eliminated", { seat, source: "vote" });
                 }

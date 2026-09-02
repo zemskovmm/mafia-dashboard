@@ -384,6 +384,47 @@ describe("GameScreen", () => {
     });
   });
 
+  it("uses muted-goodbye rules in the non-canonical voting fallback", async () => {
+    const user = userEvent.setup();
+    const base = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+    const candidate = base.players.find(({ role }) => role === "citizen")!;
+    const voteAssignments = Object.fromEntries(
+      base.players.map(({ seat }) => [seat, candidate.seat]),
+    );
+    const game: GameState = {
+      ...base,
+      phase: "voting",
+      players: base.players.map((player) =>
+        player.seat === candidate.seat ? { ...player, mutePending: true } : player,
+      ),
+      nominations: [{ nominatorSeat: 1, candidateSeat: candidate.seat, order: 1 }],
+      turnOrder: [candidate.seat],
+      currentTurnIndex: 0,
+      voteAssignments,
+      votingRound: "initial",
+    };
+    const onGameChange = vi.fn<(next: GameState) => void>();
+    render(
+      <GameScreen
+        game={game}
+        hostName="Host Player"
+        onGameChange={onGameChange}
+        onEvent={() => undefined}
+        privacyHidden={false}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Resolve voting" }));
+
+    expect(onGameChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        phase: "night-mafia",
+        goodbyeSeats: undefined,
+        goodbyeNext: undefined,
+      }),
+    );
+  });
+
   it("presents each car-crash nominee with a 30-second turn", () => {
     const game: GameState = {
       ...advanceSetupPhase(advanceSetupPhase(createPlanningGame())),

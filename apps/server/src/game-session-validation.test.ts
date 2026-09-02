@@ -524,6 +524,38 @@ describe("game session validation", () => {
     );
   });
 
+  it("rejects a persisted goodbye phase without a speaker", () => {
+    const base = liveGame(2);
+    const parse = (goodbyeSeats: readonly number[]) =>
+      gameSessionMutationSchema.safeParse({
+        name: "Persisted goodbye phase",
+        mutationId: uuid(95),
+        baseRevision: 0,
+        state: {
+          setup: null,
+          game: {
+            ...base,
+            phase: "goodbye-speech",
+            players: base.players.map((player) =>
+              player.seat === 1 ? { ...player, status: "eliminated" as const } : player,
+            ),
+            turnOrder: base.turnOrder.filter((seat) => seat !== 1),
+            goodbyeSeats,
+            goodbyeNext: "day",
+          },
+          hostPlayerId: uuid(11),
+          hostName: "Host",
+          playlistId: "",
+          log: [],
+          undoHistory: [],
+        },
+        results: null,
+      });
+
+    expect(parse([1]).success).toBe(true);
+    expect(parse([]).success).toBe(false);
+  });
+
   it("accepts incomplete Mafia result assignments while rejecting aliases", () => {
     const base = liveGame(1);
     const parse = (game: unknown) =>

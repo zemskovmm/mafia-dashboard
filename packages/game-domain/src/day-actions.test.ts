@@ -518,6 +518,56 @@ describe("day actions", () => {
     ).toThrow(/nominated player/i);
   });
 
+  it("suppresses a currently muted eliminated player's goodbye speech", () => {
+    let muted = dayOne();
+    for (let foul = 0; foul < 3; foul += 1) muted = issueFoul(muted, 4);
+    const game: GameState = {
+      ...muted,
+      phase: "car-crash-result",
+      carCrashSeats: [4, 6],
+      carCrashVotes: {},
+      carCrashResult: {
+        eliminate: true,
+        seats: [4, 6],
+        yesVotes: 6,
+        eligibleVoters: 10,
+      },
+    };
+
+    expect(completeCarCrashResult(game)).toMatchObject({
+      phase: "goodbye-speech",
+      goodbyeSeats: [6],
+      goodbyeNext: "night",
+      players: expect.arrayContaining([
+        expect.objectContaining({ seat: 4, fouls: 3, mutePending: true }),
+      ]),
+    });
+  });
+
+  it("skips an empty goodbye phase when every eliminated player is muted", () => {
+    const game: GameState = {
+      ...dayOne(),
+      phase: "car-crash-result",
+      players: dayOne().players.map((player) =>
+        player.seat === 4 || player.seat === 6 ? { ...player, mutePending: true } : player,
+      ),
+      carCrashSeats: [4, 6],
+      carCrashVotes: {},
+      carCrashResult: {
+        eliminate: true,
+        seats: [4, 6],
+        yesVotes: 6,
+        eligibleVoters: 10,
+      },
+    };
+
+    expect(completeCarCrashResult(game)).toMatchObject({
+      phase: "night-mafia",
+      goodbyeSeats: undefined,
+      goodbyeNext: undefined,
+    });
+  });
+
   it("eliminates tied nominees only when more than half vote for it", () => {
     const decision = (): GameState => ({
       ...dayOne(),
