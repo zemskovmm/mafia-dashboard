@@ -1062,6 +1062,28 @@ const mutationRequest = (input: SaveGameSessionInput) => ({
   results: input.results,
 });
 
+const normalizedMutationRequest = (request: unknown): unknown => {
+  if (request === null || typeof request !== "object" || Array.isArray(request)) return request;
+  const record = request as Record<string, unknown>;
+  const results = record.results;
+  if (results === null || typeof results !== "object" || Array.isArray(results)) return request;
+  const resultRecord = results as Record<string, unknown>;
+  if (
+    (resultRecord.winner !== "red" && resultRecord.winner !== "black") ||
+    "outcome" in resultRecord ||
+    "reason" in resultRecord
+  ) {
+    return request;
+  }
+  return {
+    ...record,
+    results: { ...resultRecord, outcome: resultRecord.winner, reason: null },
+  };
+};
+
+const isSameMutationRequest = (stored: unknown, received: unknown): boolean =>
+  isDeepStrictEqual(normalizedMutationRequest(stored), normalizedMutationRequest(received));
+
 const isMutationRetry = async (
   client: PoolClient,
   clubId: string,
@@ -1077,7 +1099,7 @@ const isMutationRetry = async (
   );
   const duplicateRow = duplicate.rows[0];
   if (duplicateRow === undefined) return false;
-  if (duplicateRow.request !== null && !isDeepStrictEqual(duplicateRow.request, request)) {
+  if (duplicateRow.request !== null && !isSameMutationRequest(duplicateRow.request, request)) {
     throw new GameSessionMutationMismatchError();
   }
   return true;
@@ -1880,6 +1902,16 @@ export class GameSessionStore {
 
   public async save(input: SaveGameSessionInput): Promise<StoredGameSession> {
     assertSnapshotGameIdentity(input);
+    const snapshotGame = deriveCurrentGame(input.state);
+    if (
+      input.results === null &&
+      (snapshotGame?.phase === "draw" || snapshotGame?.phase === "cancelled")
+    ) {
+      throw new GameSessionOperationError(
+        "game_session_completion_required",
+        "A draw or cancellation snapshot requires final results",
+      );
+    }
     const clubId = input.clubId ?? DEFAULT_CLUB_ID;
     const client = await this.pool.connect();
     try {
@@ -1907,7 +1939,7 @@ export class GameSessionStore {
       if (duplicateRow !== undefined) {
         if (
           duplicateRow.mutation_request !== null &&
-          !isDeepStrictEqual(duplicateRow.mutation_request, mutationRequest(input))
+          !isSameMutationRequest(duplicateRow.mutation_request, mutationRequest(input))
         ) {
           throw new GameSessionMutationMismatchError();
         }

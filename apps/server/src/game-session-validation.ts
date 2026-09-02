@@ -1246,6 +1246,14 @@ export const gameSessionMutationSchema = z
       });
       return;
     }
+    if (results === null && (currentGame?.phase === "draw" || currentGame?.phase === "cancelled")) {
+      context.addIssue({
+        code: "custom",
+        path: ["results"],
+        message: "A draw or cancellation snapshot requires final results",
+      });
+      return;
+    }
     if (results === null || currentGame === null) return;
     const expectedOutcome =
       currentGame.phase === "finished" ? currentGame.winner : currentGame.phase;

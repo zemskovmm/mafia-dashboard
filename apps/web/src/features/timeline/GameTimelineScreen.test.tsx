@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { CompletedGameSessionSummary, RemoteGameSession } from "../../api/client.js";
@@ -62,7 +62,11 @@ describe("GameTimelineScreen", () => {
     const user = userEvent.setup();
     const clubId = "00000000-0000-4000-8000-000000000101";
     const playerId = "00000000-0000-4000-8000-000000000201";
-    const listCompleted = vi.fn().mockResolvedValue([]);
+    const listCompleted = vi
+      .fn()
+      .mockResolvedValue([
+        completedSummary("00000000-0000-4000-8000-000000000301", "Filtered game"),
+      ]);
     render(
       <GameTimelineScreen
         clubId={clubId}
@@ -86,8 +90,53 @@ describe("GameTimelineScreen", () => {
         outcome: "draw",
       }),
     );
+    const validRequestCount = listCompleted.mock.calls.length;
+    fireEvent.change(screen.getByLabelText("From date"), {
+      target: { value: "2026-09-01" },
+    });
+
+    expect(screen.getByRole("alert")).toHaveTextContent("From date must not be after To date.");
+    expect(screen.getByLabelText("From date")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.getByLabelText("To date")).toHaveAttribute("aria-invalid", "true");
+    expect(screen.queryByRole("option", { name: /Filtered game/ })).not.toBeInTheDocument();
+    expect(listCompleted).toHaveBeenCalledTimes(validRequestCount);
     await user.click(screen.getByRole("button", { name: "Clear filters" }));
     await waitFor(() => expect(listCompleted).toHaveBeenLastCalledWith(clubId, {}));
+  });
+
+  it("ignores an in-flight valid response after the date range becomes invalid", async () => {
+    const pending = deferred<readonly CompletedGameSessionSummary[]>();
+    const clubId = "00000000-0000-4000-8000-000000000101";
+    const listCompleted = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockImplementationOnce(() => pending.promise);
+    render(
+      <GameTimelineScreen
+        clubId={clubId}
+        onBack={() => undefined}
+        loaders={{ listCompleted, getSession: vi.fn() }}
+      />,
+    );
+    await waitFor(() => expect(listCompleted).toHaveBeenCalledTimes(1));
+    fireEvent.change(screen.getByLabelText("To date"), {
+      target: { value: "2026-08-31" },
+    });
+    await waitFor(() => expect(listCompleted).toHaveBeenCalledTimes(2));
+
+    fireEvent.change(screen.getByLabelText("From date"), {
+      target: { value: "2026-09-01" },
+    });
+    await act(async () => {
+      pending.resolve([
+        completedSummary("00000000-0000-4000-8000-000000000302", "Stale filtered game"),
+      ]);
+      await pending.promise;
+    });
+
+    expect(listCompleted).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("alert")).toHaveTextContent("From date must not be after To date.");
+    expect(screen.queryByRole("option", { name: /Stale filtered game/ })).not.toBeInTheDocument();
   });
 
   it("uses its scoped Russian messages for timeline chrome, inspector, and marker labels", async () => {

@@ -369,6 +369,7 @@ describe("game session validation", () => {
     };
 
     expect(gameSessionMutationSchema.safeParse(request).success).toBe(true);
+    expect(gameSessionMutationSchema.safeParse({ ...request, results: null }).success).toBe(false);
     expect(
       gameSessionMutationSchema.safeParse({
         ...request,

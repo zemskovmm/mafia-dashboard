@@ -2030,7 +2030,7 @@ describe("GameSessionStore", () => {
       gameId,
       mutationId,
       baseRevision: 3,
-      results: completionResults,
+      results: { ...completionResults, outcome: "red", reason: null },
     });
 
     expect(response).toMatchObject({
@@ -2086,6 +2086,29 @@ describe("GameSessionStore", () => {
         before: fixture.second.after,
         draft: { type: eventType, payload: { reason } },
       });
+      await expect(
+        store.save({
+          gameId,
+          name: `Incomplete ${outcome}`,
+          mutationId: randomUUID(),
+          baseRevision: 4,
+          state: {
+            ...emptyState,
+            game: terminal.after,
+            hostPlayerId: fixture.completed.hostPlayerId,
+            hostName: "Terminal Host",
+            initialGame: fixture.initialGame,
+            events: [
+              fixture.started.entry,
+              fixture.first.entry,
+              fixture.second.entry,
+              terminal.entry,
+            ],
+            headEventId: terminal.entry.id,
+          },
+          results: null,
+        }),
+      ).rejects.toMatchObject({ code: "game_session_completion_required" });
       await store.appendEvent({
         gameId,
         mutationId: randomUUID(),
@@ -2265,7 +2288,12 @@ describe("GameSessionStore", () => {
       results: completed.results,
     };
     await store.save(saved);
-    await expect(store.save(saved)).resolves.toMatchObject({ revision: 1, duplicate: true });
+    await expect(
+      store.save({
+        ...saved,
+        results: { ...completed.results, outcome: "red", reason: null },
+      }),
+    ).resolves.toMatchObject({ revision: 1, duplicate: true });
     const baseline = { replayVersion: 1 as const, game: completed.state.game };
     const event = createGameLogEntry({
       gameId,

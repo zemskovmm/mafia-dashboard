@@ -60,6 +60,11 @@
 .timeline-filters button {
   min-height: 44px;
 }
+.timeline-filter-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--danger);
+}
 .timeline-loading,
 .timeline-empty,
 .timeline-error {

@@ -431,8 +431,10 @@ const TenantGameTimelineScreen = ({
   const [outcome, setOutcome] = useState("");
   const listRequestRef = useRef(0);
   const sessionRequestRef = useRef(0);
+  const invalidDateRange = from !== "" && to !== "" && from > to;
 
   const resetHistoricalSelection = () => {
+    listRequestRef.current += 1;
     sessionRequestRef.current += 1;
     setSelectedGameId(currentHistory === undefined ? "" : "current");
     setHistory(loadCurrentHistory());
@@ -443,6 +445,11 @@ const TenantGameTimelineScreen = ({
   useEffect(() => {
     const request = listRequestRef.current + 1;
     listRequestRef.current = request;
+    if (invalidDateRange) {
+      setError(null);
+      setSummaries([]);
+      return;
+    }
     setError(null);
     setSummaries(null);
     const filters: CompletedGameSessionFilters = {
@@ -468,7 +475,7 @@ const TenantGameTimelineScreen = ({
     return () => {
       if (listRequestRef.current === request) listRequestRef.current += 1;
     };
-  }, [clubId, from, i18n, loaders, outcome, playerId, to]);
+  }, [clubId, from, i18n, invalidDateRange, loaders, outcome, playerId, to]);
 
   useEffect(() => {
     if (selectedGameId === "current") setHistory(loadCurrentHistory());
@@ -600,6 +607,8 @@ const TenantGameTimelineScreen = ({
           <input
             type="date"
             aria-label={i18n.t("From date")}
+            aria-invalid={invalidDateRange}
+            max={to === "" ? undefined : to}
             value={from}
             onChange={(event) => {
               resetHistoricalSelection();
@@ -612,6 +621,8 @@ const TenantGameTimelineScreen = ({
           <input
             type="date"
             aria-label={i18n.t("To date")}
+            aria-invalid={invalidDateRange}
+            min={from === "" ? undefined : from}
             value={to}
             onChange={(event) => {
               resetHistoricalSelection();
@@ -667,6 +678,11 @@ const TenantGameTimelineScreen = ({
         >
           {i18n.t("Clear filters")}
         </button>
+        {invalidDateRange ? (
+          <p className="timeline-filter-error" role="alert">
+            {i18n.t("From date must not be after To date.")}
+          </p>
+        ) : null}
       </section>
 
       {error === null ? null : (
@@ -680,7 +696,7 @@ const TenantGameTimelineScreen = ({
       {loadingGameName === null || history !== null ? null : (
         <p className="timeline-loading">{i18n.t("Loading {name}…", { name: loadingGameName })}</p>
       )}
-      {summaries?.length === 0 && history === null && error === null ? (
+      {summaries?.length === 0 && history === null && error === null && !invalidDateRange ? (
         <p className="timeline-empty">{i18n.t("No completed games yet.")}</p>
       ) : null}
 
