@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useReducer,
   useRef,
   useState,
   type KeyboardEvent,
@@ -65,6 +66,17 @@ import { ClubPortal } from "./features/clubs/ClubPortal.js";
 import { ErrorConsoleScreen } from "./features/console/ErrorConsoleScreen.js";
 import { clearErrorConsole, reportError } from "./features/console/error-console.js";
 import { CanaryFirework } from "./features/effects/CanaryFirework.js";
+import {
+  createLightingRendererState,
+  LightingRendererContext,
+  lightingRendererReducer,
+} from "./features/effects/LightingRendererContext.js";
+import {
+  writeLightingRenderer,
+  writePlayerLightingEnabled,
+  type LightingRenderer,
+} from "./features/effects/lighting-preferences.js";
+import { VgpuLightingProvider } from "./features/effects/vgpu/VgpuLightingProvider.js";
 import { GameScreen } from "./features/game/GameScreen.js";
 import { isCriticalState } from "./features/game/critical-state.js";
 import { LiveSidePanel } from "./features/game/LiveSidePanel.js";
@@ -566,6 +578,11 @@ export const ClubWorkspace = ({
   const [activeDrawer, setActiveDrawer] = useState<"log" | "manage" | "dev" | null>(null);
   const [musicSetupOpen, setMusicSetupOpen] = useState(false);
   const [backgroundShade, setBackgroundShade] = useState<BackgroundShade>("black");
+  const [lighting, dispatchLighting] = useReducer(
+    lightingRendererReducer,
+    window.localStorage,
+    createLightingRendererState,
+  );
 
   const [devModeEnabled, setDevModeEnabled] = useState(false);
   const [devUnlocked, setDevUnlocked] = useState(false);
@@ -1486,6 +1503,22 @@ export const ClubWorkspace = ({
     backgroundShadeOrder[
       (backgroundShadeOrder.indexOf(backgroundShade) + 1) % backgroundShadeOrder.length
     ]!;
+  const selectLightingRenderer = useCallback((renderer: LightingRenderer) => {
+    writeLightingRenderer(window.localStorage, renderer);
+    dispatchLighting({ type: "select", renderer });
+  }, []);
+  const setPlayerLighting = useCallback((enabled: boolean) => {
+    writePlayerLightingEnabled(window.localStorage, enabled);
+    dispatchLighting({ type: "set-player-lighting", enabled });
+  }, []);
+  const reportVgpuReady = useCallback(
+    (generation: number) => dispatchLighting({ type: "vgpu-ready", generation }),
+    [],
+  );
+  const reportVgpuFailure = useCallback(
+    (generation: number) => dispatchLighting({ type: "vgpu-failed", generation }),
+    [],
+  );
 
   const showWorkspaceTools = previewGame === null && (view === "game" || view === "players");
   const togglePrivacy = () => {
@@ -1605,7 +1638,7 @@ export const ClubWorkspace = ({
     </section>
   );
 
-  return (
+  const content = (
     <div
       ref={appShellRef}
       className={`app-shell${backgroundShadeClass[backgroundShade]}${
@@ -1614,6 +1647,10 @@ export const ClubWorkspace = ({
         isFullscreen ? " is-fullscreen" : ""
       }`}
       data-background-shade={backgroundShade}
+      data-lighting-renderer={lighting.effectiveRenderer}
+      data-lighting-renderer-requested={lighting.requestedRenderer}
+      data-vgpu-status={lighting.vgpuStatus}
+      data-player-lighting={lighting.playerLightingEnabled ? "enabled" : "disabled"}
     >
       {showApplicationStatus ? (
         <header
@@ -1918,6 +1955,44 @@ export const ClubWorkspace = ({
             </p>
           </div>
           <div className="dev-menu-actions">
+            <label className="dev-renderer-field">
+              <span>{t("lightingRenderer")}</span>
+              <select
+                aria-label={t("lightingRenderer")}
+                value={lighting.requestedRenderer}
+                onChange={(event) =>
+                  selectLightingRenderer(event.currentTarget.value as LightingRenderer)
+                }
+              >
+                <option value="legacy">{t("lightingRendererLegacy")}</option>
+                <option value="svg">{t("lightingRendererSvg")}</option>
+                <option value="vgpu">{t("lightingRendererVgpu")}</option>
+              </select>
+              {lighting.vgpuStatus === "initializing" ? (
+                <small role="status">{t("vgpuInitializing")}</small>
+              ) : lighting.vgpuStatus === "fallback" ? (
+                <small role="status">{t("vgpuFallback")}</small>
+              ) : null}
+            </label>
+            <button
+              type="button"
+              className="dev-setting-toggle"
+              aria-label={
+                lighting.playerLightingEnabled
+                  ? t("disablePlayerLighting")
+                  : t("enablePlayerLighting")
+              }
+              aria-pressed={lighting.playerLightingEnabled}
+              onClick={() => setPlayerLighting(!lighting.playerLightingEnabled)}
+            >
+              <span>
+                <strong>{t("playerLighting")}</strong>
+                <small>{t("playerLightingDescription")}</small>
+              </span>
+              <span className="dev-setting-state">
+                {t(lighting.playerLightingEnabled ? "settingOn" : "settingOff")}
+              </span>
+            </button>
             <button
               type="button"
               onClick={() => {
@@ -2148,6 +2223,19 @@ export const ClubWorkspace = ({
         ) : null}
       </LiveSidePanel>
     </div>
+  );
+
+  return (
+    <LightingRendererContext.Provider value={lighting}>
+      <VgpuLightingProvider
+        enabled={lighting.requestedRenderer === "vgpu"}
+        generation={lighting.vgpuGeneration}
+        onReady={reportVgpuReady}
+        onFailure={reportVgpuFailure}
+      >
+        {content}
+      </VgpuLightingProvider>
+    </LightingRendererContext.Provider>
   );
 };
 

@@ -1,4 +1,4 @@
-/* global URL, document, getComputedStyle, HTMLElement, HTMLInputElement, innerHeight, innerWidth, structuredClone, sessionStorage, crypto, TextEncoder, ErrorEvent, Event */
+/* global URL, document, getComputedStyle, HTMLElement, HTMLCanvasElement, HTMLInputElement, innerHeight, innerWidth, structuredClone, sessionStorage, crypto, TextEncoder, ErrorEvent, Event */
 import { chromium, webkit } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { assertExactOrigin } from "./session-verifier-contracts.mjs";
@@ -18,6 +18,25 @@ const unlockDeveloperMenu = async (page) => {
     for (let tap = 0; tap < 5; tap += 1) await privacy.dispatchEvent("click");
   }
   await menuButton.waitFor();
+};
+const assertSvgPlayerLighting = async (card, kind, label) => {
+  const lighting = card.locator(`.player-card-lighting[data-player-lighting-kind="${kind}"]`);
+  await lighting.waitFor();
+  const style = await lighting
+    .locator("circle")
+    .first()
+    .evaluate((circle) => {
+      const computed = getComputedStyle(circle);
+      return {
+        animationName: computed.animationName,
+        fill: computed.fill,
+        opacity: computed.opacity,
+      };
+    });
+  if (style.animationName !== "player-led-chase" || style.opacity === "0") {
+    throw new Error(`${label} does not have active SVG LEDs: ${JSON.stringify(style)}`);
+  }
+  return style;
 };
 const screenshotPath = process.env.UI_SCREENSHOT ?? "/tmp/mafia-dashboard-setup.png";
 const tableScreenshotPath = process.env.UI_TABLE_SCREENSHOT ?? "/tmp/mafia-dashboard-table.png";
@@ -85,6 +104,7 @@ const viewportWidth = Number(process.env.UI_VIEWPORT_WIDTH ?? "");
 const viewportHeight = Number(process.env.UI_VIEWPORT_HEIGHT ?? "");
 const headerOnly = process.env.UI_HEADER_ONLY === "1";
 const hardeningOnly = process.env.UI_HARDENING_ONLY === "1";
+const verifyVgpuSelection = process.env.UI_VERIFY_VGPU === "1";
 const browser =
   browserName === "webkit"
     ? await webkit.launch({ headless: true })
@@ -801,26 +821,18 @@ try {
         `The permanent table-center shadow is missing: ${JSON.stringify(centerShadowStyle)}`,
       );
     }
-    const nightCycleStyle = await page.locator(".round-table").evaluate((table) => {
-      const ambient = getComputedStyle(table, "::before");
-      const mark = getComputedStyle(table, "::after");
-      return {
-        content: mark.content,
-        ambientAnimation: ambient.animationName,
-        markAnimation: mark.animationName,
-        ambientBackground: ambient.backgroundImage,
-        transitionDuration: getComputedStyle(table).transitionDuration,
-      };
+    const nightCycleStyle = await page.locator(".table-ambient-lighting").evaluate((ambient) => {
+      const halo = getComputedStyle(ambient.querySelector(".table-lighting-halo"));
+      const dot = getComputedStyle(ambient.querySelector(".table-lighting-dot"));
+      return { haloAnimation: halo.animationName, haloStroke: halo.stroke, dotFill: dot.fill };
     });
     if (
-      nightCycleStyle.content.includes("NIGHT") ||
-      nightCycleStyle.ambientAnimation !== "none" ||
-      nightCycleStyle.markAnimation !== "none" ||
-      !nightCycleStyle.ambientBackground.includes("gradient") ||
-      !nightCycleStyle.transitionDuration.includes("0.9s")
+      nightCycleStyle.haloAnimation !== "table-halo-breathe" ||
+      nightCycleStyle.haloStroke === "none" ||
+      nightCycleStyle.dotFill === "none"
     ) {
       throw new Error(
-        `Night tint must be static and retain its gradient: ${JSON.stringify(nightCycleStyle)}`,
+        `Night table lighting must animate with a visible cool palette: ${JSON.stringify(nightCycleStyle)}`,
       );
     }
     const nightCycleScreenshotPath = tableScreenshotPath.replace(/\.png$/i, "-night-cycle.png");
@@ -829,28 +841,57 @@ try {
     await page.getByRole("button", { name: "Begin day one" }).click();
     await page.locator(".game-shell.is-table-cycle-day").waitFor();
     await page.waitForTimeout(620);
-    const dayCycleStyle = await page.locator(".round-table").evaluate((table) => {
-      const ambient = getComputedStyle(table, "::before");
-      const mark = getComputedStyle(table, "::after");
-      return {
-        content: mark.content,
-        ambientAnimation: ambient.animationName,
-        markAnimation: mark.animationName,
-        ambientBackground: ambient.backgroundImage,
-      };
+    const dayCycleStyle = await page.locator(".table-ambient-lighting").evaluate((ambient) => {
+      const halo = getComputedStyle(ambient.querySelector(".table-lighting-halo"));
+      const dot = getComputedStyle(ambient.querySelector(".table-lighting-dot"));
+      return { haloAnimation: halo.animationName, haloStroke: halo.stroke, dotFill: dot.fill };
     });
     if (
-      dayCycleStyle.content.includes("DAY") ||
-      dayCycleStyle.ambientAnimation !== "none" ||
-      dayCycleStyle.markAnimation !== "none" ||
-      !dayCycleStyle.ambientBackground.includes("gradient")
+      dayCycleStyle.haloAnimation !== "table-halo-breathe" ||
+      dayCycleStyle.haloStroke === "none" ||
+      dayCycleStyle.dotFill === "none"
     ) {
       throw new Error(
-        `Day tint must be static and retain its gradient: ${JSON.stringify(dayCycleStyle)}`,
+        `Day table lighting must animate with a visible warm palette: ${JSON.stringify(dayCycleStyle)}`,
       );
     }
     const dayCycleScreenshotPath = tableScreenshotPath.replace(/\.png$/i, "-day-cycle.png");
     await page.screenshot({ path: dayCycleScreenshotPath, fullPage: true });
+    if (verifyVgpuSelection) {
+      await page.getByRole("button", { name: "Open developer menu" }).click();
+      await page.getByRole("combobox", { name: "Lighting renderer" }).selectOption("vgpu");
+      await page.getByRole("button", { name: "Close developer menu" }).click();
+      await page.waitForFunction(() => {
+        const shell = document.querySelector(".app-shell");
+        return (
+          document.querySelector(".vgpu-table-lighting")?.getAttribute("data-vgpu-ready") ===
+            "true" || shell?.getAttribute("data-vgpu-status") === "fallback"
+        );
+      });
+      const rendererState = await page.locator(".app-shell").evaluate((shell) => ({
+        requested: shell.getAttribute("data-lighting-renderer-requested"),
+        effective: shell.getAttribute("data-lighting-renderer"),
+      }));
+      let fallbackVisible = false;
+      if (rendererState.effective === "svg") {
+        await page.getByRole("button", { name: "Open developer menu" }).click();
+        fallbackVisible = await page.getByText("V-GPU unavailable — using SVG").isVisible();
+        await page.getByRole("button", { name: "Close developer menu" }).click();
+      }
+      if (
+        rendererState.requested !== "vgpu" ||
+        (rendererState.effective !== "vgpu" &&
+          (rendererState.effective !== "svg" || !fallbackVisible))
+      ) {
+        throw new Error(
+          `WebKit V-GPU selection did not become ready or fall back: ${JSON.stringify({ ...rendererState, fallbackVisible })}`,
+        );
+      }
+      await page.getByRole("button", { name: "Open developer menu" }).click();
+      await page.getByRole("combobox", { name: "Lighting renderer" }).selectOption("svg");
+      await page.getByRole("button", { name: "Close developer menu" }).click();
+      await page.locator('.app-shell[data-lighting-renderer="svg"]').waitFor();
+    }
     await assertAccessibleControls("live day");
     const keyboardSeat = page.getByRole("button", {
       name: `Seat 1: ${firstSeatName}`,
@@ -1484,25 +1525,11 @@ try {
       throw new Error("Every voter for the current candidate must remain highlighted");
     }
     await page.waitForTimeout(320);
-    const votingHighlightStyle = await votingHighlight.first().evaluate((card) => {
-      const style = getComputedStyle(card);
-      return {
-        animationName: style.animationName,
-        backgroundImage: style.backgroundImage,
-        borderColor: style.borderColor,
-        opacity: style.opacity,
-      };
-    });
-    if (
-      !votingHighlightStyle.animationName.includes("voting-highlight-enter") ||
-      !votingHighlightStyle.animationName.includes("voting-fire-pulse") ||
-      !votingHighlightStyle.backgroundImage.includes("gradient") ||
-      votingHighlightStyle.opacity !== "1"
-    ) {
-      throw new Error(
-        `Selected voting card must use the bright fire treatment: ${JSON.stringify(votingHighlightStyle)}`,
-      );
-    }
+    const votingHighlightStyle = await assertSvgPlayerLighting(
+      votingHighlight.first(),
+      "attention",
+      "Selected voting card",
+    );
     const votingScreenshotPath = tableScreenshotPath.replace(/\.png$/i, "-voting.png");
     await page.screenshot({ path: votingScreenshotPath, fullPage: true });
     await page.getByRole("button", { name: "Next candidate" }).click();
@@ -1677,18 +1704,11 @@ try {
       throw new Error("The night victim must stay brightly highlighted during Best move");
     }
     await page.waitForTimeout(320);
-    const postNightHighlightStyle = await postNightHighlight.evaluate((card) => ({
-      animationName: getComputedStyle(card).animationName,
-      opacity: getComputedStyle(card).opacity,
-    }));
-    if (
-      !postNightHighlightStyle.animationName.includes("voting-fire-pulse") ||
-      postNightHighlightStyle.opacity !== "1"
-    ) {
-      throw new Error(
-        `The post-night victim must use the voting-fire animation: ${JSON.stringify(postNightHighlightStyle)}`,
-      );
-    }
+    const postNightHighlightStyle = await assertSvgPlayerLighting(
+      postNightHighlight,
+      "attention",
+      "Post-night victim",
+    );
     const bestMoveScreenshotPath = tableScreenshotPath.replace(/\.png$/i, "-best-move.png");
     await page.screenshot({ path: bestMoveScreenshotPath, fullPage: true });
     for (let selection = 0; selection < 3; selection += 1) {
@@ -1945,22 +1965,11 @@ try {
         `Only the current goodbye speaker may be highlighted: ${JSON.stringify(staleGoodbyeHighlightState)}`,
       );
     }
-    const goodbyeTransitionStyle = await staleGoodbyeHighlights.evaluate((card) => {
-      const style = getComputedStyle(card);
-      return {
-        animationName: style.animationName,
-        transitionDuration: style.transitionDuration,
-      };
-    });
-    if (
-      !goodbyeTransitionStyle.animationName.includes("voting-highlight-enter") ||
-      !goodbyeTransitionStyle.animationName.includes("voting-fire-pulse") ||
-      !goodbyeTransitionStyle.transitionDuration.includes("0.28s")
-    ) {
-      throw new Error(
-        `Goodbye highlight state changes must animate: ${JSON.stringify(goodbyeTransitionStyle)}`,
-      );
-    }
+    const goodbyeTransitionStyle = await assertSvgPlayerLighting(
+      staleGoodbyeHighlights,
+      "attention",
+      "Goodbye card",
+    );
     const staleGoodbyeScreenshotPath = tableScreenshotPath.replace(
       /\.png$/i,
       "-goodbye-stale-best-move.png",
@@ -2671,28 +2680,174 @@ try {
   }
   const activeSeat = page.locator('.player-seat[aria-current="step"]');
   await activeSeat.waitFor();
-  const activeAnimation = await activeSeat.evaluate((element) => {
-    const style = getComputedStyle(element);
-    return { animationName: style.animationName, animationDuration: style.animationDuration };
-  });
-  if (activeAnimation.animationName === "none" || activeAnimation.animationDuration === "0s") {
-    throw new Error("Current player card does not have an active-turn animation");
-  }
+  await assertSvgPlayerLighting(activeSeat, "speaker", "Current player card");
   const animatedNonCurrentSeats = await page
-    .locator('.player-seat:not([aria-current="step"])')
-    .evaluateAll(
-      (elements) =>
-        elements.filter((element) => getComputedStyle(element).animationName !== "none").length,
-    );
+    .locator('.player-seat:not([aria-current="step"]) .player-card-lighting')
+    .count();
   if (animatedNonCurrentSeats !== 0) {
     throw new Error("Non-current player cards must not run the active-turn animation");
   }
+  const selectLightingRenderer = async (value) => {
+    await page.getByRole("button", { name: "Open developer menu" }).click();
+    await page.getByRole("combobox", { name: "Lighting renderer" }).selectOption(value);
+    await page.getByRole("button", { name: "Close developer menu" }).click();
+  };
+
+  await selectLightingRenderer("legacy");
+  await page.locator('.app-shell[data-lighting-renderer="legacy"]').waitFor();
+  if ((await activeSeat.locator(".player-card-lighting").count()) !== 0) {
+    throw new Error("Legacy lighting must not retain the SVG player layer");
+  }
+  const legacyEvidence = await activeSeat.evaluate((card) => {
+    const table = document.querySelector(".round-table");
+    return {
+      cardAnimation: getComputedStyle(card).animationName,
+      tableBackground: table === null ? "" : getComputedStyle(table, "::before").backgroundImage,
+    };
+  });
+  if (
+    !legacyEvidence.cardAnimation.includes("active-player-pulse") ||
+    !legacyEvidence.tableBackground.includes("gradient")
+  ) {
+    throw new Error(`Legacy lighting changed: ${JSON.stringify(legacyEvidence)}`);
+  }
+  const legacyLightingScreenshotPath = tableScreenshotPath.replace(/\.png$/i, "-legacy.png");
+  await page.screenshot({ path: legacyLightingScreenshotPath, fullPage: true });
+
+  await selectLightingRenderer("svg");
+  await page.locator('.app-shell[data-lighting-renderer="svg"]').waitFor();
+  await assertSvgPlayerLighting(activeSeat, "speaker", "Restored SVG current player card");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const reducedMotionEvidence = await page.evaluate(() => ({
+    player: getComputedStyle(document.querySelector(".player-card-lighting circle")).animationName,
+    table: getComputedStyle(document.querySelector(".table-lighting-halo")).animationName,
+    playerOpacity: getComputedStyle(document.querySelector(".player-card-lighting circle")).opacity,
+  }));
+  if (
+    reducedMotionEvidence.player !== "none" ||
+    reducedMotionEvidence.table !== "none" ||
+    reducedMotionEvidence.playerOpacity === "0"
+  ) {
+    throw new Error(
+      `Reduced motion must keep static lighting without animation: ${JSON.stringify(reducedMotionEvidence)}`,
+    );
+  }
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+
+  await selectLightingRenderer("vgpu");
+  await page.locator('.app-shell[data-lighting-renderer-requested="vgpu"]').waitFor();
+  await page.waitForFunction(() => {
+    const shell = document.querySelector(".app-shell");
+    return (
+      (document.querySelector(".vgpu-table-lighting")?.getAttribute("data-vgpu-ready") === "true" &&
+        document
+          .querySelector('.player-seat[aria-current="step"] .vgpu-player-lighting')
+          ?.getAttribute("data-vgpu-ready") === "true") ||
+      shell?.getAttribute("data-vgpu-status") === "fallback"
+    );
+  });
+  const effectiveVgpuRenderer = await page
+    .locator(".app-shell")
+    .getAttribute("data-lighting-renderer");
+  let fallbackVisible = false;
+  if (effectiveVgpuRenderer === "svg") {
+    await page.getByRole("button", { name: "Open developer menu" }).click();
+    fallbackVisible = await page.getByText("V-GPU unavailable — using SVG").isVisible();
+    await page.getByRole("button", { name: "Close developer menu" }).click();
+  }
+  const vgpuEvidence = await page.evaluate(() => ({
+    requested: document
+      .querySelector(".app-shell")
+      ?.getAttribute("data-lighting-renderer-requested"),
+    effective: document.querySelector(".app-shell")?.getAttribute("data-lighting-renderer"),
+    tableReady: document.querySelector(".vgpu-table-lighting")?.getAttribute("data-vgpu-ready"),
+    playerReady: document
+      .querySelector('.player-seat[aria-current="step"] .vgpu-player-lighting')
+      ?.getAttribute("data-vgpu-ready"),
+    playerCanvas: (() => {
+      const canvas = document.querySelector(
+        '.player-seat[aria-current="step"] .vgpu-player-lighting',
+      );
+      if (!(canvas instanceof HTMLCanvasElement)) return null;
+      const bounds = canvas.getBoundingClientRect();
+      return {
+        width: canvas.width,
+        height: canvas.height,
+        cssWidth: bounds.width,
+        cssHeight: bounds.height,
+      };
+    })(),
+  }));
+  vgpuEvidence.fallbackVisible = fallbackVisible;
+  if (
+    vgpuEvidence.requested !== "vgpu" ||
+    (vgpuEvidence.effective === "vgpu"
+      ? vgpuEvidence.tableReady !== "true" || vgpuEvidence.playerReady !== "true"
+      : vgpuEvidence.effective !== "svg" || !vgpuEvidence.fallbackVisible)
+  ) {
+    throw new Error(
+      `V-GPU renderer neither became ready nor fell back: ${JSON.stringify(vgpuEvidence)}`,
+    );
+  }
+  const vgpuLightingScreenshotPath = tableScreenshotPath.replace(/\.png$/i, "-vgpu.png");
+  await page.screenshot({ path: vgpuLightingScreenshotPath, fullPage: true });
+  let vgpuPlayerLightingScreenshotPath = null;
+  let vgpuPlayerCanvasScreenshotPath = null;
+  if (vgpuEvidence.effective === "vgpu") {
+    vgpuPlayerLightingScreenshotPath = tableScreenshotPath.replace(/\.png$/i, "-vgpu-player.png");
+    const vgpuPlayerBox = await activeSeat.boundingBox();
+    if (vgpuPlayerBox === null) throw new Error("V-GPU current player card has no layout box");
+    await page.screenshot({
+      path: vgpuPlayerLightingScreenshotPath,
+      clip: {
+        x: Math.max(0, vgpuPlayerBox.x - 24),
+        y: Math.max(0, vgpuPlayerBox.y - 24),
+        width: vgpuPlayerBox.width + 48,
+        height: vgpuPlayerBox.height + 48,
+      },
+    });
+    vgpuPlayerCanvasScreenshotPath = tableScreenshotPath.replace(
+      /\.png$/i,
+      "-vgpu-player-canvas.png",
+    );
+    const isolationStyle = await page.addStyleTag({
+      content: `
+        .player-seat[aria-current="step"] {
+          background: #000 !important;
+          border-color: transparent !important;
+          box-shadow: none !important;
+        }
+        .player-seat[aria-current="step"] > :not(.vgpu-player-lighting) {
+          visibility: hidden !important;
+        }
+      `,
+    });
+    await activeSeat.locator(".vgpu-player-lighting").screenshot({
+      path: vgpuPlayerCanvasScreenshotPath,
+    });
+    await isolationStyle.evaluate((style) => style.remove());
+  }
+
+  await page.getByRole("button", { name: "Open developer menu" }).click();
+  await page.getByRole("button", { name: "Disable player LEDs" }).click();
+  await page.getByRole("button", { name: "Close developer menu" }).click();
+  if (
+    (await page.locator(".player-card-lighting, .vgpu-player-lighting").count()) !== 0 ||
+    (await page.locator(".table-ambient-lighting, .vgpu-table-lighting").count()) === 0
+  ) {
+    throw new Error("Player LED toggle must leave table lighting active");
+  }
+  await page.getByRole("button", { name: "Open developer menu" }).click();
+  await page.getByRole("button", { name: "Enable player LEDs" }).click();
+  await page.getByRole("combobox", { name: "Lighting renderer" }).selectOption("svg");
+  await page.getByRole("button", { name: "Close developer menu" }).click();
+  await assertSvgPlayerLighting(activeSeat, "speaker", "Re-enabled SVG current player card");
   await page.screenshot({ path: tableScreenshotPath, fullPage: true });
   await page.getByRole("button", { name: "Exit fullscreen" }).click();
   await page.waitForFunction(() => document.fullscreenElement === null);
   assertNoPageErrors();
   console.log(
-    `UI browser verification: PASS (${playersScreenshotPath}, ${selectionScreenshotPath}, ${screenshotPath}, ${tableScreenshotPath})`,
+    `UI browser verification: PASS ${JSON.stringify({ playersScreenshotPath, selectionScreenshotPath, screenshotPath, tableScreenshotPath, legacyLightingScreenshotPath, vgpuLightingScreenshotPath, vgpuPlayerLightingScreenshotPath, vgpuPlayerCanvasScreenshotPath, vgpuEvidence, reducedMotionEvidence })}`,
   );
 } finally {
   await browser.close();

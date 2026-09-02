@@ -17,6 +17,7 @@ for (const testCase of cases) {
       UI_VIEWPORT_HEIGHT: String(testCase.height),
       UI_HEADER_ONLY: "1",
       UI_HARDENING_ONLY: "1",
+      UI_VERIFY_VGPU: testCase.browser === "webkit" ? "1" : "0",
       UI_SCREENSHOT: `/tmp/mafia-dashboard-${testCase.name}-setup.png`,
       UI_TABLE_SCREENSHOT: `/tmp/mafia-dashboard-${testCase.name}-table.png`,
     },

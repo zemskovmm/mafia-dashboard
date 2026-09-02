@@ -1,6 +1,12 @@
 import type { PlayerStatus, Role } from "@mafia/game-domain";
 import type { CSSProperties, ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
+import { PlayerCardLighting, resolvePlayerLightingKind } from "../effects/PlayerCardLighting.js";
+import { TableAmbientLighting } from "../effects/TableAmbientLighting.js";
+import {
+  VgpuPlayerLightingCanvas,
+  VgpuTableLightingCanvas,
+} from "../effects/vgpu/VgpuLightingCanvas.js";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { gameMessages, type GameMessageKey } from "../../i18n/messages/game.js";
 
@@ -106,6 +112,8 @@ export const GameTable = ({
       }}
     >
       <div className="round-table">
+        <VgpuTableLightingCanvas />
+        <TableAmbientLighting />
         <div className="table-center">{center}</div>
         {swipeAction === undefined ? null : (
           <div
@@ -138,8 +146,11 @@ export const GameTable = ({
             (seat.status ?? "active") === "active";
           const showRole = seat.role !== undefined && !privacyHidden;
           const className = `table-card player-seat status-${seat.status ?? "active"}${seat.current ? " is-current" : ""}${seat.mafiaShooter ? " is-mafia-shooter" : ""}${seat.sheriffHighlight ? " is-sheriff-highlight" : ""}${seat.goodbyeHighlight ? " is-goodbye-highlight" : ""}${seat.votingHighlight ? " is-voting-highlight" : ""}${seat.dimmed ? " is-dimmed" : ""}${seat.inactive ? " is-inactive" : ""}${seat.provisionalDeceased ? " is-provisional-deceased" : ""}`;
+          const lightingKind = resolvePlayerLightingKind(seat);
           const content = (
             <>
+              <VgpuPlayerLightingCanvas kind={lightingKind} />
+              <PlayerCardLighting kind={lightingKind} />
               <span className="seat-number">{seat.seat}</span>
               <PersonIcon />
               <span className="seat-name">{seat.name}</span>

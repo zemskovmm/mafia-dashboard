@@ -43,6 +43,13 @@ describe("GameTable", () => {
     expect(screen.getByRole("button", { name: "Seat 1: Player 1" })).toHaveClass("table-card");
   });
 
+  it("keeps SVG table lighting independent from highlighted player cards", () => {
+    const { container } = render(<GameTable seats={seats} />);
+
+    expect(container.querySelector(".round-table > .table-ambient-lighting")).not.toBeNull();
+    expect(container.querySelector(".player-card-lighting")).toBeNull();
+  });
+
   it("keeps the nickname separate while player status pills wrap together", () => {
     render(
       <GameTable
@@ -58,6 +65,40 @@ describe("GameTable", () => {
     expect(badges).toHaveTextContent("citizen");
     expect(badges).toHaveTextContent("Foul ×1");
     expect(badges).toHaveTextContent("Nominated");
+  });
+
+  it("maps game-state highlights into decorative player lighting", () => {
+    render(
+      <GameTable
+        seats={seats.map((seat) =>
+          seat.seat === 1
+            ? { ...seat, current: true }
+            : seat.seat === 2
+              ? { ...seat, mafiaShooter: true }
+              : seat.seat === 3
+                ? { ...seat, sheriffHighlight: true }
+                : seat.seat === 4
+                  ? { ...seat, goodbyeHighlight: true }
+                  : seat.seat === 5
+                    ? { ...seat, votingHighlight: true }
+                    : seat,
+        )}
+      />,
+    );
+
+    for (const [seat, kind] of [
+      [1, "speaker"],
+      [2, "mafia"],
+      [3, "sheriff"],
+      [4, "attention"],
+      [5, "attention"],
+    ] as const) {
+      expect(
+        screen
+          .getByRole("button", { name: `Seat ${seat}: Player ${seat}` })
+          .querySelector(".player-card-lighting"),
+      ).toHaveAttribute("data-player-lighting-kind", kind);
+    }
   });
 
   it("adds a visual cross to an eliminated player", () => {

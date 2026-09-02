@@ -26,6 +26,10 @@ import {
   getErrorConsoleSnapshot,
   reportError,
 } from "./features/console/error-console.js";
+import {
+  LIGHTING_RENDERER_STORAGE_KEY,
+  PLAYER_LIGHTING_STORAGE_KEY,
+} from "./features/effects/lighting-preferences.js";
 import { musicPreferencesStorageKey } from "./features/music/music-preferences.js";
 import { I18nProvider } from "./i18n/I18nProvider.js";
 import { THEME_COLOR_STORAGE_KEY } from "./theme.js";
@@ -959,6 +963,54 @@ describe("manage menu", () => {
 });
 
 describe("developer menu", () => {
+  it("persists one renderer for card and table lighting and a separate player LED toggle", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+
+    const renderer = screen.getByRole("combobox", { name: "Lighting renderer" });
+    expect(renderer).toHaveValue("svg");
+    expect(renderer).toHaveDisplayValue("SVG");
+    expect(document.querySelector(".app-shell")).toHaveAttribute("data-lighting-renderer", "svg");
+
+    await user.selectOptions(renderer, "legacy");
+    expect(window.localStorage.getItem(LIGHTING_RENDERER_STORAGE_KEY)).toBe("legacy");
+    expect(document.querySelector(".app-shell")).toHaveAttribute(
+      "data-lighting-renderer",
+      "legacy",
+    );
+
+    const playerLighting = screen.getByRole("button", { name: "Disable player LEDs" });
+    expect(playerLighting).toHaveAttribute("aria-pressed", "true");
+    await user.click(playerLighting);
+    expect(window.localStorage.getItem(PLAYER_LIGHTING_STORAGE_KEY)).toBe("disabled");
+    expect(screen.getByRole("button", { name: "Enable player LEDs" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(document.querySelector(".app-shell")).toHaveAttribute(
+      "data-player-lighting",
+      "disabled",
+    );
+  });
+
+  it("restores a saved V-GPU request while SVG warms up", async () => {
+    window.localStorage.setItem(LIGHTING_RENDERER_STORAGE_KEY, "vgpu");
+    render(<App />);
+    await userEvent.setup().click(screen.getByRole("button", { name: "Open developer menu" }));
+
+    expect(screen.getByRole("combobox", { name: "Lighting renderer" })).toHaveValue("vgpu");
+    expect(document.querySelector(".app-shell")).toHaveAttribute("data-lighting-renderer", "svg");
+    expect(document.querySelector(".app-shell")).toHaveAttribute(
+      "data-lighting-renderer-requested",
+      "vgpu",
+    );
+    expect(await screen.findByText("V-GPU unavailable — using SVG")).toBeInTheDocument();
+    expect(window.localStorage.getItem(LIGHTING_RENDERER_STORAGE_KEY)).toBe("vgpu");
+    expect(document.querySelector(".app-shell")).toHaveAttribute("data-lighting-renderer", "svg");
+    expect(document.querySelector(".app-shell")).toHaveAttribute("data-vgpu-status", "fallback");
+  });
+
   it("stays hidden until five rapid privacy taps launch the canary firework", () => {
     renderView(<App />);
 
@@ -1335,6 +1387,10 @@ describe("developer menu", () => {
     await user.click(firstCard);
     expect(firstCard).toHaveAttribute("aria-pressed", "true");
     expect(firstCard).toHaveClass("is-availability-selected");
+    expect(firstCard.querySelector(".player-card-lighting")).toHaveAttribute(
+      "data-player-lighting-kind",
+      "mafia",
+    );
 
     await user.type(
       screen.getByRole("searchbox", { name: "Search available players" }),
