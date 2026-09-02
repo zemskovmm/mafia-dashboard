@@ -144,6 +144,44 @@ test("verifier targets reject browser and API deployment identity splits", () =>
   );
 });
 
+test("authoritative game snapshot saves require the exact phase and full-snapshot contract", () => {
+  const valid = {
+    method: "PUT",
+    pathname: `/api/game-sessions/${ids.game}`,
+    expectedPhase: "day",
+    body: {
+      state: {
+        game: { phase: "day" },
+        events: [{ type: "game.started", parentEventId: null }],
+      },
+      results: null,
+    },
+  };
+
+  assert.equal(contracts.isAuthoritativeGameSnapshotRequest(valid), true);
+  for (const candidate of [
+    { ...valid, method: "POST" },
+    { ...valid, pathname: `${valid.pathname}/start` },
+    { ...valid, pathname: `${valid.pathname}?unreviewed=1` },
+    { ...valid, expectedPhase: "night" },
+    { ...valid, body: { ...valid.body, state: { ...valid.body.state, game: { phase: "night" } } } },
+    { ...valid, body: { ...valid.body, state: { ...valid.body.state, events: null } } },
+    {
+      ...valid,
+      body: {
+        ...valid.body,
+        state: {
+          ...valid.body.state,
+          events: [{ type: "phase.changed", parentEventId: ids.root }],
+        },
+      },
+    },
+    { ...valid, body: { ...valid.body, results: { winner: "red" } } },
+  ]) {
+    assert.equal(contracts.isAuthoritativeGameSnapshotRequest(candidate), false);
+  }
+});
+
 test("browser API policy blocks unexpected unsafe requests and unowned sessions", () => {
   const gameId = "00000000-0000-4000-8000-000000000201";
   const ownedGameIds = new Set([gameId]);
@@ -528,6 +566,11 @@ test("runtime verifiers enforce the shared contracts at their success boundaries
   assert.match(sessionVerifier, /context\.route\("\*\*\/\*"/);
   assert.match(sessionVerifier, /assertNamesAvailable\(/);
   assert.match(sessionVerifier, /assertNewResource\(/);
+  assert.match(sessionVerifier, /isAuthoritativeGameSnapshotRequest\(/);
+  assert.match(
+    sessionVerifier,
+    /const startSave = waitForSnapshot\("mafia-planning"\);[\s\S]*Begin Mafia planning stage[\s\S]*await waitForSaved\(startSave\);[\s\S]*Continue night zero to Sheriff wake-up[\s\S]*const beginDay = [\s\S]*Begin day one[\s\S]*await beginDay\.waitFor\(\);[\s\S]*const daySave = waitForSnapshot\("day"\);[\s\S]*await beginDay\.click\(\);[\s\S]*await waitForSaved\(daySave\);/,
+  );
   assert.match(sessionVerifier, /Open Manage menu/);
   assert.match(sessionVerifier, /const acceptedEvent = activeEvents\.at\(-1\)/);
   assert.match(sessionVerifier, /waitForAuthoritativePhase\(/);

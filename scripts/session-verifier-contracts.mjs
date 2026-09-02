@@ -43,6 +43,26 @@ export const assertVerifierTarget = ({
   return configured.origin;
 };
 
+export const isAuthoritativeGameSnapshotRequest = ({ method, pathname, expectedPhase, body }) => {
+  const sessionRoot =
+    typeof pathname === "string" ? pathname.match(/^\/api\/game-sessions\/([0-9a-f-]+)$/i) : null;
+  return (
+    typeof method === "string" &&
+    method.toUpperCase() === "PUT" &&
+    sessionRoot !== null &&
+    uuidPattern.test(sessionRoot[1]) &&
+    body?.results === null &&
+    typeof expectedPhase === "string" &&
+    body?.state?.game?.phase === expectedPhase &&
+    Array.isArray(body?.state?.events) &&
+    body.state.events.some(
+      (event) =>
+        event?.parentEventId === null &&
+        (event.type === "game.started" || event.type === "game.checkpointed"),
+    )
+  );
+};
+
 export const classifyBrowserApiRequest = ({ method, url, expectedOrigin, ownedGameIds }) => {
   const normalizedMethod = method.toUpperCase();
   const requestUrl = new URL(url);

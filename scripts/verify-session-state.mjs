@@ -14,6 +14,7 @@ import {
   classifyBrowserApiRequest,
   createAsyncTracker,
   deleteAndVerifyAbsent,
+  isAuthoritativeGameSnapshotRequest,
   runCleanupActions,
 } from "./session-verifier-contracts.mjs";
 
@@ -450,20 +451,32 @@ try {
       .first()
       .click();
   }
-  const startSave = firstPage.waitForResponse((response) => {
-    if (
-      response.request().method() !== "POST" ||
-      !new URL(response.url()).pathname.endsWith("/start")
-    ) {
-      return false;
-    }
-    const request = response.request().postDataJSON();
-    return request.event?.type === "game.started" || request.event?.type === "game.checkpointed";
-  });
+  const waitForSnapshot = (expectedPhase) =>
+    firstPage.waitForResponse((response) => {
+      const request = response.request();
+      const responseUrl = new URL(response.url());
+      let body;
+      try {
+        body = request.postDataJSON();
+      } catch {
+        return false;
+      }
+      return isAuthoritativeGameSnapshotRequest({
+        method: request.method(),
+        pathname: `${responseUrl.pathname}${responseUrl.search}`,
+        expectedPhase,
+        body,
+      });
+    });
+  const startSave = waitForSnapshot("mafia-planning");
   await firstPage.getByRole("button", { name: "Begin Mafia planning stage" }).click();
-  await firstPage.getByRole("button", { name: "Continue to Sheriff wake-up" }).click();
-  await firstPage.getByRole("button", { name: "Begin day one" }).click();
   await waitForSaved(startSave);
+  await firstPage.getByRole("button", { name: "Continue night zero to Sheriff wake-up" }).click();
+  const beginDay = firstPage.getByRole("button", { name: "Begin day one" });
+  await beginDay.waitFor();
+  const daySave = waitForSnapshot("day");
+  await beginDay.click();
+  await waitForSaved(daySave);
   if (createdGameIds.size !== 1) {
     throw new Error("Expected exactly one run-owned game session after start");
   }
@@ -591,7 +604,6 @@ try {
     .click();
   await restartedPage.getByRole("button", { name: "Open Manage menu" }).click();
   await restartedPage.getByRole("button", { name: `Resume ${gameName}` }).click();
-  await restartedPage.getByRole("heading", { name: "Day 1" }).waitFor();
   await restartedPage.getByRole("group", { name: `Host: ${players[10].nickname}` }).waitFor();
   const restoredEnvelope = await restartedPage.evaluate(() => {
     const raw = window.localStorage.getItem("mafia-dashboard.game-session.v4");
