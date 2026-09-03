@@ -34,7 +34,9 @@ import {
   Wrench,
 } from "lucide-react";
 import {
+  ApiError,
   checkServerReady,
+  claimGameSession,
   clearGameSession,
   createPlayer,
   deletePlayer,
@@ -49,12 +51,15 @@ import {
   deleteClub,
   listClubs,
   signOut,
+  takeoverGameSession,
+  releaseGameSession,
   updateClub,
 } from "./api/client.js";
 import type {
   ActiveGameSessionSummary,
   FinalGameResults,
   GameSessionState,
+  GameSessionClaimCredential,
   PlayerProfile,
   PlayerProfileInput,
   RemoteGameSession,
@@ -109,6 +114,7 @@ import { useMessages, type FeatureI18n, type Locale } from "./i18n/I18nProvider.
 import { LanguageSelector } from "./i18n/LanguageSelector.js";
 import { shellMessages, type ShellMessageKey } from "./i18n/messages/shell.js";
 
+import { GameSessionClaimController } from "./session-claim.js";
 import { GameSessionOutbox } from "./session-outbox.js";
 import { SessionRetryController } from "./session-retry.js";
 import { createRandomId } from "./utils/random-id.js";
@@ -202,6 +208,59 @@ const eventLabel = (eventType: string, t: ShellTranslator): string =>
 const defaultClubId = "00000000-0000-4000-8000-000000000101";
 const gameSessionStoragePrefix = "mafia-dashboard.game-session.v4";
 const legacyGameSessionStoragePrefix = "mafia-dashboard.game-session.v3";
+interface SessionClaimConflict {
+  readonly gameId: string;
+  readonly action: "resume" | "retry" | "delete" | "replace-local";
+  readonly expectedRevision: number | null;
+  readonly gameName: string | null;
+  readonly holderName: string | null;
+  readonly claimedAt: string | null;
+  readonly lastSeenAt: string | null;
+  readonly expiresAt: string | null;
+}
+const nullableString = (value: unknown): string | null =>
+  typeof value === "string" ? value : null;
+const claimConflictDetails = (
+  error: unknown,
+  gameId: string,
+  action: SessionClaimConflict["action"],
+  expectedRevision: number | null = null,
+): SessionClaimConflict | null => {
+  if (!(error instanceof ApiError)) return null;
+  if (typeof error.details !== "object" || error.details === null) return null;
+  if (error.code === "club_active_game_exists" && "activeGame" in error.details) {
+    const activeGame = error.details.activeGame;
+    if (typeof activeGame !== "object" || activeGame === null) return null;
+    const values = activeGame as Record<string, unknown>;
+    if (typeof values.gameId !== "string" || typeof values.name !== "string") {
+      return null;
+    }
+    return {
+      gameId: values.gameId,
+      action: "replace-local",
+      expectedRevision: null,
+      gameName: values.name,
+      holderName: null,
+      claimedAt: null,
+      lastSeenAt: null,
+      expiresAt: null,
+    };
+  }
+  if (error.code !== "game_session_claim_conflict" || !("claim" in error.details)) return null;
+  const claim = error.details.claim;
+  if (typeof claim !== "object" || claim === null) return null;
+  const values = claim as Record<string, unknown>;
+  return {
+    gameId,
+    action,
+    expectedRevision,
+    gameName: null,
+    holderName: nullableString(values.holderName),
+    claimedAt: nullableString(values.claimedAt),
+    lastSeenAt: nullableString(values.lastSeenAt),
+    expiresAt: nullableString(values.expiresAt),
+  };
+};
 const availablePlayerStorageKey = (clubId: string) =>
   `mafia-dashboard.available-player-ids.${clubId}`;
 const readAvailablePlayerIds = (storage: Storage, clubId: string): ReadonlySet<string> => {
@@ -399,6 +458,32 @@ export const ClubWorkspace = ({
   const isManager = club.role === "manager";
   const storageKey = gameSessionStorageKey(club.id);
   const legacyStorageKey = legacyGameSessionStorageKey(club.id);
+  const claimControllerRef = useRef<GameSessionClaimController | null>(null);
+  if (claimControllerRef.current === null) {
+    claimControllerRef.current = new GameSessionClaimController({
+      storage: window.sessionStorage,
+      coordinationStorage: window.localStorage,
+      clubId: club.id,
+      createId: createRandomId,
+      lockRequest:
+        typeof navigator.locks?.request === "function"
+          ? (name, options, callback) => navigator.locks.request(name, options, callback)
+          : undefined,
+    });
+  }
+  const claimController = claimControllerRef.current;
+  const claimControllerEffectGenerationRef = useRef(0);
+  const workspaceActiveRef = useRef(true);
+  const claimCredential = useCallback(
+    (gameId: string, claimGeneration: number): GameSessionClaimCredential =>
+      claimController.credential(gameId, claimGeneration),
+    [claimController],
+  );
+  const rotateClaimId = useCallback(
+    (gameId: string) => claimController.clear(gameId),
+    [claimController],
+  );
+
   migrateGameSessionStorage(window.sessionStorage, window.localStorage, storageKey);
   migrateGameSessionStorage(window.sessionStorage, window.localStorage, legacyStorageKey);
   const sessionSyncRef = useRef<GameSessionOutbox | null>(null);
@@ -408,25 +493,99 @@ export const ClubWorkspace = ({
       storageKey,
       legacyStorageKey,
       createId: createRandomId,
-      save: (gameId, operation) => saveGameSessionOperation(gameId, operation, club.id),
+      save: (gameId, operation, claimGeneration) =>
+        saveGameSessionOperation(
+          gameId,
+          operation,
+          claimCredential(gameId, claimGeneration),
+          club.id,
+        ),
       read: (gameId) => getGameSession(gameId, club.id),
-      clearRemote: (gameId, expectedRevision) =>
-        clearGameSession(gameId, expectedRevision, club.id),
-      saveLegacy: (gameId, mutation) => saveGameSession(gameId, mutation, club.id),
+      clearRemote: (gameId, expectedRevision, claimGeneration) =>
+        clearGameSession(
+          gameId,
+          expectedRevision,
+          claimCredential(gameId, claimGeneration),
+          club.id,
+        ),
+      saveLegacy: (gameId, mutation, claimGeneration) =>
+        saveGameSession(gameId, mutation, claimCredential(gameId, claimGeneration), club.id),
     });
   }
   const sessionSync = sessionSyncRef.current;
+  const releaseAndDisposeClaim = useCallback(
+    (clearIdentity = true) => {
+      if (claimController.isDisposed) return;
+      const owned = [...claimController.ownedClaims()];
+      const currentGameId = sessionSync.gameId;
+      const currentGeneration = sessionSync.claimGeneration;
+      if (
+        owned.length === 0 &&
+        currentGameId !== null &&
+        currentGeneration > 0 &&
+        sessionSync.current?.results === null
+      ) {
+        owned.push({
+          gameId: currentGameId,
+          ...claimCredential(currentGameId, currentGeneration),
+        });
+      }
+      for (const { gameId, claimId, claimGeneration } of owned) {
+        void releaseGameSession(gameId, { claimId, claimGeneration }, club.id).catch((error) =>
+          reportError(error, { source: "api", context: "game-session.release-unmount" }),
+        );
+      }
+      if (clearIdentity) claimController.clearAll();
+      claimController.dispose();
+    },
+    [claimController, claimCredential, club.id, sessionSync],
+  );
+  const claimConflictReporterRef = useRef<
+    (
+      error: unknown,
+      gameId: string,
+      action: SessionClaimConflict["action"],
+      expectedRevision?: number | null,
+    ) => boolean
+  >(() => false);
   const sessionRetryRef = useRef<SessionRetryController | null>(null);
   if (sessionRetryRef.current === null) {
     sessionRetryRef.current = new SessionRetryController({
-      flush: () => sessionSync.flush(),
+      flush: () => {
+        const gameId = sessionSync.gameId;
+        return gameId === null ||
+          claimController.canWrite(gameId, sessionSync.revision, sessionSync.claimGeneration)
+          ? sessionSync.flush()
+          : Promise.resolve();
+      },
       probe: checkServerReady,
       pendingCount: () => sessionSync.pendingCount,
-      reportTerminal: (error) =>
-        reportError(error, { source: "persistence", context: "game-session.offline" }),
+      reportTerminal: (error) => {
+        if (sessionSync.gameId !== null) {
+          claimConflictReporterRef.current(error, sessionSync.gameId, "retry");
+        }
+        reportError(error, { source: "persistence", context: "game-session.offline" });
+      },
     });
   }
   const sessionRetry = sessionRetryRef.current;
+  const [claimControllerReady, setClaimControllerReady] = useState(claimController.isReady);
+  const [claimConflict, setClaimConflict] = useState<SessionClaimConflict | null>(null);
+  const [claimDialogOpen, setClaimDialogOpen] = useState(false);
+  const [takeoverPending, setTakeoverPending] = useState(false);
+  const [takeoverError, setTakeoverError] = useState(false);
+  const claimConflictRef = useRef<SessionClaimConflict | null>(null);
+  claimConflictRef.current = claimConflict;
+  claimConflictReporterRef.current = (error, gameId, action, expectedRevision) => {
+    const conflict = claimConflictDetails(error, gameId, action, expectedRevision);
+    if (conflict === null) return false;
+    claimController.markBlocked(gameId);
+    if (conflict.gameId !== gameId) claimController.markBlocked(conflict.gameId);
+    setTakeoverError(false);
+    setClaimConflict(conflict);
+    setClaimDialogOpen(true);
+    return true;
+  };
   const initialCurrent = useRef(sessionSync.current).current;
   const initialState = useRef(asPersistedState(initialCurrent?.state)).current;
   const initialMusicPreferences = useRef(
@@ -509,6 +668,7 @@ export const ClubWorkspace = ({
 
   const changePlaylistId = useCallback(
     (nextPlaylistId: string) => {
+      if (claimConflictRef.current !== null) return;
       setPlaylistId(nextPlaylistId);
       setMusicPreferences((current) => {
         const next = selectRememberedPlaylist(current, nextPlaylistId);
@@ -673,6 +833,7 @@ export const ClubWorkspace = ({
   const previewEntry = events.find(({ id }) => id === previewTargetEventId);
   const renderedGameScreenMutationGeneration = gameScreenMutationGenerationRef.current;
   const canApplyGameScreenMutation = () =>
+    claimConflictRef.current === null &&
     previewTargetEventIdRef.current === null &&
     gameScreenMutationGenerationRef.current === renderedGameScreenMutationGeneration;
 
@@ -785,8 +946,119 @@ export const ClubWorkspace = ({
   }, [sessionRetry]);
 
   useEffect(() => {
-    sessionRetry.requestAutoSync();
-  }, [sessionRetry]);
+    let active = true;
+    void claimController.ready().then(() => {
+      if (!active) return;
+      setClaimControllerReady(true);
+      const gameId = sessionSync.gameId;
+      if (
+        gameId === null ||
+        claimController.canWrite(gameId, sessionSync.revision, sessionSync.claimGeneration)
+      ) {
+        sessionRetry.requestAutoSync();
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [claimController, sessionRetry]);
+
+  useEffect(() => {
+    workspaceActiveRef.current = true;
+    const generation = claimControllerEffectGenerationRef.current + 1;
+    claimControllerEffectGenerationRef.current = generation;
+    const dispose = (event: PageTransitionEvent) => {
+      if (!event.persisted) {
+        workspaceActiveRef.current = false;
+        releaseAndDisposeClaim(false);
+      }
+    };
+    window.addEventListener("pagehide", dispose);
+    return () => {
+      workspaceActiveRef.current = false;
+      window.removeEventListener("pagehide", dispose);
+      window.queueMicrotask(() => {
+        if (claimControllerEffectGenerationRef.current === generation) releaseAndDisposeClaim();
+      });
+    };
+  }, [releaseAndDisposeClaim]);
+
+  const heartbeatGameId = sessionSync.gameId;
+  const heartbeatRevision = sessionSync.revision;
+  const heartbeatGeneration = sessionSync.claimGeneration;
+  const heartbeatCompleted =
+    sessionSync.current?.results !== null && sessionSync.pendingCount === 0;
+  useEffect(() => {
+    if (!claimControllerReady) return;
+    if (heartbeatGameId === null) {
+      return;
+    }
+    if (heartbeatCompleted || claimConflict !== null) {
+      if (heartbeatCompleted) claimController.clear(heartbeatGameId);
+      else claimController.markBlocked(heartbeatGameId);
+      return;
+    }
+    if (heartbeatRevision === 0 && heartbeatGeneration === 0) {
+      sessionRetry.requestAutoSync();
+      return;
+    }
+
+    let active = true;
+    let renewing = false;
+    const renew = async () => {
+      if (renewing) return;
+      renewing = true;
+      try {
+        const claim = await claimGameSession(
+          heartbeatGameId,
+          claimCredential(heartbeatGameId, heartbeatGeneration),
+          club.id,
+        );
+        if (active) {
+          const needsRecovery = !claimController.isOwned(heartbeatGameId, heartbeatGeneration);
+          sessionSync.setClaimGeneration(claim.generation);
+          claimController.markOwned(heartbeatGameId, claim.generation);
+          if (needsRecovery) sessionRetry.retryNow();
+        }
+      } catch (error) {
+        if (active) {
+          if (!claimConflictReporterRef.current(error, heartbeatGameId, "retry")) {
+            claimController.markOffline(heartbeatGameId);
+            reportError(error, { source: "api", context: "game-session.heartbeat" });
+          }
+        }
+      } finally {
+        renewing = false;
+      }
+    };
+    const recover = () => {
+      if (document.visibilityState !== "visible") return;
+      claimController.markOffline(heartbeatGameId);
+      void renew();
+    };
+
+    claimController.startRenewal(heartbeatGameId, () => void renew());
+    window.addEventListener("online", recover);
+    document.addEventListener("visibilitychange", recover);
+    return () => {
+      active = false;
+      claimController.stopRenewal();
+      window.removeEventListener("online", recover);
+      document.removeEventListener("visibilitychange", recover);
+    };
+  }, [
+    claimConflict,
+    claimController,
+    claimControllerReady,
+    club.id,
+    heartbeatCompleted,
+    heartbeatGameId,
+    heartbeatGeneration,
+    heartbeatRevision,
+    claimCredential,
+    sessionRetry,
+    sessionSync,
+  ]);
 
   useEffect(() => {
     if (sessionSync.gameId === null && initialGame === null) return;
@@ -809,8 +1081,15 @@ export const ClubWorkspace = ({
       } as GameSessionState,
       finalResults,
     );
-    sessionRetry.requestAutoSync();
+    const gameId = sessionSync.gameId;
+    if (
+      gameId !== null &&
+      claimController.canWrite(gameId, sessionSync.revision, sessionSync.claimGeneration)
+    ) {
+      sessionRetry.requestAutoSync();
+    }
   }, [
+    claimController,
     finalResults,
     events,
     game,
@@ -1026,6 +1305,7 @@ export const ClubWorkspace = ({
   );
 
   const finishGame = () => {
+    if (claimConflictRef.current !== null) return;
     if (game?.phase !== "finished" || hostPlayerId === null || finalResults !== null) return;
     acceptGameEvent({
       type: "game.completed",
@@ -1190,6 +1470,7 @@ export const ClubWorkspace = ({
 
   const handleSetupSessionChange = useCallback(
     (next: SetupWizardSessionState) => {
+      if (claimConflictRef.current !== null) return;
       if (next.step === "roles") {
         sessionSync.ensureGameId(sessionSync.gameId ?? createRandomId());
       }
@@ -1209,14 +1490,26 @@ export const ClubWorkspace = ({
   );
 
   const applyRemoteSession = useCallback(
-    (session: RemoteGameSession) => {
-      sessionSync.restore(
-        session.gameId,
-        session.revision,
-        session.name,
-        session.state,
-        session.results,
-      );
+    (session: RemoteGameSession, claimGeneration: number, replaceLocal = false) => {
+      if (replaceLocal) {
+        sessionSync.replaceAfterTakeover(
+          session.gameId,
+          session.revision,
+          session.name,
+          session.state,
+          session.results,
+          claimGeneration,
+        );
+      } else {
+        sessionSync.restore(
+          session.gameId,
+          session.revision,
+          session.name,
+          session.state,
+          session.results,
+          claimGeneration,
+        );
+      }
       const restored = asPersistedState(sessionSync.current?.state);
       gameScreenMutationGenerationRef.current += 1;
       setSessionName(session.name);
@@ -1267,35 +1560,145 @@ export const ClubWorkspace = ({
     }
     const request = resumeRequestRef.current + 1;
     resumeRequestRef.current = request;
+    await claimController.ready();
+    if (!workspaceActiveRef.current || resumeRequestRef.current !== request) return;
     const localGameId = sessionSync.gameId;
     const localRevision = sessionSync.revision;
     const localCurrent = sessionSync.current;
+    const credential = claimCredential(
+      gameId,
+      localGameId === gameId ? sessionSync.claimGeneration : 0,
+    );
+    let acquiredCredential: GameSessionClaimCredential | null = null;
     setResumeGameId(gameId);
     setActiveSessionsError(false);
     try {
+      const claim = await claimGameSession(gameId, credential, club.id);
+      acquiredCredential = { claimId: credential.claimId, claimGeneration: claim.generation };
+      if (!workspaceActiveRef.current || resumeRequestRef.current !== request) {
+        void releaseGameSession(gameId, acquiredCredential, club.id).catch((error) =>
+          reportError(error, { source: "api", context: "game-session.release-superseded" }),
+        );
+        return;
+      }
       const session = await getGameSession(gameId, club.id);
-      if (resumeRequestRef.current !== request) return;
+      if (!workspaceActiveRef.current || resumeRequestRef.current !== request) {
+        void releaseGameSession(gameId, acquiredCredential, club.id).catch((error) =>
+          reportError(error, { source: "api", context: "game-session.release-superseded" }),
+        );
+        return;
+      }
       if (
         sessionSync.gameId !== localGameId ||
         sessionSync.revision !== localRevision ||
         sessionSync.current !== localCurrent ||
         sessionSync.status !== "saved"
       ) {
+        void releaseGameSession(gameId, acquiredCredential, club.id).catch((error) =>
+          reportError(error, { source: "api", context: "game-session.release-stale-resume" }),
+        );
         setResumeGameId(null);
         return;
       }
-      applyRemoteSession(session);
+      applyRemoteSession(session, claim.generation);
+      claimController.markOwned(gameId, claim.generation);
+      sessionRetry.requestAutoSync();
       setResumeGameId(null);
     } catch (error) {
       reportError(error, { source: "api", context: "game-session.resume" });
-      if (resumeRequestRef.current === request) {
+      if (acquiredCredential !== null) {
+        void releaseGameSession(gameId, acquiredCredential, club.id).catch((releaseError) =>
+          reportError(releaseError, {
+            source: "api",
+            context: "game-session.release-failed-resume",
+          }),
+        );
+      }
+      if (workspaceActiveRef.current && resumeRequestRef.current === request) {
         setResumeGameId(null);
-        setActiveSessionsError(true);
+        if (!claimConflictReporterRef.current(error, gameId, "resume")) {
+          setActiveSessionsError(true);
+        }
       }
     }
   };
 
+  const takeOverSession = async () => {
+    const conflict = claimConflictRef.current;
+    if (!workspaceActiveRef.current || conflict === null || takeoverPending) return;
+    setTakeoverPending(true);
+    setTakeoverError(false);
+    try {
+      await claimController.ready();
+      if (!workspaceActiveRef.current || claimConflictRef.current !== conflict) return;
+      const credential = claimCredential(
+        conflict.gameId,
+        sessionSync.gameId === conflict.gameId ? sessionSync.claimGeneration : 0,
+      );
+      const claim = await takeoverGameSession(conflict.gameId, credential, club.id);
+      if (!workspaceActiveRef.current || claimConflictRef.current !== conflict) {
+        void releaseGameSession(
+          conflict.gameId,
+          { claimId: credential.claimId, claimGeneration: claim.generation },
+          club.id,
+        ).catch((error) =>
+          reportError(error, { source: "api", context: "game-session.release-superseded" }),
+        );
+        return;
+      }
+      claimController.markOwned(conflict.gameId, claim.generation);
+      if (conflict.action === "resume" || conflict.action === "replace-local") {
+        const replacedGameId = sessionSync.gameId;
+        const session = await getGameSession(conflict.gameId, club.id);
+        if (!workspaceActiveRef.current || claimConflictRef.current !== conflict) return;
+        applyRemoteSession(session, claim.generation, conflict.action === "replace-local");
+        if (
+          conflict.action === "replace-local" &&
+          replacedGameId !== null &&
+          replacedGameId !== conflict.gameId
+        ) {
+          rotateClaimId(replacedGameId);
+        }
+      } else if (conflict.action === "delete" && conflict.expectedRevision !== null) {
+        await clearGameSession(
+          conflict.gameId,
+          conflict.expectedRevision,
+          { claimId: credential.claimId, claimGeneration: claim.generation },
+          club.id,
+        );
+        if (!workspaceActiveRef.current || claimConflictRef.current !== conflict) return;
+        if (sessionSync.gameId === conflict.gameId) {
+          await sessionSync.clear(async () => undefined);
+          resetLocalState();
+        } else {
+          rotateClaimId(conflict.gameId);
+        }
+        await Promise.all([refreshActiveSessions(), refreshPlayers()]);
+      } else {
+        sessionSync.rebindClaimGeneration(claim.generation);
+      }
+      if (!workspaceActiveRef.current) return;
+      setClaimConflict(null);
+      setClaimDialogOpen(false);
+      sessionRetry.retryNow();
+    } catch (error) {
+      reportError(error, { source: "api", context: "game-session.takeover" });
+      if (workspaceActiveRef.current && claimConflictRef.current === conflict) {
+        setTakeoverError(true);
+      }
+    } finally {
+      if (workspaceActiveRef.current) setTakeoverPending(false);
+    }
+  };
+
+  const exitWorkspace = () => {
+    workspaceActiveRef.current = false;
+    releaseAndDisposeClaim();
+    onExit();
+  };
+
   const resetLocalState = useCallback(() => {
+    const clearedGameId = sessionSync.gameId;
     setSessionName(nextGameName(window.localStorage, new Date()));
     setGame(null);
     setSetupSession(null);
@@ -1325,7 +1728,11 @@ export const ClubWorkspace = ({
     setPreviewGame(null);
     liveGameBeforePreviewRef.current = null;
     phaseRef.current = "setup-players";
-  }, []);
+    setClaimConflict(null);
+    setClaimDialogOpen(false);
+    setTakeoverError(false);
+    if (clearedGameId !== null) rotateClaimId(clearedGameId);
+  }, [rotateClaimId, sessionSync]);
 
   useEffect(() => {
     if (
@@ -1365,9 +1772,15 @@ export const ClubWorkspace = ({
     if (!window.confirm(t("deleteActiveGameConfirmation"))) return;
     const clearingGameId = sessionSync.gameId;
     try {
-      await sessionSync.clear((gameId, revision) => clearGameSession(gameId, revision, club.id));
+      await claimController.ready();
+      await sessionSync.clear((gameId, revision, generation) =>
+        clearGameSession(gameId, revision, claimCredential(gameId, generation), club.id),
+      );
     } catch (error) {
       reportError(error, { source: "persistence", context: "game-session.clear" });
+      if (clearingGameId !== null) {
+        claimConflictReporterRef.current(error, clearingGameId, "delete", sessionSync.revision);
+      }
       return;
     }
     if (sessionSync.gameId !== null && sessionSync.gameId !== clearingGameId) return;
@@ -1378,18 +1791,39 @@ export const ClubWorkspace = ({
   const deleteActiveSession = async (session: ActiveGameSessionSummary) => {
     if (!window.confirm(t("deleteSessionConfirmation", { name: session.name }))) return;
     setDeletingSessionId(session.gameId);
+    let acquiredCredential: GameSessionClaimCredential | null = null;
     try {
+      await claimController.ready();
       if (sessionSync.gameId === session.gameId) {
-        await sessionSync.clear((gameId, revision) => clearGameSession(gameId, revision, club.id));
+        await sessionSync.clear((gameId, revision, generation) =>
+          clearGameSession(gameId, revision, claimCredential(gameId, generation), club.id),
+        );
         resetLocalState();
       } else {
-        await clearGameSession(session.gameId, session.revision, club.id);
+        const initialCredential = claimCredential(session.gameId, 0);
+        const claim = await claimGameSession(session.gameId, initialCredential, club.id);
+        acquiredCredential = {
+          claimId: initialCredential.claimId,
+          claimGeneration: claim.generation,
+        };
+        await clearGameSession(session.gameId, session.revision, acquiredCredential, club.id);
+        rotateClaimId(session.gameId);
       }
       setSwipedSessionId(null);
       await Promise.all([refreshActiveSessions(), refreshPlayers()]);
     } catch (error) {
       reportError(error, { source: "api", context: "game-session.delete" });
-      setActiveSessionsError(true);
+      if (!claimConflictReporterRef.current(error, session.gameId, "delete", session.revision)) {
+        setActiveSessionsError(true);
+      }
+      if (acquiredCredential !== null) {
+        void releaseGameSession(session.gameId, acquiredCredential, club.id).catch((releaseError) =>
+          reportError(releaseError, {
+            source: "api",
+            context: "game-session.release-failed-delete",
+          }),
+        );
+      }
     } finally {
       setDeletingSessionId(null);
     }
@@ -1401,6 +1835,7 @@ export const ClubWorkspace = ({
     setClearAllDataError(false);
     try {
       await sessionSync.clear(async () => undefined);
+      claimController.clearAll();
       window.localStorage.clear();
       window.sessionStorage.clear();
       setMusicPreferences(readMusicPreferences(window.localStorage, club.id));
@@ -1648,9 +2083,11 @@ export const ClubWorkspace = ({
     </section>
   );
 
+  const claimInitializing = !claimControllerReady && sessionSync.gameId !== null;
   const content = (
     <div
       ref={appShellRef}
+      inert={claimConflict === null && !claimInitializing ? undefined : true}
       className={`app-shell${backgroundShadeClass[backgroundShade]}${
         tableLayoutActive ? " has-live-game table-layout-shell" : ""
       }${showApplicationStatus ? " has-top-level-screen" : ""}${
@@ -1691,7 +2128,7 @@ export const ClubWorkspace = ({
             type="button"
             className="club-exit-button icon-toolbar-button"
             aria-label={t("chooseAnotherClub", { clubName: club.name })}
-            onClick={onExit}
+            onClick={exitWorkspace}
           >
             <DoorOpen aria-hidden="true" />
           </button>
@@ -2245,6 +2682,86 @@ export const ClubWorkspace = ({
         onFailure={reportVgpuFailure}
       >
         {content}
+        {claimInitializing ? (
+          <aside className="claim-conflict-banner" role="status">
+            <p>{t("claimSecuring")}</p>
+          </aside>
+        ) : null}
+        {claimConflict !== null && !claimDialogOpen ? (
+          <aside className="claim-conflict-banner" role="status">
+            <p>{t("claimConflictBlocked")}</p>
+            <div className="claim-conflict-actions">
+              <button type="button" onClick={() => setClaimDialogOpen(true)}>
+                {t("claimConflictResolve")}
+              </button>
+              <button type="button" onClick={exitWorkspace}>
+                {t("claimConflictExit")}
+              </button>
+            </div>
+          </aside>
+        ) : null}
+        {claimConflict === null || !claimDialogOpen ? null : (
+          <div className="claim-conflict-backdrop">
+            <section
+              className="claim-conflict-dialog"
+              role="alertdialog"
+              aria-modal="true"
+              aria-labelledby="claim-conflict-title"
+              aria-describedby="claim-conflict-description"
+            >
+              <p className="eyebrow">{t("claimConflictEyebrow")}</p>
+              <h2 id="claim-conflict-title">{t("claimConflictTitle")}</h2>
+              <p id="claim-conflict-description">
+                {claimConflict.action === "replace-local"
+                  ? t("claimConflictActiveGameBody", {
+                      game: claimConflict.gameName ?? t("claimConflictUnknownGame"),
+                    })
+                  : t("claimConflictBody", {
+                      holder: claimConflict.holderName ?? t("claimConflictUnknownHolder"),
+                    })}
+              </p>
+              <dl className="claim-conflict-details">
+                {claimConflict.claimedAt === null ? null : (
+                  <div>
+                    <dt>{t("claimConflictClaimedAt")}</dt>
+                    <dd>{formatTime(claimConflict.claimedAt)}</dd>
+                  </div>
+                )}
+                {claimConflict.lastSeenAt === null ? null : (
+                  <div>
+                    <dt>{t("claimConflictLastSeen")}</dt>
+                    <dd>{formatTime(claimConflict.lastSeenAt)}</dd>
+                  </div>
+                )}
+                {claimConflict.expiresAt === null ? null : (
+                  <div>
+                    <dt>{t("claimConflictExpires")}</dt>
+                    <dd>{formatTime(claimConflict.expiresAt)}</dd>
+                  </div>
+                )}
+              </dl>
+              {takeoverError ? <p role="alert">{t("claimConflictTakeoverError")}</p> : null}
+              <div className="claim-conflict-actions">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => setClaimDialogOpen(false)}
+                  autoFocus
+                >
+                  {t("claimConflictCancel")}
+                </button>
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={() => void takeOverSession()}
+                  disabled={takeoverPending}
+                >
+                  {takeoverPending ? t("claimConflictTakingOver") : t("claimConflictTakeOver")}
+                </button>
+              </div>
+            </section>
+          </div>
+        )}
       </VgpuLightingProvider>
     </LightingRendererContext.Provider>
   );

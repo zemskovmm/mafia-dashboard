@@ -44,6 +44,23 @@ const liveGame = (day: number) => ({
 });
 
 describe("game session validation", () => {
+  it("parses a strict claim credential with a positive server generation", () => {
+    const schema = (
+      validationSchemas as unknown as {
+        readonly gameSessionClaimCredentialSchema?: {
+          readonly safeParse: (value: unknown) => { readonly success: boolean };
+        };
+      }
+    ).gameSessionClaimCredentialSchema;
+
+    expect(schema?.safeParse({ claimId: uuid(100), claimGeneration: 1 }).success).toBe(true);
+    expect(schema?.safeParse({ claimId: uuid(100), claimGeneration: 0 }).success).toBe(false);
+    expect(schema?.safeParse({ claimId: "not-a-uuid", claimGeneration: 1 }).success).toBe(false);
+    expect(
+      schema?.safeParse({ claimId: uuid(100), claimGeneration: 1, ignored: true }).success,
+    ).toBe(false);
+  });
+
   it("requires only an idempotency UUID and base revision to normalize a session", () => {
     const schema = (
       validationSchemas as unknown as {

@@ -4,7 +4,7 @@ import {
   type GameState,
   type InitialGameBaseline,
 } from "@mafia/game-domain";
-import type { FinalGameResults, GameSessionState } from "./api/client.js";
+import type { FinalGameResults, GameSessionClaim, GameSessionState } from "./api/client.js";
 import { reportError } from "./features/console/error-console.js";
 
 export interface SessionSaveResponse {
@@ -14,6 +14,7 @@ export interface SessionSaveResponse {
   readonly gameId?: string;
   readonly state?: GameSessionState;
   readonly results?: FinalGameResults | null;
+  readonly claim?: GameSessionClaim;
 }
 
 interface OutboxOptions {
@@ -21,12 +22,21 @@ interface OutboxOptions {
   readonly storageKey?: string;
   readonly legacyStorageKey?: string;
   readonly createId: () => string;
-  readonly save: (gameId: string, operation: GameSessionOperation) => Promise<SessionSaveResponse>;
+  readonly save: (
+    gameId: string,
+    operation: GameSessionOperation,
+    claimGeneration: number,
+  ) => Promise<SessionSaveResponse>;
   readonly read?: (gameId: string) => Promise<SessionSaveResponse>;
-  readonly clearRemote?: (gameId: string, expectedRevision: number) => Promise<void>;
+  readonly clearRemote?: (
+    gameId: string,
+    expectedRevision: number,
+    claimGeneration: number,
+  ) => Promise<void>;
   readonly saveLegacy?: (
     gameId: string,
     mutation: LegacyGameSessionMutation,
+    claimGeneration: number,
   ) => Promise<SessionSaveResponse>;
 }
 
@@ -48,6 +58,7 @@ interface LegacyPersistedEnvelope {
   readonly version: 3;
   readonly gameId: string | null;
   readonly revision: number;
+  readonly claimGeneration?: number;
   readonly current: CurrentSession | null;
   readonly outbox: readonly LegacyGameSessionMutation[];
   readonly normalizationOperation?: Extract<GameSessionOperation, { readonly kind: "normalize" }>;
@@ -106,6 +117,7 @@ interface PersistedEnvelope {
   readonly version: 4;
   readonly gameId: string | null;
   readonly revision: number;
+  readonly claimGeneration?: number;
   readonly name: string | null;
   readonly metadata: SessionMetadata;
   readonly game?: unknown | null;
@@ -135,6 +147,7 @@ const emptyEnvelope = (): PersistedEnvelope => ({
   version: 4,
   gameId: null,
   revision: 0,
+  claimGeneration: 0,
   name: null,
   metadata: emptyMetadata(),
   game: null,
@@ -284,7 +297,13 @@ const assertSessionSaveResponse = (value: unknown): SessionSaveResponse => {
     !(value.name === undefined || typeof value.name === "string") ||
     !(value.gameId === undefined || isUuid(value.gameId)) ||
     !(value.state === undefined || isGameSessionState(value.state)) ||
-    !(value.results === undefined || value.results === null || isFinalGameResults(value.results))
+    !(value.results === undefined || value.results === null || isFinalGameResults(value.results)) ||
+    !(
+      value.claim === undefined ||
+      (isRecord(value.claim) &&
+        isNonNegativeInteger(value.claim.generation) &&
+        typeof value.claim.expiresAt === "string")
+    )
   ) {
     throw new Error("Invalid game session save response");
   }
@@ -297,6 +316,7 @@ const isPersistedEnvelope = (value: unknown): value is PersistedEnvelope => {
     value.version !== 4 ||
     !isNullableUuid(value.gameId) ||
     !isNonNegativeInteger(value.revision) ||
+    !(value.claimGeneration === undefined || isNonNegativeInteger(value.claimGeneration)) ||
     !isNullableString(value.name) ||
     !isSessionMetadata(value.metadata) ||
     !(value.game === undefined || value.game === null || isRecord(value.game)) ||
@@ -346,7 +366,8 @@ const loadEnvelope = (storage: Storage, storageKey: string): PersistedEnvelope =
     const raw = storage.getItem(storageKey);
     if (raw === null) return emptyEnvelope();
     const parsed: unknown = JSON.parse(raw);
-    return isPersistedEnvelope(parsed) ? parsed : emptyEnvelope();
+    if (!isPersistedEnvelope(parsed)) return emptyEnvelope();
+    return { ...parsed, claimGeneration: parsed.claimGeneration ?? 0 };
   } catch (error) {
     reportError(error, { source: "persistence", context: "game-session-envelope.read" });
     return emptyEnvelope();
@@ -373,6 +394,7 @@ const isLegacyPersistedEnvelope = (value: unknown): value is LegacyPersistedEnve
     value.version !== 3 ||
     !isNullableUuid(value.gameId) ||
     !isNonNegativeInteger(value.revision) ||
+    !(value.claimGeneration === undefined || isNonNegativeInteger(value.claimGeneration)) ||
     !(value.current === null || isCurrentSession(value.current)) ||
     !Array.isArray(value.outbox) ||
     !value.outbox.every(isLegacyGameSessionMutation) ||
@@ -797,6 +819,7 @@ export class GameSessionOutbox {
       version: 4,
       gameId: legacy.gameId,
       revision: legacy.revision,
+      claimGeneration: legacy.claimGeneration ?? 0,
       name: desired.name,
       metadata: desired.metadata,
       game: desired.materializedGame,
@@ -872,6 +895,48 @@ export class GameSessionOutbox {
 
   public get revision(): number {
     return this.legacyEnvelope?.revision ?? this.envelope.revision;
+  }
+
+  public get claimGeneration(): number {
+    return this.legacyEnvelope?.claimGeneration ?? this.envelope.claimGeneration ?? 0;
+  }
+
+  public setClaimGeneration(claimGeneration: number): void {
+    this.updateClaimGeneration(claimGeneration, false);
+  }
+
+  public rebindClaimGeneration(claimGeneration: number): void {
+    this.updateClaimGeneration(claimGeneration, true);
+  }
+
+  private updateClaimGeneration(claimGeneration: number, rebindFailed: boolean): void {
+    if (!isNonNegativeInteger(claimGeneration)) {
+      throw new Error("Claim generation must be a non-negative integer");
+    }
+    this.synchronizeDurableState();
+    if (this.legacyEnvelope !== null) {
+      const current = this.legacyEnvelope.claimGeneration ?? 0;
+      if (claimGeneration < current || (claimGeneration === current && !rebindFailed)) return;
+      this.generation += 1;
+      this.flushPromise = null;
+      this.legacyEnvelope = {
+        ...this.legacyEnvelope,
+        claimGeneration,
+        failed: rebindFailed ? false : this.legacyEnvelope.failed,
+      };
+      this.persistLegacy();
+      return;
+    }
+    const current = this.envelope.claimGeneration ?? 0;
+    if (claimGeneration < current || (claimGeneration === current && !rebindFailed)) return;
+    this.generation += 1;
+    this.flushPromise = null;
+    this.envelope = {
+      ...this.envelope,
+      claimGeneration,
+      failed: rebindFailed ? false : this.envelope.failed,
+    };
+    this.persist();
   }
 
   public get current(): CurrentSession | null {
@@ -1057,7 +1122,11 @@ export class GameSessionOutbox {
     name: string,
     state: GameSessionState,
     results: FinalGameResults | null,
+    claimGeneration = 0,
   ): void {
+    if (!isNonNegativeInteger(claimGeneration)) {
+      throw new Error("Claim generation must be a non-negative integer");
+    }
     if (this.synchronizeDurableState()) {
       throw new Error("Local session changed in another browser context");
     }
@@ -1078,9 +1147,48 @@ export class GameSessionOutbox {
     ) {
       throw new Error("Cannot restore while local game changes are unresolved");
     }
+    this.replaceCurrentSession(gameId, revision, name, state, results, claimGeneration);
+  }
+
+  public replaceAfterTakeover(
+    gameId: string,
+    revision: number,
+    name: string,
+    state: GameSessionState,
+    results: FinalGameResults | null,
+    claimGeneration: number,
+  ): void {
+    if (!isNonNegativeInteger(claimGeneration)) {
+      throw new Error("Claim generation must be a non-negative integer");
+    }
+    if (this.synchronizeDurableState()) {
+      throw new Error("Local session changed in another browser context");
+    }
+    const durable = loadEnvelope(this.options.storage, this.storageKey);
+    if (this.legacyEnvelope === null && !sameEnvelope(durable, this.envelope)) {
+      this.envelope = durable;
+      this.notify();
+      throw new Error("Local session changed while the takeover request was pending");
+    }
+    this.replaceCurrentSession(gameId, revision, name, state, results, claimGeneration);
+  }
+
+  private replaceCurrentSession(
+    gameId: string,
+    revision: number,
+    name: string,
+    state: GameSessionState,
+    results: FinalGameResults | null,
+    claimGeneration: number,
+  ): void {
     this.generation += 1;
     this.normalizationAvailable = false;
     this.flushPromise = null;
+    if (this.migratingLegacyKey !== null) {
+      this.options.storage.removeItem(this.migratingLegacyKey);
+      this.migratingLegacyKey = null;
+    }
+    this.legacyEnvelope = null;
     const desired = desiredSession(name, state, results);
     validateDesiredReplay(gameId, desired);
     const entries = activePrefix(desired.entries, desired.headEventId);
@@ -1099,6 +1207,7 @@ export class GameSessionOutbox {
       version: 4,
       gameId,
       revision,
+      claimGeneration,
       name,
       metadata: desired.metadata,
       game: desired.materializedGame,
@@ -1128,7 +1237,11 @@ export class GameSessionOutbox {
   }
 
   public async clear(
-    clearRemote: (gameId: string, expectedRevision: number) => Promise<void>,
+    clearRemote: (
+      gameId: string,
+      expectedRevision: number,
+      claimGeneration: number,
+    ) => Promise<void>,
   ): Promise<void> {
     if (this.synchronizeDurableState()) {
       throw new Error("Local session changed in another browser context");
@@ -1144,6 +1257,7 @@ export class GameSessionOutbox {
         version: 4,
         gameId: legacy.gameId,
         revision: legacy.revision,
+        claimGeneration: legacy.claimGeneration ?? 0,
         name: desired.name,
         metadata: desired.metadata,
         baseline: desired.baseline,
@@ -1179,6 +1293,7 @@ export class GameSessionOutbox {
       this.notify();
       return;
     }
+    const claimGeneration = durable.claimGeneration ?? 0;
     this.envelope = { ...durable, clearFailed: false, clearingGameId: gameId };
     this.persist();
     const generation = this.generation;
@@ -1186,7 +1301,7 @@ export class GameSessionOutbox {
     this.clearCount += 1;
     this.notify();
     try {
-      await clearRemote(gameId, durable.revision);
+      await clearRemote(gameId, durable.revision, claimGeneration);
       if (generation !== this.generation || this.envelope.gameId !== gameId) return;
       const durableAfterClear = loadEnvelope(this.options.storage, this.storageKey);
       if (durableAfterClear.gameId !== gameId) {
@@ -1257,7 +1372,11 @@ export class GameSessionOutbox {
             throw new Error("Legacy game session persistence is unavailable");
           }
           activeLegacyMutation = mutation;
-          const responseValue = await this.options.saveLegacy(gameId, mutation);
+          const responseValue = await this.options.saveLegacy(
+            gameId,
+            mutation,
+            legacy.claimGeneration ?? 0,
+          );
           if (generation !== this.generation) return;
           const response = assertSessionSaveResponse(responseValue);
           if (response.revision !== mutation.baseRevision + 1) {
@@ -1294,6 +1413,10 @@ export class GameSessionOutbox {
           this.legacyEnvelope = {
             ...durable,
             revision: Math.max(durable.revision, response.revision),
+            claimGeneration: Math.max(
+              response.claim?.generation ?? 0,
+              durable.claimGeneration ?? 0,
+            ),
             current:
               durable.current === null || canonicalName === undefined || canonicalName === ""
                 ? durable.current
@@ -1318,6 +1441,7 @@ export class GameSessionOutbox {
             version: 4,
             gameId: legacy.gameId,
             revision: legacy.revision,
+            claimGeneration: legacy.claimGeneration ?? 0,
             name: desired.name,
             metadata: desired.metadata,
             game: desired.materializedGame,
@@ -1354,7 +1478,8 @@ export class GameSessionOutbox {
           if (gameId === null || mutation === undefined)
             throw new Error("Invalid game session outbox");
           activeMutation = mutation;
-          const responseValue = await this.options.save(gameId, mutation);
+          const claimGeneration = this.envelope.claimGeneration ?? 0;
+          const responseValue = await this.options.save(gameId, mutation, claimGeneration);
           if (generation !== this.generation) return;
           const response = assertSessionSaveResponse(responseValue);
           if (response.gameId !== undefined && response.gameId !== gameId) {
@@ -1377,6 +1502,10 @@ export class GameSessionOutbox {
           }
           const durableIndex = durable.outbox.findIndex(
             ({ mutationId }) => mutationId === mutation.mutationId,
+          );
+          const nextClaimGeneration = Math.max(
+            response.claim?.generation ?? 0,
+            durable.claimGeneration ?? 0,
           );
           const canonicalName = response.name?.trim();
           const remainingOutbox =
@@ -1410,6 +1539,7 @@ export class GameSessionOutbox {
             this.envelope = {
               ...durable,
               revision: Math.max(durable.revision, response.revision),
+              claimGeneration: nextClaimGeneration,
               name: durable.name,
               outbox: durable.outbox.map((queued, index) =>
                 index === durableIndex ? replacement : queued,
@@ -1481,6 +1611,7 @@ export class GameSessionOutbox {
               : {
                   ...durable,
                   revision: Math.max(durable.revision, response.revision),
+                  claimGeneration: nextClaimGeneration,
                   name:
                     canonicalName === undefined || canonicalName === ""
                       ? durable.name
@@ -1588,6 +1719,7 @@ export class GameSessionOutbox {
                 version: 4,
                 gameId,
                 revision: remote.revision,
+                claimGeneration: durable.claimGeneration ?? 0,
                 name: remainingOutbox.length === 0 ? desired.name : durable.name,
                 metadata: remainingOutbox.length === 0 ? desired.metadata : durable.metadata,
                 baseline: desired.baseline,

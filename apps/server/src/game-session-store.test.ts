@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import {
   createGameLogEntry,
@@ -9,14 +9,123 @@ import {
 } from "@mafia/game-domain";
 import { GameSessionStore } from "./game-session-store.js";
 import { ClubStore, DEFAULT_CLUB_ID } from "./club-store.js";
+import { lockClubGame } from "./game-lifecycle.js";
 import { PlayerStore } from "./player-store.js";
 
 const legacyOwnerId = "00000000-0000-4000-8000-000000000001";
 
+type AutomaticClaimStore = {
+  [Key in keyof GameSessionStore]: GameSessionStore[Key] extends (...args: never[]) => infer Result
+    ? (...args: unknown[]) => Result
+    : GameSessionStore[Key];
+};
+
+const automaticClaims = new Map<
+  string,
+  { readonly claimId: string; readonly claimGeneration: number }
+>();
+const automaticClaimQueues = new Map<string, Promise<void>>();
+const automaticMutationMethods = new Set([
+  "save",
+  "clear",
+  "normalize",
+  "start",
+  "appendEvent",
+  "moveHead",
+  "complete",
+]);
+
+const automaticClaimStore = (target: GameSessionStore): AutomaticClaimStore =>
+  new Proxy(target, {
+    get(storeTarget, property) {
+      const member = Reflect.get(storeTarget, property, storeTarget);
+      if (typeof property !== "string" || !automaticMutationMethods.has(property)) {
+        return typeof member === "function" ? member.bind(storeTarget) : member;
+      }
+      return (...args: unknown[]) => {
+        const positionalClear = property === "clear" && typeof args[0] === "string";
+        const input = positionalClear
+          ? { gameId: args[0], expectedRevision: args[1], clubId: args[2] }
+          : args[0];
+        if (typeof input !== "object" || input === null || !("gameId" in input)) {
+          return Reflect.apply(member as (...methodArgs: unknown[]) => unknown, storeTarget, args);
+        }
+        const record = input as Record<string, unknown>;
+        const clubId = typeof record.clubId === "string" ? record.clubId : DEFAULT_CLUB_ID;
+        const gameId = String(record.gameId);
+        const key = `${clubId}:${gameId}`;
+        const run = async () => {
+          if (record.claim !== undefined) {
+            return Reflect.apply(member as (value: unknown) => unknown, storeTarget, [input]);
+          }
+          let claim = automaticClaims.get(key);
+          if ((property === "save" || property === "clear") && claim === undefined) {
+            claim = { claimId: randomUUID(), claimGeneration: 0 };
+            try {
+              const saved = (await Reflect.apply(
+                member as (value: unknown) => unknown,
+                storeTarget,
+                [{ ...record, claim, claimedByUserId: legacyOwnerId }],
+              )) as { readonly status?: string; readonly claim?: { readonly generation: number } };
+              if (property === "clear") {
+                automaticClaims.delete(key);
+              } else if (saved.status === "active" && saved.claim !== undefined) {
+                automaticClaims.set(key, {
+                  claimId: claim.claimId,
+                  claimGeneration: saved.claim.generation,
+                });
+              }
+              return saved;
+            } catch (error) {
+              if (
+                typeof error !== "object" ||
+                error === null ||
+                !("code" in error) ||
+                error.code !== "game_session_claim_conflict"
+              ) {
+                throw error;
+              }
+            }
+          }
+          if (claim === undefined || claim.claimGeneration === 0) {
+            const claimId = claim?.claimId ?? randomUUID();
+            const acquired = await storeTarget.claim({
+              clubId,
+              gameId,
+              claim: { claimId, claimGeneration: 0 },
+              claimedByUserId: legacyOwnerId,
+            });
+            claim = { claimId, claimGeneration: acquired.generation };
+            automaticClaims.set(key, claim);
+          }
+          const result = await Reflect.apply(member as (value: unknown) => unknown, storeTarget, [
+            {
+              ...record,
+              claim,
+              ...(property === "save" ? { claimedByUserId: legacyOwnerId } : {}),
+            },
+          ]);
+          if (property === "clear") automaticClaims.delete(key);
+          return result;
+        };
+        const previous = automaticClaimQueues.get(key) ?? Promise.resolve();
+        const current = previous.catch(() => undefined).then(run);
+        automaticClaimQueues.set(
+          key,
+          current.then(
+            () => undefined,
+            () => undefined,
+          ),
+        );
+        return current;
+      };
+    },
+  }) as AutomaticClaimStore;
+
 const databaseUrl =
   process.env.TEST_DATABASE_URL ?? "postgresql://mafia:mafia@127.0.0.1:54329/mafia_test";
 const pool = new Pool({ connectionString: databaseUrl });
-const store = new GameSessionStore(pool);
+const store = automaticClaimStore(new GameSessionStore(pool));
 
 const waitForPlayerLockWaiter = async (blockerPid: number, attempts = 100): Promise<void> => {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -53,6 +162,64 @@ const emptyState = {
   log: [],
   undoHistory: [],
 } as const;
+
+const createSessionTestClub = async (name: string): Promise<string> => {
+  const clubId = randomUUID();
+  await pool.query(
+    `INSERT INTO clubs (id, name, city, created_by)
+     VALUES ($1, $2, 'Málaga', $3)`,
+    [clubId, name, legacyOwnerId],
+  );
+  return clubId;
+};
+
+const deleteSessionTestClub = async (clubId: string): Promise<void> => {
+  await pool.query("DELETE FROM game_events WHERE club_id = $1", [clubId]);
+  await pool.query("DELETE FROM game_sessions WHERE club_id = $1", [clubId]);
+  await pool.query("DELETE FROM deleted_games WHERE club_id = $1", [clubId]);
+  await pool.query("DELETE FROM clubs WHERE id = $1", [clubId]);
+};
+
+type ActiveSessionKey = { readonly club_id: string; readonly id: string };
+const activeSessionKey = ({ club_id, id }: ActiveSessionKey): string => `${club_id}:${id}`;
+let activeSessionsBeforeTest = new Set<string>();
+
+beforeEach(async () => {
+  automaticClaims.clear();
+  automaticClaimQueues.clear();
+  const active = await pool.query<ActiveSessionKey>(
+    "SELECT club_id, id FROM game_sessions WHERE status = 'active'",
+  );
+  activeSessionsBeforeTest = new Set(active.rows.map(activeSessionKey));
+});
+
+afterEach(async () => {
+  const active = await pool.query<ActiveSessionKey>(
+    "SELECT club_id, id FROM game_sessions WHERE status = 'active'",
+  );
+  const created = active.rows.filter((row) => !activeSessionsBeforeTest.has(activeSessionKey(row)));
+  if (created.length === 0) return;
+  const clubIds = created.map(({ club_id }) => club_id);
+  const gameIds = created.map(({ id }) => id);
+  await pool.query(
+    `WITH targets AS (
+       SELECT * FROM UNNEST($1::uuid[], $2::uuid[]) AS target(club_id, game_id)
+     )
+     DELETE FROM game_events AS event
+      USING targets AS target
+      WHERE event.club_id = target.club_id AND event.game_id = target.game_id`,
+    [clubIds, gameIds],
+  );
+  await pool.query(
+    `WITH targets AS (
+       SELECT * FROM UNNEST($1::uuid[], $2::uuid[]) AS target(club_id, game_id)
+     )
+     DELETE FROM game_sessions AS session
+      USING targets AS target
+      WHERE session.club_id = target.club_id AND session.id = target.game_id`,
+    [clubIds, gameIds],
+  );
+});
 
 const canonicalJsonValue = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(canonicalJsonValue);
@@ -361,6 +528,143 @@ const createCanonicalCompletedSession = async (
 };
 
 describe("GameSessionStore", () => {
+  it("serializes concurrent first active saves in one club and keeps other clubs independent", async () => {
+    const contestedClubId = await createSessionTestClub(`Contested club ${randomUUID()}`);
+    const firstIndependentClubId = await createSessionTestClub(`Independent club ${randomUUID()}`);
+    const secondIndependentClubId = await createSessionTestClub(`Independent club ${randomUUID()}`);
+    try {
+      const contestedResults = await Promise.allSettled(
+        [randomUUID(), randomUUID()].map((gameId) =>
+          store.save({
+            clubId: contestedClubId,
+            gameId,
+            name: "Concurrent active session",
+            mutationId: randomUUID(),
+            baseRevision: 0,
+            state: emptyState,
+            results: null,
+          }),
+        ),
+      );
+      const contestedFulfilled = contestedResults.filter(
+        (result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof store.save>>> =>
+          result.status === "fulfilled",
+      );
+      const contestedRejected = contestedResults.filter(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      expect(contestedFulfilled).toHaveLength(1);
+      expect(contestedRejected).toHaveLength(1);
+      expect(contestedRejected[0]!.reason).toMatchObject({ code: "club_active_game_exists" });
+      expect(await store.listActive(contestedClubId)).toHaveLength(1);
+
+      const independentResults = await Promise.allSettled(
+        [firstIndependentClubId, secondIndependentClubId].map((clubId) =>
+          store.save({
+            clubId,
+            gameId: randomUUID(),
+            name: "Independent active session",
+            mutationId: randomUUID(),
+            baseRevision: 0,
+            state: emptyState,
+            results: null,
+          }),
+        ),
+      );
+      expect(independentResults.every((result) => result.status === "fulfilled")).toBe(true);
+      expect(await store.listActive(contestedClubId)).toHaveLength(1);
+      expect(await store.listActive(firstIndependentClubId)).toHaveLength(1);
+      expect(await store.listActive(secondIndependentClubId)).toHaveLength(1);
+    } finally {
+      await deleteSessionTestClub(contestedClubId);
+      await deleteSessionTestClub(firstIndependentClubId);
+      await deleteSessionTestClub(secondIndependentClubId);
+    }
+  });
+
+  it("retries a named-index race when a non-cooperating winner disappears", async () => {
+    const clubId = await createSessionTestClub("Transient active winner");
+    const candidateGameId = randomUUID();
+    const blockingGameId = randomUUID();
+    const blocker = await pool.connect();
+    let deleteBlocker: Promise<void> | undefined;
+    try {
+      await pool.query(`
+        CREATE OR REPLACE FUNCTION delay_issue53_candidate_insert()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        BEGIN
+          PERFORM pg_sleep(1);
+          RETURN NEW;
+        END $$;
+        CREATE TRIGGER delay_issue53_candidate_insert
+        BEFORE INSERT ON game_sessions
+        FOR EACH ROW
+        WHEN (NEW.name = 'Delayed issue 53 candidate')
+        EXECUTE FUNCTION delay_issue53_candidate_insert();
+      `);
+
+      const candidate = store.save({
+        clubId,
+        gameId: candidateGameId,
+        name: "Delayed issue 53 candidate",
+        mutationId: randomUUID(),
+        baseRevision: 0,
+        state: emptyState,
+        results: null,
+      });
+      let candidateReachedInsert = false;
+      for (let attempt = 0; attempt < 50; attempt += 1) {
+        const sleepingInsert = await pool.query<{ reached: boolean }>(
+          `SELECT EXISTS (
+             SELECT 1
+               FROM pg_stat_activity
+              WHERE datname = current_database()
+                AND wait_event = 'PgSleep'
+                AND query ILIKE '%INSERT INTO game_sessions%'
+           ) AS reached`,
+        );
+        if (sleepingInsert.rows[0]?.reached === true) {
+          candidateReachedInsert = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(candidateReachedInsert).toBe(true);
+
+      await blocker.query(
+        `INSERT INTO game_sessions
+           (id, club_id, name, revision, last_mutation_id, state, status)
+         VALUES ($1, $2, 'Non-cooperating winner', 1, $3, $4::jsonb, 'active')`,
+        [blockingGameId, clubId, randomUUID(), JSON.stringify(emptyState)],
+      );
+      deleteBlocker = (async () => {
+        await blocker.query("BEGIN");
+        await blocker.query(
+          "SELECT pg_advisory_xact_lock(hashtextextended('active-game:' || $1, 0))",
+          [clubId],
+        );
+        await blocker.query("DELETE FROM game_sessions WHERE club_id = $1 AND id = $2", [
+          clubId,
+          blockingGameId,
+        ]);
+        await blocker.query("COMMIT");
+      })();
+
+      await expect(candidate).resolves.toMatchObject({ gameId: candidateGameId, status: "active" });
+      await deleteBlocker;
+      expect(await store.listActive(clubId)).toMatchObject([{ gameId: candidateGameId }]);
+    } finally {
+      await deleteBlocker?.catch(() => undefined);
+      await blocker.query("ROLLBACK").catch(() => undefined);
+      blocker.release();
+      await pool.query("DROP TRIGGER IF EXISTS delay_issue53_candidate_insert ON game_sessions");
+      await pool.query("DROP FUNCTION IF EXISTS delay_issue53_candidate_insert()");
+      await deleteSessionTestClub(clubId);
+    }
+  });
+
   it("pins the legacy FNV hash to a fixed historical game snapshot", () => {
     expect(legacyHashGameState(fixedLegacyGameState)).toBe("3143cd5f");
   });
@@ -1023,7 +1327,7 @@ describe("GameSessionStore", () => {
       calls = () => query.mock.calls;
       restoreQuery = () => query.mockRestore();
     });
-    const recordingStore = new GameSessionStore(recordingPool);
+    const recordingStore = automaticClaimStore(new GameSessionStore(recordingPool));
     try {
       const normalized = await recordingStore.normalize({
         clubId: club.id,
@@ -2096,8 +2400,15 @@ describe("GameSessionStore", () => {
       state: Record<string, unknown>;
       event_count: number;
       result_count: number;
+      claim_id: string | null;
+      claim_generation: number;
+      claimed_by_user_id: string | null;
+      claimed_at: Date | null;
+      claim_last_seen_at: Date | null;
+      claim_expires_at: Date | null;
     }>(
-      `SELECT status, state,
+      `SELECT status, state, claim_id, claim_generation::int AS claim_generation, claimed_by_user_id,
+              claimed_at, claim_last_seen_at, claim_expires_at,
               (SELECT COUNT(*)::int FROM game_events WHERE game_id = $1) AS event_count,
               (SELECT COUNT(*)::int FROM game_player_results WHERE game_id = $1) AS result_count
          FROM game_sessions
@@ -2108,6 +2419,12 @@ describe("GameSessionStore", () => {
       status: "completed",
       event_count: 3,
       result_count: 10,
+      claim_id: null,
+      claim_generation: 1,
+      claimed_by_user_id: null,
+      claimed_at: null,
+      claim_last_seen_at: null,
+      claim_expires_at: null,
     });
     expect(stored.rows[0]?.state).not.toHaveProperty("game");
     expect(stored.rows[0]?.state).not.toHaveProperty("events");
@@ -3299,34 +3616,35 @@ describe("GameSessionStore", () => {
     await expect(store.get(gameId)).resolves.toMatchObject({ revision: 2 });
   });
 
-  it("allocates concurrent dated names once and preserves the canonical name", async () => {
+  it("allocates one dated name during a first-save race without burning the loser's retry", async () => {
     await pool.query(
       "DELETE FROM game_daily_counters WHERE game_date = TO_DATE('12.02.26', 'DD.MM.YY')",
     );
     const gameIds = [randomUUID(), randomUUID()];
-    const created = await Promise.all(
-      gameIds.map((gameId) =>
-        store.save({
-          gameId,
-          name: "12.02.26 #1",
-          mutationId: randomUUID(),
-          baseRevision: 0,
-          state: emptyState,
-          results: null,
-        }),
-      ),
-    );
-    expect(created.map(({ name }) => name).sort()).toEqual(["12.02.26 #1", "12.02.26 #2"]);
-
-    const updated = await store.save({
-      gameId: created[0]!.gameId,
-      name: "12.02.26 #99",
+    const firstAttempts = gameIds.map((gameId) => ({
+      gameId,
+      name: "12.02.26 #1",
       mutationId: randomUUID(),
-      baseRevision: 1,
-      state: { ...emptyState, playlistId: "updated" },
+      baseRevision: 0,
+      state: emptyState,
       results: null,
-    });
-    expect(updated.name).toBe(created[0]!.name);
+    }));
+    const attempted = await Promise.allSettled(firstAttempts.map((input) => store.save(input)));
+    const winner = attempted.find(
+      (result): result is PromiseFulfilledResult<Awaited<ReturnType<typeof store.save>>> =>
+        result.status === "fulfilled",
+    );
+    const loser = attempted.find(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    expect(winner).toBeDefined();
+    expect(loser).toBeDefined();
+    expect(winner!.value.name).toBe("12.02.26 #1");
+    expect(loser!.reason).toMatchObject({ code: "club_active_game_exists" });
+
+    await store.clear(winner!.value.gameId, 1);
+    const loserInput = firstAttempts.find(({ gameId }) => gameId !== winner!.value.gameId)!;
+    await expect(store.save(loserInput)).resolves.toMatchObject({ name: "12.02.26 #2" });
   });
 
   it("rejects reuse of a mutation id with a different full snapshot", async () => {
@@ -3667,7 +3985,7 @@ describe("GameSessionStore", () => {
     expect(events.rowCount).toBe(0);
   });
 
-  it("lists only active restorable sessions with the latest update first", async () => {
+  it("lists the one active restorable session without crossing clubs", async () => {
     const targetClub = await new ClubStore(pool).create(legacyOwnerId, {
       name: `Ordered sessions ${randomUUID().slice(0, 8)}`,
       city: "Granada",
@@ -3702,43 +4020,26 @@ describe("GameSessionStore", () => {
       "SELECT status, updated_at FROM game_sessions WHERE club_id = $1 AND id = $2",
       [foreignClub.id, foreignId],
     );
-    const olderId = randomUUID();
-    const newerId = randomUUID();
-    const completedId = randomUUID();
-    for (const [gameId, name] of [
-      [olderId, "Older"],
-      [newerId, "Newer"],
-      [completedId, "Completed"],
-    ] as const) {
-      await store.save({
-        clubId: targetClub.id,
-        gameId,
-        name,
-        mutationId: randomUUID(),
-        baseRevision: 0,
-        state: { ...emptyState, hostName: `${name} host` },
-        results: null,
-      });
-    }
+    const activeId = randomUUID();
+    await store.save({
+      clubId: targetClub.id,
+      gameId: activeId,
+      name: "Current",
+      mutationId: randomUUID(),
+      baseRevision: 0,
+      state: { ...emptyState, hostName: "Current host" },
+      results: null,
+    });
     await pool.query(
-      `UPDATE game_sessions
-          SET updated_at = CASE id
-            WHEN $1 THEN '2098-01-01T00:00:00Z'::timestamptz
-            WHEN $2 THEN '2099-01-01T00:00:00Z'::timestamptz
-            ELSE updated_at
-          END,
-          status = CASE WHEN id = $3 THEN 'completed' ELSE status END
-        WHERE club_id = $5 AND id = ANY($4::uuid[])`,
-      [olderId, newerId, completedId, [olderId, newerId, completedId], targetClub.id],
+      "UPDATE game_sessions SET updated_at = '2099-01-01T00:00:00Z' WHERE club_id = $1 AND id = $2",
+      [targetClub.id, activeId],
     );
 
     const active = await store.listActive(targetClub.id);
 
-    expect(active.slice(0, 2)).toEqual([
-      expect.objectContaining({ gameId: newerId, name: "Newer", hostName: "Newer host" }),
-      expect.objectContaining({ gameId: olderId, name: "Older", hostName: "Older host" }),
+    expect(active).toEqual([
+      expect.objectContaining({ gameId: activeId, name: "Current", hostName: "Current host" }),
     ]);
-    expect(active.some(({ gameId }) => gameId === completedId)).toBe(false);
     expect(active.some(({ gameId }) => gameId === foreignId)).toBe(false);
     await expect(
       pool.query<{ status: string; updated_at: Date }>(
@@ -3748,7 +4049,7 @@ describe("GameSessionStore", () => {
     ).resolves.toMatchObject({ rows: foreignBefore.rows });
   });
 
-  it("keeps active-session query count constant as replay sessions grow", async () => {
+  it("keeps active-session query count constant for a replay session", async () => {
     const club = await new ClubStore(pool).create(legacyOwnerId, {
       name: `Active query count ${randomUUID().slice(0, 8)}`,
       city: "Granada",
@@ -3757,17 +4058,19 @@ describe("GameSessionStore", () => {
       language: "en",
       ownerConsent: true,
     });
-    const gameIds = Array.from({ length: 3 }, () => randomUUID());
-    for (const gameId of gameIds) await createStartedDaySessionWithCheckpoints(gameId, club.id);
+    const gameId = randomUUID();
+    await createStartedDaySessionWithCheckpoints(gameId, club.id);
 
     const recordingPool = new Pool({ connectionString: databaseUrl });
-    const recordingStore = new GameSessionStore(recordingPool);
+    const recordingStore = automaticClaimStore(new GameSessionStore(recordingPool));
     const query = vi.spyOn(recordingPool, "query");
     try {
       const active = await recordingStore.listActive(club.id);
 
       expect(query).toHaveBeenCalledTimes(2);
-      expect(new Set(active.map(({ gameId }) => gameId))).toEqual(new Set(gameIds));
+      expect(new Set(active.map(({ gameId: activeGameId }) => activeGameId))).toEqual(
+        new Set([gameId]),
+      );
       expect(active).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ phase: "day", day: 1, hostName: "Head Host" }),
@@ -3792,7 +4095,7 @@ describe("GameSessionStore", () => {
     for (const gameId of gameIds) await createCanonicalCompletedSession(gameId, club.id);
 
     const recordingPool = new Pool({ connectionString: databaseUrl });
-    const recordingStore = new GameSessionStore(recordingPool);
+    const recordingStore = automaticClaimStore(new GameSessionStore(recordingPool));
     const query = vi.spyOn(recordingPool, "query");
     try {
       const completed = await recordingStore.listCompleted(club.id);
@@ -3835,7 +4138,7 @@ describe("GameSessionStore", () => {
       calls = () => query.mock.calls;
       restoreQuery = () => query.mockRestore();
     });
-    const recordingStore = new GameSessionStore(recordingPool);
+    const recordingStore = automaticClaimStore(new GameSessionStore(recordingPool));
     try {
       const completed = await recordingStore.complete({
         clubId: club.id,
@@ -3885,6 +4188,192 @@ describe("GameSessionStore", () => {
     } finally {
       restoreQuery();
       await recordingPool.end();
+    }
+  });
+
+  it("creates an active session with generation one and renews its exact lease", async () => {
+    const clubId = await createSessionTestClub(`Claim lease ${randomUUID().slice(0, 8)}`);
+    const gameId = randomUUID();
+    const claimId = randomUUID().toUpperCase();
+    const claimStore = store as unknown as {
+      readonly save: (input: {
+        readonly clubId: string;
+        readonly gameId: string;
+        readonly name: string;
+        readonly mutationId: string;
+        readonly baseRevision: number;
+        readonly state: typeof emptyState;
+        readonly results: null;
+        readonly claim: { readonly claimId: string; readonly claimGeneration: number };
+        readonly claimedByUserId: string;
+      }) => Promise<{
+        readonly claim: { readonly generation: number; readonly expiresAt: Date | null };
+      }>;
+      readonly claim: (input: {
+        readonly clubId: string;
+        readonly gameId: string;
+        readonly claim: { readonly claimId: string; readonly claimGeneration: number };
+        readonly claimedByUserId: string;
+      }) => Promise<{
+        readonly generation: number;
+        readonly expiresAt: Date;
+      }>;
+    };
+    try {
+      const created = await claimStore.save({
+        clubId,
+        gameId,
+        name: "Claimed setup",
+        mutationId: randomUUID(),
+        baseRevision: 0,
+        state: emptyState,
+        results: null,
+        claim: { claimId, claimGeneration: 0 },
+        claimedByUserId: legacyOwnerId,
+      });
+      expect(created.claim).toMatchObject({ generation: 1, expiresAt: expect.any(Date) });
+
+      const renewed = await claimStore.claim({
+        clubId,
+        gameId,
+        claim: { claimId, claimGeneration: 1 },
+        claimedByUserId: legacyOwnerId,
+      });
+      expect(renewed).toMatchObject({ generation: 1, expiresAt: expect.any(Date) });
+    } finally {
+      await deleteSessionTestClub(clubId);
+    }
+  });
+
+  it("starts a renewed lease after a blocked transaction acquires the game lock", async () => {
+    const clubId = await createSessionTestClub(`Blocked claim ${randomUUID().slice(0, 8)}`);
+    const gameId = randomUUID();
+    const claimId = randomUUID();
+    const blocker = await pool.connect();
+    try {
+      await store.save({
+        clubId,
+        gameId,
+        name: "Blocked claim",
+        mutationId: randomUUID(),
+        baseRevision: 0,
+        state: emptyState,
+        results: null,
+        claim: { claimId, claimGeneration: 0 },
+        claimedByUserId: legacyOwnerId,
+      });
+      await blocker.query("BEGIN");
+      await lockClubGame(blocker, clubId, gameId);
+      const blockerPid = (await blocker.query<{ pid: number }>("SELECT pg_backend_pid() AS pid"))
+        .rows[0]!.pid;
+      const renewal = store.claim({
+        clubId,
+        gameId,
+        claim: { claimId, claimGeneration: 1 },
+        claimedByUserId: legacyOwnerId,
+      });
+      await waitForPlayerLockWaiter(blockerPid);
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      const releasedAt = Date.now();
+      await blocker.query("COMMIT");
+
+      const renewed = await renewal;
+      expect(renewed.expiresAt.getTime() - releasedAt).toBeGreaterThan(44_500);
+    } finally {
+      await blocker.query("ROLLBACK").catch(() => undefined);
+      blocker.release();
+      await deleteSessionTestClub(clubId);
+    }
+  });
+
+  it("fences displaced writers, retains duplicate retries, and recovers expired leases", async () => {
+    const clubId = await createSessionTestClub(`Claim fence ${randomUUID().slice(0, 8)}`);
+    const gameId = randomUUID();
+    const firstClaimId = randomUUID();
+    const secondClaimId = randomUUID();
+    const creation = {
+      clubId,
+      gameId,
+      name: "Fenced setup",
+      mutationId: randomUUID(),
+      baseRevision: 0,
+      state: emptyState,
+      results: null,
+      claim: { claimId: firstClaimId, claimGeneration: 0 },
+      claimedByUserId: legacyOwnerId,
+    } as const;
+    try {
+      await store.save(creation);
+      await expect(
+        store.takeover({
+          clubId,
+          gameId,
+          claim: { claimId: secondClaimId, claimGeneration: 0 },
+          claimedByUserId: legacyOwnerId,
+        }),
+      ).resolves.toMatchObject({ generation: 2, expiresAt: expect.any(Date) });
+      await expect(
+        store.takeover({
+          clubId,
+          gameId,
+          claim: { claimId: secondClaimId, claimGeneration: 0 },
+          claimedByUserId: legacyOwnerId,
+        }),
+      ).resolves.toMatchObject({ generation: 2, expiresAt: expect.any(Date) });
+      await expect(
+        store.claim({
+          clubId,
+          gameId,
+          claim: { claimId: firstClaimId, claimGeneration: 1 },
+          claimedByUserId: legacyOwnerId,
+        }),
+      ).rejects.toMatchObject({ code: "game_session_claim_conflict" });
+      await expect(
+        store.normalize({
+          clubId,
+          gameId,
+          mutationId: randomUUID(),
+          baseRevision: 1,
+          claim: { claimId: firstClaimId, claimGeneration: 1 },
+        }),
+      ).rejects.toMatchObject({ code: "game_session_claim_conflict" });
+      await expect(store.save(creation)).resolves.toMatchObject({ duplicate: true, revision: 1 });
+      await store.release({
+        clubId,
+        gameId,
+        claim: { claimId: secondClaimId, claimGeneration: 2 },
+      });
+      await expect(
+        store.normalize({
+          clubId,
+          gameId,
+          mutationId: randomUUID(),
+          baseRevision: 1,
+          claim: { claimId: secondClaimId, claimGeneration: 2 },
+        }),
+      ).rejects.toMatchObject({ code: "game_session_claim_conflict" });
+      await expect(
+        store.claim({
+          clubId,
+          gameId,
+          claim: { claimId: secondClaimId, claimGeneration: 0 },
+          claimedByUserId: legacyOwnerId,
+        }),
+      ).resolves.toMatchObject({ generation: 3 });
+      await pool.query(
+        "UPDATE game_sessions SET claimed_at = CURRENT_TIMESTAMP - INTERVAL '47 seconds', claim_last_seen_at = CURRENT_TIMESTAMP - INTERVAL '46 seconds', claim_expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second' WHERE club_id = $1 AND id = $2",
+        [clubId, gameId],
+      );
+      await expect(
+        store.claim({
+          clubId,
+          gameId,
+          claim: { claimId: randomUUID(), claimGeneration: 0 },
+          claimedByUserId: legacyOwnerId,
+        }),
+      ).resolves.toMatchObject({ generation: 4 });
+    } finally {
+      await deleteSessionTestClub(clubId);
     }
   });
 });

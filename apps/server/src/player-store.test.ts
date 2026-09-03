@@ -12,6 +12,7 @@ const databaseUrl =
   process.env.TEST_DATABASE_URL ?? "postgresql://mafia:mafia@127.0.0.1:54329/mafia_test";
 const pool = new Pool({ connectionString: databaseUrl });
 const store = new PlayerStore(pool);
+const defaultOwnerId = "00000000-0000-4000-8000-000000000001";
 
 beforeAll(async () => {
   await store.initialize();
@@ -1049,6 +1050,8 @@ describe("PlayerStore", () => {
         baseRevision: 1,
         state: emptyHistoricalState,
         results: null,
+        claim: { claimId: randomUUID(), claimGeneration: 0 },
+        claimedByUserId: defaultOwnerId,
       });
       await new Promise((resolve) => setTimeout(resolve, 25));
       await locker.query("COMMIT");
@@ -1134,6 +1137,7 @@ describe("PlayerStore", () => {
       email: null,
     });
     const gameId = randomUUID();
+    const claimId = randomUUID();
     await new GameSessionStore(pool).save({
       gameId,
       name: "Active players",
@@ -1154,11 +1158,17 @@ describe("PlayerStore", () => {
         undoHistory: [],
       },
       results: null,
+      claim: { claimId, claimGeneration: 0 },
+      claimedByUserId: defaultOwnerId,
     });
 
     await expect(store.delete(player.id)).resolves.toBe("active_game");
     await expect(store.get(player.id)).resolves.toMatchObject({ id: player.id });
     await expect(new GameSessionStore(pool).get(gameId)).resolves.toMatchObject({ gameId });
+    await new GameSessionStore(pool).clear({
+      gameId,
+      claim: { claimId, claimGeneration: 1 },
+    });
   });
 
   it("rejects deleting a host referenced by unfinalized persisted setup players", async () => {
@@ -1170,6 +1180,7 @@ describe("PlayerStore", () => {
       email: null,
     });
     const gameId = randomUUID();
+    const claimId = randomUUID();
     await new GameSessionStore(pool).save({
       gameId,
       name: "Active host",
@@ -1190,11 +1201,17 @@ describe("PlayerStore", () => {
         undoHistory: [],
       },
       results: null,
+      claim: { claimId, claimGeneration: 0 },
+      claimedByUserId: defaultOwnerId,
     });
 
     await expect(store.delete(host.id)).resolves.toBe("active_game");
     await expect(store.get(host.id)).resolves.toMatchObject({ id: host.id });
     await expect(new GameSessionStore(pool).get(gameId)).resolves.toMatchObject({ gameId });
+    await new GameSessionStore(pool).clear({
+      gameId,
+      claim: { claimId, claimGeneration: 1 },
+    });
   });
 
   it("deletes a player with associated game history and recomputes affected profiles", async () => {
@@ -1482,7 +1499,10 @@ describe("PlayerStore", () => {
         },
       ],
     });
-    await new GameSessionStore(pool).clear(gameId);
+    await new GameSessionStore(pool).clear({
+      gameId,
+      claim: { claimId: randomUUID(), claimGeneration: 0 },
+    });
 
     await expect(store.deleteGameResults(gameId)).rejects.toMatchObject({ code: "game_deleted" });
     await expect(

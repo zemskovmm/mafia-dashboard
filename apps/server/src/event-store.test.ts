@@ -287,7 +287,10 @@ describe("PostgreSQL event store", () => {
         DEFAULT_CLUB_ID,
         gameId,
       ]);
-      const clear = new GameSessionStore(pool).clear(gameId);
+      const clear = new GameSessionStore(pool).clear({
+        gameId,
+        claim: { claimId: randomUUID(), claimGeneration: 0 },
+      });
       await waitForAdvisoryWaiters(1);
       const append = store.append({
         gameId,

@@ -21,6 +21,7 @@ import {
 } from "@mafia/game-domain";
 import { ApiError, type Club, type PlayerProfile, type RemoteGameSession } from "./api/client.js";
 import { App as WelcomeApp, ClubWorkspace } from "./App.js";
+import { GameSessionOutbox } from "./session-outbox.js";
 import {
   clearErrorConsole,
   getErrorConsoleSnapshot,
@@ -39,6 +40,7 @@ const api = vi.hoisted(() => {
   const saveGameSession = vi.fn();
   return {
     checkServerReady: vi.fn(),
+    claimGameSession: vi.fn(),
     clearAllData: vi.fn(),
     clearGameSession: vi.fn(),
     createPlayer: vi.fn(),
@@ -52,6 +54,8 @@ const api = vi.hoisted(() => {
     updatePlayer: vi.fn(),
     getAuthSession: vi.fn(),
     signOut: vi.fn(),
+    takeoverGameSession: vi.fn(),
+    releaseGameSession: vi.fn(),
     listClubs: vi.fn(),
     createClub: vi.fn(),
     deleteClub: vi.fn(),
@@ -145,6 +149,7 @@ vi.mock("./api/client.js", () => ({
       message: string,
       public readonly status: number,
       public readonly code: string | null,
+      public readonly details: unknown = null,
     ) {
       super(message);
     }
@@ -587,6 +592,10 @@ beforeEach(() => {
   musicPlayerHarness.slowFadeOut.mockReset().mockResolvedValue(undefined);
   musicPlayerHarness.shuffleQueue.mockReset().mockReturnValue(true);
   api.checkServerReady.mockReset().mockResolvedValue(undefined);
+  api.claimGameSession.mockReset().mockResolvedValue({
+    generation: 1,
+    expiresAt: "2026-09-03T20:00:45.000Z",
+  });
   api.clearAllData.mockReset().mockResolvedValue(undefined);
   api.clearGameSession.mockReset().mockResolvedValue(undefined);
   api.createPlayer.mockReset();
@@ -603,16 +612,29 @@ beforeEach(() => {
   api.saveGameSession
     .mockReset()
     .mockImplementation((_gameId: string, mutation: { baseRevision: number }) =>
-      Promise.resolve({ revision: mutation.baseRevision + 1, duplicate: false }),
+      Promise.resolve({
+        revision: mutation.baseRevision + 1,
+        duplicate: false,
+        claim: { generation: 1, expiresAt: "2026-09-03T20:00:45.000Z" },
+      }),
     );
   api.saveGameSessionOperation
     .mockReset()
     .mockImplementation((_gameId: string, operation: { baseRevision: number }) =>
-      Promise.resolve({ revision: operation.baseRevision + 1, duplicate: false }),
+      Promise.resolve({
+        revision: operation.baseRevision + 1,
+        duplicate: false,
+        claim: { generation: 1, expiresAt: "2026-09-03T20:00:45.000Z" },
+      }),
     );
   api.updatePlayer.mockReset();
   api.getAuthSession.mockReset().mockResolvedValue({ configured: true, user: null });
   api.signOut.mockReset().mockResolvedValue(undefined);
+  api.takeoverGameSession.mockReset().mockResolvedValue({
+    generation: 2,
+    expiresAt: "2026-09-03T20:00:45.000Z",
+  });
+  api.releaseGameSession.mockReset().mockResolvedValue(undefined);
   api.listClubs.mockReset().mockResolvedValue([]);
   api.createClub.mockReset();
   api.deleteClub.mockReset().mockResolvedValue(undefined);
@@ -1200,6 +1222,7 @@ describe("developer menu", () => {
             events: expect.arrayContaining([expect.objectContaining({ type: "foul.issued" })]),
           }),
         }),
+        expect.any(Object),
         testClub.id,
       ),
     );
@@ -1330,6 +1353,406 @@ describe("developer menu", () => {
     expect(
       screen.queryByRole("button", { name: "Randomly fill 10 seats" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("blocks a claimed resume until explicit takeover and keeps the opaque claim session-only", async () => {
+    const user = userEvent.setup();
+    const gameId = "00000000-0000-4000-8000-000000000053";
+    api.listActiveGameSessions.mockResolvedValue([
+      {
+        gameId,
+        name: "Claimed table",
+        revision: 3,
+        hostName: "Existing host",
+        phase: "day",
+        day: 2,
+        updatedAt: "2026-09-03T19:59:00.000Z",
+      },
+    ]);
+    api.claimGameSession.mockRejectedValueOnce(
+      new ApiError("Claim conflict", 409, "game_session_claim_conflict", {
+        error: "game_session_claim_conflict",
+        claim: {
+          holderName: "Existing host",
+          claimedAt: "2026-09-03T19:58:00.000Z",
+          lastSeenAt: "2026-09-03T19:59:30.000Z",
+          expiresAt: "2026-09-03T20:00:15.000Z",
+        },
+      }),
+    );
+    api.getGameSession
+      .mockRejectedValueOnce(new Error("temporary load failure"))
+      .mockResolvedValue(remoteSession(gameId, "Claimed table", "Existing host", 3, 2));
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    await user.click(await screen.findByRole("button", { name: "Resume Claimed table" }));
+
+    const dialog = await screen.findByRole("alertdialog", { name: "Game already controlled" });
+    expect(dialog).toHaveTextContent("Existing host");
+    expect(dialog).toHaveTextContent("Claimed at");
+    expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus();
+    expect(document.querySelector(".app-shell")).toHaveAttribute("inert");
+    expect(api.getGameSession).not.toHaveBeenCalled();
+    const credential = api.claimGameSession.mock.calls[0]?.[1] as {
+      claimId: string;
+      claimGeneration: number;
+    };
+    expect(credential).toMatchObject({ claimGeneration: 0 });
+    expect(credential.claimId).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(
+      Array.from({ length: window.sessionStorage.length }, (_, index) =>
+        window.sessionStorage.key(index),
+      ),
+    ).toEqual(expect.arrayContaining([expect.stringContaining(gameId)]));
+    expect(
+      [...Array(window.localStorage.length)].map((_, index) =>
+        window.localStorage.getItem(window.localStorage.key(index)!),
+      ),
+    ).not.toContain(credential.claimId);
+
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(api.takeoverGameSession).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("This game remains read-only until you resolve ownership."),
+    ).toBeVisible();
+    expect(document.querySelector(".app-shell")).toHaveAttribute("inert");
+
+    await user.click(screen.getByRole("button", { name: "Resolve ownership" }));
+    await user.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", { name: "Take over" }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent("takeover failed");
+    await user.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", { name: "Take over" }),
+    );
+
+    await screen.findByText("Host: Existing host");
+    expect(api.takeoverGameSession).toHaveBeenCalledWith(gameId, credential, testClub.id);
+    expect(api.takeoverGameSession.mock.calls[1]?.[1]).toEqual({
+      claimId: credential.claimId,
+      claimGeneration: 2,
+    });
+    expect(api.getGameSession).toHaveBeenCalledWith(gameId, testClub.id);
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
+  it("keeps displaced offline changes blocked until explicit takeover", async () => {
+    const user = userEvent.setup();
+    const conflict = new ApiError("claim lost", 409, "game_session_claim_conflict", {
+      claim: {
+        holderName: "Second host",
+        claimedAt: "2026-09-03T20:00:00.000Z",
+        lastSeenAt: "2026-09-03T20:00:10.000Z",
+        expiresAt: "2026-09-03T20:00:45.000Z",
+      },
+    });
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
+    await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledOnce());
+    const claimId = api.saveGameSession.mock.calls[0]![2].claimId;
+    api.saveGameSession.mockClear();
+    api.saveGameSession.mockRejectedValueOnce(conflict).mockImplementation((_gameId, mutation) =>
+      Promise.resolve({
+        revision: mutation.baseRevision + 1,
+        duplicate: false,
+        claim: { generation: 2, expiresAt: "2026-09-03T20:01:00.000Z" },
+      }),
+    );
+
+    await user.click(screen.getByRole("button", { name: "Assign first role" }));
+    expect(await screen.findByRole("alertdialog")).toHaveTextContent("Second host");
+    expect(api.saveGameSession).toHaveBeenCalledOnce();
+    expect(
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+    ).toMatchObject({ failed: true, claimGeneration: 1, outbox: [expect.any(Object)] });
+    const blockedState = window.localStorage.getItem("mafia-dashboard.game-session.v4");
+    act(() => screen.getByRole("button", { name: "Assign first role" }).click());
+    expect(api.saveGameSession).toHaveBeenCalledOnce();
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v4")).toBe(blockedState);
+
+    await user.click(screen.getByRole("button", { name: "Take over" }));
+    await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledTimes(2));
+    expect(api.saveGameSession.mock.calls[1]![2]).toEqual({ claimId, claimGeneration: 2 });
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+  });
+
+  it("preserves a conflicting first save until explicit replacement with the active game", async () => {
+    const user = userEvent.setup();
+    const activeGame = remoteSession(
+      "00000000-0000-4000-8000-000000000069",
+      "Existing table",
+      "Existing host",
+      4,
+      2,
+    );
+    api.getGameSession.mockResolvedValue(activeGame);
+    api.saveGameSession.mockRejectedValueOnce(
+      new ApiError("active game exists", 409, "club_active_game_exists", {
+        activeGame: {
+          gameId: activeGame.gameId,
+          name: activeGame.name,
+          phase: "day",
+          day: 2,
+          updatedAt: activeGame.updatedAt,
+        },
+      }),
+    );
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
+    expect(
+      await screen.findByRole("alertdialog", { name: "Game already controlled" }),
+    ).toHaveTextContent("Existing table is already active");
+    const pending = JSON.parse(
+      window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null",
+    );
+    expect(pending).toMatchObject({ outbox: [expect.any(Object)] });
+    expect(pending.gameId).not.toBe(activeGame.gameId);
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(api.takeoverGameSession).not.toHaveBeenCalled();
+    expect(
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+    ).toMatchObject({ gameId: pending.gameId, outbox: [expect.any(Object)] });
+    act(() => screen.getByRole("button", { name: /^Save blocked ·/ }).click());
+    await act(async () => Promise.resolve());
+    expect(api.saveGameSession).toHaveBeenCalledOnce();
+
+    await user.click(screen.getByRole("button", { name: "Resolve ownership" }));
+    await user.click(screen.getByRole("button", { name: "Take over" }));
+
+    await waitFor(() => expect(api.takeoverGameSession).toHaveBeenCalled());
+    expect(await screen.findByText("Host: Existing host")).toBeInTheDocument();
+    expect(
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+    ).toMatchObject({ gameId: activeGame.gameId, outbox: [] });
+  });
+
+  it("renews a new game claim every fifteen seconds without persisting the claim id locally", async () => {
+    const intervalSpy = vi.spyOn(window, "setInterval");
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
+    await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledOnce());
+    await waitFor(() => expect(api.claimGameSession).toHaveBeenCalledOnce());
+
+    const [gameId, , initialCredential] = api.saveGameSession.mock.calls[0]!;
+    const [claimedGameId, heartbeatCredential, clubId] = api.claimGameSession.mock.calls[0]!;
+    expect(claimedGameId).toBe(gameId);
+    expect(clubId).toBe(testClub.id);
+    expect(initialCredential).toMatchObject({ claimGeneration: 0 });
+    expect(heartbeatCredential).toEqual({
+      claimId: initialCredential.claimId,
+      claimGeneration: 1,
+    });
+    expect(
+      [...Array(window.sessionStorage.length).keys()].map((index) =>
+        window.sessionStorage.key(index),
+      ),
+    ).toContain(`mafia-dashboard.game-session.v4.claim.${testClub.id}.${gameId}`);
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v4")).not.toContain(
+      initialCredential.claimId,
+    );
+
+    const heartbeatTimer = intervalSpy.mock.calls.find(([, delay]) => delay === 15_000);
+    expect(heartbeatTimer).toBeDefined();
+    const heartbeat = heartbeatTimer?.[0];
+    expect(typeof heartbeat).toBe("function");
+    await act(async () => {
+      if (typeof heartbeat === "function") heartbeat();
+      await Promise.resolve();
+    });
+    expect(api.claimGameSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("renews ownership before flushing edits after reconnect", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
+    await waitFor(() => expect(api.claimGameSession).toHaveBeenCalled());
+    const renewal = deferred<{ generation: number; expiresAt: string }>();
+    api.claimGameSession.mockReset().mockReturnValueOnce(renewal.promise);
+    api.saveGameSession.mockClear();
+
+    act(() => window.dispatchEvent(new Event("online")));
+    await waitFor(() => expect(api.claimGameSession).toHaveBeenCalledOnce());
+    await user.click(screen.getByRole("button", { name: "Assign first role" }));
+    expect(api.saveGameSession).not.toHaveBeenCalled();
+
+    await act(async () => {
+      renewal.resolve({ generation: 1, expiresAt: "2026-09-03T20:00:45.000Z" });
+      await renewal.promise;
+    });
+    await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledOnce());
+  });
+
+  it("renews a persisted claim before flushing queued work", async () => {
+    const gameId = "00000000-0000-4000-8000-000000000057";
+    const session = remoteSession(gameId, "Queued table", "Existing host", 1, 1);
+    const seed = new GameSessionOutbox({
+      storage: window.localStorage,
+      createId: () => "00000000-0000-4000-8000-000000000058",
+      save: vi.fn(),
+    });
+    seed.restore(gameId, 1, session.name, session.state, session.results, 1);
+    seed.enqueue(session.name, { ...session.state, hostName: "Pending host" }, null);
+    const claim = deferred<{ generation: number; expiresAt: string }>();
+    api.claimGameSession.mockReturnValueOnce(claim.promise);
+
+    render(<App />);
+
+    await waitFor(() => expect(api.claimGameSession).toHaveBeenCalledOnce());
+    expect(api.saveGameSessionOperation).not.toHaveBeenCalled();
+
+    await act(async () => {
+      claim.resolve({ generation: 1, expiresAt: "2026-09-03T20:00:45.000Z" });
+      await claim.promise;
+    });
+    await waitFor(() => expect(api.saveGameSessionOperation).toHaveBeenCalled());
+  });
+
+  it("releases the active claim before leaving the club workspace", async () => {
+    const onExit = vi.fn();
+    const user = userEvent.setup();
+    renderView(
+      <ClubWorkspace
+        club={testClub}
+        onExit={onExit}
+        onEditClub={() => undefined}
+        onDeleteClub={() => Promise.resolve()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
+    await waitFor(() => expect(api.claimGameSession).toHaveBeenCalled());
+    const [gameId, , initialCredential] = api.saveGameSession.mock.calls[0]!;
+    await user.click(
+      screen.getByRole("button", { name: `Choose another club · current club ${testClub.name}` }),
+    );
+
+    expect(api.releaseGameSession).toHaveBeenCalledWith(
+      gameId,
+      { claimId: initialCredential.claimId, claimGeneration: 1 },
+      testClub.id,
+    );
+    expect(
+      [...Array(window.sessionStorage.length).keys()]
+        .map((index) => window.sessionStorage.key(index))
+        .some((key) => key?.startsWith(`mafia-dashboard.game-session.v4.claim.${testClub.id}`)),
+    ).toBe(false);
+    expect(onExit).toHaveBeenCalledOnce();
+  });
+
+  it("releases the tab-identity lock when the workspace unmounts", async () => {
+    const originalLocks = Object.getOwnPropertyDescriptor(navigator, "locks");
+    let heldRequest: Promise<void> | null = null;
+    const request = vi.fn(
+      (
+        name: string,
+        _options: { mode: "exclusive"; ifAvailable: true },
+        callback: (lock: { readonly name: string } | null) => Promise<void>,
+      ) => {
+        heldRequest = callback({ name });
+        return heldRequest;
+      },
+    );
+    Object.defineProperty(navigator, "locks", {
+      configurable: true,
+      value: { request },
+    });
+    try {
+      const view = render(<App />);
+      await waitFor(() => expect(request).toHaveBeenCalled());
+
+      view.unmount();
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      await expect(heldRequest).resolves.toBeUndefined();
+    } finally {
+      if (originalLocks === undefined) delete (navigator as { locks?: unknown }).locks;
+      else Object.defineProperty(navigator, "locks", originalLocks);
+    }
+  });
+
+  it("releases the active claim when the workspace unmounts for sign-out", async () => {
+    const user = userEvent.setup();
+    const view = render(<App />);
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
+    await waitFor(() => expect(api.claimGameSession).toHaveBeenCalled());
+    const [gameId, , initialCredential] = api.saveGameSession.mock.calls[0]!;
+
+    view.unmount();
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.releaseGameSession).toHaveBeenCalledWith(
+      gameId,
+      { claimId: initialCredential.claimId, claimGeneration: 1 },
+      testClub.id,
+    );
+    expect(
+      [...Array(window.sessionStorage.length).keys()]
+        .map((index) => window.sessionStorage.key(index))
+        .some((key) => key?.startsWith(`mafia-dashboard.game-session.v4.claim.${testClub.id}`)),
+    ).toBe(false);
+  });
+
+  it("does not apply a delayed takeover after the workspace unmounts", async () => {
+    const user = userEvent.setup();
+    const gameId = "00000000-0000-4000-8000-000000000070";
+    const remote = deferred<RemoteGameSession>();
+    api.listActiveGameSessions.mockResolvedValue([
+      {
+        gameId,
+        name: "Delayed table",
+        revision: 3,
+        hostName: "Remote host",
+        phase: "day",
+        day: 2,
+        updatedAt: "2026-09-03T20:00:00.000Z",
+      },
+    ]);
+    api.claimGameSession.mockRejectedValueOnce(
+      new ApiError("Claim conflict", 409, "game_session_claim_conflict", {
+        claim: {
+          holderName: "Remote host",
+          claimedAt: "2026-09-03T19:59:00.000Z",
+          lastSeenAt: "2026-09-03T19:59:30.000Z",
+          expiresAt: "2026-09-03T20:00:15.000Z",
+        },
+      }),
+    );
+    api.getGameSession.mockReturnValueOnce(remote.promise);
+    const view = render(<App />);
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    await user.click(await screen.findByRole("button", { name: "Resume Delayed table" }));
+    await user.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Take over" }),
+    );
+    await waitFor(() => expect(api.getGameSession).toHaveBeenCalledWith(gameId, testClub.id));
+
+    view.unmount();
+    await act(async () => {
+      await Promise.resolve();
+      remote.resolve(remoteSession(gameId, "Delayed table", "Remote host", 3, 2));
+      await remote.promise;
+      await Promise.resolve();
+    });
+
+    expect(api.releaseGameSession).toHaveBeenCalledWith(
+      gameId,
+      expect.objectContaining({ claimGeneration: 2 }),
+      testClub.id,
+    );
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
   });
 
   it("localizes canonical active-session phases for a Russian club", async () => {
@@ -2090,6 +2513,7 @@ describe("authoritative game session lifecycle", () => {
           log: [],
         }),
       }),
+      expect.any(Object),
       testClub.id,
     );
     expect(gameId).toMatch(/^[0-9a-f-]{36}$/);
@@ -2183,6 +2607,7 @@ describe("authoritative game session lifecycle", () => {
             game: expect.objectContaining({ currentTurnIndex: 1 }),
           }),
         }),
+        expect.any(Object),
         testClub.id,
       ),
     );
@@ -2217,6 +2642,7 @@ describe("authoritative game session lifecycle", () => {
             events: expect.arrayContaining([expect.objectContaining({ type: "player.nominated" })]),
           }),
         }),
+        expect.any(Object),
         testClub.id,
       ),
     );
@@ -2255,6 +2681,7 @@ describe("authoritative game session lifecycle", () => {
             ]),
           }),
         }),
+        expect.any(Object),
         testClub.id,
       ),
     );
@@ -2510,6 +2937,7 @@ describe("authoritative game session lifecycle", () => {
           events: [expect.objectContaining({ type: "game.checkpointed" })],
         }),
       }),
+      expect.any(Object),
       testClub.id,
     );
   });
@@ -2863,7 +3291,9 @@ describe("authoritative game session lifecycle", () => {
     render(<App />);
 
     expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
-    expect(window.localStorage.getItem("mafia-dashboard.game-session.v4")).toBe(saved);
+    await waitFor(() =>
+      expect(window.localStorage.getItem("mafia-dashboard.game-session.v4")).toBe(saved),
+    );
     expect(window.sessionStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
   });
 
@@ -2915,7 +3345,7 @@ describe("authoritative game session lifecycle", () => {
     expect(confirm).toHaveBeenCalledWith(
       "Delete this active game from the server? This is irreversible and removes its saved session and game log for every browser.",
     );
-    expect(api.clearGameSession).toHaveBeenCalledWith(gameId, 0, testClub.id);
+    expect(api.clearGameSession).toHaveBeenCalledWith(gameId, 0, expect.any(Object), testClub.id);
     expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
     clear.resolve();
     await waitFor(() =>
@@ -2954,7 +3384,12 @@ describe("authoritative game session lifecycle", () => {
 
     clear.resolve();
     await waitFor(() =>
-      expect(api.clearGameSession).toHaveBeenCalledWith(clearedGameId, 1, testClub.id),
+      expect(api.clearGameSession).toHaveBeenCalledWith(
+        clearedGameId,
+        1,
+        expect.any(Object),
+        testClub.id,
+      ),
     );
 
     expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();

@@ -1212,6 +1212,20 @@ const sessionOperationBase = {
   baseRevision: z.number().int().nonnegative(),
 } as const;
 
+export const gameSessionClaimCredentialSchema = z
+  .object({
+    claimId: z.uuid(),
+    claimGeneration: z.number().int().positive(),
+  })
+  .strict();
+
+export const gameSessionClaimHeaderSchema = z
+  .object({
+    claimId: z.uuid(),
+    claimGeneration: z.coerce.number().int().nonnegative(),
+  })
+  .strict();
+
 export const gameSessionNormalizeMutationSchema = z.object(sessionOperationBase).strict();
 
 export const gameSessionStartMutationSchema = z

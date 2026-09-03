@@ -253,6 +253,20 @@ test("browser API policy exposes only exact session creation and owned mutation 
     kind: "owned-session-mutation",
     gameId: ownedId,
   });
+  for (const [method, action] of [
+    ["POST", "claim"],
+    ["POST", "takeover"],
+    ["DELETE", "claim"],
+  ]) {
+    assert.deepEqual(classify(method, `/api/game-sessions/${ownedId}/${action}`), {
+      kind: "owned-session-mutation",
+      gameId: ownedId,
+    });
+    assert.throws(
+      () => classify(method, `/api/game-sessions/${newId}/${action}`),
+      /unowned game session/i,
+    );
+  }
   assert.throws(
     () => classify("DELETE", `/api/game-sessions/${newId}?expectedRevision=7`),
     /unowned game session/i,

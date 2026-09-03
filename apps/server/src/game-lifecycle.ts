@@ -18,6 +18,12 @@ export class AuthoritativeGameSessionError extends Error {
   }
 }
 
+export const lockClubActiveGame = async (client: PoolClient, clubId: string): Promise<void> => {
+  await client.query("SELECT pg_advisory_xact_lock(hashtextextended('active-game:' || $1, 0))", [
+    clubId,
+  ]);
+};
+
 export const lockClubGame = async (
   client: PoolClient,
   clubId: string,

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   checkServerReady,
+  claimGameSession,
   clearGameSession,
   createClub,
   createPlayer,
@@ -18,6 +19,8 @@ import {
   listPlayers,
   saveGameSession,
   signOut,
+  takeoverGameSession,
+  releaseGameSession,
   updateClub,
   updatePlayer,
 } from "./client.js";
@@ -277,6 +280,131 @@ describe("player API client", () => {
 });
 
 describe("game session aggregate API client", () => {
+  it("sends exact claim credentials and retains safe claim-conflict details", async () => {
+    const gameId = "00000000-0000-4000-8000-000000000053";
+    const credential = {
+      claimId: "00000000-0000-4000-8000-000000000054",
+      claimGeneration: 7,
+    };
+    const conflictDetails = {
+      holderName: "Current host",
+      claimedAt: "2026-09-03T17:40:00.000Z",
+      lastSeenAt: "2026-09-03T17:40:12.000Z",
+      expiresAt: "2026-09-03T17:40:45.000Z",
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ claim: { generation: 7, expiresAt: "2026-09-03T17:40:45.000Z" } }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: "game_session_claim_conflict",
+            claim: { ...conflictDetails, claimedByUserId: "must-not-leak" },
+          }),
+          {
+            status: 409,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(claimGameSession(gameId, credential, "club-1")).resolves.toEqual({
+      generation: 7,
+      expiresAt: "2026-09-03T17:40:45.000Z",
+    });
+    await expect(takeoverGameSession(gameId, credential, "club-1")).rejects.toMatchObject({
+      status: 409,
+      code: "game_session_claim_conflict",
+      details: { claim: conflictDetails },
+    });
+    await expect(releaseGameSession(gameId, credential, "club-1")).resolves.toBeUndefined();
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      `/api/game-sessions/${gameId}/claim`,
+      expect.objectContaining({
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-club-id": "club-1",
+          "x-game-claim-id": credential.claimId,
+          "x-game-claim-generation": "7",
+        },
+        body: "{}",
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      `/api/game-sessions/${gameId}/takeover`,
+      expect.objectContaining({
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-club-id": "club-1",
+          "x-game-claim-id": credential.claimId,
+          "x-game-claim-generation": "7",
+        },
+        body: "{}",
+      }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      `/api/game-sessions/${gameId}/claim`,
+      expect.objectContaining({
+        method: "DELETE",
+        headers: {
+          "x-club-id": "club-1",
+          "x-game-claim-id": credential.claimId,
+          "x-game-claim-generation": "7",
+        },
+      }),
+    );
+  });
+
+  it("retains the safe active-game summary on a creation conflict", async () => {
+    const activeGame = {
+      gameId: "00000000-0000-4000-8000-000000000059",
+      name: "Existing table",
+      phase: "day",
+      day: 2,
+      updatedAt: "2026-09-03T20:00:00.000Z",
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: "club_active_game_exists",
+          activeGame: { ...activeGame, claimId: "must-not-leak" },
+        }),
+        {
+          status: 409,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      claimGameSession(
+        activeGame.gameId,
+        { claimId: "00000000-0000-4000-8000-000000000001", claimGeneration: 0 },
+        "club-1",
+      ),
+    ).rejects.toMatchObject({
+      code: "club_active_game_exists",
+      details: { activeGame },
+    });
+  });
+
   it("checks server and database readiness", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ status: "ready" }), {
@@ -313,6 +441,10 @@ describe("game session aggregate API client", () => {
 
   it("uploads the complete authoritative browser snapshot without a revision precondition", async () => {
     const gameId = "00000000-0000-4000-8000-000000000002";
+    const credential = {
+      claimId: "00000000-0000-4000-8000-000000000004",
+      claimGeneration: 3,
+    };
     const state = {
       setup: null,
       game: null,
@@ -342,16 +474,23 @@ describe("game session aggregate API client", () => {
       saveGameSessionOperation: (
         id: string,
         input: typeof operation,
+        claimCredential: typeof credential,
         clubId?: string,
       ) => Promise<typeof response>;
     };
 
-    await expect(api.saveGameSessionOperation(gameId, operation)).resolves.toEqual(response);
+    await expect(api.saveGameSessionOperation(gameId, operation, credential)).resolves.toEqual(
+      response,
+    );
     expect(fetchMock).toHaveBeenCalledWith(
       `/api/game-sessions/${gameId}`,
       expect.objectContaining({
         method: "PUT",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "x-game-claim-id": credential.claimId,
+          "x-game-claim-generation": "3",
+        },
         signal: expect.any(AbortSignal),
         body: JSON.stringify({
           name: operation.name,
@@ -365,6 +504,10 @@ describe("game session aggregate API client", () => {
 
   it("uses the authoritative mutation, active list, and restore endpoints", async () => {
     const gameId = "00000000-0000-4000-8000-000000000002";
+    const credential = {
+      claimId: "00000000-0000-4000-8000-000000000004",
+      claimGeneration: 3,
+    };
     const state = {
       setup: null,
       game: null,
@@ -413,7 +556,7 @@ describe("game session aggregate API client", () => {
       results: null,
     };
 
-    await expect(saveGameSession(gameId, mutation)).resolves.toEqual(session);
+    await expect(saveGameSession(gameId, mutation, credential)).resolves.toEqual(session);
     await expect(listActiveGameSessions()).resolves.toEqual([summary]);
     await expect(getGameSession(gameId)).resolves.toEqual(session);
     expect(fetchMock).toHaveBeenNthCalledWith(
@@ -421,7 +564,11 @@ describe("game session aggregate API client", () => {
       `/api/game-sessions/${gameId}`,
       expect.objectContaining({
         method: "PUT",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "x-game-claim-id": credential.claimId,
+          "x-game-claim-generation": "3",
+        },
         signal: expect.any(AbortSignal),
         body: JSON.stringify(mutation),
       }),
@@ -494,14 +641,21 @@ describe("game session aggregate API client", () => {
 
   it("sends the expected revision when clearing a session", async () => {
     const gameId = "00000000-0000-4000-8000-000000000002";
+    const credential = {
+      claimId: "00000000-0000-4000-8000-000000000004",
+      claimGeneration: 3,
+    };
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
     vi.stubGlobal("fetch", fetchMock);
 
-    await clearGameSession(gameId, 7);
+    await clearGameSession(gameId, 7, credential);
 
     expect(fetchMock).toHaveBeenCalledWith(`/api/game-sessions/${gameId}?expectedRevision=7`, {
       method: "DELETE",
-      headers: {},
+      headers: {
+        "x-game-claim-id": credential.claimId,
+        "x-game-claim-generation": "3",
+      },
     });
   });
 });

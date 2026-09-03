@@ -137,6 +137,16 @@ export interface GameSessionMutation {
   readonly results: FinalGameResults | null;
 }
 
+export interface GameSessionClaimCredential {
+  readonly claimId: string;
+  readonly claimGeneration: number;
+}
+
+export interface GameSessionClaim {
+  readonly generation: number;
+  readonly expiresAt: string;
+}
+
 export interface SessionMetadata {
   readonly setup: unknown | null;
   readonly hostPlayerId: string | null;
@@ -188,6 +198,7 @@ export interface GameSessionOperationResponse {
   readonly gameId?: string;
   readonly state?: GameSessionState;
   readonly results?: FinalGameResults | null;
+  readonly claim?: GameSessionClaim;
 }
 
 export interface ActiveGameSessionSummary {
@@ -211,6 +222,7 @@ export interface RemoteGameSession {
   readonly updatedAt: string;
   readonly state: GameSessionState;
   readonly results: FinalGameResults | null;
+  readonly claim?: GameSessionClaim;
 }
 
 export interface CompletedGameSessionSummary {
@@ -272,26 +284,90 @@ export class ApiError extends Error {
     message: string,
     public readonly status: number,
     public readonly code: string | null,
+    public readonly details: unknown | null = null,
   ) {
     super(message);
     this.name = "ApiError";
   }
 }
 
+const safeClaimConflictDetails = (value: unknown): unknown | null => {
+  if (typeof value !== "object" || value === null) return null;
+  const claim = value as Record<string, unknown>;
+  const nullableString = (field: string) =>
+    claim[field] === null || typeof claim[field] === "string";
+  if (
+    !nullableString("holderName") ||
+    !nullableString("claimedAt") ||
+    !nullableString("lastSeenAt") ||
+    !nullableString("expiresAt")
+  ) {
+    return null;
+  }
+  return {
+    claim: {
+      holderName: claim.holderName,
+      claimedAt: claim.claimedAt,
+      lastSeenAt: claim.lastSeenAt,
+      expiresAt: claim.expiresAt,
+    },
+  };
+};
+
+const safeActiveGameDetails = (value: unknown): unknown | null => {
+  if (typeof value !== "object" || value === null) return null;
+  const game = value as Record<string, unknown>;
+  if (
+    typeof game.gameId !== "string" ||
+    typeof game.name !== "string" ||
+    (game.phase !== null && typeof game.phase !== "string") ||
+    (game.day !== null && typeof game.day !== "number") ||
+    typeof game.updatedAt !== "string"
+  ) {
+    return null;
+  }
+  return {
+    activeGame: {
+      gameId: game.gameId,
+      name: game.name,
+      phase: game.phase,
+      day: game.day,
+      updatedAt: game.updatedAt,
+    },
+  };
+};
+
 const throwApiError = async (response: Response, message: string): Promise<never> => {
   let code: string | null = null;
+  let details: unknown | null = null;
   try {
-    const body = (await response.json()) as { error?: unknown };
+    const body = (await response.json()) as {
+      error?: unknown;
+      claim?: unknown;
+      activeGame?: unknown;
+    };
     if (typeof body.error === "string") code = body.error;
+    if (code === "game_session_claim_conflict") details = safeClaimConflictDetails(body.claim);
+    else if (code === "club_active_game_exists") details = safeActiveGameDetails(body.activeGame);
   } catch {
     // Non-JSON failures still retain their HTTP status.
   }
-  throw new ApiError(message, response.status, code);
+  throw new ApiError(message, response.status, code, details);
 };
 
 const clubHeaders = (clubId: string | undefined, json = false): HeadersInit => ({
   ...(json ? { "content-type": "application/json" } : {}),
   ...(clubId === undefined ? {} : { "x-club-id": clubId }),
+});
+
+const gameSessionClaimHeaders = (
+  credential: GameSessionClaimCredential,
+  clubId: string | undefined,
+  json = false,
+): HeadersInit => ({
+  ...clubHeaders(clubId, json),
+  "x-game-claim-id": credential.claimId,
+  "x-game-claim-generation": String(credential.claimGeneration),
 });
 
 const persistenceRequestTimeoutMs = 4_000;
@@ -431,11 +507,12 @@ export const deletePlayer = async (playerId: string, clubId?: string): Promise<v
 export const saveGameSession = async (
   gameId: string,
   mutation: GameSessionMutation,
+  credential: GameSessionClaimCredential,
   clubId?: string,
 ): Promise<RemoteGameSession> => {
   const response = await fetchPersistenceRequest(`/api/game-sessions/${gameId}`, {
     method: "PUT",
-    headers: clubHeaders(clubId, true),
+    headers: gameSessionClaimHeaders(credential, clubId, true),
     body: JSON.stringify(mutation),
   });
   if (!response.ok) return throwApiError(response, "Unable to save the game session");
@@ -445,6 +522,7 @@ export const saveGameSession = async (
 export const saveGameSessionOperation = async (
   gameId: string,
   operation: GameSessionOperation,
+  credential: GameSessionClaimCredential,
   clubId?: string,
 ): Promise<GameSessionOperationResponse> => {
   const request = (() => {
@@ -518,11 +596,52 @@ export const saveGameSessionOperation = async (
   })();
   const response = await fetchPersistenceRequest(request.url, {
     method: request.method,
-    headers: clubHeaders(clubId, true),
+    headers: gameSessionClaimHeaders(credential, clubId, true),
     body: JSON.stringify(request.body),
   });
   if (!response.ok) return throwApiError(response, "Unable to save the game session operation");
   return (await response.json()) as GameSessionOperationResponse;
+};
+
+export const claimGameSession = async (
+  gameId: string,
+  credential: GameSessionClaimCredential,
+  clubId?: string,
+): Promise<GameSessionClaim> => {
+  const response = await fetchPersistenceRequest(`/api/game-sessions/${gameId}/claim`, {
+    method: "POST",
+    headers: gameSessionClaimHeaders(credential, clubId, true),
+    body: "{}",
+  });
+  if (!response.ok) return throwApiError(response, "Unable to claim the game session");
+  return ((await response.json()) as { claim: GameSessionClaim }).claim;
+};
+
+export const takeoverGameSession = async (
+  gameId: string,
+  credential: GameSessionClaimCredential,
+  clubId?: string,
+): Promise<GameSessionClaim> => {
+  const response = await fetchPersistenceRequest(`/api/game-sessions/${gameId}/takeover`, {
+    method: "POST",
+    headers: gameSessionClaimHeaders(credential, clubId, true),
+    body: "{}",
+  });
+  if (!response.ok) return throwApiError(response, "Unable to take over the game session");
+  return ((await response.json()) as { claim: GameSessionClaim }).claim;
+};
+
+export const releaseGameSession = async (
+  gameId: string,
+  credential: GameSessionClaimCredential,
+  clubId?: string,
+): Promise<void> => {
+  const response = await fetchPersistenceRequest(`/api/game-sessions/${gameId}/claim`, {
+    method: "DELETE",
+    headers: gameSessionClaimHeaders(credential, clubId),
+    keepalive: true,
+  });
+  if (!response.ok) return throwApiError(response, "Unable to release the game session");
 };
 
 export const listActiveGameSessions = async (
@@ -576,11 +695,12 @@ export const getGameSession = async (
 export const clearGameSession = async (
   gameId: string,
   expectedRevision: number,
+  credential: GameSessionClaimCredential,
   clubId?: string,
 ): Promise<void> => {
   const response = await fetch(
     `/api/game-sessions/${gameId}?expectedRevision=${encodeURIComponent(expectedRevision)}`,
-    { method: "DELETE", headers: clubHeaders(clubId) },
+    { method: "DELETE", headers: gameSessionClaimHeaders(credential, clubId) },
   );
   if (!response.ok) return throwApiError(response, "Unable to clear the game session");
 };

@@ -429,6 +429,12 @@ ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS replay_version INTEGER NOT NU
 ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS club_id UUID;
 ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS ruleset_id TEXT;
 ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS ruleset_version INTEGER;
+ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS claim_id UUID NULL;
+ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS claim_generation BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS claimed_by_user_id UUID NULL;
+ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ NULL;
+ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS claim_last_seen_at TIMESTAMPTZ NULL;
+ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS claim_expires_at TIMESTAMPTZ NULL;
 UPDATE game_sessions
    SET club_id = COALESCE(club_id, '00000000-0000-4000-8000-000000000101'),
        ruleset_id = COALESCE(ruleset_id, 'club-mafia'),
@@ -450,6 +456,82 @@ BEGIN
     ALTER TABLE game_sessions
       ADD CONSTRAINT game_sessions_ruleset_fk
       FOREIGN KEY (ruleset_id, ruleset_version) REFERENCES game_rulesets (id, version)
+      ON UPDATE RESTRICT ON DELETE RESTRICT;
+  END IF;
+END $$;
+
+DO $$
+DECLARE
+  claim_metadata_constraint_is_valid BOOLEAN;
+  claim_holder_constraint_is_valid BOOLEAN;
+BEGIN
+  SELECT constraint_row.contype = 'c'
+     AND constraint_row.convalidated
+     AND pg_get_constraintdef(constraint_row.oid) =
+       'CHECK (((claim_generation >= 0) AND (((claim_id IS NULL) AND (claimed_by_user_id IS NULL) AND (claimed_at IS NULL) AND (claim_last_seen_at IS NULL) AND (claim_expires_at IS NULL)) OR ((claim_id IS NOT NULL) AND (claim_generation > 0) AND (claimed_by_user_id IS NOT NULL) AND (claimed_at IS NOT NULL) AND (claim_last_seen_at IS NOT NULL) AND (claim_expires_at IS NOT NULL) AND (claim_last_seen_at >= claimed_at) AND (claim_expires_at > claim_last_seen_at)))))'
+    INTO claim_metadata_constraint_is_valid
+    FROM pg_constraint AS constraint_row
+   WHERE constraint_row.conrelid = 'game_sessions'::regclass
+     AND constraint_row.conname = 'game_sessions_claim_metadata_ck';
+  IF claim_metadata_constraint_is_valid IS FALSE THEN
+    RAISE EXCEPTION USING
+      ERRCODE = 'integrity_constraint_violation',
+      MESSAGE = 'game_sessions_claim_metadata_ck has unexpected semantics';
+  END IF;
+  IF claim_metadata_constraint_is_valid IS NULL THEN
+    ALTER TABLE game_sessions
+      ADD CONSTRAINT game_sessions_claim_metadata_ck CHECK (
+        claim_generation >= 0
+        AND (
+          (claim_id IS NULL
+            AND claimed_by_user_id IS NULL
+            AND claimed_at IS NULL
+            AND claim_last_seen_at IS NULL
+            AND claim_expires_at IS NULL)
+          OR
+          (claim_id IS NOT NULL
+            AND claim_generation > 0
+            AND claimed_by_user_id IS NOT NULL
+            AND claimed_at IS NOT NULL
+            AND claim_last_seen_at IS NOT NULL
+            AND claim_expires_at IS NOT NULL
+            AND claim_last_seen_at >= claimed_at
+            AND claim_expires_at > claim_last_seen_at)
+        )
+      );
+  END IF;
+
+  SELECT constraint_row.contype = 'f'
+     AND constraint_row.conrelid = 'game_sessions'::regclass
+     AND constraint_row.confrelid = 'users'::regclass
+     AND constraint_row.conkey = ARRAY[
+       (SELECT attribute.attnum
+          FROM pg_attribute AS attribute
+         WHERE attribute.attrelid = 'game_sessions'::regclass
+           AND attribute.attname = 'claimed_by_user_id')
+     ]::smallint[]
+     AND constraint_row.confkey = ARRAY[
+       (SELECT attribute.attnum
+          FROM pg_attribute AS attribute
+         WHERE attribute.attrelid = 'users'::regclass
+           AND attribute.attname = 'id')
+     ]::smallint[]
+     AND constraint_row.confupdtype = 'r'
+     AND constraint_row.confdeltype = 'r'
+     AND constraint_row.convalidated
+    INTO claim_holder_constraint_is_valid
+    FROM pg_constraint AS constraint_row
+   WHERE constraint_row.conrelid = 'game_sessions'::regclass
+     AND constraint_row.conname = 'game_sessions_claimed_by_user_fk';
+  IF claim_holder_constraint_is_valid IS FALSE THEN
+    RAISE EXCEPTION USING
+      ERRCODE = 'integrity_constraint_violation',
+      MESSAGE = 'game_sessions_claimed_by_user_fk has unexpected semantics';
+  END IF;
+  IF claim_holder_constraint_is_valid IS NULL THEN
+    ALTER TABLE game_sessions
+      ADD CONSTRAINT game_sessions_claimed_by_user_fk
+      FOREIGN KEY (claimed_by_user_id) REFERENCES users (id)
       ON UPDATE RESTRICT ON DELETE RESTRICT;
   END IF;
 END $$;
@@ -1577,3 +1659,65 @@ ALTER TABLE game_events DROP CONSTRAINT IF EXISTS game_events_parent_fk;
 ALTER TABLE game_sessions DROP CONSTRAINT IF EXISTS game_sessions_replay_base_event_fk;
 ALTER TABLE game_sessions DROP CONSTRAINT IF EXISTS game_sessions_head_event_fk;
 ALTER TABLE game_sessions DROP CONSTRAINT IF EXISTS game_sessions_reset_return_event_fk;
+
+DO $$
+DECLARE
+  duplicate_active_sessions TEXT;
+BEGIN
+  SELECT string_agg(
+           format('club_id=%s game_ids=%s', club_id, game_ids),
+           '; ' ORDER BY club_id
+         )
+    INTO duplicate_active_sessions
+    FROM (
+      SELECT club_id, array_agg(id ORDER BY id) AS game_ids
+        FROM game_sessions
+       WHERE status = 'active'
+       GROUP BY club_id
+      HAVING COUNT(*) > 1
+    ) AS duplicates;
+
+  IF duplicate_active_sessions IS NOT NULL THEN
+    RAISE EXCEPTION USING
+      ERRCODE = 'P0001',
+      MESSAGE = 'game_sessions_one_active_per_club_idx cannot be created because duplicate active sessions exist',
+      DETAIL = duplicate_active_sessions,
+      HINT = 'Choose one active session per club and delete only operator-approved obsolete game IDs before rerunning the migration.';
+  END IF;
+END $$;
+
+DO $$
+DECLARE
+  active_index_is_valid BOOLEAN;
+BEGIN
+  IF to_regclass('game_sessions_one_active_per_club_idx') IS NOT NULL THEN
+    SELECT index_row.indisunique
+           AND index_row.indisvalid
+           AND index_row.indisready
+           AND index_row.indnkeyatts = 1
+           AND index_row.indnatts = 1
+           AND (index_row.indkey::SMALLINT[])[0] = club_column.attnum
+           AND pg_get_expr(index_row.indpred, index_row.indrelid) = '(status = ''active''::text)'
+      INTO active_index_is_valid
+      FROM pg_class AS index_relation
+      LEFT JOIN pg_index AS index_row ON index_row.indexrelid = index_relation.oid
+      LEFT JOIN pg_class AS table_relation ON table_relation.oid = index_row.indrelid
+      LEFT JOIN pg_attribute AS club_column
+        ON club_column.attrelid = table_relation.oid
+       AND club_column.attname = 'club_id'
+     WHERE index_relation.oid = to_regclass('game_sessions_one_active_per_club_idx')
+       AND table_relation.relname = 'game_sessions'
+       AND table_relation.relnamespace = to_regnamespace(current_schema());
+
+    IF active_index_is_valid IS DISTINCT FROM TRUE THEN
+      RAISE EXCEPTION USING
+        ERRCODE = 'P0001',
+        MESSAGE = 'game_sessions_one_active_per_club_idx has unexpected semantics',
+        HINT = 'Inspect and remove only the incorrectly shaped index before rerunning the migration.';
+    END IF;
+  END IF;
+END $$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS game_sessions_one_active_per_club_idx
+  ON game_sessions (club_id)
+  WHERE status = 'active';

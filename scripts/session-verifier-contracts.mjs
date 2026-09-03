@@ -91,6 +91,20 @@ export const classifyBrowserApiRequest = ({ method, url, expectedOrigin, ownedGa
       return { kind: "owned-session-mutation", gameId };
     }
   }
+  const sessionClaim = pathname.match(/^\/api\/game-sessions\/([0-9a-f-]+)\/(claim|takeover)$/i);
+  if (sessionClaim !== null && uuidPattern.test(sessionClaim[1]) && requestUrl.search === "") {
+    const gameId = canonicalUuid(sessionClaim[1]);
+    const action = sessionClaim[2].toLowerCase();
+    const allowed =
+      (normalizedMethod === "POST" && ["claim", "takeover"].includes(action)) ||
+      (normalizedMethod === "DELETE" && action === "claim");
+    if (allowed) {
+      if (!ownedGameIds.has(gameId)) {
+        throw new Error("Refusing an unsafe browser request for an unowned game session");
+      }
+      return { kind: "owned-session-mutation", gameId };
+    }
+  }
   throw new Error(`Refusing unexpected unsafe browser request: ${normalizedMethod} ${pathname}`);
 };
 

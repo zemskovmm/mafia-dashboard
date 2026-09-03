@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
 import { buildApp } from "./app.js";
 import { DEFAULT_CLUB_ID } from "./club-store.js";
@@ -38,6 +38,10 @@ const roleDeck = [
   "mafia",
   "don",
 ] as const;
+const claimHeaders = (claimId: string = randomUUID(), claimGeneration = 0) => ({
+  "x-game-claim-id": claimId,
+  "x-game-claim-generation": String(claimGeneration),
+});
 const createSessionPlayers = (clubId = DEFAULT_CLUB_ID) =>
   Promise.all(
     Array.from({ length: 11 }, (_, index) =>
@@ -82,6 +86,45 @@ const roleGiveawayState = (
   undoHistory: [],
 });
 
+type ActiveSessionKey = { readonly club_id: string; readonly id: string };
+const activeSessionKey = ({ club_id, id }: ActiveSessionKey): string => `${club_id}:${id}`;
+let activeSessionsBeforeTest = new Set<string>();
+
+beforeEach(async () => {
+  const active = await pool.query<ActiveSessionKey>(
+    "SELECT club_id, id FROM game_sessions WHERE status = 'active'",
+  );
+  activeSessionsBeforeTest = new Set(active.rows.map(activeSessionKey));
+});
+
+afterEach(async () => {
+  const active = await pool.query<ActiveSessionKey>(
+    "SELECT club_id, id FROM game_sessions WHERE status = 'active'",
+  );
+  const created = active.rows.filter((row) => !activeSessionsBeforeTest.has(activeSessionKey(row)));
+  if (created.length === 0) return;
+  const clubIds = created.map(({ club_id }) => club_id);
+  const gameIds = created.map(({ id }) => id);
+  await pool.query(
+    `WITH targets AS (
+       SELECT * FROM UNNEST($1::uuid[], $2::uuid[]) AS target(club_id, game_id)
+     )
+     DELETE FROM game_events AS event
+      USING targets AS target
+      WHERE event.club_id = target.club_id AND event.game_id = target.game_id`,
+    [clubIds, gameIds],
+  );
+  await pool.query(
+    `WITH targets AS (
+       SELECT * FROM UNNEST($1::uuid[], $2::uuid[]) AS target(club_id, game_id)
+     )
+     DELETE FROM game_sessions AS session
+      USING targets AS target
+      WHERE session.club_id = target.club_id AND session.id = target.game_id`,
+    [clubIds, gameIds],
+  );
+});
+
 beforeAll(async () => {
   await app.ready();
 });
@@ -118,6 +161,7 @@ describe("server API", () => {
 
   it("returns the exact completed-session retry but rejects new mutation and deletion", async () => {
     const gameId = randomUUID();
+    const claimId = randomUUID();
     const players = await createSessionPlayers();
     const payload = {
       name: "Completion retry contract",
@@ -127,23 +171,31 @@ describe("server API", () => {
       results: null,
     };
     expect(
-      await app.inject({ method: "PUT", url: `/api/game-sessions/${gameId}`, payload }),
+      await app.inject({
+        method: "PUT",
+        url: `/api/game-sessions/${gameId}`,
+        headers: claimHeaders(claimId),
+        payload,
+      }),
     ).toHaveProperty("statusCode", 201);
     await pool.query("UPDATE game_sessions SET status = 'completed' WHERE id = $1", [gameId]);
 
     const retry = await app.inject({
       method: "PUT",
       url: `/api/game-sessions/${gameId}`,
+      headers: claimHeaders(claimId),
       payload,
     });
     const changed = await app.inject({
       method: "PUT",
       url: `/api/game-sessions/${gameId}`,
+      headers: claimHeaders(claimId, 1),
       payload: { ...payload, mutationId: randomUUID(), baseRevision: 1 },
     });
     const deletion = await app.inject({
       method: "DELETE",
       url: `/api/game-sessions/${gameId}?expectedRevision=1`,
+      headers: claimHeaders(claimId, 1),
     });
 
     expect(retry.statusCode).toBe(200);
@@ -318,11 +370,12 @@ describe("server API", () => {
     );
 
     const gameId = randomUUID();
+    const gameClaimId = randomUUID();
     const gamePlayers = await createSessionPlayers(secondClubId);
     const savedGame = await app.inject({
       method: "PUT",
       url: `/api/game-sessions/${gameId}`,
-      headers: { ...authHeaders, "x-club-id": secondClubId },
+      headers: { ...authHeaders, "x-club-id": secondClubId, ...claimHeaders(gameClaimId) },
       payload: {
         name: "Tenant table",
         mutationId: randomUUID(),
@@ -472,12 +525,13 @@ describe("server API", () => {
     expect(userEvents.statusCode).toBe(200);
     expect(userEvents.json()).toEqual(managerEvents.json());
     const sessionGameId = randomUUID();
+    const sessionClaimId = randomUUID();
     const sessionPlayers = await createSessionPlayers(club.id);
     await expect(
       userApp.inject({
         method: "PUT",
         url: `/api/game-sessions/${sessionGameId}`,
-        headers,
+        headers: { ...headers, ...claimHeaders(sessionClaimId) },
         payload: {
           name: "Regular user session",
           mutationId: randomUUID(),
@@ -1231,9 +1285,11 @@ describe("server API", () => {
     });
     const gamePlayers = await createSessionPlayers();
     const gameId = randomUUID();
+    const claimId = randomUUID();
     const setup = await app.inject({
       method: "PUT",
       url: `/api/game-sessions/${gameId}`,
+      headers: claimHeaders(claimId),
       payload: {
         name: "Protected active table",
         mutationId: randomUUID(),
@@ -1261,6 +1317,7 @@ describe("server API", () => {
     const cleared = await app.inject({
       method: "DELETE",
       url: `/api/game-sessions/${gameId}?expectedRevision=1`,
+      headers: claimHeaders(claimId, 1),
     });
     expect(cleared.statusCode).toBe(204);
     const deletedAfterClear = await app.inject({
@@ -1683,14 +1740,17 @@ describe("server API", () => {
       undoHistory: [],
     };
 
+    const claimId = randomUUID();
     const saved = await app.inject({
       method: "PUT",
       url: `/api/game-sessions/${gameId}`,
+      headers: claimHeaders(claimId),
       payload: { name: "Role giveaway", mutationId, baseRevision: 0, state, results: null },
     });
     const retried = await app.inject({
       method: "PUT",
       url: `/api/game-sessions/${gameId}`,
+      headers: claimHeaders(claimId),
       payload: { name: "Role giveaway", mutationId, baseRevision: 0, state, results: null },
     });
     const listed = await app.inject({ method: "GET", url: "/api/game-sessions" });
@@ -1791,12 +1851,75 @@ describe("server API", () => {
     );
   });
 
+  it("returns a privacy-safe active-game conflict for a second session in one club", async () => {
+    const createdClub = await app.inject({
+      method: "POST",
+      url: "/api/clubs",
+      payload: {
+        name: `Active game conflict ${randomUUID().slice(0, 8)}`,
+        city: "Málaga",
+        headerLogo: null,
+        cardLogo: null,
+        language: "en",
+        ownerConsent: true,
+      },
+    });
+    expect(createdClub.statusCode).toBe(201);
+    const headers = { "x-club-id": createdClub.json().club.id as string };
+    const existingClaimId = randomUUID();
+    const players = await createSessionPlayers(headers["x-club-id"]);
+    const existingGameId = randomUUID();
+    const existing = await app.inject({
+      method: "PUT",
+      url: `/api/game-sessions/${existingGameId}`,
+      headers: { ...headers, ...claimHeaders(existingClaimId) },
+      payload: {
+        name: "Existing protected game",
+        mutationId: randomUUID(),
+        baseRevision: 0,
+        state: roleGiveawayState(players.slice(0, 10), players[10]!, true),
+        results: null,
+      },
+    });
+    expect(existing.statusCode).toBe(201);
+
+    const conflict = await app.inject({
+      method: "PUT",
+      url: `/api/game-sessions/${randomUUID()}`,
+      headers: { ...headers, ...claimHeaders() },
+      payload: {
+        name: "Second protected game",
+        mutationId: randomUUID(),
+        baseRevision: 0,
+        state: roleGiveawayState(players.slice(0, 10), players[10]!),
+        results: null,
+      },
+    });
+
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.json()).toEqual({
+      error: "club_active_game_exists",
+      activeGame: {
+        gameId: existingGameId,
+        name: "Existing protected game",
+        phase: "setup-roles",
+        day: 0,
+        updatedAt: expect.any(String),
+      },
+    });
+    expect(conflict.body).not.toContain("state");
+    expect(conflict.body).not.toContain("assignments");
+    expect(conflict.body).not.toContain("sheriff");
+  });
+
   it("rejects legacy mutations for an authoritative game session", async () => {
     const gameId = randomUUID();
+    const claimId = randomUUID();
     const players = await createSessionPlayers();
     await app.inject({
       method: "PUT",
       url: `/api/game-sessions/${gameId}`,
+      headers: claimHeaders(claimId),
       payload: {
         name: "Authoritative table",
         mutationId: randomUUID(),
@@ -1859,6 +1982,7 @@ describe("server API", () => {
 
   it("returns a conflict when a mutation id is reused with different content", async () => {
     const gameId = randomUUID();
+    const claimId = randomUUID();
     const mutationId = randomUUID();
     const players = await createSessionPlayers();
     const state = {
@@ -1868,12 +1992,14 @@ describe("server API", () => {
     await app.inject({
       method: "PUT",
       url: `/api/game-sessions/${gameId}`,
+      headers: claimHeaders(claimId),
       payload: { name: "Exact retry", mutationId, baseRevision: 0, state, results: null },
     });
 
     const response = await app.inject({
       method: "PUT",
       url: `/api/game-sessions/${gameId}`,
+      headers: claimHeaders(claimId),
       payload: {
         name: "Exact retry",
         mutationId,
@@ -2052,6 +2178,14 @@ describe("server API", () => {
       { method: "GET", url: `/api/game-sessions/${id}` },
       { method: "PUT", url: `/api/game-sessions/${id}` },
       { method: "DELETE", url: `/api/game-sessions/${id}?expectedRevision=0` },
+      { method: "POST", url: `/api/game-sessions/${id}/claim` },
+      { method: "POST", url: `/api/game-sessions/${id}/takeover` },
+      { method: "DELETE", url: `/api/game-sessions/${id}/claim` },
+      { method: "POST", url: `/api/game-sessions/${id}/normalize` },
+      { method: "POST", url: `/api/game-sessions/${id}/start` },
+      { method: "POST", url: `/api/game-sessions/${id}/events` },
+      { method: "POST", url: `/api/game-sessions/${id}/head` },
+      { method: "POST", url: `/api/game-sessions/${id}/complete` },
       { method: "POST", url: "/api/games" },
       { method: "DELETE", url: `/api/games/${id}` },
       { method: "POST", url: `/api/games/${id}/events/truncate` },
@@ -2137,6 +2271,14 @@ describe("server API", () => {
       { method: "GET", url: `/api/game-sessions/${id}` },
       { method: "PUT", url: `/api/game-sessions/${id}` },
       { method: "DELETE", url: `/api/game-sessions/${id}?expectedRevision=0` },
+      { method: "POST", url: `/api/game-sessions/${id}/claim` },
+      { method: "POST", url: `/api/game-sessions/${id}/takeover` },
+      { method: "DELETE", url: `/api/game-sessions/${id}/claim` },
+      { method: "POST", url: `/api/game-sessions/${id}/normalize` },
+      { method: "POST", url: `/api/game-sessions/${id}/start` },
+      { method: "POST", url: `/api/game-sessions/${id}/events` },
+      { method: "POST", url: `/api/game-sessions/${id}/head` },
+      { method: "POST", url: `/api/game-sessions/${id}/complete` },
       { method: "POST", url: "/api/games" },
       { method: "DELETE", url: `/api/games/${id}` },
       { method: "POST", url: `/api/games/${id}/events/truncate` },
@@ -2177,5 +2319,109 @@ describe("server API", () => {
     await pool.query("DELETE FROM users WHERE id = ANY($1::uuid[])", [
       [regularUser.id, outsider.id],
     ]);
+  });
+
+  it("creates and renews an active game-session claim without returning its credential", async () => {
+    const gameId = randomUUID();
+    const claimId = randomUUID().toUpperCase();
+    const players = await createSessionPlayers();
+    const headers = {
+      "x-game-claim-id": claimId,
+      "x-game-claim-generation": "0",
+    };
+    const payload = {
+      name: "Claimed role giveaway",
+      mutationId: randomUUID(),
+      baseRevision: 0,
+      state: roleGiveawayState(players.slice(0, 10), players[10]!),
+      results: null,
+    };
+
+    const missingClaim = await app.inject({
+      method: "PUT",
+      url: `/api/game-sessions/${randomUUID()}`,
+      payload,
+    });
+    expect(missingClaim.statusCode).toBe(400);
+
+    const created = await app.inject({
+      method: "PUT",
+      url: `/api/game-sessions/${gameId}`,
+      headers,
+      payload,
+    });
+    expect(created.statusCode).toBe(201);
+    expect(created.json()).toMatchObject({
+      gameId,
+      claim: { generation: 1, expiresAt: expect.any(String) },
+    });
+    expect(created.body).not.toContain(claimId);
+
+    const renewed = await app.inject({
+      method: "POST",
+      url: `/api/game-sessions/${gameId}/claim`,
+      headers: { ...headers, "x-game-claim-generation": "1" },
+    });
+    expect(renewed.statusCode).toBe(200);
+    expect(renewed.json()).toMatchObject({
+      claim: { generation: 1, expiresAt: expect.any(String) },
+    });
+    expect(renewed.body).not.toContain(claimId);
+
+    const replacementClaimId = randomUUID();
+    const takeover = await app.inject({
+      method: "POST",
+      url: `/api/game-sessions/${gameId}/takeover`,
+      headers: claimHeaders(replacementClaimId),
+    });
+    expect(takeover.statusCode).toBe(200);
+    expect(takeover.json()).toMatchObject({
+      claim: { generation: 2, expiresAt: expect.any(String) },
+    });
+    const takeoverRetry = await app.inject({
+      method: "POST",
+      url: `/api/game-sessions/${gameId}/takeover`,
+      headers: claimHeaders(replacementClaimId),
+    });
+    expect(takeoverRetry.statusCode).toBe(200);
+    expect(takeoverRetry.json()).toMatchObject({ claim: { generation: 2 } });
+
+    const staleRenewal = await app.inject({
+      method: "POST",
+      url: `/api/game-sessions/${gameId}/claim`,
+      headers: claimHeaders(claimId, 1),
+    });
+    expect(staleRenewal.statusCode).toBe(409);
+    expect(staleRenewal.json()).toMatchObject({
+      error: "game_session_claim_conflict",
+      claim: { holderName: "Mafia Malaga owner", expiresAt: expect.any(String) },
+    });
+    expect(staleRenewal.body).not.toContain(claimId);
+    expect(staleRenewal.body).not.toContain("state");
+    expect(staleRenewal.body).not.toContain("sheriff");
+
+    const duplicate = await app.inject({
+      method: "PUT",
+      url: `/api/game-sessions/${gameId}`,
+      headers: claimHeaders(claimId),
+      payload,
+    });
+    expect(duplicate.statusCode).toBe(200);
+    expect(duplicate.json()).toMatchObject({ duplicate: true, revision: 1 });
+    const staleWrite = await app.inject({
+      method: "PUT",
+      url: `/api/game-sessions/${gameId}`,
+      headers: claimHeaders(claimId, 1),
+      payload: { ...payload, mutationId: randomUUID(), baseRevision: 1 },
+    });
+    expect(staleWrite.statusCode).toBe(409);
+    expect(staleWrite.json()).toMatchObject({ error: "game_session_claim_conflict" });
+
+    const released = await app.inject({
+      method: "DELETE",
+      url: `/api/game-sessions/${gameId}/claim`,
+      headers: claimHeaders(replacementClaimId, 2),
+    });
+    expect(released.statusCode).toBe(204);
   });
 });

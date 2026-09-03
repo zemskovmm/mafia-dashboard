@@ -17,6 +17,7 @@ import type { Pool, PoolClient } from "pg";
 import {
   assertClubGameNotDeleted,
   lockAggregateProjectionTables,
+  lockClubActiveGame,
   lockClubGame,
 } from "./game-lifecycle.js";
 import { initializeSchema } from "./initialize-schema.js";
@@ -96,6 +97,31 @@ export interface NormalizeGameSessionInput {
   readonly gameId: string;
   readonly mutationId: string;
   readonly baseRevision: number;
+  readonly claim: GameSessionClaimCredential;
+}
+
+export interface GameSessionClaimCredential {
+  readonly claimId: string;
+  readonly claimGeneration: number;
+}
+
+export interface GameSessionClaimInput {
+  readonly clubId?: string;
+  readonly gameId: string;
+  readonly claim: GameSessionClaimCredential;
+  readonly claimedByUserId: string;
+}
+
+export interface GameSessionClaimResult {
+  readonly generation: number;
+  readonly expiresAt: Date;
+}
+
+export interface ClearGameSessionInput {
+  readonly clubId?: string;
+  readonly gameId: string;
+  readonly expectedRevision?: number;
+  readonly claim: GameSessionClaimCredential;
 }
 
 export interface StartGameSessionInput extends NormalizeGameSessionInput {
@@ -124,6 +150,8 @@ export interface SaveGameSessionInput {
   readonly baseRevision?: number;
   readonly state: StoredGameSessionState;
   readonly results: StoredGameResults | null;
+  readonly claim: GameSessionClaimCredential;
+  readonly claimedByUserId: string;
 }
 
 export interface StoredGameSession {
@@ -139,6 +167,10 @@ export interface StoredGameSession {
   readonly results: StoredGameResults | null;
   readonly replayBaseEventId?: string | null;
   readonly previewableFromEventId?: string | null;
+  readonly claim: {
+    readonly generation: number;
+    readonly expiresAt: Date | null;
+  };
 }
 
 export interface GameSessionSummary {
@@ -146,6 +178,14 @@ export interface GameSessionSummary {
   readonly name: string;
   readonly revision: number;
   readonly hostName: string | null;
+  readonly phase: string;
+  readonly day: number;
+  readonly updatedAt: Date;
+}
+
+export interface ClubActiveGameSummary {
+  readonly gameId: string;
+  readonly name: string;
   readonly phase: string;
   readonly day: number;
   readonly updatedAt: Date;
@@ -190,6 +230,12 @@ interface SessionRow {
   reset_return_event_id: string | null;
   reset_return_was_completed: boolean;
   replay_version: number;
+  claim_id: string | null;
+  claim_generation: string | number;
+  claimed_by_user_id: string | null;
+  claimed_at: Date | null;
+  claim_last_seen_at: Date | null;
+  claim_expires_at: Date | null;
 }
 
 interface CompletedSessionRow extends SessionRow {
@@ -206,7 +252,8 @@ interface DuplicateSessionRow extends SessionRow {
 
 const sessionColumns =
   "id, ruleset_id, ruleset_version, name, revision, status, updated_at, state, results, initial_game, " +
-  "replay_base_event_id, head_event_id, reset_return_event_id, reset_return_was_completed, replay_version";
+  "replay_base_event_id, head_event_id, reset_return_event_id, reset_return_was_completed, replay_version, " +
+  "claim_id, claim_generation, claimed_by_user_id, claimed_at, claim_last_seen_at, claim_expires_at";
 
 interface CanonicalEventRow {
   id: string;
@@ -387,6 +434,7 @@ const mapSession = (row: SessionRow, duplicate: boolean): StoredGameSession => (
   updatedAt: row.updated_at,
   state: materializeSessionState(row.state),
   results: normalizeStoredResults(row.results),
+  claim: { generation: Number(row.claim_generation), expiresAt: row.claim_expires_at },
 });
 
 const hydrateSessionFromEvents = (
@@ -440,6 +488,7 @@ const hydrateSessionFromEvents = (
     results: normalizeStoredResults(row.results),
     replayBaseEventId: row.replay_base_event_id,
     previewableFromEventId: row.replay_base_event_id,
+    claim: { generation: Number(row.claim_generation), expiresAt: row.claim_expires_at },
   };
 };
 
@@ -1159,6 +1208,66 @@ export class GameSessionOperationError extends Error {
   }
 }
 
+export class ClubActiveGameExistsError extends GameSessionOperationError {
+  public override readonly name = "ClubActiveGameExistsError";
+
+  public constructor(public readonly activeGame: ClubActiveGameSummary) {
+    super("club_active_game_exists", "The selected club already has an active game session");
+  }
+}
+
+const activeGameSummary = async (
+  queryable: Queryable,
+  clubId: string,
+): Promise<ClubActiveGameSummary | null> => {
+  const result = await queryable.query<SessionRow>(
+    `SELECT ${sessionColumns}
+       FROM game_sessions
+      WHERE club_id = $1 AND status = 'active'
+      ORDER BY updated_at DESC, id
+      LIMIT 1`,
+    [clubId],
+  );
+  const row = result.rows[0];
+  if (row === undefined) return null;
+  const game =
+    row.initial_game === null
+      ? deriveCurrentGame(row.state)
+      : (await hydrateSession(queryable, row, clubId, false)).state.game;
+  return {
+    gameId: row.id,
+    name: row.name,
+    phase: game?.phase ?? setupPhase(row.state.setup),
+    day: game?.day ?? 0,
+    updatedAt: row.updated_at,
+  };
+};
+
+const isActiveGameUniqueViolation = (error: unknown): boolean => {
+  if (typeof error !== "object" || error === null) return false;
+  const pgError = error as { readonly code?: unknown; readonly constraint?: unknown };
+  return pgError.code === "23505" && pgError.constraint === "game_sessions_one_active_per_club_idx";
+};
+
+const activeGameAfterUniqueViolation = async (
+  pool: Pool,
+  clubId: string,
+): Promise<ClubActiveGameSummary | null> => {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await lockClubActiveGame(client, clubId);
+    const activeGame = await activeGameSummary(client, clubId);
+    await client.query("COMMIT");
+    return activeGame;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+};
+
 export class GameSessionNotFoundError extends GameSessionOperationError {
   public override readonly name = "GameSessionNotFoundError";
 
@@ -1172,6 +1281,98 @@ const assertActiveSession = (row: Pick<SessionRow, "status">): void => {
     throw new GameSessionOperationError(
       "game_session_completed",
       "Completed sessions cannot be changed",
+    );
+  }
+};
+
+const claimGenerationOf = (row: Pick<SessionRow, "claim_generation">): number =>
+  Number(row.claim_generation);
+
+const canonicalClaimId = (claimId: string): string => claimId.toLowerCase();
+
+export interface GameSessionClaimConflict {
+  readonly holderName: string | null;
+  readonly claimedAt: Date | null;
+  readonly lastSeenAt: Date | null;
+  readonly expiresAt: Date | null;
+  readonly generation: number;
+}
+
+export class GameSessionClaimConflictError extends Error {
+  public override readonly name = "GameSessionClaimConflictError";
+  public readonly code = "game_session_claim_conflict";
+
+  public constructor(public readonly claim: GameSessionClaimConflict) {
+    super("The active game session claim is held by a different or expired writer");
+  }
+}
+
+const databaseNow = async (client: PoolClient): Promise<Date> => {
+  // Unlike CURRENT_TIMESTAMP, clock_timestamp() advances while this transaction waits on locks.
+  const result = await client.query<{ now: Date }>("SELECT clock_timestamp() AS now");
+  const now = result.rows[0]?.now;
+  if (now === undefined) throw new Error("The database did not return its current timestamp");
+  return now;
+};
+
+const claimConflictFor = async (
+  client: PoolClient,
+  row: Pick<
+    SessionRow,
+    | "claim_generation"
+    | "claimed_by_user_id"
+    | "claimed_at"
+    | "claim_last_seen_at"
+    | "claim_expires_at"
+  >,
+): Promise<GameSessionClaimConflictError> => {
+  const holder =
+    row.claimed_by_user_id === null
+      ? null
+      : await client.query<{ display_name: string }>(
+          "SELECT display_name FROM users WHERE id = $1",
+          [row.claimed_by_user_id],
+        );
+  return new GameSessionClaimConflictError({
+    holderName: holder === null ? null : (holder.rows[0]?.display_name ?? null),
+    claimedAt: row.claimed_at,
+    lastSeenAt: row.claim_last_seen_at,
+    expiresAt: row.claim_expires_at,
+    generation: claimGenerationOf(row),
+  });
+};
+
+const assertLiveClaim = async (
+  client: PoolClient,
+  row: SessionRow,
+  claim: GameSessionClaimCredential,
+  now: Date,
+): Promise<void> => {
+  if (
+    row.claim_id === canonicalClaimId(claim.claimId) &&
+    claimGenerationOf(row) === claim.claimGeneration &&
+    row.claim_expires_at !== null &&
+    row.claim_expires_at.getTime() > now.getTime()
+  ) {
+    return;
+  }
+  throw await claimConflictFor(client, row);
+};
+
+const assertMutationClaim = async (
+  client: PoolClient,
+  row: SessionRow,
+  claim: GameSessionClaimCredential,
+  now: Date,
+): Promise<void> => {
+  await assertLiveClaim(client, row, claim, now);
+};
+
+const assertInitialClaim = (input: SaveGameSessionInput): void => {
+  if (input.claim.claimGeneration !== 0) {
+    throw new GameSessionOperationError(
+      "game_session_claim_invalid",
+      "A newly created session must begin with claim generation zero",
     );
   }
 };
@@ -1199,22 +1400,218 @@ export class GameSessionStore {
     await initializeSchema(this.pool);
   }
 
-  public async clear(
-    gameId: string,
-    expectedRevision?: number,
-    clubId = DEFAULT_CLUB_ID,
-  ): Promise<void> {
+  public async claim(input: GameSessionClaimInput): Promise<GameSessionClaimResult> {
+    const clubId = input.clubId ?? DEFAULT_CLUB_ID;
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await lockClubGame(client, clubId, input.gameId);
+      const current = await client.query<SessionRow>(
+        `SELECT ${sessionColumns}
+           FROM game_sessions
+          WHERE id = $1 AND club_id = $2
+          FOR UPDATE`,
+        [input.gameId, clubId],
+      );
+      const row = current.rows[0];
+      if (row === undefined) throw new GameSessionNotFoundError();
+      assertActiveSession(row);
+      const now = await databaseNow(client);
+      const isLive =
+        row.claim_expires_at !== null && row.claim_expires_at.getTime() > now.getTime();
+      const isSameClaim =
+        isLive &&
+        row.claim_id === canonicalClaimId(input.claim.claimId) &&
+        claimGenerationOf(row) === input.claim.claimGeneration;
+      if (isSameClaim) {
+        const renewed = await client.query<{
+          claim_generation: string | number;
+          claim_expires_at: Date;
+        }>(
+          `UPDATE game_sessions
+              SET claim_last_seen_at = clock_timestamp(),
+                  claim_expires_at = clock_timestamp() + INTERVAL '45 seconds'
+            WHERE id = $1 AND club_id = $2
+          RETURNING claim_generation, claim_expires_at`,
+          [input.gameId, clubId],
+        );
+        const renewedRow = renewed.rows[0];
+        if (renewedRow === undefined) throw new Error("The renewed claim was not returned");
+        await client.query("COMMIT");
+        return {
+          generation: Number(renewedRow.claim_generation),
+          expiresAt: renewedRow.claim_expires_at,
+        };
+      }
+      if (isLive) throw await claimConflictFor(client, row);
+      const generation = claimGenerationOf(row) + 1;
+      const acquired = await client.query<{
+        claim_generation: string | number;
+        claim_expires_at: Date;
+      }>(
+        `UPDATE game_sessions
+            SET claim_id = $3, claim_generation = $4, claimed_by_user_id = $5,
+                claimed_at = clock_timestamp(), claim_last_seen_at = clock_timestamp(),
+                claim_expires_at = clock_timestamp() + INTERVAL '45 seconds'
+          WHERE id = $1 AND club_id = $2
+          RETURNING claim_generation, claim_expires_at`,
+        [
+          input.gameId,
+          clubId,
+          canonicalClaimId(input.claim.claimId),
+          generation,
+          input.claimedByUserId,
+        ],
+      );
+      const acquiredRow = acquired.rows[0];
+      if (acquiredRow === undefined) throw new Error("The acquired claim was not returned");
+      await client.query("COMMIT");
+      return {
+        generation: Number(acquiredRow.claim_generation),
+        expiresAt: acquiredRow.claim_expires_at,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async takeover(input: GameSessionClaimInput): Promise<GameSessionClaimResult> {
+    const clubId = input.clubId ?? DEFAULT_CLUB_ID;
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await lockClubGame(client, clubId, input.gameId);
+      const current = await client.query<SessionRow>(
+        `SELECT ${sessionColumns}
+           FROM game_sessions
+          WHERE id = $1 AND club_id = $2
+          FOR UPDATE`,
+        [input.gameId, clubId],
+      );
+      const row = current.rows[0];
+      if (row === undefined) throw new GameSessionNotFoundError();
+      assertActiveSession(row);
+      const now = await databaseNow(client);
+      if (
+        row.claim_id === canonicalClaimId(input.claim.claimId) &&
+        row.claim_expires_at !== null &&
+        row.claim_expires_at.getTime() > now.getTime()
+      ) {
+        const renewed = await client.query<{
+          claim_generation: string | number;
+          claim_expires_at: Date;
+        }>(
+          `UPDATE game_sessions
+              SET claim_last_seen_at = clock_timestamp(),
+                  claim_expires_at = clock_timestamp() + INTERVAL '45 seconds'
+            WHERE id = $1 AND club_id = $2
+          RETURNING claim_generation, claim_expires_at`,
+          [input.gameId, clubId],
+        );
+        const renewedRow = renewed.rows[0];
+        if (renewedRow === undefined) throw new Error("The takeover retry was not returned");
+        await client.query("COMMIT");
+        return {
+          generation: Number(renewedRow.claim_generation),
+          expiresAt: renewedRow.claim_expires_at,
+        };
+      }
+      const generation = claimGenerationOf(row) + 1;
+      const claimed = await client.query<{
+        claim_generation: string | number;
+        claim_expires_at: Date;
+      }>(
+        `UPDATE game_sessions
+            SET claim_id = $3, claim_generation = $4, claimed_by_user_id = $5,
+                claimed_at = clock_timestamp(), claim_last_seen_at = clock_timestamp(),
+                claim_expires_at = clock_timestamp() + INTERVAL '45 seconds'
+          WHERE id = $1 AND club_id = $2
+          RETURNING claim_generation, claim_expires_at`,
+        [
+          input.gameId,
+          clubId,
+          canonicalClaimId(input.claim.claimId),
+          generation,
+          input.claimedByUserId,
+        ],
+      );
+      const claimedRow = claimed.rows[0];
+      if (claimedRow === undefined) throw new Error("The takeover claim was not returned");
+      await client.query("COMMIT");
+      return {
+        generation: Number(claimedRow.claim_generation),
+        expiresAt: claimedRow.claim_expires_at,
+      };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async release(input: Omit<GameSessionClaimInput, "claimedByUserId">): Promise<void> {
+    const clubId = input.clubId ?? DEFAULT_CLUB_ID;
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      await lockClubGame(client, clubId, input.gameId);
+      const current = await client.query<SessionRow>(
+        `SELECT ${sessionColumns}
+           FROM game_sessions
+          WHERE id = $1 AND club_id = $2
+          FOR UPDATE`,
+        [input.gameId, clubId],
+      );
+      const row = current.rows[0];
+      if (row === undefined) throw new GameSessionNotFoundError();
+      assertActiveSession(row);
+      if (
+        row.claim_id !== canonicalClaimId(input.claim.claimId) ||
+        claimGenerationOf(row) !== input.claim.claimGeneration
+      ) {
+        throw await claimConflictFor(client, row);
+      }
+      await client.query(
+        `UPDATE game_sessions
+            SET claim_id = NULL, claimed_by_user_id = NULL, claimed_at = NULL,
+                claim_last_seen_at = NULL, claim_expires_at = NULL
+          WHERE id = $1 AND club_id = $2`,
+        [input.gameId, clubId],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async clear(input: ClearGameSessionInput): Promise<void> {
+    const gameId = input.gameId;
+    const expectedRevision = input.expectedRevision;
+    const clubId = input.clubId ?? DEFAULT_CLUB_ID;
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
       await lockAggregateProjectionTables(client);
       await lockClubGame(client, clubId, gameId);
-      const current = await client.query<{ revision: number; status: "active" | "completed" }>(
-        "SELECT revision, status FROM game_sessions WHERE id = $1 AND club_id = $2 FOR UPDATE",
+      const current = await client.query<SessionRow>(
+        `SELECT ${sessionColumns}
+           FROM game_sessions
+          WHERE id = $1 AND club_id = $2
+          FOR UPDATE`,
         [gameId, clubId],
       );
       const currentRow = current.rows[0];
-      if (currentRow !== undefined) assertActiveSession(currentRow);
+      if (currentRow !== undefined) {
+        assertActiveSession(currentRow);
+        await assertMutationClaim(client, currentRow, input.claim, await databaseNow(client));
+      }
       const currentRevision = currentRow?.revision ?? 0;
       if (expectedRevision !== undefined && currentRevision !== expectedRevision) {
         const deleted = await client.query(
@@ -1393,6 +1790,7 @@ export class GameSessionStore {
         return response;
       }
       assertActiveSession(row);
+      await assertMutationClaim(client, row, input.claim, await databaseNow(client));
       if (input.baseRevision !== row.revision) throw new GameSessionConflictError(row.revision);
 
       const suppliedEvents = decodePersistedReplayEvents(row.state.events);
@@ -1504,6 +1902,7 @@ export class GameSessionStore {
         return response;
       }
       assertActiveSession(row);
+      await assertMutationClaim(client, row, input.claim, await databaseNow(client));
       if (input.baseRevision !== row.revision) throw new GameSessionConflictError(row.revision);
       if (row.initial_game !== null || row.replay_base_event_id !== null) {
         throw new GameSessionOperationError(
@@ -1599,6 +1998,7 @@ export class GameSessionStore {
         return response;
       }
       assertActiveSession(row);
+      await assertMutationClaim(client, row, input.claim, await databaseNow(client));
       if (!isMeaningfulGameEventDraft(input.event)) {
         throw new GameSessionOperationError(
           "game_session_event_intermediate",
@@ -1700,6 +2100,7 @@ export class GameSessionStore {
         return response;
       }
       assertActiveSession(row);
+      await assertMutationClaim(client, row, input.claim, await databaseNow(client));
       if (input.baseRevision !== row.revision) throw new GameSessionConflictError(row.revision);
       if (
         row.initial_game === null ||
@@ -1831,6 +2232,7 @@ export class GameSessionStore {
         return response;
       }
       assertActiveSession(row);
+      await assertMutationClaim(client, row, input.claim, await databaseNow(client));
       if (input.baseRevision !== row.revision) throw new GameSessionConflictError(row.revision);
       if (row.initial_game === null || row.head_event_id === null) {
         throw new GameSessionOperationError(
@@ -1881,7 +2283,9 @@ export class GameSessionStore {
       const updated = await client.query<SessionRow>(
         `UPDATE game_sessions
             SET revision = $2, last_mutation_id = $3, status = 'completed',
-                results = $4::jsonb, updated_at = NOW()
+                results = $4::jsonb, updated_at = NOW(),
+                claim_id = NULL, claimed_by_user_id = NULL, claimed_at = NULL,
+                claim_last_seen_at = NULL, claim_expires_at = NULL
           WHERE id = $1 AND club_id = $5
         RETURNING ${sessionColumns}`,
         [input.gameId, nextRevision, input.mutationId, JSON.stringify(results), clubId],
@@ -1901,6 +2305,23 @@ export class GameSessionStore {
   }
 
   public async save(input: SaveGameSessionInput): Promise<StoredGameSession> {
+    const clubId = input.clubId ?? DEFAULT_CLUB_ID;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        return await this.saveOnce(input);
+      } catch (error) {
+        if (!isActiveGameUniqueViolation(error)) throw error;
+        const activeGame = await activeGameAfterUniqueViolation(this.pool, clubId);
+        if (activeGame !== null) throw new ClubActiveGameExistsError(activeGame);
+      }
+    }
+    throw new GameSessionOperationError(
+      "club_active_game_exists",
+      "A competing active game prevented this session from being created",
+    );
+  }
+
+  private async saveOnce(input: SaveGameSessionInput): Promise<StoredGameSession> {
     assertSnapshotGameIdentity(input);
     const snapshotGame = deriveCurrentGame(input.state);
     if (
@@ -1917,6 +2338,7 @@ export class GameSessionStore {
     try {
       await client.query("BEGIN");
       await lockAggregateProjectionTables(client);
+      await lockClubActiveGame(client, clubId);
       await lockClubGame(client, clubId, input.gameId);
       await assertClubGameNotDeleted(client, clubId, input.gameId);
 
@@ -1926,7 +2348,9 @@ export class GameSessionStore {
                 session.updated_at, session.state, session.results, session.initial_game,
                 session.replay_base_event_id, session.head_event_id,
                 session.reset_return_event_id, session.reset_return_was_completed,
-                session.replay_version,
+                session.replay_version, session.claim_id, session.claim_generation,
+                session.claimed_by_user_id, session.claimed_at, session.claim_last_seen_at,
+                session.claim_expires_at,
                 mutation.request AS mutation_request
            FROM game_session_mutations AS mutation
            JOIN game_sessions AS session
@@ -1958,6 +2382,7 @@ export class GameSessionStore {
       const currentRow = current.rows[0];
       if (currentRow !== undefined) {
         assertActiveSession(currentRow);
+        await assertMutationClaim(client, currentRow, input.claim, await databaseNow(client));
         const nextRevision = currentRow.revision + 1;
         const status = input.results === null ? "active" : "completed";
         const replayBaseEventId =
@@ -1968,7 +2393,12 @@ export class GameSessionStore {
                   state = $4::jsonb, status = $5, results = $6::jsonb,
                   initial_game = $7::jsonb, head_event_id = $8,
                   reset_return_event_id = $9, replay_base_event_id = $10,
-                  replay_version = 1, updated_at = NOW()
+                  replay_version = 1, updated_at = NOW(),
+                  claim_id = CASE WHEN $5 = 'completed' THEN NULL ELSE claim_id END,
+                  claimed_by_user_id = CASE WHEN $5 = 'completed' THEN NULL ELSE claimed_by_user_id END,
+                  claimed_at = CASE WHEN $5 = 'completed' THEN NULL ELSE claimed_at END,
+                  claim_last_seen_at = CASE WHEN $5 = 'completed' THEN NULL ELSE claim_last_seen_at END,
+                  claim_expires_at = CASE WHEN $5 = 'completed' THEN NULL ELSE claim_expires_at END
             WHERE id = $1 AND club_id = $11
           RETURNING ${sessionColumns}`,
           [
@@ -2004,8 +2434,15 @@ export class GameSessionStore {
         return response;
       }
 
-      const canonicalName = await allocateCanonicalName(client, clubId, input.name);
       const status = input.results === null ? "active" : "completed";
+      if (status === "active") {
+        assertInitialClaim(input);
+        const existingActiveGame = await activeGameSummary(client, clubId);
+        if (existingActiveGame !== null) {
+          throw new ClubActiveGameExistsError(existingActiveGame);
+        }
+      }
+      const canonicalName = await allocateCanonicalName(client, clubId, input.name);
       const replayBaseEventId =
         input.state.events?.find(({ parentEventId }) => parentEventId === null)?.id ?? null;
 
@@ -2013,9 +2450,14 @@ export class GameSessionStore {
         `INSERT INTO game_sessions
            (id, club_id, name, revision, last_mutation_id, state, status, results,
             initial_game, replay_base_event_id, head_event_id, reset_return_event_id,
-            replay_version)
+            replay_version, claim_id, claim_generation, claimed_by_user_id, claimed_at,
+            claim_last_seen_at, claim_expires_at)
          VALUES
-           ($1, $2, $3, 1, $4, $5::jsonb, $6, $7::jsonb, $8::jsonb, $9, $10, $11, 1)
+           ($1, $2, $3, 1, $4, $5::jsonb, $6, $7::jsonb, $8::jsonb, $9, $10, $11, 1,
+            $12, $13, $14,
+            CASE WHEN $12::uuid IS NULL THEN NULL ELSE clock_timestamp() END,
+            CASE WHEN $12::uuid IS NULL THEN NULL ELSE clock_timestamp() END,
+            CASE WHEN $12::uuid IS NULL THEN NULL ELSE clock_timestamp() + INTERVAL '45 seconds' END)
          RETURNING ${sessionColumns}`,
         [
           input.gameId,
@@ -2029,6 +2471,9 @@ export class GameSessionStore {
           replayBaseEventId,
           input.state.headEventId ?? null,
           input.state.resetReturnEventId ?? null,
+          status === "active" ? canonicalClaimId(input.claim.claimId) : null,
+          status === "active" ? 1 : 0,
+          status === "active" ? input.claimedByUserId : null,
         ],
       );
       await client.query(

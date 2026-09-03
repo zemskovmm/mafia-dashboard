@@ -74,6 +74,37 @@ const constraintDefinitions = async (pool: Pool) =>
     )
   ).rows;
 
+const activeSessionIndex = async (pool: Pool) =>
+  (
+    await pool.query<{
+      index_name: string;
+      is_unique: boolean;
+      is_valid: boolean;
+      is_ready: boolean;
+      predicate: string | null;
+      columns: string[];
+    }>(
+      `SELECT index_relation.relname AS index_name,
+              index_row.indisunique AS is_unique,
+              index_row.indisvalid AS is_valid,
+              index_row.indisready AS is_ready,
+              pg_get_expr(index_row.indpred, index_row.indrelid) AS predicate,
+              ARRAY(
+                SELECT attribute.attname
+                  FROM unnest(index_row.indkey::smallint[]) WITH ORDINALITY
+                    AS key_column(attnum, ordinal)
+                  JOIN pg_attribute AS attribute
+                    ON attribute.attrelid = index_row.indrelid
+                   AND attribute.attnum = key_column.attnum
+                 ORDER BY key_column.ordinal
+              )::text[] AS columns
+         FROM pg_index AS index_row
+         JOIN pg_class AS index_relation ON index_relation.oid = index_row.indexrelid
+        WHERE index_row.indrelid = 'game_sessions'::regclass
+          AND index_relation.relname = 'game_sessions_one_active_per_club_idx'`,
+    )
+  ).rows;
+
 describe("isolated schema lifecycle", () => {
   it("cleans the pool and schema when a fixture callback fails", async () => {
     let fixture: IsolatedSchema | undefined;
@@ -126,9 +157,15 @@ describe("normalized game schema migration", () => {
 
       const gameId = randomUUID();
       const playerId = randomUUID();
+      const unknownRulesetClubId = randomUUID();
       await pool.query("INSERT INTO players (id, nickname) VALUES ($1, 'Constraint player')", [
         playerId,
       ]);
+      await pool.query(
+        `INSERT INTO clubs (id, name, city, created_by)
+         VALUES ($1, 'Unknown ruleset test club', 'Granada', $2)`,
+        [unknownRulesetClubId, legacyOwnerId],
+      );
       await pool.query(
         `INSERT INTO game_sessions
            (id, name, revision, last_mutation_id, state, status)
@@ -138,9 +175,10 @@ describe("normalized game schema migration", () => {
       await expect(
         pool.query(
           `INSERT INTO game_sessions
-             (id, name, revision, last_mutation_id, state, status, ruleset_id, ruleset_version)
-           VALUES ($1, 'Unknown ruleset', 1, $2, '{}'::jsonb, 'active', 'unknown', 1)`,
-          [randomUUID(), randomUUID()],
+             (id, club_id, name, revision, last_mutation_id, state, status,
+              ruleset_id, ruleset_version)
+           VALUES ($1, $2, 'Unknown ruleset', 1, $3, '{}'::jsonb, 'active', 'unknown', 1)`,
+          [randomUUID(), unknownRulesetClubId, randomUUID()],
         ),
       ).rejects.toMatchObject({ code: "23503" });
       await expect(
@@ -208,11 +246,27 @@ describe("normalized game schema migration", () => {
       const partialPlayerId = randomUUID();
       const completedPlayerId = randomUUID();
       const hostPlayerId = randomUUID();
+      const partialHostPlayerId = randomUUID();
+      const partialClubId = randomUUID();
       await pool.query(
-        `INSERT INTO players (id, nickname)
-         VALUES ($1, 'Canonical player'), ($2, 'Partial player'),
-                ($3, 'Completed player'), ($4, 'Session host')`,
-        [canonicalPlayerId, partialPlayerId, completedPlayerId, hostPlayerId],
+        `INSERT INTO clubs (id, name, city, created_by)
+         VALUES ($1, 'Partial migration test club', 'Granada', $2)`,
+        [partialClubId, legacyOwnerId],
+      );
+      await pool.query(
+        `INSERT INTO players (id, club_id, nickname)
+         VALUES ($1, $6, 'Canonical player'), ($2, $7, 'Partial player'),
+                ($3, $6, 'Completed player'), ($4, $6, 'Session host'),
+                ($5, $7, 'Partial session host')`,
+        [
+          canonicalPlayerId,
+          partialPlayerId,
+          completedPlayerId,
+          hostPlayerId,
+          partialHostPlayerId,
+          DEFAULT_CLUB_ID,
+          partialClubId,
+        ],
       );
       const canonicalState = {
         game: { players: [{ id: canonicalPlayerId, seat: 1, role: "sheriff" }] },
@@ -225,7 +279,7 @@ describe("normalized game schema migration", () => {
       };
       const partialState = {
         game: null,
-        hostPlayerId,
+        hostPlayerId: partialHostPlayerId,
         setup: {
           setup: {
             players: [{ id: partialPlayerId, seat: 2 }],
@@ -235,10 +289,10 @@ describe("normalized game schema migration", () => {
       };
       await pool.query(
         `INSERT INTO game_sessions
-           (id, name, revision, last_mutation_id, state, status)
-         VALUES ($1, 'Canonical migration', 1, $2, $3::jsonb, 'active'),
-                ($4, 'Partial migration', 1, $5, $6::jsonb, 'active'),
-                ($7, 'Completed migration', 1, $8, $9::jsonb, 'completed')`,
+           (id, club_id, name, revision, last_mutation_id, state, status)
+         VALUES ($1, $10, 'Canonical migration', 1, $2, $3::jsonb, 'active'),
+                ($4, $11, 'Partial migration', 1, $5, $6::jsonb, 'active'),
+                ($7, $10, 'Completed migration', 1, $8, $9::jsonb, 'completed')`,
         [
           canonicalGameId,
           randomUUID(),
@@ -249,12 +303,23 @@ describe("normalized game schema migration", () => {
           completedGameId,
           randomUUID(),
           JSON.stringify({ game: null }),
+          DEFAULT_CLUB_ID,
+          partialClubId,
         ],
       );
       await pool.query(
-        `INSERT INTO game_session_players (game_id, player_id, seat, is_host)
-         VALUES ($1, $2, 1, FALSE), ($3, $4, 2, FALSE), ($3, $5, NULL, TRUE)`,
-        [canonicalGameId, canonicalPlayerId, partialSetupId, partialPlayerId, hostPlayerId],
+        `INSERT INTO game_session_players (club_id, game_id, player_id, seat, is_host)
+         VALUES ($6, $1, $2, 1, FALSE), ($7, $3, $4, 2, FALSE),
+                ($7, $3, $5, NULL, TRUE)`,
+        [
+          canonicalGameId,
+          canonicalPlayerId,
+          partialSetupId,
+          partialPlayerId,
+          partialHostPlayerId,
+          DEFAULT_CLUB_ID,
+          partialClubId,
+        ],
       );
       await pool.query(
         `INSERT INTO game_results
@@ -303,7 +368,7 @@ describe("normalized game schema migration", () => {
           }),
           expect.objectContaining({
             id: partialSetupId,
-            player_id: hostPlayerId,
+            player_id: partialHostPlayerId,
             is_host: true,
             seat: null,
             role: null,
@@ -327,6 +392,163 @@ describe("normalized game schema migration", () => {
 
       await initializeSchema(pool);
       expect(await normalized()).toEqual(afterFirstRun);
+    });
+  });
+});
+
+describe("one active game session per club migration", () => {
+  it("installs and enforces the active-session partial unique index without crossing clubs", async () => {
+    await withIsolatedSchema("one_active_session_fresh", async ({ pool }) => {
+      await initializeSchema(pool);
+
+      expect(await activeSessionIndex(pool)).toEqual([
+        {
+          index_name: "game_sessions_one_active_per_club_idx",
+          is_unique: true,
+          is_valid: true,
+          is_ready: true,
+          predicate: expect.stringMatching(/status = 'active'/),
+          columns: ["club_id"],
+        },
+      ]);
+
+      const activeGameId = randomUUID();
+      const completedGameId = randomUUID();
+      const secondClubId = randomUUID();
+      const secondClubGameId = randomUUID();
+      await pool.query(
+        `INSERT INTO clubs (id, name, city, created_by)
+         VALUES ($1, 'Independent active-session club', 'Granada', $2)`,
+        [secondClubId, legacyOwnerId],
+      );
+      await pool.query(
+        `INSERT INTO game_sessions
+           (id, name, revision, last_mutation_id, state, status)
+         VALUES ($1, 'First active session', 1, $2, '{}'::jsonb, 'active')`,
+        [activeGameId, randomUUID()],
+      );
+      await expect(
+        pool.query(
+          `INSERT INTO game_sessions
+             (id, name, revision, last_mutation_id, state, status)
+           VALUES ($1, 'Second active session', 1, $2, '{}'::jsonb, 'active')`,
+          [randomUUID(), randomUUID()],
+        ),
+      ).rejects.toMatchObject({
+        code: "23505",
+        constraint: "game_sessions_one_active_per_club_idx",
+      });
+      await expect(
+        pool.query(
+          `INSERT INTO game_sessions
+             (id, name, revision, last_mutation_id, state, status)
+           VALUES ($1, 'Completed session', 1, $2, '{}'::jsonb, 'completed')`,
+          [completedGameId, randomUUID()],
+        ),
+      ).resolves.toMatchObject({ rowCount: 1 });
+      await expect(
+        pool.query(
+          `INSERT INTO game_sessions
+             (id, club_id, name, revision, last_mutation_id, state, status)
+           VALUES ($1, $2, 'Other club active session', 1, $3, '{}'::jsonb, 'active')`,
+          [secondClubGameId, secondClubId, randomUUID()],
+        ),
+      ).resolves.toMatchObject({ rowCount: 1 });
+    });
+  });
+
+  it("fails closed on populated duplicate active sessions until an operator removes one", async () => {
+    await withIsolatedSchema("one_active_session_populated", async ({ pool }) => {
+      await initializeSchema(pool);
+      await pool.query("DROP INDEX IF EXISTS game_sessions_one_active_per_club_idx");
+
+      const firstGameId = randomUUID();
+      const obsoleteGameId = randomUUID();
+      await pool.query(
+        `INSERT INTO game_sessions
+           (id, name, revision, last_mutation_id, state, status, updated_at)
+         VALUES ($1, 'Canonical active session', 7, $2, '{"retained":true}'::jsonb, 'active', '2026-09-03T10:00:00Z'),
+                ($3, 'Obsolete active session', 3, $4, '{"obsolete":true}'::jsonb, 'active', '2026-09-03T11:00:00Z')`,
+        [firstGameId, randomUUID(), obsoleteGameId, randomUUID()],
+      );
+      const beforeFailure = (
+        await pool.query(
+          `SELECT id, name, revision, last_mutation_id, state, status, updated_at
+             FROM game_sessions
+            WHERE id = ANY($1::uuid[])
+            ORDER BY id`,
+          [[firstGameId, obsoleteGameId]],
+        )
+      ).rows;
+
+      await expect(initializeSchema(pool)).rejects.toMatchObject({
+        code: "P0001",
+        message: expect.stringContaining("game_sessions_one_active_per_club_idx"),
+        detail: expect.stringContaining(firstGameId),
+      });
+      await expect(
+        pool.query(
+          `SELECT id, name, revision, last_mutation_id, state, status, updated_at
+             FROM game_sessions
+            WHERE id = ANY($1::uuid[])
+            ORDER BY id`,
+          [[firstGameId, obsoleteGameId]],
+        ),
+      ).resolves.toMatchObject({ rows: beforeFailure });
+
+      await pool.query("DELETE FROM game_sessions WHERE id = $1", [obsoleteGameId]);
+      await initializeSchema(pool);
+      const afterRepair = await activeSessionIndex(pool);
+      const survivingRow = await pool.query(
+        `SELECT id, name, revision, state, status, updated_at
+           FROM game_sessions
+          WHERE id = $1`,
+        [firstGameId],
+      );
+
+      await initializeSchema(pool);
+      expect(await activeSessionIndex(pool)).toEqual(afterRepair);
+      expect(
+        await pool.query(
+          `SELECT id, name, revision, state, status, updated_at
+             FROM game_sessions
+            WHERE id = $1`,
+          [firstGameId],
+        ),
+      ).toEqual(survivingRow);
+    });
+  });
+
+  it("fails closed when the reserved active-session index name has different semantics", async () => {
+    await withIsolatedSchema("one_active_session_wrong_index", async ({ pool }) => {
+      await initializeSchema(pool);
+      await pool.query(`
+        DROP INDEX game_sessions_one_active_per_club_idx;
+        CREATE INDEX game_sessions_one_active_per_club_idx ON game_sessions (name);
+      `);
+
+      await expect(initializeSchema(pool)).rejects.toMatchObject({
+        code: "P0001",
+        message: "game_sessions_one_active_per_club_idx has unexpected semantics",
+      });
+      expect(await activeSessionIndex(pool)).toEqual([
+        expect.objectContaining({
+          index_name: "game_sessions_one_active_per_club_idx",
+          is_unique: false,
+          columns: ["name"],
+        }),
+      ]);
+
+      await pool.query("DROP INDEX game_sessions_one_active_per_club_idx");
+      await initializeSchema(pool);
+      expect(await activeSessionIndex(pool)).toEqual([
+        expect.objectContaining({
+          index_name: "game_sessions_one_active_per_club_idx",
+          is_unique: true,
+          columns: ["club_id"],
+          predicate: expect.stringMatching(/status = 'active'/),
+        }),
+      ]);
     });
   });
 });
@@ -1629,4 +1851,51 @@ describe("tenant-composite game schema migration", () => {
     { name: "retains legacy replay rows", concern: "replay-retention" },
     { name: "allows cross-club identifier collisions", concern: "cross-club-collisions" },
   ])("$name", async ({ concern }) => verifyTenantMigrationConcern(concern));
+});
+
+describe("game-session claim lease schema migration", () => {
+  it("installs additive fenced claim metadata and permits an unclaimed legacy active row", async () => {
+    await withIsolatedSchema("claim_lease", async ({ pool }) => {
+      await initializeSchema(pool);
+      const columns = await pool.query<{
+        column_name: string;
+        is_nullable: string;
+        column_default: string | null;
+      }>(
+        `SELECT column_name, is_nullable, column_default
+           FROM information_schema.columns
+          WHERE table_schema = current_schema()
+            AND table_name = 'game_sessions'
+            AND column_name IN (
+              'claim_id', 'claim_generation', 'claimed_by_user_id', 'claimed_at',
+              'claim_last_seen_at', 'claim_expires_at'
+            )
+          ORDER BY column_name`,
+      );
+      expect(columns.rows).toEqual([
+        { column_name: "claim_expires_at", is_nullable: "YES", column_default: null },
+        { column_name: "claim_generation", is_nullable: "NO", column_default: "0" },
+        { column_name: "claim_id", is_nullable: "YES", column_default: null },
+        { column_name: "claim_last_seen_at", is_nullable: "YES", column_default: null },
+        { column_name: "claimed_at", is_nullable: "YES", column_default: null },
+        { column_name: "claimed_by_user_id", is_nullable: "YES", column_default: null },
+      ]);
+
+      const sessionId = randomUUID();
+      await expect(
+        pool.query(
+          `INSERT INTO game_sessions
+             (id, name, revision, last_mutation_id, state, status)
+           VALUES ($1, 'Previously unclaimed', 1, $2, '{}'::jsonb, 'active')`,
+          [sessionId, randomUUID()],
+        ),
+      ).resolves.toHaveProperty("rowCount", 1);
+      await expect(
+        pool.query(`UPDATE game_sessions SET claim_id = $2 WHERE id = $1`, [
+          sessionId,
+          randomUUID(),
+        ]),
+      ).rejects.toMatchObject({ code: "23514", constraint: "game_sessions_claim_metadata_ck" });
+    });
+  });
 });

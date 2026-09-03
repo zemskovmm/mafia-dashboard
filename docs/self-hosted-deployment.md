@@ -90,6 +90,120 @@ Schema changes are forward-only reconciliations; the repository does not ship au
 
 The migration schema executes inside one PostgreSQL transaction, so an interrupted or failed attempt rolls back. If a migration committed but the new application is incompatible, keep the app stopped and follow the application/database rollback rules below; do not improvise a reverse migration.
 
+#### Duplicate active game sessions
+
+The `game_sessions_one_active_per_club_idx` migration preflight fails closed when a club has more than one row with `status = 'active'`. Its PostgreSQL error names that index and lists each affected `club_id` with its active game IDs. The application deliberately does not choose a winner, convert sessions to completed games, or delete data automatically.
+
+1. Keep `app` stopped. Take a PostgreSQL backup and verify that it can be read before deciding what to remove:
+
+   ```bash
+   docker compose exec db sh -c 'pg_dump --username "$POSTGRES_USER" --format=custom --file=/tmp/pre-active-session-repair.dump "$POSTGRES_DB"'
+   docker compose exec db sh -c 'pg_restore --list /tmp/pre-active-session-repair.dump >/dev/null'
+   docker compose cp db:/tmp/pre-active-session-repair.dump ./pre-active-session-repair.dump
+   ```
+
+2. For every affected club, inspect the candidate sessions, including their ID, name, revision, authoritative state, and update time:
+
+   ```bash
+   docker compose exec db sh -c 'psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" --tuples-only --no-align -c "SELECT club_id, id, name, revision, state, updated_at FROM game_sessions WHERE status = '\''active'\'' ORDER BY club_id, updated_at DESC, id;"'
+   ```
+
+3. Explicitly select one canonical active session for each affected club. Delete only obsolete IDs that an operator has approved. The cleanup must mirror `GameSessionStore.clear`: create a tombstone first, then remove the session, replay events, and results (with their dependent projections) in that order. Run one transaction per obsolete game. Replace the placeholders below with its exact club, game ID, and observed revision; the block aborts unless that row is still the approved active session. Verify the surviving canonical row before committing:
+
+   ```sql
+   BEGIN;
+   LOCK TABLE game_sessions IN SHARE ROW EXCLUSIVE MODE;
+   DO $$
+   BEGIN
+     IF NOT EXISTS (
+       SELECT 1
+         FROM game_sessions
+        WHERE club_id = '<affected-club-id>'
+          AND id = '<operator-approved-obsolete-game-id>'
+          AND status = 'active'
+          AND revision = <observed-revision>
+     ) THEN
+       RAISE EXCEPTION 'Approved obsolete active session no longer matches; rollback and reinspect';
+     END IF;
+   END $$;
+
+   CREATE TEMP TABLE active_session_repair_players ON COMMIT DROP AS
+   SELECT player_id
+     FROM game_player_results
+    WHERE club_id = '<affected-club-id>'
+      AND game_id = '<operator-approved-obsolete-game-id>'
+   UNION
+   SELECT host_player_id
+     FROM game_results
+    WHERE club_id = '<affected-club-id>'
+      AND game_id = '<operator-approved-obsolete-game-id>'
+      AND host_player_id IS NOT NULL;
+
+   INSERT INTO deleted_games (club_id, game_id)
+   SELECT club_id, id
+     FROM game_sessions
+    WHERE club_id = '<affected-club-id>'
+      AND id = '<operator-approved-obsolete-game-id>'
+      AND status = 'active'
+      AND revision = <observed-revision>
+   ON CONFLICT (club_id, game_id) DO NOTHING;
+
+   DELETE FROM game_sessions
+    WHERE club_id = '<affected-club-id>'
+      AND id = '<operator-approved-obsolete-game-id>'
+      AND status = 'active'
+      AND revision = <observed-revision>
+   RETURNING id;
+   DELETE FROM game_events
+    WHERE club_id = '<affected-club-id>'
+      AND game_id = '<operator-approved-obsolete-game-id>';
+   DELETE FROM game_results
+    WHERE club_id = '<affected-club-id>'
+      AND game_id = '<operator-approved-obsolete-game-id>';
+
+   SELECT id
+     FROM players
+    WHERE club_id = '<affected-club-id>'
+      AND id IN (SELECT player_id FROM active_session_repair_players)
+    ORDER BY id
+    FOR UPDATE;
+   UPDATE players AS p
+      SET last_played_at = (
+            SELECT MAX(history.played_at)
+              FROM (
+                SELECT result.played_at
+                  FROM game_player_results AS player_result
+                  JOIN game_results AS result
+                    ON result.club_id = player_result.club_id
+                   AND result.game_id = player_result.game_id
+                 WHERE player_result.club_id = p.club_id
+                   AND player_result.player_id = p.id
+                UNION ALL
+                SELECT hosted.played_at
+                  FROM game_results AS hosted
+                 WHERE hosted.club_id = p.club_id
+                   AND hosted.host_player_id = p.id
+                   AND hosted.outcome <> 'cancelled'
+              ) AS history
+          ),
+          updated_at = NOW()
+    WHERE p.club_id = '<affected-club-id>'
+      AND p.id IN (SELECT player_id FROM active_session_repair_players);
+
+   SELECT id, name, revision, state, updated_at
+     FROM game_sessions
+    WHERE club_id = '<affected-club-id>' AND status = 'active';
+   COMMIT;
+   ```
+
+4. Rerun only the one-shot migration job, then read back the partial index and surviving row:
+
+   ```bash
+   docker compose run --rm migrate
+   docker compose exec db sh -c 'psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" -c "SELECT indexrelid::regclass, indisunique, pg_get_expr(indpred, indrelid) FROM pg_index WHERE indexrelid = '\''game_sessions_one_active_per_club_idx'\''::regclass;"'
+   docker compose exec db sh -c 'psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" -c "SELECT id, name, revision, state, updated_at FROM game_sessions WHERE club_id = '\''<affected-club-id>'\'' AND status = '\''active'\'';"'
+   ```
+
 ## Start an immutable production image
 
 Set `APP_IMAGE` to a verified registry digest, then pull and start without building local source:

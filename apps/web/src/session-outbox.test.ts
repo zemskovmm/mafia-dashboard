@@ -160,6 +160,7 @@ describe("GameSessionOutbox", () => {
         state: expect.objectContaining({ game }),
         results: null,
       }),
+      0,
     );
     expect(outbox.current?.state.game).toEqual(game);
   });
@@ -381,7 +382,11 @@ describe("GameSessionOutbox", () => {
         clearingGameId: null,
       }),
     );
-    const saveLegacy = vi.fn().mockResolvedValue({ revision: 5, duplicate: false });
+    const saveLegacy = vi.fn().mockResolvedValue({
+      revision: 5,
+      duplicate: false,
+      claim: { generation: 1, expiresAt: "2026-09-03T20:00:45.000Z" },
+    });
     const save = vi
       .fn()
       .mockResolvedValue(normalizationResponse(gameId, 6, mutation.name, "PL-offline"));
@@ -397,7 +402,7 @@ describe("GameSessionOutbox", () => {
     expect(outbox.current).toMatchObject({ name: mutation.name, state: mutation.state });
     await outbox.flush();
 
-    expect(saveLegacy).toHaveBeenCalledWith(gameId, mutation);
+    expect(saveLegacy).toHaveBeenCalledWith(gameId, mutation, 0);
     expect(save).toHaveBeenCalledWith(
       gameId,
       expect.objectContaining({
@@ -405,11 +410,13 @@ describe("GameSessionOutbox", () => {
         baseRevision: 5,
         state: mutation.state,
       }),
+      1,
     );
     expect(storage.getItem(legacyKey)).toBeNull();
     expect(JSON.parse(storage.getItem(storageKey) ?? "null")).toMatchObject({
       version: 4,
       revision: 6,
+      claimGeneration: 1,
       outbox: [],
     });
   });
@@ -902,7 +909,7 @@ describe("GameSessionOutbox", () => {
 
     await expect(outbox.clear(clear)).rejects.toThrow("offline");
 
-    expect(clear).toHaveBeenCalledWith("00000000-0000-4000-8000-000000000020", 0);
+    expect(clear).toHaveBeenCalledWith("00000000-0000-4000-8000-000000000020", 0, 0);
     expect(outbox.current?.state).toEqual(state("pending"));
     expect(outbox.pendingCount).toBe(1);
     expect(outbox.status).toBe("offline");
@@ -932,7 +939,7 @@ describe("GameSessionOutbox", () => {
       clearRemote,
     });
 
-    await vi.waitFor(() => expect(clearRemote).toHaveBeenCalledWith(gameId, 7));
+    await vi.waitFor(() => expect(clearRemote).toHaveBeenCalledWith(gameId, 7, 0));
     await vi.waitFor(() => expect(remounted.current).toBeNull());
     expect(remounted.status).toBe("saved");
   });
@@ -983,6 +990,33 @@ describe("GameSessionOutbox", () => {
     ).toThrow("Cannot restore while local game changes are unresolved");
     expect(outbox.pendingCount).toBe(1);
     expect(outbox.current?.state).toEqual(state("local-newer"));
+  });
+
+  it("replaces pending local work only after explicit takeover", () => {
+    const storage = memoryStorage();
+    const outbox = new GameSessionOutbox({
+      storage,
+      createId: () => "00000000-0000-4000-8000-000000000052",
+      save: vi.fn(),
+    });
+    outbox.enqueue("Local table", state("local-newer"), null);
+
+    outbox.replaceAfterTakeover(
+      "00000000-0000-4000-8000-000000000053",
+      4,
+      "Remote table",
+      state("remote-authoritative"),
+      null,
+      7,
+    );
+
+    expect(outbox.gameId).toBe("00000000-0000-4000-8000-000000000053");
+    expect(outbox.claimGeneration).toBe(7);
+    expect(outbox.pendingCount).toBe(0);
+    expect(outbox.current).toMatchObject({
+      name: "Remote table",
+      state: state("remote-authoritative"),
+    });
   });
 
   it("refuses a stale instance restore after another instance restored a newer game", () => {
@@ -1168,6 +1202,7 @@ describe("GameSessionOutbox", () => {
     expect(save).toHaveBeenCalledWith(
       "00000000-0000-4000-8000-000000000103",
       expect.objectContaining({ kind: "snapshot", baseRevision: 0 }),
+      0,
     );
     expect(stale.pendingCount).toBe(0);
     expect(stale.revision).toBe(1);
@@ -1350,9 +1385,14 @@ describe("GameSessionOutbox", () => {
       saveLegacy: vi.fn(),
     } as unknown as ConstructorParameters<typeof GameSessionOutbox>[0]);
 
+    outbox.rebindClaimGeneration(3);
+    expect(JSON.parse(storage.getItem(legacyKey) ?? "null")).toMatchObject({
+      claimGeneration: 3,
+      failed: false,
+    });
     await outbox.clear(clearRemote);
 
-    expect(clearRemote).toHaveBeenCalledWith(gameId, 4);
+    expect(clearRemote).toHaveBeenCalledWith(gameId, 4, 3);
     expect(storage.getItem(legacyKey)).toBeNull();
     expect(outbox.current).toBeNull();
     expect(outbox.pendingCount).toBe(0);
@@ -1399,5 +1439,99 @@ describe("GameSessionOutbox", () => {
         null,
       ),
     ).toThrow(/legacy game changes are unresolved/i);
+  });
+
+  it("persists claim generations, holds conflicts, and rebinds only explicitly", async () => {
+    const storage = memoryStorage();
+    const gameId = "00000000-0000-4000-8000-000000000153";
+    const save = vi
+      .fn()
+      .mockResolvedValueOnce({
+        revision: 1,
+        duplicate: false,
+        claim: { generation: 1, expiresAt: "2026-09-03T17:40:45.000Z" },
+      })
+      .mockRejectedValueOnce(
+        Object.assign(new Error("Claim held"), { code: "game_session_claim_conflict" }),
+      )
+      .mockResolvedValueOnce({ revision: 2, duplicate: false });
+    const clearRemote = vi.fn().mockResolvedValue(undefined);
+    const outbox = new GameSessionOutbox({
+      storage,
+      createId: () => gameId,
+      save,
+      clearRemote,
+    });
+
+    outbox.enqueue("Table", state("claim-first"), null);
+    await outbox.flush();
+    expect(save).toHaveBeenLastCalledWith(gameId, expect.any(Object), 0);
+    expect(outbox.claimGeneration).toBe(1);
+
+    outbox.enqueue("Table", state("claim-conflict"), null);
+    await expect(outbox.flush()).rejects.toMatchObject({ code: "game_session_claim_conflict" });
+    expect(save).toHaveBeenLastCalledWith(gameId, expect.any(Object), 1);
+    expect(outbox.pendingCount).toBe(1);
+    expect(outbox.claimGeneration).toBe(1);
+    expect(JSON.parse(storage.getItem("mafia-dashboard.game-session.v4") ?? "null")).toMatchObject({
+      claimGeneration: 1,
+      failed: true,
+      outbox: [expect.any(Object)],
+    });
+    outbox.setClaimGeneration(1);
+    expect(JSON.parse(storage.getItem("mafia-dashboard.game-session.v4") ?? "null")).toMatchObject({
+      claimGeneration: 1,
+      failed: true,
+    });
+
+    const reloaded = new GameSessionOutbox({
+      storage,
+      createId: () => gameId,
+      save,
+      clearRemote,
+    });
+    expect(reloaded.claimGeneration).toBe(1);
+    expect(reloaded.pendingCount).toBe(1);
+
+    reloaded.rebindClaimGeneration(2);
+    await reloaded.flush();
+    expect(save).toHaveBeenLastCalledWith(gameId, expect.any(Object), 2);
+    await reloaded.clear(clearRemote);
+    expect(clearRemote).toHaveBeenCalledWith(gameId, 2, 2);
+    expect(reloaded.claimGeneration).toBe(0);
+  });
+
+  it("does not downgrade a newer durable claim when an older response arrives late", async () => {
+    const storage = memoryStorage();
+    const gameId = "00000000-0000-4000-8000-000000000154";
+    const response = deferred<{
+      revision: number;
+      duplicate: boolean;
+      claim: { generation: number; expiresAt: string };
+    }>();
+    const save = vi.fn(() => response.promise);
+    const outbox = new GameSessionOutbox({
+      storage,
+      storageKey: "mafia-dashboard.game-session.v4",
+      createId: () => gameId,
+      save,
+    });
+
+    outbox.enqueue("Table", state("claim-race"), null);
+    const flushing = outbox.flush();
+    await vi.waitFor(() => expect(save).toHaveBeenCalledOnce());
+    const durable = JSON.parse(storage.getItem("mafia-dashboard.game-session.v4") ?? "null");
+    storage.setItem(
+      "mafia-dashboard.game-session.v4",
+      JSON.stringify({ ...durable, claimGeneration: 2 }),
+    );
+    response.resolve({
+      revision: 1,
+      duplicate: false,
+      claim: { generation: 1, expiresAt: "2026-09-03T20:00:45.000Z" },
+    });
+
+    await flushing;
+    expect(outbox.claimGeneration).toBe(2);
   });
 });
