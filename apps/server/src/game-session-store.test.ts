@@ -2386,7 +2386,9 @@ describe("GameSessionStore", () => {
       status: "completed",
       results: completionResults,
     });
+    expect(response).not.toHaveProperty("claim");
     expect(retry).toMatchObject({ revision: 4, duplicate: true });
+    expect(retry).not.toHaveProperty("claim");
     await expect(
       store.complete({
         gameId,

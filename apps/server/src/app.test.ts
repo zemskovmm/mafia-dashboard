@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { Pool } from "pg";
+import { createGameLogEntry } from "@mafia/game-domain";
 import { buildApp } from "./app.js";
 import { DEFAULT_CLUB_ID } from "./club-store.js";
 
@@ -204,6 +205,157 @@ describe("server API", () => {
     expect(changed.json()).toEqual({ error: "game_session_completed" });
     expect(deletion.statusCode).toBe(409);
     expect(deletion.json()).toEqual({ error: "game_session_completed" });
+  });
+
+  it("returns a client-valid response after completing an active aggregate exactly once", async () => {
+    const gameId = randomUUID();
+    const claimId = randomUUID();
+    const players = await createSessionPlayers();
+    const seated = players.slice(0, 10).map((player, index) => ({
+      id: player.id,
+      name: player.nickname,
+      seat: index + 1,
+      role: roleDeck[index]!,
+      team: index >= 7 ? ("black" as const) : ("red" as const),
+      status: "active" as const,
+      fouls: 0,
+      mutePending: false,
+    }));
+    const game = {
+      phase: "finished" as const,
+      day: 1,
+      players: seated,
+      turnOrder: seated.map(({ seat }) => seat),
+      currentTurnIndex: 0,
+      nominations: [],
+      voteAssignments: {},
+      shotAssignments: {},
+      winner: "red" as const,
+    };
+    const initialGame = { replayVersion: 1 as const, game };
+    const root = createGameLogEntry({
+      gameId,
+      id: randomUUID(),
+      sequence: 1,
+      parentEventId: null,
+      createdAt: "2026-09-04T00:00:00.000Z",
+      before: game,
+      draft: { type: "game.checkpointed", payload: {} },
+    });
+    const completion = createGameLogEntry({
+      gameId,
+      id: randomUUID(),
+      sequence: 2,
+      parentEventId: root.entry.id,
+      createdAt: "2026-09-04T00:01:00.000Z",
+      before: root.after,
+      draft: { type: "game.completed", payload: { winner: "red" } },
+    });
+    const results = {
+      hostPlayerId: players[10]!.id,
+      outcome: "red" as const,
+      winner: "red" as const,
+      reason: null,
+      playedAt: completion.entry.createdAt,
+      players: completion.after.players.map(({ id, seat, role, team, status, fouls }) => ({
+        playerId: id,
+        seat,
+        role,
+        team,
+        status,
+        fouls,
+        bestMoveHits: null,
+      })),
+    };
+    const created = await app.inject({
+      method: "PUT",
+      url: `/api/game-sessions/${gameId}`,
+      headers: claimHeaders(claimId),
+      payload: {
+        name: "HTTP completion contract",
+        mutationId: randomUUID(),
+        state: roleGiveawayState(players.slice(0, 10), players[10]!),
+        results: null,
+      },
+    });
+    expect(created.statusCode).toBe(201);
+
+    const terminalMutation = {
+      name: "HTTP completion contract",
+      mutationId: randomUUID(),
+      state: {
+        setup: null,
+        game: completion.after,
+        hostPlayerId: players[10]!.id,
+        hostName: players[10]!.nickname,
+        playlistId: "",
+        log: [root.entry, completion.entry].map((entry) => ({
+          id: entry.id,
+          sequence: entry.sequence,
+          type: entry.type,
+          phase: entry.phaseBefore,
+          payload: entry.payload,
+          createdAt: entry.createdAt,
+        })),
+        undoHistory: [],
+        undoBudget: 0,
+        initialGame,
+        events: [root.entry, completion.entry],
+        headEventId: completion.entry.id,
+        resetReturnEventId: null,
+        legacyLog: [],
+      },
+      results,
+    };
+    const completed = await app.inject({
+      method: "PUT",
+      url: `/api/game-sessions/${gameId}`,
+      headers: claimHeaders(claimId, 1),
+      payload: terminalMutation,
+    });
+    const retry = await app.inject({
+      method: "PUT",
+      url: `/api/game-sessions/${gameId}`,
+      headers: claimHeaders(claimId, 1),
+      payload: terminalMutation,
+    });
+
+    expect(completed.statusCode).toBe(200);
+    expect(completed.json()).toMatchObject({
+      gameId,
+      revision: 2,
+      duplicate: false,
+      status: "completed",
+      results,
+    });
+    expect(completed.json()).not.toHaveProperty("claim");
+    expect(retry.statusCode).toBe(200);
+    expect(retry.json()).toMatchObject({ revision: 2, duplicate: true, status: "completed" });
+    expect(retry.json()).not.toHaveProperty("claim");
+
+    const restored = await app.inject({ method: "GET", url: `/api/game-sessions/${gameId}` });
+    const history = await app.inject({ method: "GET", url: "/api/game-sessions?status=completed" });
+    const projection = await pool.query<{ games: number; players: number }>(
+      `SELECT
+         (SELECT COUNT(*)::int FROM game_results WHERE club_id = $1 AND game_id = $2) AS games,
+         (SELECT COUNT(*)::int FROM game_player_results WHERE club_id = $1 AND game_id = $2) AS players`,
+      [DEFAULT_CLUB_ID, gameId],
+    );
+    const [redPlayer, blackPlayer, host] = await Promise.all([
+      playerStore.get(seated[0]!.id),
+      playerStore.get(seated[7]!.id),
+      playerStore.get(players[10]!.id),
+    ]);
+    expect(restored.statusCode).toBe(200);
+    expect(restored.json().session).toMatchObject({ status: "completed", results });
+    expect(restored.json().session).not.toHaveProperty("claim");
+    expect(history.json().sessions).toEqual(
+      expect.arrayContaining([expect.objectContaining({ gameId, outcome: "red" })]),
+    );
+    expect(projection.rows).toEqual([{ games: 1, players: 10 }]);
+    expect(redPlayer?.statistics).toMatchObject({ gamesPlayed: 1, wins: 1, losses: 0 });
+    expect(blackPlayer?.statistics).toMatchObject({ gamesPlayed: 1, wins: 0, losses: 1 });
+    expect(host?.statistics).toMatchObject({ hostedGames: 1, gamesPlayed: 0 });
   });
 
   it.each([

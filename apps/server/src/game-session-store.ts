@@ -167,9 +167,9 @@ export interface StoredGameSession {
   readonly results: StoredGameResults | null;
   readonly replayBaseEventId?: string | null;
   readonly previewableFromEventId?: string | null;
-  readonly claim: {
+  readonly claim?: {
     readonly generation: number;
-    readonly expiresAt: Date | null;
+    readonly expiresAt: Date;
   };
 }
 
@@ -423,6 +423,16 @@ const normalizeStoredResults = (results: StoredGameResults | null): StoredGameRe
         reason: results.reason ?? null,
       };
 
+const sessionClaim = (row: SessionRow): Pick<StoredGameSession, "claim"> =>
+  row.status !== "active" || row.claim_id === null || row.claim_expires_at === null
+    ? {}
+    : {
+        claim: {
+          generation: Number(row.claim_generation),
+          expiresAt: row.claim_expires_at,
+        },
+      };
+
 const mapSession = (row: SessionRow, duplicate: boolean): StoredGameSession => ({
   gameId: row.id,
   name: row.name,
@@ -434,7 +444,7 @@ const mapSession = (row: SessionRow, duplicate: boolean): StoredGameSession => (
   updatedAt: row.updated_at,
   state: materializeSessionState(row.state),
   results: normalizeStoredResults(row.results),
-  claim: { generation: Number(row.claim_generation), expiresAt: row.claim_expires_at },
+  ...sessionClaim(row),
 });
 
 const hydrateSessionFromEvents = (
@@ -488,7 +498,7 @@ const hydrateSessionFromEvents = (
     results: normalizeStoredResults(row.results),
     replayBaseEventId: row.replay_base_event_id,
     previewableFromEventId: row.replay_base_event_id,
-    claim: { generation: Number(row.claim_generation), expiresAt: row.claim_expires_at },
+    ...sessionClaim(row),
   };
 };
 
