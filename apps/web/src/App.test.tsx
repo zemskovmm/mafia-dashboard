@@ -1686,6 +1686,48 @@ describe("developer menu", () => {
     ).toBe(false);
   });
 
+  it("preserves reload credentials without sending a teardown release that can revoke the successor", async () => {
+    const heartbeat = deferred<{ generation: number; expiresAt: string }>();
+    const view = renderView(
+      <ClubWorkspace
+        club={testClub}
+        onExit={vi.fn()}
+        onEditClub={() => undefined}
+        onDeleteClub={() => Promise.resolve()}
+      />,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
+    await waitFor(() => expect(api.claimGameSession).toHaveBeenCalled());
+    const initialCredential = api.saveGameSession.mock.calls[0]![2];
+    api.claimGameSession.mockReset().mockReturnValueOnce(heartbeat.promise);
+    api.releaseGameSession.mockClear();
+
+    act(() => window.dispatchEvent(new Event("online")));
+    await waitFor(() => expect(api.claimGameSession).toHaveBeenCalledOnce());
+    const pagehide = new Event("pagehide");
+    Object.defineProperty(pagehide, "persisted", { value: false });
+    act(() => window.dispatchEvent(pagehide));
+    expect(api.releaseGameSession).not.toHaveBeenCalled();
+
+    await act(async () =>
+      heartbeat.resolve({ generation: 1, expiresAt: "2026-09-03T20:00:45.000Z" }),
+    );
+    view.unmount();
+    await act(async () => Promise.resolve());
+
+    expect(api.releaseGameSession).not.toHaveBeenCalled();
+    expect(
+      [...Array(window.sessionStorage.length).keys()]
+        .map((index) => window.sessionStorage.key(index))
+        .some(
+          (key) =>
+            key?.startsWith(`mafia-dashboard.game-session.v4.claim.${testClub.id}`) &&
+            window.sessionStorage.getItem(key) === initialCredential.claimId,
+        ),
+    ).toBe(true);
+  });
+
   it("releases the tab-identity lock when the workspace unmounts", async () => {
     const originalLocks = Object.getOwnPropertyDescriptor(navigator, "locks");
     let heldRequest: Promise<void> | null = null;

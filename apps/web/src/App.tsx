@@ -474,6 +474,7 @@ export const ClubWorkspace = ({
   const claimController = claimControllerRef.current;
   const claimControllerEffectGenerationRef = useRef(0);
   const workspaceActiveRef = useRef(true);
+  const preserveClaimOnTeardownRef = useRef(false);
   const claimCredential = useCallback(
     (gameId: string, claimGeneration: number): GameSessionClaimCredential =>
       claimController.credential(gameId, claimGeneration),
@@ -965,12 +966,14 @@ export const ClubWorkspace = ({
 
   useEffect(() => {
     workspaceActiveRef.current = true;
+    preserveClaimOnTeardownRef.current = false;
     const generation = claimControllerEffectGenerationRef.current + 1;
     claimControllerEffectGenerationRef.current = generation;
     const dispose = (event: PageTransitionEvent) => {
       if (!event.persisted) {
+        preserveClaimOnTeardownRef.current = true;
         workspaceActiveRef.current = false;
-        releaseAndDisposeClaim(false);
+        claimController.dispose();
       }
     };
     window.addEventListener("pagehide", dispose);
@@ -978,10 +981,12 @@ export const ClubWorkspace = ({
       workspaceActiveRef.current = false;
       window.removeEventListener("pagehide", dispose);
       window.queueMicrotask(() => {
-        if (claimControllerEffectGenerationRef.current === generation) releaseAndDisposeClaim();
+        if (claimControllerEffectGenerationRef.current !== generation) return;
+        if (preserveClaimOnTeardownRef.current) claimController.dispose();
+        else releaseAndDisposeClaim();
       });
     };
-  }, [releaseAndDisposeClaim]);
+  }, [claimController, releaseAndDisposeClaim]);
 
   const heartbeatGameId = sessionSync.gameId;
   const heartbeatRevision = sessionSync.revision;
@@ -1019,16 +1024,18 @@ export const ClubWorkspace = ({
           claimController.isDisposed ||
           claimController.lifecycle !== claimLifecycle
         ) {
-          void releaseGameSession(
-            heartbeatGameId,
-            { claimId: credential.claimId, claimGeneration: claim.generation },
-            club.id,
-          ).catch((releaseError) =>
-            reportError(releaseError, {
-              source: "api",
-              context: "game-session.release-late-heartbeat",
-            }),
-          );
+          if (!preserveClaimOnTeardownRef.current) {
+            void releaseGameSession(
+              heartbeatGameId,
+              { claimId: credential.claimId, claimGeneration: claim.generation },
+              club.id,
+            ).catch((releaseError) =>
+              reportError(releaseError, {
+                source: "api",
+                context: "game-session.release-late-heartbeat",
+              }),
+            );
+          }
           return;
         }
         const needsRecovery = !claimController.isOwned(heartbeatGameId, heartbeatGeneration);
