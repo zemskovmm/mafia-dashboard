@@ -1745,6 +1745,52 @@ describe("server API", () => {
     );
   });
 
+  it("rejects pre-role session creation without publishing an active session", async () => {
+    const gameIds: string[] = [];
+    const incompleteSetup = {
+      hostPlayerId: "",
+      selectedPlayerIds: Array.from({ length: 10 }, () => ""),
+      setup: null,
+    };
+
+    for (const setup of [
+      null,
+      { ...incompleteSetup, step: "players" },
+      { ...incompleteSetup, step: "music" },
+    ]) {
+      const gameId = randomUUID();
+      gameIds.push(gameId);
+      const response = await app.inject({
+        method: "PUT",
+        url: `/api/game-sessions/${gameId}`,
+        payload: {
+          name: "Incomplete setup",
+          mutationId: randomUUID(),
+          baseRevision: 0,
+          state: {
+            setup,
+            game: null,
+            hostPlayerId: null,
+            hostName: null,
+            playlistId: "",
+            log: [],
+            undoHistory: [],
+          },
+          results: null,
+        },
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({ error: "validation_failed" });
+    }
+
+    const listed = await app.inject({ method: "GET", url: "/api/game-sessions" });
+    expect(listed.statusCode).toBe(200);
+    expect(listed.json().sessions).not.toEqual(
+      expect.arrayContaining(gameIds.map((gameId) => expect.objectContaining({ gameId }))),
+    );
+  });
+
   it("rejects legacy mutations for an authoritative game session", async () => {
     const gameId = randomUUID();
     const players = await createSessionPlayers();
