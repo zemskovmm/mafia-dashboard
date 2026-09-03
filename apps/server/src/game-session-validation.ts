@@ -56,7 +56,36 @@ export const setupSessionStateSchema = z
     selectedPlayerIds: z.array(uuidOrEmpty).length(10),
     setup: setupState.nullable(),
   })
-  .superRefine(({ hostPlayerId, selectedPlayerIds, setup }, context) => {
+  .superRefine(({ step, hostPlayerId, selectedPlayerIds, setup }, context) => {
+    if (step === "roles") {
+      if (hostPlayerId === undefined || hostPlayerId === "") {
+        context.addIssue({
+          code: "custom",
+          path: ["hostPlayerId"],
+          message: "Role giveaway requires a host",
+        });
+      }
+      if (selectedPlayerIds.some((id) => id === "")) {
+        context.addIssue({
+          code: "custom",
+          path: ["selectedPlayerIds"],
+          message: "Role giveaway requires ten selected players",
+        });
+      }
+      if (setup === null) {
+        context.addIssue({
+          code: "custom",
+          path: ["setup"],
+          message: "Role giveaway requires initialized role setup",
+        });
+      } else if (setup.step !== "role-draw") {
+        context.addIssue({
+          code: "custom",
+          path: ["setup", "step"],
+          message: "Role giveaway requires the role-draw setup phase",
+        });
+      }
+    }
     const selected = selectedPlayerIds.filter((id) => id !== "");
     if (new Set(selected).size !== selected.length) {
       context.addIssue({
@@ -1235,6 +1264,13 @@ export const gameSessionMutationSchema = z
     results: finalGameResultsSchema.nullable(),
   })
   .superRefine(({ state, results }, context) => {
+    if (state.game === null && state.setup?.step !== "roles") {
+      context.addIssue({
+        code: "custom",
+        path: ["state", "setup"],
+        message: "A durable game session must start at role giveaway",
+      });
+    }
     const currentGame = state.game;
     const terminal =
       currentGame?.phase === "finished" ||

@@ -513,6 +513,83 @@ describe("game session validation", () => {
     ).toBe(false);
   });
 
+  it("requires a complete player table before a role giveaway can be persisted", () => {
+    const selectedPlayerIds = Array.from({ length: 10 }, (_, index) => uuid(index + 1));
+    const valid = {
+      step: "roles",
+      hostPlayerId: uuid(11),
+      selectedPlayerIds,
+      setup: {
+        step: "role-draw",
+        players: selectedPlayerIds.map((id, index) => ({
+          id,
+          name: `Player ${index + 1}`,
+          seat: index + 1,
+        })),
+        roleDeck: clubRoles,
+        remainingRoles: clubRoles,
+        assignments: {},
+      },
+    };
+
+    expect(setupSessionStateSchema.safeParse(valid).success).toBe(true);
+    expect(setupSessionStateSchema.safeParse({ ...valid, hostPlayerId: "" }).success).toBe(false);
+    expect(
+      setupSessionStateSchema.safeParse({
+        ...valid,
+        selectedPlayerIds: ["", ...selectedPlayerIds.slice(1)],
+      }).success,
+    ).toBe(false);
+    expect(setupSessionStateSchema.safeParse({ ...valid, setup: null }).success).toBe(false);
+    expect(
+      setupSessionStateSchema.safeParse({
+        ...valid,
+        setup: { ...valid.setup, step: "music" },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects durable game creation before role giveaway", () => {
+    const state = {
+      game: null,
+      hostPlayerId: null,
+      hostName: null,
+      playlistId: "",
+      log: [],
+      undoHistory: [],
+    };
+    const parse = (setup: unknown) =>
+      gameSessionMutationSchema.safeParse({
+        name: "Incomplete setup",
+        mutationId: uuid(98),
+        baseRevision: 0,
+        state: { ...state, setup },
+        results: null,
+      });
+    const incompleteSetup = {
+      hostPlayerId: "",
+      selectedPlayerIds: Array.from({ length: 10 }, () => ""),
+      setup: null,
+    };
+
+    expect(parse(null).success).toBe(false);
+    expect(parse({ ...incompleteSetup, step: "players" }).success).toBe(false);
+    expect(parse({ ...incompleteSetup, step: "music" }).success).toBe(false);
+    expect(
+      gameSessionMutationSchema.safeParse({
+        name: "Invalid baseline bypass",
+        mutationId: uuid(99),
+        baseRevision: 0,
+        state: {
+          ...state,
+          setup: null,
+          initialGame: { replayVersion: 1, game: liveGame(1) },
+        },
+        results: null,
+      }).success,
+    ).toBe(false);
+  });
+
   it("enforces the persisted voting candidate cursor and final auto-fill", () => {
     const base = liveGame(1);
     const voting = {

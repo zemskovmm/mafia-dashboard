@@ -31,6 +31,7 @@ import {
   PLAYER_LIGHTING_STORAGE_KEY,
 } from "./features/effects/lighting-preferences.js";
 import { musicPreferencesStorageKey } from "./features/music/music-preferences.js";
+import type { SetupWizardSessionState } from "./features/setup/SetupWizard.js";
 import { I18nProvider } from "./i18n/I18nProvider.js";
 import { THEME_COLOR_STORAGE_KEY } from "./theme.js";
 
@@ -165,19 +166,30 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
     players: readonly PlayerProfile[];
     onComplete: (game: GameState, hostPlayerId: string, hostName: string) => void;
     onStartGame?: () => void;
-    initialSessionState?: { step: "players" | "music" | "roles" } | null;
-    onSessionStateChange?: (state: {
-      step: "players" | "music" | "roles";
-      hostPlayerId?: string;
-      selectedPlayerIds: readonly string[];
-      setup: null;
-    }) => void;
+    initialSessionState?: SetupWizardSessionState | null;
+    onSessionStateChange?: (state: SetupWizardSessionState) => void;
     onEvent: (type: string, payload: Record<string, unknown>) => void;
     onPopulateDevelopmentPlayers?: () => Promise<readonly PlayerProfile[]>;
     onOpenAvailablePlayers?: () => void;
     showDevelopmentTools?: boolean;
   }) => {
-    const [step, setStep] = useState(initialSessionState?.step ?? "players");
+    const [session, setSession] = useState<SetupWizardSessionState | null>(
+      initialSessionState ?? null,
+    );
+    const step = session?.step ?? "players";
+    const roleDeck = assignedGame.players.map(({ role }) => role);
+    const roleGiveawaySession: SetupWizardSessionState = {
+      step: "roles",
+      hostPlayerId,
+      selectedPlayerIds: assignedGame.players.map(({ id }) => id),
+      setup: {
+        step: "role-draw",
+        players: assignedGame.players.map(({ id, name, seat }) => ({ id, name, seat })),
+        roleDeck,
+        remainingRoles: roleDeck,
+        assignments: {},
+      },
+    };
     return (
       <main>
         <h1>
@@ -186,6 +198,7 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
         <output data-testid="setup-player-pool">
           {players.map(({ nickname }) => nickname).join(",")}
         </output>
+        <output data-testid="setup-session">{JSON.stringify(session)}</output>
         {onOpenAvailablePlayers === undefined ? null : (
           <button type="button" onClick={onOpenAvailablePlayers}>
             Select available players
@@ -194,12 +207,7 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
         <button
           type="button"
           onClick={() => {
-            setStep("music");
-            onEvent("setup.players-selected", {
-              hostPlayerId,
-              players: [{ id: assignedGame.players[0]!.id, name: "Player 1", seat: 1 }],
-            });
-            onSessionStateChange?.({
+            const next: SetupWizardSessionState = {
               step: "music",
               hostPlayerId,
               selectedPlayerIds: [
@@ -207,7 +215,13 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
                 ...Array.from({ length: 9 }, () => ""),
               ],
               setup: null,
+            };
+            setSession(next);
+            onEvent("setup.players-selected", {
+              hostPlayerId,
+              players: [{ id: assignedGame.players[0]!.id, name: "Player 1", seat: 1 }],
             });
+            onSessionStateChange?.(next);
           }}
         >
           Save setup progress
@@ -219,19 +233,34 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
           type="button"
           onClick={() => {
             onStartGame();
-            setStep("roles");
-            onSessionStateChange?.({
-              step: "roles",
-              hostPlayerId,
-              selectedPlayerIds: Array.from({ length: 10 }, (_, index) =>
-                String(index + 1).padStart(36, "0"),
-              ),
-              setup: null,
-            });
+            setSession(roleGiveawaySession);
+            onSessionStateChange?.(roleGiveawaySession);
           }}
         >
           Enter role giveaway
         </button>
+        {session?.step !== "roles" || session.setup === null ? null : (
+          <button
+            type="button"
+            onClick={() => {
+              if (session.setup === null) return;
+              const [role, ...remainingRoles] = session.setup.remainingRoles;
+              if (role === undefined) return;
+              const next: SetupWizardSessionState = {
+                ...session,
+                setup: {
+                  ...session.setup,
+                  remainingRoles,
+                  assignments: { ...session.setup.assignments, 1: role },
+                },
+              };
+              setSession(next);
+              onSessionStateChange?.(next);
+            }}
+          >
+            Assign first role
+          </button>
+        )}
         {!showDevelopmentTools || onPopulateDevelopmentPlayers === undefined ? null : (
           <button
             type="button"
@@ -1080,7 +1109,7 @@ describe("developer menu", () => {
     expect(save).toHaveAttribute("data-status", "saved");
   });
 
-  it("flushes setup queued while a manual readiness check is in flight", async () => {
+  it("flushes role giveaway queued while a manual readiness check is in flight", async () => {
     const user = userEvent.setup();
     const readiness = deferred<void>();
     api.checkServerReady.mockReturnValue(readiness.promise);
@@ -1090,7 +1119,7 @@ describe("developer menu", () => {
       screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
     );
     await waitFor(() => expect(api.checkServerReady).toHaveBeenCalledOnce());
-    await user.click(screen.getByRole("button", { name: "Save setup progress" }));
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
     expect(api.saveGameSession).not.toHaveBeenCalled();
 
     readiness.resolve();
@@ -2014,27 +2043,48 @@ describe("developer menu", () => {
 });
 
 describe("authoritative game session lifecycle", () => {
-  it("persists setup without adding setup or music selections to the game log", async () => {
+  it("keeps incomplete player and music setup out of the durable game session", async () => {
     const user = userEvent.setup();
-    api.listPlayers.mockResolvedValue([
-      ...assignedGame.players.map(({ id, name }) => player(name, id)),
-      player("Host Player", hostPlayerId),
-    ]);
     render(<App />);
     await waitFor(() => expect(api.listPlayers).toHaveBeenCalledOnce());
-    expect(api.saveGameSession).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "Save setup progress" }));
 
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "Restored setup" })).toBeVisible(),
+    );
+    expect(api.saveGameSession).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
+  });
+
+  it("creates the first durable snapshot when valid setup enters role giveaway", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
+
     await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledOnce());
+    const gameId = api.saveGameSession.mock.calls[0]?.[0] as string;
+    const roleDeck = assignedGame.players.map(({ role }) => role);
     expect(api.saveGameSession).toHaveBeenCalledWith(
-      expect.stringMatching(/^[0-9a-f-]{36}$/),
+      gameId,
       expect.objectContaining({
         mutationId: expect.stringMatching(/^[0-9a-f-]{36}$/),
         baseRevision: 0,
         kind: "snapshot",
         state: expect.objectContaining({
-          setup: expect.objectContaining({ step: "music" }),
+          setup: {
+            step: "roles",
+            hostPlayerId,
+            selectedPlayerIds: assignedGame.players.map(({ id }) => id),
+            setup: {
+              step: "role-draw",
+              players: assignedGame.players.map(({ id, name, seat }) => ({ id, name, seat })),
+              roleDeck,
+              remainingRoles: roleDeck,
+              assignments: {},
+            },
+          },
           hostPlayerId,
           hostName: "Host Player",
           log: [],
@@ -2042,6 +2092,77 @@ describe("authoritative game session lifecycle", () => {
       }),
       testClub.id,
     );
+    expect(gameId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+    ).toMatchObject({
+      gameId,
+      metadata: { setup: { step: "roles", setup: { assignments: {} } } },
+    });
+  });
+
+  it("restores zero and partial role giveaway snapshots and completes on the same game ID", async () => {
+    const user = userEvent.setup();
+    const firstRender = render(<App />);
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
+    await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledOnce());
+    const gameId = api.saveGameSession.mock.calls[0]?.[0] as string;
+    firstRender.unmount();
+
+    const secondRender = render(<App />);
+    expect(JSON.parse(screen.getByTestId("setup-session").textContent ?? "null")).toMatchObject({
+      step: "roles",
+      setup: { assignments: {}, remainingRoles: expect.any(Array) },
+    });
+    await user.click(screen.getByRole("button", { name: "Assign first role" }));
+    await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledTimes(2));
+    secondRender.unmount();
+
+    render(<App />);
+    const restored = JSON.parse(screen.getByTestId("setup-session").textContent ?? "null");
+    expect(restored).toMatchObject({
+      step: "roles",
+      setup: { assignments: { "1": "sheriff" }, remainingRoles: expect.any(Array) },
+    });
+    expect(restored.setup.remainingRoles).toHaveLength(9);
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledTimes(3));
+    expect(api.saveGameSession.mock.calls.map(([savedGameId]) => savedGameId)).toEqual([
+      gameId,
+      gameId,
+      gameId,
+    ]);
+  });
+
+  it("retries an offline first role-giveaway save with its durable identity and mutation", async () => {
+    const user = userEvent.setup();
+    api.saveGameSession.mockRejectedValue(new Error("offline"));
+    api.checkServerReady.mockRejectedValue(new Error("offline"));
+    const firstRender = render(<App />);
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
+    await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledOnce());
+    const [gameId, operation] = api.saveGameSession.mock.calls[0]!;
+    expect(
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+    ).toMatchObject({
+      gameId,
+      failed: true,
+      outbox: [expect.objectContaining({ mutationId: operation.mutationId, baseRevision: 0 })],
+    });
+    firstRender.unmount();
+
+    api.saveGameSession.mockImplementation((_gameId: string, mutation: { baseRevision: number }) =>
+      Promise.resolve({ revision: mutation.baseRevision + 1, duplicate: false }),
+    );
+    api.checkServerReady.mockResolvedValue(undefined);
+    render(<App />);
+
+    await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledTimes(2));
+    expect(api.saveGameSession.mock.calls[1]?.[0]).toBe(gameId);
+    expect(api.saveGameSession.mock.calls[1]?.[1]).toMatchObject({
+      mutationId: operation.mutationId,
+      baseRevision: 0,
+    });
   });
 
   it("persists the complete browser state after an intermediate turn without adding a semantic event", async () => {
@@ -2632,7 +2753,7 @@ describe("authoritative game session lifecycle", () => {
     });
   });
 
-  it("ignores a resume response after newer local setup is saved", async () => {
+  it("ignores a resume response after newer local role setup is saved", async () => {
     const user = userEvent.setup();
     const remoteGameId = "00000000-0000-4000-8000-0000000000c3";
     const remote = deferred<RemoteGameSession>();
@@ -2653,7 +2774,7 @@ describe("authoritative game session lifecycle", () => {
     await screen.findByRole("button", { name: "Resume Remote table" });
 
     await user.click(screen.getByRole("button", { name: "Resume Remote table" }));
-    await user.click(screen.getByRole("button", { name: "Save setup progress" }));
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
     await waitFor(() =>
       expect(
         screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
@@ -2666,7 +2787,7 @@ describe("authoritative game session lifecycle", () => {
       await Promise.resolve();
     });
 
-    expect(screen.getByRole("heading", { name: "Restored setup" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
     expect(
       JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
     ).toMatchObject({ gameId: localGameId, revision: 1, outbox: [] });
@@ -2701,13 +2822,13 @@ describe("authoritative game session lifecycle", () => {
   it("restores setup and playlist progress from the durable browser aggregate", async () => {
     const user = userEvent.setup();
     const firstRender = render(<App />);
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Music player setup" }));
     await user.selectOptions(
       screen.getByRole("combobox", { name: "YouTube Music playlist" }),
       "dev-playlist",
     );
-    await user.click(screen.getByRole("button", { name: "Save setup progress" }));
     await waitFor(() =>
       expect(
         screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
@@ -2717,7 +2838,7 @@ describe("authoritative game session lifecycle", () => {
     firstRender.unmount();
     render(<App />);
 
-    expect(screen.getByRole("heading", { name: "Restored setup" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
     expect(screen.getByTestId("youtube-player")).toHaveAttribute(
       "data-playlist-id",
       "dev-playlist",
@@ -2727,7 +2848,7 @@ describe("authoritative game session lifecycle", () => {
   it("migrates an existing session-storage game into durable local storage", async () => {
     const user = userEvent.setup();
     const firstRender = render(<App />);
-    await user.click(screen.getByRole("button", { name: "Save setup progress" }));
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
     await waitFor(() =>
       expect(
         screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
@@ -2741,7 +2862,7 @@ describe("authoritative game session lifecycle", () => {
     firstRender.unmount();
     render(<App />);
 
-    expect(screen.getByRole("heading", { name: "Restored setup" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
     expect(window.localStorage.getItem("mafia-dashboard.game-session.v4")).toBe(saved);
     expect(window.sessionStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
   });
@@ -2749,7 +2870,7 @@ describe("authoritative game session lifecycle", () => {
   it("removes a stale session copy before local clear can resurrect it", async () => {
     const user = userEvent.setup();
     const firstRender = render(<App />);
-    await user.click(screen.getByRole("button", { name: "Save setup progress" }));
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
     await waitFor(() =>
       expect(
         screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
@@ -2761,7 +2882,7 @@ describe("authoritative game session lifecycle", () => {
     window.sessionStorage.setItem("mafia-dashboard.game-session.v4", saved!);
 
     const restored = render(<App />);
-    expect(screen.getByRole("heading", { name: "Restored setup" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
     expect(window.sessionStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
 
     vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -2773,7 +2894,7 @@ describe("authoritative game session lifecycle", () => {
     restored.unmount();
     render(<App />);
     expect(screen.getAllByRole("heading", { name: "Game setup" })).not.toHaveLength(0);
-    expect(screen.queryByRole("heading", { name: "Restored setup" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Role giveaway" })).toBeNull();
   });
 
   it("clears by known UUID while first save is pending and waits for the tombstone", async () => {
@@ -2784,7 +2905,7 @@ describe("authoritative game session lifecycle", () => {
     api.clearGameSession.mockImplementationOnce(() => clear.promise);
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Save setup progress" }));
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
     await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledOnce());
     const gameId = api.saveGameSession.mock.calls[0]?.[0] as string;
 
@@ -2795,9 +2916,11 @@ describe("authoritative game session lifecycle", () => {
       "Delete this active game from the server? This is irreversible and removes its saved session and game log for every browser.",
     );
     expect(api.clearGameSession).toHaveBeenCalledWith(gameId, 0, testClub.id);
-    expect(screen.getByRole("heading", { name: "Restored setup" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
     clear.resolve();
-    await screen.findByRole("heading", { name: "Game setup" });
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "Role giveaway" })).toBeNull(),
+    );
     expect(window.localStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
     firstSave.resolve({ revision: 1, duplicate: false });
   });
@@ -2808,7 +2931,7 @@ describe("authoritative game session lifecycle", () => {
     api.clearGameSession.mockImplementationOnce(() => clear.promise);
     vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Save setup progress" }));
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
     await waitFor(() =>
       expect(
         screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
@@ -2818,6 +2941,7 @@ describe("authoritative game session lifecycle", () => {
 
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Start new game" }));
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Music player setup" }));
     await user.selectOptions(
@@ -2833,7 +2957,7 @@ describe("authoritative game session lifecycle", () => {
       expect(api.clearGameSession).toHaveBeenCalledWith(clearedGameId, 1, testClub.id),
     );
 
-    expect(screen.getByRole("heading", { name: "Restored setup" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
     expect(screen.getByTestId("youtube-player")).toHaveAttribute(
       "data-playlist-id",
       "dev-playlist",
@@ -2848,7 +2972,7 @@ describe("authoritative game session lifecycle", () => {
     api.clearGameSession.mockRejectedValueOnce(new Error("offline"));
     vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Save setup progress" }));
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
     await waitFor(() =>
       expect(
         screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
@@ -2864,11 +2988,11 @@ describe("authoritative game session lifecycle", () => {
         "offline",
       ),
     );
-    expect(screen.getByRole("heading", { name: "Restored setup" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
     expect(
       JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
     ).toMatchObject({
-      metadata: { setup: { step: "music" } },
+      metadata: { setup: { step: "roles" } },
       failed: false,
       clearFailed: true,
     });

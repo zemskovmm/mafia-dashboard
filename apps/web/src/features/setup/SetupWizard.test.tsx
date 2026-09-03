@@ -478,12 +478,15 @@ describe("SetupWizard", () => {
     expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
     expect(screen.getByText("Draw roles · 10 remaining")).toBeInTheDocument();
     expect(screen.getByLabelText("Mafia table")).toBeInTheDocument();
-    expect(onSessionStateChange.mock.lastCall?.[0]).toEqual(
-      expect.objectContaining({
-        step: "roles",
-        setup: expect.objectContaining({ step: "role-draw", remainingRoles: expect.any(Array) }),
-      }),
-    );
+    const roleGiveaway = onSessionStateChange.mock.lastCall?.[0];
+    expect(roleGiveaway).toMatchObject({
+      step: "roles",
+      hostPlayerId: availablePlayers[10]!.id,
+      selectedPlayerIds: availablePlayers.slice(0, 10).map(({ id }) => id),
+      setup: { step: "role-draw", assignments: {} },
+    });
+    expect(roleGiveaway?.setup?.roleDeck).toHaveLength(10);
+    expect(roleGiveaway?.setup?.remainingRoles).toHaveLength(10);
     expect(onEvent).toHaveBeenCalledWith("setup.role-draw-started", {});
 
     const firstRoleCard = screen.getByRole("button", { name: "Draw role for Player 1" });

@@ -6,6 +6,7 @@ import { DEFAULT_CLUB_ID } from "./club-store.js";
 
 import type { AppUser, GoogleAuthService } from "./google-auth.js";
 import { initializeSchema } from "./initialize-schema.js";
+import { PlayerStore, type PlayerProfile } from "./player-store.js";
 import type { YouTubeOAuthService } from "./youtube-oauth.js";
 
 const pool = new Pool({
@@ -23,6 +24,62 @@ const app = await buildApp({
   pool,
   authenticateRequest: async () => authenticatedUser,
   defaultClubId: DEFAULT_CLUB_ID,
+});
+const playerStore = new PlayerStore(pool);
+const roleDeck = [
+  "sheriff",
+  "citizen",
+  "citizen",
+  "citizen",
+  "citizen",
+  "citizen",
+  "citizen",
+  "mafia",
+  "mafia",
+  "don",
+] as const;
+const createSessionPlayers = (clubId = DEFAULT_CLUB_ID) =>
+  Promise.all(
+    Array.from({ length: 11 }, (_, index) =>
+      playerStore.create(
+        {
+          nickname: `Session ${index + 1} ${randomUUID().slice(0, 8)}`,
+          consent: false,
+          firstName: null,
+          lastName: null,
+          email: null,
+        },
+        clubId,
+      ),
+    ),
+  );
+const roleGiveawayState = (
+  selectedPlayers: readonly Pick<PlayerProfile, "id" | "nickname">[],
+  host: Pick<PlayerProfile, "id" | "nickname">,
+  assignedFirstRole = false,
+) => ({
+  setup: {
+    step: "roles",
+    hostPlayerId: host.id,
+    selectedPlayerIds: selectedPlayers.map(({ id }) => id),
+    setup: {
+      step: "role-draw",
+      players: selectedPlayers.map(({ id, nickname }, index) => ({
+        id,
+        name: nickname,
+        seat: index + 1,
+      })),
+      roleDeck,
+      remainingRoles: assignedFirstRole ? roleDeck.slice(1) : roleDeck,
+      assignments: assignedFirstRole ? { "1": roleDeck[0] } : {},
+    },
+  },
+  game: null,
+  hostPlayerId: host.id,
+  hostName: host.nickname,
+  playlistId: "",
+  log: [],
+  undoHistory: [],
 });
 
 beforeAll(async () => {
@@ -61,19 +118,12 @@ describe("server API", () => {
 
   it("returns the exact completed-session retry but rejects new mutation and deletion", async () => {
     const gameId = randomUUID();
+    const players = await createSessionPlayers();
     const payload = {
       name: "Completion retry contract",
       mutationId: randomUUID(),
       baseRevision: 0,
-      state: {
-        setup: null,
-        game: null,
-        hostPlayerId: null,
-        hostName: null,
-        playlistId: "",
-        log: [],
-        undoHistory: [],
-      },
+      state: roleGiveawayState(players.slice(0, 10), players[10]!),
       results: null,
     };
     expect(
@@ -268,6 +318,7 @@ describe("server API", () => {
     );
 
     const gameId = randomUUID();
+    const gamePlayers = await createSessionPlayers(secondClubId);
     const savedGame = await app.inject({
       method: "PUT",
       url: `/api/game-sessions/${gameId}`,
@@ -276,15 +327,7 @@ describe("server API", () => {
         name: "Tenant table",
         mutationId: randomUUID(),
         baseRevision: 0,
-        state: {
-          setup: null,
-          game: null,
-          hostPlayerId: null,
-          hostName: null,
-          playlistId: "",
-          log: [],
-          undoHistory: [],
-        },
+        state: roleGiveawayState(gamePlayers.slice(0, 10), gamePlayers[10]!),
         results: null,
       },
     });
@@ -429,6 +472,7 @@ describe("server API", () => {
     expect(userEvents.statusCode).toBe(200);
     expect(userEvents.json()).toEqual(managerEvents.json());
     const sessionGameId = randomUUID();
+    const sessionPlayers = await createSessionPlayers(club.id);
     await expect(
       userApp.inject({
         method: "PUT",
@@ -438,15 +482,7 @@ describe("server API", () => {
           name: "Regular user session",
           mutationId: randomUUID(),
           baseRevision: 0,
-          state: {
-            setup: null,
-            game: null,
-            hostPlayerId: null,
-            hostName: null,
-            playlistId: "",
-            log: [],
-            undoHistory: [],
-          },
+          state: roleGiveawayState(sessionPlayers.slice(0, 10), sessionPlayers[10]!),
           results: null,
         },
       }),
@@ -1193,7 +1229,7 @@ describe("server API", () => {
         email: null,
       },
     });
-    const hostPlayerId = host.json().player.id as string;
+    const gamePlayers = await createSessionPlayers();
     const gameId = randomUUID();
     const setup = await app.inject({
       method: "PUT",
@@ -1202,20 +1238,10 @@ describe("server API", () => {
         name: "Protected active table",
         mutationId: randomUUID(),
         baseRevision: 0,
-        state: {
-          setup: {
-            step: "players",
-            hostPlayerId,
-            selectedPlayerIds: [playerId, ...Array.from({ length: 9 }, () => "")],
-            setup: null,
-          },
-          game: null,
-          hostPlayerId,
-          hostName: host.json().player.nickname,
-          playlistId: "",
-          log: [],
-          undoHistory: [],
-        },
+        state: roleGiveawayState(
+          [created.json().player, ...gamePlayers.slice(0, 9)],
+          host.json().player,
+        ),
         results: null,
       },
     });
@@ -1596,20 +1622,63 @@ describe("server API", () => {
     await oauthApp.close();
   });
 
-  it("saves, lists, and restores a client-id game session aggregate", async () => {
+  it("saves, retries, lists, and restores an isolated partial role giveaway", async () => {
     const gameId = randomUUID();
     const mutationId = randomUUID();
+    const playerResponses = await Promise.all(
+      Array.from({ length: 11 }, (_, index) =>
+        app.inject({
+          method: "POST",
+          url: "/api/players",
+          payload: {
+            nickname: `Role setup ${index + 1} ${gameId.slice(0, 8)}`,
+            consent: false,
+            firstName: null,
+            lastName: null,
+            email: null,
+          },
+        }),
+      ),
+    );
+    expect(playerResponses.every(({ statusCode }) => statusCode === 201)).toBe(true);
+    const players = playerResponses.map(
+      (response) => response.json().player as { id: string; nickname: string },
+    );
+    const selectedPlayers = players.slice(0, 10);
+    const host = players[10]!;
+    const roleDeck = [
+      "sheriff",
+      "citizen",
+      "citizen",
+      "citizen",
+      "citizen",
+      "citizen",
+      "citizen",
+      "mafia",
+      "mafia",
+      "don",
+    ];
     const state = {
       setup: {
-        step: "players",
-        hostPlayerId: "",
-        selectedPlayerIds: Array.from({ length: 10 }, () => ""),
-        setup: null,
+        step: "roles",
+        hostPlayerId: host.id,
+        selectedPlayerIds: selectedPlayers.map(({ id }) => id),
+        setup: {
+          step: "role-draw",
+          players: selectedPlayers.map(({ id, nickname }, index) => ({
+            id,
+            name: nickname,
+            seat: index + 1,
+          })),
+          roleDeck,
+          remainingRoles: roleDeck.slice(1),
+          assignments: { "1": "sheriff" },
+        },
       },
       game: null,
-      hostPlayerId: null,
-      hostName: null,
-      playlistId: "PL-restorable",
+      hostPlayerId: host.id,
+      hostName: host.nickname,
+      playlistId: "",
       log: [],
       undoHistory: [],
     };
@@ -1617,12 +1686,12 @@ describe("server API", () => {
     const saved = await app.inject({
       method: "PUT",
       url: `/api/game-sessions/${gameId}`,
-      payload: { name: "Restorable table", mutationId, baseRevision: 0, state, results: null },
+      payload: { name: "Role giveaway", mutationId, baseRevision: 0, state, results: null },
     });
     const retried = await app.inject({
       method: "PUT",
       url: `/api/game-sessions/${gameId}`,
-      payload: { name: "Restorable table", mutationId, baseRevision: 0, state, results: null },
+      payload: { name: "Role giveaway", mutationId, baseRevision: 0, state, results: null },
     });
     const listed = await app.inject({ method: "GET", url: "/api/game-sessions" });
     const restored = await app.inject({ method: "GET", url: `/api/game-sessions/${gameId}` });
@@ -1631,15 +1700,54 @@ describe("server API", () => {
     expect(saved.json()).toMatchObject({ gameId, revision: 1, duplicate: false });
     expect(retried.statusCode).toBe(200);
     expect(retried.json()).toEqual({ ...saved.json(), duplicate: true });
-    expect(listed.json().sessions).toEqual(
-      expect.arrayContaining([expect.objectContaining({ gameId, name: "Restorable table" })]),
-    );
+    expect(
+      listed.json().sessions.find((session: { gameId: string }) => session.gameId === gameId),
+    ).toEqual({
+      gameId,
+      name: "Role giveaway",
+      revision: 1,
+      hostName: host.nickname,
+      phase: "setup-roles",
+      day: 0,
+      updatedAt: expect.any(String),
+    });
     expect(restored.statusCode).toBe(200);
     expect(restored.json().session).toMatchObject({ gameId, revision: 1, state, results: null });
+
+    const foreignClub = await app.inject({
+      method: "POST",
+      url: "/api/clubs",
+      payload: {
+        name: `Foreign ${gameId.slice(0, 8)}`,
+        city: "Sevilla",
+        headerLogo: null,
+        cardLogo: null,
+        language: "en",
+        ownerConsent: true,
+      },
+    });
+    expect(foreignClub.statusCode).toBe(201);
+    const foreignHeaders = { "x-club-id": foreignClub.json().club.id as string };
+    expect(
+      await app.inject({
+        method: "GET",
+        url: `/api/game-sessions/${gameId}`,
+        headers: foreignHeaders,
+      }),
+    ).toHaveProperty("statusCode", 404);
+    const foreignList = await app.inject({
+      method: "GET",
+      url: "/api/game-sessions",
+      headers: foreignHeaders,
+    });
+    expect(foreignList.json().sessions).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ gameId })]),
+    );
   });
 
   it("rejects legacy mutations for an authoritative game session", async () => {
     const gameId = randomUUID();
+    const players = await createSessionPlayers();
     await app.inject({
       method: "PUT",
       url: `/api/game-sessions/${gameId}`,
@@ -1647,15 +1755,7 @@ describe("server API", () => {
         name: "Authoritative table",
         mutationId: randomUUID(),
         baseRevision: 0,
-        state: {
-          setup: null,
-          game: null,
-          hostPlayerId: null,
-          hostName: null,
-          playlistId: "",
-          log: [],
-          undoHistory: [],
-        },
+        state: roleGiveawayState(players.slice(0, 10), players[10]!),
         results: null,
       },
     });
@@ -1714,14 +1814,10 @@ describe("server API", () => {
   it("returns a conflict when a mutation id is reused with different content", async () => {
     const gameId = randomUUID();
     const mutationId = randomUUID();
+    const players = await createSessionPlayers();
     const state = {
-      setup: null,
-      game: null,
-      hostPlayerId: null,
-      hostName: null,
+      ...roleGiveawayState(players.slice(0, 10), players[10]!),
       playlistId: "original",
-      log: [],
-      undoHistory: [],
     };
     await app.inject({
       method: "PUT",

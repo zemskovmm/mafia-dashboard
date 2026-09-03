@@ -789,14 +789,7 @@ export const ClubWorkspace = ({
   }, [sessionRetry]);
 
   useEffect(() => {
-    const hasContent =
-      initialGame !== null ||
-      setupSession !== null ||
-      hostPlayerId !== null ||
-      hostName !== null ||
-      playlistId !== defaultPlaylistId ||
-      log.length > 0;
-    if (!hasContent) return;
+    if (sessionSync.gameId === null && initialGame === null) return;
     sessionSync.enqueue(
       sessionName,
       {
@@ -1197,6 +1190,9 @@ export const ClubWorkspace = ({
 
   const handleSetupSessionChange = useCallback(
     (next: SetupWizardSessionState) => {
+      if (next.step === "roles") {
+        sessionSync.ensureGameId(sessionSync.gameId ?? createRandomId());
+      }
       phaseRef.current = setupPhase(next.step);
       setSetupSession(hasSetupProgress(next) ? next : null);
       const nextHostId = next.hostPlayerId;
@@ -1209,7 +1205,7 @@ export const ClubWorkspace = ({
       setHostPlayerId(nextHostId);
       if (selectedHost !== undefined) setHostName(selectedHost.nickname);
     },
-    [players],
+    [players, sessionSync],
   );
 
   const applyRemoteSession = useCallback(
