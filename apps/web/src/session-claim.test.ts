@@ -141,6 +141,45 @@ describe("GameSessionClaimController", () => {
     controller.dispose();
   });
 
+  it("releases and reacquires tab ownership after browser data is cleared", async () => {
+    const storage = memoryStorage();
+    const heldRequests: Promise<void>[] = [];
+    const lockRequest = vi.fn(
+      (
+        name: string,
+        _options: { mode: "exclusive"; ifAvailable: true },
+        callback: (lock: { readonly name: string } | null) => Promise<void>,
+      ) => {
+        const request = callback({ name });
+        heldRequests.push(request);
+        return request;
+      },
+    );
+    const createId = vi
+      .fn()
+      .mockReturnValueOnce("00000000-0000-4000-8000-000000000301")
+      .mockReturnValueOnce("00000000-0000-4000-8000-000000000302")
+      .mockReturnValueOnce("00000000-0000-4000-8000-000000000303");
+    const controller = new GameSessionClaimController({
+      storage,
+      clubId: "club-a",
+      createId,
+      lockRequest,
+    });
+    await controller.ready();
+    const firstLockName = lockRequest.mock.calls[0]?.[0];
+
+    controller.clearAll();
+    await controller.restart();
+
+    expect(lockRequest).toHaveBeenCalledTimes(2);
+    expect(lockRequest.mock.calls[1]?.[0]).not.toBe(firstLockName);
+    await expect(heldRequests[0]).resolves.toBeUndefined();
+    expect(controller.credential("game-a", 0).claimId).toBe("00000000-0000-4000-8000-000000000303");
+    controller.dispose();
+    await expect(heldRequests[1]).resolves.toBeUndefined();
+  });
+
   it("rotates cloned credentials with the local-storage fallback", async () => {
     const clubId = "00000000-0000-4000-8000-000000000051";
     const gameId = "00000000-0000-4000-8000-000000000052";

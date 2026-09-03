@@ -1646,6 +1646,46 @@ describe("developer menu", () => {
     expect(onExit).toHaveBeenCalledOnce();
   });
 
+  it("releases a heartbeat that finishes after the workspace exits", async () => {
+    const onExit = vi.fn();
+    const user = userEvent.setup();
+    renderView(
+      <ClubWorkspace
+        club={testClub}
+        onExit={onExit}
+        onEditClub={() => undefined}
+        onDeleteClub={() => Promise.resolve()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
+    await waitFor(() => expect(api.claimGameSession).toHaveBeenCalled());
+    const renewal = deferred<{ generation: number; expiresAt: string }>();
+    api.claimGameSession.mockReset().mockReturnValueOnce(renewal.promise);
+    api.releaseGameSession.mockClear();
+    act(() => window.dispatchEvent(new Event("online")));
+    await waitFor(() => expect(api.claimGameSession).toHaveBeenCalledTimes(1));
+
+    await user.click(
+      screen.getByRole("button", { name: `Choose another club · current club ${testClub.name}` }),
+    );
+    expect(onExit).toHaveBeenCalledOnce();
+    expect(api.releaseGameSession).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      renewal.resolve({ generation: 2, expiresAt: "2026-09-03T20:01:30.000Z" });
+      await renewal.promise;
+    });
+
+    await waitFor(() => expect(api.releaseGameSession).toHaveBeenCalledTimes(2));
+    expect(api.releaseGameSession.mock.calls[1]?.[1]).toMatchObject({ claimGeneration: 2 });
+    expect(
+      [...Array(window.sessionStorage.length).keys()]
+        .map((index) => window.sessionStorage.key(index))
+        .some((key) => key?.startsWith(`mafia-dashboard.game-session.v4.claim.${testClub.id}`)),
+    ).toBe(false);
+  });
+
   it("releases the tab-identity lock when the workspace unmounts", async () => {
     const originalLocks = Object.getOwnPropertyDescriptor(navigator, "locks");
     let heldRequest: Promise<void> | null = null;
@@ -2416,8 +2456,26 @@ describe("developer menu", () => {
     expect(screen.getByRole("banner", { name: "Application status" })).toHaveTextContent(
       "Game setup",
     );
-    expect(window.localStorage.length).toBe(0);
-    expect(window.sessionStorage.length).toBe(0);
+    await waitFor(() => {
+      expect(
+        [...Array(window.localStorage.length).keys()]
+          .map((index) => window.localStorage.key(index))
+          .some((key) => key?.startsWith("mafia-dashboard-claim-tab-owner:")),
+      ).toBe(true);
+      expect(
+        [...Array(window.sessionStorage.length).keys()]
+          .map((index) => window.sessionStorage.key(index))
+          .some((key) =>
+            key?.startsWith(`mafia-dashboard.game-session.v4.claim.${testClub.id}.tab`),
+          ),
+      ).toBe(true);
+    });
+    expect(window.localStorage.getItem("other-local-data")).toBeNull();
+    expect(window.sessionStorage.getItem("other-session-data")).toBeNull();
+
+    api.saveGameSession.mockClear();
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    await waitFor(() => expect(api.saveGameSession).toHaveBeenCalled());
   });
 
   it("resets browser-only settings and Console memory when clearing all data", async () => {
@@ -2453,14 +2511,13 @@ describe("developer menu", () => {
       rememberedOrder: musicPlayer.getAttribute("data-remembered-order"),
       selectedPlaylist: (playlist as HTMLSelectElement).value,
       consoleIsEmpty: screen.queryByText("No errors have been captured.") !== null,
-      localStorageItems: window.localStorage.length,
     }).toEqual({
       playlistId: "",
       rememberedOrder: "",
       selectedPlaylist: "",
       consoleIsEmpty: true,
-      localStorageItems: 0,
     });
+    expect(window.localStorage.getItem(musicPreferencesStorageKey(testClub.id))).toBeNull();
     expect(api.clearAllData).not.toHaveBeenCalled();
   });
 });

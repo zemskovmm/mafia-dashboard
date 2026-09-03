@@ -1008,20 +1008,40 @@ export const ClubWorkspace = ({
     const renew = async () => {
       if (renewing) return;
       renewing = true;
+      const claimLifecycle = claimController.lifecycle;
+      let credential: GameSessionClaimCredential;
       try {
-        const claim = await claimGameSession(
-          heartbeatGameId,
-          claimCredential(heartbeatGameId, heartbeatGeneration),
-          club.id,
-        );
-        if (active) {
-          const needsRecovery = !claimController.isOwned(heartbeatGameId, heartbeatGeneration);
-          sessionSync.setClaimGeneration(claim.generation);
-          claimController.markOwned(heartbeatGameId, claim.generation);
-          if (needsRecovery) sessionRetry.retryNow();
+        credential = claimCredential(heartbeatGameId, heartbeatGeneration);
+        const claim = await claimGameSession(heartbeatGameId, credential, club.id);
+        if (
+          !active ||
+          !workspaceActiveRef.current ||
+          claimController.isDisposed ||
+          claimController.lifecycle !== claimLifecycle
+        ) {
+          void releaseGameSession(
+            heartbeatGameId,
+            { claimId: credential.claimId, claimGeneration: claim.generation },
+            club.id,
+          ).catch((releaseError) =>
+            reportError(releaseError, {
+              source: "api",
+              context: "game-session.release-late-heartbeat",
+            }),
+          );
+          return;
         }
+        const needsRecovery = !claimController.isOwned(heartbeatGameId, heartbeatGeneration);
+        sessionSync.setClaimGeneration(claim.generation);
+        claimController.markOwned(heartbeatGameId, claim.generation);
+        if (needsRecovery) sessionRetry.retryNow();
       } catch (error) {
-        if (active) {
+        if (
+          active &&
+          workspaceActiveRef.current &&
+          !claimController.isDisposed &&
+          claimController.lifecycle === claimLifecycle
+        ) {
           if (!claimConflictReporterRef.current(error, heartbeatGameId, "retry")) {
             claimController.markOffline(heartbeatGameId);
             reportError(error, { source: "api", context: "game-session.heartbeat" });
@@ -1835,7 +1855,8 @@ export const ClubWorkspace = ({
     setClearAllDataError(false);
     try {
       await sessionSync.clear(async () => undefined);
-      claimController.clearAll();
+      setClaimControllerReady(false);
+      releaseAndDisposeClaim();
       window.localStorage.clear();
       window.sessionStorage.clear();
       setMusicPreferences(readMusicPreferences(window.localStorage, club.id));
@@ -1851,12 +1872,15 @@ export const ClubWorkspace = ({
       privacyTapsRef.current = { count: 0, resetTimer: null };
       setAvailablePlayerIds(new Set());
       resetLocalState();
-      window.localStorage.clear();
       setActiveDrawer(null);
     } catch (error) {
       reportError(error, { source: "persistence", context: "application-data.clear" });
       setClearAllDataError(true);
     } finally {
+      if (claimController.isDisposed && workspaceActiveRef.current) {
+        await claimController.restart();
+        setClaimControllerReady(true);
+      }
       setClearingAllData(false);
     }
   };

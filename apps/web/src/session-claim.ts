@@ -36,15 +36,15 @@ export class GameSessionClaimController {
   private readyState: boolean;
   private readyPromise: Promise<void> | null = null;
   private disposed = false;
+  private lifecycleVersion = 0;
   private fallbackOwnerKey: string | null = null;
   private fallbackOwnerId: string | null = null;
   private releaseTabLock!: () => void;
-  private readonly tabLockRelease = new Promise<void>((resolve) => {
-    this.releaseTabLock = resolve;
-  });
+  private tabLockRelease: Promise<void>;
 
   public constructor(private readonly options: ClaimControllerOptions) {
     this.readyState = false;
+    this.tabLockRelease = this.createTabLockRelease();
   }
 
   public get isReady(): boolean {
@@ -53,6 +53,10 @@ export class GameSessionClaimController {
 
   public get isDisposed(): boolean {
     return this.disposed;
+  }
+
+  public get lifecycle(): number {
+    return this.lifecycleVersion;
   }
 
   public ownedClaims(): readonly (GameSessionClaimCredential & { readonly gameId: string })[] {
@@ -74,6 +78,17 @@ export class GameSessionClaimController {
           : this.acquireTabLock(this.tabId());
     }
     return this.readyPromise;
+  }
+
+  public restart(): Promise<void> {
+    this.dispose();
+    this.disposed = false;
+    this.readyState = false;
+    this.readyPromise = null;
+    this.fallbackOwnerKey = null;
+    this.fallbackOwnerId = null;
+    this.tabLockRelease = this.createTabLockRelease();
+    return this.ready();
   }
 
   public credential(gameId: string, generation: number): GameSessionClaimCredential {
@@ -154,7 +169,9 @@ export class GameSessionClaimController {
   }
 
   public dispose(): void {
+    if (this.disposed) return;
     this.disposed = true;
+    this.lifecycleVersion += 1;
     this.stopRenewal();
     this.readyState = false;
     try {
@@ -240,6 +257,7 @@ export class GameSessionClaimController {
   }
 
   private acquireTabLock(tabId: string): Promise<void> {
+    const lockRelease = this.tabLockRelease;
     return new Promise((resolve) => {
       const fallback = () => {
         if (this.disposed) {
@@ -272,7 +290,7 @@ export class GameSessionClaimController {
             }
             this.readyState = true;
             resolve();
-            await this.tabLockRelease;
+            await lockRelease;
           },
         ).catch(fallback);
       } catch {
@@ -291,5 +309,11 @@ export class GameSessionClaimController {
 
   private persistGeneration(gameId: string, generation: number): void {
     this.options.storage.setItem(this.generationStorageKey(gameId), String(generation));
+  }
+
+  private createTabLockRelease(): Promise<void> {
+    return new Promise((resolve) => {
+      this.releaseTabLock = resolve;
+    });
   }
 }
