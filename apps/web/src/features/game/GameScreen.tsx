@@ -39,6 +39,17 @@ interface GameScreenProps {
   readonly clubName?: string;
 }
 
+const foulPhases: ReadonlySet<GameState["phase"]> = new Set([
+  "day",
+  "voting",
+  "voting-cancelled",
+  "car-crash",
+  "car-crash-decision",
+  "car-crash-result",
+  "car-crash-skipped",
+  "goodbye-speech",
+]);
+
 const isSkippedCarCrash = (game: GameState): boolean => {
   if (game.phase === "car-crash-skipped") return true;
   if (game.phase !== "car-crash-decision") return false;
@@ -135,6 +146,7 @@ export const GameScreen = ({
   const swipedPlayer = game.players.find(
     ({ seat, status }) => seat === swipedSeat && status === "active",
   );
+  const foulAvailable = mode === "live" && game.day >= 1 && foulPhases.has(game.phase);
   const disciplineAvailable =
     mode === "live" &&
     game.day >= 1 &&
@@ -565,7 +577,7 @@ export const GameScreen = ({
               privacyHidden={privacyHidden}
               onSeatSwipe={disciplineAvailable ? revealDisciplineAction : undefined}
               swipeAction={swipeAction}
-              onFoul={foulPlayer}
+              onFoul={foulAvailable ? foulPlayer : undefined}
               onGameChange={onGameChange}
               onEvent={onEvent}
               onAcceptedEvent={onAcceptedEvent}
@@ -626,7 +638,7 @@ export const GameScreen = ({
                 ),
               }))}
               renderSeatActions={(seat) =>
-                (game.phase === "day" || game.phase === "car-crash") && seat.status === "active" ? (
+                foulAvailable && seat.status === "active" ? (
                   <>
                     <button
                       type="button"

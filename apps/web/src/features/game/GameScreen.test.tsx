@@ -80,6 +80,7 @@ describe("GameScreen", () => {
     expect(screen.getByText(/Стол «Мафия»/)).toBeInTheDocument();
     expect(screen.getByText("Текущий игрок")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Следующий игрок" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Фол: Player 1" })).toBeInTheDocument();
   });
 
   it("shows Critical under active team counts in every critical live phase, even when masked", () => {
@@ -232,6 +233,7 @@ describe("GameScreen", () => {
     const card = screen.getByRole("button", {
       name: `Don check ${target.name}`,
     });
+    expect(screen.queryByRole("button", { name: /^Foul / })).toBeNull();
 
     fireEvent.touchStart(card, { touches: [{ clientX: 20, clientY: 50 }] });
     fireEvent.touchEnd(card, { changedTouches: [{ clientX: 82, clientY: 52 }] });
@@ -484,6 +486,7 @@ describe("GameScreen", () => {
     expect(screen.getByRole("group", { name: "Car-crash decision" })).toBeInTheDocument();
     expect(screen.queryByText("Eliminate-all vote skipped")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Begin night" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /^Foul Player/i })).toHaveLength(10);
   });
 
   it("keeps a red-card cancellation on the voting screen until night is confirmed", async () => {
@@ -515,6 +518,7 @@ describe("GameScreen", () => {
     expect(screen.getByRole("status", { name: "Voting cancelled" })).toHaveTextContent(
       "A player received a red card",
     );
+    expect(screen.getAllByRole("button", { name: /^Foul Player/i })).toHaveLength(10);
     await user.click(screen.getByRole("button", { name: "Begin night" }));
     expect(screen.getByRole("heading", { name: "Mafia shots" })).toBeInTheDocument();
   });
@@ -554,6 +558,127 @@ describe("GameScreen", () => {
     );
     expect(onEvent).toHaveBeenCalledWith("foul.issued", { seat: 1 });
   });
+
+  it.each([
+    ["day", {}],
+    [
+      "voting",
+      {
+        nominations: [{ nominatorSeat: 1, candidateSeat: 4, order: 1 }],
+        turnOrder: [4],
+        votingRound: "initial",
+      },
+    ],
+    ["voting-cancelled", { votingCancellation: { reason: "red-card" } }],
+    ["car-crash", { carCrashSeats: [4, 6], turnOrder: [4, 6], votingRound: "repeat" }],
+    ["car-crash-decision", { carCrashSeats: [4, 6], carCrashVotes: {} }],
+    [
+      "car-crash-result",
+      { carCrashResult: { eliminate: false, seats: [4, 6], yesVotes: 5, eligibleVoters: 10 } },
+    ],
+    ["car-crash-skipped", { carCrashSeats: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] }],
+    ["goodbye-speech", { goodbyeSeats: [4], goodbyeNext: "night" }],
+  ] satisfies readonly (readonly [GameState["phase"], Partial<GameState>])[])(
+    "shows Foul controls throughout day-play phase %s",
+    (phase, state) => {
+      const base = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+      render(
+        <GameScreen
+          game={{ ...base, ...state, phase }}
+          hostName="Host Player"
+          onGameChange={() => undefined}
+          onEvent={() => undefined}
+          privacyHidden={false}
+        />,
+      );
+
+      expect(screen.getAllByRole("button", { name: /^Foul Player/i })).toHaveLength(10);
+    },
+  );
+
+  it.each([
+    ["mafia-planning", {}],
+    ["sheriff-wake", {}],
+    ["best-move", { bestMove: { playerSeat: 1, selectedSeats: [] } }],
+    ["night-mafia", {}],
+    ["night-mafia-result", { nightResult: { kind: "miss" } }],
+    ["night-don", {}],
+    [
+      "night-don-result",
+      { checkResult: { kind: "don-check", targetSeat: 1, match: false, secret: true } },
+    ],
+    ["night-sheriff", {}],
+    [
+      "night-sheriff-result",
+      { checkResult: { kind: "sheriff-check", targetSeat: 1, match: false, secret: true } },
+    ],
+    ["night-resolution", { nightResult: { kind: "miss" } }],
+    ["finished", { winner: "red" }],
+    ["draw", {}],
+    ["cancelled", {}],
+  ] satisfies readonly (readonly [GameState["phase"], Partial<GameState>])[])(
+    "hides Foul controls outside day-play phase %s",
+    (phase, state) => {
+      const base = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+      render(
+        <GameScreen
+          game={{ ...base, ...state, phase }}
+          hostName="Host Player"
+          onGameChange={() => undefined}
+          onEvent={() => undefined}
+          privacyHidden={false}
+        />,
+      );
+
+      expect(screen.queryByRole("button", { name: /^Foul Player/i })).toBeNull();
+    },
+  );
+
+  it.each([
+    { priorFouls: 2, expectedStatus: "active", expectedPhase: "voting" },
+    { priorFouls: 3, expectedStatus: "red-carded", expectedPhase: "voting-cancelled" },
+  ] as const)(
+    "applies foul $priorFouls + 1 normally during voting",
+    async ({ priorFouls, expectedStatus, expectedPhase }) => {
+      const user = userEvent.setup();
+      const base = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+      const game: GameState = {
+        ...base,
+        day: 2,
+        phase: "voting",
+        players: base.players.map((player) =>
+          player.seat === 1
+            ? { ...player, fouls: priorFouls, mutePending: priorFouls === 3 }
+            : player,
+        ),
+        nominations: [{ nominatorSeat: 1, candidateSeat: 4, order: 1 }],
+        turnOrder: [4],
+        currentTurnIndex: 0,
+        voteAssignments: {},
+        votingRound: "initial",
+      };
+      const onGameChange = vi.fn<(next: GameState) => void>();
+      render(
+        <GameScreen
+          game={game}
+          hostName="Host Player"
+          onGameChange={onGameChange}
+          onEvent={() => undefined}
+          privacyHidden={false}
+        />,
+      );
+
+      await user.click(screen.getByRole("button", { name: "Foul Player 1" }));
+
+      const next = onGameChange.mock.calls[0]?.[0];
+      expect(next).toMatchObject({ phase: expectedPhase });
+      expect(next?.players.find(({ seat }) => seat === 1)).toMatchObject({
+        fouls: priorFouls + 1,
+        status: expectedStatus,
+        mutePending: true,
+      });
+    },
+  );
 
   it("skips voting for one nominee on day one", async () => {
     const user = userEvent.setup();
@@ -705,6 +830,7 @@ describe("GameScreen", () => {
     expect(screen.getByRole("button", { name: "Seat 6: Player 6" })).toHaveClass(
       "status-eliminated",
     );
+    expect(screen.getAllByRole("button", { name: /^Foul Player/i })).toHaveLength(8);
   });
 
   it("does not present an inactive restored current speaker as the active turn", () => {
@@ -761,6 +887,7 @@ describe("GameScreen", () => {
       );
     };
     render(<BestMoveHarness />);
+    expect(screen.queryByRole("button", { name: /^Foul Player/i })).toBeNull();
     const victimCard = screen.getByRole("button", { name: `Seat ${victim.seat}: ${victim.name}` });
     expect(victimCard).toHaveClass("is-voting-highlight");
     expect(victimCard).toBeDisabled();
