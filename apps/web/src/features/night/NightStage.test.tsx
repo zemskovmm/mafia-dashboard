@@ -262,10 +262,13 @@ describe("NightStage", () => {
     expect(screen.getByRole("button", { name: /begin day 2/i })).toBeInTheDocument();
   });
 
-  it("shows deceased owners' checks and provides explicit skip actions", async () => {
+  it("keeps both same-night deceased owners' checks interactive", async () => {
     const user = userEvent.setup();
     const base = createNightGame();
     const onEvent = vi.fn();
+    const target = base.players.find(({ role }) => role === "citizen")!;
+    const don = base.players.find(({ role }) => role === "don")!;
+    const sheriff = base.players.find(({ role }) => role === "sheriff")!;
     const initial: GameState = {
       ...base,
       phase: "night-don",
@@ -277,30 +280,23 @@ describe("NightStage", () => {
     };
     render(<Harness initial={initial} onEvent={onEvent} />);
 
-    expect(screen.queryByText("Select a player to continue")).toBeNull();
-    expect(screen.queryByRole("button", { name: /^Don check Player/ })).toBeNull();
+    expect(screen.getByRole("button", { name: `Don check ${target.name}` })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Skip Don check" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: /red card|foul/i })).toBeNull();
-    expect(
-      screen
-        .getAllByRole("button")
-        .filter((button) => !button.hasAttribute("disabled"))
-        .map((button) => button.textContent?.trim()),
-    ).toEqual(["Skip Don check"]);
-    await user.click(screen.getByRole("button", { name: "Skip Don check" }));
-    expect(screen.getByText("Sheriff check")).toBeInTheDocument();
-    expect(onEvent).toHaveBeenCalledWith("don.check-skipped", { day: initial.day });
+    expect(screen.getByRole("button", { name: `Don check ${don.name}` })).toHaveClass(
+      "status-eliminated",
+    );
+    await user.click(screen.getByRole("button", { name: `Don check ${target.name}` }));
+    expect(screen.getByText("Not the Sheriff")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /proceed to sheriff check/i }));
 
-    expect(screen.queryByText("Select a player to continue")).toBeNull();
-    expect(screen.queryByRole("button", { name: /^Sheriff check Player/ })).toBeNull();
-    expect(
-      screen
-        .getAllByRole("button")
-        .filter((button) => !button.hasAttribute("disabled"))
-        .map((button) => button.textContent?.trim()),
-    ).toEqual(["Skip Sheriff check"]);
-    await user.click(screen.getByRole("button", { name: "Skip Sheriff check" }));
-    expect(screen.getByText("Night complete")).toBeInTheDocument();
-    expect(onEvent).toHaveBeenCalledWith("sheriff.check-skipped", { day: initial.day });
+    expect(screen.getByRole("button", { name: `Sheriff check ${target.name}` })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Skip Sheriff check" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: `Sheriff check ${sheriff.name}` })).toHaveClass(
+      "status-eliminated",
+    );
+    await user.click(screen.getByRole("button", { name: `Sheriff check ${target.name}` }));
+    expect(screen.getByText("Not Mafia")).toBeInTheDocument();
   });
 
   it("logs Mafia moves only when shots are evaluated", async () => {

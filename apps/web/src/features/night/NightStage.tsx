@@ -5,6 +5,7 @@ import {
   continueDonCheck,
   continueSheriffCheck,
   getMafiaShotResult,
+  isNightCheckEligible,
   performDonCheck,
   performSheriffCheck,
   resolveMafiaShots,
@@ -42,8 +43,8 @@ export const NightStage = ({
   const { t } = useMessages(nightMessages);
   const tableHostName = hostName ?? t("night.host");
   const activePlayers = game.players.filter(({ status }) => status === "active");
-  const hasActiveDon = activePlayers.some(({ role }) => role === "don");
-  const hasActiveSheriff = activePlayers.some(({ role }) => role === "sheriff");
+  const donEligible = isNightCheckEligible(game, "don");
+  const sheriffEligible = isNightCheckEligible(game, "sheriff");
   const skipDon = () => {
     const next = skipDonCheck(game);
     if (onAcceptedEvent !== undefined) {
@@ -189,18 +190,18 @@ export const NightStage = ({
       <GameTable
         hostName={tableHostName}
         privacyHidden={privacyHidden}
-        onSeatSwipe={hasActiveDon ? onSeatSwipe : undefined}
-        swipeAction={hasActiveDon ? swipeAction : undefined}
+        onSeatSwipe={donEligible ? onSeatSwipe : undefined}
+        swipeAction={donEligible ? swipeAction : undefined}
         seats={game.players.map((player) => ({
           ...player,
-          mafiaShooter: player.status === "active" && player.role === "don",
+          mafiaShooter: donEligible && player.role === "don",
         }))}
         seatActionLabel={
-          hasActiveDon ? (seat) => t("night.donCheckTarget", { name: seat.name }) : undefined
+          donEligible ? (seat) => t("night.donCheckTarget", { name: seat.name }) : undefined
         }
-        seatActionDisabled={hasActiveDon ? undefined : () => true}
+        seatActionDisabled={donEligible ? undefined : () => true}
         onSeatClick={
-          hasActiveDon
+          donEligible
             ? (targetSeat) => {
                 const check = performDonCheck(game, targetSeat);
                 if (onAcceptedEvent !== undefined) {
@@ -222,7 +223,7 @@ export const NightStage = ({
           </div>
         }
         advance={
-          hasActiveDon ? (
+          donEligible ? (
             <div className="table-advance-options">
               <button type="button" disabled>
                 {t("night.selectPlayer")}
@@ -243,7 +244,6 @@ export const NightStage = ({
 
   if (game.phase === "night-don-result" && game.checkResult?.kind === "don-check") {
     const target = game.players.find(({ seat }) => seat === game.checkResult?.targetSeat);
-    const hasSheriff = game.players.some(({ role }) => role === "sheriff");
     return (
       <GameTable
         hostName={tableHostName}
@@ -252,7 +252,7 @@ export const NightStage = ({
         swipeAction={swipeAction}
         seats={game.players.map((player) => ({
           ...player,
-          mafiaShooter: player.status === "active" && player.role === "don",
+          mafiaShooter: donEligible && player.role === "don",
           current: player.seat === game.checkResult?.targetSeat,
         }))}
         center={
@@ -278,7 +278,7 @@ export const NightStage = ({
               } else onGameChange(next);
             }}
           >
-            {hasSheriff ? t("night.proceedSheriff") : t("night.continue")}
+            {sheriffEligible ? t("night.proceedSheriff") : t("night.continue")}
           </button>
         }
       />
@@ -290,20 +290,18 @@ export const NightStage = ({
       <GameTable
         hostName={tableHostName}
         privacyHidden={privacyHidden}
-        onSeatSwipe={hasActiveSheriff ? onSeatSwipe : undefined}
-        swipeAction={hasActiveSheriff ? swipeAction : undefined}
+        onSeatSwipe={sheriffEligible ? onSeatSwipe : undefined}
+        swipeAction={sheriffEligible ? swipeAction : undefined}
         seats={game.players.map((player) => ({
           ...player,
-          sheriffHighlight: player.status === "active" && player.role === "sheriff",
+          sheriffHighlight: sheriffEligible && player.role === "sheriff",
         }))}
         seatActionLabel={
-          hasActiveSheriff
-            ? (seat) => t("night.sheriffCheckTarget", { name: seat.name })
-            : undefined
+          sheriffEligible ? (seat) => t("night.sheriffCheckTarget", { name: seat.name }) : undefined
         }
-        seatActionDisabled={hasActiveSheriff ? undefined : () => true}
+        seatActionDisabled={sheriffEligible ? undefined : () => true}
         onSeatClick={
-          hasActiveSheriff
+          sheriffEligible
             ? (targetSeat) => {
                 const check = performSheriffCheck(game, targetSeat);
                 if (onAcceptedEvent !== undefined) {
@@ -325,7 +323,7 @@ export const NightStage = ({
           </div>
         }
         advance={
-          hasActiveSheriff ? (
+          sheriffEligible ? (
             <div className="table-advance-options">
               <button type="button" disabled>
                 {t("night.selectPlayer")}
@@ -354,7 +352,7 @@ export const NightStage = ({
         swipeAction={swipeAction}
         seats={game.players.map((player) => ({
           ...player,
-          sheriffHighlight: player.status === "active" && player.role === "sheriff",
+          sheriffHighlight: sheriffEligible && player.role === "sheriff",
           current: player.seat === game.checkResult?.targetSeat,
         }))}
         center={

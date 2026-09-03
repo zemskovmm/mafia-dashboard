@@ -8,8 +8,15 @@ const playerAt = (game: GameState, seat: number) => {
   return player;
 };
 
-const hasCheckOwner = (game: GameState, role: "don" | "sheriff"): boolean =>
-  game.players.some(({ role: playerRole, status }) => playerRole === role && status === "active");
+export const isNightCheckEligible = (game: GameState, role: "don" | "sheriff"): boolean => {
+  const snapshot = game.nightCheckEligibility?.[role];
+  if (snapshot !== undefined) return snapshot;
+  const owner = game.players.find(({ role: playerRole }) => playerRole === role);
+  return (
+    owner?.status === "active" ||
+    (game.nightResult?.kind === "kill" && game.nightResult.targetSeat === owner?.seat)
+  );
+};
 
 const resultForTargets = (game: GameState, targets: ReadonlySet<number>): NightShotResult => {
   if (targets.size !== 1) return { kind: "miss" };
@@ -20,12 +27,8 @@ const resultForTargets = (game: GameState, targets: ReadonlySet<number>): NightS
 };
 
 const nextPrivatePhase = (game: GameState): GameState["phase"] => {
-  if (game.players.some(({ role }) => role === "don")) {
-    return "night-don";
-  }
-  if (game.players.some(({ role }) => role === "sheriff")) {
-    return "night-sheriff";
-  }
+  if (isNightCheckEligible(game, "don")) return "night-don";
+  if (isNightCheckEligible(game, "sheriff")) return "night-sheriff";
   return "night-resolution";
 };
 
@@ -165,7 +168,7 @@ export const performDonCheck = (
   if (game.phase !== "night-don") {
     throw new Error("The Don check is not active");
   }
-  if (!hasCheckOwner(game, "don")) {
+  if (!isNightCheckEligible(game, "don")) {
     throw new Error("There is no available Don");
   }
   const target = playerAt(game, targetSeat);
@@ -185,19 +188,19 @@ export const continueDonCheck = (game: GameState): GameState => {
   if (game.phase !== "night-don-result" || game.checkResult?.kind !== "don-check") {
     throw new Error("The Don result is not ready to continue");
   }
-  const phase = game.players.some(({ role }) => role === "sheriff")
-    ? "night-sheriff"
-    : "night-resolution";
+  if (!isNightCheckEligible(game, "don")) throw new Error("There is no available Don");
+  const phase = isNightCheckEligible(game, "sheriff") ? "night-sheriff" : "night-resolution";
   return { ...game, phase, checkResult: undefined };
 };
 
 export const skipDonCheck = (game: GameState): GameState => {
   if (game.phase !== "night-don") throw new Error("The Don check is not active");
+  if (game.nightCheckEligibility !== undefined && !isNightCheckEligible(game, "don")) {
+    throw new Error("There is no available Don");
+  }
   return {
     ...game,
-    phase: game.players.some(({ role }) => role === "sheriff")
-      ? "night-sheriff"
-      : "night-resolution",
+    phase: isNightCheckEligible(game, "sheriff") ? "night-sheriff" : "night-resolution",
     checkResult: undefined,
   };
 };
@@ -209,7 +212,7 @@ export const performSheriffCheck = (
   if (game.phase !== "night-sheriff") {
     throw new Error("The Sheriff check is not active");
   }
-  if (!hasCheckOwner(game, "sheriff")) {
+  if (!isNightCheckEligible(game, "sheriff")) {
     throw new Error("There is no available Sheriff");
   }
   const target = playerAt(game, targetSeat);
@@ -229,11 +232,15 @@ export const continueSheriffCheck = (game: GameState): GameState => {
   if (game.phase !== "night-sheriff-result" || game.checkResult?.kind !== "sheriff-check") {
     throw new Error("The Sheriff result is not ready to continue");
   }
+  if (!isNightCheckEligible(game, "sheriff")) throw new Error("There is no available Sheriff");
   return { ...game, phase: "night-resolution", checkResult: undefined };
 };
 
 export const skipSheriffCheck = (game: GameState): GameState => {
   if (game.phase !== "night-sheriff") throw new Error("The Sheriff check is not active");
+  if (game.nightCheckEligibility !== undefined && !isNightCheckEligible(game, "sheriff")) {
+    throw new Error("There is no available Sheriff");
+  }
   return { ...game, phase: "night-resolution", checkResult: undefined };
 };
 
@@ -261,6 +268,7 @@ export const completeNight = (game: GameState): GameState => {
     nominations: [],
     voteAssignments: {},
     shotAssignments: {},
+    nightCheckEligibility: undefined,
     checkResult: undefined,
     redCardIssuedThisDay: undefined,
   };

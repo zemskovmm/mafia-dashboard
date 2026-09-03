@@ -600,6 +600,7 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
       "carCrashResult",
       "goodbyeSeats",
       "goodbyeNext",
+      "nightCheckEligibility",
       "checkResult",
       "nightResult",
       "dayNotice",
@@ -766,6 +767,15 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
     game.goodbyeNext !== "night"
   ) {
     throw new Error(`${context}.goodbyeNext is invalid`);
+  }
+  if (game.nightCheckEligibility !== undefined) {
+    const eligibility = requireRecord(
+      game.nightCheckEligibility,
+      `${context}.nightCheckEligibility`,
+    );
+    assertExactKeys(eligibility, ["don", "sheriff"], `${context}.nightCheckEligibility`);
+    assertBoolean(eligibility.don, `${context}.nightCheckEligibility.don`);
+    assertBoolean(eligibility.sheriff, `${context}.nightCheckEligibility.sheriff`);
   }
   if (game.checkResult !== undefined) {
     const result = requireRecord(game.checkResult, `${context}.checkResult`);
@@ -970,6 +980,13 @@ const withMutePendingFrom = (game: GameState, source: GameState): GameState => {
 const withoutDayOpeningCursor = (game: GameState): GameState => {
   const legacy = { ...game, turnOrder: getDayOrder(game.players, game.day) };
   delete (legacy as { dayOpeningSeat?: number }).dayOpeningSeat;
+  return legacy;
+};
+
+const withoutNightCheckEligibility = (game: GameState): GameState => {
+  const legacy = { ...game };
+  delete (legacy as { nightCheckEligibility?: GameState["nightCheckEligibility"] })
+    .nightCheckEligibility;
   return legacy;
 };
 
@@ -1341,6 +1358,16 @@ export const createGameLogEntry = (
   };
 };
 
+const completeMafiaShotsWithLegacyCheckRouting = (game: GameState): GameState => {
+  const resolved = completeMafiaShots(game);
+  const phase = game.players.some(({ role }) => role === "don")
+    ? "night-don"
+    : game.players.some(({ role }) => role === "sheriff")
+      ? "night-sheriff"
+      : "night-resolution";
+  return { ...resolved, phase };
+};
+
 const applyReplayEventCore = (game: GameState, entry: GameLogEntry): GameState => {
   if (/^[0-9a-f]{8}$/.test(entry.stateHashAfter) && entry.type === "best-move.completed") {
     const prepared = game.phase === "night-resolution" ? completeNight(game) : game;
@@ -1414,6 +1441,44 @@ const applyReplayEventCore = (game: GameState, entry: GameLogEntry): GameState =
       ? after
       : { ...after, carCrashVotes: { ...entry.payload.votes } };
   }
+  if (game.nightCheckEligibility === undefined && game.phase === "night-mafia-result") {
+    const legacyCheckPhase = completeMafiaShotsWithLegacyCheckRouting(game);
+    if (entry.type === "phase.changed" && entry.payload.to === legacyCheckPhase.phase) {
+      return legacyCheckPhase;
+    }
+    if (entry.type === "don.check-skipped" && legacyCheckPhase.phase === "night-don") {
+      return {
+        ...legacyCheckPhase,
+        phase: game.players.some(({ role }) => role === "sheriff")
+          ? "night-sheriff"
+          : "night-resolution",
+      };
+    }
+  }
+  if (
+    entry.type === "don.check-skipped" &&
+    game.nightCheckEligibility === undefined &&
+    game.phase === "night-don"
+  ) {
+    return {
+      ...game,
+      phase: game.players.some(({ role }) => role === "sheriff")
+        ? "night-sheriff"
+        : "night-resolution",
+      checkResult: undefined,
+    };
+  }
+  if (entry.type === "phase.changed" && game.nightCheckEligibility === undefined) {
+    const legacyPrivatePhase =
+      game.phase === "night-don" || game.phase === "night-don-result"
+        ? "night-sheriff"
+        : game.phase === "night-sheriff" || game.phase === "night-sheriff-result"
+          ? "night-resolution"
+          : null;
+    if (legacyPrivatePhase === entry.payload.to) {
+      return { ...game, phase: legacyPrivatePhase, checkResult: undefined };
+    }
+  }
   return applyGameEvent(game, {
     type: entry.type,
     payload: entry.payload,
@@ -1438,6 +1503,11 @@ export const applyCurrentGameLogEntry = (game: GameState, entry: GameLogEntry): 
 const applyReplayEvent = (game: GameState, entry: GameLogEntry): GameState => {
   const current = applyReplayEventCore(game, entry);
   if (matchesRecordedState(current, entry)) return current;
+
+  if (game.nightCheckEligibility === undefined && current.nightCheckEligibility !== undefined) {
+    const preEligibility = withoutNightCheckEligibility(current);
+    if (matchesRecordedState(preEligibility, entry)) return preEligibility;
+  }
 
   // Historical chains may retain pre-fix mute state; new appends use applyCurrentGameLogEntry.
   const eliminatedSeats = (() => {

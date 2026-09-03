@@ -365,6 +365,50 @@ describe("GameSessionStore", () => {
     expect(legacyHashGameState(fixedLegacyGameState)).toBe("3143cd5f");
   });
 
+  it.each(["night-don", "night-don-result", "night-sheriff", "night-sheriff-result"] as const)(
+    "round-trips the same-night eligibility snapshot in %s",
+    async (phase) => {
+      const gameId = randomUUID();
+      const fixture = await createCompletedSession(gameId);
+      const checkResult = phase.endsWith("-result")
+        ? {
+            kind:
+              phase === "night-don-result" ? ("don-check" as const) : ("sheriff-check" as const),
+            targetSeat: 1,
+            match: false,
+            secret: true as const,
+          }
+        : undefined;
+      await store.save({
+        gameId,
+        name: "Night eligibility restore",
+        mutationId: randomUUID(),
+        baseRevision: 0,
+        state: {
+          ...fixture.state,
+          game: {
+            ...fixture.state.game,
+            phase,
+            winner: null,
+            nightCheckEligibility: { don: true, sheriff: true },
+            checkResult,
+          },
+        },
+        results: null,
+      });
+
+      expect(await store.get(gameId)).toMatchObject({
+        state: {
+          game: {
+            phase,
+            nightCheckEligibility: { don: true, sheriff: true },
+            ...(checkResult === undefined ? {} : { checkResult }),
+          },
+        },
+      });
+    },
+  );
+
   it("rejects a newly appended event that uses pre-fix mute semantics", async () => {
     const gameId = randomUUID();
     const completed = await createCompletedSession(gameId);

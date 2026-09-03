@@ -26,7 +26,12 @@ import {
   createSetup,
   drawRoleForSeat,
 } from "./setup.js";
-import { completeNight, resolveMafiaShots, toggleAllMafiaShotsForTarget } from "./night-actions.js";
+import {
+  completeMafiaShots,
+  completeNight,
+  resolveMafiaShots,
+  toggleAllMafiaShotsForTarget,
+} from "./night-actions.js";
 import type { GameState, PlayerInput, SetupState } from "./types.js";
 
 const players = (): PlayerInput[] =>
@@ -428,6 +433,185 @@ describe("canonical game replay", () => {
     const legacyRoot = { ...root.entry, stateHashAfter: legacyStateHash(root.after) };
     const legacyStored = { ...storedEntry, stateHashAfter: legacyStateHash(oldAfter) };
     expect(replayGameLog(baseline(before), [legacyRoot, legacyStored]).game).toEqual(oldAfter);
+  });
+
+  it("replays pre-eligibility night transitions under SHA-256 and legacy hashes", () => {
+    const before = dayOne();
+    const root = entry(before, 1, { type: "game.checkpointed", payload: {} });
+    const current = entry(
+      root.after,
+      2,
+      { type: "phase.changed", payload: { to: "night-mafia" } },
+      root.entry.id,
+    );
+    const oldAfter = { ...current.after };
+    delete (oldAfter as { nightCheckEligibility?: unknown }).nightCheckEligibility;
+    const storedEntry = { ...current.entry, stateHashAfter: hashGameState(oldAfter) };
+
+    expect(replayGameLog(baseline(before), [root.entry, storedEntry]).game).toEqual(oldAfter);
+    expect(() => applyCurrentGameLogEntry(root.after, storedEntry)).toThrow(
+      /current rule semantics/i,
+    );
+
+    const legacyRoot = { ...root.entry, stateHashAfter: legacyStateHash(root.after) };
+    const legacyStored = { ...storedEntry, stateHashAfter: legacyStateHash(oldAfter) };
+    expect(replayGameLog(baseline(before), [legacyRoot, legacyStored]).game).toEqual(oldAfter);
+  });
+
+  it("replays pre-eligibility skips for check owners who were already inactive", () => {
+    const base = dayOne();
+    const before: GameState = {
+      ...base,
+      phase: "night-don",
+      players: base.players.map((player) =>
+        player.role === "don" || player.role === "sheriff"
+          ? { ...player, status: "eliminated" }
+          : player,
+      ),
+    };
+    const root = entry(before, 1, { type: "game.checkpointed", payload: {} });
+    const afterDon = { ...root.after, phase: "night-sheriff" as const };
+    const donSkip: GameLogEntry = {
+      type: "don.check-skipped",
+      payload: {},
+      replayVersion: 1,
+      id: id(2),
+      gameId: root.entry.gameId,
+      sequence: 2,
+      parentEventId: root.entry.id,
+      phaseBefore: "night-don",
+      phaseAfter: "night-sheriff",
+      dayBefore: before.day,
+      dayAfter: before.day,
+      stateHashAfter: hashGameState(afterDon),
+      createdAt: "2026-08-24T20:02:00.000Z",
+    };
+    const afterSheriff = { ...afterDon, phase: "night-resolution" as const };
+    const sheriffSkip: GameLogEntry = {
+      ...donSkip,
+      type: "sheriff.check-skipped",
+      payload: {},
+      id: id(3),
+      sequence: 3,
+      parentEventId: donSkip.id,
+      phaseBefore: "night-sheriff",
+      phaseAfter: "night-resolution",
+      stateHashAfter: hashGameState(afterSheriff),
+      createdAt: "2026-08-24T20:03:00.000Z",
+    };
+
+    expect(replayGameLog(baseline(before), [root.entry, donSkip, sheriffSkip]).game).toEqual(
+      afterSheriff,
+    );
+    expect(() => applyCurrentGameLogEntry(root.after, donSkip)).toThrow(/current rule semantics/i);
+  });
+
+  it("replays a pre-eligibility night that routed an already-inactive Don to its old phase", () => {
+    const before = markPlayerInactive(
+      dayOne(),
+      dayOne().players.find(({ role }) => role === "don")!.seat,
+      "eliminated",
+    );
+    const root = entry(before, 1, { type: "game.checkpointed", payload: {} });
+    const currentNight = entry(
+      root.after,
+      2,
+      { type: "phase.changed", payload: { to: "night-mafia" } },
+      root.entry.id,
+    );
+    const oldNight = { ...currentNight.after };
+    delete (oldNight as { nightCheckEligibility?: unknown }).nightCheckEligibility;
+    const night: GameLogEntry = { ...currentNight.entry, stateHashAfter: hashGameState(oldNight) };
+    const mafiaResult = entry(
+      oldNight,
+      3,
+      { type: "mafia.shots-resolved", payload: { shots: [], result: { kind: "miss" } } },
+      night.id,
+    );
+    const modernAfter = completeMafiaShots(mafiaResult.after);
+    expect(modernAfter.phase).toBe("night-sheriff");
+    const oldAfter = { ...modernAfter, phase: "night-don" as const };
+    const transition: GameLogEntry = {
+      type: "phase.changed",
+      payload: { to: "night-don" },
+      replayVersion: 1,
+      id: id(4),
+      gameId: root.entry.gameId,
+      sequence: 4,
+      parentEventId: mafiaResult.entry.id,
+      phaseBefore: "night-mafia-result",
+      phaseAfter: "night-don",
+      dayBefore: before.day,
+      dayAfter: before.day,
+      stateHashAfter: hashGameState(oldAfter),
+      createdAt: "2026-08-24T20:04:00.000Z",
+    };
+
+    expect(
+      replayGameLog(baseline(before), [root.entry, night, mafiaResult.entry, transition]).game,
+    ).toEqual(oldAfter);
+  });
+
+  it("replays same-night killed role checks exactly through the canonical chain", () => {
+    const root = entry(dayOne(), 1, { type: "game.checkpointed", payload: {} });
+    const night = entry(
+      root.after,
+      2,
+      { type: "phase.changed", payload: { to: "night-mafia" } },
+      root.entry.id,
+    );
+    const don = night.after.players.find(({ role }) => role === "don")!;
+    const shots = night.after.players
+      .filter(({ status, team }) => status === "active" && team === "black")
+      .map(({ seat }) => ({ shooterSeat: seat, targetSeat: don.seat, secret: true as const }));
+    const mafiaResult = entry(
+      night.after,
+      3,
+      {
+        type: "mafia.shots-resolved",
+        payload: { shots, result: { kind: "kill", targetSeat: don.seat } },
+      },
+      night.entry.id,
+    );
+    const donPhase = entry(
+      mafiaResult.after,
+      4,
+      { type: "phase.changed", payload: { to: "night-don" } },
+      mafiaResult.entry.id,
+    );
+    const sheriff = donPhase.after.players.find(({ role }) => role === "sheriff")!;
+    const donResult = entry(
+      donPhase.after,
+      5,
+      { type: "don.checked", payload: { targetSeat: sheriff.seat, match: true } },
+      donPhase.entry.id,
+    );
+    const sheriffPhase = entry(
+      donResult.after,
+      6,
+      { type: "phase.changed", payload: { to: "night-sheriff" } },
+      donResult.entry.id,
+    );
+    const replay = replayGameLog(baseline(), [
+      root.entry,
+      night.entry,
+      mafiaResult.entry,
+      donPhase.entry,
+      donResult.entry,
+      sheriffPhase.entry,
+    ]);
+
+    expect(donPhase.after.players.find(({ seat }) => seat === don.seat)?.status).toBe("eliminated");
+    expect(donResult.after.checkResult).toMatchObject({ kind: "don-check", match: true });
+    expect(replay.game).toEqual(sheriffPhase.after);
+    expect(replay.frames.map(({ after }) => after)).toEqual([
+      root.after,
+      night.after,
+      mafiaResult.after,
+      donPhase.after,
+      donResult.after,
+      sheriffPhase.after,
+    ]);
   });
 
   it("replays pre-fix Best Moves that retained the victim's pending mute", () => {

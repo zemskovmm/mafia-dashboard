@@ -214,6 +214,7 @@ const gameStateSchema = z
     goodbyeSeats: z.array(z.number().int().min(1).max(10)).optional(),
     goodbyeNext: z.enum(["day", "night"]).optional(),
     shotAssignments: z.record(z.string(), z.number().int().min(1).max(10)),
+    nightCheckEligibility: z.object({ don: z.boolean(), sheriff: z.boolean() }).strict().optional(),
     checkResult: z
       .object({
         kind: z.enum(["don-check", "sheriff-check"]),
@@ -258,6 +259,7 @@ const gameStateSchema = z
         carCrashResult,
         goodbyeSeats = [],
         shotAssignments,
+        nightCheckEligibility,
         checkResult,
         bestMove,
         winner,
@@ -608,6 +610,29 @@ const gameStateSchema = z
           path: ["checkResult"],
           message: "Check results must exist only in their matching result phase",
         });
+      }
+      if (nightCheckEligibility !== undefined) {
+        if (!phase.startsWith("night-")) {
+          context.addIssue({
+            code: "custom",
+            path: ["nightCheckEligibility"],
+            message: "Night check eligibility exists only during night phases",
+          });
+        }
+        if (phase.startsWith("night-don") && !nightCheckEligibility.don) {
+          context.addIssue({
+            code: "custom",
+            path: ["nightCheckEligibility", "don"],
+            message: "A Don phase requires same-night Don eligibility",
+          });
+        }
+        if (phase.startsWith("night-sheriff") && !nightCheckEligibility.sheriff) {
+          context.addIssue({
+            code: "custom",
+            path: ["nightCheckEligibility", "sheriff"],
+            message: "A Sheriff phase requires same-night Sheriff eligibility",
+          });
+        }
       }
       if (phase === "goodbye-speech" && goodbyeSeats.length === 0) {
         context.addIssue({

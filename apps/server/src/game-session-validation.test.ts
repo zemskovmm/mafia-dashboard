@@ -731,6 +731,42 @@ describe("game session validation", () => {
     );
   });
 
+  it("validates the persisted same-night check eligibility snapshot", () => {
+    const base = liveGame(1);
+    const parse = (game: unknown) =>
+      gameSessionMutationSchema.safeParse({
+        name: "Persisted night eligibility",
+        mutationId: uuid(98),
+        baseRevision: 0,
+        state: {
+          setup: null,
+          game,
+          hostPlayerId: uuid(11),
+          hostName: "Host",
+          playlistId: "",
+          log: [],
+          undoHistory: [],
+        },
+        results: null,
+      });
+    const eligibility = { don: true, sheriff: false };
+    const parsed = parse({ ...base, phase: "night-don", nightCheckEligibility: eligibility });
+
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.state.game?.nightCheckEligibility).toEqual(eligibility);
+    expect(
+      parse({ ...base, phase: "night-sheriff", nightCheckEligibility: eligibility }).success,
+    ).toBe(false);
+    expect(parse({ ...base, nightCheckEligibility: eligibility }).success).toBe(false);
+    expect(
+      parse({
+        ...base,
+        phase: "night-don",
+        nightCheckEligibility: { don: "yes", sheriff: false },
+      }).success,
+    ).toBe(false);
+  });
+
   it("rejects a persisted goodbye phase without a speaker", () => {
     const base = liveGame(2);
     const parse = (goodbyeSeats: readonly number[]) =>

@@ -86,6 +86,10 @@ export interface GameState {
   readonly goodbyeSeats?: readonly number[];
   readonly goodbyeNext?: "day" | "night";
   readonly shotAssignments: Readonly<Partial<Record<number, number>>>;
+  readonly nightCheckEligibility?: {
+    readonly don: boolean;
+    readonly sheriff: boolean;
+  };
   readonly checkResult?: SecretCheckResult;
   readonly nightResult?: NightShotResult;
   readonly dayNotice?: "happy";
