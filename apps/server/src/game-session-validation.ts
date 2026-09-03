@@ -153,6 +153,7 @@ const gameStateSchema = z
     bestMoveEnabled: z.boolean().optional(),
     cyclesWithoutElimination: z.number().int().min(0).optional(),
     eliminationOccurredThisCycle: z.boolean().optional(),
+    dayOpeningSeat: z.number().int().min(1).max(10).optional(),
     players: z.array(playerState).length(10),
     turnOrder: z.array(z.number().int().min(1).max(10)).max(10),
     currentTurnIndex: z.number().int().min(0).max(10),
@@ -218,6 +219,7 @@ const gameStateSchema = z
         currentTurnIndex,
         phase,
         day,
+        dayOpeningSeat,
         nominations,
         voteAssignments,
         votingCancellation,
@@ -273,7 +275,7 @@ const gameStateSchema = z
         });
       }
       if (phase === "day") {
-        const requestedStart = ((day - 1) % 10) + 1;
+        const requestedStart = dayOpeningSeat ?? ((day - 1) % 10) + 1;
         const expectedTurnOrder = Array.from(
           { length: 10 },
           (_, offset) => ((requestedStart - 1 + offset) % 10) + 1,

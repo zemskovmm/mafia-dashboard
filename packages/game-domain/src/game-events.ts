@@ -12,7 +12,13 @@ import {
   resolveVote,
   skipVoting,
 } from "./day-actions.js";
-import { advanceSetupPhase, cancelGame, confirmDraw, isTerminalGamePhase } from "./game.js";
+import {
+  advanceSetupPhase,
+  cancelGame,
+  confirmDraw,
+  getDayOrder,
+  isTerminalGamePhase,
+} from "./game.js";
 import {
   beginNight,
   completeBestMove,
@@ -602,6 +608,7 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
       "bestMoveEnabled",
       "cyclesWithoutElimination",
       "eliminationOccurredThisCycle",
+      "dayOpeningSeat",
     ],
     context,
   );
@@ -615,6 +622,9 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
   }
   if (game.eliminationOccurredThisCycle !== undefined) {
     assertBoolean(game.eliminationOccurredThisCycle, `${context}.eliminationOccurredThisCycle`);
+  }
+  if (game.dayOpeningSeat !== undefined) {
+    assertSeat(game.dayOpeningSeat, `${context}.dayOpeningSeat`);
   }
   if (!Array.isArray(game.players) || game.players.length !== 10) {
     throw new Error(`${context}.players must contain exactly 10 players`);
@@ -955,6 +965,12 @@ const withMutePendingFrom = (game: GameState, source: GameState): GameState => {
         : player;
     }),
   };
+};
+
+const withoutDayOpeningCursor = (game: GameState): GameState => {
+  const legacy = { ...game, turnOrder: getDayOrder(game.players, game.day) };
+  delete (legacy as { dayOpeningSeat?: number }).dayOpeningSeat;
+  return legacy;
 };
 
 const sameValue = (left: unknown, right: unknown): boolean =>
@@ -1461,8 +1477,14 @@ const applyReplayEvent = (game: GameState, entry: GameLogEntry): GameState => {
     current.day > game.day &&
     (entry.type === "phase.changed" || entry.type === "best-move.completed")
   ) {
-    const preFix = withMutePendingFrom(current, game);
-    if (matchesRecordedState(preFix, entry)) return preFix;
+    const preFixMute = withMutePendingFrom(current, game);
+    if (matchesRecordedState(preFixMute, entry)) return preFixMute;
+    if (game.dayOpeningSeat === undefined) {
+      const preCursor = withoutDayOpeningCursor(current);
+      if (matchesRecordedState(preCursor, entry)) return preCursor;
+      const preCursorAndMute = withoutDayOpeningCursor(preFixMute);
+      if (matchesRecordedState(preCursorAndMute, entry)) return preCursorAndMute;
+    }
   }
 
   return current;

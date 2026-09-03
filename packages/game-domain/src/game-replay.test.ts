@@ -26,7 +26,7 @@ import {
   createSetup,
   drawRoleForSeat,
 } from "./setup.js";
-import { resolveMafiaShots, toggleAllMafiaShotsForTarget } from "./night-actions.js";
+import { completeNight, resolveMafiaShots, toggleAllMafiaShotsForTarget } from "./night-actions.js";
 import type { GameState, PlayerInput, SetupState } from "./types.js";
 
 const players = (): PlayerInput[] =>
@@ -379,6 +379,54 @@ describe("canonical game replay", () => {
       ...storedEntry,
       stateHashAfter: legacyStateHash(oldAfter),
     };
+    expect(replayGameLog(baseline(before), [legacyRoot, legacyStored]).game).toEqual(oldAfter);
+  });
+
+  it("replays a new day from the persisted actual opening seat", () => {
+    const initial = advanceSetupPhase(
+      advanceSetupPhase(markPlayerInactive(planningGame(), 2, "eliminated")),
+    );
+    const before: GameState = { ...initial, phase: "night-resolution" };
+    const root = entry(before, 1, { type: "game.checkpointed", payload: {} });
+    const nextDay = entry(
+      root.after,
+      2,
+      { type: "phase.changed", payload: { to: "day" } },
+      root.entry.id,
+    );
+
+    expect(nextDay.after).toMatchObject({ day: 2, dayOpeningSeat: 3 });
+    expect(nextDay.after.turnOrder).toEqual([3, 4, 5, 6, 7, 8, 9, 10, 1]);
+    expect(replayGameLog(baseline(before), [root.entry, nextDay.entry]).game).toEqual(
+      nextDay.after,
+    );
+  });
+
+  it("replays pre-cursor day transitions under SHA-256 and legacy hashes", () => {
+    const initial = advanceSetupPhase(
+      advanceSetupPhase(markPlayerInactive(planningGame(), 2, "eliminated")),
+    );
+    const dayTwo = completeNight({ ...initial, phase: "night-resolution" });
+    const before: GameState = { ...dayTwo, phase: "night-resolution" };
+    delete (before as { dayOpeningSeat?: number }).dayOpeningSeat;
+    const root = entry(before, 1, { type: "game.checkpointed", payload: {} });
+    const current = entry(
+      root.after,
+      2,
+      { type: "phase.changed", payload: { to: "day" } },
+      root.entry.id,
+    );
+    const oldAfter: GameState = {
+      ...current.after,
+      turnOrder: [3, 4, 5, 6, 7, 8, 9, 10, 1],
+    };
+    delete (oldAfter as { dayOpeningSeat?: number }).dayOpeningSeat;
+    const storedEntry = { ...current.entry, stateHashAfter: hashGameState(oldAfter) };
+
+    expect(replayGameLog(baseline(before), [root.entry, storedEntry]).game).toEqual(oldAfter);
+
+    const legacyRoot = { ...root.entry, stateHashAfter: legacyStateHash(root.after) };
+    const legacyStored = { ...storedEntry, stateHashAfter: legacyStateHash(oldAfter) };
     expect(replayGameLog(baseline(before), [legacyRoot, legacyStored]).game).toEqual(oldAfter);
   });
 

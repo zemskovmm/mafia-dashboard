@@ -980,6 +980,36 @@ describe("game session validation", () => {
     }
   });
 
+  it("validates a persisted actual day opener while accepting legacy nominal order", () => {
+    const parse = (game: object) =>
+      gameSessionMutationSchema.safeParse({
+        name: "Day opener",
+        mutationId: uuid(70),
+        baseRevision: 0,
+        state: {
+          setup: null,
+          game,
+          hostPlayerId: uuid(11),
+          hostName: "Host",
+          playlistId: "",
+          log: [],
+          undoHistory: [],
+        },
+        results: null,
+      });
+    const current = {
+      ...liveGame(3),
+      dayOpeningSeat: 4,
+      turnOrder: [4, 5, 6, 7, 8, 9, 10, 1, 2, 3],
+    };
+
+    expect(parse(current).success).toBe(true);
+    expect(parse({ ...current, turnOrder: [3, 4, 5, 6, 7, 8, 9, 10, 1, 2] }).success).toBe(false);
+    expect(parse({ ...liveGame(3), turnOrder: [3, 4, 5, 6, 7, 8, 9, 10, 1, 2] }).success).toBe(
+      true,
+    );
+  });
+
   it("rejects a day snapshot with no legal current turn and phase-inappropriate actions", () => {
     const parsed = gameSessionMutationSchema.safeParse({
       name: "Impossible game",

@@ -245,6 +245,8 @@ export const completeNight = (game: GameState): GameState => {
   const players = game.players.map((player) =>
     player.mutePending ? { ...player, mutePending: false } : player,
   );
+  const previousOpeningSeat = game.dayOpeningSeat ?? getDayOrder(game.players, game.day)[0] ?? 1;
+  const turnOrder = getDayOrder(players, previousOpeningSeat + 1);
   const dayState: GameState = {
     ...game,
     day,
@@ -253,7 +255,8 @@ export const completeNight = (game: GameState): GameState => {
       ? 0
       : (game.cyclesWithoutElimination ?? 0) + 1,
     eliminationOccurredThisCycle: false,
-    turnOrder: getDayOrder(players, day),
+    dayOpeningSeat: turnOrder[0],
+    turnOrder,
     currentTurnIndex: 0,
     nominations: [],
     voteAssignments: {},

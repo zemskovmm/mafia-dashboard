@@ -240,6 +240,60 @@ describe("night actions", () => {
     });
   });
 
+  it("advances from the actual previous day opener when an earlier seat is inactive", () => {
+    let game = advanceSetupPhase(
+      advanceSetupPhase(markPlayerInactive(createGame(completedSetup()), 2, "eliminated")),
+    );
+    expect(game).toMatchObject({ dayOpeningSeat: 1, turnOrder: [1, 3, 4, 5, 6, 7, 8, 9, 10] });
+
+    game = completeNight({ ...game, phase: "night-resolution" });
+    expect(game).toMatchObject({ dayOpeningSeat: 3 });
+    expect(game.turnOrder[0]).toBe(3);
+
+    game = completeNight({ ...game, phase: "night-resolution" });
+    expect(game).toMatchObject({ dayOpeningSeat: 4 });
+    expect(game.turnOrder[0]).toBe(4);
+  });
+
+  it("retains the opening cursor if that opener later becomes inactive", () => {
+    let game = advanceSetupPhase(
+      advanceSetupPhase(markPlayerInactive(createGame(completedSetup()), 2, "eliminated")),
+    );
+    game = markPlayerInactive(game, 1, "red-carded");
+
+    const nextDay = completeNight({ ...game, phase: "night-resolution" });
+
+    expect(nextDay).toMatchObject({ dayOpeningSeat: 3 });
+    expect(nextDay.turnOrder[0]).toBe(3);
+  });
+
+  it("wraps past consecutive inactive seats and handles one remaining player", () => {
+    const base = dayOne();
+    const wrapped = completeNight({
+      ...base,
+      phase: "night-resolution",
+      day: 9,
+      dayOpeningSeat: 9,
+      players: base.players.map((player) =>
+        player.seat === 10 || player.seat === 1
+          ? { ...player, status: "eliminated" as const }
+          : player,
+      ),
+    });
+    expect(wrapped).toMatchObject({ dayOpeningSeat: 2 });
+    expect(wrapped.turnOrder[0]).toBe(2);
+
+    const oneRemaining = completeNight({
+      ...base,
+      phase: "night-resolution",
+      dayOpeningSeat: 5,
+      players: base.players.map((player) =>
+        player.seat === 5 ? player : { ...player, status: "eliminated" as const },
+      ),
+    });
+    expect(oneRemaining).toMatchObject({ dayOpeningSeat: 5, turnOrder: [5] });
+  });
+
   it("expires every pending mute before exposing the next day", () => {
     const base = dayOne();
     const nextDay = completeNight({

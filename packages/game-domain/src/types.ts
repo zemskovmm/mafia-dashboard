@@ -71,6 +71,7 @@ export interface GameState {
   readonly bestMoveEnabled?: boolean;
   readonly cyclesWithoutElimination?: number;
   readonly eliminationOccurredThisCycle?: boolean;
+  readonly dayOpeningSeat?: number;
   readonly players: readonly PlayerState[];
   readonly turnOrder: readonly number[];
   readonly currentTurnIndex: number;

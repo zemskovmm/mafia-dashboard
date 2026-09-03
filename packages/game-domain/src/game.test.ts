@@ -94,7 +94,7 @@ describe("game phases and victory", () => {
     expect(() => advanceSetupPhase(day)).toThrow(/cannot advance setup/i);
   });
 
-  it("rotates the daily starting seat and skips inactive players", () => {
+  it("orders active players clockwise from a requested seat", () => {
     const game = createGame(completedSetup());
     const withInactive = markPlayerInactive(
       markPlayerInactive(game, 2, "eliminated"),

@@ -11,15 +11,15 @@ import type {
 export const getRoleTeam = (role: Role): Team =>
   role === "mafia" || role === "don" ? "black" : "red";
 
-export const getDayOrder = (players: readonly PlayerState[], day: number): number[] => {
-  if (!Number.isInteger(day) || day < 1) {
-    throw new Error("Day must be a positive integer");
+export const getDayOrder = (players: readonly PlayerState[], requestedStart: number): number[] => {
+  if (!Number.isInteger(requestedStart) || requestedStart < 1) {
+    throw new Error("Starting seat must be a positive integer");
   }
 
-  const requestedStart = ((day - 1) % 10) + 1;
+  const normalizedStart = ((requestedStart - 1) % 10) + 1;
   const clockwiseSeats = Array.from(
     { length: 10 },
-    (_, offset) => ((requestedStart - 1 + offset) % 10) + 1,
+    (_, offset) => ((normalizedStart - 1 + offset) % 10) + 1,
   );
   const activeSeats = new Set(
     players.filter(({ status }) => status === "active").map(({ seat }) => seat),
@@ -84,11 +84,13 @@ export const advanceSetupPhase = (game: GameState): GameState => {
     return { ...game, phase: "sheriff-wake" };
   }
   if (game.phase === "sheriff-wake") {
+    const turnOrder = getDayOrder(game.players, 1);
     return {
       ...game,
       phase: "day",
       day: 1,
-      turnOrder: getDayOrder(game.players, 1),
+      dayOpeningSeat: turnOrder[0],
+      turnOrder,
       currentTurnIndex: 0,
     };
   }
