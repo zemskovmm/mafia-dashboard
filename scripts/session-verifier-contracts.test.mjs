@@ -185,6 +185,35 @@ test("read-only verifier policy permits safe navigation and blocks every mutatio
   );
 });
 
+test("playlist selection requests require exact routing and the selected target", () => {
+  const request = {
+    method: "GET",
+    url: "https://mafia.example.test/api/music/playlists/playlist/items",
+    expectedOrigin: "https://mafia.example.test",
+    expectedPath: "/api/music/playlists/playlist/items",
+    selectedPlaylistId: "playlist",
+    expectedPlaylistId: "playlist",
+  };
+
+  assert.equal(contracts.isExactPlaylistSelectionRequest(request), true);
+  assert.equal(
+    contracts.isExactPlaylistSelectionRequest({ ...request, selectedPlaylistId: "" }),
+    false,
+  );
+  assert.equal(
+    contracts.isExactPlaylistSelectionRequest({ ...request, url: `${request.url}?stale=1` }),
+    false,
+  );
+  assert.equal(contracts.isExactPlaylistSelectionRequest({ ...request, method: "POST" }), false);
+  assert.equal(
+    contracts.isExactPlaylistSelectionRequest({
+      ...request,
+      url: "https://other.example.test/api/music/playlists/playlist/items",
+    }),
+    false,
+  );
+});
+
 test("exact origin guards reject matching API paths on another origin", () => {
   assert.doesNotThrow(() =>
     contracts.assertExactOrigin("https://verified.example/api/clubs", "https://verified.example"),
@@ -750,5 +779,20 @@ test("runtime verifiers enforce the shared contracts at their success boundaries
   assert.match(oauthVerifier, /\/api\/clubs/);
   assert.match(oauthVerifier, /\/api\/music\/playlists\/\$\{encodeURIComponent/);
   assert.match(oauthVerifier, /Open \$\{selectedClub\.name\} in \$\{selectedClub\.city\}/);
+  assert.match(oauthVerifier, /Open Manage menu/);
+  assert.match(oauthVerifier, /Music player setup/);
+  assert.match(oauthVerifier, /isExactPlaylistSelectionRequest/);
+  assert.match(oauthVerifier, /waitForRequest/);
+  assert.match(oauthVerifier, /Playlist required/);
+  assert.match(
+    oauthVerifier,
+    /itemsResponse\.finished\(\)[\s\S]*waitForLoadState\("networkidle"\)[\s\S]*requestErrors\.length/,
+  );
+  assert.doesNotMatch(oauthVerifier, /\.player-input-grid select/);
+  assert.doesNotMatch(oauthVerifier, /Continue to music/);
+  assert.doesNotMatch(oauthVerifier, /Start table music/);
+  assert.doesNotMatch(oauthVerifier, /Ready · paused/);
+  assert.doesNotMatch(oauthVerifier, /waitForResponse/);
+  assert.doesNotMatch(oauthVerifier, /OAUTH_SCREENSHOT|page\.screenshot/);
   assert.doesNotMatch(oauthVerifier, /\$\{pathname\} failed/);
 });

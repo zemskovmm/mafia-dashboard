@@ -136,6 +136,26 @@ export const classifyReadOnlyVerifierRequest = ({ method, url, expectedOrigin })
   return { kind: "external-safe" };
 };
 
+export const isExactPlaylistSelectionRequest = ({
+  method,
+  url,
+  expectedOrigin,
+  expectedPath,
+  selectedPlaylistId,
+  expectedPlaylistId,
+}) => {
+  if (method.toUpperCase() !== "GET" || selectedPlaylistId !== expectedPlaylistId) return false;
+  const requestUrl = new URL(url);
+  return (
+    requestUrl.origin === expectedOrigin &&
+    requestUrl.username === "" &&
+    requestUrl.password === "" &&
+    requestUrl.pathname === expectedPath &&
+    requestUrl.search === "" &&
+    requestUrl.hash === ""
+  );
+};
+
 export const isAuthoritativeGameSnapshotRequest = ({ method, pathname, expectedPhase, body }) => {
   const sessionRoot =
     typeof pathname === "string" ? pathname.match(/^\/api\/game-sessions\/([0-9a-f-]+)$/i) : null;

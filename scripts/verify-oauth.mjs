@@ -4,6 +4,7 @@ import {
   assertExactOrigin,
   assertVerifierTarget,
   classifyReadOnlyVerifierRequest,
+  isExactPlaylistSelectionRequest,
   parseVerifierAuthCookie,
   parseVerifierClubId,
 } from "./session-verifier-contracts.mjs";
@@ -21,10 +22,12 @@ assertVerifierTarget({
 const authCookie = parseVerifierAuthCookie(process.env.SESSION_AUTH_COOKIE, { required: true });
 const clubId = parseVerifierClubId(process.env.SESSION_CLUB_ID);
 const apiHeaders = { "x-club-id": clubId };
-const screenshotPath = process.env.OAUTH_SCREENSHOT ?? "/tmp/mafia-dashboard-oauth.png";
 
 const browser = await chromium.launch({ channel: "chrome", headless: true });
-const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+const context = await browser.newContext({
+  viewport: { width: 1280, height: 900 },
+  locale: "en-US",
+});
 await context.addCookies([
   {
     ...authCookie,
@@ -73,6 +76,9 @@ try {
   const { clubs } = await apiGet("/api/clubs", "Club preflight");
   const selectedClub = clubs?.find(({ id }) => id.toLowerCase() === clubId);
   if (selectedClub === undefined) throw new Error("SESSION_CLUB_ID is not accessible to this user");
+  if (selectedClub.role !== "manager") {
+    throw new Error("OAuth verification requires club manager access");
+  }
 
   const { players } = await apiGet("/api/players", "Player preflight");
   const playerIds = players?.slice(0, 10).map(({ id }) => id);
@@ -99,38 +105,69 @@ try {
   await page.goto(targetUrl.href, { waitUntil: "networkidle" });
   assertExactOrigin(page.url(), targetUrl.origin);
   const clubPortal = page.getByRole("heading", { name: "Choose your club" });
-  if (await clubPortal.isVisible()) {
-    await page
-      .getByRole("button", {
-        name: `Open ${selectedClub.name} in ${selectedClub.city}`,
-        exact: true,
-      })
-      .click();
-  }
-  const playerSelectors = page.locator(".player-input-grid select");
-  if ((await playerSelectors.count()) !== 10) throw new Error("Expected ten player selectors");
-  for (let index = 0; index < playerIds.length; index += 1) {
-    await playerSelectors.nth(index).selectOption(playerIds[index]);
-  }
-
-  await page.getByRole("button", { name: "Continue to music" }).click();
-  await page.getByRole("heading", { name: "Start table music" }).waitFor();
-  await page.getByText(/^Connected as /).waitFor();
-  const playlistSelector = page.getByLabel("YouTube Music playlist");
+  await clubPortal.waitFor();
+  await page
+    .getByRole("button", {
+      name: `Open ${selectedClub.name} in ${selectedClub.city}`,
+      exact: true,
+    })
+    .click();
+  const labels =
+    selectedClub.language === "ru"
+      ? {
+          openManageMenu: "Открыть меню управления",
+          musicPlayerSetup: "Настройка музыкального плеера",
+          connectedAccount: /^Подключено: /,
+          playlist: "Плейлист YouTube Music",
+          playlistRequired: "Нужен плейлист",
+        }
+      : {
+          openManageMenu: "Open Manage menu",
+          musicPlayerSetup: "Music player setup",
+          connectedAccount: /^Connected as /,
+          playlist: "YouTube Music playlist",
+          playlistRequired: "Playlist required",
+        };
+  await page.getByRole("button", { name: labels.openManageMenu, exact: true }).click();
+  await page.getByRole("button", { name: labels.musicPlayerSetup, exact: true }).click();
+  await page.getByText(labels.connectedAccount).waitFor();
+  const playlistSelector = page.getByLabel(labels.playlist);
   await playlistSelector.waitFor();
   if ((await playlistSelector.locator("option:not([value=''])").count()) !== playlists.length) {
     throw new Error("Playlist picker does not match the account playlist response");
   }
+  if ((await playlistSelector.inputValue()) === playlists[0].id) {
+    await playlistSelector.selectOption("");
+  }
+  await page.getByText(labels.playlistRequired, { exact: true }).waitFor();
+  const expectedItemsPath = `/api/music/playlists/${encodeURIComponent(playlists[0].id)}/items`;
+  const itemsRequestPromise = page.waitForRequest(async (request) =>
+    isExactPlaylistSelectionRequest({
+      method: request.method(),
+      url: request.url(),
+      expectedOrigin: targetUrl.origin,
+      expectedPath: expectedItemsPath,
+      selectedPlaylistId: await playlistSelector.inputValue(),
+      expectedPlaylistId: playlists[0].id,
+    }),
+  );
   await playlistSelector.selectOption(playlists[0].id);
+  const itemsRequest = await itemsRequestPromise;
+  const itemsResponse = await itemsRequest.response();
+  if (itemsResponse === null || !itemsResponse.ok()) {
+    throw new Error("Playlist UI item request failed");
+  }
+  if ((await itemsResponse.finished()) !== null) {
+    throw new Error("Playlist UI item response did not finish");
+  }
   if ((await playlistSelector.inputValue()) !== playlists[0].id) {
     throw new Error("Playlist selection did not persist in the setup form");
   }
-  await page.getByText("Ready · paused").waitFor({ timeout: 20_000 });
+  await page.waitForLoadState("networkidle");
   if (requestErrors.length > 0) throw new AggregateError(requestErrors, "Unsafe request blocked");
 
-  await page.screenshot({ path: screenshotPath, fullPage: true });
   console.log(
-    `OAuth verification: PASS (${playlists.length} playlists, ${items.length} selected items, ${screenshotPath})`,
+    `OAuth verification: PASS (${playlists.length} playlists, ${items.length} selected items)`,
   );
 } finally {
   await context.close();

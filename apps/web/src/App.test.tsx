@@ -3383,10 +3383,9 @@ describe("authoritative game session lifecycle", () => {
     );
     const saved = window.localStorage.getItem("mafia-dashboard.game-session.v4");
     expect(saved).not.toBeNull();
+    firstRender.unmount();
     window.sessionStorage.setItem("mafia-dashboard.game-session.v4", saved!);
     window.localStorage.removeItem("mafia-dashboard.game-session.v4");
-
-    firstRender.unmount();
     render(<App />);
 
     expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
