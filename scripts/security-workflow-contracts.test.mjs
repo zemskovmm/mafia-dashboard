@@ -18,9 +18,24 @@ test("root scripts expose deterministic security gates", async () => {
     scripts["test:security-contracts"],
     "node --test scripts/security-workflow-contracts.test.mjs",
   );
-  assert.match(scripts.check, /^npm run audit:security && npm run format:check/);
+  assert.equal(
+    scripts["check:verified"],
+    "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build",
+  );
+  assert.equal(scripts.check, "npm run audit:security && npm run check:verified");
   assert.match(scripts.test, /test:security-contracts/);
   assert.equal(packageJson.allowScripts, undefined);
+});
+
+test("CI and deployment audit once before scriptless install and deterministic checks", async () => {
+  for (const workflow of ["ci.yml", "deploy-azure.yml"]) {
+    const source = await read(`.github/workflows/${workflow}`);
+    assert.match(
+      source,
+      /npm run audit:security[\s\S]*npm run ci:install[\s\S]*npm run check:verified/,
+    );
+    assert.doesNotMatch(source, /^\s*- run: npm run check$/m);
+  }
 });
 
 test("every external workflow action is pinned to an immutable commit", async () => {

@@ -36,4 +36,4 @@ jobs:
           cache: npm
       - run: npm run audit:security
       - run: npm run ci:install
-      - run: npm run check
+      - run: npm run check:verified
