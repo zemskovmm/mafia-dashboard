@@ -116,6 +116,14 @@ export const parseVerifierClubId = (value) => {
   return canonicalUuid(value.trim());
 };
 
+export const gameSessionStorageKeyForClub = (clubId) => {
+  const canonicalClubId = parseVerifierClubId(clubId);
+  const prefix = "mafia-dashboard.game-session.v4";
+  return canonicalClubId === "00000000-0000-4000-8000-000000000101"
+    ? prefix
+    : `${prefix}.${canonicalClubId}`;
+};
+
 export const classifyReadOnlyVerifierRequest = ({ method, url, expectedOrigin }) => {
   const normalizedMethod = method.toUpperCase();
   const requestUrl = new URL(url);

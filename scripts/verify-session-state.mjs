@@ -15,6 +15,7 @@ import {
   classifyBrowserApiRequest,
   createAsyncTracker,
   deleteAndVerifyAbsent,
+  gameSessionStorageKeyForClub,
   isAuthoritativeGameSnapshotRequest,
   parseVerifierAuthCookie,
   parseVerifierClubId,
@@ -98,6 +99,7 @@ if (remoteTarget && !configuredClubId) {
   throw new Error("SESSION_CLUB_ID is required for remote session verification");
 }
 const clubId = parseVerifierClubId(configuredClubId || "00000000-0000-4000-8000-000000000101");
+const storageKey = gameSessionStorageKeyForClub(clubId);
 const apiHeaders = { "x-club-id": clubId };
 const browserHeaders = {
   ...apiHeaders,
@@ -670,10 +672,10 @@ try {
     await claimConflict.getByRole("button", { name: "Take over" }).click();
   }
   await restartedPage.getByRole("group", { name: `Host: ${players[10].nickname}` }).waitFor();
-  const restoredEnvelope = await restartedPage.evaluate(() => {
-    const raw = window.localStorage.getItem("mafia-dashboard.game-session.v4");
+  const restoredEnvelope = await restartedPage.evaluate((storageKey) => {
+    const raw = window.localStorage.getItem(storageKey);
     return raw === null ? null : JSON.parse(raw);
-  });
+  }, storageKey);
   assertEnvelopeMatchesSession(restoredEnvelope, authoritativeSession, replayGameLog);
   await restartedPage.screenshot({ path: screenshotPath, fullPage: true });
 
@@ -695,8 +697,9 @@ try {
     maxRedirects: 0,
   });
   if (tombstoned.status() !== 404) throw new Error("Cleared session remains server-restorable");
-  const remainingEnvelope = await restartedPage.evaluate(() =>
-    window.localStorage.getItem("mafia-dashboard.game-session.v4"),
+  const remainingEnvelope = await restartedPage.evaluate(
+    (storageKey) => window.localStorage.getItem(storageKey),
+    storageKey,
   );
   if (remainingEnvelope !== null) throw new Error("Cleared session remains in the client outbox");
   await restartedContext.close();

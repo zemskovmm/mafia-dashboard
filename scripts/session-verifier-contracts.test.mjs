@@ -147,6 +147,20 @@ test("verifier credentials are strict and never repeated in errors", () => {
   assert.throws(() => contracts.parseVerifierClubId("not-a-club"), /UUID/i);
 });
 
+test("durable browser storage keys isolate non-default clubs", () => {
+  const defaultClub = "00000000-0000-4000-8000-000000000101";
+  const otherClub = "00000000-0000-4000-8000-000000000102";
+
+  assert.equal(
+    contracts.gameSessionStorageKeyForClub(defaultClub),
+    "mafia-dashboard.game-session.v4",
+  );
+  assert.equal(
+    contracts.gameSessionStorageKeyForClub(otherClub),
+    `mafia-dashboard.game-session.v4.${otherClub}`,
+  );
+});
+
 test("read-only verifier policy permits safe navigation and blocks every mutation", () => {
   const expectedOrigin = "https://mafia.example.test";
   assert.deepEqual(
@@ -742,10 +756,8 @@ test("runtime verifiers enforce the shared contracts at their success boundaries
   assert.match(sessionVerifier, /headers: claimHeaders/);
   assert.match(sessionVerifier, /Game already controlled/);
   assert.match(sessionVerifier, /button", \{ name: "Take over"/);
-  assert.match(
-    sessionVerifier,
-    /window\.localStorage\.getItem\("mafia-dashboard\.game-session\.v4"\)/,
-  );
+  assert.match(sessionVerifier, /gameSessionStorageKeyForClub\(clubId\)/);
+  assert.equal(sessionVerifier.match(/window\.localStorage\.getItem\(storageKey\)/g)?.length, 2);
   assert.match(uiVerifier, /assertExactOrigin\(route\.request\(\)\.url\(\), expectedOrigin\)/);
   assert.match(uiVerifier, /await unlockDeveloperMenu\(page\)/);
   assert.match(uiVerifier, /snapshotRevision \+= 1/);
