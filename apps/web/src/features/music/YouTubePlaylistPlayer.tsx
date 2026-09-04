@@ -44,6 +44,7 @@ interface YouTubePlaylistPlayerProps {
 }
 
 const EMPTY_QUEUE_ORDER: readonly string[] = [];
+const FULL_VOLUME = 100;
 
 const queueOrdersEqual = (left: readonly string[], right: readonly string[]): boolean =>
   left.length === right.length && left.every((entryKey, index) => entryKey === right[index]);
@@ -147,7 +148,6 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
     const normalizedPlaylistIdRef = useRef(playlistId.trim());
     const rememberedQueueOrderRef = useRef(rememberedQueueOrder);
     rememberedQueueOrderRef.current = rememberedQueueOrder;
-    const lastAudibleVolumeRef = useRef(100);
     const onStateChangeRef = useRef(onStateChange);
     onStateChangeRef.current = onStateChange;
     const playbackStateRef = useRef<YouTubePlaybackState>("idle");
@@ -297,10 +297,6 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
                   return;
                 iframeReadyRef.current = true;
                 disablePictureInPicture(target);
-                const nativeVolume = target.getVolume();
-                if (Number.isFinite(nativeVolume) && nativeVolume > 0) {
-                  lastAudibleVolumeRef.current = nativeVolume;
-                }
                 controllerRef.current = new MusicController(new YouTubeAdapter(target));
                 if (queueRef.current.length > 0) {
                   readyRef.current = false;
@@ -336,17 +332,13 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
                     pendingOpeningFadeRef.current = false;
                     void controllerRef.current.fadeIn({
                       durationMs: 2_000,
-                      targetVolume: lastAudibleVolumeRef.current,
+                      targetVolume: FULL_VOLUME,
                     });
                   } else {
                     pendingOpeningFadeRef.current = false;
                     onStateChangeRef.current("paused");
                   }
                 } else if (data === window.YT?.PlayerState.PLAYING) {
-                  const nativeVolume = target.getVolume();
-                  if (Number.isFinite(nativeVolume) && nativeVolume > 0) {
-                    lastAudibleVolumeRef.current = nativeVolume;
-                  }
                   playbackStateRef.current = "playing";
                   readyRef.current = true;
                   setPlayerReady(true);
@@ -487,13 +479,9 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
       const player = playerRef.current;
       const controller = controllerRef.current;
       if (player === null || controller === null || !readyRef.current) return;
-      const nativeVolume = player.getVolume();
-      if (Number.isFinite(nativeVolume) && nativeVolume > 0) {
-        lastAudibleVolumeRef.current = nativeVolume;
-      }
       void controller.fadeIn({
         durationMs: 2_000,
-        targetVolume: lastAudibleVolumeRef.current,
+        targetVolume: FULL_VOLUME,
         startPlayback: () => player.playVideoAt(index),
       });
     };
@@ -531,7 +519,7 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
         }
         await controllerRef.current.fadeIn({
           durationMs: 2_000,
-          targetVolume: lastAudibleVolumeRef.current,
+          targetVolume: FULL_VOLUME,
         });
         return true;
       },
@@ -587,6 +575,8 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
         const marked = new Set(initialStageEntryKeys);
         const index = queueRef.current.findIndex((item) => !marked.has(queueEntryKey(item)));
         if (index < 0) return false;
+        controllerRef.current?.cancelActiveFade({ pausePendingPlayback: false });
+        player.setVolume(FULL_VOLUME);
         player.playVideoAt(index);
         return true;
       },

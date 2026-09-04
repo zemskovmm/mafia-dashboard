@@ -133,8 +133,29 @@ describe("YouTubePlaylistPlayer", () => {
     await act(async () => {
       playerEvents?.onStateChange?.({ target: player, data: window.YT!.PlayerState.PLAYING });
     });
-    expect(playerHandle.current?.playFirstRegularTrack()).toBe(true);
-    expect(player.playVideoAt).toHaveBeenLastCalledWith(1);
+    vi.useFakeTimers();
+    try {
+      let fadePromise!: Promise<boolean>;
+      await act(async () => {
+        fadePromise = playerHandle.current!.fadeIn();
+        await Promise.resolve();
+      });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(player.setVolume).toHaveBeenLastCalledWith(25);
+
+      expect(playerHandle.current?.playFirstRegularTrack()).toBe(true);
+      expect(player.setVolume).toHaveBeenLastCalledWith(100);
+      expect(player.playVideoAt).toHaveBeenLastCalledWith(1);
+      expect(vi.mocked(player.setVolume).mock.invocationCallOrder.at(-1)!).toBeLessThan(
+        vi.mocked(player.playVideoAt).mock.invocationCallOrder.at(-1)!,
+      );
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(fadePromise).resolves.toBe(true);
+      expect(player.setVolume).toHaveBeenLastCalledWith(100);
+    } finally {
+      vi.useRealTimers();
+    }
     vi.mocked(player.playVideoAt).mockClear();
     await act(async () => {
       playerEvents?.onStateChange?.({ target: player, data: window.YT!.PlayerState.CUED });
@@ -183,9 +204,30 @@ describe("YouTubePlaylistPlayer", () => {
       vi.mocked(player.playVideoAt).mock.invocationCallOrder[0]!,
     );
     await vi.advanceTimersByTimeAsync(2_000);
-    expect(player.setVolume).toHaveBeenLastCalledWith(65);
+    expect(player.setVolume).toHaveBeenLastCalledWith(100);
     vi.useRealTimers();
     expect(onQueueOrderChange).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      playerEvents?.onStateChange?.({ target: player, data: window.YT!.PlayerState.PAUSED });
+    });
+    vi.mocked(player.setVolume).mockClear();
+    vi.mocked(player.playVideo).mockClear();
+    vi.useFakeTimers();
+    try {
+      let fadePromise!: Promise<boolean>;
+      await act(async () => {
+        fadePromise = playerHandle.current!.fadeIn();
+        await Promise.resolve();
+      });
+      expect(player.setVolume).toHaveBeenNthCalledWith(1, 0);
+      expect(player.playVideo).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(fadePromise).resolves.toBe(true);
+      expect(player.setVolume).toHaveBeenLastCalledWith(100);
+    } finally {
+      vi.useRealTimers();
+    }
 
     const queueItems = screen.getAllByRole("listitem");
     Object.defineProperty(document, "elementFromPoint", {
@@ -318,7 +360,7 @@ describe("YouTubePlaylistPlayer", () => {
       expect(player.setVolume).toHaveBeenNthCalledWith(1, 0);
       expect(player.playVideo).toHaveBeenCalledOnce();
       await vi.advanceTimersByTimeAsync(2_000);
-      expect(player.setVolume).toHaveBeenLastCalledWith(65);
+      expect(player.setVolume).toHaveBeenLastCalledWith(100);
     } finally {
       random.mockRestore();
       vi.useRealTimers();
