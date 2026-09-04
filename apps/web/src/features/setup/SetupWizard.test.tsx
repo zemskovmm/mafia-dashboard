@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { PlayerProfile } from "../../api/client.js";
 import { I18nProvider } from "../../i18n/I18nProvider.js";
 import { SetupWizard } from "./SetupWizard.js";
-import { beginRoleDraw, createSetup, type GameState } from "@mafia/game-domain";
+import { beginRoleDraw, createSetup, drawRoleForSeat, type GameState } from "@mafia/game-domain";
 
 const availablePlayers: readonly PlayerProfile[] = Array.from({ length: 11 }, (_, index) => ({
   id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
@@ -39,6 +39,12 @@ const availablePlayers: readonly PlayerProfile[] = Array.from({ length: 11 }, (_
     bestMoveMafiaHits: 0,
   },
 }));
+const replacementPlayer: PlayerProfile = {
+  ...availablePlayers[0]!,
+  id: "00000000-0000-4000-8000-000000000012",
+  nickname: "Player 12",
+};
+const playersWithReplacement = [...availablePlayers, replacementPlayer];
 
 const Harness = ({
   onComplete,
@@ -82,6 +88,27 @@ const fillPlayerSelection = async (user: ReturnType<typeof userEvent.setup>) => 
   for (let index = 0; index < 10; index += 1) {
     await choosePlayer(user, `Seat ${index + 1} player`, availablePlayers[index]!);
   }
+};
+
+const partialRoleSession = () => {
+  const selectedPlayerIds = availablePlayers.slice(0, 10).map(({ id }) => id);
+  const setup = drawRoleForSeat(
+    beginRoleDraw(
+      createSetup(
+        availablePlayers
+          .slice(0, 10)
+          .map(({ id, nickname }, index) => ({ id, name: nickname, seat: index + 1 })),
+      ),
+      () => 0,
+    ),
+    1,
+  );
+  return {
+    step: "roles" as const,
+    hostPlayerId: availablePlayers[10]!.id,
+    selectedPlayerIds,
+    setup,
+  };
 };
 
 describe("SetupWizard", () => {
@@ -159,6 +186,144 @@ describe("SetupWizard", () => {
 
     expect(screen.queryByRole("dialog", { name: "Choose role" })).toBeNull();
     expect(card).toHaveFocus();
+  });
+
+  it("returns from role giveaway with the selection intact and focus restored", async () => {
+    const user = userEvent.setup();
+    const session = partialRoleSession();
+    const onSessionStateChange = vi.fn();
+    render(
+      <SetupWizard
+        players={availablePlayers}
+        onComplete={() => undefined}
+        onSessionStateChange={onSessionStateChange}
+        initialSessionState={session}
+      />,
+    );
+
+    const back = screen.getByRole("button", { name: "Back to player selection" });
+    back.focus();
+    await user.keyboard("{Enter}");
+
+    expect(screen.getByRole("heading", { name: "Select 10 players + host" })).toHaveFocus();
+    expect(screen.getByRole("combobox", { name: "Host player" })).toHaveValue("Player 11");
+    expect(
+      screen
+        .getAllByRole("combobox", { name: /seat \d+ player/i })
+        .map((seat) => (seat as HTMLInputElement).value),
+    ).toEqual(availablePlayers.slice(0, 10).map(({ nickname }) => nickname));
+    expect(onSessionStateChange.mock.lastCall?.[0]).toEqual({ ...session, step: "players" });
+    expect(screen.queryByText(session.setup.assignments[1]!)).not.toBeInTheDocument();
+  });
+
+  it("re-enters an unchanged role giveaway without resetting partial progress", async () => {
+    const user = userEvent.setup();
+    const session = partialRoleSession();
+    const onStartGame = vi.fn();
+    const onEvent = vi.fn();
+    const onSessionStateChange = vi.fn();
+    render(
+      <SetupWizard
+        players={availablePlayers}
+        onComplete={() => undefined}
+        onStartGame={onStartGame}
+        onEvent={onEvent}
+        onSessionStateChange={onSessionStateChange}
+        initialSessionState={session}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Back to player selection" }));
+    await user.click(screen.getByRole("button", { name: "Start game" }));
+
+    expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
+    expect(onSessionStateChange.mock.lastCall?.[0]).toEqual(session);
+    expect(screen.getAllByRole("button", { name: /^draw role for/i })).toHaveLength(9);
+    expect(onStartGame).not.toHaveBeenCalled();
+    expect(onEvent).not.toHaveBeenCalled();
+  });
+
+  it("durably resets role progress when the host changes", async () => {
+    const user = userEvent.setup();
+    const onStartGame = vi.fn();
+    const onSessionStateChange = vi.fn();
+    render(
+      <SetupWizard
+        players={playersWithReplacement}
+        onComplete={() => undefined}
+        onStartGame={onStartGame}
+        onSessionStateChange={onSessionStateChange}
+        initialSessionState={partialRoleSession()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Back to player selection" }));
+    onSessionStateChange.mockClear();
+    await choosePlayer(user, "Host player", replacementPlayer);
+
+    await waitFor(() => expect(onSessionStateChange.mock.lastCall?.[0].setup).toBeNull());
+    await user.click(screen.getByRole("button", { name: "Start game" }));
+    expect(screen.getByText("Draw roles · 10 remaining")).toBeInTheDocument();
+    expect(onSessionStateChange.mock.lastCall?.[0].setup.assignments).toEqual({});
+    expect(onStartGame).toHaveBeenCalledOnce();
+  });
+
+  it("durably resets role progress when a seat changes", async () => {
+    const user = userEvent.setup();
+    const onStartGame = vi.fn();
+    const onSessionStateChange = vi.fn();
+    render(
+      <SetupWizard
+        players={playersWithReplacement}
+        onComplete={() => undefined}
+        onStartGame={onStartGame}
+        onSessionStateChange={onSessionStateChange}
+        initialSessionState={partialRoleSession()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Back to player selection" }));
+    onSessionStateChange.mockClear();
+    await choosePlayer(user, "Seat 1 player", replacementPlayer);
+
+    await waitFor(() => expect(onSessionStateChange.mock.lastCall?.[0].setup).toBeNull());
+    await user.click(screen.getByRole("button", { name: "Start game" }));
+    expect(screen.getByText("Draw roles · 10 remaining")).toBeInTheDocument();
+    expect(onSessionStateChange.mock.lastCall?.[0].setup.assignments).toEqual({});
+    expect(onStartGame).toHaveBeenCalledOnce();
+  });
+
+  it("durably resets role progress when development players replace the roster", async () => {
+    const user = userEvent.setup();
+    const generated = availablePlayers.map((player, index) => ({
+      ...player,
+      id: `10000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+      nickname: `Generated ${index + 1}`,
+    }));
+    const onSessionStateChange = vi.fn();
+    render(
+      <SetupWizard
+        players={availablePlayers}
+        onComplete={() => undefined}
+        showDevelopmentTools
+        onPopulateDevelopmentPlayers={() => Promise.resolve(generated)}
+        onSessionStateChange={onSessionStateChange}
+        initialSessionState={partialRoleSession()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Back to player selection" }));
+    onSessionStateChange.mockClear();
+    await user.click(
+      screen.getByRole("button", {
+        name: "Development only · Generate and select host + 10 random players",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByRole("combobox", { name: "Host player" })).toHaveValue("Generated 1"),
+    );
+    expect(onSessionStateChange.mock.lastCall?.[0].setup).toBeNull();
   });
 
   it("requires a saved host who is not assigned to a player seat", async () => {

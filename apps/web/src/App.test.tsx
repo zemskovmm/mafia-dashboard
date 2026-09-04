@@ -237,13 +237,29 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
         <button
           type="button"
           onClick={() => {
-            onStartGame();
-            setSession(roleGiveawaySession);
-            onSessionStateChange?.(roleGiveawaySession);
+            const next: SetupWizardSessionState =
+              session?.setup?.step === "role-draw"
+                ? { ...session, step: "roles" }
+                : roleGiveawaySession;
+            if (session?.setup?.step !== "role-draw") onStartGame();
+            setSession(next);
+            onSessionStateChange?.(next);
           }}
         >
           Enter role giveaway
         </button>
+        {session?.step !== "roles" || session.setup === null ? null : (
+          <button
+            type="button"
+            onClick={() => {
+              const next: SetupWizardSessionState = { ...session, step: "players" };
+              setSession(next);
+              onSessionStateChange?.(next);
+            }}
+          >
+            Back to player selection
+          </button>
+        )}
         {session?.step !== "roles" || session.setup === null ? null : (
           <button
             type="button"
@@ -2655,6 +2671,58 @@ describe("authoritative game session lifecycle", () => {
       gameId,
       gameId,
     ]);
+  });
+
+  it("persists role-giveaway back-navigation and reuses its game ID across reloads", async () => {
+    const user = userEvent.setup();
+    const firstRender = render(<App />);
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
+    await user.click(screen.getByRole("button", { name: "Assign first role" }));
+    await user.click(screen.getByRole("button", { name: "Back to player selection" }));
+
+    let persisted: {
+      gameId: string;
+      metadata: { setup: SetupWizardSessionState };
+    } | null = null;
+    await waitFor(() => {
+      persisted = JSON.parse(
+        window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null",
+      );
+      expect(persisted).toMatchObject({
+        gameId: expect.any(String),
+        metadata: {
+          setup: { step: "players", setup: { assignments: { 1: expect.any(String) } } },
+        },
+      });
+    });
+    const gameId = persisted!.gameId;
+    const assignment = persisted!.metadata.setup.setup!.assignments[1];
+    firstRender.unmount();
+
+    const secondRender = render(<App />);
+    expect(screen.getAllByRole("heading", { name: "Game setup" })).not.toHaveLength(0);
+    expect(JSON.parse(screen.getByTestId("setup-session").textContent ?? "null")).toMatchObject({
+      step: "players",
+      setup: { assignments: { 1: assignment } },
+    });
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
+    await waitFor(() =>
+      expect(
+        JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+      ).toMatchObject({
+        gameId,
+        metadata: {
+          setup: { step: "roles", setup: { assignments: { 1: assignment } } },
+        },
+      }),
+    );
+    secondRender.unmount();
+
+    render(<App />);
+    expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
+    expect(new Set(api.saveGameSession.mock.calls.map(([savedGameId]) => savedGameId))).toEqual(
+      new Set([gameId]),
+    );
   });
 
   it("retries an offline first role-giveaway save with its durable identity and mutation", async () => {

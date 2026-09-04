@@ -2049,6 +2049,17 @@ button.player-seat.is-voting-highlight::after {
 .game-header h1 {
   margin-bottom: 0;
 }
+.role-draw-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.role-draw-back {
+  min-height: 48px;
+  padding: 0 16px;
+}
 .game-header-actions {
   display: flex;
   gap: 8px;

@@ -86,6 +86,13 @@ const randomPlayersBySelectionPriority = (
   return groups.flatMap((group) => shuffled(group, random));
 };
 
+const roleDrawMatchesPlayers = (setup: SetupState, players: readonly PlayerInput[]) =>
+  setup.step === "role-draw" &&
+  setup.players.length === players.length &&
+  setup.players.every(
+    (player, index) => player.id === players[index]?.id && player.seat === players[index]?.seat,
+  );
+
 interface PlayerComboboxProps {
   readonly id: string;
   readonly label: string;
@@ -277,6 +284,8 @@ export const SetupWizard = ({
   const [developmentError, setDevelopmentError] = useState(false);
   const [manualRoleSeat, setManualRoleSeat] = useState<number | null>(null);
   const roleTapState = useRef<{ seat: number; count: number; at: number } | null>(null);
+  const playerHeadingRef = useRef<HTMLHeadingElement>(null);
+  const focusPlayerHeading = useRef(false);
 
   const selectablePlayers = useMemo(
     () => [
@@ -291,6 +300,12 @@ export const SetupWizard = ({
   useEffect(() => {
     onSessionStateChange?.({ step, hostPlayerId, selectedPlayerIds, setup });
   }, [hostPlayerId, onSessionStateChange, selectedPlayerIds, setup, step]);
+
+  useEffect(() => {
+    if (step !== "players" || !focusPlayerHeading.current) return;
+    focusPlayerHeading.current = false;
+    playerHeadingRef.current?.focus();
+  }, [step]);
 
   useEffect(() => {
     const availableIds = new Set(selectablePlayers.map(({ id }) => id));
@@ -340,6 +355,20 @@ export const SetupWizard = ({
     });
   };
 
+  const changeHostPlayer = (nextPlayerId: string) => {
+    if (nextPlayerId === hostPlayerId) return;
+    setHostPlayerId(nextPlayerId);
+    setSetup(null);
+  };
+
+  const changeSeatPlayer = (index: number, nextPlayerId: string) => {
+    if (nextPlayerId === selectedPlayerIds[index]) return;
+    const next = [...selectedPlayerIds];
+    next[index] = nextPlayerId;
+    setSelectedPlayerIds(next);
+    setSetup(null);
+  };
+
   const randomlyFillSeats = useCallback(() => {
     const eligiblePlayers = selectablePlayers.filter(({ id }) => id !== hostPlayerId);
     if ((hostPlayerId === "" && selectablePlayers.length < 11) || eligiblePlayers.length < 10)
@@ -351,18 +380,21 @@ export const SetupWizard = ({
 
   const startRoleDraw = () => {
     if (!playersReady || hostPlayer === undefined) return;
-    onStartGame();
-    if (step === "players") {
+    const resumeRoleDraw = setup !== null && roleDrawMatchesPlayers(setup, players);
+    const nextSetup = resumeRoleDraw
+      ? { ...setup, players }
+      : beginRoleDraw(createSetup(players), Math.random);
+    if (!resumeRoleDraw) {
+      onStartGame();
       onEvent("setup.players-selected", {
         hostPlayerId,
         players: players.map(({ id, name, seat }) => ({ id, name, seat })),
       });
+      onEvent("setup.role-draw-started", {});
     }
-    const nextSetup = beginRoleDraw(setup ?? createSetup(players), Math.random);
     setSetup(nextSetup);
     setStep("roles");
     publishSessionState("roles", nextSetup);
-    onEvent("setup.role-draw-started", {});
   };
 
   const drawRole = (seat: number) => {
@@ -419,6 +451,14 @@ export const SetupWizard = ({
     onComplete(game, hostPlayerId, hostPlayer.nickname);
   };
 
+  const returnToPlayerSelection = () => {
+    setManualRoleSeat(null);
+    roleTapState.current = null;
+    focusPlayerHeading.current = true;
+    setStep("players");
+    publishSessionState("players", setup);
+  };
+
   if (step === "roles" && setup !== null) {
     return (
       <main className="game-shell role-draw-screen">
@@ -427,8 +467,13 @@ export const SetupWizard = ({
             <p className="eyebrow">{t("setup.firstStage")}</p>
             <h1>{t("setup.roleDraw")}</h1>
           </div>
-          <div className="phase-banner">
-            {t("setup.drawRolesRemaining", { count: setup.remainingRoles.length })}
+          <div className="role-draw-header-actions">
+            <button type="button" className="role-draw-back" onClick={returnToPlayerSelection}>
+              {t("setup.backToPlayerSelection")}
+            </button>
+            <div className="phase-banner">
+              {t("setup.drawRolesRemaining", { count: setup.remainingRoles.length })}
+            </div>
           </div>
         </header>
         <div className="live-layout">
@@ -519,7 +564,9 @@ export const SetupWizard = ({
       {step === "players" ? (
         <section className="wizard-card player-setup-card">
           <p className="eyebrow">{t("setup.gameSetup")}</p>
-          <h1>{t("setup.selectPlayers")}</h1>
+          <h1 ref={playerHeadingRef} tabIndex={-1}>
+            {t("setup.selectPlayers")}
+          </h1>
           <p className="lead">{t("setup.selectPlayersLead")}</p>
           {selectablePlayers.length < 11 ? (
             <p className="player-guidance">{t("setup.playerGuidance")}</p>
@@ -541,6 +588,7 @@ export const SetupWizard = ({
                       setDevelopmentPlayers(selected);
                       setHostPlayerId(selected[0]!.id);
                       setSelectedPlayerIds(selected.slice(1).map(({ id }) => id));
+                      setSetup(null);
                     })
                     .catch((error: unknown) => {
                       reportError(error, { source: "api", context: "development-players.select" });
@@ -561,7 +609,7 @@ export const SetupWizard = ({
             value={hostPlayerId}
             players={selectablePlayers}
             unavailablePlayerIds={selectedPlayerIds.filter(Boolean)}
-            onChange={setHostPlayerId}
+            onChange={changeHostPlayer}
           />
           <div className="player-input-grid">
             {selectedPlayerIds.map((playerId, index) => (
@@ -578,11 +626,7 @@ export const SetupWizard = ({
                     (selectedId, selectedIndex) => selectedIndex !== index && selectedId !== "",
                   ),
                 ].filter(Boolean)}
-                onChange={(nextPlayerId) => {
-                  const next = [...selectedPlayerIds];
-                  next[index] = nextPlayerId;
-                  setSelectedPlayerIds(next);
-                }}
+                onChange={(nextPlayerId) => changeSeatPlayer(index, nextPlayerId)}
               />
             ))}
           </div>
