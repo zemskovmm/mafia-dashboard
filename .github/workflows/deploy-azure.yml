@@ -298,4 +298,18 @@ jobs:
             --name "$app_name" \
             --type system \
             --tail 50 || true
+          failed_revision=$(az containerapp revision list \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$app_name" \
+            --query "[?properties.runningState == 'ActivationFailed'].name | [-1]" \
+            --output tsv 2>/dev/null || true)
+          if [[ -n "$failed_revision" && "$failed_revision" != "null" ]]; then
+            az containerapp logs show \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --name "$app_name" \
+              --revision "$failed_revision" \
+              --container migrate \
+              --type console \
+              --tail 50 || true
+          fi
           exit 1

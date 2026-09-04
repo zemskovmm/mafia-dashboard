@@ -113,6 +113,8 @@ test("Azure publish scans the exact image before pushing with least privilege", 
   assert.match(deploy, /health\/version" 2>\/dev\/null \|\| true/);
   assert.match(deploy, /az containerapp revision list/);
   assert.match(deploy, /az containerapp logs show/);
+  assert.match(deploy, /--revision "\$failed_revision"/);
+  assert.match(deploy, /--container migrate/);
   assert.doesNotMatch(deploy, /image="ghcr\.io\/\$\{GITHUB_REPOSITORY\}:\$\{GITHUB_SHA\}"/);
 });
 
