@@ -279,8 +279,8 @@ jobs:
             if curl --fail --silent --show-error \
               "${{ steps.app.outputs.public_url }}/health/ready" >/dev/null; then
               identity=$(curl --fail --silent --show-error \
-                "${{ steps.app.outputs.public_url }}/health/version")
-              if jq --exit-status --arg commit "$GITHUB_SHA" \
+                "${{ steps.app.outputs.public_url }}/health/version" 2>/dev/null || true)
+              if [[ -n "$identity" ]] && jq --exit-status --arg commit "$GITHUB_SHA" \
                 '.commit == $commit and (.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' \
                 <<<"$identity" >/dev/null; then
                 exit 0
@@ -288,4 +288,14 @@ jobs:
             fi
             sleep 10
           done
+          az containerapp revision list \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$app_name" \
+            --query '[].{name:name,active:properties.active,health:properties.healthState,running:properties.runningState,image:properties.template.containers[0].image}' \
+            --output table || true
+          az containerapp logs show \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$app_name" \
+            --type system \
+            --tail 50 || true
           exit 1
