@@ -2,7 +2,7 @@
 
 This guide deploys Mafia Dashboard on one Linux host with Docker Engine and Docker Compose v2. PostgreSQL runs in a private Compose network with a named volume; the application binds to loopback by default and expects an external HTTPS reverse proxy.
 
-The Compose deployment is pilot-grade rather than highly available. Choose and test a backup/restore policy before production; backup automation is tracked separately in [issue #22](https://github.com/zemskovmm/mafia-dashboard/issues/22).
+The Compose deployment is pilot-grade rather than highly available. Use the delivered logical backup, off-server copy, and isolated restore procedure in [PostgreSQL backup and disaster recovery](postgresql-backup-and-recovery.md); a Docker volume alone is not a backup.
 
 ## Prerequisites
 
@@ -13,6 +13,8 @@ The Compose deployment is pilot-grade rather than highly available. Choose and t
 - enough disk space for PostgreSQL, Docker's bounded local logs, and operational headroom
 
 Clone the repository only for the Compose definition and runbook. Do not place credentials in the image or commit a populated `.env` file.
+
+For v1.0.0 candidate qualification, follow the [release checklist](releases/v1.0.0.md). Release builds must set `APP_COMMIT` to the full source SHA so `/health/version` can identify the immutable candidate; ordinary local builds default to `unknown` and cannot pass the release gate.
 
 ## Configure the deployment
 
@@ -57,10 +59,11 @@ The complete HTTP policy, trust boundaries, scanning gates, and accepted residua
 
 ## Start a local build
 
-For a source checkout, build the shared application image before starting the stack:
+For a source checkout, first require a clean tracked tree, then build the shared application image with its exact source identity before starting the stack:
 
 ```bash
-docker compose build app
+test -z "$(git status --porcelain --untracked-files=no)"
+APP_COMMIT="$(git rev-parse HEAD)" docker compose build app
 docker compose up --detach --no-build --wait
 ```
 

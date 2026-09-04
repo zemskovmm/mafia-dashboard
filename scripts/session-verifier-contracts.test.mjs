@@ -1,6 +1,8 @@
 /* global URL, structuredClone */
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import * as contracts from "./session-verifier-contracts.mjs";
@@ -71,6 +73,117 @@ const session = {
 };
 
 const clone = (value) => structuredClone(value);
+
+const temporaryDirectory = async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "mafia-session-restart-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  return directory;
+};
+
+test("restart rendezvous is opt-in and exchanges fresh empty markers", async (t) => {
+  await assert.doesNotReject(() => contracts.awaitRestartRendezvous({ directory: undefined }));
+
+  const directory = await temporaryDirectory(t);
+  const rendezvous = contracts.awaitRestartRendezvous({ directory, timeoutMs: 1_000 });
+  await assert.doesNotReject(async () => {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      try {
+        await access(join(directory, "ready"));
+        return;
+      } catch {
+        await delay(5);
+      }
+    }
+    throw new Error("ready marker was not created");
+  });
+  assert.equal(await readFile(join(directory, "ready"), "utf8"), "");
+  await writeFile(join(directory, "continue"), "", { flag: "wx" });
+  await assert.doesNotReject(() => rendezvous);
+});
+
+test("restart rendezvous rejects stale markers and times out without secrets", async (t) => {
+  const staleDirectory = await temporaryDirectory(t);
+  await writeFile(join(staleDirectory, "continue"), "", { flag: "wx" });
+  await assert.rejects(
+    () => contracts.awaitRestartRendezvous({ directory: staleDirectory, timeoutMs: 50 }),
+    /stale restart rendezvous marker: continue/i,
+  );
+
+  const timeoutDirectory = await temporaryDirectory(t);
+  const secret = "mafia_session=must-not-appear";
+  await assert.rejects(
+    () =>
+      contracts.awaitRestartRendezvous({
+        directory: timeoutDirectory,
+        timeoutMs: 20,
+        diagnosticLabel: secret,
+      }),
+    (error) => {
+      assert.match(error.message, /timed out waiting for application restart/i);
+      assert.doesNotMatch(error.message, /must-not-appear/);
+      return true;
+    },
+  );
+});
+
+test("verifier credentials are strict and never repeated in errors", () => {
+  assert.deepEqual(contracts.parseVerifierAuthCookie("mafia_session=opaque=value"), {
+    name: "mafia_session",
+    value: "opaque=value",
+  });
+  assert.equal(contracts.parseVerifierAuthCookie(undefined), null);
+  assert.throws(
+    () => contracts.parseVerifierAuthCookie("must-not-appear", { required: true }),
+    (error) => {
+      assert.match(error.message, /name=value/i);
+      assert.doesNotMatch(error.message, /must-not-appear/);
+      return true;
+    },
+  );
+  assert.equal(
+    contracts.parseVerifierClubId("00000000-0000-4000-8000-000000000101"),
+    "00000000-0000-4000-8000-000000000101",
+  );
+  assert.throws(() => contracts.parseVerifierClubId("not-a-club"), /UUID/i);
+});
+
+test("read-only verifier policy permits safe navigation and blocks every mutation", () => {
+  const expectedOrigin = "https://mafia.example.test";
+  assert.deepEqual(
+    contracts.classifyReadOnlyVerifierRequest({
+      method: "GET",
+      url: `${expectedOrigin}/api/music/playlists`,
+      expectedOrigin,
+    }),
+    { kind: "same-origin-api" },
+  );
+  assert.deepEqual(
+    contracts.classifyReadOnlyVerifierRequest({
+      method: "GET",
+      url: "https://www.youtube.com/iframe_api",
+      expectedOrigin,
+    }),
+    { kind: "external-safe" },
+  );
+  assert.throws(
+    () =>
+      contracts.classifyReadOnlyVerifierRequest({
+        method: "POST",
+        url: `${expectedOrigin}/api/game-sessions`,
+        expectedOrigin,
+      }),
+    /unsafe/i,
+  );
+  assert.throws(
+    () =>
+      contracts.classifyReadOnlyVerifierRequest({
+        method: "GET",
+        url: "https://evil.example/api/music/playlists",
+        expectedOrigin,
+      }),
+    /origin mismatch/i,
+  );
+});
 
 test("exact origin guards reject matching API paths on another origin", () => {
   assert.doesNotThrow(() =>
@@ -561,10 +674,11 @@ test("exact cleanup deletes a proven ID even when listings omit it and confirms 
 });
 
 test("runtime verifiers enforce the shared contracts at their success boundaries", async () => {
-  const [sessionVerifier, uiVerifier, composeVerifier] = await Promise.all([
+  const [sessionVerifier, uiVerifier, composeVerifier, oauthVerifier] = await Promise.all([
     readFile(new URL("./verify-session-state.mjs", import.meta.url), "utf8"),
     readFile(new URL("./verify-ui.mjs", import.meta.url), "utf8"),
     readFile(new URL("./verify-production-compose.mjs", import.meta.url), "utf8"),
+    readFile(new URL("./verify-oauth.mjs", import.meta.url), "utf8"),
   ]);
 
   assert.match(sessionVerifier, /assertSessionPostcondition\(resetReadback/);
@@ -590,6 +704,17 @@ test("runtime verifiers enforce the shared contracts at their success boundaries
   assert.match(sessionVerifier, /waitForAuthoritativePhase\(/);
   assert.match(
     sessionVerifier,
+    /const \{ session: storedSession \} = await storedResponse\.json\(\);[\s\S]*await awaitRestartRendezvous\([\s\S]*const restartedSession = await readAuthoritativeSession\([\s\S]*isDeepStrictEqual\(restartedSession, storedSession\)[\s\S]*const resetResponse = await apiContext\.put/,
+  );
+  assert.match(sessionVerifier, /SESSION_RESTART_GATE_DIR/);
+  assert.match(sessionVerifier, /SESSION_RESTART_TIMEOUT_MS/);
+  assert.match(sessionVerifier, /const ownedClaims = new Map\(\)/);
+  assert.match(sessionVerifier, /baseRevision: storedSession\.revision/);
+  assert.match(sessionVerifier, /headers: claimHeaders/);
+  assert.match(sessionVerifier, /Game already controlled/);
+  assert.match(sessionVerifier, /button", \{ name: "Take over"/);
+  assert.match(
+    sessionVerifier,
     /window\.localStorage\.getItem\("mafia-dashboard\.game-session\.v4"\)/,
   );
   assert.match(uiVerifier, /assertExactOrigin\(route\.request\(\)\.url\(\), expectedOrigin\)/);
@@ -602,4 +727,28 @@ test("runtime verifiers enforce the shared contracts at their success boundaries
   assert.match(composeVerifier, /\/tmp\/mafia-app\.pid/);
   assert.match(composeVerifier, /kill -KILL/);
   assert.match(composeVerifier, /restartCountAfter <= restartCountBefore/);
+  assert.match(
+    composeVerifier,
+    /spawn\(process\.execPath, \["scripts\/verify-session-state\.mjs"\]/,
+  );
+  assert.match(composeVerifier, /SESSION_RESTART_GATE_DIR: restartGateDirectory/);
+  assert.match(composeVerifier, /SESSION_AUTH_COOKIE: `mafia_session=\$\{sessionToken\}`/);
+  const childLaunch = composeVerifier.indexOf("spawn(process.execPath");
+  const readyWait = composeVerifier.indexOf('waitForMarker("ready")');
+  const kill = composeVerifier.lastIndexOf('sigkillContainerProcess("app")');
+  const readiness = composeVerifier.lastIndexOf("await waitUntilReady()");
+  const continuation = composeVerifier.indexOf('writeRestartMarker("continue")');
+  assert.ok(
+    childLaunch < readyWait && readyWait < kill && kill < readiness && readiness < continuation,
+  );
+  assert.match(composeVerifier, /await sessionVerifierResult/);
+  assert.match(oauthVerifier, /assertVerifierTarget\(/);
+  assert.match(oauthVerifier, /parseVerifierAuthCookie\(/);
+  assert.match(oauthVerifier, /parseVerifierClubId\(/);
+  assert.match(oauthVerifier, /classifyReadOnlyVerifierRequest\(/);
+  assert.match(oauthVerifier, /\/api\/auth\/session/);
+  assert.match(oauthVerifier, /\/api\/clubs/);
+  assert.match(oauthVerifier, /\/api\/music\/playlists\/\$\{encodeURIComponent/);
+  assert.match(oauthVerifier, /Open \$\{selectedClub\.name\} in \$\{selectedClub\.city\}/);
+  assert.doesNotMatch(oauthVerifier, /\$\{pathname\} failed/);
 });

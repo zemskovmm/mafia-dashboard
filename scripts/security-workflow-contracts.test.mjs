@@ -63,6 +63,7 @@ test("security workflow blocks dependency, repository, and image findings", asyn
   assert.match(source, /severity: HIGH,CRITICAL/);
   assert.equal(source.match(/version: v0\.74\.0/g)?.length, 2);
   assert.match(source, /docker\/build-push-action@[0-9a-f]{40}/i);
+  assert.match(source, /build-args:[\s\S]*APP_COMMIT=\$\{\{ github\.sha \}\}/);
   assert.match(source, /aquasecurity\/trivy-action@[0-9a-f]{40}/i);
 });
 
@@ -83,6 +84,7 @@ test("Azure publish scans the exact image before pushing with least privilege", 
   assertBlockingScan(publish, "image");
   assert.match(publish, /outputs:\n\s{6}image: \$\{\{ steps\.publish\.outputs\.image \}\}/);
   assert.match(publish, /id: publish/);
+  assert.match(publish, /build-args:[\s\S]*APP_COMMIT=\$\{\{ github\.sha \}\}/);
   assert.match(publish, /docker buildx imagetools inspect "\$IMAGE_REF"/);
   assert.match(publish, /image_ref="\$\{IMAGE_REF%:\*\}@\$digest"/);
   assert.match(publish, /docker push/);
@@ -91,6 +93,8 @@ test("Azure publish scans the exact image before pushing with least privilege", 
   assert.doesNotMatch(deploy, /packages: write/);
   assert.match(deploy, /DEPLOY_IMAGE: \$\{\{ needs\.publish\.outputs\.image \}\}/);
   assert.match(deploy, /image="\$DEPLOY_IMAGE"/);
+  assert.match(deploy, /\/health\/version/);
+  assert.match(deploy, /--arg commit "\$GITHUB_SHA"/);
   assert.doesNotMatch(deploy, /image="ghcr\.io\/\$\{GITHUB_REPOSITORY\}:\$\{GITHUB_SHA\}"/);
 });
 
@@ -118,4 +122,19 @@ test("runtime image refreshes OS fixes and omits package managers", async () => 
   assert.match(source, /\/sbin\/apk/);
   assert.match(source, /RUN npm run ci:install/);
   assert.match(source, /npm prune --omit=dev --ignore-scripts/);
+  assert.match(source, /^ARG APP_COMMIT="unknown"$/m);
+  assert.match(source, /APP_COMMIT=\$\{APP_COMMIT\}/);
+});
+
+test("Compose passes source identity into immutable application builds", async () => {
+  const [compose, verifier] = await Promise.all([
+    read("compose.yaml"),
+    read("scripts/verify-production-compose.mjs"),
+  ]);
+
+  assert.match(compose, /APP_COMMIT: \$\{APP_COMMIT:-unknown\}/);
+  assert.match(verifier, /status.*--porcelain.*--untracked-files=no/s);
+  assert.match(verifier, /trackedStatus.*\? appCommitResult\.stdout\.trim\(\) : "unknown"/s);
+  assert.match(verifier, /APP_COMMIT: appCommit/);
+  assert.match(verifier, /\/health\/version/);
 });

@@ -22,9 +22,11 @@ RUN apk upgrade --no-cache \
     && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-v* \
     && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
     /usr/local/bin/yarn /usr/local/bin/yarnpkg /sbin/apk
+ARG APP_COMMIT="unknown"
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=3000 \
+    APP_COMMIT=${APP_COMMIT} \
     STATIC_DIR=/app/apps/web/dist
 
 COPY --from=build --chown=node:node /app/package.json /app/package-lock.json ./

@@ -4,6 +4,13 @@ import { loadConfig } from "./config.js";
 describe("loadConfig", () => {
   it("does not trust forwarding headers by default", () => {
     expect(loadConfig({}).TRUST_PROXY_HOPS).toBe(0);
+    expect(loadConfig({}).APP_COMMIT).toBe("unknown");
+  });
+
+  it("accepts only an exact full source commit identity", () => {
+    const commit = "a".repeat(40);
+    expect(loadConfig({ APP_COMMIT: commit }).APP_COMMIT).toBe(commit);
+    expect(() => loadConfig({ APP_COMMIT: "abc123" })).toThrow();
   });
 
   it("accepts one trusted proxy hop", () => {

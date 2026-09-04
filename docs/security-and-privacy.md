@@ -127,18 +127,18 @@ For a deployed HTTPS origin, sample the root and `/api/auth/session` responses a
 
 ## Residual and deferred risks
 
-| Risk                                                       | Disposition                                                                                                  |
-| ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Authenticated regular users receive full club/game state   | Accepted product model from issue #42; both roles may host games                                             |
-| Privacy shield does not hide timeline/log                  | Accepted product decision from issue #28                                                                     |
-| Single-process in-memory login limiter                     | Accepted for supported 0–1 replica deployments; replace with shared state before horizontal scale            |
-| Google/YouTube and Google Fonts availability/privacy       | Required external providers; CSP restricts access to documented purposes                                     |
-| Inline style CSP allowance and broad HTTPS image allowance | Accepted compatibility scope; scripts, frames, connections, objects, and forms remain constrained            |
-| Self-hosted automated backup/restore                       | Open issue #22; a Docker volume is explicitly not a backup                                                   |
-| Export security                                            | Export functionality is not implemented; issue #17 must preserve club isolation and avoid secret/log leakage |
-| Central audit-log retention                                | Not implemented; local logs are bounded and diagnostic rather than a security audit ledger                   |
-| Host/cloud operator access                                 | Operational trust boundary; protect credentials, backups, and console access outside the application         |
-| Denial of service beyond login throttling                  | Infrastructure-level rate limiting/WAF is not part of the pilot baseline                                     |
-| GitHub Advanced Security/CodeQL                            | Unavailable in the current private repository; repository-owned gates run instead                            |
+| Risk                                                       | Disposition                                                                                                                            |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Authenticated regular users receive full club/game state   | Accepted product model from issue #42; both roles may host games                                                                       |
+| Privacy shield does not hide timeline/log                  | Accepted product decision from issue #28                                                                                               |
+| Single-process in-memory login limiter                     | Accepted for supported 0–1 replica deployments; replace with shared state before horizontal scale                                      |
+| Google/YouTube and Google Fonts availability/privacy       | Required external providers; CSP restricts access to documented purposes                                                               |
+| Inline style CSP allowance and broad HTTPS image allowance | Accepted compatibility scope; scripts, frames, connections, objects, and forms remain constrained                                      |
+| Self-hosted automated backup/restore                       | Delivered logical backup, off-server copy, isolated restore, and failure drills; see `postgresql-backup-and-recovery.md`               |
+| Export security                                            | Export is excluded from v1.0.0; any future design must preserve club isolation and avoid secret, OAuth, log, and personal-data leakage |
+| Central audit-log retention                                | Not implemented; local logs are bounded and diagnostic rather than a security audit ledger                                             |
+| Host/cloud operator access                                 | Operational trust boundary; protect credentials, backups, and console access outside the application                                   |
+| Denial of service beyond login throttling                  | Infrastructure-level rate limiting/WAF is not part of the pilot baseline                                                               |
+| GitHub Advanced Security/CodeQL                            | Unavailable in the current private repository; repository-owned gates run instead                                                      |
 
 Revisit this model when adding horizontal scale, anonymous/public views, new identity providers, exports, centralized logging, or a different backup system.

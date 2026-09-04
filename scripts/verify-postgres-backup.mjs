@@ -145,8 +145,8 @@ try {
     INSERT INTO game_session_players (club_id, game_id, player_id, seat, is_host, role)
     VALUES ('${clubId}', '${gameId}', '${playerId}', 1, FALSE, 'citizen');
 
-    INSERT INTO game_results (game_id, club_id, winner, played_at)
-    VALUES ('${gameId}', '${clubId}', 'red', '2026-09-01T00:00:00Z');
+    INSERT INTO game_results (game_id, club_id, outcome, winner, played_at)
+    VALUES ('${gameId}', '${clubId}', 'red', 'red', '2026-09-01T00:00:00Z');
 
     INSERT INTO game_player_results
       (club_id, game_id, player_id, seat, role, team, final_status, fouls, won)

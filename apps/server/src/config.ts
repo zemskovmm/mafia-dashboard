@@ -15,6 +15,9 @@ const environment = z
       .transform((value) => Number(value) as 0 | 1),
     STATIC_DIR: z.string().optional(),
     PUBLIC_APP_URL: z.preprocess(emptyToUndefined, z.url().optional()),
+    APP_COMMIT: z
+      .union([z.literal("unknown"), z.string().regex(/^[0-9a-f]{40}$/)])
+      .default("unknown"),
     GOOGLE_CLIENT_ID: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
     GOOGLE_CLIENT_SECRET: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
     GOOGLE_OAUTH_REDIRECT_URI: z.preprocess(emptyToUndefined, z.url().optional()),

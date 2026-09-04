@@ -1,4 +1,7 @@
 /* global URL */
+import { access, lstat, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 
 const uuidPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
@@ -6,6 +9,51 @@ const localHosts = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 const canonicalUuid = (value) => value.toLowerCase();
 
 const messageOf = (error) => (error instanceof Error ? error.message : String(error));
+
+const markerExists = async (path) => {
+  try {
+    await access(path);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+};
+
+export const awaitRestartRendezvous = async ({ directory, timeoutMs = 60_000 }) => {
+  if (directory === undefined) return;
+  if (typeof directory !== "string" || directory.trim() === "") {
+    throw new Error("Restart rendezvous directory must be a non-empty path");
+  }
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300_000) {
+    throw new Error("Restart rendezvous timeout must be between 1 and 300000 milliseconds");
+  }
+  const directoryState = await lstat(directory);
+  if (!directoryState.isDirectory() || directoryState.isSymbolicLink()) {
+    throw new Error("Restart rendezvous path must be a caller-owned directory");
+  }
+  const ready = join(directory, "ready");
+  const continuation = join(directory, "continue");
+  for (const [label, path] of [
+    ["ready", ready],
+    ["continue", continuation],
+  ]) {
+    if (await markerExists(path)) throw new Error(`Stale restart rendezvous marker: ${label}`);
+  }
+  await writeFile(ready, "", { flag: "wx", mode: 0o600 });
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await markerExists(continuation)) {
+      const state = await lstat(continuation);
+      if (!state.isFile() || state.isSymbolicLink()) {
+        throw new Error("Restart rendezvous continuation must be a regular file");
+      }
+      return;
+    }
+    await delay(Math.min(50, Math.max(1, deadline - Date.now())));
+  }
+  throw new Error("Timed out waiting for application restart continuation");
+};
 
 export const assertExactOrigin = (url, expectedOrigin) => {
   const actualOrigin = new URL(url).origin;
@@ -41,6 +89,51 @@ export const assertVerifierTarget = ({
     }
   }
   return configured.origin;
+};
+
+export const parseVerifierAuthCookie = (value, { required = false } = {}) => {
+  if (value === undefined || value.trim() === "") {
+    if (required) throw new Error("Verifier authentication cookie must use name=value format");
+    return null;
+  }
+  const separator = value.indexOf("=");
+  const name = separator < 0 ? "" : value.slice(0, separator).trim();
+  const cookieValue = separator < 0 ? "" : value.slice(separator + 1).trim();
+  if (
+    !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) ||
+    cookieValue === "" ||
+    /[;\r\n]/.test(cookieValue)
+  ) {
+    throw new Error("Verifier authentication cookie must use name=value format");
+  }
+  return { name, value: cookieValue };
+};
+
+export const parseVerifierClubId = (value) => {
+  if (typeof value !== "string" || !uuidPattern.test(value.trim())) {
+    throw new Error("Verifier club ID must be a UUID");
+  }
+  return canonicalUuid(value.trim());
+};
+
+export const classifyReadOnlyVerifierRequest = ({ method, url, expectedOrigin }) => {
+  const normalizedMethod = method.toUpperCase();
+  const requestUrl = new URL(url);
+  if (!["GET", "HEAD", "OPTIONS"].includes(normalizedMethod)) {
+    throw new Error(`Refusing unsafe verifier request: ${normalizedMethod}`);
+  }
+  if (requestUrl.origin === expectedOrigin) {
+    return {
+      kind:
+        requestUrl.pathname === "/api" || requestUrl.pathname.startsWith("/api/")
+          ? "same-origin-api"
+          : "same-origin-page",
+    };
+  }
+  if (requestUrl.pathname === "/api" || requestUrl.pathname.startsWith("/api/")) {
+    assertExactOrigin(requestUrl, expectedOrigin);
+  }
+  return { kind: "external-safe" };
 };
 
 export const isAuthoritativeGameSnapshotRequest = ({ method, pathname, expectedPhase, body }) => {

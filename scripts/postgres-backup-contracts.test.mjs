@@ -128,6 +128,15 @@ test("repository exposes gated PostgreSQL 17 backup operations", async () => {
   assert.match(packageJson.scripts.test, /test:backup-contracts/);
 });
 
+test("real backup drill seeds a schema-valid terminal result", async () => {
+  const verifier = await readFile(join(root, "scripts/verify-postgres-backup.mjs"), "utf8");
+  assert.match(
+    verifier,
+    /INSERT INTO game_results \(game_id, club_id, outcome, winner, played_at\)/,
+  );
+  assert.match(verifier, /'red', 'red', '2026-09-01T00:00:00Z'/);
+});
+
 test("backup publishes one private validated timestamped archive", async () => {
   const harness = await createHarness();
 

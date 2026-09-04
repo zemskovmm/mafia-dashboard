@@ -2,6 +2,8 @@
 
 Mafia Dashboard deploys to Azure Container Apps from `.github/workflows/deploy-azure.yml` using Azure OIDC. The deployment is single-region and intentionally low-cost:
 
+The production workflow bakes the full Git SHA into the image and exposes it with the package version at `/health/version`. Use the [v1.0.0 release checklist](releases/v1.0.0.md) for exact-candidate qualification and evidence requirements.
+
 - Azure Container Apps Consumption, 0.5 vCPU / 1 GiB, 0–1 replicas
 - Azure Database for PostgreSQL Flexible Server 17, private VNet access, B1ms, 32 GiB, 7-day backups
 - private immutable images in GitHub Container Registry

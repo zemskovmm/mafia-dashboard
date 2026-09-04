@@ -304,6 +304,6 @@ Cross-cutting UI state: local running timer, privacy shield, YouTube playback st
 
 Implemented and accepted behavior includes the current 2-second fade-in, 500-millisecond quick fade-out, 3-second slow fade-out, faint ten-second warning chime, no final speech after a red card, the tie-vote flow in `rules.md`, and complete English/Russian localization of every host-facing surface. Before a club is opened, the portal follows the browser language (`ru` locales use Russian; all others use English). Language is then controlled by the club: existing clubs migrate to English, new clubs default from the creator's browser, owners and managers/editors can change it, and an accepted change applies immediately without altering an active game.
 
-One decided requirement remains an implementation gap: Best Move must be a per-club setting enabled by default; current behavior is fixed and has no club-level setting.
+Best Move is implemented as a per-club setting enabled by default. Its resolved value is copied into each game when play starts, so later club-setting changes do not rewrite active or completed games.
 
 Production recovery uses PostgreSQL custom archives with configurable 14-day local and 30-day off-server retention defaults, daily scheduling, weekly isolated semantic restore tests, and the disaster-recovery procedure in `postgresql-backup-and-recovery.md`. Point-in-time recovery remains outside the single-server baseline.

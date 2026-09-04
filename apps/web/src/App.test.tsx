@@ -1112,8 +1112,8 @@ describe("developer menu", () => {
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
 
     const menu = screen.getByRole("dialog", { name: "Developer menu" });
-    const version = within(menu).getByLabelText("Canary version 0.1.0");
-    expect(version).toHaveTextContent("Canary v0.1.0");
+    const version = within(menu).getByLabelText("Canary version 1.0.0");
+    expect(version).toHaveTextContent("Canary v1.0.0");
     expect(version.querySelector(".lucide-bird")).toBeInTheDocument();
     expect(menu.firstElementChild).toContainElement(version);
   });

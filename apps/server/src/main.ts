@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { Pool } from "pg";
 import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
@@ -6,6 +7,9 @@ import { createShutdown, registerShutdownSignals } from "./server-lifecycle.js";
 import { YouTubeOAuthService } from "./youtube-oauth.js";
 
 const config = loadConfig();
+const { version } = JSON.parse(
+  readFileSync(new URL("../../../package.json", import.meta.url), "utf8"),
+) as { readonly version: string };
 const pool = new Pool({ connectionString: config.DATABASE_URL });
 const youtubeOAuth =
   config.youtubeOAuth === undefined
@@ -19,6 +23,7 @@ const app = await buildApp({
   googleAuth,
   youtubeOAuth,
   publicAppUrl: config.PUBLIC_APP_URL,
+  releaseIdentity: { version, commit: config.APP_COMMIT },
   trustedProxyHops: config.TRUST_PROXY_HOPS,
 });
 

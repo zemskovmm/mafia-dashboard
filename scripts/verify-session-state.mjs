@@ -11,10 +11,13 @@ import {
   assertNewResource,
   assertSessionPostcondition,
   assertVerifierTarget,
+  awaitRestartRendezvous,
   classifyBrowserApiRequest,
   createAsyncTracker,
   deleteAndVerifyAbsent,
   isAuthoritativeGameSnapshotRequest,
+  parseVerifierAuthCookie,
+  parseVerifierClubId,
   runCleanupActions,
 } from "./session-verifier-contracts.mjs";
 
@@ -55,6 +58,23 @@ assertVerifierTarget({
   expectedOrigin: configuredExpectedOrigin,
 });
 const configuredHostHeader = process.env.SESSION_VERIFY_HOST_HEADER?.trim();
+const configuredRestartGateDirectory = process.env.SESSION_RESTART_GATE_DIR;
+if (configuredRestartGateDirectory !== undefined && configuredRestartGateDirectory.trim() === "") {
+  throw new Error("SESSION_RESTART_GATE_DIR must be a non-empty path");
+}
+const restartGateDirectory = configuredRestartGateDirectory?.trim();
+const configuredRestartTimeout = process.env.SESSION_RESTART_TIMEOUT_MS;
+if (configuredRestartTimeout !== undefined && restartGateDirectory === undefined) {
+  throw new Error("SESSION_RESTART_TIMEOUT_MS requires SESSION_RESTART_GATE_DIR");
+}
+const restartGateTimeoutMs = Number(configuredRestartTimeout ?? "60000");
+if (
+  !Number.isInteger(restartGateTimeoutMs) ||
+  restartGateTimeoutMs < 1 ||
+  restartGateTimeoutMs > 300_000
+) {
+  throw new Error("SESSION_RESTART_TIMEOUT_MS must be between 1 and 300000");
+}
 if (
   configuredHostHeader !== undefined &&
   !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/i.test(configuredHostHeader)
@@ -73,30 +93,16 @@ assertVerifierTarget({
 });
 const apiBaseUrl = configuredTargetUrl.origin;
 const remoteTarget = !localHosts.has(configuredTargetUrl.hostname);
-const authCookie = process.env.SESSION_AUTH_COOKIE?.trim();
 const configuredClubId = process.env.SESSION_CLUB_ID?.trim();
 if (remoteTarget && !configuredClubId) {
   throw new Error("SESSION_CLUB_ID is required for remote session verification");
 }
-const clubId = configuredClubId || "00000000-0000-4000-8000-000000000101";
-if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(clubId)) {
-  throw new Error("SESSION_CLUB_ID must be a UUID");
-}
+const clubId = parseVerifierClubId(configuredClubId || "00000000-0000-4000-8000-000000000101");
 const apiHeaders = { "x-club-id": clubId };
 const browserHeaders = {
   ...apiHeaders,
 };
-const parsedAuthCookie = (() => {
-  if (authCookie === undefined || authCookie === "") return null;
-  const separator = authCookie.indexOf("=");
-  if (separator <= 0 || separator === authCookie.length - 1) {
-    throw new Error("SESSION_AUTH_COOKIE must use name=value format");
-  }
-  return {
-    name: authCookie.slice(0, separator).trim(),
-    value: authCookie.slice(separator + 1).trim(),
-  };
-})();
+const parsedAuthCookie = parseVerifierAuthCookie(process.env.SESSION_AUTH_COOKIE);
 
 const playlist = {
   id: "session-verification-playlist",
@@ -129,6 +135,7 @@ const apiContext = await playwrightRequest.newContext({
 });
 const createdPlayerIds = new Set();
 const createdGameIds = new Set();
+const ownedClaims = new Map();
 const preexistingPlayerIds = new Set();
 const preexistingGameIds = new Set();
 const cleanupErrors = [];
@@ -223,6 +230,17 @@ const createContext = async () => {
         expectedOrigin: targetUrl.origin,
         ownedGameIds: createdGameIds,
       });
+      if (classification.kind === "owned-session-mutation") {
+        const claimId = request.headers()["x-game-claim-id"];
+        const claimGeneration = Number(request.headers()["x-game-claim-generation"]);
+        if (
+          /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(claimId ?? "") &&
+          Number.isSafeInteger(claimGeneration) &&
+          claimGeneration > 0
+        ) {
+          ownedClaims.set(classification.gameId, { claimId, claimGeneration });
+        }
+      }
       if (classification.kind === "session-creation") {
         if (preexistingGameIds.has(classification.gameId)) {
           throw new Error("Refusing to mutate a pre-existing game session ID");
@@ -303,6 +321,21 @@ const waitForAuthoritativePhase = async (gameId, expectedPhase) => {
     await delay(100);
   }
   throw new Error(`Timed out waiting for authoritative ${expectedPhase} phase`);
+};
+
+const waitForApplicationReady = async () => {
+  for (let attempt = 0; attempt < 300; attempt += 1) {
+    try {
+      const response = await fetch(new URL("/health/ready", targetUrl.origin), {
+        redirect: "manual",
+      });
+      if (response.ok && (await response.json()).status === "ready") return;
+    } catch {
+      // The coordinated application restart may still be in progress.
+    }
+    await delay(100);
+  }
+  throw new Error("Application did not become ready after coordinated restart");
 };
 
 let verificationError = null;
@@ -550,6 +583,27 @@ try {
       })}`,
     );
   }
+  await awaitRestartRendezvous({
+    directory: restartGateDirectory,
+    timeoutMs: restartGateTimeoutMs,
+  });
+  if (restartGateDirectory !== undefined) await waitForApplicationReady();
+  const restartedSession = await readAuthoritativeSession(
+    gameId,
+    "Authoritative post-restart readback failed",
+  );
+  if (!isDeepStrictEqual(restartedSession, storedSession)) {
+    throw new Error("Authoritative session changed across the application restart");
+  }
+  authoritativeSession = restartedSession;
+  const ownedClaim = ownedClaims.get(gameId);
+  if (ownedClaim === undefined) {
+    throw new Error("The browser did not expose its run-owned game-session claim");
+  }
+  const claimHeaders = {
+    "x-game-claim-id": ownedClaim.claimId,
+    "x-game-claim-generation": String(ownedClaim.claimGeneration),
+  };
   const acceptedEvent = activeEvents.at(-1);
   if (acceptedEvent?.type !== "phase.changed" || acceptedEvent.parentEventId == null) {
     throw new Error("Reset probe has no accepted phase event with a parent");
@@ -578,14 +632,18 @@ try {
   };
   const resetResponse = await apiContext.put(`${apiBaseUrl}/api/game-sessions/${gameId}`, {
     maxRedirects: 0,
+    headers: claimHeaders,
     data: {
       name: storedSession.name,
       mutationId: randomUUID(),
+      baseRevision: storedSession.revision,
       state: resetState,
       results: null,
     },
   });
-  if (!resetResponse.ok()) throw new Error("Authoritative snapshot reset probe failed");
+  if (!resetResponse.ok()) {
+    throw new Error(`Authoritative snapshot reset probe failed: HTTP ${resetResponse.status()}`);
+  }
   assertSessionPostcondition(await resetResponse.json(), resetPostcondition, replayGameLog);
   const resetReadback = await readAuthoritativeSession(
     gameId,
@@ -604,6 +662,13 @@ try {
     .click();
   await restartedPage.getByRole("button", { name: "Open Manage menu" }).click();
   await restartedPage.getByRole("button", { name: `Resume ${gameName}` }).click();
+  const claimConflict = restartedPage.getByRole("alertdialog", {
+    name: "Game already controlled",
+  });
+  await claimConflict.waitFor({ state: "visible", timeout: 3_000 }).catch(() => undefined);
+  if (await claimConflict.isVisible()) {
+    await claimConflict.getByRole("button", { name: "Take over" }).click();
+  }
   await restartedPage.getByRole("group", { name: `Host: ${players[10].nickname}` }).waitFor();
   const restoredEnvelope = await restartedPage.evaluate(() => {
     const raw = window.localStorage.getItem("mafia-dashboard.game-session.v4");
@@ -658,9 +723,28 @@ try {
         throw new Error(`Unable to inspect verification session cleanup: HTTP ${stored.status()}`);
       }
       const { session } = await stored.json();
+      const cleanupClaimId = randomUUID();
+      const takeover = await apiContext.post(`/api/game-sessions/${gameId}/takeover`, {
+        maxRedirects: 0,
+        headers: {
+          "x-game-claim-id": cleanupClaimId,
+          "x-game-claim-generation": "1",
+        },
+        data: {},
+      });
+      if (!takeover.ok()) {
+        throw new Error(`Unable to claim verification session cleanup: HTTP ${takeover.status()}`);
+      }
+      const { claim } = await takeover.json();
       const response = await apiContext.delete(
         `/api/game-sessions/${gameId}?expectedRevision=${session.revision}`,
-        { maxRedirects: 0 },
+        {
+          maxRedirects: 0,
+          headers: {
+            "x-game-claim-id": cleanupClaimId,
+            "x-game-claim-generation": String(claim.generation),
+          },
+        },
       );
       if (!response.ok() && response.status() !== 404) {
         throw new Error(`Unable to clean up a verification session: HTTP ${response.status()}`);
@@ -690,4 +774,6 @@ const failures = [...(verificationError === null ? [] : [verificationError]), ..
 if (failures.length > 0) {
   throw new AggregateError(failures, "Session verification or cleanup failed");
 }
-console.log(`Authoritative session restart verification: PASS (${screenshotPath})`);
+console.log(
+  `Authoritative ${restartGateDirectory === undefined ? "browser" : "application"} restart verification: PASS (${screenshotPath})`,
+);

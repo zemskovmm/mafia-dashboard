@@ -1,6 +1,6 @@
 {
   "name": "@mafia/server",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,7 +13,7 @@
   "dependencies": {
     "@fastify/helmet": "^13.1.1",
     "@fastify/static": "^10.1.3",
-    "@mafia/game-domain": "^0.1.0",
+    "@mafia/game-domain": "^1.0.0",
     "fastify": "^5.12.0",
     "pg": "^8.23.0",
     "zod": "^4.4.3"

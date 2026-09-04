@@ -1,16 +1,34 @@
 /* global URL, fetch, AbortSignal */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
 
-const cwd = fileURLToPath(new URL("..", import.meta.url));
+const cwd = fileURLToPath(new URL("../", import.meta.url));
+const appVersion = JSON.parse(readFileSync(join(cwd, "package.json"), "utf8")).version;
+const appCommitResult = spawnSync("git", ["rev-parse", "HEAD"], {
+  cwd,
+  encoding: "utf8",
+});
+if (appCommitResult.status !== 0 || !/^[0-9a-f]{40}\n?$/.test(appCommitResult.stdout)) {
+  throw new Error("Production Compose verification requires an exact Git commit");
+}
+const trackedStatusResult = spawnSync("git", ["status", "--porcelain", "--untracked-files=no"], {
+  cwd,
+  encoding: "utf8",
+});
+if (trackedStatusResult.status !== 0) {
+  throw new Error("Production Compose verification could not inspect tracked files");
+}
+const trackedStatus = trackedStatusResult.stdout.trim();
+const appCommit = trackedStatus === "" ? appCommitResult.stdout.trim() : "unknown";
 const project = `mafia-dashboard-smoke-${process.pid}`;
 const image = `mafia-dashboard:smoke-${process.pid}`;
 const overridePath = join(tmpdir(), `${project}-crash-override.yaml`);
+const restartGateDirectory = mkdtempSync(join(tmpdir(), `${project}-restart-`));
 const crashCommand =
   'node apps/server/dist/main.js & child=$$!; printf "%s" "$$child" > /tmp/mafia-app.pid; wait "$$child"; exit $$?';
 writeFileSync(
@@ -42,6 +60,7 @@ const postgresPassword = "mafia-smoke-only";
 const databaseUrl = `postgresql://mafia:${postgresPassword}@db:5432/mafia`;
 const env = {
   ...process.env,
+  APP_COMMIT: appCommit,
   APP_BIND: "127.0.0.1",
   APP_IMAGE: image,
   APP_PORT: String(port),
@@ -68,6 +87,57 @@ const prefix = [
 
 const requireCondition = (condition, message) => {
   if (!condition) throw new Error(message);
+};
+
+const boundedOutput = (value, limit = 64 * 1024) =>
+  value.length <= limit ? value : `${value.slice(0, limit)}\n[truncated]`;
+const redact = (value) =>
+  [sessionToken, sessionHash, postgresPassword].reduce(
+    (redacted, secret) => redacted.replaceAll(secret, "[redacted]"),
+    value,
+  );
+const markerPath = (name) => join(restartGateDirectory, name);
+const writeRestartMarker = (name) =>
+  writeFileSync(markerPath(name), "", { flag: "wx", mode: 0o600 });
+const waitForMarker = async (name) => {
+  for (let attempt = 0; attempt < 240; attempt += 1) {
+    try {
+      const state = lstatSync(markerPath(name));
+      if (!state.isFile() || state.isSymbolicLink()) {
+        throw new Error(`Restart marker ${name} is not a regular file`);
+      }
+      return;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`Timed out waiting for restart marker ${name}`);
+};
+
+const collectChild = (child) => {
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => {
+    stdout = boundedOutput(stdout + String(chunk));
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr = boundedOutput(stderr + String(chunk));
+  });
+  return new Promise((resolve) => {
+    child.once("error", (error) => resolve({ error, status: null, signal: null, stderr, stdout }));
+    child.once("exit", (status, signal) =>
+      resolve({ error: null, status, signal, stderr, stdout }),
+    );
+  });
+};
+
+const assertSessionVerifierPassed = (result) => {
+  if (result.error === null && result.status === 0 && result.signal === null) return;
+  const detail = redact(result.stderr || result.stdout || result.error?.message || "unknown error");
+  throw new Error(
+    `Authoritative restart verifier failed (${result.signal ?? result.status ?? "spawn"}): ${detail}`,
+  );
 };
 
 const run = (args, { allowFailure = false, capture = false, environment = {} } = {}) => {
@@ -171,6 +241,8 @@ const waitForRestart = async (name, before) => {
 
 let validationFailed = false;
 let validationFailure;
+let sessionVerifier;
+let sessionVerifierResult;
 try {
   const rendered = JSON.parse(run(["config", "--format", "json"], { capture: true }).stdout);
   const { app, db, migrate } = rendered.services;
@@ -274,6 +346,14 @@ try {
   }
   assertExitedZero("migrate");
   await waitUntilReady();
+  const identityResponse = await fetch(`http://127.0.0.1:${port}/health/version`, {
+    redirect: "manual",
+  });
+  if (!identityResponse.ok) throw new Error("Application release identity endpoint failed");
+  const identity = await identityResponse.json();
+  if (identity.version !== appVersion || identity.commit !== appCommit) {
+    throw new Error("Application release identity does not match the Compose candidate");
+  }
 
   run([
     "exec",
@@ -306,6 +386,26 @@ try {
   }
   const { gameId } = await createGame.json();
 
+  sessionVerifier = spawn(process.execPath, ["scripts/verify-session-state.mjs"], {
+    cwd,
+    env: {
+      ...process.env,
+      APP_URL: `http://127.0.0.1:${port}`,
+      SESSION_AUTH_COOKIE: `mafia_session=${sessionToken}`,
+      SESSION_CLUB_ID: clubId,
+      SESSION_RESTART_GATE_DIR: restartGateDirectory,
+      SESSION_RESTART_TIMEOUT_MS: "120000",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  sessionVerifierResult = collectChild(sessionVerifier);
+  await Promise.race([
+    waitForMarker("ready"),
+    sessionVerifierResult.then((result) => {
+      assertSessionVerifierPassed(result);
+      throw new Error("Authoritative restart verifier exited before requesting the restart");
+    }),
+  ]);
   await waitForRestartPolicy("app");
   const restartCountBefore = restartCount("app");
   sigkillContainerProcess("app");
@@ -314,6 +414,8 @@ try {
   if (restartCountAfter <= restartCountBefore) {
     throw new Error("The application container did not automatically restart after SIGKILL");
   }
+  writeRestartMarker("continue");
+  assertSessionVerifierPassed(await sessionVerifierResult);
 
   const readEvents = await fetch(
     `http://127.0.0.1:${port}/api/games/${gameId}/events?visibility=host`,
@@ -339,6 +441,14 @@ try {
   validationFailure = error;
 }
 
+if (sessionVerifier?.exitCode === null && sessionVerifier.signalCode === null) {
+  sessionVerifier.kill("SIGTERM");
+  await Promise.race([sessionVerifierResult, new Promise((resolve) => setTimeout(resolve, 2_000))]);
+  if (sessionVerifier.exitCode === null && sessionVerifier.signalCode === null) {
+    sessionVerifier.kill("SIGKILL");
+  }
+}
+
 const cleanup = run(["down", "--volumes", "--remove-orphans"], {
   allowFailure: true,
   capture: true,
@@ -349,6 +459,7 @@ const imageCleanup = spawnSync("docker", ["image", "rm", image], {
   env,
   stdio: ["ignore", "pipe", "pipe"],
 });
+rmSync(restartGateDirectory, { force: true, recursive: true });
 if (validationFailed) {
   rmSync(overridePath, { force: true });
   throw validationFailure;

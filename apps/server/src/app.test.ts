@@ -758,6 +758,21 @@ describe("server API", () => {
     expect(ready.json()).toEqual({ status: "ready" });
   });
 
+  it("reports an exact immutable release identity without caching", async () => {
+    const versioned = await buildApp({
+      pool,
+      releaseIdentity: { version: "1.0.0", commit: "a".repeat(40) },
+    });
+    await versioned.ready();
+
+    const response = await versioned.inject({ method: "GET", url: "/health/version" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ version: "1.0.0", commit: "a".repeat(40) });
+    expect(response.headers["cache-control"]).toBe("no-store");
+    await versioned.close();
+  });
+
   it("creates a game with the first append-only event", async () => {
     const response = await app.inject({
       method: "POST",

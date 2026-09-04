@@ -89,6 +89,8 @@ jobs:
           load: true
           push: false
           tags: ${{ env.IMAGE_REF }}
+          build-args: |
+            APP_COMMIT=${{ github.sha }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -276,7 +278,13 @@ jobs:
           for _ in $(seq 1 30); do
             if curl --fail --silent --show-error \
               "${{ steps.app.outputs.public_url }}/health/ready" >/dev/null; then
-              exit 0
+              identity=$(curl --fail --silent --show-error \
+                "${{ steps.app.outputs.public_url }}/health/version")
+              if jq --exit-status --arg commit "$GITHUB_SHA" \
+                '.commit == $commit and (.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' \
+                <<<"$identity" >/dev/null; then
+                exit 0
+              fi
             fi
             sleep 10
           done

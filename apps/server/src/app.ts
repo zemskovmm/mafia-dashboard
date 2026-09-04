@@ -303,6 +303,7 @@ export const buildApp = async ({
   defaultClubId,
   youtubeOAuth,
   publicAppUrl,
+  releaseIdentity = { version: "0.0.0-dev", commit: "unknown" },
   trustedProxyHops = 0,
   authRateLimit,
 }: {
@@ -313,6 +314,7 @@ export const buildApp = async ({
   readonly defaultClubId?: string;
   readonly youtubeOAuth?: YouTubeOAuthService;
   readonly publicAppUrl?: string;
+  readonly releaseIdentity?: { readonly version: string; readonly commit: string };
   readonly trustedProxyHops?: 0 | 1;
 
   readonly authRateLimit?: {
@@ -424,6 +426,9 @@ export const buildApp = async ({
   }
 
   app.get("/health/live", async () => ({ status: "live" }));
+  app.get("/health/version", async (_request, reply) =>
+    reply.header("cache-control", "no-store").send(releaseIdentity),
+  );
   app.get("/health/ready", async (_request, reply) => {
     try {
       await pool.query("SELECT 1");
