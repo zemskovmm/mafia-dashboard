@@ -1,99 +1,117 @@
-# Issue #52 Browser-local Game Singleton Implementation Plan
+# Issue #52 V5-only Browser Game Singleton Implementation Plan
 
-> **For Hermes:** Implement this plan task-by-task with strict RED-GREEN-REFACTOR cycles from the `test-driven-development` skill. Do not broaden the issue when unrelated findings appear.
+> **For Hermes:** Execute only after Michael approves the entire revised [same-ticket #52 plan set](./2026-09-04_232629-issue-52-current-only-plan-set.md). Use strict RED-GREEN-REFACTOR cycles. This file covers browser ownership only; companion plans now remove historical game-data, server, database and preference compatibility too.
 
-**Goal:** Replace club-scoped browser game aggregates with one validated localStorage record that owns exactly one club/game attachment, restores that owner first, and cannot be overwritten without an explicit safe release or clear decision.
+**Goal:** Enforce at most one durable browser-local game through one strict global v5 `localStorage` record, while ignoring all obsolete browser game records and blocking malformed/unsupported v5 data until the host explicitly clears it.
 
-**Architecture:** Advance the durable aggregate from v4 to a browser-wide v5 envelope with required `clubId` and `gameId` ownership. Keep canonical envelope validation and outbox mutation safety in `session-outbox.ts`; add a small pure browser-storage coordinator for bounded v3/v4 discovery, deterministic migration, conflict resolution, owner lookup, and local release. `App` will run that coordinator after authenticated clubs load, auto-open the owning club on reload, and gate attempts to open another club before a mismatched `ClubWorkspace` can mount. `ClubWorkspace` will use the one global v5 key and reject a different game ID even when the current record is fully synced.
+**Architecture:** Keep `mafia-dashboard.game-session.v5` as the only supported durable game key. `GameSessionOutbox` accepts only the current canonical v5 envelope with explicit `clubId`/`gameId`; the browser-storage coordinator classifies that one key as empty, valid, or invalid under the existing Web Lock. Valid ownership is resolved before a workspace mounts. Invalid v5 bytes block every club until an exact-snapshot explicit clear. No production path discovers, reads, migrates, deletes, tombstones, or resolves v3/v4 candidates, and no game-state path reads or writes `sessionStorage`.
 
-**Tech Stack:** React 19, TypeScript, Vitest, Testing Library, the existing `GameSessionOutbox`/claim/retry controllers, browser Storage APIs, and the English/Russian message catalog.
+**Tech Stack:** React 19, TypeScript, Vitest, Testing Library, the current `GameSessionOutbox`, Web Locks, browser `localStorage`, and the existing verifier-contract scripts.
 
-**Non-goals:** Cross-browser or cross-device exclusivity, leases, takeover semantics, or server locking (#53 already owns that boundary); changing PostgreSQL/API contracts; moving player/music/theme preferences; deleting a server game merely to release this browser; adding routes, dependencies, deployments, or a pull request.
+**Non-goals:** Preserving, migrating, cleaning, or interpreting v3/v4 browser game data; conflict selection between old records; changing claim/takeover behavior; merging, deploying, or closing issue #52. Server/domain/database/preference compatibility and the shared game-data contract belong to companion plans under this same ticket, not exclusions from #52.
 
 ---
 
 ## Plain-language summary
 
-The browser will keep one local game record for the whole application instead of one per club. Reloads will return to that game’s club, other clubs/games cannot replace it behind the host’s back, old v3/v4 records migrate once without losing offline changes, and the host gets an explicit recovery/release choice when old records conflict or the owning club is unavailable.
+The browser will understand only the current global v5 game record. Old v3/v4 keys are invisible and remain byte-for-byte untouched. A valid v5 game restores its owning club and cannot be silently replaced; a bad v5 record blocks play until the host deliberately clears exactly that record. The old migration, tombstone, and candidate-choice machinery disappears, while cross-tab locking, offline outbox safety, lifecycle cleanup, owner gating, and verifier checks remain.
 
-## Selection and current context
+## Requirements and proposed safety boundaries
 
-- Selected [GitHub issue #52](https://github.com/zemskovmm/mafia-dashboard/issues/52), `[Persistence] Enforce one durable local game per browser`.
-- It is the repository’s only open issue, has the expected `type:feature`, `area:frontend`, `area:data`, and `priority:P1` labels, and has no comments, assignee, milestone, or Project item. Its prerequisite #50 and related club-lock issue #53 are both closed, so it is implementation-ready and necessarily the highest-priority ready item.
-- Local `main`, `origin/main`, and the canonical remote all point to `3ab810850aed528bc7c700049d629008b8f9682f`. The only working-tree state is the pre-existing untracked `.AI/plans/` set; delivery must preserve the shared plan index and transport only this issue’s approved plan pair.
-- `App.tsx` currently derives a v4 and v3 key per club and migrates only the selected club’s matching sessionStorage keys during `ClubWorkspace` render (`apps/web/src/App.tsx:208-210,279-307,459-515`). Consequently the parent cannot identify the owner before mounting a workspace.
-- `GameSessionOutbox` validates v4/v3 records, preserves offline operations, checks concurrent storage changes, and refuses restore only while changes are unresolved (`apps/web/src/session-outbox.ts:20-68,116-164,766-850,975-1005,1119-1174`). A fully synced game can therefore still be replaced by `restore` with another game ID.
-- The host can leave a workspace and open another club (`apps/web/src/App.tsx:1721-1725,2926-2991`); a new `ClubWorkspace` then reads that club’s independent aggregate. Starting a new game explicitly clears the current server session, while remote resume currently has no browser-wide attachment guard (`apps/web/src/App.tsx:1583-1651,1798-1816,2050-2114,2319-2340`).
-- Completion clears the active outbox, sign-out scans v3/v4 game keys in both storage areas, club deletion removes only that club’s v3/v4 keys, and Clear all browser data intentionally clears both complete storage areas (`apps/web/src/App.tsx:1764-1796,1859-1893,2862-2924`).
-- Existing regression coverage already exercises v3 normalization, malformed records, stale browser-context writes, offline outboxes, reload, sessionStorage migration, completion, sign-out, and club deletion (`apps/web/src/session-outbox.test.ts`; `apps/web/src/App.test.tsx:830-899,3217-3600`). These are the seams to evolve rather than replace.
-- The restart/session verifier independently derives the current per-club v4 localStorage key (`scripts/session-verifier-contracts.mjs:112-125`; `scripts/verify-session-state.mjs:99-103`), and its contract suite explicitly requires isolated club keys (`scripts/session-verifier-contracts.test.mjs:150-162,759-760`). The optional browser verifier also inspects/mutates v4 fixtures in sessionStorage (`scripts/verify-ui.mjs:1175-1234,1605-1620,1732-1757`). These verifier fixtures/contracts must advance with production rather than retaining a false v4/sessionStorage assumption.
+- Remove all v3/v4 migration and normalization paths, legacy `sessionStorage` scans, legacy tombstones, candidate-conflict state/UI, compatibility tests, and verifier fallbacks.
+- Ignore obsolete v3/v4 keys in both storage areas and leave their bytes untouched. Only the existing explicit **Clear all browser data** action may remove them as part of clearing all application storage.
+- Treat a malformed or unsupported value at the global v5 key as blocking state. Never reinterpret it as empty or allow a new game to overwrite it; require an explicit exact-snapshot local clear.
+- Keep delivery on `issue-52-browser-game-singleton`: open a PR to `main`, but do not merge, deploy, enable auto-merge, or close #52.
+- Preserve current canonical replay/outbox behavior using the strict current game-data contract defined in the companion plan. The earlier blanket exemption for server/domain compatibility is superseded.
+- Untouched obsolete keys and invalid-record exact-clear handling are retained proposed safety boundaries; unanswered clarification forms are not confirmation. Approval must cover these assumptions as recorded in the plan-set index.
 
-## Migration and release decisions
+## Current state and planning boundary
 
-- The new canonical key is one origin-wide v5 localStorage key. Every valid v5 envelope requires a UUID `clubId` and a UUID `gameId` whenever game content exists; an empty in-memory envelope is not persisted.
-- Legacy discovery is bounded to exact v3/v4 game-session prefixes in localStorage and sessionStorage. It never enumerates or rewrites unrelated keys and never writes game state to sessionStorage.
-- Invalid/stale legacy values are excluded from candidate selection and reported through the existing persistence error console; cleanup of their bounded game keys occurs only after a valid v5 selection or an explicit stale-data clear. Valid duplicate copies of the same club/game are deduplicated.
-- If one valid candidate has unresolved local work and all others are fully synced, that candidate wins. If all candidates are fully synced, use a documented stable ordering—highest revision, then v4 over v3, then localStorage over sessionStorage, then source key—to select one while the remote sessions remain resumable.
-- Distinct candidates with unresolved work on more than one game are not auto-selected or deleted. Preserve all source bytes and surface a blocking recovery dialog. The host must explicitly choose the record to keep, with every affected club/game and pending-change count shown before competing local copies are removed.
-- A migration or conflict choice copies and validates the selected v5 record, reads back exact ownership/game identity, and only then removes bounded v3/v4 sources from both storage areas. A failed copy/readback leaves every source unchanged.
-- Normal release is local-only: it removes the v5 attachment without deleting the server session, but only when the outbox has no pending/failed/clearing work and the durable snapshot has not changed. Unsynced work can be retried or cleared through the owning workspace; it cannot be silently released from a cross-club prompt.
-- If the stored owner is no longer in the authenticated club list, surface stale-owner recovery instead of mounting another club. A destructive discard remains explicit and names whether local pending changes will be lost.
+- Issue #52 remains open, but its current GitHub body still requires v3/v4 migration and stale-copy cleanup. That text is superseded by the decisions above and must be reconciled after plan approval before source work resumes.
+- Read-only refresh found `/Users/Michael/Repos/Mafia Dashboard.issue-52` on `issue-52-browser-game-singleton`, HEAD `a072794e74e0fc7c173edfe21524834189a37832`, with staged source plus two earlier-plan deletions and no unstaged diff. Canonical remote `main` remains `3ab810850aed528bc7c700049d629008b8f9682f`. Preserve this state; do not reset, stash, clean, or copy source into the primary checkout.
+- Commit `a072794e74e0fc7c173edfe21524834189a37832` preserves the earlier migration-oriented plan pair. The regenerated approved bytes must enter a later plan-only revision commit before the final source commit.
+- The prior v3 identity and tombstone review findings become obsolete when all legacy discovery and conflict resolution are removed. The stale release-result finding remains applicable to the v5-only flow.
+- `.AI/reviews/2026-09-04_200409-issue-52-blocker-disposition.md` is a superseded local review input, not source and not authorized for ticket-history transport.
+
+## Revised issue contract
+
+After approval, replace issue #52's migration-oriented body with the complete contract in the plan-set index, including the following browser semantics, and verify remote readback before implementation:
+
+- One global `localStorage` key, `mafia-dashboard.game-session.v5`, is the only supported browser game aggregate.
+- A valid record requires current v5 shape plus explicit UUID `clubId` and `gameId` ownership.
+- v3/v4 keys and game-state values in `sessionStorage` are ignored and left untouched; there is no migration or compatibility path.
+- An absent v5 key means empty. A valid v5 key means attached. A malformed or unsupported v5 value means blocked-invalid and requires an explicit exact-value clear.
+- Starting/resuming another game cannot replace a valid or invalid v5 value without the appropriate explicit safe action.
+- Valid v5 completion, sign-out, owning-club deletion, explicit game clear, and local release remove only the current v5 record plus current claim data where already required. Clear all browser data remains intentionally broad.
+- Cross-device ownership remains outside #52; current club claim/takeover behavior remains unchanged.
 
 ## Acceptance criteria
 
-- At most one canonical game aggregate exists under the application origin, and every persisted mutation retains the same explicit `clubId`/`gameId` ownership.
-- On authenticated reload, a valid record is migrated/validated before workspace rendering and the owning club/game is restored automatically; no request or mutation is issued with another club’s ID.
-- Exiting to the club portal remains possible, but selecting another club is blocked before mount and offers “return to attached game” plus a local-only release only when release is safe.
-- Starting or resuming another game cannot replace a different attached game. Existing explicit server-game deletion remains a separate clear path, and cross-browser claim/takeover behavior remains unchanged.
-- New game/draft/outbox writes go only to the global v5 localStorage key. sessionStorage is read only for bounded v3/v4 migration/cleanup; claim-controller sessionStorage data is outside the game-state record and remains unchanged.
-- Zero/one/duplicate legacy candidates migrate deterministically. Multiple candidates preserve the sole unsynced record when one exists; multiple unsynced games stop with an explicit host choice and no pre-choice source deletion.
-- Migration and conflict resolution never mix club IDs, game IDs, revisions, canonical event chains, or outboxes, and source removal occurs only after verified v5 readback.
-- Offline outboxes survive reload and blocked club/game attempts unchanged. Fully synced local release preserves the remote active session for later resume.
-- Completion, sign-out, owning-club deletion, explicit game clear, Clear all browser data, and stale-owner recovery remove the applicable v5 and bounded legacy copies so sessionStorage cannot resurrect them.
-- Unrelated localStorage/sessionStorage keys and existing per-club preferences remain untouched except by the already explicit Clear all browser data action.
-- English and Russian recovery/attachment copy is accessible as a modal with a clear title, initial focus, keyboard/touch actions, and no underlying club mutation while blocked.
-- The restart/session verifier reads the same global v5 localStorage contract and asserts the stored `clubId` before treating a game ID as browser-owned; verifier safety must not regress to trusting a caller-selected club.
+- At most one supported browser game exists, under the exact global v5 `localStorage` key, with explicit owning `clubId` and `gameId`.
+- Production contains no v3/v4 game-key constants, parsers, migration options, candidate ranking/selection, tombstone policy, or legacy game-key cleanup.
+- Production never reads or writes browser game state in `sessionStorage`; current claim-controller tab identity remains permitted and separately tested.
+- Obsolete v3/v4 values in either storage area remain byte-identical through startup, owner restore, release, completion, sign-out, and club deletion. Clear all browser data may remove them only because it clears all application storage.
+- A missing v5 key is empty; a valid current v5 record is restored; malformed or unsupported v5 bytes produce a blocking invalid state without mutation.
+- Invalid state prevents club/workspace entry, game start/resume, and outbox construction until an explicit clear revalidates the exact displayed raw value under the browser lock.
+- If invalid bytes change before clear acquires the lock, clear refuses, preserves the replacement, and refreshes the blocking state.
+- A valid owner is resolved before workspace rendering. Selecting another club cannot mount it or overwrite the aggregate and offers return-to-owner plus synchronized local-only release.
+- Release rejects unresolved or changed records. If another context already removed the exact record while release waited, stale dialog state is dismissed and the requested club becomes openable without recreating or deleting data.
+- Outbox enqueue/flush/clear preserves exact v5 ownership, canonical replay, offline operations, idempotent mutation IDs, durable clear recovery, and stale cross-context rejection.
+- Completion, sign-out, explicit clear, and owning-club deletion remove the applicable v5 record; deletion of another club leaves it intact; unrelated browser preferences remain untouched except under Clear all browser data.
+- English and Russian v5 ownership, missing-owner, release, and invalid-record recovery copy remains accessible. All legacy candidate-choice copy and styling is absent.
+- Verifier contracts inspect only the global v5 `localStorage` record, require the expected owner, and contain no v3/v4 or game-state `sessionStorage` fallback.
 
-### Task 1: Make ownership part of the durable outbox contract
+### Task 1: Reconcile issue semantics and freeze the current candidate
 
-**Objective:** Establish one v5 serialization that cannot read, mutate, restore, or clear a different club/game accidentally.
+**Objective:** Make the tracker and local implementation boundary match the v5-only decision before source edits.
+
+**Files/state:**
+- GitHub issue #52 body.
+- Primary regenerated plan pair and shared untracked backlog index.
+- Isolated worktree staged candidate.
+
+**Steps:**
+1. Re-read issue #52, local/remote `main`, worktrees, branch state, and every primary dirty path. Stop on unexpected source or remote drift.
+2. Update only issue #52's body to the complete contract in the revised plan-set index; retain title, labels, open state, and issue relationships. Read it back and verify all companion scopes, removed compatibility promises, and current-version safeguards. Do not update the issue with this browser slice alone.
+3. Record the exact canonical base, staged tree, staged path set, and empty/dirty unstaged boundary before edits. Do not reset or reconstruct the candidate from chat history.
+4. Hash every plan named by the revised #52 index. Keep the shared backlog index and superseded review local-only; preserve their existing bytes.
+
+### Task 2: Make the outbox strictly v5-only
+
+**Objective:** Remove browser-envelope compatibility code while preserving current v5 replay and cross-tab safety.
 
 **Files:**
 - Modify: `apps/web/src/session-outbox.test.ts`
 - Modify: `apps/web/src/session-outbox.ts`
-- Modify: `scripts/session-verifier-contracts.test.mjs`
-- Modify: `scripts/session-verifier-contracts.mjs`
-- Modify: `scripts/verify-session-state.mjs`
-- Modify: `scripts/verify-ui.mjs`
 
 **Steps:**
-1. Add focused tests for a v5 record containing `clubId`, a shared default storage key, rejection of malformed/mismatched ownership, preservation of the owner through enqueue/flush/clear recovery, and refusal to restore a different game ID even with an empty outbox.
-2. Run the new tests by name with `npm run test -w @mafia/web -- src/session-outbox.test.ts -t "browser owner"`; expect RED because v4 has no owner and `restore` replaces a synced record.
-3. Require `clubId` in production `GameSessionOutbox` construction, advance newly persisted envelopes to v5, validate the owner alongside canonical game IDs, and make all empty/replacement/legacy-upgrade paths retain the one owner. Keep legacy v3/v4 parsing read-only for migration.
-4. Add a narrow snapshot/release inspection API needed by the coordinator; it must expose ownership, revision, and unresolved-change status without leaking mutable envelope internals. Make a local release compare the live serialized snapshot before removal.
-5. Replace the verifier’s per-club key derivation with the one v5 key and validate the persisted owner against `SESSION_CLUB_ID` before allowing browser-owned mutation requests. Move browser-verifier durable fixtures from sessionStorage v4 to localStorage v5 with explicit owner metadata. Update the contract test from “club keys differ” to “the key is global and ownership is explicit,” and add a static safeguard for the UI verifier’s v5/localStorage contract.
-6. Re-run the named tests, `npm run test -w @mafia/web -- src/session-outbox.test.ts`, and `npm run test:verifier-contracts`; expect GREEN before continuing.
+1. Add RED tests that an absent key starts empty, a canonical v5 record restores, and any v3/v4/malformed/unsupported value at the v5 key throws a blocking invalid-record error without changing storage.
+2. Add RED assertions that unrelated v3/v4 keys in local/session storage are never consulted or changed and that no `legacyStorageKey` option or legacy flush path exists.
+3. Remove v3/v4 envelope types/parsers/migration branches, `legacyStorageKey`, legacy snapshots/flush state, and browser-envelope normalization operations. Tighten the current v5 schema instead of silently returning an empty envelope for invalid bytes.
+4. Preserve current v5 canonical replay, snapshot authority, claim generation, outbox enqueue/flush, clear recovery, exact storage synchronization, and different-owner/game rejection.
+5. Integrate the companion current game-data contract without retaining historical snapshot/hash/log conversions. Preserve current snapshot authority and setup activity; do not improvise a second wire schema in the browser layer.
+6. Run the full `session-outbox.test.ts` suite and require GREEN.
 
-### Task 2: Add bounded, loss-aware legacy migration
+### Task 3: Replace migration coordination with strict v5 classification
 
-**Objective:** Convert all known v3/v4 browser game copies into one verified v5 record without mixing games or silently discarding offline work.
+**Objective:** Reduce browser storage coordination to empty/valid/invalid v5 state and exact locked lifecycle mutations.
 
 **Files:**
-- Add: `apps/web/src/browser-game-storage.ts`
-- Add: `apps/web/src/browser-game-storage.test.ts`
-- Modify only for narrow parse/upgrade helpers: `apps/web/src/session-outbox.ts`
+- Modify: `apps/web/src/browser-game-storage.test.ts`
+- Modify: `apps/web/src/browser-game-storage.ts`
+- Preserve unless a focused regression requires change: `apps/web/src/browser-game-storage-lock.ts`
 
 **Steps:**
-1. Add table-driven and generated source-order/property cases for zero candidates; one local v4; one session v3/v4; identical duplicates; multiple synced games; exactly one unsynced game; multiple unsynced games; malformed values; failed destination writes/readback; and unrelated keys.
-2. Run `npm run test -w @mafia/web -- src/browser-game-storage.test.ts`; expect RED because the coordinator does not exist.
-3. Implement exact-prefix key discovery and candidate parsing through the outbox’s canonical validators. Infer legacy `clubId` only from the exact key suffix/default-club mapping, never from selected UI state.
-4. Implement the documented stable winner policy and a typed blocking-conflict result. For ambiguity, return candidate summaries while leaving source bytes untouched; for a winner, write/validate/read back v5 before removing all bounded source keys.
-5. Implement explicit conflict selection, safe local release, stale-owner discard, and game-key-only cleanup as compare-before-write/remove operations. Keep all destination writes in localStorage and preserve claim/preference/unrelated keys.
-6. Re-run the new file and `session-outbox.test.ts`; expect GREEN.
+1. Replace migration/conflict tests with RED cases for absent v5, valid v5 owner inspection, malformed/unsupported v5 blocking, exact invalid-record discard, stale discard refusal, synchronized release, unresolved release refusal, owner-club cleanup, other-club preservation, sign-out cleanup, and unrelated-key preservation.
+2. Add explicit fixtures proving v3/v4 keys in both storage areas remain byte-identical and do not affect empty/valid/invalid classification.
+3. Remove legacy prefixes, tombstone records/policies, v3/v4 normalization, storage enumeration, candidate types/ranking/deduplication, conflict state, and conflict resolution.
+4. Expose one strict read/prepare state for the global localStorage v5 key: `empty`, `ready`, or `invalid`. Preserve the exact raw storage snapshot in ready/invalid state for post-lock comparison.
+5. Keep Web Lock serialization and exact compare-before-release/clear behavior. Simplify cleanup to the v5 key and current claim keys only; never sweep obsolete game keys.
+6. Run the full `browser-game-storage.test.ts` suite and require GREEN.
 
-### Task 3: Restore the owner first and gate cross-club navigation
+### Task 4: Simplify App ownership and add invalid-v5 recovery
 
-**Objective:** Prevent a wrong-club workspace from mounting and provide an accessible path back to or safely away from the attached game.
+**Objective:** Remove legacy candidate UI while preserving owner-first gating and explicit recovery from invalid current data.
 
 **Files:**
 - Modify: `apps/web/src/App.test.tsx`
@@ -102,57 +120,59 @@ The browser will keep one local game record for the whole application instead of
 - Modify: `apps/web/src/styles/app.css`
 
 **Steps:**
-1. Add `WelcomeApp` tests with two clubs proving that reload migrates/opens the stored owner, clicking another club does not mount it, “return to attached game” restores the owner, safe release opens the requested club without a server delete, and an unsynced attachment disables release and preserves bytes.
-2. Add separate RED cases for multiple-unsynced migration and a stored owner absent from `listClubs`, requiring a blocking recovery dialog and no workspace/API mutation before resolution.
-3. Run those tests by name with `npm run test -w @mafia/web -- src/App.test.tsx -t "browser game|legacy game conflict|stored game owner"`; expect RED.
-4. After clubs load, prepare/migrate the browser record and select the owning club before rendering. Gate `openClub` through a fresh compare-before-act owner read; never rely on stale React state for a storage safety decision.
-5. Render localized English/Russian conflict/attachment UI above `ClubPortal`, reusing the established claim-dialog accessibility pattern where practical. Focus its heading/action, make the blocked surface inert, and expose only actions valid for the current pending/saved/stale state.
-6. Wire explicit migration choice and release to the coordinator, refresh the storage decision after success, and mount only the resulting owner/requested club. Report storage failures without deleting sources or falling through to the target club.
-7. Re-run the named App tests and then the full `App.test.tsx`; expect GREEN.
+1. Add RED App cases for valid-owner restore, cross-club blocking, valid missing-owner recovery, invalid v5 pre-workspace blocking, exact invalid clear, changed-invalid refusal, ignored/untouched v3/v4 keys, and the stale `releaseBrowserGameStorage() === false` race.
+2. Remove candidate-conflict callbacks/rendering, candidate types, migration preparation arguments, localized conflict-choice strings, and `.browser-game-candidates` styling.
+3. Prepare only localStorage v5 after clubs load. Gate `openClub` with a fresh strict state read so invalid bytes can never be treated as empty and no wrong-club workspace can mount.
+4. Add an accessible localized invalid-record recovery dialog. Its destructive action must name local clearing, compare the exact displayed bytes under the lock, and refresh instead of clearing if another context changed the value.
+5. Keep valid missing-owner discard separate from invalid-record clear. Both must be exact-snapshot locked operations.
+6. On safe release, capture the target before awaiting. Treat a locked `false` result as already absent: clear stale blocking UI and open the captured target. Preserve fail-closed behavior for changed/invalid/unresolved records.
+7. Update completion, sign-out, active-game clear, club deletion, and Clear all integrations to remove only supported v5/current claim data, except Clear all's intentionally broad storage wipe.
+8. Run the named ownership/invalid/release tests and the full `App.test.tsx` suite; require GREEN.
 
-### Task 4: Apply the singleton to game lifecycle paths
+### Task 5: Align verifier contracts and prove legacy absence
 
-**Objective:** Preserve existing save/claim behavior while proving no second local game or stale session copy can reappear.
-
-**Files:**
-- Modify: `apps/web/src/App.test.tsx`
-- Modify: `apps/web/src/App.tsx`
-- Modify: `apps/web/src/session-outbox.test.ts`
-- Modify if copy is needed for blocked resume: `apps/web/src/i18n/messages/shell.ts`
-- Modify if verifier integration expectations need final adjustment: `scripts/session-verifier-contracts.test.mjs`
-
-**Steps:**
-1. Update the existing authoritative-session tests to expect the global v5 key and explicit club owner. Add RED assertions that a same-club resume of another remote game is blocked, an offline outbox remains byte-identical across reload/cross-club attempts, and no game-session key is written to sessionStorage.
-2. Replace `ClubWorkspace`’s club-derived v4/v3 migration with the global v5 outbox plus explicit `clubId`. Translate a different-local-game restore failure into actionable UI instead of generic active-session failure, without weakening claim conflicts or takeover.
-3. Extend completion, explicit active-game clear, sign-out, club deletion, and stale-copy tests. Owning-club deletion clears v5 plus its legacy sources; deletion of any unrelated club leaves the attachment intact; sign-out clears all bounded game keys while unrelated data survives; Clear all retains its intentionally broad behavior.
-4. Preserve the existing durable-clear tombstone, latest-request-wins, stale-browser-context, normalization, claim-generation, canonical replay, and retry semantics while changing key/version expectations only where ownership requires it.
-5. Run `npm run test -w @mafia/web -- src/browser-game-storage.test.ts src/session-outbox.test.ts src/App.test.tsx` and `npm run test:verifier-contracts`; expect GREEN.
-
-### Task 5: Verify the issue-scoped implementation
-
-**Objective:** Establish focused and repository-wide confidence before direct-main delivery.
+**Objective:** Keep operational verification on the exact v5-only contract.
 
 **Files:**
-- Verify only; do not modify unrelated failures or artifacts.
+- Modify as needed: `scripts/session-verifier-contracts.test.mjs`
+- Modify as needed: `scripts/session-verifier-contracts.mjs`
+- Modify as needed: `scripts/verify-session-state.mjs`
+- Modify as needed: `scripts/verify-ui.mjs`
 
 **Steps:**
-1. Run `npm run test -w @mafia/web -- src/browser-game-storage.test.ts src/session-outbox.test.ts src/App.test.tsx`; expect every focused file to pass.
-2. Run `npm run test:verifier-contracts`; expect the browser-storage verifier contract and all sibling verifier contracts to pass.
-3. Run `npm run typecheck -w @mafia/web`; expect exit 0.
-4. Run `npm run check`; expect formatting, lint, typecheck, all tests, and all builds to pass.
-5. Inspect `git diff --check`, `git diff --stat`, `git status --short --untracked-files=all`, and the exact canonical-base diff. Confirm there are no server/domain/database changes, sessionStorage game writes, unrelated preference removals, generated artifacts, or weakening of claim/club isolation.
-6. Hand off to `.AI/plans/2026-09-04_163803-issue-52-delivery-closeout.md` for isolated plan preservation, final plan cleanup, direct-main push, shared-index reconciliation, remote verification, and close-last issue mutation.
+1. Add/retain positive checks for the one global v5 localStorage key and exact `clubId` ownership before browser-owned requests.
+2. Remove compatibility fixtures and fallback logic. Replace narrow v4 checks with a static contract that no production verifier reads game state from sessionStorage or derives v3/v4 keys.
+3. Preserve canonical replay/event verification and use the exact strict current metadata contract from the companion game-data plan. Remove old-field fallback rather than independently reinterpreting server responses.
+4. Run `npm run test:verifier-contracts`; require GREEN.
+
+### Task 6: Verify and freeze one exact v5-only candidate
+
+**Objective:** Qualify the simplified source tree before any commit or remote publication.
+
+**Steps:**
+1. Run focused tests:
+   ```bash
+   npm run test -w @mafia/web -- src/browser-game-storage.test.ts src/session-outbox.test.ts src/session-claim.test.ts src/App.test.tsx src/i18n/localization-coverage.test.ts --reporter=dot
+   npm run test:verifier-contracts
+   npm run typecheck -w @mafia/web -- --force
+   npm run check
+   ```
+2. Search production/tests/verifiers for v3/v4 browser game constants, `legacyStorageKey`, legacy tombstones, conflict-candidate symbols/copy, and game-state sessionStorage access. Reconcile other compatibility occurrences with the companion plans; a keyword match alone is not a defect.
+3. Inspect the canonical-base-to-index diff, changed path set, file modes, `git diff --check`, and non-printing secret scan. Require every changed path to belong to an approved #52 companion scope; no dependency or deployment-workflow change is planned.
+4. Freeze the exact staged tree and canonical-base patch SHA-256 with an empty unstaged diff.
+5. Use the integrated review in the plan-set index, including strict invalid-v5 blocking, no hidden legacy reads/deletes, exact cross-tab checks, owner isolation, lifecycle cleanup, and verifier alignment. Do not count a browser-only review as acceptance of server/domain/database changes.
+6. Permit at most one bounded fix/re-review cycle for concrete accepted-scope P0/P1 findings. Suggestions and rejected legacy-migration concerns are non-blocking. Any source edit invalidates the candidate hash and all prior verdicts.
+7. Hand the passing exact candidate to the closeout plan below. Do not commit or push a review-failed candidate.
 
 ## Risks and tradeoffs
 
-- **Migration data loss:** Multiple old records can each carry unique offline operations. Auto-select only when one candidate is uniquely loss-bearing; otherwise preserve all bytes until a named explicit choice and verify v5 before cleanup.
-- **Wrong-club API leakage:** Constructing `ClubWorkspace` before owner resolution would bind save/read/clear callbacks to the selected club. Keep the gate in parent `App` and require outbox-level `clubId` validation as defense in depth.
-- **Stale cross-tab decisions:** Another tab can change the global key after a dialog renders. Every release, migration choice, restore, and clear must compare the current durable snapshot immediately before mutation and fail closed on mismatch.
-- **Claim storage confusion:** `GameSessionClaimController` intentionally uses sessionStorage for tab identity. The prohibition applies to durable game state, not claim coordination; key-scoped tests must preserve that distinction.
-- **Safe release versus server deletion:** Releasing this browser must leave the remote active session intact. Existing “Start new game” remains the explicit server-deletion path and must not be reused for local-only release.
-- **Large existing persistence suite:** Updating serialization expectations can create broad mechanical churn. Keep v3/v4 fixtures as legacy inputs, centralize v5 construction in test helpers, and avoid reformatting unrelated tests.
-- **Untracked shared plans:** Implementation must occur in an isolated worktree after approval, copy only the approved issue #52 plan pair by exact hash, and keep the shared index untracked.
+- **Intentional data abandonment:** Existing v3/v4 browser records will not restore and will remain stored. This is the explicit product decision; tests must prevent accidental future migration or deletion.
+- **Invalid v5 deadlock:** If any path treats invalid bytes as empty, a new game could silently overwrite them. Use one typed state reader at every pre-workspace and destructive boundary.
+- **Cross-plan contract drift:** Historical server/replay/schema compatibility is now in #52, but removal belongs to the named companion plans. Current setup activity, authoritative snapshots, current renderer choices and active server deletion tombstones must not disappear through keyword deletion.
+- **Claim/sessionStorage confusion:** The ban applies to durable game state. Current session claim/tab identity may remain in sessionStorage and must still be cleaned where existing lifecycle rules require.
+- **Stale cross-tab actions:** Every valid release and invalid clear must revalidate the exact displayed raw value after lock acquisition.
+- **Staged-candidate loss:** The isolated worktree contains substantial approved work. Never reset/stash/clean it; remove obsolete paths through reviewed TDD edits only.
 
 ## Open questions
 
-None. Michael confirmed the default backlog workflow, and the live issue plus the conservative migration/release rules above define the implementation and closeout boundaries.
+The complete revised plan set awaits approval. The latest clarification timed out; see the index for explicitly proposed non-destructive storage/database assumptions. Earlier approvals do not authorize this broadened implementation.

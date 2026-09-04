@@ -1,131 +1,109 @@
-# Issue #52 Delivery and Closure Plan
+# Issue #52 Current-Version-Only Feature Branch and Pull Request Closeout Plan
 
-> **For Hermes:** Execute this plan only after the implementation plan is approved and complete on one unchanged, locally verified candidate. Tracker closure is the final mutation.
+> **For Hermes:** Execute only after Michael approves the entire revised [same-ticket #52 plan set](./2026-09-04_232629-issue-52-current-only-plan-set.md), including its explicitly proposed safety assumptions. Do not merge the pull request, push `main`, deploy, enable auto-merge, or close issue #52.
 
-**Goal:** Preserve the approved issue #52 plan pair in history, deliver the exact verified browser-singleton implementation directly to `main`, reconcile the intentionally untracked shared plan index without absorbing it, and close GitHub issue #52 only after remote verification.
+**Goal:** Publish the approved current-version-only #52 implementation as one exact-reviewed feature-branch PR, leaving merge, deployment and closure for explicit follow-up.
 
-**Architecture:** Because the primary `main` checkout contains a shared untracked plan set, perform implementation and commits in an isolated ticket worktree created from a freshly verified `origin/main`. Transport only the two approved issue #52 plans by exact hash into a plan-only commit, preserve that history through a direct non-squashed push, delete the fulfilled plans in the final source commit, then reconcile the primary checkout and shared untracked index. Use a source commit message without `Closes`/`Fixes` so the issue remains open until the evidence comment is verified and the close command runs last.
+**Architecture:** The existing feature branch contains the original migration-oriented plan-only commit. After the integrated implementation passes exact review, preserve all approved #52 plan files in a plan-only revision commit without changing the reviewed source candidate. Then commit the reviewed implementation with the completed plans absent from the branch tip; push the feature branch and verify the open PR and unchanged `main` by remote readback.
 
-**Tech Stack:** Git, GitHub CLI, npm workspace checks, SHA-256/file hashing, an isolated Git worktree, and GitHub issue readback.
+**Tech Stack:** Git, GitHub CLI, npm workspace verification, immutable binary-patch SHA-256/tree checks.
 
-**Non-goals:** Opening or merging a pull request; waiting for CI or review; deploying; changing issue labels/milestone/Project/assignee; committing the shared backlog index; committing neighboring AI artifacts; amending/rebasing/squashing existing history; stashing/resetting/cleaning the primary checkout; or closing any issue other than #52.
+**Non-goals:** Merging; pushing or fast-forwarding `main`; deployment; issue closure; auto-merge; force-push; PR auto-fixes; changing labels/milestone/Project/assignee; committing the shared backlog index or superseded review artifact; stashing/resetting/cleaning the primary or isolated worktree; or retaining obsolete v3/v4 implementation merely to reduce the diff.
 
 ---
 
 ## Plain-language summary
 
-After the browser-singleton behavior passes its focused tests and the full repository check, preserve the approved plans in a small history commit, commit the exact implementation while removing those completed plans, push that history directly to `main`, verify GitHub has the same commit, record the local evidence, and close #52 last. The shared untracked backlog index stays local and is updated only to point #52 at the verified delivery commit.
+Once browser persistence, the current game-data contract, database bootstrap and preferences all pass integrated tests and independent review, preserve the approved plans in branch history, commit exactly that reviewed source, and publish it as an unmerged PR. The issue stays open. Removing compatibility is not authorization to upgrade, reset or deploy any environment.
 
 ## Preconditions
 
-- Michael approved both `.AI/plans/2026-09-02_142916-browser-local-game-singleton.md` and this closeout plan together in their current bytes.
-- GitHub issue #52 is still open with the same title/scope and remains the selected implementation-ready item.
-- `npm run test -w @mafia/web -- src/browser-game-storage.test.ts src/session-outbox.test.ts src/App.test.tsx`, `npm run test:verifier-contracts`, `npm run typecheck -w @mafia/web`, and `npm run check` all pass on the same implementation candidate.
-- The candidate introduces no server/domain/database/deployment changes and no unrelated working-tree paths.
-- The canonical remote `main` still identifies the frozen implementation base before work begins and again before push.
-- The primary checkout’s shared index is intentionally untracked; it is not part of the ticket’s durable commit set.
+- Michael has approved every file enumerated by the revised #52 plan-set index and its safety assumptions; earlier browser-only approvals do not apply.
+- GitHub issue #52 has been updated and read back with the complete same-ticket current-version-only contract, including browser, game/replay/API, database and preference boundaries.
+- Issue #52 remains open with its existing title/labels; no incompatible tracker or remote-main drift exists.
+- The isolated worktree remains on `issue-52-browser-game-singleton`, based on the frozen canonical commit, with no unrelated or unstaged source paths.
+- All focused domain/server/web tests, real PostgreSQL bootstrap and store tests, browser lifecycle evidence, verifier contracts and `npm run check` pass on one unchanged candidate.
+- The integrated independent immutable reviews specified in the index pass for that exact base-to-index patch/tree/digest; no old migration-candidate review is reused.
+- The primary checkout remains on `main`; shared artifacts remain untouched. The superseded blocker review is local-only and is not authorized for commit or deletion under this plan.
 
-### Task 1: Freeze and isolate the approved ticket plan set
+### Task 1: Preserve the regenerated plan contract
 
-**Objective:** Preserve the dirty primary checkout while making the exact approved plan pair durable before implementation.
-
-**Files:**
-- Approved transport: `.AI/plans/2026-09-02_142916-browser-local-game-singleton.md`
-- Approved transport: `.AI/plans/2026-09-04_163803-issue-52-delivery-closeout.md`
-- Local-only shared index: `.AI/plans/2026-09-02_142916-game-reliability-backlog-plan-set.md`
+**Objective:** Make the complete approved current-version-only scope and PR boundary durable without changing the reviewed source tree.
 
 **Steps:**
-1. Re-read `git status --porcelain=v1 -z --untracked-files=all`, local `HEAD`, `origin/main`, the canonical remote SHA, all worktrees, and issue #52. Stop if source work appeared, the remote moved incompatibly, or issue scope/state changed.
-2. Record SHA-256 and Git classification for every dirty primary path. Classify only the two named issue #52 plans as authorized transport; classify the shared index as an authorized later one-row local update but not authorized commit.
-3. Fetch the canonical remote without changing the primary checkout. Create a temporary `issue-52-browser-game-singleton` branch and isolated worktree from the verified base.
-4. Copy only the two approved plan files to the same relative paths in the isolated worktree. Recompute hashes and require exact equality with the approved primary bytes.
-5. Stage the two exact paths, assert the staged path set contains exactly those paths, and commit them as `chore(ai): plan issue 52 browser game singleton`.
-6. Read both blobs back from the commit and verify their hashes. Confirm the ticket worktree is clean and the primary index remains untracked with its frozen hash.
+1. Immediately before history mutation, fetch and verify local `main`, `origin/main`, and canonical remote `main`; re-read issue #52 and confirm its complete updated body and open state.
+2. Record SHA-256 and Git classification for every plan explicitly enumerated by the #52 index. Separately record protected shared artifacts; do not stage them.
+3. Copy only the enumerated approved #52 plan files into the isolated worktree using exact approved primary bytes. Verify every hash; stop rather than overwrite unexpected worktree edits.
+4. Create one plan-only revision commit for those exact paths while preserving the staged source candidate. Suggested message: `chore(ai): revise issue 52 for current-only data`. Use explicit path-scoped/index-isolated Git operations; never broad add/reset/stash.
+5. Read each committed plan blob back and verify its SHA-256. Confirm the original plan-only commit and this revision commit remain reachable.
+6. Remove the completed plan-set files from the isolated worktree and stage their deletions plus the exact reviewed source paths. Require canonical-base-to-index tree and binary-patch SHA-256 to remain the reviewed candidate; plan-history transport must not alter product bytes.
 
-### Task 2: Freeze the verified implementation candidate
+### Task 2: Commit the exact reviewed source
 
-**Objective:** Prove the exact source tree—not just a test narrative—is the one authorized for delivery.
-
-**Files:**
-- The scoped files named by the implementation plan and discovered by the exact base-to-candidate diff.
-- Delete from final tip: the two approved issue #52 plan files.
+**Objective:** Create one implementation commit whose tree is identical to the passing immutable candidate.
 
 **Steps:**
-1. Complete the implementation plan in the isolated worktree with strict TDD. Do not copy source changes from or into the dirty primary checkout.
-2. Run the focused web test command, verifier-contract suite, web typecheck, and `npm run check` on one unchanged candidate. Save command, exit status, and concise test/build totals for the eventual issue comment.
-3. Remove only the two fulfilled issue #52 plan files from the isolated worktree. Do not materialize, stage, or delete the shared plan index there.
-4. Stage only scoped source/tests/localization/styles plus the two plan deletions. Assert the exact staged path list and an empty unstaged diff.
-5. Inspect the full canonical-base-to-index patch, `git diff --check`, changed-path list, file modes, and candidate tree ID. Confirm the patch satisfies every issue acceptance criterion and contains no unrelated refactor, dependency, generated output, plan index, or hidden game/session data.
-6. If any edit occurs after this freeze, invalidate the tree identity, rerun every affected focused test and `npm run check`, and repeat this task before committing.
+1. Re-run `git diff --check`, inspect the full staged path set and file modes, and require an empty unstaged diff.
+2. Commit as `feat(persistence): enforce current-only data and one browser game (#52)` without an auto-closing keyword.
+3. Verify the commit tree equals the reviewed tree and regenerate the canonical-base-to-commit binary patch; require its SHA-256 to equal the reviewed patch.
+4. Verify the final tree contains no completed #52 plan files, shared artifacts, dependency/deployment-workflow changes, v3/v4 browser support, historical data adapters, or game-state sessionStorage access. Server/domain/database changes must match the approved companion plans, not be excluded from review.
+5. Require the isolated worktree to be clean.
 
-### Task 3: Commit and verify local history
+### Task 3: Push the feature branch
 
-**Objective:** Create reviewable history whose final tree exactly matches the frozen candidate while retaining the approved plan bytes in its parent.
-
-**Steps:**
-1. Commit the frozen implementation and plan deletions as `feat(persistence): enforce one local game per browser (#52)` with no auto-closing keyword.
-2. Verify the canonical-base-to-commit patch and final tree exactly equal the frozen patch/tree. Read back changed paths and confirm the issue plans are absent from the tip but present byte-for-byte in the earlier plan commit.
-3. Verify the isolated worktree is clean and both local commits descend from the frozen canonical base without amend, rebase, or squash.
-4. Re-read issue #52 and confirm it is still open before any push.
-
-### Task 4: Push directly to main and verify the remote
-
-**Objective:** Publish only the exact reviewed history and prove the canonical remote accepted it.
+**Objective:** Publish only the reviewed feature branch without changing `main`.
 
 **Steps:**
-1. Fetch immediately before push and require canonical `origin/main` still equals the frozen base. If it moved, stop and reconcile/retest rather than force-push.
-2. Push the isolated ticket `HEAD` explicitly to `origin/main` with ordinary fast-forward semantics.
-3. Fetch/read back the canonical remote and require `refs/remotes/origin/main`, `gh api repos/zemskovmm/mafia-dashboard/commits/main`, and the local ticket `HEAD` to report the exact same commit SHA.
-4. Read the remote commit’s parent/history and changed files to confirm the plan-only commit remains reachable and the final tip omits completed plans.
-5. If push or readback fails, leave issue #52 open and do not proceed to evidence/closure.
+1. Fetch immediately before push and require canonical `origin/main` still equals the frozen base. Stop and replan on drift; do not rebase or force-push implicitly.
+2. Verify no incompatible remote `issue-52-browser-game-singleton` branch or PR already exists.
+3. Push the local feature branch with ordinary non-force semantics and set its upstream.
+4. Fetch/read back the remote branch and require remote SHA, local implementation commit, reviewed commit/tree, and GitHub's commit object to match exactly.
+5. Confirm remote `main` remains unchanged and no deployment workflow was triggered by the feature-branch push.
 
-### Task 5: Reconcile the primary checkout and shared local index
+### Task 4: Open and verify the pull request
 
-**Objective:** Bring local `main` to the verified remote while preserving the intentionally untracked backlog ledger.
-
-**Files:**
-- Remove from primary after remote durability is proven: the two completed issue #52 plan files.
-- Update locally only: `.AI/plans/2026-09-02_142916-game-reliability-backlog-plan-set.md`
+**Objective:** Put the reviewed complete #52 change into human review without authorizing merge or deployment.
 
 **Steps:**
-1. Rehash/reclassify all primary dirty paths and compare them with Task 1. Stop if any unexpected byte or classification changed.
-2. Remove only the two completed issue #52 plan copies from the primary checkout; their exact bytes must already be proven reachable from canonical `main` history.
-3. Verify the incoming final tree cannot overwrite the retained untracked shared index, then fast-forward local `main` to the verified `origin/main` commit without stash/reset/clean.
-4. Update only issue #52’s shared-index status/row from its relative active-plan link to `Delivered in <verified-short-SHA>`. Leave the index untracked; record its new hash and do not claim it is byte-identical to the initial index.
-5. Verify local `main`, `origin/main`, and GitHub’s canonical SHA agree; the two completed plans are absent from the working-tree tip; and the only retained dirty state is the expected untracked shared index.
+1. Open one PR from `issue-52-browser-game-singleton` to `main` titled from issue #52.
+2. Summarize the global v5 contract, strict invalid-v5 recovery, all removed compatibility surfaces, fresh/current-schema prerequisite, preserved safeguards and exact local verification results. Explicitly state that existing historical data is unsupported and no migration/reset/deployment was performed.
+3. Link with `Refs #52`, not an auto-closing keyword. State that the PR is intentionally unmerged: merging to `main` triggers production deployment and is not authorized. Issue closure remains an explicit later decision.
+4. Read the PR back and verify it is open, non-draft unless explicitly requested otherwise, targets `main`, has the exact reviewed head SHA, contains the verification/issue linkage, and has no auto-merge request.
+5. Read the initial PR check state. A queued/running check is reportable; a completed failure blocks further mutation and must be reported without auto-fixing under this plan.
+6. Read workflow runs for the exact head SHA and verify no production deployment run was triggered.
 
-### Task 6: Comment with evidence and close issue #52 last
+### Task 5: Reconcile local planning state and stop at review
 
-**Objective:** Make tracker closure depend on verified local and remote evidence.
+**Objective:** Leave the repository and tracker in an honest in-review state.
 
 **Steps:**
-1. Post one concise issue comment naming the verified commit SHA and the successful focused web tests, verifier contracts, web typecheck, and `npm run check` results. Do not claim CI, PR review, or deployment.
-2. Read back issue #52 comments and verify the exact evidence comment URL/body/author exists once.
-3. Close issue #52 as the final external mutation.
-4. Perform read-only verification only: read back issue number/title/state/state reason/comments and confirm `state=CLOSED`; list open issues and confirm #52 is absent; confirm canonical remote SHA is unchanged.
-5. Remove the clean temporary worktree and local ticket branch only after remote/issue verification, then read back worktrees/branches. Do not alter the remote history.
+1. Record the verified PR URL/head and delivery state in the final response. Do not mutate unrelated/shared backlog files or reviews.
+2. Only after exact plan-history transport and all local criteria succeed, remove the completed #52 plan files enumerated by the index from the primary checkout if their hashes still match the approved bytes. Changed/shared artifacts must be preserved; Git history is the archive of successful plans.
+3. Rehash/reclassify protected primary artifacts and require them unchanged. Keep local `main` at unchanged canonical `main`.
+4. Keep the isolated worktree and branch available for PR follow-up; do not remove them or other agents' state as incidental cleanup.
+5. Remove only owned temporary patches/body files and stop only test infrastructure started for this execution. Never remove an existing database volume or unrelated container.
+6. Final remote readback must show: PR open, issue #52 open, remote feature branch at the reviewed SHA, `main` unchanged, no auto-merge, and no production deployment for the feature head.
 
 ## Acceptance criteria
 
-- Only the approved issue #52 plan pair enters the plan-only commit; the shared index never enters the ticket history.
-- The final source commit exactly matches the focused-tested and `npm run check`-verified candidate and has no auto-closing keyword.
-- Completed plan files are absent from the delivered tip but their approved bytes remain reachable from canonical non-squashed history.
-- The push is fast-forward only, and GitHub’s readback SHA exactly equals the reviewed local commit.
-- The shared index remains untracked and changes only in the issue #52 status/row to reference the verified delivery identity.
-- Primary local `main`, `origin/main`, and canonical GitHub `main` end at the same verified SHA; no unrelated primary bytes or classifications are changed.
-- One verified evidence comment records local focused and canonical checks without overstating CI/review/deployment.
-- Issue #52 stays open through planning, implementation, testing, commit, push, remote verification, and local reconciliation, then closes as the last external mutation.
-- No PR, deployment, force-push, history rewrite, stash/reset/clean, label change, or unrelated issue mutation occurs.
+- The updated issue body, approved plan-set revision, final implementation, and PR all describe the complete same-ticket current-version-only contract.
+- The final implementation commit exactly matches the focused-tested, full-check, and independently reviewed candidate.
+- Original and revised plan commits remain reachable while completed #52 plans are absent from the feature-branch tip.
+- No shared index or superseded review artifact enters ticket history.
+- The feature branch is pushed without force and its remote SHA/tree equal the reviewed local commit.
+- The PR is open against `main`, linked with `Refs #52` without automatic closure, and contains accurate local evidence and the explicit unsupported-historical-data warning.
+- Issue #52 remains open; `main` remains unchanged; no merge, deployment, auto-merge, issue closure, force-push, label change, or unrelated mutation occurs.
+- Primary protected artifacts remain byte-identical; completed ticket-plan removal occurs only after verified Git-history preservation, with no other primary edits.
 
 ## Stop conditions
 
-- Issue #52 scope/state changes, a new higher-priority ready issue appears before implementation begins, or the prerequisite assumptions no longer hold.
-- The primary checkout contains source changes or any dirty artifact cannot be frozen/preserved exactly.
-- The isolated plan copies differ from approved hashes, or the shared index/sibling classification changes unexpectedly.
-- Focused verification, web typecheck, `npm run check`, diff review, or exact-tree comparison fails.
-- Canonical `main` moves after freeze, the push is not a fast-forward, or remote SHA/readback differs from the reviewed commit.
-- Evidence comment readback fails. In every stop case, keep issue #52 open and report the exact blocker.
+- The issue body cannot be reconciled exactly or issue #52 no longer remains the selected open item.
+- Any unclassified source/plan/index drift appears in either checkout.
+- Focused verification, typecheck, `npm run check`, static legacy-absence audit, diff check, or immutable review fails.
+- Any source edit occurs after candidate freeze without a full affected verification and new patch/tree/digest review.
+- Canonical `main` moves incompatibly before push, the remote feature branch/PR conflicts, or any remote readback differs from the reviewed commit.
+- Publishing the branch or PR would change `main`, trigger production deployment, or require force/auto-merge.
 
 ## Open questions
 
-None. Michael explicitly approved the repository’s standing direct-main backlog workflow: focused tests plus `npm run check`, no PR/deployment, verified push, evidence, and close-last issue handling.
+Approval of the entire revised plan set is outstanding. The index labels the unanswered current-schema/non-destructive assumptions explicitly. No clarification timeout or earlier narrower approval counts as authorization.
