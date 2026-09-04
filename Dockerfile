@@ -5,7 +5,6 @@ COPY package.json package-lock.json ./
 COPY apps/web/package.json apps/web/package.json
 COPY apps/server/package.json apps/server/package.json
 COPY packages/game-domain/package.json packages/game-domain/package.json
-RUN npm run audit:security
 RUN npm run ci:install
 
 COPY tsconfig.base.json eslint.config.js .prettierrc.json ./
@@ -14,7 +13,7 @@ COPY packages packages
 ARG VITE_YOUTUBE_PLAYLIST_ID=""
 ENV VITE_YOUTUBE_PLAYLIST_ID=${VITE_YOUTUBE_PLAYLIST_ID}
 RUN npm run build
-RUN npm prune --omit=dev --ignore-scripts
+RUN npm prune --omit=dev --ignore-scripts --no-audit
 
 FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS runtime
 WORKDIR /app

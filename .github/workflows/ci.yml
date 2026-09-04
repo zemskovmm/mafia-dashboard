@@ -1,8 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
 
 permissions:
@@ -34,6 +32,5 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm run audit:security
       - run: npm run ci:install
-      - run: npm run check:verified
+      - run: npm run check

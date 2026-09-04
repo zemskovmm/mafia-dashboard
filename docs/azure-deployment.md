@@ -54,19 +54,18 @@ After this bootstrap, `azure/login` exchanges GitHub's short-lived OIDC assertio
 
 ## Deployment flow
 
-Every push to `main` runs the normal CI workflow and the Azure workflow. Azure deployment starts only when `AZURE_DEPLOY_ENABLED=true`.
+Pull requests run the `CI` workflow. Pushes to `main` run only the Azure workflow, and automatic deployment starts when `AZURE_DEPLOY_ENABLED=true`.
 
 The Azure workflow:
 
-1. runs `npm run check` with PostgreSQL 17;
-2. verifies a Linux `amd64` Docker build;
+1. builds and publishes `ghcr.io/zemskovmm/mafia-dashboard:<full-git-sha>` for Linux `amd64`;
+2. verifies the published digest and passes that immutable reference to deployment;
 3. logs into Azure using GitHub OIDC;
 4. deploys the private network, PostgreSQL, and Container Apps environment;
-5. publishes `ghcr.io/zemskovmm/mafia-dashboard:<full-git-sha>`;
-6. deploys a revision containing that immutable image as both a migration init container and the web container;
-7. requires the init migration to complete before the revision's web container starts;
-8. discovers the generated Container Apps HTTPS hostname and applies it as `PUBLIC_APP_URL`;
-9. verifies the Container App configuration and `/health/ready`.
+5. deploys a revision containing that immutable image as both a migration init container and the web container;
+6. requires the init migration to complete before the revision's web container starts;
+7. discovers the generated Container Apps HTTPS hostname and applies it as `PUBLIC_APP_URL`;
+8. verifies the Container App configuration, `/health/ready`, and the deployed commit identity.
 
 On initial provisioning, the workflow can update the Container App once more after Azure has generated the HTTPS hostname so the final revision receives the canonical `PUBLIC_APP_URL`.
 
@@ -78,9 +77,9 @@ Azure Container Apps managed HTTPS ingress is the only public route to the appli
 
 Do not replace this with unbounded proxy trust. Adding Front Door, a CDN, or another ingress changes the hop model and requires a separately validated policy before deployment. The limiter remains in-process and supports the current 0–1 replica configuration only.
 
-## Security gates
+## Workflow boundaries
 
-The separate `Security` workflow runs on pull requests, pushes to `main`, a weekly schedule, and manual dispatch. The deployment workflow independently repeats the dependency and repository scan, then builds the commit-tagged image, scans that exact local image, and pushes it only after the image gate passes. Job permissions scope package writes only to publishing and Azure OIDC only to deployment. All external actions are pinned to immutable commits. See [`security-and-privacy.md`](security-and-privacy.md) for the threat model, exact controls, verification commands, and residual risks.
+The deployment workflow intentionally does not repeat pull-request formatting, lint, typecheck, tests, or automated vulnerability scans. A main push builds, publishes, and deploys directly. Job permissions scope package writes only to publishing and Azure OIDC only to deployment, and all external actions remain pinned to immutable commits. See [`security-and-privacy.md`](security-and-privacy.md) for the retained application controls and residual risks.
 
 ## Google OAuth callbacks
 
@@ -110,7 +109,7 @@ Never commit deployment parameter files containing real passwords or OAuth secre
 
 ## Rollback
 
-The publish job uses the full Git SHA as a traceable GHCR tag, captures and verifies the pushed manifest digest, and deploys Azure from `ghcr.io/...@sha256:<digest>`. Record the deployed digest with the release evidence. To roll back, redeploy the previous known-good digest; rerunning an old commit creates and scans a new artifact and is not an artifact-identical rollback. Do not delete manifests referenced by healthy or rollback-eligible revisions.
+The publish job uses the full Git SHA as a traceable GHCR tag, captures and verifies the pushed manifest digest, and deploys Azure from `ghcr.io/...@sha256:<digest>`. Record the deployed digest with the release evidence. To roll back, redeploy the previous known-good digest; rerunning an old commit creates a new artifact and is not an artifact-identical rollback. Do not delete manifests referenced by healthy or rollback-eligible revisions.
 
 Each revision runs the advisory-locked, transaction-protected migration init container before the app container. A failed migration prevents that revision from becoming ready.
 

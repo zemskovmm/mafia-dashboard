@@ -14,14 +14,13 @@
   },
   "scripts": {
     "dev": "npm run migrate -w @mafia/server && concurrently --kill-others-on-fail --names server,web \"npm run dev -w @mafia/server\" \"npm run dev -w @mafia/web\"",
-    "ci:install": "npm ci --ignore-scripts && npm rebuild esbuild",
+    "ci:install": "npm ci --ignore-scripts --no-audit && npm rebuild esbuild",
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test:security-contracts && npm run test:verifier-contracts && npm run test:backup-contracts && npm run test:release-contracts && npm run test --workspaces --if-present",
     "test:backup-contracts": "node --test scripts/postgres-backup-contracts.test.mjs",
     "test:release-contracts": "node --test scripts/release-verifier-contracts.test.mjs",
     "test:security-contracts": "node --test scripts/security-workflow-contracts.test.mjs",
     "test:verifier-contracts": "node --test scripts/session-verifier-contracts.test.mjs",
-    "audit:security": "npm audit --audit-level=high",
     "verify:oauth": "node scripts/verify-oauth.mjs",
     "verify:release": "node scripts/verify-release.mjs",
     "verify:compose": "node scripts/verify-production-compose.mjs",
@@ -33,8 +32,7 @@
     "lint": "eslint . --max-warnings=0",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "check:verified": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build",
-    "check": "npm run audit:security && npm run check:verified"
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",

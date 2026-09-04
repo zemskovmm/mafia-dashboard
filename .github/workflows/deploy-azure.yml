@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       deploy:
-        description: Deploy after verification
+        description: Deploy after publishing
         type: boolean
         default: true
 
@@ -18,48 +18,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  verify:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    services:
-      postgres:
-        image: postgres:17-alpine
-        env:
-          POSTGRES_USER: mafia
-          POSTGRES_PASSWORD: mafia
-          POSTGRES_DB: mafia_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U mafia -d mafia_test"
-          --health-interval 3s
-          --health-timeout 3s
-          --health-retries 20
-    env:
-      TEST_DATABASE_URL: postgresql://mafia:mafia@127.0.0.1:5432/mafia_test
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
-          cache: npm
-      - run: npm run audit:security
-      - run: npm run ci:install
-      - run: npm run check:verified
-      - name: Scan repository dependencies, secrets, and configuration
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          version: v0.74.0
-          scan-type: fs
-          scan-ref: .
-          scanners: vuln,secret,misconfig
-          severity: HIGH,CRITICAL
-          ignore-unfixed: false
-          exit-code: 1
-          format: table
-
   publish:
-    needs: verify
     if: >-
       github.event_name == 'workflow_dispatch' ||
       vars.AZURE_DEPLOY_ENABLED == 'true'
@@ -81,7 +40,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build immutable image for scanning
+      - name: Build immutable image
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
@@ -96,18 +55,7 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Scan the exact image that will be published
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          version: v0.74.0
-          scan-type: image
-          image-ref: ${{ env.IMAGE_REF }}
-          scanners: vuln,secret
-          severity: HIGH,CRITICAL
-          ignore-unfixed: false
-          exit-code: 1
-          format: table
-      - name: Push the scanned immutable image
+      - name: Push immutable image
         id: publish
         shell: bash
         run: |

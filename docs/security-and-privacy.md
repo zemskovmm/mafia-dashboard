@@ -31,33 +31,32 @@ Role/check/shot data is intentionally available to both authenticated roles with
 2. **Fastify → PostgreSQL.** SQL uses parameterized values. Azure PostgreSQL is private-network only; Compose PostgreSQL is not published.
 3. **Fastify → Google OAuth/YouTube APIs.** OAuth state binds callbacks. Provider tokens remain server-side; YouTube grants are read-only.
 4. **Browser → YouTube IFrame API and Google Fonts.** CSP allowlists only the required provider origins. The player sends the exact application origin.
-5. **GitHub Actions → GHCR/Azure.** Workflows use least-required permissions, immutable action commits, OIDC for Azure, and digest-pinned application deployments. The publish job scans one local image, pushes it, verifies the registry-reported digest, and passes that digest—not the mutable SHA tag—to Azure.
+5. **GitHub Actions → GHCR/Azure.** Workflows use least-required permissions, immutable action commits, OIDC for Azure, and digest-pinned application deployments. The publish job pushes the commit-tagged image, verifies the registry-reported digest, and passes that digest—not the mutable SHA tag—to Azure.
 6. **Container runtime.** The Node base image is digest-pinned, the process runs as the unprivileged `node` user, runtime package managers are removed, and current Alpine security updates are applied at build time.
 7. **Operator and backup boundary.** Host/cloud operators can access database and deployment secrets. Operational access and backup copies require equivalent protection to live data.
 
 ## Threats, controls, and evidence
 
-| Threat                                | Implemented control                                                                 | Regression/evidence                                    |
-| ------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| Anonymous API access                  | Authentication on every non-public API route                                        | `apps/server/src/app.test.ts` protected-route matrix   |
-| Cross-club read/write                 | Membership lookup and club-scoped data keys                                         | API/store isolation tests                              |
-| Regular user reaches manager behavior | Manager-only route and UI guards                                                    | Role-matrix API/UI tests                               |
-| CSRF with ambient session cookie      | Exact `Origin` required for unsafe cookie-authenticated `/api/` requests            | `apps/server/src/app.test.ts`, `http-security.test.ts` |
-| OAuth callback substitution           | Random state in secure HttpOnly callback cookie and constant-time comparison        | Google/YouTube OAuth route tests                       |
-| Login resource abuse                  | Bounded fail-closed fixed-window source limiter with explicit zero/one-hop trust    | `http-security.test.ts`, `app-security.test.ts`        |
-| Session database theft                | Only SHA-256 token hashes stored; fixed 30-day non-sliding lifetime                 | `google-auth.test.ts`                                  |
-| XSS/injected active content           | Strict CSP, no object/embed, no framing, security-focused ESLint rules              | `app-security.test.ts`, `npm run lint`                 |
-| Clickjacking                          | `frame-ancestors 'none'` and `X-Frame-Options: DENY`                                | `app-security.test.ts`                                 |
-| MIME/referrer leakage                 | `nosniff`; strict-origin referrer policy                                            | `app-security.test.ts`                                 |
-| Sensitive API caching                 | `Cache-Control: no-store` on all `/api/` responses                                  | `app-security.test.ts`                                 |
-| Secret event leakage                  | Canonical event-type secrecy and redacted public legacy-event projection            | `event-store.test.ts`, `app.test.ts`                   |
-| Client/server error leakage           | Generic server 500s and bounded credential-redacting browser console                | `app.test.ts`, `error-console.test.ts`                 |
-| Dependency compromise/vulnerability   | Lockfile installs suppress scripts, then explicitly rebuild only pinned esbuild     | `npm run audit:security`, security contracts           |
-| Workflow action retagging             | Every external action pinned to a 40-character commit                               | security contracts                                     |
-| Repository secret/configuration issue | Trivy filesystem vulnerability, secret, and misconfiguration scan                   | `.github/workflows/security.yml`                       |
-| Vulnerable production image           | Digest-pinned base; exact pre-push Trivy gate; OS upgrade; package managers removed | deployment/security workflows and image scan           |
-| Public database exposure              | Azure public access disabled; Compose DB has no published port                      | Bicep/Compose verification                             |
-| Unbounded local logs                  | Docker local driver with size/count limits                                          | Compose contract and deployment runbook                |
+| Threat                                | Implemented control                                                              | Regression/evidence                                    |
+| ------------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| Anonymous API access                  | Authentication on every non-public API route                                     | `apps/server/src/app.test.ts` protected-route matrix   |
+| Cross-club read/write                 | Membership lookup and club-scoped data keys                                      | API/store isolation tests                              |
+| Regular user reaches manager behavior | Manager-only route and UI guards                                                 | Role-matrix API/UI tests                               |
+| CSRF with ambient session cookie      | Exact `Origin` required for unsafe cookie-authenticated `/api/` requests         | `apps/server/src/app.test.ts`, `http-security.test.ts` |
+| OAuth callback substitution           | Random state in secure HttpOnly callback cookie and constant-time comparison     | Google/YouTube OAuth route tests                       |
+| Login resource abuse                  | Bounded fail-closed fixed-window source limiter with explicit zero/one-hop trust | `http-security.test.ts`, `app-security.test.ts`        |
+| Session database theft                | Only SHA-256 token hashes stored; fixed 30-day non-sliding lifetime              | `google-auth.test.ts`                                  |
+| XSS/injected active content           | Strict CSP, no object/embed, no framing, security-focused ESLint rules           | `app-security.test.ts`, `npm run lint`                 |
+| Clickjacking                          | `frame-ancestors 'none'` and `X-Frame-Options: DENY`                             | `app-security.test.ts`                                 |
+| MIME/referrer leakage                 | `nosniff`; strict-origin referrer policy                                         | `app-security.test.ts`                                 |
+| Sensitive API caching                 | `Cache-Control: no-store` on all `/api/` responses                               | `app-security.test.ts`                                 |
+| Secret event leakage                  | Canonical event-type secrecy and redacted public legacy-event projection         | `event-store.test.ts`, `app.test.ts`                   |
+| Client/server error leakage           | Generic server 500s and bounded credential-redacting browser console             | `app.test.ts`, `error-console.test.ts`                 |
+| Dependency lifecycle compromise       | Lockfile installs suppress scripts, then explicitly rebuild only pinned esbuild  | workflow contracts                                     |
+| Workflow action retagging             | Every external action pinned to a 40-character commit                            | security contracts                                     |
+| Stale or mutable production base      | Digest-pinned base; OS upgrade; runtime package managers removed                 | Dockerfile contracts                                   |
+| Public database exposure              | Azure public access disabled; Compose DB has no published port                   | Bicep/Compose verification                             |
+| Unbounded local logs                  | Docker local driver with size/count limits                                       | Compose contract and deployment runbook                |
 
 ## HTTP policy
 
@@ -81,46 +80,24 @@ All HTTP responses receive the Helmet baseline. The policy includes:
 
 This policy only selects the key for the existing fail-closed fixed-window limiter. Limiter state remains in one application process and must be replaced with shared state before horizontal scaling.
 
-## Supply-chain gates
+## Build and workflow safeguards
 
-The `Security` workflow runs on pull requests, pushes to `main`, a weekly schedule, and manual dispatch. It has read-only repository permissions and blocks on:
+Pull requests run one `CI` workflow that performs formatting, lint, typecheck, tests, and the application build. Pushes to `main` run only `Deploy Azure`, which builds, publishes, and deploys the image without repeating CI.
 
-1. `npm audit --audit-level=high`;
-2. the repository ESLint security and DOM-sink rules;
-3. Trivy filesystem vulnerability/secret/misconfiguration findings at HIGH or CRITICAL;
-4. a production Docker build; and
-5. Trivy production-image vulnerabilities or secrets at HIGH or CRITICAL.
+Every CI/Docker lockfile install uses `npm ci --ignore-scripts --no-audit`, then explicitly runs `npm rebuild esbuild`; no other dependency lifecycle scripts execute. Production pruning also disables lifecycle scripts and npm's implicit advisory request. External action implementations and Node base images remain pinned to immutable commits or digests. The deployment publish job verifies the registry-reported image digest and deploys that immutable reference.
 
-Action implementations are pinned to exact commits. Trivy is pinned to `v0.74.0`. Every CI/Docker lockfile install uses `npm ci --ignore-scripts`, then explicitly runs `npm rebuild esbuild`; no other dependency lifecycle scripts execute. The deployment publish job scans its loaded commit-tagged image before pushing that exact local image to GHCR.
-
-GitHub Code Security is not enabled for this private repository. The repository-owned ESLint, npm audit, Trivy, and workflow-contract gates are the deterministic baseline instead; enabling GitHub Advanced Security later is additive, not a replacement.
+There is no dedicated Security workflow, automated dependency advisory audit, repository secret/misconfiguration scan, or production-image vulnerability scan. Main pushes also do not rerun the pull-request quality gate. These are accepted operational trade-offs; the retained ESLint security/DOM-sink rules and application tests run only through pull-request CI or explicit local verification.
 
 ## Verification
 
 Run before release:
 
 ```bash
-npm run audit:security
 npm run lint
 npm run test:security-contracts
 npm run check
 npm run verify:compose
-
-docker build --tag mafia-dashboard:security-scan .
-docker run --rm \
-  --volume "$PWD:/workspace:ro" \
-  --volume mafia-dashboard-trivy-cache:/root/.cache/trivy \
-  aquasec/trivy:0.74.0 fs \
-  --scanners vuln,secret,misconfig \
-  --severity HIGH,CRITICAL --ignore-unfixed=false --exit-code 1 /workspace
-
-docker run --rm \
-  --volume /var/run/docker.sock:/var/run/docker.sock \
-  --volume mafia-dashboard-trivy-cache:/root/.cache/trivy \
-  aquasec/trivy:0.74.0 image \
-  --scanners vuln,secret \
-  --severity HIGH,CRITICAL --ignore-unfixed=false --exit-code 1 \
-  mafia-dashboard:security-scan
+docker build --tag mafia-dashboard:local .
 ```
 
 For a deployed HTTPS origin, sample the root and `/api/auth/session` responses and verify the documented headers, HTTPS-only HSTS, API `no-store`, generic unauthenticated behavior, and the absence of tokens or private data. Never put a real session cookie, OAuth code, or secret in a command line, issue comment, or retained log.
@@ -139,6 +116,8 @@ For a deployed HTTPS origin, sample the root and `/api/auth/session` responses a
 | Central audit-log retention                                | Not implemented; local logs are bounded and diagnostic rather than a security audit ledger                                             |
 | Host/cloud operator access                                 | Operational trust boundary; protect credentials, backups, and console access outside the application                                   |
 | Denial of service beyond login throttling                  | Infrastructure-level rate limiting/WAF is not part of the pilot baseline                                                               |
-| GitHub Advanced Security/CodeQL                            | Unavailable in the current private repository; repository-owned gates run instead                                                      |
+| Automated dependency/repository/image security scanning    | Not configured; local review and dependency maintenance are operator responsibilities                                                  |
+| Main-push quality verification                             | Not configured; main deployment relies on prior pull-request CI or explicit local verification                                         |
+| GitHub Advanced Security/CodeQL                            | Unavailable in the current private repository                                                                                          |
 
 Revisit this model when adding horizontal scale, anonymous/public views, new identity providers, exports, centralized logging, or a different backup system.
