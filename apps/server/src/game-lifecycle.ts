@@ -9,15 +9,6 @@ export class DeletedGameError extends Error {
   }
 }
 
-export class AuthoritativeGameSessionError extends Error {
-  public readonly code = "game_session_authoritative";
-
-  public constructor(gameId: string) {
-    super(`Game ${gameId} is managed by the authoritative session aggregate`);
-    this.name = "AuthoritativeGameSessionError";
-  }
-}
-
 export const lockClubActiveGame = async (client: PoolClient, clubId: string): Promise<void> => {
   await client.query("SELECT pg_advisory_xact_lock(hashtextextended('active-game:' || $1, 0))", [
     clubId,
@@ -48,18 +39,6 @@ export const assertGameNotDeleted = async (
 };
 
 export const assertClubGameNotDeleted = assertGameNotDeleted;
-
-export const assertLegacyGameMutationAllowed = async (
-  client: PoolClient,
-  clubId: string,
-  gameId: string,
-): Promise<void> => {
-  const session = await client.query("SELECT 1 FROM game_sessions WHERE club_id = $1 AND id = $2", [
-    clubId,
-    gameId,
-  ]);
-  if (session.rowCount !== 0) throw new AuthoritativeGameSessionError(gameId);
-};
 
 export const lockAggregateProjectionTables = async (client: PoolClient): Promise<void> => {
   await client.query(

@@ -19,29 +19,6 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const scriptsDirectory = join(root, "scripts");
 const schema = readFileSync(join(root, "apps/server/src/schema.sql"));
-const temporaryRoot = mkdtempSync(join(tmpdir(), "mafia-postgres-drill-"));
-const drillDirectory = join(temporaryRoot, "drill");
-const backupDirectory = join(drillDirectory, "backups");
-const offsiteDirectory = join(drillDirectory, "offsite");
-const environmentFile = join(temporaryRoot, "container.env");
-const container = `mafia-postgres-drill-${process.pid}-${randomUUID().slice(0, 8)}`;
-const databaseUser = "mafia";
-const databaseName = "mafia";
-const gameId = "00000000-0000-4000-8000-000000000901";
-const playerId = "00000000-0000-4000-8000-000000000902";
-const clubId = "00000000-0000-4000-8000-000000000101";
-const eventOne = "00000000-0000-4000-8000-000000000903";
-const eventTwo = "00000000-0000-4000-8000-000000000904";
-const evidence = [];
-
-mkdirSync(backupDirectory, { recursive: true });
-mkdirSync(offsiteDirectory);
-writeFileSync(
-  environmentFile,
-  `POSTGRES_USER=${databaseUser}\nPOSTGRES_DB=${databaseName}\nPOSTGRES_PASSWORD=${randomUUID()}\n`,
-  { mode: 0o600 },
-);
-chmodSync(environmentFile, 0o600);
 
 const run = (command, args, options = {}) => {
   const result = spawnSync(command, args, {
@@ -56,6 +33,122 @@ const run = (command, args, options = {}) => {
   }
   return result.stdout.trim();
 };
+
+run("npm", ["run", "build", "-w", "@mafia/game-domain"], { cwd: root });
+const {
+  beginRoleDraw,
+  completeRoleDraw,
+  createGame,
+  createGameLogEntry,
+  createSeededRandom,
+  createSetup,
+  drawRoleForSeat,
+  replayGameLog,
+} = await import("@mafia/game-domain");
+
+const databaseUser = "mafia";
+const databaseName = "mafia";
+const gameId = "00000000-0000-4000-8000-000000000901";
+const hostPlayerId = "00000000-0000-4000-8000-000000000902";
+const clubId = "00000000-0000-4000-8000-000000000101";
+const eventOne = "00000000-0000-4000-8000-000000000903";
+const eventTwo = "00000000-0000-4000-8000-000000000904";
+const mutationId = "00000000-0000-4000-8000-000000000905";
+const playerIds = Array.from(
+  { length: 10 },
+  (_, index) => `00000000-0000-4000-8000-${String(index + 910).padStart(12, "0")}`,
+);
+let roleDraw = beginRoleDraw(
+  createSetup(
+    playerIds.map((id, index) => ({
+      id,
+      name: `Backup drill player ${String(index + 1).padStart(2, "0")}`,
+      seat: index + 1,
+    })),
+  ),
+  createSeededRandom(52),
+);
+for (let seat = 1; seat <= 10; seat += 1) roleDraw = drawRoleForSeat(roleDraw, seat);
+const seededGame = createGame(completeRoleDraw(roleDraw));
+const terminalGame = {
+  ...seededGame,
+  day: 1,
+  phase: "finished",
+  players: seededGame.players.map((player) =>
+    player.team === "black" ? { ...player, status: "eliminated" } : player,
+  ),
+  winner: "red",
+};
+const initialGame = { replayVersion: 1, game: terminalGame };
+const checkpoint = createGameLogEntry({
+  gameId,
+  id: eventOne,
+  sequence: 1,
+  parentEventId: null,
+  createdAt: "2026-09-01T00:00:00.000Z",
+  before: initialGame.game,
+  draft: { type: "game.checkpointed", payload: {} },
+});
+const completion = createGameLogEntry({
+  gameId,
+  id: eventTwo,
+  sequence: 2,
+  parentEventId: checkpoint.entry.id,
+  createdAt: "2026-09-01T00:00:00.000Z",
+  before: checkpoint.after,
+  draft: { type: "game.completed", payload: { winner: "red" } },
+});
+const canonicalEvents = [checkpoint.entry, completion.entry];
+assert.match(completion.entry.stateHashAfter, /^sha256:[0-9a-f]{64}$/);
+assert.deepEqual(replayGameLog(initialGame, canonicalEvents, gameId).game, completion.after);
+
+const results = {
+  hostPlayerId,
+  outcome: "red",
+  winner: "red",
+  reason: null,
+  playedAt: completion.entry.createdAt,
+  players: completion.after.players.map((player) => ({
+    playerId: player.id,
+    seat: player.seat,
+    role: player.role,
+    team: player.team,
+    status: player.status,
+    fouls: player.fouls,
+    bestMoveHits: null,
+  })),
+};
+const state = {
+  setup: null,
+  game: completion.after,
+  hostPlayerId,
+  hostName: "Backup drill host",
+  playlistId: "",
+  log: [],
+  initialGame,
+  events: canonicalEvents,
+  headEventId: completion.entry.id,
+  resetReturnEventId: null,
+  legacyLog: [],
+  undoHistory: [],
+  undoBudget: 0,
+};
+const temporaryRoot = mkdtempSync(join(tmpdir(), "mafia-postgres-drill-"));
+const drillDirectory = join(temporaryRoot, "drill");
+const backupDirectory = join(drillDirectory, "backups");
+const offsiteDirectory = join(drillDirectory, "offsite");
+const environmentFile = join(temporaryRoot, "container.env");
+const container = `mafia-postgres-drill-${process.pid}-${randomUUID().slice(0, 8)}`;
+const evidence = [];
+
+mkdirSync(backupDirectory, { recursive: true });
+mkdirSync(offsiteDirectory);
+writeFileSync(
+  environmentFile,
+  `POSTGRES_USER=${databaseUser}\nPOSTGRES_DB=${databaseName}\nPOSTGRES_PASSWORD=${randomUUID()}\n`,
+  { mode: 0o600 },
+);
+chmodSync(environmentFile, 0o600);
 
 const runDocker = (args, options) => run("docker", args, options);
 const runInDatabase = (args, options = {}) =>
@@ -114,45 +207,63 @@ try {
   await waitForDatabase();
 
   runInDatabase(["-i", container, "psql", "-X", "-v", "ON_ERROR_STOP=1"], { input: schema });
+  const playerRows = [
+    `('${hostPlayerId}', '${clubId}', 'Backup drill host')`,
+    ...completion.after.players.map((player) => `('${player.id}', '${clubId}', '${player.name}')`),
+  ].join(",\n      ");
+  const eventRows = canonicalEvents
+    .map(
+      (entry) => `('${entry.id}', '${clubId}', '${gameId}', ${entry.sequence},
+        'backup-drill-${entry.sequence}', '${entry.type}', '${entry.phaseBefore}',
+        '${JSON.stringify(entry.payload)}'::jsonb, ${entry.parentEventId === null ? "NULL" : `'${entry.parentEventId}'`},
+        ${entry.replayVersion}, ${entry.sequence}, '${entry.phaseAfter}', ${entry.dayBefore},
+        ${entry.dayAfter}, '${entry.stateHashAfter}', '${entry.createdAt}')`,
+    )
+    .join(",\n      ");
+  const sessionPlayerRows = [
+    `('${clubId}', '${gameId}', '${hostPlayerId}', NULL, TRUE, NULL)`,
+    ...completion.after.players.map(
+      (player) =>
+        `('${clubId}', '${gameId}', '${player.id}', ${player.seat}, FALSE, '${player.role}')`,
+    ),
+  ].join(",\n      ");
+  const playerResultRows = results.players
+    .map(
+      (player) =>
+        `('${clubId}', '${gameId}', '${player.playerId}', ${player.seat}, '${player.role}',
+          '${player.team}', '${player.status}', ${player.fouls}, ${player.team === "red"}, NULL)`,
+    )
+    .join(",\n      ");
   const seed = `
     INSERT INTO players (id, club_id, nickname)
-    VALUES ('${playerId}', '${clubId}', 'Backup drill player');
+    VALUES ${playerRows};
 
     INSERT INTO game_sessions
-      (id, club_id, name, revision, last_mutation_id, state, results, status, initial_game, head_event_id)
+      (id, club_id, ruleset_id, ruleset_version, name, revision, last_mutation_id, state, results,
+       status, initial_game, replay_base_event_id, head_event_id, reset_return_event_id,
+       reset_return_was_completed, replay_version)
     VALUES (
-      '${gameId}',
-      '${clubId}',
-      'Backup drill game',
-      7,
-      '00000000-0000-4000-8000-000000000905',
-      '{"game":{"players":[{"id":"${playerId}","seat":1,"role":"citizen"}]}}'::jsonb,
-      '{"winner":"red"}'::jsonb,
-      'completed',
-      '{}'::jsonb,
-      '${eventTwo}'
+      '${gameId}', '${clubId}', 'club-mafia', 1, 'Backup drill game', 7, '${mutationId}',
+      '${JSON.stringify(state)}'::jsonb, '${JSON.stringify(results)}'::jsonb, 'completed',
+      '${JSON.stringify(initialGame)}'::jsonb, NULL, '${completion.entry.id}', NULL, FALSE, 1
     );
 
     INSERT INTO game_events
       (id, club_id, game_id, sequence, idempotency_key, event_type, phase, payload,
-       parent_event_id, replay_sequence, phase_after, day_before, day_after, state_hash_after)
-    VALUES
-      ('${eventOne}', '${clubId}', '${gameId}', 1, 'backup-drill-1', 'game.started', 'day', '{}'::jsonb,
-       NULL, 1, 'day', 0, 0, 'deadbeef'),
-      ('${eventTwo}', '${clubId}', '${gameId}', 2, 'backup-drill-2', 'speech.started', 'day', '{}'::jsonb,
-       '${eventOne}', 2, 'day', 0, 0, 'deadbeef');
+       parent_event_id, replay_version, replay_sequence, phase_after, day_before, day_after,
+       state_hash_after, created_at)
+    VALUES ${eventRows};
 
     INSERT INTO game_session_players (club_id, game_id, player_id, seat, is_host, role)
-    VALUES ('${clubId}', '${gameId}', '${playerId}', 1, FALSE, 'citizen');
+    VALUES ${sessionPlayerRows};
 
-    INSERT INTO game_results (game_id, club_id, outcome, winner, played_at)
-    VALUES ('${gameId}', '${clubId}', 'red', 'red', '2026-09-01T00:00:00Z');
+    INSERT INTO game_results
+      (game_id, club_id, outcome, winner, reason, played_at, host_player_id)
+    VALUES ('${gameId}', '${clubId}', 'red', 'red', NULL, '${results.playedAt}', '${hostPlayerId}');
 
     INSERT INTO game_player_results
-      (club_id, game_id, player_id, seat, role, team, final_status, fouls, won)
-    VALUES (
-      '${clubId}', '${gameId}', '${playerId}', 1, 'citizen', 'red', 'active', 0, TRUE
-    );
+      (club_id, game_id, player_id, seat, role, team, final_status, fouls, won, best_move_hits)
+    VALUES ${playerResultRows};
   `;
   runInDatabase(["-i", container, "psql", "-X", "-v", "ON_ERROR_STOP=1"], { input: seed });
 
@@ -203,7 +314,7 @@ try {
   assert.match(restoreTestOutput, /restore_test_status=ok/);
   assert.match(restoreTestOutput, /game_status=completed/);
   assert.match(restoreTestOutput, /canonical_event_count=2/);
-  assert.match(restoreTestOutput, /participant_count=1/);
+  assert.match(restoreTestOutput, /participant_count=11/);
   assert.match(restoreTestOutput, /result_count=1/);
   evidence.push("isolated_restore_test=semantic_checks_passed");
 
@@ -215,32 +326,157 @@ try {
       `/drill/backups/${archiveName}`,
       independentTarget,
     ]);
-    const semanticCheck = runInDatabase([
-      container,
-      "psql",
-      "-XAtv",
-      "ON_ERROR_STOP=1",
-      `--dbname=${independentTarget}`,
-      "-c",
-      `SELECT CONCAT_WS('|', session.id, session.revision,
-          (SELECT COUNT(*) FROM game_events AS event
-            WHERE event.club_id = session.club_id AND event.game_id = session.id),
-          (SELECT COUNT(*) FROM game_session_players AS player
-            WHERE player.club_id = session.club_id AND player.game_id = session.id),
-          result.winner, player_result.player_id, player_result.seat, player_result.role,
-          player_result.team, player_result.final_status, player_result.fouls, player_result.won)
+    const expectedSnapshot = {
+      session: {
+        id: gameId,
+        clubId,
+        rulesetId: "club-mafia",
+        rulesetVersion: 1,
+        name: "Backup drill game",
+        revision: 7,
+        lastMutationId: mutationId,
+        state,
+        results,
+        status: "completed",
+        initialGame,
+        replayBaseEventId: null,
+        headEventId: completion.entry.id,
+        resetReturnEventId: null,
+        resetReturnWasCompleted: false,
+        replayVersion: 1,
+      },
+      events: canonicalEvents.map((entry) => ({
+        ...entry,
+        idempotencyKey: `backup-drill-${entry.sequence}`,
+      })),
+      sessionPlayers: [
+        { playerId: hostPlayerId, seat: null, isHost: true, role: null },
+        ...completion.after.players.map((player) => ({
+          playerId: player.id,
+          seat: player.seat,
+          isHost: false,
+          role: player.role,
+        })),
+      ],
+      result: {
+        outcome: results.outcome,
+        winner: results.winner,
+        reason: results.reason,
+        playedAt: results.playedAt,
+        hostPlayerId,
+      },
+      playerResults: results.players.map((player) => ({
+        ...player,
+        won: player.team === "red",
+      })),
+    };
+    const restoredSnapshot = JSON.parse(
+      runInDatabase([
+        container,
+        "psql",
+        "-XAtv",
+        "ON_ERROR_STOP=1",
+        `--dbname=${independentTarget}`,
+        "-c",
+        `SELECT jsonb_build_object(
+          'session', jsonb_build_object(
+            'id', session.id,
+            'clubId', session.club_id,
+            'rulesetId', session.ruleset_id,
+            'rulesetVersion', session.ruleset_version,
+            'name', session.name,
+            'revision', session.revision,
+            'lastMutationId', session.last_mutation_id,
+            'state', session.state,
+            'results', session.results,
+            'status', session.status,
+            'initialGame', session.initial_game,
+            'replayBaseEventId', session.replay_base_event_id,
+            'headEventId', session.head_event_id,
+            'resetReturnEventId', session.reset_return_event_id,
+            'resetReturnWasCompleted', session.reset_return_was_completed,
+            'replayVersion', session.replay_version
+          ),
+          'events', COALESCE((
+            SELECT jsonb_agg(
+              jsonb_build_object(
+                'replayVersion', event.replay_version,
+                'id', event.id,
+                'gameId', event.game_id,
+                'sequence', event.replay_sequence,
+                'parentEventId', event.parent_event_id,
+                'type', event.event_type,
+                'payload', event.payload,
+                'phaseBefore', event.phase,
+                'phaseAfter', event.phase_after,
+                'dayBefore', event.day_before,
+                'dayAfter', event.day_after,
+                'stateHashAfter', event.state_hash_after,
+                'createdAt', to_char(
+                  event.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+                ),
+                'idempotencyKey', event.idempotency_key
+              ) ORDER BY event.replay_sequence
+            )
+            FROM game_events AS event
+            WHERE event.club_id = session.club_id AND event.game_id = session.id
+          ), '[]'::jsonb),
+          'sessionPlayers', COALESCE((
+            SELECT jsonb_agg(
+              jsonb_build_object(
+                'playerId', player.player_id,
+                'seat', player.seat,
+                'isHost', player.is_host,
+                'role', player.role
+              ) ORDER BY player.is_host DESC, player.seat
+            )
+            FROM game_session_players AS player
+            WHERE player.club_id = session.club_id AND player.game_id = session.id
+          ), '[]'::jsonb),
+          'result', jsonb_build_object(
+            'outcome', result.outcome,
+            'winner', result.winner,
+            'reason', result.reason,
+            'playedAt', to_char(
+              result.played_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'
+            ),
+            'hostPlayerId', result.host_player_id
+          ),
+          'playerResults', COALESCE((
+            SELECT jsonb_agg(
+              jsonb_build_object(
+                'playerId', player_result.player_id,
+                'seat', player_result.seat,
+                'role', player_result.role,
+                'team', player_result.team,
+                'status', player_result.final_status,
+                'fouls', player_result.fouls,
+                'bestMoveHits', player_result.best_move_hits,
+                'won', player_result.won
+              ) ORDER BY player_result.seat
+            )
+            FROM game_player_results AS player_result
+            WHERE player_result.club_id = session.club_id AND player_result.game_id = session.id
+          ), '[]'::jsonb)
+        )::text
          FROM game_sessions AS session
          JOIN game_results AS result
            ON result.club_id = session.club_id AND result.game_id = session.id
-         JOIN game_player_results AS player_result
-           ON player_result.club_id = session.club_id AND player_result.game_id = session.id
         WHERE session.club_id = '${clubId}' AND session.id = '${gameId}'`,
-    ]);
-    assert.equal(semanticCheck, `${gameId}|7|2|1|red|${playerId}|1|citizen|red|active|0|t`);
-    const [restoredGameId, restoredRevision, restoredEvents, restoredParticipants, restoredWinner] =
-      semanticCheck.split("|");
+      ]),
+    );
+    assert.deepEqual(restoredSnapshot, expectedSnapshot);
+    const restoredEvents = restoredSnapshot.events.map((stored) => {
+      const event = { ...stored };
+      delete event.idempotencyKey;
+      return event;
+    });
+    assert.deepEqual(
+      replayGameLog(restoredSnapshot.session.initialGame, restoredEvents, gameId).game,
+      restoredSnapshot.session.state.game,
+    );
     evidence.push(
-      `representative_game=${restoredGameId} revision=${restoredRevision} canonical_events=${restoredEvents} participants=${restoredParticipants} winner=${restoredWinner} result_rows=1`,
+      `representative_game=${gameId} revision=7 canonical_events=2 participants=11 seated_players=10 winner=red result_rows=1 player_result_rows=10`,
     );
   } finally {
     runInDatabase([container, "dropdb", "--if-exists", "--force", independentTarget]);

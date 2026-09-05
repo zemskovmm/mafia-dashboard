@@ -1,4 +1,4 @@
-/* global URL, document, getComputedStyle, HTMLElement, HTMLCanvasElement, HTMLInputElement, innerHeight, innerWidth, structuredClone, sessionStorage, crypto, TextEncoder, ErrorEvent, Event */
+/* global URL, document, getComputedStyle, HTMLElement, HTMLCanvasElement, HTMLInputElement, innerHeight, innerWidth, structuredClone, localStorage, crypto, TextEncoder, ErrorEvent, Event */
 import { chromium, webkit } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { assertExactOrigin } from "./session-verifier-contracts.mjs";
@@ -331,7 +331,7 @@ await page.addInitScript(() => {
     value: VerifierAudioContext,
   });
   window.__mafiaVerifierCheckpointEnvelope = async (envelope, game) => {
-    const root = envelope.entries.find((entry) => entry.parentEventId === null);
+    const root = envelope.current.state.events.find((entry) => entry.parentEventId === null);
     if (root === undefined) throw new Error("Expected a persisted replay root");
     const canonical = (value) =>
       Array.isArray(value)
@@ -361,9 +361,10 @@ await page.addInitScript(() => {
         byte.toString(16).padStart(2, "0"),
       ).join("")}`,
     });
-    envelope.baseline = { replayVersion: 1, game };
-    envelope.entries = [root];
-    envelope.headEventId = root.id;
+    envelope.current.state.game = game;
+    envelope.current.state.initialGame = { replayVersion: 1, game };
+    envelope.current.state.events = [root];
+    envelope.current.state.headEventId = root.id;
   };
 });
 
@@ -1173,11 +1174,11 @@ try {
     await page.screenshot({ path: glassScreenshotPath, fullPage: true });
 
     const durableBeforePreview = await page.evaluate(() =>
-      sessionStorage.getItem("mafia-dashboard.game-session.v4"),
+      localStorage.getItem("mafia-dashboard.game-session.v5"),
     );
     const persistedCheckpoint = JSON.parse(durableBeforePreview ?? "null");
-    const persistedEvents = Array.isArray(persistedCheckpoint?.entries)
-      ? persistedCheckpoint.entries
+    const persistedEvents = Array.isArray(persistedCheckpoint?.current?.state.events)
+      ? persistedCheckpoint.current.state.events
       : [];
     const intermediateEvents = persistedEvents.filter(
       (event) =>
@@ -1228,7 +1229,7 @@ try {
     await page.getByRole("button", { name: "Exit preview" }).click();
     await page.getByRole("heading", { name: "Day 1" }).waitFor();
     const durableAfterPreview = await page.evaluate(() =>
-      sessionStorage.getItem("mafia-dashboard.game-session.v4"),
+      localStorage.getItem("mafia-dashboard.game-session.v5"),
     );
     if (durableAfterPreview !== durableBeforePreview) {
       throw new Error("Read-only preview changed the durable game head, revision, or outbox");
@@ -1603,7 +1604,7 @@ try {
       throw new Error("Assigning Mafia shots must not write to the game log");
     }
     const durableBeforeNightTimeline = await page.evaluate(() =>
-      sessionStorage.getItem("mafia-dashboard.game-session.v4"),
+      localStorage.getItem("mafia-dashboard.game-session.v5"),
     );
     await page.getByRole("button", { name: "Open developer menu" }).click();
     await page.getByRole("button", { name: "Past game timeline" }).click();
@@ -1616,7 +1617,7 @@ try {
     const selectedAfterTimeline = await page.locator(".shooter-button.is-selected").count();
     const evaluateDisabled = await evaluateShots.isDisabled();
     const durableAfterNightTimeline = await page.evaluate(() =>
-      sessionStorage.getItem("mafia-dashboard.game-session.v4"),
+      localStorage.getItem("mafia-dashboard.game-session.v5"),
     );
     if (
       selectedAfterTimeline !== shooterCount ||
@@ -1731,11 +1732,11 @@ try {
     }
     await page.goto(storageMutationUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(async () => {
-      const storageKey = "mafia-dashboard.game-session.v4";
-      const raw = window.sessionStorage.getItem(storageKey);
+      const storageKey = "mafia-dashboard.game-session.v5";
+      const raw = window.localStorage.getItem(storageKey);
       if (raw === null) throw new Error("Expected a persisted game session");
       const envelope = JSON.parse(raw);
-      const game = structuredClone(envelope.baseline?.game);
+      const game = structuredClone(envelope.current.state.initialGame?.game);
       if (game === null || game === undefined)
         throw new Error("Expected a persisted replay baseline");
       const activeSeats = game.players
@@ -1750,11 +1751,11 @@ try {
       game.votingRound = "repeat";
       game.winner = null;
       await window.__mafiaVerifierCheckpointEnvelope(envelope, game);
-      envelope.resetReturnEventId = null;
-      envelope.results = null;
+      envelope.current.state.resetReturnEventId = null;
+      envelope.current.results = null;
       envelope.outbox = [];
       envelope.failed = false;
-      window.sessionStorage.setItem(storageKey, JSON.stringify(envelope));
+      window.localStorage.setItem(storageKey, JSON.stringify(envelope));
     });
     await page.goto(browserAppUrl, { waitUntil: "networkidle" });
     await page.locator(".club-playing-card:not(.new-club-card)").first().click();
@@ -1791,11 +1792,11 @@ try {
     await page.locator(".game-shell.phase-night-mafia").waitFor();
     await page.goto(storageMutationUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(async () => {
-      const storageKey = "mafia-dashboard.game-session.v4";
-      const raw = window.sessionStorage.getItem(storageKey);
+      const storageKey = "mafia-dashboard.game-session.v5";
+      const raw = window.localStorage.getItem(storageKey);
       if (raw === null) throw new Error("Expected a persisted game session");
       const envelope = JSON.parse(raw);
-      const game = structuredClone(envelope.baseline?.game);
+      const game = structuredClone(envelope.current.state.initialGame?.game);
       if (game === null || game === undefined)
         throw new Error("Expected a persisted replay baseline");
       game.phase = "car-crash-decision";
@@ -1809,11 +1810,11 @@ try {
       game.votingRound = "repeat";
       game.winner = null;
       await window.__mafiaVerifierCheckpointEnvelope(envelope, game);
-      envelope.resetReturnEventId = null;
-      envelope.results = null;
+      envelope.current.state.resetReturnEventId = null;
+      envelope.current.results = null;
       envelope.outbox = [];
       envelope.failed = false;
-      window.sessionStorage.setItem(storageKey, JSON.stringify(envelope));
+      window.localStorage.setItem(storageKey, JSON.stringify(envelope));
     });
     await page.goto(browserAppUrl, { waitUntil: "networkidle" });
     await page.locator(".club-playing-card:not(.new-club-card)").first().click();
@@ -1846,11 +1847,11 @@ try {
     await page.getByRole("heading", { name: "Goodbye speech" }).waitFor();
     await page.goto(storageMutationUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(async () => {
-      const storageKey = "mafia-dashboard.game-session.v4";
-      const raw = window.sessionStorage.getItem(storageKey);
+      const storageKey = "mafia-dashboard.game-session.v5";
+      const raw = window.localStorage.getItem(storageKey);
       if (raw === null) throw new Error("Expected a persisted game session");
       const envelope = JSON.parse(raw);
-      const game = structuredClone(envelope.baseline?.game);
+      const game = structuredClone(envelope.current.state.initialGame?.game);
       if (game === null || game === undefined)
         throw new Error("Expected a persisted replay baseline");
       game.phase = "night-don";
@@ -1870,11 +1871,11 @@ try {
       game.checkResult = undefined;
       game.winner = null;
       await window.__mafiaVerifierCheckpointEnvelope(envelope, game);
-      envelope.resetReturnEventId = null;
-      envelope.results = null;
+      envelope.current.state.resetReturnEventId = null;
+      envelope.current.results = null;
       envelope.outbox = [];
       envelope.failed = false;
-      window.sessionStorage.setItem(storageKey, JSON.stringify(envelope));
+      window.localStorage.setItem(storageKey, JSON.stringify(envelope));
     });
     await page.goto(browserAppUrl, { waitUntil: "networkidle" });
     await page.locator(".club-playing-card:not(.new-club-card)").first().click();
@@ -1909,11 +1910,11 @@ try {
     await page.getByRole("heading", { name: "Night complete" }).waitFor();
     await page.goto(storageMutationUrl, { waitUntil: "domcontentloaded" });
     const staleGoodbyeFixture = await page.evaluate(async () => {
-      const storageKey = "mafia-dashboard.game-session.v4";
-      const raw = window.sessionStorage.getItem(storageKey);
+      const storageKey = "mafia-dashboard.game-session.v5";
+      const raw = window.localStorage.getItem(storageKey);
       if (raw === null) throw new Error("Expected a persisted game session");
       const envelope = JSON.parse(raw);
-      const game = structuredClone(envelope.baseline?.game);
+      const game = structuredClone(envelope.current.state.initialGame?.game);
       if (game === null || game === undefined)
         throw new Error("Expected a persisted replay baseline");
       const earlierSeat = game.players[0]?.seat;
@@ -1932,12 +1933,12 @@ try {
       game.goodbyeSeats = [speaker.seat];
       game.goodbyeNext = "day";
       await window.__mafiaVerifierCheckpointEnvelope(envelope, game);
-      envelope.resetReturnEventId = null;
-      envelope.results = null;
-      envelope.metadata = { ...envelope.metadata, legacyLog: [] };
+      envelope.current.state.resetReturnEventId = null;
+      envelope.current.results = null;
+      envelope.current.state.legacyLog = [];
       envelope.outbox = [];
       envelope.failed = false;
-      window.sessionStorage.setItem(storageKey, JSON.stringify(envelope));
+      window.localStorage.setItem(storageKey, JSON.stringify(envelope));
       return { earlierSeat, speakerSeat: speaker.seat, speakerName: speaker.name };
     });
     await page.goto(browserAppUrl, { waitUntil: "networkidle" });
@@ -1977,11 +1978,11 @@ try {
     await page.screenshot({ path: staleGoodbyeScreenshotPath, fullPage: true });
     await page.goto(storageMutationUrl, { waitUntil: "domcontentloaded" });
     await page.evaluate(async () => {
-      const storageKey = "mafia-dashboard.game-session.v4";
-      const raw = window.sessionStorage.getItem(storageKey);
+      const storageKey = "mafia-dashboard.game-session.v5";
+      const raw = window.localStorage.getItem(storageKey);
       if (raw === null) throw new Error("Expected a persisted game session");
       const envelope = JSON.parse(raw);
-      const game = structuredClone(envelope.baseline?.game);
+      const game = structuredClone(envelope.current.state.initialGame?.game);
       if (game === null || game === undefined)
         throw new Error("Expected a persisted replay baseline");
       game.phase = "finished";
@@ -1990,12 +1991,12 @@ try {
       game.goodbyeSeats = undefined;
       game.goodbyeNext = undefined;
       await window.__mafiaVerifierCheckpointEnvelope(envelope, game);
-      envelope.resetReturnEventId = null;
-      envelope.results = null;
-      envelope.metadata = { ...envelope.metadata, legacyLog: [] };
+      envelope.current.state.resetReturnEventId = null;
+      envelope.current.results = null;
+      envelope.current.state.legacyLog = [];
       envelope.outbox = [];
       envelope.failed = false;
-      window.sessionStorage.setItem(storageKey, JSON.stringify(envelope));
+      window.localStorage.setItem(storageKey, JSON.stringify(envelope));
     });
     await page.goto(browserAppUrl, { waitUntil: "networkidle" });
     await page.locator(".club-playing-card:not(.new-club-card)").first().click();

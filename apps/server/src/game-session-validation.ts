@@ -919,15 +919,15 @@ const initialGameBaselineSchema = z.object({
 
 interface ReplayableStateInput {
   readonly game: GameState | null;
-  readonly initialGame?: InitialGameBaseline | null;
-  readonly events?: readonly GameLogEntry[];
-  readonly headEventId?: string | null;
+  readonly initialGame: InitialGameBaseline | null;
+  readonly events: readonly GameLogEntry[];
+  readonly headEventId: string | null;
 }
 
 const deriveReplayState = (state: ReplayableStateInput): GameState | null => {
   if (state.initialGame == null) return state.game;
   if (state.headEventId == null) return state.initialGame.game;
-  const byId = new Map((state.events ?? []).map((event) => [event.id, event]));
+  const byId = new Map(state.events.map((event) => [event.id, event]));
   const reversed: GameLogEntry[] = [];
   const visited = new Set<string>();
   let currentId: string | null = state.headEventId;
@@ -942,7 +942,7 @@ const deriveReplayState = (state: ReplayableStateInput): GameState | null => {
   return replayGameLog(state.initialGame, reversed.reverse()).game;
 };
 
-const gameSessionStateSchema = z
+export const gameSessionStateSchema = z
   .object({
     setup: setupSessionStateSchema.nullable(),
     game: gameStateSchema.nullable(),
@@ -950,11 +950,11 @@ const gameSessionStateSchema = z
     hostName: z.string().trim().min(1).max(100).nullable(),
     playlistId: z.string().max(200),
     log: z.array(gameLogEntrySchema),
-    initialGame: initialGameBaselineSchema.nullable().optional(),
-    events: z.array(canonicalGameEventSchema).optional(),
-    headEventId: z.uuid().nullable().optional(),
-    resetReturnEventId: z.null().optional(),
-    legacyLog: z.array(gameLogEntrySchema).optional(),
+    initialGame: initialGameBaselineSchema.nullable(),
+    events: z.array(canonicalGameEventSchema),
+    headEventId: z.uuid().nullable(),
+    resetReturnEventId: z.uuid().nullable(),
+    legacyLog: z.array(gameLogEntrySchema),
     undoHistory: z
       .array(
         z.object({
@@ -964,27 +964,18 @@ const gameSessionStateSchema = z
         }),
       )
       .max(3),
-    undoBudget: z.number().int().min(0).max(3).optional(),
+    undoBudget: z.number().int().min(0).max(3),
   })
+  .strict()
   .superRefine(
     (
-      {
-        setup,
-        game,
-        hostPlayerId,
-        hostName,
-        log,
-        undoHistory,
-        initialGame,
-        events = [],
-        headEventId,
-      },
+      { setup, game, hostPlayerId, hostName, log, undoHistory, initialGame, events, headEventId },
       context,
     ) => {
       try {
         deriveReplayState({
           game,
-          initialGame: initialGame as InitialGameBaseline | null | undefined,
+          initialGame,
           events: events as unknown as readonly GameLogEntry[],
           headEventId,
         });
@@ -996,6 +987,16 @@ const gameSessionStateSchema = z
         });
       }
       const currentGame = game;
+      if (
+        currentGame !== null &&
+        (initialGame === null || events.length === 0 || headEventId === null)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["initialGame"],
+          message: "A live game snapshot requires its canonical baseline and active head",
+        });
+      }
       if ((hostPlayerId === null) !== (hostName === null)) {
         context.addIssue({
           code: "custom",
@@ -1113,18 +1114,17 @@ const gameSessionStateSchema = z
     },
   );
 
-const finalGameResultsSchema = z
+export const finalGameResultsSchema = z
   .object({
     hostPlayerId: z.uuid(),
-    outcome: z.enum(["red", "black", "draw", "cancelled"]).optional(),
+    outcome: z.enum(["red", "black", "draw", "cancelled"]),
     winner: team.nullable(),
     reason: z
       .string()
       .min(1)
       .max(500)
       .refine((value) => value === value.trim(), "Reason must be trimmed")
-      .nullable()
-      .optional(),
+      .nullable(),
     playedAt: z.iso.datetime({ offset: true }),
     players: z
       .array(
@@ -1140,23 +1140,17 @@ const finalGameResultsSchema = z
       )
       .length(10),
   })
+  .strict()
   .superRefine(({ hostPlayerId, outcome, winner, reason, players }, context) => {
-    const resolvedOutcome = outcome ?? winner;
-    if (resolvedOutcome === null) {
-      context.addIssue({
-        code: "custom",
-        path: ["outcome"],
-        message: "A completion outcome is required",
-      });
-    } else if (resolvedOutcome === "red" || resolvedOutcome === "black") {
-      if (winner !== resolvedOutcome || (reason !== undefined && reason !== null)) {
+    if (outcome === "red" || outcome === "black") {
+      if (winner !== outcome || reason !== null) {
         context.addIssue({
           code: "custom",
           path: ["winner"],
           message: "A winning completion must match its winner and have no ruling reason",
         });
       }
-    } else if (winner !== null || reason === undefined || reason === null) {
+    } else if (winner !== null || reason === null) {
       context.addIssue({
         code: "custom",
         path: ["reason"],
@@ -1199,13 +1193,7 @@ const finalGameResultsSchema = z
         });
       }
     }
-  })
-  .transform(({ outcome, winner, reason, ...results }) => ({
-    ...results,
-    outcome: outcome ?? winner!,
-    winner,
-    reason: reason ?? null,
-  }));
+  });
 
 const sessionOperationBase = {
   mutationId: z.uuid(),
@@ -1225,8 +1213,6 @@ export const gameSessionClaimHeaderSchema = z
     claimGeneration: z.coerce.number().int().nonnegative(),
   })
   .strict();
-
-export const gameSessionNormalizeMutationSchema = z.object(sessionOperationBase).strict();
 
 export const gameSessionStartMutationSchema = z
   .object({
@@ -1302,7 +1288,18 @@ export const gameSessionMutationSchema = z
     state: gameSessionStateSchema,
     results: finalGameResultsSchema.nullable(),
   })
+  .strict()
   .superRefine(({ state, results }, context) => {
+    if (
+      state.resetReturnEventId !== null &&
+      !state.events.some(({ id }) => id === state.resetReturnEventId)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["state", "resetReturnEventId"],
+        message: "Reset return event must belong to canonical history",
+      });
+    }
     if (state.game === null && state.setup?.step !== "roles") {
       context.addIssue({
         code: "custom",

@@ -58,6 +58,26 @@ const englishShellMessages = {
   activeGames: "Active games",
   activeGamesUnavailable: "Active games are temporarily unavailable.",
   noActiveGames: "No active games to resume.",
+  browserGameEyebrow: "Browser game",
+  browserGameLockWaiting: "Waiting for this browser's game storage lock…",
+  browserGameLockUnavailable: "This browser cannot safely lock local game storage.",
+  browserGameInvalidTitle: "Browser game data needs attention",
+  browserGameInvalidBody:
+    "The current browser game record is invalid and has not been changed. Clear it only if you no longer need to recover it.",
+  browserGameInvalidDiscard: "Clear invalid local game",
+  browserGameInvalidDiscardConfirmation:
+    "Clear this invalid local game record? This cannot be undone.",
+  browserGameAttachedTitle: "Game attached to another club",
+  browserGameAttachedBody:
+    '"{game}" is attached to {club}. Open that club or safely release the local copy before opening {target}.',
+  browserGameMissingOwnerBody:
+    '"{game}" belongs to a club that is no longer available. Discard the local copy to continue.',
+  browserGameReleaseBlocked: "Sync the attached game before releasing it.",
+  browserGameOpenOwner: "Open {club}",
+  browserGameReleaseAndOpen: "Release and open {club}",
+  browserGameDiscard: "Discard local game",
+  browserGameDiscardConfirmation:
+    "Discard this local game? Any changes that have not reached the server will be lost.",
   deleting: "Deleting…",
   delete: "Delete",
   hostNotSelected: "Host not selected",
@@ -286,6 +306,27 @@ const russianShellMessages = {
   activeGames: "Активные игры",
   activeGamesUnavailable: "Активные игры временно недоступны.",
   noActiveGames: "Нет активных игр для продолжения.",
+  browserGameEyebrow: "Игра в браузере",
+  browserGameLockWaiting: "Ожидание блокировки хранилища игры в этом браузере…",
+  browserGameLockUnavailable:
+    "Этот браузер не поддерживает безопасную блокировку локального хранилища игры.",
+  browserGameInvalidTitle: "Данные игры в браузере требуют внимания",
+  browserGameInvalidBody:
+    "Текущая запись игры в браузере недействительна и не была изменена. Удаляйте её, только если восстановление больше не требуется.",
+  browserGameInvalidDiscard: "Удалить недействительную локальную игру",
+  browserGameInvalidDiscardConfirmation:
+    "Удалить эту недействительную запись локальной игры? Отменить это действие нельзя.",
+  browserGameAttachedTitle: "Игра привязана к другому клубу",
+  browserGameAttachedBody:
+    "Игра «{game}» привязана к клубу {club}. Откройте этот клуб или безопасно отвяжите локальную копию перед открытием клуба {target}.",
+  browserGameMissingOwnerBody:
+    "Игра «{game}» принадлежит недоступному клубу. Удалите локальную копию, чтобы продолжить.",
+  browserGameReleaseBlocked: "Синхронизируйте привязанную игру перед отвязкой.",
+  browserGameOpenOwner: "Открыть {club}",
+  browserGameReleaseAndOpen: "Отвязать и открыть {club}",
+  browserGameDiscard: "Удалить локальную игру",
+  browserGameDiscardConfirmation:
+    "Удалить эту локальную игру? Все изменения, не сохранённые на сервере, будут потеряны.",
   deleting: "Удаление…",
   delete: "Удалить",
   hostNotSelected: "Ведущий не выбран",

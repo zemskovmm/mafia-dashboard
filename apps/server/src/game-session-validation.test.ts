@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createGameLogEntry } from "@mafia/game-domain";
+import { createGameLogEntry, type GameState } from "@mafia/game-domain";
 import {
   gameSessionCompleteMutationSchema,
   gameSessionMutationSchema,
@@ -43,7 +43,110 @@ const liveGame = (day: number) => ({
   winner: null,
 });
 
+const roleGiveawayState = () => ({
+  setup: {
+    step: "roles" as const,
+    hostPlayerId: uuid(11),
+    selectedPlayerIds: clubRoles.map((_, index) => uuid(index + 1)),
+    setup: {
+      step: "role-draw" as const,
+      players: clubRoles.map((_, index) => ({
+        id: uuid(index + 1),
+        name: `Player ${index + 1}`,
+        seat: index + 1,
+      })),
+      roleDeck: [...clubRoles],
+      remainingRoles: [...clubRoles],
+      assignments: {},
+    },
+  },
+  game: null,
+  hostPlayerId: uuid(11),
+  hostName: "Host",
+  playlistId: "",
+  log: [],
+  undoHistory: [],
+  undoBudget: 0,
+  initialGame: null,
+  events: [],
+  headEventId: null,
+  resetReturnEventId: null,
+  legacyLog: [],
+});
+
+const currentSnapshot = <T extends { readonly game: unknown }>(state: T) => {
+  if (state.game === null) {
+    return {
+      ...state,
+      undoBudget: 0,
+      initialGame: null,
+      events: [],
+      headEventId: null,
+      resetReturnEventId: null,
+      legacyLog: [],
+    };
+  }
+  const initialGame = { replayVersion: 1 as const, game: state.game as GameState };
+  try {
+    const { entry } = createGameLogEntry({
+      gameId: uuid(111),
+      id: uuid(112),
+      sequence: 1,
+      parentEventId: null,
+      createdAt: "2026-09-05T00:00:00.000Z",
+      before: initialGame.game,
+      draft: { type: "game.checkpointed", payload: {} },
+    });
+    return {
+      ...state,
+      undoBudget: 0,
+      initialGame,
+      events: [entry],
+      headEventId: entry.id,
+      resetReturnEventId: null,
+      legacyLog: [],
+    };
+  } catch {
+    return {
+      ...state,
+      undoBudget: 0,
+      initialGame,
+      events: [],
+      headEventId: null,
+      resetReturnEventId: null,
+      legacyLog: [],
+    };
+  }
+};
+
 describe("game session validation", () => {
+  it("requires every field in the current browser-authoritative session snapshot", () => {
+    const state = roleGiveawayState();
+    const request = {
+      name: "Current snapshot",
+      mutationId: uuid(110),
+      baseRevision: 0,
+      state,
+      results: null,
+    };
+
+    expect(gameSessionMutationSchema.safeParse(request).success).toBe(true);
+    for (const requiredField of [
+      "undoBudget",
+      "initialGame",
+      "events",
+      "headEventId",
+      "resetReturnEventId",
+      "legacyLog",
+    ] as const) {
+      const { [requiredField]: removed, ...withoutRequiredField } = state;
+      void removed;
+      expect(
+        gameSessionMutationSchema.safeParse({ ...request, state: withoutRequiredField }).success,
+      ).toBe(false);
+    }
+  });
+
   it("parses a strict claim credential with a positive server generation", () => {
     const schema = (
       validationSchemas as unknown as {
@@ -61,7 +164,7 @@ describe("game session validation", () => {
     ).toBe(false);
   });
 
-  it("requires only an idempotency UUID and base revision to normalize a session", () => {
+  it("does not expose the obsolete normalization mutation schema", () => {
     const schema = (
       validationSchemas as unknown as {
         readonly gameSessionNormalizeMutationSchema?: {
@@ -70,12 +173,7 @@ describe("game session validation", () => {
       }
     ).gameSessionNormalizeMutationSchema;
 
-    expect(schema?.safeParse({ mutationId: uuid(89), baseRevision: 3 }).success).toBe(true);
-    expect(schema?.safeParse({ mutationId: "not-a-uuid", baseRevision: 3 }).success).toBe(false);
-    expect(schema?.safeParse({ mutationId: uuid(89), baseRevision: -1 }).success).toBe(false);
-    expect(
-      schema?.safeParse({ mutationId: uuid(89), baseRevision: 3, state: liveGame(1) }).success,
-    ).toBe(false);
+    expect(schema).toBeUndefined();
   });
 
   it("accepts one verified lifecycle root and its immutable baseline", () => {
@@ -243,7 +341,9 @@ describe("game session validation", () => {
     const game = liveGame(1);
     const results = {
       hostPlayerId: uuid(11),
+      outcome: "red" as const,
       winner: "red" as const,
+      reason: null,
       playedAt: "2026-08-25T00:02:00.000Z",
       players: game.players.map(({ id, seat, role, team, status, fouls }) => ({
         playerId: id,
@@ -269,7 +369,7 @@ describe("game session validation", () => {
     expect(schema?.safeParse({ ...valid, state: { game } }).success).toBe(false);
   });
 
-  it("validates winner, draw, and cancellation completion shapes while accepting legacy wins", () => {
+  it("requires an explicit outcome and nullable reason for every completion", () => {
     const game = liveGame(1);
     const players = game.players.map(({ id, seat, role, team, status, fouls }) => ({
       playerId: id,
@@ -296,6 +396,18 @@ describe("game session validation", () => {
         results: { ...base.results, outcome: "red", winner: "red", reason: null },
       }).success,
     ).toBe(true);
+    expect(
+      gameSessionCompleteMutationSchema.safeParse({
+        ...base,
+        results: { ...base.results, winner: "red", reason: null },
+      }).success,
+    ).toBe(false);
+    expect(
+      gameSessionCompleteMutationSchema.safeParse({
+        ...base,
+        results: { ...base.results, outcome: "red", winner: "red" },
+      }).success,
+    ).toBe(false);
     expect(
       gameSessionCompleteMutationSchema.safeParse({
         ...base,
@@ -378,9 +490,12 @@ describe("game session validation", () => {
         playlistId: "",
         log: [],
         undoHistory: [],
+        undoBudget: 0,
         initialGame,
         events: [root.entry, drawn.entry],
         headEventId: drawn.entry.id,
+        resetReturnEventId: null,
+        legacyLog: [],
       },
       results,
     };
@@ -410,7 +525,7 @@ describe("game session validation", () => {
       name: "Awaiting finish confirmation",
       mutationId: uuid(90),
       baseRevision: 4,
-      state: {
+      state: currentSnapshot({
         setup: null,
         game: finished,
         hostPlayerId: uuid(11),
@@ -418,7 +533,7 @@ describe("game session validation", () => {
         playlistId: "",
         log: [],
         undoHistory: [],
-      },
+      }),
       results: null,
     });
     expect(parsed.success).toBe(true);
@@ -449,7 +564,9 @@ describe("game session validation", () => {
     };
     const results = {
       hostPlayerId: uuid(11),
+      outcome: "red" as const,
       winner: "red" as const,
+      reason: null,
       playedAt: "2026-08-31T15:01:00.000Z",
       players: finished.players.map(({ id, seat, role, team, status, fouls }) => ({
         playerId: id,
@@ -473,9 +590,12 @@ describe("game session validation", () => {
         playlistId: "",
         log: [],
         undoHistory: [],
+        undoBudget: 0,
         initialGame,
         events: [entry],
         headEventId: entry.id,
+        resetReturnEventId: null,
+        legacyLog: [],
       },
       results,
     });
@@ -626,7 +746,7 @@ describe("game session validation", () => {
         name: "Voting cursor",
         mutationId: uuid(95),
         baseRevision: 0,
-        state: {
+        state: currentSnapshot({
           setup: null,
           game,
           hostPlayerId: uuid(11),
@@ -634,7 +754,7 @@ describe("game session validation", () => {
           playlistId: "",
           log: [],
           undoHistory: [],
-        },
+        }),
         results: null,
       });
 
@@ -651,7 +771,7 @@ describe("game session validation", () => {
       name: "Cancelled voting",
       mutationId: uuid(96),
       baseRevision: 0,
-      state: {
+      state: currentSnapshot({
         setup: null,
         game: {
           ...base,
@@ -668,7 +788,7 @@ describe("game session validation", () => {
         playlistId: "",
         log: [],
         undoHistory: [],
-      },
+      }),
       results: null,
     });
 
@@ -685,7 +805,7 @@ describe("game session validation", () => {
       name: "Evaluated Mafia result",
       mutationId: uuid(97),
       baseRevision: 0,
-      state: {
+      state: currentSnapshot({
         setup: null,
         game: {
           ...base,
@@ -697,7 +817,7 @@ describe("game session validation", () => {
         playlistId: "",
         log: [],
         undoHistory: [],
-      },
+      }),
       results: null,
     });
 
@@ -711,7 +831,7 @@ describe("game session validation", () => {
         name: "Persisted special phase",
         mutationId: uuid(94),
         baseRevision: 0,
-        state: {
+        state: currentSnapshot({
           setup: null,
           game,
           hostPlayerId: uuid(11),
@@ -719,7 +839,7 @@ describe("game session validation", () => {
           playlistId: "",
           log: [],
           undoHistory: [],
-        },
+        }),
         results: null,
       });
 
@@ -755,7 +875,7 @@ describe("game session validation", () => {
         name: "Persisted night eligibility",
         mutationId: uuid(98),
         baseRevision: 0,
-        state: {
+        state: currentSnapshot({
           setup: null,
           game,
           hostPlayerId: uuid(11),
@@ -763,7 +883,7 @@ describe("game session validation", () => {
           playlistId: "",
           log: [],
           undoHistory: [],
-        },
+        }),
         results: null,
       });
     const eligibility = { don: true, sheriff: false };
@@ -791,7 +911,7 @@ describe("game session validation", () => {
         name: "Persisted goodbye phase",
         mutationId: uuid(95),
         baseRevision: 0,
-        state: {
+        state: currentSnapshot({
           setup: null,
           game: {
             ...base,
@@ -808,7 +928,7 @@ describe("game session validation", () => {
           playlistId: "",
           log: [],
           undoHistory: [],
-        },
+        }),
         results: null,
       });
 
@@ -823,7 +943,7 @@ describe("game session validation", () => {
         name: "Mafia result",
         mutationId: uuid(96),
         baseRevision: 0,
-        state: {
+        state: currentSnapshot({
           setup: null,
           game,
           hostPlayerId: uuid(11),
@@ -831,7 +951,7 @@ describe("game session validation", () => {
           playlistId: "",
           log: [],
           undoHistory: [],
-        },
+        }),
         results: null,
       });
 
@@ -859,7 +979,7 @@ describe("game session validation", () => {
       name: "Mafia result on inactive target",
       mutationId: uuid(95),
       baseRevision: 0,
-      state: {
+      state: currentSnapshot({
         setup: null,
         game: inactiveTarget,
         hostPlayerId: uuid(11),
@@ -867,7 +987,7 @@ describe("game session validation", () => {
         playlistId: "",
         log: [],
         undoHistory: [],
-      },
+      }),
       results: null,
     });
     expect(parsed.success).toBe(true);
@@ -941,7 +1061,7 @@ describe("game session validation", () => {
       name: "Reviewed car crash",
       mutationId: uuid(100),
       baseRevision: 0,
-      state: {
+      state: currentSnapshot({
         setup: null,
         game: {
           ...liveGame(1),
@@ -965,7 +1085,7 @@ describe("game session validation", () => {
         playlistId: "",
         log: [],
         undoHistory: [],
-      },
+      }),
       results: null,
     });
 
@@ -1076,7 +1196,7 @@ describe("game session validation", () => {
       name: "Invalid undo checkpoint",
       mutationId: uuid(99),
       baseRevision: 2,
-      state: {
+      state: currentSnapshot({
         setup: null,
         game: liveGame(2),
         hostPlayerId: uuid(11),
@@ -1093,7 +1213,7 @@ describe("game session validation", () => {
           },
         ],
         undoHistory: [{ game: liveGame(1), logLength: 2, sequence: 3 }],
-      },
+      }),
       results: null,
     });
 
@@ -1116,7 +1236,7 @@ describe("game session validation", () => {
         name: "Day opener",
         mutationId: uuid(70),
         baseRevision: 0,
-        state: {
+        state: currentSnapshot({
           setup: null,
           game,
           hostPlayerId: uuid(11),
@@ -1124,7 +1244,7 @@ describe("game session validation", () => {
           playlistId: "",
           log: [],
           undoHistory: [],
-        },
+        }),
         results: null,
       });
     const current = {
@@ -1182,7 +1302,7 @@ describe("game session validation", () => {
       name: "Mismatched host",
       mutationId: uuid(72),
       baseRevision: 0,
-      state: {
+      state: currentSnapshot({
         setup: {
           step: "players",
           hostPlayerId: uuid(12),
@@ -1195,7 +1315,7 @@ describe("game session validation", () => {
         playlistId: "",
         log: [],
         undoHistory: [],
-      },
+      }),
       results: null,
     });
 

@@ -111,6 +111,6 @@ Never commit deployment parameter files containing real passwords or OAuth secre
 
 The publish job uses the full Git SHA as a traceable GHCR tag, captures and verifies the pushed manifest digest, and deploys Azure from `ghcr.io/...@sha256:<digest>`. Record the deployed digest with the release evidence. To roll back, redeploy the previous known-good digest; rerunning an old commit creates a new artifact and is not an artifact-identical rollback. Do not delete manifests referenced by healthy or rollback-eligible revisions.
 
-Each revision runs the advisory-locked, transaction-protected migration init container before the app container. A failed migration prevents that revision from becoming ready.
+Each revision runs the advisory-locked, transaction-protected schema initialization container before the app container. Only an empty database or the current schema with current-format rows is supported. Historical upgrades and backfills are not provided, and an unsupported schema prevents the revision from becoming ready without repairing or deleting existing data. Independently verify the database contract before selecting a rollback image; a previous digest is not automatically compatible.
 
 Database rollback is separate: application rollback must not automatically restore PostgreSQL. Use Flexible Server point-in-time restore only for an incompatible or destructive database change.

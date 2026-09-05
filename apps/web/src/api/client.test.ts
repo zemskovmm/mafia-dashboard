@@ -18,6 +18,7 @@ import {
   listMusicPlaylists,
   listPlayers,
   saveGameSession,
+  saveGameSessionOperation,
   signOut,
   takeoverGameSession,
   releaseGameSession,
@@ -453,9 +454,15 @@ describe("game session aggregate API client", () => {
       playlistId: "PL",
       log: [],
       undoHistory: [],
+      undoBudget: 0,
+      initialGame: null,
+      events: [],
+      headEventId: null,
+      resetReturnEventId: null,
+      legacyLog: [],
     };
     const operation = {
-      kind: "snapshot",
+      kind: "snapshot" as const,
       name: "Table",
       mutationId: "00000000-0000-4000-8000-000000000003",
       baseRevision: 0,
@@ -470,16 +477,7 @@ describe("game session aggregate API client", () => {
       }),
     );
     vi.stubGlobal("fetch", fetchMock);
-    const api = (await import("./client.js")) as unknown as {
-      saveGameSessionOperation: (
-        id: string,
-        input: typeof operation,
-        claimCredential: typeof credential,
-        clubId?: string,
-      ) => Promise<typeof response>;
-    };
-
-    await expect(api.saveGameSessionOperation(gameId, operation, credential)).resolves.toEqual(
+    await expect(saveGameSessionOperation(gameId, operation, credential)).resolves.toEqual(
       response,
     );
     expect(fetchMock).toHaveBeenCalledWith(
@@ -516,6 +514,12 @@ describe("game session aggregate API client", () => {
       playlistId: "PL",
       log: [],
       undoHistory: [],
+      undoBudget: 0,
+      initialGame: null,
+      events: [],
+      headEventId: null,
+      resetReturnEventId: null,
+      legacyLog: [],
     };
     const summary = {
       gameId,

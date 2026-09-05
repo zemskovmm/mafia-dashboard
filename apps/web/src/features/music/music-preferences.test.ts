@@ -31,48 +31,27 @@ describe("music preferences", () => {
     });
   });
 
-  it("migrates the selected playlist order from the former version-one envelope", () => {
-    window.localStorage.setItem(
-      musicPreferencesStorageKey("saved-club"),
-      JSON.stringify({
-        version: 1,
-        lastPlaylistId: "playlist-last",
-        queueOrderByPlaylist: { "playlist-last": ["video-b:1", "video-a:0"] },
-        stagePlaylistIds: { day: "playlist-day", night: "playlist-night" },
-      }),
-    );
-
-    expect(readMusicPreferences(window.localStorage, "saved-club")).toEqual({
+  it("ignores obsolete playlist and queue aliases when current fields are absent", () => {
+    const storageKey = musicPreferencesStorageKey("obsolete-fields-club");
+    const raw = JSON.stringify({
       version: 1,
-      lastPlaylistId: "playlist-last",
-      queueOrder: ["video-b:1", "video-a:0"],
+      queueOrderByPlaylist: { "playlist-day": ["day:0"] },
+      stagePlaylistIds: {
+        voting: "playlist-voting",
+        night: "playlist-night",
+        day: "playlist-day",
+      },
+    });
+    window.localStorage.setItem(storageKey, raw);
+
+    expect(readMusicPreferences(window.localStorage, "obsolete-fields-club")).toEqual({
+      version: 1,
+      lastPlaylistId: "",
+      queueOrder: [],
       initialStageEntryKeys: [],
       endgameEntryKeys: [],
     });
-  });
-
-  it("recovers one deterministic legacy stage playlist when none was selected", () => {
-    window.localStorage.setItem(
-      musicPreferencesStorageKey("stage-only-club"),
-      JSON.stringify({
-        version: 1,
-        lastPlaylistId: "",
-        queueOrderByPlaylist: { "playlist-day": ["day:0"] },
-        stagePlaylistIds: {
-          voting: "playlist-voting",
-          night: "playlist-night",
-          day: "playlist-day",
-        },
-      }),
-    );
-
-    expect(readMusicPreferences(window.localStorage, "stage-only-club")).toEqual({
-      version: 1,
-      lastPlaylistId: "playlist-day",
-      queueOrder: ["day:0"],
-      initialStageEntryKeys: [],
-      endgameEntryKeys: [],
-    });
+    expect(window.localStorage.getItem(storageKey)).toBe(raw);
   });
 
   it.each([
@@ -192,6 +171,8 @@ describe("music preferences", () => {
       queueOrder: [...entryKeys, { secret: true }],
       initialStageEntryKeys: [...entryKeys, { secret: true }],
       endgameEntryKeys: [...endgameEntryKeys, { secret: true }],
+      queueOrderByPlaylist: { "playlist-obsolete": ["video-obsolete:0"] },
+      stagePlaylistIds: { day: "playlist-obsolete" },
       game: { id: "game-secret" },
       accessToken: "token-secret",
     };

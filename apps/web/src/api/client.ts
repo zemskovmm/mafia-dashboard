@@ -98,9 +98,9 @@ export type PlayerProfileInput =
 
 export interface FinalGameResults {
   readonly hostPlayerId: string;
-  readonly outcome?: "red" | "black" | "draw" | "cancelled";
+  readonly outcome: "red" | "black" | "draw" | "cancelled";
   readonly winner: "red" | "black" | null;
-  readonly reason?: string | null;
+  readonly reason: string | null;
   readonly playedAt: string;
   readonly players: readonly {
     readonly playerId: string;
@@ -121,13 +121,15 @@ export interface GameSessionState {
   readonly playlistId: string;
   readonly log: readonly unknown[];
   readonly undoHistory: readonly unknown[];
-  readonly undoBudget?: number;
-  readonly initialGame?: InitialGameBaseline | null;
-  readonly events?: readonly GameLogEntry[];
-  readonly headEventId?: string | null;
-  readonly resetReturnEventId?: string | null;
-  readonly legacyLog?: readonly unknown[];
+  readonly undoBudget: number;
+  readonly initialGame: InitialGameBaseline | null;
+  readonly events: readonly GameLogEntry[];
+  readonly headEventId: string | null;
+  readonly resetReturnEventId: string | null;
+  readonly legacyLog: readonly unknown[];
 }
+
+export type CurrentGameSessionState = GameSessionState;
 
 export interface GameSessionMutation {
   readonly name: string;
@@ -147,49 +149,17 @@ export interface GameSessionClaim {
   readonly expiresAt: string;
 }
 
-export interface SessionMetadata {
-  readonly setup: unknown | null;
-  readonly hostPlayerId: string | null;
-  readonly hostName: string | null;
-  readonly playlistId: string;
-  readonly legacyLog: readonly unknown[];
-}
-
 interface GameSessionOperationBase {
   readonly name: string;
   readonly mutationId: string;
   readonly baseRevision: number;
 }
 
-export type GameSessionOperation =
-  | (GameSessionOperationBase & {
-      readonly kind: "metadata";
-      readonly metadata: SessionMetadata;
-    })
-  | (GameSessionOperationBase & { readonly kind: "normalize" })
-  | (GameSessionOperationBase & {
-      readonly kind: "start";
-      readonly baseline: InitialGameBaseline;
-      readonly event: GameLogEntry;
-    })
-  | (GameSessionOperationBase & {
-      readonly kind: "append-event";
-      readonly event: GameLogEntry;
-    })
-  | (GameSessionOperationBase & {
-      readonly kind: "move-head";
-      readonly targetEventId: string;
-      readonly reason: "undo" | "reset" | "restore-reset";
-    })
-  | (GameSessionOperationBase & {
-      readonly kind: "complete";
-      readonly results: FinalGameResults;
-    })
-  | (GameSessionOperationBase & {
-      readonly kind: "snapshot";
-      readonly state: GameSessionState;
-      readonly results: FinalGameResults | null;
-    });
+export interface GameSessionOperation extends GameSessionOperationBase {
+  readonly kind: "snapshot";
+  readonly state: CurrentGameSessionState;
+  readonly results: FinalGameResults | null;
+}
 
 export interface GameSessionOperationResponse {
   readonly revision: number;
@@ -525,79 +495,30 @@ export const saveGameSessionOperation = async (
   credential: GameSessionClaimCredential,
   clubId?: string,
 ): Promise<GameSessionOperationResponse> => {
-  const request = (() => {
-    const base = {
-      mutationId: operation.mutationId,
-      baseRevision: operation.baseRevision,
-    };
-    switch (operation.kind) {
-      case "metadata":
-        return {
-          url: `/api/game-sessions/${gameId}`,
-          method: "PUT",
-          body: {
-            name: operation.name,
-            ...base,
-            state: {
-              setup: operation.metadata.setup,
-              game: null,
-              hostPlayerId: operation.metadata.hostPlayerId,
-              hostName: operation.metadata.hostName,
-              playlistId: operation.metadata.playlistId,
-              log: operation.metadata.legacyLog,
-              undoHistory: [],
-              legacyLog: operation.metadata.legacyLog,
-            },
-            results: null,
-          },
-        } as const;
-      case "normalize":
-        return {
-          url: `/api/game-sessions/${gameId}/normalize`,
-          method: "POST",
-          body: base,
-        } as const;
-      case "start":
-        return {
-          url: `/api/game-sessions/${gameId}/start`,
-          method: "POST",
-          body: { ...base, initialGame: operation.baseline, event: operation.event },
-        } as const;
-      case "append-event":
-        return {
-          url: `/api/game-sessions/${gameId}/events`,
-          method: "POST",
-          body: { ...base, event: operation.event },
-        } as const;
-      case "move-head":
-        return {
-          url: `/api/game-sessions/${gameId}/head`,
-          method: "POST",
-          body: { ...base, targetEventId: operation.targetEventId, reason: operation.reason },
-        } as const;
-      case "complete":
-        return {
-          url: `/api/game-sessions/${gameId}/complete`,
-          method: "POST",
-          body: { ...base, results: operation.results },
-        } as const;
-      case "snapshot":
-        return {
-          url: `/api/game-sessions/${gameId}`,
-          method: "PUT",
-          body: {
-            name: operation.name,
-            mutationId: operation.mutationId,
-            state: operation.state,
-            results: operation.results,
-          },
-        } as const;
-    }
-  })();
-  const response = await fetchPersistenceRequest(request.url, {
-    method: request.method,
+  const { state } = operation;
+  const response = await fetchPersistenceRequest(`/api/game-sessions/${gameId}`, {
+    method: "PUT",
     headers: gameSessionClaimHeaders(credential, clubId, true),
-    body: JSON.stringify(request.body),
+    body: JSON.stringify({
+      name: operation.name,
+      mutationId: operation.mutationId,
+      state: {
+        setup: state.setup,
+        game: state.game,
+        hostPlayerId: state.hostPlayerId,
+        hostName: state.hostName,
+        playlistId: state.playlistId,
+        log: state.log,
+        undoHistory: state.undoHistory,
+        undoBudget: state.undoBudget,
+        initialGame: state.initialGame,
+        events: state.events,
+        headEventId: state.headEventId,
+        resetReturnEventId: state.resetReturnEventId,
+        legacyLog: state.legacyLog,
+      },
+      results: operation.results,
+    }),
   });
   if (!response.ok) return throwApiError(response, "Unable to save the game session operation");
   return (await response.json()) as GameSessionOperationResponse;

@@ -85,6 +85,12 @@ const roleGiveawayState = (
   playlistId: "",
   log: [],
   undoHistory: [],
+  undoBudget: 0,
+  initialGame: null,
+  events: [],
+  headEventId: null,
+  resetReturnEventId: null,
+  legacyLog: [],
 });
 
 type ActiveSessionKey = { readonly club_id: string; readonly id: string };
@@ -136,6 +142,32 @@ afterAll(async () => {
 });
 
 describe("server API", () => {
+  it("does not register obsolete raw game mutations or normalization", async () => {
+    const gameId = randomUUID();
+    const routes = [
+      { method: "POST", url: `/api/game-sessions/${gameId}/normalize` },
+      { method: "POST", url: "/api/games" },
+      { method: "DELETE", url: `/api/games/${gameId}` },
+      { method: "POST", url: `/api/games/${gameId}/events/truncate` },
+      { method: "POST", url: `/api/games/${gameId}/events` },
+      { method: "PUT", url: `/api/games/${gameId}/results` },
+      { method: "DELETE", url: `/api/games/${gameId}/results` },
+    ] as const;
+
+    for (const route of routes) {
+      const response = await app.inject(route);
+      expect(response.statusCode, `${route.method} ${route.url}`).toBe(404);
+    }
+    await expect(
+      pool.query(
+        `SELECT COUNT(*)::int AS count
+           FROM game_sessions
+          WHERE club_id = $1 AND id = $2`,
+        [DEFAULT_CLUB_ID, gameId],
+      ),
+    ).resolves.toMatchObject({ rows: [{ count: 0 }] });
+  });
+
   it.each([
     "/api/game-sessions?status=completed&from=21-08-2026",
     "/api/game-sessions?status=completed&to=2026-08-32",
@@ -160,7 +192,7 @@ describe("server API", () => {
     expect(response.json()).toEqual({ sessions: [] });
   });
 
-  it("returns the exact completed-session retry but rejects new mutation and deletion", async () => {
+  it("rejects an incomplete persisted completion instead of treating it as current", async () => {
     const gameId = randomUUID();
     const claimId = randomUUID();
     const players = await createSessionPlayers();
@@ -187,24 +219,8 @@ describe("server API", () => {
       headers: claimHeaders(claimId),
       payload,
     });
-    const changed = await app.inject({
-      method: "PUT",
-      url: `/api/game-sessions/${gameId}`,
-      headers: claimHeaders(claimId, 1),
-      payload: { ...payload, mutationId: randomUUID(), baseRevision: 1 },
-    });
-    const deletion = await app.inject({
-      method: "DELETE",
-      url: `/api/game-sessions/${gameId}?expectedRevision=1`,
-      headers: claimHeaders(claimId, 1),
-    });
-
-    expect(retry.statusCode).toBe(200);
-    expect(retry.json()).toMatchObject({ revision: 1, duplicate: true, status: "completed" });
-    expect(changed.statusCode).toBe(409);
-    expect(changed.json()).toEqual({ error: "game_session_completed" });
-    expect(deletion.statusCode).toBe(409);
-    expect(deletion.json()).toEqual({ error: "game_session_completed" });
+    expect(retry.statusCode).toBe(409);
+    expect(retry.json()).toEqual({ error: "game_session_replay_invalid" });
   });
 
   it("returns a client-valid response after completing an active aggregate exactly once", async () => {
@@ -319,6 +335,17 @@ describe("server API", () => {
       headers: claimHeaders(claimId, 1),
       payload: terminalMutation,
     });
+    const changed = await app.inject({
+      method: "PUT",
+      url: `/api/game-sessions/${gameId}`,
+      headers: claimHeaders(claimId, 1),
+      payload: { ...terminalMutation, mutationId: randomUUID(), baseRevision: 2 },
+    });
+    const deletion = await app.inject({
+      method: "DELETE",
+      url: `/api/game-sessions/${gameId}?expectedRevision=2`,
+      headers: claimHeaders(claimId, 1),
+    });
 
     expect(completed.statusCode).toBe(200);
     expect(completed.json()).toMatchObject({
@@ -332,6 +359,10 @@ describe("server API", () => {
     expect(retry.statusCode).toBe(200);
     expect(retry.json()).toMatchObject({ revision: 2, duplicate: true, status: "completed" });
     expect(retry.json()).not.toHaveProperty("claim");
+    expect(changed.statusCode).toBe(409);
+    expect(changed.json()).toEqual({ error: "game_session_completed" });
+    expect(deletion.statusCode).toBe(409);
+    expect(deletion.json()).toEqual({ error: "game_session_completed" });
 
     const restored = await app.inject({ method: "GET", url: `/api/game-sessions/${gameId}` });
     const history = await app.inject({ method: "GET", url: "/api/game-sessions?status=completed" });
@@ -656,26 +687,6 @@ describe("server API", () => {
         },
       }),
     ).resolves.toHaveProperty("statusCode", 403);
-    const createdGame = await userApp.inject({
-      method: "POST",
-      url: "/api/games",
-      headers,
-      payload: { name: "Regular user game" },
-    });
-    expect(createdGame.statusCode).toBe(201);
-    const gameId = createdGame.json().gameId as string;
-    const userEvents = await userApp.inject({
-      method: "GET",
-      url: `/api/games/${gameId}/events?visibility=host`,
-      headers,
-    });
-    const managerEvents = await app.inject({
-      method: "GET",
-      url: `/api/games/${gameId}/events?visibility=host`,
-      headers,
-    });
-    expect(userEvents.statusCode).toBe(200);
-    expect(userEvents.json()).toEqual(managerEvents.json());
     const sessionGameId = randomUUID();
     const sessionClaimId = randomUUID();
     const sessionPlayers = await createSessionPlayers(club.id);
@@ -773,137 +784,22 @@ describe("server API", () => {
     await versioned.close();
   });
 
-  it("creates a game with the first append-only event", async () => {
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/games",
-      payload: { name: "Friday table" },
-    });
-
-    expect(response.statusCode).toBe(201);
-    const body = response.json();
-    expect(body.gameId).toMatch(/^[0-9a-f-]{36}$/);
-    expect(body.event).toMatchObject({
-      gameId: body.gameId,
-      sequence: 1,
-      type: "game.created",
-      phase: "setup-players",
-      payload: { name: "Friday table" },
-    });
-  });
-
-  it("appends validated events and returns the ordered host log", async () => {
-    const gameId = randomUUID();
-    const response = await app.inject({
-      method: "POST",
-      url: `/api/games/${gameId}/events`,
-      payload: {
-        idempotencyKey: "turn-1",
-        type: "turn.started",
-        phase: "day",
-        seat: 3,
-        payload: { seat: 3, seconds: 60 },
-      },
-    });
-    expect(response.statusCode).toBe(201);
-
-    const duplicate = await app.inject({
-      method: "POST",
-      url: `/api/games/${gameId}/events`,
-      payload: {
-        idempotencyKey: "turn-1",
-        type: "turn.started",
-        phase: "day",
-        seat: 3,
-        payload: { seat: 3, seconds: 60 },
-      },
-    });
-    expect(duplicate.statusCode).toBe(200);
-
-    const log = await app.inject({ method: "GET", url: `/api/games/${gameId}/events` });
-    expect(log.statusCode).toBe(200);
-    expect(log.json().events).toHaveLength(1);
-    expect(log.json().events[0]).toMatchObject({ sequence: 1, type: "turn.started" });
-  });
-
-  it("truncates an undone event tail without deleting game.created", async () => {
-    const created = await app.inject({
-      method: "POST",
-      url: "/api/games",
-      payload: { name: "Undo table" },
-    });
-    const gameId = created.json().gameId as string;
-    await app.inject({
-      method: "POST",
-      url: `/api/games/${gameId}/events`,
-      payload: {
-        idempotencyKey: "undo-target",
-        type: "turn.completed",
-        phase: "day",
-        payload: { day: 2 },
-      },
-    });
-    await app.inject({
-      method: "POST",
-      url: `/api/games/${gameId}/events`,
-      payload: {
-        idempotencyKey: "later-event",
-        type: "foul.issued",
-        phase: "day",
-        payload: { seat: 1 },
-      },
-    });
-
-    const truncated = await app.inject({
-      method: "POST",
-      url: `/api/games/${gameId}/events/truncate`,
-      payload: { fromIdempotencyKey: "undo-target" },
-    });
-
-    expect(truncated.statusCode).toBe(204);
-    const log = await app.inject({ method: "GET", url: `/api/games/${gameId}/events` });
-    expect(log.json().events).toMatchObject([
-      { sequence: 1, idempotencyKey: "game-created", type: "game.created" },
-    ]);
-  });
-
-  it("rejects invalid events without appending anything", async () => {
-    const gameId = randomUUID();
-    const invalid = await app.inject({
-      method: "POST",
-      url: `/api/games/${gameId}/events`,
-      payload: {
-        idempotencyKey: "invalid-seat",
-        type: "foul.issued",
-        phase: "day",
-        seat: 11,
-        payload: {},
-      },
-    });
-
-    expect(invalid.statusCode).toBe(400);
-    const log = await app.inject({ method: "GET", url: `/api/games/${gameId}/events` });
-    expect(log.json().events).toEqual([]);
-  });
-
   it("redacts private event payloads and integrity hashes from public log requests", async () => {
     const gameId = randomUUID();
-    await app.inject({
-      method: "POST",
-      url: `/api/games/${gameId}/events`,
-      payload: {
-        idempotencyKey: "check-1",
-        type: "sheriff.checked",
-        phase: "night-sheriff",
-        seat: 5,
-        payload: { targetSeat: 8, match: true },
-      },
-    });
     const stateHashAfter = `sha256:${"a".repeat(64)}`;
-    await pool.query("UPDATE game_events SET state_hash_after = $2 WHERE game_id = $1", [
-      gameId,
-      stateHashAfter,
-    ]);
+    await pool.query(
+      `INSERT INTO game_events
+         (id, club_id, game_id, sequence, idempotency_key, event_type, phase, seat, payload,
+          state_hash_after)
+       VALUES ($1, $2, $3, 1, 'check-1', 'sheriff.checked', 'night-sheriff', 5, $4::jsonb, $5)`,
+      [
+        randomUUID(),
+        DEFAULT_CLUB_ID,
+        gameId,
+        JSON.stringify({ targetSeat: 8, match: true }),
+        stateHashAfter,
+      ],
+    );
 
     const host = await app.inject({ method: "GET", url: `/api/games/${gameId}/events` });
     const publicLog = await app.inject({
@@ -1496,119 +1392,6 @@ describe("server API", () => {
     expect(clearedEvents.json().events).toEqual([]);
   });
 
-  it("saves one host and ten finalized player results with aggregate statistics", async () => {
-    const players: Array<{ id: string; nickname: string }> = [];
-    for (let index = 0; index < 11; index += 1) {
-      const response = await app.inject({
-        method: "POST",
-        url: "/api/players",
-        payload: {
-          nickname: `Result-${index}-${randomUUID().slice(0, 8)}`,
-          consent: false,
-          firstName: null,
-          lastName: null,
-          email: null,
-        },
-      });
-      expect(response.statusCode).toBe(201);
-      players.push(response.json().player as { id: string; nickname: string });
-    }
-    const host = players[10]!;
-    const participants = players.slice(0, 10);
-
-    const gameId = randomUUID();
-    const payload = {
-      hostPlayerId: host.id,
-      winner: "red",
-      playedAt: "2026-08-17T22:00:00.000Z",
-      players: participants.map((player, index) => ({
-        playerId: player.id,
-        seat: index + 1,
-        role: index === 0 ? "sheriff" : index < 7 ? "citizen" : index === 9 ? "don" : "mafia",
-        team: index < 7 ? "red" : "black",
-        status: index === 7 ? "eliminated" : "active",
-        fouls: index === 0 ? 2 : 0,
-      })),
-    };
-    const missingHost = await app.inject({
-      method: "PUT",
-      url: `/api/games/${randomUUID()}/results`,
-      payload: { ...payload, hostPlayerId: null },
-    });
-    expect(missingHost.statusCode).toBe(400);
-    const invalidHost = await app.inject({
-      method: "PUT",
-      url: `/api/games/${gameId}/results`,
-      payload: { ...payload, hostPlayerId: participants[0]!.id },
-    });
-    expect(invalidHost.statusCode).toBe(400);
-    const saved = await app.inject({
-      method: "PUT",
-      url: `/api/games/${gameId}/results`,
-      payload,
-    });
-    const duplicate = await app.inject({
-      method: "PUT",
-      url: `/api/games/${gameId}/results`,
-      payload,
-    });
-    expect(saved.statusCode).toBe(204);
-    expect(duplicate.statusCode).toBe(204);
-
-    const listed = await app.inject({ method: "GET", url: "/api/players" });
-    const sheriff = listed
-      .json()
-      .players.find((player: { id: string }) => player.id === participants[0]!.id);
-    expect(sheriff.statistics).toMatchObject({
-      gamesPlayed: 1,
-      wins: 1,
-      losses: 0,
-      sheriffGames: 1,
-      totalFouls: 2,
-    });
-    const savedHost = listed.json().players.find((player: { id: string }) => player.id === host.id);
-    expect(savedHost.statistics).toMatchObject({ hostedGames: 1, gamesPlayed: 0 });
-
-    const deletedWithHistory = await app.inject({
-      method: "DELETE",
-      url: `/api/players/${participants[1]!.id}`,
-    });
-    expect(deletedWithHistory.statusCode).toBe(204);
-
-    const retracted = await app.inject({
-      method: "DELETE",
-      url: `/api/games/${gameId}/results`,
-    });
-    const duplicateRetraction = await app.inject({
-      method: "DELETE",
-      url: `/api/games/${gameId}/results`,
-    });
-    expect(retracted.statusCode).toBe(410);
-    expect(retracted.json()).toEqual({ error: "game_deleted" });
-    expect(duplicateRetraction.statusCode).toBe(410);
-    expect(duplicateRetraction.json()).toEqual({ error: "game_deleted" });
-
-    const afterRetraction = await app.inject({ method: "GET", url: "/api/players" });
-    const retractedHost = afterRetraction
-      .json()
-      .players.find((player: { id: string }) => player.id === host.id);
-    const retractedSheriff = afterRetraction
-      .json()
-      .players.find((player: { id: string }) => player.id === participants[0]!.id);
-    const deletedParticipant = afterRetraction
-      .json()
-      .players.find((player: { id: string }) => player.id === participants[1]!.id);
-    expect(retractedHost).toMatchObject({
-      lastPlayedAt: null,
-      statistics: { hostedGames: 0, gamesPlayed: 0 },
-    });
-    expect(retractedSheriff).toMatchObject({
-      lastPlayedAt: null,
-      statistics: { gamesPlayed: 0, wins: 0, sheriffGames: 0 },
-    });
-    expect(deletedParticipant).toBeUndefined();
-  });
-
   it("validates OAuth state before exchanging the Google authorization code", async () => {
     const oauth = {
       createAuthorizationUrl: vi.fn(
@@ -1905,6 +1688,12 @@ describe("server API", () => {
       playlistId: "",
       log: [],
       undoHistory: [],
+      undoBudget: 0,
+      initialGame: null,
+      events: [],
+      headEventId: null,
+      resetReturnEventId: null,
+      legacyLog: [],
     };
 
     const claimId = randomUUID();
@@ -2077,74 +1866,6 @@ describe("server API", () => {
     expect(conflict.body).not.toContain("state");
     expect(conflict.body).not.toContain("assignments");
     expect(conflict.body).not.toContain("sheriff");
-  });
-
-  it("rejects legacy mutations for an authoritative game session", async () => {
-    const gameId = randomUUID();
-    const claimId = randomUUID();
-    const players = await createSessionPlayers();
-    await app.inject({
-      method: "PUT",
-      url: `/api/game-sessions/${gameId}`,
-      headers: claimHeaders(claimId),
-      payload: {
-        name: "Authoritative table",
-        mutationId: randomUUID(),
-        baseRevision: 0,
-        state: roleGiveawayState(players.slice(0, 10), players[10]!),
-        results: null,
-      },
-    });
-
-    const responses = [
-      await app.inject({
-        method: "POST",
-        url: `/api/games/${gameId}/events`,
-        payload: {
-          idempotencyKey: randomUUID(),
-          type: "foul.issued",
-          phase: "day",
-          payload: { seat: 1 },
-        },
-      }),
-      await app.inject({
-        method: "POST",
-        url: `/api/games/${gameId}/events/truncate`,
-        payload: { fromIdempotencyKey: randomUUID() },
-      }),
-      await app.inject({ method: "DELETE", url: `/api/games/${gameId}` }),
-      await app.inject({ method: "DELETE", url: `/api/games/${gameId}/results` }),
-    ];
-
-    for (const response of responses) {
-      expect(response.statusCode).toBe(409);
-      expect(response.json()).toEqual({ error: "game_session_authoritative" });
-    }
-    const readable = await app.inject({ method: "GET", url: `/api/games/${gameId}/events` });
-    expect(readable.statusCode).toBe(200);
-  });
-
-  it("rejects timer and music controls on the legacy durable event route", async () => {
-    const created = await app.inject({
-      method: "POST",
-      url: "/api/games",
-      payload: { name: "Auxiliary controls" },
-    });
-    const gameId = created.json().gameId as string;
-
-    for (const type of ["timer.started", "music.fade-in"]) {
-      const response = await app.inject({
-        method: "POST",
-        url: `/api/games/${gameId}/events`,
-        payload: {
-          idempotencyKey: `${type}-test`,
-          type,
-          phase: "day",
-          payload: {},
-        },
-      });
-      expect(response.statusCode).toBe(400);
-    }
   });
 
   it("returns a conflict when a mutation id is reused with different content", async () => {
@@ -2348,18 +2069,11 @@ describe("server API", () => {
       { method: "POST", url: `/api/game-sessions/${id}/claim` },
       { method: "POST", url: `/api/game-sessions/${id}/takeover` },
       { method: "DELETE", url: `/api/game-sessions/${id}/claim` },
-      { method: "POST", url: `/api/game-sessions/${id}/normalize` },
       { method: "POST", url: `/api/game-sessions/${id}/start` },
       { method: "POST", url: `/api/game-sessions/${id}/events` },
       { method: "POST", url: `/api/game-sessions/${id}/head` },
       { method: "POST", url: `/api/game-sessions/${id}/complete` },
-      { method: "POST", url: "/api/games" },
-      { method: "DELETE", url: `/api/games/${id}` },
-      { method: "POST", url: `/api/games/${id}/events/truncate` },
-      { method: "POST", url: `/api/games/${id}/events` },
       { method: "GET", url: `/api/games/${id}/events` },
-      { method: "PUT", url: `/api/games/${id}/results` },
-      { method: "DELETE", url: `/api/games/${id}/results` },
     ] as const;
     const anonymousApp = await buildApp({
       pool,
@@ -2441,18 +2155,11 @@ describe("server API", () => {
       { method: "POST", url: `/api/game-sessions/${id}/claim` },
       { method: "POST", url: `/api/game-sessions/${id}/takeover` },
       { method: "DELETE", url: `/api/game-sessions/${id}/claim` },
-      { method: "POST", url: `/api/game-sessions/${id}/normalize` },
       { method: "POST", url: `/api/game-sessions/${id}/start` },
       { method: "POST", url: `/api/game-sessions/${id}/events` },
       { method: "POST", url: `/api/game-sessions/${id}/head` },
       { method: "POST", url: `/api/game-sessions/${id}/complete` },
-      { method: "POST", url: "/api/games" },
-      { method: "DELETE", url: `/api/games/${id}` },
-      { method: "POST", url: `/api/games/${id}/events/truncate` },
-      { method: "POST", url: `/api/games/${id}/events` },
       { method: "GET", url: `/api/games/${id}/events` },
-      { method: "PUT", url: `/api/games/${id}/results` },
-      { method: "DELETE", url: `/api/games/${id}/results` },
     ] as const;
 
     for (const route of memberRoutes) {

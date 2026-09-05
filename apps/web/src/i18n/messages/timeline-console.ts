@@ -120,7 +120,6 @@ const englishTimelineConsoleMessages = {
   "No completed games yet.": "No completed games yet.",
   "{label} · Checkpoint #{sequence}": "{label} · Checkpoint #{sequence}",
   "Sample · not saved": "Sample · not saved",
-  "Legacy log · state preview unavailable": "Legacy log · state preview unavailable",
   "Unknown host": "Unknown host",
   "accepted events": {
     one: "{count} accepted event",
@@ -288,7 +287,6 @@ const russianTimelineConsoleMessages = {
   "No completed games yet.": "Завершённых игр пока нет.",
   "{label} · Checkpoint #{sequence}": "{label} · Контрольная точка #{sequence}",
   "Sample · not saved": "Демонстрация · не сохранена",
-  "Legacy log · state preview unavailable": "Устаревший журнал · предпросмотр состояния недоступен",
   "Unknown host": "Неизвестный ведущий",
   "accepted events": {
     one: "{count} принятое событие",

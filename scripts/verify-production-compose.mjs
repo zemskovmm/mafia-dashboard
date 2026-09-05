@@ -52,7 +52,7 @@ const findFreePort = () =>
   });
 
 const port = await findFreePort();
-const gameName = `Compose smoke ${process.pid}`;
+
 const sessionToken = randomUUID();
 const sessionHash = createHash("sha256").update(sessionToken).digest("hex");
 const clubId = "00000000-0000-4000-8000-000000000101";
@@ -370,22 +370,6 @@ try {
     `INSERT INTO user_sessions (id, token_hash, user_id, expires_at) VALUES ('${randomUUID()}', decode('${sessionHash}', 'hex'), '00000000-0000-4000-8000-000000000001', NOW() + INTERVAL '1 hour');`,
   ]);
 
-  const requestHeaders = {
-    "content-type": "application/json",
-    cookie: `mafia_session=${sessionToken}`,
-    origin: `http://127.0.0.1:${port}`,
-    "x-club-id": clubId,
-  };
-  const createGame = await fetch(`http://127.0.0.1:${port}/api/games`, {
-    body: JSON.stringify({ name: gameName }),
-    headers: requestHeaders,
-    method: "POST",
-  });
-  if (createGame.status !== 201) {
-    throw new Error(`Application rejected the smoke game with HTTP ${createGame.status}`);
-  }
-  const { gameId } = await createGame.json();
-
   sessionVerifier = spawn(process.execPath, ["scripts/verify-session-state.mjs"], {
     cwd,
     env: {
@@ -416,24 +400,6 @@ try {
   }
   writeRestartMarker("continue");
   assertSessionVerifierPassed(await sessionVerifierResult);
-
-  const readEvents = await fetch(
-    `http://127.0.0.1:${port}/api/games/${gameId}/events?visibility=host`,
-    { headers: requestHeaders },
-  );
-  if (!readEvents.ok) {
-    throw new Error(
-      `Application could not read the smoke game after restart: ${readEvents.status}`,
-    );
-  }
-  const { events } = await readEvents.json();
-  if (
-    events.length !== 1 ||
-    events[0].type !== "game.created" ||
-    events[0].payload.name !== gameName
-  ) {
-    throw new Error("The accepted game event did not survive the application-container restart");
-  }
 
   run(["run", "--rm", "migrate"]);
 } catch (error) {

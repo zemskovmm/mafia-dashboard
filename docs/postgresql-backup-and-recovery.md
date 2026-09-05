@@ -226,7 +226,7 @@ It reports identifiers, statuses, and counts only—not private state or secret 
 4. Provision the destination PostgreSQL major and application role from protected deployment configuration.
 5. Restore to a new database name with `postgres-restore.sh`.
 6. Run `postgres-restore-test.sh` against the same archive and independently inspect the recovered known game.
-7. Update the protected `DATABASE_URL` to the recovered database, run the one-shot migration, and start the application.
+7. Verify that the recovered schema and stored formats match the intended application image. Historical archives are not upgraded automatically. Only after that check, update the protected `DATABASE_URL`, run the one-shot current-schema initialization/validation job, and start the application. Preserve an incompatible recovery target; do not reset it to bypass validation.
 8. Verify `/health/live`, `/health/ready`, authentication, club isolation, and the known game before reopening writes.
 9. Observe the service and retain the damaged source plus previous connection configuration until recovery is accepted.
 10. Record elapsed time, recovered archive timestamp, actual data-loss window, and follow-up actions without recording secrets or private game payloads.

@@ -19,10 +19,8 @@ import {
   type LucideProps,
 } from "lucide-react";
 import {
-  isProvisionalInteractionType,
   replayGameLog,
   type GameLogEntry,
-  type GameState,
   type InitialGameBaseline,
   type ReplayFrame,
 } from "@mafia/game-domain";
@@ -43,13 +41,8 @@ import { getActiveBranch } from "../game/game-history.js";
 import { createSampleGameHistory } from "./sample-game-data.js";
 import {
   buildTimeline,
-  formatTimelinePhase,
-  isVisibleTimelineEvent,
-  TIMELINE_REGION_COLORS,
   type TimelineMarker,
   type TimelineModel,
-  type TimelineRegion,
-  type TimelineRegionKind,
   type TimelineText,
 } from "./timeline-model.js";
 
@@ -81,7 +74,6 @@ interface LoadedHistory {
   readonly timeline: TimelineModel;
   readonly summary: CompletedGameSessionSummary | null;
   readonly sample: boolean;
-  readonly legacy: boolean;
   readonly current: boolean;
   readonly headEventId: string | null;
 }
@@ -110,254 +102,7 @@ const iconByName: Readonly<Record<string, ComponentType<LucideProps>>> = {
   circle: Circle,
 };
 
-interface LegacyLogEntry {
-  readonly id: string;
-  readonly sequence: number;
-  readonly type: string;
-  readonly phase: string;
-  readonly payload: Readonly<Record<string, unknown>>;
-  readonly createdAt: string;
-}
-
-interface LegacyRegionIdentity {
-  readonly id: string;
-  readonly kind: TimelineRegionKind;
-  readonly label: string;
-  readonly color: string;
-  readonly day: number;
-}
-
-const legacyRegion = (
-  phase: string,
-  day: number,
-  text: TimelineText,
-): LegacyRegionIdentity | null => {
-  if (phase === "finished") return null;
-  if (day === 0) {
-    return {
-      id: "initial-night",
-      kind: "initial-night",
-      label: text.t("Initial night"),
-      color: TIMELINE_REGION_COLORS.initialNight,
-      day,
-    };
-  }
-  if (phase.startsWith("night-")) {
-    return {
-      id: `night-${day}`,
-      kind: "night",
-      label: text.t("Night {day}", { day }),
-      color: TIMELINE_REGION_COLORS.night,
-      day,
-    };
-  }
-  if (
-    phase === "voting" ||
-    phase === "voting-cancelled" ||
-    phase === "car-crash" ||
-    phase === "car-crash-decision" ||
-    phase === "car-crash-skipped" ||
-    phase === "goodbye-speech"
-  ) {
-    return {
-      id: `voting-${day}`,
-      kind: "voting",
-      label: text.t("Voting {day}", { day }),
-      color: TIMELINE_REGION_COLORS.voting,
-      day,
-    };
-  }
-  return {
-    id: `day-${day}`,
-    kind: "day",
-    label: text.t("Day {day}", { day }),
-    color: TIMELINE_REGION_COLORS.day,
-    day,
-  };
-};
-
-const legacyPlayerLabel = (game: GameState | null, value: unknown, text: TimelineText): string => {
-  if (typeof value !== "number" || !Number.isInteger(value)) return text.t("Unknown player");
-  const player = game?.players.find(({ seat }) => seat === value);
-  const name = typeof player?.name === "string" ? player.name.trim() : "";
-  return name.length > 0 ? name : text.t("Seat {seat}", { seat: value });
-};
-
-const legacyMarker = (
-  raw: LegacyLogEntry,
-  game: GameState | null,
-  frameIndex: number,
-  regionId: string | null,
-  text: TimelineText,
-): TimelineMarker => {
-  let kind: TimelineMarker["kind"] = "generic";
-  let icon = "circle";
-  let label = text.t("Generic event", {
-    event: raw.type.replace(/[.-]+/g, " ").trim() || "Game event",
-  });
-  let ariaLabel = label;
-  switch (raw.type) {
-    case "phase.changed":
-      if (typeof raw.payload.to === "string") {
-        kind = "phase";
-        icon = "arrow-right";
-        label =
-          raw.payload.to === "night-mafia"
-            ? text.t("Night")
-            : formatTimelinePhase(raw.payload.to, text);
-        ariaLabel = label;
-      }
-      break;
-    case "turn.completed":
-      if (typeof raw.payload.seat === "number") {
-        const player = legacyPlayerLabel(game, raw.payload.seat, text);
-        kind = "turn";
-        icon = "message-circle";
-        label = text.t("{player} completed turn", { player });
-        ariaLabel = text.t("{player} completed their turn", { player });
-      }
-      break;
-    case "player.nominated":
-      if (
-        typeof raw.payload.nominatorSeat === "number" &&
-        typeof raw.payload.candidateSeat === "number"
-      ) {
-        const nominator = legacyPlayerLabel(game, raw.payload.nominatorSeat, text);
-        const candidate = legacyPlayerLabel(game, raw.payload.candidateSeat, text);
-        kind = "nomination";
-        icon = "user-plus";
-        label = text.t("{candidate} set for voting", { candidate });
-        ariaLabel = text.t("Nomination: {nominator} set {candidate} for voting", {
-          nominator,
-          candidate,
-        });
-      }
-      break;
-    case "player.red-carded":
-      if (typeof raw.payload.seat === "number") {
-        const player = legacyPlayerLabel(game, raw.payload.seat, text);
-        kind = "red-card";
-        icon = "badge-x";
-        label = text.t("{player} red-carded", { player });
-        ariaLabel = text.t("Red card: {player}", { player });
-      }
-      break;
-    case "don.checked":
-    case "sheriff.checked":
-      if (typeof raw.payload.targetSeat === "number" && typeof raw.payload.match === "boolean") {
-        kind = raw.type === "don.checked" ? "don-check" : "sheriff-check";
-        icon = raw.type === "don.checked" ? "eye" : "shield-search";
-        label =
-          raw.type === "don.checked"
-            ? text.t("Don checked {target}: {result}", {
-                target: legacyPlayerLabel(game, raw.payload.targetSeat, text),
-                result: text.t(raw.payload.match ? "Sheriff" : "Not Sheriff"),
-              })
-            : text.t("Sheriff checked {target}: {result}", {
-                target: legacyPlayerLabel(game, raw.payload.targetSeat, text),
-                result: text.t(raw.payload.match ? "Mafia" : "Not Mafia"),
-              });
-        ariaLabel = label;
-      }
-      break;
-    case "don.check-skipped":
-    case "sheriff.check-skipped":
-      kind = "check-skipped";
-      icon = "skip-forward";
-      label = text.t(
-        raw.type === "don.check-skipped" ? "Don check skipped" : "Sheriff check skipped",
-      );
-      ariaLabel = label;
-      break;
-    case "voting.skipped":
-      kind = "voting-cancelled";
-      icon = "ban";
-      label = text.t("Voting skipped");
-      ariaLabel = text.t("Voting skipped by the host");
-      break;
-    case "game.completed":
-      if (raw.payload.winner === "red" || raw.payload.winner === "black") {
-        const winner = text.t("{team} team won", {
-          team: text.t(raw.payload.winner === "red" ? "Red team" : "Black team"),
-        });
-        kind = "completion";
-        icon = "trophy";
-        label = winner;
-        ariaLabel = text.t("Game completed: {team}", { team: winner });
-      }
-      break;
-  }
-  return {
-    id: `marker-${raw.id}`,
-    eventId: raw.id,
-    eventType: raw.type,
-    frameIndex,
-    sequence: raw.sequence,
-    regionId,
-    kind,
-    icon,
-    label,
-    ariaLabel,
-    accessibleLabel: ariaLabel,
-    createdAt: raw.createdAt,
-  };
-};
-
-const legacyTimeline = (session: RemoteGameSession, text: TimelineText): TimelineModel => {
-  const finalGame = session.state.game as GameState | null;
-  const rawLog = session.state.log as readonly LegacyLogEntry[];
-  if (rawLog.length === 0) return { regions: [], markers: [], frames: [] };
-  let day = 0;
-  const regions: TimelineRegion[] = [];
-  const markers: TimelineMarker[] = [];
-  for (const raw of rawLog) {
-    if (isProvisionalInteractionType(raw.type) || !isVisibleTimelineEvent(raw.type, raw.payload)) {
-      continue;
-    }
-    if (typeof raw.payload.day === "number" && Number.isInteger(raw.payload.day)) {
-      day = raw.payload.day;
-    }
-    const requestedPhase =
-      raw.type === "phase.changed" && typeof raw.payload.to === "string"
-        ? raw.payload.to
-        : raw.phase;
-    if (day === 0 && requestedPhase !== "mafia-planning" && requestedPhase !== "sheriff-wake") {
-      day = 1;
-    }
-    const identity =
-      raw.type === "best-move.completed"
-        ? legacyRegion("night-best-move", Math.max(1, day - 1), text)
-        : legacyRegion(requestedPhase, day, text);
-    const frameIndex = markers.length;
-    const previous = regions.at(-1);
-    if (identity !== null) {
-      if (previous?.id === identity.id) {
-        regions[regions.length - 1] = {
-          ...previous,
-          endFrameIndex: frameIndex,
-          frameCount: previous.frameCount + 1,
-          endSequence: raw.sequence,
-        };
-      } else {
-        regions.push({
-          ...identity,
-          startFrameIndex: frameIndex,
-          endFrameIndex: frameIndex,
-          frameCount: 1,
-          startSequence: raw.sequence,
-          endSequence: raw.sequence,
-        });
-      }
-    }
-    markers.push(legacyMarker(raw, finalGame, frameIndex, identity?.id ?? null, text));
-  }
-  return { regions, markers, frames: [] };
-};
-
-const replaySession = (
-  session: RemoteGameSession,
-  text: TimelineText,
-): { readonly timeline: TimelineModel; readonly legacy: boolean } => {
+const replaySession = (session: RemoteGameSession, text: TimelineText): TimelineModel => {
   const baseline = session.state.initialGame as InitialGameBaseline | null | undefined;
   const entries = session.state.events as readonly GameLogEntry[] | undefined;
   const headEventId = session.state.headEventId;
@@ -365,17 +110,9 @@ const replaySession = (
     throw new Error("Loaded timeline contains events from another game");
   }
   if (baseline == null || entries === undefined || headEventId == null) {
-    const timeline = legacyTimeline(session, text);
-    if (timeline.markers.length === 0) throw new Error("This game has no timeline markers");
-    return { timeline, legacy: true };
+    throw new Error("Loaded timeline is missing canonical replay data");
   }
-  return {
-    timeline: buildTimeline(
-      replayGameLog(baseline, getActiveBranch(entries, headEventId)).frames,
-      text,
-    ),
-    legacy: false,
-  };
+  return buildTimeline(replayGameLog(baseline, getActiveBranch(entries, headEventId)).frames, text);
 };
 
 export const GameTimelineScreen = (props: GameTimelineScreenProps) => (
@@ -412,7 +149,6 @@ const TenantGameTimelineScreen = ({
       timeline,
       summary: null,
       sample: false,
-      legacy: false,
       current: true,
       headEventId: semanticHead?.eventId ?? currentHistory.headEventId,
     };
@@ -499,7 +235,6 @@ const TenantGameTimelineScreen = ({
       timeline: buildTimeline(sample.frames, i18n),
       summary: null,
       sample: true,
-      legacy: false,
       current: false,
       headEventId: null,
     });
@@ -532,10 +267,9 @@ const TenantGameTimelineScreen = ({
         const replayed = replaySession(session, i18n);
         setHistory({
           label: summary.name,
-          timeline: replayed.timeline,
+          timeline: replayed,
           summary,
           sample: false,
-          legacy: replayed.legacy,
           current: false,
           headEventId: null,
         });
@@ -707,11 +441,6 @@ const TenantGameTimelineScreen = ({
               <strong>{history.label}</strong>
               {history.sample ? (
                 <span className="timeline-sample-badge">{i18n.t("Sample · not saved")}</span>
-              ) : null}
-              {history.legacy ? (
-                <span className="timeline-legacy-badge">
-                  {i18n.t("Legacy log · state preview unavailable")}
-                </span>
               ) : null}
               {history.summary === null ? null : (
                 <span>

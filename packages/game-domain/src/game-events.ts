@@ -12,13 +12,7 @@ import {
   resolveVote,
   skipVoting,
 } from "./day-actions.js";
-import {
-  advanceSetupPhase,
-  cancelGame,
-  confirmDraw,
-  getDayOrder,
-  isTerminalGamePhase,
-} from "./game.js";
+import { advanceSetupPhase, cancelGame, confirmDraw, isTerminalGamePhase } from "./game.js";
 import {
   beginNight,
   completeBestMove,
@@ -841,11 +835,9 @@ export const assertGameLogEntry: (value: unknown) => asserts value is GameLogEnt
   assertSafeInteger(entry.dayAfter, "Event dayAfter", 0);
   if (
     typeof entry.stateHashAfter !== "string" ||
-    !/^(?:sha256:[0-9a-f]{64}|[0-9a-f]{8})$/.test(entry.stateHashAfter)
+    !/^sha256:[0-9a-f]{64}$/.test(entry.stateHashAfter)
   ) {
-    throw new Error(
-      "Event stateHashAfter must use sha256:<64 lowercase hex characters> or the legacy 8-hex compatibility format",
-    );
+    throw new Error("Event stateHashAfter must use sha256:<64 lowercase hex characters>");
   }
   assertCreatedAt(entry.createdAt);
 };
@@ -946,49 +938,12 @@ export const hashGameState = (game: GameState): string => {
   return `sha256:${sha256Hex(text)}`;
 };
 
-const legacyHashGameState = (game: GameState): string => {
-  const text = JSON.stringify(canonicalJsonValue(game));
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16).padStart(8, "0");
-};
-
-const matchesStateHash = (game: GameState, hash: string): boolean =>
-  hash.startsWith("sha256:") ? hashGameState(game) === hash : legacyHashGameState(game) === hash;
+const matchesStateHash = (game: GameState, hash: string): boolean => hashGameState(game) === hash;
 
 const matchesRecordedState = (game: GameState, entry: GameLogEntry): boolean =>
   game.phase === entry.phaseAfter &&
   game.day === entry.dayAfter &&
   matchesStateHash(game, entry.stateHashAfter);
-
-const withMutePendingFrom = (game: GameState, source: GameState): GameState => {
-  const pendingBySeat = new Map(source.players.map(({ seat, mutePending }) => [seat, mutePending]));
-  return {
-    ...game,
-    players: game.players.map((player) => {
-      const mutePending = pendingBySeat.get(player.seat);
-      return mutePending !== undefined && mutePending !== player.mutePending
-        ? { ...player, mutePending }
-        : player;
-    }),
-  };
-};
-
-const withoutDayOpeningCursor = (game: GameState): GameState => {
-  const legacy = { ...game, turnOrder: getDayOrder(game.players, game.day) };
-  delete (legacy as { dayOpeningSeat?: number }).dayOpeningSeat;
-  return legacy;
-};
-
-const withoutNightCheckEligibility = (game: GameState): GameState => {
-  const legacy = { ...game };
-  delete (legacy as { nightCheckEligibility?: GameState["nightCheckEligibility"] })
-    .nightCheckEligibility;
-  return legacy;
-};
 
 const sameValue = (left: unknown, right: unknown): boolean =>
   JSON.stringify(canonicalJsonValue(left)) === JSON.stringify(canonicalJsonValue(right));
@@ -1358,133 +1313,6 @@ export const createGameLogEntry = (
   };
 };
 
-const completeMafiaShotsWithLegacyCheckRouting = (game: GameState): GameState => {
-  const resolved = completeMafiaShots(game);
-  const phase = game.players.some(({ role }) => role === "don")
-    ? "night-don"
-    : game.players.some(({ role }) => role === "sheriff")
-      ? "night-sheriff"
-      : "night-resolution";
-  return { ...resolved, phase };
-};
-
-const applyReplayEventCore = (game: GameState, entry: GameLogEntry): GameState => {
-  if (/^[0-9a-f]{8}$/.test(entry.stateHashAfter) && entry.type === "best-move.completed") {
-    const prepared = game.phase === "night-resolution" ? completeNight(game) : game;
-    const selectedSeats = [...entry.payload.selectedSeats];
-    if (
-      prepared.phase !== "best-move" ||
-      prepared.bestMove?.playerSeat !== entry.payload.playerSeat ||
-      selectedSeats.length !== 3 ||
-      new Set(selectedSeats).size !== selectedSeats.length
-    ) {
-      throw new Error("Legacy Best move has invalid phase, owner, or selections");
-    }
-    const selected = selectedSeats.map((seat) =>
-      prepared.players.find((player) => player.seat === seat),
-    );
-    if (selected.some((player) => player === undefined)) {
-      throw new Error("Legacy Best move contains an invalid player");
-    }
-    const mafiaHits = selected.filter((player) => player?.team === "black").length;
-    if (entry.payload.mafiaHits !== mafiaHits) {
-      throw new Error("Legacy Best move hit count does not match the immutable roles");
-    }
-    return {
-      ...prepared,
-      phase: "goodbye-speech",
-      bestMove: { playerSeat: entry.payload.playerSeat, selectedSeats, mafiaHits },
-      dayNotice: undefined,
-    };
-  }
-  if (
-    /^[0-9a-f]{8}$/.test(entry.stateHashAfter) &&
-    (entry.type === "don.checked" || entry.type === "sheriff.checked")
-  ) {
-    const expectedPhase = entry.type === "don.checked" ? "night-don" : "night-sheriff";
-    if (game.phase !== expectedPhase) {
-      throw new Error(`Legacy ${entry.type} cannot replay from ${game.phase}`);
-    }
-    const target = game.players.find(({ seat }) => seat === entry.payload.targetSeat);
-    const ownerRole = entry.type === "don.checked" ? "don" : "sheriff";
-    if (target === undefined || !game.players.some(({ role }) => role === ownerRole)) {
-      throw new Error(`Legacy ${ownerRole} check has invalid players`);
-    }
-    const match =
-      entry.type === "don.checked" ? target.role === "sheriff" : target.team === "black";
-    if (entry.payload.match !== match)
-      throw new Error(`Legacy ${ownerRole} check result is invalid`);
-    return {
-      ...game,
-      phase: entry.type === "don.checked" ? "night-don-result" : "night-sheriff-result",
-      checkResult: {
-        kind: entry.type === "don.checked" ? "don-check" : "sheriff-check",
-        targetSeat: target.seat,
-        match,
-        secret: true,
-      },
-    };
-  }
-  if (/^[0-9a-f]{8}$/.test(entry.stateHashAfter) && entry.type === "car-crash.resolved") {
-    const after = applyGameEvent(game, {
-      type: entry.type,
-      payload: {
-        ...entry.payload,
-        votes: Object.fromEntries(
-          game.players
-            .filter(({ status }) => status === "active")
-            .map(({ seat }) => [seat, entry.payload.votes[seat] === true]),
-        ),
-      },
-    });
-    return after.carCrashVotes === undefined
-      ? after
-      : { ...after, carCrashVotes: { ...entry.payload.votes } };
-  }
-  if (game.nightCheckEligibility === undefined && game.phase === "night-mafia-result") {
-    const legacyCheckPhase = completeMafiaShotsWithLegacyCheckRouting(game);
-    if (entry.type === "phase.changed" && entry.payload.to === legacyCheckPhase.phase) {
-      return legacyCheckPhase;
-    }
-    if (entry.type === "don.check-skipped" && legacyCheckPhase.phase === "night-don") {
-      return {
-        ...legacyCheckPhase,
-        phase: game.players.some(({ role }) => role === "sheriff")
-          ? "night-sheriff"
-          : "night-resolution",
-      };
-    }
-  }
-  if (
-    entry.type === "don.check-skipped" &&
-    game.nightCheckEligibility === undefined &&
-    game.phase === "night-don"
-  ) {
-    return {
-      ...game,
-      phase: game.players.some(({ role }) => role === "sheriff")
-        ? "night-sheriff"
-        : "night-resolution",
-      checkResult: undefined,
-    };
-  }
-  if (entry.type === "phase.changed" && game.nightCheckEligibility === undefined) {
-    const legacyPrivatePhase =
-      game.phase === "night-don" || game.phase === "night-don-result"
-        ? "night-sheriff"
-        : game.phase === "night-sheriff" || game.phase === "night-sheriff-result"
-          ? "night-resolution"
-          : null;
-    if (legacyPrivatePhase === entry.payload.to) {
-      return { ...game, phase: legacyPrivatePhase, checkResult: undefined };
-    }
-  }
-  return applyGameEvent(game, {
-    type: entry.type,
-    payload: entry.payload,
-  } as CanonicalGameEventDraft);
-};
-
 export const applyCurrentGameLogEntry = (game: GameState, entry: GameLogEntry): GameState => {
   assertGameLogEntry(entry);
   if (entry.phaseBefore !== game.phase || entry.dayBefore !== game.day) {
@@ -1498,66 +1326,6 @@ export const applyCurrentGameLogEntry = (game: GameState, entry: GameLogEntry): 
     throw new Error(`Event ${entry.id} does not match current rule semantics`);
   }
   return after;
-};
-
-const applyReplayEvent = (game: GameState, entry: GameLogEntry): GameState => {
-  const current = applyReplayEventCore(game, entry);
-  if (matchesRecordedState(current, entry)) return current;
-
-  if (game.nightCheckEligibility === undefined && current.nightCheckEligibility !== undefined) {
-    const preEligibility = withoutNightCheckEligibility(current);
-    if (matchesRecordedState(preEligibility, entry)) return preEligibility;
-  }
-
-  // Historical chains may retain pre-fix mute state; new appends use applyCurrentGameLogEntry.
-  const eliminatedSeats = (() => {
-    if (entry.type === "voting.resolved" && entry.payload.result.kind === "winner") {
-      return entry.payload.result.seats;
-    }
-    if (entry.type === "car-crash.resolved" && entry.payload.result.eliminate) {
-      return entry.payload.result.seats;
-    }
-    if (
-      entry.type === "phase.changed" &&
-      game.phase === "car-crash-result" &&
-      game.carCrashResult?.eliminate
-    ) {
-      return game.carCrashResult.seats;
-    }
-    return [];
-  })();
-  const mutedEliminations = new Set(
-    eliminatedSeats.filter(
-      (seat) => current.players.find((player) => player.seat === seat)?.mutePending,
-    ),
-  );
-  if (mutedEliminations.size > 0) {
-    const withoutEliminationMutes: GameState = {
-      ...game,
-      players: game.players.map((player) =>
-        mutedEliminations.has(player.seat) ? { ...player, mutePending: false } : player,
-      ),
-    };
-    const preFix = applyReplayEventCore(withoutEliminationMutes, entry);
-    const restored = withMutePendingFrom(preFix, current);
-    if (matchesRecordedState(restored, entry)) return restored;
-  }
-
-  if (
-    current.day > game.day &&
-    (entry.type === "phase.changed" || entry.type === "best-move.completed")
-  ) {
-    const preFixMute = withMutePendingFrom(current, game);
-    if (matchesRecordedState(preFixMute, entry)) return preFixMute;
-    if (game.dayOpeningSeat === undefined) {
-      const preCursor = withoutDayOpeningCursor(current);
-      if (matchesRecordedState(preCursor, entry)) return preCursor;
-      const preCursorAndMute = withoutDayOpeningCursor(preFixMute);
-      if (matchesRecordedState(preCursorAndMute, entry)) return preCursorAndMute;
-    }
-  }
-
-  return current;
 };
 
 export const replayGameLog = (
@@ -1576,7 +1344,6 @@ export const replayGameLog = (
   let previousSequence = 0;
   let replayGameId: string | null = null;
   const seenIds = new Set<string>();
-  let sawSha256 = false;
   const frames: ReplayFrame[] = [];
   if (entries.length > 0) {
     const rootMarkerIndexes = entries.flatMap(({ type }, index) =>
@@ -1605,11 +1372,6 @@ export const replayGameLog = (
   }
   for (const entry of entries) {
     assertGameLogEntry(entry);
-    const legacyHash = /^[0-9a-f]{8}$/.test(entry.stateHashAfter);
-    if (legacyHash && sawSha256) {
-      throw new Error(`Legacy state hash appears after SHA-256 event ${entry.id}`);
-    }
-    if (!legacyHash) sawSha256 = true;
     if (seenIds.has(entry.id)) throw new Error(`Duplicate event ID ${entry.id}`);
     seenIds.add(entry.id);
     if (replayGameId === null) replayGameId = entry.gameId;
@@ -1632,7 +1394,10 @@ export const replayGameLog = (
       throw new Error(`Event ${entry.id} does not start from the replayed state`);
     }
     const before = game;
-    const after = applyReplayEvent(before, entry);
+    const after = applyGameEvent(before, {
+      type: entry.type,
+      payload: entry.payload,
+    } as CanonicalGameEventDraft);
     if (entry.phaseAfter !== after.phase || entry.dayAfter !== after.day) {
       throw new Error(`Event ${entry.id} phase/day metadata does not match replay`);
     }
@@ -1646,11 +1411,10 @@ export const replayGameLog = (
   }
   if (
     entries.length > 0 &&
-    /^sha256:[0-9a-f]{64}$/.test(entries[0]!.stateHashAfter) &&
     entries[0]!.type !== "game.started" &&
     entries[0]!.type !== "game.checkpointed"
   ) {
-    throw new Error("A modern replay chain requires a lifecycle root marker");
+    throw new Error("A current replay chain requires a lifecycle root marker");
   }
   return { game, frames };
 };

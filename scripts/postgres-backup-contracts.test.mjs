@@ -20,6 +20,17 @@ import { afterEach, test } from "node:test";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const temporaryDirectories = [];
 
+test("the real backup drill seeds current canonical game data", async () => {
+  const drill = await readFile(join(root, "scripts/verify-postgres-backup.mjs"), "utf8");
+  const hasCurrentCanonicalFixture =
+    !/deadbeef|speech\.started/.test(drill) &&
+    /createGame\(/.test(drill) &&
+    /createGameLogEntry/.test(drill) &&
+    /replayGameLog/.test(drill) &&
+    /legacyLog: \[\]/.test(drill);
+  assert.equal(hasCurrentCanonicalFixture, true);
+});
+
 const fakePostgresTool = `#!/bin/sh
 set -eu
 tool=\${0##*/}
@@ -130,11 +141,13 @@ test("repository exposes gated PostgreSQL 17 backup operations", async () => {
 
 test("real backup drill seeds a schema-valid terminal result", async () => {
   const verifier = await readFile(join(root, "scripts/verify-postgres-backup.mjs"), "utf8");
-  assert.match(
-    verifier,
-    /INSERT INTO game_results \(game_id, club_id, outcome, winner, played_at\)/,
-  );
-  assert.match(verifier, /'red', 'red', '2026-09-01T00:00:00Z'/);
+  const hasTerminalProjection =
+    /INSERT INTO game_results\s+\(game_id, club_id, outcome, winner, reason, played_at, host_player_id\)/.test(
+      verifier,
+    ) &&
+    /outcome: "red"/.test(verifier) &&
+    /winner: "red"/.test(verifier);
+  assert.equal(hasTerminalProjection, true);
 });
 
 test("backup publishes one private validated timestamped archive", async () => {

@@ -37,26 +37,26 @@ Role/check/shot data is intentionally available to both authenticated roles with
 
 ## Threats, controls, and evidence
 
-| Threat                                | Implemented control                                                              | Regression/evidence                                    |
-| ------------------------------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| Anonymous API access                  | Authentication on every non-public API route                                     | `apps/server/src/app.test.ts` protected-route matrix   |
-| Cross-club read/write                 | Membership lookup and club-scoped data keys                                      | API/store isolation tests                              |
-| Regular user reaches manager behavior | Manager-only route and UI guards                                                 | Role-matrix API/UI tests                               |
-| CSRF with ambient session cookie      | Exact `Origin` required for unsafe cookie-authenticated `/api/` requests         | `apps/server/src/app.test.ts`, `http-security.test.ts` |
-| OAuth callback substitution           | Random state in secure HttpOnly callback cookie and constant-time comparison     | Google/YouTube OAuth route tests                       |
-| Login resource abuse                  | Bounded fail-closed fixed-window source limiter with explicit zero/one-hop trust | `http-security.test.ts`, `app-security.test.ts`        |
-| Session database theft                | Only SHA-256 token hashes stored; fixed 30-day non-sliding lifetime              | `google-auth.test.ts`                                  |
-| XSS/injected active content           | Strict CSP, no object/embed, no framing, security-focused ESLint rules           | `app-security.test.ts`, `npm run lint`                 |
-| Clickjacking                          | `frame-ancestors 'none'` and `X-Frame-Options: DENY`                             | `app-security.test.ts`                                 |
-| MIME/referrer leakage                 | `nosniff`; strict-origin referrer policy                                         | `app-security.test.ts`                                 |
-| Sensitive API caching                 | `Cache-Control: no-store` on all `/api/` responses                               | `app-security.test.ts`                                 |
-| Secret event leakage                  | Canonical event-type secrecy and redacted public legacy-event projection         | `event-store.test.ts`, `app.test.ts`                   |
-| Client/server error leakage           | Generic server 500s and bounded credential-redacting browser console             | `app.test.ts`, `error-console.test.ts`                 |
-| Dependency lifecycle compromise       | Lockfile installs suppress scripts, then explicitly rebuild only pinned esbuild  | workflow contracts                                     |
-| Workflow action retagging             | Every external action pinned to a 40-character commit                            | security contracts                                     |
-| Stale or mutable production base      | Digest-pinned base; OS upgrade; runtime package managers removed                 | Dockerfile contracts                                   |
-| Public database exposure              | Azure public access disabled; Compose DB has no published port                   | Bicep/Compose verification                             |
-| Unbounded local logs                  | Docker local driver with size/count limits                                       | Compose contract and deployment runbook                |
+| Threat                                | Implemented control                                                                                                        | Regression/evidence                                    |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| Anonymous API access                  | Authentication on every non-public API route                                                                               | `apps/server/src/app.test.ts` protected-route matrix   |
+| Cross-club read/write                 | Membership lookup and club-scoped data keys                                                                                | API/store isolation tests                              |
+| Regular user reaches manager behavior | Manager-only route and UI guards                                                                                           | Role-matrix API/UI tests                               |
+| CSRF with ambient session cookie      | Exact `Origin` required for unsafe cookie-authenticated `/api/` requests                                                   | `apps/server/src/app.test.ts`, `http-security.test.ts` |
+| OAuth callback substitution           | Random state in secure HttpOnly callback cookie and constant-time comparison                                               | Google/YouTube OAuth route tests                       |
+| Login resource abuse                  | Bounded fail-closed fixed-window source limiter with explicit zero/one-hop trust                                           | `http-security.test.ts`, `app-security.test.ts`        |
+| Session database theft                | Only SHA-256 token hashes stored; fixed 30-day non-sliding lifetime                                                        | `google-auth.test.ts`                                  |
+| XSS/injected active content           | Strict CSP, no object/embed, no framing, security-focused ESLint rules                                                     | `app-security.test.ts`, `npm run lint`                 |
+| Clickjacking                          | `frame-ancestors 'none'` and `X-Frame-Options: DENY`                                                                       | `app-security.test.ts`                                 |
+| MIME/referrer leakage                 | `nosniff`; strict-origin referrer policy                                                                                   | `app-security.test.ts`                                 |
+| Sensitive API caching                 | `Cache-Control: no-store` on all `/api/` responses                                                                         | `app-security.test.ts`                                 |
+| Secret event leakage                  | Canonical event-type secrecy and redacted public event projection; public responses omit private hashes and payload fields | `event-store.test.ts`, `app.test.ts`                   |
+| Client/server error leakage           | Generic server 500s and bounded credential-redacting browser console                                                       | `app.test.ts`, `error-console.test.ts`                 |
+| Dependency lifecycle compromise       | Lockfile installs suppress scripts, then explicitly rebuild only pinned esbuild                                            | workflow contracts                                     |
+| Workflow action retagging             | Every external action pinned to a 40-character commit                                                                      | security contracts                                     |
+| Stale or mutable production base      | Digest-pinned base; OS upgrade; runtime package managers removed                                                           | Dockerfile contracts                                   |
+| Public database exposure              | Azure public access disabled; Compose DB has no published port                                                             | Bicep/Compose verification                             |
+| Unbounded local logs                  | Docker local driver with size/count limits                                                                                 | Compose contract and deployment runbook                |
 
 ## HTTP policy
 

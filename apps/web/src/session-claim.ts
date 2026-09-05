@@ -25,7 +25,7 @@ type GameSessionClaimLockRequest = (
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export const gameSessionClaimStoragePrefix = (clubId: string): string =>
-  `mafia-dashboard.game-session.v4.claim.${clubId}`;
+  `mafia-dashboard.game-session.v5.claim.${clubId}`;
 export const gameSessionClaimTabStorageKey = (clubId: string): string =>
   `${gameSessionClaimStoragePrefix(clubId)}.tab`;
 
