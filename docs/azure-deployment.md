@@ -99,6 +99,10 @@ Do not replace this with unbounded proxy trust. Adding Front Door, a CDN, or ano
 
 The deployment workflow intentionally does not repeat pull-request formatting, lint, typecheck, tests, or automated vulnerability scans. A main push builds, publishes, and deploys directly. Job permissions scope package writes only to publishing and Azure OIDC only to deployment, and all external actions remain pinned to immutable commits. See [`security-and-privacy.md`](security-and-privacy.md) for the retained application controls and residual risks.
 
+### Known diagnostic limitation
+
+The deployment verifier can finish its health wait before reporting `ActivationFailed`; by then, the failed migration init replica may no longer be available for console logs. When investigating activation failures, inspect revision state and capture init-container logs early. Failing fast and automatically capturing those logs remains a deferred workflow improvement, not part of the fresh-database cutover.
+
 ## Google OAuth callbacks
 
 After the first Azure deployment, obtain the URL from the workflow summary. Add both callback URLs to the Google OAuth Web application client:
