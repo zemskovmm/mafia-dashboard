@@ -1,94 +1,384 @@
-DO $$
-BEGIN
-  IF to_regclass('public.mock_users') IS NOT NULL AND to_regclass('public.users') IS NULL THEN
-    ALTER TABLE mock_users RENAME TO users;
-  END IF;
-END $$;
-
 CREATE TABLE IF NOT EXISTS users (
-  id UUID PRIMARY KEY,
+  id UUID NOT NULL,
   google_subject TEXT NULL,
-  email TEXT NOT NULL UNIQUE CHECK (BTRIM(email) <> ''),
-  display_name TEXT NOT NULL CHECK (BTRIM(display_name) <> ''),
+  email TEXT NOT NULL,
+  display_name TEXT NOT NULL,
   picture TEXT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT users_pkey PRIMARY KEY (id),
+  CONSTRAINT users_email_key UNIQUE (email),
+  CONSTRAINT users_email_check CHECK (BTRIM(email) <> ''),
+  CONSTRAINT users_display_name_check CHECK (BTRIM(display_name) <> '')
 );
 
-ALTER TABLE users ADD COLUMN IF NOT EXISTS google_subject TEXT NULL;
-ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
-DROP INDEX IF EXISTS users_google_subject_unique_idx;
-CREATE UNIQUE INDEX users_google_subject_unique_idx ON users (google_subject);
+CREATE UNIQUE INDEX IF NOT EXISTS users_google_subject_unique_idx ON users (google_subject);
+
+CREATE TABLE IF NOT EXISTS clubs (
+  id UUID NOT NULL,
+  name TEXT NOT NULL,
+  city TEXT NOT NULL,
+  header_logo TEXT NULL,
+  card_logo TEXT NULL,
+  language_code TEXT NOT NULL DEFAULT 'en',
+  best_move_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  created_by UUID NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT clubs_pkey PRIMARY KEY (id),
+  CONSTRAINT clubs_name_check CHECK (BTRIM(name) <> ''),
+  CONSTRAINT clubs_city_check CHECK (BTRIM(city) <> ''),
+  CONSTRAINT clubs_language_code_ck CHECK (language_code IN ('en', 'ru')),
+  CONSTRAINT clubs_created_by_fkey FOREIGN KEY (created_by) REFERENCES users (id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS deleted_clubs (
+  club_id UUID NOT NULL,
+  deleted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT deleted_clubs_pkey PRIMARY KEY (club_id)
+);
 
 CREATE TABLE IF NOT EXISTS user_sessions (
-  id UUID PRIMARY KEY,
-  token_hash BYTEA NOT NULL UNIQUE,
-  user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  id UUID NOT NULL,
+  token_hash BYTEA NOT NULL,
+  user_id UUID NOT NULL,
   expires_at TIMESTAMPTZ NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT user_sessions_pkey PRIMARY KEY (id),
+  CONSTRAINT user_sessions_token_hash_key UNIQUE (token_hash),
+  CONSTRAINT user_sessions_user_id_fkey FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS user_sessions_expiry_idx ON user_sessions (expires_at);
 
-CREATE TABLE IF NOT EXISTS clubs (
-  id UUID PRIMARY KEY,
-  name TEXT NOT NULL CHECK (BTRIM(name) <> ''),
-  city TEXT NOT NULL CHECK (BTRIM(city) <> ''),
-  header_logo TEXT NULL,
-  card_logo TEXT NULL,
-  language_code TEXT NOT NULL DEFAULT 'en' CONSTRAINT clubs_language_code_ck CHECK (language_code IN ('en', 'ru')),
-  best_move_enabled BOOLEAN NOT NULL DEFAULT TRUE,
-  created_by UUID NOT NULL REFERENCES users (id) ON DELETE RESTRICT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+CREATE TABLE IF NOT EXISTS youtube_oauth_credentials (
+  user_id UUID NOT NULL,
+  singleton BOOLEAN NOT NULL DEFAULT TRUE,
+  access_token_encrypted BYTEA NOT NULL,
+  refresh_token_encrypted BYTEA NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  account_label TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT youtube_oauth_credentials_pkey PRIMARY KEY (user_id),
+  CONSTRAINT youtube_oauth_credentials_singleton_check CHECK (singleton),
+  CONSTRAINT youtube_oauth_credentials_account_label_check CHECK (BTRIM(account_label) <> ''),
+  CONSTRAINT youtube_oauth_credentials_user_id_fkey
+    FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 );
 
-ALTER TABLE clubs ADD COLUMN IF NOT EXISTS language_code TEXT NOT NULL DEFAULT 'en';
-UPDATE clubs SET language_code = 'en' WHERE language_code IS NULL;
-ALTER TABLE clubs ALTER COLUMN language_code SET DEFAULT 'en';
-ALTER TABLE clubs ALTER COLUMN language_code SET NOT NULL;
-ALTER TABLE clubs ADD COLUMN IF NOT EXISTS best_move_enabled BOOLEAN NOT NULL DEFAULT TRUE;
-UPDATE clubs SET best_move_enabled = TRUE WHERE best_move_enabled IS NULL;
-ALTER TABLE clubs ALTER COLUMN best_move_enabled SET DEFAULT TRUE;
-ALTER TABLE clubs ALTER COLUMN best_move_enabled SET NOT NULL;
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'clubs'::REGCLASS
-       AND conname = 'clubs_language_code_ck'
-  ) THEN
-    ALTER TABLE clubs
-      ADD CONSTRAINT clubs_language_code_ck CHECK (language_code IN ('en', 'ru'));
-  END IF;
-END $$;
+CREATE TABLE IF NOT EXISTS game_rulesets (
+  id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  player_count INTEGER NOT NULL,
+  sheriff_count INTEGER NOT NULL,
+  citizen_count INTEGER NOT NULL,
+  mafia_count INTEGER NOT NULL,
+  don_count INTEGER NOT NULL,
+  CONSTRAINT game_rulesets_pkey PRIMARY KEY (id, version),
+  CONSTRAINT game_rulesets_id_check CHECK (BTRIM(id) <> ''),
+  CONSTRAINT game_rulesets_version_check CHECK (version > 0),
+  CONSTRAINT game_rulesets_player_count_check CHECK (player_count > 0),
+  CONSTRAINT game_rulesets_sheriff_count_check CHECK (sheriff_count >= 0),
+  CONSTRAINT game_rulesets_citizen_count_check CHECK (citizen_count >= 0),
+  CONSTRAINT game_rulesets_mafia_count_check CHECK (mafia_count >= 0),
+  CONSTRAINT game_rulesets_don_count_check CHECK (don_count >= 0),
+  CONSTRAINT game_rulesets_role_count_ck
+    CHECK (sheriff_count + citizen_count + mafia_count + don_count = player_count)
+);
+
+CREATE TABLE IF NOT EXISTS players (
+  id UUID NOT NULL,
+  club_id UUID NOT NULL DEFAULT '00000000-0000-4000-8000-000000000101',
+  nickname TEXT NOT NULL,
+  first_name TEXT NULL,
+  last_name TEXT NULL,
+  email TEXT NULL,
+  data_processing_consent BOOLEAN NOT NULL DEFAULT FALSE,
+  consent_at TIMESTAMPTZ NULL,
+  club_access TEXT NOT NULL DEFAULT 'none',
+  user_id UUID NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_played_at TIMESTAMPTZ NULL,
+  CONSTRAINT players_pkey PRIMARY KEY (id),
+  CONSTRAINT players_club_fk FOREIGN KEY (club_id) REFERENCES clubs (id) ON DELETE RESTRICT,
+  CONSTRAINT players_user_fk FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE SET NULL,
+  CONSTRAINT players_nickname_check CHECK (BTRIM(nickname) <> ''),
+  CONSTRAINT players_check CHECK (
+    (data_processing_consent = FALSE
+      AND first_name IS NULL
+      AND last_name IS NULL
+      AND email IS NULL
+      AND consent_at IS NULL)
+    OR
+    (data_processing_consent = TRUE
+      AND first_name IS NOT NULL
+      AND last_name IS NOT NULL
+      AND email IS NOT NULL
+      AND BTRIM(first_name) <> ''
+      AND BTRIM(last_name) <> ''
+      AND BTRIM(email) <> ''
+      AND consent_at IS NOT NULL)
+  ),
+  CONSTRAINT players_access_requires_consent_ck
+    CHECK (club_access = 'none' OR data_processing_consent OR user_id IS NOT NULL),
+  CONSTRAINT players_club_access_ck CHECK (club_access IN ('none', 'user', 'manager')),
+  CONSTRAINT players_club_id_id_unique UNIQUE (club_id, id),
+  CONSTRAINT players_access_provenance_unique UNIQUE (id, club_id, user_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS players_club_nickname_unique_idx
+  ON players (club_id, LOWER(BTRIM(nickname)));
+CREATE INDEX IF NOT EXISTS players_club_last_played_nickname_idx
+  ON players (club_id, last_played_at DESC, nickname);
+CREATE UNIQUE INDEX IF NOT EXISTS players_club_access_email_unique_idx
+  ON players (club_id, LOWER(BTRIM(email)))
+  WHERE club_access <> 'none';
+CREATE UNIQUE INDEX IF NOT EXISTS players_club_linked_user_unique_idx
+  ON players (club_id, user_id)
+  WHERE user_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS club_memberships (
-  club_id UUID NOT NULL REFERENCES clubs (id) ON DELETE CASCADE,
-  user_id UUID NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  club_id UUID NOT NULL,
+  user_id UUID NOT NULL,
   role TEXT NOT NULL,
   access_player_id UUID NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT club_memberships_pkey PRIMARY KEY (club_id, user_id),
+  CONSTRAINT club_memberships_club_id_fkey FOREIGN KEY (club_id) REFERENCES clubs (id) ON DELETE CASCADE,
+  CONSTRAINT club_memberships_user_id_fkey FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE,
   CONSTRAINT club_memberships_role_ck CHECK (role IN ('manager', 'user')),
-  PRIMARY KEY (club_id, user_id)
+  CONSTRAINT club_memberships_access_player_fk
+    FOREIGN KEY (access_player_id, club_id, user_id)
+    REFERENCES players (id, club_id, user_id) ON DELETE CASCADE
 );
 
-ALTER TABLE club_memberships
-  DROP CONSTRAINT IF EXISTS club_memberships_manager_role_ck;
-ALTER TABLE club_memberships
-  DROP CONSTRAINT IF EXISTS club_memberships_role_check;
-ALTER TABLE club_memberships
-  DROP CONSTRAINT IF EXISTS club_memberships_role_ck;
-UPDATE club_memberships
-   SET role = 'manager'
- WHERE role IN ('owner', 'editor');
-ALTER TABLE club_memberships
-  ADD CONSTRAINT club_memberships_role_ck CHECK (role IN ('manager', 'user'));
+CREATE UNIQUE INDEX IF NOT EXISTS club_memberships_access_player_unique_idx
+  ON club_memberships (access_player_id)
+  WHERE access_player_id IS NOT NULL;
 
-CREATE TABLE IF NOT EXISTS deleted_clubs (
-  club_id UUID PRIMARY KEY,
-  deleted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+CREATE TABLE IF NOT EXISTS game_daily_counters (
+  club_id UUID NOT NULL DEFAULT '00000000-0000-4000-8000-000000000101',
+  game_date DATE NOT NULL,
+  last_number INTEGER NOT NULL,
+  CONSTRAINT game_daily_counters_pkey PRIMARY KEY (club_id, game_date),
+  CONSTRAINT game_daily_counters_club_fk FOREIGN KEY (club_id) REFERENCES clubs (id) ON DELETE CASCADE,
+  CONSTRAINT game_daily_counters_last_number_check CHECK (last_number > 0)
 );
+
+CREATE TABLE IF NOT EXISTS game_sessions (
+  id UUID NOT NULL,
+  club_id UUID NOT NULL DEFAULT '00000000-0000-4000-8000-000000000101',
+  ruleset_id TEXT NOT NULL DEFAULT 'club-mafia',
+  ruleset_version INTEGER NOT NULL DEFAULT 1,
+  name TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  last_mutation_id UUID NOT NULL,
+  state JSONB NOT NULL,
+  results JSONB NULL,
+  status TEXT NOT NULL,
+  initial_game JSONB NULL,
+  replay_base_event_id UUID NULL,
+  head_event_id UUID NULL,
+  reset_return_event_id UUID NULL,
+  reset_return_was_completed BOOLEAN NOT NULL DEFAULT FALSE,
+  replay_version INTEGER NOT NULL DEFAULT 1,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  claim_id UUID NULL,
+  claim_generation BIGINT NOT NULL DEFAULT 0,
+  claimed_by_user_id UUID NULL,
+  claimed_at TIMESTAMPTZ NULL,
+  claim_last_seen_at TIMESTAMPTZ NULL,
+  claim_expires_at TIMESTAMPTZ NULL,
+  CONSTRAINT game_sessions_pkey PRIMARY KEY (club_id, id),
+  CONSTRAINT game_sessions_club_fk FOREIGN KEY (club_id) REFERENCES clubs (id) ON DELETE RESTRICT,
+  CONSTRAINT game_sessions_ruleset_fk
+    FOREIGN KEY (ruleset_id, ruleset_version) REFERENCES game_rulesets (id, version)
+    ON UPDATE RESTRICT ON DELETE RESTRICT,
+  CONSTRAINT game_sessions_name_check CHECK (BTRIM(name) <> ''),
+  CONSTRAINT game_sessions_revision_check CHECK (revision > 0),
+  CONSTRAINT game_sessions_status_check CHECK (status IN ('active', 'completed')),
+  CONSTRAINT game_sessions_claim_metadata_ck CHECK (
+    claim_generation >= 0
+    AND (
+      (claim_id IS NULL
+        AND claimed_by_user_id IS NULL
+        AND claimed_at IS NULL
+        AND claim_last_seen_at IS NULL
+        AND claim_expires_at IS NULL)
+      OR
+      (claim_id IS NOT NULL
+        AND claim_generation > 0
+        AND claimed_by_user_id IS NOT NULL
+        AND claimed_at IS NOT NULL
+        AND claim_last_seen_at IS NOT NULL
+        AND claim_expires_at IS NOT NULL
+        AND claim_last_seen_at >= claimed_at
+        AND claim_expires_at > claim_last_seen_at)
+    )
+  ),
+  CONSTRAINT game_sessions_claimed_by_user_fk
+    FOREIGN KEY (claimed_by_user_id) REFERENCES users (id) ON UPDATE RESTRICT ON DELETE RESTRICT
+);
+
+CREATE INDEX IF NOT EXISTS game_sessions_club_active_updated_idx
+  ON game_sessions (club_id, updated_at DESC, id)
+  WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS game_sessions_club_head_idx
+  ON game_sessions (club_id, head_event_id)
+  WHERE head_event_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS game_sessions_one_active_per_club_idx
+  ON game_sessions (club_id)
+  WHERE status = 'active';
+
+CREATE TABLE IF NOT EXISTS game_session_mutations (
+  club_id UUID NOT NULL DEFAULT '00000000-0000-4000-8000-000000000101',
+  game_id UUID NOT NULL,
+  mutation_id UUID NOT NULL,
+  revision INTEGER NOT NULL,
+  request JSONB NULL,
+  CONSTRAINT game_session_mutations_pkey PRIMARY KEY (club_id, game_id, mutation_id),
+  CONSTRAINT game_session_mutations_game_revision_unique UNIQUE (club_id, game_id, revision),
+  CONSTRAINT game_session_mutations_revision_check CHECK (revision > 0),
+  CONSTRAINT game_session_mutations_game_fk
+    FOREIGN KEY (club_id, game_id) REFERENCES game_sessions (club_id, id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS game_session_players (
+  club_id UUID NOT NULL DEFAULT '00000000-0000-4000-8000-000000000101',
+  game_id UUID NOT NULL,
+  player_id UUID NOT NULL,
+  seat INTEGER NULL,
+  is_host BOOLEAN NOT NULL,
+  role TEXT NULL,
+  CONSTRAINT game_session_players_pkey PRIMARY KEY (club_id, game_id, player_id),
+  CONSTRAINT game_session_players_game_seat_unique UNIQUE (club_id, game_id, seat),
+  CONSTRAINT game_session_players_game_fk
+    FOREIGN KEY (club_id, game_id) REFERENCES game_sessions (club_id, id) ON DELETE CASCADE,
+  CONSTRAINT game_session_players_player_fk
+    FOREIGN KEY (club_id, player_id) REFERENCES players (club_id, id) ON DELETE RESTRICT,
+  CONSTRAINT game_session_players_seat_check CHECK (seat BETWEEN 1 AND 10),
+  CONSTRAINT game_session_players_role_ck CHECK (role IS NULL OR role IN ('sheriff', 'citizen', 'mafia', 'don')),
+  CONSTRAINT game_session_players_shape_ck
+    CHECK ((is_host AND seat IS NULL AND role IS NULL) OR (NOT is_host AND seat IS NOT NULL))
+);
+
+CREATE INDEX IF NOT EXISTS game_session_players_player_idx ON game_session_players (player_id, game_id);
+CREATE INDEX IF NOT EXISTS game_session_players_club_history_player_idx
+  ON game_session_players (club_id, player_id, game_id)
+  WHERE NOT is_host;
+
+CREATE TABLE IF NOT EXISTS game_results (
+  game_id UUID NOT NULL,
+  club_id UUID NOT NULL DEFAULT '00000000-0000-4000-8000-000000000101',
+  outcome TEXT NOT NULL,
+  winner TEXT NULL,
+  reason TEXT NULL,
+  played_at TIMESTAMPTZ NOT NULL,
+  host_player_id UUID NULL,
+  CONSTRAINT game_results_pkey PRIMARY KEY (club_id, game_id),
+  CONSTRAINT game_results_club_fk FOREIGN KEY (club_id) REFERENCES clubs (id) ON DELETE RESTRICT,
+  CONSTRAINT game_results_outcome_ck CHECK (outcome IN ('red', 'black', 'draw', 'cancelled')),
+  CONSTRAINT game_results_shape_ck CHECK (
+    (outcome IN ('red', 'black') AND winner IS NOT NULL AND winner = outcome AND reason IS NULL)
+    OR
+    (outcome IN ('draw', 'cancelled')
+      AND winner IS NULL
+      AND reason IS NOT NULL
+      AND reason = BTRIM(reason)
+      AND BTRIM(reason) <> ''
+      AND LENGTH(reason) <= 500)
+  ),
+  CONSTRAINT game_results_host_player_fk
+    FOREIGN KEY (club_id, host_player_id) REFERENCES players (club_id, id) ON DELETE RESTRICT
+);
+
+CREATE INDEX IF NOT EXISTS game_results_club_played_idx ON game_results (club_id, played_at DESC);
+CREATE INDEX IF NOT EXISTS game_results_club_outcome_played_idx ON game_results (club_id, outcome, played_at DESC);
+CREATE INDEX IF NOT EXISTS game_results_host_idx ON game_results (host_player_id, played_at DESC);
+
+CREATE TABLE IF NOT EXISTS game_player_results (
+  club_id UUID NOT NULL DEFAULT '00000000-0000-4000-8000-000000000101',
+  game_id UUID NOT NULL,
+  player_id UUID NOT NULL,
+  seat INTEGER NOT NULL,
+  role TEXT NOT NULL,
+  team TEXT NOT NULL,
+  final_status TEXT NOT NULL,
+  fouls INTEGER NOT NULL,
+  won BOOLEAN NULL,
+  best_move_hits INTEGER NULL,
+  CONSTRAINT game_player_results_pkey PRIMARY KEY (club_id, game_id, player_id),
+  CONSTRAINT game_player_results_game_seat_unique UNIQUE (club_id, game_id, seat),
+  CONSTRAINT game_player_results_game_fk
+    FOREIGN KEY (club_id, game_id) REFERENCES game_results (club_id, game_id) ON DELETE CASCADE,
+  CONSTRAINT game_player_results_player_fk
+    FOREIGN KEY (club_id, player_id) REFERENCES players (club_id, id) ON DELETE RESTRICT,
+  CONSTRAINT game_player_results_seat_check CHECK (seat BETWEEN 1 AND 10),
+  CONSTRAINT game_player_results_role_check CHECK (role IN ('sheriff', 'citizen', 'mafia', 'don')),
+  CONSTRAINT game_player_results_team_check CHECK (team IN ('red', 'black')),
+  CONSTRAINT game_player_results_final_status_check CHECK (final_status IN ('active', 'eliminated', 'red-carded')),
+  CONSTRAINT game_player_results_fouls_check CHECK (fouls >= 0),
+  CONSTRAINT game_player_results_best_move_hits_check CHECK (best_move_hits BETWEEN 0 AND 3)
+);
+
+CREATE INDEX IF NOT EXISTS game_player_results_player_idx ON game_player_results (player_id, game_id);
+
+CREATE TABLE IF NOT EXISTS deleted_games (
+  game_id UUID NOT NULL,
+  club_id UUID NOT NULL DEFAULT '00000000-0000-4000-8000-000000000101',
+  deleted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT deleted_games_pkey PRIMARY KEY (club_id, game_id),
+  CONSTRAINT deleted_games_club_fk FOREIGN KEY (club_id) REFERENCES clubs (id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS game_events (
+  id UUID NOT NULL,
+  club_id UUID NOT NULL DEFAULT '00000000-0000-4000-8000-000000000101',
+  game_id UUID NOT NULL,
+  sequence INTEGER NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  phase TEXT NOT NULL,
+  seat INTEGER NULL,
+  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  parent_event_id UUID NULL,
+  replay_version INTEGER NOT NULL DEFAULT 1,
+  replay_sequence INTEGER NULL,
+  phase_after TEXT NULL,
+  day_before INTEGER NULL,
+  day_after INTEGER NULL,
+  state_hash_after TEXT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT game_events_pkey PRIMARY KEY (club_id, id),
+  CONSTRAINT game_events_club_fk FOREIGN KEY (club_id) REFERENCES clubs (id) ON DELETE RESTRICT,
+  CONSTRAINT game_events_club_game_sequence_unique UNIQUE (club_id, game_id, sequence),
+  CONSTRAINT game_events_club_game_idempotency_unique UNIQUE (club_id, game_id, idempotency_key),
+  CONSTRAINT game_events_club_game_event_unique UNIQUE (club_id, game_id, id),
+  CONSTRAINT game_events_sequence_check CHECK (sequence > 0),
+  CONSTRAINT game_events_seat_check CHECK (seat BETWEEN 1 AND 10),
+  CONSTRAINT game_events_replay_sequence_positive_ck CHECK (replay_sequence > 0),
+  CONSTRAINT game_events_day_before_nonnegative_ck CHECK (day_before >= 0),
+  CONSTRAINT game_events_day_after_nonnegative_ck CHECK (day_after >= 0),
+  CONSTRAINT game_events_replay_metadata_ck CHECK (
+    replay_sequence IS NULL
+    OR (
+      replay_version = 1
+      AND phase_after IS NOT NULL
+      AND day_before IS NOT NULL
+      AND day_after IS NOT NULL
+      AND state_hash_after ~ '^sha256:[0-9a-f]{64}$'
+    )
+  )
+);
+
+CREATE INDEX IF NOT EXISTS game_events_game_parent_idx ON game_events (game_id, parent_event_id);
+CREATE INDEX IF NOT EXISTS game_events_club_game_parent_idx ON game_events (club_id, game_id, parent_event_id);
+CREATE UNIQUE INDEX IF NOT EXISTS game_events_club_game_replay_sequence_idx
+  ON game_events (club_id, game_id, replay_sequence)
+  WHERE replay_sequence IS NOT NULL;
 
 INSERT INTO users (id, email, display_name)
 VALUES ('00000000-0000-4000-8000-000000000001', 'owner@mafiamalaga.es', 'Mafia Malaga owner')
@@ -101,7 +391,8 @@ SELECT
   'Málaga',
   '00000000-0000-4000-8000-000000000001'
 WHERE NOT EXISTS (
-  SELECT 1 FROM deleted_clubs
+  SELECT 1
+    FROM deleted_clubs
    WHERE club_id = '00000000-0000-4000-8000-000000000101'
 )
 ON CONFLICT (id) DO NOTHING;
@@ -112,963 +403,13 @@ SELECT
   '00000000-0000-4000-8000-000000000001',
   'manager'
 WHERE EXISTS (
-  SELECT 1 FROM clubs
+  SELECT 1
+    FROM clubs
    WHERE id = '00000000-0000-4000-8000-000000000101'
 )
 ON CONFLICT (club_id, user_id) DO NOTHING;
 
-CREATE TABLE IF NOT EXISTS game_events (
-  id UUID NOT NULL,
-  club_id UUID NOT NULL DEFAULT '00000000-0000-4000-8000-000000000101' CONSTRAINT game_events_club_fk REFERENCES clubs (id) ON DELETE RESTRICT,
-  game_id UUID NOT NULL,
-  sequence INTEGER NOT NULL CHECK (sequence > 0),
-  idempotency_key TEXT NOT NULL,
-  event_type TEXT NOT NULL,
-  phase TEXT NOT NULL,
-  seat INTEGER NULL CHECK (seat BETWEEN 1 AND 10),
-  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-  parent_event_id UUID NULL,
-  replay_version INTEGER NOT NULL DEFAULT 1,
-  replay_sequence INTEGER NULL,
-  phase_after TEXT NULL,
-  day_before INTEGER NULL,
-  day_after INTEGER NULL,
-  state_hash_after TEXT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT game_events_pkey PRIMARY KEY (club_id, id),
-  CONSTRAINT game_events_club_game_sequence_unique UNIQUE (club_id, game_id, sequence),
-  CONSTRAINT game_events_club_game_idempotency_unique UNIQUE (club_id, game_id, idempotency_key)
-);
-
-ALTER TABLE game_events ADD COLUMN IF NOT EXISTS club_id UUID;
-ALTER TABLE game_events ADD COLUMN IF NOT EXISTS parent_event_id UUID NULL;
-ALTER TABLE game_events ADD COLUMN IF NOT EXISTS replay_version INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE game_events ADD COLUMN IF NOT EXISTS replay_sequence INTEGER NULL;
-ALTER TABLE game_events ADD COLUMN IF NOT EXISTS phase_after TEXT NULL;
-ALTER TABLE game_events ADD COLUMN IF NOT EXISTS day_before INTEGER NULL;
-ALTER TABLE game_events ADD COLUMN IF NOT EXISTS day_after INTEGER NULL;
-ALTER TABLE game_events ADD COLUMN IF NOT EXISTS state_hash_after TEXT NULL;
-ALTER TABLE game_events DROP CONSTRAINT IF EXISTS game_events_replay_sequence_check;
-ALTER TABLE game_events DROP CONSTRAINT IF EXISTS game_events_day_before_check;
-ALTER TABLE game_events DROP CONSTRAINT IF EXISTS game_events_day_after_check;
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_events'::REGCLASS
-       AND conname = 'game_events_replay_sequence_positive_ck'
-       AND pg_get_constraintdef(oid) <> 'CHECK ((replay_sequence > 0))'
-  ) THEN
-    ALTER TABLE game_events DROP CONSTRAINT game_events_replay_sequence_positive_ck;
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_events'::REGCLASS
-       AND conname = 'game_events_replay_sequence_positive_ck'
-  ) THEN
-    ALTER TABLE game_events
-      ADD CONSTRAINT game_events_replay_sequence_positive_ck
-      CHECK (replay_sequence > 0);
-  END IF;
-  IF EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_events'::REGCLASS
-       AND conname = 'game_events_day_before_nonnegative_ck'
-       AND pg_get_constraintdef(oid) <> 'CHECK ((day_before >= 0))'
-  ) THEN
-    ALTER TABLE game_events DROP CONSTRAINT game_events_day_before_nonnegative_ck;
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_events'::REGCLASS
-       AND conname = 'game_events_day_before_nonnegative_ck'
-  ) THEN
-    ALTER TABLE game_events
-      ADD CONSTRAINT game_events_day_before_nonnegative_ck
-      CHECK (day_before >= 0);
-  END IF;
-  IF EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_events'::REGCLASS
-       AND conname = 'game_events_day_after_nonnegative_ck'
-       AND pg_get_constraintdef(oid) <> 'CHECK ((day_after >= 0))'
-  ) THEN
-    ALTER TABLE game_events DROP CONSTRAINT game_events_day_after_nonnegative_ck;
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_events'::REGCLASS
-       AND conname = 'game_events_day_after_nonnegative_ck'
-  ) THEN
-    ALTER TABLE game_events
-      ADD CONSTRAINT game_events_day_after_nonnegative_ck
-      CHECK (day_after >= 0);
-  END IF;
-END $$;
-ALTER TABLE game_events DROP COLUMN IF EXISTS secret;
-UPDATE game_events
-   SET club_id = '00000000-0000-4000-8000-000000000101'
- WHERE club_id IS NULL;
-ALTER TABLE game_events ALTER COLUMN club_id SET NOT NULL;
-ALTER TABLE game_events ALTER COLUMN club_id SET DEFAULT '00000000-0000-4000-8000-000000000101';
-
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1
-      FROM pg_constraint
-     WHERE conrelid = 'game_events'::REGCLASS
-       AND conname = 'game_events_pkey'
-       AND pg_get_constraintdef(oid) = 'PRIMARY KEY (id)'
-  ) THEN
-    ALTER TABLE game_events DROP CONSTRAINT game_events_pkey;
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1
-      FROM pg_constraint
-     WHERE conrelid = 'game_events'::REGCLASS
-       AND conname = 'game_events_pkey'
-  ) THEN
-    ALTER TABLE game_events ADD CONSTRAINT game_events_pkey PRIMARY KEY (club_id, id);
-  END IF;
-END $$;
-
-ALTER TABLE game_events DROP CONSTRAINT IF EXISTS game_events_game_id_sequence_key;
-ALTER TABLE game_events DROP CONSTRAINT IF EXISTS game_events_game_id_idempotency_key_key;
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_events'::REGCLASS
-       AND conname = 'game_events_club_game_sequence_unique'
-  ) THEN
-    ALTER TABLE game_events
-      ADD CONSTRAINT game_events_club_game_sequence_unique
-      UNIQUE (club_id, game_id, sequence);
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_events'::REGCLASS
-       AND conname = 'game_events_club_game_idempotency_unique'
-  ) THEN
-    ALTER TABLE game_events
-      ADD CONSTRAINT game_events_club_game_idempotency_unique
-      UNIQUE (club_id, game_id, idempotency_key);
-  END IF;
-END $$;
-
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1
-      FROM pg_index AS candidate
-      JOIN pg_class AS candidate_relation ON candidate_relation.oid = candidate.indexrelid
-      JOIN pg_index AS covered
-        ON covered.indexrelid = TO_REGCLASS('game_events_club_game_sequence_unique')
-      JOIN pg_class AS covered_relation ON covered_relation.oid = covered.indexrelid
-     WHERE candidate.indexrelid = TO_REGCLASS('game_events_club_game_sequence_idx')
-       AND candidate.indrelid = 'game_events'::REGCLASS
-       AND covered.indrelid = candidate.indrelid
-       AND NOT candidate.indisunique
-       AND covered.indisunique
-       AND candidate.indpred IS NULL
-       AND candidate.indexprs IS NULL
-       AND candidate.indnkeyatts = covered.indnkeyatts
-       AND candidate.indnatts = covered.indnatts
-       AND candidate.indkey = covered.indkey
-       AND candidate.indcollation = covered.indcollation
-       AND candidate.indclass = covered.indclass
-       AND candidate.indoption = covered.indoption
-       AND candidate_relation.relam = covered_relation.relam
-       AND NOT EXISTS (
-         SELECT 1 FROM pg_constraint
-          WHERE conindid = candidate.indexrelid
-       )
-  ) THEN
-    DROP INDEX game_events_club_game_sequence_idx;
-  END IF;
-END $$;
-CREATE INDEX IF NOT EXISTS game_events_game_parent_idx
-  ON game_events (game_id, parent_event_id);
-CREATE INDEX IF NOT EXISTS game_events_club_game_parent_idx
-  ON game_events (club_id, game_id, parent_event_id);
-
-CREATE TABLE IF NOT EXISTS deleted_games (
-  game_id UUID NOT NULL,
-  club_id UUID NOT NULL DEFAULT '00000000-0000-4000-8000-000000000101' CONSTRAINT deleted_games_club_fk REFERENCES clubs (id) ON DELETE RESTRICT,
-  deleted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT deleted_games_pkey PRIMARY KEY (club_id, game_id)
-);
-
-ALTER TABLE deleted_games ADD COLUMN IF NOT EXISTS club_id UUID;
-UPDATE deleted_games
-   SET club_id = '00000000-0000-4000-8000-000000000101'
- WHERE club_id IS NULL;
-ALTER TABLE deleted_games ALTER COLUMN club_id SET NOT NULL;
-ALTER TABLE deleted_games ALTER COLUMN club_id SET DEFAULT '00000000-0000-4000-8000-000000000101';
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'deleted_games'::regclass
-       AND contype = 'p'
-       AND array_length(conkey, 1) = 1
-  ) THEN
-    ALTER TABLE deleted_games DROP CONSTRAINT deleted_games_pkey;
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'deleted_games'::regclass AND contype = 'p'
-  ) THEN
-    ALTER TABLE deleted_games
-      ADD CONSTRAINT deleted_games_pkey PRIMARY KEY (club_id, game_id);
-  END IF;
-END $$;
-
-CREATE TABLE IF NOT EXISTS game_daily_counters (
-  club_id UUID NOT NULL DEFAULT '00000000-0000-4000-8000-000000000101' CONSTRAINT game_daily_counters_club_fk REFERENCES clubs (id) ON DELETE CASCADE,
-  game_date DATE NOT NULL,
-  last_number INTEGER NOT NULL CHECK (last_number > 0),
-  PRIMARY KEY (club_id, game_date)
-);
-
-ALTER TABLE game_daily_counters ADD COLUMN IF NOT EXISTS club_id UUID;
-UPDATE game_daily_counters
-   SET club_id = '00000000-0000-4000-8000-000000000101'
- WHERE club_id IS NULL;
-ALTER TABLE game_daily_counters ALTER COLUMN club_id SET NOT NULL;
-ALTER TABLE game_daily_counters ALTER COLUMN club_id SET DEFAULT '00000000-0000-4000-8000-000000000101';
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_daily_counters'::regclass
-       AND contype = 'p'
-       AND array_length(conkey, 1) = 1
-  ) THEN
-    ALTER TABLE game_daily_counters DROP CONSTRAINT game_daily_counters_pkey;
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_daily_counters'::regclass AND contype = 'p'
-  ) THEN
-    ALTER TABLE game_daily_counters ADD PRIMARY KEY (club_id, game_date);
-  END IF;
-END $$;
-
-CREATE TABLE IF NOT EXISTS game_rulesets (
-  id TEXT NOT NULL CHECK (BTRIM(id) <> ''),
-  version INTEGER NOT NULL CHECK (version > 0),
-  player_count INTEGER NOT NULL CHECK (player_count > 0),
-  sheriff_count INTEGER NOT NULL CHECK (sheriff_count >= 0),
-  citizen_count INTEGER NOT NULL CHECK (citizen_count >= 0),
-  mafia_count INTEGER NOT NULL CHECK (mafia_count >= 0),
-  don_count INTEGER NOT NULL CHECK (don_count >= 0),
-  CONSTRAINT game_rulesets_pkey PRIMARY KEY (id, version),
-  CONSTRAINT game_rulesets_role_count_ck CHECK (
-    sheriff_count + citizen_count + mafia_count + don_count = player_count
-  )
-);
-
-INSERT INTO game_rulesets
-  (id, version, player_count, sheriff_count, citizen_count, mafia_count, don_count)
-VALUES ('club-mafia', 1, 10, 1, 6, 2, 1)
-ON CONFLICT (id, version) DO UPDATE
-  SET player_count = EXCLUDED.player_count,
-      sheriff_count = EXCLUDED.sheriff_count,
-      citizen_count = EXCLUDED.citizen_count,
-      mafia_count = EXCLUDED.mafia_count,
-      don_count = EXCLUDED.don_count
-WHERE (
-  game_rulesets.player_count,
-  game_rulesets.sheriff_count,
-  game_rulesets.citizen_count,
-  game_rulesets.mafia_count,
-  game_rulesets.don_count
-) IS DISTINCT FROM (
-  EXCLUDED.player_count,
-  EXCLUDED.sheriff_count,
-  EXCLUDED.citizen_count,
-  EXCLUDED.mafia_count,
-  EXCLUDED.don_count
-);
-
-CREATE TABLE IF NOT EXISTS game_sessions (
-  id UUID NOT NULL,
-  club_id UUID NOT NULL DEFAULT '00000000-0000-4000-8000-000000000101' CONSTRAINT game_sessions_club_fk REFERENCES clubs (id) ON DELETE RESTRICT,
-  ruleset_id TEXT NOT NULL DEFAULT 'club-mafia',
-  ruleset_version INTEGER NOT NULL DEFAULT 1,
-  name TEXT NOT NULL CHECK (BTRIM(name) <> ''),
-  revision INTEGER NOT NULL CHECK (revision > 0),
-  last_mutation_id UUID NOT NULL,
-  state JSONB NOT NULL,
-  results JSONB NULL,
-  status TEXT NOT NULL CHECK (status IN ('active', 'completed')),
-  initial_game JSONB NULL,
-  replay_base_event_id UUID NULL,
-  head_event_id UUID NULL,
-  reset_return_event_id UUID NULL,
-  reset_return_was_completed BOOLEAN NOT NULL DEFAULT FALSE,
-  replay_version INTEGER NOT NULL DEFAULT 1,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT game_sessions_pkey PRIMARY KEY (club_id, id),
-  CONSTRAINT game_sessions_ruleset_fk
-    FOREIGN KEY (ruleset_id, ruleset_version) REFERENCES game_rulesets (id, version)
-    ON UPDATE RESTRICT ON DELETE RESTRICT
-);
-
-ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS results JSONB NULL;
-ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS initial_game JSONB NULL;
-ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS replay_base_event_id UUID NULL;
-ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS head_event_id UUID NULL;
-ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS reset_return_event_id UUID NULL;
-ALTER TABLE game_sessions
-  ADD COLUMN IF NOT EXISTS reset_return_was_completed BOOLEAN NOT NULL DEFAULT FALSE;
-ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS replay_version INTEGER NOT NULL DEFAULT 1;
-ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS club_id UUID;
-ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS ruleset_id TEXT;
-ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS ruleset_version INTEGER;
-ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS claim_id UUID NULL;
-ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS claim_generation BIGINT NOT NULL DEFAULT 0;
-ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS claimed_by_user_id UUID NULL;
-ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ NULL;
-ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS claim_last_seen_at TIMESTAMPTZ NULL;
-ALTER TABLE game_sessions ADD COLUMN IF NOT EXISTS claim_expires_at TIMESTAMPTZ NULL;
-UPDATE game_sessions
-   SET club_id = COALESCE(club_id, '00000000-0000-4000-8000-000000000101'),
-       ruleset_id = COALESCE(ruleset_id, 'club-mafia'),
-       ruleset_version = COALESCE(ruleset_version, 1)
- WHERE club_id IS NULL OR ruleset_id IS NULL OR ruleset_version IS NULL;
-ALTER TABLE game_sessions ALTER COLUMN club_id SET NOT NULL;
-ALTER TABLE game_sessions ALTER COLUMN club_id SET DEFAULT '00000000-0000-4000-8000-000000000101';
-ALTER TABLE game_sessions ALTER COLUMN ruleset_id SET NOT NULL;
-ALTER TABLE game_sessions ALTER COLUMN ruleset_id SET DEFAULT 'club-mafia';
-ALTER TABLE game_sessions ALTER COLUMN ruleset_version SET NOT NULL;
-ALTER TABLE game_sessions ALTER COLUMN ruleset_version SET DEFAULT 1;
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_sessions'::regclass
-       AND conname = 'game_sessions_ruleset_fk'
-  ) THEN
-    ALTER TABLE game_sessions
-      ADD CONSTRAINT game_sessions_ruleset_fk
-      FOREIGN KEY (ruleset_id, ruleset_version) REFERENCES game_rulesets (id, version)
-      ON UPDATE RESTRICT ON DELETE RESTRICT;
-  END IF;
-END $$;
-
-DO $$
-DECLARE
-  claim_metadata_constraint_is_valid BOOLEAN;
-  claim_holder_constraint_is_valid BOOLEAN;
-BEGIN
-  SELECT constraint_row.contype = 'c'
-     AND constraint_row.convalidated
-     AND pg_get_constraintdef(constraint_row.oid) =
-       'CHECK (((claim_generation >= 0) AND (((claim_id IS NULL) AND (claimed_by_user_id IS NULL) AND (claimed_at IS NULL) AND (claim_last_seen_at IS NULL) AND (claim_expires_at IS NULL)) OR ((claim_id IS NOT NULL) AND (claim_generation > 0) AND (claimed_by_user_id IS NOT NULL) AND (claimed_at IS NOT NULL) AND (claim_last_seen_at IS NOT NULL) AND (claim_expires_at IS NOT NULL) AND (claim_last_seen_at >= claimed_at) AND (claim_expires_at > claim_last_seen_at)))))'
-    INTO claim_metadata_constraint_is_valid
-    FROM pg_constraint AS constraint_row
-   WHERE constraint_row.conrelid = 'game_sessions'::regclass
-     AND constraint_row.conname = 'game_sessions_claim_metadata_ck';
-  IF claim_metadata_constraint_is_valid IS FALSE THEN
-    RAISE EXCEPTION USING
-      ERRCODE = 'integrity_constraint_violation',
-      MESSAGE = 'game_sessions_claim_metadata_ck has unexpected semantics';
-  END IF;
-  IF claim_metadata_constraint_is_valid IS NULL THEN
-    ALTER TABLE game_sessions
-      ADD CONSTRAINT game_sessions_claim_metadata_ck CHECK (
-        claim_generation >= 0
-        AND (
-          (claim_id IS NULL
-            AND claimed_by_user_id IS NULL
-            AND claimed_at IS NULL
-            AND claim_last_seen_at IS NULL
-            AND claim_expires_at IS NULL)
-          OR
-          (claim_id IS NOT NULL
-            AND claim_generation > 0
-            AND claimed_by_user_id IS NOT NULL
-            AND claimed_at IS NOT NULL
-            AND claim_last_seen_at IS NOT NULL
-            AND claim_expires_at IS NOT NULL
-            AND claim_last_seen_at >= claimed_at
-            AND claim_expires_at > claim_last_seen_at)
-        )
-      );
-  END IF;
-
-  SELECT constraint_row.contype = 'f'
-     AND constraint_row.conrelid = 'game_sessions'::regclass
-     AND constraint_row.confrelid = 'users'::regclass
-     AND constraint_row.conkey = ARRAY[
-       (SELECT attribute.attnum
-          FROM pg_attribute AS attribute
-         WHERE attribute.attrelid = 'game_sessions'::regclass
-           AND attribute.attname = 'claimed_by_user_id')
-     ]::smallint[]
-     AND constraint_row.confkey = ARRAY[
-       (SELECT attribute.attnum
-          FROM pg_attribute AS attribute
-         WHERE attribute.attrelid = 'users'::regclass
-           AND attribute.attname = 'id')
-     ]::smallint[]
-     AND constraint_row.confupdtype = 'r'
-     AND constraint_row.confdeltype = 'r'
-     AND constraint_row.convalidated
-    INTO claim_holder_constraint_is_valid
-    FROM pg_constraint AS constraint_row
-   WHERE constraint_row.conrelid = 'game_sessions'::regclass
-     AND constraint_row.conname = 'game_sessions_claimed_by_user_fk';
-  IF claim_holder_constraint_is_valid IS FALSE THEN
-    RAISE EXCEPTION USING
-      ERRCODE = 'integrity_constraint_violation',
-      MESSAGE = 'game_sessions_claimed_by_user_fk has unexpected semantics';
-  END IF;
-  IF claim_holder_constraint_is_valid IS NULL THEN
-    ALTER TABLE game_sessions
-      ADD CONSTRAINT game_sessions_claimed_by_user_fk
-      FOREIGN KEY (claimed_by_user_id) REFERENCES users (id)
-      ON UPDATE RESTRICT ON DELETE RESTRICT;
-  END IF;
-END $$;
-
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1
-      FROM pg_constraint
-     WHERE conrelid = 'game_events'::REGCLASS
-       AND conname = 'game_events_replay_metadata_ck'
-       AND pg_get_constraintdef(oid) <>
-         'CHECK (((replay_sequence IS NULL) OR ((replay_version = 1) AND (phase_after IS NOT NULL) AND (day_before IS NOT NULL) AND (day_after IS NOT NULL) AND (state_hash_after ~ ''^([0-9a-f]{8}|sha256:[0-9a-f]{64})$''::text))))'
-  ) THEN
-    ALTER TABLE game_events DROP CONSTRAINT game_events_replay_metadata_ck;
-  END IF;
-END $$;
-
-UPDATE game_sessions
-   SET initial_game = CASE
-         WHEN initial_game IS NULL AND jsonb_typeof(state -> 'initialGame') = 'object'
-           THEN state -> 'initialGame'
-         ELSE initial_game
-       END,
-       head_event_id = CASE
-         WHEN head_event_id IS NULL
-          AND state ->> 'headEventId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-           THEN (state ->> 'headEventId')::UUID
-         ELSE head_event_id
-       END,
-       reset_return_event_id = CASE
-         WHEN reset_return_event_id IS NULL
-          AND state ->> 'resetReturnEventId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-           THEN (state ->> 'resetReturnEventId')::UUID
-         ELSE reset_return_event_id
-       END
- WHERE (initial_game IS NULL AND jsonb_typeof(state -> 'initialGame') = 'object')
-    OR (head_event_id IS NULL AND state ->> 'headEventId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
-    OR (reset_return_event_id IS NULL AND state ->> 'resetReturnEventId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$');
-
-WITH stored_events AS MATERIALIZED (
-  SELECT session.club_id, session.id AS game_id, stored.event_data
-    FROM game_sessions AS session
-    CROSS JOIN LATERAL jsonb_array_elements(
-      CASE
-        WHEN jsonb_typeof(session.state -> 'events') = 'array' THEN session.state -> 'events'
-        ELSE '[]'::JSONB
-      END
-    ) AS stored(event_data)
-   WHERE stored.event_data ->> 'id' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-     AND stored.event_data ->> 'gameId' = session.id::TEXT
-)
-UPDATE game_events AS event
-   SET replay_sequence = COALESCE(
-         event.replay_sequence,
-         CASE
-           WHEN stored.event_data ->> 'sequence' ~ '^[1-9][0-9]*$'
-            AND pg_input_is_valid(stored.event_data ->> 'sequence', 'integer')
-             THEN (stored.event_data ->> 'sequence')::INTEGER
-         END
-       ),
-       parent_event_id = COALESCE(
-         event.parent_event_id,
-         CASE
-           WHEN stored.event_data ->> 'parentEventId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-             THEN (stored.event_data ->> 'parentEventId')::UUID
-         END
-       ),
-       replay_version = CASE
-         WHEN stored.event_data ->> 'replayVersion' = '1' THEN 1
-         ELSE event.replay_version
-       END,
-       phase = CASE
-         WHEN stored.event_data ->> 'phaseBefore' IN (
-           'mafia-planning', 'sheriff-wake', 'day', 'voting', 'voting-cancelled',
-           'car-crash', 'car-crash-decision', 'car-crash-skipped', 'goodbye-speech',
-           'best-move', 'night-mafia', 'night-mafia-result', 'night-don',
-           'night-don-result', 'night-sheriff', 'night-sheriff-result',
-           'night-resolution', 'finished'
-         ) THEN stored.event_data ->> 'phaseBefore'
-         ELSE event.phase
-       END,
-       phase_after = COALESCE(
-         event.phase_after,
-         CASE
-           WHEN stored.event_data ->> 'phaseAfter' IN (
-             'mafia-planning', 'sheriff-wake', 'day', 'voting', 'voting-cancelled',
-             'car-crash', 'car-crash-decision', 'car-crash-skipped', 'goodbye-speech',
-             'best-move', 'night-mafia', 'night-mafia-result', 'night-don',
-             'night-don-result', 'night-sheriff', 'night-sheriff-result',
-             'night-resolution', 'finished'
-           ) THEN stored.event_data ->> 'phaseAfter'
-         END
-       ),
-       day_before = COALESCE(
-         event.day_before,
-         CASE
-           WHEN stored.event_data ->> 'dayBefore' ~ '^[0-9]+$'
-            AND pg_input_is_valid(stored.event_data ->> 'dayBefore', 'integer')
-             THEN (stored.event_data ->> 'dayBefore')::INTEGER
-         END
-       ),
-       day_after = COALESCE(
-         event.day_after,
-         CASE
-           WHEN stored.event_data ->> 'dayAfter' ~ '^[0-9]+$'
-            AND pg_input_is_valid(stored.event_data ->> 'dayAfter', 'integer')
-             THEN (stored.event_data ->> 'dayAfter')::INTEGER
-         END
-       ),
-       state_hash_after = COALESCE(
-         event.state_hash_after,
-         CASE
-           WHEN stored.event_data ->> 'stateHashAfter' ~ '^([0-9a-f]{8}|sha256:[0-9a-f]{64})$'
-             THEN stored.event_data ->> 'stateHashAfter'
-         END
-       )
-  FROM stored_events AS stored
- WHERE event.club_id = stored.club_id
-   AND event.game_id = stored.game_id
-   AND event.id::TEXT = stored.event_data ->> 'id'
-   AND (
-     (
-       event.replay_sequence IS NULL
-       AND stored.event_data ->> 'sequence' ~ '^[1-9][0-9]*$'
-       AND pg_input_is_valid(stored.event_data ->> 'sequence', 'integer')
-     )
-     OR (
-       event.parent_event_id IS NULL
-       AND stored.event_data ->> 'parentEventId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-     )
-     OR (stored.event_data ->> 'replayVersion' = '1' AND event.replay_version <> 1)
-     OR (
-       stored.event_data ->> 'phaseBefore' IN (
-         'mafia-planning', 'sheriff-wake', 'day', 'voting', 'voting-cancelled',
-         'car-crash', 'car-crash-decision', 'car-crash-skipped', 'goodbye-speech',
-         'best-move', 'night-mafia', 'night-mafia-result', 'night-don',
-         'night-don-result', 'night-sheriff', 'night-sheriff-result',
-         'night-resolution', 'finished'
-       )
-       AND event.phase IS DISTINCT FROM stored.event_data ->> 'phaseBefore'
-     )
-     OR (
-       event.phase_after IS NULL
-       AND stored.event_data ->> 'phaseAfter' IN (
-         'mafia-planning', 'sheriff-wake', 'day', 'voting', 'voting-cancelled',
-         'car-crash', 'car-crash-decision', 'car-crash-skipped', 'goodbye-speech',
-         'best-move', 'night-mafia', 'night-mafia-result', 'night-don',
-         'night-don-result', 'night-sheriff', 'night-sheriff-result',
-         'night-resolution', 'finished'
-       )
-     )
-     OR (
-       event.day_before IS NULL
-       AND stored.event_data ->> 'dayBefore' ~ '^[0-9]+$'
-       AND pg_input_is_valid(stored.event_data ->> 'dayBefore', 'integer')
-     )
-     OR (
-       event.day_after IS NULL
-       AND stored.event_data ->> 'dayAfter' ~ '^[0-9]+$'
-       AND pg_input_is_valid(stored.event_data ->> 'dayAfter', 'integer')
-     )
-     OR (
-       event.state_hash_after IS NULL
-       AND stored.event_data ->> 'stateHashAfter' ~ '^([0-9a-f]{8}|sha256:[0-9a-f]{64})$'
-     )
-   );
-
-UPDATE game_events
-   SET replay_sequence = NULL,
-       parent_event_id = NULL
- WHERE replay_sequence IS NOT NULL
-   AND (
-     phase_after IS NULL
-     OR day_before IS NULL
-     OR day_after IS NULL
-     OR state_hash_after IS NULL
-     OR state_hash_after !~ '^([0-9a-f]{8}|sha256:[0-9a-f]{64})$'
-   );
-
-WITH ordered_canonical_events AS MATERIALIZED (
-  SELECT
-    club_id,
-    game_id,
-    id,
-    ROW_NUMBER() OVER (PARTITION BY club_id, game_id ORDER BY sequence)::INTEGER AS replay_sequence,
-    LAG(id) OVER (PARTITION BY club_id, game_id ORDER BY sequence) AS inferred_parent_event_id
-  FROM game_events
-  WHERE phase_after IS NOT NULL
-    AND day_before IS NOT NULL
-    AND day_after IS NOT NULL
-    AND state_hash_after ~ '^([0-9a-f]{8}|sha256:[0-9a-f]{64})$'
-)
-UPDATE game_events AS event
-   SET replay_sequence = COALESCE(event.replay_sequence, ordered.replay_sequence),
-       parent_event_id = CASE
-         WHEN event.parent_event_id IS NOT NULL
-           OR event.event_type IN ('game.started', 'game.checkpointed')
-           THEN event.parent_event_id
-         ELSE ordered.inferred_parent_event_id
-       END
-  FROM ordered_canonical_events AS ordered
- WHERE event.club_id = ordered.club_id
-   AND event.game_id = ordered.game_id
-   AND event.id = ordered.id
-   AND (
-     event.replay_sequence IS NULL
-     OR (
-       event.parent_event_id IS NULL
-       AND event.event_type NOT IN ('game.started', 'game.checkpointed')
-       AND ordered.inferred_parent_event_id IS NOT NULL
-     )
-   );
-
-WITH replay_roots AS MATERIALIZED (
-  SELECT DISTINCT ON (club_id, game_id) club_id, game_id, id
-    FROM game_events
-   WHERE replay_sequence IS NOT NULL
-     AND event_type IN ('game.started', 'game.checkpointed')
-     AND parent_event_id IS NULL
-   ORDER BY club_id, game_id, replay_sequence
-)
-UPDATE game_sessions AS session
-   SET replay_base_event_id = COALESCE(session.replay_base_event_id, root.id),
-       head_event_id = COALESCE(session.head_event_id, root.id)
-  FROM replay_roots AS root
- WHERE session.club_id = root.club_id
-   AND session.id = root.game_id
-   AND (session.replay_base_event_id IS NULL OR session.head_event_id IS NULL);
-
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1
-      FROM pg_constraint
-     WHERE conrelid = 'game_events'::REGCLASS
-       AND conname = 'game_events_replay_metadata_ck'
-  ) THEN
-    ALTER TABLE game_events
-      ADD CONSTRAINT game_events_replay_metadata_ck CHECK (
-        replay_sequence IS NULL
-        OR (
-          replay_version = 1
-          AND phase_after IS NOT NULL
-          AND day_before IS NOT NULL
-          AND day_after IS NOT NULL
-          AND state_hash_after ~ '^([0-9a-f]{8}|sha256:[0-9a-f]{64})$'
-        )
-      );
-  END IF;
-END $$;
-
-CREATE UNIQUE INDEX IF NOT EXISTS game_events_club_game_replay_sequence_idx
-  ON game_events (club_id, game_id, replay_sequence)
-  WHERE replay_sequence IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS game_sessions_club_active_updated_idx
-  ON game_sessions (club_id, updated_at DESC, id)
-  WHERE status = 'active';
-CREATE INDEX IF NOT EXISTS game_sessions_club_head_idx
-  ON game_sessions (club_id, head_event_id)
-  WHERE head_event_id IS NOT NULL;
-
-CREATE TABLE IF NOT EXISTS game_session_mutations (
-  club_id UUID NOT NULL DEFAULT '00000000-0000-4000-8000-000000000101',
-  game_id UUID NOT NULL,
-  mutation_id UUID NOT NULL,
-  revision INTEGER NOT NULL CHECK (revision > 0),
-  request JSONB NULL,
-  CONSTRAINT game_session_mutations_pkey PRIMARY KEY (club_id, game_id, mutation_id),
-  CONSTRAINT game_session_mutations_game_revision_unique UNIQUE (club_id, game_id, revision),
-  CONSTRAINT game_session_mutations_game_fk
-    FOREIGN KEY (club_id, game_id) REFERENCES game_sessions (club_id, id) ON DELETE CASCADE
-);
-
-ALTER TABLE game_session_mutations ADD COLUMN IF NOT EXISTS request JSONB NULL;
-
-CREATE TABLE IF NOT EXISTS players (
-  id UUID PRIMARY KEY,
-  club_id UUID NOT NULL DEFAULT '00000000-0000-4000-8000-000000000101' CONSTRAINT players_club_fk REFERENCES clubs (id) ON DELETE RESTRICT,
-  nickname TEXT NOT NULL CHECK (BTRIM(nickname) <> ''),
-  first_name TEXT NULL,
-  last_name TEXT NULL,
-  email TEXT NULL,
-  data_processing_consent BOOLEAN NOT NULL DEFAULT FALSE,
-  consent_at TIMESTAMPTZ NULL,
-  club_access TEXT NOT NULL DEFAULT 'none',
-  user_id UUID NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  last_played_at TIMESTAMPTZ NULL,
-  CHECK (
-    (
-      data_processing_consent = FALSE
-      AND first_name IS NULL
-      AND last_name IS NULL
-      AND email IS NULL
-      AND consent_at IS NULL
-    )
-    OR
-    (
-      data_processing_consent = TRUE
-      AND first_name IS NOT NULL
-      AND last_name IS NOT NULL
-      AND email IS NOT NULL
-      AND BTRIM(first_name) <> ''
-      AND BTRIM(last_name) <> ''
-      AND BTRIM(email) <> ''
-      AND consent_at IS NOT NULL
-    )
-  ),
-  CONSTRAINT players_user_fk FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE SET NULL,
-  CONSTRAINT players_access_requires_consent_ck CHECK (
-    club_access = 'none'
-    OR data_processing_consent
-    OR user_id IS NOT NULL
-  ),
-  CONSTRAINT players_club_access_ck CHECK (club_access IN ('none', 'user', 'manager'))
-);
-
-ALTER TABLE players ADD COLUMN IF NOT EXISTS club_id UUID;
-ALTER TABLE players ADD COLUMN IF NOT EXISTS club_access TEXT NOT NULL DEFAULT 'none';
-ALTER TABLE players ADD COLUMN IF NOT EXISTS user_id UUID NULL;
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1
-      FROM information_schema.columns
-     WHERE table_schema = current_schema()
-       AND table_name = 'players'
-       AND column_name = 'is_club_manager'
-  ) THEN
-    UPDATE players
-       SET club_access = 'manager'
-     WHERE is_club_manager;
-  END IF;
-END $$;
-UPDATE players
-   SET club_id = '00000000-0000-4000-8000-000000000101'
- WHERE club_id IS NULL;
-ALTER TABLE players ALTER COLUMN club_id SET NOT NULL;
-ALTER TABLE players ALTER COLUMN club_id SET DEFAULT '00000000-0000-4000-8000-000000000101';
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'players'::regclass
-       AND conname = 'players_user_fk'
-       AND pg_get_constraintdef(oid) <>
-         $definition$FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL$definition$
-  ) THEN
-    ALTER TABLE players DROP CONSTRAINT players_user_fk;
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'players'::regclass
-       AND conname = 'players_user_fk'
-  ) THEN
-    ALTER TABLE players
-      ADD CONSTRAINT players_user_fk
-      FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE SET NULL;
-  END IF;
-END $$;
-
-DROP INDEX IF EXISTS players_club_manager_email_unique_idx;
-ALTER TABLE players DROP CONSTRAINT IF EXISTS players_manager_requires_consent_ck;
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'players'::regclass
-       AND conname = 'players_access_requires_consent_ck'
-       AND pg_get_constraintdef(oid) <>
-         $definition$CHECK (((club_access = 'none'::text) OR data_processing_consent OR (user_id IS NOT NULL)))$definition$
-  ) THEN
-    ALTER TABLE players DROP CONSTRAINT players_access_requires_consent_ck;
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'players'::regclass
-       AND conname = 'players_access_requires_consent_ck'
-  ) THEN
-    ALTER TABLE players
-      ADD CONSTRAINT players_access_requires_consent_ck CHECK (
-        club_access = 'none'
-        OR data_processing_consent
-        OR user_id IS NOT NULL
-      );
-  END IF;
-  IF EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'players'::regclass
-       AND conname = 'players_club_access_ck'
-       AND pg_get_constraintdef(oid) <>
-         $definition$CHECK ((club_access = ANY (ARRAY['none'::text, 'user'::text, 'manager'::text])))$definition$
-  ) THEN
-    ALTER TABLE players DROP CONSTRAINT players_club_access_ck;
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'players'::regclass
-       AND conname = 'players_club_access_ck'
-  ) THEN
-    ALTER TABLE players
-      ADD CONSTRAINT players_club_access_ck CHECK (club_access IN ('none', 'user', 'manager'));
-  END IF;
-END $$;
-ALTER TABLE players DROP COLUMN IF EXISTS is_club_manager;
-
-ALTER TABLE club_memberships ADD COLUMN IF NOT EXISTS access_player_id UUID NULL;
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1
-      FROM information_schema.columns
-     WHERE table_schema = current_schema()
-       AND table_name = 'club_memberships'
-       AND column_name = 'manager_player_id'
-  ) THEN
-    UPDATE club_memberships
-       SET access_player_id = manager_player_id
-     WHERE access_player_id IS NULL;
-  END IF;
-END $$;
-ALTER TABLE club_memberships
-  DROP CONSTRAINT IF EXISTS club_memberships_manager_player_fk;
-ALTER TABLE players
-  DROP CONSTRAINT IF EXISTS players_manager_provenance_unique;
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'club_memberships'::regclass
-       AND conname = 'club_memberships_access_player_fk'
-       AND pg_get_constraintdef(oid) <>
-         $definition$FOREIGN KEY (access_player_id, club_id, user_id) REFERENCES players(id, club_id, user_id) ON DELETE CASCADE$definition$
-  ) THEN
-    ALTER TABLE club_memberships DROP CONSTRAINT club_memberships_access_player_fk;
-  END IF;
-  IF EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'players'::regclass
-       AND conname = 'players_access_provenance_unique'
-       AND pg_get_constraintdef(oid) <>
-         $definition$UNIQUE (id, club_id, user_id)$definition$
-  ) THEN
-    ALTER TABLE players DROP CONSTRAINT players_access_provenance_unique;
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'players'::regclass
-       AND conname = 'players_access_provenance_unique'
-  ) THEN
-    ALTER TABLE players
-      ADD CONSTRAINT players_access_provenance_unique UNIQUE (id, club_id, user_id);
-  END IF;
-END $$;
-UPDATE club_memberships AS membership
-   SET access_player_id = NULL
- WHERE membership.access_player_id IS NOT NULL
-   AND NOT EXISTS (
-     SELECT 1
-       FROM players AS player
-      WHERE player.id = membership.access_player_id
-        AND player.club_id = membership.club_id
-        AND player.user_id = membership.user_id
-   );
-UPDATE players AS player
-   SET club_access = membership.role
-  FROM club_memberships AS membership
- WHERE membership.access_player_id = player.id
-   AND membership.club_id = player.club_id
-   AND membership.user_id = player.user_id;
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'club_memberships'::regclass
-       AND conname = 'club_memberships_access_player_fk'
-  ) THEN
-    ALTER TABLE club_memberships
-      ADD CONSTRAINT club_memberships_access_player_fk
-      FOREIGN KEY (access_player_id, club_id, user_id)
-      REFERENCES players (id, club_id, user_id)
-      ON DELETE CASCADE;
-  END IF;
-END $$;
-DROP INDEX IF EXISTS club_memberships_manager_player_unique_idx;
-CREATE UNIQUE INDEX IF NOT EXISTS club_memberships_access_player_unique_idx
-  ON club_memberships (access_player_id)
-  WHERE access_player_id IS NOT NULL;
-ALTER TABLE club_memberships DROP COLUMN IF EXISTS manager_player_id;
-
-WITH creator_matches AS MATERIALIZED (
-  SELECT DISTINCT ON (club.id)
-         player.id AS player_id,
-         club.created_by AS user_id
-    FROM clubs AS club
-    JOIN users AS app_user ON app_user.id = club.created_by
-    JOIN players AS player
-      ON player.club_id = club.id
-     AND player.data_processing_consent
-     AND player.email IS NOT NULL
-     AND LOWER(BTRIM(player.email)) = LOWER(BTRIM(app_user.email))
-     AND (player.user_id IS NULL OR player.user_id = club.created_by)
-   WHERE NOT EXISTS (
-     SELECT 1
-       FROM players AS existing_manager
-      WHERE existing_manager.club_id = club.id
-        AND existing_manager.club_access = 'manager'
-        AND existing_manager.user_id = club.created_by
-   )
-   ORDER BY club.id,
-            (player.user_id = club.created_by) DESC NULLS LAST,
-            player.created_at,
-            player.id
-)
-UPDATE players AS player
-   SET club_access = 'manager',
-       user_id = creator.user_id
-  FROM creator_matches AS creator
- WHERE player.id = creator.player_id;
-
-INSERT INTO players (
-  id,
-  club_id,
-  nickname,
-  first_name,
-  last_name,
-  email,
-  data_processing_consent,
-  consent_at,
-  club_access,
-  user_id,
-  created_at,
-  updated_at
-)
+INSERT INTO players (id, club_id, nickname, club_access, user_id)
 SELECT
   (
     SUBSTRING(owner_id.hex FROM 1 FOR 8) || '-' ||
@@ -1078,646 +419,22 @@ SELECT
     SUBSTRING(owner_id.hex FROM 21 FOR 12)
   )::UUID,
   club.id,
-  owner_nickname.nickname,
-  NULL,
-  NULL,
-  NULL,
-  FALSE,
-  NULL,
+  'Owner',
   'manager',
-  club.created_by,
-  club.created_at,
-  club.created_at
+  club.created_by
 FROM clubs AS club
-JOIN users AS app_user ON app_user.id = club.created_by
-CROSS JOIN LATERAL (
-  SELECT md5('club-owner-player:' || club.id::TEXT) AS hex
-) AS owner_id
-CROSS JOIN LATERAL (
-  SELECT candidate.nickname
-    FROM (
-      SELECT 1 AS ordinal, 'Owner'::TEXT AS nickname
-      UNION ALL
-      SELECT suffix AS ordinal, 'Owner ' || suffix::TEXT AS nickname
-        FROM generate_series(
-          2,
-          (SELECT COUNT(*)::INTEGER + 2 FROM players WHERE club_id = club.id)
-        ) AS suffix
-    ) AS candidate
-   WHERE NOT EXISTS (
-     SELECT 1
-       FROM players AS existing_player
-      WHERE existing_player.club_id = club.id
-        AND LOWER(BTRIM(existing_player.nickname)) = LOWER(BTRIM(candidate.nickname))
-   )
-   ORDER BY candidate.ordinal
-   LIMIT 1
-) AS owner_nickname
-WHERE NOT EXISTS (
-  SELECT 1
-    FROM players AS manager
-   WHERE manager.club_id = club.id
-     AND manager.club_access = 'manager'
-     AND manager.user_id = club.created_by
-)
+CROSS JOIN LATERAL (SELECT md5('club-owner-player:' || club.id::TEXT) AS hex) AS owner_id
+WHERE club.id = '00000000-0000-4000-8000-000000000101'
+  AND NOT EXISTS (
+    SELECT 1
+      FROM players AS manager
+     WHERE manager.club_id = club.id
+       AND manager.club_access = 'manager'
+       AND manager.user_id = club.created_by
+  )
 ON CONFLICT (id) DO NOTHING;
 
-INSERT INTO club_memberships (club_id, user_id, role, created_at)
-SELECT club.id, club.created_by, 'manager', club.created_at
-  FROM clubs AS club
-ON CONFLICT (club_id, user_id) DO UPDATE
-  SET role = 'manager', access_player_id = NULL;
-
-DROP INDEX IF EXISTS players_nickname_unique_idx;
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'players'::regclass
-       AND conname = 'players_club_id_id_unique'
-  ) THEN
-    ALTER TABLE players
-      ADD CONSTRAINT players_club_id_id_unique UNIQUE (club_id, id);
-  END IF;
-END $$;
-CREATE UNIQUE INDEX IF NOT EXISTS players_club_nickname_unique_idx
-  ON players (club_id, LOWER(BTRIM(nickname)));
-CREATE INDEX IF NOT EXISTS players_club_last_played_nickname_idx
-  ON players (club_id, last_played_at DESC, nickname);
-CREATE UNIQUE INDEX IF NOT EXISTS players_club_access_email_unique_idx
-  ON players (club_id, LOWER(BTRIM(email)))
-  WHERE club_access <> 'none';
-CREATE UNIQUE INDEX IF NOT EXISTS players_club_linked_user_unique_idx
-  ON players (club_id, user_id)
-  WHERE user_id IS NOT NULL;
-
-CREATE TABLE IF NOT EXISTS game_session_players (
-  club_id UUID NOT NULL DEFAULT '00000000-0000-4000-8000-000000000101',
-  game_id UUID NOT NULL,
-  player_id UUID NOT NULL,
-  seat INTEGER NULL CHECK (seat BETWEEN 1 AND 10),
-  is_host BOOLEAN NOT NULL,
-  role TEXT NULL,
-  CONSTRAINT game_session_players_pkey PRIMARY KEY (club_id, game_id, player_id),
-  CONSTRAINT game_session_players_game_seat_unique UNIQUE (club_id, game_id, seat),
-  CONSTRAINT game_session_players_game_fk
-    FOREIGN KEY (club_id, game_id) REFERENCES game_sessions (club_id, id) ON DELETE CASCADE,
-  CONSTRAINT game_session_players_player_fk
-    FOREIGN KEY (club_id, player_id) REFERENCES players (club_id, id) ON DELETE RESTRICT,
-  CONSTRAINT game_session_players_role_ck
-    CHECK (role IS NULL OR role IN ('sheriff', 'citizen', 'mafia', 'don')),
-  CONSTRAINT game_session_players_shape_ck
-    CHECK ((is_host AND seat IS NULL AND role IS NULL) OR (NOT is_host AND seat IS NOT NULL))
-);
-
-CREATE INDEX IF NOT EXISTS game_session_players_player_idx
-  ON game_session_players (player_id, game_id);
-CREATE TABLE IF NOT EXISTS game_results (
-  game_id UUID NOT NULL,
-  club_id UUID NOT NULL DEFAULT '00000000-0000-4000-8000-000000000101' CONSTRAINT game_results_club_fk REFERENCES clubs (id) ON DELETE RESTRICT,
-  outcome TEXT NOT NULL,
-  winner TEXT NULL,
-  reason TEXT NULL,
-  played_at TIMESTAMPTZ NOT NULL,
-  host_player_id UUID NULL,
-  CONSTRAINT game_results_pkey PRIMARY KEY (club_id, game_id),
-  CONSTRAINT game_results_outcome_ck CHECK (outcome IN ('red', 'black', 'draw', 'cancelled')),
-  CONSTRAINT game_results_shape_ck CHECK (
-    (outcome IN ('red', 'black') AND winner IS NOT NULL AND winner = outcome AND reason IS NULL)
-    OR (outcome IN ('draw', 'cancelled') AND winner IS NULL AND reason IS NOT NULL AND reason = BTRIM(reason) AND BTRIM(reason) <> '' AND LENGTH(reason) <= 500)
-  ),
-  CONSTRAINT game_results_host_player_fk
-    FOREIGN KEY (club_id, host_player_id) REFERENCES players (club_id, id) ON DELETE RESTRICT
-);
-
-ALTER TABLE game_results ADD COLUMN IF NOT EXISTS host_player_id UUID NULL;
-ALTER TABLE game_results ADD COLUMN IF NOT EXISTS club_id UUID;
-ALTER TABLE game_results ADD COLUMN IF NOT EXISTS outcome TEXT;
-ALTER TABLE game_results ADD COLUMN IF NOT EXISTS reason TEXT NULL;
-UPDATE game_results SET outcome = winner WHERE outcome IS NULL;
-ALTER TABLE game_results ALTER COLUMN outcome SET NOT NULL;
-ALTER TABLE game_results ALTER COLUMN winner DROP NOT NULL;
-ALTER TABLE game_results DROP CONSTRAINT IF EXISTS game_results_winner_check;
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_results'::regclass AND conname = 'game_results_outcome_ck'
-  ) THEN
-    ALTER TABLE game_results ADD CONSTRAINT game_results_outcome_ck
-      CHECK (outcome IN ('red', 'black', 'draw', 'cancelled'));
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_results'::regclass AND conname = 'game_results_shape_ck'
-  ) THEN
-    ALTER TABLE game_results ADD CONSTRAINT game_results_shape_ck CHECK (
-      (outcome IN ('red', 'black') AND winner IS NOT NULL AND winner = outcome AND reason IS NULL)
-      OR (outcome IN ('draw', 'cancelled') AND winner IS NULL AND reason IS NOT NULL AND reason = BTRIM(reason) AND BTRIM(reason) <> '' AND LENGTH(reason) <= 500)
-    );
-  END IF;
-END $$;
-UPDATE game_results
-   SET club_id = '00000000-0000-4000-8000-000000000101'
- WHERE club_id IS NULL;
-ALTER TABLE game_results ALTER COLUMN club_id SET NOT NULL;
-ALTER TABLE game_results ALTER COLUMN club_id SET DEFAULT '00000000-0000-4000-8000-000000000101';
-
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'game_events_club_fk') THEN
-    ALTER TABLE game_events
-      ADD CONSTRAINT game_events_club_fk FOREIGN KEY (club_id) REFERENCES clubs (id) ON DELETE RESTRICT;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'deleted_games_club_fk') THEN
-    ALTER TABLE deleted_games
-      ADD CONSTRAINT deleted_games_club_fk FOREIGN KEY (club_id) REFERENCES clubs (id) ON DELETE RESTRICT;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'game_daily_counters_club_fk') THEN
-    ALTER TABLE game_daily_counters
-      ADD CONSTRAINT game_daily_counters_club_fk FOREIGN KEY (club_id) REFERENCES clubs (id) ON DELETE CASCADE;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'game_sessions_club_fk') THEN
-    ALTER TABLE game_sessions
-      ADD CONSTRAINT game_sessions_club_fk FOREIGN KEY (club_id) REFERENCES clubs (id) ON DELETE RESTRICT;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'players_club_fk') THEN
-    ALTER TABLE players
-      ADD CONSTRAINT players_club_fk FOREIGN KEY (club_id) REFERENCES clubs (id) ON DELETE RESTRICT;
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'game_results_club_fk') THEN
-    ALTER TABLE game_results
-      ADD CONSTRAINT game_results_club_fk FOREIGN KEY (club_id) REFERENCES clubs (id) ON DELETE RESTRICT;
-  END IF;
-END $$;
-
-CREATE INDEX IF NOT EXISTS game_results_club_played_idx
-  ON game_results (club_id, played_at DESC);
-CREATE INDEX IF NOT EXISTS game_results_club_outcome_played_idx
-  ON game_results (club_id, outcome, played_at DESC);
-CREATE INDEX IF NOT EXISTS game_results_host_idx
-  ON game_results (host_player_id, played_at DESC);
-
-CREATE TABLE IF NOT EXISTS game_player_results (
-  club_id UUID NOT NULL DEFAULT '00000000-0000-4000-8000-000000000101',
-  game_id UUID NOT NULL,
-  player_id UUID NOT NULL,
-  seat INTEGER NOT NULL CHECK (seat BETWEEN 1 AND 10),
-  role TEXT NOT NULL CHECK (role IN ('sheriff', 'citizen', 'mafia', 'don')),
-  team TEXT NOT NULL CHECK (team IN ('red', 'black')),
-  final_status TEXT NOT NULL CHECK (final_status IN ('active', 'eliminated', 'red-carded')),
-  fouls INTEGER NOT NULL CHECK (fouls >= 0),
-  won BOOLEAN NULL,
-  CONSTRAINT game_player_results_pkey PRIMARY KEY (club_id, game_id, player_id),
-  CONSTRAINT game_player_results_game_seat_unique UNIQUE (club_id, game_id, seat),
-  CONSTRAINT game_player_results_game_fk
-    FOREIGN KEY (club_id, game_id) REFERENCES game_results (club_id, game_id) ON DELETE CASCADE,
-  CONSTRAINT game_player_results_player_fk
-    FOREIGN KEY (club_id, player_id) REFERENCES players (club_id, id) ON DELETE RESTRICT
-);
-
-ALTER TABLE game_player_results
-  ADD COLUMN IF NOT EXISTS best_move_hits INTEGER NULL CHECK (best_move_hits BETWEEN 0 AND 3);
-ALTER TABLE game_player_results ALTER COLUMN won DROP NOT NULL;
-
-ALTER TABLE game_session_mutations ADD COLUMN IF NOT EXISTS club_id UUID;
-UPDATE game_session_mutations AS mutation
-   SET club_id = session.club_id
-  FROM game_sessions AS session
- WHERE mutation.club_id IS NULL
-   AND mutation.game_id = session.id;
-ALTER TABLE game_session_mutations ALTER COLUMN club_id SET NOT NULL;
-ALTER TABLE game_session_mutations ALTER COLUMN club_id SET DEFAULT '00000000-0000-4000-8000-000000000101';
-
-ALTER TABLE game_session_players ADD COLUMN IF NOT EXISTS club_id UUID;
-ALTER TABLE game_session_players ADD COLUMN IF NOT EXISTS role TEXT NULL;
-UPDATE game_session_players AS player
-   SET club_id = session.club_id
-  FROM game_sessions AS session
- WHERE player.club_id IS NULL
-   AND player.game_id = session.id;
-ALTER TABLE game_session_players ALTER COLUMN club_id SET NOT NULL;
-ALTER TABLE game_session_players ALTER COLUMN club_id SET DEFAULT '00000000-0000-4000-8000-000000000101';
-
-UPDATE game_session_players AS projection
-   SET role = COALESCE(
-     (
-       SELECT game_player ->> 'role'
-         FROM jsonb_array_elements(
-           CASE
-             WHEN jsonb_typeof(session.state -> 'game' -> 'players') = 'array'
-               THEN session.state -> 'game' -> 'players'
-             ELSE '[]'::JSONB
-           END
-         ) AS game_player
-        WHERE game_player ->> 'id' = projection.player_id::TEXT
-          AND game_player ->> 'role' IN ('sheriff', 'citizen', 'mafia', 'don')
-        LIMIT 1
-     ),
-     (
-       SELECT assignment.value #>> '{}'
-         FROM jsonb_each(
-           CASE
-             WHEN jsonb_typeof(session.state -> 'setup' -> 'setup' -> 'assignments') = 'object'
-               THEN session.state -> 'setup' -> 'setup' -> 'assignments'
-             ELSE '{}'::JSONB
-           END
-         ) AS assignment
-        WHERE assignment.key = projection.seat::TEXT
-          AND assignment.value #>> '{}' IN ('sheriff', 'citizen', 'mafia', 'don')
-        LIMIT 1
-     )
-   )
-  FROM game_sessions AS session
- WHERE projection.club_id = session.club_id
-   AND projection.game_id = session.id
-   AND NOT projection.is_host
-   AND projection.role IS NULL;
-
-UPDATE game_session_players SET role = NULL WHERE is_host AND role IS NOT NULL;
-
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_session_players'::regclass
-       AND conname = 'game_session_players_role_ck'
-  ) THEN
-    ALTER TABLE game_session_players
-      ADD CONSTRAINT game_session_players_role_ck
-      CHECK (role IS NULL OR role IN ('sheriff', 'citizen', 'mafia', 'don'));
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_session_players'::regclass
-       AND conname = 'game_session_players_shape_ck'
-  ) THEN
-    ALTER TABLE game_session_players
-      ADD CONSTRAINT game_session_players_shape_ck
-      CHECK ((is_host AND seat IS NULL AND role IS NULL) OR (NOT is_host AND seat IS NOT NULL));
-  END IF;
-END $$;
-
-ALTER TABLE game_player_results ADD COLUMN IF NOT EXISTS club_id UUID;
-UPDATE game_player_results AS player_result
-   SET club_id = result.club_id
-  FROM game_results AS result
- WHERE player_result.club_id IS NULL
-   AND player_result.game_id = result.game_id;
-ALTER TABLE game_player_results ALTER COLUMN club_id SET NOT NULL;
-ALTER TABLE game_player_results ALTER COLUMN club_id SET DEFAULT '00000000-0000-4000-8000-000000000101';
-
-DO $$
-DECLARE
-  legacy_fk RECORD;
-BEGIN
-  FOR legacy_fk IN
-    SELECT relation.relname AS table_name, constraint_row.conname AS constraint_name
-      FROM pg_constraint AS constraint_row
-      JOIN pg_class AS relation ON relation.oid = constraint_row.conrelid
-     WHERE constraint_row.contype = 'f'
-       AND array_length(constraint_row.conkey, 1) = 1
-       AND (
-         (relation.relname = 'game_session_mutations'
-           AND constraint_row.confrelid = 'game_sessions'::regclass)
-         OR (relation.relname = 'game_session_players'
-           AND constraint_row.confrelid IN ('game_sessions'::regclass, 'players'::regclass))
-         OR (relation.relname = 'game_results'
-           AND constraint_row.confrelid = 'players'::regclass)
-         OR (relation.relname = 'game_player_results'
-           AND constraint_row.confrelid IN ('game_results'::regclass, 'players'::regclass))
-       )
-  LOOP
-    EXECUTE format('ALTER TABLE %I DROP CONSTRAINT %I', legacy_fk.table_name, legacy_fk.constraint_name);
-  END LOOP;
-END $$;
-
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_sessions'::regclass
-       AND contype = 'p'
-       AND array_length(conkey, 1) = 1
-  ) THEN
-    ALTER TABLE game_sessions DROP CONSTRAINT game_sessions_pkey;
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_sessions'::regclass AND contype = 'p'
-  ) THEN
-    ALTER TABLE game_sessions
-      ADD CONSTRAINT game_sessions_pkey PRIMARY KEY (club_id, id);
-  END IF;
-
-  IF EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_results'::regclass
-       AND contype = 'p'
-       AND array_length(conkey, 1) = 1
-  ) THEN
-    ALTER TABLE game_results DROP CONSTRAINT game_results_pkey;
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_results'::regclass AND contype = 'p'
-  ) THEN
-    ALTER TABLE game_results
-      ADD CONSTRAINT game_results_pkey PRIMARY KEY (club_id, game_id);
-  END IF;
-END $$;
-
-ALTER TABLE game_session_mutations
-  DROP CONSTRAINT IF EXISTS game_session_mutations_game_id_revision_key;
-ALTER TABLE game_session_players
-  DROP CONSTRAINT IF EXISTS game_session_players_game_id_seat_key;
-ALTER TABLE game_player_results
-  DROP CONSTRAINT IF EXISTS game_player_results_game_id_seat_key;
-
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_session_mutations'::regclass
-       AND contype = 'p'
-       AND array_length(conkey, 1) = 2
-  ) THEN
-    ALTER TABLE game_session_mutations DROP CONSTRAINT game_session_mutations_pkey;
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_session_mutations'::regclass AND contype = 'p'
-  ) THEN
-    ALTER TABLE game_session_mutations
-      ADD CONSTRAINT game_session_mutations_pkey PRIMARY KEY (club_id, game_id, mutation_id);
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_session_mutations'::regclass
-       AND conname = 'game_session_mutations_game_revision_unique'
-  ) THEN
-    ALTER TABLE game_session_mutations
-      ADD CONSTRAINT game_session_mutations_game_revision_unique UNIQUE (club_id, game_id, revision);
-  END IF;
-
-  IF EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_session_players'::regclass
-       AND contype = 'p'
-       AND array_length(conkey, 1) = 2
-  ) THEN
-    ALTER TABLE game_session_players DROP CONSTRAINT game_session_players_pkey;
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_session_players'::regclass AND contype = 'p'
-  ) THEN
-    ALTER TABLE game_session_players
-      ADD CONSTRAINT game_session_players_pkey PRIMARY KEY (club_id, game_id, player_id);
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_session_players'::regclass
-       AND conname = 'game_session_players_game_seat_unique'
-  ) THEN
-    ALTER TABLE game_session_players
-      ADD CONSTRAINT game_session_players_game_seat_unique UNIQUE (club_id, game_id, seat);
-  END IF;
-
-  IF EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_player_results'::regclass
-       AND contype = 'p'
-       AND array_length(conkey, 1) = 2
-  ) THEN
-    ALTER TABLE game_player_results DROP CONSTRAINT game_player_results_pkey;
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_player_results'::regclass AND contype = 'p'
-  ) THEN
-    ALTER TABLE game_player_results
-      ADD CONSTRAINT game_player_results_pkey PRIMARY KEY (club_id, game_id, player_id);
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_player_results'::regclass
-       AND conname = 'game_player_results_game_seat_unique'
-  ) THEN
-    ALTER TABLE game_player_results
-      ADD CONSTRAINT game_player_results_game_seat_unique UNIQUE (club_id, game_id, seat);
-  END IF;
-END $$;
-
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_session_mutations'::regclass
-       AND conname = 'game_session_mutations_game_fk'
-  ) THEN
-    ALTER TABLE game_session_mutations
-      ADD CONSTRAINT game_session_mutations_game_fk
-      FOREIGN KEY (club_id, game_id) REFERENCES game_sessions (club_id, id) ON DELETE CASCADE;
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_session_players'::regclass
-       AND conname = 'game_session_players_game_fk'
-  ) THEN
-    ALTER TABLE game_session_players
-      ADD CONSTRAINT game_session_players_game_fk
-      FOREIGN KEY (club_id, game_id) REFERENCES game_sessions (club_id, id) ON DELETE CASCADE;
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_session_players'::regclass
-       AND conname = 'game_session_players_player_fk'
-  ) THEN
-    ALTER TABLE game_session_players
-      ADD CONSTRAINT game_session_players_player_fk
-      FOREIGN KEY (club_id, player_id) REFERENCES players (club_id, id) ON DELETE RESTRICT;
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_results'::regclass
-       AND conname = 'game_results_host_player_fk'
-  ) THEN
-    ALTER TABLE game_results
-      ADD CONSTRAINT game_results_host_player_fk
-      FOREIGN KEY (club_id, host_player_id) REFERENCES players (club_id, id) ON DELETE RESTRICT;
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_player_results'::regclass
-       AND conname = 'game_player_results_game_fk'
-  ) THEN
-    ALTER TABLE game_player_results
-      ADD CONSTRAINT game_player_results_game_fk
-      FOREIGN KEY (club_id, game_id) REFERENCES game_results (club_id, game_id) ON DELETE CASCADE;
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_player_results'::regclass
-       AND conname = 'game_player_results_player_fk'
-  ) THEN
-    ALTER TABLE game_player_results
-      ADD CONSTRAINT game_player_results_player_fk
-      FOREIGN KEY (club_id, player_id) REFERENCES players (club_id, id) ON DELETE RESTRICT;
-  END IF;
-END $$;
-
-CREATE INDEX IF NOT EXISTS game_player_results_player_idx
-  ON game_player_results (player_id, game_id);
-CREATE INDEX IF NOT EXISTS game_session_players_club_history_player_idx
-  ON game_session_players (club_id, player_id, game_id)
-  WHERE NOT is_host;
-
-INSERT INTO game_session_players (club_id, game_id, player_id, seat, is_host, role)
-SELECT result.club_id, result.game_id, result.player_id, result.seat, FALSE, result.role
-  FROM game_player_results AS result
-  JOIN game_sessions AS session
-    ON session.club_id = result.club_id AND session.id = result.game_id
-ON CONFLICT (club_id, game_id, player_id) DO UPDATE
-  SET seat = EXCLUDED.seat, is_host = FALSE, role = EXCLUDED.role
-WHERE (game_session_players.seat, game_session_players.is_host, game_session_players.role)
-      IS DISTINCT FROM (EXCLUDED.seat, FALSE, EXCLUDED.role);
-
-INSERT INTO game_session_players (club_id, game_id, player_id, seat, is_host, role)
-SELECT result.club_id, result.game_id, result.host_player_id, NULL, TRUE, NULL
-  FROM game_results AS result
-  JOIN game_sessions AS session
-    ON session.club_id = result.club_id AND session.id = result.game_id
- WHERE result.host_player_id IS NOT NULL
-ON CONFLICT (club_id, game_id, player_id) DO UPDATE
-  SET seat = NULL, is_host = TRUE, role = NULL
-WHERE (game_session_players.seat, game_session_players.is_host, game_session_players.role)
-      IS DISTINCT FROM (NULL, TRUE, NULL);
-
-CREATE TABLE IF NOT EXISTS youtube_oauth_credentials (
-  user_id UUID PRIMARY KEY REFERENCES users (id) ON DELETE CASCADE,
-  singleton BOOLEAN NOT NULL DEFAULT TRUE CHECK (singleton),
-  access_token_encrypted BYTEA NOT NULL,
-  refresh_token_encrypted BYTEA NOT NULL,
-  expires_at TIMESTAMPTZ NOT NULL,
-  account_label TEXT NOT NULL CHECK (BTRIM(account_label) <> ''),
-  scope TEXT NOT NULL,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-ALTER TABLE youtube_oauth_credentials
-  ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users (id) ON DELETE CASCADE;
-UPDATE youtube_oauth_credentials
-   SET user_id = '00000000-0000-4000-8000-000000000001'
- WHERE user_id IS NULL;
-ALTER TABLE youtube_oauth_credentials ALTER COLUMN user_id SET NOT NULL;
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1
-      FROM pg_constraint
-     WHERE conrelid = 'youtube_oauth_credentials'::regclass
-       AND contype = 'p'
-       AND pg_get_constraintdef(oid) NOT LIKE '%(user_id)%'
-  ) THEN
-    ALTER TABLE youtube_oauth_credentials DROP CONSTRAINT youtube_oauth_credentials_pkey;
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1
-      FROM pg_constraint
-     WHERE conrelid = 'youtube_oauth_credentials'::regclass
-       AND contype = 'p'
-  ) THEN
-    ALTER TABLE youtube_oauth_credentials ADD PRIMARY KEY (user_id);
-  END IF;
-END $$;
-
-DO $$
-BEGIN
-  IF EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_events'::regclass
-       AND conname = 'game_events_club_game_event_unique'
-       AND pg_get_constraintdef(oid) <> 'UNIQUE (club_id, game_id, id)'
-  ) THEN
-    RAISE EXCEPTION 'game_events_club_game_event_unique has an unexpected definition';
-  END IF;
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-     WHERE conrelid = 'game_events'::regclass
-       AND conname = 'game_events_club_game_event_unique'
-  ) THEN
-    ALTER TABLE game_events
-      ADD CONSTRAINT game_events_club_game_event_unique UNIQUE (club_id, game_id, id);
-  END IF;
-END $$;
-
--- EventStore also serves non-session game aggregates. Remove this constraint
--- if a failed pre-release schema application installed it.
-ALTER TABLE game_events DROP CONSTRAINT IF EXISTS game_events_game_fk;
-ALTER TABLE game_events DROP CONSTRAINT IF EXISTS game_events_parent_fk;
-ALTER TABLE game_sessions DROP CONSTRAINT IF EXISTS game_sessions_replay_base_event_fk;
-ALTER TABLE game_sessions DROP CONSTRAINT IF EXISTS game_sessions_head_event_fk;
-ALTER TABLE game_sessions DROP CONSTRAINT IF EXISTS game_sessions_reset_return_event_fk;
-
-DO $$
-DECLARE
-  duplicate_active_sessions TEXT;
-BEGIN
-  SELECT string_agg(
-           format('club_id=%s game_ids=%s', club_id, game_ids),
-           '; ' ORDER BY club_id
-         )
-    INTO duplicate_active_sessions
-    FROM (
-      SELECT club_id, array_agg(id ORDER BY id) AS game_ids
-        FROM game_sessions
-       WHERE status = 'active'
-       GROUP BY club_id
-      HAVING COUNT(*) > 1
-    ) AS duplicates;
-
-  IF duplicate_active_sessions IS NOT NULL THEN
-    RAISE EXCEPTION USING
-      ERRCODE = 'P0001',
-      MESSAGE = 'game_sessions_one_active_per_club_idx cannot be created because duplicate active sessions exist',
-      DETAIL = duplicate_active_sessions,
-      HINT = 'Choose one active session per club and delete only operator-approved obsolete game IDs before rerunning the migration.';
-  END IF;
-END $$;
-
-DO $$
-DECLARE
-  active_index_is_valid BOOLEAN;
-BEGIN
-  IF to_regclass('game_sessions_one_active_per_club_idx') IS NOT NULL THEN
-    SELECT index_row.indisunique
-           AND index_row.indisvalid
-           AND index_row.indisready
-           AND index_row.indnkeyatts = 1
-           AND index_row.indnatts = 1
-           AND (index_row.indkey::SMALLINT[])[0] = club_column.attnum
-           AND pg_get_expr(index_row.indpred, index_row.indrelid) = '(status = ''active''::text)'
-      INTO active_index_is_valid
-      FROM pg_class AS index_relation
-      LEFT JOIN pg_index AS index_row ON index_row.indexrelid = index_relation.oid
-      LEFT JOIN pg_class AS table_relation ON table_relation.oid = index_row.indrelid
-      LEFT JOIN pg_attribute AS club_column
-        ON club_column.attrelid = table_relation.oid
-       AND club_column.attname = 'club_id'
-     WHERE index_relation.oid = to_regclass('game_sessions_one_active_per_club_idx')
-       AND table_relation.relname = 'game_sessions'
-       AND table_relation.relnamespace = to_regnamespace(current_schema());
-
-    IF active_index_is_valid IS DISTINCT FROM TRUE THEN
-      RAISE EXCEPTION USING
-        ERRCODE = 'P0001',
-        MESSAGE = 'game_sessions_one_active_per_club_idx has unexpected semantics',
-        HINT = 'Inspect and remove only the incorrectly shaped index before rerunning the migration.';
-    END IF;
-  END IF;
-END $$;
-
-CREATE UNIQUE INDEX IF NOT EXISTS game_sessions_one_active_per_club_idx
-  ON game_sessions (club_id)
-  WHERE status = 'active';
+INSERT INTO game_rulesets
+  (id, version, player_count, sheriff_count, citizen_count, mafia_count, don_count)
+VALUES ('club-mafia', 1, 10, 1, 6, 2, 1)
+ON CONFLICT (id, version) DO NOTHING;

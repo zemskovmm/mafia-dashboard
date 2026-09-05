@@ -34,20 +34,9 @@ const boundedStrings = (value: unknown): readonly string[] => {
 };
 
 const sanitizeMusicPreferences = (value: Record<string, unknown>): MusicPreferencesV1 => {
-  const legacyStages = isRecord(value.stagePlaylistIds) ? value.stagePlaylistIds : {};
   const lastPlaylistId =
-    (typeof value.lastPlaylistId === "string" && value.lastPlaylistId) ||
-    (["initial", "day", "night", "voting"] as const)
-      .map((stage) => legacyStages[stage])
-      .find(
-        (playlistId): playlistId is string =>
-          typeof playlistId === "string" && playlistId.length > 0,
-      ) ||
-    "";
-  const legacyOrders = isRecord(value.queueOrderByPlaylist) ? value.queueOrderByPlaylist : {};
-  const queueOrder = Array.isArray(value.queueOrder)
-    ? boundedStrings(value.queueOrder)
-    : boundedStrings(legacyOrders[lastPlaylistId]);
+    typeof value.lastPlaylistId === "string" && value.lastPlaylistId ? value.lastPlaylistId : "";
+  const queueOrder = boundedStrings(value.queueOrder);
   const endgameEntryKeys = boundedStrings(value.endgameEntryKeys);
   const endgameEntries = new Set(endgameEntryKeys);
 

@@ -117,11 +117,16 @@ export const parseVerifierClubId = (value) => {
 };
 
 export const gameSessionStorageKeyForClub = (clubId) => {
-  const canonicalClubId = parseVerifierClubId(clubId);
-  const prefix = "mafia-dashboard.game-session.v4";
-  return canonicalClubId === "00000000-0000-4000-8000-000000000101"
-    ? prefix
-    : `${prefix}.${canonicalClubId}`;
+  parseVerifierClubId(clubId);
+  return "mafia-dashboard.game-session.v5";
+};
+
+export const assertBrowserGameEnvelopeOwner = (envelope, clubId) => {
+  const expectedClubId = parseVerifierClubId(clubId);
+  if (envelope?.version !== 5 || envelope.clubId !== expectedClubId) {
+    throw new Error("The durable browser game belongs to another club");
+  }
+  return envelope;
 };
 
 export const classifyReadOnlyVerifierRequest = ({ method, url, expectedOrigin }) => {
@@ -295,25 +300,26 @@ const canonicalMetadata = (state) => ({
   hostPlayerId: state.hostPlayerId,
   hostName: state.hostName,
   playlistId: state.playlistId,
-  legacyLog: state.legacyLog ?? [],
+  legacyLog: state.legacyLog,
 });
 
 export const assertEnvelopeMatchesSession = (envelope, session, replay) => {
+  assertEqual("envelope version", envelope.version, 5);
   assertEqual("game id", envelope.gameId, session.gameId);
-  assertEqual("name", envelope.name, session.name);
+  assertEqual("name", envelope.current.name, session.name);
   assertEqual("revision", envelope.revision, session.revision);
-  assertEqual("status", envelope.results === null ? "active" : "completed", session.status);
-  assertEqual("results", envelope.results, session.results);
-  assertEqual("metadata", envelope.metadata, canonicalMetadata(session.state));
-  assertEqual("game", envelope.game, session.state.game);
-  assertEqual("undo budget", envelope.undoBudget ?? 0, session.state.undoBudget ?? 0);
-  assertEqual("baseline", envelope.baseline, session.state.initialGame);
-  assertEqual("entries", envelope.entries, session.state.events);
-  assertEqual("head", envelope.headEventId, session.state.headEventId);
-  assertEqual("reset return", envelope.resetReturnEventId, session.state.resetReturnEventId);
+  assertEqual("status", envelope.current.results === null ? "active" : "completed", session.status);
+  assertEqual("results", envelope.current.results, session.results);
+  const state = envelope.current.state;
+  assertEqual("metadata", canonicalMetadata(state), canonicalMetadata(session.state));
+  assertEqual("game", state.game, session.state.game);
+  assertEqual("undo budget", state.undoBudget, session.state.undoBudget);
+  assertEqual("baseline", state.initialGame, session.state.initialGame);
+  assertEqual("entries", state.events, session.state.events);
+  assertEqual("head", state.headEventId, session.state.headEventId);
+  assertEqual("reset return", state.resetReturnEventId, session.state.resetReturnEventId);
   assertEqual("outbox", envelope.outbox, []);
-  const activeEntries = activeEntriesFor(envelope.entries, envelope.headEventId);
-  replay(envelope.baseline, activeEntries);
+  replay(state.initialGame, activeEntriesFor(state.events, state.headEventId));
 };
 
 export const assertSessionPostcondition = (session, expected, replay) => {

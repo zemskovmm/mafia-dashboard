@@ -57,27 +57,6 @@ const baseline = (game = dayOne()): InitialGameBaseline => ({
 
 const id = (sequence: number) => `00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`;
 
-const legacyStateHash = (game: GameState): string => {
-  const canonical = (value: unknown): unknown =>
-    Array.isArray(value)
-      ? value.map(canonical)
-      : value === null || typeof value !== "object"
-        ? value
-        : Object.fromEntries(
-            Object.entries(value)
-              .filter(([, entry]) => entry !== undefined)
-              .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
-              .map(([key, entry]) => [key, canonical(entry)]),
-          );
-  const text = JSON.stringify(canonical(game));
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16).padStart(8, "0");
-};
-
 const entry = (
   game: GameState,
   sequence: number,
@@ -286,7 +265,7 @@ describe("canonical game replay", () => {
     expect(replayGameLog(baseline(voting), [root.entry, resolved.entry]).game).toEqual(corrected);
   });
 
-  it("replays pre-fix votes that retained a muted goodbye speaker", () => {
+  it("rejects persisted snapshots that retain a muted goodbye speaker", () => {
     const initial = dayOne();
     const candidate = initial.players.find(({ role }) => role === "citizen")!;
     const voteAssignments = Object.fromEntries(
@@ -329,22 +308,15 @@ describe("canonical game replay", () => {
       stateHashAfter: hashGameState(oldAfter),
     };
 
-    expect(replayGameLog(baseline(voting), [root.entry, storedEntry]).game).toEqual(oldAfter);
+    expect(() => replayGameLog(baseline(voting), [root.entry, storedEntry])).toThrow(
+      /phase\/day metadata/i,
+    );
     expect(() => applyCurrentGameLogEntry(root.after, storedEntry)).toThrow(
       /current rule semantics/i,
     );
-    const legacyRoot: GameLogEntry = {
-      ...root.entry,
-      stateHashAfter: legacyStateHash(root.after),
-    };
-    const legacyStored: GameLogEntry = {
-      ...storedEntry,
-      stateHashAfter: legacyStateHash(oldAfter),
-    };
-    expect(replayGameLog(baseline(voting), [legacyRoot, legacyStored]).game).toEqual(oldAfter);
   });
 
-  it("replays pre-fix day increments that retained pending mutes", () => {
+  it("rejects persisted day transitions that retain expired mutes", () => {
     const initial = dayOne();
     const before: GameState = {
       ...initial,
@@ -375,16 +347,9 @@ describe("canonical game replay", () => {
       stateHashAfter: hashGameState(oldAfter),
     };
 
-    expect(replayGameLog(baseline(before), [root.entry, storedEntry]).game).toEqual(oldAfter);
-    const legacyRoot: GameLogEntry = {
-      ...root.entry,
-      stateHashAfter: legacyStateHash(root.after),
-    };
-    const legacyStored: GameLogEntry = {
-      ...storedEntry,
-      stateHashAfter: legacyStateHash(oldAfter),
-    };
-    expect(replayGameLog(baseline(before), [legacyRoot, legacyStored]).game).toEqual(oldAfter);
+    expect(() => replayGameLog(baseline(before), [root.entry, storedEntry])).toThrow(
+      /state hash mismatch/i,
+    );
   });
 
   it("replays a new day from the persisted actual opening seat", () => {
@@ -407,7 +372,7 @@ describe("canonical game replay", () => {
     );
   });
 
-  it("replays pre-cursor day transitions under SHA-256 and legacy hashes", () => {
+  it("rejects persisted day transitions without the current opening cursor", () => {
     const initial = advanceSetupPhase(
       advanceSetupPhase(markPlayerInactive(planningGame(), 2, "eliminated")),
     );
@@ -428,14 +393,12 @@ describe("canonical game replay", () => {
     delete (oldAfter as { dayOpeningSeat?: number }).dayOpeningSeat;
     const storedEntry = { ...current.entry, stateHashAfter: hashGameState(oldAfter) };
 
-    expect(replayGameLog(baseline(before), [root.entry, storedEntry]).game).toEqual(oldAfter);
-
-    const legacyRoot = { ...root.entry, stateHashAfter: legacyStateHash(root.after) };
-    const legacyStored = { ...storedEntry, stateHashAfter: legacyStateHash(oldAfter) };
-    expect(replayGameLog(baseline(before), [legacyRoot, legacyStored]).game).toEqual(oldAfter);
+    expect(() => replayGameLog(baseline(before), [root.entry, storedEntry])).toThrow(
+      /state hash mismatch/i,
+    );
   });
 
-  it("replays pre-eligibility night transitions under SHA-256 and legacy hashes", () => {
+  it("rejects persisted night transitions without the current eligibility snapshot", () => {
     const before = dayOne();
     const root = entry(before, 1, { type: "game.checkpointed", payload: {} });
     const current = entry(
@@ -448,17 +411,15 @@ describe("canonical game replay", () => {
     delete (oldAfter as { nightCheckEligibility?: unknown }).nightCheckEligibility;
     const storedEntry = { ...current.entry, stateHashAfter: hashGameState(oldAfter) };
 
-    expect(replayGameLog(baseline(before), [root.entry, storedEntry]).game).toEqual(oldAfter);
+    expect(() => replayGameLog(baseline(before), [root.entry, storedEntry])).toThrow(
+      /state hash mismatch/i,
+    );
     expect(() => applyCurrentGameLogEntry(root.after, storedEntry)).toThrow(
       /current rule semantics/i,
     );
-
-    const legacyRoot = { ...root.entry, stateHashAfter: legacyStateHash(root.after) };
-    const legacyStored = { ...storedEntry, stateHashAfter: legacyStateHash(oldAfter) };
-    expect(replayGameLog(baseline(before), [legacyRoot, legacyStored]).game).toEqual(oldAfter);
   });
 
-  it("replays pre-eligibility skips for check owners who were already inactive", () => {
+  it("rejects historical check-skip routing without an eligibility snapshot", () => {
     const base = dayOne();
     const before: GameState = {
       ...base,
@@ -486,27 +447,13 @@ describe("canonical game replay", () => {
       stateHashAfter: hashGameState(afterDon),
       createdAt: "2026-08-24T20:02:00.000Z",
     };
-    const afterSheriff = { ...afterDon, phase: "night-resolution" as const };
-    const sheriffSkip: GameLogEntry = {
-      ...donSkip,
-      type: "sheriff.check-skipped",
-      payload: {},
-      id: id(3),
-      sequence: 3,
-      parentEventId: donSkip.id,
-      phaseBefore: "night-sheriff",
-      phaseAfter: "night-resolution",
-      stateHashAfter: hashGameState(afterSheriff),
-      createdAt: "2026-08-24T20:03:00.000Z",
-    };
-
-    expect(replayGameLog(baseline(before), [root.entry, donSkip, sheriffSkip]).game).toEqual(
-      afterSheriff,
+    expect(() => replayGameLog(baseline(before), [root.entry, donSkip])).toThrow(
+      /phase\/day metadata/i,
     );
     expect(() => applyCurrentGameLogEntry(root.after, donSkip)).toThrow(/current rule semantics/i);
   });
 
-  it("replays a pre-eligibility night that routed an already-inactive Don to its old phase", () => {
+  it("rejects old private-phase routing for an inactive Don", () => {
     const before = markPlayerInactive(
       dayOne(),
       dayOne().players.find(({ role }) => role === "don")!.seat,
@@ -519,14 +466,11 @@ describe("canonical game replay", () => {
       { type: "phase.changed", payload: { to: "night-mafia" } },
       root.entry.id,
     );
-    const oldNight = { ...currentNight.after };
-    delete (oldNight as { nightCheckEligibility?: unknown }).nightCheckEligibility;
-    const night: GameLogEntry = { ...currentNight.entry, stateHashAfter: hashGameState(oldNight) };
     const mafiaResult = entry(
-      oldNight,
+      currentNight.after,
       3,
       { type: "mafia.shots-resolved", payload: { shots: [], result: { kind: "miss" } } },
-      night.id,
+      currentNight.entry.id,
     );
     const modernAfter = completeMafiaShots(mafiaResult.after);
     expect(modernAfter.phase).toBe("night-sheriff");
@@ -547,9 +491,14 @@ describe("canonical game replay", () => {
       createdAt: "2026-08-24T20:04:00.000Z",
     };
 
-    expect(
-      replayGameLog(baseline(before), [root.entry, night, mafiaResult.entry, transition]).game,
-    ).toEqual(oldAfter);
+    expect(() =>
+      replayGameLog(baseline(before), [
+        root.entry,
+        currentNight.entry,
+        mafiaResult.entry,
+        transition,
+      ]),
+    ).toThrow(/cannot replay a phase change/i);
   });
 
   it("replays same-night killed role checks exactly through the canonical chain", () => {
@@ -614,7 +563,7 @@ describe("canonical game replay", () => {
     ]);
   });
 
-  it("replays pre-fix Best Moves that retained the victim's pending mute", () => {
+  it("rejects persisted Best Moves that retain an expired mute", () => {
     const initial = dayOne();
     const victim = initial.players.find(({ role }) => role === "citizen")!;
     const killed = markPlayerInactive(initial, victim.seat, "eliminated");
@@ -657,16 +606,9 @@ describe("canonical game replay", () => {
       stateHashAfter: hashGameState(oldAfter),
     };
 
-    expect(replayGameLog(baseline(before), [root.entry, storedEntry]).game).toEqual(oldAfter);
-    const legacyRoot: GameLogEntry = {
-      ...root.entry,
-      stateHashAfter: legacyStateHash(root.after),
-    };
-    const legacyStored: GameLogEntry = {
-      ...storedEntry,
-      stateHashAfter: legacyStateHash(oldAfter),
-    };
-    expect(replayGameLog(baseline(before), [legacyRoot, legacyStored]).game).toEqual(oldAfter);
+    expect(() => replayGameLog(baseline(before), [root.entry, storedEntry])).toThrow(
+      /state hash mismatch/i,
+    );
   });
 
   it("folds a single day-one nominee and omitted turns into the Mafia shot checkpoint", () => {
@@ -1371,36 +1313,33 @@ describe("canonical game replay", () => {
     ).toThrow(/hash/i);
   });
 
-  it("replays legacy 8-hex state hashes without generating new weak hashes", () => {
+  it("rejects recorded weak state hashes", () => {
     const initial = dayOne();
     const first = entry(initial, 1, {
       type: "player.nominated",
       payload: { nominatorSeat: 1, candidateSeat: 4 },
     });
-    const legacyEntry = { ...first.entry, stateHashAfter: legacyStateHash(first.after) };
+    const weakEntry = { ...first.entry, stateHashAfter: "00000000" };
 
-    expect(replayGameLog(baseline(initial), [legacyEntry]).game).toEqual(first.after);
-    expect(hashGameState(first.after)).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(() => replayGameLog(baseline(initial), [weakEntry])).toThrow(/sha256/i);
   });
 
-  it("replays a persisted legacy chain followed by a canonical SHA event", () => {
+  it("rejects a weak hash anywhere in a replay chain", () => {
     const initial = dayOne();
     const first = entry(initial, 1, {
       type: "player.nominated",
       payload: { nominatorSeat: 1, candidateSeat: 4 },
     });
-    const legacyParent = { ...first.entry, stateHashAfter: legacyStateHash(first.after) };
+    const weakParent = { ...first.entry, stateHashAfter: "00000000" };
 
     const second = entry(
       first.after,
       2,
       { type: "turn.completed", payload: { seat: 1 } },
-      legacyParent.id,
+      weakParent.id,
     );
 
-    expect(replayGameLog(baseline(initial), [legacyParent, second.entry]).game).toEqual(
-      second.after,
-    );
+    expect(() => replayGameLog(baseline(initial), [weakParent, second.entry])).toThrow(/sha256/i);
   });
 
   it("rejects game.started outside Mafia planning at every domain write boundary", () => {
@@ -1463,11 +1402,8 @@ describe("canonical game replay", () => {
     );
 
     expect(() =>
-      replayGameLog(baseline(initial), [
-        root.entry,
-        { ...next.entry, stateHashAfter: legacyStateHash(next.after) },
-      ]),
-    ).toThrow(/legacy state hash.*after sha/i);
+      replayGameLog(baseline(initial), [root.entry, { ...next.entry, stateHashAfter: "00000000" }]),
+    ).toThrow(/sha256/i);
     expect(() =>
       replayGameLog(baseline(initial), [{ ...next.entry, sequence: 1, parentEventId: null }]),
     ).toThrow(/lifecycle root/i);
@@ -1511,7 +1447,7 @@ describe("canonical game replay", () => {
     ).toThrow(/day phase/i);
   });
 
-  it("replays a legacy Best Move containing its owner and an inactive selection", () => {
+  it("rejects a Best Move containing its owner and an inactive selection", () => {
     const initial = dayOne();
     const owner = initial.players[0]!;
     const inactive = initial.players[1]!;
@@ -1541,7 +1477,7 @@ describe("canonical game replay", () => {
       bestMove: { playerSeat: owner.seat, selectedSeats, mafiaHits },
       dayNotice: undefined,
     };
-    const legacyEntry: GameLogEntry = {
+    const storedEntry: GameLogEntry = {
       replayVersion: 1,
       id: id(1),
       gameId: "00000000-0000-4000-8000-000000000999",
@@ -1553,14 +1489,14 @@ describe("canonical game replay", () => {
       phaseAfter: after.phase,
       dayBefore: before.day,
       dayAfter: after.day,
-      stateHashAfter: legacyStateHash(after),
+      stateHashAfter: hashGameState(after),
       createdAt: "2026-08-18T08:00:00.000Z",
     };
 
-    expect(replayGameLog(baseline(before), [legacyEntry]).game).toEqual(after);
+    expect(() => replayGameLog(baseline(before), [storedEntry])).toThrow();
   });
 
-  it("replays legacy Don and Sheriff checks made by eliminated role owners", () => {
+  it("rejects Don and Sheriff checks made by eliminated role owners", () => {
     const variants = [
       {
         type: "don.checked",
@@ -1601,7 +1537,7 @@ describe("canonical game replay", () => {
           secret: true,
         },
       };
-      const legacyEntry: GameLogEntry = {
+      const storedEntry: GameLogEntry = {
         replayVersion: 1,
         id: id(1),
         gameId: "00000000-0000-4000-8000-000000000999",
@@ -1613,20 +1549,20 @@ describe("canonical game replay", () => {
         phaseAfter: after.phase,
         dayBefore: before.day,
         dayAfter: after.day,
-        stateHashAfter: legacyStateHash(after),
+        stateHashAfter: hashGameState(after),
         createdAt: "2026-08-18T08:01:00.000Z",
       };
 
-      expect(replayGameLog(baseline(before), [legacyEntry]).game).toEqual(after);
+      expect(() => replayGameLog(baseline(before), [storedEntry])).toThrow();
       expect(() =>
         replayGameLog(baseline({ ...before, phase: "day" }), [
-          { ...legacyEntry, phaseBefore: "day" },
+          { ...storedEntry, phaseBefore: "day" },
         ]),
-      ).toThrow(/cannot replay from day/i);
+      ).toThrow();
     }
   });
 
-  it("replays legacy car-crash decisions whose omitted voters meant no", () => {
+  it("rejects car-crash decisions whose omitted voters change the snapshot", () => {
     const decision: GameState = {
       ...dayOne(),
       phase: "car-crash-decision",
@@ -1649,10 +1585,12 @@ describe("canonical game replay", () => {
     const legacyEntry = {
       ...accepted.entry,
       payload: { ...accepted.entry.payload, votes: legacyVotes },
-      stateHashAfter: legacyStateHash(legacyAfter),
+      stateHashAfter: hashGameState(legacyAfter),
     } as GameLogEntry;
 
-    expect(replayGameLog(baseline(decision), [legacyEntry]).game).toEqual(legacyAfter);
+    expect(() => replayGameLog(baseline(decision), [legacyEntry])).toThrow(
+      /every eligible player must vote/i,
+    );
   });
 
   it("replays new car-crash ballots through a review phase before elimination", () => {
@@ -1718,7 +1656,7 @@ describe("canonical game replay", () => {
     expect(replayGameLog(baseline(reviewed), [root.entry, resolved.entry]).game).toEqual(corrected);
   });
 
-  it("replays pre-fix car-crash goodbyes with a muted speaker", () => {
+  it("rejects car-crash goodbyes that retain a muted speaker", () => {
     const initial = dayOne();
     const reviewed: GameState = {
       ...initial,
@@ -1748,16 +1686,9 @@ describe("canonical game replay", () => {
       stateHashAfter: hashGameState(oldAfter),
     };
 
-    expect(replayGameLog(baseline(reviewed), [root.entry, storedEntry]).game).toEqual(oldAfter);
-    const legacyRoot: GameLogEntry = {
-      ...root.entry,
-      stateHashAfter: legacyStateHash(root.after),
-    };
-    const legacyStored: GameLogEntry = {
-      ...storedEntry,
-      stateHashAfter: legacyStateHash(oldAfter),
-    };
-    expect(replayGameLog(baseline(reviewed), [legacyRoot, legacyStored]).game).toEqual(oldAfter);
+    expect(() => replayGameLog(baseline(reviewed), [root.entry, storedEntry])).toThrow(
+      /state hash mismatch/i,
+    );
   });
 
   it("supports independent append-only branches from one parent", () => {

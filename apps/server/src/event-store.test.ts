@@ -1,313 +1,205 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { EventStore } from "./event-store.js";
-import { GameSessionStore } from "./game-session-store.js";
 import { ClubStore, DEFAULT_CLUB_ID } from "./club-store.js";
+import { EventStore } from "./event-store.js";
 
 const databaseUrl =
   process.env.TEST_DATABASE_URL ?? "postgresql://mafia:mafia@127.0.0.1:54329/mafia_test";
-const pool = new Pool({ connectionString: databaseUrl });
+const schemaName = `event_store_test_${randomUUID().replaceAll("-", "")}`;
+const bootstrapPool = new Pool({ connectionString: databaseUrl });
+const pool = new Pool({ connectionString: databaseUrl, options: `-c search_path=${schemaName}` });
 const store = new EventStore(pool);
-const legacyOwnerId = "00000000-0000-4000-8000-000000000001";
 
 beforeAll(async () => {
+  await bootstrapPool.query(`CREATE SCHEMA ${schemaName}`);
   await store.initialize();
 });
 
 afterAll(async () => {
   await pool.end();
+  await bootstrapPool.query(`DROP SCHEMA IF EXISTS ${schemaName} CASCADE`);
+  await bootstrapPool.end();
 });
 
-const waitForAdvisoryWaiters = async (expected: number): Promise<void> => {
-  const deadline = Date.now() + 2_000;
-  while (Date.now() < deadline) {
-    const result = await pool.query<{ waiters: number }>(
-      `SELECT COUNT(*)::int AS waiters
-         FROM pg_stat_activity
-        WHERE datname = current_database()
-          AND wait_event_type = 'Lock'
-          AND query LIKE '%pg_advisory_xact_lock%'`,
-    );
-    if ((result.rows[0]?.waiters ?? 0) >= expected) return;
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  throw new Error("Timed out waiting for advisory lock waiter");
+const canonicalHash = (value: string): string =>
+  `sha256:${createHash("sha256").update(value).digest("hex")}`;
+
+const createClub = async (): Promise<string> => {
+  const userId = randomUUID();
+  await pool.query("INSERT INTO users (id, email, display_name) VALUES ($1, $2, $3)", [
+    userId,
+    `event-store-${userId}@example.test`,
+    "Event store test user",
+  ]);
+  const club = await new ClubStore(pool).create(userId, {
+    name: `Event store club ${randomUUID().slice(0, 8)}`,
+    city: "Málaga",
+    headerLogo: null,
+    cardLogo: null,
+    language: "en",
+    ownerConsent: true,
+  });
+  return club.id;
 };
 
-describe("PostgreSQL event store", () => {
-  it("assigns monotonic per-game sequences and reads events in order", async () => {
+const insertEvent = async ({
+  id = randomUUID(),
+  clubId = DEFAULT_CLUB_ID,
+  gameId,
+  sequence,
+  type,
+  phase,
+  payload,
+  parentEventId = null,
+  createdAt = "2026-08-18T08:00:00.000Z",
+}: {
+  readonly id?: string;
+  readonly clubId?: string;
+  readonly gameId: string;
+  readonly sequence: number;
+  readonly type: string;
+  readonly phase: string;
+  readonly payload: Readonly<Record<string, unknown>>;
+  readonly parentEventId?: string | null;
+  readonly createdAt?: string;
+}): Promise<string> => {
+  await pool.query(
+    `INSERT INTO game_events
+       (id, club_id, game_id, sequence, idempotency_key, event_type, phase, payload,
+        parent_event_id, replay_version, replay_sequence, phase_after, day_before, day_after,
+        state_hash_after, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, 1, $4, $7, 0, 0, $10, $11)`,
+    [
+      id,
+      clubId,
+      gameId,
+      sequence,
+      randomUUID(),
+      type,
+      phase,
+      JSON.stringify(payload),
+      parentEventId,
+      canonicalHash(`${gameId}:${sequence}:${type}`),
+      createdAt,
+    ],
+  );
+  return id;
+};
+
+describe("EventStore", () => {
+  it("reads ordered canonical event records without mutating the event stream", async () => {
     const gameId = randomUUID();
-
-    const first = await store.append({
+    const checkpointId = await insertEvent({
       gameId,
-      idempotencyKey: "first",
-      type: "game.created",
-      phase: "setup-players",
-      payload: { name: "Friday game" },
-    });
-    const second = await store.append({
-      gameId,
-      idempotencyKey: "second",
-      type: "players.selected",
-      phase: "setup-players",
-      payload: { seats: 10 },
-    });
-
-    expect(first.sequence).toBe(1);
-    expect(second.sequence).toBe(2);
-    expect((await store.read(gameId)).map(({ type }) => type)).toEqual([
-      "game.created",
-      "players.selected",
-    ]);
-  });
-
-  it("returns the original event for a duplicate idempotency key", async () => {
-    const gameId = randomUUID();
-    const input = {
-      gameId,
-      idempotencyKey: "same-tap",
-      type: "turn.started",
-      phase: "day",
-      seat: 3,
-      payload: { seat: 3, seconds: 60 },
-    } as const;
-
-    const first = await store.append(input);
-    const duplicate = await store.append(input);
-
-    expect(duplicate.id).toBe(first.id);
-    expect(duplicate.sequence).toBe(1);
-    expect(await store.read(gameId)).toHaveLength(1);
-  });
-
-  it("redacts private event types from public reads without storing a secrecy flag", async () => {
-    const gameId = randomUUID();
-    for (const [index, type] of [
-      "don.checked",
-      "sheriff.checked",
-      "best-move.completed",
-    ].entries()) {
-      await store.append({
-        gameId,
-        idempotencyKey: `private-${index}`,
-        type,
-        phase: "night-don",
-        seat: 4,
-        payload: { privateValue: type },
-      });
-    }
-
-    const host = await store.read(gameId, { includeSecrets: true });
-    const publicEvents = await store.read(gameId, { includeSecrets: false });
-
-    expect(host.map(({ payload }) => payload)).toEqual([
-      { privateValue: "don.checked" },
-      { privateValue: "sheriff.checked" },
-      { privateValue: "best-move.completed" },
-    ]);
-    expect(publicEvents.map(({ payload }) => payload)).toEqual([
-      { redacted: true },
-      { redacted: true },
-      { redacted: true },
-    ]);
-  });
-
-  it("keeps canonical public payloads visible and fails closed for unknown event types", async () => {
-    const gameId = randomUUID();
-    await store.append({
-      gameId,
-      idempotencyKey: "public",
-      type: "player.nominated",
-      phase: "day",
-      payload: { candidateSeat: 2 },
-    });
-    await store.append({
-      gameId,
-      idempotencyKey: "unknown",
-      type: "future.private-event",
-      phase: "day",
-      payload: { hidden: true },
-    });
-
-    const publicEvents = await store.read(gameId, { includeSecrets: false });
-
-    expect(publicEvents.map(({ payload }) => payload)).toEqual([
-      { candidateSeat: 2 },
-      { redacted: true },
-    ]);
-  });
-
-  it("truncates the undone event tail by idempotency key while preserving game.created", async () => {
-    const gameId = randomUUID();
-    await store.append({
-      gameId,
-      idempotencyKey: "game-created",
-      type: "game.created",
-      phase: "setup-players",
+      sequence: 1,
+      type: "game.checkpointed",
+      phase: "finished",
       payload: {},
+      createdAt: "2026-08-18T07:59:00.000Z",
     });
-    await store.append({
+    const completionId = await insertEvent({
       gameId,
-      idempotencyKey: "undo-from-here",
-      type: "turn.completed",
-      phase: "day",
-      payload: { day: 2 },
-    });
-    await store.append({
-      gameId,
-      idempotencyKey: "later-event",
-      type: "foul.issued",
-      phase: "day",
-      payload: { seat: 1 },
+      sequence: 2,
+      type: "game.completed",
+      phase: "finished",
+      payload: { winner: "red" },
+      parentEventId: checkpointId,
     });
 
-    await store.truncateFrom(gameId, "undo-from-here");
-    await store.truncateFrom(gameId, "undo-from-here");
-    await store.truncateFrom(gameId, "game-created");
-
-    await expect(store.read(gameId)).resolves.toMatchObject([
-      { sequence: 1, idempotencyKey: "game-created", type: "game.created" },
-    ]);
-  });
-
-  it("tombstones an abandoned game, removes its active setup players, and rejects late appends", async () => {
-    const gameId = randomUUID();
-    await store.append({
-      gameId,
-      idempotencyKey: "setup-players",
-      type: "setup.players-selected",
-      phase: "setup-players",
-      payload: { hostPlayerId: randomUUID(), players: [] },
-    });
-
-    await store.deleteGame(gameId);
-
-    await expect(store.read(gameId)).resolves.toEqual([]);
-    await expect(
-      store.append({
-        gameId,
-        idempotencyKey: "late-event",
-        type: "turn.started",
-        phase: "day",
+    await expect(store.read(gameId)).resolves.toEqual([
+      expect.objectContaining({
+        id: checkpointId,
+        sequence: 1,
+        type: "game.checkpointed",
         payload: {},
+        parentEventId: null,
+        replayVersion: 1,
+        stateHashAfter: canonicalHash(`${gameId}:1:game.checkpointed`),
       }),
-    ).rejects.toMatchObject({ code: "game_deleted" });
-  });
-
-  it("serializes concurrent appends without duplicate sequence numbers", async () => {
-    const gameId = randomUUID();
-
-    const events = await Promise.all(
-      Array.from({ length: 10 }, (_, index) =>
-        store.append({
-          gameId,
-          idempotencyKey: `event-${index}`,
-          type: "log.test",
-          phase: "day",
-          payload: { index },
-        }),
-      ),
-    );
-
-    expect(events.map(({ sequence }) => sequence).sort((a, b) => a - b)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+      expect.objectContaining({
+        id: completionId,
+        sequence: 2,
+        type: "game.completed",
+        payload: { winner: "red" },
+        parentEventId: checkpointId,
+        replayVersion: 1,
+        stateHashAfter: canonicalHash(`${gameId}:2:game.completed`),
+      }),
     ]);
   });
 
-  it("does not serialize the same game UUID across independent clubs", async () => {
-    const club = await new ClubStore(pool).create(legacyOwnerId, {
-      name: `Independent lock ${randomUUID().slice(0, 8)}`,
-      city: "Granada",
-      headerLogo: null,
-      cardLogo: null,
-      language: "en",
-      ownerConsent: true,
-    });
+  it("redacts secret event payloads and state hashes from public reads", async () => {
     const gameId = randomUUID();
-    const locker = await pool.connect();
-    let local: ReturnType<EventStore["append"]> | undefined;
-    let foreign: ReturnType<EventStore["append"]> | undefined;
-    let foreignOutcome: string | undefined;
-    let localOutcome: string | undefined;
-    try {
-      await locker.query("BEGIN");
-      await locker.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [gameId]);
-      await locker.query("SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2, 0))", [
-        DEFAULT_CLUB_ID,
-        gameId,
-      ]);
-      local = store.append({
-        clubId: DEFAULT_CLUB_ID,
-        gameId,
-        idempotencyKey: "local",
-        type: "game.created",
-        phase: "setup-players",
-        payload: {},
-      });
-      foreign = store.append({
-        clubId: club.id,
-        gameId,
-        idempotencyKey: "foreign",
-        type: "game.created",
-        phase: "setup-players",
-        payload: {},
-      });
-      foreignOutcome = await Promise.race([
-        foreign.then(() => "completed"),
-        new Promise<string>((resolve) => setTimeout(() => resolve("blocked"), 250)),
-      ]);
-      localOutcome = await Promise.race([
-        local.then(() => "completed"),
-        new Promise<string>((resolve) => setTimeout(() => resolve("blocked"), 50)),
-      ]);
-    } finally {
-      await locker.query("ROLLBACK");
-      locker.release();
-      await Promise.allSettled([
-        ...(local === undefined ? [] : [local]),
-        ...(foreign === undefined ? [] : [foreign]),
-      ]);
-    }
+    await insertEvent({
+      gameId,
+      sequence: 1,
+      type: "sheriff.checked",
+      phase: "night-sheriff-result",
+      payload: { targetSeat: 4, match: true },
+    });
+    await insertEvent({
+      gameId,
+      sequence: 2,
+      type: "game.completed",
+      phase: "finished",
+      payload: { winner: "black" },
+    });
 
-    expect(foreignOutcome).toBe("completed");
-    expect(localOutcome).toBe("blocked");
-    await expect(store.read(gameId, { includeSecrets: true }, club.id)).resolves.toHaveLength(1);
-    await expect(
-      store.read(gameId, { includeSecrets: true }, DEFAULT_CLUB_ID),
-    ).resolves.toHaveLength(1);
+    const privateEvents = await store.read(gameId, { includeSecrets: true });
+    const publicEvents = await store.read(gameId, { includeSecrets: false });
+
+    expect(privateEvents[0]).toMatchObject({
+      type: "sheriff.checked",
+      payload: { targetSeat: 4, match: true },
+      stateHashAfter: canonicalHash(`${gameId}:1:sheriff.checked`),
+    });
+    expect(publicEvents).toEqual([
+      expect.objectContaining({
+        type: "sheriff.checked",
+        payload: { redacted: true },
+        stateHashAfter: null,
+      }),
+      expect.objectContaining({
+        type: "game.completed",
+        payload: { winner: "black" },
+        stateHashAfter: null,
+      }),
+    ]);
   });
 
-  it("rejects an append queued behind an aggregate tombstone", async () => {
+  it("isolates event reads by club even when game IDs collide", async () => {
     const gameId = randomUUID();
-    const locker = await pool.connect();
-    try {
-      await locker.query("BEGIN");
-      await locker.query("SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2, 0))", [
-        DEFAULT_CLUB_ID,
-        gameId,
-      ]);
-      const clear = new GameSessionStore(pool).clear({
-        gameId,
-        claim: { claimId: randomUUID(), claimGeneration: 0 },
-      });
-      await waitForAdvisoryWaiters(1);
-      const append = store.append({
-        gameId,
-        idempotencyKey: randomUUID(),
-        type: "turn.started",
-        phase: "day",
-        payload: {},
-      });
-      await waitForAdvisoryWaiters(2);
-      await locker.query("COMMIT");
+    const foreignClubId = await createClub();
+    await insertEvent({
+      gameId,
+      sequence: 1,
+      type: "game.completed",
+      phase: "finished",
+      payload: { winner: "red" },
+    });
+    await insertEvent({
+      clubId: foreignClubId,
+      gameId,
+      sequence: 1,
+      type: "game.completed",
+      phase: "finished",
+      payload: { winner: "black" },
+    });
 
-      await clear;
-      await expect(append).rejects.toMatchObject({ code: "game_deleted" });
-      await expect(store.read(gameId)).resolves.toEqual([]);
-    } finally {
-      await locker.query("ROLLBACK");
-      locker.release();
-    }
+    await expect(store.read(gameId, { includeSecrets: true })).resolves.toMatchObject([
+      { payload: { winner: "red" } },
+    ]);
+    await expect(
+      store.read(gameId, { includeSecrets: true }, foreignClubId),
+    ).resolves.toMatchObject([{ payload: { winner: "black" } }]);
+  });
+
+  it("does not retain the removed raw event mutation surface", () => {
+    const legacyStore = store as unknown as Record<string, unknown>;
+    expect(legacyStore.append).toBeUndefined();
+    expect(legacyStore.createGame).toBeUndefined();
+    expect(legacyStore.complete).toBeUndefined();
+    expect(legacyStore.clear).toBeUndefined();
   });
 });

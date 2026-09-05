@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 
 import helmet from "@fastify/helmet";
 import staticFiles from "@fastify/static";
@@ -7,7 +7,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import type { Pool } from "pg";
 import { z } from "zod";
 import { EventStore } from "./event-store.js";
-import { AuthoritativeGameSessionError, DeletedGameError } from "./game-lifecycle.js";
+import { DeletedGameError } from "./game-lifecycle.js";
 import {
   ClubActiveGameExistsError,
   GameSessionClaimConflictError,
@@ -18,13 +18,11 @@ import {
   GameSessionStore,
 } from "./game-session-store.js";
 import {
-  durableGameEventTypeSchema,
   gameSessionClaimHeaderSchema,
   gameSessionCompleteMutationSchema,
   gameSessionEventMutationSchema,
   gameSessionHeadMutationSchema,
   gameSessionMutationSchema,
-  gameSessionNormalizeMutationSchema,
   gameSessionStartMutationSchema,
 } from "./game-session-validation.js";
 import {
@@ -70,17 +68,6 @@ const playerIdParams = z.object({
 });
 const clubIdParams = z.object({ clubId: z.uuid() });
 const playlistIdParams = z.object({ playlistId: z.string().trim().min(1).max(200) });
-const createGameBody = z.object({ name: z.string().trim().min(1).max(100) });
-const appendEventBody = z.object({
-  idempotencyKey: z.string().trim().min(1).max(200),
-  type: durableGameEventTypeSchema,
-  phase: z.string().trim().min(1).max(100),
-  seat: z.number().int().min(1).max(10).optional(),
-  payload: z.record(z.string(), z.unknown()),
-});
-const truncateEventsBody = z.object({
-  fromIdempotencyKey: z.string().trim().min(1).max(200),
-});
 const visibilityQuery = z.object({ visibility: z.enum(["host", "public"]).default("host") });
 const oauthCallbackQuery = z.object({
   code: z.string().min(1),
@@ -133,61 +120,6 @@ const playerProfileUpdateBody = z.union([
   consentedPlayerBody,
   linkedManagerConsentWithdrawalBody,
 ]);
-
-const gamePlayerResultBody = z.object({
-  playerId: z.uuid(),
-  seat: z.number().int().min(1).max(10),
-  role: z.enum(["sheriff", "citizen", "mafia", "don"]),
-  team: z.enum(["red", "black"]),
-  status: z.enum(["active", "eliminated", "red-carded"]),
-  fouls: z.number().int().min(0),
-  bestMoveHits: z.number().int().min(0).max(3).nullable().optional(),
-});
-
-const gameResultsBody = z
-  .object({
-    hostPlayerId: z.uuid(),
-    winner: z.enum(["red", "black"]),
-    playedAt: z.coerce.date(),
-    players: z.array(gamePlayerResultBody).length(10),
-  })
-  .superRefine(({ hostPlayerId, players }, context) => {
-    if (hostPlayerId !== null && players.some(({ playerId }) => playerId === hostPlayerId)) {
-      context.addIssue({
-        code: "custom",
-        path: ["hostPlayerId"],
-        message: "Host must not also occupy a player seat",
-      });
-    }
-    if (new Set(players.map(({ playerId }) => playerId)).size !== players.length) {
-      context.addIssue({ code: "custom", path: ["players"], message: "Player IDs must be unique" });
-    }
-    if (new Set(players.map(({ seat }) => seat)).size !== players.length) {
-      context.addIssue({ code: "custom", path: ["players"], message: "Seats must be unique" });
-    }
-
-    const expectedRoleCounts = { sheriff: 1, citizen: 6, mafia: 2, don: 1 } as const;
-    for (const [role, expected] of Object.entries(expectedRoleCounts)) {
-      if (players.filter((player) => player.role === role).length !== expected) {
-        context.addIssue({
-          code: "custom",
-          path: ["players"],
-          message: `Expected ${expected} ${role} result${expected === 1 ? "" : "s"}`,
-        });
-      }
-    }
-
-    for (const [index, player] of players.entries()) {
-      const expectedTeam = player.role === "mafia" || player.role === "don" ? "black" : "red";
-      if (player.team !== expectedTeam) {
-        context.addIssue({
-          code: "custom",
-          path: ["players", index, "team"],
-          message: `${player.role} must belong to the ${expectedTeam} team`,
-        });
-      }
-    }
-  });
 
 const validationFailure = (issues: readonly z.core.$ZodIssue[]) => ({
   error: "validation_failed",
@@ -927,27 +859,6 @@ export const buildApp = async ({
     }
   });
 
-  app.post("/api/game-sessions/:gameId/normalize", async (request, reply) => {
-    const context = await selectedClubContext(request, reply);
-    if (context === null) return;
-    const params = gameIdParams.safeParse(request.params);
-    const body = gameSessionNormalizeMutationSchema.safeParse(request.body);
-    const claim = gameSessionClaimFromHeaders(request);
-    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
-    if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
-    if (!claim.success) return reply.code(400).send(validationFailure(claim.error.issues));
-    try {
-      return await gameSessionStore.normalize({
-        clubId: context.clubId,
-        gameId: params.data.gameId,
-        ...body.data,
-        claim: claim.data,
-      });
-    } catch (error) {
-      return sendGameSessionMutationError(reply, error);
-    }
-  });
-
   app.post("/api/game-sessions/:gameId/start", async (request, reply) => {
     const context = await selectedClubContext(request, reply);
     if (context === null) return;
@@ -1032,89 +943,6 @@ export const buildApp = async ({
     }
   });
 
-  app.post("/api/games", async (request, reply) => {
-    const clubId = await selectedClub(request, reply);
-    if (clubId === null) return;
-    const parsed = createGameBody.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.code(400).send(validationFailure(parsed.error.issues));
-    }
-
-    const gameId = randomUUID();
-    const event = await store.append({
-      clubId,
-      gameId,
-      idempotencyKey: "game-created",
-      type: "game.created",
-      phase: "setup-players",
-      payload: { name: parsed.data.name },
-    });
-    return reply.code(201).send({ gameId, event });
-  });
-
-  app.delete("/api/games/:gameId", async (request, reply) => {
-    const clubId = await selectedClub(request, reply);
-    if (clubId === null) return;
-    const params = gameIdParams.safeParse(request.params);
-    if (!params.success) {
-      return reply.code(400).send(validationFailure(params.error.issues));
-    }
-    try {
-      await store.deleteGame(params.data.gameId, clubId);
-      return reply.code(204).send();
-    } catch (error) {
-      if (error instanceof AuthoritativeGameSessionError) {
-        return reply.code(409).send({ error: "game_session_authoritative" });
-      }
-      throw error;
-    }
-  });
-
-  app.post("/api/games/:gameId/events/truncate", async (request, reply) => {
-    const clubId = await selectedClub(request, reply);
-    if (clubId === null) return;
-    const params = gameIdParams.safeParse(request.params);
-    const body = truncateEventsBody.safeParse(request.body);
-    if (!params.success) {
-      return reply.code(400).send(validationFailure(params.error.issues));
-    }
-    if (!body.success) {
-      return reply.code(400).send(validationFailure(body.error.issues));
-    }
-    try {
-      await store.truncateFrom(params.data.gameId, body.data.fromIdempotencyKey, clubId);
-      return reply.code(204).send();
-    } catch (error) {
-      if (error instanceof AuthoritativeGameSessionError) {
-        return reply.code(409).send({ error: "game_session_authoritative" });
-      }
-      throw error;
-    }
-  });
-
-  app.post("/api/games/:gameId/events", async (request, reply) => {
-    const clubId = await selectedClub(request, reply);
-    if (clubId === null) return;
-    const params = gameIdParams.safeParse(request.params);
-    const body = appendEventBody.safeParse(request.body);
-    if (!params.success) {
-      return reply.code(400).send(validationFailure(params.error.issues));
-    }
-    if (!body.success) {
-      return reply.code(400).send(validationFailure(body.error.issues));
-    }
-
-    try {
-      const event = await store.append({ clubId, gameId: params.data.gameId, ...body.data });
-      return reply.code(event.duplicate ? 200 : 201).send({ event });
-    } catch (error) {
-      if (error instanceof AuthoritativeGameSessionError) {
-        return reply.code(409).send({ error: "game_session_authoritative" });
-      }
-      throw error;
-    }
-  });
-
   app.get("/api/games/:gameId/events", async (request, reply) => {
     const clubId = await selectedClub(request, reply);
     if (clubId === null) return;
@@ -1133,52 +961,6 @@ export const buildApp = async ({
       clubId,
     );
     return { events };
-  });
-
-  app.put("/api/games/:gameId/results", async (request, reply) => {
-    const clubId = await selectedClub(request, reply);
-    if (clubId === null) return;
-    const params = gameIdParams.safeParse(request.params);
-    const body = gameResultsBody.safeParse(request.body);
-    if (!params.success) {
-      return reply.code(400).send(validationFailure(params.error.issues));
-    }
-    if (!body.success) {
-      return reply.code(400).send(validationFailure(body.error.issues));
-    }
-    try {
-      await playerStore.saveGameResults({ gameId: params.data.gameId, ...body.data }, clubId);
-      return reply.code(204).send();
-    } catch (error) {
-      if (error instanceof DeletedGameError) {
-        return reply.code(410).send({ error: "game_deleted" });
-      }
-      if (error instanceof AuthoritativeGameSessionError) {
-        return reply.code(409).send({ error: "game_session_authoritative" });
-      }
-      throw error;
-    }
-  });
-
-  app.delete("/api/games/:gameId/results", async (request, reply) => {
-    const clubId = await selectedClub(request, reply);
-    if (clubId === null) return;
-    const params = gameIdParams.safeParse(request.params);
-    if (!params.success) {
-      return reply.code(400).send(validationFailure(params.error.issues));
-    }
-    try {
-      await playerStore.deleteGameResults(params.data.gameId, clubId);
-      return reply.code(204).send();
-    } catch (error) {
-      if (error instanceof DeletedGameError) {
-        return reply.code(410).send({ error: "game_deleted" });
-      }
-      if (error instanceof AuthoritativeGameSessionError) {
-        return reply.code(409).send({ error: "game_session_authoritative" });
-      }
-      throw error;
-    }
   });
 
   if (staticDir !== undefined) {

@@ -32,30 +32,38 @@ const completedSummary = (gameId: string, name: string): CompletedGameSessionSum
   updatedAt: "2026-08-24T18:00:00.000Z",
 });
 
-const legacySession = (
+const canonicalSession = (
   summary: CompletedGameSessionSummary,
-  log: readonly Readonly<Record<string, unknown>>[],
   gameId = summary.gameId,
-): RemoteGameSession => ({
-  gameId,
-  name: summary.name,
-  revision: summary.revision,
-  duplicate: false,
-  status: "completed",
-  rulesetId: summary.rulesetId,
-  rulesetVersion: summary.rulesetVersion,
-  updatedAt: summary.updatedAt,
-  state: {
-    setup: null,
-    game: createSampleGameHistory().game,
-    hostPlayerId: null,
-    hostName: summary.hostName,
-    playlistId: "",
-    log,
-    undoHistory: [],
-  },
-  results: null,
-});
+): RemoteGameSession => {
+  const history = createSampleGameHistory();
+  return {
+    gameId,
+    name: summary.name,
+    revision: summary.revision,
+    duplicate: false,
+    status: "completed",
+    rulesetId: summary.rulesetId,
+    rulesetVersion: summary.rulesetVersion,
+    updatedAt: summary.updatedAt,
+    state: {
+      setup: null,
+      game: history.game,
+      hostPlayerId: null,
+      hostName: summary.hostName,
+      playlistId: "",
+      log: [],
+      undoHistory: [],
+      undoBudget: 0,
+      initialGame: history.baseline,
+      events: history.entries.map((entry) => ({ ...entry, gameId })),
+      headEventId: history.headEventId,
+      resetReturnEventId: null,
+      legacyLog: [],
+    },
+    results: null,
+  };
+};
 
 describe("GameTimelineScreen", () => {
   it("loads completed history with composable date, player, and result filters", async () => {
@@ -341,20 +349,7 @@ describe("GameTimelineScreen", () => {
       listCompleted: vi.fn((clubId: string) =>
         clubId === clubA ? Promise.resolve([gameA]) : clubBList.promise,
       ),
-      getSession: vi.fn(() =>
-        Promise.resolve(
-          legacySession(gameA, [
-            {
-              id: "00000000-0000-4000-8000-000000000711",
-              sequence: 1,
-              type: "don.checked",
-              phase: "night-don-result",
-              payload: { targetSeat: 1, match: true },
-              createdAt: "2026-08-24T18:01:00.000Z",
-            },
-          ]),
-        ),
-      ),
+      getSession: vi.fn(() => Promise.resolve(canonicalSession(gameA))),
     };
     const { rerender } = render(
       <GameTimelineScreen clubId={clubA} onBack={() => undefined} loaders={loaders} />,
@@ -396,20 +391,7 @@ describe("GameTimelineScreen", () => {
       gameA.gameId,
     );
     rerender(<GameTimelineScreen clubId={clubB} onBack={() => undefined} loaders={loaders} />);
-    await act(async () =>
-      sessionA.resolve(
-        legacySession(gameA, [
-          {
-            id: "00000000-0000-4000-8000-000000000711",
-            sequence: 1,
-            type: "don.checked",
-            phase: "night-don-result",
-            payload: { targetSeat: 1, match: true },
-            createdAt: "2026-08-24T18:01:00.000Z",
-          },
-        ]),
-      ),
-    );
+    await act(async () => sessionA.resolve(canonicalSession(gameA)));
 
     expect(screen.queryByRole("button", { name: "Don checked Player 1: Sheriff" })).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
@@ -460,20 +442,7 @@ describe("GameTimelineScreen", () => {
     await user.selectOptions(selector, game.gameId);
     expect(screen.getByText("Loading First…")).toBeInTheDocument();
     await user.selectOptions(selector, "");
-    await act(async () =>
-      response.resolve(
-        legacySession(game, [
-          {
-            id: "00000000-0000-4000-8000-000000000711",
-            sequence: 1,
-            type: "don.checked",
-            phase: "night-don-result",
-            payload: { targetSeat: 1, match: true },
-            createdAt: "2026-08-24T18:01:00.000Z",
-          },
-        ]),
-      ),
-    );
+    await act(async () => response.resolve(canonicalSession(game)));
 
     expect(selector).toHaveValue("");
     expect(screen.queryByText("Loading First…")).toBeNull();
@@ -545,22 +514,7 @@ describe("GameTimelineScreen", () => {
         loaders={{
           listCompleted: () => Promise.resolve([selected]),
           getSession: () =>
-            Promise.resolve(
-              legacySession(
-                selected,
-                [
-                  {
-                    id: "00000000-0000-4000-8000-000000000711",
-                    sequence: 1,
-                    type: "don.checked",
-                    phase: "night-don-result",
-                    payload: { targetSeat: 1, match: true },
-                    createdAt: "2026-08-24T18:01:00.000Z",
-                  },
-                ],
-                "00000000-0000-4000-8000-000000000799",
-              ),
-            ),
+            Promise.resolve(canonicalSession(selected, "00000000-0000-4000-8000-000000000799")),
         }}
       />,
     );
@@ -604,6 +558,7 @@ describe("GameTimelineScreen", () => {
                 playlistId: "",
                 log: [],
                 undoHistory: [],
+                undoBudget: 0,
                 initialGame: history.baseline,
                 events: [
                   history.entries[0]!,
@@ -654,37 +609,11 @@ describe("GameTimelineScreen", () => {
     await user.selectOptions(selector, second.gameId);
     expect(screen.getByText("Loading Second…")).toBeInTheDocument();
 
-    await act(async () =>
-      firstResponse.resolve(
-        legacySession(first, [
-          {
-            id: "00000000-0000-4000-8000-000000000711",
-            sequence: 1,
-            type: "don.checked",
-            phase: "night-don-result",
-            payload: { targetSeat: 1, match: true },
-            createdAt: "2026-08-24T18:01:00.000Z",
-          },
-        ]),
-      ),
-    );
+    await act(async () => firstResponse.resolve(canonicalSession(first)));
     expect(screen.getByText("Loading Second…")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Don checked Player 1: Sheriff" })).toBeNull();
 
-    await act(async () =>
-      secondResponse.resolve(
-        legacySession(second, [
-          {
-            id: "00000000-0000-4000-8000-000000000712",
-            sequence: 1,
-            type: "player.red-carded",
-            phase: "day",
-            payload: { seat: 8, source: "host" },
-            createdAt: "2026-08-24T19:01:00.000Z",
-          },
-        ]),
-      ),
-    );
+    await act(async () => secondResponse.resolve(canonicalSession(second)));
     expect(screen.queryByText("Loading Second…")).toBeNull();
     expect(screen.getByRole("button", { name: "Red card: Player 8" })).toBeInTheDocument();
   });
@@ -821,7 +750,7 @@ describe("GameTimelineScreen", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Unable to load Second");
   });
 
-  it("renders legacy completed logs while honestly disabling historical state preview", async () => {
+  it("rejects log-only completed history without canonical replay data", async () => {
     const user = userEvent.setup();
     const gameId = "00000000-0000-4000-8000-000000000703";
     const summary = {
@@ -881,6 +810,12 @@ describe("GameTimelineScreen", () => {
                   },
                 ],
                 undoHistory: [],
+                undoBudget: 0,
+                initialGame: null,
+                events: [],
+                headEventId: null,
+                resetReturnEventId: null,
+                legacyLog: [],
               },
               results: null,
             }),
@@ -892,10 +827,8 @@ describe("GameTimelineScreen", () => {
       await screen.findByRole("combobox", { name: "Completed game" }),
       gameId,
     );
-    expect(await screen.findByText("Legacy log · state preview unavailable")).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /Nomination: Player 1 set Player 7/i }),
-    ).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Vote assigned" })).toBeNull();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Unable to load Legacy.");
+    expect(screen.queryByRole("button", { name: /Nomination: Player 1 set Player 7/i })).toBeNull();
+    expect(screen.queryByText("Legacy log · state preview unavailable")).toBeNull();
   });
 });

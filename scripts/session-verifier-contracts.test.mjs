@@ -34,27 +34,6 @@ const entries = [
 const replay = (_baseline, activeEntries) => ({
   game: { phase: "day", day: 1, turn: activeEntries.length - 1 },
 });
-const envelope = {
-  version: 4,
-  gameId: ids.game,
-  revision: 7,
-  name: "Verifier table",
-  metadata: {
-    setup: null,
-    hostPlayerId: "host-player",
-    hostName: "Host",
-    playlistId: "playlist",
-    legacyLog: [],
-  },
-  game: { phase: "day", day: 1, turn: 1 },
-  undoBudget: 2,
-  baseline,
-  entries,
-  headEventId: ids.turn,
-  resetReturnEventId: null,
-  results: null,
-  outbox: [],
-};
 const session = {
   gameId: ids.game,
   name: "Verifier table",
@@ -62,7 +41,13 @@ const session = {
   status: "active",
   results: null,
   state: {
-    ...envelope.metadata,
+    setup: null,
+    hostPlayerId: "host-player",
+    hostName: "Host",
+    playlistId: "playlist",
+    legacyLog: [],
+    log: [],
+    undoHistory: [],
     game: { phase: "day", day: 1, turn: 1 },
     undoBudget: 2,
     initialGame: baseline,
@@ -70,6 +55,18 @@ const session = {
     headEventId: ids.turn,
     resetReturnEventId: null,
   },
+};
+const envelope = {
+  version: 5,
+  clubId: "00000000-0000-4000-8000-000000000101",
+  gameId: ids.game,
+  revision: 7,
+  claimGeneration: 1,
+  current: { name: session.name, state: structuredClone(session.state), results: null },
+  outbox: [],
+  failed: false,
+  clearFailed: false,
+  clearingGameId: null,
 };
 
 const clone = (value) => structuredClone(value);
@@ -147,17 +144,23 @@ test("verifier credentials are strict and never repeated in errors", () => {
   assert.throws(() => contracts.parseVerifierClubId("not-a-club"), /UUID/i);
 });
 
-test("durable browser storage keys isolate non-default clubs", () => {
+test("durable browser storage uses one global key with explicit club ownership", () => {
   const defaultClub = "00000000-0000-4000-8000-000000000101";
   const otherClub = "00000000-0000-4000-8000-000000000102";
 
   assert.equal(
     contracts.gameSessionStorageKeyForClub(defaultClub),
-    "mafia-dashboard.game-session.v4",
+    "mafia-dashboard.game-session.v5",
   );
   assert.equal(
     contracts.gameSessionStorageKeyForClub(otherClub),
-    `mafia-dashboard.game-session.v4.${otherClub}`,
+    "mafia-dashboard.game-session.v5",
+  );
+  const envelope = { version: 5, clubId: defaultClub, gameId: otherClub };
+  assert.equal(contracts.assertBrowserGameEnvelopeOwner(envelope, defaultClub), envelope);
+  assert.throws(
+    () => contracts.assertBrowserGameEnvelopeOwner(envelope, otherClub),
+    /another club/i,
   );
 });
 
@@ -529,7 +532,13 @@ test("durable envelopes must match the complete authoritative canonical session"
       { ...clone(session), state: { ...clone(session.state), resetReturnEventId: ids.turn } },
     ],
     game: [
-      { ...clone(envelope), game: { phase: "day", day: 1, turn: 0 } },
+      {
+        ...clone(envelope),
+        current: {
+          ...clone(envelope.current),
+          state: { ...clone(envelope.current.state), game: { phase: "day", day: 1, turn: 0 } },
+        },
+      },
       {
         ...clone(session),
         state: clone(session.state),
@@ -546,10 +555,31 @@ test("durable envelopes must match the complete authoritative canonical session"
   }
 });
 
-test("durable envelopes normalize an omitted authoritative legacy log to empty", () => {
+test("durable session comparison rejects every unsupported envelope version", () => {
+  for (const version of [3, 4, 6, undefined]) {
+    assert.throws(
+      () => assertEnvelopeMatchesSession({ ...envelope, version }, session, replay),
+      /version/i,
+    );
+  }
+});
+
+test("durable envelopes reject an omitted current activity log without normalization", () => {
   const withoutLegacyLog = clone(session);
   delete withoutLegacyLog.state.legacyLog;
-  assert.doesNotThrow(() => assertEnvelopeMatchesSession(envelope, withoutLegacyLog, replay));
+  assert.throws(
+    () => assertEnvelopeMatchesSession(envelope, withoutLegacyLog, replay),
+    /metadata/i,
+  );
+});
+
+test("durable envelopes require an explicit current undo budget", () => {
+  const missingBudget = clone(session);
+  delete missingBudget.state.undoBudget;
+  assert.throws(
+    () => assertEnvelopeMatchesSession({ ...envelope, undoBudget: 0 }, missingBudget, replay),
+    /undo budget/i,
+  );
 });
 
 test("authoritative readbacks must satisfy the fresh reset postcondition", () => {
@@ -757,14 +787,18 @@ test("runtime verifiers enforce the shared contracts at their success boundaries
   assert.match(sessionVerifier, /Game already controlled/);
   assert.match(sessionVerifier, /button", \{ name: "Take over"/);
   assert.match(sessionVerifier, /gameSessionStorageKeyForClub\(clubId\)/);
+  assert.match(sessionVerifier, /assertBrowserGameEnvelopeOwner\(restoredEnvelope, clubId\)/);
   assert.equal(sessionVerifier.match(/window\.localStorage\.getItem\(storageKey\)/g)?.length, 2);
+  assert.doesNotMatch(uiVerifier, /sessionStorage\.getItem\("mafia-dashboard\.game-session\.v4"\)/);
+  assert.match(uiVerifier, /localStorage\.getItem\("mafia-dashboard\.game-session\.v5"\)/);
   assert.match(uiVerifier, /assertExactOrigin\(route\.request\(\)\.url\(\), expectedOrigin\)/);
   assert.match(uiVerifier, /await unlockDeveloperMenu\(page\)/);
   assert.match(uiVerifier, /snapshotRevision \+= 1/);
   assert.match(uiVerifier, /Destructive snapshot Reset failed/);
   assert.match(uiVerifier, /rootCheckpoint\?\.phaseAfter !== "mafia-planning"/);
   assert.match(uiVerifier, /dayCheckpoint\?\.phaseAfter !== "day"/);
-  assert.match(composeVerifier, /origin: `http:\/\/127\.0\.0\.1:\$\{port\}`/);
+  assert.match(composeVerifier, /APP_URL: `http:\/\/127\.0\.0\.1:\$\{port\}`/);
+  assert.doesNotMatch(composeVerifier, /\/api\/games/);
   assert.match(composeVerifier, /\/tmp\/mafia-app\.pid/);
   assert.match(composeVerifier, /kill -KILL/);
   assert.match(composeVerifier, /restartCountAfter <= restartCountBefore/);

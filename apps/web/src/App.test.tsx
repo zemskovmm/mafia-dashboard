@@ -21,6 +21,7 @@ import {
 } from "@mafia/game-domain";
 import { ApiError, type Club, type PlayerProfile, type RemoteGameSession } from "./api/client.js";
 import { App as WelcomeApp, ClubWorkspace } from "./App.js";
+
 import { GameSessionOutbox } from "./session-outbox.js";
 import {
   clearErrorConsole,
@@ -94,6 +95,47 @@ const testClub: Club = {
   role: "manager",
   createdAt: "2026-08-21T00:00:00.000Z",
   updatedAt: "2026-08-21T00:00:00.000Z",
+};
+const otherClub: Club = {
+  ...testClub,
+  id: "00000000-0000-4000-8000-000000000202",
+  name: "Mafia Sevilla",
+  city: "Sevilla",
+};
+const authenticatedUser = {
+  configured: true,
+  user: {
+    id: "00000000-0000-4000-8000-000000000001",
+    email: "owner@mafiamalaga.es",
+    name: "Mafia Malaga owner",
+    picture: null,
+  },
+} as const;
+const browserSessionState = (playlistId: string) => ({
+  setup: null,
+  game: null,
+  hostPlayerId: null,
+  hostName: null,
+  playlistId,
+  log: [],
+  undoHistory: [],
+  undoBudget: 0,
+  initialGame: null,
+  events: [],
+  headEventId: null,
+  resetReturnEventId: null,
+  legacyLog: [],
+});
+const seedBrowserGame = (club: Club, gameId: string, name: string, pending = false) => {
+  const outbox = new GameSessionOutbox({
+    storage: window.localStorage,
+    clubId: club.id,
+    createId: () => gameId,
+    save: vi.fn(),
+  });
+  if (pending) outbox.enqueue(name, browserSessionState(name), null);
+  else outbox.restore(gameId, 1, name, browserSessionState(name), null);
+  return outbox;
 };
 const App = () => (
   <ClubWorkspace
@@ -667,6 +709,207 @@ afterEach(() => {
 });
 
 describe("club welcome", () => {
+  it("restores the browser game owner before rendering a club workspace", async () => {
+    api.getAuthSession.mockResolvedValue(authenticatedUser);
+    api.listClubs.mockResolvedValue([testClub, otherClub]);
+    seedBrowserGame(otherClub, "00000000-0000-4000-8000-000000000301", "Sevilla table");
+
+    render(<WelcomeApp />);
+
+    expect(
+      await screen.findByRole("button", {
+        name: "Choose another club · current club Mafia Sevilla",
+      }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Mafia Malaga.*Málaga/i })).toBeNull();
+  });
+
+  it("blocks another club until the synchronized local game is explicitly released", async () => {
+    const user = userEvent.setup();
+    api.getAuthSession.mockResolvedValue(authenticatedUser);
+    api.listClubs.mockResolvedValue([testClub, otherClub]);
+    const gameId = "00000000-0000-4000-8000-000000000302";
+    seedBrowserGame(testClub, gameId, "Malaga table");
+
+    render(<WelcomeApp />);
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Choose another club · current club Mafia Malaga",
+      }),
+    );
+    await user.click(await screen.findByRole("button", { name: /Mafia Sevilla.*Sevilla/i }));
+
+    const dialog = screen.getByRole("dialog", { name: "Game attached to another club" });
+    expect(dialog).toHaveTextContent("Malaga table");
+    expect(dialog).toHaveTextContent("Mafia Malaga");
+    await user.click(
+      within(dialog).getByRole("button", { name: "Release and open Mafia Sevilla" }),
+    );
+
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBeNull();
+    expect(
+      await screen.findByRole("button", {
+        name: "Choose another club · current club Mafia Sevilla",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("refreshes and opens the captured club when another tab already released the game", async () => {
+    const user = userEvent.setup();
+    api.getAuthSession.mockResolvedValue(authenticatedUser);
+    api.listClubs.mockResolvedValue([testClub, otherClub]);
+    const gameId = "00000000-0000-4000-8000-000000000302";
+    seedBrowserGame(testClub, gameId, "Malaga table");
+
+    render(<WelcomeApp />);
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Choose another club · current club Mafia Malaga",
+      }),
+    );
+    await user.click(await screen.findByRole("button", { name: /Mafia Sevilla.*Sevilla/i }));
+
+    const dialog = screen.getByRole("dialog", { name: "Game attached to another club" });
+    expect(dialog).toHaveTextContent("Malaga table");
+    expect(dialog).toHaveTextContent("Mafia Malaga");
+    window.localStorage.removeItem("mafia-dashboard.game-session.v5");
+    await user.click(
+      within(dialog).getByRole("button", { name: "Release and open Mafia Sevilla" }),
+    );
+
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBeNull();
+    expect(
+      await screen.findByRole("button", {
+        name: "Choose another club · current club Mafia Sevilla",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it.each(["replacement", "invalid"] as const)(
+    "does not release a %s record or open the blocked club",
+    async (mode) => {
+      const user = userEvent.setup();
+      api.getAuthSession.mockResolvedValue(authenticatedUser);
+      api.listClubs.mockResolvedValue([testClub, otherClub]);
+      const gameId = "00000000-0000-4000-8000-000000000302";
+      seedBrowserGame(testClub, gameId, "Malaga table");
+
+      render(<WelcomeApp />);
+      await user.click(
+        await screen.findByRole("button", {
+          name: "Choose another club · current club Mafia Malaga",
+        }),
+      );
+      await user.click(await screen.findByRole("button", { name: /Mafia Sevilla.*Sevilla/i }));
+
+      const dialog = screen.getByRole("dialog", { name: "Game attached to another club" });
+      expect(dialog).toHaveTextContent("Malaga table");
+      expect(dialog).toHaveTextContent("Mafia Malaga");
+      window.localStorage.removeItem("mafia-dashboard.game-session.v5");
+      if (mode === "replacement") {
+        seedBrowserGame(testClub, "00000000-0000-4000-8000-000000000309", "Replacement");
+      } else {
+        window.localStorage.setItem("mafia-dashboard.game-session.v5", "invalid replacement");
+      }
+      const expected = window.localStorage.getItem("mafia-dashboard.game-session.v5");
+      await user.click(
+        within(dialog).getByRole("button", { name: "Release and open Mafia Sevilla" }),
+      );
+
+      expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBe(expected);
+      expect(
+        screen.queryByRole("button", {
+          name: "Choose another club · current club Mafia Sevilla",
+        }),
+      ).toBeNull();
+    },
+  );
+
+  it("keeps an unsynced game attached when another club is selected", async () => {
+    const user = userEvent.setup();
+    api.getAuthSession.mockResolvedValue(authenticatedUser);
+    api.listClubs.mockResolvedValue([testClub, otherClub]);
+    api.saveGameSessionOperation.mockRejectedValue(new Error("offline"));
+    seedBrowserGame(testClub, "00000000-0000-4000-8000-000000000303", "Offline table", true);
+
+    render(<WelcomeApp />);
+    await user.click(
+      await screen.findByRole("button", {
+        name: "Choose another club · current club Mafia Malaga",
+      }),
+    );
+    await user.click(await screen.findByRole("button", { name: /Mafia Sevilla.*Sevilla/i }));
+
+    const dialog = screen.getByRole("dialog", { name: "Game attached to another club" });
+    expect(
+      within(dialog).getByRole("button", { name: "Release and open Mafia Sevilla" }),
+    ).toBeDisabled();
+    expect(dialog).toHaveTextContent("Sync the attached game before releasing it.");
+    expect(
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5")!),
+    ).toMatchObject({
+      clubId: testClub.id,
+      outbox: [expect.any(Object)],
+    });
+  });
+
+  it("refuses a stale missing-owner discard after another tab attaches a newer game", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    api.getAuthSession.mockResolvedValue(authenticatedUser);
+    api.listClubs.mockResolvedValue([testClub, otherClub]);
+    const missingClub = {
+      ...testClub,
+      id: "00000000-0000-4000-8000-000000000399",
+      name: "Missing club",
+    };
+    seedBrowserGame(missingClub, "00000000-0000-4000-8000-000000000398", "Missing table");
+
+    render(<WelcomeApp />);
+    const dialog = await screen.findByRole("dialog", { name: "Game attached to another club" });
+    expect(dialog).toHaveTextContent("Missing table");
+
+    window.localStorage.removeItem("mafia-dashboard.game-session.v5");
+    seedBrowserGame(otherClub, "00000000-0000-4000-8000-000000000397", "Newer Sevilla table", true);
+    await user.click(within(dialog).getByRole("button", { name: "Discard local game" }));
+
+    await waitFor(() =>
+      expect(
+        JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5")!),
+      ).toMatchObject({
+        clubId: otherClub.id,
+        gameId: "00000000-0000-4000-8000-000000000397",
+      }),
+    );
+  });
+
+  it("shows invalid current storage without changing it, then clears only after confirmation", async () => {
+    const user = userEvent.setup();
+    const raw = '{"version":5,"current":{}}';
+    window.localStorage.setItem("mafia-dashboard.game-session.v5", raw);
+    window.sessionStorage.setItem(
+      `mafia-dashboard.game-session.v5.claim.${testClub.id}.tab`,
+      "claim",
+    );
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    api.getAuthSession.mockResolvedValue(authenticatedUser);
+    api.listClubs.mockResolvedValue([testClub, otherClub]);
+
+    render(<WelcomeApp />);
+
+    const dialog = await screen.findByRole("dialog", {
+      name: "Browser game data needs attention",
+    });
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBe(raw);
+    await user.click(within(dialog).getByRole("button", { name: "Clear invalid local game" }));
+    await waitFor(() =>
+      expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBeNull(),
+    );
+    expect(
+      window.sessionStorage.getItem(`mafia-dashboard.game-session.v5.claim.${testClub.id}.tab`),
+    ).toBe("claim");
+  });
+
   it("starts with the secure Google authorization entry point", async () => {
     render(<WelcomeApp />);
     expect(screen.getByRole("heading", { name: "Choose your club" })).toBeInTheDocument();
@@ -844,6 +1087,12 @@ describe("club welcome", () => {
     await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i });
 
     await user.click(screen.getByRole("button", { name: /Mafia Malaga.*Málaga/i }));
+    seedBrowserGame(testClub, "00000000-0000-4000-8000-000000000308", "Deleted table");
+    window.sessionStorage.setItem(
+      `mafia-dashboard.game-session.v5.claim.${testClub.id}.tab`,
+      "claim",
+    );
+    window.localStorage.setItem("unrelated-local", "keep");
     await user.click(await screen.findByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Delete club" }));
 
@@ -851,6 +1100,11 @@ describe("club welcome", () => {
       'Delete "Mafia Malaga" and all of its players, games, and statistics? This cannot be undone.',
     );
     expect(api.deleteClub).toHaveBeenCalledWith(testClub.id);
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBeNull();
+    expect(
+      window.sessionStorage.getItem(`mafia-dashboard.game-session.v5.claim.${testClub.id}.tab`),
+    ).toBeNull();
+    expect(window.localStorage.getItem("unrelated-local")).toBe("keep");
     expect(await screen.findByRole("heading", { name: "Choose your club" })).toBeInTheDocument();
     await waitFor(() =>
       expect(
@@ -861,15 +1115,11 @@ describe("club welcome", () => {
 
   it("signs out the current application session", async () => {
     const user = userEvent.setup();
-    window.localStorage.setItem("mafia-dashboard.game-session.v3", "private game");
-    window.localStorage.setItem("mafia-dashboard.game-session.v3.other-club", "private game");
-    window.localStorage.setItem("mafia-dashboard.game-session.v4", "private game");
-    window.localStorage.setItem("mafia-dashboard.game-session.v4.other-club", "private game");
     window.localStorage.setItem("unrelated-local", "keep");
-    window.sessionStorage.setItem("mafia-dashboard.game-session.v3", "private game");
-    window.sessionStorage.setItem("mafia-dashboard.game-session.v3.other-club", "private game");
-    window.sessionStorage.setItem("mafia-dashboard.game-session.v4", "private game");
-    window.sessionStorage.setItem("mafia-dashboard.game-session.v4.other-club", "private game");
+    window.sessionStorage.setItem(
+      `mafia-dashboard.game-session.v5.claim.${testClub.id}.tab`,
+      "claim",
+    );
     window.sessionStorage.setItem("unrelated", "keep");
     api.getAuthSession.mockResolvedValue({
       configured: true,
@@ -885,15 +1135,11 @@ describe("club welcome", () => {
     await user.click(await screen.findByRole("button", { name: "Sign out" }));
 
     expect(api.signOut).toHaveBeenCalledOnce();
-    expect(window.localStorage.getItem("mafia-dashboard.game-session.v3")).toBeNull();
-    expect(window.localStorage.getItem("mafia-dashboard.game-session.v3.other-club")).toBeNull();
-    expect(window.localStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
-    expect(window.localStorage.getItem("mafia-dashboard.game-session.v4.other-club")).toBeNull();
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBeNull();
     expect(window.localStorage.getItem("unrelated-local")).toBe("keep");
-    expect(window.sessionStorage.getItem("mafia-dashboard.game-session.v3")).toBeNull();
-    expect(window.sessionStorage.getItem("mafia-dashboard.game-session.v3.other-club")).toBeNull();
-    expect(window.sessionStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
-    expect(window.sessionStorage.getItem("mafia-dashboard.game-session.v4.other-club")).toBeNull();
+    expect(
+      window.sessionStorage.getItem(`mafia-dashboard.game-session.v5.claim.${testClub.id}.tab`),
+    ).toBe("claim");
     expect(window.sessionStorage.getItem("unrelated")).toBe("keep");
     expect(await screen.findByRole("link", { name: "Continue with Google" })).toBeInTheDocument();
   });
@@ -1166,7 +1412,7 @@ describe("developer menu", () => {
       screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
     ).toHaveAttribute("data-status", "saved");
     expect(
-      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null"),
     ).toMatchObject({ outbox: [] });
   });
 
@@ -1249,7 +1495,7 @@ describe("developer menu", () => {
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
     await waitFor(() => expect(api.saveGameSession).toHaveBeenCalled());
-    const beforeConsole = window.localStorage.getItem("mafia-dashboard.game-session.v4");
+    const beforeConsole = window.localStorage.getItem("mafia-dashboard.game-session.v5");
     reportError(new Error("Captured before Console navigation"), {
       source: "application",
       context: "mafia.shots-resolved",
@@ -1263,7 +1509,7 @@ describe("developer menu", () => {
 
     await user.click(screen.getByRole("button", { name: "Back" }));
     expect(screen.getByRole("heading", { name: "Live test game" })).toBeInTheDocument();
-    expect(window.localStorage.getItem("mafia-dashboard.game-session.v4")).toBe(beforeConsole);
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBe(beforeConsole);
   });
 
   it("captures a handled player API failure in the Console", async () => {
@@ -1481,12 +1727,12 @@ describe("developer menu", () => {
     expect(await screen.findByRole("alertdialog")).toHaveTextContent("Second host");
     expect(api.saveGameSession).toHaveBeenCalledOnce();
     expect(
-      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null"),
     ).toMatchObject({ failed: true, claimGeneration: 1, outbox: [expect.any(Object)] });
-    const blockedState = window.localStorage.getItem("mafia-dashboard.game-session.v4");
+    const blockedState = window.localStorage.getItem("mafia-dashboard.game-session.v5");
     act(() => screen.getByRole("button", { name: "Assign first role" }).click());
     expect(api.saveGameSession).toHaveBeenCalledOnce();
-    expect(window.localStorage.getItem("mafia-dashboard.game-session.v4")).toBe(blockedState);
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBe(blockedState);
 
     await user.click(screen.getByRole("button", { name: "Take over" }));
     await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledTimes(2));
@@ -1522,7 +1768,7 @@ describe("developer menu", () => {
       await screen.findByRole("alertdialog", { name: "Game already controlled" }),
     ).toHaveTextContent("Existing table is already active");
     const pending = JSON.parse(
-      window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null",
+      window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null",
     );
     expect(pending).toMatchObject({ outbox: [expect.any(Object)] });
     expect(pending.gameId).not.toBe(activeGame.gameId);
@@ -1530,7 +1776,7 @@ describe("developer menu", () => {
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(api.takeoverGameSession).not.toHaveBeenCalled();
     expect(
-      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null"),
     ).toMatchObject({ gameId: pending.gameId, outbox: [expect.any(Object)] });
     act(() => screen.getByRole("button", { name: /^Save blocked ·/ }).click());
     await act(async () => Promise.resolve());
@@ -1542,7 +1788,7 @@ describe("developer menu", () => {
     await waitFor(() => expect(api.takeoverGameSession).toHaveBeenCalled());
     expect(await screen.findByText("Host: Existing host")).toBeInTheDocument();
     expect(
-      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null"),
     ).toMatchObject({ gameId: activeGame.gameId, outbox: [] });
   });
 
@@ -1568,8 +1814,8 @@ describe("developer menu", () => {
       [...Array(window.sessionStorage.length).keys()].map((index) =>
         window.sessionStorage.key(index),
       ),
-    ).toContain(`mafia-dashboard.game-session.v4.claim.${testClub.id}.${gameId}`);
-    expect(window.localStorage.getItem("mafia-dashboard.game-session.v4")).not.toContain(
+    ).toContain(`mafia-dashboard.game-session.v5.claim.${testClub.id}.${gameId}`);
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).not.toContain(
       initialCredential.claimId,
     );
 
@@ -1657,7 +1903,7 @@ describe("developer menu", () => {
     expect(
       [...Array(window.sessionStorage.length).keys()]
         .map((index) => window.sessionStorage.key(index))
-        .some((key) => key?.startsWith(`mafia-dashboard.game-session.v4.claim.${testClub.id}`)),
+        .some((key) => key?.startsWith(`mafia-dashboard.game-session.v5.claim.${testClub.id}`)),
     ).toBe(false);
     expect(onExit).toHaveBeenCalledOnce();
   });
@@ -1698,7 +1944,7 @@ describe("developer menu", () => {
     expect(
       [...Array(window.sessionStorage.length).keys()]
         .map((index) => window.sessionStorage.key(index))
-        .some((key) => key?.startsWith(`mafia-dashboard.game-session.v4.claim.${testClub.id}`)),
+        .some((key) => key?.startsWith(`mafia-dashboard.game-session.v5.claim.${testClub.id}`)),
     ).toBe(false);
   });
 
@@ -1738,7 +1984,7 @@ describe("developer menu", () => {
         .map((index) => window.sessionStorage.key(index))
         .some(
           (key) =>
-            key?.startsWith(`mafia-dashboard.game-session.v4.claim.${testClub.id}`) &&
+            key?.startsWith(`mafia-dashboard.game-session.v5.claim.${testClub.id}`) &&
             window.sessionStorage.getItem(key) === initialCredential.claimId,
         ),
     ).toBe(true);
@@ -1799,7 +2045,7 @@ describe("developer menu", () => {
     expect(
       [...Array(window.sessionStorage.length).keys()]
         .map((index) => window.sessionStorage.key(index))
-        .some((key) => key?.startsWith(`mafia-dashboard.game-session.v4.claim.${testClub.id}`)),
+        .some((key) => key?.startsWith(`mafia-dashboard.game-session.v5.claim.${testClub.id}`)),
     ).toBe(false);
   });
 
@@ -1850,7 +2096,7 @@ describe("developer menu", () => {
       expect.objectContaining({ claimGeneration: 2 }),
       testClub.id,
     );
-    expect(window.localStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBeNull();
   });
 
   it("localizes canonical active-session phases for a Russian club", async () => {
@@ -2511,8 +2757,14 @@ describe("developer menu", () => {
       "Clear all data stored by Mafia Dashboard in this browser? Server players, sessions, results, and music will not be deleted.",
     );
     expect(api.clearAllData).not.toHaveBeenCalled();
-    expect(screen.getByRole("banner", { name: "Application status" })).toHaveTextContent(
-      "Game setup",
+    await waitFor(() => {
+      expect(window.localStorage.getItem("other-local-data")).toBeNull();
+      expect(window.sessionStorage.getItem("other-session-data")).toBeNull();
+    });
+    await waitFor(() =>
+      expect(screen.getByRole("banner", { name: "Application status" })).toHaveTextContent(
+        "Game setup",
+      ),
     );
     await waitFor(() => {
       expect(
@@ -2524,13 +2776,10 @@ describe("developer menu", () => {
         [...Array(window.sessionStorage.length).keys()]
           .map((index) => window.sessionStorage.key(index))
           .some((key) =>
-            key?.startsWith(`mafia-dashboard.game-session.v4.claim.${testClub.id}.tab`),
+            key?.startsWith(`mafia-dashboard.game-session.v5.claim.${testClub.id}.tab`),
           ),
       ).toBe(true);
     });
-    expect(window.localStorage.getItem("other-local-data")).toBeNull();
-    expect(window.sessionStorage.getItem("other-session-data")).toBeNull();
-
     api.saveGameSession.mockClear();
     await user.click(screen.getByRole("button", { name: "Start test game" }));
     await waitFor(() => expect(api.saveGameSession).toHaveBeenCalled());
@@ -2556,6 +2805,12 @@ describe("developer menu", () => {
 
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     await user.click(screen.getByRole("button", { name: "Clear all data" }));
+    await waitFor(() =>
+      expect(window.localStorage.getItem(musicPreferencesStorageKey(testClub.id))).toBeNull(),
+    );
+    await waitFor(() => {
+      expect(musicPlayer).toHaveAttribute("data-playlist-id", "");
+    });
     const privacy = screen.getByRole("button", { name: "Hide private info" });
     for (let tap = 0; tap < 5; tap += 1) fireEvent.click(privacy);
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
@@ -2592,7 +2847,7 @@ describe("authoritative game session lifecycle", () => {
       expect(screen.getByRole("heading", { name: "Restored setup" })).toBeVisible(),
     );
     expect(api.saveGameSession).not.toHaveBeenCalled();
-    expect(window.localStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBeNull();
   });
 
   it("creates the first durable snapshot when valid setup enters role giveaway", async () => {
@@ -2633,10 +2888,10 @@ describe("authoritative game session lifecycle", () => {
     );
     expect(gameId).toMatch(/^[0-9a-f-]{36}$/);
     expect(
-      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null"),
     ).toMatchObject({
       gameId,
-      metadata: { setup: { step: "roles", setup: { assignments: {} } } },
+      current: { state: { setup: { step: "roles", setup: { assignments: {} } } } },
     });
   });
 
@@ -2682,21 +2937,21 @@ describe("authoritative game session lifecycle", () => {
 
     let persisted: {
       gameId: string;
-      metadata: { setup: SetupWizardSessionState };
+      current: { state: { setup: SetupWizardSessionState } };
     } | null = null;
     await waitFor(() => {
       persisted = JSON.parse(
-        window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null",
+        window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null",
       );
       expect(persisted).toMatchObject({
         gameId: expect.any(String),
-        metadata: {
-          setup: { step: "players", setup: { assignments: { 1: expect.any(String) } } },
+        current: {
+          state: { setup: { step: "players", setup: { assignments: { 1: expect.any(String) } } } },
         },
       });
     });
     const gameId = persisted!.gameId;
-    const assignment = persisted!.metadata.setup.setup!.assignments[1];
+    const assignment = persisted!.current.state.setup.setup!.assignments[1];
     firstRender.unmount();
 
     const secondRender = render(<App />);
@@ -2708,12 +2963,10 @@ describe("authoritative game session lifecycle", () => {
     await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
     await waitFor(() =>
       expect(
-        JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+        JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null"),
       ).toMatchObject({
         gameId,
-        metadata: {
-          setup: { step: "roles", setup: { assignments: { 1: assignment } } },
-        },
+        current: { state: { setup: { step: "roles", setup: { assignments: { 1: assignment } } } } },
       }),
     );
     secondRender.unmount();
@@ -2734,7 +2987,7 @@ describe("authoritative game session lifecycle", () => {
     await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledOnce());
     const [gameId, operation] = api.saveGameSession.mock.calls[0]!;
     expect(
-      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null"),
     ).toMatchObject({
       gameId,
       failed: true,
@@ -2779,10 +3032,14 @@ describe("authoritative game session lifecycle", () => {
       ),
     );
     expect(
-      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null"),
     ).toMatchObject({
-      game: expect.objectContaining({ currentTurnIndex: 1 }),
-      entries: [expect.objectContaining({ type: "game.checkpointed" })],
+      current: {
+        state: {
+          game: expect.objectContaining({ currentTurnIndex: 1 }),
+          events: [expect.objectContaining({ type: "game.checkpointed" })],
+        },
+      },
     });
     await user.click(screen.getByRole("button", { name: "Open game log" }));
     expect(screen.queryByText("turn.completed")).toBeNull();
@@ -2859,25 +3116,28 @@ describe("authoritative game session lifecycle", () => {
     ).toBe(false);
 
     const persisted = JSON.parse(
-      window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null",
+      window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null",
     ) as {
-      baseline: InitialGameBaseline;
-      entries: GameLogEntry[];
-      headEventId: string;
+      current: {
+        state: {
+          initialGame: InitialGameBaseline;
+          events: GameLogEntry[];
+          headEventId: string;
+        };
+      };
     };
-    expect(persisted.entries).toHaveLength(3);
-    expect(persisted.entries[1]).toMatchObject({
+    const { state } = persisted.current;
+    expect(state.events).toHaveLength(3);
+    expect(state.events[1]).toMatchObject({
       type: "player.nominated",
-      parentEventId: persisted.entries[0]!.id,
+      parentEventId: state.events[0]!.id,
     });
-    expect(persisted.entries[2]).toMatchObject({
+    expect(state.events[2]).toMatchObject({
       type: "mafia.shots-resolved",
-      parentEventId: persisted.entries[1]!.id,
+      parentEventId: state.events[1]!.id,
     });
-    expect(persisted.headEventId).toBe(persisted.entries[2]!.id);
-    expect(replayGameLog(persisted.baseline, persisted.entries).game).toEqual(
-      gameScreenHarness.liveGame,
-    );
+    expect(state.headEventId).toBe(state.events[2]!.id);
+    expect(replayGameLog(state.initialGame, state.events).game).toEqual(gameScreenHarness.liveGame);
   });
 
   it("preserves a provisional ballot when a meaningful event is accepted", async () => {
@@ -2936,22 +3196,26 @@ describe("authoritative game session lifecycle", () => {
       }),
     });
     expect(
-      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null"),
     ).toMatchObject({
-      game: expect.objectContaining({
-        players: expect.arrayContaining([expect.objectContaining({ seat: 1, fouls: 1 })]),
-      }),
-      baseline: expect.objectContaining({
-        replayVersion: 1,
-        game: expect.objectContaining({ currentTurnIndex: 0, day: 1 }),
-      }),
-      entries: [
-        expect.objectContaining({ type: "game.checkpointed" }),
-        expect.objectContaining({
-          type: "foul.issued",
-          payload: expect.objectContaining({ seat: 1, foulNumber: 1 }),
-        }),
-      ],
+      current: {
+        state: {
+          game: expect.objectContaining({
+            players: expect.arrayContaining([expect.objectContaining({ seat: 1, fouls: 1 })]),
+          }),
+          initialGame: expect.objectContaining({
+            replayVersion: 1,
+            game: expect.objectContaining({ currentTurnIndex: 0, day: 1 }),
+          }),
+          events: [
+            expect.objectContaining({ type: "game.checkpointed" }),
+            expect.objectContaining({
+              type: "foul.issued",
+              payload: expect.objectContaining({ seat: 1, foulNumber: 1 }),
+            }),
+          ],
+        },
+      },
     });
   });
 
@@ -3005,8 +3269,8 @@ describe("authoritative game session lifecycle", () => {
       ).toBeInTheDocument(),
     );
     const before = JSON.parse(
-      window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null",
-    ) as { headEventId: string };
+      window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null",
+    ) as { current: { state: { headEventId: string } } };
     api.saveGameSessionOperation.mockRejectedValue(new Error("offline"));
 
     await user.click(screen.getByRole("button", { name: "Open game log" }));
@@ -3015,9 +3279,9 @@ describe("authoritative game session lifecycle", () => {
 
     expect(screen.getByText("Game fouls 0")).toBeInTheDocument();
     const persisted = JSON.parse(
-      window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null",
+      window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null",
     );
-    expect(persisted.headEventId).not.toBe(before.headEventId);
+    expect(persisted.current.state.headEventId).not.toBe(before.current.state.headEventId);
     expect(persisted.outbox).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -3049,41 +3313,44 @@ describe("authoritative game session lifecycle", () => {
       ).toBeInTheDocument(),
     );
     const persisted = JSON.parse(
-      window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null",
+      window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null",
     ) as {
       gameId: string;
-      name: string;
-      metadata: {
-        setup: unknown | null;
-        hostPlayerId: string | null;
-        hostName: string | null;
-        playlistId: string;
-        legacyLog: readonly unknown[];
+      current: {
+        name: string;
+        state: {
+          setup: unknown | null;
+          hostPlayerId: string | null;
+          hostName: string | null;
+          playlistId: string;
+          legacyLog: readonly unknown[];
+          undoBudget: number;
+          initialGame: InitialGameBaseline;
+          events: readonly GameLogEntry[];
+          headEventId: string;
+          resetReturnEventId: string | null;
+          game: GameState | null;
+          log: readonly unknown[];
+          undoHistory: readonly unknown[];
+        };
       };
-      baseline: InitialGameBaseline;
-      entries: readonly GameLogEntry[];
     };
-    const authoritativeHead = persisted.entries.at(-1)!;
-    const authoritativeGame = replayGameLog(persisted.baseline, persisted.entries).game;
+    const authoritativeState = persisted.current.state;
+    const authoritativeHead = authoritativeState.events.at(-1)!;
+    const authoritativeGame = replayGameLog(
+      authoritativeState.initialGame,
+      authoritativeState.events,
+    ).game;
     api.saveGameSession
       .mockResolvedValueOnce({
         gameId: persisted.gameId,
-        name: persisted.name,
+        name: persisted.current.name,
         revision: 8,
         duplicate: true,
         state: {
-          setup: persisted.metadata.setup,
+          ...authoritativeState,
           game: authoritativeGame,
-          hostPlayerId: persisted.metadata.hostPlayerId,
-          hostName: persisted.metadata.hostName,
-          playlistId: persisted.metadata.playlistId,
-          log: persisted.metadata.legacyLog,
-          undoHistory: [],
-          initialGame: persisted.baseline,
-          events: persisted.entries,
           headEventId: authoritativeHead.id,
-          resetReturnEventId: null,
-          legacyLog: persisted.metadata.legacyLog,
         },
         results: null,
       })
@@ -3237,7 +3504,7 @@ describe("authoritative game session lifecycle", () => {
     await user.click(screen.getByRole("button", { name: "Finish the game" }));
     expect(screen.getByRole("button", { name: "Game saved offline" })).toBeDisabled();
     expect(
-      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null").outbox,
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null").outbox,
     ).toEqual([
       expect.objectContaining({
         kind: "snapshot",
@@ -3256,7 +3523,7 @@ describe("authoritative game session lifecycle", () => {
         ([, operation]) => operation.kind === "snapshot" && operation.results !== null,
       ),
     ).toHaveLength(1);
-    expect(window.localStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBeNull();
   });
 
   it("keeps Local only when the newer queued aggregate mutation fails", async () => {
@@ -3284,7 +3551,7 @@ describe("authoritative game session lifecycle", () => {
       ),
     );
     expect(
-      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null"),
     ).toMatchObject({
       failed: true,
       outbox: expect.arrayContaining([expect.objectContaining({ baseRevision: 1 })]),
@@ -3339,11 +3606,11 @@ describe("authoritative game session lifecycle", () => {
     expect(screen.getByText("Game day 3")).toBeInTheDocument();
     expect(api.saveGameSession).not.toHaveBeenCalled();
     expect(
-      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null"),
     ).toMatchObject({
       gameId: sessionBId,
       revision: 7,
-      baseline: { game: expect.objectContaining({ day: 3 }) },
+      current: { state: { game: expect.objectContaining({ day: 3 }) } },
       outbox: [],
     });
   });
@@ -3384,7 +3651,7 @@ describe("authoritative game session lifecycle", () => {
 
     expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
     expect(
-      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null"),
     ).toMatchObject({ gameId: localGameId, revision: 1, outbox: [] });
   });
 
@@ -3440,59 +3707,6 @@ describe("authoritative game session lifecycle", () => {
     );
   });
 
-  it("migrates an existing session-storage game into durable local storage", async () => {
-    const user = userEvent.setup();
-    const firstRender = render(<App />);
-    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
-    await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
-      ).toBeInTheDocument(),
-    );
-    const saved = window.localStorage.getItem("mafia-dashboard.game-session.v4");
-    expect(saved).not.toBeNull();
-    firstRender.unmount();
-    window.sessionStorage.setItem("mafia-dashboard.game-session.v4", saved!);
-    window.localStorage.removeItem("mafia-dashboard.game-session.v4");
-    render(<App />);
-
-    expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
-    await waitFor(() =>
-      expect(window.localStorage.getItem("mafia-dashboard.game-session.v4")).toBe(saved),
-    );
-    expect(window.sessionStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
-  });
-
-  it("removes a stale session copy before local clear can resurrect it", async () => {
-    const user = userEvent.setup();
-    const firstRender = render(<App />);
-    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
-    await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
-      ).toBeInTheDocument(),
-    );
-    const saved = window.localStorage.getItem("mafia-dashboard.game-session.v4");
-    expect(saved).not.toBeNull();
-    firstRender.unmount();
-    window.sessionStorage.setItem("mafia-dashboard.game-session.v4", saved!);
-
-    const restored = render(<App />);
-    expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
-    expect(window.sessionStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
-
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
-    await user.click(screen.getByRole("button", { name: "Start new game" }));
-    await screen.findByRole("button", { name: "Start test game" });
-    expect(window.localStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
-
-    restored.unmount();
-    render(<App />);
-    expect(screen.getAllByRole("heading", { name: "Game setup" })).not.toHaveLength(0);
-    expect(screen.queryByRole("heading", { name: "Role giveaway" })).toBeNull();
-  });
-
   it("clears by known UUID while first save is pending and waits for the tombstone", async () => {
     const user = userEvent.setup();
     const firstSave = deferred<{ revision: number; duplicate: boolean }>();
@@ -3517,7 +3731,7 @@ describe("authoritative game session lifecycle", () => {
     await waitFor(() =>
       expect(screen.queryByRole("heading", { name: "Role giveaway" })).toBeNull(),
     );
-    expect(window.localStorage.getItem("mafia-dashboard.game-session.v4")).toBeNull();
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBeNull();
     firstSave.resolve({ revision: 1, duplicate: false });
   });
 
@@ -3564,8 +3778,11 @@ describe("authoritative game session lifecycle", () => {
       "dev-playlist",
     );
     expect(
-      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
-    ).toMatchObject({ gameId: newerGameId, metadata: { playlistId: "dev-playlist" } });
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null"),
+    ).toMatchObject({
+      gameId: newerGameId,
+      current: { state: { playlistId: "dev-playlist" } },
+    });
   });
 
   it("preserves local setup and outbox when remote clear fails", async () => {
@@ -3591,9 +3808,9 @@ describe("authoritative game session lifecycle", () => {
     );
     expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
     expect(
-      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null"),
     ).toMatchObject({
-      metadata: { setup: { step: "roles" } },
+      current: { state: { setup: { step: "roles" } } },
       failed: false,
       clearFailed: true,
     });
@@ -3623,6 +3840,12 @@ const remoteSession = (
     playlistId: `PL-${name}`,
     log: [],
     undoHistory: [],
+    undoBudget: 0,
+    initialGame: null,
+    events: [],
+    headEventId: null,
+    resetReturnEventId: null,
+    legacyLog: [],
   },
   results: null,
 });
@@ -3821,11 +4044,15 @@ describe("undo checkpoints", () => {
     expect(screen.getByText("Game fouls 0")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /undo last action.*0 available/i })).toBeDisabled();
     expect(
-      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v4") ?? "null"),
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null"),
     ).toMatchObject({
-      resetReturnEventId: null,
-      undoBudget: 0,
-      entries: [expect.objectContaining({ type: "game.checkpointed" })],
+      current: {
+        state: {
+          resetReturnEventId: null,
+          undoBudget: 0,
+          events: [expect.objectContaining({ type: "game.checkpointed" })],
+        },
+      },
     });
   });
 

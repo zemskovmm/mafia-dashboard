@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from "node:util";
 import { replayGameLog } from "@mafia/game-domain";
 import { chromium, request as playwrightRequest } from "@playwright/test";
 import {
+  assertBrowserGameEnvelopeOwner,
   assertEnvelopeMatchesSession,
   assertExactOrigin,
   assertNamesAvailable,
@@ -430,8 +431,13 @@ try {
           return;
         }
         if (response.ok()) return;
+        const body = await response.json().catch(() => null);
+        const code =
+          typeof body?.error === "string" && /^[a-z_]{1,80}$/.test(body.error)
+            ? body.error
+            : "unavailable";
         throw new Error(
-          `Game-session request failed: HTTP ${response.status()} ${response.request().method()} ${responseUrl.pathname}`,
+          `Game-session request failed: HTTP ${response.status()} ${response.request().method()} ${responseUrl.pathname} (${code})`,
         );
       })(),
     );
@@ -619,6 +625,8 @@ try {
     ...storedSession.state,
     game: resetGame,
     events: resetEntries,
+    log: storedSession.state.log.filter(({ id }) => id !== acceptedEvent.id),
+    undoHistory: [],
     headEventId: acceptedEvent.parentEventId,
     resetReturnEventId: null,
     undoBudget: 0,
@@ -676,6 +684,7 @@ try {
     const raw = window.localStorage.getItem(storageKey);
     return raw === null ? null : JSON.parse(raw);
   }, storageKey);
+  assertBrowserGameEnvelopeOwner(restoredEnvelope, clubId);
   assertEnvelopeMatchesSession(restoredEnvelope, authoritativeSession, replayGameLog);
   await restartedPage.screenshot({ path: screenshotPath, fullPage: true });
 

@@ -44,7 +44,6 @@ import {
   getGameSession,
   listActiveGameSessions,
   listPlayers,
-  saveGameSession,
   saveGameSessionOperation,
   updatePlayer,
   createClub,
@@ -57,6 +56,7 @@ import {
 } from "./api/client.js";
 import type {
   ActiveGameSessionSummary,
+  CurrentGameSessionState,
   FinalGameResults,
   GameSessionState,
   GameSessionClaimCredential,
@@ -114,6 +114,25 @@ import { useMessages, type FeatureI18n, type Locale } from "./i18n/I18nProvider.
 import { LanguageSelector } from "./i18n/LanguageSelector.js";
 import { shellMessages, type ShellMessageKey } from "./i18n/messages/shell.js";
 
+import {
+  clearApplicationBrowserStorage,
+  clearApplicationBrowserStorageLocked,
+  clearBrowserGameStorage,
+  clearBrowserGameStorageForClub,
+  clearBrowserGameStorageForClubLocked,
+  discardBrowserGameStorage,
+  discardInvalidBrowserGameStorage,
+  prepareBrowserGameStorage,
+  readBrowserGameAttachment,
+  readBrowserGameStorageState,
+  releaseBrowserGameStorage,
+  type BrowserGameAttachment,
+  type BrowserGameStorageState,
+} from "./browser-game-storage.js";
+import {
+  type BrowserGameStorageGuard,
+  withBrowserGameStorageGuard,
+} from "./browser-game-storage-lock.js";
 import { GameSessionClaimController } from "./session-claim.js";
 import { GameSessionOutbox } from "./session-outbox.js";
 import { SessionRetryController } from "./session-retry.js";
@@ -205,9 +224,7 @@ const phaseLabel = (phase: string, t: ShellTranslator): string =>
   t(phaseMessageKeys[phase] ?? "unknownPhase", { value: phase });
 const eventLabel = (eventType: string, t: ShellTranslator): string =>
   t(eventMessageKeys[eventType] ?? "unknownEvent", { value: eventType });
-const defaultClubId = "00000000-0000-4000-8000-000000000101";
-const gameSessionStoragePrefix = "mafia-dashboard.game-session.v4";
-const legacyGameSessionStoragePrefix = "mafia-dashboard.game-session.v3";
+
 interface SessionClaimConflict {
   readonly gameId: string;
   readonly action: "resume" | "retry" | "delete" | "replace-local";
@@ -276,35 +293,6 @@ const readAvailablePlayerIds = (storage: Storage, clubId: string): ReadonlySet<s
     return new Set();
   }
 };
-const gameSessionStorageKey = (clubId: string) =>
-  clubId === defaultClubId ? gameSessionStoragePrefix : `${gameSessionStoragePrefix}.${clubId}`;
-const legacyGameSessionStorageKey = (clubId: string) =>
-  clubId === defaultClubId
-    ? legacyGameSessionStoragePrefix
-    : `${legacyGameSessionStoragePrefix}.${clubId}`;
-const clearGameSessionStorage = (storage: Storage) => {
-  for (let index = storage.length - 1; index >= 0; index -= 1) {
-    const key = storage.key(index);
-    if (
-      key === gameSessionStoragePrefix ||
-      key?.startsWith(`${gameSessionStoragePrefix}.`) ||
-      key === legacyGameSessionStoragePrefix ||
-      key?.startsWith(`${legacyGameSessionStoragePrefix}.`)
-    ) {
-      storage.removeItem(key);
-    }
-  }
-};
-const migrateGameSessionStorage = (source: Storage, destination: Storage, key: string) => {
-  if (destination.getItem(key) !== null) {
-    source.removeItem(key);
-    return;
-  }
-  const value = source.getItem(key);
-  if (value === null) return;
-  destination.setItem(key, value);
-  if (destination.getItem(key) === value) source.removeItem(key);
-};
 const nextGameName = (storage: Storage, now: Date): string => {
   const date = [now.getDate(), now.getMonth() + 1, now.getFullYear() % 100]
     .map((value) => String(value).padStart(2, "0"))
@@ -315,7 +303,7 @@ const nextGameName = (storage: Storage, now: Date): string => {
   return `${date} #${next}`;
 };
 
-interface PersistedState extends GameSessionState {
+interface PersistedState extends CurrentGameSessionState {
   readonly setup: SetupWizardSessionState | null;
   readonly game: GameState | null;
   readonly log: readonly LocalLogEntry[];
@@ -382,63 +370,41 @@ const toLocalLogEntry = (entry: GameLogEntry): LocalLogEntry => ({
   createdAt: entry.createdAt,
 });
 
-const migratePlanningNames = (state: GameSessionState | undefined) => {
-  const setup = (state?.setup as SetupWizardSessionState | null | undefined) ?? null;
-  const setupState = setup?.setup as unknown as { step?: string } | null;
-  const game =
-    (state?.game as unknown as ({ phase?: string } & Record<string, unknown>) | null) ?? null;
-  return {
-    setup:
-      setup === null
-        ? null
-        : {
-            ...setup,
-            setup:
-              setupState?.step === "mafia-negotiation"
-                ? ({ ...setup.setup, step: "mafia-planning" } as SetupWizardSessionState["setup"])
-                : setup.setup,
-          },
-    game:
-      game?.phase === "mafia-negotiation"
-        ? ({ ...game, phase: "mafia-planning" } as GameState)
-        : (game as unknown as GameState | null),
-  };
-};
-
 const asPersistedState = (state: GameSessionState | undefined): PersistedState => {
-  const migrated = migratePlanningNames(state);
-  const incremental = state as
-    | (GameSessionState & {
-        readonly initialGame?: InitialGameBaseline | null;
-        readonly events?: readonly GameLogEntry[];
-        readonly headEventId?: string | null;
-        readonly resetReturnEventId?: string | null;
-        readonly legacyLog?: readonly LocalLogEntry[];
-        readonly undoBudget?: number;
-      })
-    | undefined;
-  const storedLog = (state?.log as readonly LocalLogEntry[] | undefined) ?? [];
-  const events = incremental?.events ?? [];
+  if (state === undefined) {
+    return {
+      setup: null,
+      game: null,
+      hostPlayerId: null,
+      hostName: null,
+      playlistId: defaultPlaylistId,
+      log: [],
+      undoHistory: [],
+      undoBudget: 0,
+      initialGame: null,
+      events: [],
+      headEventId: null,
+      resetReturnEventId: null,
+      legacyLog: [],
+    };
+  }
   return {
-    ...migrated,
-    hostPlayerId: state?.hostPlayerId ?? null,
-    hostName: state?.hostName ?? null,
-    playlistId: state?.playlistId ?? defaultPlaylistId,
-    log: storedLog,
-    undoHistory: [],
-    undoBudget: incremental?.undoBudget,
-    initialGame:
-      incremental?.initialGame ??
-      (migrated.game === null ? null : { replayVersion: 1, game: migrated.game }),
-    events,
-    headEventId: incremental?.headEventId ?? events.at(-1)?.id ?? null,
-    resetReturnEventId: incremental?.resetReturnEventId ?? null,
-    legacyLog: incremental?.legacyLog ?? (events.length === 0 ? storedLog : []),
+    ...state,
+    setup: state.setup as SetupWizardSessionState | null,
+    game: state.game as GameState | null,
+    log: state.log as readonly LocalLogEntry[],
+    undoBudget: state.undoBudget as number,
+    initialGame: state.initialGame as InitialGameBaseline | null,
+    events: state.events as readonly GameLogEntry[],
+    headEventId: state.headEventId as string | null,
+    resetReturnEventId: state.resetReturnEventId as string | null,
+    legacyLog: state.legacyLog as readonly LocalLogEntry[],
   };
 };
 
 export const ClubWorkspace = ({
   club,
+  storageGuard,
   onExit,
   onEditClub,
   onDeleteClub,
@@ -447,6 +413,7 @@ export const ClubWorkspace = ({
   onThemeColorChange = () => undefined,
 }: {
   readonly club: Club;
+  readonly storageGuard?: BrowserGameStorageGuard;
   readonly onExit: () => void;
   readonly onEditClub: () => void;
   readonly onDeleteClub: () => Promise<void>;
@@ -456,8 +423,6 @@ export const ClubWorkspace = ({
 }) => {
   const { t, formatTime } = useMessages(shellMessages);
   const isManager = club.role === "manager";
-  const storageKey = gameSessionStorageKey(club.id);
-  const legacyStorageKey = legacyGameSessionStorageKey(club.id);
   const claimControllerRef = useRef<GameSessionClaimController | null>(null);
   if (claimControllerRef.current === null) {
     claimControllerRef.current = new GameSessionClaimController({
@@ -485,14 +450,12 @@ export const ClubWorkspace = ({
     [claimController],
   );
 
-  migrateGameSessionStorage(window.sessionStorage, window.localStorage, storageKey);
-  migrateGameSessionStorage(window.sessionStorage, window.localStorage, legacyStorageKey);
   const sessionSyncRef = useRef<GameSessionOutbox | null>(null);
   if (sessionSyncRef.current === null) {
     sessionSyncRef.current = new GameSessionOutbox({
       storage: window.localStorage,
-      storageKey,
-      legacyStorageKey,
+      storageGuard,
+      clubId: club.id,
       createId: createRandomId,
       save: (gameId, operation, claimGeneration) =>
         saveGameSessionOperation(
@@ -501,7 +464,6 @@ export const ClubWorkspace = ({
           claimCredential(gameId, claimGeneration),
           club.id,
         ),
-      read: (gameId) => getGameSession(gameId, club.id),
       clearRemote: (gameId, expectedRevision, claimGeneration) =>
         clearGameSession(
           gameId,
@@ -509,8 +471,6 @@ export const ClubWorkspace = ({
           claimCredential(gameId, claimGeneration),
           club.id,
         ),
-      saveLegacy: (gameId, mutation, claimGeneration) =>
-        saveGameSession(gameId, mutation, claimCredential(gameId, claimGeneration), club.id),
     });
   }
   const sessionSync = sessionSyncRef.current;
@@ -905,34 +865,8 @@ export const ClubWorkspace = ({
       sessionSync.subscribe(() => {
         setSyncRender((revision) => revision + 1);
         const current = sessionSync.current;
-        const normalized = sessionSync.takeNormalizedCurrent();
         const canonicalName = current?.name;
         if (canonicalName !== undefined) setSessionName(canonicalName);
-        if (
-          normalized !== null &&
-          normalized.state.initialGame != null &&
-          (normalized.state.events?.length ?? 0) > 0
-        ) {
-          const baseline = normalized.state.initialGame;
-          const canonicalEvents = [...(normalized.state.events ?? [])];
-          const canonicalHead = normalized.state.headEventId ?? canonicalEvents.at(-1)?.id ?? null;
-          const canonicalGame =
-            canonicalHead === null
-              ? baseline.game
-              : replayToEvent(baseline, canonicalEvents, canonicalHead);
-          initialGameRef.current = baseline;
-          eventsRef.current = canonicalEvents;
-          headEventIdRef.current = canonicalHead;
-          canonicalGameRef.current = canonicalGame;
-          phaseRef.current = canonicalGame.phase;
-          setInitialGame(baseline);
-          setEvents(canonicalEvents);
-          setHeadEventId(canonicalHead);
-          setResetReturnEventId(normalized.state.resetReturnEventId ?? null);
-          setGame(canonicalGame);
-          setFinalResults(normalized.results);
-          setFinishGameState(normalized.results === null ? "ready" : "saved");
-        }
       }),
     [sessionSync],
   );
@@ -1088,7 +1022,7 @@ export const ClubWorkspace = ({
   ]);
 
   useEffect(() => {
-    if (sessionSync.gameId === null && initialGame === null) return;
+    if (sessionSync.gameId === null) return;
     sessionSync.enqueue(
       sessionName,
       {
@@ -1105,7 +1039,7 @@ export const ClubWorkspace = ({
         headEventId,
         resetReturnEventId,
         legacyLog,
-      } as GameSessionState,
+      } as CurrentGameSessionState,
       finalResults,
     );
     const gameId = sessionSync.gameId;
@@ -1117,6 +1051,7 @@ export const ClubWorkspace = ({
     }
   }, [
     claimController,
+
     finalResults,
     events,
     game,
@@ -1143,12 +1078,7 @@ export const ClubWorkspace = ({
 
   const logEvent = useCallback(
     (type: string, payload: Record<string, unknown>) => {
-      if (
-        sessionSync.normalizing ||
-        previewTargetEventIdRef.current !== null ||
-        isAuxiliaryEvent(type)
-      )
-        return;
+      if (previewTargetEventIdRef.current !== null || isAuxiliaryEvent(type)) return;
       const sequence =
         Math.max(
           0,
@@ -1171,7 +1101,7 @@ export const ClubWorkspace = ({
   );
 
   const changeGame = (next: GameState) => {
-    if (sessionSync.normalizing || previewTargetEventIdRef.current !== null) return;
+    if (previewTargetEventIdRef.current !== null) return;
     const canonical = canonicalGameRef.current;
     hasIntermediateDraftRef.current =
       canonical !== null && hashGameState(next) !== hashGameState(canonical);
@@ -1180,7 +1110,7 @@ export const ClubWorkspace = ({
 
   const acceptGameEvent = useCallback(
     (draft: CanonicalGameEventDraft) => {
-      if (sessionSync.normalizing || previewTargetEventIdRef.current !== null) return;
+      if (previewTargetEventIdRef.current !== null) return;
       const baseline = initialGameRef.current;
       const before = canonicalGameRef.current;
       const gameId = sessionSync.gameId;
@@ -1365,7 +1295,7 @@ export const ClubWorkspace = ({
         headEventId: headEventIdRef.current,
         resetReturnEventId,
         legacyLog: legacyLogRef.current,
-      } as GameSessionState,
+      } as CurrentGameSessionState,
       results,
     );
     sessionRetry.requestAutoSync();
@@ -1523,7 +1453,7 @@ export const ClubWorkspace = ({
           session.gameId,
           session.revision,
           session.name,
-          session.state,
+          asPersistedState(session.state),
           session.results,
           claimGeneration,
         );
@@ -1532,7 +1462,7 @@ export const ClubWorkspace = ({
           session.gameId,
           session.revision,
           session.name,
-          session.state,
+          asPersistedState(session.state),
           session.results,
           claimGeneration,
         );
@@ -1864,8 +1794,15 @@ export const ClubWorkspace = ({
       await sessionSync.clear(async () => undefined);
       setClaimControllerReady(false);
       releaseAndDisposeClaim();
-      window.localStorage.clear();
-      window.sessionStorage.clear();
+      if (storageGuard === undefined) {
+        await clearApplicationBrowserStorage(window.localStorage, window.sessionStorage);
+      } else {
+        clearApplicationBrowserStorageLocked(
+          window.localStorage,
+          window.sessionStorage,
+          storageGuard,
+        );
+      }
       setMusicPreferences(readMusicPreferences(window.localStorage, club.id));
 
       clearErrorConsole();
@@ -2798,6 +2735,79 @@ export const ClubWorkspace = ({
   );
 };
 
+type LockedClubWorkspaceProps = Omit<
+  Parameters<typeof ClubWorkspace>[0],
+  "storageGuard" | "onDeleteClub"
+> & {
+  readonly onDeleteClub: (guard: BrowserGameStorageGuard) => Promise<void>;
+  readonly onStorageMismatch: (attachment: BrowserGameAttachment) => void;
+  readonly onStorageInvalid: (rawSnapshot: string) => void;
+};
+
+const LockedClubWorkspace = ({
+  onDeleteClub,
+  onStorageMismatch,
+  onStorageInvalid,
+  ...workspaceProps
+}: LockedClubWorkspaceProps) => {
+  const { t } = useMessages(shellMessages);
+  const [storageGuard, setStorageGuard] = useState<BrowserGameStorageGuard | null>(null);
+  const [lockFailed, setLockFailed] = useState(false);
+  const mismatchRef = useRef(onStorageMismatch);
+  mismatchRef.current = onStorageMismatch;
+  const invalidRef = useRef(onStorageInvalid);
+  invalidRef.current = onStorageInvalid;
+
+  useEffect(() => {
+    let cancelled = false;
+    let release: () => void = () => undefined;
+    const lifetime = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    void withBrowserGameStorageGuard(async (guard) => {
+      if (cancelled) return;
+      const currentStorage = readBrowserGameStorageState(window.localStorage);
+      if (currentStorage.kind === "invalid") {
+        invalidRef.current(currentStorage.rawSnapshot);
+        return;
+      }
+      if (
+        currentStorage.kind === "ready" &&
+        currentStorage.attachment.clubId !== workspaceProps.club.id
+      ) {
+        mismatchRef.current(currentStorage.attachment);
+        return;
+      }
+      setStorageGuard(guard);
+      await lifetime;
+    }).catch((error: unknown) => {
+      reportError(error, { source: "persistence", context: "browser-game.lock" });
+      if (!cancelled) setLockFailed(true);
+    });
+    return () => {
+      cancelled = true;
+      release();
+    };
+  }, [workspaceProps.club.id]);
+
+  if (storageGuard === null) {
+    return (
+      <main className="app-shell">
+        <p role={lockFailed ? "alert" : "status"}>
+          {t(lockFailed ? "browserGameLockUnavailable" : "browserGameLockWaiting")}
+        </p>
+      </main>
+    );
+  }
+  return (
+    <ClubWorkspace
+      {...workspaceProps}
+      storageGuard={storageGuard}
+      onDeleteClub={() => onDeleteClub(storageGuard)}
+    />
+  );
+};
+
 export const App = () => {
   const { locale, setLocale, t } = useMessages(shellMessages);
   const portalLocale = useRef(locale).current;
@@ -2807,6 +2817,10 @@ export const App = () => {
   const [authUnavailable, setAuthUnavailable] = useState(false);
   const [clubs, setClubs] = useState<readonly Club[]>([]);
   const [selectedClub, setSelectedClub] = useState<Club | null>(null);
+  const [blockedClub, setBlockedClub] = useState<Club | null>(null);
+  const [browserGameState, setBrowserGameState] = useState<BrowserGameStorageState>({
+    kind: "empty",
+  });
   const [editingClub, setEditingClub] = useState<Club | "new" | null>(null);
   const [openingCurtains, setOpeningCurtains] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -2823,7 +2837,17 @@ export const App = () => {
   const refreshClubs = useCallback(async () => {
     setLoading(true);
     try {
-      setClubs(await listClubs());
+      const nextClubs = await listClubs();
+      const nextBrowserGameState = await prepareBrowserGameStorage({
+        localStorage: window.localStorage,
+      });
+      setClubs(nextClubs);
+      setBrowserGameState(nextBrowserGameState);
+      if (nextBrowserGameState.kind === "ready") {
+        setSelectedClub(
+          nextClubs.find(({ id }) => id === nextBrowserGameState.attachment.clubId) ?? null,
+        );
+      }
       setError(null);
     } catch (error) {
       reportError(error, { source: "api", context: "clubs.list" });
@@ -2863,11 +2887,12 @@ export const App = () => {
     setLoading(true);
     try {
       await signOut();
-      clearGameSessionStorage(window.localStorage);
-      clearGameSessionStorage(window.sessionStorage);
+      await clearBrowserGameStorage(window.localStorage);
       setUser(null);
       setClubs([]);
       setSelectedClub(null);
+      setBlockedClub(null);
+      setBrowserGameState({ kind: "empty" });
       setEditingClub(null);
       setError(null);
     } catch (error) {
@@ -2901,20 +2926,27 @@ export const App = () => {
     }
   };
 
-  const removeClub = async (club: Club) => {
+  const removeClub = async (club: Club, storageGuard?: BrowserGameStorageGuard) => {
     if (user === null) throw new Error("Sign in before deleting a club");
     if (!window.confirm(t("deleteClubConfirmation", { name: club.name }))) {
       return;
     }
     try {
       await deleteClub(club.id);
-      window.localStorage.removeItem(gameSessionStorageKey(club.id));
-      window.localStorage.removeItem(legacyGameSessionStorageKey(club.id));
-      window.sessionStorage.removeItem(gameSessionStorageKey(club.id));
-      window.sessionStorage.removeItem(legacyGameSessionStorageKey(club.id));
+      const cleanup = {
+        localStorage: window.localStorage,
+        clubId: club.id,
+      };
+      if (storageGuard === undefined) {
+        await clearBrowserGameStorageForClub(cleanup);
+      } else {
+        clearBrowserGameStorageForClubLocked(cleanup, storageGuard);
+      }
       window.localStorage.removeItem(availablePlayerStorageKey(club.id));
       setClubs((current) => current.filter(({ id }) => id !== club.id));
       setSelectedClub(null);
+      setBlockedClub(null);
+      setBrowserGameState(readBrowserGameStorageState(window.localStorage));
       setEditingClub(null);
       setError(null);
     } catch (error) {
@@ -2924,7 +2956,15 @@ export const App = () => {
   };
 
   const openClub = (club: Club) => {
+    if (browserGameState.kind === "invalid") return;
     setEditingClub(null);
+    const attachment = readBrowserGameAttachment(window.localStorage);
+    if (attachment !== null && attachment.clubId !== club.id) {
+      setBrowserGameState({ kind: "ready", attachment });
+      setBlockedClub(club);
+      return;
+    }
+    setBlockedClub(null);
     setSelectedClub(club);
     setOpeningCurtains(true);
     window.setTimeout(() => setOpeningCurtains(false), 900);
@@ -2944,21 +2984,90 @@ export const App = () => {
     setClubs((current) => current.map((club) => (club.id === saved.id ? saved : club)));
   };
 
+  const openBrowserGameOwner = () => {
+    if (browserGameState.kind !== "ready") return;
+    const owner = clubs.find(({ id }) => id === browserGameState.attachment.clubId);
+    if (owner === undefined) return;
+    setBlockedClub(null);
+    setSelectedClub(owner);
+  };
+
+  const releaseAndOpenBlockedClub = async () => {
+    if (browserGameState.kind !== "ready" || blockedClub === null) return;
+    const target = blockedClub;
+    try {
+      await releaseBrowserGameStorage(window.localStorage, browserGameState.attachment);
+      const current = await prepareBrowserGameStorage({ localStorage: window.localStorage });
+      setBrowserGameState(current);
+      if (current.kind !== "empty") return;
+      setBlockedClub(null);
+      setSelectedClub(target);
+    } catch (error) {
+      reportError(error, { source: "persistence", context: "browser-game.release" });
+      setBrowserGameState(readBrowserGameStorageState(window.localStorage));
+    }
+  };
+
+  const discardUnavailableBrowserGame = async () => {
+    if (browserGameState.kind !== "ready") return;
+    if (!window.confirm(t("browserGameDiscardConfirmation"))) return;
+    const expected = browserGameState.attachment;
+    try {
+      await discardBrowserGameStorage({ localStorage: window.localStorage }, expected);
+      setBrowserGameState({ kind: "empty" });
+      setBlockedClub(null);
+    } catch (error) {
+      reportError(error, { source: "persistence", context: "browser-game.discard" });
+      const nextState = await prepareBrowserGameStorage({
+        localStorage: window.localStorage,
+      });
+      setBrowserGameState(nextState);
+      if (nextState.kind === "ready") {
+        setSelectedClub(clubs.find(({ id }) => id === nextState.attachment.clubId) ?? null);
+      }
+    }
+  };
+
+  const discardInvalidBrowserGame = async () => {
+    if (browserGameState.kind !== "invalid") return;
+    if (!window.confirm(t("browserGameInvalidDiscardConfirmation"))) return;
+    const rawSnapshot = browserGameState.rawSnapshot;
+    try {
+      await discardInvalidBrowserGameStorage({ localStorage: window.localStorage }, rawSnapshot);
+      setBrowserGameState({ kind: "empty" });
+      setBlockedClub(null);
+    } catch (error) {
+      reportError(error, { source: "persistence", context: "browser-game.discard-invalid" });
+      setBrowserGameState(readBrowserGameStorageState(window.localStorage));
+    }
+  };
+
   if (selectedClub !== null) {
     return (
       <>
-        <ClubWorkspace
+        <LockedClubWorkspace
           key={selectedClub.id}
           club={selectedClub}
           onExit={() => {
             setSelectedClub(null);
             setEditingClub(null);
+            setBrowserGameState(readBrowserGameStorageState(window.localStorage));
           }}
           onEditClub={() => {
             setSelectedClub(null);
             setEditingClub(selectedClub);
           }}
-          onDeleteClub={() => removeClub(selectedClub)}
+          onDeleteClub={(storageGuard) => removeClub(selectedClub, storageGuard)}
+          onStorageMismatch={(attachment) => {
+            setSelectedClub(null);
+            setBrowserGameState({ kind: "ready", attachment });
+            setBlockedClub(selectedClub);
+          }}
+          onStorageInvalid={(rawSnapshot) => {
+            setSelectedClub(null);
+            setBrowserGameState({ kind: "invalid", rawSnapshot });
+            setBlockedClub(null);
+          }}
           onLanguageChange={changeSelectedClubLanguage}
           themeColor={themeColor}
           onThemeColorChange={setThemeColor}
@@ -2973,21 +3082,98 @@ export const App = () => {
     );
   }
 
+  const missingOwner =
+    browserGameState.kind === "ready" &&
+    !clubs.some(({ id }) => id === browserGameState.attachment.clubId);
+
   return (
-    <ClubPortal
-      user={user}
-      authConfigured={authConfigured}
-      authUnavailable={authUnavailable}
-      themeColor={themeColor}
-      clubs={clubs}
-      loading={loading}
-      error={error === null ? null : t(error)}
-      editing={editingClub}
-      onSignOut={endSession}
-      onThemeColorChange={setThemeColor}
-      onEditingChange={setEditingClub}
-      onSaveClub={saveClub}
-      onOpenClub={openClub}
-    />
+    <>
+      <ClubPortal
+        user={user}
+        authConfigured={authConfigured}
+        authUnavailable={authUnavailable}
+        themeColor={themeColor}
+        clubs={clubs}
+        loading={loading}
+        error={error === null ? null : t(error)}
+        editing={editingClub}
+        onSignOut={endSession}
+        onThemeColorChange={setThemeColor}
+        onEditingChange={setEditingClub}
+        onSaveClub={saveClub}
+        onOpenClub={openClub}
+      />
+      {browserGameState.kind === "invalid" ? (
+        <div className="claim-conflict-backdrop">
+          <section
+            className="claim-conflict-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="browser-game-invalid-title"
+          >
+            <p className="eyebrow">{t("browserGameEyebrow")}</p>
+            <h2 id="browser-game-invalid-title">{t("browserGameInvalidTitle")}</h2>
+            <p>{t("browserGameInvalidBody")}</p>
+            <div className="claim-conflict-actions">
+              <button type="button" onClick={() => void discardInvalidBrowserGame()}>
+                {t("browserGameInvalidDiscard")}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : browserGameState.kind === "ready" && (blockedClub !== null || missingOwner) ? (
+        <div className="claim-conflict-backdrop">
+          <section
+            className="claim-conflict-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="browser-game-attached-title"
+          >
+            <p className="eyebrow">{t("browserGameEyebrow")}</p>
+            <h2 id="browser-game-attached-title">{t("browserGameAttachedTitle")}</h2>
+            <p>
+              {missingOwner
+                ? t("browserGameMissingOwnerBody", {
+                    game: browserGameState.attachment.name ?? browserGameState.attachment.gameId,
+                  })
+                : t("browserGameAttachedBody", {
+                    game: browserGameState.attachment.name ?? browserGameState.attachment.gameId,
+                    club:
+                      clubs.find(({ id }) => id === browserGameState.attachment.clubId)?.name ??
+                      browserGameState.attachment.clubId,
+                    target: blockedClub?.name ?? "",
+                  })}
+            </p>
+            {browserGameState.attachment.unresolved && !missingOwner ? (
+              <p>{t("browserGameReleaseBlocked")}</p>
+            ) : null}
+            <div className="claim-conflict-actions">
+              {!missingOwner ? (
+                <button type="button" className="secondary" onClick={openBrowserGameOwner}>
+                  {t("browserGameOpenOwner", {
+                    club:
+                      clubs.find(({ id }) => id === browserGameState.attachment.clubId)?.name ??
+                      browserGameState.attachment.clubId,
+                  })}
+                </button>
+              ) : null}
+              {blockedClub !== null ? (
+                <button
+                  type="button"
+                  disabled={browserGameState.attachment.unresolved}
+                  onClick={releaseAndOpenBlockedClub}
+                >
+                  {t("browserGameReleaseAndOpen", { club: blockedClub.name })}
+                </button>
+              ) : (
+                <button type="button" onClick={discardUnavailableBrowserGame}>
+                  {t("browserGameDiscard")}
+                </button>
+              )}
+            </div>
+          </section>
+        </div>
+      ) : null}
+    </>
   );
 };

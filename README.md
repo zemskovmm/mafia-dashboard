@@ -64,7 +64,7 @@ npm run verify:compose
 npm run verify:backup
 ```
 
-`npm run dev` applies the idempotent schema migration before starting the server and web watchers. The production Compose stack and Azure deployment instead run the same migration bundle as a one-shot job before the web process starts.
+`npm run dev` initializes or validates the current schema before starting the server and web watchers. Production Compose and Azure run the same advisory-locked, transaction-protected bundle as a one-shot job before the web process starts. Only an empty database or the current schema is supported; historical schema upgrades and data backfills are not provided. Keep unsupported databases intact and do not bypass the startup gate or reset an existing environment automatically.
 
 Server integration tests expect PostgreSQL at `postgresql://mafia:mafia@127.0.0.1:54329/mafia_test`, or use `TEST_DATABASE_URL` to override it.
 
@@ -81,6 +81,8 @@ Server integration tests expect PostgreSQL at `postgresql://mafia:mafia@127.0.0.
 - Foul, red-card, nomination, individual voting, Mafia shot, Don check, and Sheriff check controls
 - Rotating day order, automatic win detection, and atomic PostgreSQL persistence of setup state followed by an immutable game baseline and parent-linked semantic events
 - Browser-authoritative full session snapshots plus **Active games** resume for setup/live state, host, playlist, Log/Timeline history, and Undo recovery
+- One browser-wide v5 localStorage game with explicit club/game ownership; no old-format or sessionStorage game recovery. Invalid current-key data blocks gameplay until explicitly cleared. Old game/theme/music keys are ignored, not migrated or swept.
+- Current-format API snapshots and SHA-256 replay only; historical normalization, replay adapters, and raw game mutation endpoints are not supported. The current activity-log field and selectable `legacy` lighting renderer remain supported features.
 - Server validation of snapshot invariants plus semantic-event parent links and state hashes; PostgreSQL mirrors the last uploaded valid browser snapshot
 - Destructive three-action Undo and Timeline Reset with every new day as a checkpoint; discarded event tails are permanently removed and timer/music controls remain non-durable UI state
 
