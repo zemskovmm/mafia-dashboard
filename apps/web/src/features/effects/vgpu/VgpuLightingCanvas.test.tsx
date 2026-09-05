@@ -10,7 +10,7 @@ import type { VgpuLightingRuntime } from "./VgpuLightingRuntime.js";
 
 const lighting: LightingRendererContextValue = {
   requestedRenderer: "vgpu",
-  effectiveRenderer: "svg",
+  effectiveRenderer: "legacy",
   playerLightingEnabled: true,
   vgpuGeneration: 1,
   vgpuStatus: "initializing",
@@ -75,8 +75,8 @@ describe("V-GPU lighting canvases", () => {
     await waitFor(() => expect(canvas).toHaveAttribute("data-vgpu-ready", "true"));
     expect(env.register).toHaveBeenCalledWith(canvas, {
       kind: "player",
-      primary: [1, 0.89, 0.29],
-      secondary: [0.31, 0.72, 1],
+      primary: [1, 0.74, 0.3],
+      secondary: [1, 0.9, 0.64],
     });
   });
 
@@ -143,7 +143,7 @@ describe("V-GPU lighting canvases", () => {
   it("reads the current night class when V-GPU is selected after mount", async () => {
     const env = setupRuntime();
     const createRuntime = () => Promise.resolve(env.runtime);
-    const tree = (requestedRenderer: "svg" | "vgpu") => (
+    const tree = (requestedRenderer: "legacy" | "vgpu") => (
       <LightingRendererContext.Provider value={{ ...lighting, requestedRenderer }}>
         <VgpuLightingProvider
           enabled={requestedRenderer === "vgpu"}
@@ -158,7 +158,7 @@ describe("V-GPU lighting canvases", () => {
         </VgpuLightingProvider>
       </LightingRendererContext.Provider>
     );
-    const { container, rerender } = render(tree("svg"));
+    const { container, rerender } = render(tree("legacy"));
 
     rerender(tree("vgpu"));
 

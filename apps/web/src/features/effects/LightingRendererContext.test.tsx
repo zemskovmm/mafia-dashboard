@@ -1,26 +1,48 @@
+import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import { createLightingRendererState, lightingRendererReducer } from "./LightingRendererContext.js";
+import {
+  createLightingRendererState,
+  lightingRendererReducer,
+  useLightingRenderer,
+} from "./LightingRendererContext.js";
+
+const DefaultContextProbe = () => {
+  const lighting = useLightingRenderer();
+  return <output data-testid="lighting-context">{JSON.stringify(lighting)}</output>;
+};
 
 describe("lighting renderer state", () => {
-  it("starts SVG and player lighting enabled on fresh storage", () => {
+  it("starts V-GPU requested with legacy CSS effective on fresh storage", () => {
     expect(createLightingRendererState({ getItem: () => null })).toEqual({
-      requestedRenderer: "svg",
-      effectiveRenderer: "svg",
+      requestedRenderer: "vgpu",
+      effectiveRenderer: "legacy",
       playerLightingEnabled: true,
-      vgpuGeneration: 0,
-      vgpuStatus: "idle",
+      vgpuGeneration: 1,
+      vgpuStatus: "initializing",
     });
   });
 
-  it("keeps SVG effective while V-GPU initializes, then switches atomically when ready", () => {
+  it("exposes the same V-GPU request and legacy CSS initialization fallback by default", () => {
+    render(<DefaultContextProbe />);
+
+    expect(JSON.parse(screen.getByTestId("lighting-context").textContent ?? "null")).toEqual({
+      requestedRenderer: "vgpu",
+      effectiveRenderer: "legacy",
+      playerLightingEnabled: true,
+      vgpuGeneration: 1,
+      vgpuStatus: "initializing",
+    });
+  });
+
+  it("keeps legacy CSS effective while V-GPU initializes, then switches atomically when ready", () => {
     const initializing = lightingRendererReducer(
-      createLightingRendererState({ getItem: () => null }),
+      createLightingRendererState({ getItem: () => "legacy" }),
       { type: "select", renderer: "vgpu" },
     );
 
     expect(initializing).toMatchObject({
       requestedRenderer: "vgpu",
-      effectiveRenderer: "svg",
+      effectiveRenderer: "legacy",
       vgpuGeneration: 1,
       vgpuStatus: "initializing",
     });
@@ -29,7 +51,7 @@ describe("lighting renderer state", () => {
     ).toMatchObject({ effectiveRenderer: "vgpu", vgpuStatus: "ready" });
   });
 
-  it("falls back without changing the requested V-GPU renderer", () => {
+  it("uses legacy CSS on V-GPU failure without changing the requested renderer", () => {
     const initializing = createLightingRendererState({ getItem: () => "vgpu" });
 
     expect(
@@ -39,8 +61,17 @@ describe("lighting renderer state", () => {
       }),
     ).toMatchObject({
       requestedRenderer: "vgpu",
-      effectiveRenderer: "svg",
+      effectiveRenderer: "legacy",
       vgpuStatus: "fallback",
+    });
+  });
+
+  it("keeps an explicit legacy renderer selected", () => {
+    expect(createLightingRendererState({ getItem: () => "legacy" })).toMatchObject({
+      requestedRenderer: "legacy",
+      effectiveRenderer: "legacy",
+      vgpuGeneration: 0,
+      vgpuStatus: "idle",
     });
   });
 
@@ -60,9 +91,11 @@ describe("lighting renderer state", () => {
   });
 
   it("toggles player lighting without changing the table renderer", () => {
-    const svg = createLightingRendererState({ getItem: () => null });
-    expect(lightingRendererReducer(svg, { type: "set-player-lighting", enabled: false })).toEqual({
-      ...svg,
+    const lighting = createLightingRendererState({ getItem: () => null });
+    expect(
+      lightingRendererReducer(lighting, { type: "set-player-lighting", enabled: false }),
+    ).toEqual({
+      ...lighting,
       playerLightingEnabled: false,
     });
   });

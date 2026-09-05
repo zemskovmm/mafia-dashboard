@@ -5,6 +5,8 @@ struct LightingConfig {
   variant: f32,
   primary: vec4f,
   secondary: vec4f,
+  // Canvas padding, emitter corner radius and DPR, in physical pixels.
+  geometry: vec4f,
 }
 
 @group(0) @binding(0) var<uniform> cfg: LightingConfig;
@@ -13,61 +15,46 @@ fn safe_resolution() -> vec2f {
   return max(cfg.resolution, vec2f(1.0));
 }
 
-fn player_light(uv: vec2f) -> vec4f {
-  let aspect = cfg.resolution.x / max(cfg.resolution.y, 1.0);
-  var nearestDistance = 100.0;
-  var nearestIndex = 0u;
-  for (var i = 0u; i < 16u; i = i + 1u) {
-    let side = i / 4u;
-    let offset = (f32(i % 4u) + 0.5) / 4.0;
-    var centre = vec2f(0.0);
-    if (side == 0u) {
-      centre = vec2f(offset, 0.10);
-    } else if (side == 1u) {
-      centre = vec2f(0.90, offset);
-    } else if (side == 2u) {
-      centre = vec2f(1.0 - offset, 0.90);
-    } else {
-      centre = vec2f(0.10, 1.0 - offset);
-    }
-    var delta = uv - centre;
-    delta.x *= aspect;
-    let distanceSquared = dot(delta, delta);
-    if (distanceSquared < nearestDistance) {
-      nearestDistance = distanceSquared;
-      nearestIndex = i;
-    }
-  }
-  let distanceToLed = sqrt(nearestDistance);
-  let core = 1.0 - smoothstep(0.018, 0.038, distanceToLed);
-  let glow = 1.0 - smoothstep(0.030, 0.085, distanceToLed);
-  let phase = f32(nearestIndex) / 16.0;
-  let chase = 0.66 + 0.34 * pow(0.5 + 0.5 * cos(phase * 6.2832 - cfg.time * 4.6), 4.0);
-  let colour = mix(cfg.primary, cfg.secondary, f32(nearestIndex % 2u));
-  let alpha = clamp(core * chase + glow * 0.34, 0.0, 1.0);
-  return vec4f(colour.rgb * (0.76 + core * 0.52), alpha);
+fn emitter_distance(position: vec2f) -> f32 {
+  let halfSize = max(safe_resolution() * 0.5 - vec2f(cfg.geometry.x), vec2f(1.0));
+  let radius = clamp(cfg.geometry.y, 0.0, min(halfSize.x, halfSize.y));
+  let q = abs(position - safe_resolution() * 0.5) - halfSize + vec2f(radius);
+  return (length(max(q, vec2f(0.0))) + min(max(q.x, q.y), 0.0) - radius)
+    / max(cfg.geometry.z, 1.0);
 }
 
-fn table_light(uv: vec2f, resolution: vec2f) -> vec4f {
-  var p = uv - vec2f(0.5);
-  p.x *= resolution.x / max(resolution.y, 1.0);
-  let radius = length(p);
-  let angle = atan2(p.y, p.x);
-  let ring = exp(-abs(radius - 0.39) * 20.0);
-  let outer = exp(-abs(radius - 0.39) * 12.0) * 0.28;
-  let chase = pow(0.5 + 0.5 * cos(angle * 11.0 - cfg.time * 2.8), 5.0);
-  let fade = 0.72 + 0.28 * sin(cfg.time * 1.3 + angle * 2.0);
-  let colour = mix(cfg.primary, cfg.secondary, 0.5 + 0.5 * sin(angle * 3.0 + cfg.time));
-  let alpha = clamp((ring * (0.52 + 0.48 * chase) + outer) * fade, 0.0, 0.94);
-  return vec4f(colour.rgb * (0.78 + chase * 0.42), alpha);
+fn player_light(distance: f32) -> vec4f {
+  let outside = max(distance, 0.0);
+  let core = exp(-abs(distance) / 1.4);
+  let halo = 0.32 * exp(-outside / 9.0);
+  let spill = 0.23 * exp(-outside / 32.0);
+  let padding = cfg.geometry.x / max(cfg.geometry.z, 1.0);
+  let fade = 1.0 - smoothstep(padding * 0.65, padding - 2.0, outside);
+  let breathe = 0.95 + 0.05 * sin(cfg.time * 1.4);
+  // Light the surroundings, not the opaque card face and its content.
+  let mask = smoothstep(-2.0, 0.0, distance);
+  let alpha = min((core * 0.9 + halo + spill) * mask * fade * breathe, 0.98);
+  let colour = mix(mix(cfg.primary.rgb, cfg.secondary.rgb, core), vec3f(1.0), core * 0.45);
+  return vec4f(colour, alpha);
+}
+
+fn table_light(distance: f32) -> vec4f {
+  let inward = max(-distance, 0.0);
+  let core = exp(-abs(distance) / 1.25);
+  let wash = (0.10 * exp(-inward / 8.0) + 0.08 * exp(-inward / 26.0))
+    * (1.0 - smoothstep(0.0, 2.0, distance));
+  let outer = 0.04 * exp(-abs(distance) / 6.0);
+  let fade = 1.0 - smoothstep(12.0, 22.0, max(distance, 0.0));
+  let breathe = 0.97 + 0.03 * sin(cfg.time * 0.8);
+  let alpha = (core * 0.32 + wash + outer) * fade * breathe;
+  return vec4f(mix(cfg.primary.rgb, cfg.secondary.rgb, core), alpha);
 }
 
 @fragment fn main(@builtin(position) position: vec4f) -> @location(0) vec4f {
-  let resolution = safe_resolution();
-  let uv = position.xy / resolution;
+  let distance = emitter_distance(position.xy);
   if (cfg.variant < 0.5) {
-    return player_light(uv);
+    return player_light(distance);
   }
-  return table_light(uv, resolution);
+  return table_light(distance);
 }
 `;

@@ -1276,15 +1276,14 @@ describe("manage menu", () => {
 });
 
 describe("developer menu", () => {
-  it("persists one renderer for card and table lighting and a separate player LED toggle", async () => {
+  it("persists the V-GPU renderer and a separate player LED toggle", async () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
 
     const renderer = screen.getByRole("combobox", { name: "Lighting renderer" });
-    expect(renderer).toHaveValue("svg");
-    expect(renderer).toHaveDisplayValue("SVG");
-    expect(document.querySelector(".app-shell")).toHaveAttribute("data-lighting-renderer", "svg");
+    expect(renderer).toHaveValue("vgpu");
+    expect(renderer).toHaveDisplayValue("V-GPU");
 
     await user.selectOptions(renderer, "legacy");
     expect(window.localStorage.getItem(LIGHTING_RENDERER_STORAGE_KEY)).toBe("legacy");
@@ -1307,20 +1306,22 @@ describe("developer menu", () => {
     );
   });
 
-  it("restores a saved V-GPU request while SVG warms up", async () => {
-    window.localStorage.setItem(LIGHTING_RENDERER_STORAGE_KEY, "vgpu");
+  it("resolves a historical SVG request to V-GPU and falls back to existing CSS", async () => {
+    window.localStorage.setItem(LIGHTING_RENDERER_STORAGE_KEY, "svg");
     render(<App />);
     await userEvent.setup().click(screen.getByRole("button", { name: "Open developer menu" }));
 
     expect(screen.getByRole("combobox", { name: "Lighting renderer" })).toHaveValue("vgpu");
-    expect(document.querySelector(".app-shell")).toHaveAttribute("data-lighting-renderer", "svg");
     expect(document.querySelector(".app-shell")).toHaveAttribute(
       "data-lighting-renderer-requested",
       "vgpu",
     );
-    expect(await screen.findByText("V-GPU unavailable — using SVG")).toBeInTheDocument();
-    expect(window.localStorage.getItem(LIGHTING_RENDERER_STORAGE_KEY)).toBe("vgpu");
-    expect(document.querySelector(".app-shell")).toHaveAttribute("data-lighting-renderer", "svg");
+    expect(await screen.findByText("V-GPU unavailable — using existing CSS")).toBeInTheDocument();
+    expect(window.localStorage.getItem(LIGHTING_RENDERER_STORAGE_KEY)).toBe("svg");
+    expect(document.querySelector(".app-shell")).toHaveAttribute(
+      "data-lighting-renderer",
+      "legacy",
+    );
     expect(document.querySelector(".app-shell")).toHaveAttribute("data-vgpu-status", "fallback");
   });
 
@@ -2183,10 +2184,7 @@ describe("developer menu", () => {
     await user.click(firstCard);
     expect(firstCard).toHaveAttribute("aria-pressed", "true");
     expect(firstCard).toHaveClass("is-availability-selected");
-    expect(firstCard.querySelector(".player-card-lighting")).toHaveAttribute(
-      "data-player-lighting-kind",
-      "mafia",
-    );
+    expect(firstCard.querySelector(".vgpu-player-lighting")).not.toBeNull();
 
     await user.type(
       screen.getByRole("searchbox", { name: "Search available players" }),

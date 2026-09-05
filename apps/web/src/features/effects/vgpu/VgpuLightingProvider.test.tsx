@@ -106,7 +106,7 @@ describe("VgpuLightingProvider", () => {
     vi.unstubAllGlobals();
   });
 
-  it("keeps SVG effective until the first runtime surface is ready", async () => {
+  it("publishes readiness only after the first runtime surface is ready", async () => {
     let markReady!: () => void;
     const firstSurface = new Promise<void>((resolve) => {
       markReady = resolve;

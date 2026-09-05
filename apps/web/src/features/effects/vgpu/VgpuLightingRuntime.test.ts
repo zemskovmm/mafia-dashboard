@@ -1,5 +1,35 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createVgpuLightingRuntime, type VgpuLightingModule } from "./VgpuLightingRuntime.js";
+
+let resized: ResizeObserverCallback;
+const disconnect = vi.fn();
+beforeEach(() => {
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      constructor(callback: ResizeObserverCallback) {
+        resized = callback;
+      }
+      observe = vi.fn();
+      unobserve = vi.fn();
+      disconnect = disconnect;
+    },
+  );
+});
+afterEach(() => vi.unstubAllGlobals());
+const resize = (target: HTMLCanvasElement) =>
+  resized(
+    [
+      {
+        target,
+        contentRect: target.getBoundingClientRect(),
+        borderBoxSize: [],
+        contentBoxSize: [],
+        devicePixelContentBoxSize: [],
+      },
+    ],
+    {} as ResizeObserver,
+  );
 
 const setupModule = () => {
   const stop = vi.fn();
@@ -12,7 +42,8 @@ const setupModule = () => {
   };
   const surfaces: Array<{
     format: GPUTextureFormat;
-    size: readonly [number, number];
+    size: [number, number];
+    dpr: number;
     read: ReturnType<typeof vi.fn>;
     dispose: ReturnType<typeof vi.fn>;
   }> = [];
@@ -31,7 +62,8 @@ const setupModule = () => {
     surface: vi.fn(() => {
       const created = {
         format: "bgra8unorm" as GPUTextureFormat,
-        size: [200, 100] as const,
+        size: [200, 100] as [number, number],
+        dpr: 1,
         read: vi.fn().mockResolvedValue(Uint8Array.from([0, 0, 0, 255])),
         dispose: vi.fn(),
       };
@@ -69,6 +101,59 @@ const setupModule = () => {
 };
 
 describe("VgpuLightingRuntime", () => {
+  it("keeps padded card geometry in CSS pixels across DPR and reduced-motion resize", async () => {
+    const env = setupModule();
+    const runtime = await createVgpuLightingRuntime(env.module, { onError: vi.fn() });
+    const canvas = document.createElement("canvas");
+    canvas.style.borderTopLeftRadius = "14px";
+    document.body.append(canvas);
+    const registration = runtime.register(canvas, {
+      kind: "player",
+      primary: [1, 0.74, 0.3],
+      secondary: [1, 0.9, 0.64],
+    });
+    await registration.ready;
+    expect(env.effects[0]!.set).toHaveBeenLastCalledWith({
+      cfg: expect.objectContaining({ geometry: [96, 14, 1, 0] }),
+    });
+    runtime.setReducedMotion(true);
+    env.surfaces[0]!.dpr = 2;
+    env.surfaces[0]!.size = [576, 536];
+    canvas.style.borderTopLeftRadius = "10px";
+    resize(canvas);
+    expect(env.effects[0]!.set).toHaveBeenLastCalledWith({
+      cfg: expect.objectContaining({ resolution: [576, 536], geometry: [192, 20, 2, 0], time: 0 }),
+    });
+    runtime.dispose();
+    expect(disconnect).toHaveBeenCalled();
+  });
+
+  it("aligns a circular or compact rounded table emitter with its padded surface", async () => {
+    const env = setupModule();
+    const runtime = await createVgpuLightingRuntime(env.module, { onError: vi.fn() });
+    const canvas = document.createElement("canvas");
+    canvas.style.borderTopLeftRadius = "50%";
+    const table = document.createElement("div");
+    table.className = "round-table";
+    table.style.borderTopLeftRadius = "50%";
+    table.append(canvas);
+    document.body.append(table);
+    const registration = runtime.register(canvas, { kind: "table", cycle: "day" });
+    env.surfaces[0]!.size = [744, 744];
+    await registration.ready;
+    expect(env.effects[0]!.set).toHaveBeenLastCalledWith({
+      cfg: expect.objectContaining({ geometry: [24, 348, 1, 0] }),
+    });
+    table.style.borderTopLeftRadius = "16px";
+    env.surfaces[0]!.size = [400, 700];
+    resize(canvas);
+    env.loop()?.(env.currentFrame);
+    expect(env.effects[0]!.set).toHaveBeenLastCalledWith({
+      cfg: expect.objectContaining({ geometry: [24, 16, 1, 0] }),
+    });
+    runtime.dispose();
+  });
+
   it("disposes the GPU if runtime setup fails after initialization", async () => {
     const env = setupModule();
     vi.mocked(env.module.clock).mockImplementationOnce(() => {
@@ -86,12 +171,15 @@ describe("VgpuLightingRuntime", () => {
     const runtime = await createVgpuLightingRuntime(env.module, { onError: vi.fn() });
     expect(env.module.frameLoop).not.toHaveBeenCalled();
     const firstSurfaceReady = (runtime as typeof runtime & { ready: Promise<void> }).ready;
-    const first = runtime.register({} as HTMLCanvasElement, {
+    const first = runtime.register(document.createElement("canvas"), {
       kind: "player",
       primary: [1, 0, 0],
       secondary: [1, 0, 0],
     });
-    const second = runtime.register({} as HTMLCanvasElement, { kind: "table", cycle: "night" });
+    const second = runtime.register(document.createElement("canvas"), {
+      kind: "table",
+      cycle: "night",
+    });
 
     await Promise.all([first.ready, second.ready, firstSurfaceReady]);
     expect(env.module.init).toHaveBeenCalledOnce();
@@ -133,7 +221,7 @@ describe("VgpuLightingRuntime", () => {
       ready = true;
     });
 
-    const registration = runtime.register({} as HTMLCanvasElement, {
+    const registration = runtime.register(document.createElement("canvas"), {
       kind: "table",
       cycle: "day",
     });
@@ -148,7 +236,7 @@ describe("VgpuLightingRuntime", () => {
   it("stops animation and renders one static frame for reduced motion", async () => {
     const env = setupModule();
     const runtime = await createVgpuLightingRuntime(env.module, { onError: vi.fn() });
-    const registration = runtime.register({} as HTMLCanvasElement, {
+    const registration = runtime.register(document.createElement("canvas"), {
       kind: "table",
       cycle: "day",
     });
@@ -168,7 +256,7 @@ describe("VgpuLightingRuntime", () => {
     const env = setupModule();
     const onError = vi.fn();
     const runtime = await createVgpuLightingRuntime(env.module, { onError });
-    const registration = runtime.register({} as HTMLCanvasElement, {
+    const registration = runtime.register(document.createElement("canvas"), {
       kind: "table",
       cycle: "day",
     });
@@ -190,7 +278,7 @@ describe("VgpuLightingRuntime", () => {
       throw new Error("surface failed");
     });
 
-    const registration = runtime.register({} as HTMLCanvasElement, {
+    const registration = runtime.register(document.createElement("canvas"), {
       kind: "table",
       cycle: "day",
     });
@@ -208,7 +296,7 @@ describe("VgpuLightingRuntime", () => {
       throw new Error("effect failed");
     });
 
-    const registration = runtime.register({} as HTMLCanvasElement, {
+    const registration = runtime.register(document.createElement("canvas"), {
       kind: "player",
       primary: [1, 0, 0],
       secondary: [1, 0, 0],
@@ -230,7 +318,7 @@ describe("VgpuLightingRuntime", () => {
     })) as never;
     const onError = vi.fn();
     const runtime = await createVgpuLightingRuntime(env.module, { onError });
-    const registration = runtime.register({} as HTMLCanvasElement, {
+    const registration = runtime.register(document.createElement("canvas"), {
       kind: "player",
       primary: [1, 0, 0],
       secondary: [1, 0, 0],

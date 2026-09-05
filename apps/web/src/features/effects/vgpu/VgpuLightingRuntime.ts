@@ -15,6 +15,8 @@ export type VgpuLightingDescriptor =
     }>
   | Readonly<{ kind: "table"; cycle: "day" | "night" }>;
 
+export const lightingPadding = { player: 96, table: 24 } as const;
+
 export interface VgpuLightingRegistration {
   readonly ready: Promise<void>;
   readonly dispose: () => void;
@@ -31,33 +33,43 @@ export interface VgpuLightingRuntime {
 }
 
 interface RuntimeEntry {
+  readonly canvas: HTMLCanvasElement;
+  readonly emitter: Element;
   readonly surface: Surface;
   readonly effect: Effect;
   readonly descriptor: VgpuLightingDescriptor;
   active: boolean;
   ready: boolean;
+  cornerRadius: string;
 }
 
 const tableColours = {
   day: {
-    primary: [1, 0.48, 0.15] as const,
-    secondary: [1, 0.86, 0.34] as const,
+    primary: [1, 0.68, 0.28] as const,
+    secondary: [1, 0.88, 0.61] as const,
   },
   night: {
-    primary: [0.24, 0.31, 0.94] as const,
-    secondary: [0.51, 0.29, 1] as const,
+    primary: [0.29, 0.4, 0.85] as const,
+    secondary: [0.57, 0.7, 1] as const,
   },
 };
 
 const configFor = (entry: RuntimeEntry, time: number) => {
   const descriptor = entry.descriptor;
   const colours = descriptor.kind === "table" ? tableColours[descriptor.cycle] : descriptor;
+  const dpr = entry.surface.dpr;
+  const padding = lightingPadding[descriptor.kind] * dpr;
+  const radius = Number.parseFloat(entry.cornerRadius) || 0;
+  const cornerRadius = entry.cornerRadius.endsWith("%")
+    ? (Math.max(0, Math.min(...entry.surface.size) - padding * 2) * radius) / 100
+    : radius * dpr;
   return {
     resolution: entry.surface.size,
     time,
     variant: descriptor.kind === "player" ? 0 : descriptor.cycle === "day" ? 1 : 2,
     primary: [...colours.primary, 1],
     secondary: [...colours.secondary, 1],
+    geometry: [padding, cornerRadius, dpr, 0],
   };
 };
 
@@ -65,6 +77,7 @@ class Runtime implements VgpuLightingRuntime {
   readonly #entries = new Set<RuntimeEntry>();
   readonly #clock;
   readonly #offError;
+  readonly #resizeObserver;
   readonly ready: Promise<void>;
   #resolveReady!: () => void;
   #readyResolved = false;
@@ -83,6 +96,14 @@ class Runtime implements VgpuLightingRuntime {
     });
     this.#clock = module.clock(gpu);
     this.#offError = gpu.onError((error) => this.#fail(error));
+    this.#resizeObserver = new ResizeObserver((changes) => {
+      for (const entry of this.#entries) {
+        if (changes.some((change) => change.target === entry.canvas)) {
+          entry.cornerRadius = getComputedStyle(entry.emitter).borderTopLeftRadius;
+        }
+      }
+      if (this.#reducedMotion) this.#renderOnce();
+    });
     void gpu.gpu.lost.then((info) => {
       if (!this.#disposed) this.#fail(new Error(`WebGPU device lost: ${info.message}`));
     });
@@ -122,14 +143,19 @@ class Runtime implements VgpuLightingRuntime {
       target.dispose();
       throw error;
     }
+    const emitter = canvas.closest(".player-seat, .round-table") ?? canvas;
     const entry: RuntimeEntry = {
+      canvas,
+      emitter,
       surface: target,
       effect: shader,
       descriptor,
       active: true,
       ready: false,
+      cornerRadius: getComputedStyle(emitter).borderTopLeftRadius,
     };
     this.#entries.add(entry);
+    this.#resizeObserver.observe(canvas);
     let compileTimeout: ReturnType<typeof setTimeout>;
     const compiled = shader.compile({ colors: [target.format] }).then(() => {
       if (!entry.active || this.#disposed) return;
@@ -157,6 +183,7 @@ class Runtime implements VgpuLightingRuntime {
         if (!entry.active) return;
         entry.active = false;
         this.#entries.delete(entry);
+        this.#resizeObserver.unobserve(canvas);
         target.dispose();
         if (![...this.#entries].some((candidate) => candidate.ready)) this.#stopLoop();
       },
@@ -179,6 +206,7 @@ class Runtime implements VgpuLightingRuntime {
     this.#disposed = true;
     this.#stopLoop();
     this.#offError();
+    this.#resizeObserver.disconnect();
     for (const entry of this.#entries) {
       entry.active = false;
       entry.surface.dispose();

@@ -1,8 +1,8 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useLightingRenderer } from "../LightingRendererContext.js";
 import type { PlayerLightingKind } from "../PlayerCardLighting.js";
 import { useVgpuLightingRuntime } from "./VgpuLightingProvider.js";
-import type { VgpuLightingDescriptor } from "./VgpuLightingRuntime.js";
+import { lightingPadding, type VgpuLightingDescriptor } from "./VgpuLightingRuntime.js";
 
 const playerColours: Readonly<
   Record<
@@ -13,7 +13,7 @@ const playerColours: Readonly<
     }>
   >
 > = {
-  speaker: { primary: [1, 0.89, 0.29], secondary: [0.31, 0.72, 1] },
+  speaker: { primary: [1, 0.74, 0.3], secondary: [1, 0.9, 0.64] },
   mafia: { primary: [1, 0.19, 0.15], secondary: [1, 0.19, 0.15] },
   sheriff: { primary: [0.24, 0.67, 1], secondary: [0.24, 0.67, 1] },
   attention: { primary: [1, 0.82, 0.2], secondary: [1, 0.82, 0.2] },
@@ -48,6 +48,9 @@ const LightingCanvas = ({
     <canvas
       ref={canvasRef}
       className={className}
+      style={
+        { "--vgpu-lighting-padding": `${lightingPadding[descriptor.kind]}px` } as CSSProperties
+      }
       data-vgpu-ready={String(ready)}
       aria-hidden="true"
     />

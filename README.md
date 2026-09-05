@@ -10,6 +10,7 @@ This repository contains the implemented touch-first TypeScript web application,
 
 - [`rules.md`](rules.md) — canonical Club Mafia behavior, moderator workflows, data model, deployment baseline, and recorded product decisions/gaps.
 - [`docs/product-outline.md`](docs/product-outline.md) — approved setup wizard, round-table UI, music/timer behavior, phase flow, and interaction contracts.
+- [`docs/architecture.md`](docs/architecture.md) — current workspace boundaries, client rendering, and lighting-renderer lifecycle.
 - [`docs/adr/0001-typescript-modular-monolith.md`](docs/adr/0001-typescript-modular-monolith.md) — initial SPA/API/PostgreSQL architecture decision.
 - [`docs/azure-deployment.md`](docs/azure-deployment.md) — Azure Container Apps, private PostgreSQL, GitHub OIDC deployment, and rollback runbook.
 - [`docs/self-hosted-deployment.md`](docs/self-hosted-deployment.md) — single-host Docker Compose, one-shot migrations, external TLS, bounded logs, upgrades, and rollback.
@@ -19,7 +20,7 @@ This repository contains the implemented touch-first TypeScript web application,
 
 ## Architecture direction
 
-The application is a TypeScript npm workspace with a React/Vite SPA, Fastify API, pure game-domain package, and a revisioned PostgreSQL game-session aggregate. Setup state is persisted directly; live play is derived from an immutable game baseline and parent-linked semantic events. Local development uses Docker Compose; production deploys to Azure Container Apps with private PostgreSQL Flexible Server persistence.
+The application is a TypeScript npm workspace with a React/Vite SPA, Fastify API, pure game-domain package, and a revisioned PostgreSQL game-session aggregate. Setup state is persisted directly; live play is derived from an immutable game baseline and parent-linked semantic events. The client defaults to V-GPU lighting, retains existing CSS lighting while V-GPU starts or fails, and offers manual **Same as before** CSS selection. Local development uses Docker Compose; production deploys to Azure Container Apps with private PostgreSQL Flexible Server persistence.
 
 ## Run locally with Docker
 
@@ -82,7 +83,7 @@ Server integration tests expect PostgreSQL at `postgresql://mafia:mafia@127.0.0.
 - Rotating day order, automatic win detection, and atomic PostgreSQL persistence of setup state followed by an immutable game baseline and parent-linked semantic events
 - Browser-authoritative full session snapshots plus **Active games** resume for setup/live state, host, playlist, Log/Timeline history, and Undo recovery
 - One browser-wide v5 localStorage game with explicit club/game ownership; no old-format or sessionStorage game recovery. Invalid current-key data blocks gameplay until explicitly cleared. Old game/theme/music keys are ignored, not migrated or swept.
-- Current-format API snapshots and SHA-256 replay only; historical normalization, replay adapters, and raw game mutation endpoints are not supported. The current activity-log field and selectable `legacy` lighting renderer remain supported features.
+- Current-format API snapshots and SHA-256 replay only; historical normalization, replay adapters, and raw game mutation endpoints are not supported. V-GPU is the default lighting renderer; the selectable `legacy` renderer remains the existing CSS **Same as before** mode.
 - Server validation of snapshot invariants plus semantic-event parent links and state hashes; PostgreSQL mirrors the last uploaded valid browser snapshot
 - Destructive three-action Undo and Timeline Reset with every new day as a checkpoint; discarded event tails are permanently removed and timer/music controls remain non-durable UI state
 

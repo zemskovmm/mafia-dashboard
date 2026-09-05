@@ -2380,7 +2380,6 @@ export const ClubWorkspace = ({
                 }
               >
                 <option value="legacy">{t("lightingRendererLegacy")}</option>
-                <option value="svg">{t("lightingRendererSvg")}</option>
                 <option value="vgpu">{t("lightingRendererVgpu")}</option>
               </select>
               {lighting.vgpuStatus === "initializing" ? (

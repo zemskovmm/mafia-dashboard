@@ -8,6 +8,7 @@ const config = {
   variant: 0,
   primary: [1, 0, 0, 1],
   secondary: [1, 1, 0, 1],
+  geometry: [12, 8, 1, 0],
 };
 
 describe("V-GPU lighting shader", () => {

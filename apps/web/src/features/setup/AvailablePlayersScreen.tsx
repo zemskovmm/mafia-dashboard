@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { X } from "lucide-react";
 import type { PlayerProfile } from "../../api/client.js";
-import { PlayerCardLighting } from "../effects/PlayerCardLighting.js";
 import { VgpuPlayerLightingCanvas } from "../effects/vgpu/VgpuLightingCanvas.js";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { gameMessages } from "../../i18n/messages/game.js";
@@ -95,7 +94,6 @@ export const AvailablePlayersScreen = ({
                   onClick={() => onAvailabilityChange(player.id, !available)}
                 >
                   <VgpuPlayerLightingCanvas kind={available ? "mafia" : null} />
-                  <PlayerCardLighting kind={available ? "mafia" : null} />
                   <PersonIcon />
                   <span className="seat-name">{player.nickname}</span>
                   <span className="state-badge">

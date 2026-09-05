@@ -29,7 +29,7 @@ export const createLightingRendererState = (storage: StorageReader): LightingRen
   const requestedRenderer = readLightingRenderer(storage);
   return {
     requestedRenderer,
-    effectiveRenderer: requestedRenderer === "vgpu" ? "svg" : requestedRenderer,
+    effectiveRenderer: requestedRenderer === "vgpu" ? "legacy" : requestedRenderer,
     playerLightingEnabled: readPlayerLightingEnabled(storage),
     vgpuGeneration: requestedRenderer === "vgpu" ? 1 : 0,
     vgpuStatus: requestedRenderer === "vgpu" ? "initializing" : "idle",
@@ -49,7 +49,7 @@ export const lightingRendererReducer = (
       ? {
           ...state,
           requestedRenderer: "vgpu",
-          effectiveRenderer: "svg",
+          effectiveRenderer: "legacy",
           vgpuGeneration,
           vgpuStatus: "initializing",
         }
@@ -66,17 +66,17 @@ export const lightingRendererReducer = (
     return state;
   return action.type === "vgpu-ready"
     ? { ...state, effectiveRenderer: "vgpu", vgpuStatus: "ready" }
-    : { ...state, effectiveRenderer: "svg", vgpuStatus: "fallback" };
+    : { ...state, effectiveRenderer: "legacy", vgpuStatus: "fallback" };
 };
 
 export type LightingRendererContextValue = LightingRendererState;
 
 const defaultContext: LightingRendererContextValue = {
-  requestedRenderer: "svg",
-  effectiveRenderer: "svg",
+  requestedRenderer: "vgpu",
+  effectiveRenderer: "legacy",
   playerLightingEnabled: true,
-  vgpuGeneration: 0,
-  vgpuStatus: "idle",
+  vgpuGeneration: 1,
+  vgpuStatus: "initializing",
 };
 
 export const LightingRendererContext = createContext(defaultContext);

@@ -1050,164 +1050,24 @@ h2 {
 .app-shell:not([data-lighting-renderer="legacy"]) .round-table::before {
   content: none;
 }
-.table-ambient-lighting {
+.vgpu-lighting-canvas {
   position: absolute;
-  z-index: 1;
-  inset: -16%;
-  width: 132%;
-  height: 132%;
-  overflow: visible;
+  inset: calc(-1 * var(--vgpu-lighting-padding));
+  width: calc(100% + var(--vgpu-lighting-padding) * 2);
+  height: calc(100% + var(--vgpu-lighting-padding) * 2);
+  border-radius: inherit;
   pointer-events: none;
+  visibility: hidden;
+}
+.app-shell[data-lighting-renderer="vgpu"] .vgpu-lighting-canvas[data-vgpu-ready="true"] {
+  visibility: visible;
 }
 .vgpu-table-lighting-host {
   position: absolute;
   z-index: 1;
-  inset: -16%;
-  width: 132%;
-  height: 132%;
+  inset: 0;
+  border-radius: inherit;
   pointer-events: none;
-}
-.vgpu-table-lighting {
-  width: 100%;
-  height: 100%;
-}
-.vgpu-table-lighting-host:has(.vgpu-table-lighting[data-vgpu-ready="true"])
-  + .table-ambient-lighting {
-  opacity: 0;
-}
-.table-lighting-radiance {
-  fill: none;
-  stroke-width: 8;
-  opacity: 0.18;
-  filter: blur(4px);
-  vector-effect: non-scaling-stroke;
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: table-halo-breathe 4.2s ease-in-out infinite alternate;
-}
-.table-lighting-radiance.is-middle {
-  animation-delay: -1.4s;
-}
-.table-lighting-radiance.is-inner {
-  animation-delay: -2.8s;
-}
-.table-lighting-halo {
-  fill: none;
-  stroke-width: 1.4;
-  vector-effect: non-scaling-stroke;
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: table-halo-breathe 3.2s ease-in-out infinite alternate;
-}
-.table-lighting-halo.is-outer {
-  stroke-width: 2.2;
-  opacity: 0.62;
-}
-.table-lighting-halo.is-middle {
-  opacity: 0.38;
-  animation-delay: -1.1s;
-}
-.table-lighting-halo.is-inner {
-  opacity: 0.22;
-  animation-delay: -2.2s;
-}
-.table-lighting-dot {
-  opacity: 0.42;
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: table-lighting-chase 1.9s ease-in-out infinite;
-  animation-delay: calc(var(--table-led-index) * -115ms);
-}
-.is-table-cycle-day .table-lighting-halo {
-  filter: drop-shadow(0 0 5px rgb(255 169 67 / 72%)) drop-shadow(0 0 15px rgb(255 109 45 / 42%));
-}
-.is-table-cycle-day .table-lighting-radiance.is-outer,
-.is-table-cycle-day .table-lighting-halo.is-outer {
-  stroke: #ff7043;
-}
-.is-table-cycle-day .table-lighting-radiance.is-middle,
-.is-table-cycle-day .table-lighting-halo.is-middle {
-  stroke: #ffb33f;
-}
-.is-table-cycle-day .table-lighting-radiance.is-inner,
-.is-table-cycle-day .table-lighting-halo.is-inner {
-  stroke: #ffe176;
-}
-.is-table-cycle-day .table-lighting-dot.is-color-0 {
-  fill: #ffe06f;
-}
-.is-table-cycle-day .table-lighting-dot.is-color-1 {
-  fill: #ff7a3c;
-}
-.is-table-cycle-day .table-lighting-dot.is-color-2 {
-  fill: #ffbf4a;
-}
-.is-table-cycle-night .table-lighting-halo {
-  filter: drop-shadow(0 0 5px rgb(91 115 255 / 76%)) drop-shadow(0 0 17px rgb(101 52 214 / 46%));
-}
-.is-table-cycle-night .table-lighting-radiance.is-outer,
-.is-table-cycle-night .table-lighting-halo.is-outer {
-  stroke: #3045b8;
-}
-.is-table-cycle-night .table-lighting-radiance.is-middle,
-.is-table-cycle-night .table-lighting-halo.is-middle {
-  stroke: #7954e8;
-}
-.is-table-cycle-night .table-lighting-radiance.is-inner,
-.is-table-cycle-night .table-lighting-halo.is-inner {
-  stroke: #61b7ff;
-}
-.is-table-cycle-night .table-lighting-dot.is-color-0 {
-  fill: #4856dc;
-}
-.is-table-cycle-night .table-lighting-dot.is-color-1 {
-  fill: #8758ff;
-}
-.is-table-cycle-night .table-lighting-dot.is-color-2 {
-  fill: #6bbcff;
-}
-.table-lighting-dot {
-  filter: drop-shadow(0 0 2px currentcolor) drop-shadow(0 0 7px currentcolor);
-}
-@keyframes table-halo-breathe {
-  from {
-    opacity: 0.28;
-    transform: scale(0.985);
-  }
-  to {
-    opacity: 0.82;
-    transform: scale(1.018);
-  }
-}
-@keyframes table-lighting-chase {
-  0%,
-  55%,
-  100% {
-    opacity: 0.42;
-    transform: scale(0.9);
-  }
-  16%,
-  30% {
-    opacity: 1;
-    transform: scale(1.4);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .table-lighting-radiance,
-  .table-lighting-halo,
-  .table-lighting-dot {
-    transform: none;
-    animation: none;
-  }
-  .table-lighting-halo {
-    opacity: 0.54;
-  }
-  .table-lighting-radiance {
-    opacity: 0.24;
-  }
-  .table-lighting-dot {
-    opacity: 0.72;
-  }
 }
 .table-center {
   --center-shadow-size: 190px;
@@ -1789,88 +1649,16 @@ button.player-seat.is-voting-highlight::after {
   box-shadow: 0 12px 30px rgb(0 0 0 / 58%);
   animation: none;
 }
-.player-card-lighting {
-  --led-primary: #ffd85d;
-  --led-secondary: var(--led-primary);
-  position: absolute;
-  z-index: 2;
-  inset: -7px;
-  width: calc(100% + 14px);
-  height: calc(100% + 14px);
-  overflow: visible;
-  pointer-events: none;
-}
 .vgpu-player-lighting {
-  position: absolute;
-  z-index: 2;
-  inset: -12px;
-  width: calc(100% + 24px);
-  height: calc(100% + 24px);
-  pointer-events: none;
+  z-index: 0;
 }
-.vgpu-player-lighting[data-vgpu-ready="true"] + .player-card-lighting {
-  opacity: 0;
+.player-seat > :not(.vgpu-player-lighting) {
+  z-index: 1;
 }
-.app-shell[data-lighting-renderer="vgpu"][data-player-lighting="enabled"]
-  .player-seat:is(
-    .is-current,
-    .is-mafia-shooter,
-    .is-sheriff-highlight,
-    .is-goodbye-highlight,
-    .is-voting-highlight,
-    .is-availability-selected
-  ) {
-  border-color: rgb(255 255 255 / 18%);
-}
-.player-card-lighting.is-mafia {
-  --led-primary: #ff4d45;
-}
-.player-card-lighting.is-sheriff {
-  --led-primary: #58b7ff;
-}
-.player-card-lighting.is-speaker {
-  --led-primary: #ffe45f;
-  --led-secondary: #5ebdff;
-}
-.player-card-lighting-track {
-  fill: none;
-  stroke: var(--led-primary);
-  stroke-width: 1.2;
-  opacity: 0.34;
-  vector-effect: non-scaling-stroke;
-}
-.player-card-lighting circle {
-  fill: var(--led-primary);
-  filter: drop-shadow(0 0 2px var(--led-primary)) drop-shadow(0 0 5px var(--led-primary));
-  opacity: 0.48;
-  transform-box: fill-box;
-  transform-origin: center;
-  animation: player-led-chase 1.4s ease-in-out infinite;
-  animation-delay: calc(var(--led-index) * -50ms);
-}
-.player-card-lighting circle.is-secondary {
-  fill: var(--led-secondary);
-  filter: drop-shadow(0 0 2px var(--led-secondary)) drop-shadow(0 0 5px var(--led-secondary));
-}
-@keyframes player-led-chase {
-  0%,
-  62%,
-  100% {
-    opacity: 0.48;
-    transform: scale(0.9);
-  }
-  14%,
-  30% {
-    opacity: 1;
-    transform: scale(1.22);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .player-card-lighting circle {
-    opacity: 0.86;
-    transform: none;
-    animation: none;
-  }
+.app-shell[data-lighting-renderer="vgpu"] .player-seat.is-current,
+.app-shell[data-lighting-renderer="vgpu"] .player-seat.is-voting-highlight {
+  border-color: #ffe9ac;
+  background: linear-gradient(145deg, #34312a, #191c23 65%);
 }
 .deceased-cross {
   position: absolute;

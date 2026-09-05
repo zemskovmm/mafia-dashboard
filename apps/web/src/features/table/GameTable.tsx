@@ -1,8 +1,7 @@
 import type { PlayerStatus, Role } from "@mafia/game-domain";
 import type { CSSProperties, ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
-import { PlayerCardLighting, resolvePlayerLightingKind } from "../effects/PlayerCardLighting.js";
-import { TableAmbientLighting } from "../effects/TableAmbientLighting.js";
+import { resolvePlayerLightingKind } from "../effects/PlayerCardLighting.js";
 import {
   VgpuPlayerLightingCanvas,
   VgpuTableLightingCanvas,
@@ -113,7 +112,6 @@ export const GameTable = ({
     >
       <div className="round-table">
         <VgpuTableLightingCanvas />
-        <TableAmbientLighting />
         <div className="table-center">{center}</div>
         {swipeAction === undefined ? null : (
           <div
@@ -150,7 +148,6 @@ export const GameTable = ({
           const content = (
             <>
               <VgpuPlayerLightingCanvas kind={lightingKind} />
-              <PlayerCardLighting kind={lightingKind} />
               <span className="seat-number">{seat.seat}</span>
               <PersonIcon />
               <span className="seat-name">{seat.name}</span>
