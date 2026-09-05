@@ -1,6 +1,6 @@
 # ADR 0001: TypeScript modular monolith for the local web application
 
-- **Status:** Partially superseded — the TypeScript modular-monolith decision remains accepted; the original snapshot persistence model is superseded by the current replay/head model below.
+- **Status:** Accepted — TypeScript modular monolith with browser-authoritative snapshots, validated semantic history, and the current-only data and ownership boundaries below. Earlier persistence descriptions are historical where they conflict with this model.
 - **Decision owners:** Project owner and implementation agent
 - **Scope:** Initial touch SPA, local API, game domain, and PostgreSQL persistence
 
@@ -20,9 +20,9 @@ Use one TypeScript npm workspace with three deployable/logical units:
 
 Use PostgreSQL for one authoritative game-session aggregate. Validate API boundaries with Zod.
 
-### Original persistence decision (superseded)
+### Original persistence decision (historical)
 
-The initial implementation decision was for each accepted setup or game action to replace a complete restorable snapshot, non-auxiliary log tail, active-player projection, undo history, and final results in one transaction. It also introduced a revisioned durable browser outbox that retries mutations by UUID and fails closed on conflicts. The outbox/revision contract remains; snapshot replacement for live play does not.
+The initial implementation used atomic complete-snapshot replacement and a revisioned durable browser outbox that retries mutations by UUID. Complete snapshots remain the live-play authority. The current contract below distinguishes snapshot uploads from revision-checked incremental operations and destructive clear; it does not reject every snapshot solely because its observed server revision is older.
 
 Use Vitest for domain/server/component tests, Testing Library for React behavior, and Playwright for critical browser flows. Build the production SPA into the server image and run the app plus PostgreSQL through Docker Compose.
 
@@ -38,6 +38,29 @@ The YouTube IFrame Player API runs only in the browser. Revisioned session metad
 - Ordinary Undo and Timeline Reset permanently truncate the browser snapshot and mirrored event prefix. They create no game event, retain no future branch, and provide no Reset Return. Undo remains limited to three actions and cannot cross a new-day checkpoint.
 - Clicking **Finish game** locks Undo and Reset in the client and persists the completed snapshot and projections.
 - Timers provide start presets and stop only. Timer ticks, starts/stops, music playback, and fades are not durable events.
+
+## Current data support and ownership boundaries
+
+These decisions preserve the contracts from [#48](https://github.com/zemskovmm/mafia-dashboard/issues/48), [#50](https://github.com/zemskovmm/mafia-dashboard/issues/50), [#52](https://github.com/zemskovmm/mafia-dashboard/issues/52), and [#53](https://github.com/zemskovmm/mafia-dashboard/issues/53); the current-only implementation landed in [PR #55](https://github.com/zemskovmm/mafia-dashboard/pull/55).
+
+### Browser ownership and club claims are separate safeguards
+
+- Within one browser profile and application origin, the sole supported durable game record is `localStorage["mafia-dashboard.game-session.v5"]`, with explicit `clubId` and `gameId`. Restore its owner before allowing another start or resume. Browser-local ownership does not replace the server's club-wide active-game claim and explicit takeover across tabs/devices.
+- Missing v5 data means empty storage. Valid v5 data restores the game and pending outbox. Invalid/unsupported v5 bytes block gameplay until an explicit clear of the exact inspected bytes; they are not silently repaired or replaced. Normal game operations ignore old game/preference keys without migrating or sweeping them. Explicit application-wide clear remains a separate destructive action.
+- Browser storage operations serialize through Web Locks and verify the expected stored record before destructive release/discard. Unsupported locking fails closed. Synced release cannot discard unresolved outbox work. If another tab already removed the expected record, release-and-open refreshes storage and opens the captured target club only if storage is empty; replacement or invalid data must not be overwritten.
+- Game state has no `sessionStorage` recovery fallback. Tab-claim identity may still use session storage. Server claims fence stale writers by claim identity/generation; HTTP polling/revalidation and explicit takeover are sufficient, without requiring WebSockets.
+
+### Snapshot authority is not unrestricted writing
+
+- A full snapshot from a valid current claim may replace the server mirror despite an older `baseRevision`. Requiring compare-and-swap for every full snapshot was rejected because it would change the accepted browser-authority contract, not fix a regression. Incremental operations and destructive clear retain revision checks.
+- Club membership/isolation, claim ownership, schema/invariant validation, immutable event identity, canonical parent/hash validation, and exact mutation-ID retries remain required. Reusing a mutation ID for a different payload is rejected. Current setup, active games, and completion/results retain atomic persistence and idempotent retries; a failed upload must not discard the pending browser state.
+- Semantic replay validates the retained event history for Log, Timeline, and Preview; it does not reconstruct over or replace the authoritative snapshot's current `GameState` merely because both valid representations differ.
+
+### Current-only support is not an automatic migration
+
+- Browser/API/session/replay writers and readers support current shapes and SHA-256 replay metadata only. Historical envelope parsing, hash adapters, fallback hydration, raw aggregate mutation routes, and database repair/backfill are intentionally unsupported.
+- PostgreSQL initialization supports an empty database or an already-current schema. It is advisory-locked and transactional; unsupported or incomplete schemas must fail without partial conversion, destructive reset, or data backfill. This boundary does not authorize deployment or conversion of an existing historical installation. See [self-hosted deployment](../self-hosted-deployment.md) and [backup and recovery](../postgresql-backup-and-recovery.md).
+- Removing compatibility does not remove current features whose names contain `legacy`: the `legacyLog` field still carries current setup/activity entries, and the selectable `legacy` lighting renderer remains supported. Current theme/music preference keys, defaults, queue behavior, and lighting choices remain intact.
 
 ## Considered alternatives
 

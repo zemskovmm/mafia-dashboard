@@ -102,6 +102,8 @@ Primary hit targets are at least 48×48 CSS pixels. A destructive action require
 - Tapping an unassigned player reveals/draws one remaining role for that player.
 - A seat cannot draw twice; assigned roles and remaining counts are host-private.
 - Continue appears in the center only after all ten seats have one role.
+- Entering role giveaway from valid player/host selection creates the first durable setup snapshot before any role is drawn. Reloads and offline retries retain the same game ID, role deck, assignments, and pending save.
+- **Back to player selection** preserves the host and seat selection without revealing drawn roles. Returning with unchanged selections preserves partial role-draw progress; changing the host or any seat resets that progress. Back-navigation and re-entry retain the same game ID.
 
 ### Step 4 — Night zero: Mafia free seating
 
@@ -140,7 +142,7 @@ Primary hit targets are at least 48×48 CSS pixels. A destructive action require
 
 ### 7.2 Fade behavior
 
-- Fade-in starts at volume 0, begins/resumes playback, and reaches the prior audible target over the accepted 2-second duration.
+- Fade-in starts at volume 0, begins/resumes playback, and reaches 100% volume over the accepted 2-second duration. Direct playback also normalizes to 100%, rather than inheriting a previous low player volume.
 - Quick fade-out runs for 500 milliseconds and then pauses playback at volume 0.
 - Slow fade-out runs for 3 seconds and then pauses playback at volume 0.
 - Starting a new fade cancels the previous fade cleanly.
@@ -168,11 +170,10 @@ The queue changes only IFrame playback order. Account authorization remains read
 
 ### 9.1 Rotation
 
-- Day 1 order: 1 → 2 → … → 10.
-- Day 2 order: 2 → 3 → … → 10 → 1.
-- Day 3 order: 3 → 4 → … → 10 → 1 → 2.
-- The starting seat continues to rotate and wraps after seat 10.
-- Eliminated/red-carded players are omitted while the relative order remains stable.
+- Day one starts at the first active seat from seat 1.
+- Each later day opens at the next active seat after the previous day's actual opening seat, wrapping after seat 10. The cursor is not derived from the day number.
+- Eliminated/red-carded seats are skipped. If the previous opener later becomes inactive, its original opening seat still anchors the next day's rotation.
+- With every seat active, the first three openers are 1, 2, and 3. If seat 2 is inactive, they are 1, 3, and 4 instead.
 
 ### 9.2 Turn control
 
@@ -185,8 +186,8 @@ The queue changes only IFrame playback order. Account authorization remains read
 
 ### 9.3 Player actions
 
-- **Foul:** increments foul count and logs the reason/note when provided.
-- **Third foul:** creates one pending muted turn. That next turn lasts 10 seconds and permits only one nomination.
+- **Foul:** increments foul count and logs the reason/note when provided. Controls remain available for active players throughout live non-night day-play phases, including voting, car-crash handling, and goodbye speeches. They are unavailable during setup, night, Best Move (treated as night for this control), preview, and completed play.
+- **Third foul:** creates one pending muted turn. That next turn lasts 10 seconds and permits only one nomination. A player who is still muted receives no goodbye speech. Any unconsumed mute expires when the day advances, before the new day's Best Move or goodbye speech; it never carries into the next day.
 - **Red card:** immediately removes the player, with confirmation, no final speech, and an immediate victory check.
 - **Nominate:** during the current player’s eligible window, choose one other active player. Each candidate appears once in first-nomination order.
 
@@ -207,6 +208,8 @@ The queue changes only IFrame playback order. Account authorization remains read
 
 Night is a host-private guided sequence.
 
+Don/Sheriff check eligibility is captured when the ordinary night begins. A role owner active at that point may complete that night's check even if killed by that night's Mafia shot. Owners already inactive before the night cannot check, and a same-night victim gains no eligibility for later nights.
+
 ### 11.1 Mafia shots
 
 - The app lists each active Mafia-aligned shooter: both Mafia roles and Don while active.
@@ -220,14 +223,14 @@ Night is a host-private guided sequence.
 
 ### 11.2 Don check
 
-- If the Don is active, show `DON CHECK`.
+- If the Don is eligible for this night, show `DON CHECK`.
 - Tap one active target.
 - Host-private result is Sheriff / not Sheriff.
 - The result is stored as a secret event.
 
 ### 11.3 Sheriff check
 
-- If the Sheriff is active, show `SHERIFF CHECK`.
+- If the Sheriff is eligible for this night, show `SHERIFF CHECK`.
 - Tap one active target.
 - Host-private result is Mafia-aligned / not Mafia-aligned.
 - The result is stored as a secret event.
@@ -280,8 +283,8 @@ SETUP_PLAYERS
   → DAY_TURNS
   → VOTING (when candidates exist)
   → NIGHT_MAFIA_SHOTS
-  → NIGHT_DON_CHECK (when Don active)
-  → NIGHT_SHERIFF_CHECK (when Sheriff active)
+  → NIGHT_DON_CHECK (when Don eligible this night)
+  → NIGHT_SHERIFF_CHECK (when Sheriff eligible this night)
   → NIGHT_RESOLUTION
   → DAY_TURNS ...
   → FINISHED
@@ -301,6 +304,8 @@ Cross-cutting UI state: local running timer, privacy shield, YouTube playback st
 - Faint timer audio has a visible equivalent and a test button.
 
 ## 16. Product decisions and implementation gaps
+
+The setup durability/back-navigation, full-volume playback, foul/mute, opening-seat, and same-night eligibility decisions above were accepted in [#45](https://github.com/zemskovmm/mafia-dashboard/issues/45), [#46](https://github.com/zemskovmm/mafia-dashboard/issues/46), [#47](https://github.com/zemskovmm/mafia-dashboard/issues/47), [#49](https://github.com/zemskovmm/mafia-dashboard/issues/49), [#50](https://github.com/zemskovmm/mafia-dashboard/issues/50), [#51](https://github.com/zemskovmm/mafia-dashboard/issues/51), and [#54](https://github.com/zemskovmm/mafia-dashboard/issues/54). Browser ownership, club claims, snapshot authority, and current-only data support are specified in [ADR 0001](adr/0001-typescript-modular-monolith.md#current-data-support-and-ownership-boundaries).
 
 Implemented and accepted behavior includes the current 2-second fade-in, 500-millisecond quick fade-out, 3-second slow fade-out, faint ten-second warning chime, no final speech after a red card, the tie-vote flow in `rules.md`, and complete English/Russian localization of every host-facing surface. Before a club is opened, the portal follows the browser language (`ru` locales use Russian; all others use English). Language is then controlled by the club: existing clubs migrate to English, new clubs default from the creator's browser, owners and managers/editors can change it, and an accepted change applies immediately without altering an active game.
 
