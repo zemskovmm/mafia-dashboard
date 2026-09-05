@@ -1,5 +1,6 @@
 /* global URL */
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFile, readdir } from "node:fs/promises";
 import { test } from "node:test";
 
@@ -84,6 +85,78 @@ test("Azure publishes an immutable image and deploys its verified digest with le
   assert.match(deploy, /--revision "\$failed_revision"/);
   assert.match(deploy, /--container migrate/);
   assert.doesNotMatch(deploy, /image="ghcr\.io\/\$\{GITHUB_REPOSITORY\}:\$\{GITHUB_SHA\}"/);
+});
+
+test("Azure passes one explicit database target through every deployment path", async () => {
+  const [workflow, template] = await Promise.all([
+    read(".github/workflows/deploy-azure.yml"),
+    read("infra/main.bicep"),
+  ]);
+
+  assert.match(workflow, /AZURE_DATABASE_NAME: \$\{\{ vars\.AZURE_DATABASE_NAME \}\}/);
+  const invocations = workflow.match(
+    /az deployment group (?:validate|create)[\s\S]*?--output (?:none|json)/g,
+  );
+  assert.equal(invocations?.length, 3);
+  for (const invocation of invocations) {
+    assert.match(invocation, /databaseName="\$AZURE_DATABASE_NAME"/);
+  }
+  assert.match(template, /@minLength\(1\)\s+@maxLength\(63\)\s+param databaseName string\s*\n/);
+  assert.doesNotMatch(template, /(?:var|param) databaseName[^\n]*=/);
+  assert.match(template, /parent: postgres\s+name: databaseName/);
+  assert.match(template, /5432\/\$\{databaseName\}\?sslmode=verify-full/);
+  assert.match(template, /output deployedDatabaseName string = database.name/);
+  assert.match(workflow, /\.deployedDatabaseName\.value/);
+  assert.match(workflow, /echo "- Database:.*steps\.foundation\.outputs\.database_name/);
+});
+
+test("Azure rejects missing or unsafe database names before resource mutation", async () => {
+  const source = await read(".github/workflows/deploy-azure.yml");
+  const start = source.indexOf("      - name: Validate deployment inputs\n");
+  const end = source.indexOf("      - name: Create resource group\n", start);
+  assert.ok(start >= 0 && end > start);
+  const block = source.slice(start, end).split("        run: |\n")[1];
+  assert.ok(block);
+  const script = block.replace(/^ {10}/gm, "");
+  const environment = {
+    AZURE_RESOURCE_GROUP: "test-group",
+    AZURE_LOCATION: "northeurope",
+    AZURE_NAME_PREFIX: "testapp",
+    GHCR_USERNAME: "testuser",
+    GHCR_TOKEN: "test-fixture-token",
+    POSTGRES_PASSWORD: "test-fixture-password",
+  };
+  for (const name of [
+    undefined,
+    "",
+    " ",
+    "Uppercase",
+    "1name",
+    "a-b",
+    "a/b",
+    "a?b",
+    "a\nb",
+    "a".repeat(64),
+    "$(exit 0)",
+  ]) {
+    const result = spawnSync("/bin/bash", ["-c", script], {
+      env: { ...environment, ...(name === undefined ? {} : { AZURE_DATABASE_NAME: name }) },
+      encoding: "utf8",
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 1, `must reject ${JSON.stringify(name)}`);
+    assert.match(result.stderr, /AZURE_DATABASE_NAME/);
+    assert.doesNotMatch(result.stdout + result.stderr, /test-fixture/);
+  }
+  for (const name of ["a", "mafia_current_20260905", "a".repeat(63)]) {
+    const result = spawnSync("/bin/bash", ["-c", script], {
+      env: { ...environment, AZURE_DATABASE_NAME: name },
+      encoding: "utf8",
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, `must accept ${name}`);
+    assert.equal(result.stdout + result.stderr, "");
+  }
 });
 
 test("ESLint loads repository-owned security rules", async () => {

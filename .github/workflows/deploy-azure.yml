@@ -92,6 +92,7 @@ jobs:
       AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
       AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
       AZURE_NAME_PREFIX: ${{ vars.AZURE_NAME_PREFIX }}
+      AZURE_DATABASE_NAME: ${{ vars.AZURE_DATABASE_NAME }}
       GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
       GHCR_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
       POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
@@ -112,6 +113,11 @@ jobs:
           : "${AZURE_RESOURCE_GROUP:?Missing AZURE_RESOURCE_GROUP}"
           : "${AZURE_LOCATION:?Missing AZURE_LOCATION}"
           : "${AZURE_NAME_PREFIX:?Missing AZURE_NAME_PREFIX}"
+          : "${AZURE_DATABASE_NAME:?Missing AZURE_DATABASE_NAME}"
+          if [[ ! "$AZURE_DATABASE_NAME" =~ ^[a-z][a-z0-9_]{0,62}$ ]]; then
+            echo "AZURE_DATABASE_NAME must be 1-63 lowercase letters, digits, or underscores, starting with a letter" >&2
+            exit 1
+          fi
           : "${GHCR_USERNAME:?Missing GHCR_USERNAME}"
           : "${GHCR_TOKEN:?Missing GHCR_PULL_TOKEN}"
           : "${POSTGRES_PASSWORD:?Missing POSTGRES_PASSWORD}"
@@ -129,6 +135,7 @@ jobs:
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --template-file infra/main.bicep \
             --parameters \
+              databaseName="$AZURE_DATABASE_NAME" \
               location="$AZURE_LOCATION" \
               namePrefix="$AZURE_NAME_PREFIX" \
               deployApp=false \
@@ -149,6 +156,7 @@ jobs:
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --template-file infra/main.bicep \
             --parameters \
+              databaseName="$AZURE_DATABASE_NAME" \
               location="$AZURE_LOCATION" \
               namePrefix="$AZURE_NAME_PREFIX" \
               deployApp=false \
@@ -161,7 +169,10 @@ jobs:
             --query properties.outputs \
             --output json)
           app_name=$(jq -r '.containerAppName.value' <<<"$outputs")
+          database_name=$(jq -er '.deployedDatabaseName.value' <<<"$outputs")
+          [[ "$database_name" == "$AZURE_DATABASE_NAME" ]]
           echo "app_name=$app_name" >> "$GITHUB_OUTPUT"
+          echo "database_name=$database_name" >> "$GITHUB_OUTPUT"
       - name: Deploy application
         id: app
         shell: bash
@@ -187,6 +198,7 @@ jobs:
                 location="$AZURE_LOCATION" \
                 namePrefix="$AZURE_NAME_PREFIX" \
                 deployApp=true \
+                databaseName="$AZURE_DATABASE_NAME" \
                 image="$image" \
                 publicAppUrl="$1" \
                 postgresPassword="$POSTGRES_PASSWORD" \
@@ -212,6 +224,7 @@ jobs:
             echo "### Azure deployment"
             echo "- Image: \`$image\`"
             echo "- URL: $public_url"
+            echo "- Database: ${{ steps.foundation.outputs.database_name }}"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Verify Azure deployment
         shell: bash

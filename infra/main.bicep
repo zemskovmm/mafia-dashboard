@@ -28,11 +28,16 @@ param postgresPassword string
 
 param postgresAdminUser string = 'mafiaadmin'
 
+@description('Explicit target database; use a new name for an approved current-only cutover.')
+@minLength(1)
+@maxLength(63)
+param databaseName string
+
 var uniqueSuffix = uniqueString(subscription().id, resourceGroup().id)
 var postgresServerName = take('${namePrefix}-pg-${uniqueSuffix}', 63)
 var environmentName = '${namePrefix}-env'
 var appName = '${namePrefix}-app'
-var databaseName = 'mafia'
+
 var privateDnsZoneName = '${uniqueSuffix}.postgres.database.azure.com'
 var encodedPostgresPassword = uriComponent(postgresPassword)
 var databaseUrl = 'postgresql://${postgresAdminUser}:${encodedPostgresPassword}@${postgres.properties.fullyQualifiedDomainName}:5432/${databaseName}?sslmode=verify-full'
@@ -372,6 +377,7 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = if (deployApp) {
 }
 
 output postgresServerName string = postgres.name
+output deployedDatabaseName string = database.name
 output containerAppName string = appName
 output appFqdn string = deployApp ? app!.properties.configuration.ingress.fqdn : ''
 output publicUrl string = deployApp ? 'https://${app!.properties.configuration.ingress.fqdn}' : ''

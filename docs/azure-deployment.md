@@ -21,8 +21,11 @@ The `production` environment must contain these variables:
 - `AZURE_RESOURCE_GROUP`
 - `AZURE_LOCATION`
 - `AZURE_NAME_PREFIX`
+- `AZURE_DATABASE_NAME` (required explicit target, for example `mafia_current_20260905`)
 - `GHCR_USERNAME`
 - `AZURE_DEPLOY_ENABLED=true`
+
+`AZURE_DATABASE_NAME` is a non-secret deployment identity: 1–63 lowercase letters, digits, or underscores, beginning with a letter. There is no fallback database name. All Bicep validation, foundation, and application paths receive the same target; the workflow verifies the foundation's database-name output and includes it in the deployment summary. Direct Bicep callers must also supply `databaseName` explicitly and follow the same naming rule.
 
 It must contain these secrets:
 
@@ -71,6 +74,21 @@ On initial provisioning, the workflow can update the Container App once more aft
 
 Manual deployment is available from **Actions → Deploy Azure → Run workflow**.
 
+## Fresh current-only database cutover
+
+This is an explicitly approved data reset, not an upgrade. The selected cutover deliberately omits backup creation, restore verification, a PITR server, a production write freeze, and rollback preparation. Existing platform backup settings remain unchanged, but recoverability is not verified or promised.
+
+The new database contains only current DDL and bootstrap seeds. Existing users, clubs, players, sessions, games, and OAuth connections are not copied. Old sessions become invalid; users sign in again, create clubs, and reconnect music as needed. Writes accepted by the old app during cutover are not carried forward and will be lost when the old database is deleted. The Container App hostname and Google callback URLs remain unchanged. Shared-secret updates and revision activation may interrupt service; zero downtime is not promised.
+
+1. Obtain explicit approval for publishing, deploying, and deleting the old database after acceptance. Confirm Azure access and the exact subscription, resource group, PostgreSQL server, app, old database, and distinct never-used new database name. Do not read credentials into logs.
+2. Before pushing, pause automatic deployment using `AZURE_DEPLOY_ENABLED=false` at the scopes supplying the workflow's job conditions, including any repository/organization-level value; read back the effective configuration and check that no deployment is already in flight. A production-environment variable alone must not be assumed to gate jobs before environment initialization. Manual dispatch with `deploy=true` bypasses this automatic-deployment switch. Do not freeze application writes.
+3. Qualify and publish the scoped change, verify the remote SHA, then set and read back production `AZURE_DATABASE_NAME` to the new name. Keep automatic deployment paused while checking inputs. The existing incremental ARM deployment creates/selects the named database on the same server; it does **not** delete the old database.
+4. Dispatch the qualified ref with deployment enabled. Record the run's actual pushed digest and verify that the deployed init and app containers use it. Rebuilding the same SHA is not proof of an identical artifact. Require migration success, a healthy serving revision, and `/health/live`, `/health/ready`, and `/health/version` matching the expected commit.
+5. Verify both containers target the new database without exposing the connection string. At the unchanged origin, verify rejection of an old session, fresh Google sign-in, club creation/isolation, and a current-format game save/reload. Confirm historical records were not copied and clean up only verifier-owned data. If any acceptance check fails or cannot be completed, stop with the old database undeleted; do not improvise rollback.
+6. After acceptance passes, deactivate obsolete revisions and verify only the new healthy revision can serve traffic. Old revisions must not restart against changed app-level secrets.
+7. Immediately before deletion, re-read the exact server, old database `mafia`, new database, and active app target. Require old and new names to differ and the app to use the verified new database. Delete only the old database resource—never the server, resource group, or a wildcard. Stop on uncertain identity or connections rather than forcing a broad cleanup.
+8. Read back database resources: the old database must be absent and the new one present. Recheck health, exact version, and current-game persistence after deletion. Report verified results and restore the intended automatic-deployment setting only when the target is correct. No old-database retention or rollback guarantee applies to this cutover.
+
 ## Trusted ingress and authentication limiting
 
 Azure Container Apps managed HTTPS ingress is the only public route to the application container. The deployment therefore sets `TRUST_PROXY_HOPS=1`: Fastify uses the rightmost `X-Forwarded-For` address supplied by that single ingress for the authentication-attempt limiter. [Container Apps documents](https://learn.microsoft.com/azure/container-apps/ingress-overview#http-headers) that ingress appends the request sender and that only this rightmost address is supplied by Container Apps; caller-controlled values to its left are not trusted.
@@ -101,13 +119,15 @@ az bicep build --file infra/main.bicep
 az deployment group validate \
   --resource-group <resource-group> \
   --template-file infra/main.bicep \
-  --parameters deployApp=false postgresPassword='<redacted>'
+  --parameters deployApp=false databaseName='<explicit-database-name>' postgresPassword='<redacted>'
 actionlint .github/workflows/deploy-azure.yml
 ```
 
 Never commit deployment parameter files containing real passwords or OAuth secrets.
 
 ## Rollback
+
+The fresh cutover above intentionally has no planned rollback and deletes its old database after verification. The general guidance below is not a recovery guarantee for that reset.
 
 The publish job uses the full Git SHA as a traceable GHCR tag, captures and verifies the pushed manifest digest, and deploys Azure from `ghcr.io/...@sha256:<digest>`. Record the deployed digest with the release evidence. To roll back, redeploy the previous known-good digest; rerunning an old commit creates a new artifact and is not an artifact-identical rollback. Do not delete manifests referenced by healthy or rollback-eligible revisions.
 
