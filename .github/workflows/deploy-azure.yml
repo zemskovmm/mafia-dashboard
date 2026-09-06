@@ -9,6 +9,10 @@ on:
         description: Deploy after publishing
         type: boolean
         default: true
+      deploy_infrastructure:
+        description: Force infrastructure deployment (otherwise detect changes automatically)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -89,6 +93,7 @@ jobs:
       id-token: write
     env:
       DEPLOY_IMAGE: ${{ needs.publish.outputs.image }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
       AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
       AZURE_NAME_PREFIX: ${{ vars.AZURE_NAME_PREFIX }}
@@ -121,16 +126,24 @@ jobs:
           : "${GHCR_USERNAME:?Missing GHCR_USERNAME}"
           : "${GHCR_TOKEN:?Missing GHCR_PULL_TOKEN}"
           : "${POSTGRES_PASSWORD:?Missing POSTGRES_PASSWORD}"
+      - name: Select infrastructure deployment
+        id: plan
+        env:
+          DEPLOY_INFRASTRUCTURE: ${{ inputs.deploy_infrastructure == true }}
+        run: node scripts/azure-deployment-plan.mjs
       - name: Create resource group
+        if: steps.plan.outputs.deploy == 'true'
         run: >-
           az group create
           --name "$AZURE_RESOURCE_GROUP"
           --location "$AZURE_LOCATION"
           --output none
-      - name: Validate Bicep
+      - name: Validate foundation
+        if: steps.plan.outputs.deploy == 'true'
+        env:
+          FOUNDATION_FINGERPRINT: ${{ steps.plan.outputs.fingerprint }}
         run: |
           set -Eeuo pipefail
-          az bicep build --file infra/main.bicep
           az deployment group validate \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --template-file infra/main.bicep \
@@ -138,47 +151,43 @@ jobs:
               databaseName="$AZURE_DATABASE_NAME" \
               location="$AZURE_LOCATION" \
               namePrefix="$AZURE_NAME_PREFIX" \
-              deployApp=false \
+              foundationFingerprint="$FOUNDATION_FINGERPRINT" \
               postgresPassword="$POSTGRES_PASSWORD" \
-              ghcrUsername="$GHCR_USERNAME" \
-              ghcrToken="$GHCR_TOKEN" \
-              googleClientId="$GOOGLE_CLIENT_ID" \
-              googleClientSecret="$GOOGLE_CLIENT_SECRET" \
-              musicTokenEncryptionKey="$MUSIC_TOKEN_ENCRYPTION_KEY" \
             --output none
       - name: Deploy foundation
         id: foundation
+        if: steps.plan.outputs.deploy == 'true'
+        env:
+          FOUNDATION_FINGERPRINT: ${{ steps.plan.outputs.fingerprint }}
         shell: bash
         run: |
           set -Eeuo pipefail
           outputs=$(az deployment group create \
-            --name "mafia-foundation-${GITHUB_RUN_ID}" \
+            --name "mafia-foundation" \
+            --mode Incremental \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --template-file infra/main.bicep \
             --parameters \
               databaseName="$AZURE_DATABASE_NAME" \
               location="$AZURE_LOCATION" \
               namePrefix="$AZURE_NAME_PREFIX" \
-              deployApp=false \
+              foundationFingerprint="$FOUNDATION_FINGERPRINT" \
               postgresPassword="$POSTGRES_PASSWORD" \
-              ghcrUsername="$GHCR_USERNAME" \
-              ghcrToken="$GHCR_TOKEN" \
-              googleClientId="$GOOGLE_CLIENT_ID" \
-              googleClientSecret="$GOOGLE_CLIENT_SECRET" \
-              musicTokenEncryptionKey="$MUSIC_TOKEN_ENCRYPTION_KEY" \
             --query properties.outputs \
             --output json)
-          app_name=$(jq -r '.containerAppName.value' <<<"$outputs")
           database_name=$(jq -er '.deployedDatabaseName.value' <<<"$outputs")
           [[ "$database_name" == "$AZURE_DATABASE_NAME" ]]
-          echo "app_name=$app_name" >> "$GITHUB_OUTPUT"
-          echo "database_name=$database_name" >> "$GITHUB_OUTPUT"
+          jq --exit-status --arg fingerprint "$FOUNDATION_FINGERPRINT" \
+            '.foundationFingerprint.value == $fingerprint' <<<"$outputs" >/dev/null
       - name: Deploy application
         id: app
+        env:
+          APP_NAME: ${{ steps.plan.outputs.app_name }}
+          FOUNDATION_REASON: ${{ steps.plan.outputs.reason }}
         shell: bash
         run: |
           set -Eeuo pipefail
-          app_name='${{ steps.foundation.outputs.app_name }}'
+          app_name="$APP_NAME"
           image="$DEPLOY_IMAGE"
           existing_fqdn=$(az containerapp show \
             --resource-group "$AZURE_RESOURCE_GROUP" \
@@ -192,12 +201,12 @@ jobs:
           deploy() {
             az deployment group create \
               --name "mafia-app-${GITHUB_RUN_ID}" \
+              --mode Incremental \
               --resource-group "$AZURE_RESOURCE_GROUP" \
-              --template-file infra/main.bicep \
+              --template-file infra/app.bicep \
               --parameters \
                 location="$AZURE_LOCATION" \
                 namePrefix="$AZURE_NAME_PREFIX" \
-                deployApp=true \
                 databaseName="$AZURE_DATABASE_NAME" \
                 image="$image" \
                 publicAppUrl="$1" \
@@ -224,22 +233,29 @@ jobs:
             echo "### Azure deployment"
             echo "- Image: \`$image\`"
             echo "- URL: $public_url"
-            echo "- Database: ${{ steps.foundation.outputs.database_name }}"
+            echo "- Database: ${{ steps.plan.outputs.database_name }}"
+            echo "- Infrastructure: $FOUNDATION_REASON"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Verify Azure deployment
+        env:
+          APP_NAME: ${{ steps.plan.outputs.app_name }}
         shell: bash
         run: |
           set -Eeuo pipefail
-          app_name='${{ steps.foundation.outputs.app_name }}'
-          az containerapp show \
+          app_name="$APP_NAME"
+          configuration=$(az containerapp show \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --name "$app_name" \
-            --query '{provisioningState:properties.provisioningState,minReplicas:properties.template.scale.minReplicas,maxReplicas:properties.template.scale.maxReplicas,targetPort:properties.configuration.ingress.targetPort}' \
-            --output json
+            --query '{provisioningState:properties.provisioningState,minReplicas:properties.template.scale.minReplicas,maxReplicas:properties.template.scale.maxReplicas,targetPort:properties.configuration.ingress.targetPort,image:properties.template.containers[0].image,initImage:properties.template.initContainers[0].image}' \
+            --output json)
+          jq --exit-status --arg image "$DEPLOY_IMAGE" \
+            '.provisioningState == "Succeeded" and .minReplicas == 1 and .maxReplicas == 1 and .targetPort == 3000 and .image == $image and .initImage == $image' \
+            <<<"$configuration" >/dev/null
+          printf '%s\n' "$configuration"
           for _ in $(seq 1 30); do
-            if curl --fail --silent --show-error \
+            if curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
               "${{ steps.app.outputs.public_url }}/health/ready" >/dev/null; then
-              identity=$(curl --fail --silent --show-error \
+              identity=$(curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
                 "${{ steps.app.outputs.public_url }}/health/version" 2>/dev/null || true)
               if [[ -n "$identity" ]] && jq --exit-status --arg commit "$GITHUB_SHA" \
                 '.commit == $commit and (.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' \

@@ -88,9 +88,10 @@ test("Azure publishes an immutable image and deploys its verified digest with le
 });
 
 test("Azure passes one explicit database target through every deployment path", async () => {
-  const [workflow, template] = await Promise.all([
+  const [workflow, template, app] = await Promise.all([
     read(".github/workflows/deploy-azure.yml"),
     read("infra/main.bicep"),
+    read("infra/app.bicep"),
   ]);
 
   assert.match(workflow, /AZURE_DATABASE_NAME: \$\{\{ vars\.AZURE_DATABASE_NAME \}\}/);
@@ -104,16 +105,48 @@ test("Azure passes one explicit database target through every deployment path", 
   assert.match(template, /@minLength\(1\)\s+@maxLength\(63\)\s+param databaseName string\s*\n/);
   assert.doesNotMatch(template, /(?:var|param) databaseName[^\n]*=/);
   assert.match(template, /parent: postgres\s+name: databaseName/);
-  assert.match(template, /5432\/\$\{databaseName\}\?sslmode=verify-full/);
+  assert.match(app, /5432\/\$\{database\.name\}\?sslmode=verify-full/);
+  assert.match(app, /@minLength\(1\)\s+@maxLength\(63\)\s+param databaseName string\s*\n/);
+  assert.doesNotMatch(app, /(?:var|param) databaseName[^\n]*=/);
   assert.match(template, /output deployedDatabaseName string = database.name/);
   assert.match(workflow, /\.deployedDatabaseName\.value/);
-  assert.match(workflow, /echo "- Database:.*steps\.foundation\.outputs\.database_name/);
+  assert.match(workflow, /echo "- Database:.*steps\.plan\.outputs\.database_name/);
+});
+
+test("Azure applies foundation conditionally and application separately", async () => {
+  const source = await read(".github/workflows/deploy-azure.yml");
+  assert.match(
+    source,
+    /deploy_infrastructure:\n\s+description: [^\n]+\n\s+type: boolean\n\s+default: false/,
+  );
+  assert.match(source, /concurrency:\n\s+group: azure-production\n\s+cancel-in-progress: false/);
+  assert.match(source, /github.event_name == 'workflow_dispatch' && inputs.deploy/);
+  assert.match(source, /node scripts\/azure-deployment-plan.mjs/);
+  for (const name of ["Create resource group", "Validate foundation", "Deploy foundation"]) {
+    const step = source.slice(source.indexOf(`      - name: ${name}\n`)).split(/\n {6}- /)[0];
+    assert.match(step, /if: steps\.plan\.outputs\.deploy == 'true'/, name);
+  }
+  const foundation = source.slice(
+    source.indexOf("      - name: Deploy foundation\n"),
+    source.indexOf("      - name: Deploy application\n"),
+  );
+  assert.match(foundation, /--name "mafia-foundation"/);
+  assert.match(foundation, /foundationFingerprint="\$FOUNDATION_FINGERPRINT"/);
+  assert.match(foundation, /--mode Incremental/);
+  const app = source.slice(
+    source.indexOf("      - name: Deploy application\n"),
+    source.indexOf("      - name: Verify Azure deployment\n"),
+  );
+  assert.match(app, /--template-file infra\/app.bicep/);
+  assert.match(app, /--mode Incremental/);
+  assert.doesNotMatch(app, /--template-file infra\/main.bicep|deployApp=/);
+  assert.doesNotMatch(source, /deployApp=|--mode Complete/);
 });
 
 test("Azure rejects missing or unsafe database names before resource mutation", async () => {
   const source = await read(".github/workflows/deploy-azure.yml");
   const start = source.indexOf("      - name: Validate deployment inputs\n");
-  const end = source.indexOf("      - name: Create resource group\n", start);
+  const end = source.indexOf("      - name: Select infrastructure deployment\n", start);
   assert.ok(start >= 0 && end > start);
   const block = source.slice(start, end).split("        run: |\n")[1];
   assert.ok(block);

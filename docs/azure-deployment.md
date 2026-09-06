@@ -1,15 +1,15 @@
 # Azure deployment
 
-Mafia Dashboard deploys to Azure Container Apps from `.github/workflows/deploy-azure.yml` using Azure OIDC. The deployment is single-region and intentionally low-cost:
+Mafia Dashboard deploys to Azure Container Apps from `.github/workflows/deploy-azure.yml` using Azure OIDC. The deployment is a single-region, single-replica pilot topology:
 
 The production workflow bakes the full Git SHA into the image and exposes it with the package version at `/health/version`. Use the [v1.0.0 release checklist](releases/v1.0.0.md) for exact-candidate qualification and evidence requirements.
 
-- Azure Container Apps Consumption, 0.5 vCPU / 1 GiB, 0–1 replicas
+- Azure Container Apps Consumption, 0.5 vCPU / 1 GiB, exactly 1 always-warm replica
 - Azure Database for PostgreSQL Flexible Server 17, private VNet access, B1ms, 32 GiB, 7-day backups
 - private immutable images in GitHub Container Registry
 - no Azure Files, storage account, Dapr, Redis, NAT Gateway, or retained Log Analytics workspace
 
-Expected baseline is approximately **US$19.41/month** before tax, domain, egress, or excess Container Apps usage. B1ms and a single app/database are pilot-grade, not HA.
+There is no fixed all-in monthly estimate. Azure bills Container Apps per second; a minimum replica is charged at the reduced idle rate only while it is inactive, and at the active rate while starting or processing work. The public North Europe pay-as-you-go feed currently lists Standard idle usage at **US$0.000003 per vCPU-second** and **US$0.000003 per GiB-second**. Actual cost depends on active time, request volume, the subscription-wide free grant, PostgreSQL usage, storage/backup, egress, tax, and price changes. See the [Azure Container Apps pricing page](https://azure.microsoft.com/en-us/pricing/details/container-apps/) and the [North Europe retail-price feed](https://prices.azure.com/api/retail/prices?%24filter=serviceName%20eq%20%27Azure%20Container%20Apps%27%20and%20armRegionName%20eq%20%27northeurope%27). B1ms and a single app/database are pilot-grade, not HA.
 
 ## GitHub production environment
 
@@ -64,15 +64,26 @@ The Azure workflow:
 1. builds and publishes `ghcr.io/zemskovmm/mafia-dashboard:<full-git-sha>` for Linux `amd64`;
 2. verifies the published digest and passes that immutable reference to deployment;
 3. logs into Azure using GitHub OIDC;
-4. deploys the private network, PostgreSQL, and Container Apps environment;
-5. deploys a revision containing that immutable image as both a migration init container and the web container;
-6. requires the init migration to complete before the revision's web container starts;
-7. discovers the generated Container Apps HTTPS hostname and applies it as `PUBLIC_APP_URL`;
-8. verifies the Container App configuration, `/health/ready`, and the deployed commit identity.
+4. selects whether the infrastructure foundation needs deployment;
+5. when required, deploys the private network, PostgreSQL, and Container Apps environment from `infra/main.bicep`;
+6. deploys the Container App from `infra/app.bicep`, containing the immutable image as both a migration init container and the web container;
+7. requires the init migration to complete before the revision's web container starts;
+8. discovers the generated Container Apps HTTPS hostname and applies it as `PUBLIC_APP_URL`;
+9. verifies the Container App configuration, `/health/ready`, and the deployed commit identity.
+
+`infra/main.bicep` owns only the foundation; `infra/app.bicep` owns only the Container App and references the existing foundation identities. Routine application releases therefore do not write network, PostgreSQL, database, or managed-environment resources. The app template keeps `minReplicas: 1` and `maxReplicas: 1`; one running replica avoids scale-to-zero cold starts but is not high availability.
+
+Foundation selection uses a deterministic, non-secret fingerprint over sorted deployment-file paths and contents (all `infra/` Bicep files, the deployment workflow, and the deployment-selection helper) and the explicit target context: subscription, resource group, location, name prefix, and database name. The workflow stores this fingerprint through the successful, stable ARM deployment record named `mafia-foundation`. It reuses that record only when it succeeded, its fingerprint and non-secret target outputs match, and the required foundation resources still exist. A missing or unsuccessful record, changed or unrecorded fingerprint, or missing resource applies the foundation. A matching fingerprint with invalid target outputs or resource IDs fails closed, as do authorization, network, and malformed-response errors. A fingerprint detects represented changes, not all out-of-band drift.
 
 On initial provisioning, the workflow can update the Container App once more after Azure has generated the HTTPS hostname so the final revision receives the canonical `PUBLIC_APP_URL`.
 
 Manual deployment is available from **Actions → Deploy Azure → Run workflow**.
+
+- `deploy=true` (the default) publishes and deploys the application. `deploy_infrastructure=false` (the default) means automatic foundation detection, not “never deploy foundation.”
+- `deploy_infrastructure=true` forces the foundation apply. Use it for deliberate drift reconciliation and secret rotation, because secrets are intentionally excluded from the fingerprint.
+- `deploy=false` is publish-only: it performs no Azure deployment regardless of `deploy_infrastructure`.
+
+Foundation and application deployment remain serialized in the existing workflow and production concurrency group. A failed foundation is never recorded as applied and blocks the application deployment; retry after correcting the failure. For an app-only release, the workflow resolves and validates the existing foundation identities and explicit database target before applying the app template.
 
 ## Fresh current-only database cutover
 
@@ -93,7 +104,7 @@ The new database contains only current DDL and bootstrap seeds. Existing users, 
 
 Azure Container Apps managed HTTPS ingress is the only public route to the application container. The deployment therefore sets `TRUST_PROXY_HOPS=1`: Fastify uses the rightmost `X-Forwarded-For` address supplied by that single ingress for the authentication-attempt limiter. [Container Apps documents](https://learn.microsoft.com/azure/container-apps/ingress-overview#http-headers) that ingress appends the request sender and that only this rightmost address is supplied by Container Apps; caller-controlled values to its left are not trusted.
 
-Do not replace this with unbounded proxy trust. Adding Front Door, a CDN, or another ingress changes the hop model and requires a separately validated policy before deployment. The limiter remains in-process and supports the current 0–1 replica configuration only.
+Do not replace this with unbounded proxy trust. Adding Front Door, a CDN, or another ingress changes the hop model and requires a separately validated policy before deployment. The limiter remains in-process and supports the current single-replica configuration only.
 
 ## Workflow boundaries
 
@@ -120,10 +131,11 @@ Until those exact URLs are authorized by Google, the Azure application is health
 npm run check
 npm run verify:compose
 az bicep build --file infra/main.bicep
+az bicep build --file infra/app.bicep
 az deployment group validate \
   --resource-group <resource-group> \
   --template-file infra/main.bicep \
-  --parameters deployApp=false databaseName='<explicit-database-name>' postgresPassword='<redacted>'
+  --parameters databaseName='<explicit-database-name>' postgresPassword='<redacted>'
 actionlint .github/workflows/deploy-azure.yml
 ```
 
@@ -133,7 +145,9 @@ Never commit deployment parameter files containing real passwords or OAuth secre
 
 The fresh cutover above intentionally has no planned rollback and deletes its old database after verification. The general guidance below is not a recovery guarantee for that reset.
 
-The publish job uses the full Git SHA as a traceable GHCR tag, captures and verifies the pushed manifest digest, and deploys Azure from `ghcr.io/...@sha256:<digest>`. Record the deployed digest with the release evidence. To roll back, redeploy the previous known-good digest; rerunning an old commit creates a new artifact and is not an artifact-identical rollback. Do not delete manifests referenced by healthy or rollback-eligible revisions.
+The publish job uses the full Git SHA as a traceable GHCR tag, captures and verifies the pushed manifest digest, and deploys Azure from `ghcr.io/...@sha256:<digest>`. Record the deployed digest with the release evidence. To roll back an application release, redeploy the previous known-good digest through `infra/app.bicep`; rerunning an old commit creates a new artifact and is not an artifact-identical rollback. Do not delete manifests referenced by healthy or rollback-eligible revisions.
+
+Reverting a foundation template or non-secret target input changes the fingerprint and re-applies the foundation. Manual `deploy_infrastructure=true` is for an intentional reconciliation, not a full drift detector or a database rollback. Do not use an app rollback to restore, rename, or delete PostgreSQL resources.
 
 Each revision runs the advisory-locked, transaction-protected schema initialization container before the app container. Only an empty database or the current schema with current-format rows is supported. Historical upgrades and backfills are not provided, and an unsupported schema prevents the revision from becoming ready without repairing or deleting existing data. Independently verify the database contract before selecting a rollback image; a previous digest is not automatically compatible.
 
