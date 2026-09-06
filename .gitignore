@@ -17,3 +17,18 @@ test-results/
 # Local database and container state
 postgres-data/
 backups/
+
+# Local AI evidence and snapshots; active plans and reports remain trackable.
+/.AI/azure-template-contracts/
+/.AI/card-fire/
+/.AI/deployment-verification/
+/.AI/fire-samples/
+/.AI/ipad-layout/
+/.AI/lighting-polish/
+/.AI/lighting-visuals/
+/.AI/local-backend/
+/.AI/local-tooling-commit/
+/.AI/turbulent-card-fire/
+/.AI/ui-release/
+/.AI/local-history/
+/.AI/artifact-housekeeping/
