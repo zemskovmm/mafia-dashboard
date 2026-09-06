@@ -285,18 +285,26 @@ describe("NightStage", () => {
     expect(screen.queryByRole("button", { name: /red card|foul/i })).toBeNull();
     expect(screen.getByRole("button", { name: `Don check ${don.name}` })).toHaveClass(
       "status-eliminated",
+      "is-night-check-highlight",
     );
     await user.click(screen.getByRole("button", { name: `Don check ${target.name}` }));
     expect(screen.getByText("Not the Sheriff")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: `Seat ${don.seat}: ${don.name}` })).not.toHaveClass(
+      "is-night-check-highlight",
+    );
     await user.click(screen.getByRole("button", { name: /proceed to sheriff check/i }));
 
     expect(screen.getByRole("button", { name: `Sheriff check ${target.name}` })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Skip Sheriff check" })).toBeEnabled();
     expect(screen.getByRole("button", { name: `Sheriff check ${sheriff.name}` })).toHaveClass(
       "status-eliminated",
+      "is-night-check-highlight",
     );
     await user.click(screen.getByRole("button", { name: `Sheriff check ${target.name}` }));
     expect(screen.getByText("Not Mafia")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: `Seat ${sheriff.seat}: ${sheriff.name}` }),
+    ).not.toHaveClass("is-night-check-highlight");
   });
 
   it("logs Mafia moves only when shots are evaluated", async () => {

@@ -27,6 +27,7 @@
     "verify:backup": "node scripts/verify-postgres-backup.mjs",
     "verify:session": "node scripts/verify-session-state.mjs",
     "verify:ui": "node scripts/verify-ui.mjs",
+    "verify:night-check-glow": "node scripts/verify-night-check-glow.mjs",
     "verify:ui-hardening": "node scripts/verify-ui-hardening.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "eslint . --max-warnings=0",

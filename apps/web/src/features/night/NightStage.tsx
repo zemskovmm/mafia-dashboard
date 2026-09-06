@@ -195,6 +195,7 @@ export const NightStage = ({
         seats={game.players.map((player) => ({
           ...player,
           mafiaShooter: donEligible && player.role === "don",
+          nightCheckHighlight: donEligible && player.role === "don",
         }))}
         seatActionLabel={
           donEligible ? (seat) => t("night.donCheckTarget", { name: seat.name }) : undefined
@@ -295,6 +296,7 @@ export const NightStage = ({
         seats={game.players.map((player) => ({
           ...player,
           sheriffHighlight: sheriffEligible && player.role === "sheriff",
+          nightCheckHighlight: sheriffEligible && player.role === "sheriff",
         }))}
         seatActionLabel={
           sheriffEligible ? (seat) => t("night.sheriffCheckTarget", { name: seat.name }) : undefined

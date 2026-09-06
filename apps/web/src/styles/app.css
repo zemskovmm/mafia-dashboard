@@ -1536,6 +1536,10 @@ h2 {
 .player-seat.status-red-carded {
   border-color: rgb(239 93 104 / 55%);
 }
+.player-seat.is-night-check-highlight {
+  filter: none;
+  opacity: 1;
+}
 button.player-seat.is-voting-highlight {
   z-index: 2;
   filter: none;
