@@ -101,6 +101,54 @@ const setupModule = () => {
 };
 
 describe("VgpuLightingRuntime", () => {
+  it("enables flames only for an explicitly marked player emitter", async () => {
+    const env = setupModule();
+    const runtime = await createVgpuLightingRuntime(env.module, { onError: vi.fn() });
+    for (const fire of [true, false]) {
+      await runtime.register(document.createElement("canvas"), {
+        kind: "player",
+        primary: [1, 0, 0],
+        secondary: [1, 0, 0],
+        fire,
+      }).ready;
+    }
+    expect(env.effects[0]!.set).toHaveBeenLastCalledWith({
+      cfg: expect.objectContaining({ pulse: [1, 0.05, 1, 0] }),
+    });
+    expect(env.effects[1]!.set).toHaveBeenLastCalledWith({
+      cfg: expect.objectContaining({ pulse: [1, 0.05, 0, 0] }),
+    });
+    runtime.dispose();
+  });
+
+  it("updates player pulsing live without rebuilding surfaces or restarting time", async () => {
+    const env = setupModule();
+    const runtime = await createVgpuLightingRuntime(env.module, { onError: vi.fn() });
+    await runtime.register(document.createElement("canvas"), {
+      kind: "player",
+      primary: [1, 0, 0],
+      secondary: [1, 0, 0],
+    }).ready;
+    runtime.setPlayerPulse({ enabled: true, speed: 2, strength: 0.3 });
+    env.loop()?.(env.currentFrame);
+    expect(env.effects[0]!.set).toHaveBeenLastCalledWith({
+      cfg: expect.objectContaining({ pulse: [2, 0.3, 0, 0], time: 2 }),
+    });
+    runtime.setPlayerPulse({ enabled: false, speed: 2, strength: 0.3 });
+    expect(env.effects[0]!.set).toHaveBeenLastCalledWith({
+      cfg: expect.objectContaining({ pulse: [2, 0, 0, 0], time: 2 }),
+    });
+    expect(env.module.surface).toHaveBeenCalledOnce();
+    expect(env.module.effect).toHaveBeenCalledOnce();
+    expect(env.module.frameLoop).toHaveBeenCalledOnce();
+    runtime.setReducedMotion(true);
+    runtime.setPlayerPulse({ enabled: true, speed: 3, strength: 0.5 });
+    expect(env.effects[0]!.set).toHaveBeenLastCalledWith({
+      cfg: expect.objectContaining({ pulse: [3, 0.5, 0, 0], time: 0 }),
+    });
+    runtime.dispose();
+  });
+
   it("keeps padded card geometry in CSS pixels across DPR and reduced-motion resize", async () => {
     const env = setupModule();
     const runtime = await createVgpuLightingRuntime(env.module, { onError: vi.fn() });

@@ -78,7 +78,6 @@ const Harness = () => {
         <div
           className="app-shell game-shell is-table-cycle-night"
           data-lighting-renderer={lighting.effectiveRenderer}
-          data-player-lighting={lighting.playerLightingEnabled ? "enabled" : "disabled"}
           data-vgpu-status={lighting.vgpuStatus}
           data-owner={owner.seat}
           data-other={other.seat}

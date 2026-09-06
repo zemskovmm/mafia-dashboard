@@ -27,6 +27,7 @@ interface SetupWizardProps {
   readonly showDevelopmentTools?: boolean;
   readonly onPopulateDevelopmentPlayers?: () => Promise<readonly PlayerProfile[]>;
   readonly onOpenAvailablePlayers?: () => void;
+  readonly onRoleDrawBackActionChange?: (action: (() => void) | null) => void;
   readonly privacyHidden?: boolean;
 }
 
@@ -262,6 +263,7 @@ export const SetupWizard = ({
   showDevelopmentTools = false,
   onPopulateDevelopmentPlayers,
   onOpenAvailablePlayers,
+  onRoleDrawBackActionChange,
   privacyHidden = false,
 }: SetupWizardProps) => {
   const { t } = useMessages(gameMessages);
@@ -346,14 +348,17 @@ export const SetupWizard = ({
     players.length === 10 &&
     new Set([hostPlayerId, ...selectedPlayerIds.filter(Boolean)]).size === 11;
 
-  const publishSessionState = (nextStep: WizardStep, nextSetup: SetupState | null) => {
-    onSessionStateChange?.({
-      step: nextStep,
-      hostPlayerId,
-      selectedPlayerIds,
-      setup: nextSetup,
-    });
-  };
+  const publishSessionState = useCallback(
+    (nextStep: WizardStep, nextSetup: SetupState | null) => {
+      onSessionStateChange?.({
+        step: nextStep,
+        hostPlayerId,
+        selectedPlayerIds,
+        setup: nextSetup,
+      });
+    },
+    [hostPlayerId, onSessionStateChange, selectedPlayerIds],
+  );
 
   const changeHostPlayer = (nextPlayerId: string) => {
     if (nextPlayerId === hostPlayerId) return;
@@ -451,13 +456,22 @@ export const SetupWizard = ({
     onComplete(game, hostPlayerId, hostPlayer.nickname);
   };
 
-  const returnToPlayerSelection = () => {
+  const returnToPlayerSelection = useCallback(() => {
     setManualRoleSeat(null);
     roleTapState.current = null;
     focusPlayerHeading.current = true;
     setStep("players");
     publishSessionState("players", setup);
-  };
+  }, [publishSessionState, setup]);
+
+  useEffect(() => {
+    if (step !== "roles" || setup === null) {
+      onRoleDrawBackActionChange?.(null);
+      return;
+    }
+    onRoleDrawBackActionChange?.(returnToPlayerSelection);
+    return () => onRoleDrawBackActionChange?.(null);
+  }, [onRoleDrawBackActionChange, returnToPlayerSelection, setup, step]);
 
   if (step === "roles" && setup !== null) {
     return (
@@ -467,13 +481,8 @@ export const SetupWizard = ({
             <p className="eyebrow">{t("setup.firstStage")}</p>
             <h1>{t("setup.roleDraw")}</h1>
           </div>
-          <div className="role-draw-header-actions">
-            <button type="button" className="role-draw-back" onClick={returnToPlayerSelection}>
-              {t("setup.backToPlayerSelection")}
-            </button>
-            <div className="phase-banner">
-              {t("setup.drawRolesRemaining", { count: setup.remainingRoles.length })}
-            </div>
+          <div className="phase-banner">
+            {t("setup.drawRolesRemaining", { count: setup.remainingRoles.length })}
           </div>
         </header>
         <div className="live-layout">

@@ -26,21 +26,36 @@ const ContextActionHarness = () => {
 };
 
 describe("GameTable", () => {
-  it("places the host and ten players in eleven equally spaced circular slots", () => {
+  it("starts the ten-seat orbit at 198 degrees so seats 1 and 10 split the lower edge", () => {
     render(<GameTable seats={seats} hostName="Host Player" />);
 
-    const seatOneAnchor = screen.getByRole("button", { name: "Seat 1: Player 1" }).parentElement;
-    const hostAnchor = screen.getByRole("group", { name: "Host: Host Player" }).parentElement;
+    const playerCards = seats.map((seat, index) => {
+      const card = screen.getByRole("button", { name: `Seat ${seat.seat}: ${seat.name}` });
+      expect(card).toHaveTextContent(String(seat.seat));
+      expect(card.parentElement).toHaveStyle({ "--seat-angle": `${198 + index * 36}deg` });
+      return card;
+    });
 
-    expect(hostAnchor).toHaveStyle({ "--seat-angle": "180deg" });
-    expect(seatOneAnchor).toHaveStyle({ "--seat-angle": `${180 + 360 / 11}deg` });
+    expect(playerCards[0]!.parentElement).toHaveStyle({ "--seat-angle": "198deg" });
+    expect(playerCards[9]!.parentElement).toHaveStyle({ "--seat-angle": "522deg" });
+    expect(document.querySelectorAll(".seat-anchor")).toHaveLength(10);
+    expect(playerCards).toHaveLength(10);
   });
 
-  it("uses the same card footprint for host and players", () => {
-    render(<GameTable seats={seats} hostName="Host Player" />);
+  it("keeps player-seat click actions available on the ten-seat layout", () => {
+    const onSeatClick = vi.fn();
+    const onSeatSwipe = vi.fn();
+    render(<GameTable seats={seats} onSeatClick={onSeatClick} onSeatSwipe={onSeatSwipe} />);
 
-    expect(screen.getByRole("group", { name: "Host: Host Player" })).toHaveClass("table-card");
-    expect(screen.getByRole("button", { name: "Seat 1: Player 1" })).toHaveClass("table-card");
+    fireEvent.click(screen.getByRole("button", { name: "Seat 7: Player 7" }));
+    fireEvent.keyDown(screen.getByRole("button", { name: "Seat 9: Player 9" }), {
+      key: "ContextMenu",
+    });
+
+    expect(onSeatClick).toHaveBeenCalledOnce();
+    expect(onSeatClick).toHaveBeenCalledWith(7);
+    expect(onSeatSwipe).toHaveBeenCalledOnce();
+    expect(onSeatSwipe).toHaveBeenCalledWith(9);
   });
 
   it("prepares a V-GPU table surface for the default renderer request", () => {

@@ -59,7 +59,6 @@ const assertSupportedPlayerLighting = async (card, label) => {
       const style = getComputedStyle(element);
       return {
         effective: shell.getAttribute("data-lighting-renderer"),
-        playerLighting: shell.getAttribute("data-player-lighting"),
         gpuReady: canvas?.getAttribute("data-vgpu-ready"),
         gpuVisibility: canvas === null ? null : getComputedStyle(canvas).visibility,
         cssAnimation: style.animationName,
@@ -880,7 +879,12 @@ try {
     await page.screenshot({ path: dayCycleScreenshotPath, fullPage: true });
     if (verifyVgpuSelection) {
       await page.getByRole("button", { name: "Open developer menu" }).click();
-      await page.getByRole("combobox", { name: "Lighting renderer" }).selectOption("vgpu");
+      if (
+        (await page.locator(".app-shell").getAttribute("data-lighting-renderer-requested")) !==
+        "vgpu"
+      ) {
+        await page.getByRole("button", { name: "Enable Raytracing" }).click();
+      }
       await page.getByRole("button", { name: "Close developer menu" }).click();
       await page.waitForFunction(() => {
         const shell = document.querySelector(".app-shell");
@@ -2432,7 +2436,9 @@ try {
   if ((await page.locator(".player-seat").count()) !== 10) {
     throw new Error("Expected ten player seats on the live table");
   }
-  await page.getByRole("group", { name: `Host: ${testNicknames[10]}` }).waitFor();
+  if ((await page.locator(".host-seat").count()) !== 0) {
+    throw new Error("The live table must not render a Host tile");
+  }
   const geometry = await page.evaluate(() => {
     const box = (selector) => {
       const element = document.querySelector(selector);
@@ -2521,7 +2527,7 @@ try {
       documentHeight: document.documentElement.scrollHeight,
     };
   });
-  if (geometry.cards.length !== 11) throw new Error("Expected ten player cards and one host card");
+  if (geometry.cards.length !== 10) throw new Error("Expected ten player cards with no host tile");
   if (geometry.appScroll.left !== 0 || geometry.appScroll.top !== 0) {
     throw new Error(
       `Live application shell retained scrolling: ${JSON.stringify(geometry.appScroll)}`,
@@ -2569,7 +2575,8 @@ try {
       const overlaps =
         Math.min(left.right, right.right) > Math.max(left.left, right.left) &&
         Math.min(left.bottom, right.bottom) > Math.max(left.top, right.top);
-      if (overlaps) throw new Error(`${left.label ?? "Host"} overlaps ${right.label ?? "Host"}`);
+      if (overlaps)
+        throw new Error(`${left.label ?? "Table card"} overlaps ${right.label ?? "Table card"}`);
     }
   }
   if (geometry.documentWidth > geometry.viewportWidth) {
@@ -2611,28 +2618,7 @@ try {
       }
     }
   }
-  const hostCenter = geometry.cards.find(({ label }) => label?.startsWith("Host:"));
-  if (hostCenter === undefined) throw new Error("Expected a visible host position");
-  const hostVisual = await page.locator(".host-seat").evaluate((element) => {
-    const style = getComputedStyle(element);
-    return { backgroundImage: style.backgroundImage, boxShadow: style.boxShadow };
-  });
-  if (hostVisual.backgroundImage === "none") {
-    throw new Error("Host card must have a distinct layered visual treatment");
-  }
-  const seatBoxes = geometry.cards.filter(({ label }) => label?.startsWith("Seat "));
-  const closestSeatLeftOfHost = seatBoxes
-    .filter((seat) => seat.centerX < hostCenter.centerX)
-    .sort(
-      (left, right) =>
-        Math.hypot(left.centerX - hostCenter.centerX, left.centerY - hostCenter.centerY) -
-        Math.hypot(right.centerX - hostCenter.centerX, right.centerY - hostCenter.centerY),
-    )[0];
-  if (!closestSeatLeftOfHost?.label?.startsWith("Seat 1:")) {
-    throw new Error(
-      `Expected seat 1 immediately left of host, found ${closestSeatLeftOfHost?.label ?? "none"}`,
-    );
-  }
+
   for (const seconds of [60, 30, 10]) {
     await page.getByRole("button", { name: `Start ${seconds} second timer` }).click();
     await page.getByRole("button", { name: "Stop timer" }).click();
@@ -2696,7 +2682,21 @@ try {
   await assertSupportedPlayerLighting(activeSeat, "Current player card");
   const selectLightingRenderer = async (value) => {
     await page.getByRole("button", { name: "Open developer menu" }).click();
-    await page.getByRole("combobox", { name: "Lighting renderer" }).selectOption(value);
+    const requestedRenderer = await page
+      .locator(".app-shell")
+      .getAttribute("data-lighting-renderer-requested");
+    const wantsVgpu = value === "vgpu";
+    if ((requestedRenderer === "vgpu") !== wantsVgpu) {
+      const raytracing = page.getByRole("button", {
+        name: wantsVgpu ? "Enable Raytracing" : "Disable Raytracing",
+      });
+      if (wantsVgpu) {
+        await raytracing.focus();
+        await page.keyboard.press("Space");
+      } else {
+        await raytracing.click();
+      }
+    }
     await page.getByRole("button", { name: "Close developer menu" }).click();
   };
 
@@ -2839,47 +2839,58 @@ try {
   }
 
   await page.getByRole("button", { name: "Open developer menu" }).click();
-  await page.getByRole("button", { name: "Disable player LEDs" }).click();
+  if (await page.getByRole("button", { name: /player LEDs/i }).count()) {
+    throw new Error("The retired Player LEDs switch must not be offered");
+  }
   await page.getByRole("button", { name: "Close developer menu" }).click();
-  const playerToggleEvidence = await activeSeat.evaluate((card) => {
-    const shell = card.closest(".app-shell");
-    const table = document.querySelector(".round-table");
-    if (!(shell instanceof HTMLElement) || !(table instanceof HTMLElement)) {
-      throw new Error("Missing lighting containers");
-    }
-    return {
-      playerLighting: shell.getAttribute("data-player-lighting"),
-      effective: shell.getAttribute("data-lighting-renderer"),
-      playerAnimation: getComputedStyle(card).animationName,
-      tableGpuReady: table.querySelector(".vgpu-table-lighting")?.getAttribute("data-vgpu-ready"),
-      tableCssBackground: getComputedStyle(table, "::before").backgroundImage,
-    };
-  });
-  const tableLightingRemainsActive =
-    (playerToggleEvidence.effective === "vgpu" && playerToggleEvidence.tableGpuReady === "true") ||
-    (playerToggleEvidence.effective === "legacy" &&
-      playerToggleEvidence.tableCssBackground.includes("gradient"));
+  const alwaysEnabledPlayerLightingEvidence = await assertSupportedPlayerLighting(
+    activeSeat,
+    "Always-enabled current player card",
+  );
+  const independentTableLightingEvidence = await assertSupportedTableLighting(
+    page,
+    "Independent table lighting",
+  );
+  await page.getByRole("button", { name: "Open developer menu" }).click();
+  await page.getByRole("button", { name: "Disable player glow pulse" }).click();
+  await page.getByLabel("Player glow pulse speed").fill("2.5");
+  await page.getByLabel("Player glow pulse strength").fill("40");
+  await page.getByRole("button", { name: "Close developer menu" }).click();
+  await page
+    .locator(
+      '.app-shell[data-player-pulse="disabled"][data-player-pulse-speed="2.5"][data-player-pulse-strength="0.4"]',
+    )
+    .waitFor();
+  const playerPulseEvidence = await page.locator(".app-shell").evaluate((shell) => ({
+    enabled: shell.getAttribute("data-player-pulse"),
+    speed: shell.getAttribute("data-player-pulse-speed"),
+    strength: shell.getAttribute("data-player-pulse-strength"),
+  }));
   if (
-    playerToggleEvidence.playerLighting !== "disabled" ||
-    playerToggleEvidence.playerAnimation !== "none" ||
-    !tableLightingRemainsActive
+    playerPulseEvidence.enabled !== "disabled" ||
+    playerPulseEvidence.speed !== "2.5" ||
+    playerPulseEvidence.strength !== "0.4"
   ) {
-    throw new Error("Player-lighting toggle must leave table lighting active");
+    throw new Error(
+      `Player pulse controls did not persist live values: ${JSON.stringify(playerPulseEvidence)}`,
+    );
   }
   await page.getByRole("button", { name: "Open developer menu" }).click();
-  await page.getByRole("button", { name: "Enable player LEDs" }).click();
+  await page.getByRole("button", { name: "Enable player glow pulse" }).click();
+  await page.getByLabel("Player glow pulse speed").fill("1");
+  await page.getByLabel("Player glow pulse strength").fill("5");
   await page.getByRole("button", { name: "Close developer menu" }).click();
-  await page.locator('.app-shell[data-player-lighting="enabled"]').waitFor();
-  const reenabledPlayerLightingEvidence = await assertSupportedPlayerLighting(
-    activeSeat,
-    "Re-enabled current player card",
-  );
+  await page
+    .locator(
+      '.app-shell[data-player-pulse="enabled"][data-player-pulse-speed="1"][data-player-pulse-strength="0.05"]',
+    )
+    .waitFor();
   await page.screenshot({ path: tableScreenshotPath, fullPage: true });
   await page.getByRole("button", { name: "Exit fullscreen" }).click();
   await page.waitForFunction(() => document.fullscreenElement === null);
   assertNoPageErrors();
   console.log(
-    `UI browser verification: PASS ${JSON.stringify({ playersScreenshotPath, selectionScreenshotPath, screenshotPath, tableScreenshotPath, legacyLightingScreenshotPath, vgpuLightingScreenshotPath, vgpuPlayerLightingScreenshotPath, vgpuPlayerCanvasScreenshotPath, vgpuEvidence, vgpuTableLightingEvidence, vgpuPlayerLightingEvidence, reducedMotionEvidence, playerToggleEvidence, reenabledPlayerLightingEvidence })}`,
+    `UI browser verification: PASS ${JSON.stringify({ playersScreenshotPath, selectionScreenshotPath, screenshotPath, tableScreenshotPath, legacyLightingScreenshotPath, vgpuLightingScreenshotPath, vgpuPlayerLightingScreenshotPath, vgpuPlayerCanvasScreenshotPath, vgpuEvidence, vgpuTableLightingEvidence, vgpuPlayerLightingEvidence, reducedMotionEvidence, alwaysEnabledPlayerLightingEvidence, independentTableLightingEvidence, playerPulseEvidence })}`,
   );
 } finally {
   await browser.close();

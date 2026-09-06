@@ -43,9 +43,9 @@ try {
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     for (const role of ["don", "sheriff"]) {
-      for (const mode of ["check", "prior", "privacy", "disabled"]) {
+      for (const mode of ["check", "prior", "privacy", "retired-disabled"]) {
         await page.goto(`${server.resolvedUrls.local[0]}?role=${role}&${mode}=1`);
-        if (mode === "disabled") {
+        if (mode === "retired-disabled") {
           await page.evaluate(() =>
             window.localStorage.setItem("mafia-dashboard.player-lighting.v1", "disabled"),
           );
@@ -78,15 +78,25 @@ try {
             role === "don" ? /is-mafia-shooter/ : /is-sheriff-highlight/,
           );
           const effective = await shell.getAttribute("data-lighting-renderer");
-          if (mode === "disabled") {
-            await expect(owner.locator(".vgpu-player-lighting")).toHaveCount(0);
-            await expect(owner).toHaveCSS("animation-name", "none");
-          } else if (effective === "vgpu") {
+          if (effective === "vgpu") {
             await expect(owner.locator(".vgpu-player-lighting")).toHaveAttribute(
               "data-vgpu-ready",
               "true",
             );
             await expect(owner.locator(".vgpu-player-lighting")).toHaveCSS("visibility", "visible");
+          } else if (role === "don") {
+            await expect(owner).toHaveCSS("box-shadow", /rgba?\(/);
+            const fallback = await owner.evaluate((element) => {
+              const style = getComputedStyle(element, "::after");
+              return {
+                background: style.backgroundImage,
+                inset: style.inset,
+                content: style.content,
+              };
+            });
+            assert.match(fallback.background, /gradient/);
+            assert.equal(fallback.inset, "1px");
+            assert.equal(fallback.content, '""');
           } else {
             await expect(owner).toHaveCSS("animation-name", "mafia-flame-pulse");
           }

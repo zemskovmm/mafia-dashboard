@@ -48,6 +48,20 @@ const profile = (overrides: Partial<PlayerProfile> = {}): PlayerProfile => ({
 });
 
 describe("PlayersScreen", () => {
+  it("provides a keyboard-accessible Back control without changing the empty player form", async () => {
+    const user = userEvent.setup();
+    const onBack = vi.fn();
+    render(<PlayersScreen players={[]} onBack={onBack} onCreate={vi.fn()} onUpdate={vi.fn()} />);
+
+    const back = screen.getByRole("button", { name: "Back to game" });
+    back.focus();
+    await user.keyboard("{Enter}");
+
+    expect(onBack).toHaveBeenCalledOnce();
+    expect(screen.getByRole("heading", { name: "No players yet" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add player" })).toBeInTheDocument();
+  });
+
   it("uses one local rotating specular surface only for New player", () => {
     render(<PlayersScreen players={[profile()]} onCreate={vi.fn()} onUpdate={vi.fn()} />);
 

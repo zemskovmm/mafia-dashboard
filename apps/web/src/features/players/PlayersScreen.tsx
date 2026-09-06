@@ -8,6 +8,7 @@ import { GlassSurface } from "../theme/GlassSurface.js";
 
 interface PlayersScreenProps {
   readonly players: readonly PlayerProfile[];
+  readonly onBack?: () => void;
   readonly onCreate: (input: PlayerProfileInput) => Promise<void>;
   readonly onUpdate: (playerId: string, input: PlayerProfileInput) => Promise<void>;
   readonly onDelete?: (playerId: string) => Promise<void>;
@@ -367,6 +368,7 @@ const PlayerCard = ({
 
 export const PlayersScreen = ({
   players,
+  onBack = () => undefined,
   onCreate,
   onUpdate,
   onDelete,
@@ -386,6 +388,11 @@ export const PlayersScreen = ({
 
   return (
     <main className="players-shell">
+      <header className="players-screen-header">
+        <button type="button" onClick={onBack}>
+          {t("Back to game")}
+        </button>
+      </header>
       <GlassSurface
         as="section"
         className="new-player-panel"

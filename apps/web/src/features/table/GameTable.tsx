@@ -52,8 +52,8 @@ const PersonIcon = () => (
   </svg>
 );
 
-const TABLE_POSITION_COUNT = 11;
-const HOST_ANGLE = 180;
+const TABLE_POSITION_COUNT = 10;
+const FIRST_SEAT_ANGLE = 198;
 const roleMessageKeys: Record<Role, GameMessageKey> = {
   citizen: "role.citizen",
   don: "role.don",
@@ -63,7 +63,6 @@ const roleMessageKeys: Record<Role, GameMessageKey> = {
 
 export const GameTable = ({
   seats,
-  hostName = "Host",
   privacyHidden = false,
   seatActionLabel,
   seatActionDisabled,
@@ -134,7 +133,7 @@ export const GameTable = ({
           </div>
         )}
         {seats.map((seat) => {
-          const angle = HOST_ANGLE + (seat.seat * 360) / TABLE_POSITION_COUNT;
+          const angle = FIRST_SEAT_ANGLE + ((seat.seat - 1) * 360) / TABLE_POSITION_COUNT;
           const label =
             seatActionLabel?.(seat) ?? t("table.seat", { seat: seat.seat, name: seat.name });
           const disabled = seatActionDisabled?.(seat) ?? false;
@@ -258,20 +257,6 @@ export const GameTable = ({
             </div>
           );
         })}
-        <div
-          className="seat-anchor host-anchor"
-          style={{ "--seat-angle": `${HOST_ANGLE}deg` } as CSSProperties}
-        >
-          <div
-            className="table-card host-seat"
-            role="group"
-            aria-label={t("table.host", { name: hostName })}
-          >
-            <span className="host-crown">◆</span>
-            <span className="host-name">{hostName}</span>
-            <span className="host-role">{t("table.hostRole")}</span>
-          </div>
-        </div>
       </div>
     </section>
   );

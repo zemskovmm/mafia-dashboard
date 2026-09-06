@@ -1,5 +1,6 @@
 import type { Effect, Frame, FrameLoopHandle, Gpu, Surface } from "vgpu";
 import type * as VgpuModule from "vgpu";
+import { DEFAULT_PLAYER_PULSE, type PlayerPulseSettings } from "../lighting-preferences.js";
 import { vgpuLightingShader } from "./lighting-shader.js";
 
 export type VgpuLightingModule = Pick<
@@ -12,6 +13,7 @@ export type VgpuLightingDescriptor =
       kind: "player";
       primary: readonly [number, number, number];
       secondary: readonly [number, number, number];
+      fire?: boolean;
     }>
   | Readonly<{ kind: "table"; cycle: "day" | "night" }>;
 
@@ -29,6 +31,7 @@ export interface VgpuLightingRuntime {
     descriptor: VgpuLightingDescriptor,
   ) => VgpuLightingRegistration;
   readonly setReducedMotion: (reduced: boolean) => void;
+  readonly setPlayerPulse: (settings: PlayerPulseSettings) => void;
   readonly dispose: () => void;
 }
 
@@ -54,7 +57,7 @@ const tableColours = {
   },
 };
 
-const configFor = (entry: RuntimeEntry, time: number) => {
+const configFor = (entry: RuntimeEntry, time: number, pulse: PlayerPulseSettings) => {
   const descriptor = entry.descriptor;
   const colours = descriptor.kind === "table" ? tableColours[descriptor.cycle] : descriptor;
   const dpr = entry.surface.dpr;
@@ -70,6 +73,12 @@ const configFor = (entry: RuntimeEntry, time: number) => {
     primary: [...colours.primary, 1],
     secondary: [...colours.secondary, 1],
     geometry: [padding, cornerRadius, dpr, 0],
+    pulse: [
+      pulse.speed,
+      pulse.enabled ? pulse.strength : 0,
+      descriptor.kind === "player" && descriptor.fire ? 1 : 0,
+      0,
+    ],
   };
 };
 
@@ -85,6 +94,7 @@ class Runtime implements VgpuLightingRuntime {
   #disposed = false;
   #failed = false;
   #reducedMotion = false;
+  #playerPulse: PlayerPulseSettings = DEFAULT_PLAYER_PULSE;
 
   constructor(
     readonly module: VgpuLightingModule,
@@ -201,6 +211,12 @@ class Runtime implements VgpuLightingRuntime {
     }
   }
 
+  setPlayerPulse(settings: PlayerPulseSettings): void {
+    if (this.#disposed) return;
+    this.#playerPulse = settings;
+    this.#renderOnce();
+  }
+
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
@@ -240,7 +256,9 @@ class Runtime implements VgpuLightingRuntime {
   #renderOnce(): boolean {
     if (this.#disposed) return false;
     try {
-      this.module.frame(this.gpu, (currentFrame) => this.#render(currentFrame, 0));
+      this.module.frame(this.gpu, (currentFrame) =>
+        this.#render(currentFrame, this.#reducedMotion ? 0 : this.#clock.time),
+      );
       return true;
     } catch (error) {
       this.#fail(error);
@@ -257,7 +275,7 @@ class Runtime implements VgpuLightingRuntime {
   #render(currentFrame: Frame, time: number): void {
     for (const entry of this.#entries) {
       if (!entry.active || !entry.ready) continue;
-      entry.effect.set({ cfg: configFor(entry, time) });
+      entry.effect.set({ cfg: configFor(entry, time, this.#playerPulse) });
       currentFrame.pass({ target: entry.surface, clear: [0, 0, 0, 0] }, (pass) =>
         pass.draw(entry.effect),
       );

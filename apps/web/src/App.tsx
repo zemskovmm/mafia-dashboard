@@ -73,14 +73,21 @@ import { ErrorConsoleScreen } from "./features/console/ErrorConsoleScreen.js";
 import { clearErrorConsole, reportError } from "./features/console/error-console.js";
 import { CanaryFirework } from "./features/effects/CanaryFirework.js";
 import {
+  clearDeveloperPreferences,
+  readDeveloperPreferences,
+  writeDeveloperModeEnabled,
+  writeDeveloperUnlocked,
+} from "./features/developer/developer-preferences.js";
+import {
   createLightingRendererState,
   LightingRendererContext,
   lightingRendererReducer,
 } from "./features/effects/LightingRendererContext.js";
 import {
   writeLightingRenderer,
-  writePlayerLightingEnabled,
+  writePlayerPulse,
   type LightingRenderer,
+  type PlayerPulseSettings,
 } from "./features/effects/lighting-preferences.js";
 import { VgpuLightingProvider } from "./features/effects/vgpu/VgpuLightingProvider.js";
 import { GameScreen } from "./features/game/GameScreen.js";
@@ -698,6 +705,7 @@ export const ClubWorkspace = ({
   const [swipedSessionId, setSwipedSessionId] = useState<string | null>(null);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [activeDrawer, setActiveDrawer] = useState<"log" | "manage" | "dev" | null>(null);
+  const [roleDrawBackAction, setRoleDrawBackAction] = useState<(() => void) | null>(null);
   const [musicSetupOpen, setMusicSetupOpen] = useState(false);
   const [backgroundShade, setBackgroundShade] = useState<BackgroundShade>("black");
   const [lighting, dispatchLighting] = useReducer(
@@ -706,8 +714,13 @@ export const ClubWorkspace = ({
     createLightingRendererState,
   );
 
-  const [devModeEnabled, setDevModeEnabled] = useState(false);
-  const [devUnlocked, setDevUnlocked] = useState(false);
+  const [initialDeveloperPreferences] = useState(() =>
+    readDeveloperPreferences(window.localStorage),
+  );
+  const [devModeEnabled, setDevModeEnabled] = useState(
+    () => initialDeveloperPreferences.unlocked && initialDeveloperPreferences.devModeEnabled,
+  );
+  const [devUnlocked, setDevUnlocked] = useState(() => initialDeveloperPreferences.unlocked);
   const [canaryBurstKey, setCanaryBurstKey] = useState(0);
   const [privacyTapStage, setPrivacyTapStage] = useState(0);
   const [privacyHidden, setPrivacyHidden] = useState(false);
@@ -719,6 +732,9 @@ export const ClubWorkspace = ({
   const appShellRef = useRef<HTMLDivElement>(null);
   const drawerRef = useRef<HTMLElement>(null);
   const drawerTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const privacyButtonRef = useRef<HTMLButtonElement | null>(null);
+  const restorePrivacyFocusRef = useRef(false);
+  const preserveDrawerCloseFocusRef = useRef(false);
   const previousDrawerRef = useRef<typeof activeDrawer>(null);
   const musicRef = useRef<YouTubePlayerHandle>(null);
   const privacyTapsRef = useRef<{ count: number; resetTimer: number | null }>({
@@ -753,13 +769,24 @@ export const ClubWorkspace = ({
   useEffect(() => {
     const previousDrawer = previousDrawerRef.current;
     if (activeDrawer === null) {
-      if (previousDrawer !== null && drawerTriggerRef.current?.isConnected)
+      if (
+        previousDrawer !== null &&
+        !preserveDrawerCloseFocusRef.current &&
+        drawerTriggerRef.current?.isConnected
+      )
         drawerTriggerRef.current.focus();
+      preserveDrawerCloseFocusRef.current = false;
     } else {
       drawerRef.current?.querySelector<HTMLElement>("h2")?.focus();
     }
     previousDrawerRef.current = activeDrawer;
   }, [activeDrawer]);
+
+  useEffect(() => {
+    if (!restorePrivacyFocusRef.current) return;
+    restorePrivacyFocusRef.current = false;
+    privacyButtonRef.current?.focus();
+  }, [devUnlocked]);
 
   const closeDrawerOnEscape = (event: KeyboardEvent<HTMLElement>) => {
     if (event.key !== "Escape") return;
@@ -1921,9 +1948,12 @@ export const ClubWorkspace = ({
     writeLightingRenderer(window.localStorage, renderer);
     dispatchLighting({ type: "select", renderer });
   }, []);
-  const setPlayerLighting = useCallback((enabled: boolean) => {
-    writePlayerLightingEnabled(window.localStorage, enabled);
-    dispatchLighting({ type: "set-player-lighting", enabled });
+  const updateRoleDrawBackAction = useCallback((action: (() => void) | null) => {
+    setRoleDrawBackAction(() => action);
+  }, []);
+  const setPlayerPulse = useCallback((settings: PlayerPulseSettings) => {
+    writePlayerPulse(window.localStorage, settings);
+    dispatchLighting({ type: "set-player-pulse", settings });
   }, []);
   const reportVgpuReady = useCallback(
     (generation: number) => dispatchLighting({ type: "vgpu-ready", generation }),
@@ -1947,6 +1977,7 @@ export const ClubWorkspace = ({
     if (count >= 5) {
       privacyTapsRef.current = { count: 0, resetTimer: null };
       setPrivacyTapStage(5);
+      writeDeveloperUnlocked(window.localStorage, true);
       setDevUnlocked(true);
       setCanaryBurstKey((key) => key + 1);
       return;
@@ -1960,6 +1991,27 @@ export const ClubWorkspace = ({
     };
     setPrivacyTapStage(count);
   };
+  const setDevelopmentToolsEnabled = useCallback(
+    (enabled: boolean) => {
+      if (!isManager || !devUnlocked) return;
+      writeDeveloperModeEnabled(window.localStorage, enabled);
+      setDevModeEnabled(enabled);
+    },
+    [devUnlocked, isManager],
+  );
+  const hideDeveloperMode = useCallback(() => {
+    if (!isManager) return;
+    clearDeveloperPreferences(window.localStorage);
+    setDevModeEnabled(false);
+    setDevUnlocked(false);
+    setActiveDrawer(null);
+    setPrivacyTapStage(0);
+    if (privacyTapsRef.current.resetTimer !== null) {
+      window.clearTimeout(privacyTapsRef.current.resetTimer);
+    }
+    privacyTapsRef.current = { count: 0, resetTimer: null };
+    restorePrivacyFocusRef.current = true;
+  }, [isManager]);
   const hasCurrentGameState =
     sessionSync.gameId !== null ||
     game !== null ||
@@ -2066,7 +2118,9 @@ export const ClubWorkspace = ({
       data-lighting-renderer={lighting.effectiveRenderer}
       data-lighting-renderer-requested={lighting.requestedRenderer}
       data-vgpu-status={lighting.vgpuStatus}
-      data-player-lighting={lighting.playerLightingEnabled ? "enabled" : "disabled"}
+      data-player-pulse={lighting.playerPulse.enabled ? "enabled" : "disabled"}
+      data-player-pulse-speed={lighting.playerPulse.speed}
+      data-player-pulse-strength={lighting.playerPulse.strength}
     >
       {showApplicationStatus ? (
         <header
@@ -2140,6 +2194,7 @@ export const ClubWorkspace = ({
             <span className="toolbar-count">{undoCount}</span>
           </button>
           <button
+            ref={privacyButtonRef}
             type="button"
             className={`privacy-button icon-toolbar-button is-tap-${privacyTapStage}`}
             aria-label={privacyHidden ? t("showPrivateInfo") : t("hidePrivateInfo")}
@@ -2275,6 +2330,18 @@ export const ClubWorkspace = ({
             >
               {t("startNewGame")}
             </button>
+            {roleDrawBackAction === null ? null : (
+              <button
+                type="button"
+                onClick={() => {
+                  preserveDrawerCloseFocusRef.current = true;
+                  roleDrawBackAction();
+                  setActiveDrawer(null);
+                }}
+              >
+                {t("backToPlayerSelection")}
+              </button>
+            )}
             {isManager ? (
               <>
                 <button
@@ -2350,7 +2417,7 @@ export const ClubWorkspace = ({
           ) : null}
         </aside>
       ) : null}
-      {isManager && showWorkspaceTools && activeDrawer === "dev" ? (
+      {isManager && devUnlocked && showWorkspaceTools && activeDrawer === "dev" ? (
         <aside
           ref={drawerRef}
           id="dev-menu-drawer"
@@ -2370,43 +2437,96 @@ export const ClubWorkspace = ({
             </p>
           </div>
           <div className="dev-menu-actions">
-            <label className="dev-renderer-field">
-              <span>{t("lightingRenderer")}</span>
-              <select
-                aria-label={t("lightingRenderer")}
-                value={lighting.requestedRenderer}
-                onChange={(event) =>
-                  selectLightingRenderer(event.currentTarget.value as LightingRenderer)
-                }
-              >
-                <option value="legacy">{t("lightingRendererLegacy")}</option>
-                <option value="vgpu">{t("lightingRendererVgpu")}</option>
-              </select>
-              {lighting.vgpuStatus === "initializing" ? (
-                <small role="status">{t("vgpuInitializing")}</small>
-              ) : lighting.vgpuStatus === "fallback" ? (
-                <small role="status">{t("vgpuFallback")}</small>
-              ) : null}
-            </label>
             <button
               type="button"
               className="dev-setting-toggle"
               aria-label={
-                lighting.playerLightingEnabled
-                  ? t("disablePlayerLighting")
-                  : t("enablePlayerLighting")
+                lighting.requestedRenderer === "vgpu"
+                  ? t("disableRaytracing")
+                  : t("enableRaytracing")
               }
-              aria-pressed={lighting.playerLightingEnabled}
-              onClick={() => setPlayerLighting(!lighting.playerLightingEnabled)}
+              aria-pressed={lighting.requestedRenderer === "vgpu"}
+              onClick={() =>
+                selectLightingRenderer(lighting.requestedRenderer === "vgpu" ? "legacy" : "vgpu")
+              }
             >
               <span>
-                <strong>{t("playerLighting")}</strong>
-                <small>{t("playerLightingDescription")}</small>
+                <strong>{t("raytracing")}</strong>
+                <small>{t("raytracingDescription")}</small>
               </span>
               <span className="dev-setting-state">
-                {t(lighting.playerLightingEnabled ? "settingOn" : "settingOff")}
+                {t(lighting.requestedRenderer === "vgpu" ? "settingOn" : "settingOff")}
               </span>
             </button>
+            {lighting.vgpuStatus === "initializing" ? (
+              <p className="dev-renderer-status" role="status">
+                {t("vgpuInitializing")}
+              </p>
+            ) : lighting.vgpuStatus === "fallback" ? (
+              <p className="dev-renderer-status" role="status">
+                {t("vgpuFallback")}
+              </p>
+            ) : null}
+            <button
+              type="button"
+              className="dev-setting-toggle"
+              disabled={lighting.requestedRenderer !== "vgpu"}
+              aria-label={
+                lighting.playerPulse.enabled ? t("disablePlayerPulse") : t("enablePlayerPulse")
+              }
+              aria-pressed={lighting.playerPulse.enabled}
+              onClick={() =>
+                setPlayerPulse({ ...lighting.playerPulse, enabled: !lighting.playerPulse.enabled })
+              }
+            >
+              <span>
+                <strong>{t("playerPulse")}</strong>
+                <small>{t("playerPulseDescription")}</small>
+              </span>
+              <span className="dev-setting-state">
+                {t(lighting.playerPulse.enabled ? "settingOn" : "settingOff")}
+              </span>
+            </button>
+            <label className="dev-renderer-field">
+              <span>{t("playerPulseSpeedValue", { speed: lighting.playerPulse.speed })}</span>
+              <input
+                type="range"
+                aria-label={t("playerPulseSpeed")}
+                min="0.25"
+                max="3"
+                step="0.25"
+                value={lighting.playerPulse.speed}
+                disabled={lighting.requestedRenderer !== "vgpu"}
+                onChange={(event) =>
+                  setPlayerPulse({
+                    ...lighting.playerPulse,
+                    speed: Number(event.currentTarget.value),
+                  })
+                }
+              />
+            </label>
+            <label className="dev-renderer-field">
+              <span>
+                {t("playerPulseStrengthValue", {
+                  strength: Math.round(lighting.playerPulse.strength * 100),
+                })}
+              </span>
+              <input
+                type="range"
+                aria-label={t("playerPulseStrength")}
+                min="0"
+                max="50"
+                step="1"
+                value={Math.round(lighting.playerPulse.strength * 100)}
+                disabled={lighting.requestedRenderer !== "vgpu"}
+                onChange={(event) =>
+                  setPlayerPulse({
+                    ...lighting.playerPulse,
+                    strength: Number(event.currentTarget.value) / 100,
+                  })
+                }
+              />
+            </label>
             <button
               type="button"
               onClick={() => {
@@ -2435,9 +2555,12 @@ export const ClubWorkspace = ({
             <button
               type="button"
               aria-pressed={devModeEnabled}
-              onClick={() => setDevModeEnabled((enabled) => !enabled)}
+              onClick={() => setDevelopmentToolsEnabled(!devModeEnabled)}
             >
               {devModeEnabled ? t("disableDevMode") : t("enableDevMode")}
+            </button>
+            <button type="button" className="danger-action" onClick={hideDeveloperMode}>
+              {t("hideDeveloperMode")}
             </button>
             <button
               type="button"
@@ -2463,7 +2586,7 @@ export const ClubWorkspace = ({
           clubId={club.id}
           players={players}
           onBack={() => setView(viewBeforeTimelineRef.current)}
-          showDevelopmentTools={devModeEnabled}
+          showDevelopmentTools={isManager && devUnlocked && devModeEnabled}
           currentHistory={currentTimelineHistory}
           onPreviewCurrentEvent={(eventId) => {
             previewEventState(eventId);
@@ -2493,6 +2616,7 @@ export const ClubWorkspace = ({
           ) : null}
           <PlayersScreen
             players={players}
+            onBack={() => setView("game")}
             onCreate={createProfile}
             onUpdate={updateProfile}
             onDelete={deleteProfile}
@@ -2512,9 +2636,10 @@ export const ClubWorkspace = ({
             key={setupInstanceKey}
             players={availablePlayersForSetup}
             bestMoveEnabled={club.bestMoveEnabled}
-            showDevelopmentTools={isManager && devModeEnabled}
+            showDevelopmentTools={isManager && devUnlocked && devModeEnabled}
             onPopulateDevelopmentPlayers={populateDevelopmentPlayers}
             onOpenAvailablePlayers={() => setAvailabilityScreenOpen(true)}
+            onRoleDrawBackActionChange={updateRoleDrawBackAction}
             privacyHidden={privacyHidden}
             initialSessionState={setupSession}
             onSessionStateChange={handleSetupSessionChange}
@@ -2645,6 +2770,7 @@ export const ClubWorkspace = ({
       <VgpuLightingProvider
         enabled={lighting.requestedRenderer === "vgpu"}
         generation={lighting.vgpuGeneration}
+        playerPulse={lighting.playerPulse}
         onReady={reportVgpuReady}
         onFailure={reportVgpuFailure}
       >

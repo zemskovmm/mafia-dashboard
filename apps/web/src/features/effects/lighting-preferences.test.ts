@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_LIGHTING_RENDERER,
+  DEFAULT_PLAYER_PULSE,
   LIGHTING_RENDERER_STORAGE_KEY,
-  PLAYER_LIGHTING_STORAGE_KEY,
+  PLAYER_PULSE_STORAGE_KEY,
   readLightingRenderer,
-  readPlayerLightingEnabled,
+  readPlayerPulse,
   writeLightingRenderer,
-  writePlayerLightingEnabled,
+  writePlayerPulse,
 } from "./lighting-preferences.js";
 
 describe("lighting preferences", () => {
@@ -37,19 +38,29 @@ describe("lighting preferences", () => {
     expect(setItem).toHaveBeenCalledWith(LIGHTING_RENDERER_STORAGE_KEY, renderer);
   });
 
-  it("defaults player lighting to enabled and restores exact stored values", () => {
-    expect(readPlayerLightingEnabled({ getItem: () => null })).toBe(true);
-    expect(readPlayerLightingEnabled({ getItem: () => "enabled" })).toBe(true);
-    expect(readPlayerLightingEnabled({ getItem: () => "disabled" })).toBe(false);
-    expect(readPlayerLightingEnabled({ getItem: () => "false" })).toBe(true);
+  it("defaults player pulse and rejects malformed or out-of-range storage", () => {
+    expect(readPlayerPulse({ getItem: () => null })).toEqual(DEFAULT_PLAYER_PULSE);
+    for (const value of [
+      "not JSON",
+      JSON.stringify({ enabled: true, speed: Number.NaN, strength: 0.05 }),
+      JSON.stringify({ enabled: true, speed: 0.2, strength: 0.05 }),
+      JSON.stringify({ enabled: true, speed: 1, strength: 0.51 }),
+      JSON.stringify({ enabled: "true", speed: 1, strength: 0.05 }),
+    ]) {
+      expect(readPlayerPulse({ getItem: () => value })).toEqual(DEFAULT_PLAYER_PULSE);
+    }
   });
 
-  it.each([
-    [true, "enabled"],
-    [false, "disabled"],
-  ] as const)("persists player lighting %s", (enabled, stored) => {
+  it("restores and persists bounded GPU player pulse settings", () => {
+    const settings = { enabled: false, speed: 2.5, strength: 0.4 } as const;
     const setItem = vi.fn();
-    writePlayerLightingEnabled({ setItem }, enabled);
-    expect(setItem).toHaveBeenCalledWith(PLAYER_LIGHTING_STORAGE_KEY, stored);
+
+    expect(
+      readPlayerPulse({
+        getItem: (key) => (key === PLAYER_PULSE_STORAGE_KEY ? JSON.stringify(settings) : null),
+      }),
+    ).toEqual(settings);
+    writePlayerPulse({ setItem }, settings);
+    expect(setItem).toHaveBeenCalledWith(PLAYER_PULSE_STORAGE_KEY, JSON.stringify(settings));
   });
 });

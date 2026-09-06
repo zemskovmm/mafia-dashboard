@@ -2,6 +2,7 @@ import { render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   LightingRendererContext,
+  createLightingRendererState,
   type LightingRendererContextValue,
 } from "../LightingRendererContext.js";
 import { VgpuPlayerLightingCanvas, VgpuTableLightingCanvas } from "./VgpuLightingCanvas.js";
@@ -11,7 +12,7 @@ import type { VgpuLightingRuntime } from "./VgpuLightingRuntime.js";
 const lighting: LightingRendererContextValue = {
   requestedRenderer: "vgpu",
   effectiveRenderer: "legacy",
-  playerLightingEnabled: true,
+  playerPulse: { enabled: true, speed: 1, strength: 0.05 },
   vgpuGeneration: 1,
   vgpuStatus: "initializing",
 };
@@ -27,6 +28,7 @@ const setupRuntime = () => {
     ready: Promise.resolve(),
     register,
     setReducedMotion: vi.fn(),
+    setPlayerPulse: vi.fn(),
     dispose: vi.fn(),
   };
   return { runtime, register, disposers };
@@ -77,6 +79,7 @@ describe("V-GPU lighting canvases", () => {
       kind: "player",
       primary: [1, 0.74, 0.3],
       secondary: [1, 0.9, 0.64],
+      fire: false,
     });
   });
 
@@ -98,19 +101,48 @@ describe("V-GPU lighting canvases", () => {
       kind: "player",
       primary: colour,
       secondary: colour,
+      fire: kind === "mafia",
     });
   });
 
-  it("does not mount a player canvas when player lighting is disabled", () => {
+  it("renders player lighting despite a retired disabled preference", async () => {
     const env = setupRuntime();
+    const restored = createLightingRendererState({
+      getItem: (key) => (key === "mafia-dashboard.player-lighting.v1" ? "disabled" : null),
+    });
     const { container } = render(
-      <LightingRendererContext.Provider value={{ ...lighting, playerLightingEnabled: false }}>
-        <VgpuPlayerLightingCanvas kind="mafia" />
+      <LightingRendererContext.Provider value={restored}>
+        <VgpuLightingProvider
+          enabled
+          generation={restored.vgpuGeneration}
+          createRuntime={() => Promise.resolve(env.runtime)}
+          onReady={vi.fn()}
+          onFailure={vi.fn()}
+        >
+          <VgpuPlayerLightingCanvas kind="mafia" />
+        </VgpuLightingProvider>
       </LightingRendererContext.Provider>,
     );
 
+    await waitFor(() =>
+      expect(container.querySelector(".vgpu-player-lighting")).toHaveAttribute(
+        "data-vgpu-ready",
+        "true",
+      ),
+    );
+    expect(env.register).toHaveBeenCalledWith(
+      container.querySelector("canvas"),
+      expect.objectContaining({ kind: "player", fire: true }),
+    );
+  });
+
+  it("leaves player lighting to CSS when the legacy renderer is selected", () => {
+    const { container } = render(
+      <LightingRendererContext.Provider value={{ ...lighting, requestedRenderer: "legacy" }}>
+        <VgpuPlayerLightingCanvas kind="mafia" />
+      </LightingRendererContext.Provider>,
+    );
     expect(container.querySelector("canvas")).toBeNull();
-    expect(env.register).not.toHaveBeenCalled();
   });
 
   it("re-registers table lighting when the existing day/night class changes", async () => {

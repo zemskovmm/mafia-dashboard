@@ -1,6 +1,7 @@
 import type { Message } from "./types.js";
 
 const englishPlayersMusicMessages = {
+  "Back to game": "Back to game",
   Nickname: "Nickname",
   "Data processing": "Data processing",
   "Agree for data processing": "Agree for data processing",
@@ -120,6 +121,7 @@ const englishPlayersMusicMessages = {
 type PlayersMusicMessageKey = keyof typeof englishPlayersMusicMessages;
 
 const russianPlayersMusicMessages = {
+  "Back to game": "Вернуться к игре",
   Nickname: "Псевдоним",
   "Data processing": "Обработка персональных данных",
   "Agree for data processing": "Согласие на обработку персональных данных",

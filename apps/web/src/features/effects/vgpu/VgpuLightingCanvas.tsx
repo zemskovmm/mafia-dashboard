@@ -60,12 +60,13 @@ const LightingCanvas = ({
 export const VgpuPlayerLightingCanvas = ({
   kind,
 }: Readonly<{ kind: PlayerLightingKind | null }>) => {
-  const { requestedRenderer, playerLightingEnabled } = useLightingRenderer();
+  const { requestedRenderer } = useLightingRenderer();
   const descriptor = useMemo<VgpuLightingDescriptor | null>(
-    () => (kind === null ? null : { kind: "player", ...playerColours[kind] }),
+    () =>
+      kind === null ? null : { kind: "player", ...playerColours[kind], fire: kind === "mafia" },
     [kind],
   );
-  if (requestedRenderer !== "vgpu" || !playerLightingEnabled || descriptor === null) return null;
+  if (requestedRenderer !== "vgpu" || descriptor === null) return null;
   return (
     <LightingCanvas className="vgpu-lighting-canvas vgpu-player-lighting" descriptor={descriptor} />
   );

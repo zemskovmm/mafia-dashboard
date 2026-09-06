@@ -1,11 +1,13 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { DEFAULT_PLAYER_PULSE } from "../lighting-preferences.js";
 import { VgpuLightingProvider, useVgpuLightingRuntime } from "./VgpuLightingProvider.js";
 import type { VgpuLightingRuntime } from "./VgpuLightingRuntime.js";
 
 const runtime = (): VgpuLightingRuntime => ({
   ready: Promise.resolve(),
   register: vi.fn(),
+  setPlayerPulse: vi.fn(),
   setReducedMotion: vi.fn(),
   dispose: vi.fn(),
 });
@@ -103,6 +105,84 @@ describe("VgpuLightingProvider", () => {
       </VgpuLightingProvider>,
     );
     expect(activeRuntime.dispose).toHaveBeenCalledOnce();
+    vi.unstubAllGlobals();
+  });
+
+  it("applies the latest player pulse after async initialization without recreating runtime", async () => {
+    let resolve!: (value: VgpuLightingRuntime) => void;
+    const pending = new Promise<VgpuLightingRuntime>((done) => {
+      resolve = done;
+    });
+    const activeRuntime = runtime();
+    const createRuntime = vi.fn(() => pending);
+    const onReady = vi.fn();
+    const onFailure = vi.fn();
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => ({
+        matches: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    );
+    const { rerender } = render(
+      <VgpuLightingProvider
+        enabled
+        generation={7}
+        createRuntime={createRuntime}
+        onReady={onReady}
+        onFailure={onFailure}
+      >
+        <Probe />
+      </VgpuLightingProvider>,
+    );
+
+    const latestPulse = { enabled: false, speed: 2, strength: 0.3 } as const;
+    rerender(
+      <VgpuLightingProvider
+        enabled
+        generation={7}
+        playerPulse={latestPulse}
+        createRuntime={createRuntime}
+        onReady={onReady}
+        onFailure={onFailure}
+      >
+        <Probe />
+      </VgpuLightingProvider>,
+    );
+    await act(async () => resolve(activeRuntime));
+
+    await waitFor(() => expect(activeRuntime.setPlayerPulse).toHaveBeenCalledWith(latestPulse));
+    expect(createRuntime).toHaveBeenCalledOnce();
+    expect(activeRuntime.dispose).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it("uses the default player pulse for callers without the optional setting", async () => {
+    const activeRuntime = runtime();
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => ({
+        matches: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    );
+    render(
+      <VgpuLightingProvider
+        enabled
+        generation={8}
+        createRuntime={() => Promise.resolve(activeRuntime)}
+        onReady={vi.fn()}
+        onFailure={vi.fn()}
+      >
+        <Probe />
+      </VgpuLightingProvider>,
+    );
+
+    await waitFor(() =>
+      expect(activeRuntime.setPlayerPulse).toHaveBeenCalledWith(DEFAULT_PLAYER_PULSE),
+    );
     vi.unstubAllGlobals();
   });
 

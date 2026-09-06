@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { PlayerProfile } from "../../api/client.js";
@@ -111,6 +111,15 @@ const partialRoleSession = () => {
   };
 };
 
+const invokeRoleDrawBackAction = (onRoleDrawBackActionChange: ReturnType<typeof vi.fn>) => {
+  const action = [...onRoleDrawBackActionChange.mock.calls]
+    .reverse()
+    .map(([candidate]) => candidate)
+    .find((candidate): candidate is () => void => typeof candidate === "function");
+  if (action === undefined) throw new Error("Role back action was not registered");
+  act(action);
+};
+
 describe("SetupWizard", () => {
   it("renders the Russian role draw and preserves the emitted role payload", async () => {
     const user = userEvent.setup();
@@ -189,21 +198,22 @@ describe("SetupWizard", () => {
   });
 
   it("returns from role giveaway with the selection intact and focus restored", async () => {
-    const user = userEvent.setup();
     const session = partialRoleSession();
     const onSessionStateChange = vi.fn();
+    const onRoleDrawBackActionChange = vi.fn();
     render(
       <SetupWizard
         players={availablePlayers}
         onComplete={() => undefined}
         onSessionStateChange={onSessionStateChange}
         initialSessionState={session}
+        {...({ onRoleDrawBackActionChange } as Record<string, unknown>)}
       />,
     );
 
-    const back = screen.getByRole("button", { name: "Back to player selection" });
-    back.focus();
-    await user.keyboard("{Enter}");
+    expect(onRoleDrawBackActionChange).toHaveBeenCalledWith(expect.any(Function));
+    expect(screen.queryByRole("button", { name: "Back to player selection" })).toBeNull();
+    invokeRoleDrawBackAction(onRoleDrawBackActionChange);
 
     expect(screen.getByRole("heading", { name: "Select 10 players + host" })).toHaveFocus();
     expect(screen.getByRole("combobox", { name: "Host player" })).toHaveValue("Player 11");
@@ -213,6 +223,7 @@ describe("SetupWizard", () => {
         .map((seat) => (seat as HTMLInputElement).value),
     ).toEqual(availablePlayers.slice(0, 10).map(({ nickname }) => nickname));
     expect(onSessionStateChange.mock.lastCall?.[0]).toEqual({ ...session, step: "players" });
+    expect(onRoleDrawBackActionChange.mock.lastCall).toEqual([null]);
     expect(screen.queryByText(session.setup.assignments[1]!)).not.toBeInTheDocument();
   });
 
@@ -222,6 +233,7 @@ describe("SetupWizard", () => {
     const onStartGame = vi.fn();
     const onEvent = vi.fn();
     const onSessionStateChange = vi.fn();
+    const onRoleDrawBackActionChange = vi.fn();
     render(
       <SetupWizard
         players={availablePlayers}
@@ -230,10 +242,11 @@ describe("SetupWizard", () => {
         onEvent={onEvent}
         onSessionStateChange={onSessionStateChange}
         initialSessionState={session}
+        onRoleDrawBackActionChange={onRoleDrawBackActionChange}
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Back to player selection" }));
+    invokeRoleDrawBackAction(onRoleDrawBackActionChange);
     await user.click(screen.getByRole("button", { name: "Start game" }));
 
     expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
@@ -247,6 +260,7 @@ describe("SetupWizard", () => {
     const user = userEvent.setup();
     const onStartGame = vi.fn();
     const onSessionStateChange = vi.fn();
+    const onRoleDrawBackActionChange = vi.fn();
     render(
       <SetupWizard
         players={playersWithReplacement}
@@ -254,10 +268,11 @@ describe("SetupWizard", () => {
         onStartGame={onStartGame}
         onSessionStateChange={onSessionStateChange}
         initialSessionState={partialRoleSession()}
+        onRoleDrawBackActionChange={onRoleDrawBackActionChange}
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Back to player selection" }));
+    invokeRoleDrawBackAction(onRoleDrawBackActionChange);
     onSessionStateChange.mockClear();
     await choosePlayer(user, "Host player", replacementPlayer);
 
@@ -272,6 +287,7 @@ describe("SetupWizard", () => {
     const user = userEvent.setup();
     const onStartGame = vi.fn();
     const onSessionStateChange = vi.fn();
+    const onRoleDrawBackActionChange = vi.fn();
     render(
       <SetupWizard
         players={playersWithReplacement}
@@ -279,10 +295,11 @@ describe("SetupWizard", () => {
         onStartGame={onStartGame}
         onSessionStateChange={onSessionStateChange}
         initialSessionState={partialRoleSession()}
+        onRoleDrawBackActionChange={onRoleDrawBackActionChange}
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Back to player selection" }));
+    invokeRoleDrawBackAction(onRoleDrawBackActionChange);
     onSessionStateChange.mockClear();
     await choosePlayer(user, "Seat 1 player", replacementPlayer);
 
@@ -301,6 +318,7 @@ describe("SetupWizard", () => {
       nickname: `Generated ${index + 1}`,
     }));
     const onSessionStateChange = vi.fn();
+    const onRoleDrawBackActionChange = vi.fn();
     render(
       <SetupWizard
         players={availablePlayers}
@@ -309,10 +327,11 @@ describe("SetupWizard", () => {
         onPopulateDevelopmentPlayers={() => Promise.resolve(generated)}
         onSessionStateChange={onSessionStateChange}
         initialSessionState={partialRoleSession()}
+        onRoleDrawBackActionChange={onRoleDrawBackActionChange}
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Back to player selection" }));
+    invokeRoleDrawBackAction(onRoleDrawBackActionChange);
     onSessionStateChange.mockClear();
     await user.click(
       screen.getByRole("button", {

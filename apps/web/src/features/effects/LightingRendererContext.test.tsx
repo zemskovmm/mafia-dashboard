@@ -1,10 +1,11 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createLightingRendererState,
   lightingRendererReducer,
   useLightingRenderer,
 } from "./LightingRendererContext.js";
+import { DEFAULT_PLAYER_PULSE } from "./lighting-preferences.js";
 
 const DefaultContextProbe = () => {
   const lighting = useLightingRenderer();
@@ -16,7 +17,7 @@ describe("lighting renderer state", () => {
     expect(createLightingRendererState({ getItem: () => null })).toEqual({
       requestedRenderer: "vgpu",
       effectiveRenderer: "legacy",
-      playerLightingEnabled: true,
+      playerPulse: DEFAULT_PLAYER_PULSE,
       vgpuGeneration: 1,
       vgpuStatus: "initializing",
     });
@@ -28,7 +29,7 @@ describe("lighting renderer state", () => {
     expect(JSON.parse(screen.getByTestId("lighting-context").textContent ?? "null")).toEqual({
       requestedRenderer: "vgpu",
       effectiveRenderer: "legacy",
-      playerLightingEnabled: true,
+      playerPulse: DEFAULT_PLAYER_PULSE,
       vgpuGeneration: 1,
       vgpuStatus: "initializing",
     });
@@ -90,13 +91,31 @@ describe("lighting renderer state", () => {
     ).toBe(legacy);
   });
 
-  it("toggles player lighting without changing the table renderer", () => {
-    const lighting = createLightingRendererState({ getItem: () => null });
-    expect(
-      lightingRendererReducer(lighting, { type: "set-player-lighting", enabled: false }),
-    ).toEqual({
-      ...lighting,
-      playerLightingEnabled: false,
+  it("ignores the retired player-lighting preference while restoring renderer and pulse", () => {
+    const playerPulse = { enabled: false, speed: 1.75, strength: 0.2 };
+    const stored = new Map([
+      ["mafia-dashboard.player-lighting.v1", "disabled"],
+      ["mafia-dashboard.lighting-renderer.v1", "vgpu"],
+      ["mafia-dashboard.player-pulse.v1", JSON.stringify(playerPulse)],
+    ]);
+    const getItem = vi.fn((key: string) => stored.get(key) ?? null);
+
+    expect(createLightingRendererState({ getItem })).toEqual({
+      requestedRenderer: "vgpu",
+      effectiveRenderer: "legacy",
+      playerPulse,
+      vgpuGeneration: 1,
+      vgpuStatus: "initializing",
     });
+    expect(getItem).not.toHaveBeenCalledWith("mafia-dashboard.player-lighting.v1");
+  });
+
+  it("updates GPU player pulse settings without changing the selected renderer", () => {
+    const lighting = createLightingRendererState({ getItem: () => null });
+    const playerPulse = { enabled: false, speed: 1.75, strength: 0.2 } as const;
+
+    expect(
+      lightingRendererReducer(lighting, { type: "set-player-pulse", settings: playerPulse }),
+    ).toEqual({ ...lighting, playerPulse });
   });
 });

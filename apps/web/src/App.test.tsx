@@ -30,8 +30,12 @@ import {
 } from "./features/console/error-console.js";
 import {
   LIGHTING_RENDERER_STORAGE_KEY,
-  PLAYER_LIGHTING_STORAGE_KEY,
+  PLAYER_PULSE_STORAGE_KEY,
 } from "./features/effects/lighting-preferences.js";
+import {
+  DEVELOPER_MODE_ENABLED_STORAGE_KEY,
+  DEVELOPER_UNLOCKED_STORAGE_KEY,
+} from "./features/developer/developer-preferences.js";
 import { musicPreferencesStorageKey } from "./features/music/music-preferences.js";
 import type { SetupWizardSessionState } from "./features/setup/SetupWizard.js";
 import { I18nProvider } from "./i18n/I18nProvider.js";
@@ -205,6 +209,7 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
     onStartGame = () => undefined,
     initialSessionState,
     onSessionStateChange,
+    onRoleDrawBackActionChange,
     onEvent,
     onPopulateDevelopmentPlayers,
     onOpenAvailablePlayers,
@@ -215,6 +220,7 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
     onStartGame?: () => void;
     initialSessionState?: SetupWizardSessionState | null;
     onSessionStateChange?: (state: SetupWizardSessionState) => void;
+    onRoleDrawBackActionChange?: (action: (() => void) | null) => void;
     onEvent: (type: string, payload: Record<string, unknown>) => void;
     onPopulateDevelopmentPlayers?: () => Promise<readonly PlayerProfile[]>;
     onOpenAvailablePlayers?: () => void;
@@ -237,6 +243,18 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
         assignments: {},
       },
     };
+    useEffect(() => {
+      if (session?.step !== "roles" || session.setup === null) {
+        onRoleDrawBackActionChange?.(null);
+        return;
+      }
+      onRoleDrawBackActionChange?.(() => {
+        const next: SetupWizardSessionState = { ...session, step: "players" };
+        setSession(next);
+        onSessionStateChange?.(next);
+      });
+      return () => onRoleDrawBackActionChange?.(null);
+    }, [onRoleDrawBackActionChange, onSessionStateChange, session]);
     return (
       <main>
         <h1>
@@ -290,18 +308,6 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
         >
           Enter role giveaway
         </button>
-        {session?.step !== "roles" || session.setup === null ? null : (
-          <button
-            type="button"
-            onClick={() => {
-              const next: SetupWizardSessionState = { ...session, step: "players" };
-              setSession(next);
-              onSessionStateChange?.(next);
-            }}
-          >
-            Back to player selection
-          </button>
-        )}
         {session?.step !== "roles" || session.setup === null ? null : (
           <button
             type="button"
@@ -1241,6 +1247,29 @@ describe("club player gate", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Add 11 more registered players");
     expect(screen.getByRole("heading", { name: "Players & statistics" })).toBeInTheDocument();
   });
+
+  it("returns from the under-eleven player directory to the existing setup without a navigation trap", async () => {
+    const user = userEvent.setup();
+    api.listPlayers.mockResolvedValue([]);
+    render(
+      <ClubWorkspace
+        club={testClub}
+        onExit={() => undefined}
+        onEditClub={() => undefined}
+        onDeleteClub={() => Promise.resolve()}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "Players & statistics" }),
+    ).toBeInTheDocument();
+    const back = screen.getByRole("button", { name: "Back to game" });
+    back.focus();
+    await user.keyboard("{Enter}");
+
+    expect(screen.getAllByRole("heading", { name: "Game setup" })).not.toHaveLength(0);
+    expect(screen.queryByRole("heading", { name: "Players & statistics" })).toBeNull();
+  });
 });
 
 describe("manage menu", () => {
@@ -1273,37 +1302,94 @@ describe("manage menu", () => {
     expect(within(dev).queryByRole("button", { name: "Delete club" })).not.toBeInTheDocument();
     expect(within(dev).queryByRole("region", { name: "Active games" })).not.toBeInTheDocument();
   });
+
+  it("moves role-giveaway return into Manage without resetting the draw", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
+    await user.click(screen.getByRole("button", { name: "Assign first role" }));
+    const beforeBack = JSON.parse(screen.getByTestId("setup-session").textContent ?? "null");
+    const clearCallsBeforeBack = api.clearGameSession.mock.calls.length;
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+
+    const manage = screen.getByRole("dialog", { name: "Manage" });
+    const back = within(manage).getByRole("button", { name: "Back to player selection" });
+    back.focus();
+    await user.keyboard("{Enter}");
+
+    expect(screen.queryByRole("dialog", { name: "Manage" })).toBeNull();
+    expect(screen.getAllByRole("heading", { name: "Game setup" })).not.toHaveLength(0);
+    expect(JSON.parse(screen.getByTestId("setup-session").textContent ?? "null")).toEqual({
+      ...beforeBack,
+      step: "players",
+    });
+    expect(api.clearGameSession).toHaveBeenCalledTimes(clearCallsBeforeBack);
+  });
+
+  it("returns the player directory to an active game without resetting it", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Start test game" }));
+    const liveGame = gameScreenHarness.liveGame;
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    await user.click(screen.getByRole("button", { name: "Players screen" }));
+    await user.click(screen.getByRole("button", { name: "Back to game" }));
+
+    expect(screen.getByRole("heading", { name: "Live test game" })).toBeInTheDocument();
+    expect(gameScreenHarness.liveGame).toBe(liveGame);
+    expect(api.clearGameSession).not.toHaveBeenCalled();
+  });
 });
 
 describe("developer menu", () => {
-  it("persists the V-GPU renderer and a separate player LED toggle", async () => {
+  it("keeps player lighting enabled with a retired disabled setting while retaining Raytracing and pulse controls", async () => {
     const user = userEvent.setup();
+    window.localStorage.setItem("mafia-dashboard.player-lighting.v1", "disabled");
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
 
-    const renderer = screen.getByRole("combobox", { name: "Lighting renderer" });
-    expect(renderer).toHaveValue("vgpu");
-    expect(renderer).toHaveDisplayValue("V-GPU");
+    expect(screen.queryByRole("button", { name: /player LEDs/i })).toBeNull();
+    expect(document.querySelector(".app-shell")).not.toHaveAttribute("data-player-lighting");
 
-    await user.selectOptions(renderer, "legacy");
+    const raytracing = screen.getByRole("button", { name: "Disable Raytracing" });
+    expect(raytracing).toHaveAttribute("aria-pressed", "true");
+    await user.click(raytracing);
     expect(window.localStorage.getItem(LIGHTING_RENDERER_STORAGE_KEY)).toBe("legacy");
     expect(document.querySelector(".app-shell")).toHaveAttribute(
       "data-lighting-renderer",
       "legacy",
     );
-
-    const playerLighting = screen.getByRole("button", { name: "Disable player LEDs" });
-    expect(playerLighting).toHaveAttribute("aria-pressed", "true");
-    await user.click(playerLighting);
-    expect(window.localStorage.getItem(PLAYER_LIGHTING_STORAGE_KEY)).toBe("disabled");
-    expect(screen.getByRole("button", { name: "Enable player LEDs" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Enable Raytracing" })).toHaveAttribute(
       "aria-pressed",
       "false",
     );
+    expect(screen.getByRole("button", { name: "Disable player glow pulse" })).toBeDisabled();
+
+    const enableRaytracing = screen.getByRole("button", { name: "Enable Raytracing" });
+    enableRaytracing.focus();
+    expect(enableRaytracing).toHaveFocus();
+    await user.click(enableRaytracing);
+    expect(window.localStorage.getItem(LIGHTING_RENDERER_STORAGE_KEY)).toBe("vgpu");
     expect(document.querySelector(".app-shell")).toHaveAttribute(
-      "data-player-lighting",
-      "disabled",
+      "data-lighting-renderer-requested",
+      "vgpu",
     );
+
+    await user.click(screen.getByRole("button", { name: "Disable player glow pulse" }));
+    fireEvent.change(screen.getByLabelText("Player glow pulse speed"), {
+      target: { value: "2.5" },
+    });
+    fireEvent.change(screen.getByLabelText("Player glow pulse strength"), {
+      target: { value: "29" },
+    });
+    expect(screen.getByText("Strength: 29%")).toBeInTheDocument();
+    expect(JSON.parse(window.localStorage.getItem(PLAYER_PULSE_STORAGE_KEY) ?? "null")).toEqual({
+      enabled: false,
+      speed: 2.5,
+      strength: 0.29,
+    });
   });
 
   it("resolves a historical SVG request to V-GPU and falls back to existing CSS", async () => {
@@ -1311,7 +1397,10 @@ describe("developer menu", () => {
     render(<App />);
     await userEvent.setup().click(screen.getByRole("button", { name: "Open developer menu" }));
 
-    expect(screen.getByRole("combobox", { name: "Lighting renderer" })).toHaveValue("vgpu");
+    expect(screen.getByRole("button", { name: "Disable Raytracing" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     expect(document.querySelector(".app-shell")).toHaveAttribute(
       "data-lighting-renderer-requested",
       "vgpu",
@@ -1338,6 +1427,67 @@ describe("developer menu", () => {
     expect(screen.getByRole("button", { name: "Open developer menu" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Show private info" })).toBe(privacy);
     expect(document.querySelectorAll("[data-canary-particle]")).toHaveLength(32);
+  });
+
+  it("restores developer access and enabled tools independently after remount", async () => {
+    const user = userEvent.setup();
+    const firstView = renderView(<App />);
+    const privacy = screen.getByRole("button", { name: "Hide private info" });
+    for (let tap = 0; tap < 5; tap += 1) fireEvent.click(privacy);
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    expect(screen.getByRole("button", { name: "Enable dev mode" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Enable dev mode" }));
+    expect(window.localStorage.getItem(DEVELOPER_UNLOCKED_STORAGE_KEY)).toBe("unlocked");
+    expect(window.localStorage.getItem(DEVELOPER_MODE_ENABLED_STORAGE_KEY)).toBe("enabled");
+    firstView.unmount();
+
+    renderView(<App />);
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    expect(screen.getByRole("button", { name: "Disable dev mode" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Generate test players" })).toBeInTheDocument();
+  });
+
+  it("rejects malformed persisted developer flags and keeps manager guards authoritative", () => {
+    window.localStorage.setItem(DEVELOPER_UNLOCKED_STORAGE_KEY, "yes");
+    window.localStorage.setItem(DEVELOPER_MODE_ENABLED_STORAGE_KEY, "true");
+    renderView(
+      <ClubWorkspace
+        club={{ ...testClub, role: "user" }}
+        onExit={() => undefined}
+        onEditClub={() => undefined}
+        onDeleteClub={() => Promise.resolve()}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Open developer menu" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Generate test players" })).not.toBeInTheDocument();
+  });
+
+  it("hides developer access, disables tools, and preserves lighting preferences", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(LIGHTING_RENDERER_STORAGE_KEY, "legacy");
+    window.localStorage.setItem(
+      PLAYER_PULSE_STORAGE_KEY,
+      JSON.stringify({ enabled: false, speed: 2, strength: 0.25 }),
+    );
+    render(<App />);
+    const privacy = screen.getByRole("button", { name: "Hide private info" });
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Enable dev mode" }));
+    await user.click(screen.getByRole("button", { name: "Hide developer mode" }));
+
+    expect(screen.queryByRole("dialog", { name: "Developer menu" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open developer menu" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Generate test players" })).not.toBeInTheDocument();
+    expect(window.localStorage.getItem(DEVELOPER_UNLOCKED_STORAGE_KEY)).toBeNull();
+    expect(window.localStorage.getItem(DEVELOPER_MODE_ENABLED_STORAGE_KEY)).toBeNull();
+    expect(window.localStorage.getItem(LIGHTING_RENDERER_STORAGE_KEY)).toBe("legacy");
+    expect(JSON.parse(window.localStorage.getItem(PLAYER_PULSE_STORAGE_KEY) ?? "null")).toEqual({
+      enabled: false,
+      speed: 2,
+      strength: 0.25,
+    });
+    await waitFor(() => expect(privacy).toHaveFocus());
   });
 
   it("resets the hidden Dev tap sequence after a slow privacy tap", () => {
@@ -2229,6 +2379,7 @@ describe("developer menu", () => {
 
   it("opens a searchable table-card availability screen and returns to setup", async () => {
     const user = userEvent.setup();
+    window.localStorage.setItem("mafia-dashboard.player-lighting.v1", "disabled");
     render(<App />);
     await waitFor(() => expect(api.listPlayers).toHaveBeenCalled());
 
@@ -2245,6 +2396,7 @@ describe("developer menu", () => {
     expect(firstCard).toHaveAttribute("aria-pressed", "true");
     expect(firstCard).toHaveClass("is-availability-selected");
     expect(firstCard.querySelector(".vgpu-player-lighting")).not.toBeNull();
+    expect(document.querySelector(".app-shell")).not.toHaveAttribute("data-player-lighting");
 
     await user.type(
       screen.getByRole("searchbox", { name: "Search available players" }),
@@ -2991,7 +3143,12 @@ describe("authoritative game session lifecycle", () => {
     const firstRender = render(<App />);
     await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
     await user.click(screen.getByRole("button", { name: "Assign first role" }));
-    await user.click(screen.getByRole("button", { name: "Back to player selection" }));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    await user.click(
+      within(screen.getByRole("dialog", { name: "Manage" })).getByRole("button", {
+        name: "Back to player selection",
+      }),
+    );
 
     let persisted: {
       gameId: string;

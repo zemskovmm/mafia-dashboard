@@ -1,8 +1,10 @@
 import { createContext, useContext } from "react";
 import {
+  DEFAULT_PLAYER_PULSE,
+  readPlayerPulse,
   readLightingRenderer,
-  readPlayerLightingEnabled,
   type LightingRenderer,
+  type PlayerPulseSettings,
 } from "./lighting-preferences.js";
 
 export type VgpuStatus = "idle" | "initializing" | "ready" | "fallback";
@@ -10,14 +12,14 @@ export type VgpuStatus = "idle" | "initializing" | "ready" | "fallback";
 export interface LightingRendererState {
   readonly requestedRenderer: LightingRenderer;
   readonly effectiveRenderer: LightingRenderer;
-  readonly playerLightingEnabled: boolean;
+  readonly playerPulse: PlayerPulseSettings;
   readonly vgpuGeneration: number;
   readonly vgpuStatus: VgpuStatus;
 }
 
 export type LightingRendererAction =
   | { readonly type: "select"; readonly renderer: LightingRenderer }
-  | { readonly type: "set-player-lighting"; readonly enabled: boolean }
+  | { readonly type: "set-player-pulse"; readonly settings: PlayerPulseSettings }
   | { readonly type: "vgpu-ready"; readonly generation: number }
   | { readonly type: "vgpu-failed"; readonly generation: number };
 
@@ -30,7 +32,7 @@ export const createLightingRendererState = (storage: StorageReader): LightingRen
   return {
     requestedRenderer,
     effectiveRenderer: requestedRenderer === "vgpu" ? "legacy" : requestedRenderer,
-    playerLightingEnabled: readPlayerLightingEnabled(storage),
+    playerPulse: readPlayerPulse(storage),
     vgpuGeneration: requestedRenderer === "vgpu" ? 1 : 0,
     vgpuStatus: requestedRenderer === "vgpu" ? "initializing" : "idle",
   };
@@ -40,8 +42,7 @@ export const lightingRendererReducer = (
   state: LightingRendererState,
   action: LightingRendererAction,
 ): LightingRendererState => {
-  if (action.type === "set-player-lighting")
-    return { ...state, playerLightingEnabled: action.enabled };
+  if (action.type === "set-player-pulse") return { ...state, playerPulse: action.settings };
 
   if (action.type === "select") {
     const vgpuGeneration = state.vgpuGeneration + 1;
@@ -74,7 +75,7 @@ export type LightingRendererContextValue = LightingRendererState;
 const defaultContext: LightingRendererContextValue = {
   requestedRenderer: "vgpu",
   effectiveRenderer: "legacy",
-  playerLightingEnabled: true,
+  playerPulse: DEFAULT_PLAYER_PULSE,
   vgpuGeneration: 1,
   vgpuStatus: "initializing",
 };

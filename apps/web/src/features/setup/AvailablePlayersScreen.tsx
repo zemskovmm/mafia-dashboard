@@ -12,8 +12,13 @@ interface AvailablePlayersScreenProps {
   readonly onClose: () => void;
 }
 
-const PersonIcon = () => (
-  <svg viewBox="0 0 48 48" aria-hidden="true" className="person-icon">
+const PersonIcon = ({ available }: Readonly<{ available: boolean }>) => (
+  <svg
+    viewBox="0 0 48 48"
+    aria-hidden="true"
+    className="person-icon availability-player-icon"
+    data-availability-state={available ? "selected" : "unselected"}
+  >
     <circle cx="24" cy="15" r="8" />
     <path d="M9 43c1.3-11.1 6.3-16.7 15-16.7S37.7 31.9 39 43" />
   </svg>
@@ -79,6 +84,7 @@ export const AvailablePlayersScreen = ({
           >
             {visiblePlayers.map((player) => {
               const available = availablePlayerIds.has(player.id);
+              const availabilityState = available ? "selected" : "unselected";
               return (
                 <button
                   key={player.id}
@@ -91,10 +97,11 @@ export const AvailablePlayersScreen = ({
                     availability: t(available ? "available.unavailable" : "available.available"),
                   })}
                   aria-pressed={available}
+                  data-availability-state={availabilityState}
                   onClick={() => onAvailabilityChange(player.id, !available)}
                 >
                   <VgpuPlayerLightingCanvas kind={available ? "mafia" : null} />
-                  <PersonIcon />
+                  <PersonIcon available={available} />
                   <span className="seat-name">{player.nickname}</span>
                   <span className="state-badge">
                     {t(available ? "available.selected" : "available.tapToSelect")}

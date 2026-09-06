@@ -171,11 +171,6 @@ describe("GameScreen", () => {
     expect(screen.queryByRole("status", { name: /table indication/i })).toBeNull();
   });
 
-  it("shows the selected host at the table", () => {
-    render(<Harness onEvent={() => undefined} />);
-    expect(screen.getByText("Host Player")).toBeInTheDocument();
-  });
-
   it("does not advertise player context actions while discipline is unavailable", () => {
     render(<Harness onEvent={() => undefined} />);
 
@@ -193,7 +188,6 @@ describe("GameScreen", () => {
       screen.getByRole("heading", { name: /night zero · mafia free seating/i }),
     ).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: /seat \d+: player/i })).toHaveLength(10);
-    expect(screen.getByRole("group", { name: /host: host player/i })).toBeInTheDocument();
 
     await user.click(
       screen.getByRole("button", { name: /continue night zero to sheriff wake-up/i }),

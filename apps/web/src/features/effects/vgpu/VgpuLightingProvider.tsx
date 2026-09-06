@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { DEFAULT_PLAYER_PULSE, type PlayerPulseSettings } from "../lighting-preferences.js";
 import { loadVgpuLightingRuntime, type VgpuLightingRuntime } from "./VgpuLightingRuntime.js";
 
 interface RuntimeOptions {
@@ -10,6 +11,7 @@ interface VgpuLightingProviderProps {
   readonly generation: number;
   readonly onReady: (generation: number) => void;
   readonly onFailure: (generation: number) => void;
+  readonly playerPulse?: PlayerPulseSettings;
   readonly createRuntime?: (options: RuntimeOptions) => Promise<VgpuLightingRuntime>;
   readonly children: ReactNode;
 }
@@ -23,10 +25,15 @@ export const VgpuLightingProvider = ({
   generation,
   onReady,
   onFailure,
+  playerPulse = DEFAULT_PLAYER_PULSE,
   createRuntime = loadVgpuLightingRuntime,
   children,
 }: VgpuLightingProviderProps) => {
   const [runtime, setRuntime] = useState<VgpuLightingRuntime | null>(null);
+
+  useEffect(() => {
+    runtime?.setPlayerPulse(playerPulse);
+  }, [playerPulse, runtime]);
 
   useEffect(() => {
     if (!enabled) {

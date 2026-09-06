@@ -167,7 +167,7 @@ button {
   touch-action: manipulation;
   transition: 150ms ease;
 }
-button:hover:not(:disabled) {
+button:hover:not(:disabled):not(:where(.availability-player-card)) {
   background: rgb(255 255 255 / 8%);
   border-color: rgb(255 255 255 / 18%);
 }
@@ -375,6 +375,16 @@ h2 {
   width: min(1400px, calc(100% - 32px));
   margin: 0 auto;
   padding: 96px 0 80px;
+}
+.players-screen-header {
+  display: flex;
+  align-items: center;
+  min-height: 48px;
+  margin-bottom: 18px;
+}
+.players-screen-header > button {
+  min-height: 48px;
+  padding-inline: 18px;
 }
 
 .error-console-screen {
@@ -865,6 +875,56 @@ h2 {
   padding: 16px 14px 28px;
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+.player-seat.availability-player-card {
+  /* Availability is binary; keep the card indicator ahead of any V-GPU registration. */
+  transition: none;
+}
+.player-seat.availability-player-card .availability-player-icon {
+  transition: none;
+}
+.player-seat.availability-player-card[data-availability-state="selected"]
+  .availability-player-icon {
+  fill: rgb(255 103 72 / 42%);
+  stroke: #ffe0bd;
+}
+.player-seat.availability-player-card[data-availability-state="selected"] .state-badge {
+  color: #ffe0bd;
+  background: rgb(255 93 73 / 32%);
+}
+.app-shell[data-lighting-renderer="vgpu"]
+  .player-seat.availability-player-card[data-availability-state="selected"]
+  .state-badge,
+.app-shell[data-lighting-renderer="vgpu"] .player-seat.is-mafia-shooter .role-badge {
+  /* Keep small labels readable over the selected turbulent fire folds. */
+  background: rgb(48 14 11 / 88%);
+}
+.app-shell[data-lighting-renderer="vgpu"]
+  .player-seat:is(.is-availability-selected, .is-mafia-shooter)
+  .seat-name {
+  /* Long names can reach beyond the shader's protected centre. */
+  background: rgb(10 10 10 / 45%);
+  border-radius: 3px;
+}
+.availability-selection-header,
+.availability-search,
+.availability-count {
+  position: relative;
+  z-index: 2;
+}
+.availability-player-grid {
+  /* The enclosing card owns the rounded light boundary and scrolling. */
+  isolation: isolate;
+  overflow: visible;
+}
+.availability-player-grid .player-seat.availability-player-card {
+  z-index: auto;
+}
+.availability-player-grid .player-seat.availability-player-card.is-availability-selected {
+  background-color: #161819;
+}
+.availability-player-grid .player-seat.availability-player-card .vgpu-player-lighting {
+  z-index: 0;
 }
 .availability-player-card {
   height: 108px;
@@ -1400,30 +1460,26 @@ h2 {
 .player-seat.is-mafia-shooter,
 .player-seat.is-availability-selected {
   z-index: 1;
+  isolation: isolate;
   border-color: #ff5f4f;
-  background:
-    radial-gradient(circle at 50% 28%, rgb(255 167 70 / 22%), transparent 34%),
-    linear-gradient(145deg, rgb(122 18 20 / 62%), rgb(22 24 25 / 96%));
+  background: radial-gradient(ellipse at 50% 100%, rgb(174 57 18 / 14%), transparent 72%), #161819;
   box-shadow:
     0 0 0 3px rgb(239 93 104 / 20%),
     0 0 24px rgb(255 67 55 / 48%),
     0 9px 25px rgb(0 0 0 / 48%);
-  animation: mafia-flame-pulse 1.25s ease-in-out infinite alternate;
 }
 .player-seat.is-mafia-shooter::after,
 .player-seat.is-availability-selected::after {
   position: absolute;
-  z-index: -1;
-  inset: -14px 13px 44px;
+  z-index: 0;
+  inset: 1px;
   content: "";
   pointer-events: none;
+  border-radius: inherit;
+  /* Quiet interior fallback; the GPU supplies motion when it is available. */
   background:
-    radial-gradient(ellipse at 20% 100%, rgb(255 214 92 / 82%) 0 13%, transparent 43%),
-    radial-gradient(ellipse at 50% 100%, rgb(255 82 46 / 92%) 0 18%, transparent 50%),
-    radial-gradient(ellipse at 82% 100%, rgb(255 167 49 / 78%) 0 12%, transparent 42%);
-  filter: blur(5px);
-  transform-origin: 50% 100%;
-  animation: mafia-flame-flicker 620ms ease-in-out infinite alternate;
+    radial-gradient(ellipse at 20% 100%, rgb(222 93 23 / 10%), transparent 65%),
+    radial-gradient(ellipse at 82% 100%, rgb(255 137 49 / 10%), transparent 65%);
 }
 .player-seat.is-sheriff-highlight,
 .player-seat.is-goodbye-highlight {
@@ -1618,14 +1674,6 @@ button.player-seat.is-voting-highlight::after {
     .is-availability-selected,
     .is-sheriff-highlight,
     .is-goodbye-highlight
-  ),
-.app-shell[data-player-lighting="disabled"] .player-seat.is-current,
-.app-shell[data-player-lighting="disabled"]
-  .player-seat:is(
-    .is-mafia-shooter,
-    .is-availability-selected,
-    .is-sheriff-highlight,
-    .is-goodbye-highlight
   ) {
   box-shadow: 0 9px 25px rgb(0 0 0 / 40%);
   animation: none;
@@ -1637,19 +1685,10 @@ button.player-seat.is-voting-highlight::after {
     .is-sheriff-highlight,
     .is-goodbye-highlight
   )::after,
-.app-shell[data-player-lighting="disabled"]
-  .player-seat:is(
-    .is-mafia-shooter,
-    .is-availability-selected,
-    .is-sheriff-highlight,
-    .is-goodbye-highlight
-  )::after,
-.app-shell:not([data-lighting-renderer="legacy"]) button.player-seat.is-voting-highlight::after,
-.app-shell[data-player-lighting="disabled"] button.player-seat.is-voting-highlight::after {
+.app-shell:not([data-lighting-renderer="legacy"]) button.player-seat.is-voting-highlight::after {
   content: none;
 }
-.app-shell:not([data-lighting-renderer="legacy"]) button.player-seat.is-voting-highlight,
-.app-shell[data-player-lighting="disabled"] button.player-seat.is-voting-highlight {
+.app-shell:not([data-lighting-renderer="legacy"]) button.player-seat.is-voting-highlight {
   box-shadow: 0 12px 30px rgb(0 0 0 / 58%);
   animation: none;
 }
@@ -1766,12 +1805,6 @@ button.player-seat.is-voting-highlight::after {
   top: calc(100% + 5px);
   bottom: auto;
 }
-.seat-anchor[data-seat="1"] .seat-actions {
-  transform: translateX(-35%);
-}
-.seat-anchor[data-seat="10"] .seat-actions {
-  transform: translateX(-65%);
-}
 .seat-actions button {
   flex: 1 1 0;
   min-width: 0;
@@ -1790,43 +1823,6 @@ button.player-seat.is-voting-highlight::after {
   border-color: #ff8177;
   opacity: 1;
 }
-.host-anchor {
-  z-index: 5;
-}
-.host-seat {
-  place-items: center;
-  overflow: hidden;
-  color: #d5d4ff;
-  background:
-    radial-gradient(circle at 50% 0%, rgb(229 169 77 / 34%), transparent 42%),
-    linear-gradient(145deg, rgb(113 112 255 / 28%), rgb(23 24 33 / 96%) 58%), #171821;
-  border-color: rgb(113 112 255 / 38%);
-  box-shadow:
-    inset 0 0 0 1px rgb(229 169 77 / 16%),
-    inset 0 -18px 32px rgb(0 0 0 / 18%),
-    0 14px 35px rgb(0 0 0 / 45%);
-}
-.host-crown {
-  color: #f4c36f;
-  font-size: 1.15rem;
-  filter: drop-shadow(0 0 8px rgb(229 169 77 / 62%));
-}
-.host-name {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
-}
-.host-role {
-  color: #aeadff;
-  font:
-    500 0.58rem "JetBrains Mono",
-    monospace;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-
 .game-shell {
   min-height: 100vh;
   padding: 22px clamp(14px, 2vw, 28px) 110px;
@@ -3005,14 +3001,12 @@ button.player-seat.is-voting-highlight::after {
     --layout-gutter: 14px;
     --right-panel-width: 406px;
     --main-card-width: min(918px, calc(100vw - 448px));
-    --main-card-top: 74px;
-    --main-card-height: calc(100dvh - 88px);
+    --main-card-top: calc(var(--header-top) + 76px);
+    --main-card-height: calc(100dvh - var(--main-card-top) - 14px);
     overflow: hidden;
   }
   .app-shell.is-fullscreen {
     --header-top: max(32px, env(safe-area-inset-top));
-    --main-card-top: 92px;
-    --main-card-height: calc(100dvh - 106px);
   }
   .app-status-bar {
     top: var(--header-top);
@@ -3071,8 +3065,8 @@ button.player-seat.is-voting-highlight::after {
     gap: 12px;
     align-items: center;
     width: 100%;
-    height: 46px;
-    min-height: 46px;
+    height: 62px;
+    min-height: 62px;
     margin-bottom: 14px;
   }
   .table-layout-shell .game-header > :first-child {
@@ -3099,6 +3093,7 @@ button.player-seat.is-voting-highlight::after {
   .table-layout-shell .game-header h1 {
     font-size: clamp(1.4rem, 2vw, 1.85rem);
   }
+
   .table-layout-shell .game-header-actions {
     grid-column: 3;
     justify-self: end;
@@ -3196,11 +3191,14 @@ button.player-seat.is-voting-highlight::after {
     padding: 0;
   }
   .table-layout-shell .seat-anchor {
-    top: calc(50% + 22px);
+    top: calc(50% + 32px);
   }
   .table-layout-shell .round-table {
     --table-size: min(52vw, calc(100dvh - 300px), 720px);
-    --table-radius: min(calc(var(--table-size) * 0.68), 394px);
+    --table-radius: min(calc(var(--table-size) * 0.68), 383px);
+  }
+  .app-shell.is-fullscreen.table-layout-shell .seat-anchor {
+    top: calc(50% + 23px);
   }
   .live-side-panel.has-live-utilities {
     position: fixed;
@@ -3403,7 +3401,7 @@ html:-webkit-full-screen #root {
     left: 345px;
     display: grid;
     place-items: center;
-    width: min(330px, calc(100vw - 345px - var(--s6-toolbar-width) - var(--s6-edge) * 2));
+    width: min(330px, calc(100vw - 345px - var(--s6-toolbar-width) - var(--s6-edge) * 4));
     height: var(--s6-header-height);
     margin: 0;
     padding: 0 10px;
@@ -3656,12 +3654,7 @@ html:-webkit-full-screen #root {
   .seat-badges {
     gap: 1px 2px;
   }
-  .host-crown {
-    font-size: 0.82rem;
-  }
-  .host-role {
-    font-size: 0.45rem;
-  }
+
   .seat-actions {
     bottom: calc(100% + 3px);
   }
@@ -3950,9 +3943,7 @@ html:-webkit-full-screen #root {
     min-height: 42px;
     padding-inline: 3px;
   }
-  .host-anchor {
-    grid-column: 1 / -1;
-  }
+
   .voter-grid,
   .night-target-grid {
     grid-template-columns: repeat(2, 1fr);
@@ -3962,6 +3953,15 @@ html:-webkit-full-screen #root {
     width: min(356px, calc(100vw - 16px));
     margin: 12px auto;
     opacity: 1;
+  }
+}
+
+@media (max-width: 539px) {
+  .table-layout-shell .role-draw-screen .game-header {
+    padding-top: 58px;
+  }
+  .table-layout-shell .role-draw-screen .table-card {
+    height: 88px;
   }
 }
 
@@ -4242,9 +4242,7 @@ html:-webkit-full-screen #root {
     padding: 0 2px;
     font-size: 0.5rem;
   }
-  .host-anchor {
-    grid-column: auto;
-  }
+
   .table-primary {
     width: 145px;
     min-width: 120px;
