@@ -13,10 +13,16 @@
     "npm": ">=10"
   },
   "scripts": {
-    "dev": "npm run migrate -w @mafia/server && concurrently --kill-others-on-fail --names server,web \"npm run dev -w @mafia/server\" \"npm run dev -w @mafia/web\"",
+    "dev": "node scripts/dev-local.mjs",
+    "dev:localhost": "node scripts/dev-local.mjs --local",
+    "dev:web": "npm run dev -w @mafia/web -- --host 127.0.0.1 --strictPort",
     "ci:install": "npm ci --ignore-scripts --no-audit && npm rebuild esbuild",
     "build": "npm run build --workspaces --if-present",
-    "test": "npm run test:security-contracts && npm run test:azure-contracts && npm run test:verifier-contracts && npm run test:backup-contracts && npm run test:release-contracts && npm run test --workspaces --if-present",
+    "test": "npm run test:local-contracts && npm run test:security-contracts && npm run test:azure-contracts && npm run test:verifier-contracts && npm run test:backup-contracts && npm run test:release-contracts && npm run test --workspaces --if-present",
+    "test:local-contracts": "node --test scripts/local-stack.test.mjs scripts/local-backend.test.mjs scripts/test-local.test.mjs",
+    "test:local": "node scripts/test-local.mjs",
+    "check:local": "node scripts/test-local.mjs --check",
+    "verify:local": "node scripts/verify-local-backend.mjs",
     "test:backup-contracts": "node --test scripts/postgres-backup-contracts.test.mjs",
     "test:release-contracts": "node --test scripts/release-verifier-contracts.test.mjs",
     "test:security-contracts": "node --test scripts/security-workflow-contracts.test.mjs",
