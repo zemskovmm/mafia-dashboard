@@ -2151,6 +2151,66 @@ describe("developer menu", () => {
     );
   });
 
+  it.each([0, 4, 10])(
+    "routes New game from Players to availability with %i available players",
+    async (availableCount) => {
+      const user = userEvent.setup();
+      const playerIds = [...assignedGame.players.map(({ id }) => id), hostPlayerId];
+      const storageKey = `mafia-dashboard.available-player-ids.${testClub.id}`;
+      const otherStorageKey = `mafia-dashboard.available-player-ids.${otherClub.id}`;
+      const selectedIds = playerIds.slice(0, availableCount);
+      window.localStorage.setItem(storageKey, JSON.stringify(selectedIds));
+      window.localStorage.setItem(otherStorageKey, JSON.stringify(playerIds));
+      render(<App />);
+      await waitFor(() => expect(api.listPlayers).toHaveBeenCalledWith(testClub.id));
+
+      await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+      await user.click(screen.getByRole("button", { name: "Players screen" }));
+      await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+      await user.click(screen.getByRole("button", { name: "Start new game" }));
+
+      expect(
+        within(screen.getByRole("main")).getByRole("heading", { name: "Available players" }),
+      ).toBeInTheDocument();
+      expect(screen.getByRole("banner", { name: "Application status" })).toHaveTextContent(
+        "Available players",
+      );
+      expect(screen.queryByRole("dialog", { name: "Manage" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+      const cards = within(screen.getByRole("group", { name: "Player availability" }));
+      expect(cards.queryAllByRole("button", { pressed: true })).toHaveLength(availableCount);
+      expect(window.localStorage.getItem(storageKey)).toBe(JSON.stringify(selectedIds));
+
+      for (const card of cards.getAllByRole("button", { pressed: false })) {
+        await user.click(card);
+      }
+      await user.click(screen.getByRole("button", { name: "Close available players" }));
+      expect(
+        within(screen.getByRole("main")).getByRole("heading", { name: "Game setup" }),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId("setup-player-pool")).toHaveTextContent(
+        [...assignedGame.players.map(({ name }) => name), "Host Player"].join(","),
+      );
+      expect(JSON.parse(window.localStorage.getItem(storageKey) ?? "null")).toEqual(playerIds);
+      expect(window.localStorage.getItem(otherStorageKey)).toBe(JSON.stringify(playerIds));
+      expect(api.saveGameSession).not.toHaveBeenCalled();
+      expect(api.clearGameSession).not.toHaveBeenCalled();
+    },
+  );
+
+  it("routes New game from setup to availability when none are selected", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await waitFor(() => expect(api.listPlayers).toHaveBeenCalledWith(testClub.id));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    await user.click(screen.getByRole("button", { name: "Start new game" }));
+
+    expect(
+      within(screen.getByRole("main")).getByRole("heading", { name: "Available players" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("limits setup Host and Seat choices to marked-available players", async () => {
     const [firstPlayer, secondPlayer] = assignedGame.players;
     window.localStorage.setItem(
@@ -3705,6 +3765,29 @@ describe("authoritative game session lifecycle", () => {
     );
   });
 
+  it("does not open availability or clear the game when New game is cancelled", async () => {
+    const user = userEvent.setup();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
+      ).toBeInTheDocument(),
+    );
+    const savedSession = window.localStorage.getItem("mafia-dashboard.game-session.v5");
+    expect(savedSession).not.toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    await user.click(screen.getByRole("button", { name: "Start new game" }));
+
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(api.clearGameSession).not.toHaveBeenCalled();
+    expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
+    expect(screen.queryByRole("searchbox", { name: "Search available players" })).toBeNull();
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBe(savedSession);
+  });
+
   it("clears by known UUID while first save is pending and waits for the tombstone", async () => {
     const user = userEvent.setup();
     const firstSave = deferred<{ revision: number; duplicate: boolean }>();
@@ -3725,10 +3808,12 @@ describe("authoritative game session lifecycle", () => {
     );
     expect(api.clearGameSession).toHaveBeenCalledWith(gameId, 0, expect.any(Object), testClub.id);
     expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
+    expect(screen.queryByRole("searchbox", { name: "Search available players" })).toBeNull();
     clear.resolve();
     await waitFor(() =>
       expect(screen.queryByRole("heading", { name: "Role giveaway" })).toBeNull(),
     );
+    expect(screen.getByRole("searchbox", { name: "Search available players" })).toBeInTheDocument();
     expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBeNull();
     firstSave.resolve({ revision: 1, duplicate: false });
   });
@@ -3781,6 +3866,7 @@ describe("authoritative game session lifecycle", () => {
       gameId: newerGameId,
       current: { state: { playlistId: "dev-playlist" } },
     });
+    expect(screen.queryByRole("searchbox", { name: "Search available players" })).toBeNull();
   });
 
   it("preserves local setup and outbox when remote clear fails", async () => {
@@ -3812,6 +3898,7 @@ describe("authoritative game session lifecycle", () => {
       failed: false,
       clearFailed: true,
     });
+    expect(screen.queryByRole("searchbox", { name: "Search available players" })).toBeNull();
   });
 });
 

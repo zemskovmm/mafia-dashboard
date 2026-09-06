@@ -1725,7 +1725,7 @@ export const ClubWorkspace = ({
     syncRender,
   ]);
 
-  const clearGameState = async () => {
+  const clearGameState = async (openAvailablePlayers = false) => {
     if (!window.confirm(t("deleteActiveGameConfirmation"))) return;
     const clearingGameId = sessionSync.gameId;
     try {
@@ -1742,6 +1742,7 @@ export const ClubWorkspace = ({
     }
     if (sessionSync.gameId !== null && sessionSync.gameId !== clearingGameId) return;
     resetLocalState();
+    setAvailabilityScreenOpen(openAvailablePlayers);
     void refreshActiveSessions();
   };
 
@@ -2257,20 +2258,19 @@ export const ClubWorkspace = ({
             <button
               type="button"
               onClick={() => {
-                if (view === "players" && availablePlayersForSetup.length < 11) {
-                  const missing = 11 - availablePlayersForSetup.length;
-                  setPlayerGateError(
-                    players.length < 11
-                      ? { key: "addRegisteredPlayers", count: 11 - players.length }
-                      : { key: "markAvailablePlayers", count: missing },
-                  );
+                if (view === "players" && players.length < 11) {
+                  setPlayerGateError({ key: "addRegisteredPlayers", count: 11 - players.length });
                   setActiveDrawer(null);
                   return;
                 }
                 setPlayerGateError(null);
                 setActiveDrawer(null);
-                if (hasCurrentGameState) void clearGameState();
-                else resetLocalState();
+                const openAvailablePlayers = availablePlayersForSetup.length < 11;
+                if (hasCurrentGameState) void clearGameState(openAvailablePlayers);
+                else {
+                  resetLocalState();
+                  setAvailabilityScreenOpen(openAvailablePlayers);
+                }
               }}
             >
               {t("startNewGame")}
