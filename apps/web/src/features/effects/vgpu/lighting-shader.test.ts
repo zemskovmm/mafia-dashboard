@@ -13,6 +13,14 @@ const config = {
 };
 
 describe("V-GPU lighting shader", () => {
+  it("shades the fire from its semantic outline hue instead of a separate orange palette", () => {
+    const fire = vgpuLightingShader.slice(vgpuLightingShader.indexOf("fn player_fire"));
+    expect(fire).toContain("cfg.primary.rgb");
+    expect(fire).not.toContain("vec3f(1.0, 0.37, 0.032)");
+    expect(fire).not.toContain("vec3f(1.0, 0.77, 0.31)");
+    expect(fire).toContain("sum *= 0.50 * 1.5");
+  });
+
   it("selects the approved turbulent sheets as fourteen-slice semantic interior fire", () => {
     expect(vgpuLightingShader).toContain("if (distance >= 0.0)");
     expect(vgpuLightingShader).toContain("cfg.pulse.z > 0.5");

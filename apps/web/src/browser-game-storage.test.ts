@@ -169,6 +169,16 @@ describe("browser current-v5 game storage", () => {
     expect(localStorage.getItem(gameSessionStorageKey)).toBeNull();
   });
 
+  it("allows explicit guarded discard of unresolved local work without weakening release", async () => {
+    const localStorage = memoryStorage();
+    seed(localStorage, { pending: true });
+    const attachment = readBrowserGameAttachment(localStorage)!;
+
+    await expect(releaseBrowserGameStorage(localStorage, attachment)).resolves.toBe(false);
+    await expect(discardBrowserGameStorage({ localStorage }, attachment)).resolves.toBeUndefined();
+    expect(localStorage.getItem(gameSessionStorageKey)).toBeNull();
+  });
+
   it("uses raw-byte revalidation before clearing an invalid record", async () => {
     const localStorage = memoryStorage();
     const raw = '{"version":5,"current":{}}';

@@ -83,7 +83,7 @@ describe("GameScreen", () => {
     expect(screen.getByRole("button", { name: "Фол: Player 1" })).toBeInTheDocument();
   });
 
-  it("shows Critical under active team counts in every critical live phase, even when masked", () => {
+  it("shows Critical only when private information is revealed, including at night", () => {
     const day = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
     let citizens = 0;
     let mafia = 0;
@@ -117,7 +117,7 @@ describe("GameScreen", () => {
         privacyHidden
       />,
     );
-    expect(screen.getByRole("status", { name: "Critical" })).toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: "Critical" })).toBeNull();
 
     rerender(
       <GameScreen
@@ -126,6 +126,16 @@ describe("GameScreen", () => {
         onGameChange={() => undefined}
         onEvent={() => undefined}
         privacyHidden
+      />,
+    );
+    expect(screen.queryByRole("status", { name: "Critical" })).toBeNull();
+    rerender(
+      <GameScreen
+        game={{ ...critical, phase: "night-mafia" }}
+        hostName="Host Player"
+        onGameChange={() => undefined}
+        onEvent={() => undefined}
+        privacyHidden={false}
       />,
     );
     expect(screen.getByRole("status", { name: "Critical" })).toBeInTheDocument();
@@ -141,6 +151,53 @@ describe("GameScreen", () => {
     );
     expect(screen.queryByRole("status", { name: "Critical" })).toBeNull();
   });
+
+  it.each(["en", "ru"] as const)(
+    "renders one localized, privacy-safe endgame pill and clean header in %s",
+    (locale) => {
+      const day = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+      let red = 0;
+      let black = 0;
+      const guessing: GameState = {
+        ...day,
+        players: day.players.map((player) => ({
+          ...player,
+          status: (player.team === "red" ? red++ < 2 : black++ < 1) ? "active" : "eliminated",
+        })),
+      };
+      const label = locale === "en" ? "Guessing Game" : "угадайка";
+      const renderGame = (game: GameState, privacyHidden: boolean, preview = false) => (
+        <I18nProvider locale={locale}>
+          <GameScreen
+            game={game}
+            gameName="Fixture game"
+            clubName="Fixture club"
+            hostName="Host"
+            onGameChange={() => undefined}
+            onEvent={() => undefined}
+            privacyHidden={privacyHidden}
+            mode={preview ? "preview" : "live"}
+          />
+        </I18nProvider>
+      );
+      const { rerender, container } = render(renderGame(guessing, false));
+      expect(screen.getByRole("status", { name: label })).toBeInTheDocument();
+      expect(container.querySelectorAll(".critical-state-pill")).toHaveLength(1);
+      const header = container.querySelector(".game-header .eyebrow");
+      expect(header).toHaveTextContent("Fixture club · Fixture game");
+      expect(header?.textContent).not.toMatch(/host view|панель ведущего|режим ведущего|·\s*$/i);
+      rerender(renderGame(guessing, true));
+      expect(container.querySelector(".critical-state-pill")).toBeNull();
+      rerender(renderGame({ ...guessing, phase: "night-mafia" }, false));
+      expect(screen.getByRole("status", { name: label })).toBeInTheDocument();
+      rerender(renderGame(guessing, false, true));
+      expect(screen.getByRole("status", { name: label })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: /Preview|Просмотр/i })).toBeInTheDocument();
+      rerender(renderGame(day, true));
+      rerender(renderGame(day, false));
+      expect(container.querySelector(".critical-state-pill")).toBeNull();
+    },
+  );
 
   it("keeps a static table tint in sync with Day and night", () => {
     const day = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));

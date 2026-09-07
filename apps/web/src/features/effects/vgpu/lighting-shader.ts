@@ -138,8 +138,9 @@ fn player_fire(position: vec2f, distance: f32) -> vec4f {
     let tip = 1.0 - smoothstep(0.64, 1.05, rise);
     let density = body * tip * 0.15;
     let temperature = clamp(field * 2.8 + (1.0 - rise) * 0.4 + detail * 0.14, 0.0, 1.0);
-    var colour = mix(vec3f(0.78, 0.058, 0.004), vec3f(1.0, 0.37, 0.032), smoothstep(0.06, 0.5, temperature));
-    colour = mix(colour, vec3f(1.0, 0.77, 0.31), pow(temperature, 3.0));
+    // Shade the outline's semantic hue; hotter sheets lighten without turning yellow.
+    var colour = cfg.primary.rgb * mix(0.78, 1.0, smoothstep(0.06, 0.5, temperature));
+    colour = mix(colour, mix(cfg.primary.rgb, vec3f(1.0), 0.35), pow(temperature, 3.0));
     sum += (1.0 - absorption) * colour * density;
     absorption += (1.0 - absorption) * density * 0.64;
   }
@@ -148,7 +149,7 @@ fn player_fire(position: vec2f, distance: f32) -> vec4f {
   let reading = 1.0 - 0.77 * exp(-pow(abs((x - 0.5) / 0.29), 4.0) - pow(abs((y - 0.52) / 0.24), 4.0));
   let edge = smoothstep(0.0, 0.025, x) * smoothstep(0.0, 0.025, 1.0 - x);
   let base = exp(-y * 24.0) * (0.55 + 0.45 * fire_noise(vec3f(x * 44.0, t * 0.7, 1.0)));
-  sum += vec3f(0.27, 0.041, 0.003) * base;
+  sum += cfg.primary.rgb * 0.27 * base;
   sum *= 0.50 * 1.5 * reading * edge * mix(0.65, 1.0, side);
   return screen_to_straight_alpha(sum);
 }

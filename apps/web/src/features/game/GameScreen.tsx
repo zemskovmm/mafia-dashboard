@@ -18,6 +18,7 @@ import { gameMessages, type GameMessageKey } from "../../i18n/messages/game.js";
 import { NightStage } from "../night/NightStage.js";
 import { GameTable } from "../table/GameTable.js";
 import { isCriticalState } from "./critical-state.js";
+import { isGuessingState } from "./guessing-state.js";
 import { VotingStage } from "../voting/VotingStage.js";
 
 interface GameScreenProps {
@@ -467,6 +468,7 @@ export const GameScreen = ({
     );
   })();
 
+  const endgameLabel = isGuessingState(game) ? t("game.guessingGame") : t("game.critical");
   const tableCycle =
     game.phase === "mafia-planning" ||
     game.phase === "sheriff-wake" ||
@@ -485,7 +487,7 @@ export const GameScreen = ({
         <div>
           <p className="eyebrow">
             {t("game.live")} · {clubName === undefined ? "" : `${clubName} · `}
-            {displayGameName} · {t("game.hostView")}
+            {displayGameName}
           </p>
           <h1>
             {mode === "preview"
@@ -542,9 +544,9 @@ export const GameScreen = ({
                 {t("game.mafia")} {privacyHidden ? "?" : activeMafia}
               </span>
             </span>
-            {isCriticalState(game) ? (
-              <span className="critical-state-pill" role="status" aria-label={t("game.critical")}>
-                {t("game.critical")}
+            {!privacyHidden && isCriticalState(game) ? (
+              <span className="critical-state-pill" role="status" aria-label={endgameLabel}>
+                {endgameLabel}
               </span>
             ) : null}
           </div>

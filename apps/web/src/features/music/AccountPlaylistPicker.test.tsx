@@ -4,85 +4,66 @@ import { useState, type ComponentType } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   disconnectMusicAccount,
-  getMusicAccountStatus,
   listMusicPlaylists,
+  type MusicAccountStatus,
 } from "../../api/client.js";
 import { I18nProvider } from "../../i18n/I18nProvider.js";
 import { AccountPlaylistPicker } from "./AccountPlaylistPicker.js";
 
 vi.mock("../../api/client.js", () => ({
-  getMusicAccountStatus: vi.fn(),
   listMusicPlaylists: vi.fn(),
   disconnectMusicAccount: vi.fn(),
 }));
 
 beforeEach(() => {
-  vi.mocked(getMusicAccountStatus).mockReset();
   vi.mocked(listMusicPlaylists).mockReset();
   vi.mocked(disconnectMusicAccount).mockReset();
 });
 
 describe("AccountPlaylistPicker", () => {
   it("offers Google authorization when no account is connected", async () => {
-    vi.mocked(getMusicAccountStatus).mockResolvedValue({
-      configured: true,
-      connected: false,
-      accountLabel: null,
-    });
-
     render(
       <AccountPlaylistPicker
         playlistId=""
         onPlaylistIdChange={vi.fn()}
         onAccountDisconnected={vi.fn()}
+        status={{ configured: true, connected: false, accountLabel: null }}
+        statusError={false}
+        onRetry={vi.fn()}
+        onStatusChange={vi.fn()}
       />,
     );
 
-    const connect = await screen.findByRole("link", {
+    const connect = screen.getByRole("link", {
       name: "Connect YouTube Music account",
     });
     expect(connect).toHaveAttribute("href", "/api/music/oauth/start");
     expect(screen.getByText(/least-privilege read-only access/i)).toBeInTheDocument();
   });
 
-  it("keeps playlist-ID playback available when account OAuth is not configured", async () => {
+  it("shows unavailable account setup without a manual playlist-ID bypass", () => {
     const onPlaylistIdChange = vi.fn();
-    vi.mocked(getMusicAccountStatus).mockResolvedValue({
-      configured: false,
-      connected: false,
-      accountLabel: null,
-    });
-    const user = userEvent.setup();
-    const Harness = () => {
-      const [playlistId, setPlaylistId] = useState("");
-      return (
-        <AccountPlaylistPicker
-          playlistId={playlistId}
-          onAccountDisconnected={vi.fn()}
-          onPlaylistIdChange={(next: string) => {
-            setPlaylistId(next);
-            onPlaylistIdChange(next);
-          }}
-        />
-      );
-    };
+    render(
+      <AccountPlaylistPicker
+        playlistId="remembered-playlist"
+        onPlaylistIdChange={onPlaylistIdChange}
+        onAccountDisconnected={vi.fn()}
+        status={{ configured: false, connected: false, accountLabel: null }}
+        statusError={false}
+        onRetry={vi.fn()}
+        onStatusChange={vi.fn()}
+      />,
+    );
 
-    render(<Harness />);
-    const playlistId = await screen.findByRole("textbox", {
-      name: "YouTube Music playlist ID",
-    });
-    await user.type(playlistId, "PL-manual");
-
-    expect(onPlaylistIdChange).toHaveBeenLastCalledWith("PL-manual");
+    expect(
+      screen.getByRole("button", { name: /Connect YouTube Music account unavailable/i }),
+    ).toBeDisabled();
+    expect(screen.queryByRole("textbox", { name: "YouTube Music playlist ID" })).toBeNull();
+    expect(onPlaylistIdChange).not.toHaveBeenCalled();
   });
 
   it("lists account playlists and selects one for playback", async () => {
     const onPlaylistIdChange = vi.fn();
-    vi.mocked(getMusicAccountStatus).mockResolvedValue({
-      configured: true,
-      connected: true,
-      accountLabel: "Mafia Host",
-    });
     vi.mocked(listMusicPlaylists).mockResolvedValue([
       { id: "PL-dinner", title: "Dinner mix", itemCount: 12, thumbnailUrl: null },
       { id: "PL-late", title: "Late night", itemCount: 8, thumbnailUrl: null },
@@ -94,6 +75,10 @@ describe("AccountPlaylistPicker", () => {
         playlistId=""
         onPlaylistIdChange={onPlaylistIdChange}
         onAccountDisconnected={vi.fn()}
+        status={{ configured: true, connected: true, accountLabel: "Mafia Host" }}
+        statusError={false}
+        onRetry={vi.fn()}
+        onStatusChange={vi.fn()}
       />,
     );
     const picker = await screen.findByRole("combobox", { name: "YouTube Music playlist" });
@@ -110,11 +95,6 @@ describe("AccountPlaylistPicker", () => {
     const LegacyCompatiblePicker = AccountPlaylistPicker as unknown as ComponentType<
       Record<string, unknown>
     >;
-    vi.mocked(getMusicAccountStatus).mockResolvedValue({
-      configured: true,
-      connected: true,
-      accountLabel: "Mafia Host",
-    });
     vi.mocked(listMusicPlaylists).mockResolvedValue([
       { id: "PL-day", title: "Day mix", itemCount: 12, thumbnailUrl: null },
       { id: "PL-vote", title: "Vote mix", itemCount: 8, thumbnailUrl: null },
@@ -125,6 +105,10 @@ describe("AccountPlaylistPicker", () => {
         playlistId="PL-day"
         onPlaylistIdChange={vi.fn()}
         onAccountDisconnected={vi.fn()}
+        status={{ configured: true, connected: true, accountLabel: "Mafia Host" }}
+        statusError={false}
+        onRetry={vi.fn()}
+        onStatusChange={vi.fn()}
         stagePlaylistIds={{ day: "PL-day", night: "PL-night" }}
         onStagePlaylistIdsChange={vi.fn()}
       />,
@@ -141,24 +125,31 @@ describe("AccountPlaylistPicker", () => {
   it("delegates successful disconnect cleanup to one account-disconnected callback", async () => {
     const onPlaylistIdChange = vi.fn();
     const onAccountDisconnected = vi.fn();
-    vi.mocked(getMusicAccountStatus).mockResolvedValue({
-      configured: true,
-      connected: true,
-      accountLabel: "Mafia Host",
-    });
     vi.mocked(listMusicPlaylists).mockResolvedValue([
       { id: "PL-music", title: "Mafia music", itemCount: 20, thumbnailUrl: null },
     ]);
     vi.mocked(disconnectMusicAccount).mockResolvedValue(undefined);
     const user = userEvent.setup();
+    const Harness = () => {
+      const [status, setStatus] = useState<MusicAccountStatus>({
+        configured: true,
+        connected: true,
+        accountLabel: "Mafia Host",
+      });
+      return (
+        <AccountPlaylistPicker
+          playlistId="PL-music"
+          onPlaylistIdChange={onPlaylistIdChange}
+          onAccountDisconnected={onAccountDisconnected}
+          status={status}
+          statusError={false}
+          onRetry={vi.fn()}
+          onStatusChange={setStatus}
+        />
+      );
+    };
 
-    render(
-      <AccountPlaylistPicker
-        playlistId="PL-music"
-        onPlaylistIdChange={onPlaylistIdChange}
-        onAccountDisconnected={onAccountDisconnected}
-      />,
-    );
+    render(<Harness />);
     await user.click(await screen.findByRole("button", { name: "Disconnect account" }));
 
     expect(disconnectMusicAccount).toHaveBeenCalledOnce();
@@ -172,11 +163,6 @@ describe("AccountPlaylistPicker", () => {
   it("leaves playlist state unchanged when disconnecting the account fails", async () => {
     const onPlaylistIdChange = vi.fn();
     const onAccountDisconnected = vi.fn();
-    vi.mocked(getMusicAccountStatus).mockResolvedValue({
-      configured: true,
-      connected: true,
-      accountLabel: "Mafia Host",
-    });
     vi.mocked(listMusicPlaylists).mockResolvedValue([
       { id: "PL-music", title: "Mafia music", itemCount: 20, thumbnailUrl: null },
     ]);
@@ -188,6 +174,10 @@ describe("AccountPlaylistPicker", () => {
         playlistId="PL-music"
         onPlaylistIdChange={onPlaylistIdChange}
         onAccountDisconnected={onAccountDisconnected}
+        status={{ configured: true, connected: true, accountLabel: "Mafia Host" }}
+        statusError={false}
+        onRetry={vi.fn()}
+        onStatusChange={vi.fn()}
       />,
     );
     await user.click(await screen.findByRole("button", { name: "Disconnect account" }));
@@ -200,26 +190,44 @@ describe("AccountPlaylistPicker", () => {
     expect(onPlaylistIdChange).not.toHaveBeenCalled();
   });
 
-  it("renders Russian account loading and manual playlist recovery", async () => {
-    vi.mocked(getMusicAccountStatus).mockResolvedValue({
-      configured: false,
-      connected: false,
-      accountLabel: null,
-    });
-
+  it("renders Russian account loading without a manual playlist bypass", () => {
     render(
       <I18nProvider locale="ru">
         <AccountPlaylistPicker
           playlistId=""
           onPlaylistIdChange={vi.fn()}
           onAccountDisconnected={vi.fn()}
+          status={null}
+          statusError={false}
+          onRetry={vi.fn()}
+          onStatusChange={vi.fn()}
         />
       </I18nProvider>,
     );
 
     expect(screen.getByText("Проверяем аккаунт YouTube Music…")).toBeInTheDocument();
-    const playlistId = await screen.findByRole("textbox", { name: "ID плейлиста YouTube Music" });
-    expect(playlistId).toHaveAttribute("placeholder", "Вставьте ID плейлиста");
-    expect(screen.getByText(/Доступ к аккаунту Google ещё не настроен/)).toBeInTheDocument();
+    expect(screen.queryByRole("textbox", { name: "ID плейлиста YouTube Music" })).toBeNull();
+  });
+
+  it("offers a retry after the shared account status check fails", async () => {
+    const onRetry = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <AccountPlaylistPicker
+        playlistId=""
+        onPlaylistIdChange={vi.fn()}
+        onAccountDisconnected={vi.fn()}
+        status={null}
+        statusError
+        onRetry={onRetry}
+        onStatusChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Unable to check the YouTube Music account.",
+    );
+    await user.click(screen.getByRole("button", { name: "Retry music account check" }));
+    expect(onRetry).toHaveBeenCalledOnce();
   });
 });

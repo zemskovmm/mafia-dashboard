@@ -64,6 +64,7 @@ const api = vi.hoisted(() => {
     listClubs: vi.fn(),
     createClub: vi.fn(),
     deleteClub: vi.fn(),
+    getMusicAccountStatus: vi.fn(),
     updateClub: vi.fn(),
   };
 });
@@ -586,25 +587,63 @@ vi.mock("./features/music/AccountPlaylistPicker.js", () => ({
     playlistId,
     onPlaylistIdChange,
     onAccountDisconnected,
+    onStatusChange,
+    onRetry,
+    status = { configured: true, connected: true, accountLabel: "Mafia Host" },
+    statusError = false,
   }: {
     playlistId: string;
     onPlaylistIdChange: (playlistId: string) => void;
     onAccountDisconnected: () => void;
-  }) => (
-    <>
-      <select
-        aria-label="YouTube Music playlist"
-        value={playlistId}
-        onChange={(event) => onPlaylistIdChange(event.target.value)}
-      >
-        <option value="">No playlist</option>
-        <option value="dev-playlist">Dev playlist</option>
-      </select>
-      <button type="button" onClick={onAccountDisconnected}>
-        Disconnect account
-      </button>
-    </>
-  ),
+    onStatusChange?: (status: {
+      configured: boolean;
+      connected: boolean;
+      accountLabel: string | null;
+    }) => void;
+    onRetry?: () => void;
+    status?: { configured: boolean; connected: boolean; accountLabel: string | null } | null;
+    statusError?: boolean;
+  }) => {
+    if (statusError) {
+      return (
+        <button type="button" onClick={onRetry}>
+          Retry music account check
+        </button>
+      );
+    }
+    if (status === null) return <p>Checking YouTube Music account…</p>;
+    if (!status.configured) {
+      return (
+        <button type="button" disabled>
+          Connect YouTube Music account unavailable
+        </button>
+      );
+    }
+    if (!status.connected) {
+      return <a href="/api/music/oauth/start">Connect YouTube Music account</a>;
+    }
+    return (
+      <>
+        <select
+          aria-label="YouTube Music playlist"
+          value={playlistId}
+          onChange={(event) => onPlaylistIdChange(event.target.value)}
+        >
+          <option value="">No playlist</option>
+          <option value="dev-playlist">Dev playlist</option>
+        </select>
+        <button
+          type="button"
+          onClick={() => {
+            onAccountDisconnected();
+            onStatusChange?.({ configured: true, connected: false, accountLabel: null });
+          }}
+        >
+          Disconnect account
+        </button>
+      </>
+    );
+  },
 }));
 
 const player = (nickname: string, id: string): PlayerProfile => ({
@@ -693,6 +732,11 @@ beforeEach(() => {
     );
   api.updatePlayer.mockReset();
   api.getAuthSession.mockReset().mockResolvedValue({ configured: true, user: null });
+  api.getMusicAccountStatus.mockReset().mockResolvedValue({
+    configured: true,
+    connected: true,
+    accountLabel: "Mafia Host",
+  });
   api.signOut.mockReset().mockResolvedValue(undefined);
   api.takeoverGameSession.mockReset().mockResolvedValue({
     generation: 2,
@@ -715,6 +759,22 @@ afterEach(() => {
 });
 
 describe("club welcome", () => {
+  it.each(["en", "ru"] as const)(
+    "keeps the workspace title without a Host view suffix in %s",
+    (locale) => {
+      const { container } = render(
+        <I18nProvider locale={locale}>
+          <App />
+        </I18nProvider>,
+      );
+      const header = container.querySelector(".app-status-bar");
+      expect(header).toHaveTextContent("Mafia Malaga");
+      expect(header?.querySelector(".eyebrow")?.textContent).not.toMatch(
+        /host view|панель ведущего|режим ведущего|·\s*$/i,
+      );
+    },
+  );
+
   it("restores the browser game owner before rendering a club workspace", async () => {
     api.getAuthSession.mockResolvedValue(authenticatedUser);
     api.listClubs.mockResolvedValue([testClub, otherClub]);
@@ -857,6 +917,41 @@ describe("club welcome", () => {
       clubId: testClub.id,
       outbox: [expect.any(Object)],
     });
+  });
+
+  it("discards an unavailable owner's unresolved local game before opening the captured target", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    api.getAuthSession.mockResolvedValue(authenticatedUser);
+    api.listClubs.mockResolvedValue([testClub, otherClub]);
+    const missingClub = {
+      ...testClub,
+      id: "00000000-0000-4000-8000-000000000399",
+      name: "Unavailable club",
+    };
+    seedBrowserGame(
+      missingClub,
+      "00000000-0000-4000-8000-000000000398",
+      "Unfinished unavailable table",
+      true,
+    );
+
+    render(<WelcomeApp />);
+    await user.click(await screen.findByRole("button", { name: /Mafia Sevilla.*Sevilla/i }));
+
+    const dialog = screen.getByRole("dialog", { name: "Game attached to another club" });
+    const discard = within(dialog).getByRole("button", {
+      name: "Discard local game and open Mafia Sevilla",
+    });
+    expect(discard).toBeEnabled();
+    await user.click(discard);
+
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBeNull();
+    expect(
+      await screen.findByRole("button", {
+        name: "Choose another club · current club Mafia Sevilla",
+      }),
+    ).toBeInTheDocument();
   });
 
   it("refuses a stale missing-owner discard after another tab attaches a newer game", async () => {
@@ -1273,6 +1368,36 @@ describe("club player gate", () => {
 });
 
 describe("manage menu", () => {
+  it("does not mount a saved playlist player until the account is confirmed connected", async () => {
+    const status = deferred<{
+      configured: boolean;
+      connected: boolean;
+      accountLabel: string | null;
+    }>();
+    api.getMusicAccountStatus.mockReturnValueOnce(status.promise);
+    window.localStorage.setItem(
+      musicPreferencesStorageKey(testClub.id),
+      JSON.stringify({
+        version: 1,
+        lastPlaylistId: "remembered-playlist",
+        queueOrder: [],
+        initialStageEntryKeys: [],
+        endgameEntryKeys: [],
+      }),
+    );
+    const user = userEvent.setup();
+
+    render(<App />);
+
+    expect(screen.queryByTestId("youtube-player")).toBeNull();
+    status.resolve({ configured: true, connected: false, accountLabel: null });
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    expect(
+      await screen.findByRole("link", { name: "Connect YouTube Music account" }),
+    ).toHaveAttribute("href", "/api/music/oauth/start");
+    expect(screen.queryByTestId("youtube-player")).toBeNull();
+  });
+
   it("owns ordinary club, game, player, music, and active-game workflows", async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -2473,7 +2598,7 @@ describe("developer menu", () => {
   it("keeps the compact music player mounted but hides it on Players", async () => {
     const user = userEvent.setup();
     render(<App />);
-    const player = screen.getByTestId("youtube-player");
+    const player = await screen.findByTestId("youtube-player");
     const dock = player.closest(".youtube-dock");
     expect(dock).toHaveClass("is-compact");
     expect(dock).toBeVisible();
@@ -2490,7 +2615,7 @@ describe("developer menu", () => {
   it("groups live Timer, Voting order, and the persistent music player in one side panel", async () => {
     const user = userEvent.setup();
     render(<App />);
-    const player = screen.getByTestId("youtube-player");
+    const player = await screen.findByTestId("youtube-player");
 
     await user.click(screen.getByRole("button", { name: "Start test game" }));
 
@@ -2505,7 +2630,7 @@ describe("developer menu", () => {
     const user = userEvent.setup();
     render(<App />);
     const rail = screen.getByRole("complementary", { name: "Live game controls" });
-    const player = screen.getByTestId("youtube-player");
+    const player = await screen.findByTestId("youtube-player");
     const timer = within(rail).getByRole("region", { name: "Timer controls" });
     expect(within(rail).getByRole("region", { name: "Voting order" })).toHaveTextContent(
       "No nominations yet",
@@ -2537,6 +2662,7 @@ describe("developer menu", () => {
   it("advances to the first non-Initial track when a playing Role giveaway completes", async () => {
     const user = userEvent.setup();
     render(<App />);
+    await screen.findByTestId("youtube-player");
     act(() => musicPlayerHarness.setState?.("playing"));
     await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
     await user.click(screen.getByRole("button", { name: "Start test game" }));
@@ -2608,7 +2734,7 @@ describe("developer menu", () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
-    const player = screen.getByTestId("youtube-player");
+    const player = await screen.findByTestId("youtube-player");
     await user.click(screen.getByRole("button", { name: "Record game action" }));
     await user.click(screen.getByRole("button", { name: "Open game log" }));
     await user.click(screen.getByRole("button", { name: "Preview state after log #1" }));
@@ -2627,6 +2753,7 @@ describe("developer menu", () => {
   it("keeps music player setup behind the Manage menu", async () => {
     const user = userEvent.setup();
     render(<App />);
+    const player = await screen.findByTestId("youtube-player");
 
     expect(screen.queryByRole("region", { name: "Music player setup" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
@@ -2639,6 +2766,8 @@ describe("developer menu", () => {
     expect(screen.queryByLabelText("High")).toBeNull();
     expect(screen.queryByRole("combobox", { name: "Voting playlist" })).toBeNull();
     const playlist = screen.getByRole("combobox", { name: "YouTube Music playlist" });
+    expect(screen.getByTestId("youtube-player")).toBe(player);
+    expect(musicPlayerHarness).toMatchObject({ mounts: 1, unmounts: 0 });
     await user.selectOptions(playlist, "dev-playlist");
     expect(playlist).toHaveValue("dev-playlist");
   });
@@ -2661,7 +2790,7 @@ describe("developer menu", () => {
     expect(screen.queryByRole("button", { name: "Reset glass settings" })).not.toBeInTheDocument();
   });
 
-  it("restores the club's last playlist when no active game session supplies one", () => {
+  it("restores the club's last playlist when no active game session supplies one", async () => {
     window.localStorage.setItem(
       musicPreferencesStorageKey(testClub.id),
       JSON.stringify({
@@ -2675,7 +2804,7 @@ describe("developer menu", () => {
 
     render(<App />);
 
-    expect(screen.getByTestId("youtube-player")).toHaveAttribute(
+    expect(await screen.findByTestId("youtube-player")).toHaveAttribute(
       "data-playlist-id",
       "remembered-playlist",
     );
@@ -2694,7 +2823,7 @@ describe("developer menu", () => {
     );
     const user = userEvent.setup();
     render(<App />);
-    expect(screen.getByTestId("youtube-player")).toHaveAttribute(
+    expect(await screen.findByTestId("youtube-player")).toHaveAttribute(
       "data-remembered-order",
       "video-b:1,video-a:0",
     );
@@ -2783,7 +2912,7 @@ describe("developer menu", () => {
     );
     const user = userEvent.setup();
     render(<App />);
-    const player = screen.getByTestId("youtube-player");
+    const player = await screen.findByTestId("youtube-player");
 
     await user.click(screen.getByRole("button", { name: "Start test game" }));
     expect(player).toHaveAttribute("data-playlist-id", "PL-base");
@@ -2794,6 +2923,41 @@ describe("developer menu", () => {
     expect(screen.getByTestId("youtube-player")).toBe(player);
     expect(musicPlayerHarness).toMatchObject({ mounts: 1, unmounts: 0 });
   });
+
+  it.each(["success", "failure"] as const)(
+    "ignores an in-flight account refresh %s after disconnect",
+    async (outcome) => {
+      const refresh = deferred<{
+        configured: boolean;
+        connected: boolean;
+        accountLabel: string | null;
+      }>();
+      const user = userEvent.setup();
+      render(<App />);
+      const player = await screen.findByTestId("youtube-player");
+      api.getMusicAccountStatus.mockReturnValueOnce(refresh.promise);
+
+      await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+      await user.click(screen.getByRole("button", { name: "Music player setup" }));
+      await waitFor(() => expect(api.getMusicAccountStatus).toHaveBeenCalledTimes(2));
+      expect(screen.getByTestId("youtube-player")).toBe(player);
+      await user.click(screen.getByRole("button", { name: "Disconnect account" }));
+      expect(screen.queryByTestId("youtube-player")).toBeNull();
+
+      await act(async () => {
+        if (outcome === "success") {
+          refresh.resolve({ configured: true, connected: true, accountLabel: "Mafia Host" });
+        } else {
+          refresh.reject(new Error("Stale status request failed"));
+        }
+      });
+      expect(screen.queryByTestId("youtube-player")).toBeNull();
+      expect(
+        screen.queryAllByRole("link", { name: "Connect YouTube Music account" }),
+      ).not.toHaveLength(0);
+      expect(musicPlayerHarness).toMatchObject({ mounts: 1, unmounts: 1 });
+    },
+  );
 
   it("atomically clears the one remembered playlist on account disconnect", async () => {
     window.localStorage.setItem(
@@ -2808,7 +2972,7 @@ describe("developer menu", () => {
     );
     const user = userEvent.setup();
     render(<App />);
-    const player = screen.getByTestId("youtube-player");
+    const player = await screen.findByTestId("youtube-player");
 
     await user.click(screen.getByRole("button", { name: "Start test game" }));
     expect(player).toHaveAttribute("data-playlist-id", "PL-base");
@@ -2817,7 +2981,8 @@ describe("developer menu", () => {
     await user.click(screen.getByRole("button", { name: "Disconnect account" }));
     await act(async () => Promise.resolve());
 
-    expect(player).toHaveAttribute("data-playlist-id", "");
+    expect(screen.queryByTestId("youtube-player")).toBeNull();
+    expect(musicPlayerHarness).toMatchObject({ mounts: 1, unmounts: 1 });
     expect(
       JSON.parse(window.localStorage.getItem(musicPreferencesStorageKey(testClub.id)) ?? "null"),
     ).toEqual({
@@ -2833,7 +2998,7 @@ describe("developer menu", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    const player = screen.getByTestId("youtube-player");
+    const player = await screen.findByTestId("youtube-player");
     const controls = screen.getByLabelText("Live music controls");
     expect(controls.parentElement).toBe(player.closest(".youtube-dock"));
 
@@ -3010,7 +3175,7 @@ describe("developer menu", () => {
     );
     reportError(new Error("Stale Console entry"));
     render(<App />);
-    const musicPlayer = screen.getByTestId("youtube-player");
+    const musicPlayer = await screen.findByTestId("youtube-player");
     expect(musicPlayer).toHaveAttribute("data-playlist-id", "remembered-playlist");
 
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
@@ -3916,7 +4081,7 @@ describe("authoritative game session lifecycle", () => {
     render(<App />);
 
     expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
-    expect(screen.getByTestId("youtube-player")).toHaveAttribute(
+    expect(await screen.findByTestId("youtube-player")).toHaveAttribute(
       "data-playlist-id",
       "dev-playlist",
     );
@@ -4013,7 +4178,7 @@ describe("authoritative game session lifecycle", () => {
     );
 
     expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
-    expect(screen.getByTestId("youtube-player")).toHaveAttribute(
+    expect(await screen.findByTestId("youtube-player")).toHaveAttribute(
       "data-playlist-id",
       "dev-playlist",
     );

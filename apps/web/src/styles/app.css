@@ -1462,7 +1462,7 @@ h2 {
   z-index: 1;
   isolation: isolate;
   border-color: #ff5f4f;
-  background: radial-gradient(ellipse at 50% 100%, rgb(174 57 18 / 14%), transparent 72%), #161819;
+  background: radial-gradient(ellipse at 50% 100%, rgb(255 95 79 / 14%), transparent 72%), #161819;
   box-shadow:
     0 0 0 3px rgb(239 93 104 / 20%),
     0 0 24px rgb(255 67 55 / 48%),
@@ -1478,8 +1478,8 @@ h2 {
   border-radius: inherit;
   /* Quiet interior fallback; the GPU supplies motion when it is available. */
   background:
-    radial-gradient(ellipse at 20% 100%, rgb(222 93 23 / 10%), transparent 65%),
-    radial-gradient(ellipse at 82% 100%, rgb(255 137 49 / 10%), transparent 65%);
+    radial-gradient(ellipse at 20% 100%, rgb(255 95 79 / 10%), transparent 65%),
+    radial-gradient(ellipse at 82% 100%, rgb(255 95 79 / 10%), transparent 65%);
 }
 .player-seat.is-sheriff-highlight,
 .player-seat.is-goodbye-highlight {

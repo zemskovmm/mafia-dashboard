@@ -121,6 +121,28 @@ const invokeRoleDrawBackAction = (onRoleDrawBackActionChange: ReturnType<typeof 
 };
 
 describe("SetupWizard", () => {
+  it.each(["en", "ru"] as const)(
+    "keeps the role-giveaway heading free of Host view in %s",
+    (locale) => {
+      const { container } = render(
+        <I18nProvider locale={locale}>
+          <SetupWizard
+            players={availablePlayers}
+            onComplete={vi.fn()}
+            onOpenAvailablePlayers={vi.fn()}
+            initialSessionState={partialRoleSession()}
+          />
+        </I18nProvider>,
+      );
+      expect(container.querySelector(".eyebrow")).toHaveTextContent(
+        locale === "en" ? "First game stage" : "Первый этап игры",
+      );
+      expect(container.querySelector(".eyebrow")?.textContent).not.toMatch(
+        /host view|панель ведущего|режим ведущего|·\s*$/i,
+      );
+    },
+  );
+
   it("renders the Russian role draw and preserves the emitted role payload", async () => {
     const user = userEvent.setup();
     const onEvent = vi.fn();

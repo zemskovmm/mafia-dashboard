@@ -47,13 +47,14 @@ const englishShellMessages = {
   gameSetup: "Game setup",
   persistentPlayers: "Persistent players",
   gameSetupSession: "Game setup · {sessionName}",
-  hostView: "Host view",
   needPlayers: "Need {needed} players · {registered} registered",
   availableRegistered: "{available} available · {registered} registered",
   tableMusic: "Table music",
   availableCount: "{count} available",
   selectPlayers: "Select players",
   musicPlayerSetup: "Music player setup",
+  connectMusicAccount: "Connect YouTube Music account",
+  musicAccountConnectionUnavailable: "Connect YouTube Music account unavailable",
   reloadMusicPlayer: "Reload music player",
   activeGames: "Active games",
   activeGamesUnavailable: "Active games are temporarily unavailable.",
@@ -76,6 +77,12 @@ const englishShellMessages = {
   browserGameOpenOwner: "Open {club}",
   browserGameReleaseAndOpen: "Release and open {club}",
   browserGameDiscard: "Discard local game",
+  browserGameDiscardAndOpen: "Discard local game and open {club}",
+  browserGameRecoveryWorking: "Discarding local game…",
+  browserGameRecoveryFailed:
+    "The local game could not be discarded. Check the current local game before trying again.",
+  browserGameReleaseFailed:
+    "The local game could not be released. Check the current local game before trying again.",
   browserGameDiscardConfirmation:
     "Discard this local game? Any changes that have not reached the server will be lost.",
   deleting: "Deleting…",
@@ -214,6 +221,7 @@ const englishShellMessages = {
   playerProfilesUnavailable: "Player profiles are temporarily unavailable.",
   host: "Host",
   clubsUnavailable: "Clubs are temporarily unavailable.",
+  browserGameRecoveryTargetUnavailable: "That club is no longer available.",
   signOutFailed: "Sign out could not be completed.",
   clubSaveFailed: "The club could not be saved.",
   deleteClubConfirmation:
@@ -304,13 +312,14 @@ const russianShellMessages = {
   gameSetup: "Настройка игры",
   persistentPlayers: "Постоянные игроки",
   gameSetupSession: "Настройка игры · {sessionName}",
-  hostView: "Режим ведущего",
   needPlayers: "Требуется {needed} игроков · зарегистрировано: {registered}",
   availableRegistered: "Доступно: {available} · зарегистрировано: {registered}",
   tableMusic: "Музыка за столом",
   availableCount: "Доступно: {count}",
   selectPlayers: "Выберите игроков",
   musicPlayerSetup: "Настройка музыкального плеера",
+  connectMusicAccount: "Подключить аккаунт YouTube Music",
+  musicAccountConnectionUnavailable: "Подключение аккаунта YouTube Music недоступно",
   reloadMusicPlayer: "Перезагрузить музыкальный плеер",
   activeGames: "Активные игры",
   activeGamesUnavailable: "Активные игры временно недоступны.",
@@ -334,6 +343,12 @@ const russianShellMessages = {
   browserGameOpenOwner: "Открыть {club}",
   browserGameReleaseAndOpen: "Отвязать и открыть {club}",
   browserGameDiscard: "Удалить локальную игру",
+  browserGameDiscardAndOpen: "Удалить локальную игру и открыть {club}",
+  browserGameRecoveryWorking: "Удаляем локальную игру…",
+  browserGameRecoveryFailed:
+    "Не удалось удалить локальную игру. Проверьте текущую локальную игру и повторите попытку.",
+  browserGameReleaseFailed:
+    "Не удалось отвязать локальную игру. Проверьте текущую локальную игру и повторите попытку.",
   browserGameDiscardConfirmation:
     "Удалить эту локальную игру? Все изменения, не сохранённые на сервере, будут потеряны.",
   deleting: "Удаление…",
@@ -472,6 +487,7 @@ const russianShellMessages = {
   playerProfilesUnavailable: "Профили игроков временно недоступны.",
   host: "Ведущий",
   clubsUnavailable: "Клубы временно недоступны.",
+  browserGameRecoveryTargetUnavailable: "Этот клуб больше недоступен.",
   signOutFailed: "Не удалось выйти из учётной записи.",
   clubSaveFailed: "Не удалось сохранить клуб.",
   deleteClubConfirmation:

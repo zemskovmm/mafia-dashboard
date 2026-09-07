@@ -48,6 +48,7 @@ import {
   updatePlayer,
   createClub,
   deleteClub,
+  getMusicAccountStatus,
   listClubs,
   signOut,
   takeoverGameSession,
@@ -60,6 +61,7 @@ import type {
   FinalGameResults,
   GameSessionState,
   GameSessionClaimCredential,
+  MusicAccountStatus,
   PlayerProfile,
   PlayerProfileInput,
   RemoteGameSession,
@@ -633,6 +635,30 @@ export const ClubWorkspace = ({
   const [musicPlayerExpanded, setMusicPlayerExpanded] = useState(false);
   const [musicReloadRequest, setMusicReloadRequest] = useState(0);
   const [musicState, setMusicState] = useState<YouTubePlaybackState>("idle");
+  const [musicAccountStatus, setMusicAccountStatus] = useState<MusicAccountStatus | null>(null);
+  const [musicAccountStatusError, setMusicAccountStatusError] = useState(false);
+  const [musicAccountStatusRequest, setMusicAccountStatusRequest] = useState(0);
+  const musicAccountStatusRevision = useRef(0);
+
+  useEffect(() => {
+    if (!isManager) return undefined;
+    let current = true;
+    const revision = ++musicAccountStatusRevision.current;
+    setMusicAccountStatusError(false);
+    void getMusicAccountStatus()
+      .then((status) => {
+        if (current && revision === musicAccountStatusRevision.current)
+          setMusicAccountStatus(status);
+      })
+      .catch((error: unknown) => {
+        reportError(error, { source: "api", context: "music-account.status" });
+        if (current && revision === musicAccountStatusRevision.current)
+          setMusicAccountStatusError(true);
+      });
+    return () => {
+      current = false;
+    };
+  }, [club.id, isManager, musicAccountStatusRequest]);
 
   const changePlaylistId = useCallback(
     (nextPlaylistId: string) => {
@@ -2017,23 +2043,47 @@ export const ClubWorkspace = ({
     game !== null ||
     setupSession !== null ||
     playlistId !== defaultPlaylistId;
+  const musicAccountConnected =
+    isManager &&
+    !musicAccountStatusError &&
+    musicAccountStatus?.configured === true &&
+    musicAccountStatus.connected === true;
+  const toggleMusicSetup = () => {
+    const next = !musicSetupOpen;
+    setMusicSetupOpen(next);
+    if (next && (musicAccountStatus !== null || musicAccountStatusError)) {
+      setMusicAccountStatusRequest((request) => request + 1);
+    }
+  };
   const musicSetupPanel = musicSetupOpen ? (
     <section
       id="manage-music-setup"
       className="manage-music-setup"
       aria-label={t("musicPlayerSetup")}
     >
-      <div className={`music-status ${musicState === "playing" ? "is-playing" : ""}`}>
-        <span className="status-dot" />
-        <strong>{musicLabel[musicState]}</strong>
-      </div>
-      <button type="button" onClick={() => setMusicReloadRequest((request) => request + 1)}>
-        {t("reloadMusicPlayer")}
-      </button>
+      {musicAccountConnected ? (
+        <>
+          <div className={`music-status ${musicState === "playing" ? "is-playing" : ""}`}>
+            <span className="status-dot" />
+            <strong>{musicLabel[musicState]}</strong>
+          </div>
+          <button type="button" onClick={() => setMusicReloadRequest((request) => request + 1)}>
+            {t("reloadMusicPlayer")}
+          </button>
+        </>
+      ) : null}
       <AccountPlaylistPicker
         playlistId={playlistId}
         onPlaylistIdChange={changePlaylistId}
         onAccountDisconnected={clearMusicAccountState}
+        status={musicAccountStatus}
+        statusError={musicAccountStatusError}
+        onRetry={() => setMusicAccountStatusRequest((request) => request + 1)}
+        onStatusChange={(status) => {
+          musicAccountStatusRevision.current += 1;
+          setMusicAccountStatusError(false);
+          setMusicAccountStatus(status);
+        }}
       />
     </section>
   ) : null;
@@ -2133,8 +2183,7 @@ export const ClubWorkspace = ({
           )}
           <div>
             <p className="eyebrow">
-              {view === "players" ? t("persistentPlayers") : t("gameSetupSession", { sessionName })}{" "}
-              · {t("hostView")}
+              {view === "players" ? t("persistentPlayers") : t("gameSetupSession", { sessionName })}
             </p>
             <h1 aria-label={applicationStatusTitle}>
               <span className="active-club-title-name">{club.name}</span>
@@ -2359,10 +2408,25 @@ export const ClubWorkspace = ({
                   type="button"
                   aria-expanded={musicSetupOpen}
                   aria-controls="manage-music-setup"
-                  onClick={() => setMusicSetupOpen((open) => !open)}
+                  onClick={toggleMusicSetup}
                 >
                   {musicSetupOpen ? t("hideMusicPlayerSetup") : t("musicPlayerSetup")}
                 </button>
+                {!musicSetupOpen &&
+                !musicAccountStatusError &&
+                musicAccountStatus?.configured === true &&
+                musicAccountStatus.connected === false ? (
+                  <a className="oauth-connect" href="/api/music/oauth/start">
+                    {t("connectMusicAccount")}
+                  </a>
+                ) : null}
+                {!musicSetupOpen &&
+                !musicAccountStatusError &&
+                musicAccountStatus?.configured === false ? (
+                  <button type="button" disabled>
+                    {t("musicAccountConnectionUnavailable")}
+                  </button>
+                ) : null}
               </>
             ) : null}
           </div>
@@ -2715,7 +2779,7 @@ export const ClubWorkspace = ({
       )}
 
       <LiveSidePanel game={view === "game" ? (previewGame ?? game) : null} hidden={view !== "game"}>
-        {isManager ? (
+        {musicAccountConnected ? (
           <MusicDock
             expanded={musicPlayerExpanded}
             onExpandedChange={setMusicPlayerExpanded}
@@ -2950,6 +3014,9 @@ export const App = () => {
   const [openingCurtains, setOpeningCurtains] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<ShellMessageKey | null>(null);
+  const [browserGameRecoveryPending, setBrowserGameRecoveryPending] = useState(false);
+  const [browserGameRecoveryError, setBrowserGameRecoveryError] = useState(false);
+  const [browserGameReleaseError, setBrowserGameReleaseError] = useState(false);
 
   useEffect(() => {
     setLocale(selectedClub?.language ?? portalLocale);
@@ -3120,36 +3187,61 @@ export const App = () => {
   const releaseAndOpenBlockedClub = async () => {
     if (browserGameState.kind !== "ready" || blockedClub === null) return;
     const target = blockedClub;
+    setBrowserGameReleaseError(false);
     try {
-      await releaseBrowserGameStorage(window.localStorage, browserGameState.attachment);
+      const released = await releaseBrowserGameStorage(
+        window.localStorage,
+        browserGameState.attachment,
+      );
       const current = await prepareBrowserGameStorage({ localStorage: window.localStorage });
       setBrowserGameState(current);
-      if (current.kind !== "empty") return;
+      if (current.kind !== "empty") {
+        if (!released) setBrowserGameReleaseError(true);
+        return;
+      }
       setBlockedClub(null);
       setSelectedClub(target);
     } catch (error) {
       reportError(error, { source: "persistence", context: "browser-game.release" });
-      setBrowserGameState(readBrowserGameStorageState(window.localStorage));
+      setBrowserGameReleaseError(true);
     }
   };
 
   const discardUnavailableBrowserGame = async () => {
-    if (browserGameState.kind !== "ready") return;
-    if (!window.confirm(t("browserGameDiscardConfirmation"))) return;
+    if (browserGameState.kind !== "ready" || browserGameRecoveryPending) return;
     const expected = browserGameState.attachment;
+    const target = blockedClub;
+    if (!window.confirm(t("browserGameDiscardConfirmation"))) return;
+    setBrowserGameRecoveryPending(true);
+    setBrowserGameRecoveryError(false);
     try {
-      await discardBrowserGameStorage({ localStorage: window.localStorage }, expected);
-      setBrowserGameState({ kind: "empty" });
+      let discardError: unknown = null;
+      try {
+        await discardBrowserGameStorage({ localStorage: window.localStorage }, expected);
+      } catch (error) {
+        discardError = error;
+      }
+      const nextState = await prepareBrowserGameStorage({ localStorage: window.localStorage });
+      setBrowserGameState(nextState);
+      if (nextState.kind !== "empty") {
+        if (discardError !== null) {
+          reportError(discardError, { source: "persistence", context: "browser-game.discard" });
+        }
+        setBrowserGameRecoveryError(true);
+        return;
+      }
       setBlockedClub(null);
+      if (target !== null && clubs.some(({ id }) => id === target.id)) {
+        setSelectedClub(target);
+        return;
+      }
+      setSelectedClub(null);
+      if (target !== null) setError("browserGameRecoveryTargetUnavailable");
     } catch (error) {
       reportError(error, { source: "persistence", context: "browser-game.discard" });
-      const nextState = await prepareBrowserGameStorage({
-        localStorage: window.localStorage,
-      });
-      setBrowserGameState(nextState);
-      if (nextState.kind === "ready") {
-        setSelectedClub(clubs.find(({ id }) => id === nextState.attachment.clubId) ?? null);
-      }
+      setBrowserGameRecoveryError(true);
+    } finally {
+      setBrowserGameRecoveryPending(false);
     }
   };
 
@@ -3272,6 +3364,8 @@ export const App = () => {
             {browserGameState.attachment.unresolved && !missingOwner ? (
               <p>{t("browserGameReleaseBlocked")}</p>
             ) : null}
+            {browserGameRecoveryError ? <p role="alert">{t("browserGameRecoveryFailed")}</p> : null}
+            {browserGameReleaseError ? <p role="alert">{t("browserGameReleaseFailed")}</p> : null}
             <div className="claim-conflict-actions">
               {!missingOwner ? (
                 <button type="button" className="secondary" onClick={openBrowserGameOwner}>
@@ -3282,7 +3376,19 @@ export const App = () => {
                   })}
                 </button>
               ) : null}
-              {blockedClub !== null ? (
+              {missingOwner ? (
+                <button
+                  type="button"
+                  disabled={browserGameRecoveryPending}
+                  onClick={() => void discardUnavailableBrowserGame()}
+                >
+                  {browserGameRecoveryPending
+                    ? t("browserGameRecoveryWorking")
+                    : blockedClub === null
+                      ? t("browserGameDiscard")
+                      : t("browserGameDiscardAndOpen", { club: blockedClub.name })}
+                </button>
+              ) : blockedClub !== null ? (
                 <button
                   type="button"
                   disabled={browserGameState.attachment.unresolved}
@@ -3290,11 +3396,7 @@ export const App = () => {
                 >
                   {t("browserGameReleaseAndOpen", { club: blockedClub.name })}
                 </button>
-              ) : (
-                <button type="button" onClick={discardUnavailableBrowserGame}>
-                  {t("browserGameDiscard")}
-                </button>
-              )}
+              ) : null}
             </div>
           </section>
         </div>
