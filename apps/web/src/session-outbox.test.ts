@@ -7,7 +7,7 @@ import {
   drawRoleForSeat,
   type GameLogEntry,
 } from "@mafia/game-domain";
-import type { GameSessionState } from "./api/client.js";
+import { ApiError, type GameSessionState } from "./api/client.js";
 import { withBrowserGameStorageGuard } from "./browser-game-storage-lock.js";
 import { GameSessionOutbox, gameSessionStorageKey } from "./session-outbox.js";
 
@@ -276,17 +276,31 @@ describe("GameSessionOutbox current-v5 persistence", () => {
     expect(readPersisted(storage)).toMatchObject({ gameId: replacementGameId });
   });
 
-  it("retains a failed current snapshot for retry instead of deleting unsynced work", async () => {
+  it.each([
+    new Error("offline"),
+    new ApiError("rejected", 400, "validation_failed", {
+      issues: [
+        {
+          path: "state.events",
+          message: "Invalid value",
+          diagnostic: { code: "history.hash_mismatch", eventIndex: 0, replayIndex: 0 },
+        },
+      ],
+    }),
+  ])("retains a failed current snapshot across rejected retries: %s", async (failure) => {
     const storage = memoryStorage();
     const outbox = new GameSessionOutbox({
       storage,
       clubId,
       createId: ids(gameId, "00000000-0000-4000-8000-000000000309"),
-      save: vi.fn().mockRejectedValue(new Error("offline")),
+      save: vi.fn().mockRejectedValue(failure),
     });
     outbox.enqueue("Offline table", completeState(), null);
 
-    await expect(outbox.flush()).rejects.toThrow("offline");
+    await expect(outbox.flush()).rejects.toBe(failure);
+    const persistedFailure = storage.getItem(gameSessionStorageKey);
+    await expect(outbox.flush()).rejects.toBe(failure);
+    expect(storage.getItem(gameSessionStorageKey)).toBe(persistedFailure);
     expect(outbox.status).toBe("offline");
     expect(outbox.pendingCount).toBe(1);
     expect(readPersisted(storage)).toMatchObject({

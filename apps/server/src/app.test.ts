@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { Pool } from "pg";
 import { createGameLogEntry } from "@mafia/game-domain";
 import { buildApp } from "./app.js";
+import { GameSessionStore } from "./game-session-store.js";
 import { DEFAULT_CLUB_ID } from "./club-store.js";
 
 import type { AppUser, GoogleAuthService } from "./google-auth.js";
@@ -323,6 +324,85 @@ describe("server API", () => {
       },
       results,
     };
+    const beforeRejections = await app.inject({
+      method: "GET",
+      url: `/api/game-sessions/${gameId}`,
+    });
+    const saveSpy = vi.spyOn(GameSessionStore.prototype, "save");
+    const cases = [
+      {
+        code: "history.hash_mismatch",
+        events: [root.entry, { ...completion.entry, stateHashAfter: `sha256:${"0".repeat(64)}` }],
+        position: { eventIndex: 1, replayIndex: 1 },
+      },
+      {
+        code: "history.invalid_event",
+        events: [root.entry, { ...completion.entry, type: "PRIVATE-DIAGNOSTIC-CANARY" }],
+        position: { eventIndex: 1 },
+      },
+      {
+        code: "history.missing_parent",
+        events: [root.entry, { ...completion.entry, parentEventId: randomUUID() }],
+        position: { eventIndex: 1 },
+      },
+      {
+        code: "history.cycle",
+        events: [{ ...root.entry, parentEventId: completion.entry.id }, completion.entry],
+        position: { eventIndex: 1 },
+      },
+      {
+        code: "history.duplicate_event",
+        events: [root.entry, completion.entry, completion.entry],
+        position: { eventIndex: 2 },
+      },
+      {
+        code: "history.retained_prefix",
+        events: [root.entry, completion.entry, { ...root.entry, id: randomUUID() }],
+        position: { eventIndex: 2 },
+      },
+      // Submitted order need not equal active replay order.
+      {
+        code: "history.hash_mismatch",
+        events: [{ ...completion.entry, stateHashAfter: `sha256:${"0".repeat(64)}` }, root.entry],
+        position: { eventIndex: 0, replayIndex: 1 },
+      },
+    ];
+    try {
+      for (const { code, events, position } of cases) {
+        const rejected = await app.inject({
+          method: "PUT",
+          url: `/api/game-sessions/${gameId}`,
+          headers: claimHeaders(claimId, 1),
+          payload: { ...terminalMutation, state: { ...terminalMutation.state, events } },
+        });
+        expect(rejected.statusCode).toBe(400);
+        expect(rejected.json()).toMatchObject({
+          error: "validation_failed",
+          issues: expect.arrayContaining([
+            {
+              path: ["state", "events"],
+              message: "Invalid value",
+              diagnostic: { code, ...position },
+            },
+          ]),
+        });
+        for (const secret of [
+          "PRIVATE-DIAGNOSTIC-CANARY",
+          gameId,
+          root.entry.id,
+          completion.entry.id,
+          root.entry.stateHashAfter,
+          players[0]!.nickname,
+        ]) {
+          expect(rejected.body).not.toContain(secret);
+        }
+      }
+      expect(saveSpy).not.toHaveBeenCalled();
+      const unchanged = await app.inject({ method: "GET", url: `/api/game-sessions/${gameId}` });
+      expect(unchanged.json()).toEqual(beforeRejections.json());
+    } finally {
+      saveSpy.mockRestore();
+    }
     const completed = await app.inject({
       method: "PUT",
       url: `/api/game-sessions/${gameId}`,

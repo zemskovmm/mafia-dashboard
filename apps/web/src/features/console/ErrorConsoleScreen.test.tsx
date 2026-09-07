@@ -1,7 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "../../api/client.js";
+import { ApiError, checkServerReady } from "../../api/client.js";
 import { clearErrorConsole, reportError } from "./error-console.js";
 import { ErrorConsoleScreen } from "./ErrorConsoleScreen.js";
 import { I18nProvider } from "../../i18n/I18nProvider.js";
@@ -9,9 +9,75 @@ import { I18nProvider } from "../../i18n/I18nProvider.js";
 afterEach(() => {
   clearErrorConsole();
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 describe("ErrorConsoleScreen", () => {
+  it.each([
+    [
+      "en",
+      "Replayed state does not match the recorded hash",
+      "Submitted event #4",
+      "Active replay position #2",
+    ],
+    [
+      "ru",
+      "Восстановленное состояние не совпадает с записанным хешем",
+      "Событие в запросе №4",
+      "Позиция в активной истории №2",
+    ],
+  ] as const)(
+    "renders sanitized response diagnostics in %s",
+    async (locale, explanation, submitted, replay) => {
+      const canary = "PRIVATE-DIAGNOSTIC-CANARY";
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          new Response(
+            JSON.stringify({
+              error: "validation_failed",
+              issues: [
+                {
+                  path: ["state", "events", 3, "payload", canary],
+                  message: canary,
+                  diagnostic: {
+                    code: "history.hash_mismatch",
+                    eventIndex: 3,
+                    replayIndex: 1,
+                    payload: canary,
+                    eventId: canary,
+                    message: canary,
+                  },
+                },
+              ],
+            }),
+            { status: 400 },
+          ),
+        ),
+      );
+      try {
+        await checkServerReady();
+      } catch (error) {
+        reportError(error, { source: "persistence" });
+      }
+      render(
+        <I18nProvider locale={locale}>
+          <ErrorConsoleScreen onBack={vi.fn()} />
+        </I18nProvider>,
+      );
+      const details = within(
+        screen.getByRole("region", {
+          name: locale === "en" ? "API error details" : "Подробности ошибки API",
+        }),
+      ).getByRole("listitem");
+      expect(details).toHaveTextContent("history.hash_mismatch");
+      expect(details).toHaveTextContent(explanation);
+      expect(details).toHaveTextContent(submitted);
+      expect(details).toHaveTextContent(replay);
+      expect(document.body).not.toHaveTextContent(canary);
+      expect(screen.getByText("HTTP 400 · validation_failed")).toBeInTheDocument();
+    },
+  );
   it("localizes its Russian chrome and dates without altering captured diagnostics", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-26T09:00:00.000Z"));

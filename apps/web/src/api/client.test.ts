@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
+  sanitizeApiValidationIssues,
   checkServerReady,
   claimGameSession,
   clearGameSession,
@@ -281,6 +282,31 @@ describe("player API client", () => {
 });
 
 describe("game session aggregate API client", () => {
+  it("retains only allowlisted history codes and bounded positions", () => {
+    const diagnostic = { code: "history.hash_mismatch", eventIndex: 4, replayIndex: 2 };
+    expect(
+      sanitizeApiValidationIssues([
+        {
+          path: ["state", "events"],
+          message: "private",
+          diagnostic: { ...diagnostic, eventId: "private" },
+        },
+      ]),
+    ).toEqual([{ path: "state.events", message: "Invalid value", diagnostic }]);
+    for (const invalid of [
+      null,
+      [],
+      { code: "private" },
+      { ...diagnostic, eventIndex: -1 },
+      { ...diagnostic, eventIndex: 1.5 },
+      { ...diagnostic, replayIndex: Number.MAX_SAFE_INTEGER },
+      { ...diagnostic, replayIndex: "private" },
+    ]) {
+      expect(
+        sanitizeApiValidationIssues([{ path: ["state", "events"], diagnostic: invalid }]),
+      ).toEqual([{ path: "state.events", message: "Invalid value" }]);
+    }
+  });
   it("retains only bounded static validation diagnostics from a failed save", async () => {
     const gameId = "00000000-0000-4000-8000-000000000002";
     const credential = {

@@ -23,6 +23,7 @@ import {
   gameSessionEventMutationSchema,
   gameSessionHeadMutationSchema,
   gameSessionMutationSchema,
+  publicHistoryValidationIssue,
   gameSessionStartMutationSchema,
 } from "./game-session-validation.js";
 import {
@@ -123,7 +124,9 @@ const playerProfileUpdateBody = z.union([
 
 const validationFailure = (issues: readonly z.core.$ZodIssue[]) => ({
   error: "validation_failed",
-  issues: issues.map(({ path, message }) => ({ path, message })),
+  issues: issues.map(
+    (issue) => publicHistoryValidationIssue(issue) ?? { path: issue.path, message: issue.message },
+  ),
 });
 
 const gameSessionClaimFromHeaders = (request: FastifyRequest) =>

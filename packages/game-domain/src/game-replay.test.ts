@@ -74,6 +74,45 @@ const entry = (
   });
 
 describe("canonical game replay", () => {
+  it.each([
+    [{ phaseBefore: "voting" }, "history.before_state"],
+    [{ dayAfter: 99 }, "history.after_state"],
+    [{ parentEventId: id(99) }, "history.parent_link"],
+    [{ createdAt: "PRIVATE-CANARY" }, "history.invalid_event"],
+  ] as const)("labels replay failure %j at its active position", (change, code) => {
+    const initial = baseline();
+    const root = entry(initial.game, 1, { type: "game.checkpointed", payload: {} });
+    expect(() => replayGameLog(initial, [{ ...root.entry, ...change }])).toThrow(
+      expect.objectContaining({ diagnostic: { code, replayIndex: 0 } }),
+    );
+  });
+
+  it("labels action application failures without classifying their private exception text", () => {
+    const initial = baseline();
+    const root = entry(initial.game, 1, { type: "game.checkpointed", payload: {} });
+    const next = entry(root.after, 2, { type: "turn.completed", payload: { seat: 1 } });
+    const invalid = { ...next.entry, payload: { seat: 2 } } as GameLogEntry;
+    expect(() => replayGameLog(initial, [root.entry, invalid])).toThrow(
+      expect.objectContaining({ diagnostic: { code: "history.action_failed", replayIndex: 1 } }),
+    );
+  });
+
+  it("identifies a replay hash failure without including event values in diagnostics", () => {
+    const initial = baseline();
+    const root = entry(initial.game, 1, { type: "game.checkpointed", payload: {} });
+    const invalid = { ...root.entry, stateHashAfter: hashGameState({ ...initial.game, day: 2 }) };
+    let failure: unknown;
+    try {
+      replayGameLog(initial, [invalid]);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      message: `State hash mismatch at event ${invalid.id}`,
+      diagnostic: { code: "history.hash_mismatch", replayIndex: 0 },
+    });
+  });
+
   it("derives secrecy from event type and fails closed for unknown types", () => {
     const secrecy = (
       gameEvents as typeof gameEvents & {

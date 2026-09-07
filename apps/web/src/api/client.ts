@@ -1,4 +1,9 @@
-import type { GameLogEntry, InitialGameBaseline } from "@mafia/game-domain";
+import {
+  sanitizeHistoryDiagnostic,
+  type GameLogEntry,
+  type HistoryDiagnostic,
+  type InitialGameBaseline,
+} from "@mafia/game-domain";
 
 interface PlayerStatistics {
   readonly hostedGames: number;
@@ -272,6 +277,7 @@ const validationIssuePaths = [
   "state.initialGame",
   "state.events",
   "state.legacyLog",
+  "state.headEventId",
   "results",
   "results.hostPlayerId",
 ] as const;
@@ -293,6 +299,7 @@ export type ApiValidationReason = typeof genericValidationReason | typeof finalV
 export interface ApiValidationIssue {
   readonly path: ApiValidationPath;
   readonly message: ApiValidationReason;
+  readonly diagnostic?: HistoryDiagnostic;
 }
 
 export interface ApiValidationDetails {
@@ -345,9 +352,15 @@ export const sanitizeApiValidationIssues = (value: unknown): readonly ApiValidat
     const issue = candidate as Record<string, unknown>;
     const validationPath = safeValidationPath(issue.path);
     if (validationPath === null) continue;
+    const diagnostic = ["state.events", "state.initialGame", "state.headEventId"].includes(
+      validationPath.path,
+    )
+      ? sanitizeHistoryDiagnostic(issue.diagnostic)
+      : null;
     issues.push(
       Object.freeze({
         path: validationPath.path,
+        ...(diagnostic === null ? {} : { diagnostic }),
         message: validationPath.generic
           ? genericValidationReason
           : safeValidationReason(issue.message),

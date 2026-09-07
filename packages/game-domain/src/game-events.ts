@@ -13,6 +13,7 @@ import {
   skipVoting,
 } from "./day-actions.js";
 import { advanceSetupPhase, cancelGame, confirmDraw, isTerminalGamePhase } from "./game.js";
+import { GameHistoryError, withHistoryDiagnostic } from "./history-diagnostics.js";
 import {
   beginNight,
   completeBestMove,
@@ -1333,12 +1334,14 @@ export const replayGameLog = (
   entries: readonly GameLogEntry[],
   expectedGameId?: string,
 ): { readonly game: GameState; readonly frames: readonly ReplayFrame[] } => {
-  const baselineRecord = requireRecord(baseline, "Initial game baseline");
-  assertExactKeys(baselineRecord, ["replayVersion", "game"], "Initial game baseline");
-  if (baseline.replayVersion !== CURRENT_REPLAY_VERSION) {
-    throw new Error(`Unsupported replay version ${baseline.replayVersion}`);
-  }
-  assertGameState(baselineRecord.game, "Initial game baseline.game");
+  withHistoryDiagnostic({ code: "history.invalid_baseline" }, () => {
+    const baselineRecord = requireRecord(baseline, "Initial game baseline");
+    assertExactKeys(baselineRecord, ["replayVersion", "game"], "Initial game baseline");
+    if (baseline.replayVersion !== CURRENT_REPLAY_VERSION) {
+      throw new Error(`Unsupported replay version ${baseline.replayVersion}`);
+    }
+    assertGameState(baselineRecord.game, "Initial game baseline.game");
+  });
   let game = baseline.game;
   let parentEventId: string | null = null;
   let previousSequence = 0;
@@ -1353,10 +1356,19 @@ export const replayGameLog = (
       rootMarkerIndexes.length > 1 ||
       (rootMarkerIndexes.length === 1 && rootMarkerIndexes[0] !== 0)
     ) {
-      throw new Error("A canonical lifecycle marker may appear only at the replay root");
+      throw new GameHistoryError(
+        "A canonical lifecycle marker may appear only at the replay root",
+        {
+          code: "history.lifecycle",
+          replayIndex: rootMarkerIndexes.find((index) => index !== 0),
+        },
+      );
     }
     if (entries[0]!.type === "game.started" && baseline.game.phase !== "mafia-planning") {
-      throw new Error("game.started requires a mafia-planning baseline");
+      throw new GameHistoryError("game.started requires a mafia-planning baseline", {
+        code: "history.lifecycle",
+        replayIndex: 0,
+      });
     }
     const terminalIndexes = entries.flatMap(({ type }, index) =>
       type === "game.completed" || type === "game.drawn" || type === "game.cancelled"
@@ -1367,42 +1379,77 @@ export const replayGameLog = (
       terminalIndexes.length > 1 ||
       (terminalIndexes.length === 1 && terminalIndexes[0] !== entries.length - 1)
     ) {
-      throw new Error("A terminal game event may appear only once at the active head");
+      throw new GameHistoryError("A terminal game event may appear only once at the active head", {
+        code: "history.terminal_position",
+        replayIndex: terminalIndexes[0],
+      });
     }
   }
-  for (const entry of entries) {
-    assertGameLogEntry(entry);
-    if (seenIds.has(entry.id)) throw new Error(`Duplicate event ID ${entry.id}`);
+  for (const [replayIndex, entry] of entries.entries()) {
+    withHistoryDiagnostic({ code: "history.invalid_event", replayIndex }, () =>
+      assertGameLogEntry(entry),
+    );
+    if (seenIds.has(entry.id))
+      throw new GameHistoryError(`Duplicate event ID ${entry.id}`, {
+        code: "history.duplicate_event",
+        replayIndex,
+      });
     seenIds.add(entry.id);
     if (replayGameId === null) replayGameId = entry.gameId;
     else if (entry.gameId !== replayGameId) {
-      throw new Error(`Cross-game event link at ${entry.id}`);
+      throw new GameHistoryError(`Cross-game event link at ${entry.id}`, {
+        code: "history.cross_game",
+        replayIndex,
+      });
     }
     if (expectedGameId !== undefined && entry.gameId !== expectedGameId) {
-      throw new Error(`Event ${entry.id} does not belong to game ${expectedGameId}`);
+      throw new GameHistoryError(`Event ${entry.id} does not belong to game ${expectedGameId}`, {
+        code: "history.cross_game",
+        replayIndex,
+      });
     }
     if (entry.replayVersion !== baseline.replayVersion) {
-      throw new Error(`Replay version mismatch at event ${entry.id}`);
+      throw new GameHistoryError(`Replay version mismatch at event ${entry.id}`, {
+        code: "history.version",
+        replayIndex,
+      });
     }
     if (entry.parentEventId !== parentEventId) {
-      throw new Error(`Broken parent link at event ${entry.id}`);
+      throw new GameHistoryError(`Broken parent link at event ${entry.id}`, {
+        code: "history.parent_link",
+        replayIndex,
+      });
     }
     if (entry.sequence <= previousSequence) {
-      throw new Error(`Event sequence is not increasing at ${entry.id}`);
+      throw new GameHistoryError(`Event sequence is not increasing at ${entry.id}`, {
+        code: "history.sequence",
+        replayIndex,
+      });
     }
     if (entry.phaseBefore !== game.phase || entry.dayBefore !== game.day) {
-      throw new Error(`Event ${entry.id} does not start from the replayed state`);
+      throw new GameHistoryError(`Event ${entry.id} does not start from the replayed state`, {
+        code: "history.before_state",
+        replayIndex,
+      });
     }
     const before = game;
-    const after = applyGameEvent(before, {
-      type: entry.type,
-      payload: entry.payload,
-    } as CanonicalGameEventDraft);
+    const after = withHistoryDiagnostic({ code: "history.action_failed", replayIndex }, () =>
+      applyGameEvent(before, {
+        type: entry.type,
+        payload: entry.payload,
+      } as CanonicalGameEventDraft),
+    );
     if (entry.phaseAfter !== after.phase || entry.dayAfter !== after.day) {
-      throw new Error(`Event ${entry.id} phase/day metadata does not match replay`);
+      throw new GameHistoryError(`Event ${entry.id} phase/day metadata does not match replay`, {
+        code: "history.after_state",
+        replayIndex,
+      });
     }
     if (!matchesStateHash(after, entry.stateHashAfter)) {
-      throw new Error(`State hash mismatch at event ${entry.id}`);
+      throw new GameHistoryError(`State hash mismatch at event ${entry.id}`, {
+        code: "history.hash_mismatch",
+        replayIndex,
+      });
     }
     frames.push({ entry, before, after });
     game = after;
@@ -1414,7 +1461,10 @@ export const replayGameLog = (
     entries[0]!.type !== "game.started" &&
     entries[0]!.type !== "game.checkpointed"
   ) {
-    throw new Error("A current replay chain requires a lifecycle root marker");
+    throw new GameHistoryError("A current replay chain requires a lifecycle root marker", {
+      code: "history.lifecycle",
+      replayIndex: 0,
+    });
   }
   return { game, frames };
 };

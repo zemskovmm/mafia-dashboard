@@ -1,10 +1,45 @@
 import {
+  GameHistoryError,
+  historyDiagnosticFromError,
+  sanitizeHistoryDiagnostic,
   replayGameLog,
   type GameLogEntry,
   type GameState,
   type InitialGameBaseline,
 } from "@mafia/game-domain";
 import { z } from "zod";
+
+// Collapse private schema paths/messages before they leave the server. Never serialize Zod params.
+export const publicHistoryValidationIssue = (issue: z.core.$ZodIssue) => {
+  const field = issue.path[1];
+  if (
+    issue.path[0] !== "state" ||
+    (field !== "events" && field !== "initialGame" && field !== "headEventId")
+  )
+    return null;
+  const typed =
+    issue.code === "custom" ? sanitizeHistoryDiagnostic(issue.params?.diagnostic) : null;
+  const eventIndex =
+    field === "events" && typeof issue.path[2] === "number" ? issue.path[2] : undefined;
+  const diagnostic =
+    typed ??
+    sanitizeHistoryDiagnostic({
+      code:
+        field === "initialGame"
+          ? "history.invalid_baseline"
+          : field === "headEventId"
+            ? "history.missing_head"
+            : issue.code === "custom"
+              ? "history.replay_failed"
+              : "history.invalid_event",
+      ...(eventIndex === undefined ? {} : { eventIndex }),
+    });
+  return {
+    path: ["state", field],
+    message: "Invalid value",
+    ...(diagnostic === null ? {} : { diagnostic }),
+  };
+};
 
 const uuidOrEmpty = z.union([z.uuid(), z.literal("")]);
 const role = z.enum(["sheriff", "citizen", "mafia", "don"]);
@@ -928,18 +963,45 @@ const deriveReplayState = (state: ReplayableStateInput): GameState | null => {
   if (state.initialGame == null) return state.game;
   if (state.headEventId == null) return state.initialGame.game;
   const byId = new Map(state.events.map((event) => [event.id, event]));
+  const eventIndexes = new Map(state.events.map((event, index) => [event.id, index]));
   const reversed: GameLogEntry[] = [];
   const visited = new Set<string>();
   let currentId: string | null = state.headEventId;
   while (currentId !== null) {
-    if (visited.has(currentId)) throw new Error("Game history contains a cycle");
+    if (visited.has(currentId))
+      throw new GameHistoryError("Game history contains a cycle", {
+        code: "history.cycle",
+        eventIndex: eventIndexes.get(currentId),
+      });
     visited.add(currentId);
     const event: GameLogEntry | undefined = byId.get(currentId);
-    if (event === undefined) throw new Error("Game history is missing its active parent");
+    if (event === undefined) {
+      const child = reversed.at(-1);
+      throw new GameHistoryError(
+        "Game history is missing its active parent",
+        child === undefined
+          ? { code: "history.missing_head" }
+          : { code: "history.missing_parent", eventIndex: eventIndexes.get(child.id) },
+      );
+    }
     reversed.push(event);
     currentId = event.parentEventId;
   }
-  return replayGameLog(state.initialGame, reversed.reverse()).game;
+  const chain = reversed.reverse();
+  try {
+    return replayGameLog(state.initialGame, chain).game;
+  } catch (error) {
+    const diagnostic = historyDiagnosticFromError(error);
+    if (diagnostic === null) throw error;
+    const entry = diagnostic.replayIndex === undefined ? undefined : chain[diagnostic.replayIndex];
+    throw new GameHistoryError(
+      error instanceof Error ? error.message : "Game history cannot be replayed",
+      {
+        ...diagnostic,
+        ...(entry === undefined ? {} : { eventIndex: eventIndexes.get(entry.id) }),
+      },
+    );
+  }
 };
 
 export const gameSessionStateSchema = z
@@ -984,6 +1046,9 @@ export const gameSessionStateSchema = z
           code: "custom",
           path: ["events"],
           message: error instanceof Error ? error.message : "Game history cannot be replayed",
+          params: {
+            diagnostic: historyDiagnosticFromError(error) ?? { code: "history.replay_failed" },
+          },
         });
       }
       const currentGame = game;
@@ -995,6 +1060,7 @@ export const gameSessionStateSchema = z
           code: "custom",
           path: ["initialGame"],
           message: "A live game snapshot requires its canonical baseline and active head",
+          params: { diagnostic: { code: "history.invalid_baseline" } },
         });
       }
       if ((hostPlayerId === null) !== (hostName === null)) {
@@ -1072,16 +1138,29 @@ export const gameSessionStateSchema = z
           code: "custom",
           path: ["initialGame"],
           message: "Incremental events require an initial game baseline",
+          params: { diagnostic: { code: "history.invalid_baseline" } },
         });
       }
-      if (new Set(events.map(({ id }) => id)).size !== events.length) {
-        context.addIssue({ code: "custom", path: ["events"], message: "Event IDs must be unique" });
+      const seenEventIds = new Set<string>();
+      const duplicateIndex = events.findIndex(({ id }) => {
+        if (seenEventIds.has(id)) return true;
+        seenEventIds.add(id);
+        return false;
+      });
+      if (duplicateIndex !== -1) {
+        context.addIssue({
+          code: "custom",
+          path: ["events"],
+          message: "Event IDs must be unique",
+          params: { diagnostic: { code: "history.duplicate_event", eventIndex: duplicateIndex } },
+        });
       }
       if (events.length > 0 && (headEventId === undefined || headEventId === null)) {
         context.addIssue({
           code: "custom",
           path: ["headEventId"],
           message: "Canonical history requires an active head",
+          params: { diagnostic: { code: "history.missing_head" } },
         });
       }
       if (
@@ -1093,6 +1172,7 @@ export const gameSessionStateSchema = z
           code: "custom",
           path: ["headEventId"],
           message: "The active head must reference a stored event",
+          params: { diagnostic: { code: "history.missing_head" } },
         });
       }
       if (headEventId !== undefined && headEventId !== null) {
@@ -1104,10 +1184,17 @@ export const gameSessionStateSchema = z
           eventId = byId.get(eventId)?.parentEventId ?? null;
         }
         if (retained.size !== events.length) {
+          const eventIndex = events.findIndex(({ id }) => !retained.has(id));
           context.addIssue({
             code: "custom",
             path: ["events"],
             message: "Canonical history must contain only the retained active prefix",
+            params: {
+              diagnostic: {
+                code: "history.retained_prefix",
+                ...(eventIndex < 0 ? {} : { eventIndex }),
+              },
+            },
           });
         }
       }

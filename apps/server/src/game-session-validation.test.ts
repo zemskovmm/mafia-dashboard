@@ -3,6 +3,7 @@ import { createGameLogEntry, type GameState } from "@mafia/game-domain";
 import {
   gameSessionCompleteMutationSchema,
   gameSessionMutationSchema,
+  publicHistoryValidationIssue,
   setupSessionStateSchema,
 } from "./game-session-validation.js";
 import * as validationSchemas from "./game-session-validation.js";
@@ -120,6 +121,91 @@ const currentSnapshot = <T extends { readonly game: unknown }>(state: T) => {
 };
 
 describe("game session validation", () => {
+  it("redacts unknown history failures and never invents positions for global failures", () => {
+    expect(
+      publicHistoryValidationIssue({
+        code: "custom",
+        path: ["state", "events"],
+        message: "PRIVATE-CANARY",
+        params: {
+          diagnostic: { code: "PRIVATE-CANARY", eventIndex: -1 },
+          payload: "PRIVATE-CANARY",
+        },
+      }),
+    ).toEqual({
+      path: ["state", "events"],
+      message: "Invalid value",
+      diagnostic: { code: "history.replay_failed" },
+    });
+    for (const [field, code] of [
+      ["initialGame", "history.invalid_baseline"],
+      ["headEventId", "history.missing_head"],
+    ]) {
+      expect(
+        publicHistoryValidationIssue({
+          code: "custom",
+          path: ["state", field!],
+          message: "PRIVATE-CANARY",
+        }),
+      ).toEqual({
+        path: ["state", field],
+        message: "Invalid value",
+        diagnostic: { code },
+      });
+    }
+    expect(
+      publicHistoryValidationIssue({
+        code: "custom",
+        path: ["name"],
+        message: "Unchanged contract",
+      }),
+    ).toBeNull();
+  });
+  it.each([
+    ["hash", "history.hash_mismatch"],
+    ["parent", "history.missing_parent"],
+    ["duplicate", "history.duplicate_event"],
+    ["extra", "history.retained_prefix"],
+  ] as const)("attaches safe metadata for %s history rejection", (kind, code) => {
+    const state = currentSnapshot({
+      setup: null,
+      game: liveGame(1),
+      hostPlayerId: uuid(11),
+      hostName: "Host",
+      playlistId: "",
+      log: [],
+      undoHistory: [],
+    });
+    const event = state.events[0]!;
+    const events =
+      kind === "duplicate"
+        ? [event, event]
+        : kind === "extra"
+          ? [event, { ...event, id: uuid(99) }]
+          : [
+              {
+                ...event,
+                ...(kind === "hash"
+                  ? { stateHashAfter: `sha256:${"0".repeat(64)}` }
+                  : { parentEventId: uuid(99) }),
+              },
+            ];
+    const parsed = gameSessionMutationSchema.safeParse({
+      name: "Diagnostic fixture",
+      mutationId: uuid(110),
+      baseRevision: 0,
+      state: { ...state, events },
+      results: null,
+    });
+    expect(parsed.success).toBe(false);
+    if (parsed.success) return;
+    expect(parsed.error.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ params: { diagnostic: expect.objectContaining({ code }) } }),
+      ]),
+    );
+  });
+
   it("requires every field in the current browser-authoritative session snapshot", () => {
     const state = roleGiveawayState();
     const request = {

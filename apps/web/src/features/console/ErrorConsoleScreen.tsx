@@ -69,7 +69,32 @@ export const ErrorConsoleScreen = ({ onBack }: ErrorConsoleScreenProps) => {
                         <ul>
                           {entry.api.validationIssues.map((issue, index) => (
                             <li key={`${issue.path}-${index}`}>
-                              <code>{issue.path}</code>: {issue.message}
+                              <code>{issue.path}</code>:{" "}
+                              {issue.diagnostic === undefined ? (
+                                issue.message
+                              ) : (
+                                <>
+                                  {t(issue.diagnostic.code)} · <code>{issue.diagnostic.code}</code>
+                                  {issue.diagnostic.eventIndex === undefined ? null : (
+                                    <>
+                                      {" "}
+                                      ·{" "}
+                                      {t("Submitted event #{position}", {
+                                        position: issue.diagnostic.eventIndex + 1,
+                                      })}
+                                    </>
+                                  )}
+                                  {issue.diagnostic.replayIndex === undefined ? null : (
+                                    <>
+                                      {" "}
+                                      ·{" "}
+                                      {t("Active replay position #{position}", {
+                                        position: issue.diagnostic.replayIndex + 1,
+                                      })}
+                                    </>
+                                  )}
+                                </>
+                              )}
                             </li>
                           ))}
                         </ul>
