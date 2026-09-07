@@ -181,6 +181,9 @@ a:focus-visible,
   outline: 3px solid rgb(from var(--accent) r g b / 55%);
   outline-offset: 3px;
 }
+.app-drawer > h2[tabindex="-1"]:focus {
+  outline: none;
+}
 button:disabled {
   cursor: not-allowed;
   opacity: 0.38;
@@ -1048,7 +1051,7 @@ h2 {
   width: 100%;
   min-height: min(74vw, 820px);
   overflow: visible;
-  padding: 70px 0 120px;
+  padding: 95px 0;
 }
 .round-table {
   --table-size: min(58vw, 680px);
@@ -1374,6 +1377,13 @@ h2 {
 .table-check-center > strong,
 .deceased-player-card > strong {
   font-size: 1.05rem;
+}
+.table-vote-center > .voting-candidate-identity {
+  max-height: 3.45em;
+  overflow-y: auto;
+  font-size: 2.1rem;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
 }
 .car-crash-skip-message,
 .voting-cancellation-message {
@@ -3186,19 +3196,39 @@ button.player-seat.is-voting-highlight::after {
     overflow: hidden;
   }
   .table-layout-shell .table-stage {
+    container-type: size;
     height: 100%;
     min-height: 0;
     padding: 0;
   }
   .table-layout-shell .seat-anchor {
-    top: calc(50% + 32px);
+    top: 50%;
   }
   .table-layout-shell .round-table {
     --table-size: min(52vw, calc(100dvh - 300px), 720px);
-    --table-radius: min(calc(var(--table-size) * 0.68), 383px);
+    --table-radius: min(
+      calc(var(--table-size) * 0.68),
+      383px,
+      calc((100cqh - 108px) / 2),
+      calc((100cqw - clamp(88px, 9vw, 126px)) / 2)
+    );
   }
-  .app-shell.is-fullscreen.table-layout-shell .seat-anchor {
-    top: calc(50% + 23px);
+  @container (max-height: 700px) {
+    .table-vote-center:has(> .voting-candidate-identity) {
+      transform: translateY(-48px);
+    }
+    .round-table:has(.voting-candidate-identity) .table-advance {
+      top: calc(75% - 16px);
+    }
+    .table-card {
+      /* sin(36deg) gives the seat step; reserve 48px actions + 5px gap + 6px clearance. */
+      height: min(108px, calc(var(--table-radius) * 0.587785 - 59px));
+      padding: 4px 6px;
+    }
+    .person-icon {
+      width: 24px;
+      height: 24px;
+    }
   }
   .live-side-panel.has-live-utilities {
     position: fixed;
@@ -3732,6 +3762,12 @@ html:-webkit-full-screen #root {
   .table-check-center > strong,
   .deceased-player-card > strong {
     font-size: 0.82rem;
+  }
+  .table-vote-center > .voting-candidate-identity {
+    font-size: 1.64rem;
+  }
+  .table-vote-center:has(> .voting-candidate-identity) {
+    transform: translateY(-28px);
   }
   .candidate-navigation button,
   .table-choice-actions button,
@@ -4324,11 +4360,4 @@ html:-webkit-full-screen #root {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
   }
-}
-
-.table-layout-shell .game-shell.is-history-preview .live-layout {
-  grid-template-columns: minmax(0, 1fr);
-}
-.table-layout-shell .game-shell.is-history-preview .table-workspace {
-  width: 100%;
 }

@@ -148,6 +148,7 @@ const browserName = process.env.UI_BROWSER ?? "chromium";
 const viewportWidth = Number(process.env.UI_VIEWPORT_WIDTH ?? "");
 const viewportHeight = Number(process.env.UI_VIEWPORT_HEIGHT ?? "");
 const headerOnly = process.env.UI_HEADER_ONLY === "1";
+const layoutOnly = process.env.UI_LAYOUT_ONLY === "1";
 const hardeningOnly = process.env.UI_HARDENING_ONLY === "1";
 const verifyVgpuSelection = process.env.UI_VERIFY_VGPU === "1";
 const browser =
@@ -155,7 +156,8 @@ const browser =
     ? await webkit.launch({ headless: true })
     : await chromium.launch({ channel: "chrome", headless: true });
 const context = await browser.newContext({
-  hasTouch: headerOnly,
+  hasTouch: headerOnly || layoutOnly,
+  isMobile: layoutOnly && browserName === "webkit",
   viewport:
     Number.isFinite(viewportWidth) &&
     viewportWidth > 0 &&
@@ -609,6 +611,14 @@ try {
     await page.getByRole("button", { name: "Game screen" }).click();
   }
   await setupHeading.waitFor();
+  if (layoutOnly) {
+    const { verifyIpadLayout } = await import("./verify-ipad-layout.mjs");
+    await verifyIpadLayout(page, { assertVisibleFocus, assertCoreLayout, assertCoreTargets });
+    assertNoPageErrors();
+    console.log("iPad layout verification: PASS");
+    await browser.close();
+    process.exit(0);
+  }
   await assertAccessibleControls("Player setup");
   const manageButton = page.getByRole("button", { name: "Open Manage menu" });
   await assertVisibleFocus(manageButton, "Manage trigger");

@@ -51,14 +51,22 @@
 }
 .timeline-filters label {
   display: grid;
+  grid-template-rows: auto 44px;
   gap: 5px;
+  min-width: 0;
   color: var(--muted);
   font-size: 0.72rem;
 }
 .timeline-filters input,
 .timeline-filters select,
 .timeline-filters button {
+  min-width: 0;
+  max-width: 100%;
   min-height: 44px;
+}
+.timeline-filters input[type="date"] {
+  display: block;
+  appearance: none;
 }
 .timeline-filter-error {
   grid-column: 1 / -1;

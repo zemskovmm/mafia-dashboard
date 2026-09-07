@@ -367,7 +367,10 @@ export const VotingStage = ({
               total: game.nominations.length,
             })}
           </span>
-          <strong>
+          <strong
+            className={candidate === undefined ? undefined : "voting-candidate-identity"}
+            tabIndex={candidate === undefined ? undefined : 0}
+          >
             {candidate === undefined ? t("noCandidate") : `#${candidate.seat} ${candidate.name}`}
           </strong>
           <span>
