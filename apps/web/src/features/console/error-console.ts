@@ -1,5 +1,19 @@
+import {
+  ApiError,
+  sanitizeApiValidationIssues,
+  type ApiValidationIssue,
+} from "../../api/client.js";
+
 export type ErrorConsoleSource =
   "console" | "window" | "promise" | "application" | "api" | "persistence";
+
+export type ErrorConsoleValidationIssue = ApiValidationIssue;
+
+export interface ErrorConsoleApiDiagnostics {
+  readonly status: number;
+  readonly code: string | null;
+  readonly validationIssues: readonly ErrorConsoleValidationIssue[];
+}
 
 export interface ErrorConsoleEntry {
   readonly id: string;
@@ -8,6 +22,7 @@ export interface ErrorConsoleEntry {
   readonly context: string | null;
   readonly message: string;
   readonly stack: string | null;
+  readonly api: ErrorConsoleApiDiagnostics | null;
   readonly createdAt: string;
 }
 
@@ -64,6 +79,30 @@ const normalizeMessage = (error: unknown): string => {
   return "Unknown error";
 };
 
+const safeApiDiagnostics = (error: unknown): ErrorConsoleApiDiagnostics | null => {
+  if (
+    !(error instanceof ApiError) ||
+    !Number.isInteger(error.status) ||
+    error.status < 100 ||
+    error.status > 599
+  ) {
+    return null;
+  }
+
+  const details = error.details;
+  const validationIssues = sanitizeApiValidationIssues(
+    typeof details === "object" && details !== null && "issues" in details
+      ? (details as { issues?: unknown }).issues
+      : null,
+  );
+
+  return Object.freeze({
+    status: error.status,
+    code: /^[a-z][a-z0-9_]{0,127}$/.test(error.code ?? "") ? error.code : null,
+    validationIssues,
+  });
+};
+
 export const getErrorConsoleSnapshot = (): readonly ErrorConsoleEntry[] => snapshot;
 
 export const subscribeToErrorConsole = (listener: () => void): (() => void) => {
@@ -91,6 +130,7 @@ export const reportError = (
         : boundText(options.context, 256),
     message: normalizeMessage(error),
     stack: error instanceof Error && error.stack ? boundText(error.stack, 12_000) : null,
+    api: safeApiDiagnostics(error),
     createdAt: new Date().toISOString(),
   });
   snapshot = Object.freeze([entry, ...snapshot].slice(0, 200));

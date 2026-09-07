@@ -261,6 +261,111 @@ export class ApiError extends Error {
   }
 }
 
+const validationIssuePaths = [
+  "name",
+  "mutationId",
+  "baseRevision",
+  "state.game",
+  "state.game.voteAssignments",
+  "state.log",
+  "state.undoHistory",
+  "state.initialGame",
+  "state.events",
+  "state.legacyLog",
+  "results",
+  "results.hostPlayerId",
+] as const;
+const secretValidationPaths = new Set<ApiValidationPath>([
+  "state.events",
+  "state.log",
+  "state.undoHistory",
+  "state.initialGame",
+  "state.legacyLog",
+]);
+const genericValidationReason = "Invalid value";
+const finalVoteAssignmentReason =
+  "The final voting candidate must receive every remaining active vote";
+const maximumValidationIssueCandidates = 100;
+const maximumValidationIssues = 10;
+
+export type ApiValidationPath = (typeof validationIssuePaths)[number];
+export type ApiValidationReason = typeof genericValidationReason | typeof finalVoteAssignmentReason;
+export interface ApiValidationIssue {
+  readonly path: ApiValidationPath;
+  readonly message: ApiValidationReason;
+}
+
+export interface ApiValidationDetails {
+  readonly issues: readonly ApiValidationIssue[];
+}
+
+const isValidationPath = (value: string): value is ApiValidationPath =>
+  (validationIssuePaths as readonly string[]).includes(value);
+
+const safeValidationPath = (
+  value: unknown,
+): { readonly path: ApiValidationPath; readonly generic: boolean } | null => {
+  if (typeof value === "string") {
+    return isValidationPath(value)
+      ? { path: value, generic: secretValidationPaths.has(value) }
+      : null;
+  }
+  if (!Array.isArray(value) || value.length === 0 || value.length > 16) return null;
+
+  if (value[0] === "state" && typeof value[1] === "string") {
+    const path = `state.${value[1]}`;
+    if (secretValidationPaths.has(path as ApiValidationPath)) {
+      return { path: path as ApiValidationPath, generic: true };
+    }
+  }
+
+  const segments: string[] = [];
+  for (const segment of value) {
+    if (typeof segment !== "string") break;
+    segments.push(segment);
+  }
+  for (let length = segments.length; length > 0; length -= 1) {
+    const path = segments.slice(0, length).join(".");
+    if (isValidationPath(path)) return { path, generic: path !== segments.join(".") };
+  }
+
+  return null;
+};
+
+const safeValidationReason = (value: unknown): ApiValidationReason =>
+  value === finalVoteAssignmentReason ? finalVoteAssignmentReason : genericValidationReason;
+
+export const sanitizeApiValidationIssues = (value: unknown): readonly ApiValidationIssue[] => {
+  if (!Array.isArray(value)) return Object.freeze([]);
+
+  const issues: ApiValidationIssue[] = [];
+  for (const candidate of value.slice(0, maximumValidationIssueCandidates)) {
+    if (issues.length === maximumValidationIssues) break;
+    if (typeof candidate !== "object" || candidate === null) continue;
+    const issue = candidate as Record<string, unknown>;
+    const validationPath = safeValidationPath(issue.path);
+    if (validationPath === null) continue;
+    issues.push(
+      Object.freeze({
+        path: validationPath.path,
+        message: validationPath.generic
+          ? genericValidationReason
+          : safeValidationReason(issue.message),
+      }),
+    );
+  }
+
+  return Object.freeze(issues);
+};
+
+const safeErrorCode = (value: unknown): string | null =>
+  typeof value === "string" && /^[a-z][a-z0-9_]{0,127}$/.test(value) ? value : null;
+
+const safeValidationDetails = (value: unknown): ApiValidationDetails | null => {
+  const issues = sanitizeApiValidationIssues(value);
+  return issues.length === 0 ? null : { issues };
+};
+
 const safeClaimConflictDetails = (value: unknown): unknown | null => {
   if (typeof value !== "object" || value === null) return null;
   const claim = value as Record<string, unknown>;
@@ -315,10 +420,12 @@ const throwApiError = async (response: Response, message: string): Promise<never
       error?: unknown;
       claim?: unknown;
       activeGame?: unknown;
+      issues?: unknown;
     };
-    if (typeof body.error === "string") code = body.error;
+    code = safeErrorCode(body.error);
     if (code === "game_session_claim_conflict") details = safeClaimConflictDetails(body.claim);
     else if (code === "club_active_game_exists") details = safeActiveGameDetails(body.activeGame);
+    else if (code === "validation_failed") details = safeValidationDetails(body.issues);
   } catch {
     // Non-JSON failures still retain their HTTP status.
   }

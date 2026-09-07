@@ -614,7 +614,9 @@ export const ClubWorkspace = ({
   const [finalResults, setFinalResults] = useState<FinalGameResults | null>(
     initialCurrent?.results ?? null,
   );
-  const [finishGameState, setFinishGameState] = useState<"ready" | "saving" | "saved" | "queued">(
+  const [finishGameState, setFinishGameState] = useState<
+    "ready" | "saving" | "saved" | "queued" | "blocked"
+  >(
     initialCurrent?.results === null || initialCurrent?.results === undefined
       ? "ready"
       : sessionSync.pendingCount > 0
@@ -1125,8 +1127,16 @@ export const ClubWorkspace = ({
 
   useEffect(() => {
     if (finalResults === null) return;
-    const phase = sessionRetry.getSnapshot().phase;
-    setFinishGameState(phase === "offline" ? "queued" : phase === "saved" ? "saved" : "saving");
+    const { phase, terminalReason } = sessionRetry.getSnapshot();
+    setFinishGameState(
+      phase === "offline"
+        ? terminalReason === "rejected"
+          ? "blocked"
+          : "queued"
+        : phase === "saved"
+          ? "saved"
+          : "saving",
+    );
   }, [finalResults, sessionRetry, syncRender]);
 
   const logEvent = useCallback(

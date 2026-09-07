@@ -1,7 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { createGameLogEntry, type GameState } from "@mafia/game-domain";
+import {
+  advanceVotingCandidate,
+  assignVote,
+  createGameLogEntry,
+  toggleVote,
+  type GameState,
+} from "@mafia/game-domain";
 import { DEFAULT_CLUB_ID } from "./club-store.js";
 import { GameSessionStore } from "./game-session-store.js";
 
@@ -20,6 +26,18 @@ const createdClubs = new Set<string>();
 type SessionState = Parameters<GameSessionStore["save"]>[0]["state"];
 type SaveInput = Parameters<GameSessionStore["save"]>[0];
 type Claim = SaveInput["claim"];
+type ClientResultBuilder = (
+  game: GameState,
+  playedAt: Date,
+  hostPlayerId: string,
+) => Parameters<GameSessionStore["complete"]>[0]["results"] | null;
+
+const loadClientResultBuilder = async (): Promise<ClientResultBuilder> => {
+  const moduleUrl = new URL("../../web/src/features/players/game-results.ts", import.meta.url).href;
+  // eslint-disable-next-line no-unsanitized/method -- Fixed repository-local test module; no untrusted path input.
+  const module = (await import(moduleUrl)) as { buildFinalGameResults: ClientResultBuilder };
+  return module.buildFinalGameResults;
+};
 
 const roles = [
   "sheriff",
@@ -106,6 +124,25 @@ const finishedGame = (playerIds: readonly string[]): GameState => ({
   bestMove: { playerSeat: 1, selectedSeats: [2, 3, 4], mafiaHits: 2 },
   winner: "red",
 });
+
+const finalCandidateVoting = (playerIds: readonly string[], day = 1) => {
+  let game: GameState = {
+    ...dayGame(playerIds),
+    day,
+    phase: "voting",
+    nominations: [
+      { nominatorSeat: 1, candidateSeat: 4, order: 1 },
+      { nominatorSeat: 2, candidateSeat: 6, order: 2 },
+    ],
+    turnOrder: [4, 6],
+    currentTurnIndex: 0,
+    votingRound: "initial",
+  };
+  for (const seat of [1, 2, 3, 4, 5, 6, 7]) game = assignVote(game, seat, 4);
+  const beforeFinalCandidate = game;
+  const autoFilled = advanceVotingCandidate(game);
+  return { beforeFinalCandidate, autoFilled };
+};
 
 const createSession = async (
   clubId: string,
@@ -535,6 +572,145 @@ describe("GameSessionStore current snapshot invariants", () => {
         [clubId, fixture.gameId],
       ),
     ).resolves.toMatchObject({ rows: [{ count: 1 }] });
+  });
+
+  it("persists final auto-filled ballots and undo history through an exact winning completion retry", async () => {
+    const clubId = await createClub();
+    const { hostPlayerId, playerIds } = await createPlayers(clubId);
+    const terminalGame = finishedGame(playerIds);
+    const { beforeFinalCandidate, autoFilled } = finalCandidateVoting(playerIds, terminalGame.day);
+    const session = await createSession(
+      clubId,
+      currentState({ hostPlayerId, hostName: "Voting completion host" }),
+      "Voting completion",
+    );
+    const initialGame = { replayVersion: 1 as const, game: terminalGame };
+    const root = createGameLogEntry({
+      gameId: session.gameId,
+      id: randomUUID(),
+      sequence: 1,
+      parentEventId: null,
+      createdAt: "2026-09-07T17:40:00.000Z",
+      before: initialGame.game,
+      draft: { type: "game.checkpointed", payload: {} },
+    });
+    const started = await store.start({
+      clubId,
+      gameId: session.gameId,
+      mutationId: randomUUID(),
+      baseRevision: session.saved.revision,
+      initialGame,
+      event: root.entry,
+      claim: session.claim,
+    });
+
+    const afterFinalCardTap = toggleVote(autoFilled, 8, 6);
+    expect(afterFinalCardTap).toBe(autoFilled);
+    const snapshot = currentState({
+      ...started.state,
+      game: terminalGame,
+      undoHistory: [
+        { game: beforeFinalCandidate, logLength: 0, sequence: 0 },
+        { game: afterFinalCardTap, logLength: 0, sequence: 0 },
+      ],
+      undoBudget: 2,
+    });
+    const saved = await saveCurrent(
+      clubId,
+      session.gameId,
+      session.claim,
+      snapshot,
+      started.revision,
+      "Voting completion",
+    );
+    expect(saved).toMatchObject({
+      revision: 3,
+      duplicate: false,
+      state: {
+        game: { phase: "finished", winner: "red" },
+        undoHistory: [
+          { game: { currentTurnIndex: 0 }, logLength: 0, sequence: 0 },
+          {
+            game: { currentTurnIndex: 1, voteAssignments: { "8": 6, "9": 6, "10": 6 } },
+            logLength: 0,
+            sequence: 0,
+          },
+        ],
+        undoBudget: 2,
+      },
+    });
+
+    const terminal = createGameLogEntry({
+      gameId: session.gameId,
+      id: randomUUID(),
+      sequence: 2,
+      parentEventId: root.entry.id,
+      createdAt: "2026-09-07T17:41:00.000Z",
+      before: root.after,
+      draft: { type: "game.completed", payload: { winner: "red" } },
+    });
+    const buildFinalGameResults = await loadClientResultBuilder();
+    const results = buildFinalGameResults(
+      terminal.after,
+      new Date(terminal.entry.createdAt),
+      hostPlayerId,
+    );
+    if (results === null)
+      throw new Error("The real client result builder rejected a terminal game");
+    const completionMutationId = randomUUID();
+    const persistedTerminalGame = {
+      phase: terminal.after.phase,
+      day: terminal.after.day,
+      winner: terminal.after.winner,
+      players: terminal.after.players,
+    };
+    const completion: SaveInput = {
+      clubId,
+      claimedByUserId: ownerId,
+      gameId: session.gameId,
+      mutationId: completionMutationId,
+      baseRevision: saved.revision,
+      name: "Voting completion",
+      state: {
+        ...snapshot,
+        game: terminal.after,
+        events: [root.entry, terminal.entry],
+        headEventId: terminal.entry.id,
+      },
+      results,
+      claim: session.claim,
+    };
+    const completed = await store.save(completion);
+    const retry = await store.save(completion);
+
+    expect(completed).toMatchObject({
+      status: "completed",
+      revision: 4,
+      results,
+      state: { game: persistedTerminalGame, undoHistory: snapshot.undoHistory },
+    });
+    expect(retry).toMatchObject({ duplicate: true, revision: 4, results });
+    await expect(store.get(session.gameId, clubId)).resolves.toMatchObject({
+      status: "completed",
+      revision: 4,
+      results,
+      state: {
+        game: persistedTerminalGame,
+        events: [root.entry, terminal.entry],
+        headEventId: terminal.entry.id,
+        undoHistory: snapshot.undoHistory,
+      },
+    });
+    await expect(
+      pool.query<{ results: number; player_results: number; canonical_events: number }>(
+        `SELECT
+           (SELECT COUNT(*)::int FROM game_results WHERE club_id = $1 AND game_id = $2) AS results,
+           (SELECT COUNT(*)::int FROM game_player_results WHERE club_id = $1 AND game_id = $2) AS player_results,
+           (SELECT COUNT(*)::int FROM game_events
+              WHERE club_id = $1 AND game_id = $2 AND replay_sequence IS NOT NULL) AS canonical_events`,
+        [clubId, session.gameId],
+      ),
+    ).resolves.toMatchObject({ rows: [{ results: 1, player_results: 10, canonical_events: 2 }] });
   });
 
   it("persists a completed current snapshot and rejects new mutations while retaining exact retries", async () => {

@@ -1086,6 +1086,31 @@ describe("GameScreen", () => {
     expect(onFinishGame).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["finished", "draw", "cancelled"] as const)(
+    "distinguishes a rejected %s save from an offline save",
+    (phase) => {
+      const day = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+      render(
+        <GameScreen
+          game={{ ...day, phase, winner: phase === "finished" ? "red" : null }}
+          hostName="Host Player"
+          onGameChange={() => undefined}
+          onEvent={() => undefined}
+          privacyHidden={false}
+          finishGameState="blocked"
+        />,
+      );
+
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "Game saved on this device · upload rejected. See Console for details.",
+      );
+      expect(screen.queryByText(/reconnect to upload|Game safely saved/)).toBeNull();
+      if (phase === "finished") {
+        expect(screen.getByRole("button", { name: "Game upload blocked" })).toBeDisabled();
+      }
+    },
+  );
+
   it("shows a locally durable completion while the server is offline", () => {
     const day = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
     render(

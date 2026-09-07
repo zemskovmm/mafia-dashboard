@@ -532,6 +532,9 @@ describe("VotingStage", () => {
       true,
     );
     expect(screen.getByText("3 votes")).toBeInTheDocument();
+    await user.click(autoAssignedVoters[0]!);
+    expect(screen.getAllByRole("button", { name: /voted for seat 6/i })).toHaveLength(3);
+    expect(screen.getByRole("button", { name: /resolve voting/i })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: /resolve voting/i }));
 
     expect(onResolved).toHaveBeenCalledWith(expect.any(Object), [4]);

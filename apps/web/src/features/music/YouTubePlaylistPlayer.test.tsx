@@ -8,7 +8,10 @@ import type { YouTubePlayerHandle } from "./YouTubePlaylistPlayer.js";
 
 const api = vi.hoisted(() => ({ listMusicPlaylistItems: vi.fn() }));
 
-vi.mock("../../api/client.js", () => api);
+vi.mock(import("../../api/client.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  ...api,
+}));
 
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;

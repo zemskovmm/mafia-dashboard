@@ -281,6 +281,138 @@ describe("player API client", () => {
 });
 
 describe("game session aggregate API client", () => {
+  it("retains only bounded static validation diagnostics from a failed save", async () => {
+    const gameId = "00000000-0000-4000-8000-000000000002";
+    const credential = {
+      claimId: "00000000-0000-4000-8000-000000000004",
+      claimGeneration: 3,
+    };
+    const safeIssue = {
+      path: "state.game.voteAssignments",
+      message: "The final voting candidate must receive every remaining active vote",
+    };
+    const privateSentinel = "must-not-leak-private-validation-value";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            error: "validation_failed",
+            issues: [
+              { path: ["results", "hostPlayerId"], message: privateSentinel },
+              { path: ["state", "undoHistory", privateSentinel], message: privateSentinel },
+              {
+                path: ["state", "game", "players", 3, "role"],
+                message: privateSentinel,
+              },
+              { path: ["results", "players", 3, "role"], message: privateSentinel },
+              ...Array.from({ length: 12 }, () => ({
+                path: ["state", "game", "voteAssignments"],
+                message: safeIssue.message,
+              })),
+            ],
+            request: { state: { events: [{ payload: privateSentinel }] } },
+            headers: { authorization: `Bearer ${privateSentinel}` },
+            credentials: { token: privateSentinel },
+          }),
+          {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          },
+        ),
+      ),
+    );
+
+    let failure: unknown;
+    try {
+      await saveGameSessionOperation(
+        gameId,
+        {
+          kind: "snapshot",
+          name: "Table",
+          mutationId: "00000000-0000-4000-8000-000000000003",
+          baseRevision: 0,
+          state: {
+            setup: null,
+            game: null,
+            hostPlayerId: null,
+            hostName: null,
+            playlistId: "PL",
+            log: [],
+            undoHistory: [],
+            undoBudget: 0,
+            initialGame: null,
+            events: [],
+            headEventId: null,
+            resetReturnEventId: null,
+            legacyLog: [],
+          },
+          results: null,
+        },
+        credential,
+      );
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(ApiError);
+    if (!(failure instanceof ApiError)) throw new Error("Expected an API error");
+    expect(failure).toMatchObject({
+      status: 400,
+      code: "validation_failed",
+      details: {
+        issues: [
+          { path: "results.hostPlayerId", message: "Invalid value" },
+          { path: "state.undoHistory", message: "Invalid value" },
+          { path: "state.game", message: "Invalid value" },
+          { path: "results", message: "Invalid value" },
+          ...Array.from({ length: 6 }, () => safeIssue),
+        ],
+      },
+    });
+    const serialized = JSON.stringify(failure);
+    expect(serialized).not.toContain(privateSentinel);
+    expect(serialized).not.toContain("authorization");
+    expect(serialized).not.toContain("credentials");
+  });
+
+  it("bounds the validation issue scan before retaining diagnostics", async () => {
+    const privateSentinel = "must-not-scan-unbounded-validation-values";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            error: "validation_failed",
+            issues: [
+              { path: ["results", "hostPlayerId"], message: privateSentinel },
+              ...Array.from({ length: 99 }, () => ({
+                path: ["unrecognized", privateSentinel],
+                message: privateSentinel,
+              })),
+              { path: ["results", "hostPlayerId"], message: privateSentinel },
+            ],
+          }),
+          { status: 400, headers: { "content-type": "application/json" } },
+        ),
+      ),
+    );
+
+    let failure: unknown;
+    try {
+      await checkServerReady();
+    } catch (error) {
+      failure = error;
+    }
+
+    expect(failure).toBeInstanceOf(ApiError);
+    if (!(failure instanceof ApiError)) throw new Error("Expected an API error");
+    expect(failure.details).toEqual({
+      issues: [{ path: "results.hostPlayerId", message: "Invalid value" }],
+    });
+    expect(JSON.stringify(failure)).not.toContain(privateSentinel);
+  });
+
   it("sends exact claim credentials and retains safe claim-conflict details", async () => {
     const gameId = "00000000-0000-4000-8000-000000000053";
     const credential = {

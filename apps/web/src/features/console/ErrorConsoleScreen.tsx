@@ -54,6 +54,28 @@ export const ErrorConsoleScreen = ({ onBack }: ErrorConsoleScreenProps) => {
                       <dd>{entry.context ?? t("None")}</dd>
                     </div>
                   </dl>
+                  {entry.api === null ? null : (
+                    <section
+                      className="error-console-api-diagnostics"
+                      aria-label={t("API error details")}
+                    >
+                      <p>
+                        {t("HTTP {status}{code}", {
+                          status: entry.api.status,
+                          code: entry.api.code === null ? "" : ` · ${entry.api.code}`,
+                        })}
+                      </p>
+                      {entry.api.validationIssues.length === 0 ? null : (
+                        <ul>
+                          {entry.api.validationIssues.map((issue, index) => (
+                            <li key={`${issue.path}-${index}`}>
+                              <code>{issue.path}</code>: {issue.message}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </section>
+                  )}
                   <p className="error-console-message">{entry.message}</p>
                   <pre aria-label={t("Stack trace")}>
                     {entry.stack ?? t("No stack trace available.")}

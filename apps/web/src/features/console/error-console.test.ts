@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../../api/client.js";
 import {
   clearErrorConsole,
   errorConsole,
@@ -100,6 +101,55 @@ describe("error console store", () => {
     expect(entry.stack).toBeNull();
     expect(JSON.stringify(entry)).not.toContain("top-secret-token");
     expect(JSON.stringify(entry)).not.toContain("private-body");
+  });
+
+  it("retains only bounded static diagnostics from genuine API errors", () => {
+    const privateSentinel = "must-not-leak-private-validation-value";
+    const entry = reportError(
+      new ApiError("Unable to save the game session operation", 400, "validation_failed", {
+        issues: [
+          { path: ["results", "hostPlayerId"], message: privateSentinel },
+          { path: ["state", "undoHistory", privateSentinel], message: privateSentinel },
+          {
+            path: ["state", "game", "players", 3, "role"],
+            message: privateSentinel,
+          },
+          { path: ["results", "players", 3, "role"], message: privateSentinel },
+          {
+            path: "state.game.voteAssignments",
+            message: "The final voting candidate must receive every remaining active vote",
+          },
+          {
+            path: ["state", "events", 0, "payload"],
+            message: privateSentinel,
+          },
+        ],
+        request: { state: { events: [{ payload: privateSentinel }] } },
+        headers: { authorization: `Bearer ${privateSentinel}` },
+        credentials: { token: privateSentinel },
+      }),
+      { source: "persistence", context: "game-session.save" },
+    );
+
+    expect(entry.api).toEqual({
+      status: 400,
+      code: "validation_failed",
+      validationIssues: [
+        { path: "results.hostPlayerId", message: "Invalid value" },
+        { path: "state.undoHistory", message: "Invalid value" },
+        { path: "state.game", message: "Invalid value" },
+        { path: "results", message: "Invalid value" },
+        {
+          path: "state.game.voteAssignments",
+          message: "The final voting candidate must receive every remaining active vote",
+        },
+        { path: "state.events", message: "Invalid value" },
+      ],
+    });
+    const serialized = JSON.stringify(entry);
+    expect(serialized).not.toContain(privateSentinel);
+    expect(serialized).not.toContain("authorization");
+    expect(serialized).not.toContain("credentials");
   });
 
   it("redacts credential-like values from retained text", () => {

@@ -16,6 +16,7 @@ import {
   resolveVote,
   resolveCarCrashVote,
   startVoting,
+  toggleVote,
 } from "./day-actions.js";
 import {
   beginRoleDraw,
@@ -54,6 +55,21 @@ const completeDayWithNominees = (day: number, candidateSeats: readonly number[])
 };
 
 describe("day actions", () => {
+  it("keeps the final candidate's automatic votes while earlier votes remain toggleable", () => {
+    let game = completeDayWithNominees(1, [4, 6]);
+    game = toggleVote(game, 1, 4);
+    expect(game.voteAssignments[1]).toBe(4);
+    game = toggleVote(game, 1, 4);
+    expect(game.voteAssignments[1]).toBeUndefined();
+    game = toggleVote(game, 1, 4);
+    game = advanceVotingCandidate(game);
+
+    expect(toggleVote(game, 2, 6)).toBe(game);
+    expect(game.voteAssignments[1]).toBe(4);
+    expect(Object.keys(game.voteAssignments)).toHaveLength(10);
+    expect(() => resolveVote(game)).not.toThrow();
+  });
+
   it("accepts nominations only from the current speaker and preserves unique candidate order", () => {
     let game = dayOne();
 

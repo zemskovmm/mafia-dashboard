@@ -289,6 +289,8 @@ export const toggleVote = (
   if (assignedCandidateSeat !== candidateSeat) {
     throw new Error(`Seat ${voterSeat} has already voted for another candidate`);
   }
+  // The final candidate must retain every automatically assigned remaining vote.
+  if (game.currentTurnIndex === game.nominations.length - 1) return game;
   const voteAssignments = { ...game.voteAssignments };
   delete voteAssignments[voterSeat];
   return { ...game, voteAssignments };

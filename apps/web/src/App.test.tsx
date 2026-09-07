@@ -189,18 +189,9 @@ const deferred = <T,>() => {
   return { promise, resolve, reject };
 };
 
-vi.mock("./api/client.js", () => ({
+vi.mock(import("./api/client.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
   ...api,
-  ApiError: class ApiError extends Error {
-    public constructor(
-      message: string,
-      public readonly status: number,
-      public readonly code: string | null,
-      public readonly details: unknown = null,
-    ) {
-      super(message);
-    }
-  },
 }));
 
 vi.mock("./features/setup/SetupWizard.js", () => ({
@@ -370,7 +361,7 @@ vi.mock("./features/game/GameScreen.js", () => ({
     onResetPreview?: () => void;
     privacyHidden: boolean;
     onFinishGame: () => void;
-    finishGameState: "ready" | "saving" | "saved" | "queued";
+    finishGameState: "ready" | "saving" | "saved" | "queued" | "blocked";
   }) => {
     if (mode === "preview") {
       gameScreenHarness.previewGame = game;
@@ -481,9 +472,11 @@ vi.mock("./features/game/GameScreen.js", () => ({
               ? "Game safely saved"
               : finishGameState === "queued"
                 ? "Game saved offline"
-                : finishGameState === "saving"
-                  ? "Saving game…"
-                  : "Finish the game"}
+                : finishGameState === "blocked"
+                  ? "Game upload blocked"
+                  : finishGameState === "saving"
+                    ? "Saving game…"
+                    : "Finish the game"}
           </button>
         ) : null}
       </main>
@@ -3861,7 +3854,7 @@ describe("authoritative game session lifecycle", () => {
     },
   );
 
-  it("finishes locally while offline and uploads exactly once after Save is pressed", async () => {
+  it("keeps a rejected completion local and uploads exactly once after Save is pressed", async () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
@@ -3882,7 +3875,7 @@ describe("authoritative game session lifecycle", () => {
 
     await user.click(screen.getByRole("button", { name: "Finish test game" }));
     await user.click(screen.getByRole("button", { name: "Finish the game" }));
-    expect(screen.getByRole("button", { name: "Game saved offline" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Game upload blocked" })).toBeDisabled();
     expect(
       JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null").outbox,
     ).toEqual([

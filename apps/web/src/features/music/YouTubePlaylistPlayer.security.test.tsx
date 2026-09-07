@@ -5,7 +5,10 @@ import { YouTubePlaylistPlayer } from "./YouTubePlaylistPlayer.js";
 
 const api = vi.hoisted(() => ({ listMusicPlaylistItems: vi.fn() }));
 
-vi.mock("../../api/client.js", () => api);
+vi.mock(import("../../api/client.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  ...api,
+}));
 
 afterEach(() => {
   Object.defineProperty(window, "YT", { configurable: true, value: undefined, writable: true });

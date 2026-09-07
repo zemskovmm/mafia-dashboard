@@ -1,6 +1,7 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../../api/client.js";
 import { clearErrorConsole, reportError } from "./error-console.js";
 import { ErrorConsoleScreen } from "./ErrorConsoleScreen.js";
 import { I18nProvider } from "../../i18n/I18nProvider.js";
@@ -91,6 +92,37 @@ describe("ErrorConsoleScreen", () => {
     expect(olderRow.getByText("Loading players")).toBeInTheDocument();
     expect(olderRow.getByText("Older failure")).toBeInTheDocument();
     expect(olderRow.getByText("older-stack")).toBeInTheDocument();
+  });
+
+  it("renders safe API status, code, and validation diagnostics", () => {
+    const secretEventPayload = "must-not-render-secret-event-payload";
+    reportError(
+      new ApiError("Unable to save the game session operation", 400, "validation_failed", {
+        issues: [
+          {
+            path: "state.game.voteAssignments",
+            message: "The final voting candidate must receive every remaining active vote",
+          },
+          {
+            path: "state.game.events[0].payload",
+            message: secretEventPayload,
+          },
+        ],
+        request: { state: { events: [{ payload: secretEventPayload }] } },
+      }),
+      { source: "persistence" },
+    );
+    render(<ErrorConsoleScreen onBack={vi.fn()} />);
+
+    const entry = screen.getByRole("article", {
+      name: "Error from persistence: Unable to save the game session operation",
+    });
+    expect(within(entry).getByText("HTTP 400 · validation_failed")).toBeInTheDocument();
+    expect(within(entry).getByText("state.game.voteAssignments")).toBeInTheDocument();
+    expect(within(entry).getByRole("listitem")).toHaveTextContent(
+      "The final voting candidate must receive every remaining active vote",
+    );
+    expect(within(entry).queryByText(secretEventPayload)).not.toBeInTheDocument();
   });
 
   it("clears the external store and updates to the empty state", async () => {

@@ -73,6 +73,8 @@ const englishGameMessages = {
   "game.closeActions": "Close actions for {name}",
   "game.reviewTargetOrder": "Review the target order",
   "game.saveStateLocal": "Game saved on this device · reconnect to upload",
+  "game.saveStateBlocked": "Game saved on this device · upload rejected. See Console for details.",
+  "game.saveBlocked": "Game upload blocked",
   "game.saving": "Saving game…",
   "game.safelySaved": "Game safely saved",
   "game.savedOffline": "Game saved offline",
@@ -238,6 +240,9 @@ const russianGameMessages = {
   "game.closeActions": "Закрыть действия для игрока {name}",
   "game.reviewTargetOrder": "Проверьте порядок целей",
   "game.saveStateLocal": "Игра сохранена на этом устройстве · подключитесь к сети для отправки",
+  "game.saveStateBlocked":
+    "Игра сохранена на этом устройстве · сервер отклонил сохранение. Подробности в консоли.",
+  "game.saveBlocked": "Сохранение на сервере заблокировано",
   "game.saving": "Сохранение игры…",
   "game.safelySaved": "Игра надёжно сохранена",
   "game.savedOffline": "Игра сохранена офлайн",

@@ -10,7 +10,8 @@ import {
 import { I18nProvider } from "../../i18n/I18nProvider.js";
 import { AccountPlaylistPicker } from "./AccountPlaylistPicker.js";
 
-vi.mock("../../api/client.js", () => ({
+vi.mock(import("../../api/client.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
   listMusicPlaylists: vi.fn(),
   disconnectMusicAccount: vi.fn(),
 }));

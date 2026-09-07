@@ -35,7 +35,7 @@ interface GameScreenProps {
   readonly canResetPreview?: boolean;
   readonly privacyHidden: boolean;
   readonly onFinishGame?: () => void;
-  readonly finishGameState?: "ready" | "saving" | "saved" | "queued";
+  readonly finishGameState?: "ready" | "saving" | "saved" | "queued" | "blocked";
   readonly clubLogo?: string | null;
   readonly clubName?: string;
 }
@@ -277,8 +277,10 @@ export const GameScreen = ({
         <div className={`winner-card winner-${game.winner}`} role="status">
           <span className="table-prompt">{t("game.finished")}</span>
           <strong>{game.winner === "red" ? t("game.citizensWon") : t("game.mafiaWon")}</strong>
-          {finishGameState === "queued" ? (
-            <span className="finish-game-local">{t("game.saveStateLocal")}</span>
+          {finishGameState === "queued" || finishGameState === "blocked" ? (
+            <span className="finish-game-local">
+              {t(finishGameState === "blocked" ? "game.saveStateBlocked" : "game.saveStateLocal")}
+            </span>
           ) : null}
         </div>
       );
@@ -292,9 +294,11 @@ export const GameScreen = ({
             <span className="finish-game-local">
               {finishGameState === "saving"
                 ? t("game.saving")
-                : finishGameState === "queued"
-                  ? t("game.saveStateLocal")
-                  : t("game.safelySaved")}
+                : finishGameState === "blocked"
+                  ? t("game.saveStateBlocked")
+                  : finishGameState === "queued"
+                    ? t("game.saveStateLocal")
+                    : t("game.safelySaved")}
             </span>
           )}
         </div>
@@ -368,9 +372,11 @@ export const GameScreen = ({
             ? t("game.saving")
             : finishGameState === "queued"
               ? t("game.savedOffline")
-              : finishGameState === "saved"
-                ? t("game.safelySaved")
-                : t("game.finish")}
+              : finishGameState === "blocked"
+                ? t("game.saveBlocked")
+                : finishGameState === "saved"
+                  ? t("game.safelySaved")
+                  : t("game.finish")}
         </button>
       );
     }
