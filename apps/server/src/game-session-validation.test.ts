@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { createGameLogEntry, type GameState } from "@mafia/game-domain";
+import {
+  assertGameLogEntry,
+  canonicalGameEventTypes,
+  createGameLogEntry,
+  type CanonicalGameEventType,
+  type GameState,
+} from "@mafia/game-domain";
 import {
   gameSessionCompleteMutationSchema,
   gameSessionMutationSchema,
@@ -121,6 +127,103 @@ const currentSnapshot = <T extends { readonly game: unknown }>(state: T) => {
 };
 
 describe("game session validation", () => {
+  it("accepts a domain-valid shape for every canonical event without stripping fields", () => {
+    const ballot = {
+      votes: {},
+      result: { eliminate: false, seats: [4, 6], yesVotes: 0, eligibleVoters: 10 },
+    };
+    const payloads = {
+      "game.started": {},
+      "game.checkpointed": {},
+      "phase.changed": { to: "night-mafia" },
+      "turn.completed": { seat: 1 },
+      "player.nominated": { nominatorSeat: 1, candidateSeat: 2 },
+      "foul.issued": {
+        seat: 1,
+        foulNumber: 1,
+        redCarded: false,
+        phase: "day",
+        currentTurnIndex: 2,
+      },
+      "player.red-carded": { seat: 1, phase: "day", currentTurnIndex: 2 },
+      "voting.skipped": { reason: "host-skipped" },
+      "voting.resolved": {
+        voteAssignments: { "1": 2 },
+        result: { kind: "winner", seats: [2], totals: { "2": 1 } },
+      },
+      "car-crash.resolved": ballot,
+      "car-crash.ballot-resolved": ballot,
+      "mafia.shots-resolved": {
+        shots: [{ shooterSeat: 8, targetSeat: 1, secret: true }],
+        result: { kind: "kill", targetSeat: 1 },
+      },
+      "don.checked": { targetSeat: 1, match: true },
+      "don.check-skipped": {},
+      "sheriff.checked": { targetSeat: 8, match: true },
+      "sheriff.check-skipped": {},
+      "best-move.completed": { playerSeat: 1, selectedSeats: [8], mafiaHits: 1 },
+      "game.completed": { winner: "red" },
+      "game.drawn": { reason: "Draw" },
+      "game.cancelled": { reason: "Cancelled" },
+    } satisfies Record<CanonicalGameEventType, unknown>;
+    const { entry } = createGameLogEntry({
+      gameId: uuid(90),
+      id: uuid(91),
+      sequence: 1,
+      parentEventId: null,
+      createdAt: "2026-09-07T00:00:00.000Z",
+      before: liveGame(1),
+      draft: { type: "game.checkpointed", payload: {} },
+    });
+    expect(Object.keys(payloads).sort()).toEqual([...canonicalGameEventTypes].sort());
+    for (const type of canonicalGameEventTypes) {
+      const event = { ...entry, type, payload: payloads[type] };
+      expect(() => assertGameLogEntry(event), type).not.toThrow();
+      expect(
+        validationSchemas.gameSessionEventMutationSchema.shape.event.parse(event),
+        type,
+      ).toEqual(event);
+    }
+  });
+
+  it.each(["foul.issued", "player.red-carded"] as const)(
+    "keeps %s context optional, paired and strict",
+    (type) => {
+      const payload =
+        type === "foul.issued" ? { seat: 1, foulNumber: 1, redCarded: false } : { seat: 1 };
+      const { entry } = createGameLogEntry({
+        gameId: uuid(90),
+        id: uuid(91),
+        sequence: 1,
+        parentEventId: null,
+        createdAt: "2026-09-07T00:00:00.000Z",
+        before: liveGame(1),
+        draft: { type: "game.checkpointed", payload: {} },
+      });
+      const schema = validationSchemas.gameSessionEventMutationSchema.shape.event;
+      for (const context of [{}, { phase: "day", currentTurnIndex: 2 }]) {
+        const event = { ...entry, type, payload: { ...payload, ...context } };
+        expect(schema.parse(event)).toEqual(event);
+      }
+      for (const context of [
+        { phase: "day" },
+        { currentTurnIndex: 2 },
+        { phase: "unknown", currentTurnIndex: 2 },
+        { phase: "day", currentTurnIndex: -1 },
+        { phase: "day", currentTurnIndex: 1.5 },
+        { phase: "day", currentTurnIndex: Number.MAX_SAFE_INTEGER + 1 },
+        { phase: null, currentTurnIndex: 2 },
+        { phase: "day", currentTurnIndex: null },
+        { phase: "day", currentTurnIndex: 2, extra: true },
+        { extra: true },
+      ]) {
+        expect(
+          schema.safeParse({ ...entry, type, payload: { ...payload, ...context } }).success,
+        ).toBe(false);
+      }
+    },
+  );
+
   it("redacts unknown history failures and never invents positions for global failures", () => {
     expect(
       publicHistoryValidationIssue({

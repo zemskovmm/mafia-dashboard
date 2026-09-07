@@ -14,6 +14,7 @@ import {
 import type { GameState, PlayerInput } from "@mafia/game-domain";
 import { I18nProvider } from "../../i18n/I18nProvider.js";
 import { GameScreen } from "./GameScreen.js";
+import { expectServerAcceptsEvent } from "../../test-game-event-contract.js";
 
 const createPlanningGame = (): GameState => {
   const players: PlayerInput[] = Array.from({ length: 10 }, (_, index) => ({
@@ -354,6 +355,7 @@ describe("GameScreen", () => {
         currentTurnIndex: 4,
       },
     });
+    await expectServerAcceptsEvent(game, onAcceptedEvent.mock.calls[0]![0]);
   });
 
   it("removes and disables swipe red-card actions at night resolution", () => {
@@ -435,6 +437,7 @@ describe("GameScreen", () => {
         currentTurnIndex: 2,
       },
     });
+    await expectServerAcceptsEvent(base, onAcceptedEvent.mock.calls[0]![0]);
   });
 
   it("uses muted-goodbye rules in the non-canonical voting fallback", async () => {

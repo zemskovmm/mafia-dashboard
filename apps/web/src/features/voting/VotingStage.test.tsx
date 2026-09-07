@@ -18,6 +18,7 @@ import {
 import type { CanonicalGameEventDraft, GameState, PlayerInput } from "@mafia/game-domain";
 import { I18nProvider } from "../../i18n/I18nProvider.js";
 import { VotingStage } from "./VotingStage.js";
+import { expectServerAcceptsEvent } from "../../test-game-event-contract.js";
 
 const votingGame = (): GameState => {
   const players: PlayerInput[] = Array.from({ length: 10 }, (_, index) => ({
@@ -51,6 +52,31 @@ const Harness = ({
 };
 
 describe("VotingStage", () => {
+  it("emits a car-crash ballot that the server accepts unchanged", async () => {
+    const user = userEvent.setup();
+    const game: GameState = {
+      ...votingGame(),
+      phase: "car-crash-decision",
+      carCrashSeats: [4, 6],
+      carCrashVotes: {},
+    };
+    const onAcceptedEvent = vi.fn<(event: CanonicalGameEventDraft) => void>();
+    render(
+      <VotingStage
+        game={game}
+        onGameChange={() => undefined}
+        onResolved={() => undefined}
+        onEvent={() => undefined}
+        onAcceptedEvent={onAcceptedEvent}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Resolve car crash" }));
+    expect(onAcceptedEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "car-crash.ballot-resolved" }),
+    );
+    await expectServerAcceptsEvent(game, onAcceptedEvent.mock.calls[0]![0]);
+  });
+
   it("renders voting controls, labels, and plural status in Russian", () => {
     render(
       <I18nProvider locale="ru">

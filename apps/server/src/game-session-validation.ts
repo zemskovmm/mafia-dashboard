@@ -746,6 +746,13 @@ const gameLogEntrySchema = z.object({
 const canonicalSeat = z.number().int().min(1).max(10);
 const canonicalSeatKey = z.string().regex(/^(?:[1-9]|10)$/);
 const emptyCanonicalPayload = z.object({}).strict();
+const withDisciplineContext = <Shape extends z.ZodRawShape>(shape: Shape) =>
+  z.union([
+    z.object(shape).strict(),
+    z
+      .object({ ...shape, phase: gamePhase, currentTurnIndex: z.number().int().nonnegative() })
+      .strict(),
+  ]);
 const voteResultSchema = z
   .object({
     kind: z.enum(["winner", "car-crash", "eliminate-both-vote", "eliminate-all-skipped"]),
@@ -813,19 +820,17 @@ const canonicalGameEventSchema = z.discriminatedUnion("type", [
   canonicalEventMetadata
     .extend({
       type: z.literal("foul.issued"),
-      payload: z
-        .object({
-          seat: canonicalSeat,
-          foulNumber: z.number().int().positive(),
-          redCarded: z.boolean(),
-        })
-        .strict(),
+      payload: withDisciplineContext({
+        seat: canonicalSeat,
+        foulNumber: z.number().int().positive(),
+        redCarded: z.boolean(),
+      }),
     })
     .strict(),
   canonicalEventMetadata
     .extend({
       type: z.literal("player.red-carded"),
-      payload: z.object({ seat: canonicalSeat }).strict(),
+      payload: withDisciplineContext({ seat: canonicalSeat }),
     })
     .strict(),
   canonicalEventMetadata
@@ -847,7 +852,7 @@ const canonicalGameEventSchema = z.discriminatedUnion("type", [
     .strict(),
   canonicalEventMetadata
     .extend({
-      type: z.literal("car-crash.resolved"),
+      type: z.enum(["car-crash.resolved", "car-crash.ballot-resolved"]),
       payload: z
         .object({
           votes: z.record(canonicalSeatKey, z.boolean()),
