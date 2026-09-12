@@ -18,17 +18,15 @@ test-results/
 postgres-data/
 backups/
 
-# Local AI evidence and snapshots; active plans and reports remain trackable.
-/.AI/azure-template-contracts/
-/.AI/card-fire/
-/.AI/deployment-verification/
-/.AI/fire-samples/
-/.AI/ipad-layout/
-/.AI/lighting-polish/
-/.AI/lighting-visuals/
-/.AI/local-backend/
-/.AI/local-tooling-commit/
-/.AI/turbulent-card-fire/
-/.AI/ui-release/
-/.AI/local-history/
-/.AI/artifact-housekeeping/
+# Local AI artifacts; only directory guidance and genuine future plans are trackable.
+/.AI/*
+!/.AI/README.md
+!/.AI/plans/
+/.AI/plans/*
+!/.AI/plans/future/
+
+# Do not create parallel AI artifact trees.
+/.hermes/
+/.claude/
+/plans/
+/reports/
