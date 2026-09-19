@@ -6,6 +6,17 @@ import { fileURLToPath } from "node:url";
 
 const root = new URL("../", import.meta.url);
 
+// Keep resource GETs on the same supported API versions as infra/main.bicep.
+const resourceApiVersions = new Map([
+  ["microsoft.network/virtualnetworks", "2024-05-01"],
+  ["microsoft.network/virtualnetworks/subnets", "2024-05-01"],
+  ["microsoft.network/privatednszones", "2024-06-01"],
+  ["microsoft.network/privatednszones/virtualnetworklinks", "2024-06-01"],
+  ["microsoft.dbforpostgresql/flexibleservers", "2024-08-01"],
+  ["microsoft.dbforpostgresql/flexibleservers/databases", "2024-08-01"],
+  ["microsoft.app/managedenvironments", "2024-03-01"],
+]);
+
 export function foundationFingerprint(files, target) {
   return createHash("sha256")
     .update(JSON.stringify({ target, files: [...files].sort(([a], [b]) => a.localeCompare(b)) }))
@@ -53,7 +64,22 @@ export function selectFoundation({ target, fingerprint, force, readAzure }) {
     throw new Error("Foundation record has invalid resource IDs");
   }
   for (const id of ids) {
-    const existingId = readAzure(["resource", "show", "--ids", id, "--query", "id"]);
+    const [namespace, ...segments] = id.slice(prefix.length).toLowerCase().split("/");
+    const type = [namespace, ...segments.filter((_, index) => index % 2 === 0)].join("/");
+    const apiVersion = resourceApiVersions.get(type);
+    if (!apiVersion || segments.length % 2 !== 0 || segments.some((segment) => !segment)) {
+      throw new Error("Foundation record has an unsupported or malformed resource ID");
+    }
+    const existingId = readAzure([
+      "resource",
+      "show",
+      "--ids",
+      id,
+      "--api-version",
+      apiVersion,
+      "--query",
+      "id",
+    ]);
     if (existingId === null) return { deploy: true, reason: "foundation resource missing" };
     if (typeof existingId !== "string" || existingId.toLowerCase() !== id.toLowerCase()) {
       throw new Error("Unexpected foundation resource lookup response");

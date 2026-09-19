@@ -114,6 +114,64 @@ test("lookup failures and malformed successful records stop deployment", () => {
   }
 });
 
+test("unknown and malformed resource types fail before resource lookup", () => {
+  const prefix = `/subscriptions/${target.subscriptionId}/resourceGroups/${target.resourceGroup}/providers/`;
+  for (const suffix of [
+    "Microsoft.Unknown/widgets/test",
+    "Microsoft.App/managedEnvironments",
+    "Microsoft.App/managedEnvironments/",
+    "Microsoft.Network/virtualNetworks//subnets/test",
+    "Microsoft.Network/virtualNetworks/test/subnets",
+  ]) {
+    const previous = {
+      ...record,
+      outputs: { ...record.outputs, resourceIds: { value: [prefix + suffix] } },
+    };
+    const calls = [];
+    assert.throws(
+      () =>
+        selectFoundation({
+          target,
+          fingerprint,
+          force: false,
+          readAzure(args) {
+            calls.push(args);
+            return previous;
+          },
+        }),
+      /unsupported or malformed resource ID/,
+    );
+    assert.equal(calls.length, 1, "only the foundation record may be read");
+  }
+});
+
+test("resource lookup versions match every foundation Bicep type", async () => {
+  const template = await readFile(new URL("../infra/main.bicep", import.meta.url), "utf8");
+  const declarations = [...template.matchAll(/resource\s+\w+\s+'([^'@]+)@([^']+)'/g)];
+  assert.ok(declarations.length > 0);
+  for (const [, type, version] of declarations) {
+    const [namespace, ...types] = type.split("/");
+    const id = `/subscriptions/${target.subscriptionId}/resourceGroups/${target.resourceGroup}/providers/${namespace}/${types.map((part) => `${part}/test`).join("/")}`;
+    const result = selectFoundation({
+      target,
+      fingerprint,
+      force: false,
+      readAzure(args) {
+        if (args[0] === "deployment") {
+          return {
+            ...record,
+            outputs: { ...record.outputs, resourceIds: { value: [id.toUpperCase()] } },
+          };
+        }
+        assert.equal(args[args.indexOf("--api-version") + 1], version, type);
+        assert.equal(args[args.indexOf("--ids") + 1], id.toUpperCase());
+        return id;
+      },
+    });
+    assert.equal(result.deploy, false);
+  }
+});
+
 test("fingerprint covers complete deployment inputs independent of commit history", () => {
   const files = [
     ["infra/main.bicep", "foundation"],

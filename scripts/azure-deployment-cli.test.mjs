@@ -8,8 +8,23 @@ import { test } from "node:test";
 test("selection CLI emits safe outputs and fails closed on Azure errors", () => {
   const directory = mkdtempSync(join(tmpdir(), "mafia-azure-cli-"));
   const output = join(directory, "outputs");
-  const resourceId =
-    "/subscriptions/sub/resourceGroups/group/providers/Microsoft.App/managedEnvironments/app-env";
+  const resources = [
+    ["Microsoft.Network/virtualNetworks/app-vnet", "2024-05-01"],
+    ["Microsoft.Network/virtualNetworks/app-vnet/subnets/container-apps", "2024-05-01"],
+    ["Microsoft.Network/virtualNetworks/app-vnet/subnets/postgres", "2024-05-01"],
+    ["Microsoft.Network/privateDnsZones/app.postgres.database.azure.com", "2024-06-01"],
+    [
+      "Microsoft.Network/privateDnsZones/app.postgres.database.azure.com/virtualNetworkLinks/app-link",
+      "2024-06-01",
+    ],
+    ["Microsoft.DBforPostgreSQL/flexibleServers/app-pg", "2024-08-01"],
+    ["Microsoft.DBforPostgreSQL/flexibleServers/app-pg/databases/mafia_current", "2024-08-01"],
+    ["Microsoft.App/managedEnvironments/app-env", "2024-03-01"],
+  ].map(([path, version]) => [
+    `/subscriptions/sub/resourceGroups/group/providers/${path}`,
+    version,
+  ]);
+  const calls = join(directory, "calls");
   const env = {
     PATH: `${directory}:${process.env.PATH}`,
     AZURE_SUBSCRIPTION_ID: "sub",
@@ -53,12 +68,32 @@ test("selection CLI emits safe outputs and fails closed on Azure errors", () => 
         foundationFingerprint: { value: fingerprint },
         containerAppName: { value: "app-app" },
         deployedDatabaseName: { value: "mafia_current" },
-        resourceIds: { value: [resourceId] },
+        resourceIds: { value: resources.map(([id]) => id) },
       },
     };
-    const success = `process.stdout.write(JSON.stringify(process.argv[2] === "deployment" ? ${JSON.stringify(record)} : ${JSON.stringify(resourceId)}));`;
-    assert.equal(run(success).status, 0);
+    const success = `
+      const args = process.argv.slice(2);
+      if (args[0] === "deployment") {
+        process.stdout.write(JSON.stringify(${JSON.stringify(record)}));
+      } else {
+        const id = args[args.indexOf("--ids") + 1];
+        const versions = new Map(${JSON.stringify(resources)});
+        const versionIndex = args.indexOf("--api-version");
+        if (versionIndex < 0 || args[versionIndex + 1] !== versions.get(id)) {
+          process.stderr.write("ERROR: (NoRegisteredProviderFound) unsupported API version fixture");
+          process.exit(1);
+        }
+        require("node:fs").appendFileSync(${JSON.stringify(calls)}, id + "\\n");
+        process.stdout.write(JSON.stringify(id));
+      }
+    `;
+    const selected = run(success);
+    assert.equal(selected.status, 0, selected.stderr);
     assert.equal(outputs().deploy, "false");
+    assert.deepEqual(
+      readFileSync(calls, "utf8").trim().split("\n"),
+      resources.map(([id]) => id),
+    );
     assert.equal(
       run('throw new Error("force must not query Azure")', { DEPLOY_INFRASTRUCTURE: "true" })
         .status,
