@@ -32,7 +32,7 @@ import {
   OwnerProfileForbiddenError,
   PlayerStore,
 } from "./player-store.js";
-import { YouTubePlaylistAccessError } from "./youtube-oauth.js";
+import { YouTubePlaylistAccessError, YouTubeReconnectRequiredError } from "./youtube-oauth.js";
 import type { YouTubeOAuthService } from "./youtube-oauth.js";
 import { ClubStore } from "./club-store.js";
 import type { AppUser, GoogleAuthService } from "./google-auth.js";
@@ -291,6 +291,9 @@ export const buildApp = async ({
     },
   });
   app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof YouTubeReconnectRequiredError) {
+      return reply.code(409).send({ error: "youtube_reconnect_required" });
+    }
     const statusCode =
       typeof error === "object" &&
       error !== null &&

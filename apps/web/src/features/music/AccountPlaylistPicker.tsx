@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { disconnectMusicAccount, listMusicPlaylists } from "../../api/client.js";
+import { ApiError, disconnectMusicAccount, listMusicPlaylists } from "../../api/client.js";
 import type { MusicAccountStatus, MusicPlaylist } from "../../api/client.js";
 import { reportError } from "../console/error-console.js";
 import { useMessages } from "../../i18n/I18nProvider.js";
@@ -27,12 +27,15 @@ export const AccountPlaylistPicker = ({
   const { t } = useMessages(playersMusicMessages);
   const [playlists, setPlaylists] = useState<readonly MusicPlaylist[] | null>(null);
   const [playlistLoadFailed, setPlaylistLoadFailed] = useState(false);
+  const [playlistReconnectRequired, setPlaylistReconnectRequired] = useState(false);
+  const [playlistReload, setPlaylistReload] = useState(0);
   const [disconnectFailed, setDisconnectFailed] = useState(false);
   const [disconnecting, setDisconnecting] = useState(false);
 
   useEffect(() => {
     setPlaylists(null);
     setPlaylistLoadFailed(false);
+    setPlaylistReconnectRequired(false);
     if (status?.connected !== true) return undefined;
     let current = true;
     void listMusicPlaylists()
@@ -41,12 +44,17 @@ export const AccountPlaylistPicker = ({
       })
       .catch((error: unknown) => {
         reportError(error, { source: "api", context: "music-playlists.list" });
-        if (current) setPlaylistLoadFailed(true);
+        if (current) {
+          setPlaylistLoadFailed(true);
+          setPlaylistReconnectRequired(
+            error instanceof ApiError && error.code === "youtube_reconnect_required",
+          );
+        }
       });
     return () => {
       current = false;
     };
-  }, [status?.accountLabel, status?.connected]);
+  }, [playlistReload, status?.accountLabel, status?.connected]);
 
   if (statusError) {
     return (
@@ -59,9 +67,6 @@ export const AccountPlaylistPicker = ({
         </button>
       </section>
     );
-  }
-  if (playlistLoadFailed || disconnectFailed) {
-    return <p className="account-playlist-error">{t("Music account check failed")}</p>;
   }
   if (status === null) {
     return <p className="muted">{t("Checking music account")}</p>;
@@ -88,13 +93,6 @@ export const AccountPlaylistPicker = ({
       </section>
     );
   }
-  if (playlists === null) {
-    return (
-      <p className="muted">
-        {t("Loading playlists for {account}", { account: status.accountLabel ?? "" })}
-      </p>
-    );
-  }
   return (
     <section className="account-playlist-picker">
       <div className="account-playlist-heading">
@@ -109,6 +107,7 @@ export const AccountPlaylistPicker = ({
           disabled={disconnecting}
           onClick={() => {
             setDisconnecting(true);
+            setDisconnectFailed(false);
             void disconnectMusicAccount()
               .then(() => {
                 onAccountDisconnected();
@@ -125,22 +124,54 @@ export const AccountPlaylistPicker = ({
           {disconnecting ? t("Disconnecting…") : t("Disconnect account")}
         </button>
       </div>
-      <label className="wide-field">
-        <span>{t("Music playlist")}</span>
-        <select
-          aria-label={t("Music playlist")}
-          value={playlistId}
-          onChange={(event) => onPlaylistIdChange(event.target.value)}
-        >
-          <option value="">{t("Choose a playlist")}</option>
-          {playlists.map((playlist) => (
-            <option key={playlist.id} value={playlist.id}>
-              {playlist.title} · {t("Playlist tracks", { count: playlist.itemCount })}
-            </option>
-          ))}
-        </select>
-      </label>
-      {playlists.length === 0 ? <p className="muted">{t("No account playlists")}</p> : null}
+      {disconnectFailed ? (
+        <p className="account-playlist-error" role="alert">
+          {t("Music account disconnect failed")}
+        </p>
+      ) : null}
+      {playlistLoadFailed ? (
+        <div>
+          <p className="account-playlist-error" role="alert">
+            {t(
+              playlistReconnectRequired
+                ? "Music account reconnect required"
+                : "Music playlists load failed",
+            )}
+          </p>
+          {playlistReconnectRequired ? (
+            <a className="oauth-connect" href="/api/music/oauth/start">
+              {t("Reconnect music account")}
+            </a>
+          ) : (
+            <button type="button" onClick={() => setPlaylistReload((attempt) => attempt + 1)}>
+              {t("Retry loading playlists")}
+            </button>
+          )}
+        </div>
+      ) : playlists === null ? (
+        <p className="muted">
+          {t("Loading playlists for {account}", { account: status.accountLabel ?? "" })}
+        </p>
+      ) : (
+        <>
+          <label className="wide-field">
+            <span>{t("Music playlist")}</span>
+            <select
+              aria-label={t("Music playlist")}
+              value={playlistId}
+              onChange={(event) => onPlaylistIdChange(event.target.value)}
+            >
+              <option value="">{t("Choose a playlist")}</option>
+              {playlists.map((playlist) => (
+                <option key={playlist.id} value={playlist.id}>
+                  {playlist.title} · {t("Playlist tracks", { count: playlist.itemCount })}
+                </option>
+              ))}
+            </select>
+          </label>
+          {playlists.length === 0 ? <p className="muted">{t("No account playlists")}</p> : null}
+        </>
+      )}
     </section>
   );
 };

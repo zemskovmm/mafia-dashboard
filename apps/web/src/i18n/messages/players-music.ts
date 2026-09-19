@@ -72,6 +72,13 @@ const englishPlayersMusicMessages = {
   "Player email aria": "{player} email",
   "Music account check failed": "Unable to check the YouTube Music account.",
   "Retry music account check": "Retry music account check",
+  "Music account disconnect failed":
+    "Unable to disconnect the YouTube Music account. Please try again.",
+  "Music account reconnect required":
+    "Your YouTube Music authorization has expired or was revoked. Reconnect your account to load playlists.",
+  "Reconnect music account": "Reconnect YouTube Music account",
+  "Music playlists load failed": "Unable to load YouTube Music playlists. Please try again.",
+  "Retry loading playlists": "Retry loading playlists",
   "Checking music account": "Checking YouTube Music account…",
   "Music playlist": "YouTube Music playlist",
   "Music account access not configured":
@@ -215,6 +222,13 @@ const russianPlayersMusicMessages = {
   "Player email aria": "{player} Электронная почта",
   "Music account check failed": "Не удалось проверить аккаунт YouTube Music.",
   "Retry music account check": "Повторить проверку аккаунта",
+  "Music account disconnect failed":
+    "Не удалось отключить аккаунт YouTube Music. Повторите попытку.",
+  "Music account reconnect required":
+    "Срок действия авторизации YouTube Music истёк или она была отозвана. Повторно подключите аккаунт, чтобы загрузить плейлисты.",
+  "Reconnect music account": "Повторно подключить аккаунт YouTube Music",
+  "Music playlists load failed": "Не удалось загрузить плейлисты YouTube Music. Повторите попытку.",
+  "Retry loading playlists": "Повторить загрузку плейлистов",
   "Checking music account": "Проверяем аккаунт YouTube Music…",
   "Music playlist": "Плейлист YouTube Music",
   "Music account access not configured":

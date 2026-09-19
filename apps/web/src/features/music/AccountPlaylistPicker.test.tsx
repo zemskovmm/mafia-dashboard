@@ -1,8 +1,9 @@
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState, type ComponentType } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  ApiError,
   disconnectMusicAccount,
   listMusicPlaylists,
   type MusicAccountStatus,
@@ -92,6 +93,117 @@ describe("AccountPlaylistPicker", () => {
     expect(onPlaylistIdChange).toHaveBeenCalledWith("PL-late");
   });
 
+  it("retains account controls and reloads playlists after a transient loading failure", async () => {
+    vi.mocked(listMusicPlaylists)
+      .mockRejectedValueOnce(new Error("playlist provider unavailable"))
+      .mockResolvedValueOnce([
+        { id: "PL-remembered", title: "Remembered mix", itemCount: 12, thumbnailUrl: null },
+      ]);
+    const user = userEvent.setup();
+
+    render(
+      <AccountPlaylistPicker
+        playlistId="PL-remembered"
+        onPlaylistIdChange={vi.fn()}
+        onAccountDisconnected={vi.fn()}
+        status={{ configured: true, connected: true, accountLabel: "Mafia Host" }}
+        statusError={false}
+        onRetry={vi.fn()}
+        onStatusChange={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Unable to load YouTube Music playlists. Please try again.",
+    );
+    expect(screen.getByText("Connected as Mafia Host")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Disconnect account" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Connect YouTube Music account" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Retry loading playlists" }));
+
+    expect(await screen.findByRole("combobox", { name: "YouTube Music playlist" })).toHaveValue(
+      "PL-remembered",
+    );
+    expect(listMusicPlaylists).toHaveBeenCalledTimes(2);
+  });
+
+  it("offers reconnection instead of retrying when playlist authorization is revoked", async () => {
+    vi.mocked(listMusicPlaylists).mockRejectedValue(
+      new ApiError("YouTube authorization must be renewed", 409, "youtube_reconnect_required"),
+    );
+
+    render(
+      <AccountPlaylistPicker
+        playlistId="PL-remembered"
+        onPlaylistIdChange={vi.fn()}
+        onAccountDisconnected={vi.fn()}
+        status={{ configured: true, connected: true, accountLabel: "Mafia Host" }}
+        statusError={false}
+        onRetry={vi.fn()}
+        onStatusChange={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Your YouTube Music authorization has expired or was revoked. Reconnect your account to load playlists.",
+    );
+    const reconnect = screen.getByRole("link", { name: "Reconnect YouTube Music account" });
+    expect(reconnect).toHaveAttribute("href", "/api/music/oauth/start");
+    expect(screen.queryByRole("button", { name: "Retry loading playlists" })).toBeNull();
+  });
+
+  it("ignores a stale playlist response after the connected account changes", async () => {
+    let resolveStale: (
+      playlists: readonly { id: string; title: string; itemCount: number; thumbnailUrl: null }[],
+    ) => void;
+    const stalePlaylists = new Promise<
+      readonly { id: string; title: string; itemCount: number; thumbnailUrl: null }[]
+    >((resolve) => {
+      resolveStale = resolve;
+    });
+    vi.mocked(listMusicPlaylists)
+      .mockReturnValueOnce(stalePlaylists)
+      .mockResolvedValueOnce([
+        { id: "PL-current", title: "Current mix", itemCount: 8, thumbnailUrl: null },
+      ]);
+
+    const { rerender } = render(
+      <AccountPlaylistPicker
+        playlistId=""
+        onPlaylistIdChange={vi.fn()}
+        onAccountDisconnected={vi.fn()}
+        status={{ configured: true, connected: true, accountLabel: "Earlier Host" }}
+        statusError={false}
+        onRetry={vi.fn()}
+        onStatusChange={vi.fn()}
+      />,
+    );
+    await screen.findByText("Loading playlists for Earlier Host…");
+
+    rerender(
+      <AccountPlaylistPicker
+        playlistId=""
+        onPlaylistIdChange={vi.fn()}
+        onAccountDisconnected={vi.fn()}
+        status={{ configured: true, connected: true, accountLabel: "Current Host" }}
+        statusError={false}
+        onRetry={vi.fn()}
+        onStatusChange={vi.fn()}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("option", { name: "Current mix · 8 tracks" }),
+    ).toBeInTheDocument();
+    await act(async () => {
+      resolveStale([{ id: "PL-stale", title: "Stale mix", itemCount: 3, thumbnailUrl: null }]);
+    });
+
+    expect(screen.getByRole("option", { name: "Current mix · 8 tracks" })).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Stale mix · 3 tracks" })).toBeNull();
+  });
+
   it("renders only one remembered playlist selector even when obsolete stage props are present", async () => {
     const LegacyCompatiblePicker = AccountPlaylistPicker as unknown as ComponentType<
       Record<string, unknown>
@@ -161,7 +273,7 @@ describe("AccountPlaylistPicker", () => {
     ).toBeInTheDocument();
   });
 
-  it("leaves playlist state unchanged when disconnecting the account fails", async () => {
+  it("keeps account controls and playlist state when disconnecting the account fails", async () => {
     const onPlaylistIdChange = vi.fn();
     const onAccountDisconnected = vi.fn();
     vi.mocked(listMusicPlaylists).mockResolvedValue([
@@ -183,9 +295,14 @@ describe("AccountPlaylistPicker", () => {
     );
     await user.click(await screen.findByRole("button", { name: "Disconnect account" }));
 
-    expect(
-      await screen.findByText("Unable to check the YouTube Music account."),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Unable to disconnect the YouTube Music account. Please try again.",
+    );
+    expect(screen.getByText("Connected as Mafia Host")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Disconnect account" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "YouTube Music playlist" })).toHaveValue(
+      "PL-music",
+    );
     expect(disconnectMusicAccount).toHaveBeenCalledOnce();
     expect(onAccountDisconnected).not.toHaveBeenCalled();
     expect(onPlaylistIdChange).not.toHaveBeenCalled();

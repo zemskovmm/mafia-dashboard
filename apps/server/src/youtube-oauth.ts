@@ -5,6 +5,13 @@ import { z } from "zod";
 const YOUTUBE_READONLY_SCOPE = "https://www.googleapis.com/auth/youtube.readonly";
 const MAX_YOUTUBE_PAGE_COUNT = 20;
 
+export class YouTubeReconnectRequiredError extends Error {
+  public constructor() {
+    super("YouTube authorization has expired or been revoked; reconnect the account");
+    this.name = "YouTubeReconnectRequiredError";
+  }
+}
+
 export class YouTubePlaylistAccessError extends Error {
   public constructor(playlistId: string) {
     super(`Playlist ${playlistId} is not in the connected YouTube account`);
@@ -306,7 +313,17 @@ export class YouTubeOAuthService {
         grant_type: "refresh_token",
       }),
     });
-    if (!response.ok) throw new Error(`Google token refresh failed with HTTP ${response.status}`);
+    if (!response.ok) {
+      // Only a rejected refresh grant proves that the user must authorize again.
+      // Outages, quotas, client configuration and malformed responses must not erase credentials.
+      if (response.status === 400) {
+        const failure = z
+          .object({ error: z.literal("invalid_grant") })
+          .safeParse(await response.json().catch(() => null));
+        if (failure.success) throw new YouTubeReconnectRequiredError();
+      }
+      throw new Error(`Google token refresh failed with HTTP ${response.status}`);
+    }
     const tokens = accessTokenResponse.parse(await response.json());
     await this.pool.query(
       `UPDATE youtube_oauth_credentials
