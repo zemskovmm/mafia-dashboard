@@ -208,7 +208,9 @@ The queue changes only IFrame playback order. Account authorization remains read
 
 Night is a host-private guided sequence.
 
-Don/Sheriff check eligibility is captured when the ordinary night begins. A role owner active at that point may complete that night's check even if killed by that night's Mafia shot. Owners already inactive before the night cannot check, and a same-night victim gains no eligibility for later nights.
+Don/Sheriff check eligibility is captured when the ordinary night begins. Active and eliminated role owners may check: both screens remain available on the night of death and every subsequent ordinary night, with target selection, private results, Continue, and Skip still usable. Owners red-carded before the night remain ineligible. Checks do not revive players or restore shooting, voting, or speaking rights. During their own eligible check selection screen, deceased owners retain the existing full-bright role highlight and deceased marker; result screens retain their normal presentation.
+
+Previously saved nights retain their captured eligibility until the next ordinary night. Canonical replay remains current-rules-only: older logs whose transition hashes encode the former post-death skip rule are rejected, not silently rewritten or migrated.
 
 ### 11.1 Mafia shots
 
@@ -224,14 +226,14 @@ Don/Sheriff check eligibility is captured when the ordinary night begins. A role
 ### 11.2 Don check
 
 - If the Don is eligible for this night, show `DON CHECK`.
-- Tap one active target.
+- Tap one seated target, including deceased players, or skip the check.
 - Host-private result is Sheriff / not Sheriff.
 - The result is stored as a secret event.
 
 ### 11.3 Sheriff check
 
 - If the Sheriff is eligible for this night, show `SHERIFF CHECK`.
-- Tap one active target.
+- Tap one seated target, including deceased players, or skip the check.
 - Host-private result is Mafia-aligned / not Mafia-aligned.
 - The result is stored as a secret event.
 

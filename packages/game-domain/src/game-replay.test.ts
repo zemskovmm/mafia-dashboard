@@ -458,14 +458,14 @@ describe("canonical game replay", () => {
     );
   });
 
-  it("rejects historical check-skip routing without an eligibility snapshot", () => {
+  it("rejects check-skip routing to a red-carded Sheriff without an eligibility snapshot", () => {
     const base = dayOne();
     const before: GameState = {
       ...base,
       phase: "night-don",
       players: base.players.map((player) =>
         player.role === "don" || player.role === "sheriff"
-          ? { ...player, status: "eliminated" }
+          ? { ...player, status: "red-carded" }
           : player,
       ),
     };
@@ -492,11 +492,11 @@ describe("canonical game replay", () => {
     expect(() => applyCurrentGameLogEntry(root.after, donSkip)).toThrow(/current rule semantics/i);
   });
 
-  it("rejects old private-phase routing for an inactive Don", () => {
+  it("rejects private-phase routing for a previously red-carded Don", () => {
     const before = markPlayerInactive(
       dayOne(),
       dayOne().players.find(({ role }) => role === "don")!.seat,
-      "eliminated",
+      "red-carded",
     );
     const root = entry(before, 1, { type: "game.checkpointed", payload: {} });
     const currentNight = entry(
@@ -538,6 +538,64 @@ describe("canonical game replay", () => {
         transition,
       ]),
     ).toThrow(/cannot replay a phase change/i);
+  });
+
+  it("replays checks and skips on successive nights after both owners died", () => {
+    let game = dayOne();
+    const don = game.players.find(({ role }) => role === "don")!;
+    const sheriff = game.players.find(({ role }) => role === "sheriff")!;
+    game = markPlayerInactive(
+      markPlayerInactive(game, don.seat, "eliminated"),
+      sheriff.seat,
+      "eliminated",
+    );
+    const initial = baseline(game);
+    const events: GameLogEntry[] = [];
+    const append = (draft: CanonicalGameEventDraft) => {
+      const next = entry(game, events.length + 1, draft);
+      events.push(next.entry);
+      game = next.after;
+      expect(replayGameLog(initial, JSON.parse(JSON.stringify(events))).game).toEqual(game);
+    };
+    append({ type: "game.checkpointed", payload: {} });
+    for (let night = 0; night < 2; night += 1) {
+      append({ type: "phase.changed", payload: { to: "night-mafia" } });
+      append({ type: "mafia.shots-resolved", payload: { shots: [], result: { kind: "miss" } } });
+      append({ type: "phase.changed", payload: { to: "night-don" } });
+      if (night === 0) {
+        append({ type: "don.checked", payload: { targetSeat: sheriff.seat, match: true } });
+        expect(game.checkResult?.secret).toBe(true);
+        append({ type: "phase.changed", payload: { to: "night-sheriff" } });
+        expect(game.checkResult).toBeUndefined();
+        append({ type: "sheriff.checked", payload: { targetSeat: don.seat, match: true } });
+        expect(game.checkResult?.secret).toBe(true);
+        append({ type: "phase.changed", payload: { to: "night-resolution" } });
+      } else {
+        append({ type: "don.check-skipped", payload: {} });
+        append({ type: "sheriff.check-skipped", payload: {} });
+      }
+      append({ type: "phase.changed", payload: { to: "day" } });
+      expect(game.checkResult).toBeUndefined();
+      expect(game.players).toEqual(initial.game.players);
+    }
+  });
+
+  it("rejects old night-transition hashes that excluded deceased check owners", () => {
+    const before = markPlayerInactive(
+      dayOne(),
+      dayOne().players.find(({ role }) => role === "don")!.seat,
+      "eliminated",
+    );
+    const root = entry(before, 1, { type: "game.checkpointed", payload: {} });
+    const night = entry(root.after, 2, { type: "phase.changed", payload: { to: "night-mafia" } });
+    const oldAfter = { ...night.after, nightCheckEligibility: { don: false, sheriff: true } };
+    const storedEntry = { ...night.entry, stateHashAfter: hashGameState(oldAfter) };
+    expect(() => replayGameLog(baseline(before), [root.entry, storedEntry])).toThrow(
+      /state hash mismatch/i,
+    );
+    expect(() => applyCurrentGameLogEntry(root.after, storedEntry)).toThrow(
+      /current rule semantics/i,
+    );
   });
 
   it("replays same-night killed role checks exactly through the canonical chain", () => {

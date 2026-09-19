@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   assertGameLogEntry,
+  beginNight,
   canonicalGameEventTypes,
+  completeMafiaShots,
+  continueDonCheck,
   createGameLogEntry,
+  markPlayerInactive,
+  performDonCheck,
+  performSheriffCheck,
+  resolveMafiaShots,
   type CanonicalGameEventType,
   type GameState,
 } from "@mafia/game-domain";
@@ -1057,7 +1064,38 @@ describe("game session validation", () => {
     );
   });
 
-  it("validates the persisted same-night check eligibility snapshot", () => {
+  it("round-trips later-night selection and result snapshots with deceased check owners", () => {
+    const base = liveGame(3);
+    const night = beginNight(
+      markPlayerInactive(markPlayerInactive(base, 10, "eliminated"), 1, "eliminated"),
+    );
+    const don = completeMafiaShots(resolveMafiaShots(night).game);
+    const donResult = performDonCheck(don, 1).game;
+    const sheriff = continueDonCheck(donResult);
+    const sheriffResult = performSheriffCheck(sheriff, 10).game;
+    for (const game of [don, donResult, sheriff, sheriffResult]) {
+      const mutation = {
+        name: "Post-death night check",
+        mutationId: uuid(98),
+        baseRevision: 0,
+        state: currentSnapshot({
+          setup: null,
+          game,
+          hostPlayerId: uuid(11),
+          hostName: "Host",
+          playlistId: "",
+          log: [],
+          undoHistory: [],
+        }),
+        results: null,
+      };
+      const parsed = gameSessionMutationSchema.parse(JSON.parse(JSON.stringify(mutation)));
+      expect(parsed.state.game).toEqual(JSON.parse(JSON.stringify(game)));
+      expect(parsed.state.game?.nightCheckEligibility).toEqual({ don: true, sheriff: true });
+    }
+  });
+
+  it("validates the persisted night check eligibility snapshot", () => {
     const base = liveGame(1);
     const parse = (game: unknown) =>
       gameSessionMutationSchema.safeParse({

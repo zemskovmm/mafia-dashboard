@@ -14,6 +14,7 @@ export const isNightCheckEligible = (game: GameState, role: "don" | "sheriff"): 
   const owner = game.players.find(({ role: playerRole }) => playerRole === role);
   return (
     owner?.status === "active" ||
+    owner?.status === "eliminated" ||
     (game.nightResult?.kind === "kill" && game.nightResult.targetSeat === owner?.seat)
   );
 };

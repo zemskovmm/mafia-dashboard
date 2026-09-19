@@ -11,6 +11,7 @@ import {
   createSeededRandom,
   createSetup,
   drawRoleForSeat,
+  markPlayerInactive,
 } from "@mafia/game-domain";
 import type { GameState, PlayerInput } from "@mafia/game-domain";
 import { I18nProvider } from "../../i18n/I18nProvider.js";
@@ -260,6 +261,63 @@ describe("NightStage", () => {
     expect(screen.getByRole("region", { name: "Mafia table" })).toBeInTheDocument();
     expect(screen.getByText("Night complete")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /begin day 2/i })).toBeInTheDocument();
+  });
+
+  it("offers both checks after Mafia shots when both owners died before this night", async () => {
+    const user = userEvent.setup();
+    const base = createNightGame();
+    const don = base.players.find(({ role }) => role === "don")!;
+    const sheriff = base.players.find(({ role }) => role === "sheriff")!;
+    const initial = beginNight({
+      ...markPlayerInactive(
+        markPlayerInactive(base, don.seat, "eliminated"),
+        sheriff.seat,
+        "eliminated",
+      ),
+      phase: "day",
+      day: 3,
+    });
+    const onEvent = vi.fn();
+    const { unmount } = render(<Harness initial={initial} onEvent={onEvent} />);
+
+    await user.click(screen.getByRole("button", { name: /evaluate mafia shots/i }));
+    await user.click(screen.getByRole("button", { name: "Continue night" }));
+    expect(screen.getByRole("button", { name: `Don check ${don.name}` })).toHaveClass(
+      "status-eliminated",
+    );
+    await user.click(screen.getByRole("button", { name: `Don check ${sheriff.name}` }));
+    expect(screen.getByRole("status", { name: "Don check result" })).toHaveTextContent(
+      "Sheriff found",
+    );
+    expect(onEvent).toHaveBeenLastCalledWith(
+      "don.checked",
+      expect.objectContaining({ targetSeat: sheriff.seat, match: true, secret: true }),
+    );
+    await user.click(screen.getByRole("button", { name: "Proceed to Sheriff check" }));
+    expect(screen.queryByText("Sheriff found")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: `Sheriff check ${sheriff.name}` })).toHaveClass(
+      "status-eliminated",
+    );
+    await user.click(screen.getByRole("button", { name: `Sheriff check ${don.name}` }));
+    expect(screen.getByRole("status", { name: "Sheriff check result" })).toHaveTextContent(
+      "Mafia found",
+    );
+    expect(onEvent).toHaveBeenLastCalledWith(
+      "sheriff.checked",
+      expect.objectContaining({ targetSeat: don.seat, match: true, secret: true }),
+    );
+    await user.click(screen.getByRole("button", { name: "Continue night" }));
+    expect(screen.getByRole("button", { name: "Begin day 4" })).toBeEnabled();
+    unmount();
+
+    render(<Harness initial={initial} onEvent={onEvent} />);
+    await user.click(screen.getByRole("button", { name: /evaluate mafia shots/i }));
+    await user.click(screen.getByRole("button", { name: "Continue night" }));
+    await user.click(screen.getByRole("button", { name: "Skip Don check" }));
+    expect(onEvent).toHaveBeenLastCalledWith("don.check-skipped", { day: 3 });
+    await user.click(screen.getByRole("button", { name: "Skip Sheriff check" }));
+    expect(onEvent).toHaveBeenLastCalledWith("sheriff.check-skipped", { day: 3 });
+    expect(screen.getByRole("button", { name: "Begin day 4" })).toBeEnabled();
   });
 
   it("keeps both same-night deceased owners' checks interactive", async () => {

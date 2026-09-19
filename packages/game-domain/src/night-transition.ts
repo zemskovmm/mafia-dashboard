@@ -13,8 +13,12 @@ export const transitionToNight = (game: GameState): GameState => ({
   goodbyeNext: undefined,
   shotAssignments: {},
   nightCheckEligibility: {
-    don: game.players.some(({ role, status }) => role === "don" && status === "active"),
-    sheriff: game.players.some(({ role, status }) => role === "sheriff" && status === "active"),
+    don: game.players.some(
+      ({ role, status }) => role === "don" && (status === "active" || status === "eliminated"),
+    ),
+    sheriff: game.players.some(
+      ({ role, status }) => role === "sheriff" && (status === "active" || status === "eliminated"),
+    ),
   },
   checkResult: undefined,
   nightResult: undefined,

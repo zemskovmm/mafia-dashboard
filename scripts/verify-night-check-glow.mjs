@@ -43,8 +43,9 @@ try {
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     for (const role of ["don", "sheriff"]) {
-      for (const mode of ["check", "prior", "privacy", "retired-disabled"]) {
-        await page.goto(`${server.resolvedUrls.local[0]}?role=${role}&${mode}=1`);
+      for (const mode of ["check", "prior", "privacy", "prior-privacy", "retired-disabled"]) {
+        const query = mode === "prior-privacy" ? "prior=1&privacy=1" : `${mode}=1`;
+        await page.goto(`${server.resolvedUrls.local[0]}?role=${role}&${query}`);
         if (mode === "retired-disabled") {
           await page.evaluate(() =>
             window.localStorage.setItem("mafia-dashboard.player-lighting.v1", "disabled"),
@@ -67,56 +68,51 @@ try {
         await expect(owner).toHaveClass(/status-eliminated/);
         await expect(owner.locator(".deceased-cross")).toHaveCount(1);
         await expect(other).toHaveCSS("opacity", "0.48");
-        await expect(owner).toHaveCSS("opacity", mode === "prior" ? "0.48" : "1");
-        await expect(owner).toHaveCSS("filter", mode === "prior" ? "grayscale(0.9)" : "none");
-        if (mode === "prior") {
-          await expect(owner).toBeDisabled();
-          await expect(owner).not.toHaveClass(/is-mafia-shooter|is-sheriff-highlight/);
-        } else {
-          await expect(owner).toBeEnabled();
-          await expect(owner).toHaveClass(
-            role === "don" ? /is-mafia-shooter/ : /is-sheriff-highlight/,
+        await expect(owner).toHaveCSS("opacity", "1");
+        await expect(owner).toHaveCSS("filter", "none");
+        await expect(owner).toBeEnabled();
+        await expect(owner).toHaveClass(
+          role === "don" ? /is-mafia-shooter/ : /is-sheriff-highlight/,
+        );
+        const effective = await shell.getAttribute("data-lighting-renderer");
+        if (effective === "vgpu") {
+          await expect(owner.locator(".vgpu-player-lighting")).toHaveAttribute(
+            "data-vgpu-ready",
+            "true",
           );
-          const effective = await shell.getAttribute("data-lighting-renderer");
-          if (effective === "vgpu") {
-            await expect(owner.locator(".vgpu-player-lighting")).toHaveAttribute(
-              "data-vgpu-ready",
-              "true",
-            );
-            await expect(owner.locator(".vgpu-player-lighting")).toHaveCSS("visibility", "visible");
-          } else if (role === "don") {
-            await expect(owner).toHaveCSS("box-shadow", /rgba?\(/);
-            const fallback = await owner.evaluate((element) => {
-              const style = getComputedStyle(element, "::after");
-              return {
-                background: style.backgroundImage,
-                inset: style.inset,
-                content: style.content,
-              };
-            });
-            assert.match(fallback.background, /gradient/);
-            assert.equal(fallback.inset, "1px");
-            assert.equal(fallback.content, '""');
-          } else {
-            await expect(owner).toHaveCSS("animation-name", "mafia-flame-pulse");
-          }
-          if (mode === "privacy") await expect(owner.locator(".role-badge")).toHaveCount(0);
-          evidence.push({
-            renderer,
-            effective,
-            role,
-            mode,
-            ...(await owner.evaluate((element) => ({
-              opacity: getComputedStyle(element).opacity,
-              filter: getComputedStyle(element).filter,
-            }))),
+          await expect(owner.locator(".vgpu-player-lighting")).toHaveCSS("visibility", "visible");
+        } else if (role === "don") {
+          await expect(owner).toHaveCSS("box-shadow", /rgba?\(/);
+          const fallback = await owner.evaluate((element) => {
+            const style = getComputedStyle(element, "::after");
+            return {
+              background: style.backgroundImage,
+              inset: style.inset,
+              content: style.content,
+            };
           });
-          // Deceased targets remain checkable; the result stage keeps its existing dimming.
-          await other.click();
-          await expect(shell).toHaveAttribute("data-phase", `night-${role}-result`);
-          await expect(owner).toHaveCSS("opacity", "0.48");
-          await expect(owner).toHaveCSS("filter", "grayscale(0.9)");
+          assert.match(fallback.background, /gradient/);
+          assert.equal(fallback.inset, "1px");
+          assert.equal(fallback.content, '""');
+        } else {
+          await expect(owner).toHaveCSS("animation-name", "mafia-flame-pulse");
         }
+        if (mode.endsWith("privacy")) await expect(owner.locator(".role-badge")).toHaveCount(0);
+        evidence.push({
+          renderer,
+          effective,
+          role,
+          mode,
+          ...(await owner.evaluate((element) => ({
+            opacity: getComputedStyle(element).opacity,
+            filter: getComputedStyle(element).filter,
+          }))),
+        });
+        // Deceased targets remain checkable; the result stage keeps its existing dimming.
+        await other.click();
+        await expect(shell).toHaveAttribute("data-phase", `night-${role}-result`);
+        await expect(owner).toHaveCSS("opacity", "0.48");
+        await expect(owner).toHaveCSS("filter", "grayscale(0.9)");
         await page.evaluate(() =>
           window.localStorage.removeItem("mafia-dashboard.player-lighting.v1"),
         );

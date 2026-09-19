@@ -47,10 +47,10 @@ const night = beginNight({
       : player,
   ),
 });
-let initial = prior
-  ? { ...night, phase: role === "don" ? ("night-don" as const) : ("night-sheriff" as const) }
-  : completeMafiaShots(resolveMafiaShots(toggleAllMafiaShotsForTarget(night, owner.seat)).game);
-if (!prior && role === "sheriff") initial = skipDonCheck(initial);
+let initial = completeMafiaShots(
+  resolveMafiaShots(prior ? night : toggleAllMafiaShotsForTarget(night, owner.seat)).game,
+);
+if (role === "sheriff") initial = skipDonCheck(initial);
 
 const Harness = () => {
   const [game, setGame] = useState(initial);
