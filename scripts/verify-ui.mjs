@@ -149,6 +149,7 @@ const viewportWidth = Number(process.env.UI_VIEWPORT_WIDTH ?? "");
 const viewportHeight = Number(process.env.UI_VIEWPORT_HEIGHT ?? "");
 const headerOnly = process.env.UI_HEADER_ONLY === "1";
 const layoutOnly = process.env.UI_LAYOUT_ONLY === "1";
+const musicOnly = process.env.UI_MUSIC_ONLY === "1";
 const hardeningOnly = process.env.UI_HARDENING_ONLY === "1";
 const verifyVgpuSelection = process.env.UI_VERIFY_VGPU === "1";
 const browser =
@@ -184,6 +185,119 @@ const assertNoPageErrors = () => {
   if (routeErrors.length > 0) {
     throw new Error(`Unexpected verifier API requests occurred: ${routeErrors.join(" | ")}`);
   }
+};
+
+const measureMusic = () =>
+  page.locator(".youtube-dock").evaluate((dock) => {
+    const box = (element) => {
+      if (!(element instanceof HTMLElement)) throw new Error("Missing music layout element");
+      const { x, y, width, height, bottom } = element.getBoundingClientRect();
+      return { x, y, width, height, bottom };
+    };
+    const queue = dock.querySelector(".youtube-session-queue");
+    return {
+      dock: box(dock),
+      controls: [
+        dock.querySelector(".music-panel-handle"),
+        dock.querySelector(".live-music-controls"),
+        ...dock.querySelectorAll(".live-music-controls button"),
+      ].map(box),
+      video: box(dock.querySelector(".youtube-player-video")),
+      queue: queue ? box(queue) : null,
+      queueContentHeight: queue
+        ? [...queue.children].reduce((height, child) => {
+            const style = getComputedStyle(child);
+            return (
+              height +
+              child.getBoundingClientRect().height +
+              parseFloat(style.marginTop) +
+              parseFloat(style.marginBottom)
+            );
+          }, 0) +
+          parseFloat(getComputedStyle(queue).paddingTop) +
+          parseFloat(getComputedStyle(queue).paddingBottom) +
+          1
+        : 0,
+      viewportHeight: innerHeight,
+    };
+  });
+
+const verifyMusicExpansion = async (label, expectedRows = 5) => {
+  const handle = page.getByRole("button", { name: "Music player panel handle" });
+  const compact = await measureMusic();
+  const player = await page.locator(".youtube-player-video").elementHandle();
+  await handle.dispatchEvent("touchstart", {
+    touches: [{ identifier: 3, clientX: 100, clientY: 100 }],
+  });
+  await handle.dispatchEvent("touchend", {
+    changedTouches: [{ identifier: 3, clientX: 102, clientY: 35 }],
+  });
+  await page.locator(".youtube-dock.is-expanded").waitFor();
+  await page.waitForFunction((count) => {
+    const list = document.querySelector(".youtube-session-queue ol");
+    return list !== null && list.children.length === count;
+  }, expectedRows);
+  const expanded = await measureMusic();
+  await page.screenshot({
+    path: screenshotPath.replace(/\.png$/i, `-music-${label}.png`),
+    fullPage: true,
+  });
+  const near = (left, right) => Math.abs(left - right) <= 1;
+  if (
+    expanded.controls.some(
+      (control, index) =>
+        !near(control.width, compact.controls[index].width) ||
+        !near(control.height, compact.controls[index].height),
+    )
+  ) {
+    throw new Error(
+      `Expanded music controls stretched (${label}): ${JSON.stringify({ compact, expanded })}`,
+    );
+  }
+  if (
+    !near(compact.dock.width, expanded.dock.width) ||
+    !near(compact.dock.bottom, expanded.dock.bottom) ||
+    expanded.dock.y < 0 ||
+    expanded.dock.bottom > expanded.viewportHeight + 1 ||
+    expanded.queue.height > expanded.queueContentHeight + 1 ||
+    !near(expanded.controls[0].bottom, expanded.video.y) ||
+    !near(expanded.video.bottom, expanded.queue.y) ||
+    !near(expanded.queue.bottom, expanded.controls[1].y)
+  ) {
+    throw new Error(
+      `Expanded music is not content-sized and bounded (${label}): ${JSON.stringify({ compact, expanded })}`,
+    );
+  }
+  const queue = page.locator(".youtube-session-queue");
+  const scroll = await queue.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+    return { top: element.scrollTop, height: element.clientHeight, content: element.scrollHeight };
+  });
+  if (
+    expanded.queueContentHeight > expanded.queue.height + 1 &&
+    (scroll.top <= 0 || Math.abs(scroll.top + scroll.height - scroll.content) > 1)
+  ) {
+    throw new Error(
+      `Expanded queue cannot scroll to its end (${label}): ${JSON.stringify(scroll)}`,
+    );
+  }
+  await handle.dispatchEvent("touchstart", {
+    touches: [{ identifier: 4, clientX: 100, clientY: 35 }],
+  });
+  await handle.dispatchEvent("touchend", {
+    changedTouches: [{ identifier: 4, clientX: 102, clientY: 100 }],
+  });
+  await page.locator(".youtube-dock:not(.is-expanded)").waitFor();
+  await handle.dispatchEvent("click"); // Consume the swipe's compatibility click.
+  if (
+    !(await player.evaluate(
+      (element) =>
+        element.isConnected && element === document.querySelector(".youtube-player-video"),
+    ))
+  ) {
+    throw new Error("Expansion remounted the music player");
+  }
+  console.log(`Music geometry PASS (${label}): ${JSON.stringify({ compact, expanded, scroll })}`);
 };
 
 const namedControlRules = [
@@ -457,11 +571,38 @@ await page.route("**/api/music/playlists", async (route) => {
   await fulfillMock(route, {
     contentType: "application/json",
     body: JSON.stringify({
-      playlists: [{ id: "test-playlist", title: "UI Verification", itemCount: 12 }],
+      playlists: [
+        { id: "test-playlist", title: "UI Verification", itemCount: 12 },
+        ...(musicOnly
+          ? [0, 4, 40].map((count) => ({
+              id: `test-queue-${count}`,
+              title: `Geometry queue ${count}`,
+              itemCount: count,
+            }))
+          : []),
+      ],
     }),
   });
 });
 await page.route("**/api/music/playlists/*/items", async (route) => {
+  const geometryQueue = new URL(route.request().url()).pathname.match(
+    /test-queue-(0|4|40)\/items$/,
+  );
+  if (musicOnly && geometryQueue) {
+    await fulfillMock(route, {
+      contentType: "application/json",
+      body: JSON.stringify({
+        items: Array.from({ length: Number(geometryQueue[1]) }, (_, index) => ({
+          videoId: `geometry-track-${index}`,
+          title: `Geometry track ${index + 1}`,
+          channelTitle: "UI verification",
+          thumbnailUrl: null,
+          position: index,
+        })),
+      }),
+    });
+    return;
+  }
   await fulfillMock(route, {
     contentType: "application/json",
     body: JSON.stringify({
@@ -2143,6 +2284,37 @@ try {
   await page.screenshot({ path: screenshotPath, fullPage: true });
   await page.getByRole("button", { name: "Close Manage menu" }).click();
   const queueHandle = page.getByRole("button", { name: "Music player panel handle" });
+  await verifyMusicExpansion("setup");
+  if (musicOnly) {
+    await page.getByRole("button", { name: "Start game", exact: true }).click();
+    for (let roleIndex = 0; roleIndex < 10; roleIndex += 1) {
+      await page
+        .getByRole("button", { name: /^Draw role for / })
+        .first()
+        .click();
+    }
+    await page.getByRole("button", { name: "Begin Mafia planning stage" }).click();
+    await verifyMusicExpansion("live-utilities-visible");
+    await page.getByRole("button", { name: "Hide timer and voting" }).click();
+    await verifyMusicExpansion("live-utilities-hidden");
+    for (const count of [0, 4, 40]) {
+      await page.getByRole("button", { name: "Open Manage menu" }).click();
+      if (!(await musicSetup.isVisible())) {
+        await page.getByRole("button", { name: "Music player setup" }).click();
+      }
+      await musicSetup.getByLabel("YouTube Music playlist").selectOption(`test-queue-${count}`);
+      await page.getByRole("button", { name: "Close Manage menu" }).click();
+      await verifyMusicExpansion(`live-hidden-${count}`, count);
+      // Exercise both layout states; portrait's existing utility grip can sit behind the dock.
+      await page.getByRole("button", { name: "Show timer and voting" }).dispatchEvent("click");
+      await verifyMusicExpansion(`live-visible-${count}`, count);
+      await page.getByRole("button", { name: "Hide timer and voting" }).dispatchEvent("click");
+    }
+    assertNoPageErrors();
+    console.log("Focused music geometry verification: PASS");
+    await browser.close();
+    process.exit(0);
+  }
   await queueHandle.click();
   const queue = page.getByRole("region", { name: "Session playlist queue" });
   const finaleRow = queue.getByRole("listitem").filter({ hasText: "UI verification finale" });

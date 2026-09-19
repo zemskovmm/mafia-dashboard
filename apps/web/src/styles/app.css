@@ -2187,6 +2187,7 @@ button.player-seat.is-voting-highlight::after {
   position: relative;
   z-index: 80;
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   width: min(356px, calc(100vw - 32px));
   margin: -90px auto 100px;
   overflow: hidden;
@@ -2202,6 +2203,14 @@ button.player-seat.is-voting-highlight::after {
   width: min(406px, calc(100vw - 32px));
   margin: 0;
   opacity: 0.75;
+}
+
+.youtube-dock.is-expanded {
+  max-height: calc(100dvh - var(--main-card-top, 92px) - var(--dock-edge-inset));
+}
+.youtube-dock.is-expanded .youtube-player-frame {
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 0;
 }
 
 .youtube-player-frame {
@@ -3305,14 +3314,14 @@ button.player-seat.is-voting-highlight::after {
     top: auto;
     right: auto;
     bottom: auto;
-    flex: 1 1 auto;
+    flex: 0 1 auto;
     width: 100%;
     height: auto;
     min-height: 0;
-    margin-top: 0;
+    margin-top: auto;
   }
   .live-side-panel.has-live-utilities .youtube-dock.is-expanded .youtube-player-frame {
-    grid-template-rows: minmax(140px, 220px) minmax(0, 1fr);
+    grid-template-rows: 220px minmax(0, 1fr);
     min-height: 0;
   }
   .live-side-panel.has-live-utilities .youtube-dock.is-expanded .youtube-player-video,
@@ -3618,12 +3627,11 @@ html:-webkit-full-screen #root {
     top: auto;
     right: auto;
     bottom: auto;
-    flex: 1 1 auto;
-    grid-template-rows: 48px minmax(0, 1fr) auto;
+    flex: 0 1 auto;
     width: 100%;
     height: auto;
     min-height: 0;
-    margin-top: 0;
+    margin-top: auto;
   }
   .live-side-panel.has-live-utilities .music-panel-handle {
     position: relative;
@@ -3821,9 +3829,7 @@ html:-webkit-full-screen #root {
     height: 100px;
   }
   .youtube-dock.is-compact.is-expanded {
-    top: var(--s6-content-top);
-    height: calc(100dvh - var(--s6-content-top) - var(--s6-edge));
-    grid-template-rows: minmax(0, 1fr) auto;
+    max-height: calc(100dvh - var(--s6-content-top) - var(--s6-edge));
   }
   .youtube-dock.is-expanded .youtube-player-video,
   .youtube-dock.is-expanded .youtube-player-frame > iframe:first-child {
@@ -4340,8 +4346,8 @@ html:-webkit-full-screen #root {
     height: 80px;
   }
   .youtube-dock.is-compact.is-expanded {
-    top: var(--s6p-content-top);
-    height: calc(100dvh - var(--s6p-content-top) - var(--s6p-edge));
+    height: auto;
+    max-height: calc(100dvh - var(--s6p-content-top) - var(--s6p-edge));
   }
   .live-music-controls {
     padding: 6px;
