@@ -64,6 +64,8 @@ const englishShellMessages = {
   noActiveGames: "No active games to resume.",
   browserGameEyebrow: "Browser game",
   browserGameLockWaiting: "Waiting for this browser's game storage lock…",
+  browserGameLockBusy:
+    "Mafia Dashboard is already open in another tab. Please use that tab, or close it and reload this page.",
   browserGameLockUnavailable: "This browser cannot safely lock local game storage.",
   browserGameInvalidTitle: "Browser game data needs attention",
   browserGameInvalidBody:
@@ -314,6 +316,8 @@ const russianShellMessages = {
   noActiveGames: "Нет активных игр для продолжения.",
   browserGameEyebrow: "Игра в браузере",
   browserGameLockWaiting: "Ожидание блокировки хранилища игры в этом браузере…",
+  browserGameLockBusy:
+    "Mafia Dashboard уже открыт в другой вкладке. Используйте её или закройте и перезагрузите эту страницу.",
   browserGameLockUnavailable:
     "Этот браузер не поддерживает безопасную блокировку локального хранилища игры.",
   browserGameInvalidTitle: "Данные игры в браузере требуют внимания",

@@ -8,7 +8,7 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
+import { forwardRef, StrictMode, useEffect, useImperativeHandle, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   replayGameLog,
@@ -23,6 +23,7 @@ import { ApiError, type Club, type PlayerProfile, type RemoteGameSession } from 
 import { App as WelcomeApp, ClubWorkspace } from "./App.js";
 
 import { GameSessionOutbox } from "./session-outbox.js";
+import { withBrowserGameStorageGuard } from "./browser-game-storage-lock.js";
 import {
   clearErrorConsole,
   getErrorConsoleSnapshot,
@@ -784,6 +785,136 @@ afterEach(() => {
 });
 
 describe("club welcome", () => {
+  it("localizes the other-tab error in Russian", async () => {
+    api.getAuthSession.mockResolvedValue(authenticatedUser);
+    api.listClubs.mockResolvedValue([testClub]);
+    const lifetime = deferred<void>();
+    const owner = withBrowserGameStorageGuard(() => lifetime.promise);
+    const view = render(
+      <I18nProvider locale="ru">
+        <WelcomeApp />
+      </I18nProvider>,
+    );
+    try {
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Mafia Dashboard уже открыт в другой вкладке. Используйте её или закройте и перезагрузите эту страницу.",
+      );
+      expect(screen.queryByRole("button")).toBeNull();
+    } finally {
+      view.unmount();
+      lifetime.resolve();
+      await owner;
+    }
+  });
+
+  it("distinguishes unavailable storage locking from another-tab contention", async () => {
+    api.getAuthSession.mockResolvedValue(authenticatedUser);
+    api.listClubs.mockResolvedValue([testClub]);
+    vi.stubEnv("MODE", "production");
+    try {
+      render(<WelcomeApp />);
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "This browser cannot safely lock local game storage.",
+      );
+      expect(screen.queryByRole("button")).toBeNull();
+      expect(api.listPlayers).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("keeps a club API failure distinct from a storage error", async () => {
+    api.getAuthSession.mockResolvedValue(authenticatedUser);
+    api.listClubs.mockRejectedValue(new Error("offline"));
+    render(<WelcomeApp />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Clubs are temporarily unavailable");
+    expect(screen.queryByText(/already open in another tab/)).toBeNull();
+  });
+
+  it("blocks workspace entry if another tab takes the lock after the club list loads", async () => {
+    const user = userEvent.setup();
+    api.getAuthSession.mockResolvedValue(authenticatedUser);
+    api.listClubs.mockResolvedValue([testClub]);
+    const view = render(<WelcomeApp />);
+    const open = await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i });
+    const lifetime = deferred<void>();
+    const owner = withBrowserGameStorageGuard(() => lifetime.promise);
+    try {
+      await user.click(open);
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Mafia Dashboard is already open in another tab. Please use that tab, or close it and reload this page.",
+      );
+      expect(api.listPlayers).not.toHaveBeenCalled();
+      expect(screen.queryByRole("button", { name: /New club|Sign out|Open Manage/ })).toBeNull();
+      await act(async () => {
+        lifetime.resolve();
+        await owner;
+      });
+      expect(screen.getByRole("alert")).toHaveTextContent("already open in another tab");
+      expect(api.listPlayers).not.toHaveBeenCalled();
+    } finally {
+      view.unmount();
+      lifetime.resolve();
+      await owner;
+    }
+  });
+
+  it("opens and reopens an uncontended workspace under StrictMode", async () => {
+    const user = userEvent.setup();
+    api.getAuthSession.mockResolvedValue(authenticatedUser);
+    api.listClubs.mockResolvedValue([testClub]);
+    render(
+      <StrictMode>
+        <WelcomeApp />
+      </StrictMode>,
+    );
+    for (let visit = 0; visit < 2; visit += 1) {
+      await user.click(await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i }));
+      await user.click(
+        await screen.findByRole("button", {
+          name: "Choose another club · current club Mafia Malaga",
+        }),
+      );
+    }
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("blocks startup when another tab owns game storage until the page is reloaded", async () => {
+    api.getAuthSession.mockResolvedValue(authenticatedUser);
+    api.listClubs.mockResolvedValue([{ ...testClub, name: "La Verdad" }]);
+    seedBrowserGame(testClub, "00000000-0000-4000-8000-000000000301", "Unsynced game", true);
+    const original = window.localStorage.getItem("mafia-dashboard.game-session.v5");
+    const lifetime = deferred<void>();
+    const owner = withBrowserGameStorageGuard(() => lifetime.promise);
+    const view = render(<WelcomeApp />);
+    try {
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Mafia Dashboard is already open in another tab. Please use that tab, or close it and reload this page.",
+      );
+      expect(screen.queryByRole("button", { name: /New club|Sign out|La Verdad/ })).toBeNull();
+      expect(api.listPlayers).not.toHaveBeenCalled();
+      expect(api.signOut).not.toHaveBeenCalled();
+      expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBe(original);
+
+      await act(async () => {
+        lifetime.resolve();
+        await owner;
+      });
+      expect(screen.getByRole("alert")).toHaveTextContent("already open in another tab");
+      expect(api.listPlayers).not.toHaveBeenCalled();
+      expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBe(original);
+    } finally {
+      view.unmount();
+      lifetime.resolve();
+      await owner;
+    }
+
+    render(<WelcomeApp />);
+    expect(
+      await screen.findByRole("button", { name: "Choose another club · current club La Verdad" }),
+    ).toBeInTheDocument();
+  });
+
   it.each(["en", "ru"] as const)(
     "keeps the workspace title without a Host view suffix in %s",
     (locale) => {

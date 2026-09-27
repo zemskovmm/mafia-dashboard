@@ -74,9 +74,12 @@ export const readBrowserGameAttachment = (storage: Storage): BrowserGameAttachme
 
 export const prepareBrowserGameStorage = async (
   options: BrowserGameStorageOptions,
+  lockOptions: { readonly ifAvailable?: boolean } = {},
 ): Promise<BrowserGameStorageState> =>
-  withBrowserGameStorageTransaction(options.localStorage, () =>
-    stateFromRaw(options.localStorage.getItem(gameSessionStorageKey)),
+  withBrowserGameStorageTransaction(
+    options.localStorage,
+    () => stateFromRaw(options.localStorage.getItem(gameSessionStorageKey)),
+    lockOptions,
   );
 
 export const releaseBrowserGameStorage = async (

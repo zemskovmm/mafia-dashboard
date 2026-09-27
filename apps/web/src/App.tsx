@@ -136,6 +136,7 @@ import {
   type BrowserGameStorageState,
 } from "./browser-game-storage.js";
 import {
+  BrowserGameStorageBusyError,
   type BrowserGameStorageGuard,
   withBrowserGameStorageGuard,
 } from "./browser-game-storage-lock.js";
@@ -2427,17 +2428,20 @@ type LockedClubWorkspaceProps = Omit<
   readonly onDeleteClub: (guard: BrowserGameStorageGuard) => Promise<void>;
   readonly onStorageMismatch: (attachment: BrowserGameAttachment) => void;
   readonly onStorageInvalid: (rawSnapshot: string) => void;
+  readonly onStorageError: (message: "browserGameLockBusy" | "browserGameLockUnavailable") => void;
 };
 
 const LockedClubWorkspace = ({
   onDeleteClub,
   onStorageMismatch,
   onStorageInvalid,
+  onStorageError,
   ...workspaceProps
 }: LockedClubWorkspaceProps) => {
   const { t } = useMessages(shellMessages);
   const [storageGuard, setStorageGuard] = useState<BrowserGameStorageGuard | null>(null);
-  const [lockFailed, setLockFailed] = useState(false);
+  const errorRef = useRef(onStorageError);
+  errorRef.current = onStorageError;
   const mismatchRef = useRef(onStorageMismatch);
   mismatchRef.current = onStorageMismatch;
   const invalidRef = useRef(onStorageInvalid);
@@ -2449,26 +2453,40 @@ const LockedClubWorkspace = ({
     const lifetime = new Promise<void>((resolve) => {
       release = resolve;
     });
-    void withBrowserGameStorageGuard(async (guard) => {
-      if (cancelled) return;
-      const currentStorage = readBrowserGameStorageState(window.localStorage);
-      if (currentStorage.kind === "invalid") {
-        invalidRef.current(currentStorage.rawSnapshot);
-        return;
-      }
-      if (
-        currentStorage.kind === "ready" &&
-        currentStorage.attachment.clubId !== workspaceProps.club.id
-      ) {
-        mismatchRef.current(currentStorage.attachment);
-        return;
-      }
-      setStorageGuard(guard);
-      await lifetime;
-    }).catch((error: unknown) => {
-      reportError(error, { source: "persistence", context: "browser-game.lock" });
-      if (!cancelled) setLockFailed(true);
-    });
+    // Skip StrictMode's cancelled first effect before requesting ownership.
+    void Promise.resolve()
+      .then(() => {
+        if (cancelled) return;
+        return withBrowserGameStorageGuard(
+          async (guard) => {
+            if (cancelled) return;
+            const currentStorage = readBrowserGameStorageState(window.localStorage);
+            if (currentStorage.kind === "invalid") {
+              invalidRef.current(currentStorage.rawSnapshot);
+              return;
+            }
+            if (
+              currentStorage.kind === "ready" &&
+              currentStorage.attachment.clubId !== workspaceProps.club.id
+            ) {
+              mismatchRef.current(currentStorage.attachment);
+              return;
+            }
+            setStorageGuard(guard);
+            await lifetime;
+          },
+          { ifAvailable: true },
+        );
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        if (error instanceof BrowserGameStorageBusyError) {
+          errorRef.current("browserGameLockBusy");
+        } else {
+          reportError(error, { source: "persistence", context: "browser-game.lock" });
+          errorRef.current("browserGameLockUnavailable");
+        }
+      });
     return () => {
       cancelled = true;
       release();
@@ -2478,9 +2496,7 @@ const LockedClubWorkspace = ({
   if (storageGuard === null) {
     return (
       <main className="app-shell">
-        <p role={lockFailed ? "alert" : "status"}>
-          {t(lockFailed ? "browserGameLockUnavailable" : "browserGameLockWaiting")}
-        </p>
+        <p role="status">{t("browserGameLockWaiting")}</p>
       </main>
     );
   }
@@ -2510,6 +2526,7 @@ export const App = () => {
   const [openingCurtains, setOpeningCurtains] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<ShellMessageKey | null>(null);
+  const [storageError, setStorageError] = useState<ShellMessageKey | null>(null);
   const [browserGameRecoveryPending, setBrowserGameRecoveryPending] = useState(false);
   const [browserGameRecoveryError, setBrowserGameRecoveryError] = useState(false);
   const [browserGameReleaseError, setBrowserGameReleaseError] = useState(false);
@@ -2522,28 +2539,52 @@ export const App = () => {
     applyThemeColor(document.documentElement, window.localStorage, themeColor);
   }, [themeColor]);
 
-  const refreshClubs = useCallback(async () => {
-    setLoading(true);
-    try {
-      const nextClubs = await listClubs();
-      const nextBrowserGameState = await prepareBrowserGameStorage({
-        localStorage: window.localStorage,
-      });
-      setClubs(nextClubs);
-      setBrowserGameState(nextBrowserGameState);
-      if (nextBrowserGameState.kind === "ready") {
-        setSelectedClub(
-          nextClubs.find(({ id }) => id === nextBrowserGameState.attachment.clubId) ?? null,
-        );
+  useEffect(() => {
+    if (user === null) return;
+    let current = true;
+    const refreshClubs = async () => {
+      setLoading(true);
+      try {
+        const nextClubs = await listClubs();
+        if (!current) return;
+        let nextBrowserGameState: BrowserGameStorageState;
+        try {
+          nextBrowserGameState = await prepareBrowserGameStorage(
+            { localStorage: window.localStorage },
+            { ifAvailable: true },
+          );
+        } catch (error) {
+          if (!current) return;
+          if (error instanceof BrowserGameStorageBusyError) {
+            setStorageError("browserGameLockBusy");
+          } else {
+            reportError(error, { source: "persistence", context: "browser-game.prepare" });
+            setStorageError("browserGameLockUnavailable");
+          }
+          return;
+        }
+        if (!current) return;
+        setClubs(nextClubs);
+        setBrowserGameState(nextBrowserGameState);
+        if (nextBrowserGameState.kind === "ready") {
+          setSelectedClub(
+            nextClubs.find(({ id }) => id === nextBrowserGameState.attachment.clubId) ?? null,
+          );
+        }
+        setError(null);
+      } catch (error) {
+        if (!current) return;
+        reportError(error, { source: "api", context: "clubs.list" });
+        setError("clubsUnavailable");
+      } finally {
+        if (current) setLoading(false);
       }
-      setError(null);
-    } catch (error) {
-      reportError(error, { source: "api", context: "clubs.list" });
-      setError("clubsUnavailable");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+    };
+    void refreshClubs();
+    return () => {
+      current = false;
+    };
+  }, [user]);
 
   useEffect(() => {
     let current = true;
@@ -2566,10 +2607,6 @@ export const App = () => {
       current = false;
     };
   }, []);
-
-  useEffect(() => {
-    if (user !== null) void refreshClubs();
-  }, [refreshClubs, user]);
 
   const endSession = async () => {
     setLoading(true);
@@ -2755,6 +2792,16 @@ export const App = () => {
     }
   };
 
+  if (storageError !== null) {
+    return (
+      <main className="club-portal">
+        <section className="browser-game-dialog" role="alert">
+          {t(storageError)}
+        </section>
+      </main>
+    );
+  }
+
   if (selectedClub !== null) {
     return (
       <>
@@ -2782,6 +2829,7 @@ export const App = () => {
             setBlockedClub(null);
           }}
           onLanguageChange={changeSelectedClubLanguage}
+          onStorageError={setStorageError}
           themeColor={themeColor}
           onThemeColorChange={setThemeColor}
         />
