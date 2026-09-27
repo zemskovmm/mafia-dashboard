@@ -754,4 +754,33 @@ describe("SetupWizard", () => {
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^start game$/i })).toBeDisabled();
   });
+
+  it("does not let role giveaway advance before the creation POST has returned a GUID", async () => {
+    const onSessionStateChange = vi.fn();
+    const rolePlayers = availablePlayers.slice(0, 10).map(({ id, nickname }, index) => ({
+      id,
+      name: nickname,
+      seat: index + 1,
+    }));
+    render(
+      <SetupWizard
+        players={availablePlayers}
+        initialSessionState={{
+          step: "roles",
+          hostPlayerId: availablePlayers[10]!.id,
+          selectedPlayerIds: rolePlayers.map(({ id }) => id),
+          setup: beginRoleDraw(createSetup(rolePlayers), () => 0.5),
+        }}
+        persistencePending
+        onComplete={() => undefined}
+        onSessionStateChange={onSessionStateChange}
+      />,
+    );
+
+    onSessionStateChange.mockClear();
+    await userEvent.click(screen.getByRole("button", { name: "Draw role for Player 1" }));
+
+    expect(onSessionStateChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Begin Mafia planning stage" })).toBeDisabled();
+  });
 });

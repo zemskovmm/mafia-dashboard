@@ -400,15 +400,14 @@ test("browser API policy exposes only exact session creation and owned mutation 
       ownedGameIds: new Set([ownedId]),
     });
 
-  assert.deepEqual(classify("PUT", `/api/game-sessions/${newId}`), {
-    kind: "session-creation",
-    gameId: newId,
-  });
+  assert.deepEqual(classify("POST", "/api/game-sessions"), { kind: "session-creation" });
+  assert.throws(() => classify("POST", "/api/game-sessions?extra=1"), /unexpected unsafe/i);
+  assert.throws(() => classify("PUT", `/api/game-sessions/${newId}`), /unowned game session/i);
   assert.deepEqual(classify("PUT", `/api/game-sessions/${ownedId}`), {
     kind: "owned-session-mutation",
     gameId: ownedId,
   });
-  assert.deepEqual(classify("DELETE", `/api/game-sessions/${ownedId}?expectedRevision=7`), {
+  assert.deepEqual(classify("DELETE", `/api/game-sessions/${ownedId}`), {
     kind: "owned-session-mutation",
     gameId: ownedId,
   });
@@ -417,19 +416,16 @@ test("browser API policy exposes only exact session creation and owned mutation 
     ["POST", "takeover"],
     ["DELETE", "claim"],
   ]) {
-    assert.deepEqual(classify(method, `/api/game-sessions/${ownedId}/${action}`), {
-      kind: "owned-session-mutation",
-      gameId: ownedId,
-    });
+    assert.throws(
+      () => classify(method, `/api/game-sessions/${ownedId}/${action}`),
+      /unexpected unsafe browser request/i,
+    );
     assert.throws(
       () => classify(method, `/api/game-sessions/${newId}/${action}`),
-      /unowned game session/i,
+      /unexpected unsafe browser request/i,
     );
   }
-  assert.throws(
-    () => classify("DELETE", `/api/game-sessions/${newId}?expectedRevision=7`),
-    /unowned game session/i,
-  );
+  assert.throws(() => classify("DELETE", `/api/game-sessions/${newId}`), /unowned game session/i);
   assert.throws(() => classify("PATCH", `/api/game-sessions/${ownedId}`), /unexpected unsafe/i);
 });
 
@@ -444,9 +440,7 @@ test("ownership checks canonicalize case-variant UUID references before dispatch
       ownedGameIds,
     });
 
-  const candidate = classify(new Set());
-  assert.deepEqual(candidate, { kind: "session-creation", gameId });
-  assert.equal(new Set([gameId]).has(candidate.gameId), true);
+  assert.throws(() => classify(new Set()), /unowned game session/i);
   assert.deepEqual(classify(new Set([gameId])), { kind: "owned-session-mutation", gameId });
   assert.throws(
     () =>
@@ -781,11 +775,11 @@ test("runtime verifiers enforce the shared contracts at their success boundaries
   );
   assert.match(sessionVerifier, /SESSION_RESTART_GATE_DIR/);
   assert.match(sessionVerifier, /SESSION_RESTART_TIMEOUT_MS/);
-  assert.match(sessionVerifier, /const ownedClaims = new Map\(\)/);
-  assert.match(sessionVerifier, /baseRevision: storedSession\.revision/);
-  assert.match(sessionVerifier, /headers: claimHeaders/);
-  assert.match(sessionVerifier, /Game already controlled/);
-  assert.match(sessionVerifier, /button", \{ name: "Take over"/);
+  assert.doesNotMatch(sessionVerifier, /ownedClaims|claimHeaders|x-game-claim|Take over/);
+  assert.match(
+    sessionVerifier,
+    /getByRole\("button", \{ name: `Delete \$\{secondName\}`, exact: true \}\)/,
+  );
   assert.match(sessionVerifier, /gameSessionStorageKeyForClub\(clubId\)/);
   assert.match(sessionVerifier, /assertBrowserGameEnvelopeOwner\(restoredEnvelope, clubId\)/);
   assert.equal(sessionVerifier.match(/window\.localStorage\.getItem\(storageKey\)/g)?.length, 2);

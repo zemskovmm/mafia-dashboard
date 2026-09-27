@@ -102,8 +102,10 @@ Primary hit targets are at least 48×48 CSS pixels. A destructive action require
 - Tapping an unassigned player reveals/draws one remaining role for that player.
 - A seat cannot draw twice; assigned roles and remaining counts are host-private.
 - Continue appears in the center only after all ten seats have one role.
-- Entering role giveaway from valid player/host selection creates the first durable setup snapshot before any role is drawn. Reloads and offline retries retain the same game ID, role deck, assignments, and pending save.
+- Entering role giveaway from valid player/host selection requests the first durable setup snapshot before any role is drawn. The server generates the game GUID; a new game waits for that response, retaining the setup draft on failure. Reloads and offline update retries retain the same returned GUID, role deck, assignments, and pending save.
 - **Back to player selection** preserves the host and seat selection without revealing drawn roles. Returning with unchanged selections preserves partial role-draw progress; changing the host or any seat resets that progress. Back-navigation and re-entry retain the same game ID.
+- **Active games** lists all active games stored on the server for the selected club. Club admins/owners may open any game or delete it directly from this list. Multiple active games are allowed; starting another game does not delete a saved one. Deletion permanently removes the stored game without recording results, and is confirmed only after the server acknowledges it.
+- There is no session claim, takeover, heartbeat, or stale-writer protection. Concurrent clients may overwrite each other's snapshots. A removed GUID cannot be recreated by an update; an already-open client discovers removal on its next request.
 
 ### Step 4 — Night zero: Mafia free seating
 
@@ -252,7 +254,7 @@ Previously saved nights retain their captured eligibility until the next ordinar
 
 ## 13. Game log
 
-The browser's complete persisted game-session snapshot is authoritative for live play. PostgreSQL mirrors the last uploaded valid snapshot and its exact semantic event prefix; a newer server revision does not defeat a later valid browser upload. Semantic events remain the structured source for Log, Timeline, and Preview, while replay validates their shape, parent linkage, legal phase/day transitions, and state hashes without replacing the snapshot's current `GameState`. Each retained entry stores:
+The browser's complete persisted game-session snapshot is authoritative for live play. PostgreSQL mirrors the last uploaded snapshot and its semantic event prefix without game-rule, replay, ownership or revision validation; game-record access requires authenticated club admin/owner authorization. Semantic events remain the structured source for Log, Timeline, and Preview, while client-side replay validates their shape, parent linkage, legal phase/day transitions, and state hashes without replacing the snapshot's current `GameState`. Each retained entry stores:
 
 - replay sequence, parent event ID, and timestamp;
 - phase and day before/after the action;

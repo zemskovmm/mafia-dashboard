@@ -54,8 +54,8 @@ export const expectServerAcceptsEvent = async (
 ) => {
   const modulePath = resolve("../server/src/game-session-validation.ts");
   // eslint-disable-next-line no-unsanitized/method -- Fixed repository-local test module, not user input.
-  const { gameSessionEventMutationSchema } = (await import(modulePath)) as {
-    gameSessionEventMutationSchema: { parse: (input: unknown) => unknown };
+  const { gameSessionMutationSchema } = (await import(modulePath)) as {
+    gameSessionMutationSchema: { parse: (input: unknown) => unknown };
   };
   const { entry } = createGameLogEntry({
     gameId: "00000000-0000-4000-8000-000000000090",
@@ -67,9 +67,24 @@ export const expectServerAcceptsEvent = async (
     draft,
   });
   const request = {
+    name: "Contract game",
     mutationId: "00000000-0000-4000-8000-000000000093",
-    baseRevision: 1,
-    event: entry,
+    state: {
+      setup: null,
+      game: before,
+      hostPlayerId: null,
+      hostName: null,
+      playlistId: "",
+      log: [],
+      undoHistory: [],
+      undoBudget: 0,
+      initialGame: null,
+      events: [entry],
+      headEventId: entry.id,
+      resetReturnEventId: null,
+      legacyLog: [],
+    },
+    results: null,
   };
-  expect(gameSessionEventMutationSchema.parse(request)).toEqual(request);
+  expect(gameSessionMutationSchema.parse(request)).toEqual(request);
 };

@@ -657,13 +657,43 @@ await page.route("**/api/players*", async (route) => {
     body: JSON.stringify({ players: testPlayers }),
   });
 });
+const mockSessions = new Map();
+let snapshotRevision = 0;
+const mockSnapshot = (gameId, mutation) => {
+  snapshotRevision += 1;
+  const session = {
+    gameId,
+    name: mutation.name,
+    revision: snapshotRevision,
+    duplicate: false,
+    status: mutation.results === null ? "active" : "completed",
+    hostName: mutation.state.hostName,
+    phase: mutation.state.game?.phase ?? "setup-role-draw",
+    day: mutation.state.game?.day ?? 0,
+    updatedAt: "2026-08-18T00:00:00.000Z",
+    state: mutation.state,
+    results: mutation.results,
+  };
+  mockSessions.set(gameId, session);
+  return session;
+};
 await page.route("**/api/game-sessions", async (route) => {
+  if (route.request().method() === "POST") {
+    await fulfillMock(route, {
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify(mockSnapshot(crypto.randomUUID(), route.request().postDataJSON())),
+    });
+    return;
+  }
   if (route.request().method() !== "GET") {
     routeErrors.push(`${route.request().method()} /api/game-sessions`);
   }
   await fulfillMock(route, {
     contentType: "application/json",
-    body: JSON.stringify({ sessions: [] }),
+    body: JSON.stringify({
+      sessions: [...mockSessions.values()].filter(({ status }) => status === "active"),
+    }),
   });
 });
 await page.route("**/api/game-sessions?*", async (route) => {
@@ -675,19 +705,29 @@ await page.route("**/api/game-sessions?*", async (route) => {
     body: JSON.stringify({ sessions: [] }),
   });
 });
-let snapshotRevision = 0;
 await page.route("**/api/game-sessions/**", async (route) => {
   const request = route.request();
+  const gameId = new URL(request.url()).pathname.split("/").at(-1);
+  if (request.method() === "GET") {
+    const session = mockSessions.get(gameId);
+    await fulfillMock(route, {
+      status: session === undefined ? 404 : 200,
+      contentType: "application/json",
+      body: JSON.stringify(session === undefined ? {} : { session }),
+    });
+    return;
+  }
   if (request.method() === "DELETE") {
     const requestUrl = new URL(request.url());
     const validDelete =
       /^\/api\/game-sessions\/[0-9a-f-]{36}$/i.test(requestUrl.pathname) &&
-      /^\d+$/.test(requestUrl.searchParams.get("expectedRevision") ?? "");
+      requestUrl.search === "";
     if (!validDelete) {
       routeErrors.push(`DELETE ${requestUrl.pathname}`);
       await fulfillMock(route, { status: 400, contentType: "application/json", body: "{}" });
       return;
     }
+    mockSessions.delete(gameId);
     await fulfillMock(route, { status: 204, body: "" });
     return;
   }
@@ -710,24 +750,10 @@ await page.route("**/api/game-sessions/**", async (route) => {
     await fulfillMock(route, { status: 400, contentType: "application/json", body: "{}" });
     return;
   }
-  snapshotRevision += 1;
-  const gameId = requestPath.split("/").at(-1);
   await fulfillMock(route, {
-    status: snapshotRevision === 1 ? 201 : 200,
+    status: 200,
     contentType: "application/json",
-    body: JSON.stringify({
-      gameId,
-      name: mutation.name,
-      revision: snapshotRevision,
-      duplicate: false,
-      status: mutation.results === null ? "active" : "completed",
-      hostName: mutation.state.hostName,
-      phase: mutation.state.game?.phase ?? "setup-players",
-      day: mutation.state.game?.day ?? 0,
-      updatedAt: "2026-08-18T00:00:00.000Z",
-      state: mutation.state,
-      results: mutation.results,
-    }),
+    body: JSON.stringify(mockSnapshot(gameId, mutation)),
   });
 });
 

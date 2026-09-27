@@ -186,12 +186,6 @@ CREATE TABLE IF NOT EXISTS game_sessions (
   replay_version INTEGER NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  claim_id UUID NULL,
-  claim_generation BIGINT NOT NULL DEFAULT 0,
-  claimed_by_user_id UUID NULL,
-  claimed_at TIMESTAMPTZ NULL,
-  claim_last_seen_at TIMESTAMPTZ NULL,
-  claim_expires_at TIMESTAMPTZ NULL,
   CONSTRAINT game_sessions_pkey PRIMARY KEY (club_id, id),
   CONSTRAINT game_sessions_club_fk FOREIGN KEY (club_id) REFERENCES clubs (id) ON DELETE RESTRICT,
   CONSTRAINT game_sessions_ruleset_fk
@@ -199,28 +193,29 @@ CREATE TABLE IF NOT EXISTS game_sessions (
     ON UPDATE RESTRICT ON DELETE RESTRICT,
   CONSTRAINT game_sessions_name_check CHECK (BTRIM(name) <> ''),
   CONSTRAINT game_sessions_revision_check CHECK (revision > 0),
-  CONSTRAINT game_sessions_status_check CHECK (status IN ('active', 'completed')),
-  CONSTRAINT game_sessions_claim_metadata_ck CHECK (
-    claim_generation >= 0
-    AND (
-      (claim_id IS NULL
-        AND claimed_by_user_id IS NULL
-        AND claimed_at IS NULL
-        AND claim_last_seen_at IS NULL
-        AND claim_expires_at IS NULL)
-      OR
-      (claim_id IS NOT NULL
-        AND claim_generation > 0
-        AND claimed_by_user_id IS NOT NULL
-        AND claimed_at IS NOT NULL
-        AND claim_last_seen_at IS NOT NULL
-        AND claim_expires_at IS NOT NULL
-        AND claim_last_seen_at >= claimed_at
-        AND claim_expires_at > claim_last_seen_at)
-    )
-  ),
-  CONSTRAINT game_sessions_claimed_by_user_fk
-    FOREIGN KEY (claimed_by_user_id) REFERENCES users (id) ON UPDATE RESTRICT ON DELETE RESTRICT
+  CONSTRAINT game_sessions_status_check CHECK (status IN ('active', 'completed'))
+);
+
+-- Narrow, transactional upgrade from the previous claim-controlled catalog.
+-- Creation mappings intentionally survive game deletion so retried POSTs cannot resurrect a record.
+ALTER TABLE game_sessions DROP CONSTRAINT IF EXISTS game_sessions_claim_metadata_ck;
+ALTER TABLE game_sessions DROP CONSTRAINT IF EXISTS game_sessions_claimed_by_user_fk;
+ALTER TABLE game_sessions DROP COLUMN IF EXISTS claim_id;
+ALTER TABLE game_sessions DROP COLUMN IF EXISTS claim_generation;
+ALTER TABLE game_sessions DROP COLUMN IF EXISTS claimed_by_user_id;
+ALTER TABLE game_sessions DROP COLUMN IF EXISTS claimed_at;
+ALTER TABLE game_sessions DROP COLUMN IF EXISTS claim_last_seen_at;
+ALTER TABLE game_sessions DROP COLUMN IF EXISTS claim_expires_at;
+DROP INDEX IF EXISTS game_sessions_one_active_per_club_idx;
+
+CREATE TABLE IF NOT EXISTS game_session_creations (
+  club_id UUID NOT NULL,
+  creation_id UUID NOT NULL,
+  game_id UUID NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT game_session_creations_pkey PRIMARY KEY (club_id, creation_id),
+  CONSTRAINT game_session_creations_club_fk
+    FOREIGN KEY (club_id) REFERENCES clubs (id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS game_sessions_club_active_updated_idx
@@ -229,9 +224,6 @@ CREATE INDEX IF NOT EXISTS game_sessions_club_active_updated_idx
 CREATE INDEX IF NOT EXISTS game_sessions_club_head_idx
   ON game_sessions (club_id, head_event_id)
   WHERE head_event_id IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS game_sessions_one_active_per_club_idx
-  ON game_sessions (club_id)
-  WHERE status = 'active';
 
 CREATE TABLE IF NOT EXISTS game_session_mutations (
   club_id UUID NOT NULL DEFAULT '00000000-0000-4000-8000-000000000101',

@@ -9,22 +9,14 @@ import { z } from "zod";
 import { EventStore } from "./event-store.js";
 import { DeletedGameError } from "./game-lifecycle.js";
 import {
-  ClubActiveGameExistsError,
-  GameSessionClaimConflictError,
-  GameSessionConflictError,
-  GameSessionMutationMismatchError,
   GameSessionNotFoundError,
   GameSessionOperationError,
   GameSessionStore,
 } from "./game-session-store.js";
 import {
-  gameSessionClaimHeaderSchema,
-  gameSessionCompleteMutationSchema,
-  gameSessionEventMutationSchema,
-  gameSessionHeadMutationSchema,
+  gameSessionCreationSchema,
   gameSessionMutationSchema,
   publicHistoryValidationIssue,
-  gameSessionStartMutationSchema,
 } from "./game-session-validation.js";
 import {
   ClubAccessConsentRequiredError,
@@ -39,7 +31,6 @@ import type { AppUser, GoogleAuthService } from "./google-auth.js";
 import { createFixedWindowLimiter, hasExactOrigin, isUnsafeMethod } from "./http-security.js";
 
 const gameIdParams = z.object({ gameId: z.uuid() });
-const clearGameSessionQuery = z.object({ expectedRevision: z.coerce.number().int().nonnegative() });
 const gameSessionListQuery = z
   .object({
     status: z.enum(["active", "completed"]).default("active"),
@@ -129,45 +120,7 @@ const validationFailure = (issues: readonly z.core.$ZodIssue[]) => ({
   ),
 });
 
-const gameSessionClaimFromHeaders = (request: FastifyRequest) =>
-  gameSessionClaimHeaderSchema.safeParse({
-    claimId: request.headers["x-game-claim-id"],
-    claimGeneration: request.headers["x-game-claim-generation"],
-  });
-
 const sendGameSessionMutationError = (reply: FastifyReply, error: unknown): FastifyReply => {
-  if (error instanceof GameSessionClaimConflictError) {
-    return reply.code(409).send({
-      error: error.code,
-      claim: {
-        holderName: error.claim.holderName,
-        claimedAt: error.claim.claimedAt?.toISOString() ?? null,
-        lastSeenAt: error.claim.lastSeenAt?.toISOString() ?? null,
-        expiresAt: error.claim.expiresAt?.toISOString() ?? null,
-      },
-    });
-  }
-  if (error instanceof ClubActiveGameExistsError) {
-    return reply.code(409).send({
-      error: error.code,
-      activeGame: {
-        gameId: error.activeGame.gameId,
-        name: error.activeGame.name,
-        phase: error.activeGame.phase,
-        day: error.activeGame.day,
-        updatedAt: error.activeGame.updatedAt.toISOString(),
-      },
-    });
-  }
-  if (error instanceof GameSessionMutationMismatchError) {
-    return reply.code(409).send({ error: "game_session_mutation_mismatch" });
-  }
-  if (error instanceof GameSessionConflictError) {
-    return reply.code(409).send({
-      error: "game_session_revision_conflict",
-      currentRevision: error.currentRevision,
-    });
-  }
   if (error instanceof GameSessionNotFoundError) {
     return reply.code(404).send({ error: error.code });
   }
@@ -732,7 +685,7 @@ export const buildApp = async ({
   });
 
   app.get("/api/game-sessions", async (request, reply) => {
-    const clubId = await selectedClub(request, reply);
+    const clubId = await selectedManagerClub(request, reply);
     if (clubId === null) return;
     const query = gameSessionListQuery.safeParse(request.query);
     if (!query.success) return reply.code(400).send(validationFailure(query.error.issues));
@@ -750,7 +703,7 @@ export const buildApp = async ({
   });
 
   app.get("/api/game-sessions/:gameId", async (request, reply) => {
-    const clubId = await selectedClub(request, reply);
+    const clubId = await selectedManagerClub(request, reply);
     if (clubId === null) return;
     const params = gameIdParams.safeParse(request.params);
     if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
@@ -759,191 +712,52 @@ export const buildApp = async ({
     return { session };
   });
 
+  app.post("/api/game-sessions", async (request, reply) => {
+    const clubId = await selectedManagerClub(request, reply);
+    if (clubId === null) return;
+    const body = gameSessionCreationSchema.safeParse(request.body);
+    if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
+    try {
+      const session = await gameSessionStore.create({ clubId, ...body.data });
+      return reply.code(session.duplicate ? 200 : 201).send(session);
+    } catch (error) {
+      return sendGameSessionMutationError(reply, error);
+    }
+  });
+
   app.put("/api/game-sessions/:gameId", async (request, reply) => {
-    const context = await selectedClubContext(request, reply);
-    if (context === null) return;
+    const clubId = await selectedManagerClub(request, reply);
+    if (clubId === null) return;
     const params = gameIdParams.safeParse(request.params);
     const body = gameSessionMutationSchema.safeParse(request.body);
-    const claim = gameSessionClaimFromHeaders(request);
     if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
     if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
-    if (!claim.success) return reply.code(400).send(validationFailure(claim.error.issues));
     try {
       const session = await gameSessionStore.save({
-        clubId: context.clubId,
+        clubId,
         gameId: params.data.gameId,
-        ...body.data,
-        claim: claim.data,
-        claimedByUserId: context.user.id,
+        name: body.data.name,
+        mutationId: body.data.mutationId,
+        state: body.data.state,
+        results: body.data.results,
       });
-      return reply.code(session.duplicate || session.revision > 1 ? 200 : 201).send(session);
+      return reply.code(200).send(session);
     } catch (error) {
       return sendGameSessionMutationError(reply, error);
     }
   });
 
   app.delete("/api/game-sessions/:gameId", async (request, reply) => {
-    const context = await selectedClubContext(request, reply);
-    if (context === null) return;
+    const clubId = await selectedManagerClub(request, reply);
+    if (clubId === null) return;
     const params = gameIdParams.safeParse(request.params);
-    const query = clearGameSessionQuery.safeParse(request.query);
-    const claim = gameSessionClaimFromHeaders(request);
     if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
-    if (!query.success) return reply.code(400).send(validationFailure(query.error.issues));
-    if (!claim.success) return reply.code(400).send(validationFailure(claim.error.issues));
     try {
       await gameSessionStore.clear({
-        clubId: context.clubId,
+        clubId,
         gameId: params.data.gameId,
-        expectedRevision: query.data.expectedRevision,
-        claim: claim.data,
       });
       return reply.code(204).send();
-    } catch (error) {
-      return sendGameSessionMutationError(reply, error);
-    }
-  });
-
-  app.post("/api/game-sessions/:gameId/claim", async (request, reply) => {
-    const context = await selectedClubContext(request, reply);
-    if (context === null) return;
-    const params = gameIdParams.safeParse(request.params);
-    const claim = gameSessionClaimFromHeaders(request);
-    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
-    if (!claim.success) return reply.code(400).send(validationFailure(claim.error.issues));
-    try {
-      return {
-        claim: await gameSessionStore.claim({
-          clubId: context.clubId,
-          gameId: params.data.gameId,
-          claim: claim.data,
-          claimedByUserId: context.user.id,
-        }),
-      };
-    } catch (error) {
-      return sendGameSessionMutationError(reply, error);
-    }
-  });
-
-  app.post("/api/game-sessions/:gameId/takeover", async (request, reply) => {
-    const context = await selectedClubContext(request, reply);
-    if (context === null) return;
-    const params = gameIdParams.safeParse(request.params);
-    const claim = gameSessionClaimFromHeaders(request);
-    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
-    if (!claim.success) return reply.code(400).send(validationFailure(claim.error.issues));
-    try {
-      return {
-        claim: await gameSessionStore.takeover({
-          clubId: context.clubId,
-          gameId: params.data.gameId,
-          claim: claim.data,
-          claimedByUserId: context.user.id,
-        }),
-      };
-    } catch (error) {
-      return sendGameSessionMutationError(reply, error);
-    }
-  });
-
-  app.delete("/api/game-sessions/:gameId/claim", async (request, reply) => {
-    const context = await selectedClubContext(request, reply);
-    if (context === null) return;
-    const params = gameIdParams.safeParse(request.params);
-    const claim = gameSessionClaimFromHeaders(request);
-    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
-    if (!claim.success) return reply.code(400).send(validationFailure(claim.error.issues));
-    try {
-      await gameSessionStore.release({
-        clubId: context.clubId,
-        gameId: params.data.gameId,
-        claim: claim.data,
-      });
-      return reply.code(204).send();
-    } catch (error) {
-      return sendGameSessionMutationError(reply, error);
-    }
-  });
-
-  app.post("/api/game-sessions/:gameId/start", async (request, reply) => {
-    const context = await selectedClubContext(request, reply);
-    if (context === null) return;
-    const params = gameIdParams.safeParse(request.params);
-    const body = gameSessionStartMutationSchema.safeParse(request.body);
-    const claim = gameSessionClaimFromHeaders(request);
-    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
-    if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
-    if (!claim.success) return reply.code(400).send(validationFailure(claim.error.issues));
-    try {
-      return await gameSessionStore.start({
-        clubId: context.clubId,
-        gameId: params.data.gameId,
-        ...body.data,
-        claim: claim.data,
-      });
-    } catch (error) {
-      return sendGameSessionMutationError(reply, error);
-    }
-  });
-
-  app.post("/api/game-sessions/:gameId/events", async (request, reply) => {
-    const context = await selectedClubContext(request, reply);
-    if (context === null) return;
-    const params = gameIdParams.safeParse(request.params);
-    const body = gameSessionEventMutationSchema.safeParse(request.body);
-    const claim = gameSessionClaimFromHeaders(request);
-    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
-    if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
-    if (!claim.success) return reply.code(400).send(validationFailure(claim.error.issues));
-    try {
-      return await gameSessionStore.appendEvent({
-        clubId: context.clubId,
-        gameId: params.data.gameId,
-        ...body.data,
-        claim: claim.data,
-      });
-    } catch (error) {
-      return sendGameSessionMutationError(reply, error);
-    }
-  });
-
-  app.post("/api/game-sessions/:gameId/head", async (request, reply) => {
-    const context = await selectedClubContext(request, reply);
-    if (context === null) return;
-    const params = gameIdParams.safeParse(request.params);
-    const body = gameSessionHeadMutationSchema.safeParse(request.body);
-    const claim = gameSessionClaimFromHeaders(request);
-    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
-    if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
-    if (!claim.success) return reply.code(400).send(validationFailure(claim.error.issues));
-    try {
-      return await gameSessionStore.moveHead({
-        clubId: context.clubId,
-        gameId: params.data.gameId,
-        ...body.data,
-        claim: claim.data,
-      });
-    } catch (error) {
-      return sendGameSessionMutationError(reply, error);
-    }
-  });
-
-  app.post("/api/game-sessions/:gameId/complete", async (request, reply) => {
-    const context = await selectedClubContext(request, reply);
-    if (context === null) return;
-    const params = gameIdParams.safeParse(request.params);
-    const body = gameSessionCompleteMutationSchema.safeParse(request.body);
-    const claim = gameSessionClaimFromHeaders(request);
-    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
-    if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
-    if (!claim.success) return reply.code(400).send(validationFailure(claim.error.issues));
-    try {
-      return await gameSessionStore.complete({
-        clubId: context.clubId,
-        gameId: params.data.gameId,
-        ...body.data,
-        claim: claim.data,
-      });
     } catch (error) {
       return sendGameSessionMutationError(reply, error);
     }

@@ -1,45 +1,22 @@
-import {
-  assertGameLogEntry,
-  type GameLogEntry,
-  type InitialGameBaseline,
-} from "@mafia/game-domain";
 import type {
   CurrentGameSessionState,
   FinalGameResults,
-  GameSessionClaim,
+  GameSessionCreation,
   GameSessionState,
+  RemoteGameSession,
 } from "./api/client.js";
+import { ApiError } from "./api/client.js";
 import {
   assertBrowserGameStorageGuard,
   type BrowserGameStorageGuard,
 } from "./browser-game-storage-lock.js";
 
-export interface SessionSaveResponse {
-  readonly revision: number;
-  readonly duplicate: boolean;
-  readonly name?: string;
-  readonly gameId?: string;
-  readonly state?: GameSessionState;
-  readonly results?: FinalGameResults | null;
-  readonly claim?: GameSessionClaim;
-}
-
-interface OutboxOptions {
-  readonly storage: Storage;
-  readonly storageGuard?: BrowserGameStorageGuard;
-  readonly clubId?: string;
-  readonly storageKey?: string;
-  readonly createId: () => string;
-  readonly save: (
-    gameId: string,
-    operation: GameSessionOperation,
-    claimGeneration: number,
-  ) => Promise<SessionSaveResponse>;
-  readonly clearRemote?: (
-    gameId: string,
-    expectedRevision: number,
-    claimGeneration: number,
-  ) => Promise<void>;
+export interface GameSessionOperation {
+  readonly kind: "snapshot";
+  readonly name: string;
+  readonly mutationId: string;
+  readonly state: CurrentGameSessionState;
+  readonly results: FinalGameResults | null;
 }
 
 interface CurrentSession {
@@ -48,279 +25,169 @@ interface CurrentSession {
   readonly results: FinalGameResults | null;
 }
 
-interface OperationBase {
-  readonly kind: "snapshot";
-  readonly name: string;
-  readonly mutationId: string;
-  readonly baseRevision: number;
-}
-
-export interface GameSessionOperation extends OperationBase {
-  readonly state: CurrentGameSessionState;
-  readonly results: FinalGameResults | null;
-}
-
 export interface CurrentGameSessionEnvelope {
   readonly version: 5;
   readonly clubId: string;
   readonly gameId: string | null;
+  readonly creationId: string | null;
   readonly revision: number;
-  readonly claimGeneration: number;
   readonly current: CurrentSession | null;
   readonly outbox: readonly GameSessionOperation[];
   readonly failed: boolean;
   readonly clearFailed: boolean;
   readonly clearingGameId: string | null;
+  readonly removed: boolean;
+  /** A v5 client-generated ID must be checked before it can be adopted. */
+  readonly legacyGameId: string | null;
+}
+
+interface OutboxOptions {
+  readonly storage: Storage;
+  readonly storageGuard?: BrowserGameStorageGuard;
+  readonly clubId?: string;
+  readonly storageKey?: string;
+  readonly createId: () => string;
+  readonly create?: (input: GameSessionCreation) => Promise<RemoteGameSession>;
+  readonly save: (
+    gameId: string,
+    operation: GameSessionOperation,
+  ) => Promise<Pick<RemoteGameSession, "revision">>;
 }
 
 export const gameSessionStorageKey = "mafia-dashboard.game-session.v5";
 const defaultClubId = "00000000-0000-4000-8000-000000000101";
 const uuidPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 
-const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
-
 const isUuid = (value: unknown): value is string =>
   typeof value === "string" && uuidPattern.test(value);
-
 const isNullableUuid = (value: unknown): value is string | null => value === null || isUuid(value);
-
 const isNonNegativeInteger = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 
-const isPositiveInteger = (value: unknown): value is number =>
-  isNonNegativeInteger(value) && value > 0;
-
-const isStringArray = (value: unknown): value is readonly string[] =>
-  Array.isArray(value) && value.every((entry) => typeof entry === "string");
-
-const isIntegerArray = (value: unknown): value is readonly number[] =>
-  Array.isArray(value) && value.every(isNonNegativeInteger);
-
-const isRole = (value: unknown): value is "sheriff" | "citizen" | "mafia" | "don" =>
-  value === "sheriff" || value === "citizen" || value === "mafia" || value === "don";
-
-const isTeam = (value: unknown): value is "red" | "black" => value === "red" || value === "black";
-
-const isSetupState = (value: unknown): boolean => {
-  if (!isRecord(value)) return false;
-  return (
-    (value.step === "music" || value.step === "role-draw" || value.step === "mafia-planning") &&
-    Array.isArray(value.players) &&
-    value.players.every(
-      (player) =>
-        isRecord(player) &&
-        typeof player.id === "string" &&
-        typeof player.name === "string" &&
-        isPositiveInteger(player.seat),
-    ) &&
-    Array.isArray(value.roleDeck) &&
-    value.roleDeck.every(isRole) &&
-    Array.isArray(value.remainingRoles) &&
-    value.remainingRoles.every(isRole) &&
-    isRecord(value.assignments) &&
-    Object.values(value.assignments).every(isRole)
-  );
-};
-
-const isSetupSessionState = (value: unknown): boolean => {
-  if (!isRecord(value)) return false;
-  return (
-    (value.step === "players" || value.step === "roles" || value.step === "music") &&
-    (value.hostPlayerId === undefined || typeof value.hostPlayerId === "string") &&
-    isStringArray(value.selectedPlayerIds) &&
-    (value.setup === null || isSetupState(value.setup))
-  );
-};
-
-const gamePhases = new Set([
-  "mafia-planning",
-  "sheriff-wake",
-  "day",
-  "voting",
-  "voting-cancelled",
-  "car-crash",
-  "car-crash-decision",
-  "car-crash-result",
-  "car-crash-skipped",
-  "goodbye-speech",
-  "best-move",
-  "night-mafia",
-  "night-mafia-result",
-  "night-don",
-  "night-don-result",
-  "night-sheriff",
-  "night-sheriff-result",
-  "night-resolution",
-  "finished",
-  "draw",
-  "cancelled",
-]);
-
-const isGameState = (value: unknown): boolean => {
-  if (!isRecord(value)) return false;
-  return (
-    typeof value.phase === "string" &&
-    gamePhases.has(value.phase) &&
-    isNonNegativeInteger(value.day) &&
-    Array.isArray(value.players) &&
-    value.players.every(
-      (player) =>
-        isRecord(player) &&
-        typeof player.id === "string" &&
-        typeof player.name === "string" &&
-        isPositiveInteger(player.seat) &&
-        isRole(player.role) &&
-        isTeam(player.team) &&
-        (player.status === "active" ||
-          player.status === "eliminated" ||
-          player.status === "red-carded") &&
-        isNonNegativeInteger(player.fouls) &&
-        typeof player.mutePending === "boolean",
-    ) &&
-    isIntegerArray(value.turnOrder) &&
-    isNonNegativeInteger(value.currentTurnIndex) &&
-    Array.isArray(value.nominations) &&
-    value.nominations.every(
-      (nomination) =>
-        isRecord(nomination) &&
-        isPositiveInteger(nomination.nominatorSeat) &&
-        isPositiveInteger(nomination.candidateSeat) &&
-        isPositiveInteger(nomination.order),
-    ) &&
-    isRecord(value.voteAssignments) &&
-    Object.values(value.voteAssignments).every(isPositiveInteger) &&
-    isRecord(value.shotAssignments) &&
-    Object.values(value.shotAssignments).every(isPositiveInteger) &&
-    (value.winner === null || isTeam(value.winner))
-  );
-};
-
-const isGameLogEntry = (value: unknown): value is GameLogEntry => {
-  try {
-    assertGameLogEntry(value);
-    return isUuid(value.id) && isUuid(value.gameId) && isNullableUuid(value.parentEventId);
-  } catch {
-    return false;
-  }
-};
-
-const isInitialGameBaseline = (value: unknown): value is InitialGameBaseline =>
-  isRecord(value) && value.replayVersion === 1 && isGameState(value.game);
-
-const isFinalGameResults = (value: unknown): value is FinalGameResults =>
-  isRecord(value) &&
-  typeof value.hostPlayerId === "string" &&
-  (value.outcome === "red" ||
-    value.outcome === "black" ||
-    value.outcome === "draw" ||
-    value.outcome === "cancelled") &&
-  (value.winner === "red" || value.winner === "black" || value.winner === null) &&
-  (value.reason === null || typeof value.reason === "string") &&
-  typeof value.playedAt === "string" &&
-  Array.isArray(value.players);
-
+/**
+ * Game-rule integrity is enforced by the client game domain. Storage only rejects
+ * malformed envelopes, so a historical session is never dropped due to a later
+ * domain schema change.
+ */
 export const isCurrentGameSessionState = (value: unknown): value is CurrentGameSessionState =>
   isRecord(value) &&
-  Object.hasOwn(value, "setup") &&
-  Object.hasOwn(value, "game") &&
-  Object.hasOwn(value, "hostPlayerId") &&
-  Object.hasOwn(value, "hostName") &&
-  Object.hasOwn(value, "playlistId") &&
-  Object.hasOwn(value, "log") &&
-  Object.hasOwn(value, "undoHistory") &&
-  Object.hasOwn(value, "undoBudget") &&
-  Object.hasOwn(value, "initialGame") &&
-  Object.hasOwn(value, "events") &&
-  Object.hasOwn(value, "headEventId") &&
-  Object.hasOwn(value, "resetReturnEventId") &&
-  Object.hasOwn(value, "legacyLog") &&
-  (value.setup === null || isSetupSessionState(value.setup)) &&
-  (value.game === null || isGameState(value.game)) &&
-  (value.hostPlayerId === null || typeof value.hostPlayerId === "string") &&
-  (value.hostName === null || typeof value.hostName === "string") &&
-  typeof value.playlistId === "string" &&
-  Array.isArray(value.log) &&
-  Array.isArray(value.undoHistory) &&
-  isNonNegativeInteger(value.undoBudget) &&
-  value.undoBudget <= 3 &&
-  (value.initialGame === null || isInitialGameBaseline(value.initialGame)) &&
-  Array.isArray(value.events) &&
-  value.events.every(isGameLogEntry) &&
-  isNullableUuid(value.headEventId) &&
-  isNullableUuid(value.resetReturnEventId) &&
-  Array.isArray(value.legacyLog);
+  [
+    "setup",
+    "game",
+    "hostPlayerId",
+    "hostName",
+    "playlistId",
+    "log",
+    "undoHistory",
+    "undoBudget",
+    "initialGame",
+    "events",
+    "headEventId",
+    "resetReturnEventId",
+    "legacyLog",
+  ].every((field) => Object.hasOwn(value, field)) &&
+  Array.isArray(value.events);
 
-const isCurrentSession = (value: unknown): value is CurrentSession =>
+const isResults = (value: unknown): value is FinalGameResults | null =>
+  value === null || isRecord(value);
+
+const isCurrent = (value: unknown): value is CurrentSession =>
   isRecord(value) &&
   typeof value.name === "string" &&
   isCurrentGameSessionState(value.state) &&
-  (value.results === null || isFinalGameResults(value.results));
+  isResults(value.results);
 
 const isOperation = (value: unknown): value is GameSessionOperation =>
   isRecord(value) &&
   value.kind === "snapshot" &&
   typeof value.name === "string" &&
   isUuid(value.mutationId) &&
-  isNonNegativeInteger(value.baseRevision) &&
   isCurrentGameSessionState(value.state) &&
-  (value.results === null || isFinalGameResults(value.results));
+  isResults(value.results);
 
-export const isCurrentGameSessionEnvelope = (
-  value: unknown,
-): value is CurrentGameSessionEnvelope => {
+const emptyEnvelope = (clubId: string): CurrentGameSessionEnvelope => ({
+  version: 5,
+  clubId,
+  gameId: null,
+  creationId: null,
+  revision: 0,
+  current: null,
+  outbox: [],
+  failed: false,
+  clearFailed: false,
+  clearingGameId: null,
+  removed: false,
+  legacyGameId: null,
+});
+
+const normalizeEnvelope = (value: unknown): CurrentGameSessionEnvelope | null => {
+  if (!isRecord(value) || !isUuid(value.clubId)) return null;
+
+  if (value.version === 5 && Object.hasOwn(value, "creationId")) {
+    if (
+      !isNullableUuid(value.gameId) ||
+      !isNullableUuid(value.creationId) ||
+      !isNonNegativeInteger(value.revision) ||
+      !(value.current === null || isCurrent(value.current)) ||
+      !Array.isArray(value.outbox) ||
+      !value.outbox.every(isOperation) ||
+      typeof value.failed !== "boolean" ||
+      typeof value.clearFailed !== "boolean" ||
+      !isNullableUuid(value.clearingGameId) ||
+      typeof value.removed !== "boolean" ||
+      !isNullableUuid(value.legacyGameId)
+    ) {
+      return null;
+    }
+    if (value.gameId === null && value.current !== null && value.creationId === null) return null;
+    if (value.gameId !== null && value.current === null && value.clearingGameId === null)
+      return null;
+    return value as unknown as CurrentGameSessionEnvelope;
+  }
+
+  // V5 records came from a client-generated GUID scheme. Keep their snapshots
+  // verbatim, but force the App to GET the GUID before treating it as server-owned.
   if (
-    !isRecord(value) ||
     value.version !== 5 ||
-    !isUuid(value.clubId) ||
     !isNullableUuid(value.gameId) ||
     !isNonNegativeInteger(value.revision) ||
-    !isNonNegativeInteger(value.claimGeneration) ||
-    !(value.current === null || isCurrentSession(value.current)) ||
+    !(value.current === null || isCurrent(value.current)) ||
     !Array.isArray(value.outbox) ||
     !value.outbox.every(isOperation) ||
     typeof value.failed !== "boolean" ||
     typeof value.clearFailed !== "boolean" ||
     !isNullableUuid(value.clearingGameId)
   ) {
-    return false;
+    return null;
   }
-  if (value.gameId === null && (value.current !== null || value.outbox.length > 0)) return false;
-  if (value.gameId !== null && value.current === null && value.clearingGameId === null)
-    return false;
-  const revision = value.revision as number;
-  if (!value.outbox.every((operation, index) => operation.baseRevision === revision + index)) {
-    return false;
-  }
-  const eventsBelongToOwner = (state: CurrentGameSessionState) =>
-    value.gameId !== null && state.events.every(({ gameId }) => gameId === value.gameId);
-  return (
-    (value.current === null || eventsBelongToOwner(value.current.state)) &&
-    value.outbox.every((operation) => eventsBelongToOwner(operation.state))
-  );
+  return {
+    version: 5,
+    clubId: value.clubId,
+    gameId: value.gameId,
+    creationId: null,
+    revision: value.revision,
+    current: value.current,
+    outbox: value.outbox,
+    failed: value.failed,
+    clearFailed: value.clearFailed,
+    clearingGameId: value.clearingGameId,
+    removed: false,
+    legacyGameId: value.gameId,
+  };
 };
+
+export const isCurrentGameSessionEnvelope = (value: unknown): value is CurrentGameSessionEnvelope =>
+  normalizeEnvelope(value) !== null;
 
 export const parseCurrentGameSessionEnvelope = (raw: string): CurrentGameSessionEnvelope | null => {
   try {
-    const parsed: unknown = JSON.parse(raw);
-    return isCurrentGameSessionEnvelope(parsed) ? parsed : null;
+    return normalizeEnvelope(JSON.parse(raw));
   } catch {
     return null;
   }
 };
-
-const emptyEnvelope = (clubId: string): CurrentGameSessionEnvelope => ({
-  version: 5,
-  clubId,
-  gameId: null,
-  revision: 0,
-  claimGeneration: 0,
-  current: null,
-  outbox: [],
-  failed: false,
-  clearFailed: false,
-  clearingGameId: null,
-});
 
 const stableJson = (value: unknown): string =>
   JSON.stringify(value, (_key, entry) => {
@@ -335,26 +202,13 @@ const stableJson = (value: unknown): string =>
 const sameCurrent = (left: CurrentSession | null, right: CurrentSession): boolean =>
   left !== null && stableJson(left) === stableJson(right);
 
-const assertSessionSaveResponse = (value: unknown): SessionSaveResponse => {
-  if (
-    !isRecord(value) ||
-    !isNonNegativeInteger(value.revision) ||
-    typeof value.duplicate !== "boolean" ||
-    !(value.name === undefined || typeof value.name === "string") ||
-    !(value.gameId === undefined || isUuid(value.gameId)) ||
-    !(value.state === undefined || isCurrentGameSessionState(value.state)) ||
-    !(value.results === undefined || value.results === null || isFinalGameResults(value.results)) ||
-    !(
-      value.claim === undefined ||
-      (isRecord(value.claim) &&
-        isNonNegativeInteger(value.claim.generation) &&
-        typeof value.claim.expiresAt === "string")
-    )
-  ) {
-    throw new Error("Invalid game session save response");
-  }
-  return value as unknown as SessionSaveResponse;
-};
+const remapEventGameIds = (
+  state: CurrentGameSessionState,
+  gameId: string,
+): CurrentGameSessionState => ({
+  ...state,
+  events: state.events.map((event) => ({ ...event, gameId })),
+});
 
 export class GameSessionOutbox {
   private readonly options: OutboxOptions & { readonly clubId: string };
@@ -363,8 +217,6 @@ export class GameSessionOutbox {
   private storageSnapshot: string | null;
   private flushPromise: Promise<void> | null = null;
   private generation = 0;
-  private clearCount = 0;
-  private readonly pendingClears = new Set<string>();
   private readonly listeners = new Set<() => void>();
 
   public constructor(options: OutboxOptions) {
@@ -374,29 +226,29 @@ export class GameSessionOutbox {
     this.storageKey = options.storageKey ?? gameSessionStorageKey;
     this.storageSnapshot = options.storage.getItem(this.storageKey);
     this.envelope = this.readEnvelope(this.storageSnapshot);
-    if (this.envelope.clubId !== clubId && this.envelope.gameId !== null) {
+    if (this.envelope.clubId !== clubId && this.envelope.current !== null) {
       throw new Error("The durable game belongs to another club");
-    }
-    if (this.envelope.clearingGameId !== null && options.clearRemote !== undefined) {
-      void this.clear(options.clearRemote).catch(() => undefined);
     }
   }
 
-  public get status(): "saved" | "saving" | "offline" | "clearing" {
-    if (this.envelope.clearingGameId !== null || this.clearCount > 0) return "clearing";
+  public get status(): "saved" | "saving" | "offline" | "clearing" | "removed" {
+    if (this.envelope.removed) return "removed";
+    if (this.envelope.clearingGameId !== null) return "clearing";
     if (this.envelope.failed || this.envelope.clearFailed) return "offline";
-    if (this.envelope.outbox.length > 0 || this.flushPromise !== null) {
+    if (
+      this.envelope.creationId !== null ||
+      this.envelope.outbox.length > 0 ||
+      this.flushPromise !== null
+    ) {
       return "saving";
     }
     return "saved";
   }
 
   public get pendingCount(): number {
-    return this.envelope.outbox.length;
-  }
-
-  public get clearFailed(): boolean {
-    return this.envelope.clearFailed;
+    return this.envelope.removed
+      ? 0
+      : this.envelope.outbox.length + (this.envelope.creationId === null ? 0 : 1);
   }
 
   public get gameId(): string | null {
@@ -407,12 +259,20 @@ export class GameSessionOutbox {
     return this.envelope.revision;
   }
 
-  public get claimGeneration(): number {
-    return this.envelope.claimGeneration;
-  }
-
   public get current(): CurrentSession | null {
     return this.envelope.current;
+  }
+
+  public get isCreating(): boolean {
+    return this.envelope.gameId === null && this.envelope.creationId !== null;
+  }
+
+  public get isRemoved(): boolean {
+    return this.envelope.removed;
+  }
+
+  public get needsRemoteVerification(): boolean {
+    return this.envelope.legacyGameId !== null;
   }
 
   public subscribe(listener: () => void): () => void {
@@ -420,111 +280,161 @@ export class GameSessionOutbox {
     return () => this.listeners.delete(listener);
   }
 
-  public setClaimGeneration(claimGeneration: number): void {
-    this.updateClaimGeneration(claimGeneration, false);
-  }
-
-  public rebindClaimGeneration(claimGeneration: number): void {
-    this.updateClaimGeneration(claimGeneration, true);
-  }
-
-  public ensureGameId(gameId: string): void {
-    if (!isUuid(gameId)) throw new Error("Game identity must be a UUID");
+  /** Persist one retry-stable creation identity before making the POST. */
+  public beginCreation(
+    name: string,
+    state: CurrentGameSessionState,
+    results: FinalGameResults | null,
+  ): void {
     this.synchronizeDurableState();
-    if (this.envelope.gameId !== null && this.envelope.gameId !== gameId) {
-      throw new Error("The active game already has a different identity");
-    }
-    if (this.envelope.gameId === gameId) return;
-    this.envelope = { ...this.envelope, gameId };
-    this.persist();
-  }
-
-  public enqueue(name: string, state: GameSessionState, results: FinalGameResults | null): void {
     if (!isCurrentGameSessionState(state)) throw new Error("Invalid current game session state");
-    const synchronized = this.synchronizeDurableState();
-    const current = { name, state, results };
-    if (sameCurrent(this.envelope.current, current)) return;
-    if (synchronized && this.envelope.outbox.length > 0) {
-      throw new Error("Local session changed in another browser context");
-    }
-    let source = this.envelope;
-    if (
-      source.gameId !== null &&
-      (source.clearingGameId === source.gameId || this.pendingClears.has(source.gameId))
-    ) {
-      this.generation += 1;
-      this.flushPromise = null;
-      source = { ...emptyEnvelope(this.options.clubId), gameId: this.options.createId() };
-    }
-    const gameId = source.gameId ?? this.options.createId();
-    if (state.events.some((entry) => entry.gameId !== gameId)) {
-      throw new Error("Local game changes target a different durable game");
-    }
-    const retained = this.flushPromise === null ? [] : source.outbox.slice(0, 1);
-    const outbox: readonly GameSessionOperation[] = [
-      ...retained,
-      {
-        kind: "snapshot",
-        name,
-        mutationId: this.options.createId(),
-        baseRevision: source.revision + retained.length,
-        state,
-        results,
-      },
-    ];
+    if (this.envelope.gameId !== null || this.envelope.creationId !== null) return;
     this.envelope = {
-      ...source,
-      gameId,
-      current,
-      outbox,
+      ...this.envelope,
+      current: { name, state, results },
+      creationId: this.options.createId(),
       failed: false,
       clearFailed: false,
-      clearingGameId: null,
+      removed: false,
+      legacyGameId: null,
     };
     this.persist();
   }
 
-  public restore(
-    gameId: string,
-    revision: number,
-    name: string,
-    state: GameSessionState,
-    results: FinalGameResults | null,
-    claimGeneration = 0,
-  ): void {
+  /** Convert only a never-acknowledged v5 snapshot into a new server creation request. */
+  public adoptLegacyDraft(): void {
     this.synchronizeDurableState();
+    if (this.envelope.legacyGameId === null || this.envelope.current === null) return;
+    this.generation += 1;
+    this.flushPromise = null;
+    if (this.envelope.revision > 0) {
+      // A missing acknowledged record was deleted, not an unsent draft.
+      // Keep the local snapshot for inspection without resurrecting it.
+      this.envelope = {
+        ...this.envelope,
+        outbox: [],
+        failed: false,
+        removed: true,
+        legacyGameId: null,
+      };
+      this.persist();
+      return;
+    }
+    this.envelope = {
+      ...this.envelope,
+      gameId: null,
+      creationId: this.options.createId(),
+      outbox: [],
+      failed: false,
+      clearFailed: false,
+      clearingGameId: null,
+      removed: false,
+      legacyGameId: null,
+    };
+    this.persist();
+  }
+
+  public confirmRemoteGame(gameId: string): void {
+    this.synchronizeDurableState();
+    if (this.envelope.gameId !== gameId || this.envelope.legacyGameId === null) return;
+    this.envelope = { ...this.envelope, legacyGameId: null };
+    this.persist();
+  }
+
+  public enqueue(name: string, state: GameSessionState, results: FinalGameResults | null): void {
+    this.synchronizeDurableState();
+    if (this.envelope.removed || this.envelope.gameId === null) return;
+    if (!isCurrentGameSessionState(state)) throw new Error("Invalid current game session state");
+    const normalizedState = remapEventGameIds(state, this.envelope.gameId);
+    const current = { name, state: normalizedState, results };
+    if (sameCurrent(this.envelope.current, current)) return;
+    const retained = this.flushPromise === null ? [] : this.envelope.outbox.slice(0, 1);
+    this.envelope = {
+      ...this.envelope,
+      current,
+      outbox: [
+        ...retained,
+        {
+          kind: "snapshot",
+          name,
+          mutationId: this.options.createId(),
+          state: normalizedState,
+          results,
+        },
+      ],
+      failed: false,
+      clearFailed: false,
+    };
+    this.persist();
+  }
+
+  /** Preserve the current local record while another server game is opened. */
+  public park(): void {
+    this.synchronizeDurableState();
+    this.assertStorageGuard();
+    const identity = this.envelope.gameId ?? this.envelope.creationId;
+    if (identity === null || this.envelope.current === null) return;
+    const serialized = JSON.stringify(this.envelope);
+    const key = this.parkedStorageKey(identity);
+    this.options.storage.setItem(key, serialized);
+    if (this.options.storage.getItem(key) !== serialized) {
+      throw new Error("Browser game storage write could not be verified");
+    }
+    this.generation += 1;
+    this.flushPromise = null;
+    this.envelope = emptyEnvelope(this.options.clubId);
+    this.persist();
+  }
+
+  /** Load a server snapshot, preferring a parked copy only with unsent work. */
+  public activateRemote(session: RemoteGameSession): void {
+    this.synchronizeDurableState();
+    if (!isUuid(session.gameId) || !isCurrentGameSessionState(session.state)) {
+      throw new Error("Invalid server game session");
+    }
+    if (this.envelope.gameId === session.gameId && this.envelope.outbox.length > 0) return;
     if (
-      this.envelope.gameId !== null &&
-      this.envelope.gameId !== gameId &&
-      this.envelope.clearingGameId !== this.envelope.gameId
+      this.envelope.current !== null &&
+      (this.envelope.gameId !== session.gameId || this.envelope.creationId !== null)
     ) {
-      throw new Error("A different game is already attached to this browser");
+      this.park();
     }
-    if (this.envelope.outbox.length > 0 || this.flushPromise !== null || this.envelope.failed) {
-      throw new Error("Cannot restore while local game changes are unresolved");
+    const parkedKey = this.parkedStorageKey(session.gameId);
+    const parkedRaw = this.options.storage.getItem(parkedKey);
+    const parked = parkedRaw === null ? null : parseCurrentGameSessionEnvelope(parkedRaw);
+    if (
+      parked?.gameId === session.gameId &&
+      parked.current !== null &&
+      (parked.outbox.length > 0 || parked.creationId !== null)
+    ) {
+      this.options.storage.removeItem(parkedKey);
+      this.envelope = parked;
+      this.storageSnapshot = this.options.storage.getItem(this.storageKey);
+      this.persist();
+      return;
     }
-    this.replaceCurrentSession(gameId, revision, name, state, results, claimGeneration);
+    if (parkedRaw !== null) this.options.storage.removeItem(parkedKey);
+    this.generation += 1;
+    this.flushPromise = null;
+    this.envelope = {
+      version: 5,
+      clubId: this.options.clubId,
+      gameId: session.gameId,
+      creationId: null,
+      revision: session.revision,
+      current: { name: session.name, state: session.state, results: session.results },
+      outbox: [],
+      failed: false,
+      clearFailed: false,
+      clearingGameId: null,
+      removed: false,
+      legacyGameId: null,
+    };
+    this.persist();
   }
 
-  public replaceAfterTakeover(
-    gameId: string,
-    revision: number,
-    name: string,
-    state: GameSessionState,
-    results: FinalGameResults | null,
-    claimGeneration: number,
-  ): void {
-    this.synchronizeDurableState();
-    this.replaceCurrentSession(gameId, revision, name, state, results, claimGeneration);
-  }
-
-  public async clear(
-    clearRemote: (
-      gameId: string,
-      expectedRevision: number,
-      claimGeneration: number,
-    ) => Promise<void>,
-  ): Promise<void> {
+  /** Remove only the local record after DELETE has been acknowledged. */
+  public async clear(clearRemote: (gameId: string) => Promise<void>): Promise<void> {
     this.synchronizeDurableState();
     const gameId = this.envelope.gameId;
     if (gameId === null) {
@@ -532,244 +442,111 @@ export class GameSessionOutbox {
       this.persist();
       return;
     }
-    const generation = this.generation;
     this.envelope = { ...this.envelope, clearFailed: false, clearingGameId: gameId };
     this.persist();
-    const clearSnapshot = this.storageSnapshot;
-    this.pendingClears.add(gameId);
-    this.clearCount += 1;
-    this.notify();
     try {
-      await clearRemote(gameId, this.envelope.revision, this.envelope.claimGeneration);
-      if (
-        generation !== this.generation ||
-        this.envelope.gameId !== gameId ||
-        this.options.storage.getItem(this.storageKey) !== clearSnapshot
-      ) {
-        this.reloadAfterExternalChange();
-        return;
-      }
+      await clearRemote(gameId);
+      if (this.envelope.gameId !== gameId) return;
       this.generation += 1;
       this.flushPromise = null;
       this.envelope = emptyEnvelope(this.options.clubId);
       this.persist();
     } catch (error) {
-      if (
-        generation === this.generation &&
-        this.envelope.gameId === gameId &&
-        this.options.storage.getItem(this.storageKey) === clearSnapshot
-      ) {
+      if (this.envelope.gameId === gameId) {
         this.envelope = { ...this.envelope, clearFailed: true, clearingGameId: null };
         this.persist();
-      } else {
-        this.reloadAfterExternalChange();
       }
       throw error;
-    } finally {
-      this.pendingClears.delete(gameId);
-      this.clearCount -= 1;
-      this.notify();
     }
   }
 
   public flush(): Promise<void> {
     if (this.flushPromise !== null) return this.flushPromise;
     this.synchronizeDurableState();
-    if (this.envelope.outbox.length === 0) return Promise.resolve();
+    if (this.pendingCount === 0) return Promise.resolve();
     const generation = this.generation;
-    const operation = (async () => {
-      let active: GameSessionOperation | null = null;
-      try {
-        while (this.envelope.outbox.length > 0 && generation === this.generation) {
-          const gameId = this.envelope.gameId;
-          const mutation = this.envelope.outbox[0];
-          if (gameId === null || mutation === undefined)
-            throw new Error("Invalid game session outbox");
-          active = mutation;
-          const response = assertSessionSaveResponse(
-            await this.options.save(gameId, mutation, this.envelope.claimGeneration),
-          );
-          if (generation !== this.generation) return;
-          if (response.gameId !== undefined && response.gameId !== gameId) {
-            throw new Error("Game session response targets another game");
-          }
-          const raw = this.options.storage.getItem(this.storageKey);
-          if (raw !== this.storageSnapshot) {
-            this.reloadAfterExternalChange();
-            return;
-          }
-          const durable = this.readEnvelope(raw);
-          const index = durable.outbox.findIndex(
-            ({ mutationId }) => mutationId === mutation.mutationId,
-          );
-          if (durable.gameId !== gameId || index === -1) {
-            this.envelope = durable;
-            this.storageSnapshot = raw;
-            this.notify();
-            return;
-          }
-          const remaining = durable.outbox.filter((_, queuedIndex) => queuedIndex !== index);
-          const responseState = response.state;
-          const remoteCurrent =
-            responseState === undefined ||
-            response.results === undefined ||
-            !isCurrentGameSessionState(responseState)
-              ? null
-              : {
-                  name: response.name ?? mutation.name,
-                  state: responseState,
-                  results: response.results,
-                };
-          if (
-            response.duplicate &&
-            remoteCurrent !== null &&
-            remaining.length === 0 &&
-            !sameCurrent(remoteCurrent, {
-              name: mutation.name,
-              state: mutation.state,
-              results: mutation.results,
-            })
-          ) {
-            const retry: GameSessionOperation = {
-              ...mutation,
-              name: response.name?.trim() || mutation.name,
-              mutationId: this.options.createId(),
-              baseRevision: response.revision,
-            };
-            this.envelope = {
-              ...durable,
-              revision: Math.max(durable.revision, response.revision),
-              claimGeneration: Math.max(durable.claimGeneration, response.claim?.generation ?? 0),
-              outbox: [retry],
-              failed: false,
-            };
-            this.storageSnapshot = raw;
-            this.persist();
-            active = null;
-            continue;
-          }
-          const name = response.name?.trim();
-          this.envelope = {
-            ...durable,
-            revision: Math.max(durable.revision, response.revision),
-            claimGeneration: Math.max(durable.claimGeneration, response.claim?.generation ?? 0),
-            current:
-              durable.current === null || name === undefined || name === ""
-                ? durable.current
-                : { ...durable.current, name },
-            outbox:
-              name === undefined || name === ""
-                ? remaining
-                : remaining.map((queued) => ({ ...queued, name })),
-            failed: false,
-          };
-          this.storageSnapshot = raw;
-          this.persist();
-          active = null;
-        }
-      } catch (error) {
-        if (generation === this.generation && active !== null) {
-          const activeMutationId = active.mutationId;
-          const raw = this.options.storage.getItem(this.storageKey);
-          if (raw === this.storageSnapshot) {
-            const durable = this.readEnvelope(raw);
-            if (durable.outbox.some(({ mutationId }) => mutationId === activeMutationId)) {
-              this.envelope = { ...durable, failed: true };
-              this.persist();
-            } else {
-              this.envelope = durable;
-              this.notify();
-            }
-          } else {
-            this.reloadAfterExternalChange();
-          }
-        }
-        throw error;
-      }
-    })();
+    const operation = this.flushAll(generation);
     this.flushPromise = operation;
     this.notify();
-    void operation.then(
-      () => {
-        if (this.flushPromise === operation) {
-          this.flushPromise = null;
-          this.notify();
-        }
-      },
-      () => {
-        if (this.flushPromise === operation) {
-          this.flushPromise = null;
-          this.notify();
-        }
-      },
+    operation.then(
+      () => this.finishFlush(operation),
+      () => this.finishFlush(operation),
     );
     return operation;
   }
 
-  private updateClaimGeneration(claimGeneration: number, rebindFailed: boolean): void {
-    if (!isNonNegativeInteger(claimGeneration)) {
-      throw new Error("Claim generation must be a non-negative integer");
-    }
-    this.synchronizeDurableState();
-    if (claimGeneration < this.envelope.claimGeneration) return;
-    if (claimGeneration === this.envelope.claimGeneration && !rebindFailed) return;
-    this.generation += 1;
+  private finishFlush(operation: Promise<void>): void {
+    if (this.flushPromise !== operation) return;
     this.flushPromise = null;
-    this.envelope = {
-      ...this.envelope,
-      claimGeneration,
-      failed: rebindFailed ? false : this.envelope.failed,
-    };
-    this.persist();
-  }
-
-  private replaceCurrentSession(
-    gameId: string,
-    revision: number,
-    name: string,
-    state: GameSessionState,
-    results: FinalGameResults | null,
-    claimGeneration: number,
-  ): void {
-    if (!isUuid(gameId)) throw new Error("Game identity must be a UUID");
-    if (!isNonNegativeInteger(revision) || !isNonNegativeInteger(claimGeneration)) {
-      throw new Error("Game session revision and claim generation must be non-negative integers");
-    }
-    if (!isCurrentGameSessionState(state)) throw new Error("Invalid current game session state");
-    if (state.events.some((entry) => entry.gameId !== gameId)) {
-      throw new Error("Game session contains a cross-game event");
-    }
-    this.generation += 1;
-    this.flushPromise = null;
-    this.envelope = {
-      version: 5,
-      clubId: this.options.clubId,
-      gameId,
-      revision,
-      claimGeneration,
-      current: { name, state, results },
-      outbox: [],
-      failed: false,
-      clearFailed: false,
-      clearingGameId: null,
-    };
-    this.persist();
-  }
-
-  private synchronizeDurableState(): boolean {
-    const raw = this.options.storage.getItem(this.storageKey);
-    if (raw === this.storageSnapshot) return false;
-    this.envelope = this.readEnvelope(raw);
-    if (this.envelope.clubId !== this.options.clubId && this.envelope.gameId !== null) {
-      throw new Error("The durable game belongs to another club");
-    }
-    this.storageSnapshot = raw;
     this.notify();
-    return true;
   }
 
-  private reloadAfterExternalChange(): void {
+  private async flushAll(generation: number): Promise<void> {
+    try {
+      if (this.envelope.gameId === null && this.envelope.creationId !== null) {
+        const current = this.envelope.current;
+        if (current === null) throw new Error("Creation is missing its game snapshot");
+        const creationId = this.envelope.creationId;
+        if (this.options.create === undefined) {
+          throw new Error("Game-session creation is not configured");
+        }
+        const remote = await this.options.create({
+          creationId,
+          name: current.name,
+          state: current.state,
+          results: current.results,
+        });
+        if (generation !== this.generation) return;
+        if (!isUuid(remote.gameId) || !isCurrentGameSessionState(remote.state)) {
+          throw new Error("Invalid game creation response");
+        }
+        this.envelope = {
+          ...this.envelope,
+          gameId: remote.gameId,
+          creationId: null,
+          revision: remote.revision,
+          current: {
+            name: remote.name,
+            state: remapEventGameIds(current.state, remote.gameId),
+            results: current.results,
+          },
+          failed: false,
+          legacyGameId: null,
+        };
+        this.persist();
+      }
+
+      while (this.envelope.outbox.length > 0 && generation === this.generation) {
+        const gameId = this.envelope.gameId;
+        const mutation = this.envelope.outbox[0];
+        if (gameId === null || mutation === undefined)
+          throw new Error("Invalid game session outbox");
+        const remote = await this.options.save(gameId, mutation);
+        if (generation !== this.generation) return;
+        this.envelope = {
+          ...this.envelope,
+          revision: remote.revision,
+          outbox: this.envelope.outbox.slice(1),
+          failed: false,
+        };
+        this.persist();
+      }
+    } catch (error) {
+      if (generation === this.generation) {
+        if (error instanceof ApiError && error.status === 404 && this.envelope.gameId !== null) {
+          this.envelope = { ...this.envelope, outbox: [], failed: false, removed: true };
+        } else {
+          this.envelope = { ...this.envelope, failed: true };
+        }
+        this.persist();
+      }
+      throw error;
+    }
+  }
+
+  private synchronizeDurableState(): void {
     const raw = this.options.storage.getItem(this.storageKey);
+    if (raw === this.storageSnapshot) return;
     this.envelope = this.readEnvelope(raw);
     this.storageSnapshot = raw;
     this.notify();
@@ -785,9 +562,9 @@ export class GameSessionOutbox {
   private persist(): void {
     this.assertStorageGuard();
     const serialized =
-      this.envelope.gameId === null &&
       this.envelope.current === null &&
-      this.envelope.outbox.length === 0
+      this.envelope.outbox.length === 0 &&
+      this.envelope.creationId === null
         ? null
         : JSON.stringify(this.envelope);
     if (this.options.storage.getItem(this.storageKey) !== this.storageSnapshot) {
@@ -800,6 +577,10 @@ export class GameSessionOutbox {
     }
     this.storageSnapshot = serialized;
     this.notify();
+  }
+
+  private parkedStorageKey(identity: string): string {
+    return `${this.storageKey}.parked.${identity}`;
   }
 
   private assertStorageGuard(): void {

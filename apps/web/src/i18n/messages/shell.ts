@@ -29,6 +29,8 @@ const englishShellMessages = {
   devPlayerName: "Dev {adjective} {alias} {batchId}-{number}",
   deleteActiveGameConfirmation:
     "Delete this active game from the server? This is irreversible and removes its saved session and game log for every browser.",
+  startNewGameConfirmation:
+    "Start a new game? The current game will stay saved and can be resumed later.",
   deleteSessionConfirmation:
     'Delete "{name}" and all associated game statistics? This cannot be undone.',
   clearApplicationDataConfirmation:
@@ -38,6 +40,7 @@ const englishShellMessages = {
     other: "{count} changes",
   },
   savedToServer: "Saved to server · tap to check connection",
+  gameRemoved: "This game was removed from the server. Its local copy will not be recreated.",
   saveBlocked: "Save blocked · {pendingLabel} safe on this device · tap to retry",
   offline: "Offline · {pendingLabel} safe on this device · tap to retry",
   saveFailed: "Save failed · retry {attempt} of {maxAttempts} · {pendingLabel} pending",
@@ -87,27 +90,9 @@ const englishShellMessages = {
     "Discard this local game? Any changes that have not reached the server will be lost.",
   deleting: "Deleting…",
   delete: "Delete",
+  deleteSession: "Delete {name}",
   hostNotSelected: "Host not selected",
   activeSessionSummary: "{host} · {phase} · day {day}",
-  claimConflictEyebrow: "Game claim",
-  claimConflictTitle: "Game already controlled",
-  claimConflictBody:
-    "{holder} is currently controlling this game. Take over only if you intend to replace that browser.",
-  claimConflictActiveGameBody:
-    "{game} is already active. Taking over will replace this browser's unsaved local game with the active game.",
-  claimConflictUnknownGame: "The active game",
-  claimConflictUnknownHolder: "Another host",
-  claimConflictClaimedAt: "Claimed at",
-  claimConflictLastSeen: "Last seen",
-  claimConflictExpires: "Lease expires",
-  claimConflictTakeoverError: "The takeover failed. Try again.",
-  claimConflictCancel: "Cancel",
-  claimConflictTakeOver: "Take over",
-  claimConflictTakingOver: "Taking over…",
-  claimSecuring: "Securing game control…",
-  claimConflictBlocked: "This game remains read-only until you resolve ownership.",
-  claimConflictResolve: "Resolve ownership",
-  claimConflictExit: "Back to clubs",
   phaseSetupPlayers: "Player setup",
   phaseMafiaPlanning: "Mafia planning",
   phaseSheriffWake: "Sheriff wake-up",
@@ -289,6 +274,8 @@ const russianShellMessages = {
   devPlayerName: "Тестовый {adjective} {alias} {batchId}-{number}",
   deleteActiveGameConfirmation:
     "Удалить эту активную игру с сервера? Действие необратимо: сохранённая сессия и журнал игры будут удалены во всех браузерах.",
+  startNewGameConfirmation:
+    "Начать новую игру? Текущая игра останется сохранённой, и к ней можно будет вернуться позже.",
   deleteSessionConfirmation:
     "Удалить «{name}» и всю связанную игровую статистику? Это действие нельзя отменить.",
   clearApplicationDataConfirmation:
@@ -300,6 +287,7 @@ const russianShellMessages = {
     other: "{count} изменения",
   },
   savedToServer: "Сохранено на сервере · нажмите, чтобы проверить подключение",
+  gameRemoved: "Эта игра удалена с сервера. Её локальная копия не будет создана заново.",
   saveBlocked:
     "Сохранение заблокировано · {pendingLabel} безопасно хранятся на этом устройстве · нажмите, чтобы повторить",
   offline:
@@ -353,27 +341,9 @@ const russianShellMessages = {
     "Удалить эту локальную игру? Все изменения, не сохранённые на сервере, будут потеряны.",
   deleting: "Удаление…",
   delete: "Удалить",
+  deleteSession: "Удалить {name}",
   hostNotSelected: "Ведущий не выбран",
   activeSessionSummary: "{host} · {phase} · день {day}",
-  claimConflictEyebrow: "Управление игрой",
-  claimConflictTitle: "Игра уже открыта в другом браузере",
-  claimConflictBody:
-    "Сейчас игрой управляет {holder}. Перехватывайте управление, только если хотите заменить тот браузер.",
-  claimConflictActiveGameBody:
-    "Игра «{game}» уже активна. Перехват заменит несохранённую локальную игру в этом браузере активной игрой.",
-  claimConflictUnknownGame: "Активная игра",
-  claimConflictUnknownHolder: "Другой ведущий",
-  claimConflictClaimedAt: "Управление получено",
-  claimConflictLastSeen: "Последняя активность",
-  claimConflictExpires: "Срок аренды истекает",
-  claimConflictTakeoverError: "Не удалось перехватить управление. Повторите попытку.",
-  claimConflictCancel: "Отмена",
-  claimConflictTakeOver: "Перехватить",
-  claimConflictTakingOver: "Перехват…",
-  claimSecuring: "Подтверждение управления игрой…",
-  claimConflictBlocked: "Игра доступна только для чтения, пока вы не решите вопрос управления.",
-  claimConflictResolve: "Решить вопрос управления",
-  claimConflictExit: "К списку клубов",
   phaseSetupPlayers: "Выбор игроков",
   phaseMafiaPlanning: "Планирование мафии",
   phaseSheriffWake: "Подъём Шерифа",

@@ -138,7 +138,8 @@ const apiContext = await playwrightRequest.newContext({
 });
 const createdPlayerIds = new Set();
 const createdGameIds = new Set();
-const ownedClaims = new Map();
+const createdSetupStates = new Map();
+
 const preexistingPlayerIds = new Set();
 const preexistingGameIds = new Set();
 const cleanupErrors = [];
@@ -233,32 +234,19 @@ const createContext = async () => {
         expectedOrigin: targetUrl.origin,
         ownedGameIds: createdGameIds,
       });
-      if (classification.kind === "owned-session-mutation") {
-        const claimId = request.headers()["x-game-claim-id"];
-        const claimGeneration = Number(request.headers()["x-game-claim-generation"]);
-        if (
-          /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(claimId ?? "") &&
-          Number.isSafeInteger(claimGeneration) &&
-          claimGeneration > 0
-        ) {
-          ownedClaims.set(classification.gameId, { claimId, claimGeneration });
-        }
-      }
       if (classification.kind === "session-creation") {
-        if (preexistingGameIds.has(classification.gameId)) {
-          throw new Error("Refusing to mutate a pre-existing game session ID");
-        }
         const response = await route.fetch({ maxRedirects: 0 });
         const session = await response.json();
         const createdGameId = assertNewResource({
           label: "game session",
           status: response.status(),
           id: session.gameId,
-          expectedId: classification.gameId,
+
           preexistingIds: preexistingGameIds,
           claimedIds: createdGameIds,
         });
         createdGameIds.add(createdGameId);
+        createdSetupStates.set(createdGameId, request.postDataJSON().state);
         await route.fulfill({ response });
         return;
       }
@@ -591,6 +579,83 @@ try {
       })}`,
     );
   }
+  const secondName = `Session ${runId} second game`;
+  const initialState = createdSetupStates.get(gameId);
+  if (initialState === undefined) throw new Error("Missing run-owned creation snapshot");
+  const secondCreated = await apiContext.post("/api/game-sessions", {
+    maxRedirects: 0,
+    data: {
+      creationId: randomUUID(),
+      name: secondName,
+      state: { ...initialState, log: [], legacyLog: [], events: [] },
+      results: null,
+    },
+  });
+  const secondSession = await secondCreated.json();
+  const secondId = assertNewResource({
+    label: "second game session",
+    status: secondCreated.status(),
+    id: secondSession.gameId,
+    preexistingIds: preexistingGameIds,
+    claimedIds: createdGameIds,
+  });
+  createdGameIds.add(secondId);
+  const concurrentListing = await apiContext.get("/api/game-sessions");
+  const concurrentSessions = (await concurrentListing.json()).sessions;
+  if (
+    ![gameId, secondId].every((id) => concurrentSessions.some((session) => session.gameId === id))
+  ) {
+    throw new Error("The club did not enumerate both simultaneous active games");
+  }
+  const secondContext = await createContext();
+  const secondPage = await secondContext.newPage();
+  await secondPage.goto(targetUrl.href, { waitUntil: "networkidle" });
+  await secondPage
+    .getByRole("button", { name: `Open ${selectedClub.name} in ${selectedClub.city}` })
+    .click();
+  await secondPage.getByRole("button", { name: "Open Manage menu" }).click();
+  await secondPage.getByRole("button", { name: `Resume ${secondName}`, exact: true }).click();
+  await secondPage.getByRole("heading", { name: "Role giveaway" }).waitFor();
+  await secondPage.getByRole("button", { name: "Open Manage menu" }).click();
+  const gameRows = secondPage.getByRole("listitem");
+  await gameRows
+    .filter({ has: secondPage.getByRole("button", { name: `Resume ${gameName}`, exact: true }) })
+    .waitFor();
+  secondPage.once("dialog", (dialog) => dialog.accept());
+  const secondDeletion = secondPage.waitForResponse(
+    (response) =>
+      response.request().method() === "DELETE" &&
+      new URL(response.url()).pathname === `/api/game-sessions/${secondId}`,
+  );
+  await gameRows
+    .filter({ has: secondPage.getByRole("button", { name: `Resume ${secondName}`, exact: true }) })
+    .getByRole("button", { name: `Delete ${secondName}`, exact: true })
+    .click();
+  const secondDeleteResponse = await secondDeletion;
+  if (secondDeleteResponse.status() !== 204) {
+    throw new Error(`Second-game UI delete failed: HTTP ${secondDeleteResponse.status()}`);
+  }
+  await secondPage.getByRole("heading", { name: "Select 10 players + host" }).waitFor();
+  const secondReadback = await apiContext.get(`/api/game-sessions/${secondId}`);
+  if (secondReadback.status() !== 404) throw new Error("Deleted second game remains on the server");
+  const lateSave = await apiContext.put(`/api/game-sessions/${secondId}`, {
+    data: { name: secondName, mutationId: randomUUID(), state: secondSession.state, results: null },
+  });
+  if (lateSave.status() !== 404) throw new Error("A late save recreated the deleted game");
+  const survivingSession = await readAuthoritativeSession(gameId);
+  if (!isDeepStrictEqual(survivingSession, storedSession)) {
+    throw new Error("Deleting the second game changed the first game");
+  }
+  await secondPage.reload({ waitUntil: "networkidle" });
+  const afterSecondDelete = await apiContext.get("/api/game-sessions");
+  const remainingSessions = (await afterSecondDelete.json()).sessions;
+  if (
+    remainingSessions.some((session) => session.gameId === secondId) ||
+    !remainingSessions.some((session) => session.gameId === gameId)
+  ) {
+    throw new Error("Active game listing did not preserve only the surviving fixture");
+  }
+  await secondContext.close();
   await awaitRestartRendezvous({
     directory: restartGateDirectory,
     timeoutMs: restartGateTimeoutMs,
@@ -604,14 +669,7 @@ try {
     throw new Error("Authoritative session changed across the application restart");
   }
   authoritativeSession = restartedSession;
-  const ownedClaim = ownedClaims.get(gameId);
-  if (ownedClaim === undefined) {
-    throw new Error("The browser did not expose its run-owned game-session claim");
-  }
-  const claimHeaders = {
-    "x-game-claim-id": ownedClaim.claimId,
-    "x-game-claim-generation": String(ownedClaim.claimGeneration),
-  };
+
   const acceptedEvent = activeEvents.at(-1);
   if (acceptedEvent?.type !== "phase.changed" || acceptedEvent.parentEventId == null) {
     throw new Error("Reset probe has no accepted phase event with a parent");
@@ -642,11 +700,11 @@ try {
   };
   const resetResponse = await apiContext.put(`${apiBaseUrl}/api/game-sessions/${gameId}`, {
     maxRedirects: 0,
-    headers: claimHeaders,
+
     data: {
       name: storedSession.name,
       mutationId: randomUUID(),
-      baseRevision: storedSession.revision,
+
       state: resetState,
       results: null,
     },
@@ -672,26 +730,37 @@ try {
     .click();
   await restartedPage.getByRole("button", { name: "Open Manage menu" }).click();
   await restartedPage.getByRole("button", { name: `Resume ${gameName}` }).click();
-  const claimConflict = restartedPage.getByRole("alertdialog", {
-    name: "Game already controlled",
+
+  const restoredPhaseAction = restartedPage.getByRole("button", {
+    name: "Continue night zero to Sheriff wake-up",
+    exact: true,
   });
-  await claimConflict.waitFor({ state: "visible", timeout: 3_000 }).catch(() => undefined);
-  if (await claimConflict.isVisible()) {
-    await claimConflict.getByRole("button", { name: "Take over" }).click();
-  }
-  await restartedPage.getByRole("group", { name: `Host: ${players[10].nickname}` }).waitFor();
+  await restoredPhaseAction.waitFor();
   const restoredEnvelope = await restartedPage.evaluate((storageKey) => {
     const raw = window.localStorage.getItem(storageKey);
     return raw === null ? null : JSON.parse(raw);
   }, storageKey);
   assertBrowserGameEnvelopeOwner(restoredEnvelope, clubId);
   assertEnvelopeMatchesSession(restoredEnvelope, authoritativeSession, replayGameLog);
+  await restartedPage.locator(".club-curtain-opening").waitFor({ state: "detached" });
   await restartedPage.screenshot({ path: screenshotPath, fullPage: true });
 
-  restartedPage.once("dialog", (dialog) => dialog.accept());
-  await restartedPage.getByRole("button", { name: "Open Manage menu" }).click();
-  await restartedPage.getByRole("button", { name: "Start new game" }).click();
-  await restartedPage.getByRole("heading", { name: "Select 10 players + host" }).waitFor();
+  const directDelete = await apiContext.delete(`/api/game-sessions/${gameId}`);
+  if (directDelete.status() !== 204) throw new Error("Direct server-side delete failed");
+  const removedSave = restartedPage.waitForResponse(
+    (response) =>
+      response.request().method() === "PUT" &&
+      new URL(response.url()).pathname === `/api/game-sessions/${gameId}`,
+  );
+  await restoredPhaseAction.click();
+  if ((await removedSave).status() !== 404)
+    throw new Error("The open client recreated a removed game");
+  await restartedPage
+    .getByRole("button", {
+      name: "This game was removed from the server. Its local copy will not be recreated.",
+      exact: true,
+    })
+    .waitFor();
   const afterClear = await apiContext.get(`${apiBaseUrl}/api/game-sessions`, {
     maxRedirects: 0,
   });
@@ -710,7 +779,10 @@ try {
     (storageKey) => window.localStorage.getItem(storageKey),
     storageKey,
   );
-  if (remainingEnvelope !== null) throw new Error("Cleared session remains in the client outbox");
+  const removedEnvelope = JSON.parse(remainingEnvelope);
+  if (removedEnvelope?.removed !== true || removedEnvelope.outbox.length !== 0) {
+    throw new Error("Removed game retained automatic retries or lost its local recovery copy");
+  }
   await restartedContext.close();
 } catch (error) {
   verificationError = error instanceof Error ? error : new Error(String(error));
@@ -734,30 +806,9 @@ try {
       if (!stored.ok()) {
         throw new Error(`Unable to inspect verification session cleanup: HTTP ${stored.status()}`);
       }
-      const { session } = await stored.json();
-      const cleanupClaimId = randomUUID();
-      const takeover = await apiContext.post(`/api/game-sessions/${gameId}/takeover`, {
+      const response = await apiContext.delete(`/api/game-sessions/${gameId}`, {
         maxRedirects: 0,
-        headers: {
-          "x-game-claim-id": cleanupClaimId,
-          "x-game-claim-generation": "1",
-        },
-        data: {},
       });
-      if (!takeover.ok()) {
-        throw new Error(`Unable to claim verification session cleanup: HTTP ${takeover.status()}`);
-      }
-      const { claim } = await takeover.json();
-      const response = await apiContext.delete(
-        `/api/game-sessions/${gameId}?expectedRevision=${session.revision}`,
-        {
-          maxRedirects: 0,
-          headers: {
-            "x-game-claim-id": cleanupClaimId,
-            "x-game-claim-generation": String(claim.generation),
-          },
-        },
-      );
       if (!response.ok() && response.status() !== 404) {
         throw new Error(`Unable to clean up a verification session: HTTP ${response.status()}`);
       }

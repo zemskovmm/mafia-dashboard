@@ -6,7 +6,9 @@ Mafia Dashboard is a TypeScript npm workspace with three primary application bou
 - `apps/server/` is the Fastify API and static host. It owns authentication, club isolation, and PostgreSQL persistence.
 - `packages/game-domain/` contains framework-independent Club Mafia rules, canonical events, and replay logic.
 
-The browser persists setup state directly. During live play, it derives the visible game from an immutable baseline plus parent-linked semantic events. The server validates and stores the latest valid snapshot within its club-scoped game-session aggregate.
+The browser owns game rules, setup checks, and semantic replay. On entering Role giveaway it creates a server-backed game record and receives its server-generated GUID; subsequent full-snapshot updates address that GUID. The server authorizes the authenticated club manager (admin/owner), preserves club isolation, and stores the client snapshot without validating game rules, replay, claims, or revisions. Concurrent updates are last-write-wins.
+
+A club may have multiple active games. The client lists and opens those server records without takeover, and permanently deletes a selected game through the same club-scoped API. Updates never create missing records, so a deleted game cannot be resurrected by a late save. There are no game claims, heartbeats, expiry or stale-writer fencing. New games require a server response before play; existing games retain offline save retries. Deletion is acknowledged only after the server succeeds, and another client discovers deletion on its next request.
 
 ## Lighting renderer
 

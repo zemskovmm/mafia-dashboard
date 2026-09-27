@@ -2934,29 +2934,7 @@ button.player-seat.is-voting-highlight::after {
   line-height: 1.4;
 }
 
-.claim-conflict-banner {
-  position: fixed;
-  z-index: 1000;
-  inset: max(16px, env(safe-area-inset-top)) 16px auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  max-width: 760px;
-  margin-inline: auto;
-  padding: 14px 16px;
-  color: var(--white);
-  background: rgb(17 13 13 / 96%);
-  border: 1px solid rgb(255 255 255 / 16%);
-  border-radius: 16px;
-  box-shadow: var(--shadow);
-}
-
-.claim-conflict-banner p {
-  margin: 0;
-}
-
-.claim-conflict-backdrop {
+.browser-game-backdrop {
   position: fixed;
   z-index: 1000;
   inset: 0;
@@ -2968,7 +2946,7 @@ button.player-seat.is-voting-highlight::after {
   backdrop-filter: blur(10px);
 }
 
-.claim-conflict-dialog {
+.browser-game-dialog {
   width: min(100%, 520px);
   padding: clamp(24px, 5vw, 40px);
   color: var(--text);
@@ -2978,36 +2956,15 @@ button.player-seat.is-voting-highlight::after {
   box-shadow: 0 24px 90px rgb(0 0 0 / 65%);
 }
 
-.claim-conflict-dialog h2 {
+.browser-game-dialog h2 {
   margin: 8px 0 12px;
 }
 
-.claim-conflict-dialog > p {
+.browser-game-dialog > p {
   line-height: 1.5;
 }
 
-.claim-conflict-details {
-  display: grid;
-  gap: 8px;
-  margin: 20px 0;
-}
-
-.claim-conflict-details div {
-  display: flex;
-  justify-content: space-between;
-  gap: 20px;
-}
-
-.claim-conflict-details dt {
-  color: var(--muted);
-}
-
-.claim-conflict-details dd {
-  margin: 0;
-  font-variant-numeric: tabular-nums;
-}
-
-.claim-conflict-actions {
+.browser-game-actions {
   display: flex;
   justify-content: flex-end;
   gap: 10px;

@@ -136,44 +136,19 @@ export interface GameSessionState {
 
 export type CurrentGameSessionState = GameSessionState;
 
-export interface GameSessionMutation {
+export interface GameSessionOperation {
+  readonly kind: "snapshot";
   readonly name: string;
   readonly mutationId: string;
-  readonly baseRevision: number;
   readonly state: GameSessionState;
   readonly results: FinalGameResults | null;
 }
 
-export interface GameSessionClaimCredential {
-  readonly claimId: string;
-  readonly claimGeneration: number;
-}
-
-export interface GameSessionClaim {
-  readonly generation: number;
-  readonly expiresAt: string;
-}
-
-interface GameSessionOperationBase {
+export interface GameSessionCreation {
+  readonly creationId: string;
   readonly name: string;
-  readonly mutationId: string;
-  readonly baseRevision: number;
-}
-
-export interface GameSessionOperation extends GameSessionOperationBase {
-  readonly kind: "snapshot";
   readonly state: CurrentGameSessionState;
   readonly results: FinalGameResults | null;
-}
-
-export interface GameSessionOperationResponse {
-  readonly revision: number;
-  readonly duplicate: boolean;
-  readonly name?: string;
-  readonly gameId?: string;
-  readonly state?: GameSessionState;
-  readonly results?: FinalGameResults | null;
-  readonly claim?: GameSessionClaim;
 }
 
 export interface ActiveGameSessionSummary {
@@ -197,7 +172,6 @@ export interface RemoteGameSession {
   readonly updatedAt: string;
   readonly state: GameSessionState;
   readonly results: FinalGameResults | null;
-  readonly claim?: GameSessionClaim;
 }
 
 export interface CompletedGameSessionSummary {
@@ -269,7 +243,6 @@ export class ApiError extends Error {
 const validationIssuePaths = [
   "name",
   "mutationId",
-  "baseRevision",
   "state.game",
   "state.game.voteAssignments",
   "state.log",
@@ -379,66 +352,16 @@ const safeValidationDetails = (value: unknown): ApiValidationDetails | null => {
   return issues.length === 0 ? null : { issues };
 };
 
-const safeClaimConflictDetails = (value: unknown): unknown | null => {
-  if (typeof value !== "object" || value === null) return null;
-  const claim = value as Record<string, unknown>;
-  const nullableString = (field: string) =>
-    claim[field] === null || typeof claim[field] === "string";
-  if (
-    !nullableString("holderName") ||
-    !nullableString("claimedAt") ||
-    !nullableString("lastSeenAt") ||
-    !nullableString("expiresAt")
-  ) {
-    return null;
-  }
-  return {
-    claim: {
-      holderName: claim.holderName,
-      claimedAt: claim.claimedAt,
-      lastSeenAt: claim.lastSeenAt,
-      expiresAt: claim.expiresAt,
-    },
-  };
-};
-
-const safeActiveGameDetails = (value: unknown): unknown | null => {
-  if (typeof value !== "object" || value === null) return null;
-  const game = value as Record<string, unknown>;
-  if (
-    typeof game.gameId !== "string" ||
-    typeof game.name !== "string" ||
-    (game.phase !== null && typeof game.phase !== "string") ||
-    (game.day !== null && typeof game.day !== "number") ||
-    typeof game.updatedAt !== "string"
-  ) {
-    return null;
-  }
-  return {
-    activeGame: {
-      gameId: game.gameId,
-      name: game.name,
-      phase: game.phase,
-      day: game.day,
-      updatedAt: game.updatedAt,
-    },
-  };
-};
-
 const throwApiError = async (response: Response, message: string): Promise<never> => {
   let code: string | null = null;
   let details: unknown | null = null;
   try {
     const body = (await response.json()) as {
       error?: unknown;
-      claim?: unknown;
-      activeGame?: unknown;
       issues?: unknown;
     };
     code = safeErrorCode(body.error);
-    if (code === "game_session_claim_conflict") details = safeClaimConflictDetails(body.claim);
-    else if (code === "club_active_game_exists") details = safeActiveGameDetails(body.activeGame);
-    else if (code === "validation_failed") details = safeValidationDetails(body.issues);
+    if (code === "validation_failed") details = safeValidationDetails(body.issues);
   } catch {
     // Non-JSON failures still retain their HTTP status.
   }
@@ -448,16 +371,6 @@ const throwApiError = async (response: Response, message: string): Promise<never
 const clubHeaders = (clubId: string | undefined, json = false): HeadersInit => ({
   ...(json ? { "content-type": "application/json" } : {}),
   ...(clubId === undefined ? {} : { "x-club-id": clubId }),
-});
-
-const gameSessionClaimHeaders = (
-  credential: GameSessionClaimCredential,
-  clubId: string | undefined,
-  json = false,
-): HeadersInit => ({
-  ...clubHeaders(clubId, json),
-  "x-game-claim-id": credential.claimId,
-  "x-game-claim-generation": String(credential.claimGeneration),
 });
 
 const persistenceRequestTimeoutMs = 4_000;
@@ -594,31 +507,28 @@ export const deletePlayer = async (playerId: string, clubId?: string): Promise<v
   if (!response.ok) return throwApiError(response, "Unable to delete player");
 };
 
-export const saveGameSession = async (
-  gameId: string,
-  mutation: GameSessionMutation,
-  credential: GameSessionClaimCredential,
+export const createGameSession = async (
+  input: GameSessionCreation,
   clubId?: string,
 ): Promise<RemoteGameSession> => {
-  const response = await fetchPersistenceRequest(`/api/game-sessions/${gameId}`, {
-    method: "PUT",
-    headers: gameSessionClaimHeaders(credential, clubId, true),
-    body: JSON.stringify(mutation),
+  const response = await fetchPersistenceRequest("/api/game-sessions", {
+    method: "POST",
+    headers: clubHeaders(clubId, true),
+    body: JSON.stringify(input),
   });
-  if (!response.ok) return throwApiError(response, "Unable to save the game session");
+  if (!response.ok) return throwApiError(response, "Unable to create the game session");
   return (await response.json()) as RemoteGameSession;
 };
 
 export const saveGameSessionOperation = async (
   gameId: string,
   operation: GameSessionOperation,
-  credential: GameSessionClaimCredential,
   clubId?: string,
-): Promise<GameSessionOperationResponse> => {
+): Promise<RemoteGameSession> => {
   const { state } = operation;
   const response = await fetchPersistenceRequest(`/api/game-sessions/${gameId}`, {
     method: "PUT",
-    headers: gameSessionClaimHeaders(credential, clubId, true),
+    headers: clubHeaders(clubId, true),
     body: JSON.stringify({
       name: operation.name,
       mutationId: operation.mutationId,
@@ -641,48 +551,7 @@ export const saveGameSessionOperation = async (
     }),
   });
   if (!response.ok) return throwApiError(response, "Unable to save the game session operation");
-  return (await response.json()) as GameSessionOperationResponse;
-};
-
-export const claimGameSession = async (
-  gameId: string,
-  credential: GameSessionClaimCredential,
-  clubId?: string,
-): Promise<GameSessionClaim> => {
-  const response = await fetchPersistenceRequest(`/api/game-sessions/${gameId}/claim`, {
-    method: "POST",
-    headers: gameSessionClaimHeaders(credential, clubId, true),
-    body: "{}",
-  });
-  if (!response.ok) return throwApiError(response, "Unable to claim the game session");
-  return ((await response.json()) as { claim: GameSessionClaim }).claim;
-};
-
-export const takeoverGameSession = async (
-  gameId: string,
-  credential: GameSessionClaimCredential,
-  clubId?: string,
-): Promise<GameSessionClaim> => {
-  const response = await fetchPersistenceRequest(`/api/game-sessions/${gameId}/takeover`, {
-    method: "POST",
-    headers: gameSessionClaimHeaders(credential, clubId, true),
-    body: "{}",
-  });
-  if (!response.ok) return throwApiError(response, "Unable to take over the game session");
-  return ((await response.json()) as { claim: GameSessionClaim }).claim;
-};
-
-export const releaseGameSession = async (
-  gameId: string,
-  credential: GameSessionClaimCredential,
-  clubId?: string,
-): Promise<void> => {
-  const response = await fetchPersistenceRequest(`/api/game-sessions/${gameId}/claim`, {
-    method: "DELETE",
-    headers: gameSessionClaimHeaders(credential, clubId),
-    keepalive: true,
-  });
-  if (!response.ok) return throwApiError(response, "Unable to release the game session");
+  return (await response.json()) as RemoteGameSession;
 };
 
 export const listActiveGameSessions = async (
@@ -733,15 +602,10 @@ export const getGameSession = async (
   return body.session;
 };
 
-export const clearGameSession = async (
-  gameId: string,
-  expectedRevision: number,
-  credential: GameSessionClaimCredential,
-  clubId?: string,
-): Promise<void> => {
-  const response = await fetch(
-    `/api/game-sessions/${gameId}?expectedRevision=${encodeURIComponent(expectedRevision)}`,
-    { method: "DELETE", headers: gameSessionClaimHeaders(credential, clubId) },
-  );
+export const clearGameSession = async (gameId: string, clubId?: string): Promise<void> => {
+  const response = await fetch(`/api/game-sessions/${gameId}`, {
+    method: "DELETE",
+    headers: clubHeaders(clubId),
+  });
   if (!response.ok) return throwApiError(response, "Unable to clear the game session");
 };

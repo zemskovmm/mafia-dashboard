@@ -29,6 +29,8 @@ interface SetupWizardProps {
   readonly onOpenAvailablePlayers?: () => void;
   readonly onRoleDrawBackActionChange?: (action: (() => void) | null) => void;
   readonly privacyHidden?: boolean;
+  /** Creation is in flight; role changes must not outrun the server GUID. */
+  readonly persistencePending?: boolean;
 }
 
 type WizardStep = "players" | "roles";
@@ -265,6 +267,7 @@ export const SetupWizard = ({
   onOpenAvailablePlayers,
   onRoleDrawBackActionChange,
   privacyHidden = false,
+  persistencePending = false,
 }: SetupWizardProps) => {
   const { t } = useMessages(gameMessages);
   const [step, setStep] = useState<WizardStep>(
@@ -403,6 +406,7 @@ export const SetupWizard = ({
   };
 
   const drawRole = (seat: number) => {
+    if (persistencePending) return;
     if (setup === null || setup.assignments[seat] !== undefined) return;
     setManualRoleSeat(null);
     const nextSetup = drawRoleForSeat(setup, seat);
@@ -416,6 +420,7 @@ export const SetupWizard = ({
   };
 
   const handleRoleCardTap = (seat: number) => {
+    if (persistencePending) return;
     if (setup === null) return;
     setManualRoleSeat(null);
     if (setup.assignments[seat] === undefined) {
@@ -441,6 +446,7 @@ export const SetupWizard = ({
   };
 
   const selectManualRole = (role: Role) => {
+    if (persistencePending) return;
     if (setup === null || manualRoleSeat === null || setup.remainingRoles.length === 0) return;
     const nextSetup = assignRoleForSeat(setup, manualRoleSeat, role);
     setSetup(nextSetup);
@@ -450,6 +456,7 @@ export const SetupWizard = ({
   };
 
   const finishRoleDraw = () => {
+    if (persistencePending) return;
     if (setup === null || hostPlayer === undefined) return;
     const game = createGame(completeRoleDraw(setup), { bestMoveEnabled });
     onEvent("setup.completed", { phase: game.phase });
@@ -555,7 +562,11 @@ export const SetupWizard = ({
               advance={
                 <button
                   type="button"
-                  disabled={setup.remainingRoles.length > 0 || hostPlayer === undefined}
+                  disabled={
+                    persistencePending ||
+                    setup.remainingRoles.length > 0 ||
+                    hostPlayer === undefined
+                  }
                   onClick={finishRoleDraw}
                 >
                   {t("setup.startPlanning")}

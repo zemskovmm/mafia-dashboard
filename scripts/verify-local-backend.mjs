@@ -636,6 +636,24 @@ const verify = async () => {
     await page.getByText(playerName, { exact: true }).last().waitFor({ state: "visible" });
     pass("server-restart-persistence-readback");
 
+    await mkdir(evidenceDirectory, { recursive: true });
+    await runChild({
+      args: ["scripts/verify-session-state.mjs"],
+      command: process.execPath,
+      cwd: repositoryRoot,
+      env: {
+        ...cleanInheritedEnvironment(process.env),
+        APP_URL: webOrigin,
+        SESSION_AUTH_COOKIE: `${sessionCookieName}=${owner.token}`,
+        SESSION_CLUB_ID: clubId,
+        SESSION_SCREENSHOT: resolve(evidenceDirectory, "game-record-restored.png"),
+      },
+      label: "server-backed game record browser verification",
+      signal: signalController.signal,
+      timeout: 180_000,
+    });
+    pass("game-record-browser-create-restore-delete");
+
     const deniedSecondUser = await apiResponse({
       apiOrigin,
       clubId,

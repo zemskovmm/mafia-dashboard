@@ -66,10 +66,22 @@ const seed = (
     storage,
     clubId: owner,
     createId: ids(id, "00000000-0000-4000-8000-000000000301"),
+    create: vi.fn(),
     save: vi.fn().mockResolvedValue({ revision: 1, duplicate: false }),
   });
-  if (pending) outbox.enqueue("Table", state(), null);
-  else outbox.restore(id, 4, "Table", state(), null);
+  outbox.activateRemote({
+    gameId: id,
+    name: "Table",
+    status: "active",
+    rulesetId: "classic",
+    rulesetVersion: 1,
+    revision: 4,
+    duplicate: false,
+    updatedAt: "2026-09-26T20:00:00.000Z",
+    state: state(),
+    results: null,
+  });
+  if (pending) outbox.enqueue("Table", state("PL-pending"), null);
   return outbox;
 };
 
@@ -137,14 +149,18 @@ describe("browser current-v5 game storage", () => {
     await expect(releaseBrowserGameStorage(localStorage, pending)).resolves.toBe(false);
     expect(localStorage.getItem(gameSessionStorageKey)).toBe(pending.storageSnapshot);
 
-    active.replaceAfterTakeover(
-      "00000000-0000-4000-8000-000000000202",
-      5,
-      "Replacement",
-      state("PL-replacement"),
-      null,
-      0,
-    );
+    active.activateRemote({
+      gameId: "00000000-0000-4000-8000-000000000202",
+      revision: 5,
+      name: "Replacement",
+      state: state("PL-replacement"),
+      results: null,
+      status: "active",
+      rulesetId: "classic",
+      rulesetVersion: 1,
+      duplicate: false,
+      updatedAt: "2026-09-26T20:00:00.000Z",
+    });
     await expect(releaseBrowserGameStorage(localStorage, pending)).resolves.toBe(false);
     expect(readBrowserGameAttachment(localStorage)?.gameId).toBe(
       "00000000-0000-4000-8000-000000000202",

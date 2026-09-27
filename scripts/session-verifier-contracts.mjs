@@ -202,29 +202,17 @@ export const classifyBrowserApiRequest = ({ method, url, expectedOrigin, ownedGa
 
   assertExactOrigin(requestUrl, expectedOrigin);
   const { pathname } = requestUrl;
+  if (
+    normalizedMethod === "POST" &&
+    pathname === "/api/game-sessions" &&
+    requestUrl.search === ""
+  ) {
+    return { kind: "session-creation" };
+  }
   const sessionRoot = pathname.match(/^\/api\/game-sessions\/([0-9a-f-]+)$/i);
   if (sessionRoot !== null && uuidPattern.test(sessionRoot[1])) {
     const gameId = canonicalUuid(sessionRoot[1]);
-    if (normalizedMethod === "PUT" && requestUrl.search === "") {
-      return ownedGameIds.has(gameId)
-        ? { kind: "owned-session-mutation", gameId }
-        : { kind: "session-creation", gameId };
-    }
-    if (normalizedMethod === "DELETE" && /^\?expectedRevision=\d+$/.test(requestUrl.search)) {
-      if (!ownedGameIds.has(gameId)) {
-        throw new Error("Refusing an unsafe browser request for an unowned game session");
-      }
-      return { kind: "owned-session-mutation", gameId };
-    }
-  }
-  const sessionClaim = pathname.match(/^\/api\/game-sessions\/([0-9a-f-]+)\/(claim|takeover)$/i);
-  if (sessionClaim !== null && uuidPattern.test(sessionClaim[1]) && requestUrl.search === "") {
-    const gameId = canonicalUuid(sessionClaim[1]);
-    const action = sessionClaim[2].toLowerCase();
-    const allowed =
-      (normalizedMethod === "POST" && ["claim", "takeover"].includes(action)) ||
-      (normalizedMethod === "DELETE" && action === "claim");
-    if (allowed) {
+    if (["PUT", "DELETE"].includes(normalizedMethod) && requestUrl.search === "") {
       if (!ownedGameIds.has(gameId)) {
         throw new Error("Refusing an unsafe browser request for an unowned game session");
       }
