@@ -37,6 +37,8 @@ describe("GameUtilityPanels", () => {
     expect(screen.getByRole("region", { name: "Voting order" })).toHaveTextContent(
       "Initiated by #1 Player 1",
     );
+    expect(screen.getByRole("listitem")).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("listitem")).not.toHaveClass("is-voting-highlight");
   });
 
   it("shows current vote totals only during voting-related phases", () => {
@@ -49,7 +51,11 @@ describe("GameUtilityPanels", () => {
     const { rerender } = render(<GameUtilityPanels game={base} />);
     expect(screen.queryByText(/active vote/i)).toBeNull();
 
-    rerender(<GameUtilityPanels game={{ ...base, phase: "voting" }} />);
+    rerender(
+      <GameUtilityPanels
+        game={{ ...base, phase: "voting", turnOrder: [2], currentTurnIndex: 0 }}
+      />,
+    );
     expect(screen.getByText("1 active vote")).toBeInTheDocument();
   });
 
@@ -60,5 +66,31 @@ describe("GameUtilityPanels", () => {
     expect(screen.getByRole("region", { name: "Voting order" })).toHaveTextContent(
       "No nominations yet",
     );
+    expect(screen.queryByRole("listitem")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    "day",
+    "voting-cancelled",
+    "car-crash",
+    "car-crash-decision",
+    "car-crash-result",
+    "goodbye-speech",
+    "night-mafia",
+  ] as const)("does not retain the candidate highlight in %s", (phase) => {
+    const game: GameState = {
+      ...createDayGame(),
+      phase: "voting",
+      nominations: [{ candidateSeat: 2, nominatorSeat: 1, order: 1 }],
+      turnOrder: [2],
+      currentTurnIndex: 0,
+    };
+    const { rerender } = render(<GameUtilityPanels game={game} />);
+    expect(screen.getByRole("listitem")).toHaveAttribute("aria-current", "step");
+    expect(screen.getByRole("listitem")).toHaveClass("is-voting-highlight");
+
+    rerender(<GameUtilityPanels game={{ ...game, phase }} />);
+    expect(screen.getByRole("listitem")).not.toHaveAttribute("aria-current");
+    expect(screen.getByRole("listitem")).not.toHaveClass("is-voting-highlight");
   });
 });

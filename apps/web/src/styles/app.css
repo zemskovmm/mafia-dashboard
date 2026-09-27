@@ -1606,7 +1606,8 @@ h2 {
   filter: none;
   opacity: 1;
 }
-button.player-seat.is-voting-highlight {
+button.player-seat.is-voting-highlight,
+.nomination-panel li.is-voting-highlight {
   z-index: 2;
   filter: none;
   opacity: 1;
@@ -1623,7 +1624,8 @@ button.player-seat.is-voting-highlight {
     voting-highlight-enter 280ms cubic-bezier(0.22, 1, 0.36, 1) both,
     voting-fire-pulse 760ms ease-in-out 280ms infinite alternate;
 }
-button.player-seat.is-voting-highlight::after {
+button.player-seat.is-voting-highlight::after,
+.nomination-panel li.is-voting-highlight::after {
   position: absolute;
   z-index: -1;
   inset: -18px 8px 38px;
@@ -1673,7 +1675,9 @@ button.player-seat.is-voting-highlight::after {
     transition-duration: 0s;
   }
   button.player-seat.is-voting-highlight,
-  button.player-seat.is-voting-highlight::after {
+  button.player-seat.is-voting-highlight::after,
+  .nomination-panel li.is-voting-highlight,
+  .nomination-panel li.is-voting-highlight::after {
     animation: none;
   }
 }
@@ -1695,21 +1699,25 @@ button.player-seat.is-voting-highlight::after {
     .is-sheriff-highlight,
     .is-goodbye-highlight
   )::after,
-.app-shell:not([data-lighting-renderer="legacy"]) button.player-seat.is-voting-highlight::after {
+.app-shell:not([data-lighting-renderer="legacy"]) button.player-seat.is-voting-highlight::after,
+.app-shell:not([data-lighting-renderer="legacy"]) .nomination-panel li.is-voting-highlight::after {
   content: none;
 }
-.app-shell:not([data-lighting-renderer="legacy"]) button.player-seat.is-voting-highlight {
+.app-shell:not([data-lighting-renderer="legacy"]) button.player-seat.is-voting-highlight,
+.app-shell:not([data-lighting-renderer="legacy"]) .nomination-panel li.is-voting-highlight {
   box-shadow: 0 12px 30px rgb(0 0 0 / 58%);
   animation: none;
 }
 .vgpu-player-lighting {
   z-index: 0;
 }
-.player-seat > :not(.vgpu-player-lighting) {
+.player-seat > :not(.vgpu-player-lighting),
+.nomination-panel li > :not(.vgpu-player-lighting) {
   z-index: 1;
 }
 .app-shell[data-lighting-renderer="vgpu"] .player-seat.is-current,
-.app-shell[data-lighting-renderer="vgpu"] .player-seat.is-voting-highlight {
+.app-shell[data-lighting-renderer="vgpu"] .player-seat.is-voting-highlight,
+.app-shell[data-lighting-renderer="vgpu"] .nomination-panel li.is-voting-highlight {
   border-color: #ffe9ac;
   background: linear-gradient(145deg, #34312a, #191c23 65%);
 }
@@ -2045,13 +2053,33 @@ button.player-seat.is-voting-highlight::after {
 .nomination-panel ol {
   display: grid;
   gap: 6px;
-  padding-left: 24px;
+  margin-inline: calc(-1 * var(--nomination-inset, 14px));
+  padding: 0;
 }
 .nomination-panel li {
+  position: relative;
+  isolation: isolate;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  padding: 6px max(8px, var(--nomination-inset, 14px));
+  border: 1px solid transparent;
+  border-radius: 0;
+}
+.nomination-panel li.is-voting-highlight::after {
+  inset: -8px 8px 0;
+}
+.nomination-panel li.is-voting-highlight :is(.nomination-copy span, .nomination-total) {
+  color: inherit;
+}
+.app-shell[data-lighting-renderer="legacy"]
+  .nomination-panel
+  li.is-voting-highlight
+  :is(.nomination-copy, .nomination-total) {
+  background: rgb(22 24 25 / 90%);
+  border-radius: 3px;
+  box-shadow: 0 0 0 3px rgb(22 24 25 / 90%);
 }
 .nomination-copy {
   display: grid;
@@ -3241,6 +3269,7 @@ button.player-seat.is-voting-highlight::after {
     border-radius: 20px 20px 0 0;
   }
   .live-side-panel.has-live-utilities > #game-utility-panels {
+    --nomination-inset: 8px;
     padding: 8px 8px 0;
   }
   .live-side-panel.has-live-utilities .timer-panel,
@@ -3554,6 +3583,7 @@ html:-webkit-full-screen #root {
     min-width: 0;
   }
   .live-side-panel.has-live-utilities > #game-utility-panels {
+    --nomination-inset: 7px;
     padding: 7px 7px 0;
   }
   .live-side-panel.has-live-utilities .timer-panel,
@@ -3771,7 +3801,6 @@ html:-webkit-full-screen #root {
   }
   .nomination-panel ol {
     gap: 3px;
-    padding-left: 20px;
   }
   .youtube-dock.is-compact {
     right: var(--s6-edge);

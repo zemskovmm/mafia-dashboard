@@ -1,8 +1,9 @@
-import { countVotes } from "@mafia/game-domain";
+import { countVotes, getCurrentVotingCandidateSeat } from "@mafia/game-domain";
 import type { GameState } from "@mafia/game-domain";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { gameMessages } from "../../i18n/messages/game.js";
 import { TimerControls } from "../timer/TimerControls.js";
+import { VgpuPlayerLightingCanvas } from "../effects/vgpu/VgpuLightingCanvas.js";
 
 export interface GameUtilityPanelsProps {
   readonly game: GameState | null;
@@ -11,6 +12,7 @@ export interface GameUtilityPanelsProps {
 export const GameUtilityPanels = ({ game }: GameUtilityPanelsProps) => {
   const { t } = useMessages(gameMessages);
   const nominationTotals = game === null ? {} : countVotes(game);
+  const currentCandidate = game?.phase === "voting" ? getCurrentVotingCandidateSeat(game) : null;
   const activeSeats = (game?.players ?? [])
     .filter(({ status }) => status === "active")
     .map(({ seat }) => seat);
@@ -52,8 +54,14 @@ export const GameUtilityPanels = ({ game }: GameUtilityPanelsProps) => {
               {game.nominations.map(({ candidateSeat, nominatorSeat }) => {
                 const candidate = game.players.find(({ seat }) => seat === candidateSeat);
                 const nominator = game.players.find(({ seat }) => seat === nominatorSeat);
+                const current = candidateSeat === currentCandidate;
                 return (
-                  <li key={candidateSeat}>
+                  <li
+                    key={candidateSeat}
+                    className={current ? "is-voting-highlight" : undefined}
+                    aria-current={current ? "step" : undefined}
+                  >
+                    <VgpuPlayerLightingCanvas kind={current ? "attention" : null} />
                     <span className="nomination-copy">
                       <strong>
                         #{candidateSeat}{" "}

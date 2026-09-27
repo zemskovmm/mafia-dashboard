@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -18,6 +18,7 @@ import {
 import type { CanonicalGameEventDraft, GameState, PlayerInput } from "@mafia/game-domain";
 import { I18nProvider } from "../../i18n/I18nProvider.js";
 import { VotingStage } from "./VotingStage.js";
+import { GameUtilityPanels } from "../game/GameUtilityPanels.js";
 import { expectServerAcceptsEvent } from "../../test-game-event-contract.js";
 
 const votingGame = (): GameState => {
@@ -37,21 +38,65 @@ const votingGame = (): GameState => {
 
 const Harness = ({
   onResolved,
+  showUtilities = false,
 }: {
   onResolved: (game: GameState, seats: readonly number[]) => void;
+  showUtilities?: boolean;
 }) => {
   const [game, setGame] = useState(votingGame);
   return (
-    <VotingStage
-      game={game}
-      onGameChange={setGame}
-      onResolved={onResolved}
-      onEvent={() => undefined}
-    />
+    <>
+      <VotingStage
+        game={game}
+        onGameChange={setGame}
+        onResolved={onResolved}
+        onEvent={() => undefined}
+      />
+      {showUtilities ? <GameUtilityPanels game={game} /> : null}
+    </>
   );
 };
 
 describe("VotingStage", () => {
+  it("highlights the candidate only in voting order while board highlights track votes", async () => {
+    const user = userEvent.setup();
+    render(<Harness onResolved={() => undefined} showUtilities />);
+    const table = screen.getByRole("region", { name: "Mafia table" });
+    const order = screen.getByRole("region", { name: "Voting order" });
+    const rows = within(order).getAllByRole("listitem");
+    const candidate = screen.getByRole("button", { name: /vote as player 4 for player 4/i });
+
+    expect(table.querySelector(".is-current")).toBeNull();
+    expect(table.querySelector("[aria-current]")).toBeNull();
+    expect(candidate).not.toHaveClass("is-voting-highlight");
+    expect(rows[0]).toHaveClass("is-voting-highlight");
+    expect(rows[0]).toHaveAttribute("aria-current", "step");
+    expect(rows[1]).not.toHaveClass("is-voting-highlight");
+
+    await user.click(candidate);
+    expect(candidate).toHaveClass("is-voting-highlight");
+    expect(candidate).not.toHaveClass("is-current");
+    await user.click(candidate);
+    expect(candidate).not.toHaveClass("is-voting-highlight");
+    expect(rows[0]).toHaveClass("is-voting-highlight");
+
+    await user.click(screen.getByRole("button", { name: /vote as player 1 for player 4/i }));
+    const voter = screen.getByRole("button", { name: /player 1 voted for seat 4/i });
+    expect(voter).toHaveClass("is-voting-highlight");
+    await user.click(screen.getByRole("button", { name: "Next candidate" }));
+    expect(rows[0]).not.toHaveClass("is-voting-highlight");
+    expect(rows[0]).not.toHaveAttribute("aria-current");
+    expect(rows[1]).toHaveClass("is-voting-highlight");
+    expect(rows[1]).toHaveAttribute("aria-current", "step");
+    expect(voter).not.toHaveClass("is-voting-highlight");
+    expect(table.querySelector(".is-current")).toBeNull();
+    expect(table.querySelectorAll(".is-voting-highlight")).toHaveLength(9);
+
+    await user.click(screen.getByRole("button", { name: "Skip voting" }));
+    expect(order.querySelector(".is-voting-highlight")).toBeNull();
+    expect(order.querySelector("[aria-current]")).toBeNull();
+  });
+
   it("emits a car-crash ballot that the server accepts unchanged", async () => {
     const user = userEvent.setup();
     const game: GameState = {

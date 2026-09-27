@@ -338,7 +338,6 @@ export const VotingStage = ({
       swipeAction={swipeAction}
       seats={game.players.map((player) => ({
         ...player,
-        current: player.seat === selectedCandidate,
         votingHighlight: game.voteAssignments[player.seat] === selectedCandidate,
         inactive: game.voteAssignments[player.seat] !== undefined,
         voteTargetSeat: game.voteAssignments[player.seat],

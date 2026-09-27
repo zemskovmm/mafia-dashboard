@@ -474,7 +474,21 @@ vi.mock("./features/game/GameScreen.js", () => ({
         >
           Start new day
         </button>
-        <button type="button" onClick={() => onGameChange({ ...game, phase: "voting" })}>
+        <button
+          type="button"
+          onClick={() =>
+            onGameChange({
+              ...game,
+              phase: "voting",
+              nominations: [
+                { candidateSeat: 2, nominatorSeat: 1, order: 1 },
+                { candidateSeat: 3, nominatorSeat: 2, order: 2 },
+              ],
+              turnOrder: [2, 3],
+              currentTurnIndex: 0,
+            })
+          }
+        >
           Enter voting phase
         </button>
         <button type="button" onClick={() => onGameChange({ ...game, phase: "night-mafia" })}>
