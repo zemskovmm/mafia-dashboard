@@ -2,14 +2,14 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 import { reportError } from "../console/error-console.js";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { gameMessages } from "../../i18n/messages/game.js";
-import { readCountdown, startCountdown } from "./timer.js";
+import { readCountdown, startCountdown, toggleCountdown } from "./timer.js";
 import type { CountdownState } from "./timer.js";
 
 export interface TimerControlsHandle {
   start(seconds: 10 | 30 | 60): void;
 }
 
-const scheduleFaintChime = (context: AudioContext, seconds: 10 | 30 | 60): OscillatorNode => {
+const scheduleFaintChime = (context: AudioContext, seconds: number): OscillatorNode => {
   const oscillator = context.createOscillator();
   const gain = context.createGain();
   const warningTime = context.currentTime + Math.max(0, seconds - 10);
@@ -48,8 +48,7 @@ export const TimerControls = forwardRef<TimerControlsHandle>((_, ref) => {
     warningOscillatorRef.current = null;
   }, []);
 
-  const start = (seconds: 10 | 30 | 60) => {
-    cancelScheduledWarning();
+  const scheduleWarning = (seconds: number) => {
     const AudioContextConstructor = window.AudioContext;
     if (AudioContextConstructor !== undefined) {
       try {
@@ -64,8 +63,13 @@ export const TimerControls = forwardRef<TimerControlsHandle>((_, ref) => {
         // Timers remain usable when Web Audio is unavailable or blocked.
       }
     }
-    const next = startCountdown(seconds, Date.now());
-    const reading = readCountdown(next, Date.now());
+  };
+
+  const start = (seconds: 10 | 30 | 60) => {
+    cancelScheduledWarning();
+    const now = Date.now();
+    const reading = readCountdown(startCountdown(seconds, now), now);
+    scheduleWarning(seconds);
     setTimer(reading.timer);
     setRemaining(reading.remainingSeconds);
   };
@@ -91,13 +95,18 @@ export const TimerControls = forwardRef<TimerControlsHandle>((_, ref) => {
     return () => window.clearInterval(interval);
   }, [timer?.status]);
 
-  const stop = () => {
+  const toggle = () => {
     if (timer === null || timer.status === "expired") {
       return;
     }
     cancelScheduledWarning();
-    setTimer(null);
-    setRemaining(0);
+    const now = Date.now();
+    const reading = readCountdown(toggleCountdown(timer, now), now);
+    if (reading.timer.status === "running" && !reading.timer.warningEmitted) {
+      scheduleWarning((reading.timer.endsAt - now) / 1_000);
+    }
+    setTimer(reading.timer);
+    setRemaining(reading.remainingSeconds);
   };
 
   return (
@@ -114,10 +123,14 @@ export const TimerControls = forwardRef<TimerControlsHandle>((_, ref) => {
         type="button"
         className={`timer-display${remaining <= 10 && remaining > 0 ? " is-warning" : ""}`}
         aria-label={
-          timer === null || timer.status === "expired" ? t("timer.face") : t("timer.stop")
+          timer === null || timer.status === "expired"
+            ? t("timer.face")
+            : timer.status === "paused"
+              ? t("timer.resume")
+              : t("timer.pause")
         }
         disabled={timer === null || timer.status === "expired"}
-        onClick={stop}
+        onClick={toggle}
       >
         <span className="timer-label">{t("timer.label")}</span>
         <strong>{remaining.toString().padStart(2, "0")}</strong>

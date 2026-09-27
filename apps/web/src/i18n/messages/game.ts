@@ -150,7 +150,8 @@ const englishGameMessages = {
   "timer.label": "Timer",
   "timer.seconds": "seconds",
   "timer.start": "Start {seconds} second timer",
-  "timer.stop": "Stop timer",
+  "timer.pause": "Pause timer",
+  "timer.resume": "Resume timer",
   "utility.activeVotes": {
     one: "{count} active vote",
     other: "{count} active votes",
@@ -318,7 +319,8 @@ const russianGameMessages = {
   "timer.label": "Таймер",
   "timer.seconds": "секунд",
   "timer.start": "Запустить таймер на {seconds} секунд",
-  "timer.stop": "Остановить таймер",
+  "timer.pause": "Приостановить таймер",
+  "timer.resume": "Продолжить таймер",
   "utility.activeVotes": {
     one: "{count} активный голос",
     few: "{count} активных голоса",

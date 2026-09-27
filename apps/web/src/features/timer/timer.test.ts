@@ -1,7 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { readCountdown, startCountdown } from "./timer.js";
+import { readCountdown, startCountdown, toggleCountdown } from "./timer.js";
 
 describe("authoritative countdown", () => {
+  it("preserves milliseconds through repeated pauses without advancing time or warnings", () => {
+    const firstPause = toggleCountdown(startCountdown(60, 0), 12_250);
+    expect(firstPause).toMatchObject({ status: "paused", remainingMs: 47_750 });
+    expect(readCountdown(firstPause, 200_000)).toMatchObject({
+      remainingSeconds: 48,
+      emitWarning: false,
+      timer: firstPause,
+    });
+    const firstResume = toggleCountdown(firstPause, 200_000);
+    const secondPause = toggleCountdown(firstResume, 200_125);
+    const secondResume = toggleCountdown(secondPause, 300_000);
+    expect(readCountdown(secondResume, 347_624).remainingSeconds).toBe(1);
+    const expired = readCountdown(secondResume, 347_625);
+    expect(expired.remainingSeconds).toBe(0);
+    expect(toggleCountdown(expired.timer, 350_000).status).toBe("expired");
+  });
+
   it("derives remaining time from timestamps rather than interval counts", () => {
     const timer = startCountdown(60, 1_000);
 
