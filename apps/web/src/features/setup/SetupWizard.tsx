@@ -10,6 +10,7 @@ import {
   createGame,
   createSetup,
   drawRoleForSeat,
+  isCasperPlayer,
   rerollRoleForSeat,
 } from "@mafia/game-domain";
 import type { GameState, PlayerInput, Role, SetupState } from "@mafia/game-domain";
@@ -299,9 +300,11 @@ export const SetupWizard = ({
 
   const selectablePlayers = useMemo(
     () => [
-      ...availablePlayers,
+      ...availablePlayers.filter((player) => !isCasperPlayer(player)),
       ...developmentPlayers.filter(
-        ({ id }) => !availablePlayers.some((available) => available.id === id),
+        (player) =>
+          !isCasperPlayer(player) &&
+          !availablePlayers.some((available) => available.id === player.id),
       ),
     ],
     [availablePlayers, developmentPlayers],
@@ -694,7 +697,7 @@ export const SetupWizard = ({
                   <input
                     id="casper-player"
                     aria-label={`${t("setup.seat", { seat: CASPER_SEAT })} ${t("setup.player")}`}
-                    value={`${CASPER_NAME} · ${t("role.citizen")}`}
+                    value={CASPER_NAME}
                     readOnly
                   />
                 </div>

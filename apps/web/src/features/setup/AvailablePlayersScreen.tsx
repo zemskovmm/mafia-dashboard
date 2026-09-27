@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { X } from "lucide-react";
+import { isCasperPlayer } from "@mafia/game-domain";
 import type { PlayerProfile } from "../../api/client.js";
 import { VgpuPlayerLightingCanvas } from "../effects/vgpu/VgpuLightingCanvas.js";
 import { useMessages } from "../../i18n/I18nProvider.js";
@@ -33,8 +34,9 @@ export const AvailablePlayersScreen = ({
   const { t } = useMessages(gameMessages);
   const [query, setQuery] = useState("");
   const normalizedQuery = query.trim().toLocaleLowerCase();
-  const availableCount = players.filter(({ id }) => availablePlayerIds.has(id)).length;
-  const visiblePlayers = players.filter((player) =>
+  const humanPlayers = players.filter((player) => !isCasperPlayer(player));
+  const availableCount = humanPlayers.filter(({ id }) => availablePlayerIds.has(id)).length;
+  const visiblePlayers = humanPlayers.filter((player) =>
     [player.nickname, player.firstName, player.lastName, player.email]
       .filter((value): value is string => value !== null)
       .some((value) => value.toLocaleLowerCase().includes(normalizedQuery)),
@@ -71,7 +73,7 @@ export const AvailablePlayersScreen = ({
         </label>
 
         <p className="availability-count">
-          {t("available.count", { available: availableCount, registered: players.length })}
+          {t("available.count", { available: availableCount, registered: humanPlayers.length })}
         </p>
 
         {visiblePlayers.length === 0 ? (

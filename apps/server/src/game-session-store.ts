@@ -104,10 +104,6 @@ interface SessionRow {
 }
 
 interface CompletedSessionRow extends SessionRow {
-  readonly completion_outcome: "red" | "black" | "draw" | "cancelled";
-  readonly completion_winner: "red" | "black" | null;
-  readonly completion_reason: string | null;
-  readonly completion_played_at: Date;
   readonly event_count: number;
 }
 
@@ -283,6 +279,33 @@ const projectableResults = (value: FinalGameResults | null): ProjectableResults 
     reason: reason as string | null,
     playedAt,
     players,
+  };
+};
+
+// The aggregate is authoritative; game_results is only a derived statistics
+// projection and can be absent from an otherwise completed historical session.
+const completionMetadata = (value: FinalGameResults | null) => {
+  if (!isRecord(value)) return null;
+  const { outcome, winner, reason, playedAt } = value;
+  if (
+    (outcome !== "red" && outcome !== "black" && outcome !== "draw" && outcome !== "cancelled") ||
+    (winner !== "red" && winner !== "black" && winner !== null) ||
+    typeof playedAt !== "string" ||
+    Number.isNaN(Date.parse(playedAt)) ||
+    ((outcome === "red" || outcome === "black") && (winner !== outcome || reason !== null)) ||
+    ((outcome === "draw" || outcome === "cancelled") &&
+      (winner !== null ||
+        typeof reason !== "string" ||
+        reason.trim() === "" ||
+        reason.length > 500))
+  ) {
+    return null;
+  }
+  return {
+    outcome: outcome as CompletedGameSessionSummary["outcome"],
+    winner: winner as CompletedGameSessionSummary["winner"],
+    reason: reason as string | null,
+    playedAt: new Date(playedAt).toISOString(),
   };
 };
 
@@ -696,16 +719,20 @@ export class GameSessionStore {
     clubId = DEFAULT_CLUB_ID,
     filters: CompletedGameSessionFilters = {},
   ): Promise<readonly CompletedGameSessionSummary[]> {
+    if (
+      filters.playerId !== undefined &&
+      (
+        await this.pool.query<{ id: string }>(
+          "SELECT id FROM players WHERE club_id = $1 AND id = $2",
+          [clubId, filters.playerId],
+        )
+      ).rows.length === 0
+    ) {
+      return [];
+    }
     const result = await this.pool.query<CompletedSessionRow>(
-      `SELECT ${sessionColumns},
-              result.outcome AS completion_outcome,
-              result.winner AS completion_winner,
-              result.reason AS completion_reason,
-              result.played_at AS completion_played_at,
-              COALESCE(events.event_count, 0)::int AS event_count
+      `SELECT ${sessionColumns}, COALESCE(events.event_count, 0)::int AS event_count
          FROM game_sessions
-         JOIN game_results AS result
-           ON result.club_id = game_sessions.club_id AND result.game_id = game_sessions.id
          LEFT JOIN (
            SELECT game_id, COUNT(*)::int AS event_count
              FROM game_events
@@ -713,36 +740,36 @@ export class GameSessionStore {
             GROUP BY game_id
          ) AS events ON events.game_id = game_sessions.id
         WHERE game_sessions.club_id = $1 AND game_sessions.status = 'completed'
-          AND ($2::date IS NULL OR result.played_at >= ($2::date::timestamp AT TIME ZONE 'UTC'))
-          AND ($3::date IS NULL OR result.played_at < (($3::date + 1)::timestamp AT TIME ZONE 'UTC'))
-          AND ($4::uuid IS NULL OR EXISTS (
-            SELECT 1 FROM game_player_results AS participant
-             WHERE participant.club_id = game_sessions.club_id
-               AND participant.game_id = game_sessions.id
-               AND participant.player_id = $4
-          ))
-          AND ($5::text IS NULL OR result.outcome = $5)
         ORDER BY game_sessions.updated_at DESC, game_sessions.id`,
-      [
-        clubId,
-        filters.from ?? null,
-        filters.to ?? null,
-        filters.playerId ?? null,
-        filters.outcome ?? null,
-      ],
+      [clubId],
     );
-    return result.rows.map((row) => {
+    return result.rows.flatMap((row) => {
+      const completion = completionMetadata(row.results);
+      if (completion === null) return [];
+      const day = completion.playedAt.slice(0, 10);
+      if (
+        (filters.from !== undefined && day < filters.from) ||
+        (filters.to !== undefined && day > filters.to) ||
+        (filters.outcome !== undefined && completion.outcome !== filters.outcome) ||
+        (filters.playerId !== undefined &&
+          (!isRecord(row.results) ||
+            !Array.isArray(row.results.players) ||
+            !row.results.players.some(
+              (player: unknown) => isRecord(player) && player.playerId === filters.playerId,
+            )))
+      ) {
+        return [];
+      }
       const summary = sessionSummary(row);
-      return {
-        ...summary,
-        outcome: row.completion_outcome,
-        winner: row.completion_winner,
-        reason: row.completion_reason,
-        rulesetId: row.ruleset_id,
-        rulesetVersion: row.ruleset_version,
-        playedAt: row.completion_played_at.toISOString(),
-        eventCount: row.event_count,
-      };
+      return [
+        {
+          ...summary,
+          ...completion,
+          rulesetId: row.ruleset_id,
+          rulesetVersion: row.ruleset_version,
+          eventCount: row.event_count,
+        },
+      ];
     });
   }
 }

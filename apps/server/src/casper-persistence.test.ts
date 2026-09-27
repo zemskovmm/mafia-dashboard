@@ -13,6 +13,13 @@ import {
   CASPER_PLAYER_ID,
   CASPER_SEAT,
   CASPER_NAME,
+  advanceSetupPhase,
+  beginNight,
+  completeMafiaShots,
+  resolveMafiaShots,
+  skipDonCheck,
+  skipSheriffCheck,
+  toggleAllMafiaShotsForTarget,
 } from "@mafia/game-domain";
 import type { GameState, PlayerInput } from "@mafia/game-domain";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -127,6 +134,60 @@ const getResultsBuilder = async (): Promise<
 };
 
 describe("Casper browser snapshot persistence", () => {
+  it("persists and replays a new Casper kill without Best Move across an isolated club", async () => {
+    const { host, baseline } = await createRoster();
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/game-sessions",
+      headers: headers(),
+      payload: { creationId: randomUUID(), name: "Casper kill", state: {}, results: null },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const gameId = created.json().gameId as string;
+    expect(baseline.skipCasperBestMove).toBe(true);
+    let game = beginNight(advanceSetupPhase(advanceSetupPhase(baseline)));
+    game = toggleAllMafiaShotsForTarget(game, CASPER_SEAT);
+    game = skipSheriffCheck(skipDonCheck(completeMafiaShots(resolveMafiaShots(game).game)));
+    const initialGame = { replayVersion: 1 as const, game };
+    const root = createGameLogEntry({
+      gameId,
+      id: randomUUID(),
+      sequence: 1,
+      parentEventId: null,
+      createdAt: "2026-09-26T12:00:00.000Z",
+      before: game,
+      draft: { type: "game.checkpointed", payload: {} },
+    });
+    const speech = createGameLogEntry({
+      gameId,
+      id: randomUUID(),
+      sequence: 2,
+      parentEventId: root.entry.id,
+      createdAt: "2026-09-26T12:00:01.000Z",
+      before: root.after,
+      draft: { type: "phase.changed", payload: { to: "goodbye-speech" } },
+    });
+    expect(speech.after).toMatchObject({
+      phase: "goodbye-speech",
+      goodbyeSeats: [CASPER_SEAT],
+      skipCasperBestMove: true,
+    });
+    expect(speech.after.bestMove).toBeUndefined();
+    const state = {
+      hostPlayerId: host.id,
+      game: speech.after,
+      initialGame,
+      events: [root.entry, speech.entry],
+      headEventId: speech.entry.id,
+    };
+    const saved = await save(gameId, state);
+    expect(saved.statusCode, saved.body).toBe(200);
+    const loaded = (await read(gameId)).json().session.state;
+    expect(loaded).toEqual(JSON.parse(JSON.stringify(state)));
+    expect(replayGameLog(loaded.initialGame, loaded.events, gameId).game).toEqual(loaded.game);
+    expect((await read(gameId, randomUUID())).statusCode).toBe(403);
+  });
+
   it("round-trips the complete ten-seat replay and projects the real host and nine humans on completion", async () => {
     const { host, humans, baseline } = await createRoster("Casper");
     const created = await app.inject({
@@ -200,6 +261,7 @@ describe("Casper browser snapshot persistence", () => {
       game: finished,
       initialGame: { replayVersion: 1 as const, game: finished },
       events: [checkpoint, completion],
+      headEventId: completion.id,
     };
     const completionMutationId = randomUUID();
     const completed = await save(
@@ -265,6 +327,62 @@ describe("Casper browser snapshot persistence", () => {
     expect((await playerStore.get(host.id))?.statistics.hostedGames).toBe(1);
     expect((await playerStore.get(humans[0]!.id))?.statistics.gamesPlayed).toBe(1);
     expect((await read(gameId)).json().session.results).toEqual(results);
+    // The aggregate retains authoritative results/replay even if a historical
+    // derived result row is missing. Empty filters must not hide that game.
+    await pool.query("DELETE FROM game_results WHERE club_id = $1 AND game_id = $2", [
+      DEFAULT_CLUB_ID,
+      gameId,
+    ]);
+    const afterProjectionLoss = (await read(gameId)).json().session;
+    expect(afterProjectionLoss.status).toBe("completed");
+    expect(afterProjectionLoss.results).toEqual(results);
+    expect(
+      replayGameLog(afterProjectionLoss.state.initialGame, afterProjectionLoss.state.events, gameId)
+        .game,
+    ).toEqual(finished);
+    const unfiltered = await app.inject({
+      method: "GET",
+      url: "/api/game-sessions?status=completed",
+      headers: headers(),
+    });
+    expect(unfiltered.statusCode, unfiltered.body).toBe(200);
+    expect(unfiltered.json().sessions).toMatchObject([
+      { gameId, outcome: "red", winner: "red", eventCount: 2 },
+    ]);
+    const filtered = await app.inject({
+      method: "GET",
+      url: `/api/game-sessions?status=completed&playerId=${humans[0]!.id}&outcome=red`,
+      headers: headers(),
+    });
+    expect(filtered.json().sessions).toMatchObject([{ gameId }]);
+    for (const query of [
+      "from=2026-09-26",
+      "to=2026-09-26",
+      `playerId=${humans[0]!.id}`,
+      "outcome=red",
+      `from=2026-09-26&to=2026-09-26&playerId=${humans[0]!.id}&outcome=red`,
+    ]) {
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/game-sessions?status=completed&${query}`,
+        headers: headers(),
+      });
+      expect(response.json().sessions, query).toMatchObject([{ gameId }]);
+    }
+    for (const query of [
+      "from=2026-09-27",
+      "to=2026-09-25",
+      `playerId=${humans[1]!.id}&outcome=black`,
+      `playerId=${randomUUID()}`,
+      "outcome=draw",
+    ]) {
+      const response = await app.inject({
+        method: "GET",
+        url: `/api/game-sessions?status=completed&${query}`,
+        headers: headers(),
+      });
+      expect(response.json().sessions, query).toEqual([]);
+    }
   });
 
   it.each([

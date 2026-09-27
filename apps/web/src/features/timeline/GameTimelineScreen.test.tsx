@@ -66,6 +66,49 @@ const canonicalSession = (
 };
 
 describe("GameTimelineScreen", () => {
+  it("opens an unfiltered completed game, clears filters back to the list, and reopens its replay", async () => {
+    const user = userEvent.setup();
+    const clubId = "00000000-0000-4000-8000-000000000101";
+    const summary = completedSummary("00000000-0000-4000-8000-000000000701", "Saved game");
+    const listCompleted = vi.fn((_clubId: string, filters: object) =>
+      Promise.resolve(Object.keys(filters).length === 0 ? [summary] : []),
+    );
+    const getSession = vi.fn(() => Promise.resolve(canonicalSession(summary)));
+    render(
+      <GameTimelineScreen
+        clubId={clubId}
+        onBack={() => undefined}
+        loaders={{ listCompleted, getSession }}
+      />,
+    );
+
+    expect(
+      await screen.findByRole("option", { name: "Saved game · Citizens" }),
+    ).toBeInTheDocument();
+    expect(listCompleted).toHaveBeenCalledWith(clubId, {});
+    const selector = screen.getByRole("combobox", { name: "Completed game" });
+    await user.selectOptions(selector, summary.gameId);
+    expect(
+      await screen.findByRole("button", { name: "Don checked Player 1: Sheriff" }),
+    ).toBeInTheDocument();
+    expect(getSession).toHaveBeenCalledWith(summary.gameId, clubId);
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Result" }), "black");
+    expect(await screen.findByText("No completed games yet.")).toBeInTheDocument();
+    expect(selector).toHaveValue("");
+    expect(screen.queryByRole("button", { name: "Don checked Player 1: Sheriff" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Clear filters" }));
+    expect(
+      await screen.findByRole("option", { name: "Saved game · Citizens" }),
+    ).toBeInTheDocument();
+    expect(listCompleted).toHaveBeenLastCalledWith(clubId, {});
+    await user.selectOptions(selector, summary.gameId);
+    expect(
+      await screen.findByRole("button", { name: "Don checked Player 1: Sheriff" }),
+    ).toBeInTheDocument();
+    expect(getSession).toHaveBeenCalledTimes(2);
+  });
+
   it("loads completed history with composable date, player, and result filters", async () => {
     const user = userEvent.setup();
     const clubId = "00000000-0000-4000-8000-000000000101";

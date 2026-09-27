@@ -1,4 +1,5 @@
 import { evaluateVictory, getDayOrder, markPlayerInactive } from "./game.js";
+import { isCasperPlayer } from "./casper.js";
 import { transitionToNight } from "./night-transition.js";
 import type { GameState, NightShotResult, SecretCheckResult, ShotAssignment } from "./types.js";
 
@@ -274,7 +275,15 @@ export const completeNight = (game: GameState): GameState => {
     redCardIssuedThisDay: undefined,
   };
   if (game.nightResult?.kind === "kill") {
-    return game.day === 1 && game.bestMoveEnabled !== false
+    const victimSeat = game.nightResult.targetSeat;
+    const virtualVictim = game.players.find(({ seat }) => seat === victimSeat);
+    return game.day === 1 &&
+      game.bestMoveEnabled !== false &&
+      !(
+        game.skipCasperBestMove === true &&
+        virtualVictim !== undefined &&
+        isCasperPlayer(virtualVictim)
+      )
       ? {
           ...dayState,
           phase: "best-move",

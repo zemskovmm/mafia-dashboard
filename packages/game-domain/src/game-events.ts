@@ -603,6 +603,7 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
       "redCardIssuedThisDay",
       "bestMove",
       "bestMoveEnabled",
+      "skipCasperBestMove",
       "cyclesWithoutElimination",
       "eliminationOccurredThisCycle",
       "dayOpeningSeat",
@@ -613,6 +614,9 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
   assertSafeInteger(game.day, `${context}.day`, 0);
   if (game.bestMoveEnabled !== undefined) {
     assertBoolean(game.bestMoveEnabled, `${context}.bestMoveEnabled`);
+  }
+  if (Object.hasOwn(game, "skipCasperBestMove")) {
+    assertBoolean(game.skipCasperBestMove, `${context}.skipCasperBestMove`);
   }
   if (game.cyclesWithoutElimination !== undefined) {
     assertSafeInteger(game.cyclesWithoutElimination, `${context}.cyclesWithoutElimination`, 0);

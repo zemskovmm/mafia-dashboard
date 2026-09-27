@@ -48,15 +48,21 @@ const players = [
 const Harness = ({
   onAvailabilityChange = vi.fn(),
   onClose = vi.fn(),
+  roster = players,
+  initialAvailableIds = [],
 }: Readonly<{
   onAvailabilityChange?: (playerId: string, available: boolean) => void;
   onClose?: () => void;
+  roster?: readonly PlayerProfile[];
+  initialAvailableIds?: readonly string[];
 }>) => {
-  const [availablePlayerIds, setAvailablePlayerIds] = useState<ReadonlySet<string>>(new Set());
+  const [availablePlayerIds, setAvailablePlayerIds] = useState<ReadonlySet<string>>(
+    () => new Set(initialAvailableIds),
+  );
   return (
     <I18nProvider locale="en">
       <AvailablePlayersScreen
-        players={players}
+        players={roster}
         availablePlayerIds={availablePlayerIds}
         onAvailabilityChange={(playerId, available) => {
           onAvailabilityChange(playerId, available);
@@ -74,6 +80,39 @@ const Harness = ({
 };
 
 describe("AvailablePlayersScreen", () => {
+  it("excludes only the synthetic ID from cards, search and counts, retaining a real Casper profile", async () => {
+    const user = userEvent.setup();
+    const onAvailabilityChange = vi.fn();
+    const realCasper = player("00000000-0000-4000-8000-000000000003", "Casper");
+    render(
+      <Harness
+        roster={[...players, player("casper", "Virtual Casper"), realCasper]}
+        initialAvailableIds={[players[0]!.id, "casper", realCasper.id]}
+        onAvailabilityChange={onAvailabilityChange}
+      />,
+    );
+
+    expect(screen.getByText("2 available · 3 registered")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /^Mark .* unavailable$/ })).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Mark Casper unavailable" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Virtual Casper/ })).not.toBeInTheDocument();
+    await user.type(screen.getByRole("searchbox", { name: "Search available players" }), "virtual");
+    expect(screen.getByText("No matching players")).toBeInTheDocument();
+    expect(screen.getByText("2 available · 3 registered")).toBeInTheDocument();
+    expect(onAvailabilityChange).not.toHaveBeenCalled();
+    await user.clear(screen.getByRole("searchbox", { name: "Search available players" }));
+    await user.click(screen.getByRole("button", { name: "Mark Casper unavailable" }));
+    expect(onAvailabilityChange).toHaveBeenCalledWith(realCasper.id, false);
+    expect(screen.getByText("1 available · 3 registered")).toBeInTheDocument();
+  });
+
+  it("treats a synthetic-only roster as empty despite its selected availability ID", () => {
+    render(<Harness roster={[player("casper", "Casper")]} initialAvailableIds={["casper"]} />);
+    expect(screen.getByText("0 available · 0 registered")).toBeInTheDocument();
+    expect(screen.getByText("No matching players")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Mark Casper/ })).not.toBeInTheDocument();
+  });
+
   it("commits a binary card and icon state in the interaction render", async () => {
     const user = userEvent.setup();
     const onAvailabilityChange = vi.fn();

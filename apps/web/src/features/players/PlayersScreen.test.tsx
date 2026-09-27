@@ -48,6 +48,48 @@ const profile = (overrides: Partial<PlayerProfile> = {}): PlayerProfile => ({
 });
 
 describe("PlayersScreen", () => {
+  it("omits synthetic Casper from profiles and search while allowing a real Casper to be managed", async () => {
+    const user = userEvent.setup();
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
+    const realCasper = profile({ id: "00000000-0000-4000-8000-000000000002", nickname: "Casper" });
+    render(
+      <PlayersScreen
+        players={[profile(), profile({ id: "casper", nickname: "Virtual Casper" }), realCasper]}
+        onCreate={vi.fn()}
+        onUpdate={onUpdate}
+        onDelete={vi.fn()}
+      />,
+    );
+
+    expect(screen.getAllByRole("article")).toHaveLength(2);
+    expect(screen.getByRole("article", { name: "Player Casper" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("article", { name: "Player Virtual Casper" }),
+    ).not.toBeInTheDocument();
+    await user.type(screen.getByRole("searchbox"), "virtual");
+    expect(screen.getByRole("heading", { name: "No matching players" })).toBeInTheDocument();
+    await user.clear(screen.getByRole("searchbox"));
+    await user.type(screen.getByRole("searchbox"), "casper");
+    expect(screen.getAllByRole("article")).toHaveLength(1);
+    await user.click(screen.getByRole("button", { name: "Save Casper" }));
+    expect(onUpdate).toHaveBeenCalledWith(
+      realCasper.id,
+      expect.objectContaining({ nickname: "Casper" }),
+    );
+  });
+
+  it("shows the empty directory rather than a synthetic-only profile", () => {
+    render(
+      <PlayersScreen
+        players={[profile({ id: "casper", nickname: "Casper" })]}
+        onCreate={vi.fn()}
+        onUpdate={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("heading", { name: "No players yet" })).toBeInTheDocument();
+    expect(screen.queryByRole("article")).not.toBeInTheDocument();
+  });
+
   it("provides a keyboard-accessible Back control without changing the empty player form", async () => {
     const user = userEvent.setup();
     const onBack = vi.fn();

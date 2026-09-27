@@ -4079,6 +4079,10 @@ html:-webkit-full-screen #root {
     min-height: 0;
     overflow: hidden;
   }
+  .app-shell.has-game-screen {
+    --s6p-header-height: 44px;
+    --s6p-content-top: 51px;
+  }
   .app-status-bar,
   .table-layout-shell .game-header {
     position: relative;

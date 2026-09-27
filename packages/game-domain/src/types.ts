@@ -69,6 +69,7 @@ export interface GameState {
   readonly phase: GamePhase;
   readonly day: number;
   readonly bestMoveEnabled?: boolean;
+  readonly skipCasperBestMove?: boolean;
   readonly cyclesWithoutElimination?: number;
   readonly eliminationOccurredThisCycle?: boolean;
   readonly dayOpeningSeat?: number;

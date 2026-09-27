@@ -307,7 +307,6 @@ export const GameScreen = ({
     if (game.phase === "best-move" && game.bestMove !== undefined) {
       return (
         <div className="best-move-center">
-          <span className="table-prompt">{t("bestMove.center")}</span>
           <strong>{t("bestMove.selected", { count: game.bestMove.selectedSeats.length })}</strong>
         </div>
       );
@@ -330,7 +329,6 @@ export const GameScreen = ({
     if (game.phase === "mafia-planning") {
       return (
         <div className="table-check-center">
-          <span className="table-prompt">{t("game.mafiaPlanning")}</span>
           <strong>{t("game.reviewTargetOrder")}</strong>
         </div>
       );
@@ -338,7 +336,6 @@ export const GameScreen = ({
     if (game.phase === "sheriff-wake") {
       return (
         <div className="table-check-center">
-          <span className="table-prompt">{t("game.sheriffWake")}</span>
           <strong>{t("game.wakeSheriff")}</strong>
         </div>
       );
@@ -501,32 +498,6 @@ export const GameScreen = ({
               : phaseTitle(game, t)}
           </h1>
         </div>
-        {game.phase === "mafia-planning" ? (
-          <div className="phase-banner night-banner">{t("game.mafiaPlanningBanner")}</div>
-        ) : null}
-        {game.phase === "sheriff-wake" ? (
-          <div className="phase-banner sheriff-banner">{t("game.sheriffWakeBanner")}</div>
-        ) : null}
-        {game.phase === "day" && currentPlayer !== undefined ? (
-          <div className="phase-banner current-turn-copy">
-            {isLastDayTurn
-              ? votingRequired
-                ? t("game.finalTurnVoting", { name: currentPlayer.name })
-                : t("game.finalTurnNight", { name: currentPlayer.name })
-              : t("game.currentTurn", { name: currentPlayer.name })}
-          </div>
-        ) : null}
-        {game.phase === "car-crash" && currentPlayer !== undefined ? (
-          <div className="phase-banner current-turn-copy">
-            {t("game.carCrashTurn", { name: currentPlayer.name })}
-          </div>
-        ) : null}
-        {game.phase === "goodbye-speech" ? (
-          <div className="phase-banner current-turn-copy">{t("game.finalWordsBeforeNight")}</div>
-        ) : null}
-        {game.phase === "best-move" ? (
-          <div className="phase-banner current-turn-copy">{t("game.nameThreeMafia")}</div>
-        ) : null}
       </header>
 
       <div className="live-layout">

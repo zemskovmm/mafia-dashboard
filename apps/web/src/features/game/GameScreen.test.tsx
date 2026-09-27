@@ -84,6 +84,72 @@ describe("GameScreen", () => {
     expect(screen.getByRole("button", { name: "Фол: Player 1" })).toBeInTheDocument();
   });
 
+  it("keeps the phase title and table controls without a repeated phase banner in live and preview states", () => {
+    const planning = createPlanningGame();
+    const day = advanceSetupPhase(advanceSetupPhase(planning));
+    const props = {
+      hostName: "Host Player",
+      onGameChange: () => undefined,
+      onEvent: () => undefined,
+      privacyHidden: false,
+    };
+    const { rerender, container } = render(<GameScreen {...props} game={planning} />);
+
+    expect(
+      screen.getByRole("heading", { level: 1, name: /night zero · mafia free seating/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /continue night zero to sheriff wake-up/i }),
+    ).toBeInTheDocument();
+    expect(container.querySelector(".table-check-center")).toHaveTextContent(
+      "Review the target order",
+    );
+    expect(container.querySelector(".table-check-center .table-prompt")).toBeNull();
+    expect(container.querySelector(".game-shell .phase-banner")).toBeNull();
+
+    rerender(<GameScreen {...props} game={{ ...planning, phase: "sheriff-wake" }} />);
+    expect(
+      screen.getByRole("heading", { level: 1, name: /night zero · sheriff wake-up/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /begin day one/i })).toBeInTheDocument();
+    expect(container.querySelector(".table-check-center")).toHaveTextContent("Wake Sheriff");
+    expect(container.querySelector(".table-check-center .table-prompt")).toBeNull();
+    expect(container.querySelector(".game-shell .phase-banner")).toBeNull();
+
+    rerender(<GameScreen {...props} game={day} />);
+    expect(screen.getByRole("heading", { level: 1, name: /day 1/i })).toBeInTheDocument();
+    expect(screen.getByText("Current speaker")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /next player/i })).toBeInTheDocument();
+    expect(container.querySelector(".game-shell .phase-banner")).toBeNull();
+
+    rerender(<GameScreen {...props} game={{ ...day, phase: "night-mafia" }} />);
+    expect(screen.getByRole("heading", { level: 1, name: /mafia shots/i })).toBeInTheDocument();
+    expect(container.querySelector(".game-shell .phase-banner")).toBeNull();
+
+    rerender(
+      <GameScreen
+        {...props}
+        game={{
+          ...day,
+          phase: "voting",
+          nominations: [{ nominatorSeat: 1, candidateSeat: 4, order: 1 }],
+          turnOrder: [4],
+          currentTurnIndex: 0,
+          votingRound: "initial",
+        }}
+      />,
+    );
+    expect(screen.getByRole("heading", { level: 1, name: /voting/i })).toBeInTheDocument();
+    expect(container.querySelector(".game-shell .phase-banner")).toBeNull();
+
+    rerender(<GameScreen {...props} game={planning} mode="preview" previewSequence={1} />);
+    expect(
+      screen.getByRole("heading", { level: 1, name: /night zero.*preview/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: /preview controls/i })).toBeInTheDocument();
+    expect(container.querySelector(".game-shell .phase-banner")).toBeNull();
+  });
+
   it("shows Critical only when private information is revealed, including at night", () => {
     const day = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
     let citizens = 0;
@@ -257,7 +323,7 @@ describe("GameScreen", () => {
     await user.click(screen.getByRole("button", { name: /begin day one/i }));
 
     expect(screen.getByRole("heading", { name: /day 1/i })).toBeInTheDocument();
-    expect(screen.getByText(/current turn: player 1/i)).toBeInTheDocument();
+    expect(screen.getByText("Current speaker").nextElementSibling).toHaveTextContent("Player 1");
     expect(screen.getByRole("button", { name: /seat 1: player 1/i })).toHaveAttribute(
       "aria-current",
       "step",
@@ -502,7 +568,7 @@ describe("GameScreen", () => {
     );
 
     expect(screen.getByRole("heading", { name: /car crash/i })).toBeInTheDocument();
-    expect(screen.getByText(/car crash turn: player 4/i)).toBeInTheDocument();
+    expect(screen.getByText("Car crash speech").nextElementSibling).toHaveTextContent("Player 4");
     expect(
       screen.queryByRole("button", { name: /start player 4 30-second turn/i }),
     ).not.toBeInTheDocument();
@@ -756,7 +822,7 @@ describe("GameScreen", () => {
     };
     render(<DayOneHarness />);
 
-    expect(screen.getByText("Final turn: Player 10 · Night next")).toBeInTheDocument();
+    expect(screen.getByText("Current speaker").nextElementSibling).toHaveTextContent("Player 10");
     await user.click(screen.getByRole("button", { name: "Begin night" }));
 
     expect(screen.getByRole("heading", { name: "Mafia shots" })).toBeInTheDocument();
@@ -797,7 +863,7 @@ describe("GameScreen", () => {
     };
     render(<InactiveNomineeHarness />);
 
-    expect(screen.getByText("Final turn: Player 10 · Night next")).toBeInTheDocument();
+    expect(screen.getByText("Current speaker").nextElementSibling).toHaveTextContent("Player 10");
     expect(screen.queryByRole("button", { name: "Begin voting" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Begin night" }));
     expect(screen.getByRole("heading", { name: "Mafia shots" })).toBeInTheDocument();

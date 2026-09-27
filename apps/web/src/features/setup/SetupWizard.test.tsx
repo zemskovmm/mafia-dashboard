@@ -133,7 +133,7 @@ describe("SetupWizard", () => {
     toggle.focus();
     await user.keyboard(" ");
     expect(toggle).toBeChecked();
-    expect(screen.getByRole("textbox", { name: "Seat 10 player" })).toHaveValue("Casper · citizen");
+    expect(screen.getByRole("textbox", { name: "Seat 10 player" })).toHaveValue("Casper");
     await user.click(screen.getByText("Include Casper", { selector: "span" }));
     expect(toggle).not.toBeChecked();
     expect(screen.getByRole("combobox", { name: "Seat 10 player" })).toHaveValue("");
@@ -177,7 +177,7 @@ describe("SetupWizard", () => {
     await user.click(screen.getByRole("button", { name: "Assign players" }));
 
     expect(screen.getAllByRole("combobox", { name: /seat \d+ player/i })).toHaveLength(9);
-    expect(screen.getByRole("textbox", { name: "Seat 10 player" })).toHaveValue("Casper · citizen");
+    expect(screen.getByRole("textbox", { name: "Seat 10 player" })).toHaveValue("Casper");
     expect(screen.getByRole("textbox", { name: "Seat 10 player" })).toHaveAttribute("readonly");
     expect(screen.getByRole("button", { name: "Start game" })).toBeEnabled();
     const selection = onSessionStateChange.mock.lastCall?.[0];
@@ -221,9 +221,11 @@ describe("SetupWizard", () => {
     invokeRoleDrawBackAction(onRoleDrawBackActionChange);
     expect(screen.getByRole("switch", { name: "Include Casper" })).toBeChecked();
     const saved = onSessionStateChange.mock.lastCall?.[0];
+    expect(screen.getByRole("textbox", { name: "Seat 10 player" })).toHaveValue("Casper");
     unmount();
     render(<SetupWizard {...props} initialSessionState={saved!} />);
     expect(screen.getByRole("switch", { name: "Include Casper" })).toBeChecked();
+    expect(screen.getByRole("textbox", { name: "Seat 10 player" })).toHaveValue("Casper");
     await user.click(screen.getByRole("button", { name: "Start game" }));
     expect(onSessionStateChange.mock.lastCall?.[0].setup?.assignments).toEqual(assignments);
     for (const player of availablePlayers.slice(1, 9)) {
@@ -301,6 +303,28 @@ describe("SetupWizard", () => {
     expect(screen.getByText(/mark at least 11 players available/i)).toBeInTheDocument();
   });
 
+  it("does not count a synthetic roster row as a human or offer it in host and seat selectors", async () => {
+    const user = userEvent.setup();
+    const humans = availablePlayers.slice(0, 9);
+    render(
+      <Harness
+        players={[...humans, { ...availablePlayers[9]!, id: "casper", nickname: "Virtual Casper" }]}
+        onComplete={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole("switch", { name: "Include Casper" }));
+    expect(screen.getByText(/mark at least 10 players available/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Assign players" })).toBeDisabled();
+    const host = screen.getByRole("combobox", { name: "Host player" });
+    await user.click(host);
+    await user.type(host, "Virtual");
+    expect(screen.queryByRole("option", { name: "Virtual Casper" })).not.toBeInTheDocument();
+    const seat = screen.getByRole("combobox", { name: "Seat 1 player" });
+    await user.click(seat);
+    await user.type(seat, "Virtual");
+    expect(screen.queryByRole("option", { name: "Virtual Casper" })).not.toBeInTheDocument();
+  });
+
   it("keeps Casper selected when development players are generated", async () => {
     const user = userEvent.setup();
     const onSessionStateChange = vi.fn();
@@ -344,9 +368,7 @@ describe("SetupWizard", () => {
       </I18nProvider>,
     );
     await user.click(screen.getByRole("switch", { name: "Добавить Каспера" }));
-    expect(screen.getByRole("textbox", { name: "Место 10 игрок" })).toHaveValue(
-      "Casper · Мирный житель",
-    );
+    expect(screen.getByRole("textbox", { name: "Место 10 игрок" })).toHaveValue("Casper");
   });
 
   it.each(["en", "ru"] as const)(

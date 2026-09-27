@@ -56,6 +56,7 @@ export const createGame = (
     phase: "mafia-planning",
     day: 0,
     bestMoveEnabled,
+    skipCasperBestMove: true,
     cyclesWithoutElimination: 0,
     eliminationOccurredThisCycle: false,
     players,

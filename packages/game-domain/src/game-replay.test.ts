@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import legacyCasperFixture from "./fixtures/legacy-casper-best-move.json";
 import { CASPER_NAME, CASPER_PLAYER_ID, CASPER_SEAT } from "./casper.js";
 import { advanceVotingCandidate, completeCurrentTurn } from "./day-actions.js";
 import { advanceSetupPhase, createGame, evaluateVictory, markPlayerInactive } from "./game.js";
@@ -28,9 +29,12 @@ import {
   drawRoleForSeat,
 } from "./setup.js";
 import {
+  beginNight,
   completeMafiaShots,
   completeNight,
   resolveMafiaShots,
+  skipDonCheck,
+  skipSheriffCheck,
   toggleAllMafiaShotsForTarget,
 } from "./night-actions.js";
 import type { GameState, PlayerInput, SetupState } from "./types.js";
@@ -75,6 +79,73 @@ const entry = (
   });
 
 describe("canonical game replay", () => {
+  it("replays a fixed serialized legacy Casper Best Move without rewriting its historical hashes", () => {
+    const { baseline: stored, events, finalHash } = legacyCasperFixture;
+    const historical = stored as InitialGameBaseline;
+    const entries = events as GameLogEntry[];
+    expect(historical.game).not.toHaveProperty("skipCasperBestMove");
+    expect(hashGameState(historical.game)).toBe(
+      "sha256:c6bbfe9b99a7d477cb6dbfe1844fcbe435a8267e51c2ba6399c5c214c8a355f0",
+    );
+    expect(entries[0]?.stateHashAfter).toBe(
+      "sha256:c6bbfe9b99a7d477cb6dbfe1844fcbe435a8267e51c2ba6399c5c214c8a355f0",
+    );
+    expect(entries[1]?.stateHashAfter).toBe(
+      "sha256:3ed7fd02b41334c18c8d46092f4115b9247086f9061fe4701ecd6ae3dc431e79",
+    );
+    const restored = replayGameLog(historical, entries);
+    expect(restored.game).not.toHaveProperty("skipCasperBestMove");
+    expect(restored.game).toMatchObject({ phase: "goodbye-speech", day: 2 });
+    expect(restored.game.bestMove?.playerSeat).toBe(CASPER_SEAT);
+    expect(hashGameState(restored.game)).toBe(finalHash);
+    expect(hashGameState(restored.game)).toBe(
+      "sha256:3ed7fd02b41334c18c8d46092f4115b9247086f9061fe4701ecd6ae3dc431e79",
+    );
+  });
+
+  it.each(["yes", null, 1, {}])("rejects a non-boolean Casper rule marker %j", (marker) => {
+    const initial = { ...planningGame(), skipCasperBestMove: marker } as unknown as GameState;
+    expect(() => replayGameLog(baseline(initial), [])).toThrow(/skipCasperBestMove.*boolean/);
+    expect(() => entry(initial, 1, { type: "game.started", payload: {} })).toThrow(
+      /skipCasperBestMove.*boolean/,
+    );
+  });
+
+  it("round-trips a new Casper-kill checkpoint without a Best Move event", () => {
+    const historical = legacyCasperFixture.baseline.game as GameState;
+    const before: GameState = { ...historical, skipCasperBestMove: true };
+    const initial = baseline(JSON.parse(JSON.stringify(before)) as GameState);
+    const root = entry(initial.game, 1, { type: "game.checkpointed", payload: {} });
+    const speech = entry(root.after, 2, {
+      type: "phase.changed",
+      payload: { to: "goodbye-speech" },
+    });
+    expect(speech.after).toMatchObject({
+      phase: "goodbye-speech",
+      day: 2,
+      goodbyeSeats: [CASPER_SEAT],
+      skipCasperBestMove: true,
+    });
+    expect(speech.after.bestMove).toBeUndefined();
+    const day = entry(speech.after, 3, { type: "phase.changed", payload: { to: "day" } });
+    const stored = JSON.parse(
+      JSON.stringify([root.entry, speech.entry, day.entry]),
+    ) as GameLogEntry[];
+    const restored = replayGameLog(initial, stored);
+    expect(restored.game).toEqual(day.after);
+    expect(restored.game.skipCasperBestMove).toBe(true);
+    expect(restored.frames.map(({ entry }) => entry.type)).toEqual([
+      "game.checkpointed",
+      "phase.changed",
+      "phase.changed",
+    ]);
+    expect(() =>
+      applyGameEvent(root.after, {
+        type: "best-move.completed",
+        payload: { playerSeat: CASPER_SEAT, selectedSeats: [1, 2, 3], mafiaHits: 1 },
+      }),
+    ).toThrow(/Best move owner/i);
+  });
   it("replays Casper speaking, voting, and being eliminated under ordinary rules", () => {
     const roster = players().map((player) =>
       player.seat === CASPER_SEAT
@@ -118,6 +189,50 @@ describe("canonical game replay", () => {
       redWin = markPlayerInactive(redWin, seat, "eliminated");
     }
     expect(evaluateVictory(redWin.players)).toBe("red");
+  });
+
+  it("replays a valid first-night Casper Best Move with its recorded phase and hash", () => {
+    const roster = players().map((player) =>
+      player.seat === CASPER_SEAT
+        ? { id: CASPER_PLAYER_ID, name: CASPER_NAME, seat: CASPER_SEAT }
+        : player,
+    );
+    let setup = beginRoleDraw(createSetup(roster), createSeededRandom(41));
+    for (let seat = 1; seat < CASPER_SEAT; seat += 1) setup = drawRoleForSeat(setup, seat);
+    // Model an ongoing pre-rule game; the fixed serialized fixture above also pins its hashes.
+    const historicalGame = structuredClone(createGame(completeRoleDraw(setup)));
+    delete (historicalGame as { skipCasperBestMove?: boolean }).skipCasperBestMove;
+    let game = beginNight(advanceSetupPhase(advanceSetupPhase(historicalGame)));
+    game = toggleAllMafiaShotsForTarget(game, CASPER_SEAT);
+    game = completeMafiaShots(resolveMafiaShots(game).game);
+    game = skipSheriffCheck(skipDonCheck(game));
+    expect(game).toMatchObject({
+      phase: "night-resolution",
+      day: 1,
+      nightResult: { kind: "kill", targetSeat: CASPER_SEAT },
+    });
+
+    const root = entry(game, 1, { type: "game.checkpointed", payload: {} });
+    const selectedSeats = game.players
+      .filter(({ status }) => status === "active")
+      .slice(0, 3)
+      .map(({ seat }) => seat);
+    const mafiaHits = selectedSeats.filter(
+      (seat) => game.players.find((player) => player.seat === seat)?.team === "black",
+    ).length;
+    const completed = entry(root.after, 2, {
+      type: "best-move.completed",
+      payload: { playerSeat: CASPER_SEAT, selectedSeats, mafiaHits },
+    });
+    expect(completed.entry).toMatchObject({
+      replayVersion: 1,
+      phaseBefore: "night-resolution",
+      phaseAfter: "goodbye-speech",
+      dayAfter: 2,
+    });
+    expect(completed.after.bestMove?.playerSeat).toBe(CASPER_SEAT);
+    const stored = JSON.parse(JSON.stringify([root.entry, completed.entry])) as GameLogEntry[];
+    expect(replayGameLog(baseline(game), stored).game).toEqual(completed.after);
   });
 
   it("rejects an invalid synthetic identity in a replay baseline, even with no events", () => {

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CASPER_NAME, CASPER_PLAYER_ID, CASPER_SEAT } from "./casper.js";
 import { advanceSetupPhase, createGame, markPlayerInactive, shouldSuggestDraw } from "./game.js";
 import {
   beginNight,
@@ -44,7 +45,91 @@ const completedSetup = (): SetupState => {
 
 const dayOne = (): GameState => advanceSetupPhase(advanceSetupPhase(createGame(completedSetup())));
 
+const casperDayOne = (): GameState => {
+  const roster = players().map((player) =>
+    player.seat === CASPER_SEAT
+      ? { id: CASPER_PLAYER_ID, name: CASPER_NAME, seat: CASPER_SEAT }
+      : player,
+  );
+  let setup = beginRoleDraw(createSetup(roster), createSeededRandom(41));
+  for (let seat = 1; seat < CASPER_SEAT; seat += 1) setup = drawRoleForSeat(setup, seat);
+  return advanceSetupPhase(advanceSetupPhase(createGame(completeRoleDraw(setup))));
+};
+
+const resolvedNight = (day: GameState, targetSeat: number): GameState => {
+  const night = toggleAllMafiaShotsForTarget(beginNight(day), targetSeat);
+  return skipSheriffCheck(skipDonCheck(completeMafiaShots(resolveMafiaShots(night).game)));
+};
+
 describe("night actions", () => {
+  it("skips virtual Casper's first-night Best Move in a newly started game but keeps the goodbye", () => {
+    const day = casperDayOne();
+    expect(day.skipCasperBestMove).toBe(true);
+    const resolved = resolvedNight(day, CASPER_SEAT);
+    expect(resolved.nightResult).toEqual({ kind: "kill", targetSeat: CASPER_SEAT });
+    const next = completeNight(resolved);
+    expect(next).toMatchObject({
+      phase: "goodbye-speech",
+      day: 2,
+      goodbyeSeats: [CASPER_SEAT],
+      goodbyeNext: "day",
+      skipCasperBestMove: true,
+    });
+    expect(next.bestMove).toBeUndefined();
+    expect(completeGoodbyeSpeech(next).phase).toBe("day");
+  });
+  it("retains first-night Best Move for a human victim with the new marker", () => {
+    const next = completeNight(resolvedNight(casperDayOne(), 3));
+    expect(next).toMatchObject({
+      phase: "best-move",
+      day: 2,
+      bestMove: { playerSeat: 3, selectedSeats: [] },
+      goodbyeSeats: [3],
+    });
+  });
+  it("treats a real player named Casper as human even in seat ten", () => {
+    const day = casperDayOne();
+    const realNamedCasper = {
+      ...day,
+      players: day.players.map((player) =>
+        player.seat === CASPER_SEAT ? { ...player, id: "real-casper" } : player,
+      ),
+    };
+    expect(completeNight(resolvedNight(realNamedCasper, CASPER_SEAT))).toMatchObject({
+      phase: "best-move",
+      bestMove: { playerSeat: CASPER_SEAT, selectedSeats: [] },
+    });
+  });
+  it("preserves legacy Casper eligibility for an absent or false marker", () => {
+    const legacyDay = structuredClone(casperDayOne());
+    delete (legacyDay as { skipCasperBestMove?: boolean }).skipCasperBestMove;
+    for (const day of [legacyDay, { ...legacyDay, skipCasperBestMove: false }]) {
+      const next = completeNight(resolvedNight(day, CASPER_SEAT));
+      expect(next).toMatchObject({
+        phase: "best-move",
+        bestMove: { playerSeat: CASPER_SEAT, selectedSeats: [] },
+      });
+      expect(Object.hasOwn(next, "skipCasperBestMove")).toBe(
+        Object.hasOwn(day, "skipCasperBestMove"),
+      );
+    }
+  });
+  it("does not change disabled Best Move, misses, or later-night eligibility", () => {
+    const day = casperDayOne();
+    expect(
+      completeNight(resolvedNight({ ...day, bestMoveEnabled: false }, CASPER_SEAT)),
+    ).toMatchObject({
+      phase: "goodbye-speech",
+      goodbyeSeats: [CASPER_SEAT],
+    });
+    const miss = skipSheriffCheck(
+      skipDonCheck(completeMafiaShots(resolveMafiaShots(beginNight(day)).game)),
+    );
+    expect(completeNight(miss)).toMatchObject({ phase: "day", day: 2 });
+    const later = completeNight(resolvedNight({ ...day, day: 2 }, CASPER_SEAT));
+    expect(later).toMatchObject({ phase: "goodbye-speech", day: 3, goodbyeSeats: [CASPER_SEAT] });
+    expect(later.bestMove).toBeUndefined();
+  });
   it.each(["car-crash", "car-crash-decision", "car-crash-result"] as const)(
     "rejects beginning night from unresolved %s state",
     (phase) => {

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { isCasperPlayer } from "@mafia/game-domain";
 import { ApiError } from "../../api/client.js";
 import type { PlayerProfile, PlayerProfileInput } from "../../api/client.js";
 import { reportError } from "../console/error-console.js";
@@ -380,7 +381,8 @@ export const PlayersScreen = ({
   const [saving, setSaving] = useState(false);
   const [query, setQuery] = useState("");
   const normalizedQuery = query.trim().toLocaleLowerCase();
-  const visiblePlayers = players.filter((player) =>
+  const humanPlayers = players.filter((player) => !isCasperPlayer(player));
+  const visiblePlayers = humanPlayers.filter((player) =>
     [player.nickname, player.firstName, player.lastName, player.email]
       .filter((value): value is string => value !== null)
       .some((value) => value.toLocaleLowerCase().includes(normalizedQuery)),
@@ -446,7 +448,7 @@ export const PlayersScreen = ({
         />
       </label>
 
-      {players.length === 0 ? (
+      {humanPlayers.length === 0 ? (
         <section className="empty-players">
           <h2>{t("No players yet")}</h2>
           <p>{t("Add eleven players")}</p>

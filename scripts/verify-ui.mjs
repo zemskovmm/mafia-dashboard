@@ -529,6 +529,10 @@ await page.addInitScript(() => {
   };
 });
 
+// Same-origin inert document for storage fixture changes; the dev proxy need not run an API.
+await page.route("**/health/ready", (route) =>
+  fulfillMock(route, { contentType: "text/html", body: "<!doctype html><title>Fixture</title>" }),
+);
 await page.route("**/api/**", async (route) => {
   const request = route.request();
   assertExactOrigin(request.url(), expectedOrigin);
@@ -1507,7 +1511,7 @@ try {
     }));
     if (
       timelineGeometry.documentScroll > timelineGeometry.viewportHeight + 1 ||
-      timelineGeometry.markerCount !== 22 ||
+      timelineGeometry.markerCount !== 23 ||
       timelineGeometry.regionCount !== 7
     ) {
       throw new Error(
@@ -1520,11 +1524,14 @@ try {
     });
     await page.screenshot({ path: timelineRightScreenshotPath, fullPage: true });
     await page.getByRole("button", { name: /back/i }).click();
+    await page.getByRole("heading", { name: "Night zero · Mafia free seating" }).waitFor();
+    await page.getByRole("button", { name: "Continue night zero to Sheriff wake-up" }).click();
+    await page.getByRole("button", { name: "Begin day one" }).click();
     await page.getByRole("heading", { name: "Day 1" }).waitFor();
 
     for (const seconds of [60, 30, 10]) {
       await page.getByRole("button", { name: `Start ${seconds} second timer` }).click();
-      await page.getByRole("button", { name: "Stop timer" }).click();
+      await page.getByRole("button", { name: "Pause timer" }).click();
     }
     const timerAudioStarts = await page.evaluate(() => window.__mafiaAudioStarts);
     if (
@@ -1631,6 +1638,8 @@ try {
     await page
       .getByText(`Initiated by #${nominatorSeat} ${nominatorName}`, { exact: true })
       .waitFor();
+    const showPrivateInfo = page.getByRole("button", { name: "Show private info" });
+    if ((await showPrivateInfo.count()) > 0) await showPrivateInfo.click();
     const statusLayout = await nominatorCard.evaluate((card) => {
       const name = card.querySelector(".seat-name");
       const badges = card.querySelector(".seat-badges");
@@ -1737,13 +1746,11 @@ try {
     await page.screenshot({ path: autoVotingScreenshotPath, fullPage: true });
     const redCardTarget = autoVotingHighlight.first();
     const redCardTargetName = await redCardTarget.locator(".seat-name").innerText();
-    await redCardTarget.dispatchEvent("touchstart", {
-      touches: [{ identifier: 2, clientX: 20, clientY: 50 }],
-    });
-    await redCardTarget.dispatchEvent("touchend", {
-      changedTouches: [{ identifier: 2, clientX: 82, clientY: 52 }],
-    });
-    await page.getByRole("button", { name: `Red card ${redCardTargetName}`, exact: true }).click();
+    // Auto-assigned voters are inactive for swipe actions; a fourth foul still red-cards
+    // an active player and must cancel voting.
+    for (let foul = 0; foul < 4; foul += 1) {
+      await page.getByRole("button", { name: `Foul ${redCardTargetName}`, exact: true }).click();
+    }
     const cancellation = page.getByRole("status", { name: "Voting cancelled" });
     await cancellation.waitFor();
     if (
@@ -1798,6 +1805,7 @@ try {
     if (Number(await shotLogCount.innerText()) !== logCountBeforeShots) {
       throw new Error("Assigning Mafia shots must not write to the game log");
     }
+    await page.locator('.save-indicator[data-status="saved"]').waitFor();
     const durableBeforeNightTimeline = await page.evaluate(() =>
       localStorage.getItem("mafia-dashboard.game-session.v5"),
     );
@@ -1814,23 +1822,35 @@ try {
     const durableAfterNightTimeline = await page.evaluate(() =>
       localStorage.getItem("mafia-dashboard.game-session.v5"),
     );
+    const beforeDraft = JSON.parse(durableBeforeNightTimeline ?? "null");
+    const afterDraft = JSON.parse(durableAfterNightTimeline ?? "null");
+    const changedEnvelopeFields = Object.keys(afterDraft ?? {}).filter(
+      (key) => JSON.stringify(beforeDraft?.[key]) !== JSON.stringify(afterDraft[key]),
+    );
+    const changedStateFields = Object.keys(afterDraft?.current?.state ?? {}).filter(
+      (key) =>
+        JSON.stringify(beforeDraft?.current?.state?.[key]) !==
+        JSON.stringify(afterDraft.current.state[key]),
+    );
     if (
       selectedAfterTimeline !== shooterCount ||
       assignmentSummary !== `${shooterCount} of ${shooterCount} shooters assigned` ||
       evaluateDisabled ||
-      durableAfterNightTimeline !== durableBeforeNightTimeline
+      changedEnvelopeFields.some((field) => field !== "revision" && field !== "outbox") ||
+      changedStateFields.length > 0 ||
+      (afterDraft?.outbox?.length ?? 0) > (beforeDraft?.outbox?.length ?? 0)
     ) {
       throw new Error(
-        `Timeline browsing stranded the Mafia draft: ${JSON.stringify({ assignmentSummary, shooterCount, selectedAfterTimeline, evaluateDisabled, durableChanged: durableAfterNightTimeline !== durableBeforeNightTimeline })}`,
+        `Timeline browsing stranded the Mafia draft: ${JSON.stringify({ assignmentSummary, shooterCount, selectedAfterTimeline, evaluateDisabled, changedEnvelopeFields, changedStateFields })}`,
       );
     }
     const acceptedShotRequest = page.waitForRequest((request) => {
-      if (request.method() !== "POST") return false;
-      if (!new URL(request.url()).pathname.endsWith("/events")) return false;
-      return request.postDataJSON().event?.type === "mafia.shots-resolved";
+      if (request.method() !== "PUT") return false;
+      if (!/\/api\/game-sessions\/[^/]+$/.test(new URL(request.url()).pathname)) return false;
+      return request.postDataJSON().state?.events?.at(-1)?.type === "mafia.shots-resolved";
     });
     await evaluateShots.click();
-    const acceptedShotEvent = (await acceptedShotRequest).postDataJSON().event;
+    const acceptedShotEvent = (await acceptedShotRequest).postDataJSON().state.events.at(-1);
     if (
       acceptedShotEvent?.replayVersion !== 1 ||
       acceptedShotEvent?.type !== "mafia.shots-resolved" ||
@@ -1952,9 +1972,10 @@ try {
       window.localStorage.setItem(storageKey, JSON.stringify(envelope));
     });
     await page.goto(browserAppUrl, { waitUntil: "networkidle" });
-    await page.locator(".club-playing-card:not(.new-club-card)").first().click();
+    if ((await page.locator(".club-playing-card:not(.new-club-card)").count()) > 0)
+      await page.locator(".club-playing-card:not(.new-club-card)").first().click();
     await page.waitForTimeout(950);
-    await page.getByRole("heading", { name: "Car crash decision" }).waitFor();
+    await page.getByRole("heading", { name: "Car-crash decision" }).waitFor();
     await page.getByText("Eliminate all players voting").waitFor();
     if (
       (await page.getByRole("button", { name: /^Eliminate (all|both) nominees$/ }).count()) !== 0 ||
@@ -2011,7 +2032,8 @@ try {
       window.localStorage.setItem(storageKey, JSON.stringify(envelope));
     });
     await page.goto(browserAppUrl, { waitUntil: "networkidle" });
-    await page.locator(".club-playing-card:not(.new-club-card)").first().click();
+    if ((await page.locator(".club-playing-card:not(.new-club-card)").count()) > 0)
+      await page.locator(".club-playing-card:not(.new-club-card)").first().click();
     await page.waitForTimeout(950);
     const eliminateVotes = page.getByRole("button", {
       name: /^Vote as .* to eliminate all car-crash players$/,
@@ -2055,6 +2077,8 @@ try {
           ? { ...player, status: "eliminated" }
           : player,
       );
+      // These owners were eliminated during this night; their check rights remain snapshotted.
+      game.nightCheckEligibility = { don: true, sheriff: true };
       game.carCrashSeats = undefined;
       game.carCrashVotes = undefined;
       game.carCrashResult = undefined;
@@ -2072,29 +2096,37 @@ try {
       window.localStorage.setItem(storageKey, JSON.stringify(envelope));
     });
     await page.goto(browserAppUrl, { waitUntil: "networkidle" });
-    await page.locator(".club-playing-card:not(.new-club-card)").first().click();
+    if ((await page.locator(".club-playing-card:not(.new-club-card)").count()) > 0)
+      await page.locator(".club-playing-card:not(.new-club-card)").first().click();
     await page.waitForTimeout(950);
-    const assertOnlyCheckAction = async (expected) => {
+    const assertDeceasedOwnerCheckActions = async (expected) => {
       const phaseActions = (
         await page.locator(".table-advance button:visible").allTextContents()
       ).map((text) => text.trim());
       if (
-        JSON.stringify(phaseActions) !== JSON.stringify([expected]) ||
+        JSON.stringify(phaseActions) !==
+          JSON.stringify(["Select a player to continue", expected]) ||
+        (await page.getByRole("button", { name: "Select a player to continue" }).isEnabled()) ||
+        !(await page.getByRole("button", { name: expected }).isEnabled()) ||
+        (await page.locator(".player-seat.status-eliminated.is-night-check-highlight").count()) !==
+          1 ||
+        (await page.locator(".player-seat.status-active:enabled").count()) === 0 ||
         (await page.locator(".seat-actions button:visible").count()) !== 0 ||
-        (await page.locator(".table-center button:visible").count()) !== 0
+        (await page.locator(".table-center button:visible").count()) !== 0 ||
+        (await page.getByRole("button", { name: /^Red card |^Foul / }).count()) !== 0
       ) {
         throw new Error(
-          `A dead check owner must expose only ${expected}: ${JSON.stringify(phaseActions)}`,
+          `A same-night deceased check owner must retain a playable check and ${expected} without direct discipline actions: ${JSON.stringify(phaseActions)}`,
         );
       }
     };
     await page.getByRole("heading", { name: "Don check" }).waitFor();
-    await assertOnlyCheckAction("Skip Don check");
+    await assertDeceasedOwnerCheckActions("Skip Don check");
     const deadDonScreenshotPath = tableScreenshotPath.replace(/\.png$/i, "-dead-don-check.png");
     await page.screenshot({ path: deadDonScreenshotPath, fullPage: true });
     await page.getByRole("button", { name: "Skip Don check" }).click();
     await page.getByRole("heading", { name: "Sheriff check" }).waitFor();
-    await assertOnlyCheckAction("Skip Sheriff check");
+    await assertDeceasedOwnerCheckActions("Skip Sheriff check");
     const deadSheriffScreenshotPath = tableScreenshotPath.replace(
       /\.png$/i,
       "-dead-sheriff-check.png",
@@ -2136,7 +2168,8 @@ try {
       return { earlierSeat, speakerSeat: speaker.seat, speakerName: speaker.name };
     });
     await page.goto(browserAppUrl, { waitUntil: "networkidle" });
-    await page.locator(".club-playing-card:not(.new-club-card)").first().click();
+    if ((await page.locator(".club-playing-card:not(.new-club-card)").count()) > 0)
+      await page.locator(".club-playing-card:not(.new-club-card)").first().click();
     await page.waitForTimeout(950);
     await page.getByRole("heading", { name: "Goodbye speech" }).waitFor();
     const staleGoodbyeHighlights = page.locator(".player-seat.is-voting-highlight");
@@ -2192,11 +2225,13 @@ try {
       window.localStorage.setItem(storageKey, JSON.stringify(envelope));
     });
     await page.goto(browserAppUrl, { waitUntil: "networkidle" });
-    await page.locator(".club-playing-card:not(.new-club-card)").first().click();
+    if ((await page.locator(".club-playing-card:not(.new-club-card)").count()) > 0)
+      await page.locator(".club-playing-card:not(.new-club-card)").first().click();
     await page.waitForTimeout(950);
-    const finishCopy = page.getByText("Citizens won", { exact: true });
-    if ((await finishCopy.count()) < 2) {
-      throw new Error("Finish screen and phase banner must both say Citizens won");
+    await page.getByRole("heading", { level: 1, name: "Citizens won" }).waitFor();
+    await page.locator(".winner-card strong").getByText("Citizens won", { exact: true }).waitFor();
+    if ((await page.locator(".game-shell .phase-banner").count()) !== 0) {
+      throw new Error("Finished game must not repeat the phase title in a banner");
     }
     const finishScreenshotPath = tableScreenshotPath.replace(/\.png$/i, "-finished.png");
     await page.screenshot({ path: finishScreenshotPath, fullPage: true });
@@ -2695,19 +2730,18 @@ try {
           ?.getAttribute("aria-label"),
       };
     });
-    const phaseBannerBox = document.querySelector(".phase-banner")?.getBoundingClientRect();
-    const phaseBannerObstructions =
-      phaseBannerBox === undefined
-        ? ["missing phase banner"]
-        : [...document.querySelectorAll(".seat-actions")].filter((element) => {
-            const box = element.getBoundingClientRect();
-            return !(
-              box.right <= phaseBannerBox.left ||
-              box.left >= phaseBannerBox.right ||
-              box.bottom <= phaseBannerBox.top ||
-              box.top >= phaseBannerBox.bottom
-            );
-          });
+    const phaseTitleBox = box(".game-shell .game-header h1");
+    const phaseTitleObstructions = [...document.querySelectorAll(".seat-actions")].filter(
+      (element) => {
+        const bounds = element.getBoundingClientRect();
+        return !(
+          bounds.right <= phaseTitleBox.left ||
+          bounds.left >= phaseTitleBox.right ||
+          bounds.bottom <= phaseTitleBox.top ||
+          bounds.top >= phaseTitleBox.bottom
+        );
+      },
+    );
     return {
       appScroll: { left: appShell.scrollLeft, top: appShell.scrollTop },
       cards,
@@ -2715,6 +2749,7 @@ try {
       essential: {
         game: box(".game-shell"),
         header: box(".game-header"),
+        phaseTitle: phaseTitleBox,
         toolbar: box(".app-fixed-toolbar"),
         table: box(".table-workspace"),
         rail: box(".live-side-panel.has-live-utilities"),
@@ -2728,7 +2763,7 @@ try {
         top: headerTitleBox.top,
         bottom: headerTitleBox.bottom,
       },
-      phaseBannerObstructionCount: phaseBannerObstructions.length,
+      phaseTitleObstructionCount: phaseTitleObstructions.length,
       viewportWidth: innerWidth,
       viewportHeight: innerHeight,
       documentWidth: document.documentElement.scrollWidth,
@@ -2795,9 +2830,9 @@ try {
       `Primary live layout scrolls vertically (${geometry.documentHeight}px > ${geometry.viewportHeight}px)`,
     );
   }
-  if (geometry.phaseBannerObstructionCount > 0) {
+  if (geometry.phaseTitleObstructionCount > 0) {
     throw new Error(
-      `Phase banner is obstructed by ${geometry.phaseBannerObstructionCount} seat control group(s)`,
+      `Phase title is obstructed by ${geometry.phaseTitleObstructionCount} seat control group(s)`,
     );
   }
   for (const card of geometry.cards) {
@@ -2829,7 +2864,7 @@ try {
 
   for (const seconds of [60, 30, 10]) {
     await page.getByRole("button", { name: `Start ${seconds} second timer` }).click();
-    await page.getByRole("button", { name: "Stop timer" }).click();
+    await page.getByRole("button", { name: "Pause timer" }).click();
   }
   const audioStarts = await page.evaluate(() => window.__mafiaAudioStarts);
   if (
@@ -2851,17 +2886,18 @@ try {
   }
   await page.getByRole("button", { name: "Continue night zero to Sheriff wake-up" }).click();
   await page.getByRole("button", { name: "Begin day one" }).click();
-  const dayBannerGeometry = await page.evaluate(() => {
-    const phaseBannerBox = document.querySelector(".phase-banner")?.getBoundingClientRect();
-    if (phaseBannerBox === undefined) return { banner: null, obstructions: ["missing"] };
+  const dayTitleGeometry = await page.evaluate(() => {
+    const title = document.querySelector(".game-shell .game-header h1");
+    if (!(title instanceof HTMLElement)) throw new Error("Missing day phase title");
+    const titleBox = title.getBoundingClientRect();
     const obstructions = [...document.querySelectorAll(".seat-actions, .table-card")]
       .filter((element) => {
         const box = element.getBoundingClientRect();
         return !(
-          box.right <= phaseBannerBox.left ||
-          box.left >= phaseBannerBox.right ||
-          box.bottom <= phaseBannerBox.top ||
-          box.top >= phaseBannerBox.bottom
+          box.right <= titleBox.left ||
+          box.left >= titleBox.right ||
+          box.bottom <= titleBox.top ||
+          box.top >= titleBox.bottom
         );
       })
       .map((element) => {
@@ -2873,17 +2909,17 @@ try {
         };
       });
     return {
-      banner: {
-        left: phaseBannerBox.left,
-        right: phaseBannerBox.right,
-        top: phaseBannerBox.top,
-        bottom: phaseBannerBox.bottom,
+      title: {
+        left: titleBox.left,
+        right: titleBox.right,
+        top: titleBox.top,
+        bottom: titleBox.bottom,
       },
       obstructions,
     };
   });
-  if (dayBannerGeometry.obstructions.length > 0) {
-    throw new Error(`Day banner obstruction: ${JSON.stringify(dayBannerGeometry)}`);
+  if (dayTitleGeometry.obstructions.length > 0) {
+    throw new Error(`Day phase title obstruction: ${JSON.stringify(dayTitleGeometry)}`);
   }
   const activeSeat = page.locator('.player-seat[aria-current="step"]');
   await activeSeat.waitFor();

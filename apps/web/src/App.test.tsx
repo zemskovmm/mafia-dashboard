@@ -1470,6 +1470,59 @@ describe("workspace localization", () => {
 });
 
 describe("club player gate", () => {
+  it("does not count a synthetic Casper as a registered or available human, even when a human shares the nickname", async () => {
+    const user = userEvent.setup();
+    const humans = assignedGame.players
+      .slice(0, 9)
+      .map(({ id, name }, index) => player(index === 0 ? "Casper" : name, id));
+    api.listPlayers.mockResolvedValue([...humans, player("Casper", "casper")]);
+    window.localStorage.setItem(
+      `mafia-dashboard.available-player-ids.${testClub.id}`,
+      JSON.stringify([...humans.map(({ id }) => id), "casper"]),
+    );
+    render(<App />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Players & statistics" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Need 10 players · 9 registered")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    await user.click(screen.getByRole("button", { name: "Start new game" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Add 1 more registered player");
+    await user.click(screen.getByRole("button", { name: "Back to game" }));
+    expect(screen.getByTestId("setup-player-pool").textContent?.split(",")).toHaveLength(9);
+    expect(screen.getByTestId("setup-player-pool")).toHaveTextContent("Casper");
+    await user.click(screen.getByRole("button", { name: "Select available players" }));
+    expect(screen.getByRole("banner", { name: "Application status" })).toHaveTextContent(
+      "9 available",
+    );
+  });
+
+  it("allows ten human profiles even when a stale synthetic Casper profile is returned", async () => {
+    const user = userEvent.setup();
+    const humans = assignedGame.players.map(({ id, name }, index) =>
+      player(index === 0 ? "Casper" : name, id),
+    );
+    api.listPlayers.mockResolvedValue([...humans, player("Casper", "casper")]);
+    window.localStorage.setItem(
+      `mafia-dashboard.available-player-ids.${testClub.id}`,
+      JSON.stringify([...humans.map(({ id }) => id), "casper"]),
+    );
+    render(<App />);
+
+    await waitFor(() => expect(api.listPlayers).toHaveBeenCalledWith(testClub.id));
+    expect(screen.getByTestId("setup-player-pool").textContent?.split(",")).toHaveLength(10);
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    await user.click(screen.getByRole("button", { name: "Players screen" }));
+    expect(screen.getByRole("banner", { name: "Application status" })).toHaveTextContent(
+      "10 available · 10 registered",
+    );
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    await user.click(screen.getByRole("button", { name: "Start new game" }));
+    expect(screen.getByTestId("setup-player-pool")).toHaveTextContent("Casper");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("opens Players, allows welcome exit, and blocks a new game below ten profiles", async () => {
     const user = userEvent.setup();
     const onExit = vi.fn();
@@ -1615,14 +1668,22 @@ describe("manage menu", () => {
     const user = userEvent.setup();
     render(<App />);
 
+    expect(screen.getByRole("banner", { name: "Application status" })).toBeInTheDocument();
+
     await user.click(screen.getByRole("button", { name: "Start test game" }));
     await screen.findByRole("heading", { name: "Live test game" });
+    expect(document.querySelector(".app-shell")).toHaveClass("has-game-screen");
+    expect(screen.queryByRole("banner", { name: "Application status" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Open Manage menu" })).toBeInTheDocument();
     const liveGame = gameScreenHarness.liveGame;
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Players screen" }));
+    expect(document.querySelector(".app-shell")).not.toHaveClass("has-game-screen");
+    expect(screen.getByRole("banner", { name: "Application status" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Back to game" }));
 
     expect(screen.getByRole("heading", { name: "Live test game" })).toBeInTheDocument();
+    expect(screen.queryByRole("banner", { name: "Application status" })).toBeNull();
     expect(gameScreenHarness.liveGame).toBe(liveGame);
     expect(api.clearGameSession).not.toHaveBeenCalled();
   });

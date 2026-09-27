@@ -11,6 +11,7 @@ import {
   applyGameEvent,
   createGameLogEntry,
   hashGameState,
+  isCasperPlayer,
   isMeaningfulGameEventDraft,
   isTerminalGamePhase,
   replayGameLog,
@@ -710,8 +711,9 @@ export const ClubWorkspace = ({
         setPlayers(nextPlayers);
         setPlayersLoaded(true);
         setPlayersError(false);
-        // Ten people can play with Casper; the wizard enforces each mode's full roster.
-        if (isManager && nextPlayers.length < 10) setView("players");
+        // Synthetic Casper never counts as a registered human; names alone are not reserved.
+        if (isManager && nextPlayers.filter((player) => !isCasperPlayer(player)).length < 10)
+          setView("players");
       }
     } catch (error) {
       reportError(error, { source: "api", context: "players.list" });
@@ -1495,7 +1497,8 @@ export const ClubWorkspace = ({
         ? []
         : [hostPlayerId]),
   ]);
-  const availablePlayersForSetup = players.filter(({ id }) => availablePlayerIds.has(id));
+  const humanPlayers = players.filter((player) => !isCasperPlayer(player));
+  const availablePlayersForSetup = humanPlayers.filter(({ id }) => availablePlayerIds.has(id));
 
   const persistenceSnapshot = sessionRetry.getSnapshot();
   const persistenceState =
@@ -1537,11 +1540,11 @@ export const ClubWorkspace = ({
         : t("gameSetup");
   const applicationStatusPhase =
     view === "players"
-      ? players.length < 10
-        ? t("needPlayers", { needed: 10, registered: players.length })
+      ? humanPlayers.length < 10
+        ? t("needPlayers", { needed: 10, registered: humanPlayers.length })
         : t("availableRegistered", {
             available: availablePlayersForSetup.length,
-            registered: players.length,
+            registered: humanPlayers.length,
           })
       : setupStep === "music"
         ? t("tableMusic")
@@ -1767,9 +1770,9 @@ export const ClubWorkspace = ({
       ref={appShellRef}
       className={`app-shell${backgroundShadeClass[backgroundShade]}${
         tableLayoutActive ? " has-live-game table-layout-shell" : ""
-      }${showApplicationStatus ? " has-top-level-screen" : ""}${
-        isFullscreen ? " is-fullscreen" : ""
-      }`}
+      }${view === "game" && game !== null ? " has-game-screen" : ""}${
+        showApplicationStatus ? " has-top-level-screen" : ""
+      }${isFullscreen ? " is-fullscreen" : ""}`}
       data-background-shade={backgroundShade}
       data-lighting-renderer={lighting.effectiveRenderer}
       data-lighting-renderer-requested={lighting.requestedRenderer}
@@ -1968,8 +1971,11 @@ export const ClubWorkspace = ({
             <button
               type="button"
               onClick={() => {
-                if (view === "players" && players.length < 10) {
-                  setPlayerGateError({ key: "addRegisteredPlayers", count: 10 - players.length });
+                if (view === "players" && humanPlayers.length < 10) {
+                  setPlayerGateError({
+                    key: "addRegisteredPlayers",
+                    count: 10 - humanPlayers.length,
+                  });
                   setActiveDrawer(null);
                   return;
                 }

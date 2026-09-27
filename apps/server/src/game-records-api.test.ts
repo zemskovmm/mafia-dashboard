@@ -77,6 +77,40 @@ afterAll(async () => {
 });
 
 describe("server-backed game records", () => {
+  it("skips malformed completion metadata without breaking the rest of the history", async () => {
+    const malformed = await create(
+      payload({
+        results: {
+          outcome: { toString: "red" },
+          winner: "red",
+          reason: null,
+          playedAt: "2026-09-26T12:00:00.000Z",
+        },
+      }),
+    );
+    expect(malformed.statusCode, malformed.body).toBe(201);
+    const valid = await create(
+      payload({
+        results: {
+          outcome: "red",
+          winner: "red",
+          reason: null,
+          playedAt: "2026-09-26T12:00:00.000Z",
+          players: [],
+        },
+      }),
+    );
+    expect(valid.statusCode, valid.body).toBe(201);
+    const history = await app.inject({
+      method: "GET",
+      url: "/api/game-sessions?status=completed",
+      headers: { "x-club-id": DEFAULT_CLUB_ID },
+    });
+    expect(history.statusCode, history.body).toBe(200);
+    expect(history.json().sessions).toMatchObject([{ gameId: valid.json().gameId }]);
+    expect(history.json().sessions).toHaveLength(1);
+  });
+
   it("creates a server-issued game GUID and deduplicates a lost creation response", async () => {
     const body = payload();
 
@@ -477,13 +511,31 @@ describe("server-backed game records", () => {
       "INSERT INTO club_memberships (club_id, user_id, role) VALUES ($1, $2, 'manager')",
       [foreignClubId, foreignUser.id],
     );
-    const created = await create(payload());
+    const created = await create(
+      payload({
+        results: {
+          outcome: "red",
+          winner: "red",
+          reason: null,
+          playedAt: "2026-09-26T12:00:00.000Z",
+          players: [],
+        },
+      }),
+    );
     const gameId = created.json().gameId as string;
     const foreignApp = await buildApp({ pool, authenticateRequest: async () => foreignUser });
     await foreignApp.ready();
     try {
+      const foreignHistory = await foreignApp.inject({
+        method: "GET",
+        url: "/api/game-sessions?status=completed",
+        headers: { "x-club-id": foreignClubId },
+      });
+      expect(foreignHistory.statusCode, foreignHistory.body).toBe(200);
+      expect(foreignHistory.json().sessions).toEqual([]);
       for (const request of [
         { method: "GET", url: "/api/game-sessions" },
+        { method: "GET", url: "/api/game-sessions?status=completed" },
         { method: "GET", url: `/api/game-sessions/${gameId}` },
         {
           method: "PUT",
