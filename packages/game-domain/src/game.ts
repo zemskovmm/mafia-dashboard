@@ -1,3 +1,4 @@
+import { assertCompleteRoleAssignments } from "./setup.js";
 import type {
   GameState,
   PlayerState,
@@ -34,6 +35,7 @@ export const createGame = (
   if (setup.step !== "mafia-planning" || Object.keys(setup.assignments).length !== 10) {
     throw new Error("Role setup must be complete before a game is created");
   }
+  assertCompleteRoleAssignments(setup);
 
   const players: PlayerState[] = setup.players.map((player) => {
     const role = setup.assignments[player.seat];

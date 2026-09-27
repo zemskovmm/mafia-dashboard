@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CASPER_NAME, CASPER_PLAYER_ID, CASPER_SEAT } from "./casper.js";
 import {
   advanceSetupPhase,
   cancelGame,
@@ -34,7 +35,66 @@ const completedSetup = (): SetupState => {
   return completeRoleDraw(setup);
 };
 
+const casperSetup = (): SetupState => {
+  const roster = players().map((player) =>
+    player.seat === CASPER_SEAT
+      ? { id: CASPER_PLAYER_ID, name: CASPER_NAME, seat: CASPER_SEAT }
+      : player,
+  );
+  let setup = beginRoleDraw(createSetup(roster), createSeededRandom(31));
+  for (let seat = 1; seat < CASPER_SEAT; seat += 1) setup = drawRoleForSeat(setup, seat);
+  return completeRoleDraw(setup);
+};
+
 describe("game phases and victory", () => {
+  it("validates Casper at the game creation boundary, including forged setup snapshots", () => {
+    const setup = casperSetup();
+    expect(createGame(setup).players.find(({ id }) => id === CASPER_PLAYER_ID)).toMatchObject({
+      seat: CASPER_SEAT,
+      name: CASPER_NAME,
+      role: "citizen",
+      team: "red",
+      status: "active",
+    });
+    const mafiaSeat = Number(
+      Object.keys(setup.assignments).find((seat) => setup.assignments[Number(seat)] === "mafia"),
+    );
+    const swapped = {
+      ...setup,
+      assignments: {
+        ...setup.assignments,
+        [mafiaSeat]: "citizen" as const,
+        [CASPER_SEAT]: "mafia" as const,
+      },
+    };
+    expect(() => createGame(swapped)).toThrow(/Casper.*citizen/i);
+    const misplaced = {
+      ...setup,
+      players: setup.players.map((player) =>
+        player.seat === 1
+          ? { ...player, id: CASPER_PLAYER_ID }
+          : player.seat === CASPER_SEAT
+            ? { ...player, id: "player-10" }
+            : player,
+      ),
+    };
+    expect(() => createGame(misplaced)).toThrow(/Casper.*seat 10/i);
+    expect(() =>
+      createGame({ ...setup, assignments: { ...setup.assignments, 1: undefined } }),
+    ).toThrow();
+  });
+  it("counts Casper as an ordinary active citizen when testing victory parity", () => {
+    let game = createGame(casperSetup());
+    const humanRedSeats = game.players
+      .filter(({ team, id }) => team === "red" && id !== CASPER_PLAYER_ID)
+      .slice(0, 3)
+      .map(({ seat }) => seat);
+    for (const seat of humanRedSeats) game = markPlayerInactive(game, seat, "eliminated");
+    expect(evaluateVictory(game.players)).toBeNull();
+    game = markPlayerInactive(game, CASPER_SEAT, "eliminated");
+    expect(evaluateVictory(game.players)).toBe("black");
+  });
+
   it("initializes draw-cycle tracking without suggesting a draw", () => {
     const game = createGame(completedSetup());
 

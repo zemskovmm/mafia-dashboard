@@ -1,3 +1,4 @@
+import { assertCasperRole } from "./casper.js";
 import {
   acceptCarCrashBallot,
   beginCarCrash,
@@ -646,6 +647,7 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
     ) {
       throw new Error(`${context}.players[${index}].role is invalid`);
     }
+    assertCasperRole({ id: player.id, name: player.name, seat: player.seat }, player.role);
     const expectedTeam = player.role === "mafia" || player.role === "don" ? "black" : "red";
     if (player.team !== expectedTeam) {
       throw new Error(`${context}.players[${index}].team does not match role`);

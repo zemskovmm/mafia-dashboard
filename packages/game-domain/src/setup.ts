@@ -1,3 +1,4 @@
+import { CASPER_SEAT, assertCasperPlayer, assertCasperRole, isCasperPlayer } from "./casper.js";
 import type { PlayerInput, Role, SetupState } from "./types.js";
 
 const CANONICAL_ROLE_DECK: readonly Role[] = [
@@ -65,6 +66,8 @@ export const createSetup = (players: readonly PlayerInput[]): SetupState => {
     throw new Error("Every player requires a display name");
   }
 
+  players.forEach(assertCasperPlayer);
+
   return {
     step: "music",
     players: players.map((player) => ({ ...player })),
@@ -75,13 +78,16 @@ export const createSetup = (players: readonly PlayerInput[]): SetupState => {
 };
 
 export const beginRoleDraw = (state: SetupState, random: RandomSource): SetupState => {
+  state.players.forEach(assertCasperPlayer);
   const roleDeck = shuffle(CANONICAL_ROLE_DECK, random);
+  const hasCasper = state.players.some(isCasperPlayer);
+  const citizenIndex = hasCasper ? roleDeck.indexOf("citizen") : -1;
   return {
     ...state,
     step: "role-draw",
     roleDeck,
-    remainingRoles: roleDeck,
-    assignments: {},
+    remainingRoles: roleDeck.filter((_, index) => index !== citizenIndex),
+    assignments: hasCasper ? { [CASPER_SEAT]: "citizen" } : {},
   };
 };
 
@@ -91,6 +97,9 @@ export const drawRoleForSeat = (state: SetupState, seat: number): SetupState => 
   }
   if (!state.players.some((player) => player.seat === seat)) {
     throw new Error(`Seat ${seat} is not part of this game`);
+  }
+  if (state.players.some((player) => player.seat === seat && isCasperPlayer(player))) {
+    throw new Error("Casper already has a role and cannot draw another");
   }
   if (state.assignments[seat] !== undefined) {
     throw new Error(`Seat ${seat} already has a role`);
@@ -114,6 +123,9 @@ export const rerollRoleForSeat = (
   random: RandomSource,
 ): SetupState => {
   if (state.step !== "role-draw") throw new Error("Role drawing has not started");
+  if (state.players.some((player) => player.seat === seat && isCasperPlayer(player))) {
+    throw new Error("Casper cannot reroll his role");
+  }
   const currentRole = state.assignments[seat];
   if (currentRole === undefined) throw new Error(`Seat ${seat} does not have a role to reroll`);
   if (state.remainingRoles.length === 0) return state;
@@ -137,6 +149,9 @@ export const assignRoleForSeat = (state: SetupState, seat: number, role: Role): 
   if (!state.players.some((player) => player.seat === seat)) {
     throw new Error(`Seat ${seat} does not exist`);
   }
+  if (state.players.some((player) => player.seat === seat && isCasperPlayer(player))) {
+    throw new Error("Casper's role cannot be reassigned");
+  }
   const availableIndex = state.remainingRoles.indexOf(role);
   if (availableIndex < 0) throw new Error(`Role ${role} is not available`);
   const currentRole = state.assignments[seat];
@@ -152,10 +167,28 @@ export const assignRoleForSeat = (state: SetupState, seat: number, role: Role): 
   };
 };
 
-export const completeRoleDraw = (state: SetupState): SetupState => {
+export const assertCompleteRoleAssignments = (state: SetupState): void => {
   if (Object.keys(state.assignments).length !== 10 || state.remainingRoles.length !== 0) {
     throw new Error("All ten seats must have a role before setup can continue");
   }
+
+  // A restored or forged setup must satisfy the same identity and deck rules as a fresh draw.
+  createSetup(state.players);
+  for (const player of state.players) assertCasperRole(player, state.assignments[player.seat]);
+  const roles = Object.values(state.assignments);
+  if (
+    Object.keys(state.assignments).some((seat) => !/^(10|[1-9])$/.test(seat)) ||
+    roles.some((role) => !CANONICAL_ROLE_DECK.includes(role as Role)) ||
+    Object.entries(roleCounts(roles as Role[])).some(
+      ([role, count]) => count !== CANONICAL_ROLE_DECK.filter((card) => card === role).length,
+    )
+  ) {
+    throw new Error("Role assignments must match the canonical ten-card deck");
+  }
+};
+
+export const completeRoleDraw = (state: SetupState): SetupState => {
+  assertCompleteRoleAssignments(state);
 
   return { ...state, step: "mafia-planning" };
 };

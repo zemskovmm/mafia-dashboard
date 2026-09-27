@@ -3,6 +3,9 @@ import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   assignRoleForSeat,
   beginRoleDraw,
+  CASPER_NAME,
+  CASPER_PLAYER_ID,
+  CASPER_SEAT,
   completeRoleDraw,
   createGame,
   createSetup,
@@ -30,6 +33,7 @@ interface SetupWizardProps {
   readonly onRoleDrawBackActionChange?: (action: (() => void) | null) => void;
   /** Creation is in flight; role changes must not outrun the server GUID. */
   readonly persistencePending?: boolean;
+  readonly playersLoading?: boolean;
 }
 
 type WizardStep = "players" | "roles";
@@ -266,6 +270,7 @@ export const SetupWizard = ({
   onOpenAvailablePlayers,
   onRoleDrawBackActionChange,
   persistencePending = false,
+  playersLoading = false,
 }: SetupWizardProps) => {
   const { t } = useMessages(gameMessages);
   const [step, setStep] = useState<WizardStep>(
@@ -280,6 +285,8 @@ export const SetupWizard = ({
       ? [...initialSessionState.selectedPlayerIds]
       : Array.from({ length: 10 }, () => ""),
   );
+  const includeCasper = selectedPlayerIds[CASPER_SEAT - 1] === CASPER_PLAYER_ID;
+  const humanSeatCount = includeCasper ? 9 : 10;
   const [hostPlayerId, setHostPlayerId] = useState(initialSessionState?.hostPlayerId ?? "");
   const [setup, setSetup] = useState<SetupState | null>(initialSessionState?.setup ?? null);
   const [developmentPlayers, setDevelopmentPlayers] = useState<readonly PlayerProfile[]>([]);
@@ -311,16 +318,21 @@ export const SetupWizard = ({
   }, [step]);
 
   useEffect(() => {
+    if (playersLoading) return;
     const availableIds = new Set(selectablePlayers.map(({ id }) => id));
     const nextHostPlayerId =
       hostPlayerId === "" || availableIds.has(hostPlayerId) ? hostPlayerId : "";
-    const nextSelectedPlayerIds = selectedPlayerIds.map((playerId) =>
-      playerId === "" || availableIds.has(playerId) ? playerId : "",
+    const nextSelectedPlayerIds = selectedPlayerIds.map((playerId, index) =>
+      playerId === "" ||
+      availableIds.has(playerId) ||
+      (playerId === CASPER_PLAYER_ID && index === CASPER_SEAT - 1)
+        ? playerId
+        : "",
     );
     const restoredIds = [nextHostPlayerId, ...nextSelectedPlayerIds];
     const valid =
       restoredIds.length === 11 &&
-      restoredIds.every((playerId) => playerId !== "" && availableIds.has(playerId)) &&
+      restoredIds.every((playerId) => playerId !== "") &&
       new Set(restoredIds).size === 11;
     const selectionChanged =
       nextHostPlayerId !== hostPlayerId ||
@@ -331,11 +343,14 @@ export const SetupWizard = ({
       if (selectionChanged) setSelectedPlayerIds(nextSelectedPlayerIds);
       setSetup(null);
     }
-  }, [hostPlayerId, selectablePlayers, selectedPlayerIds, step]);
+  }, [hostPlayerId, playersLoading, selectablePlayers, selectedPlayerIds, step]);
 
   const players = useMemo<PlayerInput[]>(
     () =>
       selectedPlayerIds.flatMap((playerId, index) => {
+        if (playerId === CASPER_PLAYER_ID && index === CASPER_SEAT - 1) {
+          return [{ id: CASPER_PLAYER_ID, name: CASPER_NAME, seat: CASPER_SEAT }];
+        }
         const player = selectablePlayers.find(({ id }) => id === playerId);
         return player === undefined
           ? []
@@ -345,6 +360,7 @@ export const SetupWizard = ({
   );
   const hostPlayer = selectablePlayers.find(({ id }) => id === hostPlayerId);
   const playersReady =
+    !playersLoading &&
     hostPlayer !== undefined &&
     players.length === 10 &&
     new Set([hostPlayerId, ...selectedPlayerIds.filter(Boolean)]).size === 11;
@@ -377,12 +393,21 @@ export const SetupWizard = ({
 
   const randomlyFillSeats = useCallback(() => {
     const eligiblePlayers = selectablePlayers.filter(({ id }) => id !== hostPlayerId);
-    if ((hostPlayerId === "" && selectablePlayers.length < 11) || eligiblePlayers.length < 10)
+    if (
+      (hostPlayerId === "" && selectablePlayers.length < humanSeatCount + 1) ||
+      eligiblePlayers.length < humanSeatCount
+    )
       return;
-    const selectedPlayers = randomPlayersBySelectionPriority(eligiblePlayers).slice(0, 10);
-    setSelectedPlayerIds(shuffled(selectedPlayers).map(({ id }) => id));
+    const selectedPlayers = randomPlayersBySelectionPriority(eligiblePlayers).slice(
+      0,
+      humanSeatCount,
+    );
+    setSelectedPlayerIds([
+      ...shuffled(selectedPlayers).map(({ id }) => id),
+      ...(includeCasper ? [CASPER_PLAYER_ID] : []),
+    ]);
     setSetup(null);
-  }, [hostPlayerId, selectablePlayers]);
+  }, [hostPlayerId, humanSeatCount, includeCasper, selectablePlayers]);
 
   const startRoleDraw = () => {
     if (!playersReady || hostPlayer === undefined) return;
@@ -419,6 +444,7 @@ export const SetupWizard = ({
 
   const handleRoleCardTap = (seat: number) => {
     if (persistencePending) return;
+    if (includeCasper && seat === CASPER_SEAT) return;
     if (setup === null) return;
     setManualRoleSeat(null);
     if (setup.assignments[seat] === undefined) {
@@ -445,6 +471,7 @@ export const SetupWizard = ({
 
   const selectManualRole = (role: Role) => {
     if (persistencePending) return;
+    if (includeCasper && manualRoleSeat === CASPER_SEAT) return;
     if (setup === null || manualRoleSeat === null || setup.remainingRoles.length === 0) return;
     const nextSetup = assignRoleForSeat(setup, manualRoleSeat, role);
     setSetup(nextSetup);
@@ -503,16 +530,21 @@ export const SetupWizard = ({
                 seat.role === undefined
                   ? t("setup.drawRole", { name: seat.name })
                   : t(
-                      setup.remainingRoles.length > 0
+                      setup.remainingRoles.length > 0 &&
+                        !(includeCasper && seat.seat === CASPER_SEAT)
                         ? "setup.roleDrawCardReroll"
                         : "setup.roleDrawCard",
                       { name: seat.name, role: t(roleMessageKeys[seat.role]) },
                     )
               }
               onSeatClick={handleRoleCardTap}
+              seatActionDisabled={(seat) => includeCasper && seat.seat === CASPER_SEAT}
               onSeatSwipe={
                 setup.remainingRoles.length > 0
-                  ? (seat) => setManualRoleSeat((current) => (current === seat ? null : seat))
+                  ? (seat) => {
+                      if (includeCasper && seat === CASPER_SEAT) return;
+                      setManualRoleSeat((current) => (current === seat ? null : seat));
+                    }
                   : undefined
               }
               contextActionOpen={manualRoleSeat !== null}
@@ -581,12 +613,30 @@ export const SetupWizard = ({
       {step === "players" ? (
         <section className="wizard-card player-setup-card">
           <p className="eyebrow">{t("setup.gameSetup")}</p>
-          <h1 ref={playerHeadingRef} tabIndex={-1}>
-            {t("setup.selectPlayers")}
-          </h1>
-          <p className="lead">{t("setup.selectPlayersLead")}</p>
-          {selectablePlayers.length < 11 ? (
-            <p className="player-guidance">{t("setup.playerGuidance")}</p>
+          <header className="player-setup-heading">
+            <h1 ref={playerHeadingRef} tabIndex={-1}>
+              {t("setup.selectPlayers")}
+            </h1>
+            <label className="casper-toggle">
+              <span>{t("setup.includeCasper")}</span>
+              <input
+                type="checkbox"
+                role="switch"
+                checked={includeCasper}
+                onChange={(event) =>
+                  changeSeatPlayer(
+                    CASPER_SEAT - 1,
+                    event.currentTarget.checked ? CASPER_PLAYER_ID : "",
+                  )
+                }
+              />
+              <span className="casper-switch-track" aria-hidden="true" />
+            </label>
+          </header>
+          {selectablePlayers.length < humanSeatCount + 1 ? (
+            <p className="player-guidance">
+              {t("setup.playerGuidance", { count: humanSeatCount + 1 })}
+            </p>
           ) : null}
           {showDevelopmentTools && onPopulateDevelopmentPlayers !== undefined ? (
             <div className="development-player-tools">
@@ -604,7 +654,15 @@ export const SetupWizard = ({
                       const selected = generated.slice(0, 11);
                       setDevelopmentPlayers(selected);
                       setHostPlayerId(selected[0]!.id);
-                      setSelectedPlayerIds(selected.slice(1).map(({ id }) => id));
+                      setSelectedPlayerIds((current) =>
+                        selected
+                          .slice(1)
+                          .map(({ id }, index) =>
+                            index === CASPER_SEAT - 1 && current[index] === CASPER_PLAYER_ID
+                              ? CASPER_PLAYER_ID
+                              : id,
+                          ),
+                      );
                       setSetup(null);
                     })
                     .catch((error: unknown) => {
@@ -629,23 +687,35 @@ export const SetupWizard = ({
             onChange={changeHostPlayer}
           />
           <div className="player-input-grid">
-            {selectedPlayerIds.map((playerId, index) => (
-              <PlayerCombobox
-                id={`seat-${index + 1}-player`}
-                key={index}
-                label={t("setup.seat", { seat: index + 1 })}
-                placeholder={t("setup.searchNickname")}
-                value={playerId}
-                players={selectablePlayers}
-                unavailablePlayerIds={[
-                  hostPlayerId,
-                  ...selectedPlayerIds.filter(
-                    (selectedId, selectedIndex) => selectedIndex !== index && selectedId !== "",
-                  ),
-                ].filter(Boolean)}
-                onChange={(nextPlayerId) => changeSeatPlayer(index, nextPlayerId)}
-              />
-            ))}
+            {selectedPlayerIds.map((playerId, index) =>
+              includeCasper && index === CASPER_SEAT - 1 ? (
+                <div className="player-combobox" key={index}>
+                  <label htmlFor="casper-player">{t("setup.seat", { seat: CASPER_SEAT })}</label>
+                  <input
+                    id="casper-player"
+                    aria-label={`${t("setup.seat", { seat: CASPER_SEAT })} ${t("setup.player")}`}
+                    value={`${CASPER_NAME} · ${t("role.citizen")}`}
+                    readOnly
+                  />
+                </div>
+              ) : (
+                <PlayerCombobox
+                  id={`seat-${index + 1}-player`}
+                  key={index}
+                  label={t("setup.seat", { seat: index + 1 })}
+                  placeholder={t("setup.searchNickname")}
+                  value={playerId}
+                  players={selectablePlayers}
+                  unavailablePlayerIds={[
+                    hostPlayerId,
+                    ...selectedPlayerIds.filter(
+                      (selectedId, selectedIndex) => selectedIndex !== index && selectedId !== "",
+                    ),
+                  ].filter(Boolean)}
+                  onChange={(nextPlayerId) => changeSeatPlayer(index, nextPlayerId)}
+                />
+              ),
+            )}
           </div>
           <div
             className="player-setup-actions"
@@ -660,7 +730,7 @@ export const SetupWizard = ({
             <button
               type="button"
               className="primary-action"
-              disabled={selectablePlayers.length < 11}
+              disabled={selectablePlayers.length < humanSeatCount + 1}
               onClick={randomlyFillSeats}
             >
               {t("setup.assignPlayers")}

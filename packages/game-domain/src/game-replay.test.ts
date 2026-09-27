@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { CASPER_NAME, CASPER_PLAYER_ID, CASPER_SEAT } from "./casper.js";
 import { advanceVotingCandidate, completeCurrentTurn } from "./day-actions.js";
-import { advanceSetupPhase, createGame, markPlayerInactive } from "./game.js";
+import { advanceSetupPhase, createGame, evaluateVictory, markPlayerInactive } from "./game.js";
 import {
   applyCurrentGameLogEntry,
   applyGameEvent,
@@ -74,6 +75,90 @@ const entry = (
   });
 
 describe("canonical game replay", () => {
+  it("replays Casper speaking, voting, and being eliminated under ordinary rules", () => {
+    const roster = players().map((player) =>
+      player.seat === CASPER_SEAT
+        ? { id: CASPER_PLAYER_ID, name: CASPER_NAME, seat: CASPER_SEAT }
+        : player,
+    );
+    let setup = beginRoleDraw(createSetup(roster), createSeededRandom(41));
+    for (let seat = 1; seat < CASPER_SEAT; seat += 1) setup = drawRoleForSeat(setup, seat);
+    const initial = createGame(completeRoleDraw(setup));
+    const events: GameLogEntry[] = [];
+    let current = initial;
+    const append = (draft: CanonicalGameEventDraft) => {
+      const next = entry(current, events.length + 1, draft);
+      events.push(next.entry);
+      current = next.after;
+    };
+    append({ type: "game.started", payload: {} });
+    append({ type: "phase.changed", payload: { to: "day" } });
+    expect(current.turnOrder).toContain(CASPER_SEAT);
+    append({ type: "player.nominated", payload: { nominatorSeat: 1, candidateSeat: CASPER_SEAT } });
+    append({ type: "player.nominated", payload: { nominatorSeat: CASPER_SEAT, candidateSeat: 1 } });
+    const votes = Object.fromEntries(current.players.map(({ seat }) => [seat, CASPER_SEAT]));
+    append({
+      type: "voting.resolved",
+      payload: {
+        voteAssignments: votes,
+        result: { kind: "winner", seats: [CASPER_SEAT], totals: { [CASPER_SEAT]: 10, 1: 0 } },
+      },
+    });
+    expect(current.players.find(({ id }) => id === CASPER_PLAYER_ID)?.status).toBe("eliminated");
+    expect(current.winner).toBeNull();
+    const restored = replayGameLog(
+      { replayVersion: 1, game: initial },
+      JSON.parse(JSON.stringify(events)) as GameLogEntry[],
+    );
+    expect(restored.game).toEqual(current);
+    expect(restored.frames).toHaveLength(events.length);
+    expect(evaluateVictory(restored.game.players)).toBeNull();
+    let redWin = restored.game;
+    for (const { seat } of redWin.players.filter(({ team }) => team === "black")) {
+      redWin = markPlayerInactive(redWin, seat, "eliminated");
+    }
+    expect(evaluateVictory(redWin.players)).toBe("red");
+  });
+
+  it("rejects an invalid synthetic identity in a replay baseline, even with no events", () => {
+    const initial = dayOne();
+    const casperAtOne = {
+      ...initial,
+      players: initial.players.map((player) =>
+        player.seat === 1 ? { ...player, id: CASPER_PLAYER_ID, name: CASPER_NAME } : player,
+      ),
+    };
+    expect(() => replayGameLog(baseline(casperAtOne), [])).toThrow(/Casper.*seat 10/i);
+    const casperMafia = {
+      ...initial,
+      players: initial.players.map((player) =>
+        player.role === "mafia" ? { ...player, id: CASPER_PLAYER_ID, name: CASPER_NAME } : player,
+      ),
+    };
+    expect(() => replayGameLog(baseline(casperMafia), [])).toThrow();
+    const wrongRole = {
+      ...initial,
+      players: initial.players.map((player) =>
+        player.seat === CASPER_SEAT
+          ? {
+              ...player,
+              id: CASPER_PLAYER_ID,
+              name: CASPER_NAME,
+              role: "mafia" as const,
+              team: "black" as const,
+            }
+          : player,
+      ),
+    };
+    expect(() => replayGameLog(baseline(wrongRole), [])).toThrow(/Casper.*citizen/i);
+    const realNamedCasper = {
+      ...initial,
+      players: initial.players.map((player) =>
+        player.seat === 10 ? { ...player, name: CASPER_NAME } : player,
+      ),
+    };
+    expect(replayGameLog(baseline(realNamedCasper), []).game).toEqual(realNamedCasper);
+  });
   it.each([
     [{ phaseBefore: "voting" }, "history.before_state"],
     [{ dayAfter: 99 }, "history.after_state"],

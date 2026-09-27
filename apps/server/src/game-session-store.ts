@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { CASPER_PLAYER_ID, CASPER_SEAT } from "@mafia/game-domain";
 import type { Pool, PoolClient } from "pg";
 import { DEFAULT_CLUB_ID } from "./club-store.js";
 import { DeletedGameError, lockAggregateProjectionTables, lockClubGame } from "./game-lifecycle.js";
@@ -240,7 +241,7 @@ const projectableResults = (value: FinalGameResults | null): ProjectableResults 
         ? null
         : asInteger(candidate.bestMoveHits);
     if (
-      !isUuid(playerId) ||
+      (!isUuid(playerId) && playerId !== CASPER_PLAYER_ID) ||
       seat === null ||
       seat < 1 ||
       seat > 10 ||
@@ -249,7 +250,9 @@ const projectableResults = (value: FinalGameResults | null): ProjectableResults 
       !["active", "eliminated", "red-carded"].includes(String(status)) ||
       fouls === null ||
       fouls < 0 ||
-      (bestMoveHits !== null && (bestMoveHits < 0 || bestMoveHits > 3))
+      (bestMoveHits !== null && (bestMoveHits < 0 || bestMoveHits > 3)) ||
+      (playerId === CASPER_PLAYER_ID &&
+        (seat !== CASPER_SEAT || role !== "citizen" || team !== "red"))
     ) {
       return [];
     }
@@ -267,6 +270,7 @@ const projectableResults = (value: FinalGameResults | null): ProjectableResults 
   });
   if (
     players.length !== value.players.length ||
+    (players.some(({ playerId }) => playerId === CASPER_PLAYER_ID) && players.length !== 10) ||
     new Set(players.map(({ playerId }) => playerId)).size !== players.length ||
     new Set(players.map(({ seat }) => seat)).size !== players.length
   ) {
@@ -322,7 +326,9 @@ const replaceResultsProjection = async (
     );
     return;
   }
-  const participantIds = projection.players.map(({ playerId }) => playerId);
+  // Validate the entire ten-seat roster above; only then omit Casper from UUID/FK projections.
+  const realPlayers = projection.players.filter(({ playerId }) => playerId !== CASPER_PLAYER_ID);
+  const participantIds = realPlayers.map(({ playerId }) => playerId);
   if (!(await playersBelongToClub(client, clubId, [projection.hostPlayerId, ...participantIds]))) {
     await updateLastPlayed(
       client,
@@ -344,7 +350,7 @@ const replaceResultsProjection = async (
       projection.hostPlayerId,
     ],
   );
-  if (projection.outcome !== "cancelled" && projection.players.length > 0) {
+  if (projection.outcome !== "cancelled" && realPlayers.length > 0) {
     await client.query(
       `INSERT INTO game_player_results
          (club_id, game_id, player_id, seat, role, team, final_status, fouls, won, best_move_hits)
@@ -358,13 +364,13 @@ const replaceResultsProjection = async (
         gameId,
         projection.outcome,
         projection.winner,
-        projection.players.map(({ playerId }) => playerId),
-        projection.players.map(({ seat }) => seat),
-        projection.players.map(({ role }) => role),
-        projection.players.map(({ team }) => team),
-        projection.players.map(({ status }) => status),
-        projection.players.map(({ fouls }) => fouls),
-        projection.players.map(({ bestMoveHits }) => bestMoveHits),
+        realPlayers.map(({ playerId }) => playerId),
+        realPlayers.map(({ seat }) => seat),
+        realPlayers.map(({ role }) => role),
+        realPlayers.map(({ team }) => team),
+        realPlayers.map(({ status }) => status),
+        realPlayers.map(({ fouls }) => fouls),
+        realPlayers.map(({ bestMoveHits }) => bestMoveHits),
       ],
     );
   }
@@ -387,32 +393,43 @@ const replacePlayerProjection = async (
     gameId,
   ]);
   if (!isRecord(state)) return;
+  if (state.hostPlayerId === CASPER_PLAYER_ID) return;
   const hostPlayerId = isUuid(state.hostPlayerId) ? state.hostPlayerId : null;
   const game = isRecord(state.game) ? state.game : null;
   const rawPlayers = Array.isArray(game?.players) ? game.players : [];
   const players = rawPlayers.flatMap((candidate) => {
-    if (!isRecord(candidate) || !isUuid(candidate.id)) return [];
+    if (!isRecord(candidate) || (!isUuid(candidate.id) && candidate.id !== CASPER_PLAYER_ID))
+      return [];
     const seat = asInteger(candidate.seat);
     if (seat === null) return [];
     const role = asString(candidate.role);
-    if (seat < 1 || seat > 10 || !["sheriff", "citizen", "mafia", "don"].includes(role ?? ""))
+    if (
+      seat < 1 ||
+      seat > 10 ||
+      !["sheriff", "citizen", "mafia", "don"].includes(role ?? "") ||
+      (candidate.id === CASPER_PLAYER_ID &&
+        (seat !== CASPER_SEAT || role !== "citizen" || candidate.team !== "red"))
+    )
       return [];
     return [{ id: candidate.id, seat, role }];
   });
   if (
     players.length !== rawPlayers.length ||
+    (players.some(({ id }) => id === CASPER_PLAYER_ID) && players.length !== 10) ||
     new Set(players.map(({ id }) => id)).size !== players.length ||
     new Set(players.map(({ seat }) => seat)).size !== players.length ||
     !(await playersBelongToClub(client, clubId, [
       ...(hostPlayerId === null ? [] : [hostPlayerId]),
-      ...players.map(({ id }) => id),
+      ...players.filter(({ id }) => id !== CASPER_PLAYER_ID).map(({ id }) => id),
     ]))
   ) {
     return;
   }
   const all = [
     ...(hostPlayerId === null ? [] : [{ id: hostPlayerId, seat: null, isHost: true, role: null }]),
-    ...players.map(({ id, seat, role }) => ({ id, seat, isHost: false, role })),
+    ...players
+      .filter(({ id }) => id !== CASPER_PLAYER_ID)
+      .map(({ id, seat, role }) => ({ id, seat, isHost: false, role })),
   ];
   if (all.length === 0) return;
   await client.query(

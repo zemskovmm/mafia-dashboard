@@ -101,6 +101,7 @@ const englishGameMessages = {
   "setup.assignRole": "Assign {role} to seat {seat}",
   "setup.backToPlayerSelection": "Back to player selection",
   "setup.cancel": "Cancel",
+  "setup.includeCasper": "Include Casper",
   "setup.chooseRole": "Choose role",
   "setup.chooseRoleForSeat": "Choose role for seat {seat}",
   "setup.clear": "Clear {label}",
@@ -116,7 +117,7 @@ const englishGameMessages = {
   "setup.noMatchingPlayers": "No matching players",
   "setup.player": "player",
   "setup.playerGuidance":
-    "Mark at least 11 players available in Players & statistics before continuing.",
+    "Mark at least {count} players available in Players & statistics before continuing.",
   "setup.playerSetupActions": "Player setup actions",
   "setup.roleDraw": "Role giveaway",
   "setup.roleDrawCard": "{name}: {role}",
@@ -127,8 +128,6 @@ const englishGameMessages = {
   "setup.seat": "Seat {seat}",
   "setup.selectAvailable": "Select available players",
   "setup.selectPlayers": "Select 10 players + host",
-  "setup.selectPlayersLead":
-    "Choose a saved host and ten different saved players. The player order becomes seats 1–10 around the table.",
   "setup.startGame": "Start game",
   "setup.startPlanning": "Begin Mafia planning stage",
   "setup.suggestions": "{label} suggestions",
@@ -270,6 +269,7 @@ const russianGameMessages = {
   "setup.assignRole": "Назначить роль «{role}» месту {seat}",
   "setup.backToPlayerSelection": "Назад к выбору игроков",
   "setup.cancel": "Отмена",
+  "setup.includeCasper": "Добавить Каспера",
   "setup.chooseRole": "Выберите роль",
   "setup.chooseRoleForSeat": "Выберите роль для места {seat}",
   "setup.clear": "Очистить: {label}",
@@ -285,7 +285,7 @@ const russianGameMessages = {
   "setup.noMatchingPlayers": "Игроки не найдены",
   "setup.player": "игрок",
   "setup.playerGuidance":
-    "Перед продолжением отметьте не менее 11 доступных игроков в разделе «Игроки и статистика».",
+    "Перед продолжением отметьте не менее {count} доступных игроков в разделе «Игроки и статистика».",
   "setup.playerSetupActions": "Действия настройки игроков",
   "setup.roleDraw": "Раздача ролей",
   "setup.roleDrawCard": "{name}: {role}",
@@ -296,8 +296,6 @@ const russianGameMessages = {
   "setup.seat": "Место {seat}",
   "setup.selectAvailable": "Выбрать доступных игроков",
   "setup.selectPlayers": "Выберите 10 игроков и ведущего",
-  "setup.selectPlayersLead":
-    "Выберите сохранённого ведущего и десять разных сохранённых игроков. Порядок игроков определяет места 1–10 за столом.",
   "setup.startGame": "Начать игру",
   "setup.startPlanning": "Начать этап планирования мафии",
   "setup.suggestions": "Подсказки для поля «{label}»",

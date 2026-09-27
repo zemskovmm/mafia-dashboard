@@ -468,6 +468,7 @@ export const ClubWorkspace = ({
         : "saved",
   );
   const [players, setPlayers] = useState<readonly PlayerProfile[]>([]);
+  const [playersLoaded, setPlayersLoaded] = useState(false);
   const [availablePlayerIds, setAvailablePlayerIds] = useState<ReadonlySet<string>>(() =>
     readAvailablePlayerIds(window.localStorage, club.id),
   );
@@ -705,8 +706,10 @@ export const ClubWorkspace = ({
       const nextPlayers = await listPlayers(club.id);
       if (playerRequestRef.current === request) {
         setPlayers(nextPlayers);
+        setPlayersLoaded(true);
         setPlayersError(false);
-        if (isManager && nextPlayers.length < 11) setView("players");
+        // Ten people can play with Casper; the wizard enforces each mode's full roster.
+        if (isManager && nextPlayers.length < 10) setView("players");
       }
     } catch (error) {
       reportError(error, { source: "api", context: "players.list" });
@@ -1532,8 +1535,8 @@ export const ClubWorkspace = ({
         : t("gameSetup");
   const applicationStatusPhase =
     view === "players"
-      ? players.length < 11
-        ? t("needPlayers", { needed: 11, registered: players.length })
+      ? players.length < 10
+        ? t("needPlayers", { needed: 10, registered: players.length })
         : t("availableRegistered", {
             available: availablePlayersForSetup.length,
             registered: players.length,
@@ -1938,14 +1941,14 @@ export const ClubWorkspace = ({
             <button
               type="button"
               onClick={() => {
-                if (view === "players" && players.length < 11) {
-                  setPlayerGateError({ key: "addRegisteredPlayers", count: 11 - players.length });
+                if (view === "players" && players.length < 10) {
+                  setPlayerGateError({ key: "addRegisteredPlayers", count: 10 - players.length });
                   setActiveDrawer(null);
                   return;
                 }
                 setPlayerGateError(null);
                 setActiveDrawer(null);
-                const openAvailablePlayers = availablePlayersForSetup.length < 11;
+                const openAvailablePlayers = availablePlayersForSetup.length < 10;
                 if (hasCurrentGameState) startNewGame(openAvailablePlayers);
                 else {
                   resetLocalState();
@@ -2275,6 +2278,7 @@ export const ClubWorkspace = ({
           <SetupWizard
             key={setupInstanceKey}
             players={availablePlayersForSetup}
+            playersLoading={!playersLoaded}
             bestMoveEnabled={club.bestMoveEnabled}
             showDevelopmentTools={isManager && devUnlocked && devModeEnabled}
             onPopulateDevelopmentPlayers={populateDevelopmentPlayers}

@@ -1453,7 +1453,7 @@ describe("workspace localization", () => {
     );
 
     expect(await screen.findByRole("banner", { name: "Статус приложения" })).toHaveTextContent(
-      "Требуется 11 игроков · зарегистрировано: 0",
+      "Требуется 10 игроков · зарегистрировано: 0",
     );
     expect(screen.getByLabelText("Инструменты приложения")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Открыть меню управления" }));
@@ -1468,7 +1468,7 @@ describe("workspace localization", () => {
 });
 
 describe("club player gate", () => {
-  it("opens Players, allows welcome exit, and blocks a new game below eleven profiles", async () => {
+  it("opens Players, allows welcome exit, and blocks a new game below ten profiles", async () => {
     const user = userEvent.setup();
     const onExit = vi.fn();
     api.listPlayers.mockResolvedValue([]);
@@ -1487,7 +1487,7 @@ describe("club player gate", () => {
       screen.getByText("Mafia Malaga", { selector: ".active-club-title-name" }),
     ).toBeInTheDocument();
     expect(document.title).toBe("Mafia Malaga · Mafia Dashboard");
-    expect(screen.getByText("Need 11 players · 0 registered")).toBeInTheDocument();
+    expect(screen.getByText("Need 10 players · 0 registered")).toBeInTheDocument();
 
     await user.click(
       screen.getByRole("button", { name: "Choose another club · current club Mafia Malaga" }),
@@ -1496,7 +1496,7 @@ describe("club player gate", () => {
 
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Start new game" }));
-    expect(screen.getByRole("alert")).toHaveTextContent("Add 11 more registered players");
+    expect(screen.getByRole("alert")).toHaveTextContent("Add 10 more registered players");
     expect(screen.getByRole("heading", { name: "Players & statistics" })).toBeInTheDocument();
   });
 
@@ -2104,7 +2104,7 @@ describe("developer menu", () => {
     );
   });
 
-  it.each([0, 4, 10])(
+  it.each([0, 4, 9])(
     "routes New game from Players to availability with %i available players",
     async (availableCount) => {
       const user = userEvent.setup();
@@ -3199,6 +3199,82 @@ describe("authoritative game session lifecycle", () => {
       gameId,
       current: { state: { setup: { step: "roles", setup: { assignments: {} } } } },
     });
+  });
+
+  it("saves and reloads a real Casper role draw before creating its canonical game", async () => {
+    const { SetupWizard: RealSetupWizard } = await vi.importActual<typeof setupWizardModule>(
+      "./features/setup/SetupWizard.js",
+    );
+    const setupMock = vi
+      .spyOn(setupWizardModule, "SetupWizard")
+      .mockImplementation(RealSetupWizard);
+    const humans = assignedGame.players.slice(0, 9);
+    api.listPlayers.mockResolvedValue([
+      ...humans.map(({ name, id }) => player(name, id)),
+      player("Host Player", hostPlayerId),
+    ]);
+    window.localStorage.setItem(
+      `mafia-dashboard.available-player-ids.${testClub.id}`,
+      JSON.stringify([...humans.map(({ id }) => id), hostPlayerId]),
+    );
+    const user = userEvent.setup();
+    const gameId = "00000000-0000-4000-8000-000000000090";
+    try {
+      const first = renderView(<App />);
+      await waitFor(() => expect(api.listPlayers).toHaveBeenCalledWith(testClub.id));
+      await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+      await user.click(screen.getByRole("button", { name: "Players screen" }));
+      await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+      await user.click(screen.getByRole("button", { name: "Start new game" }));
+      await user.click(await screen.findByRole("combobox", { name: "Host player" }));
+      await user.click(await screen.findByRole("option", { name: "Host Player" }));
+      await user.click(screen.getByRole("switch", { name: "Include Casper" }));
+      await user.click(screen.getByRole("button", { name: "Assign players" }));
+      await user.click(screen.getByRole("button", { name: "Start game" }));
+      await waitFor(() => expect(api.createGameSession).toHaveBeenCalledOnce());
+      expect(api.createGameSession.mock.calls[0]?.[0].state.setup.setup).toMatchObject({
+        assignments: { 10: "citizen" },
+        players: expect.arrayContaining([{ id: "casper", name: "Casper", seat: 10 }]),
+      });
+      await user.click(screen.getByRole("button", { name: "Draw role for Player 1" }));
+      await waitFor(() =>
+        expect(
+          api.saveGameSession.mock.lastCall?.[1].state.setup.setup.remainingRoles,
+        ).toHaveLength(8),
+      );
+      first.unmount();
+      renderView(<App />);
+      expect(await screen.findByRole("button", { name: "Casper: citizen" })).toBeDisabled();
+      expect(screen.getByText("Draw roles · 8 remaining")).toBeInTheDocument();
+      for (const { name } of humans.slice(1)) {
+        await user.click(screen.getByRole("button", { name: `Draw role for ${name}` }));
+      }
+      await user.click(screen.getByRole("button", { name: "Begin Mafia planning stage" }));
+      await waitFor(() =>
+        expect(gameScreenHarness.liveGame?.players[9]).toMatchObject({
+          id: "casper",
+          name: "Casper",
+          seat: 10,
+          role: "citizen",
+          team: "red",
+        }),
+      );
+      await waitFor(() =>
+        expect(
+          api.saveGameSession.mock.lastCall?.[1].state.initialGame.game.players[9],
+        ).toMatchObject({ id: "casper", role: "citizen" }),
+      );
+      expect(api.createGameSession).toHaveBeenCalledOnce();
+      expect(new Set(api.saveGameSession.mock.calls.map(([id]) => id))).toEqual(new Set([gameId]));
+      const state = api.saveGameSession.mock.lastCall?.[1].state;
+      expect(replayGameLog(state.initialGame, state.events).game.players[9]).toMatchObject({
+        id: "casper",
+        role: "citizen",
+      });
+    } finally {
+      cleanup();
+      setupMock.mockRestore();
+    }
   });
 
   it("restores zero and partial role giveaway snapshots and completes on the same game ID", async () => {

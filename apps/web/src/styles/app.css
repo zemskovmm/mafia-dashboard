@@ -711,6 +711,77 @@ h2 {
   column-gap: 42px;
   margin: 24px 0;
 }
+.player-setup-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 8px;
+}
+.player-setup-heading h1 {
+  min-width: 0;
+  margin-bottom: 0;
+}
+.casper-toggle {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  max-width: 45%;
+  flex-shrink: 0;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+.casper-toggle input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  clip-path: inset(50%);
+}
+.casper-switch-track {
+  position: relative;
+  flex: 0 0 51px;
+  height: 31px;
+  background: #636366;
+  border-radius: 999px;
+  transition: background-color 180ms ease;
+}
+.casper-switch-track::before {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 27px;
+  height: 27px;
+  content: "";
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 25%);
+  transition: transform 180ms ease;
+}
+.casper-toggle input:checked + .casper-switch-track {
+  background: #34c759;
+}
+.casper-toggle input:checked + .casper-switch-track::before {
+  transform: translateX(20px);
+}
+.casper-toggle input:focus-visible + .casper-switch-track {
+  outline: 2px solid var(--accent);
+  outline-offset: 4px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .casper-switch-track,
+  .casper-switch-track::before {
+    transition: none;
+  }
+}
+.player-combobox input[readonly] {
+  padding-right: 14px;
+}
 .player-combobox {
   position: relative;
   display: grid;
