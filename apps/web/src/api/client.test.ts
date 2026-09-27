@@ -10,6 +10,7 @@ import {
   deleteClub,
   disconnectMusicAccount,
   getAuthSession,
+  getAppVersion,
   getGameEvents,
   getGameSession,
   getMusicAccountStatus,
@@ -74,6 +75,63 @@ void lockedManagerConsentWithdrawal;
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+});
+
+describe("app version API client", () => {
+  it("returns the exact non-default server version without using a cached response", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ version: "2.7.123", commit: "abc123" }), { status: 200 }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getAppVersion()).resolves.toBe("2.7.123");
+    expect(fetchMock).toHaveBeenCalledWith("/health/version", { cache: "no-store" });
+  });
+
+  it.each([
+    null,
+    {},
+    { version: "2.7.123" },
+    { version: "2.7.123", commit: 123 },
+    ...[
+      "",
+      "1.0",
+      "01.0.0",
+      "1.00.0",
+      "1.0.01",
+      "1.-1.0",
+      "1.2.3-beta",
+      "1.0.9007199254740992",
+      "1e2.0.0",
+    ].map((version) => ({ version, commit: "abc123" })),
+  ])("rejects a malformed version response: %j", async (body) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(body))));
+
+    await expect(getAppVersion()).rejects.toThrow("Invalid app version response");
+  });
+
+  it("preserves HTTP error status and code", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(new Response(JSON.stringify({ error: "unavailable" }), { status: 503 })),
+    );
+
+    await expect(getAppVersion()).rejects.toMatchObject({
+      name: "ApiError",
+      status: 503,
+      code: "unavailable",
+    });
+  });
+
+  it("propagates network failures", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Network unavailable")));
+
+    await expect(getAppVersion()).rejects.toThrow("Network unavailable");
+  });
 });
 
 describe("club API client", () => {

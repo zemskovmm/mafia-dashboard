@@ -54,6 +54,7 @@ jobs:
           tags: ${{ env.IMAGE_REF }}
           build-args: |
             APP_COMMIT=${{ github.sha }}
+            APP_BUILD_INDEX=${{ github.run_number }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -242,6 +243,12 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
+          expected_version=$(node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { composeAppVersion } from "./scripts/release-verifier-contracts.mjs";
+            const { version } = JSON.parse(readFileSync("package.json", "utf8"));
+            process.stdout.write(composeAppVersion(version, process.env.GITHUB_RUN_NUMBER));
+          ')
           app_name="$APP_NAME"
           configuration=$(az containerapp show \
             --resource-group "$AZURE_RESOURCE_GROUP" \
@@ -257,8 +264,8 @@ jobs:
               "${{ steps.app.outputs.public_url }}/health/ready" >/dev/null; then
               identity=$(curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
                 "${{ steps.app.outputs.public_url }}/health/version" 2>/dev/null || true)
-              if [[ -n "$identity" ]] && jq --exit-status --arg commit "$GITHUB_SHA" \
-                '.commit == $commit and (.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' \
+              if [[ -n "$identity" ]] && jq --exit-status --arg commit "$GITHUB_SHA" --arg version "$expected_version" \
+                '.version == $version and .commit == $commit' \
                 <<<"$identity" >/dev/null; then
                 exit 0
               fi

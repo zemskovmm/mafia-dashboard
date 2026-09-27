@@ -23,8 +23,32 @@ const required = (environment, key) => {
   return value.trim();
 };
 
+export const composeAppVersion = (packageVersion, buildIndex) => {
+  if (
+    typeof packageVersion !== "string" ||
+    !/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(packageVersion) ||
+    packageVersion.split(".").some((value) => !Number.isSafeInteger(Number(value)))
+  ) {
+    throw new Error(
+      "package.json version must be major.minor.patch with non-negative safe integers",
+    );
+  }
+  if (
+    typeof buildIndex !== "string" ||
+    !/^(0|[1-9][0-9]*)$/.test(buildIndex) ||
+    !Number.isSafeInteger(Number(buildIndex))
+  ) {
+    throw new Error("APP_BUILD_INDEX must be a canonical non-negative safe integer");
+  }
+  const [major, minor] = packageVersion.split(".");
+  return `${major}.${minor}.${buildIndex}`;
+};
+
 export const assertReleaseEnvironment = (environment) => {
   const appUrl = required(environment, "APP_URL");
+  const buildIndex = environment.APP_BUILD_INDEX;
+  // Remote qualification must name the published image's build index explicitly.
+  composeAppVersion("0.0.0", buildIndex);
   const parsedUrl = new URL(appUrl);
   if (parsedUrl.protocol !== "https:") throw new Error("APP_URL must use HTTPS");
   if (
@@ -48,21 +72,23 @@ export const assertReleaseEnvironment = (environment) => {
   }
   parseVerifierAuthCookie(required(environment, "SESSION_AUTH_COOKIE"), { required: true });
   parseVerifierClubId(required(environment, "SESSION_CLUB_ID"));
-  return { appUrl, commit, expectedOrigin };
+  return { appUrl, buildIndex, commit, expectedOrigin };
 };
 
 export const assertReleaseCandidate = ({
-  packageVersion,
+  appVersion,
   head,
   releaseCommit,
   trackedStatus,
   deployedIdentity,
 }) => {
-  if (packageVersion !== "1.0.0") throw new Error("Release package version must be 1.0.0");
+  if (typeof appVersion !== "string" || !/^\d+\.\d+\.\d+$/.test(appVersion)) {
+    throw new Error("Expected application version is invalid");
+  }
   if (!/^[0-9a-f]{40}$/.test(head)) throw new Error("HEAD must be a full Git SHA");
   if (head !== releaseCommit) throw new Error("RELEASE_COMMIT does not match HEAD");
   if (trackedStatus.trim() !== "") throw new Error("Tracked files must be clean");
-  if (deployedIdentity?.version !== packageVersion || deployedIdentity?.commit !== releaseCommit) {
+  if (deployedIdentity?.version !== appVersion || deployedIdentity?.commit !== releaseCommit) {
     throw new Error("Deployed release identity does not match the local candidate");
   }
 };

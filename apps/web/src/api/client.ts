@@ -392,6 +392,27 @@ export const checkServerReady = async (): Promise<void> => {
   if (!response.ok) return throwApiError(response, "Server is not ready");
 };
 
+export const getAppVersion = async (): Promise<string> => {
+  const response = await fetch("/health/version", { cache: "no-store" });
+  if (!response.ok) return throwApiError(response, "Unable to load app version");
+  const body: unknown = await response.json();
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    throw new Error("Invalid app version response");
+  }
+  const { version, commit } = body as Record<string, unknown>;
+  if (typeof version !== "string" || typeof commit !== "string") {
+    throw new Error("Invalid app version response");
+  }
+  const components = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.exec(version);
+  if (
+    components === null ||
+    components.slice(1).some((value) => !Number.isSafeInteger(Number(value)))
+  ) {
+    throw new Error("Invalid app version response");
+  }
+  return version;
+};
+
 export const getAuthSession = async (): Promise<AuthSession> => {
   const response = await fetch("/api/auth/session");
   if (!response.ok) return throwApiError(response, "Unable to load the sign-in session");

@@ -6,9 +6,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
+import { composeAppVersion } from "./release-verifier-contracts.mjs";
 
 const cwd = fileURLToPath(new URL("../", import.meta.url));
-const appVersion = JSON.parse(readFileSync(join(cwd, "package.json"), "utf8")).version;
+const { version: packageVersion } = JSON.parse(readFileSync(join(cwd, "package.json"), "utf8"));
+const buildIndex = process.env.APP_BUILD_INDEX ?? "0";
+const appVersion = composeAppVersion(packageVersion, buildIndex);
 const appCommitResult = spawnSync("git", ["rev-parse", "HEAD"], {
   cwd,
   encoding: "utf8",
@@ -61,6 +64,7 @@ const databaseUrl = `postgresql://mafia:${postgresPassword}@db:5432/mafia`;
 const env = {
   ...process.env,
   APP_COMMIT: appCommit,
+  APP_BUILD_INDEX: buildIndex,
   APP_BIND: "127.0.0.1",
   APP_IMAGE: image,
   APP_PORT: String(port),

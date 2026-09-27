@@ -70,6 +70,7 @@ test("Azure publishes an immutable image and deploys its verified digest with le
   assert.match(publish, /outputs:\n\s{6}image: \$\{\{ steps\.publish\.outputs\.image \}\}/);
   assert.match(publish, /id: publish/);
   assert.match(publish, /build-args:[\s\S]*APP_COMMIT=\$\{\{ github\.sha \}\}/);
+  assert.match(publish, /build-args:[\s\S]*APP_BUILD_INDEX=\$\{\{ github\.run_number \}\}/);
   assert.match(publish, /docker buildx imagetools inspect "\$IMAGE_REF"/);
   assert.match(publish, /image_ref="\$\{IMAGE_REF%:\*\}@\$digest"/);
   assert.match(publish, /docker push/);
@@ -79,12 +80,58 @@ test("Azure publishes an immutable image and deploys its verified digest with le
   assert.match(deploy, /image="\$DEPLOY_IMAGE"/);
   assert.match(deploy, /\/health\/version/);
   assert.match(deploy, /--arg commit "\$GITHUB_SHA"/);
+  assert.match(deploy, /composeAppVersion\(version, process\.env\.GITHUB_RUN_NUMBER\)/);
+  assert.match(deploy, /--arg version "\$expected_version"/);
+  assert.match(deploy, /\.version == \$version and \.commit == \$commit/);
+  assert.doesNotMatch(deploy, /\.version \| test\(/);
   assert.match(deploy, /health\/version" 2>\/dev\/null \|\| true/);
   assert.match(deploy, /az containerapp revision list/);
   assert.match(deploy, /az containerapp logs show/);
   assert.match(deploy, /--revision "\$failed_revision"/);
   assert.match(deploy, /--container migrate/);
   assert.doesNotMatch(deploy, /image="ghcr\.io\/\$\{GITHUB_REPOSITORY\}:\$\{GITHUB_SHA\}"/);
+});
+
+test("Azure readback accepts only the configured version and exact commit", async () => {
+  const source = await read(".github/workflows/deploy-azure.yml");
+  const verify = source.slice(source.indexOf("      - name: Verify Azure deployment\n"));
+  const block = verify.split("        run: |\n")[1].replace(/^ {10}/gm, "");
+  assert.ok(block);
+  const fixture = block
+    .replace(
+      'const { version } = JSON.parse(readFileSync("package.json", "utf8"));',
+      'const version = "2.7.9";',
+    )
+    .replaceAll("${{ steps.app.outputs.public_url }}", "https://mafia.example.test");
+  assert.notEqual(fixture, block);
+  const script = `
+    az() { printf '%s\\n' '{"provisioningState":"Succeeded","minReplicas":1,"maxReplicas":1,"targetPort":3000,"image":"sha256:fixture","initImage":"sha256:fixture"}'; }
+    curl() { if [[ "$*" == *"/health/version"* ]]; then printf '%s\\n' "$MOCK_IDENTITY"; else printf '%s\\n' '{"status":"ready"}'; fi; }
+    sleep() { :; }
+    ${fixture}
+  `;
+  const commit = "a".repeat(40);
+  for (const [identity, expectedStatus] of [
+    [{ version: "2.7.123", commit }, 0],
+    [{ version: "2.7.124", commit }, 1],
+    [{ version: "2.7.123", commit: "b".repeat(40) }, 1],
+    [{ version: "1.0.123", commit }, 1],
+  ]) {
+    const result = spawnSync("/bin/bash", ["-c", script], {
+      cwd: new URL("../", import.meta.url),
+      env: {
+        ...process.env,
+        APP_NAME: "fixture",
+        AZURE_RESOURCE_GROUP: "fixture",
+        DEPLOY_IMAGE: "sha256:fixture",
+        GITHUB_SHA: commit,
+        GITHUB_RUN_NUMBER: "123",
+        MOCK_IDENTITY: JSON.stringify(identity),
+      },
+      encoding: "utf8",
+    });
+    assert.equal(result.status, expectedStatus, result.stderr);
+  }
 });
 
 test("Azure passes one explicit database target through every deployment path", async () => {
@@ -213,6 +260,10 @@ test("runtime image refreshes OS fixes and omits package managers", async () => 
   assert.match(source, /npm prune --omit=dev --ignore-scripts --no-audit/);
   assert.match(source, /^ARG APP_COMMIT="unknown"$/m);
   assert.match(source, /APP_COMMIT=\$\{APP_COMMIT\}/);
+  assert.match(source, /^ARG APP_BUILD_INDEX="0"$/m);
+  assert.match(source, /APP_BUILD_INDEX=\$\{APP_BUILD_INDEX\}/);
+  assert.match(source, /COPY --from=build --chown=node:node \/app\/package\.json /);
+  assert.doesNotMatch(source, /version\.json/);
 });
 
 test("Compose passes source identity into immutable application builds", async () => {
@@ -222,8 +273,13 @@ test("Compose passes source identity into immutable application builds", async (
   ]);
 
   assert.match(compose, /APP_COMMIT: \$\{APP_COMMIT:-unknown\}/);
+  assert.match(compose, /APP_BUILD_INDEX: \$\{APP_BUILD_INDEX:-0\}/);
+  assert.doesNotMatch(compose, /^\s{6}APP_BUILD_INDEX: /m);
   assert.match(verifier, /status.*--porcelain.*--untracked-files=no/s);
   assert.match(verifier, /trackedStatus.*\? appCommitResult\.stdout\.trim\(\) : "unknown"/s);
   assert.match(verifier, /APP_COMMIT: appCommit/);
+  assert.match(verifier, /APP_BUILD_INDEX: buildIndex/);
+  assert.match(verifier, /composeAppVersion\(packageVersion, buildIndex\)/);
+  assert.doesNotMatch(verifier, /version\.json/);
   assert.match(verifier, /\/health\/version/);
 });

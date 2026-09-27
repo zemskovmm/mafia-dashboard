@@ -53,6 +53,7 @@ const api = vi.hoisted(() => {
     createPlayer: vi.fn(),
     deletePlayer: vi.fn(),
     getGameSession: vi.fn(),
+    getAppVersion: vi.fn(),
     listActiveGameSessions: vi.fn(),
     listCompletedGameSessions: vi.fn(),
     listPlayers: vi.fn(),
@@ -738,6 +739,7 @@ beforeEach(() => {
   api.createPlayer.mockReset();
   api.deletePlayer.mockReset().mockResolvedValue(undefined);
   api.getGameSession.mockReset();
+  api.getAppVersion.mockReset().mockResolvedValue("1.0.0");
   api.listActiveGameSessions.mockReset().mockResolvedValue([]);
   api.listCompletedGameSessions.mockReset().mockResolvedValue([]);
   api.listPlayers
@@ -1801,17 +1803,82 @@ describe("developer menu", () => {
     expect(clearTimeout).toHaveBeenCalledWith(42);
   });
 
-  it("shows the canary app version with a bird icon at the top", async () => {
+  it("shows the exact server Canary version with a bird icon at the top, retaining it on reopen", async () => {
     const user = userEvent.setup();
+    api.getAppVersion.mockResolvedValue("2.7.123");
     render(<App />);
 
+    expect(api.getAppVersion).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
 
     const menu = screen.getByRole("dialog", { name: "Developer menu" });
-    const version = within(menu).getByLabelText("Canary version 1.0.0");
-    expect(version).toHaveTextContent("Canary v1.0.0");
+    const version = await within(menu).findByLabelText("Canary version 2.7.123");
+    expect(version).toHaveTextContent("Canary v2.7.123");
     expect(version.querySelector(".lucide-bird")).toBeInTheDocument();
     expect(menu.firstElementChild).toContainElement(version);
+    await user.click(screen.getByRole("button", { name: "Close developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    expect(screen.getByLabelText("Canary version 2.7.123")).toBeInTheDocument();
+    expect(api.getAppVersion).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the workspace usable while loading and retries failed version requests on reopening", async () => {
+    const user = userEvent.setup();
+    const first = deferred<string>();
+    api.getAppVersion.mockReturnValueOnce(first.promise).mockResolvedValueOnce("3.4.5");
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    const menu = screen.getByRole("dialog", { name: "Developer menu" });
+    const loading = within(menu).getByLabelText("Canary version loading");
+    expect(loading).toHaveTextContent("Canary vLoading…");
+    expect(loading).not.toHaveTextContent("1.0.0");
+    expect(screen.getByRole("button", { name: "Enter role giveaway" })).toBeInTheDocument();
+    first.reject(new TypeError("Network unavailable"));
+    expect(await within(menu).findByLabelText("Canary version unavailable")).toHaveTextContent(
+      "Canary vUnavailable",
+    );
+    await user.click(screen.getByRole("button", { name: "Close developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    expect(await screen.findByLabelText("Canary version 3.4.5")).toHaveTextContent("Canary v3.4.5");
+    expect(api.getAppVersion).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores a stale version result after closing and reopening the menu", async () => {
+    const user = userEvent.setup();
+    const first = deferred<string>();
+    const second = deferred<string>();
+    api.getAppVersion.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Close developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await waitFor(() => expect(api.getAppVersion).toHaveBeenCalledTimes(2));
+    await act(async () => first.resolve("9.9.9"));
+    expect(screen.getByLabelText("Canary version loading")).toBeInTheDocument();
+    await act(async () => second.resolve("4.5.6"));
+    expect(screen.getByLabelText("Canary version 4.5.6")).toBeInTheDocument();
+  });
+
+  it("localizes Canary loading and error states in Russian", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<string>();
+    api.getAppVersion.mockReturnValue(pending.promise);
+    renderView(
+      <I18nProvider locale="ru">
+        <App />
+      </I18nProvider>,
+    );
+    const privacy = screen.getByRole("button", { name: "Скрыть личную информацию" });
+    for (let tap = 0; tap < 6; tap += 1) fireEvent.click(privacy);
+    await user.click(screen.getByRole("button", { name: "Открыть меню разработчика" }));
+    expect(screen.getByLabelText("Версия Canary загружается")).toHaveTextContent(
+      "Canary vЗагрузка…",
+    );
+    pending.reject(new Error("Unavailable"));
+    expect(await screen.findByLabelText("Версия Canary недоступна")).toHaveTextContent(
+      "Canary vНедоступна",
+    );
   });
 
   it("uses the Save icon as a server readiness button", async () => {

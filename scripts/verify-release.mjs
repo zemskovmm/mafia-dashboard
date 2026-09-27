@@ -7,6 +7,7 @@ import {
   assertNoReleaseArguments,
   assertReleaseCandidate,
   assertReleaseEnvironment,
+  composeAppVersion,
   redactDiagnostic,
   runGateMatrix,
 } from "./release-verifier-contracts.mjs";
@@ -19,7 +20,7 @@ const runGit = (args) => {
 };
 const secrets = [process.env.SESSION_AUTH_COOKIE];
 let release;
-let packageVersion = "unknown";
+let appVersion = "unknown";
 let head = "unknown";
 let trackedStatus = "";
 let deployedIdentity = null;
@@ -35,7 +36,7 @@ const verifyDeploymentIdentity = async () => {
   }
   deployedIdentity = await response.json();
   assertReleaseCandidate({
-    packageVersion,
+    appVersion,
     head,
     releaseCommit: release.commit,
     trackedStatus,
@@ -45,9 +46,10 @@ const verifyDeploymentIdentity = async () => {
 try {
   assertNoReleaseArguments(process.argv.slice(2));
   release = assertReleaseEnvironment(process.env);
-  packageVersion = JSON.parse(
+  const { version: packageVersion } = JSON.parse(
     readFileSync(new URL("../package.json", import.meta.url), "utf8"),
-  ).version;
+  );
+  appVersion = composeAppVersion(packageVersion, release.buildIndex);
   head = runGit(["rev-parse", "HEAD"]);
   await verifyDeploymentIdentity();
 
@@ -72,7 +74,7 @@ try {
   console.log(
     JSON.stringify({
       status: "PASS",
-      version: packageVersion,
+      version: appVersion,
       candidate: head,
       deployedIdentity,
       targetOrigin: release.expectedOrigin,
@@ -93,7 +95,7 @@ try {
   console.error(
     JSON.stringify({
       status: "FAIL",
-      version: packageVersion,
+      version: appVersion,
       candidate: head,
       deployedIdentity,
       targetOrigin: release?.expectedOrigin ?? null,

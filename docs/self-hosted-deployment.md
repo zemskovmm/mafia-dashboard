@@ -16,6 +16,8 @@ Clone the repository only for the Compose definition and runbook. Do not place c
 
 For v1.0.0 candidate qualification, follow the [release checklist](releases/v1.0.0.md). Release builds must set `APP_COMMIT` to the full source SHA so `/health/version` can identify the immutable candidate; ordinary local builds default to `unknown` and cannot pass the release gate.
 
+The application version takes its first two components from the root `package.json` standard `version` field (initially `1.0.0`). Use a numeric `major.minor.patch` value with non-negative safe integers. The package patch is replaced by `APP_BUILD_INDEX`, a canonical non-negative integer baked into the image at build time: package version `2.7.9` with build index `123` produces `2.7.123`, or `2.7.0` locally. The **Deploy Azure** publishing workflow supplies its `github.run_number`; run numbers belong to this workflow, may have gaps, and reruns reuse the same number. Changing major/minor does not reset the run number. The runtime image already includes the root package manifest; neither Compose nor Azure overrides the baked index at runtime. Backend/frontend workspace versions remain independent, and builds do not rewrite package manifests or the lockfile.
+
 ## Configure the deployment
 
 Create a root-owned deployment directory, copy `compose.yaml` and `.env.example` into it, rename the example to `.env`, and restrict the file to the deployment account:
@@ -41,6 +43,8 @@ GOOGLE_CLIENT_SECRET=<google-web-client-secret>
 GOOGLE_OAUTH_REDIRECT_URI=https://mafia.example.com/api/music/oauth/callback
 MUSIC_TOKEN_ENCRYPTION_KEY=<32-byte-base64url-key>
 ```
+
+For a source build, pass `APP_BUILD_INDEX=<published-build-index>` to `docker compose build app` only if building that exact candidate locally; otherwise the default is `0`. For an immutable digest deployment, `APP_BUILD_INDEX` in the deployment host environment does **not** change the image's version—use the index baked at publication.
 
 Use the exact browser origin for `PUBLIC_APP_URL`. Register these exact Google callback URLs:
 
@@ -223,7 +227,7 @@ npm run verify:compose
 npm run verify:backup
 ```
 
-The Compose verifier uses a unique project, temporary port, disposable database volume, and throwaway image tag. It verifies the production image build, failed-migration startup blocking, health checks, one-shot and idempotent migrations, clean `SIGTERM` shutdown, automatic application restart after `SIGKILL`, exact accepted-event readback after that crash, and PostgreSQL persistence, then removes its containers, network, volume, and image. The backup verifier separately runs a real PostgreSQL 17 custom dump, byte-verified off-server copy, isolated semantic restore, independent readback, failure path, and cleanup.
+The Compose verifier uses a unique project, temporary port, disposable database volume, and throwaway image tag. It verifies the production image build, exact root package major/minor + `APP_BUILD_INDEX` and commit identity, failed-migration startup blocking, health checks, one-shot and idempotent migrations, clean `SIGTERM` shutdown, automatic application restart after `SIGKILL`, exact accepted-event readback after that crash, and PostgreSQL persistence, then removes its containers, network, volume, and image. Set `APP_BUILD_INDEX` to exercise a nonzero index (otherwise it defaults to `0`). The backup verifier separately runs a real PostgreSQL 17 custom dump, byte-verified off-server copy, isolated semantic restore, independent readback, failure path, and cleanup.
 
 Run the full repository gate separately:
 

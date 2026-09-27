@@ -7,7 +7,6 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
-import webPackage from "../package.json";
 import {
   applyGameEvent,
   createGameLogEntry,
@@ -41,6 +40,7 @@ import {
   createPlayer,
   deletePlayer,
   getAuthSession,
+  getAppVersion,
   getGameSession,
   listActiveGameSessions,
   listPlayers,
@@ -577,6 +577,8 @@ export const ClubWorkspace = ({
   const [swipedSessionId, setSwipedSessionId] = useState<string | null>(null);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [activeDrawer, setActiveDrawer] = useState<"log" | "manage" | "dev" | null>(null);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [appVersionUnavailable, setAppVersionUnavailable] = useState(false);
   const [roleDrawBackAction, setRoleDrawBackAction] = useState<(() => void) | null>(null);
   const [musicSetupOpen, setMusicSetupOpen] = useState(false);
   const [backgroundShade, setBackgroundShade] = useState<BackgroundShade>("black");
@@ -1571,6 +1573,31 @@ export const ClubWorkspace = ({
   );
 
   const showWorkspaceTools = previewGame === null && (view === "game" || view === "players");
+  useEffect(() => {
+    if (
+      activeDrawer !== "dev" ||
+      !isManager ||
+      !devUnlocked ||
+      !showWorkspaceTools ||
+      appVersion !== null
+    ) {
+      return;
+    }
+    let active = true;
+    setAppVersionUnavailable(false);
+    void getAppVersion().then(
+      (version) => {
+        if (active) setAppVersion(version);
+      },
+      () => {
+        if (active) setAppVersionUnavailable(true);
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [activeDrawer, appVersion, devUnlocked, isManager, showWorkspaceTools]);
+
   const togglePrivacy = () => {
     setPrivacyHidden((hidden) => !hidden);
     if (!isManager) {
@@ -2073,10 +2100,19 @@ export const ClubWorkspace = ({
             <h2 tabIndex={-1}>{t("devMenu")}</h2>
             <p
               className="dev-menu-version"
-              aria-label={t("canaryVersion", { version: webPackage.version })}
+              aria-label={
+                appVersion !== null
+                  ? t("canaryVersion", { version: appVersion })
+                  : t(appVersionUnavailable ? "canaryVersionUnavailable" : "canaryVersionLoading")
+              }
             >
               <Bird aria-hidden="true" strokeWidth={2.5} />
-              <span>{t("canaryVersionLabel", { version: webPackage.version })}</span>
+              <span>
+                {t("canaryVersionLabel", {
+                  version:
+                    appVersion ?? t(appVersionUnavailable ? "canaryUnavailable" : "canaryLoading"),
+                })}
+              </span>
             </p>
           </div>
           <div className="dev-menu-actions">

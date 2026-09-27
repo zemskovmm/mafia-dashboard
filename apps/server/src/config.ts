@@ -18,6 +18,12 @@ const environment = z
     APP_COMMIT: z
       .union([z.literal("unknown"), z.string().regex(/^[0-9a-f]{40}$/)])
       .default("unknown"),
+    APP_BUILD_INDEX: z
+      .string()
+      .regex(/^(0|[1-9][0-9]*)$/)
+      .default("0")
+      .transform(Number)
+      .pipe(z.int().nonnegative()),
     GOOGLE_CLIENT_ID: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
     GOOGLE_CLIENT_SECRET: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
     GOOGLE_OAUTH_REDIRECT_URI: z.preprocess(emptyToUndefined, z.url().optional()),

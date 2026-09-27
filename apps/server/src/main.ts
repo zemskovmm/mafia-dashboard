@@ -1,15 +1,17 @@
 import { readFileSync } from "node:fs";
 import { Pool } from "pg";
 import { buildApp } from "./app.js";
+import { composeAppVersion } from "./app-version.js";
 import { loadConfig } from "./config.js";
 import { GoogleAuthService } from "./google-auth.js";
 import { createShutdown, registerShutdownSignals } from "./server-lifecycle.js";
 import { YouTubeOAuthService } from "./youtube-oauth.js";
 
 const config = loadConfig();
-const { version } = JSON.parse(
-  readFileSync(new URL("../../../package.json", import.meta.url), "utf8"),
-) as { readonly version: string };
+const version = composeAppVersion(
+  JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8")).version,
+  config.APP_BUILD_INDEX,
+);
 const pool = new Pool({ connectionString: config.DATABASE_URL });
 const youtubeOAuth =
   config.youtubeOAuth === undefined

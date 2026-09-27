@@ -22,10 +22,12 @@ RUN apk upgrade --no-cache \
     && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
     /usr/local/bin/yarn /usr/local/bin/yarnpkg /sbin/apk
 ARG APP_COMMIT="unknown"
+ARG APP_BUILD_INDEX="0"
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=3000 \
     APP_COMMIT=${APP_COMMIT} \
+    APP_BUILD_INDEX=${APP_BUILD_INDEX} \
     STATIC_DIR=/app/apps/web/dist
 
 COPY --from=build --chown=node:node /app/package.json /app/package-lock.json ./

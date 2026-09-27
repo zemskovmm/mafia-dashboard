@@ -2,6 +2,18 @@ import { describe, expect, it } from "vitest";
 import { loadConfig } from "./config.js";
 
 describe("loadConfig", () => {
+  it("uses build index zero locally and accepts the CI run number", () => {
+    expect(loadConfig({}).APP_BUILD_INDEX).toBe(0);
+    expect(loadConfig({ APP_BUILD_INDEX: "123" }).APP_BUILD_INDEX).toBe(123);
+  });
+
+  it.each(["", "-1", "1.5", "1e3", "01", " 1", "9007199254740992", "build"])(
+    "rejects an invalid build index %j",
+    (APP_BUILD_INDEX) => {
+      expect(() => loadConfig({ APP_BUILD_INDEX })).toThrow();
+    },
+  );
+
   it("does not trust forwarding headers by default", () => {
     expect(loadConfig({}).TRUST_PROXY_HOPS).toBe(0);
     expect(loadConfig({}).APP_COMMIT).toBe("unknown");
