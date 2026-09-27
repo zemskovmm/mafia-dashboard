@@ -2280,7 +2280,6 @@ export const ClubWorkspace = ({
             onPopulateDevelopmentPlayers={populateDevelopmentPlayers}
             onOpenAvailablePlayers={() => setAvailabilityScreenOpen(true)}
             onRoleDrawBackActionChange={updateRoleDrawBackAction}
-            privacyHidden={privacyHidden}
             persistencePending={sessionSync.isCreating || sessionSync.isRemoved}
             initialSessionState={setupSession}
             onSessionStateChange={handleSetupSessionChange}

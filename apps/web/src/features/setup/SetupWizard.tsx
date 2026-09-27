@@ -28,7 +28,6 @@ interface SetupWizardProps {
   readonly onPopulateDevelopmentPlayers?: () => Promise<readonly PlayerProfile[]>;
   readonly onOpenAvailablePlayers?: () => void;
   readonly onRoleDrawBackActionChange?: (action: (() => void) | null) => void;
-  readonly privacyHidden?: boolean;
   /** Creation is in flight; role changes must not outrun the server GUID. */
   readonly persistencePending?: boolean;
 }
@@ -266,7 +265,6 @@ export const SetupWizard = ({
   onPopulateDevelopmentPlayers,
   onOpenAvailablePlayers,
   onRoleDrawBackActionChange,
-  privacyHidden = false,
   persistencePending = false,
 }: SetupWizardProps) => {
   const { t } = useMessages(gameMessages);
@@ -496,7 +494,6 @@ export const SetupWizard = ({
           <section className="table-workspace">
             <GameTable
               hostName={hostPlayer?.nickname ?? t("setup.unknownHost")}
-              privacyHidden={privacyHidden}
               seats={setup.players.map((player) => ({
                 seat: player.seat,
                 name: player.name,

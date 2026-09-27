@@ -38,6 +38,8 @@ import {
   DEVELOPER_UNLOCKED_STORAGE_KEY,
 } from "./features/developer/developer-preferences.js";
 import { musicPreferencesStorageKey } from "./features/music/music-preferences.js";
+import * as gameScreenModule from "./features/game/GameScreen.js";
+import * as setupWizardModule from "./features/setup/SetupWizard.js";
 import type { SetupWizardSessionState } from "./features/setup/SetupWizard.js";
 import { I18nProvider } from "./i18n/I18nProvider.js";
 import { THEME_COLOR_STORAGE_KEY } from "./theme.js";
@@ -2747,6 +2749,79 @@ describe("developer menu", () => {
     Reflect.deleteProperty(document.documentElement, "requestFullscreen");
     Reflect.deleteProperty(document, "exitFullscreen");
   });
+
+  it.each([false, true])(
+    "ignores privacy during real role giveaway (initially hidden: %s) but preserves it for gameplay",
+    async (initiallyHidden) => {
+      const { SetupWizard: RealSetupWizard } = await vi.importActual<typeof setupWizardModule>(
+        "./features/setup/SetupWizard.js",
+      );
+      const setupMock = vi
+        .spyOn(setupWizardModule, "SetupWizard")
+        .mockImplementation(RealSetupWizard);
+      const { GameScreen: RealGameScreen } = await vi.importActual<typeof gameScreenModule>(
+        "./features/game/GameScreen.js",
+      );
+      const gameMock = vi.spyOn(gameScreenModule, "GameScreen").mockImplementation(RealGameScreen);
+      window.localStorage.setItem(
+        `mafia-dashboard.available-player-ids.${testClub.id}`,
+        JSON.stringify([...assignedGame.players.map(({ id }) => id), hostPlayerId]),
+      );
+      const user = userEvent.setup();
+      try {
+        renderView(<App />);
+        const host = await screen.findByRole("combobox", { name: "Host player" });
+        await user.click(host);
+        await user.click(screen.getByRole("option", { name: "Host Player" }));
+        for (const { seat, name } of assignedGame.players) {
+          await user.click(screen.getByRole("combobox", { name: `Seat ${seat} player` }));
+          await user.click(screen.getByRole("option", { name }));
+        }
+        if (initiallyHidden) {
+          await user.click(screen.getByRole("button", { name: "Hide private info" }));
+        }
+        await user.click(screen.getByRole("button", { name: /^start game$/i }));
+        await waitFor(() => expect(api.createGameSession).toHaveBeenCalledOnce());
+        await user.click(screen.getByRole("button", { name: "Draw role for Player 1" }));
+        const table = screen.getByRole("region", { name: "Mafia table" });
+        const firstBadge = table.querySelector(".role-badge");
+        expect(firstBadge).toBeVisible();
+        expect(table.querySelectorAll(".role-badge")).toHaveLength(1);
+        expect(screen.getByText("Draw roles · 9 remaining")).toBeVisible();
+
+        for (let toggle = 0; toggle < 2; toggle += 1) {
+          await user.click(screen.getByRole("button", { name: /^(show|hide) private info$/i }));
+          expect(table.querySelector(".role-badge")).toBe(firstBadge);
+          expect(firstBadge).toBeVisible();
+          expect(table.querySelectorAll(".role-badge")).toHaveLength(1);
+          expect(screen.getAllByRole("button", { name: /^Draw role for/ })).toHaveLength(9);
+          expect(screen.getByText("Draw roles · 9 remaining")).toBeVisible();
+        }
+        if (!initiallyHidden) {
+          await user.click(screen.getByRole("button", { name: "Hide private info" }));
+        }
+        for (const { name } of assignedGame.players.slice(1)) {
+          await user.click(screen.getByRole("button", { name: `Draw role for ${name}` }));
+        }
+        expect(table.querySelectorAll(".role-badge")).toHaveLength(10);
+        expect(screen.getByText("Draw roles · 0 remaining")).toBeVisible();
+        await user.click(screen.getByRole("button", { name: "Begin Mafia planning stage" }));
+        expect(screen.queryByRole("heading", { name: "Role giveaway" })).not.toBeInTheDocument();
+        const gameTable = screen.getByRole("region", { name: "Mafia table" });
+        expect(gameTable.querySelectorAll(".role-badge")).toHaveLength(0);
+        expect(screen.getByRole("button", { name: "Show private info" })).toHaveAttribute(
+          "aria-pressed",
+          "true",
+        );
+        await user.click(screen.getByRole("button", { name: "Show private info" }));
+        expect(gameTable.querySelectorAll(".role-badge")).toHaveLength(10);
+      } finally {
+        cleanup();
+        setupMock.mockRestore();
+        gameMock.mockRestore();
+      }
+    },
+  );
 
   it("uses the fixed mask control to hide private game information", async () => {
     const user = userEvent.setup();
