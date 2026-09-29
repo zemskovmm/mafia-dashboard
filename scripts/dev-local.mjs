@@ -30,7 +30,12 @@ export const assertAvailablePort = (port) =>
     );
   });
 
-const googleKeys = new Set(["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"]);
+const googleKeys = new Set([
+  "GOOGLE_CLIENT_ID",
+  "GOOGLE_CLIENT_SECRET",
+  "GOOGLE_OAUTH_REDIRECT_URI",
+  "MUSIC_TOKEN_ENCRYPTION_KEY",
+]);
 const pinnedKeys = new Set([
   "DATABASE_URL",
   "PUBLIC_APP_URL",
@@ -177,7 +182,7 @@ const rejectPinnedOverrides = (values, source) => {
 const validateInheritedOverrides = () =>
   rejectPinnedOverrides(process.env, "the inherited environment");
 
-const googleEnvironment = (values) =>
+export const googleEnvironment = (values) =>
   Object.fromEntries(
     Object.entries(values).filter(([key, value]) => googleKeys.has(key) && value !== ""),
   );
@@ -274,7 +279,7 @@ const waitFor = async ({ label, url, validate, children }) => {
   throw new Error(`${label} did not become ready within 30 seconds (${lastError}).`);
 };
 
-const apiSettings = ({ databaseUrl, origin, google }) =>
+export const apiSettings = ({ databaseUrl, origin, google }) =>
   childEnvironment({
     DATABASE_URL: databaseUrl,
     PUBLIC_APP_URL: origin,
@@ -284,7 +289,7 @@ const apiSettings = ({ databaseUrl, origin, google }) =>
     ...google,
   });
 
-const viteSettings = () => childEnvironment({ MAFIA_API_PROXY_TARGET: apiOrigin });
+export const viteSettings = () => childEnvironment({ MAFIA_API_PROXY_TARGET: apiOrigin });
 
 export const main = async () => {
   const mode = parseLaunchMode(process.argv.slice(2));
@@ -426,6 +431,11 @@ export const main = async () => {
       );
     } else {
       console.log(`Local development ready: ${origin}`);
+    }
+    if (!google.GOOGLE_OAUTH_REDIRECT_URI || !google.MUSIC_TOKEN_ENCRYPTION_KEY) {
+      console.warn(
+        `YouTube Music connection is not configured. Add GOOGLE_OAUTH_REDIRECT_URI=${origin}/api/music/oauth/callback and MUSIC_TOKEN_ENCRYPTION_KEY to .env.local, authorize the music callback in Google, then restart. See README.md; Google sign-in alone does not enable playlist access.`,
+      );
     }
 
     const outcome = await Promise.race([

@@ -41,6 +41,13 @@ For real Google sign-in, supply `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in
 
 `https://mbp16.tail102fab.ts.net/api/auth/google/callback`
 
+YouTube playlist connection uses the same Google client but needs two additional server-only settings in `.env.local`:
+
+- `GOOGLE_OAUTH_REDIRECT_URI=https://mbp16.tail102fab.ts.net/api/music/oauth/callback` — register this **additional** redirect URI on the same Google Web application client, keeping the app sign-in callback above.
+- `MUSIC_TOKEN_ENCRYPTION_KEY` — a persistent cryptographically random 32-byte base64url key. Generate it once for this local database, keep it private, and never replace an existing key: stored YouTube grants depend on it.
+
+Enable YouTube Data API v3 for that Google project and allow the connecting account through its OAuth consent configuration. Restart `npm run dev` after changing `.env.local`, then connect the account from Music player setup. Use the Tailscale HTTPS origin for this flow because music OAuth cookies require HTTPS. Configured settings do not prove Google consent or playlist access has succeeded.
+
 Credentials are server-only; do not put them in `VITE_*` variables. The launcher pins the local database and approved public origin rather than inheriting deployment targets. Missing Google configuration is a sign-in blocker even if database/API health succeeds. Cookie-authenticated mutations retain exact-origin checks and Secure, HttpOnly cookies.
 
 On iPad, connect Tailscale and open the same HTTPS URL in Safari. Keep this Mac awake with `npm run dev` running. Both devices use the same backend database, but login cookies and browser-local active-game state remain separate; this does not add live cross-device synchronization.

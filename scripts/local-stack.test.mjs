@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { createServer } from "node:net";
 import { execFileSync, spawnSync } from "node:child_process";
 import { stat } from "node:fs/promises";
@@ -8,6 +9,48 @@ import test from "node:test";
 const nativePostgresAvailable = ["initdb", "pg_ctl", "psql"].every(
   (command) => spawnSync(command, ["--version"]).status === 0,
 );
+
+test("local launch forwards explicit YouTube settings only to the API", async () => {
+  const { apiSettings, canonicalOrigin, googleEnvironment, viteSettings } =
+    await import("./dev-local.mjs");
+  const google = {
+    GOOGLE_CLIENT_ID: "test-client",
+    GOOGLE_CLIENT_SECRET: "test-secret",
+    GOOGLE_OAUTH_REDIRECT_URI: `${canonicalOrigin}/api/music/oauth/callback`,
+    MUSIC_TOKEN_ENCRYPTION_KEY: Buffer.alloc(32, 9).toString("base64url"),
+  };
+  const selected = googleEnvironment({ ...google, UNRELATED_SECRET: "must-not-leak" });
+  assert.deepEqual(selected, google);
+  assert.deepEqual(googleEnvironment({ GOOGLE_CLIENT_ID: "" }), {});
+  const api = apiSettings({
+    databaseUrl: "postgresql://mafia@127.0.0.1:54328/mafia_local",
+    origin: canonicalOrigin,
+    google: selected,
+  });
+  for (const [key, value] of Object.entries(google)) assert.equal(api[key], value);
+  assert.equal(api.UNRELATED_SECRET, undefined);
+  const inherited = { ...google, UNRELATED_SECRET: "must-not-leak" };
+  const previous = Object.fromEntries(Object.keys(inherited).map((key) => [key, process.env[key]]));
+  try {
+    Object.assign(process.env, inherited);
+    const web = viteSettings();
+    const apiWithoutExplicitConfig = apiSettings({
+      databaseUrl: api.DATABASE_URL,
+      origin: canonicalOrigin,
+      google: {},
+    });
+    for (const key of Object.keys(inherited)) {
+      assert.equal(web[key], undefined);
+      assert.equal(apiWithoutExplicitConfig[key], undefined);
+    }
+    assert.equal(web.MAFIA_API_PROXY_TARGET, "http://127.0.0.1:3000");
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
 
 // This test exercises a native PostgreSQL cluster created exclusively for the test.
 test(
