@@ -1,6 +1,7 @@
 import type { PlayerStatus, Role } from "@mafia/game-domain";
 import type { CSSProperties, ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { resolvePlayerLightingKind } from "../effects/PlayerCardLighting.js";
 import {
   VgpuPlayerLightingCanvas,
@@ -39,6 +40,7 @@ interface GameTableProps {
   readonly onSeatSwipe?: (seat: number) => void;
   readonly renderSeatActions?: (seat: TableSeatView) => ReactNode;
   readonly swipeAction?: ReactNode;
+  readonly onDismissSwipeAction?: () => void;
   readonly contextActionOpen?: boolean;
   readonly center?: ReactNode;
   readonly advance?: ReactNode;
@@ -70,6 +72,7 @@ export const GameTable = ({
   onSeatSwipe,
   renderSeatActions,
   swipeAction,
+  onDismissSwipeAction,
   contextActionOpen,
   center,
   advance,
@@ -99,10 +102,10 @@ export const GameTable = ({
     setKeyboardContextSeat(null);
   }, [actionOpen, keyboardContextSeat]);
 
-  return (
+  const table = (
     <section
       ref={tableRef}
-      className="table-stage"
+      className={`table-stage${swipeAction !== undefined && onDismissSwipeAction !== undefined ? " is-context-action-open" : ""}`}
       aria-label={t("game.table")}
       onKeyDown={(event) => {
         if (event.key !== "Escape" || keyboardContextSeat === null || !actionOpen) return;
@@ -219,6 +222,8 @@ export const GameTable = ({
                     const deltaX = touch.clientX - start.x;
                     const deltaY = touch.clientY - start.y;
                     if (Math.abs(deltaX) > 44 && Math.abs(deltaX) > Math.abs(deltaY) * 1.2) {
+                      // The synthetic click after a swipe must not hit the newly mounted backdrop.
+                      event.preventDefault();
                       suppressClickSeat.current = seat.seat;
                       onSeatSwipe(seat.seat);
                       window.setTimeout(() => {
@@ -259,5 +264,20 @@ export const GameTable = ({
         })}
       </div>
     </section>
+  );
+  return (
+    <>
+      {swipeAction !== undefined && onDismissSwipeAction !== undefined
+        ? createPortal(
+            <div
+              className="table-swipe-backdrop"
+              aria-hidden="true"
+              onClick={onDismissSwipeAction}
+            />,
+            document.body,
+          )
+        : null}
+      {table}
+    </>
   );
 };

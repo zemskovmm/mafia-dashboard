@@ -29,6 +29,7 @@ interface VotingStageProps {
   readonly privacyHidden?: boolean;
   readonly onSeatSwipe?: (seat: number) => void;
   readonly swipeAction?: ReactNode;
+  readonly onDismissSwipeAction?: () => void;
   readonly onFoul?: (seat: number) => void;
 }
 
@@ -42,6 +43,7 @@ export const VotingStage = ({
   privacyHidden = false,
   onSeatSwipe,
   swipeAction,
+  onDismissSwipeAction,
   onFoul,
 }: VotingStageProps) => {
   const { formatList, t } = useMessages(votingMessages);
@@ -134,6 +136,7 @@ export const VotingStage = ({
         privacyHidden={privacyHidden}
         onSeatSwipe={onSeatSwipe}
         swipeAction={swipeAction}
+        onDismissSwipeAction={onDismissSwipeAction}
         seats={game.players.map((player) => ({
           ...player,
           inactive: player.status !== "active",
@@ -162,6 +165,7 @@ export const VotingStage = ({
         privacyHidden={privacyHidden}
         onSeatSwipe={onSeatSwipe}
         swipeAction={swipeAction}
+        onDismissSwipeAction={onDismissSwipeAction}
         seats={game.players.map((player) => ({
           ...player,
           current: game.carCrashSeats?.includes(player.seat),
@@ -197,6 +201,7 @@ export const VotingStage = ({
         privacyHidden={privacyHidden}
         onSeatSwipe={onSeatSwipe}
         swipeAction={swipeAction}
+        onDismissSwipeAction={onDismissSwipeAction}
         seats={game.players.map((player) => ({
           ...player,
           current: game.carCrashSeats?.includes(player.seat),
@@ -336,6 +341,7 @@ export const VotingStage = ({
       privacyHidden={privacyHidden}
       onSeatSwipe={onSeatSwipe}
       swipeAction={swipeAction}
+      onDismissSwipeAction={onDismissSwipeAction}
       seats={game.players.map((player) => ({
         ...player,
         votingHighlight: game.voteAssignments[player.seat] === selectedCandidate,

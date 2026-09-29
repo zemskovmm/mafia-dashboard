@@ -1124,6 +1124,20 @@ h2 {
   overflow: visible;
   padding: 95px 0;
 }
+.table-swipe-backdrop {
+  position: fixed;
+  z-index: 120;
+  inset: 0;
+  background: transparent;
+}
+.table-stage.is-context-action-open {
+  position: relative;
+  z-index: 121;
+  pointer-events: none;
+}
+.table-stage.is-context-action-open .table-swipe-menu {
+  pointer-events: auto;
+}
 .round-table {
   --table-size: min(58vw, 680px);
   --table-radius: calc(var(--table-size) * 0.555);
@@ -1238,37 +1252,11 @@ h2 {
   z-index: 6;
   top: 25%;
   left: 50%;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: 8px;
-  align-items: center;
-  width: min(280px, 44%);
-  min-height: 50px;
-  padding: 7px 12px;
-  background:
-    linear-gradient(135deg, rgb(74 12 18 / 94%), rgb(16 13 14 / 94%)), rgb(10 12 12 / 96%);
-  border: 1px solid rgb(255 103 110 / 46%);
-  border-radius: 18px;
-  box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 14%),
-    0 14px 34px rgb(0 0 0 / 48%),
-    0 0 24px rgb(209 46 58 / 20%);
+  max-width: min(280px, 75%);
   transform: translate(-50%, -50%);
-  backdrop-filter: blur(12px);
-}
-.table-swipe-player {
-  overflow: hidden;
-  color: rgb(255 255 255 / 78%);
-  font-size: 0.72rem;
-  font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.table-swipe-red-card,
-.table-swipe-close {
-  min-height: 48px;
 }
 .table-swipe-red-card {
+  min-height: 48px;
   padding: 5px 13px;
   color: white;
   font-size: 0.7rem;
@@ -1279,20 +1267,6 @@ h2 {
 }
 .table-swipe-red-card:hover:not(:disabled) {
   background: linear-gradient(145deg, #ee4d5b, #941e2a);
-}
-.table-swipe-close {
-  width: 48px;
-  padding: 0;
-  color: rgb(255 255 255 / 64%);
-  font-size: 2rem;
-  line-height: 1;
-  background: transparent;
-  border: 0;
-  border-radius: 0;
-}
-.table-swipe-close:hover:not(:disabled) {
-  background: transparent;
-  border: 0;
 }
 .table-advance {
   position: absolute;

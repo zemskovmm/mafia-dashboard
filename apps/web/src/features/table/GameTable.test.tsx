@@ -14,6 +14,7 @@ const ContextActionHarness = () => {
     <GameTable
       seats={seats}
       onSeatSwipe={(seat) => setSwipedSeat((current) => (current === seat ? null : seat))}
+      onDismissSwipeAction={() => setSwipedSeat(null)}
       swipeAction={
         swipedSeat === null ? undefined : (
           <button type="button" className="table-swipe-red-card">
@@ -172,6 +173,38 @@ describe("GameTable", () => {
     expect(screen.getByRole("button", { name: "Red card Player 1" }).parentElement).toHaveClass(
       "table-swipe-menu",
     );
+  });
+
+  it("intercepts outside interaction without activating a seat and allows reopening", () => {
+    const onSeatClick = vi.fn();
+    const Harness = () => {
+      const [seat, setSeat] = useState<number | null>(null);
+      return (
+        <GameTable
+          seats={seats}
+          onSeatSwipe={setSeat}
+          onSeatClick={onSeatClick}
+          onDismissSwipeAction={() => setSeat(null)}
+          swipeAction={seat === null ? undefined : <button>Red card Player {seat}</button>}
+        />
+      );
+    };
+    render(<Harness />);
+    const first = screen.getByRole("button", { name: "Seat 1: Player 1" });
+    fireEvent.keyDown(first, { key: "ContextMenu" });
+    expect(screen.getByRole("button", { name: "Red card Player 1" })).toBeInTheDocument();
+    const backdrop = document.querySelector(".table-swipe-backdrop");
+    expect(backdrop).not.toBeNull();
+    expect(backdrop?.parentElement).toBe(document.body);
+    expect(first.closest(".table-stage")).toHaveClass("is-context-action-open");
+    fireEvent.click(backdrop!);
+    expect(screen.queryByRole("button", { name: "Red card Player 1" })).toBeNull();
+    expect(onSeatClick).not.toHaveBeenCalled();
+    expect(document.querySelector(".table-swipe-backdrop")).toBeNull();
+    fireEvent.keyDown(screen.getByRole("button", { name: "Seat 2: Player 2" }), {
+      key: "ContextMenu",
+    });
+    expect(screen.getByRole("button", { name: "Red card Player 2" })).toBeInTheDocument();
   });
 
   it("opens a seat context action with Shift+F10 and focuses its first control", async () => {

@@ -166,45 +166,34 @@ export const GameScreen = ({
   };
   const swipeAction =
     disciplineAvailable && swipedPlayer !== undefined ? (
-      <>
-        <span className="table-swipe-player">{swipedPlayer.name}</span>
-        <button
-          type="button"
-          className="table-swipe-red-card"
-          aria-label={t("game.redCard", { name: swipedPlayer.name })}
-          onClick={() => {
-            setSwipedSeat(null);
-            if (onAcceptedEvent !== undefined) {
-              onAcceptedEvent({
-                type: "player.red-carded",
-                payload: {
-                  seat: swipedPlayer.seat,
-                  phase: game.phase,
-                  currentTurnIndex: game.currentTurnIndex,
-                },
-              });
-            } else {
-              const next = redCard(game, swipedPlayer.seat);
-              onGameChange(next);
-              onEvent("player.red-carded", {
+      <button
+        type="button"
+        className="table-swipe-red-card"
+        aria-label={t("game.redCard", { name: swipedPlayer.name })}
+        onClick={() => {
+          setSwipedSeat(null);
+          if (onAcceptedEvent !== undefined) {
+            onAcceptedEvent({
+              type: "player.red-carded",
+              payload: {
                 seat: swipedPlayer.seat,
-                source: "swipe",
                 phase: game.phase,
-              });
-            }
-          }}
-        >
-          {t("game.redCard", { name: swipedPlayer.name })}
-        </button>
-        <button
-          type="button"
-          className="table-swipe-close"
-          aria-label={t("game.closeActions", { name: swipedPlayer.name })}
-          onClick={() => setSwipedSeat(null)}
-        >
-          ×
-        </button>
-      </>
+                currentTurnIndex: game.currentTurnIndex,
+              },
+            });
+          } else {
+            const next = redCard(game, swipedPlayer.seat);
+            onGameChange(next);
+            onEvent("player.red-carded", {
+              seat: swipedPlayer.seat,
+              source: "swipe",
+              phase: game.phase,
+            });
+          }
+        }}
+      >
+        {t("game.redCard", { name: swipedPlayer.name })}
+      </button>
     ) : undefined;
 
   const continueSetup = () => {
@@ -556,6 +545,7 @@ export const GameScreen = ({
               privacyHidden={privacyHidden}
               onSeatSwipe={disciplineAvailable ? revealDisciplineAction : undefined}
               swipeAction={swipeAction}
+              onDismissSwipeAction={() => setSwipedSeat(null)}
               onFoul={foulAvailable ? foulPlayer : undefined}
               onGameChange={onGameChange}
               onEvent={onEvent}
@@ -574,6 +564,7 @@ export const GameScreen = ({
               privacyHidden={privacyHidden}
               onSeatSwipe={disciplineAvailable ? revealDisciplineAction : undefined}
               swipeAction={swipeAction}
+              onDismissSwipeAction={() => setSwipedSeat(null)}
               onGameChange={onGameChange}
               onEvent={onEvent}
               onAcceptedEvent={onAcceptedEvent}
@@ -584,6 +575,7 @@ export const GameScreen = ({
               privacyHidden={privacyHidden}
               onSeatSwipe={disciplineAvailable ? revealDisciplineAction : undefined}
               swipeAction={swipeAction}
+              onDismissSwipeAction={() => setSwipedSeat(null)}
               seats={game.players.map((player) => ({
                 seat: player.seat,
                 name: player.name,

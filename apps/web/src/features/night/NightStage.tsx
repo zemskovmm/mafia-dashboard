@@ -28,6 +28,7 @@ interface NightStageProps {
   readonly privacyHidden?: boolean;
   readonly onSeatSwipe?: (seat: number) => void;
   readonly swipeAction?: ReactNode;
+  readonly onDismissSwipeAction?: () => void;
 }
 
 export const NightStage = ({
@@ -39,6 +40,7 @@ export const NightStage = ({
   privacyHidden = false,
   onSeatSwipe,
   swipeAction,
+  onDismissSwipeAction,
 }: NightStageProps) => {
   const { t } = useMessages(nightMessages);
   const tableHostName = hostName ?? t("night.host");
@@ -74,6 +76,7 @@ export const NightStage = ({
         privacyHidden={privacyHidden}
         onSeatSwipe={onSeatSwipe}
         swipeAction={swipeAction}
+        onDismissSwipeAction={onDismissSwipeAction}
         seats={game.players.map((player) => ({
           ...player,
           mafiaShooter: player.status === "active" && player.team === "black",
@@ -153,6 +156,7 @@ export const NightStage = ({
         privacyHidden={privacyHidden}
         onSeatSwipe={onSeatSwipe}
         swipeAction={swipeAction}
+        onDismissSwipeAction={onDismissSwipeAction}
         seats={game.players.map((player) => ({
           ...player,
           mafiaShooter: player.team === "black" && game.shotAssignments[player.seat] !== undefined,
@@ -251,6 +255,7 @@ export const NightStage = ({
         privacyHidden={privacyHidden}
         onSeatSwipe={onSeatSwipe}
         swipeAction={swipeAction}
+        onDismissSwipeAction={onDismissSwipeAction}
         seats={game.players.map((player) => ({
           ...player,
           mafiaShooter: donEligible && player.role === "don",
@@ -352,6 +357,7 @@ export const NightStage = ({
         privacyHidden={privacyHidden}
         onSeatSwipe={onSeatSwipe}
         swipeAction={swipeAction}
+        onDismissSwipeAction={onDismissSwipeAction}
         seats={game.players.map((player) => ({
           ...player,
           sheriffHighlight: sheriffEligible && player.role === "sheriff",
@@ -398,6 +404,7 @@ export const NightStage = ({
         privacyHidden={privacyHidden}
         onSeatSwipe={onSeatSwipe}
         swipeAction={swipeAction}
+        onDismissSwipeAction={onDismissSwipeAction}
         seats={game.players}
         center={
           <div className="table-check-center">

@@ -1590,40 +1590,36 @@ try {
     await page.getByRole("button", { name: `Red card ${firstPlayerName}`, exact: true }).waitFor();
     const swipeMenuGeometry = await page.locator(".table-swipe-menu").evaluate((menu) => {
       const style = getComputedStyle(menu);
-      const close = menu.querySelector(".table-swipe-close");
       const redCard = menu.querySelector(".table-swipe-red-card");
-      if (!(close instanceof HTMLElement) || !(redCard instanceof HTMLElement)) {
-        throw new Error("Expected red-card and close controls in the swipe menu");
+      if (!(redCard instanceof HTMLElement) || menu.children.length !== 1) {
+        throw new Error("Expected only the red-card button in the swipe action");
       }
-      const closeStyle = getComputedStyle(close);
       const redCardStyle = getComputedStyle(redCard);
       return {
-        borderRadius: style.borderRadius,
+        background: style.backgroundColor,
+        borderWidth: style.borderTopWidth,
         paddingLeft: style.paddingLeft,
-        paddingRight: style.paddingRight,
-        closeBackground: closeStyle.backgroundColor,
-        closeBorderWidth: closeStyle.borderTopWidth,
-        closeFontSize: closeStyle.fontSize,
+        backdrop: document.querySelector("body > .table-swipe-backdrop") !== null,
         redCardBorderRadius: redCardStyle.borderRadius,
       };
     });
     if (
-      swipeMenuGeometry.borderRadius !== "18px" ||
-      swipeMenuGeometry.paddingLeft !== swipeMenuGeometry.paddingRight ||
-      swipeMenuGeometry.closeBackground !== "rgba(0, 0, 0, 0)" ||
-      swipeMenuGeometry.closeBorderWidth !== "0px" ||
-      swipeMenuGeometry.closeFontSize !== "32px" ||
+      swipeMenuGeometry.background !== "rgba(0, 0, 0, 0)" ||
+      swipeMenuGeometry.borderWidth !== "0px" ||
+      swipeMenuGeometry.paddingLeft !== "0px" ||
+      !swipeMenuGeometry.backdrop ||
       swipeMenuGeometry.redCardBorderRadius !== "10px"
     ) {
       throw new Error(
-        `Swipe menu must be symmetric and use a bare 2× close icon: ${JSON.stringify(swipeMenuGeometry)}`,
+        `Swipe action must be just the red button above a viewport backdrop: ${JSON.stringify(swipeMenuGeometry)}`,
       );
     }
     const swipeMenuScreenshotPath = tableScreenshotPath.replace(/\.png$/i, "-swipe-menu.png");
     await page.screenshot({ path: swipeMenuScreenshotPath, fullPage: true });
-    await page
-      .getByRole("button", { name: `Close actions for ${firstPlayerName}`, exact: true })
-      .click();
+    await page.locator(".table-swipe-backdrop").click({ position: { x: 5, y: 5 } });
+    if ((await page.locator(".table-swipe-menu").count()) !== 0) {
+      throw new Error("Outside click did not dismiss the red-card action");
+    }
 
     const nominatorCard = page.locator(".player-seat.is-current");
     const nominatorLabel = await nominatorCard.getAttribute("aria-label");

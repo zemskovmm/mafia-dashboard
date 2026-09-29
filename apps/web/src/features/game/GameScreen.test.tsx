@@ -366,6 +366,66 @@ describe("GameScreen", () => {
     );
   });
 
+  it("shows only the player-specific red-card button and dismisses outside without game actions", async () => {
+    const user = userEvent.setup();
+    const game = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+    const onGameChange = vi.fn();
+    const onEvent = vi.fn();
+    render(
+      <GameScreen
+        game={game}
+        hostName="Host Player"
+        onGameChange={onGameChange}
+        onEvent={onEvent}
+        privacyHidden={false}
+      />,
+    );
+    const first = screen.getByRole("button", { name: "Seat 1: Player 1" });
+    fireEvent.touchStart(first, { touches: [{ clientX: 20, clientY: 50 }] });
+    fireEvent.touchEnd(first, { changedTouches: [{ clientX: 82, clientY: 52 }] });
+    expect(screen.getByRole("dialog", { name: "Player actions" })).toHaveTextContent(
+      "Red card Player 1",
+    );
+    expect(screen.getByRole("dialog", { name: "Player actions" }).children).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: "Close actions for Player 1" })).toBeNull();
+    expect(document.querySelector(".table-swipe-player")).toBeNull();
+    await user.click(document.querySelector(".table-swipe-backdrop")!);
+    expect(screen.queryByRole("dialog", { name: "Player actions" })).toBeNull();
+    expect(onGameChange).not.toHaveBeenCalled();
+    expect(onEvent).not.toHaveBeenCalled();
+    fireEvent.touchStart(first, { touches: [{ clientX: 20, clientY: 50 }] });
+    fireEvent.touchEnd(first, { changedTouches: [{ clientX: 82, clientY: 52 }] });
+    expect(screen.getByRole("button", { name: "Red card Player 1" })).toBeInTheDocument();
+  });
+
+  it("executes the original red-card action exactly once and closes", async () => {
+    const user = userEvent.setup();
+    const game = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
+    const onGameChange = vi.fn();
+    const onEvent = vi.fn();
+    render(
+      <GameScreen
+        game={game}
+        hostName="Host Player"
+        onGameChange={onGameChange}
+        onEvent={onEvent}
+        privacyHidden={false}
+      />,
+    );
+    const seat = screen.getByRole("button", { name: "Seat 2: Player 2" });
+    fireEvent.touchStart(seat, { touches: [{ clientX: 20, clientY: 50 }] });
+    fireEvent.touchEnd(seat, { changedTouches: [{ clientX: 82, clientY: 52 }] });
+    await user.click(screen.getByRole("button", { name: "Red card Player 2" }));
+    expect(onGameChange).toHaveBeenCalledOnce();
+    expect(onEvent).toHaveBeenCalledExactlyOnceWith("player.red-carded", {
+      seat: 2,
+      source: "swipe",
+      phase: "day",
+    });
+    expect(screen.queryByRole("button", { name: "Red card Player 2" })).toBeNull();
+    expect(document.querySelector(".table-swipe-backdrop")).toBeNull();
+  });
+
   it("closes the keyboard red-card menu with Escape", () => {
     const base = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
     const game: GameState = { ...base, phase: "night-don" };
