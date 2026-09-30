@@ -116,6 +116,12 @@ const invokeRoleDrawBackAction = (onRoleDrawBackActionChange: ReturnType<typeof 
   act(action);
 };
 
+const seatPointer = (element: Element, type: string, pointerId = 1) => {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.assign(event, { pointerId, isPrimary: true, button: 0, clientX: 100, clientY: 100 });
+  fireEvent(element, event);
+};
+
 describe("SetupWizard", () => {
   it("groups the accessible Casper switch with the selection heading", async () => {
     const user = userEvent.setup();
@@ -460,6 +466,7 @@ describe("SetupWizard", () => {
   });
 
   it("returns from role giveaway with the selection intact and focus restored", async () => {
+    const user = userEvent.setup();
     const session = partialRoleSession();
     const onSessionStateChange = vi.fn();
     const onRoleDrawBackActionChange = vi.fn();
@@ -474,8 +481,7 @@ describe("SetupWizard", () => {
     );
 
     expect(onRoleDrawBackActionChange).toHaveBeenCalledWith(expect.any(Function));
-    expect(screen.queryByRole("button", { name: "Back to player selection" })).toBeNull();
-    invokeRoleDrawBackAction(onRoleDrawBackActionChange);
+    await user.click(screen.getByRole("button", { name: "Player setup" }));
 
     expect(screen.getByRole("heading", { name: "Select 10 players + host" })).toHaveFocus();
     expect(screen.getByRole("combobox", { name: "Host player" })).toHaveValue("Player 11");
@@ -516,6 +522,194 @@ describe("SetupWizard", () => {
     expect(screen.getAllByRole("button", { name: /^draw role for/i })).toHaveLength(9);
     expect(onStartGame).not.toHaveBeenCalled();
     expect(onEvent).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    "atomically swaps seats and discards the entire deal (complete: %s)",
+    async (complete) => {
+      const user = userEvent.setup();
+      const session = partialRoleSession();
+      if (complete) {
+        for (let seat = 2; seat <= 10; seat += 1)
+          session.setup = drawRoleForSeat(session.setup, seat);
+      }
+      const onSessionStateChange = vi.fn();
+      render(
+        <SetupWizard
+          players={availablePlayers}
+          onComplete={() => undefined}
+          initialSessionState={session}
+          onSessionStateChange={onSessionStateChange}
+        />,
+      );
+      await user.click(screen.getByRole("button", { name: "Player setup" }));
+      onSessionStateChange.mockClear();
+      const source = screen.getByLabelText("Move player in seat 1");
+      const target = screen.getByRole("combobox", { name: "Seat 7 player" });
+      const previous = Object.getOwnPropertyDescriptor(document, "elementFromPoint");
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: () => target,
+      });
+      try {
+        seatPointer(source, "pointerdown");
+        seatPointer(source, "pointermove");
+        expect(onSessionStateChange).not.toHaveBeenCalled();
+        seatPointer(source, "pointerup");
+        const selectedPlayerIds = [...session.selectedPlayerIds];
+        [selectedPlayerIds[0], selectedPlayerIds[6]] = [
+          selectedPlayerIds[6]!,
+          selectedPlayerIds[0]!,
+        ];
+        expect(onSessionStateChange).toHaveBeenCalledTimes(1);
+        expect(onSessionStateChange.mock.lastCall?.[0]).toEqual({
+          ...session,
+          step: "players",
+          selectedPlayerIds,
+          setup: null,
+        });
+        expect(screen.getByRole("combobox", { name: "Seat 1 player" })).toHaveValue("Player 7");
+        expect(target).toHaveValue("Player 1");
+        await user.click(screen.getByRole("button", { name: "Start game" }));
+        expect(onSessionStateChange.mock.lastCall?.[0].setup.assignments).toEqual({});
+        expect(screen.getByText("Draw roles · 10 remaining")).toBeInTheDocument();
+      } finally {
+        if (previous) Object.defineProperty(document, "elementFromPoint", previous);
+        else Reflect.deleteProperty(document, "elementFromPoint");
+      }
+    },
+  );
+
+  it("does not commit same-seat, outside, cancelled or foreign-pointer drops", () => {
+    const session = { ...partialRoleSession(), step: "players" as const };
+    const onSessionStateChange = vi.fn();
+    render(
+      <SetupWizard
+        players={availablePlayers}
+        onComplete={() => undefined}
+        initialSessionState={session}
+        onSessionStateChange={onSessionStateChange}
+      />,
+    );
+    const source = screen.getByLabelText("Move player in seat 1");
+    let target: Element | null = source;
+    const previous = Object.getOwnPropertyDescriptor(document, "elementFromPoint");
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: () => target,
+    });
+    onSessionStateChange.mockClear();
+    try {
+      seatPointer(source, "pointerdown");
+      seatPointer(source, "pointerup");
+      seatPointer(source, "pointerdown");
+      target = screen.getByRole("combobox", { name: "Seat 7 player" });
+      seatPointer(source, "pointermove");
+      target = null;
+      seatPointer(source, "pointerup");
+      for (const cancel of ["pointercancel", "lostpointercapture"]) {
+        seatPointer(source, "pointerdown");
+        target = screen.getByRole("combobox", { name: "Seat 7 player" });
+        seatPointer(source, "pointermove");
+        seatPointer(source, cancel);
+        seatPointer(source, "pointerup");
+      }
+      seatPointer(source, "pointerdown");
+      seatPointer(source, "pointerup", 2);
+      seatPointer(source, "pointercancel");
+      expect(onSessionStateChange).not.toHaveBeenCalled();
+      expect(screen.getByRole("combobox", { name: "Seat 1 player" })).toHaveValue("Player 1");
+    } finally {
+      if (previous) Object.defineProperty(document, "elementFromPoint", previous);
+      else Reflect.deleteProperty(document, "elementFromPoint");
+    }
+  });
+
+  it("moves into empty seats, rejects empty sources and keeps Casper fixed", async () => {
+    const user = userEvent.setup();
+    const session = { ...partialRoleSession(), step: "players" as const, setup: null };
+    session.selectedPlayerIds[6] = "";
+    const onSessionStateChange = vi.fn();
+    render(
+      <SetupWizard
+        players={availablePlayers}
+        onComplete={() => undefined}
+        initialSessionState={session}
+        onSessionStateChange={onSessionStateChange}
+      />,
+    );
+    const source = screen.getByLabelText("Move player in seat 1");
+    let target: Element = screen.getByRole("combobox", { name: "Seat 7 player" });
+    const previous = Object.getOwnPropertyDescriptor(document, "elementFromPoint");
+    Object.defineProperty(document, "elementFromPoint", {
+      configurable: true,
+      value: () => target,
+    });
+    try {
+      const empty = screen.getByLabelText("Move player in seat 7");
+      onSessionStateChange.mockClear();
+      seatPointer(empty, "pointerdown");
+      seatPointer(empty, "pointerup");
+      expect(onSessionStateChange).not.toHaveBeenCalled();
+      seatPointer(source, "pointerdown");
+      seatPointer(source, "pointerup");
+      expect(screen.getByRole("combobox", { name: "Seat 1 player" })).toHaveValue("");
+      expect(target).toHaveValue("Player 1");
+      await user.click(screen.getByRole("switch", { name: "Include Casper" }));
+      onSessionStateChange.mockClear();
+      const casper = screen.getByLabelText("Move player in seat 10");
+      target = screen.getByRole("combobox", { name: "Seat 2 player" });
+      seatPointer(casper, "pointerdown");
+      seatPointer(casper, "pointerup");
+      target = casper;
+      const occupied = screen.getByLabelText("Move player in seat 7");
+      seatPointer(occupied, "pointerdown");
+      seatPointer(occupied, "pointerup");
+      expect(onSessionStateChange).not.toHaveBeenCalled();
+      expect(screen.getByRole("textbox", { name: "Seat 10 player" })).toHaveValue("Casper");
+      // A roster change during a drag cancels it rather than moving stale occupants.
+      seatPointer(occupied, "pointerdown");
+      await user.click(screen.getByRole("button", { name: "Clear Seat 2" }));
+      onSessionStateChange.mockClear();
+      target = screen.getByRole("combobox", { name: "Seat 2 player" });
+      seatPointer(occupied, "pointerup");
+      expect(onSessionStateChange).not.toHaveBeenCalled();
+      expect(target).toHaveValue("");
+    } finally {
+      if (previous) Object.defineProperty(document, "elementFromPoint", previous);
+      else Reflect.deleteProperty(document, "elementFromPoint");
+    }
+  });
+
+  it("keeps the deal while searching or cancelling either player picker", async () => {
+    const user = userEvent.setup();
+    const session = partialRoleSession();
+    const onSessionStateChange = vi.fn();
+    render(
+      <SetupWizard
+        players={playersWithReplacement}
+        onComplete={() => undefined}
+        initialSessionState={{ ...session, step: "players" }}
+        onSessionStateChange={onSessionStateChange}
+      />,
+    );
+    onSessionStateChange.mockClear();
+    for (const label of ["Host player", "Seat 1 player"]) {
+      const field = screen.getByRole("combobox", { name: label });
+      const original = (field as HTMLInputElement).value;
+      await user.clear(field);
+      await user.type(field, "Player 12");
+      expect(onSessionStateChange).not.toHaveBeenCalled();
+      await user.keyboard("{Escape}");
+      expect(field).toHaveValue(original);
+      await user.clear(field);
+      await user.type(field, "not a player");
+      await user.click(screen.getByRole("heading", { name: "Select 10 players + host" }));
+      expect(field).toHaveValue(original);
+      expect(onSessionStateChange).not.toHaveBeenCalled();
+    }
+    await user.click(screen.getByRole("button", { name: "Start game" }));
+    expect(onSessionStateChange.mock.lastCall?.[0]).toEqual(session);
   });
 
   it("durably resets role progress when the host changes", async () => {

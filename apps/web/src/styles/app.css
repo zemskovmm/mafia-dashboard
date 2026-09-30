@@ -4519,6 +4519,166 @@ html:-webkit-full-screen #root {
   }
 }
 
+/* Pre-game corrections stay in the ordinary player setup workspace. */
+.setup-seat-hint {
+  margin: 18px 0 8px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.player-setup-card .player-input-grid {
+  gap: 12px 20px;
+  margin: 8px 0 20px;
+}
+.setup-seat-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 48px;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 72px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: linear-gradient(135deg, var(--surface-strong), var(--surface));
+}
+.setup-seat-card:focus-within {
+  z-index: 36;
+}
+.setup-seat-number {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 36px;
+  border-radius: 8px;
+  background: var(--surface-strong);
+  color: var(--accent);
+}
+.setup-seat-card > .player-combobox {
+  min-width: 0;
+}
+.setup-seat-card > .player-combobox > label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+.setup-seat-card .player-combobox input {
+  min-width: 0;
+  width: 100%;
+  padding-left: 4px;
+  background: transparent;
+  border-color: transparent;
+  font-weight: 500;
+  text-overflow: ellipsis;
+}
+.player-setup-card .player-combobox input,
+.player-setup-card .player-combobox-list button {
+  min-height: 48px;
+}
+.player-setup-card .player-combobox-clear {
+  width: 48px;
+  height: 48px;
+  right: 24px;
+  background: transparent;
+  border-color: transparent;
+}
+.setup-seat-drag-handle {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-left: 1px solid var(--border);
+  color: var(--accent);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.setup-seat-drag-handle svg {
+  width: 24px;
+  height: 24px;
+  fill: currentColor;
+  pointer-events: none;
+}
+.setup-seat-drag-handle[aria-disabled="true"] {
+  cursor: default;
+  opacity: 0.3;
+  touch-action: auto;
+}
+.setup-seat-card.is-dragging {
+  z-index: 1;
+  transform: translateY(-3px);
+  border-color: var(--accent);
+  box-shadow: 0 12px 24px rgb(0 0 0 / 40%);
+}
+.setup-seat-card.is-dragging .setup-seat-drag-handle {
+  cursor: grabbing;
+}
+.setup-seat-card.is-drop-target {
+  border: 2px dashed var(--accent);
+  padding: 7px;
+}
+.setup-seat-drop-label {
+  position: absolute;
+  right: 56px;
+  bottom: 0;
+  font-size: 0.65rem;
+  color: var(--accent);
+  pointer-events: none;
+}
+.role-draw-heading {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+.role-draw-heading .role-draw-back {
+  flex-shrink: 0;
+  height: 48px;
+  white-space: nowrap;
+}
+.table-layout-shell .role-draw-screen .game-header {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 20px;
+  padding-right: 380px;
+}
+.table-layout-shell .role-draw-screen .game-header > .phase-banner {
+  position: static;
+  width: auto;
+  margin: 0;
+  transform: none;
+  flex: 0 0 auto;
+  font-size: 0.85rem;
+}
+@media (max-width: 1159px) {
+  .player-setup-card .player-input-grid {
+    grid-template-columns: 1fr;
+  }
+  .table-layout-shell .role-draw-screen .game-header {
+    gap: 10px;
+    padding-right: 370px;
+  }
+  .role-draw-heading {
+    gap: 10px;
+  }
+  .role-draw-heading h1 {
+    font-size: 1.3rem;
+  }
+  .table-layout-shell .role-draw-screen .game-header > .phase-banner {
+    font-size: 0.7rem;
+    padding-inline: 8px;
+  }
+}
+@media (max-width: 760px) {
+  .table-layout-shell .role-draw-screen .game-header {
+    flex-wrap: wrap;
+    height: auto;
+    padding-right: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

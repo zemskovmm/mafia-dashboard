@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
 import {
   assignRoleForSeat,
   beginRoleDraw,
@@ -157,6 +157,7 @@ const PlayerCombobox = ({
       event.preventDefault();
       choosePlayer(matchingPlayers[highlightedIndex]!);
     } else if (event.key === "Escape") {
+      event.preventDefault();
       setOpen(false);
       setQuery(selectedPlayer?.nickname ?? "");
     }
@@ -198,7 +199,6 @@ const PlayerCombobox = ({
             setQuery(event.currentTarget.value);
             setHighlightedIndex(0);
             setOpen(true);
-            if (value !== "") onChange("");
           }}
           onKeyDown={handleKeyDown}
         />
@@ -298,6 +298,95 @@ export const SetupWizard = ({
   const roleTapState = useRef<{ seat: number; count: number; at: number } | null>(null);
   const playerHeadingRef = useRef<HTMLHeadingElement>(null);
   const focusPlayerHeading = useRef(false);
+  const seatGridRef = useRef<HTMLDivElement>(null);
+  const seatDragRef = useRef<{
+    pointerId: number;
+    source: number;
+    selection: readonly string[];
+    host: string;
+  } | null>(null);
+  const [seatDrag, setSeatDrag] = useState<{ source: number; target: number | null } | null>(null);
+
+  const cancelSeatDrag = () => {
+    seatDragRef.current = null;
+    setSeatDrag(null);
+  };
+
+  useEffect(() => {
+    cancelSeatDrag();
+  }, [selectedPlayerIds, hostPlayerId, step, playersLoading]);
+
+  const seatAtPointer = (event: ReactPointerEvent<HTMLElement>) => {
+    const card = document
+      .elementFromPoint(event.clientX, event.clientY)
+      ?.closest<HTMLElement>("[data-setup-seat]");
+    if (!card || !seatGridRef.current?.contains(card)) return null;
+    const index = Number(card.dataset.setupSeat) - 1;
+    return Number.isInteger(index) &&
+      index >= 0 &&
+      index < 10 &&
+      selectedPlayerIds[index] !== CASPER_PLAYER_ID
+      ? index
+      : null;
+  };
+
+  const beginSeatDrag = (event: ReactPointerEvent<HTMLElement>, source: number) => {
+    if (
+      !event.isPrimary ||
+      event.button !== 0 ||
+      seatDragRef.current ||
+      playersLoading ||
+      !selectedPlayerIds[source] ||
+      selectedPlayerIds[source] === CASPER_PLAYER_ID
+    )
+      return;
+    event.preventDefault();
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    seatDragRef.current = {
+      pointerId: event.pointerId,
+      source,
+      selection: selectedPlayerIds,
+      host: hostPlayerId,
+    };
+    setSeatDrag({ source, target: null });
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  const moveSeatDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = seatDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const scroller = seatGridRef.current?.closest<HTMLElement>(".player-setup-card");
+    if (scroller && scroller.scrollHeight > scroller.clientHeight) {
+      const bounds = scroller.getBoundingClientRect();
+      if (event.clientY < bounds.top + 40) scroller.scrollTop -= 16;
+      else if (event.clientY > bounds.bottom - 40) scroller.scrollTop += 16;
+    }
+    const target = seatAtPointer(event);
+    setSeatDrag({ source: drag.source, target: target === drag.source ? null : target });
+  };
+
+  const finishSeatDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const drag = seatDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const target = seatAtPointer(event);
+    cancelSeatDrag();
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    if (
+      target === null ||
+      target === drag.source ||
+      drag.selection !== selectedPlayerIds ||
+      drag.host !== hostPlayerId ||
+      step !== "players" ||
+      playersLoading
+    )
+      return;
+    const next = [...selectedPlayerIds];
+    [next[drag.source], next[target]] = [next[target]!, next[drag.source]!];
+    setSelectedPlayerIds(next);
+    setSetup(null);
+  };
 
   const selectablePlayers = useMemo(
     () => [
@@ -511,9 +600,14 @@ export const SetupWizard = ({
     return (
       <main className="game-shell role-draw-screen">
         <header className="game-header">
-          <div>
-            <p className="eyebrow">{t("setup.firstStage")}</p>
-            <h1>{t("setup.roleDraw")}</h1>
+          <div className="role-draw-heading">
+            <button type="button" className="role-draw-back" onClick={returnToPlayerSelection}>
+              <span aria-hidden="true">←</span> {t("setup.playerSetup")}
+            </button>
+            <div>
+              <p className="eyebrow">{t("setup.firstStage")}</p>
+              <h1>{t("setup.roleDraw")}</h1>
+            </div>
           </div>
           <div className="phase-banner">
             {t("setup.drawRolesRemaining", { count: setup.remainingRoles.length })}
@@ -692,36 +786,71 @@ export const SetupWizard = ({
             unavailablePlayerIds={selectedPlayerIds.filter(Boolean)}
             onChange={changeHostPlayer}
           />
-          <div className="player-input-grid">
-            {selectedPlayerIds.map((playerId, index) =>
-              includeCasper && index === CASPER_SEAT - 1 ? (
-                <div className="player-combobox" key={index}>
-                  <label htmlFor="casper-player">{t("setup.seat", { seat: CASPER_SEAT })}</label>
-                  <input
-                    id="casper-player"
-                    aria-label={`${t("setup.seat", { seat: CASPER_SEAT })} ${t("setup.player")}`}
-                    value={CASPER_NAME}
-                    readOnly
+          <p className="setup-seat-hint">{t("setup.seatHint")}</p>
+          <div className="player-input-grid" ref={seatGridRef}>
+            {selectedPlayerIds.map((playerId, index) => (
+              <div
+                key={index}
+                data-setup-seat={index + 1}
+                className={`setup-seat-card${seatDrag?.source === index ? " is-dragging" : ""}${seatDrag?.target === index ? " is-drop-target" : ""}`}
+              >
+                <span className="setup-seat-number" aria-hidden="true">
+                  {index + 1}
+                </span>
+                {includeCasper && index === CASPER_SEAT - 1 ? (
+                  <div className="player-combobox">
+                    <label htmlFor="casper-player">{t("setup.seat", { seat: CASPER_SEAT })}</label>
+                    <input
+                      id="casper-player"
+                      aria-label={`${t("setup.seat", { seat: CASPER_SEAT })} ${t("setup.player")}`}
+                      value={CASPER_NAME}
+                      readOnly
+                    />
+                  </div>
+                ) : (
+                  <PlayerCombobox
+                    id={`seat-${index + 1}-player`}
+                    label={t("setup.seat", { seat: index + 1 })}
+                    placeholder={t("setup.searchNickname")}
+                    value={playerId}
+                    players={selectablePlayers}
+                    unavailablePlayerIds={[
+                      hostPlayerId,
+                      ...selectedPlayerIds.filter(
+                        (selectedId, selectedIndex) => selectedIndex !== index && selectedId !== "",
+                      ),
+                    ].filter(Boolean)}
+                    onChange={(nextPlayerId) => changeSeatPlayer(index, nextPlayerId)}
                   />
-                </div>
-              ) : (
-                <PlayerCombobox
-                  id={`seat-${index + 1}-player`}
-                  key={index}
-                  label={t("setup.seat", { seat: index + 1 })}
-                  placeholder={t("setup.searchNickname")}
-                  value={playerId}
-                  players={selectablePlayers}
-                  unavailablePlayerIds={[
-                    hostPlayerId,
-                    ...selectedPlayerIds.filter(
-                      (selectedId, selectedIndex) => selectedIndex !== index && selectedId !== "",
-                    ),
-                  ].filter(Boolean)}
-                  onChange={(nextPlayerId) => changeSeatPlayer(index, nextPlayerId)}
-                />
-              ),
-            )}
+                )}
+                <span
+                  className="setup-seat-drag-handle"
+                  aria-label={t("setup.moveSeat", { seat: index + 1 })}
+                  aria-disabled={playersLoading || !playerId || playerId === CASPER_PLAYER_ID}
+                  onPointerDown={(event) => beginSeatDrag(event, index)}
+                  onPointerMove={moveSeatDrag}
+                  onPointerUp={finishSeatDrag}
+                  onPointerCancel={(event) => {
+                    if (event.pointerId === seatDragRef.current?.pointerId) cancelSeatDrag();
+                  }}
+                  onLostPointerCapture={(event) => {
+                    if (event.pointerId === seatDragRef.current?.pointerId) cancelSeatDrag();
+                  }}
+                >
+                  <svg aria-hidden="true" viewBox="0 0 24 24">
+                    <circle cx="8" cy="6" r="1.5" />
+                    <circle cx="16" cy="6" r="1.5" />
+                    <circle cx="8" cy="12" r="1.5" />
+                    <circle cx="16" cy="12" r="1.5" />
+                    <circle cx="8" cy="18" r="1.5" />
+                    <circle cx="16" cy="18" r="1.5" />
+                  </svg>
+                </span>
+                {seatDrag?.target === index ? (
+                  <span className="setup-seat-drop-label">{t("setup.dropToSwap")}</span>
+                ) : null}
+              </div>
+            ))}
           </div>
           <div
             className="player-setup-actions"

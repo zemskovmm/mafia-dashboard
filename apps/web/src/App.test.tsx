@@ -3814,6 +3814,142 @@ describe("authoritative game session lifecycle", () => {
     );
   });
 
+  it("persists a real inline-back seat swap and cleared draw across a delayed save and reload on the same game ID", async () => {
+    const { SetupWizard: RealSetupWizard } = await vi.importActual<typeof setupWizardModule>(
+      "./features/setup/SetupWizard.js",
+    );
+    const setupMock = vi
+      .spyOn(setupWizardModule, "SetupWizard")
+      .mockImplementation(RealSetupWizard);
+    const selectedIds = assignedGame.players.map(({ id }) => id);
+    window.localStorage.setItem(
+      `mafia-dashboard.available-player-ids.${testClub.id}`,
+      JSON.stringify([...selectedIds, hostPlayerId]),
+    );
+    const readSaved = () =>
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null");
+    const user = userEvent.setup();
+    const delayedSave = deferred<{ revision: number; duplicate: boolean }>();
+    const previousElementFromPoint = Object.getOwnPropertyDescriptor(document, "elementFromPoint");
+    try {
+      const first = renderView(<App />);
+      await user.click(await screen.findByRole("combobox", { name: "Host player" }));
+      await user.click(screen.getByRole("option", { name: "Host Player" }));
+      for (const seat of assignedGame.players) {
+        await user.click(screen.getByRole("combobox", { name: `Seat ${seat.seat} player` }));
+        await user.click(screen.getByRole("option", { name: playerLabel(seat) }));
+      }
+      await user.click(screen.getByRole("button", { name: "Start game" }));
+      await waitFor(() => expect(readSaved()?.gameId).toBe("00000000-0000-4000-8000-000000000090"));
+      const gameId = readSaved().gameId as string;
+      api.saveGameSession.mockImplementationOnce(() => delayedSave.promise);
+      await user.click(screen.getByRole("button", { name: "Draw role for Player 1" }));
+      await waitFor(() =>
+        expect(readSaved()?.current.state.setup.setup.assignments[1]).toBeDefined(),
+      );
+      await waitFor(() =>
+        expect(
+          api.saveGameSession.mock.lastCall?.[1].state.setup.setup.assignments[1],
+        ).toBeDefined(),
+      );
+      const writesWhilePending = api.saveGameSession.mock.calls.length;
+      const drawn = readSaved().current.state.setup.setup;
+      expect(drawn.remainingRoles).toHaveLength(9);
+      await user.click(screen.getByRole("button", { name: "Player setup" }));
+      expect(screen.getByRole("combobox", { name: "Seat 1 player" })).toHaveValue("Player 1");
+      expect(readSaved().current.state.setup).toMatchObject({
+        step: "players",
+        setup: { assignments: { 1: drawn.assignments[1] } },
+      });
+
+      const source = document.querySelector<HTMLElement>(
+        ".setup-seat-card[data-setup-seat='1'] .setup-seat-drag-handle",
+      );
+      const target = document.querySelector<HTMLElement>(".setup-seat-card[data-setup-seat='2']");
+      expect(source).toHaveAccessibleName("Move player in seat 1");
+      expect(target).not.toBeNull();
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: vi.fn(() => target),
+      });
+      const pointer = (type: string, x: number) => {
+        const event = new MouseEvent(type, {
+          bubbles: true,
+          button: 0,
+          buttons: type === "pointerup" ? 0 : 1,
+          clientX: x,
+          clientY: 20,
+        });
+        Object.defineProperties(event, {
+          pointerId: { value: 1 },
+          pointerType: { value: "mouse" },
+          isPrimary: { value: true },
+        });
+        fireEvent(source!, event);
+      };
+      pointer("pointerdown", 10);
+      pointer("pointermove", 40);
+      pointer("pointerup", 40);
+      const swappedIds = [selectedIds[1], selectedIds[0], ...selectedIds.slice(2)];
+      expect(screen.getByRole("combobox", { name: "Seat 1 player" })).toHaveValue("Player 2");
+      expect(screen.getByRole("combobox", { name: "Seat 2 player" })).toHaveValue("Player 1");
+      expect(readSaved()).toMatchObject({
+        gameId,
+        current: {
+          state: { setup: { step: "players", selectedPlayerIds: swappedIds, setup: null } },
+        },
+      });
+      expect(api.saveGameSession).toHaveBeenCalledTimes(writesWhilePending);
+
+      await act(async () => delayedSave.resolve({ revision: 2, duplicate: false }));
+      await waitFor(() =>
+        expect(api.saveGameSession.mock.lastCall?.[1].state.setup).toMatchObject({
+          selectedPlayerIds: swappedIds,
+          setup: null,
+        }),
+      );
+      expect(new Set(api.saveGameSession.mock.calls.map(([id]) => id))).toEqual(new Set([gameId]));
+      first.unmount();
+      renderView(<App />);
+      await waitFor(() => {
+        expect(screen.getByRole("combobox", { name: "Seat 1 player" })).toHaveValue("Player 2");
+        expect(screen.getByRole("combobox", { name: "Seat 2 player" })).toHaveValue("Player 1");
+      });
+      expect(readSaved()).toMatchObject({
+        gameId,
+        current: {
+          state: { setup: { step: "players", selectedPlayerIds: swappedIds, setup: null } },
+        },
+      });
+      await user.click(screen.getByRole("button", { name: "Start game" }));
+      expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
+      expect(readSaved()).toMatchObject({
+        gameId,
+        current: {
+          state: {
+            setup: {
+              step: "roles",
+              selectedPlayerIds: swappedIds,
+              setup: {
+                players: expect.arrayContaining([{ id: selectedIds[1], seat: 1 }]),
+                assignments: {},
+              },
+            },
+          },
+        },
+      });
+      expect(api.createGameSession).toHaveBeenCalledOnce();
+      expect(new Set(api.saveGameSession.mock.calls.map(([id]) => id))).toEqual(new Set([gameId]));
+    } finally {
+      delayedSave.resolve({ revision: 2, duplicate: false });
+      if (previousElementFromPoint === undefined)
+        Reflect.deleteProperty(document, "elementFromPoint");
+      else Object.defineProperty(document, "elementFromPoint", previousElementFromPoint);
+      cleanup();
+      setupMock.mockRestore();
+    }
+  });
+
   it("retries an offline first role-giveaway save with its durable identity and mutation", async () => {
     const user = userEvent.setup();
     api.saveGameSession.mockRejectedValue(new Error("offline"));
