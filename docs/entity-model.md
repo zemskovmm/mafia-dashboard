@@ -38,6 +38,7 @@ erDiagram
         string header_logo "nullable"
         string card_logo "nullable"
         string language_code
+        boolean best_move_enabled
         uuid created_by FK
         timestamp created_at
         timestamp updated_at
@@ -47,7 +48,7 @@ erDiagram
         uuid club_id PK, FK
         uuid user_id PK, FK
         string role
-        uuid manager_player_id FK "nullable; composite manager identity"
+        uuid access_player_id FK "nullable; composite access identity"
         timestamp created_at
     }
 
@@ -119,6 +120,13 @@ erDiagram
         timestamp updated_at
     }
 
+    GAME_SESSION_CREATIONS {
+        uuid club_id PK, FK
+        uuid creation_id PK
+        uuid game_id "logical aggregate id; survives game deletion"
+        timestamp created_at
+    }
+
     GAME_SESSION_MUTATIONS {
         uuid club_id PK, FK
         uuid game_id PK, FK
@@ -130,17 +138,18 @@ erDiagram
     PLAYERS {
         uuid id PK
         uuid club_id FK
-        string nickname
+        string nickname "null only when retired"
         string first_name "nullable"
         string last_name "nullable"
         string email "nullable"
         boolean data_processing_consent
         timestamp consent_at "nullable"
-        boolean is_club_manager
+        string club_access "none, user, or manager"
         uuid user_id FK "nullable"
         timestamp created_at
         timestamp updated_at
         timestamp last_played_at "nullable"
+        timestamp retired_at "nullable"
     }
 
     GAME_SESSION_PLAYERS {
@@ -155,7 +164,9 @@ erDiagram
     GAME_RESULTS {
         uuid club_id PK, FK
         uuid game_id PK
-        string winner
+        string outcome "red, black, draw, or cancelled"
+        string winner "nullable for draw or cancellation"
+        string reason "required for draw or cancellation; otherwise null"
         timestamp played_at
         uuid host_player_id FK "nullable"
     }
@@ -169,7 +180,7 @@ erDiagram
         string team
         string final_status
         int fouls
-        boolean won
+        boolean won "nullable"
         int best_move_hits "nullable"
     }
 
@@ -184,39 +195,45 @@ erDiagram
         timestamp updated_at
     }
 
-    USERS ||--o{ USER_SESSIONS : authenticates
-    USERS ||--o{ CLUBS : creates
+    USERS ||..o{ USER_SESSIONS : authenticates
+    USERS ||..o{ CLUBS : creates
     USERS ||--o{ CLUB_MEMBERSHIPS : joins
     CLUBS ||--o{ CLUB_MEMBERSHIPS : grants
-    USERS o|--o{ PLAYERS : links_identity
-    CLUBS ||--o{ PLAYERS : owns
-    PLAYERS o|--o| CLUB_MEMBERSHIPS : manager_identity
+    USERS o|..o{ PLAYERS : links_identity
+    CLUBS ||..o{ PLAYERS : owns
+    PLAYERS o|..o| CLUB_MEMBERSHIPS : access_identity
     USERS ||--o| YOUTUBE_OAUTH_CREDENTIALS : authorizes
 
     CLUBS ||--o{ GAME_EVENTS : isolates
     CLUBS ||--o{ DELETED_GAMES : tombstones
     CLUBS ||--o{ GAME_DAILY_COUNTERS : numbers
     CLUBS ||--o{ GAME_SESSIONS : owns
-    GAME_RULESETS ||--o{ GAME_SESSIONS : governs
+    GAME_RULESETS ||..o{ GAME_SESSIONS : governs
+    CLUBS ||--o{ GAME_SESSION_CREATIONS : deduplicates_creation
     GAME_SESSIONS ||--o{ GAME_SESSION_MUTATIONS : deduplicates
     GAME_SESSIONS ||--o{ GAME_SESSION_PLAYERS : selects
     PLAYERS ||--o{ GAME_SESSION_PLAYERS : participates
 
     CLUBS ||--o{ GAME_RESULTS : records
-    PLAYERS o|--o{ GAME_RESULTS : hosts
+    PLAYERS o|..o{ GAME_RESULTS : hosts
     GAME_RESULTS ||--o{ GAME_PLAYER_RESULTS : contains
     PLAYERS ||--o{ GAME_PLAYER_RESULTS : earns
 ```
 
 ### Physical-key notes
 
+- Uppercase entity labels correspond directly to the lowercase SQL table names. All current tables and columns are shown. Solid relationships have their entire child-side foreign key inside the child's primary key; dashed relationships do not. Both represent declared SQL foreign keys, not inferred relationships.
 - Club isolation is part of the composite keys and composite foreign keys for sessions, mutations, selected players, results, and player results. A matching `club_id` is therefore required across those relationships.
 - `game_rulesets` contains the immutable fixed-ruleset identity used by current sessions. Each session has a required composite reference to the canonical `club-mafia` version `1` row; custom rulesets and historical ruleset snapshot behavior remain outside the current model.
 - `game_session_players` is an internal relational projection of the authoritative session snapshot. Its composite keys enforce one row per player and one seated row per seat in each club/game. Database checks require hosts to have neither a seat nor a role, require non-hosts to have a seat, and restrict assigned roles to the canonical role vocabulary. A role may remain null before that seat draws a card.
-- The full `game_sessions.state` snapshot remains the restorable authority. Projection rows are rebuilt atomically on every accepted mutation, removed on completion, and never form a separate public or sanitized API representation. Authenticated `manager` and `user` members receive the same complete session data; membership and club isolation control access.
-- `club_memberships.manager_player_id`, `club_id`, and `user_id` form a nullable composite foreign key to the manager player's `(id, club_id, user_id)` identity. The partial unique index on `manager_player_id` limits a manager player to at most one membership.
+- The full `game_sessions.state` snapshot remains the restorable authority. Event, player and result projections are rebuilt atomically from accepted snapshots; player projection rows are not automatically removed on completion. Virtual Casper has no physical player profile and is omitted from the player projection. These rows never form a separate public or sanitized session representation. Authenticated `manager` and `user` members receive the same complete session data; membership and club isolation control access.
+- `club_memberships.access_player_id`, `club_id`, and `user_id` form a composite foreign key to the access player's `(id, club_id, user_id)` identity. `access_player_id` is nullable, making this relationship optional; its partial unique index limits a player to at most one linked membership. Membership roles are `manager` or `user`; a player's `club_access` may also be `none`.
+- `players.id` is a permanent, globally unique identity belonging to one club, with `retired_at` marking profile retirement. Retired rows retain the ID but must have null nickname, personal fields, consent timestamp and user link, no consent, and `club_access = 'none'`. Active rows require a nonblank nickname. Historical participation and results reference these retained IDs, not copied profile names.
+- Player uniqueness is club-scoped: normalized nickname among non-retired profiles, normalized email among profiles with club access, and linked user ID where present. These composite/partial indexes do not make individual columns globally unique. Personal fields and consent timestamps are required when consent is true and must be null otherwise.
+- `game_session_creations` maps `(club_id, creation_id)` to a server-issued `game_id`. Only its club is a foreign key: the mapping intentionally survives game deletion so a retried creation cannot resurrect that game. It is deleted with the club.
+- `game_results.outcome` is `red`, `black`, `draw`, or `cancelled`. Team outcomes require the matching winner and a null reason; draw/cancellation require a null winner and a nonblank trimmed reason. `game_player_results.won` is nullable. Host references are optional and club-scoped.
 - `game_events` is an event store for both session and non-session game aggregates. `game_events.game_id` deliberately has no foreign key to `game_sessions`.
-- `game_events.parent_event_id` and the three event IDs on `game_sessions` are logical replay links. Their former foreign keys are explicitly removed by the schema so retained branches and non-session aggregates remain valid.
+- `game_events.parent_event_id` and the three event IDs on `game_sessions` are logical replay links without SQL foreign keys, allowing retained branches and non-session aggregates. `game_sessions.last_mutation_id` is also a logical identifier, not a foreign key.
 - `deleted_games.game_id` and `game_results.game_id` also identify game aggregates without foreign keys to `game_sessions`; only their club and downstream result relationships are physically enforced.
 - `deleted_clubs` is an independent deletion marker, not a child of `clubs`; it must survive after the club row is gone. `deleted_games` remains physically scoped to an existing club.
 - Important composite uniqueness rules not expressible as single-column `UK` markers include event sequence and idempotency per club/game, replay sequence per club/game, session mutation revision per club/game, and seat per club/game.
