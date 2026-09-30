@@ -8,10 +8,16 @@ import { GameUtilityPanels } from "./GameUtilityPanels.js";
 interface LiveSidePanelProps {
   readonly game: GameState | null;
   readonly hidden?: boolean;
+  readonly onSelectVotingCandidate?: (seat: number) => void;
   readonly children: ReactNode;
 }
 
-export const LiveSidePanel = ({ game, hidden = false, children }: LiveSidePanelProps) => {
+export const LiveSidePanel = ({
+  game,
+  hidden = false,
+  onSelectVotingCandidate,
+  children,
+}: LiveSidePanelProps) => {
   const { t } = useMessages(gameMessages);
   const [utilitiesHidden, setUtilitiesHidden] = useState(false);
   const touchStartRef = useRef<{ readonly x: number; readonly y: number } | null>(null);
@@ -54,7 +60,10 @@ export const LiveSidePanel = ({ game, hidden = false, children }: LiveSidePanelP
         <span aria-hidden="true" />
       </button>
       <div id="game-utility-panels" hidden={utilitiesHidden}>
-        <GameUtilityPanels game={game} />
+        <GameUtilityPanels
+          game={game}
+          onSelectVotingCandidate={hidden || utilitiesHidden ? undefined : onSelectVotingCandidate}
+        />
       </div>
       {children}
     </aside>

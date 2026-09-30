@@ -10,7 +10,6 @@ export const isCasperPlayer = (player: Pick<PlayerInput, "id">): boolean =>
 export const assertCasperPlayer = (player: PlayerInput): void => {
   if (!isCasperPlayer(player)) return;
   if (player.seat !== CASPER_SEAT) throw new Error("Casper must occupy seat 10");
-  if (player.name !== CASPER_NAME) throw new Error("Casper must use the reserved name");
 };
 
 export const assertCasperRole = (player: PlayerInput, role: Role | undefined): void => {

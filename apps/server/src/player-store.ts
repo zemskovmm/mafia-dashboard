@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { initializeSchema } from "./initialize-schema.js";
 import { DEFAULT_CLUB_ID } from "./club-store.js";
+import { inspectGameIdentities } from "./game-session-identity.js";
 
 export class ManagerLockedError extends Error {
   public readonly code = "manager_locked";
@@ -184,7 +185,7 @@ export class PlayerStore {
 
   public async list(clubId = DEFAULT_CLUB_ID): Promise<readonly PlayerProfile[]> {
     const result = await this.pool.query<PlayerRow>(
-      `${profileSelect} WHERE p.club_id = $1 ${profileGroupAndOrder}`,
+      `${profileSelect} WHERE p.club_id = $1 AND p.retired_at IS NULL ${profileGroupAndOrder}`,
       [clubId],
     );
     return result.rows.map(mapPlayer);
@@ -192,7 +193,7 @@ export class PlayerStore {
 
   public async get(id: string, clubId = DEFAULT_CLUB_ID): Promise<PlayerProfile | null> {
     const result = await this.pool.query<PlayerRow>(
-      `${profileSelect} WHERE p.id = $1 AND p.club_id = $2 ${profileGroupAndOrder}`,
+      `${profileSelect} WHERE p.id = $1 AND p.club_id = $2 AND p.retired_at IS NULL ${profileGroupAndOrder}`,
       [id, clubId],
     );
     return result.rows[0] === undefined ? null : mapPlayer(result.rows[0]);
@@ -278,7 +279,7 @@ export class PlayerStore {
                   (player.club_access = 'manager' AND player.user_id = club.created_by) AS manager_locked
              FROM players AS player
              JOIN clubs AS club ON club.id = player.club_id
-            WHERE player.id = $1 AND player.club_id = $2
+            WHERE player.id = $1 AND player.club_id = $2 AND player.retired_at IS NULL
             FOR UPDATE OF player`,
           [id, clubId],
         )
@@ -379,7 +380,7 @@ export class PlayerStore {
       );
       await client.query("LOCK TABLE game_session_players IN SHARE MODE");
       const locked = await client.query<{ id: string }>(
-        "SELECT id FROM players WHERE id = $1 AND club_id = $2 FOR UPDATE",
+        "SELECT id FROM players WHERE id = $1 AND club_id = $2 AND retired_at IS NULL FOR UPDATE",
         [id, clubId],
       );
       if (locked.rowCount === 0) {
@@ -414,56 +415,18 @@ export class PlayerStore {
         await client.query("COMMIT");
         return "active_game";
       }
-      const currentGames = await client.query<{ game_id: string }>(
-        `SELECT game_id FROM game_player_results WHERE club_id = $2 AND player_id = $1
-         UNION
-         SELECT game_id FROM game_results WHERE club_id = $2 AND host_player_id = $1
-         UNION
-         SELECT game_id FROM game_session_players WHERE club_id = $2 AND player_id = $1
-         ORDER BY game_id`,
-        [id, clubId],
+      // The JSON aggregate is authoritative. A partial or missing projection
+      // cannot permit retirement of an active host or participant. Save takes
+      // the projection-table locks before locking player rows as well.
+      const activeSnapshots = await client.query<{ state: Record<string, unknown> }>(
+        "SELECT state FROM game_sessions WHERE club_id = $1 AND status = 'active'",
+        [clubId],
       );
-      const gameIds = currentGames.rows.map(({ game_id }) => game_id);
-      const affectedPlayers =
-        gameIds.length === 0
-          ? []
-          : (
-              await client.query<{ player_id: string }>(
-                `SELECT player_id
-                   FROM game_player_results
-                  WHERE club_id = $2 AND game_id = ANY($1::uuid[])
-                 UNION
-                 SELECT host_player_id AS player_id
-                   FROM game_results
-                  WHERE club_id = $2 AND game_id = ANY($1::uuid[])
-                    AND host_player_id IS NOT NULL
-                 UNION
-                 SELECT player_id
-                   FROM game_session_players
-                  WHERE club_id = $2 AND game_id = ANY($1::uuid[])`,
-                [gameIds, clubId],
-              )
-            ).rows.map(({ player_id }) => player_id);
-
-      if (gameIds.length > 0) {
-        await client.query(
-          `INSERT INTO deleted_games (game_id, club_id)
-           SELECT game_id, $2 FROM UNNEST($1::uuid[]) AS game_id
-           ON CONFLICT (club_id, game_id) DO NOTHING`,
-          [gameIds, clubId],
-        );
-        await client.query(
-          "DELETE FROM game_sessions WHERE club_id = $2 AND id = ANY($1::uuid[])",
-          [gameIds, clubId],
-        );
-        await client.query(
-          "DELETE FROM game_events WHERE club_id = $2 AND game_id = ANY($1::uuid[])",
-          [gameIds, clubId],
-        );
-        await client.query(
-          "DELETE FROM game_results WHERE club_id = $2 AND game_id = ANY($1::uuid[])",
-          [gameIds, clubId],
-        );
+      if (
+        activeSnapshots.rows.some(({ state }) => inspectGameIdentities(state, null).all.has(id))
+      ) {
+        await client.query("COMMIT");
+        return "active_game";
       }
       const linkedUserId = playerAccess.user_id;
       if (linkedUserId !== null) {
@@ -473,33 +436,14 @@ export class PlayerStore {
           [clubId, id],
         );
       }
-      await client.query("DELETE FROM players WHERE id = $1 AND club_id = $2", [id, clubId]);
-      if (affectedPlayers.length > 0) {
-        await client.query(
-          `UPDATE players AS p
-              SET last_played_at = (
-                    SELECT MAX(history.played_at)
-                      FROM (
-                        SELECT result.played_at
-                          FROM game_player_results AS player_result
-                          JOIN game_results AS result
-                            ON result.club_id = player_result.club_id
-                           AND result.game_id = player_result.game_id
-                         WHERE player_result.club_id = p.club_id
-                           AND player_result.player_id = p.id
-                        UNION ALL
-                        SELECT hosted.played_at
-                          FROM game_results AS hosted
-                         WHERE hosted.club_id = p.club_id
-                           AND hosted.host_player_id = p.id
-                           AND hosted.outcome <> 'cancelled'
-                      ) AS history
-                  ),
-                  updated_at = NOW()
-            WHERE p.club_id = $2 AND p.id = ANY($1::uuid[])`,
-          [affectedPlayers, clubId],
-        );
-      }
+      await client.query(
+        `UPDATE players
+            SET nickname = NULL, first_name = NULL, last_name = NULL, email = NULL,
+                user_id = NULL, club_access = 'none', data_processing_consent = FALSE,
+                consent_at = NULL, retired_at = NOW(), updated_at = NOW()
+          WHERE id = $1 AND club_id = $2`,
+        [id, clubId],
+      );
       await client.query("COMMIT");
       return "deleted";
     } catch (error) {

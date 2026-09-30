@@ -1,0 +1,10 @@
+version: 1
+
+checks:
+  local-check:
+    run: npm run check:local
+    timeout: 10m
+
+default:
+  use:
+    - local-check

@@ -15,6 +15,7 @@ import {
   isMeaningfulGameEventDraft,
   isTerminalGamePhase,
   replayGameLog,
+  selectVotingCandidate,
   type CanonicalGameEventDraft,
   type GameLogEntry,
   type GameState,
@@ -117,6 +118,7 @@ import { buildFinalGameResults } from "./features/players/game-results.js";
 import { SetupWizard, type SetupWizardSessionState } from "./features/setup/SetupWizard.js";
 import { AvailablePlayersScreen } from "./features/setup/AvailablePlayersScreen.js";
 import { GameTimelineScreen } from "./features/timeline/GameTimelineScreen.js";
+import { PlayerDirectoryProvider } from "./features/players/player-display.js";
 import { useMessages, type FeatureI18n, type Locale } from "./i18n/I18nProvider.js";
 import { LanguageSelector } from "./i18n/LanguageSelector.js";
 import { shellMessages, type ShellMessageKey } from "./i18n/messages/shell.js";
@@ -331,7 +333,6 @@ const asPersistedState = (state: GameSessionState | undefined): PersistedState =
       setup: null,
       game: null,
       hostPlayerId: null,
-      hostName: null,
       playlistId: defaultPlaylistId,
       log: [],
       undoHistory: [],
@@ -418,20 +419,22 @@ export const ClubWorkspace = ({
   const [sessionName, setSessionName] = useState(
     () => initialCurrent?.name ?? nextGameName(window.localStorage, new Date()),
   );
-  const initialDerivedGame = (() => {
-    if (initialState.game !== null) return initialState.game;
+  // The saved game can contain an open ballot; only the retained event head is canonical.
+  const initialCanonicalGame = (() => {
     if (initialState.initialGame === null) return initialState.game;
-    if (initialState.headEventId === null) return initialState.initialGame.game;
     try {
-      return replayGameLog(
-        initialState.initialGame,
-        getActiveBranch(initialState.events, initialState.headEventId),
-      ).game;
+      return initialState.headEventId === null
+        ? initialState.initialGame.game
+        : replayGameLog(
+            initialState.initialGame,
+            getActiveBranch(initialState.events, initialState.headEventId),
+          ).game;
     } catch (error) {
       reportError(error, { source: "persistence", context: "game-session.replay-initial" });
-      return initialState.game;
+      return null;
     }
   })();
+  const initialDerivedGame = initialState.game ?? initialCanonicalGame;
   const [game, setGame] = useState<GameState | null>(initialDerivedGame);
   const [initialGame, setInitialGame] = useState<InitialGameBaseline | null>(
     initialState.initialGame,
@@ -455,7 +458,6 @@ export const ClubWorkspace = ({
   );
   const [setupInstanceKey, setSetupInstanceKey] = useState(0);
   const [hostPlayerId, setHostPlayerId] = useState<string | null>(initialState.hostPlayerId);
-  const [hostName, setHostName] = useState<string | null>(initialState.hostName);
   const [finalResults, setFinalResults] = useState<FinalGameResults | null>(
     initialCurrent?.results ?? null,
   );
@@ -621,12 +623,16 @@ export const ClubWorkspace = ({
   const initialGameRef = useRef<InitialGameBaseline | null>(initialState.initialGame);
   const eventsRef = useRef<readonly GameLogEntry[]>(initialState.events);
   const headEventIdRef = useRef<string | null>(initialState.headEventId);
-  const canonicalGameRef = useRef<GameState | null>(initialDerivedGame);
+  const canonicalGameRef = useRef<GameState | null>(initialCanonicalGame);
   const legacyLogRef = useRef<readonly LocalLogEntry[]>(initialState.legacyLog);
   const previewTargetEventIdRef = useRef<string | null>(null);
   const gameScreenMutationGenerationRef = useRef(0);
   const liveGameBeforePreviewRef = useRef<GameState | null>(null);
-  const hasIntermediateDraftRef = useRef(false);
+  const hasIntermediateDraftRef = useRef(
+    initialCanonicalGame !== null &&
+      initialDerivedGame !== null &&
+      hashGameState(initialDerivedGame) !== hashGameState(initialCanonicalGame),
+  );
   const viewBeforeTimelineRef = useRef<Exclude<WorkspaceView, "timeline">>("game");
   const viewBeforeConsoleRef = useRef<"game" | "players">("game");
   const phaseRef = useRef(initialState.game?.phase ?? setupPhase(initialState.setup?.step));
@@ -635,6 +641,7 @@ export const ClubWorkspace = ({
   const resumeRequestRef = useRef(0);
   const unavailableGameIdsRef = useRef(new Set<string>());
   const persistedResultsRef = useRef<FinalGameResults | null>(initialCurrent?.results ?? null);
+  const finishRequestedRef = useRef(initialCurrent?.results != null);
   const finalizingCompletionRef = useRef(false);
   const fullscreenTarget = document.documentElement as WebkitFullscreenElement;
   const fullscreenDocument = document as WebkitFullscreenDocument;
@@ -825,7 +832,6 @@ export const ClubWorkspace = ({
       setup: setupSession,
       game,
       hostPlayerId,
-      hostName,
       playlistId,
       log,
       undoHistory: [],
@@ -856,7 +862,6 @@ export const ClubWorkspace = ({
     events,
     game,
     headEventId,
-    hostName,
     hostPlayerId,
     initialGame,
     legacyLog,
@@ -963,59 +968,31 @@ export const ClubWorkspace = ({
         setUndoBudget((current) => (created.after.day > before.day ? 0 : Math.min(3, current + 1)));
       }
       setGame(displayedAfter);
-      if (
-        (created.entry.type === "game.drawn" || created.entry.type === "game.cancelled") &&
-        hostPlayerId !== null
-      ) {
-        setFinalResults(
-          buildFinalGameResults(
-            created.after,
-            new Date(created.entry.createdAt),
-            hostPlayerId,
-            created.entry.payload.reason,
-          ),
-        );
-        setFinishGameState("saving");
-      } else if (created.after.phase !== "finished") {
+      if (created.after.phase !== "finished") {
         setFinalResults(null);
         setFinishGameState("ready");
       }
     },
-    [game, hostPlayerId, sessionSync],
+    [game, sessionSync],
   );
 
-  const moveHeadLocally = useCallback(
-    (targetEventId: string | null) => {
-      const baseline = initialGameRef.current;
-      if (baseline === null) return;
-      gameScreenMutationGenerationRef.current += 1;
-      hasIntermediateDraftRef.current = false;
-      const nextGame =
-        targetEventId === null
-          ? baseline.game
-          : replayToEvent(baseline, eventsRef.current, targetEventId);
-      headEventIdRef.current = targetEventId;
-      canonicalGameRef.current = nextGame;
-      phaseRef.current = nextGame.phase;
-      setHeadEventId(targetEventId);
-      setGame(nextGame);
-      const target = eventsRef.current.find(({ id }) => id === targetEventId);
-      if (target !== undefined && hostPlayerId !== null && isTerminalGamePhase(nextGame.phase)) {
-        const reason =
-          target.type === "game.drawn" || target.type === "game.cancelled"
-            ? target.payload.reason
-            : null;
-        setFinalResults(
-          buildFinalGameResults(nextGame, new Date(target.createdAt), hostPlayerId, reason),
-        );
-        setFinishGameState("saved");
-      } else {
-        setFinalResults(null);
-        setFinishGameState("ready");
-      }
-    },
-    [hostPlayerId],
-  );
+  const moveHeadLocally = useCallback((targetEventId: string | null) => {
+    const baseline = initialGameRef.current;
+    if (baseline === null) return;
+    gameScreenMutationGenerationRef.current += 1;
+    hasIntermediateDraftRef.current = false;
+    const nextGame =
+      targetEventId === null
+        ? baseline.game
+        : replayToEvent(baseline, eventsRef.current, targetEventId);
+    headEventIdRef.current = targetEventId;
+    canonicalGameRef.current = nextGame;
+    phaseRef.current = nextGame.phase;
+    setHeadEventId(targetEventId);
+    setGame(nextGame);
+    setFinalResults(null);
+    setFinishGameState("ready");
+  }, []);
 
   const previewEventState = useCallback(
     (eventId: string) => {
@@ -1071,17 +1048,36 @@ export const ClubWorkspace = ({
 
   const finishGame = () => {
     if (sessionSync.isCreating || sessionSync.isRemoved) return;
-    if (game?.phase !== "finished" || hostPlayerId === null || finalResults !== null) return;
-    acceptGameEvent({
-      type: "game.completed",
-      payload: { winner: game.winner ?? "red" },
-    });
-    const completionEvent = eventsRef.current.at(-1);
+    if (
+      game === null ||
+      !isTerminalGamePhase(game.phase) ||
+      hostPlayerId === null ||
+      finalResults !== null ||
+      finishRequestedRef.current
+    )
+      return;
+    const outcomeEvent = eventsRef.current.find(({ id }) => id === headEventIdRef.current);
+    const reason =
+      outcomeEvent?.type === "game.drawn" || outcomeEvent?.type === "game.cancelled"
+        ? outcomeEvent.payload.reason
+        : null;
+    let playedAt = outcomeEvent?.createdAt;
+    if (game.phase === "finished" && game.winner !== null) {
+      acceptGameEvent({ type: "game.completed", payload: { winner: game.winner } });
+      playedAt = eventsRef.current.at(-1)?.createdAt;
+    } else if (
+      (game.phase === "draw" && outcomeEvent?.type !== "game.drawn") ||
+      (game.phase === "cancelled" && outcomeEvent?.type !== "game.cancelled")
+    )
+      return;
     const results = buildFinalGameResults(
       game,
-      new Date(completionEvent?.createdAt ?? Date.now()),
+      new Date(playedAt ?? Date.now()),
       hostPlayerId,
+      reason,
     );
+    if (results === null) return;
+    finishRequestedRef.current = true;
     setFinishGameState("saving");
     setFinalResults(results);
     sessionSync.enqueue(
@@ -1090,7 +1086,6 @@ export const ClubWorkspace = ({
         setup: setupSession,
         game,
         hostPlayerId,
-        hostName,
         playlistId,
         log: [
           ...legacyLogRef.current,
@@ -1243,14 +1238,11 @@ export const ClubWorkspace = ({
       const nextHostId = next.hostPlayerId;
       if (nextHostId === undefined || nextHostId === "") {
         setHostPlayerId(null);
-        setHostName(null);
         return;
       }
-      const selectedHost = players.find(({ id }) => id === nextHostId);
       setHostPlayerId(nextHostId);
-      if (selectedHost !== undefined) setHostName(selectedHost.nickname);
     },
-    [players, sessionSync],
+    [sessionSync],
   );
 
   const applyRemoteSession = useCallback(
@@ -1261,16 +1253,26 @@ export const ClubWorkspace = ({
       const restored = asPersistedState(current.state);
       gameScreenMutationGenerationRef.current += 1;
       setSessionName(current.name);
-      const restoredGame =
-        restored.game ??
-        (restored.initialGame === null
-          ? null
-          : restored.headEventId === null
-            ? restored.initialGame.game
-            : replayGameLog(
-                restored.initialGame,
-                getActiveBranch(restored.events, restored.headEventId),
-              ).game);
+      let canonicalRestoredGame: GameState | null = restored.game;
+      if (restored.initialGame !== null) {
+        try {
+          canonicalRestoredGame =
+            restored.headEventId === null
+              ? restored.initialGame.game
+              : replayGameLog(
+                  restored.initialGame,
+                  getActiveBranch(restored.events, restored.headEventId),
+                ).game;
+        } catch (error) {
+          reportError(error, { source: "persistence", context: "game-session.replay-resumed" });
+          canonicalRestoredGame = null;
+        }
+      }
+      const restoredGame = restored.game ?? canonicalRestoredGame;
+      hasIntermediateDraftRef.current =
+        canonicalRestoredGame !== null &&
+        restoredGame !== null &&
+        hashGameState(restoredGame) !== hashGameState(canonicalRestoredGame);
       setGame(restoredGame);
       setInitialGame(restored.initialGame);
       initialGameRef.current = restored.initialGame;
@@ -1278,7 +1280,7 @@ export const ClubWorkspace = ({
       eventsRef.current = restored.events;
       setHeadEventId(restored.headEventId);
       headEventIdRef.current = restored.headEventId;
-      canonicalGameRef.current = restoredGame;
+      canonicalGameRef.current = canonicalRestoredGame;
       setLegacyLog(restored.legacyLog);
       legacyLogRef.current = restored.legacyLog;
       setResetReturnEventId(restored.resetReturnEventId);
@@ -1287,9 +1289,9 @@ export const ClubWorkspace = ({
       );
       setSetupSession(restored.setup);
       setHostPlayerId(restored.hostPlayerId);
-      setHostName(restored.hostName);
       setPlaylistId(restored.playlistId);
       setFinalResults(current.results);
+      finishRequestedRef.current = current.results !== null;
       setFinishGameState(current.results === null ? "ready" : "saved");
       persistedResultsRef.current = current.results;
       phaseRef.current = restoredGame?.phase ?? setupPhase(restored.setup?.step);
@@ -1326,8 +1328,8 @@ export const ClubWorkspace = ({
     setGame(null);
     setSetupSession(null);
     setHostPlayerId(null);
-    setHostName(null);
     setFinalResults(null);
+    finishRequestedRef.current = false;
     persistedResultsRef.current = null;
     setFinishGameState("ready");
     setPlaylistId(defaultPlaylistId);
@@ -1730,7 +1732,11 @@ export const ClubWorkspace = ({
                   <strong>{session.name}</strong>
                   <span>
                     {t("activeSessionSummary", {
-                      host: session.hostName ?? t("hostNotSelected"),
+                      host:
+                        session.hostPlayerId === null
+                          ? t("hostNotSelected")
+                          : (players.find(({ id }) => id === session.hostPlayerId)?.nickname ??
+                            t("player.anonymous")),
                       phase: phaseLabel(session.phase, t),
                       day: session.day,
                     })}
@@ -2333,7 +2339,7 @@ export const ClubWorkspace = ({
             onStartGame={() => {
               musicRef.current?.startOpeningQueue();
             }}
-            onComplete={(next, selectedHostPlayerId, selectedHostName) => {
+            onComplete={(next, selectedHostPlayerId) => {
               const gameId = sessionSync.gameId;
               if (gameId === null || sessionSync.isCreating || sessionSync.isRemoved) return;
               const baseline: InitialGameBaseline = { replayVersion: 1, game: next };
@@ -2361,7 +2367,6 @@ export const ClubWorkspace = ({
               phaseRef.current = next.phase;
               setSetupSession(null);
               setHostPlayerId(selectedHostPlayerId);
-              setHostName(selectedHostName);
               setFinalResults(null);
               if (musicState === "playing") musicRef.current?.playFirstRegularTrack();
               setGame(next);
@@ -2373,7 +2378,11 @@ export const ClubWorkspace = ({
           key={`${previewGame === null ? "live" : "preview"}-${renderedGameScreenMutationGeneration}`}
           game={previewGame ?? game}
           gameName={sessionName}
-          hostName={hostName ?? t("host")}
+          hostName={
+            hostPlayerId === null
+              ? t("host")
+              : (players.find(({ id }) => id === hostPlayerId)?.nickname ?? t("player.anonymous"))
+          }
           onGameChange={(nextGame) => {
             if (canApplyGameScreenMutation()) changeGame(nextGame);
           }}
@@ -2400,7 +2409,23 @@ export const ClubWorkspace = ({
         />
       )}
 
-      <LiveSidePanel game={view === "game" ? (previewGame ?? game) : null} hidden={view !== "game"}>
+      <LiveSidePanel
+        game={view === "game" ? (previewGame ?? game) : null}
+        hidden={view !== "game"}
+        onSelectVotingCandidate={
+          view === "game" &&
+          previewGame === null &&
+          finalResults === null &&
+          finishGameState !== "blocked" &&
+          game?.phase === "voting"
+            ? (seat) => {
+                if (canApplyGameScreenMutation() && game.phase === "voting") {
+                  changeGame(selectVotingCandidate(game, seat));
+                }
+              }
+            : undefined
+        }
+      >
         {musicAccountConnected ? (
           <MusicDock
             expanded={musicPlayerExpanded}
@@ -2460,7 +2485,7 @@ export const ClubWorkspace = ({
         onReady={reportVgpuReady}
         onFailure={reportVgpuFailure}
       >
-        {content}
+        <PlayerDirectoryProvider profiles={players}>{content}</PlayerDirectoryProvider>
       </VgpuLightingProvider>
     </LightingRendererContext.Provider>
   );

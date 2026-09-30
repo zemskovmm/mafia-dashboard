@@ -68,15 +68,7 @@ const completeDay = (game: GameState): GameState => {
     votingRound: "initial",
   };
   if (nominations.length !== 1) return voting;
-  const candidateSeat = nominations[0]!.candidateSeat;
-  return {
-    ...voting,
-    voteAssignments: Object.fromEntries(
-      voting.players
-        .filter(({ status }) => status === "active")
-        .map(({ seat }) => [seat, candidateSeat]),
-    ),
-  };
+  return selectVotingCandidate(voting, nominations[0]!.candidateSeat);
 };
 
 export const nominate = (
@@ -287,10 +279,11 @@ export const toggleVote = (
     throw new Error("Votes can only be changed for the current voting candidate");
   }
   if (assignedCandidateSeat !== candidateSeat) {
-    throw new Error(`Seat ${voterSeat} has already voted for another candidate`);
+    return {
+      ...game,
+      voteAssignments: { ...game.voteAssignments, [voterSeat]: candidateSeat },
+    };
   }
-  // The final candidate must retain every automatically assigned remaining vote.
-  if (game.currentTurnIndex === game.nominations.length - 1) return game;
   const voteAssignments = { ...game.voteAssignments };
   delete voteAssignments[voterSeat];
   return { ...game, voteAssignments };
@@ -308,13 +301,14 @@ export const getCurrentVotingCandidateSeat = (game: GameState): number => {
   return candidateSeat;
 };
 
-export const advanceVotingCandidate = (game: GameState): GameState => {
+export const selectVotingCandidate = (game: GameState, candidateSeat: number): GameState => {
   getCurrentVotingCandidateSeat(game);
-  const nextIndex = game.currentTurnIndex + 1;
-  if (nextIndex >= game.nominations.length) {
-    throw new Error("The final voting candidate is already active");
+  const nextIndex = game.nominations.findIndex(
+    (nomination) => nomination.candidateSeat === candidateSeat,
+  );
+  if (nextIndex < 0 || game.turnOrder[nextIndex] !== candidateSeat) {
+    throw new Error("Only a nominated voting candidate can be selected");
   }
-  const candidateSeat = game.nominations[nextIndex]!.candidateSeat;
   const voteAssignments = { ...game.voteAssignments };
   if (nextIndex === game.nominations.length - 1) {
     for (const player of game.players) {
@@ -324,6 +318,15 @@ export const advanceVotingCandidate = (game: GameState): GameState => {
     }
   }
   return { ...game, currentTurnIndex: nextIndex, voteAssignments };
+};
+
+export const advanceVotingCandidate = (game: GameState): GameState => {
+  getCurrentVotingCandidateSeat(game);
+  const candidateSeat = game.turnOrder[game.currentTurnIndex + 1];
+  if (candidateSeat === undefined) {
+    throw new Error("The final voting candidate is already active");
+  }
+  return selectVotingCandidate(game, candidateSeat);
 };
 
 export const countVotes = (game: GameState): Record<number, number> => {
@@ -343,9 +346,7 @@ export const resolveVote = (game: GameState): VoteResult => {
     throw new Error("A vote can only be resolved during voting");
   }
   getCurrentVotingCandidateSeat(game);
-  if (game.currentTurnIndex !== game.turnOrder.length - 1) {
-    throw new Error("Voting can only resolve on the final candidate");
-  }
+
   const eligibleVoterSeats = game.players
     .filter(({ status }) => status === "active")
     .map(({ seat }) => seat);

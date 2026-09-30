@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   acceptCarCrashBallot,
   advanceVotingCandidate,
@@ -18,6 +18,7 @@ import type { CanonicalGameEventDraft, GameState } from "@mafia/game-domain";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { votingMessages } from "../../i18n/messages/voting.js";
 import { GameTable, type TableSeatView } from "../table/GameTable.js";
+import { usePlayerDisplayName } from "../players/player-display.js";
 
 interface VotingStageProps {
   readonly game: GameState;
@@ -47,13 +48,23 @@ export const VotingStage = ({
   onFoul,
 }: VotingStageProps) => {
   const { formatList, t } = useMessages(votingMessages);
+  const displayName = usePlayerDisplayName();
   const hostName = suppliedHostName ?? t("host");
   const [, setSelectedVoterSeat] = useState<number | null>(null);
+  const resolutionSubmittedRef = useRef(false);
+  useEffect(() => {
+    if (game.phase !== "voting") resolutionSubmittedRef.current = false;
+  }, [game.phase]);
   const totals = countVotes(game);
-  const activePlayers = game.players.filter(({ status }) => status === "active");
-  const allVotesAssigned = activePlayers.every(
-    ({ seat }) => game.voteAssignments[seat] !== undefined,
-  );
+  const allVotesAssigned = (() => {
+    if (game.phase !== "voting") return false;
+    try {
+      resolveVote(game);
+      return true;
+    } catch {
+      return false;
+    }
+  })();
 
   const selectedCandidate = game.phase === "voting" ? getCurrentVotingCandidateSeat(game) : null;
   const selectedCandidateIndex = game.phase === "voting" ? game.currentTurnIndex : -1;
@@ -95,7 +106,9 @@ export const VotingStage = ({
   };
 
   const resolve = () => {
+    if (resolutionSubmittedRef.current || !allVotesAssigned) return;
     const result = resolveVote(game);
+    resolutionSubmittedRef.current = true;
     if (onAcceptedEvent !== undefined) {
       const voteAssignments = Object.fromEntries(
         Object.entries(game.voteAssignments).flatMap(([seat, candidateSeat]) =>
@@ -139,6 +152,7 @@ export const VotingStage = ({
         onDismissSwipeAction={onDismissSwipeAction}
         seats={game.players.map((player) => ({
           ...player,
+          name: displayName(player),
           inactive: player.status !== "active",
         }))}
         renderSeatActions={renderFoulAction}
@@ -168,6 +182,7 @@ export const VotingStage = ({
         onDismissSwipeAction={onDismissSwipeAction}
         seats={game.players.map((player) => ({
           ...player,
+          name: displayName(player),
           current: game.carCrashSeats?.includes(player.seat),
           inactive: player.status !== "active",
         }))}
@@ -191,9 +206,10 @@ export const VotingStage = ({
   if (game.phase === "car-crash-decision") {
     const carCrashSeats = game.carCrashSeats ?? [];
     const nominees = formatList(
-      carCrashSeats.map(
-        (seat) => game.players.find((player) => player.seat === seat)?.name ?? t("seat", { seat }),
-      ),
+      carCrashSeats.map((seat) => {
+        const player = game.players.find((candidate) => candidate.seat === seat);
+        return player === undefined ? t("seat", { seat }) : displayName(player);
+      }),
     );
     return (
       <GameTable
@@ -204,6 +220,7 @@ export const VotingStage = ({
         onDismissSwipeAction={onDismissSwipeAction}
         seats={game.players.map((player) => ({
           ...player,
+          name: displayName(player),
           current: game.carCrashSeats?.includes(player.seat),
           votingHighlight: game.carCrashVotes?.[player.seat] === true,
           inactive: player.status !== "active",
@@ -284,9 +301,10 @@ export const VotingStage = ({
   if (game.phase === "car-crash-result" && game.carCrashResult !== undefined) {
     const result = game.carCrashResult;
     const names = formatList(
-      result.seats.map(
-        (seat) => game.players.find((player) => player.seat === seat)?.name ?? t("seat", { seat }),
-      ),
+      result.seats.map((seat) => {
+        const player = game.players.find((candidate) => candidate.seat === seat);
+        return player === undefined ? t("seat", { seat }) : displayName(player);
+      }),
     );
     return (
       <GameTable
@@ -294,6 +312,7 @@ export const VotingStage = ({
         privacyHidden={privacyHidden}
         seats={game.players.map((player) => ({
           ...player,
+          name: displayName(player),
           current: result.seats.includes(player.seat),
           provisionalDeceased: result.eliminate && result.seats.includes(player.seat),
         }))}
@@ -344,22 +363,22 @@ export const VotingStage = ({
       onDismissSwipeAction={onDismissSwipeAction}
       seats={game.players.map((player) => ({
         ...player,
+        name: displayName(player),
         votingHighlight: game.voteAssignments[player.seat] === selectedCandidate,
-        inactive: game.voteAssignments[player.seat] !== undefined,
+        inactive: game.voteAssignments[player.seat] !== undefined || player.status !== "active",
         voteTargetSeat: game.voteAssignments[player.seat],
       }))}
       renderSeatActions={renderFoulAction}
+      seatActionDisabled={(seat) => seat.status !== "active"}
       seatActionLabel={(seat) => {
         const assigned = game.voteAssignments[seat.seat];
         if (assigned !== undefined) return t("votedForSeat", { name: seat.name, seat: assigned });
         if (candidate === undefined) return t("seatWithName", { seat: seat.seat, name: seat.name });
-        return t("voteAs", { voter: seat.name, candidate: candidate.name });
+        return t("voteAs", { voter: seat.name, candidate: displayName(candidate) });
       }}
       onSeatClick={(voterSeat) => {
         if (candidate === undefined) return;
-        const assignedCandidateSeat = game.voteAssignments[voterSeat];
-        if (assignedCandidateSeat !== undefined && assignedCandidateSeat !== candidate.seat) return;
-        const removingVote = assignedCandidateSeat === candidate.seat;
+        const removingVote = game.voteAssignments[voterSeat] === candidate.seat;
         const next = toggleVote(game, voterSeat, candidate.seat);
         setSelectedVoterSeat(removingVote ? null : voterSeat);
         onGameChange(next);
@@ -376,7 +395,9 @@ export const VotingStage = ({
             className={candidate === undefined ? undefined : "voting-candidate-identity"}
             tabIndex={candidate === undefined ? undefined : 0}
           >
-            {candidate === undefined ? t("noCandidate") : `#${candidate.seat} ${candidate.name}`}
+            {candidate === undefined
+              ? t("noCandidate")
+              : `#${candidate.seat} ${displayName(candidate)}`}
           </strong>
           <span>
             {t("votes", {
@@ -399,11 +420,10 @@ export const VotingStage = ({
             >
               {t("nextCandidate")}
             </button>
-          ) : (
-            <button type="button" disabled={!allVotesAssigned} onClick={resolve}>
-              {t("resolveVoting")}
-            </button>
-          )}
+          ) : null}
+          <button type="button" disabled={!allVotesAssigned} onClick={resolve}>
+            {t("resolveVoting")}
+          </button>
           <button
             type="button"
             className="table-advance-secondary"

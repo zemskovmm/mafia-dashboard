@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import legacyCasperFixture from "./fixtures/legacy-casper-best-move.json";
 import { CASPER_NAME, CASPER_PLAYER_ID, CASPER_SEAT } from "./casper.js";
-import { advanceVotingCandidate, completeCurrentTurn } from "./day-actions.js";
+import {
+  advanceVotingCandidate,
+  completeCurrentTurn,
+  resolveVote,
+  selectVotingCandidate,
+  toggleVote,
+} from "./day-actions.js";
 import { advanceSetupPhase, createGame, evaluateVictory, markPlayerInactive } from "./game.js";
 import {
   applyCurrentGameLogEntry,
@@ -42,7 +48,6 @@ import type { GameState, PlayerInput, SetupState } from "./types.js";
 const players = (): PlayerInput[] =>
   Array.from({ length: 10 }, (_, index) => ({
     id: `player-${index + 1}`,
-    name: `Player ${index + 1}`,
     seat: index + 1,
   }));
 
@@ -79,28 +84,30 @@ const entry = (
   });
 
 describe("canonical game replay", () => {
-  it("replays a fixed serialized legacy Casper Best Move without rewriting its historical hashes", () => {
+  it("rejects an old named baseline rather than rehashing it", () => {
+    expect(() => replayGameLog(legacyCasperFixture.baseline as InitialGameBaseline, [])).toThrow();
+  });
+  it("keeps canonical hashes independent of profile name changes", () => {
+    const current = planningGame();
+    const hash = hashGameState(current);
+    const directory = new Map([[current.players[0]!.id, "Old nickname"]]);
+    directory.set(current.players[0]!.id, "New nickname");
+    directory.delete(current.players[0]!.id);
+    expect(JSON.stringify(current)).not.toContain("Old nickname");
+    expect(JSON.stringify(current)).not.toContain('"name"');
+    expect(hashGameState(current)).toBe(hash);
+  });
+  it("rejects the exact old named Casper fixture without rewriting its historical hashes", () => {
     const { baseline: stored, events, finalHash } = legacyCasperFixture;
-    const historical = stored as InitialGameBaseline;
-    const entries = events as GameLogEntry[];
-    expect(historical.game).not.toHaveProperty("skipCasperBestMove");
-    expect(hashGameState(historical.game)).toBe(
+    const bytes = JSON.stringify(legacyCasperFixture);
+    expect(hashGameState(stored.game as GameState)).toBe(
       "sha256:c6bbfe9b99a7d477cb6dbfe1844fcbe435a8267e51c2ba6399c5c214c8a355f0",
     );
-    expect(entries[0]?.stateHashAfter).toBe(
-      "sha256:c6bbfe9b99a7d477cb6dbfe1844fcbe435a8267e51c2ba6399c5c214c8a355f0",
+    expect(events[1]?.stateHashAfter).toBe(finalHash);
+    expect(() => replayGameLog(stored as InitialGameBaseline, events as GameLogEntry[])).toThrow(
+      /unexpected name/,
     );
-    expect(entries[1]?.stateHashAfter).toBe(
-      "sha256:3ed7fd02b41334c18c8d46092f4115b9247086f9061fe4701ecd6ae3dc431e79",
-    );
-    const restored = replayGameLog(historical, entries);
-    expect(restored.game).not.toHaveProperty("skipCasperBestMove");
-    expect(restored.game).toMatchObject({ phase: "goodbye-speech", day: 2 });
-    expect(restored.game.bestMove?.playerSeat).toBe(CASPER_SEAT);
-    expect(hashGameState(restored.game)).toBe(finalHash);
-    expect(hashGameState(restored.game)).toBe(
-      "sha256:3ed7fd02b41334c18c8d46092f4115b9247086f9061fe4701ecd6ae3dc431e79",
-    );
+    expect(JSON.stringify(legacyCasperFixture)).toBe(bytes);
   });
 
   it.each(["yes", null, 1, {}])("rejects a non-boolean Casper rule marker %j", (marker) => {
@@ -112,9 +119,17 @@ describe("canonical game replay", () => {
   });
 
   it("round-trips a new Casper-kill checkpoint without a Best Move event", () => {
-    const historical = legacyCasperFixture.baseline.game as GameState;
-    const before: GameState = { ...historical, skipCasperBestMove: true };
-    const initial = baseline(JSON.parse(JSON.stringify(before)) as GameState);
+    const roster = players().map((player) =>
+      player.seat === CASPER_SEAT ? { id: CASPER_PLAYER_ID, seat: CASPER_SEAT } : player,
+    );
+    let setup = beginRoleDraw(createSetup(roster), createSeededRandom(41));
+    for (let seat = 1; seat < CASPER_SEAT; seat += 1) setup = drawRoleForSeat(setup, seat);
+    let before = beginNight(
+      advanceSetupPhase(advanceSetupPhase(createGame(completeRoleDraw(setup)))),
+    );
+    before = toggleAllMafiaShotsForTarget(before, CASPER_SEAT);
+    before = skipSheriffCheck(skipDonCheck(completeMafiaShots(resolveMafiaShots(before).game)));
+    const initial = baseline(before);
     const root = entry(initial.game, 1, { type: "game.checkpointed", payload: {} });
     const speech = entry(root.after, 2, {
       type: "phase.changed",
@@ -148,9 +163,7 @@ describe("canonical game replay", () => {
   });
   it("replays Casper speaking, voting, and being eliminated under ordinary rules", () => {
     const roster = players().map((player) =>
-      player.seat === CASPER_SEAT
-        ? { id: CASPER_PLAYER_ID, name: CASPER_NAME, seat: CASPER_SEAT }
-        : player,
+      player.seat === CASPER_SEAT ? { id: CASPER_PLAYER_ID, seat: CASPER_SEAT } : player,
     );
     let setup = beginRoleDraw(createSetup(roster), createSeededRandom(41));
     for (let seat = 1; seat < CASPER_SEAT; seat += 1) setup = drawRoleForSeat(setup, seat);
@@ -191,11 +204,54 @@ describe("canonical game replay", () => {
     expect(evaluateVictory(redWin.players)).toBe("red");
   });
 
+  it("round-trips the committed decisive night from a current ID-only game without a private phase", () => {
+    let day = dayOne();
+    const red = day.players.filter(({ team }) => team === "red");
+    for (const player of red.slice(0, 3)) {
+      day = markPlayerInactive(day, player.seat, "eliminated");
+    }
+    const victim = red[3]!;
+    const initial = baseline(beginNight(day));
+    const root = entry(initial.game, 1, { type: "game.checkpointed", payload: {} });
+    const selected = toggleAllMafiaShotsForTarget(root.after, victim.seat);
+    const resolution = resolveMafiaShots(selected);
+    const shot = entry(root.after, 2, {
+      type: "mafia.shots-resolved",
+      payload: { shots: resolution.secretShots, result: resolution.result },
+    });
+    expect(shot.after).toMatchObject({ phase: "night-mafia-result", winner: null });
+    expect(shot.after.players.find(({ seat }) => seat === victim.seat)?.status).toBe("active");
+    const outcome = entry(shot.after, 3, { type: "phase.changed", payload: { to: "finished" } });
+    expect(outcome.after).toEqual(completeMafiaShots(resolveMafiaShots(selected).game));
+    expect(outcome.after).toMatchObject({
+      phase: "finished",
+      winner: "black",
+      nightResult: { kind: "kill", targetSeat: victim.seat },
+      shotAssignments: {},
+    });
+    expect(outcome.entry.stateHashAfter).toBe(hashGameState(outcome.after));
+    const stored = JSON.parse(
+      JSON.stringify([root.entry, shot.entry, outcome.entry]),
+    ) as GameLogEntry[];
+    const restored = replayGameLog(JSON.parse(JSON.stringify(initial)), stored);
+    expect(restored.game).toEqual(outcome.after);
+    expect(restored.frames.map(({ after }) => after.phase)).toEqual([
+      "night-mafia",
+      "night-mafia-result",
+      "finished",
+    ]);
+    expect(() =>
+      replayGameLog(initial, [
+        root.entry,
+        shot.entry,
+        { ...outcome.entry, stateHashAfter: shot.entry.stateHashAfter },
+      ]),
+    ).toThrow(/state hash mismatch/i);
+  });
+
   it("replays a valid first-night Casper Best Move with its recorded phase and hash", () => {
     const roster = players().map((player) =>
-      player.seat === CASPER_SEAT
-        ? { id: CASPER_PLAYER_ID, name: CASPER_NAME, seat: CASPER_SEAT }
-        : player,
+      player.seat === CASPER_SEAT ? { id: CASPER_PLAYER_ID, seat: CASPER_SEAT } : player,
     );
     let setup = beginRoleDraw(createSetup(roster), createSeededRandom(41));
     for (let seat = 1; seat < CASPER_SEAT; seat += 1) setup = drawRoleForSeat(setup, seat);
@@ -240,14 +296,14 @@ describe("canonical game replay", () => {
     const casperAtOne = {
       ...initial,
       players: initial.players.map((player) =>
-        player.seat === 1 ? { ...player, id: CASPER_PLAYER_ID, name: CASPER_NAME } : player,
+        player.seat === 1 ? { ...player, id: CASPER_PLAYER_ID } : player,
       ),
     };
     expect(() => replayGameLog(baseline(casperAtOne), [])).toThrow(/Casper.*seat 10/i);
     const casperMafia = {
       ...initial,
       players: initial.players.map((player) =>
-        player.role === "mafia" ? { ...player, id: CASPER_PLAYER_ID, name: CASPER_NAME } : player,
+        player.role === "mafia" ? { ...player, id: CASPER_PLAYER_ID } : player,
       ),
     };
     expect(() => replayGameLog(baseline(casperMafia), [])).toThrow();
@@ -258,7 +314,7 @@ describe("canonical game replay", () => {
           ? {
               ...player,
               id: CASPER_PLAYER_ID,
-              name: CASPER_NAME,
+
               role: "mafia" as const,
               team: "black" as const,
             }
@@ -266,13 +322,13 @@ describe("canonical game replay", () => {
       ),
     };
     expect(() => replayGameLog(baseline(wrongRole), [])).toThrow(/Casper.*citizen/i);
-    const realNamedCasper = {
+    const oldNamedCasper = {
       ...initial,
       players: initial.players.map((player) =>
         player.seat === 10 ? { ...player, name: CASPER_NAME } : player,
       ),
     };
-    expect(replayGameLog(baseline(realNamedCasper), []).game).toEqual(realNamedCasper);
+    expect(() => replayGameLog(baseline(oldNamedCasper), [])).toThrow();
   });
   it.each([
     [{ phaseBefore: "voting" }, "history.before_state"],
@@ -502,6 +558,78 @@ describe("canonical game replay", () => {
     const resolved = entry(root.after, 2, draft, root.entry.id);
     expect(applyCurrentGameLogEntry(root.after, resolved.entry)).toEqual(corrected);
     expect(replayGameLog(baseline(voting), [root.entry, resolved.entry]).game).toEqual(corrected);
+  });
+
+  it("replays only the corrected explicit ballot, not its selection and removal drafts", () => {
+    const initial: GameState = {
+      ...dayOne(),
+      phase: "voting",
+      nominations: [
+        { nominatorSeat: 1, candidateSeat: 4, order: 1 },
+        { nominatorSeat: 2, candidateSeat: 6, order: 2 },
+      ],
+      turnOrder: [4, 6],
+      currentTurnIndex: 0,
+      votingRound: "initial",
+    };
+    const root = entry(initial, 1, { type: "game.checkpointed", payload: {} });
+    let draft = selectVotingCandidate(root.after, 6);
+    draft = toggleVote(draft, 1, 6);
+    expect(draft.voteAssignments[1]).toBeUndefined();
+    const restoredDraft = structuredClone(draft);
+    expect(restoredDraft.voteAssignments[1]).toBeUndefined();
+    expect(() => resolveVote(restoredDraft)).toThrow(/every eligible player/i);
+    draft = selectVotingCandidate(restoredDraft, 4);
+    expect(draft.voteAssignments[1]).toBeUndefined();
+    draft = toggleVote(draft, 1, 4);
+    draft = toggleVote(draft, 2, 4);
+    const resolution = resolveVote(draft);
+    const accepted: CanonicalGameEventDraft = {
+      type: "voting.resolved",
+      payload: {
+        voteAssignments: { ...draft.voteAssignments } as Record<number, number>,
+        result: resolution,
+      },
+    };
+    const committed = entry(root.after, 2, accepted, root.entry.id);
+    const replayed = replayGameLog(baseline(initial), [root.entry, committed.entry]);
+    expect(replayed.game).toEqual(committed.after);
+    expect(replayed.frames).toHaveLength(2);
+    expect(committed.entry.payload).toMatchObject({ voteAssignments: draft.voteAssignments });
+    expect(Object.keys(draft.voteAssignments)).toHaveLength(10);
+  });
+
+  it("replays discipline on an earlier nominee after a later nominee received a foul", () => {
+    const initial: GameState = {
+      ...dayOne(),
+      phase: "voting",
+      nominations: [
+        { nominatorSeat: 1, candidateSeat: 4, order: 1 },
+        { nominatorSeat: 2, candidateSeat: 6, order: 2 },
+      ],
+      turnOrder: [4, 6],
+      currentTurnIndex: 0,
+      votingRound: "initial",
+    };
+    const root = entry(initial, 1, { type: "game.checkpointed", payload: {} });
+    const later = entry(root.after, 2, {
+      type: "foul.issued",
+      payload: { seat: 3, foulNumber: 1, redCarded: false, phase: "voting", currentTurnIndex: 1 },
+    });
+    const earlier = entry(later.after, 3, {
+      type: "foul.issued",
+      payload: { seat: 3, foulNumber: 2, redCarded: false, phase: "voting", currentTurnIndex: 0 },
+    });
+    expect(earlier.after).toMatchObject({ phase: "voting", currentTurnIndex: 0 });
+    expect(replayGameLog(baseline(initial), [root.entry, later.entry, earlier.entry]).game).toEqual(
+      earlier.after,
+    );
+    expect(() =>
+      applyGameEvent(earlier.after, {
+        type: "foul.issued",
+        payload: { seat: 3, foulNumber: 3, redCarded: false, phase: "voting", currentTurnIndex: 2 },
+      }),
+    ).toThrow(/candidate index is invalid/);
   });
 
   it("rejects persisted snapshots that retain a muted goodbye speaker", () => {

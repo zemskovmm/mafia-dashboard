@@ -5,6 +5,7 @@ import type { Pool, PoolClient } from "pg";
 import { DEFAULT_CLUB_ID } from "./club-store.js";
 import { DeletedGameError, lockAggregateProjectionTables, lockClubGame } from "./game-lifecycle.js";
 import { initializeSchema } from "./initialize-schema.js";
+import { assertSupportedGame, validateGameIdentities } from "./game-session-identity.js";
 
 export type GameSessionState = Readonly<Record<string, unknown>>;
 export type FinalGameResults = Readonly<Record<string, unknown>>;
@@ -43,7 +44,7 @@ export interface GameSessionSummary {
   readonly gameId: string;
   readonly name: string;
   readonly revision: number;
-  readonly hostName: string | null;
+  readonly hostPlayerId: string | null;
   readonly phase: string;
   readonly day: number;
   readonly updatedAt: Date;
@@ -60,7 +61,7 @@ export interface CompletedGameSessionSummary {
   readonly gameId: string;
   readonly name: string;
   readonly revision: number;
-  readonly hostName: string | null;
+  readonly hostPlayerId: string | null;
   readonly outcome: "red" | "black" | "draw" | "cancelled";
   readonly winner: "red" | "black" | null;
   readonly reason: string | null;
@@ -132,6 +133,7 @@ const mapSession = (row: SessionRow, duplicate: boolean): StoredGameSession => (
 });
 
 const sessionSummary = (row: SessionRow): GameSessionSummary => {
+  assertSupportedGame(row.state, row.results);
   const state = isRecord(row.state) ? row.state : {};
   const game = isRecord(state.game) ? state.game : null;
   const setup = isRecord(state.setup) ? state.setup : null;
@@ -139,11 +141,28 @@ const sessionSummary = (row: SessionRow): GameSessionSummary => {
     gameId: row.id,
     name: row.name,
     revision: row.revision,
-    hostName: asString(state.hostName),
+    hostPlayerId:
+      asString(state.hostPlayerId) ||
+      asString(setup?.hostPlayerId) ||
+      (isRecord(row.results) ? asString(row.results.hostPlayerId) : null) ||
+      null,
     phase: asString(game?.phase) ?? asString(setup?.step) ?? "setup",
     day: asInteger(game?.day) ?? 0,
     updatedAt: row.updated_at,
   };
+};
+
+const assertSupportedEvents = async (
+  client: Pool | PoolClient,
+  clubId: string,
+  gameIds: readonly string[],
+): Promise<void> => {
+  if (gameIds.length === 0) return;
+  const events = await client.query<{ payload: Record<string, unknown> }>(
+    "SELECT payload FROM game_events WHERE club_id = $1 AND game_id = ANY($2::uuid[])",
+    [clubId, gameIds],
+  );
+  assertSupportedGame({ events: events.rows.map(({ payload }) => ({ payload })) }, null);
 };
 
 const updateLastPlayed = async (
@@ -550,9 +569,12 @@ export class GameSessionStore {
         );
         const row = current.rows[0];
         if (row === undefined) throw new DeletedGameError(mappedGameId);
+        assertSupportedGame(row.state, row.results);
+        await assertSupportedEvents(client, clubId, [mappedGameId]);
         await client.query("COMMIT");
         return mapSession(row, true);
       }
+      await validateGameIdentities(client, clubId, input.state, input.results, true);
       const gameId = randomUUID();
       const mutationId = randomUUID();
       const status = input.results === null ? "active" : "completed";
@@ -604,6 +626,9 @@ export class GameSessionStore {
       );
       const current = existing.rows[0];
       if (current === undefined) throw new GameSessionNotFoundError();
+      assertSupportedGame(current.state, current.results);
+      await assertSupportedEvents(client, clubId, [input.gameId]);
+      await validateGameIdentities(client, clubId, input.state, input.results, false);
       const status = input.results === null ? "active" : "completed";
       const updated = await client.query<SessionRow>(
         `UPDATE game_sessions
@@ -702,7 +727,10 @@ export class GameSessionStore {
       [clubId, gameId],
     );
     const row = result.rows[0];
-    return row === undefined ? null : mapSession(row, false);
+    if (row === undefined) return null;
+    assertSupportedGame(row.state, row.results);
+    await assertSupportedEvents(this.pool, clubId, [gameId]);
+    return mapSession(row, false);
   }
 
   public async listActive(clubId = DEFAULT_CLUB_ID): Promise<readonly GameSessionSummary[]> {
@@ -711,6 +739,12 @@ export class GameSessionStore {
         WHERE club_id = $1 AND status = 'active'
         ORDER BY updated_at DESC, id`,
       [clubId],
+    );
+    result.rows.forEach((row) => assertSupportedGame(row.state, row.results));
+    await assertSupportedEvents(
+      this.pool,
+      clubId,
+      result.rows.map(({ id }) => id),
     );
     return result.rows.map(sessionSummary);
   }
@@ -742,6 +776,12 @@ export class GameSessionStore {
         WHERE game_sessions.club_id = $1 AND game_sessions.status = 'completed'
         ORDER BY game_sessions.updated_at DESC, game_sessions.id`,
       [clubId],
+    );
+    result.rows.forEach((row) => assertSupportedGame(row.state, row.results));
+    await assertSupportedEvents(
+      this.pool,
+      clubId,
+      result.rows.map(({ id }) => id),
     );
     return result.rows.flatMap((row) => {
       const completion = completionMetadata(row.results);

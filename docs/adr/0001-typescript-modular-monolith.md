@@ -60,7 +60,7 @@ These decisions preserve the contracts from [#48](https://github.com/zemskovmm/m
 ### Current-only support is not an automatic migration
 
 - Browser/API/session/replay writers and readers support current shapes and SHA-256 replay metadata only. Historical envelope parsing, hash adapters, fallback hydration, raw aggregate mutation routes, and database repair/backfill are intentionally unsupported.
-- PostgreSQL initialization supports an empty database, the current schema, and the narrowly recognized immediately preceding claim-based schema via an atomic non-destructive upgrade. Unsupported or incomplete historical schemas still fail without reset or broad backfill. Schema qualification does not authorize deployment. See [self-hosted deployment](../self-hosted-deployment.md) and [backup and recovery](../postgresql-backup-and-recovery.md).
+- PostgreSQL initialization supports only an empty database or the current schema. The preceding claim-based, unknown and incomplete schemas fail without mutation, reset or backfill. Schema qualification does not authorize deployment. See [self-hosted deployment](../self-hosted-deployment.md) and [backup and recovery](../postgresql-backup-and-recovery.md).
 - Removing compatibility does not remove current features whose names contain `legacy`: the `legacyLog` field still carries current setup/activity entries, and the selectable `legacy` lighting renderer remains supported. Current theme/music preference keys, defaults, queue behavior, and lighting choices remain intact.
 
 ## Considered alternatives

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CASPER_NAME, CASPER_PLAYER_ID, CASPER_SEAT } from "./casper.js";
+import { CASPER_PLAYER_ID, CASPER_SEAT } from "./casper.js";
 import {
   advanceSetupPhase,
   cancelGame,
@@ -23,7 +23,7 @@ import type { PlayerInput, SetupState } from "./types.js";
 const players = (): PlayerInput[] =>
   Array.from({ length: 10 }, (_, index) => ({
     id: `player-${index + 1}`,
-    name: `Player ${index + 1}`,
+
     seat: index + 1,
   }));
 
@@ -37,9 +37,7 @@ const completedSetup = (): SetupState => {
 
 const casperSetup = (): SetupState => {
   const roster = players().map((player) =>
-    player.seat === CASPER_SEAT
-      ? { id: CASPER_PLAYER_ID, name: CASPER_NAME, seat: CASPER_SEAT }
-      : player,
+    player.seat === CASPER_SEAT ? { id: CASPER_PLAYER_ID, seat: CASPER_SEAT } : player,
   );
   let setup = beginRoleDraw(createSetup(roster), createSeededRandom(31));
   for (let seat = 1; seat < CASPER_SEAT; seat += 1) setup = drawRoleForSeat(setup, seat);
@@ -51,7 +49,7 @@ describe("game phases and victory", () => {
     const setup = casperSetup();
     expect(createGame(setup).players.find(({ id }) => id === CASPER_PLAYER_ID)).toMatchObject({
       seat: CASPER_SEAT,
-      name: CASPER_NAME,
+
       role: "citizen",
       team: "red",
       status: "active",

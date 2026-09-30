@@ -154,13 +154,10 @@ export const completeMafiaShots = (game: GameState): GameState => {
   const result = getMafiaShotResult(game);
   const resolvedGame =
     result.kind === "kill" ? markPlayerInactive(game, result.targetSeat, "eliminated") : game;
-  const withResult = { ...resolvedGame, nightResult: result };
-  return {
-    ...withResult,
-    phase: nextPrivatePhase(withResult),
-    shotAssignments: {},
-    winner: null,
-  };
+  const withResult = { ...resolvedGame, nightResult: result, shotAssignments: {} };
+  const winner = result.kind === "kill" ? evaluateVictory(withResult.players) : null;
+  if (winner !== null) return { ...withResult, phase: "finished", winner };
+  return { ...withResult, phase: nextPrivatePhase(withResult), winner: null };
 };
 
 export const performDonCheck = (

@@ -66,6 +66,24 @@ const isNullableUuid = (value: unknown): value is string | null => value === nul
 const isNonNegativeInteger = (value: unknown): value is number =>
   typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 
+/** Reject old structured identity copies, not free-text game titles or moderator reasons. */
+const containsCopiedPlayerName = (value: unknown): boolean => {
+  if (Array.isArray(value)) return value.some(containsCopiedPlayerName);
+  if (!isRecord(value)) return false;
+  if (Object.hasOwn(value, "hostName") && value.hostName !== null) return true;
+  const profileFields = ["name", "nickname", "firstName", "lastName", "email", "hostName"];
+  const payload = value.payload;
+  if (isRecord(payload) && profileFields.some((key) => Object.hasOwn(payload, key))) return true;
+  if (
+    (Object.hasOwn(value, "seat") &&
+      (Object.hasOwn(value, "id") || Object.hasOwn(value, "playerId"))) ||
+    Object.hasOwn(value, "playerId")
+  ) {
+    if (profileFields.some((key) => Object.hasOwn(value, key))) return true;
+  }
+  return Object.values(value).some(containsCopiedPlayerName);
+};
+
 /**
  * Game-rule integrity is enforced by the client game domain. Storage only rejects
  * malformed envelopes, so a historical session is never dropped due to a later
@@ -77,7 +95,6 @@ export const isCurrentGameSessionState = (value: unknown): value is CurrentGameS
     "setup",
     "game",
     "hostPlayerId",
-    "hostName",
     "playlistId",
     "log",
     "undoHistory",
@@ -88,10 +105,11 @@ export const isCurrentGameSessionState = (value: unknown): value is CurrentGameS
     "resetReturnEventId",
     "legacyLog",
   ].every((field) => Object.hasOwn(value, field)) &&
-  Array.isArray(value.events);
+  Array.isArray(value.events) &&
+  !containsCopiedPlayerName(value);
 
 const isResults = (value: unknown): value is FinalGameResults | null =>
-  value === null || isRecord(value);
+  value === null || (isRecord(value) && !containsCopiedPlayerName(value));
 
 const isCurrent = (value: unknown): value is CurrentSession =>
   isRecord(value) &&

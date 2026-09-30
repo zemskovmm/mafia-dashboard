@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS game_rulesets (
 CREATE TABLE IF NOT EXISTS players (
   id UUID NOT NULL,
   club_id UUID NOT NULL DEFAULT '00000000-0000-4000-8000-000000000101',
-  nickname TEXT NOT NULL,
+  nickname TEXT NULL,
   first_name TEXT NULL,
   last_name TEXT NULL,
   email TEXT NULL,
@@ -101,10 +101,16 @@ CREATE TABLE IF NOT EXISTS players (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   last_played_at TIMESTAMPTZ NULL,
+  retired_at TIMESTAMPTZ NULL,
   CONSTRAINT players_pkey PRIMARY KEY (id),
   CONSTRAINT players_club_fk FOREIGN KEY (club_id) REFERENCES clubs (id) ON DELETE RESTRICT,
   CONSTRAINT players_user_fk FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE SET NULL,
-  CONSTRAINT players_nickname_check CHECK (BTRIM(nickname) <> ''),
+  CONSTRAINT players_nickname_check CHECK (
+    (retired_at IS NULL AND nickname IS NOT NULL AND BTRIM(nickname) <> '')
+    OR (retired_at IS NOT NULL AND nickname IS NULL AND first_name IS NULL
+      AND last_name IS NULL AND email IS NULL AND user_id IS NULL
+      AND club_access = 'none' AND NOT data_processing_consent AND consent_at IS NULL)
+  ),
   CONSTRAINT players_check CHECK (
     (data_processing_consent = FALSE
       AND first_name IS NULL
@@ -129,7 +135,7 @@ CREATE TABLE IF NOT EXISTS players (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS players_club_nickname_unique_idx
-  ON players (club_id, LOWER(BTRIM(nickname)));
+  ON players (club_id, LOWER(BTRIM(nickname))) WHERE retired_at IS NULL;
 CREATE INDEX IF NOT EXISTS players_club_last_played_nickname_idx
   ON players (club_id, last_played_at DESC, nickname);
 CREATE UNIQUE INDEX IF NOT EXISTS players_club_access_email_unique_idx
@@ -196,18 +202,7 @@ CREATE TABLE IF NOT EXISTS game_sessions (
   CONSTRAINT game_sessions_status_check CHECK (status IN ('active', 'completed'))
 );
 
--- Narrow, transactional upgrade from the previous claim-controlled catalog.
 -- Creation mappings intentionally survive game deletion so retried POSTs cannot resurrect a record.
-ALTER TABLE game_sessions DROP CONSTRAINT IF EXISTS game_sessions_claim_metadata_ck;
-ALTER TABLE game_sessions DROP CONSTRAINT IF EXISTS game_sessions_claimed_by_user_fk;
-ALTER TABLE game_sessions DROP COLUMN IF EXISTS claim_id;
-ALTER TABLE game_sessions DROP COLUMN IF EXISTS claim_generation;
-ALTER TABLE game_sessions DROP COLUMN IF EXISTS claimed_by_user_id;
-ALTER TABLE game_sessions DROP COLUMN IF EXISTS claimed_at;
-ALTER TABLE game_sessions DROP COLUMN IF EXISTS claim_last_seen_at;
-ALTER TABLE game_sessions DROP COLUMN IF EXISTS claim_expires_at;
-DROP INDEX IF EXISTS game_sessions_one_active_per_club_idx;
-
 CREATE TABLE IF NOT EXISTS game_session_creations (
   club_id UUID NOT NULL,
   creation_id UUID NOT NULL,

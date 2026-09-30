@@ -44,7 +44,6 @@ const deferred = <T>() => {
 
 const setupPlayers = Array.from({ length: 10 }, (_, index) => ({
   id: `00000000-0000-4000-8000-0000000005${String(index + 1).padStart(2, "0")}`,
-  name: `Player ${index + 1}`,
   seat: index + 1,
 }));
 
@@ -148,6 +147,26 @@ const currentEnvelope = (state: GameSessionState, ownerGameId = gameId) =>
   });
 
 describe("GameSessionOutbox current-v5 persistence", () => {
+  it("writes identity-only canonical game/setup while leaving the game title independent", () => {
+    const storage = memoryStorage();
+    const outbox = new GameSessionOutbox({
+      storage,
+      clubId,
+      createId: ids("00000000-0000-4000-8000-000000000300"),
+      create: vi.fn(),
+      save: vi.fn(),
+    });
+    const game = playedGame();
+    const state = { ...completeState(), setup: roleDrawSetup(), game };
+    outbox.beginCreation("Named table title", state, null);
+    const saved = JSON.parse(storage.getItem(gameSessionStorageKey)!) as {
+      current: { name: string; state: Record<string, unknown> };
+    };
+    expect(saved.current.name).toBe("Named table title");
+    expect(JSON.stringify(saved.current.state)).not.toContain('"name"');
+    expect(JSON.stringify(saved.current.state)).not.toContain("Player 1");
+    expect(saved.current.state).toHaveProperty("hostPlayerId", null);
+  });
   it("persists the entire current snapshot without deriving or stripping setup, log, or drafts", () => {
     const storage = memoryStorage();
     const state = completeState();

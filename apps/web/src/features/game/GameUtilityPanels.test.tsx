@@ -1,5 +1,6 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
 import {
   advanceSetupPhase,
   beginRoleDraw,
@@ -11,11 +12,14 @@ import {
 } from "@mafia/game-domain";
 import type { GameState, PlayerInput } from "@mafia/game-domain";
 import { GameUtilityPanels } from "./GameUtilityPanels.js";
+import { namedProfiles, renderWithProfiles } from "../../test-player-directory.js";
+
+const render = (ui: Parameters<typeof renderWithProfiles>[0]) =>
+  renderWithProfiles(ui, namedProfiles("player-"));
 
 const createDayGame = (): GameState => {
   const players: PlayerInput[] = Array.from({ length: 10 }, (_, index) => ({
     id: `player-${index + 1}`,
-    name: `Player ${index + 1}`,
     seat: index + 1,
   }));
   let setup = beginRoleDraw(createSetup(players), createSeededRandom(13));
@@ -24,6 +28,37 @@ const createDayGame = (): GameState => {
 };
 
 describe("GameUtilityPanels", () => {
+  it("offers the nominee names as pressed-state buttons only for an open live ballot", async () => {
+    const user = userEvent.setup();
+    const onSelectVotingCandidate = vi.fn();
+    const game: GameState = {
+      ...createDayGame(),
+      phase: "voting",
+      nominations: [
+        { candidateSeat: 2, nominatorSeat: 1, order: 1 },
+        { candidateSeat: 3, nominatorSeat: 2, order: 2 },
+      ],
+      turnOrder: [2, 3],
+      currentTurnIndex: 0,
+    };
+    const { rerender } = render(
+      <GameUtilityPanels game={game} onSelectVotingCandidate={onSelectVotingCandidate} />,
+    );
+    const first = screen.getByRole("button", { name: "#2 Player 2" });
+    const second = screen.getByRole("button", { name: "#3 Player 3" });
+    expect(first).toHaveAttribute("aria-pressed", "true");
+    expect(second).toHaveAttribute("aria-pressed", "false");
+    second.focus();
+    await user.keyboard("{Enter}");
+    expect(onSelectVotingCandidate).toHaveBeenCalledExactlyOnceWith(3);
+    rerender(
+      <GameUtilityPanels
+        game={{ ...game, phase: "voting-cancelled" }}
+        onSelectVotingCandidate={onSelectVotingCandidate}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "#3 Player 3" })).toBeNull();
+  });
   it("renders the timer and nomination order from the current game", () => {
     const game: GameState = {
       ...createDayGame(),

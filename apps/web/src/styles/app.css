@@ -1877,7 +1877,12 @@ button.player-seat.is-voting-highlight::after,
   font-size: 0.6rem;
   background: #202224;
 }
-.seat-actions button.shooter-button {
+/* Three night shooters need a complete row of touch-size targets. */
+.game-shell.phase-night-mafia .seat-actions:has(> .shooter-button:nth-child(3)) {
+  width: max(100%, 144px);
+}
+.game-shell.phase-night-mafia .seat-actions .shooter-button {
+  min-width: 48px;
   color: var(--text);
 }
 .seat-actions button.is-selected {
@@ -2137,11 +2142,14 @@ button.player-seat.is-voting-highlight::after,
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.nomination-copy span,
+.nomination-copy span {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
 .nomination-total,
 .vote-count-summary {
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: 1.44rem;
 }
 .nomination-total {
   flex: 0 0 auto;
@@ -3240,6 +3248,30 @@ button.player-seat.is-voting-highlight::after,
     min-height: 0;
     padding: 0;
   }
+  /* On the diagonal, the wider night row sits beside the neighboring card. */
+  .game-shell.phase-night-mafia
+    .seat-anchor:is([data-seat="1"], [data-seat="5"], [data-seat="7"])
+    .seat-actions:has(> .shooter-button:nth-child(3)) {
+    transform: translateX(calc(-50% + 8px));
+  }
+  .game-shell.phase-night-mafia
+    .seat-anchor:is([data-seat="4"], [data-seat="6"], [data-seat="10"])
+    .seat-actions:has(> .shooter-button:nth-child(3)) {
+    transform: translateX(calc(-50% - 8px));
+  }
+  /* Keep all three ballot actions between the candidate and the lower seat controls. */
+  .game-shell.phase-voting .round-table:has(.voting-candidate-identity) .table-advance {
+    top: calc(75% - 34px);
+  }
+  .game-shell.phase-voting .round-table:has(.voting-candidate-identity) .table-advance-options {
+    gap: 0;
+  }
+  .game-shell.phase-voting
+    .round-table:has(.voting-candidate-identity)
+    .table-advance-options
+    > button:first-child {
+    min-height: 48px;
+  }
   .table-layout-shell .seat-anchor {
     top: 50%;
   }
@@ -3361,6 +3393,19 @@ button.player-seat.is-voting-highlight::after,
     .youtube-player-frame
     > iframe:first-child {
     height: 220px;
+  }
+  @media (max-height: 800px) {
+    /* The short laptop ballot can straddle the 700px table-container breakpoint;
+       keep its count above the next action on either side of that boundary. */
+    .table-vote-center:has(> .voting-candidate-identity) {
+      transform: translateY(-48px);
+    }
+    /* A multi-nominee panel grows; keep the compact video's controls within the rail. */
+    .live-side-panel.has-live-utilities:has(.nomination-panel li:nth-child(2))
+      .youtube-dock.is-compact:not(.is-expanded)
+      :is(.youtube-player-video, .youtube-player-frame > iframe:first-child) {
+      height: 104px;
+    }
   }
   .has-live-game .youtube-dock.is-compact {
     right: var(--dock-edge-inset);
@@ -3614,6 +3659,10 @@ html:-webkit-full-screen #root {
     overflow: hidden;
     border-radius: 14px;
   }
+  .game-shell:has(.nomination-panel li:nth-child(2)) .live-side-panel.has-live-utilities {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
   .live-side-panel-glass {
     position: absolute;
     z-index: 0;
@@ -3741,6 +3790,22 @@ html:-webkit-full-screen #root {
     bottom: auto;
     transform: translateX(-50%);
   }
+  /* Bottom daytime cards have no 48px clearance below them at 600px. */
+  .game-shell:is(.phase-day, .phase-voting)
+    .seat-anchor:is([data-seat="1"], [data-seat="10"])
+    .seat-actions {
+    top: 5px;
+    bottom: auto;
+    width: 48px;
+    flex-direction: column;
+    transform: none;
+  }
+  .game-shell:is(.phase-day, .phase-voting) .seat-anchor[data-seat="1"] .seat-actions {
+    left: calc(-48px - 5px);
+  }
+  .game-shell:is(.phase-day, .phase-voting) .seat-anchor[data-seat="10"] .seat-actions {
+    left: calc(100% + 5px);
+  }
   .seat-anchor:is([data-seat="2"], [data-seat="3"]) .seat-actions,
   .seat-anchor:is([data-seat="8"], [data-seat="9"]) .seat-actions {
     top: 50%;
@@ -3755,6 +3820,67 @@ html:-webkit-full-screen #root {
   .seat-anchor:is([data-seat="8"], [data-seat="9"]) .seat-actions {
     right: calc(100% + 5px);
     left: auto;
+  }
+  .game-shell:is(.phase-day, .phase-voting)
+    .seat-anchor:is([data-seat="2"], [data-seat="9"])
+    .seat-actions {
+    top: calc(50% - 8px);
+  }
+  /* At 600px, keep one to three live shooters beside diagonal cards instead
+     of widening across their neighbors or the center action. */
+  .game-shell.phase-night-mafia
+    .seat-anchor:is(
+      [data-seat="1"],
+      [data-seat="2"],
+      [data-seat="3"],
+      [data-seat="8"],
+      [data-seat="9"],
+      [data-seat="10"]
+    )
+    .seat-actions:has(> .shooter-button) {
+    width: 48px;
+    flex-direction: column;
+  }
+  .game-shell.phase-night-mafia
+    .seat-anchor:is([data-seat="1"], [data-seat="10"])
+    .seat-actions:has(> .shooter-button) {
+    top: auto;
+    bottom: calc(100% + 5px);
+    left: 50%;
+    transform: translateX(-50%);
+  }
+  .game-shell.phase-night-mafia .seat-anchor[data-seat="2"] .seat-actions:has(> .shooter-button) {
+    right: calc(100% + 5px);
+    left: auto;
+  }
+  .game-shell.phase-night-mafia .seat-anchor[data-seat="9"] .seat-actions:has(> .shooter-button) {
+    right: auto;
+    left: calc(100% + 5px);
+  }
+  .game-shell.phase-night-mafia
+    .seat-anchor:is([data-seat="4"], [data-seat="6"])
+    .seat-actions:has(> .shooter-button:nth-child(3)) {
+    transform: translateX(calc(-50% - 8px));
+  }
+  .game-shell.phase-night-mafia
+    .seat-anchor:is([data-seat="5"], [data-seat="7"])
+    .seat-actions:has(> .shooter-button:nth-child(3)) {
+    transform: translateX(calc(-50% + 8px));
+  }
+  .game-shell.phase-night-mafia .seat-anchor[data-seat="1"] .seat-actions:has(> .shooter-button) {
+    left: 0;
+    transform: none;
+  }
+  .game-shell.phase-night-mafia .seat-anchor[data-seat="10"] .seat-actions:has(> .shooter-button) {
+    right: 0;
+    left: auto;
+    transform: none;
+  }
+  .game-shell.phase-night-mafia
+    .seat-anchor[data-seat="6"]
+    .seat-actions:has(> .shooter-button:nth-child(3)) {
+    top: calc(100% + 53px);
+    bottom: auto;
   }
   .table-center {
     --center-shadow-size: 145px;
@@ -3807,7 +3933,7 @@ html:-webkit-full-screen #root {
     font-size: 1.64rem;
   }
   .table-vote-center:has(> .voting-candidate-identity) {
-    transform: translateY(-28px);
+    transform: translateY(-44px);
   }
   .candidate-navigation button,
   .table-choice-actions button,

@@ -32,7 +32,7 @@ const sessionColumns = async (pool: Pool) =>
     `)
   ).rows.map(({ column_name }) => column_name);
 
-describe("server-backed game-record schema upgrade", () => {
+describe("current-only game-record schema initialization", () => {
   it("creates a claim-free catalog that permits multiple active records and retains creation mappings", async () => {
     await withSchema("game_record_target", async (pool) => {
       await initializeSchema(pool);
@@ -48,10 +48,43 @@ describe("server-backed game-record schema upgrade", () => {
           "SELECT 1 FROM pg_indexes WHERE schemaname = current_schema() AND indexname = 'game_sessions_one_active_per_club_idx'",
         ),
       ).resolves.toMatchObject({ rowCount: 0 });
+      const gameIds = [randomUUID(), randomUUID()];
+      for (const id of gameIds) {
+        await pool.query(
+          `INSERT INTO game_sessions (id, club_id, name, revision, last_mutation_id, state, results, status)
+           VALUES ($1, $2, 'Current active record', 1, $3, '{"kept":true}'::jsonb, NULL, 'active')`,
+          [id, DEFAULT_CLUB_ID, randomUUID()],
+        );
+      }
+      const creationId = randomUUID();
+      await pool.query(
+        "INSERT INTO game_session_creations (club_id, creation_id, game_id) VALUES ($1, $2, $3)",
+        [DEFAULT_CLUB_ID, creationId, gameIds[0]],
+      );
+      const deletedId = randomUUID();
+      await pool.query("INSERT INTO deleted_games (club_id, game_id) VALUES ($1, $2)", [
+        DEFAULT_CLUB_ID,
+        deletedId,
+      ]);
+      const readBack = async () => ({
+        games: (await pool.query("SELECT * FROM game_sessions ORDER BY id")).rows,
+        creations: (await pool.query("SELECT * FROM game_session_creations ORDER BY creation_id"))
+          .rows,
+        tombstones: (await pool.query("SELECT * FROM deleted_games ORDER BY game_id")).rows,
+        columns: await sessionColumns(pool),
+      });
+      const before = await readBack();
+      expect(before.games).toHaveLength(2);
+      expect(before.creations).toEqual([
+        expect.objectContaining({ creation_id: creationId, game_id: gameIds[0] }),
+      ]);
+      expect(before.tombstones).toEqual([expect.objectContaining({ game_id: deletedId })]);
+      await initializeSchema(pool);
+      expect(await readBack()).toEqual(before);
     });
   });
 
-  it("upgrades the immediately previous populated claim-controlled catalog in place", async () => {
+  it("rejects the populated prior claim-controlled catalog without changing its data or structure", async () => {
     await withSchema("game_record_legacy", async (pool) => {
       await initializeSchema(pool);
       const gameId = randomUUID();
@@ -87,39 +120,63 @@ describe("server-backed game-record schema upgrade", () => {
         "CREATE UNIQUE INDEX game_sessions_one_active_per_club_idx ON game_sessions (club_id) WHERE status = 'active'",
       );
 
-      // An unrelated drift must not consume the one-time claim migration.
-      await pool.query("ALTER TABLE players DROP CONSTRAINT players_access_requires_consent_ck");
-      await expect(initializeSchema(pool)).rejects.toThrow("Unsupported existing database schema");
-      await expect(sessionColumns(pool)).resolves.toContain("claim_id");
-      await expect(pool.query("SELECT 1 FROM game_session_creations LIMIT 0")).rejects.toThrow();
-      await pool.query(`ALTER TABLE players ADD CONSTRAINT players_access_requires_consent_ck
-        CHECK (club_access = 'none' OR data_processing_consent OR user_id IS NOT NULL)`);
-
-      await initializeSchema(pool);
-
-      await expect(
-        pool.query("SELECT id, revision, state FROM game_sessions WHERE club_id = $1 AND id = $2", [
-          DEFAULT_CLUB_ID,
-          gameId,
-        ]),
-      ).resolves.toMatchObject({ rows: [{ id: gameId, revision: 7, state }] });
-      const columns = await sessionColumns(pool);
-      expect(columns).not.toEqual(
-        expect.arrayContaining(["claim_id", "claim_generation", "claimed_by_user_id"]),
+      const capture = async () => ({
+        data: (
+          await pool.query(
+            "SELECT row_to_json(g)::text AS raw FROM game_sessions AS g WHERE id = $1",
+            [gameId],
+          )
+        ).rows,
+        tables: (
+          await pool.query(`SELECT table_name FROM information_schema.tables
+            WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' ORDER BY table_name`)
+        ).rows,
+        columns: (
+          await pool.query(`SELECT table_name, column_name, udt_name, is_nullable
+            FROM information_schema.columns WHERE table_schema = current_schema()
+            ORDER BY table_name, ordinal_position`)
+        ).rows,
+        constraints: (
+          await pool.query(`SELECT conname, pg_get_constraintdef(c.oid) AS definition
+            FROM pg_constraint AS c JOIN pg_namespace AS n ON n.oid = c.connamespace
+            WHERE n.nspname = current_schema() ORDER BY conname`)
+        ).rows,
+        indexes: (
+          await pool.query(`SELECT indexname, indexdef FROM pg_indexes
+            WHERE schemaname = current_schema() ORDER BY indexname`)
+        ).rows,
+      });
+      const before = await capture();
+      expect(before.data).toHaveLength(1);
+      expect(before.data[0].raw).toContain("Preserved legacy record");
+      expect(before.columns).toEqual(
+        expect.arrayContaining([expect.objectContaining({ column_name: "claim_id" })]),
       );
-      await expect(
-        pool.query(
-          `INSERT INTO game_sessions (id, club_id, name, revision, last_mutation_id, state, results, status)
-           VALUES ($1, $2, 'Second active', 1, $3, '{}'::jsonb, NULL, 'active')`,
-          [randomUUID(), DEFAULT_CLUB_ID, randomUUID()],
-        ),
-      ).resolves.toMatchObject({ rowCount: 1 });
+      expect(before.indexes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ indexname: "game_sessions_one_active_per_club_idx" }),
+        ]),
+      );
+      expect(before.constraints).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ conname: "game_sessions_claim_metadata_ck" }),
+        ]),
+      );
+      expect(before.tables).not.toEqual(
+        expect.arrayContaining([{ table_name: "game_session_creations" }]),
+      );
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await expect(initializeSchema(pool)).rejects.toThrow(
+          "Unsupported existing database schema",
+        );
+        expect(await capture()).toEqual(before);
+      }
     });
   });
 
   it.each([
     ["catalog column type", "ALTER TABLE players ALTER COLUMN nickname TYPE VARCHAR(80)"],
-    ["catalog nullability", "ALTER TABLE players ALTER COLUMN nickname DROP NOT NULL"],
+    ["catalog nullability", "ALTER TABLE players ALTER COLUMN updated_at DROP NOT NULL"],
     [
       "unrelated integrity constraint",
       "ALTER TABLE players DROP CONSTRAINT players_access_requires_consent_ck",
@@ -129,6 +186,10 @@ describe("server-backed game-record schema upgrade", () => {
       "ALTER TABLE game_results DROP CONSTRAINT game_results_shape_ck; ALTER TABLE game_results ADD CONSTRAINT game_results_shape_ck CHECK (true)",
     ],
     ["unrelated index", "DROP INDEX players_club_nickname_unique_idx"],
+    [
+      "retired nickname index predicate",
+      "DROP INDEX players_club_nickname_unique_idx; CREATE UNIQUE INDEX players_club_nickname_unique_idx ON players (club_id, LOWER(BTRIM(nickname)))",
+    ],
     [
       "critical index keys",
       "DROP INDEX game_events_club_game_replay_sequence_idx; CREATE UNIQUE INDEX game_events_club_game_replay_sequence_idx ON game_events (id) WHERE replay_sequence IS NOT NULL",
@@ -142,15 +203,50 @@ describe("server-backed game-record schema upgrade", () => {
     });
   });
 
-  it("rejects partial or unknown catalogs before applying an upgrade", async () => {
+  it("rejects a partial catalog without repairing its rows or relations", async () => {
     await withSchema("game_record_reject", async (pool) => {
       await initializeSchema(pool);
+      const id = randomUUID();
+      await pool.query(
+        `INSERT INTO game_sessions (id, club_id, name, revision, last_mutation_id, state, results, status)
+         VALUES ($1, $2, 'Partial record', 1, $3, '{"untouched":true}'::jsonb, NULL, 'active')`,
+        [id, DEFAULT_CLUB_ID, randomUUID()],
+      );
       await pool.query("DROP TABLE game_session_creations");
       await pool.query("ALTER TABLE game_sessions ADD COLUMN claim_id UUID NULL");
 
+      const before = await pool.query(
+        "SELECT row_to_json(g)::text AS raw FROM game_sessions AS g WHERE id = $1",
+        [id],
+      );
       await expect(initializeSchema(pool)).rejects.toThrow("Unsupported existing database schema");
       await expect(pool.query("SELECT 1 FROM game_session_creations LIMIT 0")).rejects.toThrow();
       await expect(sessionColumns(pool)).resolves.toContain("claim_id");
+      expect(
+        (
+          await pool.query(
+            "SELECT row_to_json(g)::text AS raw FROM game_sessions AS g WHERE id = $1",
+            [id],
+          )
+        ).rows,
+      ).toEqual(before.rows);
+    });
+  });
+
+  it("rejects an unknown catalog without adding application tables or changing its row", async () => {
+    await withSchema("game_record_unknown", async (pool) => {
+      await pool.query("CREATE TABLE unrelated (value TEXT NOT NULL)");
+      await pool.query("INSERT INTO unrelated (value) VALUES ('leave intact')");
+      const before = await pool.query("SELECT * FROM unrelated");
+      await expect(initializeSchema(pool)).rejects.toThrow("Unsupported existing database schema");
+      expect((await pool.query("SELECT * FROM unrelated")).rows).toEqual(before.rows);
+      expect(
+        (
+          await pool.query(
+            `SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() ORDER BY table_name`,
+          )
+        ).rows,
+      ).toEqual([{ table_name: "unrelated" }]);
     });
   });
 });

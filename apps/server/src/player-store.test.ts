@@ -808,7 +808,7 @@ describe("PlayerStore", () => {
     expect(orderedIds.indexOf(older.id)).toBeLessThan(orderedIds.indexOf(never.id));
   });
 
-  it("deletes a player's completed current history and tombstones its game", async () => {
+  it("retires a player's profile while retaining individual and shared completed results", async () => {
     const host = await store.create({
       nickname: nickname("History host"),
       consent: false,
@@ -818,6 +818,13 @@ describe("PlayerStore", () => {
     });
     const participant = await store.create({
       nickname: nickname("History participant"),
+      consent: true,
+      firstName: "History",
+      lastName: "Participant",
+      email: `history-${randomUUID()}@example.test`,
+    });
+    const peer = await store.create({
+      nickname: nickname("History peer"),
       consent: false,
       firstName: null,
       lastName: null,
@@ -835,27 +842,99 @@ describe("PlayerStore", () => {
           status: "active",
           fouls: 0,
         },
+        {
+          playerId: peer.id,
+          seat: 2,
+          role: "mafia",
+          team: "black",
+          status: "active",
+          fouls: 1,
+        },
       ],
     });
 
     await expect(store.delete(participant.id)).resolves.toBe("deleted");
     await expect(store.get(participant.id)).resolves.toBeNull();
+    expect((await store.list()).some(({ id }) => id === participant.id)).toBe(false);
+    await expect(
+      pool.query(
+        `SELECT nickname, first_name, last_name, email, user_id, club_access,
+                data_processing_consent, consent_at, retired_at
+           FROM players WHERE club_id = $1 AND id = $2`,
+        [DEFAULT_CLUB_ID, participant.id],
+      ),
+    ).resolves.toMatchObject({
+      rows: [
+        {
+          nickname: null,
+          first_name: null,
+          last_name: null,
+          email: null,
+          user_id: null,
+          club_access: "none",
+          data_processing_consent: false,
+          consent_at: null,
+          retired_at: expect.any(Date),
+        },
+      ],
+    });
     await expect(store.get(host.id)).resolves.toMatchObject({
-      lastPlayedAt: null,
-      statistics: { hostedGames: 0, gamesPlayed: 0 },
+      lastPlayedAt: expect.any(Date),
+      statistics: { hostedGames: 1, gamesPlayed: 0 },
+    });
+    await expect(store.get(peer.id)).resolves.toMatchObject({
+      statistics: { gamesPlayed: 1, losses: 1 },
     });
     await expect(
-      pool.query("SELECT 1 FROM deleted_games WHERE club_id = $1 AND game_id = $2", [
-        DEFAULT_CLUB_ID,
-        gameId,
-      ]),
-    ).resolves.toMatchObject({ rowCount: 1 });
+      pool.query(
+        "SELECT player_id, seat, won FROM game_player_results WHERE club_id = $1 AND game_id = $2 ORDER BY seat",
+        [DEFAULT_CLUB_ID, gameId],
+      ),
+    ).resolves.toMatchObject({
+      rows: [
+        { player_id: participant.id, seat: 1, won: true },
+        { player_id: peer.id, seat: 2, won: false },
+      ],
+    });
     await expect(
       pool.query("SELECT 1 FROM game_results WHERE club_id = $1 AND game_id = $2", [
         DEFAULT_CLUB_ID,
         gameId,
       ]),
-    ).resolves.toMatchObject({ rowCount: 0 });
+    ).resolves.toMatchObject({ rowCount: 1 });
+    await expect(store.delete(participant.id)).resolves.toBe("not_found");
+    await expect(
+      store.create({
+        nickname: participant.nickname,
+        consent: false,
+        firstName: null,
+        lastName: null,
+        email: null,
+      }),
+    ).resolves.toMatchObject({ nickname: participant.nickname });
+  });
+
+  it("protects an active host as well as a participant from profile deletion", async () => {
+    const host = await store.create({
+      nickname: nickname("Active host"),
+      consent: false,
+      firstName: null,
+      lastName: null,
+      email: null,
+    });
+    const gameId = randomUUID();
+    await pool.query(
+      `INSERT INTO game_sessions (id, club_id, name, revision, last_mutation_id, state, status)
+       VALUES ($1, $2, 'Hosted active game', 1, $3, '{}'::jsonb, 'active')`,
+      [gameId, DEFAULT_CLUB_ID, randomUUID()],
+    );
+    await pool.query(
+      `INSERT INTO game_session_players (club_id, game_id, player_id, seat, is_host, role)
+       VALUES ($1, $2, $3, NULL, TRUE, NULL)`,
+      [DEFAULT_CLUB_ID, gameId, host.id],
+    );
+    await expect(store.delete(host.id)).resolves.toBe("active_game");
+    await expect(store.get(host.id)).resolves.toMatchObject({ id: host.id });
   });
 
   it("does not delete a player referenced by a current active projection", async () => {

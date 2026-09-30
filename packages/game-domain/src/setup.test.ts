@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CASPER_NAME, CASPER_PLAYER_ID, CASPER_SEAT } from "./index.js";
+import { CASPER_PLAYER_ID, CASPER_SEAT } from "./index.js";
 import {
   assignRoleForSeat,
   beginRoleDraw,
@@ -15,18 +15,23 @@ import type { PlayerInput, Role } from "./types.js";
 const players = (): PlayerInput[] =>
   Array.from({ length: 10 }, (_, index) => ({
     id: `player-${index + 1}`,
-    name: `Player ${index + 1}`,
+
     seat: index + 1,
   }));
 
 const withCasper = (): PlayerInput[] =>
   players().map((player) =>
-    player.seat === CASPER_SEAT
-      ? { id: CASPER_PLAYER_ID, name: CASPER_NAME, seat: CASPER_SEAT }
-      : player,
+    player.seat === CASPER_SEAT ? { id: CASPER_PLAYER_ID, seat: CASPER_SEAT } : player,
   );
 
 describe("setup", () => {
+  it("keeps canonical setup identity-only and refuses copied profile names", () => {
+    const roster = players().map(({ id, seat }) => ({ id, seat }));
+    expect(createSetup(roster).players).toEqual(roster);
+    expect(() =>
+      createSetup(players().map((player) => ({ ...player, name: "Copied name" }))),
+    ).toThrow(/identity-only/i);
+  });
   it("requires exactly ten distinct players and seats", () => {
     expect(() => createSetup(players().slice(0, 9))).toThrow(/exactly ten/i);
 
@@ -41,12 +46,12 @@ describe("setup", () => {
 
   it("reserves the synthetic Casper identity for seat ten", () => {
     const misplaced = players();
-    misplaced[0] = { id: "casper", name: "Casper", seat: 1 };
+    misplaced[0] = { id: "casper", seat: 1 };
     expect(() => createSetup(misplaced)).toThrow(/Casper.*seat 10/i);
 
-    const renamed = players();
-    renamed[9] = { id: "casper", name: "Not Casper", seat: 10 };
-    expect(() => createSetup(renamed)).toThrow(/Casper.*name/i);
+    const named = players().map((player) => ({ ...player, name: "Not Casper" }));
+    named[9] = { id: "casper", name: "Not Casper", seat: 10 };
+    expect(() => createSetup(named)).toThrow(/identity-only/i);
   });
 
   it("uses the canonical ten-card role deck", () => {
@@ -92,9 +97,8 @@ describe("setup", () => {
     expect(completeRoleDraw(drawing).step).toBe("mafia-planning");
   });
 
-  it("does not reserve a citizen for a real player named Casper", () => {
+  it("does not reserve a citizen for a real nonvirtual identity at seat ten", () => {
     const humans = players();
-    humans[9] = { ...humans[9]!, name: CASPER_NAME };
     const drawing = beginRoleDraw(createSetup(humans), createSeededRandom(42));
     expect(drawing.assignments).toEqual({});
     expect(drawing.remainingRoles).toHaveLength(10);

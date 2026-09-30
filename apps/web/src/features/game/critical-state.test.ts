@@ -14,7 +14,6 @@ import { isCriticalState } from "./critical-state.js";
 const createDayGame = (): GameState => {
   const players: PlayerInput[] = Array.from({ length: 10 }, (_, index) => ({
     id: `player-${index + 1}`,
-    name: `Player ${index + 1}`,
     seat: index + 1,
   }));
   let setup = beginRoleDraw(createSetup(players), createSeededRandom(13));

@@ -19,6 +19,8 @@ import {
   type LucideProps,
 } from "lucide-react";
 import {
+  CASPER_NAME,
+  CASPER_PLAYER_ID,
   replayGameLog,
   type GameLogEntry,
   type InitialGameBaseline,
@@ -39,12 +41,7 @@ import {
 import { reportError } from "../console/error-console.js";
 import { getActiveBranch } from "../game/game-history.js";
 import { createSampleGameHistory } from "./sample-game-data.js";
-import {
-  buildTimeline,
-  type TimelineMarker,
-  type TimelineModel,
-  type TimelineText,
-} from "./timeline-model.js";
+import { buildTimeline, type TimelineMarker, type TimelineText } from "./timeline-model.js";
 
 interface TimelineLoaders {
   readonly listCompleted: (
@@ -71,7 +68,7 @@ interface GameTimelineScreenProps {
 
 interface LoadedHistory {
   readonly label: string;
-  readonly timeline: TimelineModel;
+  readonly frames: readonly ReplayFrame[];
   readonly summary: CompletedGameSessionSummary | null;
   readonly sample: boolean;
   readonly current: boolean;
@@ -102,7 +99,7 @@ const iconByName: Readonly<Record<string, ComponentType<LucideProps>>> = {
   circle: Circle,
 };
 
-const replaySession = (session: RemoteGameSession, text: TimelineText): TimelineModel => {
+const replaySession = (session: RemoteGameSession): readonly ReplayFrame[] => {
   const baseline = session.state.initialGame as InitialGameBaseline | null | undefined;
   const entries = session.state.events as readonly GameLogEntry[] | undefined;
   const headEventId = session.state.headEventId;
@@ -112,7 +109,7 @@ const replaySession = (session: RemoteGameSession, text: TimelineText): Timeline
   if (baseline == null || entries === undefined || headEventId == null) {
     throw new Error("Loaded timeline is missing canonical replay data");
   }
-  return buildTimeline(replayGameLog(baseline, getActiveBranch(entries, headEventId)).frames, text);
+  return replayGameLog(baseline, getActiveBranch(entries, headEventId)).frames;
 };
 
 export const GameTimelineScreen = (props: GameTimelineScreenProps) => (
@@ -130,9 +127,16 @@ const TenantGameTimelineScreen = ({
   onResetCurrentEvent,
 }: GameTimelineScreenProps) => {
   const i18n = useMessages(timelineConsoleMessages);
+  const timelineText: TimelineText = {
+    ...i18n,
+    playerName: (id) =>
+      id === CASPER_PLAYER_ID
+        ? CASPER_NAME
+        : players.find((profile) => profile.id === id)?.nickname,
+  };
   const loadCurrentHistory = (): LoadedHistory | null => {
     if (currentHistory === undefined) return null;
-    const timeline = buildTimeline(currentHistory.frames, i18n);
+    const timeline = buildTimeline(currentHistory.frames, timelineText);
     const headSequence = currentHistory.frames.find(
       ({ entry }) => entry.id === currentHistory.headEventId,
     )?.entry.sequence;
@@ -146,7 +150,7 @@ const TenantGameTimelineScreen = ({
         label: currentHistory.label,
         sequence: semanticHead?.sequence ?? headSequence ?? "—",
       }),
-      timeline,
+      frames: currentHistory.frames,
       summary: null,
       sample: false,
       current: true,
@@ -217,7 +221,8 @@ const TenantGameTimelineScreen = ({
     if (selectedGameId === "current") setHistory(loadCurrentHistory());
   }, [currentHistory?.headEventId, currentHistory?.label, i18n, selectedGameId]);
 
-  const timeline = history?.timeline ?? null;
+  // Reproject resolved profile names on every directory refresh; replay frames remain canonical.
+  const timeline = history === null ? null : buildTimeline(history.frames, timelineText);
   const selectedMarker =
     timeline?.markers.find(({ id }) => id === selectedMarkerId) ??
     timeline?.markers.find(({ eventId }) => eventId === history?.headEventId) ??
@@ -232,7 +237,7 @@ const TenantGameTimelineScreen = ({
     setError(null);
     setHistory({
       label: sample.label,
-      timeline: buildTimeline(sample.frames, i18n),
+      frames: sample.frames,
       summary: null,
       sample: true,
       current: false,
@@ -264,10 +269,10 @@ const TenantGameTimelineScreen = ({
         if (session.gameId !== gameId || session.status !== "completed") {
           throw new Error("Loaded session does not match the selected completed game");
         }
-        const replayed = replaySession(session, i18n);
+        const replayed = replaySession(session);
         setHistory({
           label: summary.name,
-          timeline: replayed,
+          frames: replayed,
           summary,
           sample: false,
           current: false,
@@ -444,8 +449,11 @@ const TenantGameTimelineScreen = ({
               ) : null}
               {history.summary === null ? null : (
                 <span>
-                  {history.summary.hostName ?? i18n.t("Unknown host")} ·{" "}
-                  {i18n.formatDateTime(history.summary.playedAt)} · {history.summary.rulesetId} v
+                  {history.summary.hostPlayerId === null
+                    ? i18n.t("Unknown host")
+                    : (players?.find(({ id }) => id === history.summary?.hostPlayerId)?.nickname ??
+                      i18n.t("Anonymous player"))}{" "}
+                  · {i18n.formatDateTime(history.summary.playedAt)} · {history.summary.rulesetId} v
                   {history.summary.rulesetVersion}
                 </span>
               )}

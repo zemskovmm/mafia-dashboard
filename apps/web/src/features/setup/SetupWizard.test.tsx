@@ -94,11 +94,7 @@ const partialRoleSession = () => {
   const selectedPlayerIds = availablePlayers.slice(0, 10).map(({ id }) => id);
   const setup = drawRoleForSeat(
     beginRoleDraw(
-      createSetup(
-        availablePlayers
-          .slice(0, 10)
-          .map(({ id, nickname }, index) => ({ id, name: nickname, seat: index + 1 })),
-      ),
+      createSetup(availablePlayers.slice(0, 10).map(({ id }, index) => ({ id, seat: index + 1 }))),
       () => 0,
     ),
     1,
@@ -235,12 +231,12 @@ describe("SetupWizard", () => {
     expect(onComplete).toHaveBeenCalledOnce();
     expect(onComplete.mock.calls[0]?.[0].players[9]).toMatchObject({
       id: "casper",
-      name: "Casper",
       seat: 10,
       role: "citizen",
       team: "red",
       status: "active",
     });
+    expect(onComplete.mock.calls[0]?.[0].players[9]).not.toHaveProperty("name");
   });
 
   it("replaces only C10 when toggled and clears role progress when Casper is removed", async () => {
@@ -401,11 +397,7 @@ describe("SetupWizard", () => {
     );
     const selectedPlayerIds = players.slice(0, 10).map(({ id }) => id);
     const setup = beginRoleDraw(
-      createSetup(
-        players
-          .slice(0, 10)
-          .map(({ id, nickname }, index) => ({ id, name: nickname, seat: index + 1 })),
-      ),
+      createSetup(players.slice(0, 10).map(({ id }, index) => ({ id, seat: index + 1 }))),
       () => 0,
     );
     render(
@@ -438,9 +430,7 @@ describe("SetupWizard", () => {
   it("opens and closes manual role assignment from the keyboard", () => {
     const players = availablePlayers.slice(0, 10);
     const setup = beginRoleDraw(
-      createSetup(
-        players.map(({ id, nickname }, index) => ({ id, name: nickname, seat: index + 1 })),
-      ),
+      createSetup(players.map(({ id }, index) => ({ id, seat: index + 1 }))),
       () => 0,
     );
     render(
@@ -825,9 +815,7 @@ describe("SetupWizard", () => {
   it("returns legacy music-step snapshots to the player setup with seats intact", () => {
     const selectedPlayerIds = availablePlayers.slice(0, 10).map(({ id }) => id);
     const setup = createSetup(
-      availablePlayers
-        .slice(0, 10)
-        .map(({ id, nickname }, index) => ({ id, name: nickname, seat: index + 1 })),
+      availablePlayers.slice(0, 10).map(({ id }, index) => ({ id, seat: index + 1 })),
     );
 
     render(
@@ -851,9 +839,7 @@ describe("SetupWizard", () => {
   it("returns stale restored host selection to the player step", () => {
     const selectedPlayerIds = availablePlayers.slice(0, 10).map(({ id }) => id);
     const setup = createSetup(
-      availablePlayers
-        .slice(0, 10)
-        .map(({ id, nickname }, index) => ({ id, name: nickname, seat: index + 1 })),
+      availablePlayers.slice(0, 10).map(({ id }, index) => ({ id, seat: index + 1 })),
     );
 
     render(
@@ -1007,9 +993,8 @@ describe("SetupWizard", () => {
 
   it("does not let role giveaway advance before the creation POST has returned a GUID", async () => {
     const onSessionStateChange = vi.fn();
-    const rolePlayers = availablePlayers.slice(0, 10).map(({ id, nickname }, index) => ({
+    const rolePlayers = availablePlayers.slice(0, 10).map(({ id }, index) => ({
       id,
-      name: nickname,
       seat: index + 1,
     }));
     render(

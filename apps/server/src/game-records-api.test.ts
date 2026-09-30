@@ -6,6 +6,18 @@ import { DEFAULT_CLUB_ID } from "./club-store.js";
 import type { AppUser } from "./google-auth.js";
 import { initializeSchema } from "./initialize-schema.js";
 import { PlayerStore } from "./player-store.js";
+import {
+  beginRoleDraw,
+  completeRoleDraw,
+  createGame,
+  createGameLogEntry,
+  createSeededRandom,
+  createSetup,
+  drawRoleForSeat,
+  hashGameState,
+  replayGameLog,
+} from "@mafia/game-domain";
+import type { GameLogEntry, InitialGameBaseline } from "@mafia/game-domain";
 
 const databaseUrl =
   process.env.TEST_DATABASE_URL ?? "postgresql://mafia@127.0.0.1:54329/mafia_test";
@@ -16,6 +28,12 @@ const owner = {
   id: "00000000-0000-4000-8000-000000000001",
   email: "owner@mafiamalaga.es",
   name: "Mafia Malaga owner",
+  picture: null,
+};
+const regularUser: AppUser = {
+  id: randomUUID(),
+  email: `regular-${randomUUID()}@example.test`,
+  name: "Regular user",
   picture: null,
 };
 
@@ -42,6 +60,15 @@ const create = async (body = payload(), clubId = DEFAULT_CLUB_ID) =>
 beforeAll(async () => {
   await schemaPool.query(`CREATE SCHEMA ${schemaName}`);
   await initializeSchema(pool);
+  await pool.query("INSERT INTO users (id, email, display_name) VALUES ($1, $2, $3)", [
+    regularUser.id,
+    regularUser.email,
+    regularUser.name,
+  ]);
+  await pool.query(
+    "INSERT INTO club_memberships (club_id, user_id, role) VALUES ($1, $2, 'user')",
+    [DEFAULT_CLUB_ID, regularUser.id],
+  );
   app = await buildApp({
     pool,
     defaultClubId: DEFAULT_CLUB_ID,
@@ -50,12 +77,7 @@ beforeAll(async () => {
   regularUserApp = await buildApp({
     pool,
     defaultClubId: DEFAULT_CLUB_ID,
-    authenticateRequest: async () => ({
-      id: randomUUID(),
-      email: "regular@example.test",
-      name: "Regular user",
-      picture: null,
-    }),
+    authenticateRequest: async () => regularUser,
   });
   await app.ready();
   await regularUserApp.ready();
@@ -77,6 +99,619 @@ afterAll(async () => {
 });
 
 describe("server-backed game records", () => {
+  it("rejects structured copied identities on create and save without changing accepted bytes", async () => {
+    const accepted = await create(payload({ state: { arbitrary: "allowed" } }));
+    expect(accepted.statusCode).toBe(201);
+    const gameId = accepted.json().gameId as string;
+    const original = await pool.query<{ state: unknown; results: unknown; revision: number }>(
+      "SELECT state, results, revision FROM game_sessions WHERE id = $1",
+      [gameId],
+    );
+    const named = [
+      { state: { hostName: "private host" } },
+      {
+        state: {
+          setup: { setup: { players: [{ id: randomUUID(), seat: 1, name: "private setup" }] } },
+        },
+      },
+      { state: { game: { players: [{ id: randomUUID(), seat: 1, name: "private game" }] } } },
+      {
+        state: {
+          initialGame: {
+            state: { players: [{ id: randomUUID(), seat: 1, nickname: "private baseline" }] },
+          },
+        },
+      },
+      {
+        state: {
+          events: [{ payload: { playerId: randomUUID(), seat: 1, name: "private event" } }],
+        },
+      },
+      {
+        state: {
+          log: [{ payload: { playerId: randomUUID(), seat: 1, email: "private@example.test" } }],
+        },
+      },
+      { results: { players: [{ playerId: randomUUID(), seat: 1, name: "private result" }] } },
+    ];
+    for (const candidate of named) {
+      const request = payload(candidate);
+      const rejectedCreate = await create(request);
+      expect(rejectedCreate.statusCode, rejectedCreate.body).toBe(400);
+      expect(rejectedCreate.body).not.toContain("private");
+      const rejectedSave = await app.inject({
+        method: "PUT",
+        url: `/api/game-sessions/${gameId}`,
+        payload: {
+          name: "Safe title",
+          mutationId: randomUUID(),
+          state: { arbitrary: true },
+          results: null,
+          ...candidate,
+        },
+      });
+      expect(rejectedSave.statusCode, rejectedSave.body).toBe(400);
+      expect(rejectedSave.body).not.toContain("private");
+      expect(
+        (
+          await pool.query("SELECT state, results, revision FROM game_sessions WHERE id = $1", [
+            gameId,
+          ])
+        ).rows,
+      ).toEqual(original.rows);
+      expect(
+        (
+          await pool.query(
+            "SELECT COUNT(*)::int AS count FROM game_session_creations WHERE creation_id = $1",
+            [request.creationId],
+          )
+        ).rows[0]?.count,
+      ).toBe(0);
+    }
+    const freeText = await app.inject({
+      method: "PUT",
+      url: `/api/game-sessions/${gameId}`,
+      payload: {
+        name: "Named tournament",
+        mutationId: randomUUID(),
+        state: { reason: "Named referee", custom: { name: "free text label" } },
+        results: null,
+      },
+    });
+    expect(freeText.statusCode, freeText.body).toBe(200);
+  });
+
+  it("refuses an old stored name-bearing game in list, detail, events and retry without exposing it or editing it", async () => {
+    const request = payload();
+    const created = await create(request);
+    const gameId = created.json().gameId as string;
+    await pool.query(
+      "UPDATE game_sessions SET state = $2::jsonb, results = $3::jsonb WHERE id = $1",
+      [
+        gameId,
+        JSON.stringify({
+          hostName: "private host",
+          game: { players: [{ id: randomUUID(), seat: 1, name: "private player" }] },
+        }),
+        JSON.stringify({
+          hostPlayerId: randomUUID(),
+          players: [{ playerId: randomUUID(), seat: 1, name: "private result" }],
+        }),
+      ],
+    );
+    await pool.query(
+      "INSERT INTO game_events (id, club_id, game_id, sequence, idempotency_key, event_type, phase, payload) VALUES ($1,$2,$3,1,$4,'opaque','opaque',$5::jsonb)",
+      [
+        randomUUID(),
+        DEFAULT_CLUB_ID,
+        gameId,
+        randomUUID(),
+        JSON.stringify({ name: "private event" }),
+      ],
+    );
+    const before = (
+      await pool.query(
+        "SELECT state::text, results::text, revision FROM game_sessions WHERE id = $1",
+        [gameId],
+      )
+    ).rows;
+    for (const url of [
+      "/api/game-sessions",
+      `/api/game-sessions/${gameId}`,
+      `/api/games/${gameId}/events`,
+      `/api/games/${gameId}/events?visibility=public`,
+    ]) {
+      const response = await app.inject({ method: "GET", url });
+      expect(response.statusCode, url + response.body).toBe(409);
+      expect(response.json()).toEqual({ error: "unsupported_game_format" });
+      expect(response.body).not.toContain("private");
+    }
+    const unrelatedHistory = await app.inject({
+      method: "GET",
+      url: "/api/game-sessions?status=completed",
+    });
+    expect(unrelatedHistory.json().sessions).toEqual([]);
+    const retry = await create(request);
+    expect(retry.statusCode, retry.body).toBe(409);
+    expect(
+      (
+        await pool.query(
+          "SELECT state::text, results::text, revision FROM game_sessions WHERE id = $1",
+          [gameId],
+        )
+      ).rows,
+    ).toEqual(before);
+    expect(
+      (await pool.query("SELECT payload FROM game_events WHERE game_id = $1", [gameId])).rows,
+    ).toEqual([{ payload: { name: "private event" } }]);
+    await pool.query("UPDATE game_sessions SET status = 'completed' WHERE id = $1", [gameId]);
+    const completedList = await app.inject({
+      method: "GET",
+      url: "/api/game-sessions?status=completed",
+    });
+    expect(completedList.json()).toEqual({ error: "unsupported_game_format" });
+    expect(completedList.statusCode).toBe(409);
+    expect(completedList.body).not.toContain("private");
+  });
+  it("rejects foreign and retired new identities but allows an existing completed history correction", async () => {
+    const players = new PlayerStore(pool);
+    const profile = (nickname: string) => ({
+      nickname,
+      consent: false,
+      firstName: null,
+      lastName: null,
+      email: null,
+    });
+    const host = await players.create(profile(`Host ${randomUUID()}`));
+    const participant = await players.create(profile(`Seat ${randomUUID()}`));
+    const otherClub = randomUUID();
+    await pool.query("INSERT INTO clubs (id, name, city, created_by) VALUES ($1,$2,'Málaga',$3)", [
+      otherClub,
+      "Another",
+      owner.id,
+    ]);
+    try {
+      const outsider = await players.create(profile(`Foreign ${randomUUID()}`), otherClub);
+      const liveState = (id: string) => ({
+        hostPlayerId: host.id,
+        setup: { selectedPlayerIds: [id] },
+        game: { phase: "opaque", players: [{ id, seat: 1, role: "citizen" }] },
+      });
+      const overlap = await create(
+        payload({ state: { ...liveState(participant.id), hostPlayerId: participant.id } }),
+      );
+      expect(overlap.statusCode, overlap.body).toBe(400);
+      expect(overlap.json().error).toBe("validation_failed");
+      for (const id of [outsider.id, randomUUID()]) {
+        const rejected = await create(payload({ state: liveState(id) }));
+        expect(rejected.statusCode, rejected.body).toBe(409);
+        expect(rejected.json()).toEqual({ error: "invalid_game_identity" });
+      }
+      const completed = await create(
+        payload({
+          state: liveState(participant.id),
+          results: {
+            hostPlayerId: host.id,
+            outcome: "red",
+            winner: "red",
+            reason: null,
+            playedAt: "2026-09-26T12:00:00.000Z",
+            players: [
+              {
+                playerId: participant.id,
+                seat: 1,
+                role: "citizen",
+                team: "red",
+                status: "active",
+                fouls: 0,
+                bestMoveHits: null,
+              },
+            ],
+          },
+        }),
+      );
+      expect(completed.statusCode, completed.body).toBe(201);
+      expect(await players.delete(participant.id)).toBe("deleted");
+      const newSelection = await create(payload({ state: liveState(participant.id) }));
+      expect(newSelection.statusCode, newSelection.body).toBe(409);
+      const correction = await app.inject({
+        method: "PUT",
+        url: `/api/game-sessions/${completed.json().gameId}`,
+        payload: {
+          name: "After retirement",
+          mutationId: randomUUID(),
+          state: completed.json().state,
+          results: { ...completed.json().results, outcome: "black", winner: "black" },
+        },
+      });
+      expect(correction.statusCode, correction.body).toBe(200);
+      expect(
+        (
+          await pool.query("SELECT player_id, won FROM game_player_results WHERE game_id = $1", [
+            completed.json().gameId,
+          ])
+        ).rows,
+      ).toEqual([{ player_id: participant.id, won: false }]);
+    } finally {
+      await pool.query("DELETE FROM players WHERE club_id = $1", [otherClub]);
+      await pool.query("DELETE FROM clubs WHERE id = $1", [otherClub]);
+    }
+  });
+
+  it("keeps active host and participant profiles when their projection rows are missing", async () => {
+    const players = new PlayerStore(pool);
+    const profile = (nickname: string) => ({
+      nickname,
+      consent: false,
+      firstName: null,
+      lastName: null,
+      email: null,
+    });
+    const host = await players.create(profile(`Host ${randomUUID()}`));
+    const participant = await players.create(profile(`Seat ${randomUUID()}`));
+    const state = {
+      hostPlayerId: host.id,
+      game: { phase: "opaque", players: [{ id: participant.id, seat: 1, role: "citizen" }] },
+    };
+    const created = await create(payload({ state }));
+    expect(created.statusCode, created.body).toBe(201);
+    await pool.query("DELETE FROM game_session_players WHERE game_id = $1", [
+      created.json().gameId,
+    ]);
+    for (const id of [host.id, participant.id]) {
+      const result = await app.inject({ method: "DELETE", url: `/api/players/${id}` });
+      expect(result.statusCode, result.body).toBe(409);
+      expect(result.json()).toEqual({ error: "active_game" });
+      expect(await players.get(id)).not.toBeNull();
+    }
+  });
+  it("blocks old stored event-only copied identities on every record view while preserving the event", async () => {
+    const created = await create();
+    const gameId = created.json().gameId as string;
+    const event = { name: "private projected event", playerId: randomUUID() };
+    await pool.query(
+      "INSERT INTO game_events (id, club_id, game_id, sequence, idempotency_key, event_type, phase, payload) VALUES ($1,$2,$3,1,$4,'opaque','opaque',$5::jsonb)",
+      [randomUUID(), DEFAULT_CLUB_ID, gameId, randomUUID(), JSON.stringify(event)],
+    );
+    for (const url of [
+      "/api/game-sessions",
+      `/api/game-sessions/${gameId}`,
+      `/api/games/${gameId}/events`,
+    ]) {
+      const response = await app.inject({ method: "GET", url });
+      expect(response.statusCode, url + response.body).toBe(409);
+      expect(response.json()).toEqual({ error: "unsupported_game_format" });
+      expect(response.body).not.toContain("private");
+    }
+    expect(
+      (await pool.query("SELECT payload FROM game_events WHERE game_id = $1", [gameId])).rows,
+    ).toEqual([{ payload: event }]);
+  });
+  it("reloads an ID-only real replay and peer results unchanged after profile rename and retirement", async () => {
+    const players = new PlayerStore(pool);
+    const profile = (nickname: string) => ({
+      nickname,
+      consent: false,
+      firstName: null,
+      lastName: null,
+      email: null,
+    });
+    const host = await players.create(profile(`Host ${randomUUID()}`));
+    const roster = await Promise.all(
+      Array.from({ length: 10 }, (_, index) =>
+        players.create(profile(`Seat-${index}-${randomUUID()}`)),
+      ),
+    );
+    const rosterIds = roster.map(({ id }, index) => ({ id, seat: index + 1 }));
+    let setup = beginRoleDraw(createSetup(rosterIds), createSeededRandom(41));
+    for (let seat = 1; seat <= 10; seat += 1) setup = drawRoleForSeat(setup, seat);
+    setup = completeRoleDraw(setup);
+    const baseline: InitialGameBaseline = { replayVersion: 1, game: createGame(setup) };
+    const created = await create(
+      payload({
+        state: {
+          hostPlayerId: host.id,
+          setup: { hostPlayerId: host.id, selectedPlayerIds: rosterIds.map(({ id }) => id), setup },
+          game: baseline.game,
+          initialGame: baseline,
+          events: [],
+          log: [],
+        },
+      }),
+    );
+    expect(created.statusCode, created.body).toBe(201);
+    const gameId = created.json().gameId as string;
+    const activeSummaries = (await app.inject({ method: "GET", url: "/api/game-sessions" })).json()
+      .sessions;
+    expect(activeSummaries).toEqual([expect.objectContaining({ gameId, hostPlayerId: host.id })]);
+    expect(JSON.stringify(activeSummaries)).not.toContain(host.nickname);
+    expect(JSON.stringify(activeSummaries)).not.toContain("hostName");
+    const { entry, after } = createGameLogEntry({
+      gameId,
+      id: randomUUID(),
+      sequence: 1,
+      parentEventId: null,
+      createdAt: "2026-09-26T12:00:00.000Z",
+      before: baseline.game,
+      draft: { type: "game.started", payload: {} },
+    });
+    const results = {
+      hostPlayerId: host.id,
+      outcome: "red",
+      winner: "red",
+      reason: null,
+      playedAt: "2026-09-26T12:00:00.000Z",
+      players: after.players.map(({ id, seat, role, team, status, fouls }) => ({
+        playerId: id,
+        seat,
+        role,
+        team,
+        status,
+        fouls,
+        bestMoveHits: null,
+      })),
+    };
+    const state = { ...created.json().state, game: after, events: [entry], headEventId: entry.id };
+    const saved = await app.inject({
+      method: "PUT",
+      url: `/api/game-sessions/${gameId}`,
+      payload: {
+        name: "Named championship",
+        mutationId: randomUUID(),
+        state,
+        results,
+      },
+    });
+    expect(saved.statusCode, saved.body).toBe(200);
+    const completedSummaries = (
+      await app.inject({ method: "GET", url: "/api/game-sessions?status=completed" })
+    ).json().sessions;
+    expect(completedSummaries).toEqual([
+      expect.objectContaining({ gameId, hostPlayerId: host.id }),
+    ]);
+    expect(JSON.stringify(completedSummaries)).not.toContain(host.nickname);
+    expect(JSON.stringify(completedSummaries)).not.toContain("hostName");
+    const hash = hashGameState(after);
+    const bytes = (
+      await pool.query<{ state: string; results: string }>(
+        "SELECT state::text, results::text FROM game_sessions WHERE id = $1",
+        [gameId],
+      )
+    ).rows[0]!;
+    await players.update(
+      roster[0]!.id,
+      profile(`Renamed ${randomUUID()}`),
+      DEFAULT_CLUB_ID,
+      owner.id,
+    );
+    expect(await players.delete(roster[0]!.id)).toBe("deleted");
+    expect(await players.get(roster[0]!.id)).toBeNull();
+    expect(await players.delete(host.id)).toBe("deleted");
+    expect(await players.get(host.id)).toBeNull();
+    const loaded = await app.inject({ method: "GET", url: `/api/game-sessions/${gameId}` });
+    expect(loaded.statusCode, loaded.body).toBe(200);
+    const restored = loaded.json().session;
+    expect(
+      replayGameLog(
+        restored.state.initialGame as InitialGameBaseline,
+        restored.state.events as GameLogEntry[],
+        gameId,
+      ).game,
+    ).toEqual(after);
+    expect(hashGameState(restored.state.game)).toBe(hash);
+    expect(restored.state.events[0].stateHashAfter).toBe(hash);
+    expect(restored.results.players[0].playerId).toBe(roster[0]!.id);
+    expect(restored.results.hostPlayerId).toBe(host.id);
+    expect(
+      (
+        await pool.query("SELECT state::text, results::text FROM game_sessions WHERE id = $1", [
+          gameId,
+        ])
+      ).rows[0],
+    ).toEqual(bytes);
+    expect(
+      (
+        await pool.query<{ player_id: string; won: boolean }>(
+          "SELECT player_id, won FROM game_player_results WHERE game_id = $1 ORDER BY seat",
+          [gameId],
+        )
+      ).rows,
+    ).toEqual(
+      results.players.map(({ playerId, team }) => ({ player_id: playerId, won: team === "red" })),
+    );
+    expect(
+      (await app.inject({ method: "GET", url: "/api/game-sessions?status=completed" })).json()
+        .sessions,
+    ).toEqual([
+      expect.objectContaining({ gameId, name: "Named championship", hostPlayerId: host.id }),
+    ]);
+  });
+  it("serializes both queued save/retire orders without active reidentification or partial writes", async () => {
+    const players = new PlayerStore(pool);
+    for (const first of ["save", "retire"] as const) {
+      const participant = await players.create({
+        nickname: `Race-${first}-${randomUUID()}`,
+        consent: false,
+        firstName: null,
+        lastName: null,
+        email: null,
+      });
+      const created = await create();
+      expect(created.statusCode, created.body).toBe(201);
+      const gameId = created.json().gameId as string;
+      const state = { game: { players: [{ id: participant.id, seat: 1 }] } };
+      const retire = () => app.inject({ method: "DELETE", url: `/api/players/${participant.id}` });
+      const save = () =>
+        app.inject({
+          method: "PUT",
+          url: `/api/game-sessions/${gameId}`,
+          payload: { name: "race", mutationId: randomUUID(), state, results: null },
+        });
+      // Both production writers take game_results before player rows. Hold that
+      // first lock, observe each real request queued in pg_locks, then release.
+      // PostgreSQL's lock queue (not scheduling delays) fixes the serialization.
+      const gate = await pool.connect();
+      await gate.query("BEGIN");
+      await gate.query("LOCK TABLE game_results IN ACCESS EXCLUSIVE MODE");
+      const waitForQueue = async (mode: "RowExclusiveLock" | "ShareRowExclusiveLock") => {
+        const deadline = Date.now() + 10_000;
+        while (Date.now() < deadline) {
+          const waiting = await pool.query<{ count: number }>(
+            `SELECT COUNT(*)::int AS count FROM pg_locks
+             WHERE relation = 'game_results'::regclass AND mode = $1 AND NOT granted`,
+            [mode],
+          );
+          if (waiting.rows[0]?.count === 1) return;
+        }
+        throw new Error(`The ${mode} API request never reached the database lock queue`);
+      };
+      let firstResponse: Awaited<ReturnType<typeof save>>;
+      let secondResponse: Awaited<ReturnType<typeof save>>;
+      try {
+        const pendingFirst = first === "save" ? save() : retire();
+        await waitForQueue(first === "save" ? "RowExclusiveLock" : "ShareRowExclusiveLock");
+        const pendingSecond = first === "save" ? retire() : save();
+        await waitForQueue(first === "save" ? "ShareRowExclusiveLock" : "RowExclusiveLock");
+        await gate.query("COMMIT");
+        [firstResponse, secondResponse] = await Promise.all([pendingFirst, pendingSecond]);
+      } finally {
+        await gate.query("ROLLBACK");
+        gate.release();
+      }
+      const retirement = first === "save" ? secondResponse : firstResponse;
+      const saved = first === "save" ? firstResponse : secondResponse;
+      expect([retirement.statusCode, saved.statusCode]).toEqual(
+        first === "save" ? [409, 200] : [204, 409],
+      );
+      const persisted = (
+        await pool.query<{ state: unknown; revision: number; status: string }>(
+          "SELECT state, revision, status FROM game_sessions WHERE id = $1",
+          [gameId],
+        )
+      ).rows[0]!;
+      const identity = (
+        await pool.query<{ retired_at: Date | null; nickname: string | null }>(
+          "SELECT retired_at, nickname FROM players WHERE id = $1",
+          [participant.id],
+        )
+      ).rows[0]!;
+      const projected = (
+        await pool.query<{ count: number }>(
+          "SELECT COUNT(*)::int AS count FROM game_session_players WHERE game_id = $1 AND player_id = $2",
+          [gameId, participant.id],
+        )
+      ).rows[0]!.count;
+      const readback = await app.inject({ method: "GET", url: `/api/game-sessions/${gameId}` });
+      expect(readback.statusCode, readback.body).toBe(200);
+      expect(readback.json().session.state).toEqual(persisted.state);
+      expect(persisted.status).toBe("active");
+      if (first === "retire") {
+        expect(await players.get(participant.id)).toBeNull();
+        expect(identity).toMatchObject({ nickname: null });
+        expect(identity.retired_at).not.toBeNull();
+        expect(persisted).toMatchObject({ state: created.json().state, revision: 1 });
+        expect(projected).toBe(0);
+      } else {
+        expect(await players.get(participant.id)).not.toBeNull();
+        expect(identity.retired_at).toBeNull();
+        expect(persisted).toMatchObject({ state, revision: 2 });
+        // Sparse browser snapshots do not qualify for a relational projection;
+        // deletion must still find the authoritative active JSON reference.
+        expect(projected).toBe(0);
+      }
+    }
+  });
+  it("purges permanent identities, authoritative games, events and result projections on club deletion", async () => {
+    const clubResponse = await app.inject({
+      method: "POST",
+      url: "/api/clubs",
+      payload: {
+        name: `Purge ${randomUUID()}`,
+        city: "Málaga",
+        headerLogo: null,
+        cardLogo: null,
+        language: "en",
+        ownerConsent: true,
+      },
+    });
+    expect(clubResponse.statusCode, clubResponse.body).toBe(201);
+    const clubId = clubResponse.json().club.id as string;
+    const players = new PlayerStore(pool);
+    const participant = await players.create(
+      {
+        nickname: `Purge-${randomUUID()}`,
+        consent: false,
+        firstName: null,
+        lastName: null,
+        email: null,
+      },
+      clubId,
+    );
+    const host = (await players.list(clubId)).find(({ managerLocked }) => managerLocked)!;
+    const session = await create(
+      payload({
+        state: {
+          hostPlayerId: host.id,
+          game: { players: [{ id: participant.id, seat: 1, role: "citizen" }] },
+        },
+        results: {
+          hostPlayerId: host.id,
+          outcome: "red",
+          winner: "red",
+          reason: null,
+          playedAt: "2026-09-26T12:00:00.000Z",
+          players: [
+            {
+              playerId: participant.id,
+              seat: 1,
+              role: "citizen",
+              team: "red",
+              status: "active",
+              fouls: 0,
+              bestMoveHits: null,
+            },
+          ],
+        },
+      }),
+      clubId,
+    );
+    expect(session.statusCode, session.body).toBe(201);
+    expect(
+      (
+        await pool.query(
+          "SELECT COUNT(*)::int AS count FROM game_player_results WHERE club_id = $1",
+          [clubId],
+        )
+      ).rows[0]?.count,
+    ).toBe(1);
+    const removed = await app.inject({ method: "DELETE", url: `/api/clubs/${clubId}` });
+    expect(removed.statusCode, removed.body).toBe(204);
+    for (const table of [
+      "players",
+      "game_sessions",
+      "game_session_players",
+      "game_results",
+      "game_player_results",
+      "game_events",
+      "game_session_creations",
+    ]) {
+      expect(
+        (
+          await pool.query(`SELECT COUNT(*)::int AS count FROM ${table} WHERE club_id = $1`, [
+            clubId,
+          ])
+        ).rows[0]?.count,
+        table,
+      ).toBe(0);
+    }
+    expect(
+      (
+        await pool.query("SELECT COUNT(*)::int AS count FROM deleted_clubs WHERE club_id = $1", [
+          clubId,
+        ])
+      ).rows[0]?.count,
+    ).toBe(1);
+  });
   it("skips malformed completion metadata without breaking the rest of the history", async () => {
     const malformed = await create(
       payload({
@@ -466,35 +1101,148 @@ describe("server-backed game records", () => {
     ).toHaveProperty("statusCode", 204);
   });
 
-  it("requires a manager for every game-record CRUD operation", async () => {
-    const requests = [
-      { method: "GET", url: "/api/game-sessions" },
-      { method: "POST", url: "/api/game-sessions", payload: payload() },
-      { method: "GET", url: `/api/game-sessions/${randomUUID()}` },
-      {
-        method: "PUT",
-        url: `/api/game-sessions/${randomUUID()}`,
-        payload: { name: "blocked", mutationId: randomUUID(), state: {}, results: null },
-      },
-      { method: "DELETE", url: `/api/game-sessions/${randomUUID()}` },
-    ] as const;
+  it("lets a member manage their club's active and completed records without resurrecting deletion", async () => {
+    const headers = { "x-club-id": DEFAULT_CLUB_ID };
+    const body = payload({ name: "Member table" });
+    const created = await regularUserApp.inject({
+      method: "POST",
+      url: "/api/game-sessions",
+      headers,
+      payload: body,
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const gameId = created.json().gameId as string;
+    const retry = await regularUserApp.inject({
+      method: "POST",
+      url: "/api/game-sessions",
+      headers,
+      payload: body,
+    });
+    expect(retry.statusCode, retry.body).toBe(200);
+    expect(retry.json()).toMatchObject({ gameId, duplicate: true });
+    const active = await regularUserApp.inject({
+      method: "GET",
+      url: "/api/game-sessions",
+      headers,
+    });
+    expect(active.statusCode, active.body).toBe(200);
+    expect(active.json().sessions).toMatchObject([{ gameId }]);
 
-    for (const request of requests) {
-      const response = await regularUserApp.inject({
-        ...request,
-        headers: { "x-club-id": DEFAULT_CLUB_ID },
-      });
-      expect(response.statusCode, `${request.method} ${request.url}`).toBe(403);
-      expect(response.json()).toMatchObject({ error: "club_access_denied" });
-    }
+    const host = await new PlayerStore(pool).create({
+      nickname: `Member host ${randomUUID().slice(0, 8)}`,
+      consent: false,
+      firstName: null,
+      lastName: null,
+      email: null,
+    });
+    const completedResults = {
+      hostPlayerId: host.id,
+      outcome: "red",
+      winner: "red",
+      reason: null,
+      playedAt: "2026-09-26T12:00:00.000Z",
+      players: [],
+    };
+    const saved = await regularUserApp.inject({
+      method: "PUT",
+      url: `/api/game-sessions/${gameId}`,
+      headers,
+      payload: {
+        operation: "snapshot",
+        mutationId: randomUUID(),
+        name: "Member completed",
+        state: { browserOwned: true },
+        results: completedResults,
+      },
+    });
+    expect(saved.statusCode, saved.body).toBe(200);
+    expect(saved.json()).toMatchObject({ gameId, revision: 2, status: "completed" });
+    const detail = await regularUserApp.inject({
+      method: "GET",
+      url: `/api/game-sessions/${gameId}`,
+      headers,
+    });
+    expect(detail.statusCode, detail.body).toBe(200);
+    expect(detail.json().session).toMatchObject({
+      gameId,
+      name: "Member completed",
+      state: { browserOwned: true },
+      results: completedResults,
+    });
+    const history = await regularUserApp.inject({
+      method: "GET",
+      url: "/api/game-sessions?status=completed&from=2026-09-26&to=2026-09-26&outcome=red",
+      headers,
+    });
+    expect(history.statusCode, history.body).toBe(200);
+    expect(history.json().sessions).toMatchObject([{ gameId, outcome: "red" }]);
+    const excludedHistory = await regularUserApp.inject({
+      method: "GET",
+      url: "/api/game-sessions?status=completed&from=2026-09-27&to=2026-09-27&outcome=black",
+      headers,
+    });
+    expect(excludedHistory.statusCode, excludedHistory.body).toBe(200);
+    expect(excludedHistory.json().sessions).toEqual([]);
+    await expect(
+      pool.query("SELECT status, state FROM game_sessions WHERE club_id = $1 AND id = $2", [
+        DEFAULT_CLUB_ID,
+        gameId,
+      ]),
+    ).resolves.toMatchObject({ rows: [{ status: "completed", state: { browserOwned: true } }] });
+    await expect(
+      pool.query(
+        "SELECT COUNT(*)::int AS count FROM game_results WHERE club_id = $1 AND game_id = $2",
+        [DEFAULT_CLUB_ID, gameId],
+      ),
+    ).resolves.toMatchObject({ rows: [{ count: 1 }] });
+
+    const deleted = await regularUserApp.inject({
+      method: "DELETE",
+      url: `/api/game-sessions/${gameId}`,
+      headers,
+    });
+    expect(deleted.statusCode, deleted.body).toBe(204);
+    const staleSave = await regularUserApp.inject({
+      method: "PUT",
+      url: `/api/game-sessions/${gameId}`,
+      headers,
+      payload: {
+        operation: "snapshot",
+        mutationId: randomUUID(),
+        name: "stale",
+        state: { stale: true },
+        results: null,
+      },
+    });
+    expect(staleSave.statusCode, staleSave.body).toBe(404);
+    const retryDeleted = await regularUserApp.inject({
+      method: "POST",
+      url: "/api/game-sessions",
+      headers,
+      payload: body,
+    });
+    expect(retryDeleted.statusCode, retryDeleted.body).toBe(410);
+    const afterDelete = await regularUserApp.inject({
+      method: "GET",
+      url: `/api/game-sessions/${gameId}`,
+      headers,
+    });
+    expect(afterDelete.statusCode).toBe(404);
+    await expect(
+      pool.query(
+        `SELECT (SELECT COUNT(*)::int FROM game_sessions WHERE club_id = $1 AND id = $2) AS sessions,
+              (SELECT COUNT(*)::int FROM game_results WHERE club_id = $1 AND game_id = $2) AS results`,
+        [DEFAULT_CLUB_ID, gameId],
+      ),
+    ).resolves.toMatchObject({ rows: [{ sessions: 0, results: 0 }] });
   });
 
-  it("does not grant a manager in another club access to this club's records", async () => {
+  const verifyForeignClubIsolation = async (role: "user" | "manager") => {
     const foreignClubId = randomUUID();
     const foreignUser: AppUser = {
       id: randomUUID(),
-      email: `foreign-manager-${randomUUID()}@example.test`,
-      name: "Foreign manager",
+      email: `foreign-${role}-${randomUUID()}@example.test`,
+      name: `Foreign ${role}`,
       picture: null,
     };
     await pool.query("INSERT INTO users (id, email, display_name) VALUES ($1, $2, $3)", [
@@ -507,10 +1255,11 @@ describe("server-backed game records", () => {
        VALUES ($1, $2, 'Málaga', $3)`,
       [foreignClubId, `Foreign ${foreignClubId}`, owner.id],
     );
-    await pool.query(
-      "INSERT INTO club_memberships (club_id, user_id, role) VALUES ($1, $2, 'manager')",
-      [foreignClubId, foreignUser.id],
-    );
+    await pool.query("INSERT INTO club_memberships (club_id, user_id, role) VALUES ($1, $2, $3)", [
+      foreignClubId,
+      foreignUser.id,
+      role,
+    ]);
     const created = await create(
       payload({
         results: {
@@ -526,6 +1275,22 @@ describe("server-backed game records", () => {
     const foreignApp = await buildApp({ pool, authenticateRequest: async () => foreignUser });
     await foreignApp.ready();
     try {
+      const foreignCreated = await foreignApp.inject({
+        method: "POST",
+        url: "/api/game-sessions",
+        headers: { "x-club-id": foreignClubId },
+        payload: payload({ name: "Foreign club game" }),
+      });
+      expect(foreignCreated.statusCode, foreignCreated.body).toBe(201);
+      const foreignActive = await foreignApp.inject({
+        method: "GET",
+        url: "/api/game-sessions",
+        headers: { "x-club-id": foreignClubId },
+      });
+      expect(foreignActive.statusCode).toBe(200);
+      expect(foreignActive.json().sessions).toMatchObject([
+        { gameId: foreignCreated.json().gameId, name: "Foreign club game" },
+      ]);
       const foreignHistory = await foreignApp.inject({
         method: "GET",
         url: "/api/game-sessions?status=completed",
@@ -533,9 +1298,38 @@ describe("server-backed game records", () => {
       });
       expect(foreignHistory.statusCode, foreignHistory.body).toBe(200);
       expect(foreignHistory.json().sessions).toEqual([]);
+      const guessed = await foreignApp.inject({
+        method: "GET",
+        url: `/api/game-sessions/${gameId}`,
+        headers: { "x-club-id": foreignClubId },
+      });
+      expect(guessed.statusCode).toBe(404);
+      const guessedSave = await foreignApp.inject({
+        method: "PUT",
+        url: `/api/game-sessions/${gameId}`,
+        headers: { "x-club-id": foreignClubId },
+        payload: {
+          operation: "snapshot",
+          name: "cross-club",
+          mutationId: randomUUID(),
+          state: { forbidden: true },
+          results: null,
+        },
+      });
+      expect(guessedSave.statusCode).toBe(404);
+      const guessedDelete = await foreignApp.inject({
+        method: "DELETE",
+        url: `/api/game-sessions/${gameId}`,
+        headers: { "x-club-id": foreignClubId },
+      });
+      expect(guessedDelete.statusCode).toBe(204);
+      const stillOwned = await app.inject({ method: "GET", url: `/api/game-sessions/${gameId}` });
+      expect(stillOwned.statusCode).toBe(200);
+      expect(stillOwned.json().session.name).toBe(created.json().name);
       for (const request of [
         { method: "GET", url: "/api/game-sessions" },
         { method: "GET", url: "/api/game-sessions?status=completed" },
+        { method: "POST", url: "/api/game-sessions", payload: payload() },
         { method: "GET", url: `/api/game-sessions/${gameId}` },
         {
           method: "PUT",
@@ -559,8 +1353,14 @@ describe("server-backed game records", () => {
       }
     } finally {
       await foreignApp.close();
+      await pool.query("DELETE FROM game_sessions WHERE club_id = $1", [foreignClubId]);
+      await pool.query("DELETE FROM deleted_games WHERE club_id = $1", [foreignClubId]);
       await pool.query("DELETE FROM clubs WHERE id = $1", [foreignClubId]);
       await pool.query("DELETE FROM users WHERE id = $1", [foreignUser.id]);
     }
-  });
+  };
+  it.each(["user", "manager"] as const)(
+    "isolates another club %s's records even with a guessed game ID or forged club selection",
+    verifyForeignClubIsolation,
+  );
 });

@@ -86,6 +86,99 @@ const seed = (
 };
 
 describe("browser current-v5 game storage", () => {
+  it("preserves and rejects a named old game without silently converting or clearing it", async () => {
+    const localStorage = memoryStorage();
+    seed(localStorage);
+    const envelope = JSON.parse(localStorage.getItem(gameSessionStorageKey)!) as {
+      current: { state: { game: unknown } };
+    };
+    envelope.current.state.game = {
+      players: [{ id: "player-1", seat: 1, name: "Private old name" }],
+    };
+    const oldBytes = JSON.stringify(envelope);
+    localStorage.setItem(gameSessionStorageKey, oldBytes);
+    expect(await prepareBrowserGameStorage({ localStorage })).toEqual({
+      kind: "invalid",
+      rawSnapshot: oldBytes,
+    });
+    expect(localStorage.getItem(gameSessionStorageKey)).toBe(oldBytes);
+    await expect(
+      discardInvalidBrowserGameStorage({ localStorage }, "stale bytes"),
+    ).rejects.toThrow();
+    expect(localStorage.getItem(gameSessionStorageKey)).toBe(oldBytes);
+    await discardInvalidBrowserGameStorage({ localStorage }, oldBytes);
+    expect(localStorage.getItem(gameSessionStorageKey)).toBeNull();
+  });
+  type MutableEnvelope = {
+    current: { state: Record<string, unknown>; results: unknown };
+    outbox: unknown[];
+  };
+  it.each([
+    [
+      "legacy event payload",
+      (envelope: MutableEnvelope) => {
+        envelope.current.state.legacyLog = [{ payload: { playerId: gameId, name: "Alice" } }];
+      },
+    ],
+    [
+      "generated event payload",
+      (envelope: MutableEnvelope) => {
+        envelope.current.state.events = [{ payload: { playerId: gameId, name: "Alice" } }];
+      },
+    ],
+    [
+      "pending outbox payload",
+      (envelope: MutableEnvelope) => {
+        envelope.outbox = [
+          {
+            kind: "snapshot",
+            name: "Table",
+            mutationId: gameId,
+            state: { ...state(), log: [{ payload: { playerId: gameId, name: "Alice" } }] },
+            results: null,
+          },
+        ];
+      },
+    ],
+    [
+      "result player without a seat",
+      (envelope: MutableEnvelope) => {
+        envelope.current.results = { players: [{ playerId: gameId, name: "Alice" }] };
+      },
+    ],
+    [
+      "malformed seat player",
+      (envelope: MutableEnvelope) => {
+        envelope.current.state.log = [{ id: gameId, seat: "1", nickname: "Alice" }];
+      },
+    ],
+  ])("blocks copied identity in %s and preserves the exact local record", async (_kind, mutate) => {
+    const localStorage = memoryStorage();
+    seed(localStorage, { pending: true });
+    const envelope = JSON.parse(localStorage.getItem(gameSessionStorageKey)!);
+    mutate(envelope);
+    const raw = JSON.stringify(envelope);
+    localStorage.setItem(gameSessionStorageKey, raw);
+    expect(await prepareBrowserGameStorage({ localStorage })).toEqual({
+      kind: "invalid",
+      rawSnapshot: raw,
+    });
+    expect(localStorage.getItem(gameSessionStorageKey)).toBe(raw);
+    await expect(discardInvalidBrowserGameStorage({ localStorage }, `${raw} `)).rejects.toThrow();
+    expect(localStorage.getItem(gameSessionStorageKey)).toBe(raw);
+  });
+
+  it("accepts unrelated title and moderator reason in structured free text", async () => {
+    const localStorage = memoryStorage();
+    seed(localStorage);
+    const envelope = JSON.parse(localStorage.getItem(gameSessionStorageKey)!);
+    envelope.current.name = "Alice's table";
+    envelope.current.state.log = [{ title: "Alice", reason: "Alice called a draw" }];
+    envelope.current.results = { reason: "Alice called a draw" };
+    localStorage.setItem(gameSessionStorageKey, JSON.stringify(envelope));
+    expect((await prepareBrowserGameStorage({ localStorage })).kind).toBe("ready");
+  });
+
   it("returns empty when the single local current record is absent", async () => {
     const localStorage = memoryStorage();
 

@@ -18,6 +18,7 @@ import type { CanonicalGameEventDraft, GameState, NightShotResult } from "@mafia
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { nightMessages } from "../../i18n/messages/night.js";
 import { GameTable } from "../table/GameTable.js";
+import { usePlayerDisplayName } from "../players/player-display.js";
 
 interface NightStageProps {
   readonly game: GameState;
@@ -25,6 +26,7 @@ interface NightStageProps {
   readonly onEvent: (type: string, payload: Record<string, unknown>) => void;
   readonly onAcceptedEvent?: (event: CanonicalGameEventDraft) => void;
   readonly hostName?: string;
+  // The parent may supply the daytime toggle, but every NightStage phase is exempt.
   readonly privacyHidden?: boolean;
   readonly onSeatSwipe?: (seat: number) => void;
   readonly swipeAction?: ReactNode;
@@ -37,12 +39,12 @@ export const NightStage = ({
   onEvent,
   onAcceptedEvent,
   hostName,
-  privacyHidden = false,
   onSeatSwipe,
   swipeAction,
   onDismissSwipeAction,
 }: NightStageProps) => {
   const { t } = useMessages(nightMessages);
+  const displayName = usePlayerDisplayName();
   const tableHostName = hostName ?? t("night.host");
   const activePlayers = game.players.filter(({ status }) => status === "active");
   const donEligible = isNightCheckEligible(game, "don");
@@ -73,12 +75,13 @@ export const NightStage = ({
     return (
       <GameTable
         hostName={tableHostName}
-        privacyHidden={privacyHidden}
+        privacyHidden={false}
         onSeatSwipe={onSeatSwipe}
         swipeAction={swipeAction}
         onDismissSwipeAction={onDismissSwipeAction}
         seats={game.players.map((player) => ({
           ...player,
+          name: displayName(player),
           mafiaShooter: player.status === "active" && player.team === "black",
         }))}
         seatActionLabel={(seat) =>
@@ -153,12 +156,13 @@ export const NightStage = ({
     return (
       <GameTable
         hostName={tableHostName}
-        privacyHidden={privacyHidden}
+        privacyHidden={false}
         onSeatSwipe={onSeatSwipe}
         swipeAction={swipeAction}
         onDismissSwipeAction={onDismissSwipeAction}
         seats={game.players.map((player) => ({
           ...player,
+          name: displayName(player),
           mafiaShooter: player.team === "black" && game.shotAssignments[player.seat] !== undefined,
           provisionalDeceased: result.kind === "kill" && player.seat === result.targetSeat,
         }))}
@@ -193,11 +197,12 @@ export const NightStage = ({
     return (
       <GameTable
         hostName={tableHostName}
-        privacyHidden={privacyHidden}
+        privacyHidden={false}
         onSeatSwipe={donEligible ? onSeatSwipe : undefined}
         swipeAction={donEligible ? swipeAction : undefined}
         seats={game.players.map((player) => ({
           ...player,
+          name: displayName(player),
           mafiaShooter: donEligible && player.role === "don",
           nightCheckHighlight: donEligible && player.role === "don",
         }))}
@@ -252,19 +257,22 @@ export const NightStage = ({
     return (
       <GameTable
         hostName={tableHostName}
-        privacyHidden={privacyHidden}
+        privacyHidden={false}
         onSeatSwipe={onSeatSwipe}
         swipeAction={swipeAction}
         onDismissSwipeAction={onDismissSwipeAction}
         seats={game.players.map((player) => ({
           ...player,
+          name: displayName(player),
           mafiaShooter: donEligible && player.role === "don",
           current: player.seat === game.checkResult?.targetSeat,
         }))}
         center={
           <div className="table-check-center" role="status" aria-label={t("night.donCheckResult")}>
             <span className="table-prompt">
-              {t("night.donChecked", { name: target?.name ?? t("night.player") })}
+              {t("night.donChecked", {
+                name: target === undefined ? t("night.player") : displayName(target),
+              })}
             </span>
             <div className="secret-result">
               {game.checkResult.match ? t("night.sheriffFound") : t("night.notSheriff")}
@@ -295,11 +303,12 @@ export const NightStage = ({
     return (
       <GameTable
         hostName={tableHostName}
-        privacyHidden={privacyHidden}
+        privacyHidden={false}
         onSeatSwipe={sheriffEligible ? onSeatSwipe : undefined}
         swipeAction={sheriffEligible ? swipeAction : undefined}
         seats={game.players.map((player) => ({
           ...player,
+          name: displayName(player),
           sheriffHighlight: sheriffEligible && player.role === "sheriff",
           nightCheckHighlight: sheriffEligible && player.role === "sheriff",
         }))}
@@ -354,12 +363,13 @@ export const NightStage = ({
     return (
       <GameTable
         hostName={tableHostName}
-        privacyHidden={privacyHidden}
+        privacyHidden={false}
         onSeatSwipe={onSeatSwipe}
         swipeAction={swipeAction}
         onDismissSwipeAction={onDismissSwipeAction}
         seats={game.players.map((player) => ({
           ...player,
+          name: displayName(player),
           sheriffHighlight: sheriffEligible && player.role === "sheriff",
           current: player.seat === game.checkResult?.targetSeat,
         }))}
@@ -370,7 +380,9 @@ export const NightStage = ({
             aria-label={t("night.sheriffCheckResult")}
           >
             <span className="table-prompt">
-              {t("night.sheriffChecked", { name: target?.name ?? t("night.player") })}
+              {t("night.sheriffChecked", {
+                name: target === undefined ? t("night.player") : displayName(target),
+              })}
             </span>
             <div className="secret-result">
               {game.checkResult.match ? t("night.mafiaFound") : t("night.notMafia")}
@@ -401,11 +413,11 @@ export const NightStage = ({
     return (
       <GameTable
         hostName={tableHostName}
-        privacyHidden={privacyHidden}
+        privacyHidden={false}
         onSeatSwipe={onSeatSwipe}
         swipeAction={swipeAction}
         onDismissSwipeAction={onDismissSwipeAction}
-        seats={game.players}
+        seats={game.players.map((player) => ({ ...player, name: displayName(player) }))}
         center={
           <div className="table-check-center">
             <span className="table-prompt">{t("night.stageComplete")}</span>
@@ -456,6 +468,7 @@ const MafiaShotResultCard = ({
   readonly result: NightShotResult;
 }) => {
   const { t } = useMessages(nightMessages);
+  const displayName = usePlayerDisplayName();
   const target =
     result.kind === "miss"
       ? undefined
@@ -475,7 +488,10 @@ const MafiaShotResultCard = ({
         <span className="table-prompt">{t("night.noEffect")}</span>
         <strong>
           {t("night.wasAlreadyOut", {
-            name: target?.name ?? t("night.seat", { seat: result.targetSeat }),
+            name:
+              target === undefined
+                ? t("night.seat", { seat: result.targetSeat })
+                : displayName(target),
           })}
         </strong>
       </div>
@@ -485,7 +501,9 @@ const MafiaShotResultCard = ({
     <div className="deceased-player-card" role="group" aria-label={t("night.deceasedPlayer")}>
       <span className="table-prompt">{t("night.deceasedPlayer")}</span>
       <strong>#{target?.seat ?? result.targetSeat}</strong>
-      <span>{target?.name ?? t("night.seat", { seat: result.targetSeat })}</span>
+      <span>
+        {target === undefined ? t("night.seat", { seat: result.targetSeat }) : displayName(target)}
+      </span>
     </div>
   );
 };

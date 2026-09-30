@@ -23,7 +23,7 @@ const englishVotingMessages = {
   redCardCancelled: "A player received a red card, so voting is cancelled for this day.",
   removeAllVote: "Remove {name}'s eliminate-all vote",
   resolveCarCrash: "Resolve car crash",
-  resolveVoting: "Resolve voting",
+  resolveVoting: "Finish voting",
   seat: "Seat {seat}",
   seatWithName: "Seat {seat}: {name}",
   skipMessage:

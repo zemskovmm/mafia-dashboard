@@ -33,7 +33,6 @@ export type Winner = Team | null;
 
 export interface PlayerInput {
   id: string;
-  name: string;
   seat: number;
 }
 

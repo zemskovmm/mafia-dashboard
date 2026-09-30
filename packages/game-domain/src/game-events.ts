@@ -637,11 +637,11 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
     const player = requireRecord(value, `${context}.players[${index}]`);
     assertExactKeys(
       player,
-      ["id", "name", "seat", "role", "team", "status", "fouls", "mutePending"],
+      ["id", "seat", "role", "team", "status", "fouls", "mutePending"],
       `${context}.players[${index}]`,
     );
     assertNonEmptyString(player.id, `${context}.players[${index}].id`);
-    assertNonEmptyString(player.name, `${context}.players[${index}].name`);
+
     assertSeat(player.seat, `${context}.players[${index}].seat`);
     if (
       player.role !== "sheriff" &&
@@ -651,7 +651,7 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
     ) {
       throw new Error(`${context}.players[${index}].role is invalid`);
     }
-    assertCasperRole({ id: player.id, name: player.name, seat: player.seat }, player.role);
+    assertCasperRole({ id: player.id, seat: player.seat }, player.role);
     const expectedTeam = player.role === "mafia" || player.role === "don" ? "black" : "red";
     if (player.team !== expectedTeam) {
       throw new Error(`${context}.players[${index}].team does not match role`);
@@ -1083,7 +1083,7 @@ const applyDisciplineContext = (
       next.turnOrder.every((seat, index) => next.nominations[index]?.candidateSeat === seat);
     if (
       !validCandidateOrder ||
-      context.currentTurnIndex < next.currentTurnIndex ||
+      context.currentTurnIndex < 0 ||
       context.currentTurnIndex >= next.turnOrder.length
     ) {
       throw new Error("Discipline context voting candidate index is invalid");

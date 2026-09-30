@@ -62,15 +62,21 @@ export const createSetup = (players: readonly PlayerInput[]): SetupState => {
     throw new Error("Seats must be numbered 1 through 10");
   }
 
-  if (players.some(({ name }) => name.trim().length === 0)) {
-    throw new Error("Every player requires a display name");
-  }
+  if (
+    players.some(
+      (player) =>
+        typeof player.id !== "string" ||
+        player.id.trim().length === 0 ||
+        Object.keys(player).some((key) => key !== "id" && key !== "seat"),
+    )
+  )
+    throw new Error("Setup requires identity-only player IDs and seats");
 
   players.forEach(assertCasperPlayer);
 
   return {
     step: "music",
-    players: players.map((player) => ({ ...player })),
+    players: players.map(({ id, seat }) => ({ id, seat })),
     roleDeck: [...CANONICAL_ROLE_DECK],
     remainingRoles: [...CANONICAL_ROLE_DECK],
     assignments: {},

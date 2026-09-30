@@ -64,9 +64,8 @@ const roleGiveawayState = (
     selectedPlayerIds: selectedPlayers.map(({ id }) => id),
     setup: {
       step: "role-draw",
-      players: selectedPlayers.map(({ id, nickname }, index) => ({
+      players: selectedPlayers.map(({ id }, index) => ({
         id,
-        name: nickname,
         seat: index + 1,
       })),
       roleDeck,
@@ -76,7 +75,7 @@ const roleGiveawayState = (
   },
   game: null,
   hostPlayerId: host.id,
-  hostName: host.nickname,
+
   playlistId: "",
   log: [],
   undoHistory: [],
@@ -1349,6 +1348,7 @@ describe("server API", () => {
       { method: "PUT", url: `/api/players/${id}` },
       { method: "DELETE", url: `/api/players/${id}` },
       { method: "GET", url: "/api/game-sessions" },
+      { method: "GET", url: "/api/game-sessions?status=completed" },
       { method: "POST", url: "/api/game-sessions" },
       { method: "GET", url: `/api/game-sessions/${id}` },
       { method: "PUT", url: `/api/game-sessions/${id}` },
@@ -1376,7 +1376,7 @@ describe("server API", () => {
     await anonymousApp.close();
   });
 
-  it("enforces club membership and manager-only route classes", async () => {
+  it("enforces club membership on game records while keeping club and profile administration manager-only", async () => {
     const regularUser = {
       id: randomUUID(),
       email: `regular-${randomUUID()}@example.test`,
@@ -1424,7 +1424,10 @@ describe("server API", () => {
       { method: "POST", url: "/api/players" },
       { method: "PUT", url: `/api/players/${id}` },
       { method: "DELETE", url: `/api/players/${id}` },
+    ] as const;
+    const gameRoutes = [
       { method: "GET", url: "/api/game-sessions" },
+      { method: "GET", url: "/api/game-sessions?status=completed" },
       { method: "POST", url: "/api/game-sessions" },
       { method: "GET", url: `/api/game-sessions/${id}` },
       { method: "PUT", url: `/api/game-sessions/${id}` },
@@ -1432,6 +1435,7 @@ describe("server API", () => {
     ] as const;
     const memberRoutes = [
       ...managerRoutes,
+      ...gameRoutes,
       { method: "GET", url: "/api/players" },
       { method: "GET", url: `/api/games/${id}/events` },
     ] as const;

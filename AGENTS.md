@@ -32,3 +32,14 @@
 - Rely on issue-focused local tests plus `npm run check`; do not open a pull request or wait for CI/review unless explicitly requested.
 - After all local acceptance criteria pass, commit the scoped changes, push the current branch, verify the remote commit, and close the issue with the verified local results.
 - Outside an explicit backlog-execution request, the default no-commit/no-push/no-close rule still applies.
+
+<!-- idd:project:start -->
+
+## Intent-Driven Development
+
+This project uses Intent-Driven Development (IDD). Treat `.idd/intent/` as the
+current product truth. When `.idd/engineering/` exists, treat it as the current
+durable engineering guardrails. When `.idd/verification.yaml` exists, follow it
+as the project-owned verification policy. Use the installed IDD skills when
+changing intent, implementing behavior, or verifying implementation.
+<!-- idd:project:end -->

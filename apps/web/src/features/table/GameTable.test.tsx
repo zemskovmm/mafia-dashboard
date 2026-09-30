@@ -110,6 +110,36 @@ describe("GameTable", () => {
     }
   });
 
+  it("suppresses role-only CSS and GPU lighting inputs when masked without hiding attention cues", () => {
+    const roleSeats = seats.map((seat) =>
+      seat.seat === 2
+        ? { ...seat, role: "mafia" as const, mafiaShooter: true }
+        : seat.seat === 3
+          ? { ...seat, role: "sheriff" as const, sheriffHighlight: true }
+          : seat.seat === 4
+            ? { ...seat, votingHighlight: true, nominated: true }
+            : seat,
+    );
+    const { rerender } = render(<GameTable seats={roleSeats} privacyHidden />);
+    for (const seat of [2, 3]) {
+      const card = screen.getByRole("button", { name: `Seat ${seat}: Player ${seat}` });
+      expect(card).not.toHaveClass(seat === 2 ? "is-mafia-shooter" : "is-sheriff-highlight");
+      expect(card.querySelector(".vgpu-player-lighting")).toBeNull();
+      expect(card.querySelector(".role-badge")).toBeNull();
+    }
+    const attention = screen.getByRole("button", { name: "Seat 4: Player 4" });
+    expect(attention).toHaveClass("is-voting-highlight");
+    expect(attention.querySelector(".vgpu-player-lighting")).not.toBeNull();
+    expect(attention).toHaveTextContent("Nominated");
+    rerender(<GameTable seats={roleSeats} />);
+    expect(screen.getByRole("button", { name: "Seat 2: Player 2" })).toHaveClass(
+      "is-mafia-shooter",
+    );
+    expect(screen.getByRole("button", { name: "Seat 3: Player 3" })).toHaveClass(
+      "is-sheriff-highlight",
+    );
+  });
+
   it("adds a visual cross to an eliminated player", () => {
     const { container } = render(
       <GameTable

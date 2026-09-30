@@ -3,14 +3,17 @@ import type { GameState } from "@mafia/game-domain";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { gameMessages } from "../../i18n/messages/game.js";
 import { TimerControls } from "../timer/TimerControls.js";
+import { usePlayerDisplayName } from "../players/player-display.js";
 import { VgpuPlayerLightingCanvas } from "../effects/vgpu/VgpuLightingCanvas.js";
 
 export interface GameUtilityPanelsProps {
   readonly game: GameState | null;
+  readonly onSelectVotingCandidate?: (seat: number) => void;
 }
 
-export const GameUtilityPanels = ({ game }: GameUtilityPanelsProps) => {
+export const GameUtilityPanels = ({ game, onSelectVotingCandidate }: GameUtilityPanelsProps) => {
   const { t } = useMessages(gameMessages);
+  const displayName = usePlayerDisplayName();
   const nominationTotals = game === null ? {} : countVotes(game);
   const currentCandidate = game?.phase === "voting" ? getCurrentVotingCandidateSeat(game) : null;
   const activeSeats = (game?.players ?? [])
@@ -63,14 +66,32 @@ export const GameUtilityPanels = ({ game }: GameUtilityPanelsProps) => {
                   >
                     <VgpuPlayerLightingCanvas kind={current ? "attention" : null} />
                     <span className="nomination-copy">
-                      <strong>
-                        #{candidateSeat}{" "}
-                        {candidate?.name ?? t("utility.seat", { seat: candidateSeat })}
-                      </strong>
+                      {game.phase === "voting" && onSelectVotingCandidate !== undefined ? (
+                        <button
+                          type="button"
+                          aria-pressed={current}
+                          onClick={() => onSelectVotingCandidate(candidateSeat)}
+                        >
+                          #{candidateSeat}{" "}
+                          {candidate === undefined
+                            ? t("utility.seat", { seat: candidateSeat })
+                            : displayName(candidate)}
+                        </button>
+                      ) : (
+                        <strong>
+                          #{candidateSeat}{" "}
+                          {candidate === undefined
+                            ? t("utility.seat", { seat: candidateSeat })
+                            : displayName(candidate)}
+                        </strong>
+                      )}
                       <span>
                         {t("utility.initiatedBy", {
                           seat: nominatorSeat,
-                          name: nominator?.name ?? t("utility.seat", { seat: nominatorSeat }),
+                          name:
+                            nominator === undefined
+                              ? t("utility.seat", { seat: nominatorSeat })
+                              : displayName(nominator),
                         })}
                       </span>
                     </span>

@@ -15,7 +15,6 @@ import { buildFinalGameResults } from "./game-results.js";
 const createAssignedGame = (): GameState => {
   const players: PlayerInput[] = Array.from({ length: 10 }, (_, index) => ({
     id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
-    name: `Player ${index + 1}`,
     seat: index + 1,
   }));
   let setup = beginRoleDraw(createSetup(players), createSeededRandom(13));

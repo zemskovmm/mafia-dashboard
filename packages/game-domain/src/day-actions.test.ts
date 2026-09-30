@@ -15,6 +15,7 @@ import {
   redCard,
   resolveVote,
   resolveCarCrashVote,
+  selectVotingCandidate,
   startVoting,
   toggleVote,
 } from "./day-actions.js";
@@ -30,7 +31,7 @@ import type { GameState, PlayerInput, SetupState } from "./types.js";
 const players = (): PlayerInput[] =>
   Array.from({ length: 10 }, (_, index) => ({
     id: `player-${index + 1}`,
-    name: `Player ${index + 1}`,
+
     seat: index + 1,
   }));
 
@@ -55,19 +56,43 @@ const completeDayWithNominees = (day: number, candidateSeats: readonly number[])
 };
 
 describe("day actions", () => {
-  it("keeps the final candidate's automatic votes while earlier votes remain toggleable", () => {
-    let game = completeDayWithNominees(1, [4, 6]);
-    game = toggleVote(game, 1, 4);
-    expect(game.voteAssignments[1]).toBe(4);
-    game = toggleVote(game, 1, 4);
-    expect(game.voteAssignments[1]).toBeUndefined();
-    game = toggleVote(game, 1, 4);
-    game = advanceVotingCandidate(game);
+  it("uses deliberate last-nominee selection for a lone later-day nominee too", () => {
+    const day = { ...dayOne(), day: 2 };
+    let voting = startVoting(nominate(day, day.turnOrder[0]!, 4));
+    expect(voting.voteAssignments[1]).toBe(4);
+    expect(Object.keys(voting.voteAssignments)).toHaveLength(10);
+    voting = toggleVote(voting, 1, 4);
+    expect(structuredClone(voting).voteAssignments[1]).toBeUndefined();
+    expect(() => resolveVote(voting)).toThrow(/every eligible player/i);
+    voting = selectVotingCandidate(voting, 4);
+    expect(voting.voteAssignments[1]).toBe(4);
+  });
 
-    expect(toggleVote(game, 2, 6)).toBe(game);
+  it("corrects an open ballot from any nominee and refills only on deliberate last selection", () => {
+    let game = completeDayWithNominees(1, [4, 6, 8]);
+    game = toggleVote(game, 1, 4);
+    game = selectVotingCandidate(game, 8);
     expect(game.voteAssignments[1]).toBe(4);
     expect(Object.keys(game.voteAssignments)).toHaveLength(10);
+    game = toggleVote(game, 2, 8);
+    expect(game.voteAssignments[2]).toBeUndefined();
+    expect(() => resolveVote(game)).toThrow(/every eligible player/i);
+    game = selectVotingCandidate(game, 6);
+    expect(game.voteAssignments[2]).toBeUndefined();
+    game = toggleVote(game, 3, 6);
+    expect(game.voteAssignments[3]).toBe(6);
+    game = selectVotingCandidate(game, 4);
+    game = toggleVote(game, 3, 4);
+    expect(game.voteAssignments[3]).toBe(4);
+    game = assignVote(game, 2, 4);
+    expect(Object.keys(game.voteAssignments)).toHaveLength(10);
     expect(() => resolveVote(game)).not.toThrow();
+    game = toggleVote(game, 2, 4);
+    expect(game.voteAssignments[2]).toBeUndefined();
+    game = selectVotingCandidate(game, 8);
+    expect(game.voteAssignments[2]).toBe(8);
+    expect(Object.keys(game.voteAssignments)).toHaveLength(10);
+    expect(() => selectVotingCandidate(game, 9)).toThrow(/nominated/i);
   });
 
   it("accepts nominations only from the current speaker and preserves unique candidate order", () => {

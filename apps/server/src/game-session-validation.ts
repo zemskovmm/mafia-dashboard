@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { inspectGameIdentities } from "./game-session-identity.js";
 
 /**
  * Game snapshots are browser-authoritative records.  The server validates only
@@ -11,6 +12,19 @@ export const publicHistoryValidationIssue = (issue: z.core.$ZodIssue) => ({
   message: issue.message,
 });
 
+const identityOnly = (
+  value: { state: Record<string, unknown>; results: Record<string, unknown> | null },
+  context: z.core.$RefinementCtx,
+) => {
+  const inspected = inspectGameIdentities(value.state, value.results);
+  if (inspected.named || inspected.invalid)
+    context.addIssue({
+      code: "custom",
+      path: ["state"],
+      message: "Unsupported or invalid player identity reference",
+    });
+};
+
 export const gameSessionCreationSchema = z
   .object({
     creationId: z.uuid(),
@@ -18,7 +32,8 @@ export const gameSessionCreationSchema = z
     state: snapshotObject,
     results: snapshotObject.nullable(),
   })
-  .strict();
+  .strict()
+  .superRefine(identityOnly);
 
 export const gameSessionMutationSchema = z
   .object({
@@ -29,4 +44,5 @@ export const gameSessionMutationSchema = z
     state: snapshotObject,
     results: snapshotObject.nullable(),
   })
-  .strict();
+  .strict()
+  .superRefine(identityOnly);

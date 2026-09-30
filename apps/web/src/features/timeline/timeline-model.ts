@@ -9,6 +9,7 @@ export interface TimelineText {
   readonly t: (key: TimelineConsoleMessageKey, values?: MessageValues) => string;
   readonly formatList: (values: readonly string[]) => string;
   readonly formatTime: (value: Date | string) => string;
+  readonly playerName?: (id: string) => string | undefined;
 }
 
 const interpolate = (template: string, values: MessageValues): string =>
@@ -16,7 +17,7 @@ const interpolate = (template: string, values: MessageValues): string =>
     values[name] === undefined ? token : String(values[name]),
   );
 
-const englishTimelineText: TimelineText = {
+export const englishTimelineText: TimelineText = {
   t: (key, values = {}) => {
     const message: Message = timelineConsoleMessages.en[key];
     const template =
@@ -247,8 +248,8 @@ const playerLabel = (frame: ReplayFrame, value: unknown, text: TimelineText): st
   const player =
     frame.after.players.find((candidate) => candidate.seat === seat) ??
     frame.before.players.find((candidate) => candidate.seat === seat);
-  const name = typeof player?.name === "string" ? player.name.trim() : "";
-  return name.length > 0 ? name : text.t("Seat {seat}", { seat });
+  if (player === undefined) return text.t("Seat {seat}", { seat });
+  return text.playerName?.(player.id) ?? text.t("Anonymous player");
 };
 
 const humanizeEventType = (eventType: string): string => {

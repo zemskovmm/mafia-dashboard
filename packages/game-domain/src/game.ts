@@ -43,7 +43,8 @@ export const createGame = (
       throw new Error(`Seat ${player.seat} does not have a role`);
     }
     return {
-      ...player,
+      id: player.id,
+      seat: player.seat,
       role,
       team: getRoleTeam(role),
       status: "active",

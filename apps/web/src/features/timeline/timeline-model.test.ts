@@ -2,7 +2,20 @@ import { describe, expect, it } from "vitest";
 import type { ReplayFrame } from "@mafia/game-domain";
 import { timelineConsoleMessages } from "../../i18n/messages/timeline-console.js";
 import { createSampleGameHistory } from "./sample-game-data.js";
-import { buildTimeline } from "./timeline-model.js";
+import {
+  buildTimeline as buildTimelineModel,
+  englishTimelineText,
+  type TimelineText,
+} from "./timeline-model.js";
+import { namedProfiles } from "../../test-player-directory.js";
+
+const profiles = namedProfiles("sample-player-");
+const withNames = (text: TimelineText = englishTimelineText): TimelineText => ({
+  ...text,
+  playerName: (id) => profiles.find((profile) => profile.id === id)?.nickname,
+});
+const buildTimeline = (frames: Parameters<typeof buildTimelineModel>[0], text?: TimelineText) =>
+  buildTimelineModel(frames, withNames(text));
 
 const russianTimelineText = {
   t: (key: string, values: Readonly<Record<string, string | number>> = {}) => {
@@ -175,22 +188,20 @@ describe("replay-frame timeline model", () => {
     expect(timeline.markers.some(({ eventId }) => eventId === inactiveEntry?.id)).toBe(false);
   });
 
-  it("falls back to seat labels when a replay frame has a blank player name", () => {
+  it("falls back to an anonymous label when a profile is unavailable, without changing replay frames", () => {
     const nomination = createSampleGameHistory().frames.find(
       ({ entry }) => entry.type === "player.nominated",
     )!;
-    const blankSeatSevenName = (players: ReplayFrame["after"]["players"]) =>
-      players.map((player) => (player.seat === 7 ? { ...player, name: "   " } : player));
-    const namelessFrame: ReplayFrame = {
-      ...nomination,
-      before: { ...nomination.before, players: blankSeatSevenName(nomination.before.players) },
-      after: { ...nomination.after, players: blankSeatSevenName(nomination.after.players) },
+    const missingProfile: TimelineText = {
+      ...withNames(),
+      playerName: (id) => (id === "sample-player-7" ? undefined : withNames().playerName?.(id)),
     };
 
-    expect(buildTimeline([namelessFrame]).markers[0]).toMatchObject({
-      label: "Seat 7 set for voting",
-      ariaLabel: "Nomination: Player 1 set Seat 7 for voting",
+    expect(buildTimelineModel([nomination], missingProfile).markers[0]).toMatchObject({
+      label: "Anonymous player set for voting",
+      ariaLabel: "Nomination: Player 1 set Anonymous player for voting",
     });
+    expect(nomination.before.players[6]).not.toHaveProperty("name");
   });
 
   it("uses a generic accessible marker instead of throwing for a malformed payload", () => {

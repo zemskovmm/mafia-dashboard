@@ -1,4 +1,9 @@
 import { spawnSync } from "node:child_process";
+import { mkdirSync } from "node:fs";
+import { resolve } from "node:path";
+
+const evidenceDir = resolve(process.env.UI_MATRIX_EVIDENCE_DIR ?? ".AI/plan-09-matrix");
+mkdirSync(evidenceDir, { recursive: true });
 
 const cases = [
   { name: "laptop-1366x768", browser: "chromium", width: 1366, height: 768 },
@@ -18,8 +23,9 @@ for (const testCase of cases) {
       UI_HEADER_ONLY: "1",
       UI_HARDENING_ONLY: "1",
       UI_VERIFY_VGPU: testCase.browser === "webkit" ? "1" : "0",
-      UI_SCREENSHOT: `/tmp/mafia-dashboard-${testCase.name}-setup.png`,
-      UI_TABLE_SCREENSHOT: `/tmp/mafia-dashboard-${testCase.name}-table.png`,
+      UI_SCREENSHOT: resolve(evidenceDir, `${testCase.name}-setup.png`),
+      UI_TABLE_SCREENSHOT: resolve(evidenceDir, `${testCase.name}-table.png`),
+      UI_SIDE_PANEL_SCREENSHOT: resolve(evidenceDir, `${testCase.name}-rail.png`),
     },
     stdio: "inherit",
   });

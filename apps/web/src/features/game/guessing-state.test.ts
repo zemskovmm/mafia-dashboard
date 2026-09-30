@@ -13,9 +13,7 @@ import { isGuessingState } from "./guessing-state.js";
 import { isCriticalState } from "./critical-state.js";
 
 let setup = beginRoleDraw(
-  createSetup(
-    Array.from({ length: 10 }, (_, i) => ({ id: `p-${i}`, name: `Player ${i}`, seat: i + 1 })),
-  ),
+  createSetup(Array.from({ length: 10 }, (_, i) => ({ id: `p-${i}`, seat: i + 1 }))),
   createSeededRandom(13),
 );
 for (let seat = 1; seat <= 10; seat += 1) setup = drawRoleForSeat(setup, seat);

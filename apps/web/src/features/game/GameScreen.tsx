@@ -16,6 +16,7 @@ import type { CanonicalGameEventDraft, GameState } from "@mafia/game-domain";
 import { useMessages, type FeatureI18n } from "../../i18n/I18nProvider.js";
 import { gameMessages, type GameMessageKey } from "../../i18n/messages/game.js";
 import { NightStage } from "../night/NightStage.js";
+import { usePlayerDisplayName } from "../players/player-display.js";
 import { GameTable } from "../table/GameTable.js";
 import { isCriticalState } from "./critical-state.js";
 import { isGuessingState } from "./guessing-state.js";
@@ -125,6 +126,7 @@ export const GameScreen = ({
   clubName,
 }: GameScreenProps) => {
   const { t, formatList } = useMessages(gameMessages);
+  const displayName = usePlayerDisplayName();
   const displayGameName = gameName ?? t("game.table");
   const [swipedSeat, setSwipedSeat] = useState<number | null>(null);
   const currentSeat = game.turnOrder[game.currentTurnIndex];
@@ -169,7 +171,7 @@ export const GameScreen = ({
       <button
         type="button"
         className="table-swipe-red-card"
-        aria-label={t("game.redCard", { name: swipedPlayer.name })}
+        aria-label={t("game.redCard", { name: displayName(swipedPlayer) })}
         onClick={() => {
           setSwipedSeat(null);
           if (onAcceptedEvent !== undefined) {
@@ -192,7 +194,7 @@ export const GameScreen = ({
           }
         }}
       >
-        {t("game.redCard", { name: swipedPlayer.name })}
+        {t("game.redCard", { name: displayName(swipedPlayer) })}
       </button>
     ) : undefined;
 
@@ -302,11 +304,10 @@ export const GameScreen = ({
     }
     if (game.phase === "goodbye-speech") {
       const names = formatList(
-        (game.goodbyeSeats ?? []).map(
-          (seat) =>
-            game.players.find((player) => player.seat === seat)?.name ??
-            t("utility.seat", { seat }),
-        ),
+        (game.goodbyeSeats ?? []).map((seat) => {
+          const player = game.players.find((candidate) => candidate.seat === seat);
+          return player === undefined ? t("utility.seat", { seat }) : displayName(player);
+        }),
       );
       return (
         <div className="table-check-center">
@@ -333,7 +334,11 @@ export const GameScreen = ({
       return (
         <div className="day-center-stack">
           <span className="table-prompt">{t("game.currentSpeaker")}</span>
-          <strong>{currentPlayer?.name ?? t("game.waitingForActivePlayer")}</strong>
+          <strong>
+            {currentPlayer === undefined
+              ? t("game.waitingForActivePlayer")
+              : displayName(currentPlayer)}
+          </strong>
         </div>
       );
     }
@@ -341,7 +346,9 @@ export const GameScreen = ({
       return (
         <div className="day-center-stack">
           <span className="table-prompt">{t("game.carCrashSpeech")}</span>
-          <strong>{currentPlayer?.name ?? t("game.waitingForNominee")}</strong>
+          <strong>
+            {currentPlayer === undefined ? t("game.waitingForNominee") : displayName(currentPlayer)}
+          </strong>
         </div>
       );
     }
@@ -350,8 +357,7 @@ export const GameScreen = ({
 
   const tableAdvance = (() => {
     if (mode === "preview") return undefined;
-    if (game.phase === "draw" || game.phase === "cancelled") return undefined;
-    if (game.phase === "finished") {
+    if (game.phase === "finished" || game.phase === "draw" || game.phase === "cancelled") {
       return (
         <button type="button" disabled={finishGameState !== "ready"} onClick={onFinishGame}>
           {finishGameState === "saving"
@@ -467,6 +473,7 @@ export const GameScreen = ({
     game.phase.startsWith("night-")
       ? "night"
       : "day";
+  const effectivePrivacyHidden = privacyHidden && tableCycle === "day";
 
   return (
     <main
@@ -494,7 +501,7 @@ export const GameScreen = ({
           <div
             className="team-counts"
             aria-label={
-              privacyHidden
+              effectivePrivacyHidden
                 ? t("game.activeTeamCountsHidden")
                 : t("game.activeCitizensAndMafia", {
                     citizens: activeCitizens,
@@ -504,13 +511,13 @@ export const GameScreen = ({
           >
             <span className="team-count-values">
               <span>
-                {t("game.citizens")} {privacyHidden ? "?" : activeCitizens}
+                {t("game.citizens")} {effectivePrivacyHidden ? "?" : activeCitizens}
               </span>
               <span>
-                {t("game.mafia")} {privacyHidden ? "?" : activeMafia}
+                {t("game.mafia")} {effectivePrivacyHidden ? "?" : activeMafia}
               </span>
             </span>
-            {!privacyHidden && isCriticalState(game) ? (
+            {!effectivePrivacyHidden && isCriticalState(game) ? (
               <span className="critical-state-pill" role="status" aria-label={endgameLabel}>
                 {endgameLabel}
               </span>
@@ -519,9 +526,10 @@ export const GameScreen = ({
           {mode === "preview" ? (
             <GameTable
               hostName={hostName}
-              privacyHidden={privacyHidden}
+              privacyHidden={effectivePrivacyHidden}
               seats={game.players.map((player) => ({
                 ...player,
+                name: displayName(player),
                 current:
                   player.seat === currentPlayer?.seat ||
                   game.checkResult?.targetSeat === player.seat,
@@ -542,7 +550,7 @@ export const GameScreen = ({
             <VotingStage
               game={game}
               hostName={hostName}
-              privacyHidden={privacyHidden}
+              privacyHidden={effectivePrivacyHidden}
               onSeatSwipe={disciplineAvailable ? revealDisciplineAction : undefined}
               swipeAction={swipeAction}
               onDismissSwipeAction={() => setSwipedSeat(null)}
@@ -561,7 +569,7 @@ export const GameScreen = ({
             <NightStage
               game={game}
               hostName={hostName}
-              privacyHidden={privacyHidden}
+              privacyHidden={effectivePrivacyHidden}
               onSeatSwipe={disciplineAvailable ? revealDisciplineAction : undefined}
               swipeAction={swipeAction}
               onDismissSwipeAction={() => setSwipedSeat(null)}
@@ -572,13 +580,13 @@ export const GameScreen = ({
           ) : (
             <GameTable
               hostName={hostName}
-              privacyHidden={privacyHidden}
+              privacyHidden={effectivePrivacyHidden}
               onSeatSwipe={disciplineAvailable ? revealDisciplineAction : undefined}
               swipeAction={swipeAction}
               onDismissSwipeAction={() => setSwipedSeat(null)}
               seats={game.players.map((player) => ({
                 seat: player.seat,
-                name: player.name,
+                name: displayName(player),
                 role: player.role,
                 status: player.status,
                 mafiaShooter:

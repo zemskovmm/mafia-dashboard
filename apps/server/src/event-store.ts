@@ -2,6 +2,7 @@ import type { Pool } from "pg";
 import { initializeSchema } from "./initialize-schema.js";
 import { DEFAULT_CLUB_ID } from "./club-store.js";
 import { isSecretGameEventType } from "@mafia/game-domain";
+import { assertSupportedGame } from "./game-session-identity.js";
 
 export interface GameEvent {
   readonly gameId: string;
@@ -70,6 +71,7 @@ export class EventStore {
         ORDER BY sequence ASC`,
       [clubId, gameId],
     );
+    assertSupportedGame({ events: result.rows.map(({ payload }) => ({ payload })) }, null);
     return result.rows.map((row) => {
       const event = mapRow(row);
       if (options.includeSecrets) return event;

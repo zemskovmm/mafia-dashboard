@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { render, screen, within } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -13,6 +13,7 @@ import {
   createSetup,
   drawRoleForSeat,
   nominate,
+  selectVotingCandidate,
   startVoting,
 } from "@mafia/game-domain";
 import type { CanonicalGameEventDraft, GameState, PlayerInput } from "@mafia/game-domain";
@@ -20,11 +21,14 @@ import { I18nProvider } from "../../i18n/I18nProvider.js";
 import { VotingStage } from "./VotingStage.js";
 import { GameUtilityPanels } from "../game/GameUtilityPanels.js";
 import { expectServerAcceptsEvent } from "../../test-game-event-contract.js";
+import { namedProfiles, renderWithProfiles } from "../../test-player-directory.js";
+
+const render = (ui: Parameters<typeof renderWithProfiles>[0]) =>
+  renderWithProfiles(ui, namedProfiles("p-"));
 
 const votingGame = (): GameState => {
   const players: PlayerInput[] = Array.from({ length: 10 }, (_, index) => ({
     id: `p-${index + 1}`,
-    name: `Player ${index + 1}`,
     seat: index + 1,
   }));
   let setup = beginRoleDraw(createSetup(players), createSeededRandom(9));
@@ -52,12 +56,65 @@ const Harness = ({
         onResolved={onResolved}
         onEvent={() => undefined}
       />
-      {showUtilities ? <GameUtilityPanels game={game} /> : null}
+      {showUtilities ? (
+        <GameUtilityPanels
+          game={game}
+          onSelectVotingCandidate={(seat) =>
+            setGame((current) => selectVotingCandidate(current, seat))
+          }
+        />
+      ) : null}
     </>
   );
 };
 
 describe("VotingStage", () => {
+  it("does not enable Finish for a full-looking but invalid ballot", () => {
+    const game = votingGame();
+    const invalid = {
+      ...game,
+      voteAssignments: Object.fromEntries(game.players.map(({ seat }) => [seat, 9])),
+    };
+    render(
+      <VotingStage
+        game={invalid}
+        onGameChange={() => undefined}
+        onResolved={() => undefined}
+        onEvent={() => undefined}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Finish voting" })).toBeDisabled();
+  });
+
+  it("submits an explicit completed ballot only once even if Finish is clicked twice", async () => {
+    const user = userEvent.setup();
+    const game = votingGame();
+    const complete = {
+      ...game,
+      voteAssignments: Object.fromEntries(game.players.map(({ seat }) => [seat, 4])),
+    };
+    const onAcceptedEvent = vi.fn();
+    render(
+      <VotingStage
+        game={complete}
+        onGameChange={() => undefined}
+        onResolved={() => undefined}
+        onEvent={() => undefined}
+        onAcceptedEvent={onAcceptedEvent}
+      />,
+    );
+    const finish = screen.getByRole("button", { name: "Finish voting" });
+    await user.click(finish);
+    await user.click(finish);
+    expect(onAcceptedEvent).toHaveBeenCalledTimes(1);
+    expect(onAcceptedEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "voting.resolved",
+        payload: expect.objectContaining({ voteAssignments: complete.voteAssignments }),
+      }),
+    );
+  });
+
   it("highlights the candidate only in voting order while board highlights track votes", async () => {
     const user = userEvent.setup();
     render(<Harness onResolved={() => undefined} showUtilities />);
@@ -141,6 +198,7 @@ describe("VotingStage", () => {
     expect(screen.getByText("#4 Player 4")).toBeInTheDocument();
     expect(screen.getByText("0 голосов")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Следующий кандидат" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Завершить голосование" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Пропустить голосование" })).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Проголосовать игроком Player 1 за Player 4" }),
@@ -424,7 +482,7 @@ describe("VotingStage", () => {
     };
     render(<VotingStage {...props} game={tied} />);
 
-    await user.click(screen.getByRole("button", { name: /resolve voting/i }));
+    await user.click(screen.getByRole("button", { name: /finish voting/i }));
     expect(onGameChange).toHaveBeenCalledWith(
       expect.objectContaining({
         phase: "car-crash",
@@ -464,7 +522,7 @@ describe("VotingStage", () => {
         onEvent={() => undefined}
       />,
     );
-    await user.click(screen.getByRole("button", { name: "Resolve voting" }));
+    await user.click(screen.getByRole("button", { name: "Finish voting" }));
 
     expect(onGameChange).toHaveBeenCalledWith(
       expect.objectContaining({ phase: "car-crash-skipped", carCrashSeats: activeSeats }),
@@ -566,15 +624,17 @@ describe("VotingStage", () => {
     expect(screen.getByText("0 votes")).toBeInTheDocument();
   });
 
-  it("keeps voting on the table and gives the last candidate every remaining vote", async () => {
+  it("corrects automatic votes and finishes a complete ballot from an earlier nominee", async () => {
     const user = userEvent.setup();
     const onResolved = vi.fn<(game: GameState, seats: readonly number[]) => void>();
-    render(<Harness onResolved={onResolved} />);
+    render(<Harness onResolved={onResolved} showUtilities />);
 
     expect(screen.getByRole("region", { name: "Mafia table" })).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "Voting candidate" })).toHaveTextContent(
       "#4 Player 4",
     );
+    const finish = screen.getByRole("button", { name: "Finish voting" });
+    expect(finish).toBeDisabled();
     await user.click(screen.getByRole("button", { name: /vote as player 4 for player 4/i }));
     const firstSelected = screen.getByRole("button", { name: /player 4 voted for seat 4/i });
     expect(firstSelected).toHaveClass("is-inactive", "is-voting-highlight");
@@ -604,10 +664,19 @@ describe("VotingStage", () => {
     );
     expect(screen.getByText("3 votes")).toBeInTheDocument();
     await user.click(autoAssignedVoters[0]!);
-    expect(screen.getAllByRole("button", { name: /voted for seat 6/i })).toHaveLength(3);
-    expect(screen.getByRole("button", { name: /resolve voting/i })).toBeEnabled();
-    await user.click(screen.getByRole("button", { name: /resolve voting/i }));
+    expect(screen.getAllByRole("button", { name: /voted for seat 6/i })).toHaveLength(2);
+    expect(finish).toBeDisabled();
+    const order = screen.getByRole("region", { name: "Voting order" });
+    await user.click(within(order).getByRole("button", { name: /player 4/i }));
+    expect(finish).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: /vote as player 8 for player 4/i }));
+    expect(finish).toBeEnabled();
+    await user.click(finish);
 
-    expect(onResolved).toHaveBeenCalledWith(expect.any(Object), [4]);
+    expect(onResolved).toHaveBeenCalledWith(
+      expect.objectContaining({ voteAssignments: expect.objectContaining({ 8: 4 }) }),
+      [4],
+    );
+    expect(onResolved).toHaveBeenCalledTimes(1);
   });
 });

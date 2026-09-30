@@ -26,7 +26,6 @@ const SAMPLE_STARTED_AT = Date.UTC(2026, 7, 24, 18, 0, 0);
 const samplePlayers = (): readonly PlayerInput[] =>
   Array.from({ length: 10 }, (_, index) => ({
     id: `sample-player-${index + 1}`,
-    name: `Player ${index + 1}`,
     seat: index + 1,
   }));
 

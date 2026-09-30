@@ -122,7 +122,8 @@ export interface GameSessionState {
   readonly setup: unknown | null;
   readonly game: unknown | null;
   readonly hostPlayerId: string | null;
-  readonly hostName: string | null;
+  /** Older empty snapshots may contain null; current saves omit this field. */
+  readonly hostName?: null;
   readonly playlistId: string;
   readonly log: readonly unknown[];
   readonly undoHistory: readonly unknown[];
@@ -155,7 +156,7 @@ export interface ActiveGameSessionSummary {
   readonly gameId: string;
   readonly name: string;
   readonly revision: number;
-  readonly hostName: string | null;
+  readonly hostPlayerId: string | null;
   readonly phase: string;
   readonly day: number;
   readonly updatedAt: string;
@@ -178,7 +179,7 @@ export interface CompletedGameSessionSummary {
   readonly gameId: string;
   readonly name: string;
   readonly revision: number;
-  readonly hostName: string | null;
+  readonly hostPlayerId: string | null;
   readonly outcome: "red" | "black" | "draw" | "cancelled";
   readonly winner: "red" | "black" | null;
   readonly reason: string | null;

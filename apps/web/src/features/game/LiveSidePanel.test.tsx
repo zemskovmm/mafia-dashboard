@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import {
   advanceSetupPhase,
@@ -11,11 +11,14 @@ import {
 } from "@mafia/game-domain";
 import type { GameState, PlayerInput } from "@mafia/game-domain";
 import { LiveSidePanel } from "./LiveSidePanel.js";
+import { namedProfiles, renderWithProfiles } from "../../test-player-directory.js";
+
+const render = (ui: Parameters<typeof renderWithProfiles>[0]) =>
+  renderWithProfiles(ui, namedProfiles("player-"));
 
 const createDayGame = (): GameState => {
   const players: PlayerInput[] = Array.from({ length: 10 }, (_, index) => ({
     id: `player-${index + 1}`,
-    name: `Player ${index + 1}`,
     seat: index + 1,
   }));
   let setup = beginRoleDraw(createSetup(players), createSeededRandom(13));

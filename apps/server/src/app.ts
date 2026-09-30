@@ -7,6 +7,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import type { Pool } from "pg";
 import { z } from "zod";
 import { EventStore } from "./event-store.js";
+import { InvalidGameIdentityError, UnsupportedGameFormatError } from "./game-session-identity.js";
 import { DeletedGameError } from "./game-lifecycle.js";
 import {
   GameSessionNotFoundError,
@@ -121,6 +122,9 @@ const validationFailure = (issues: readonly z.core.$ZodIssue[]) => ({
 });
 
 const sendGameSessionMutationError = (reply: FastifyReply, error: unknown): FastifyReply => {
+  if (error instanceof UnsupportedGameFormatError || error instanceof InvalidGameIdentityError) {
+    return reply.code(409).send({ error: error.code });
+  }
   if (error instanceof GameSessionNotFoundError) {
     return reply.code(404).send({ error: error.code });
   }
@@ -685,35 +689,48 @@ export const buildApp = async ({
   });
 
   app.get("/api/game-sessions", async (request, reply) => {
-    const clubId = await selectedManagerClub(request, reply);
+    const clubId = await selectedClub(request, reply);
     if (clubId === null) return;
     const query = gameSessionListQuery.safeParse(request.query);
     if (!query.success) return reply.code(400).send(validationFailure(query.error.issues));
-    return {
-      sessions:
-        query.data.status === "completed"
-          ? await gameSessionStore.listCompleted(clubId, {
-              ...(query.data.from === undefined ? {} : { from: query.data.from }),
-              ...(query.data.to === undefined ? {} : { to: query.data.to }),
-              ...(query.data.playerId === undefined ? {} : { playerId: query.data.playerId }),
-              ...(query.data.outcome === undefined ? {} : { outcome: query.data.outcome }),
-            })
-          : await gameSessionStore.listActive(clubId),
-    };
+    try {
+      return {
+        sessions:
+          query.data.status === "completed"
+            ? await gameSessionStore.listCompleted(clubId, {
+                ...(query.data.from === undefined ? {} : { from: query.data.from }),
+                ...(query.data.to === undefined ? {} : { to: query.data.to }),
+                ...(query.data.playerId === undefined ? {} : { playerId: query.data.playerId }),
+                ...(query.data.outcome === undefined ? {} : { outcome: query.data.outcome }),
+              })
+            : await gameSessionStore.listActive(clubId),
+      };
+    } catch (error) {
+      if (error instanceof UnsupportedGameFormatError)
+        return reply.code(409).send({ error: error.code });
+      throw error;
+    }
   });
 
   app.get("/api/game-sessions/:gameId", async (request, reply) => {
-    const clubId = await selectedManagerClub(request, reply);
+    const clubId = await selectedClub(request, reply);
     if (clubId === null) return;
     const params = gameIdParams.safeParse(request.params);
     if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
-    const session = await gameSessionStore.get(params.data.gameId, clubId);
+    let session;
+    try {
+      session = await gameSessionStore.get(params.data.gameId, clubId);
+    } catch (error) {
+      if (error instanceof UnsupportedGameFormatError)
+        return reply.code(409).send({ error: error.code });
+      throw error;
+    }
     if (session === null) return reply.code(404).send({ error: "game_session_not_found" });
     return { session };
   });
 
   app.post("/api/game-sessions", async (request, reply) => {
-    const clubId = await selectedManagerClub(request, reply);
+    const clubId = await selectedClub(request, reply);
     if (clubId === null) return;
     const body = gameSessionCreationSchema.safeParse(request.body);
     if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
@@ -726,7 +743,7 @@ export const buildApp = async ({
   });
 
   app.put("/api/game-sessions/:gameId", async (request, reply) => {
-    const clubId = await selectedManagerClub(request, reply);
+    const clubId = await selectedClub(request, reply);
     if (clubId === null) return;
     const params = gameIdParams.safeParse(request.params);
     const body = gameSessionMutationSchema.safeParse(request.body);
@@ -748,7 +765,7 @@ export const buildApp = async ({
   });
 
   app.delete("/api/game-sessions/:gameId", async (request, reply) => {
-    const clubId = await selectedManagerClub(request, reply);
+    const clubId = await selectedClub(request, reply);
     if (clubId === null) return;
     const params = gameIdParams.safeParse(request.params);
     if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
@@ -775,12 +792,21 @@ export const buildApp = async ({
       return reply.code(400).send(validationFailure(query.error.issues));
     }
 
-    const events = await store.read(
-      params.data.gameId,
-      { includeSecrets: query.data.visibility === "host" },
-      clubId,
-    );
-    return { events };
+    try {
+      // Older raw-event fixtures need not have an aggregate row. A present
+      // aggregate still must pass identity-only read admission first.
+      await gameSessionStore.get(params.data.gameId, clubId);
+      const events = await store.read(
+        params.data.gameId,
+        { includeSecrets: query.data.visibility === "host" },
+        clubId,
+      );
+      return { events };
+    } catch (error) {
+      if (error instanceof UnsupportedGameFormatError)
+        return reply.code(409).send({ error: error.code });
+      throw error;
+    }
   });
 
   if (staticDir !== undefined) {

@@ -88,8 +88,8 @@ const createRoster = async (firstHumanName?: string) => {
     ),
   );
   const inputs: PlayerInput[] = [
-    ...humans.map(({ id, nickname }, index) => ({ id, name: nickname, seat: index + 1 })),
-    { id: CASPER_PLAYER_ID, name: CASPER_NAME, seat: CASPER_SEAT },
+    ...humans.map(({ id }, index) => ({ id, seat: index + 1 })),
+    { id: CASPER_PLAYER_ID, seat: CASPER_SEAT },
   ];
   let setup = beginRoleDraw(createSetup(inputs), createSeededRandom(13));
   for (let seat = 1; seat <= 9; seat += 1) setup = drawRoleForSeat(setup, seat);
@@ -214,8 +214,7 @@ describe("Casper browser snapshot persistence", () => {
     });
     const state = {
       hostPlayerId: host.id,
-      hostName: host.nickname,
-      setup: { players: baseline.players.map(({ id, name, seat }) => ({ id, name, seat })) },
+      setup: { players: baseline.players.map(({ id, seat }) => ({ id, seat })) },
       game: baseline,
       initialGame: { replayVersion: 1, game: baseline },
       events: [entry],
@@ -407,7 +406,7 @@ describe("Casper browser snapshot persistence", () => {
         players.map((p) => (p.seat === 1 ? { ...p, playerId: CASPER_PLAYER_ID } : p)),
     ],
     ["incomplete roster", (players: Record<string, unknown>[]) => players.slice(1)],
-  ])("does not project results for Casper with %s", async (_label, alter) => {
+  ])("does not project results for Casper with %s", async (label, alter) => {
     const { host, baseline } = await createRoster();
     const created = await app.inject({
       method: "POST",
@@ -425,8 +424,9 @@ describe("Casper browser snapshot persistence", () => {
     )!;
     const results = { ...valid, players: alter(valid.players as Record<string, unknown>[]) };
     const saved = await save(gameId, { hostPlayerId: host.id, game: finished }, results);
-    expect(saved.statusCode, saved.body).toBe(200);
-    expect((await read(gameId)).json().session.results).toEqual(results);
+    const invalidIdentity = label === "wrong seat" || label === "duplicate synthetic ID";
+    expect(saved.statusCode, saved.body).toBe(invalidIdentity ? 400 : 200);
+    expect((await read(gameId)).json().session.results).toEqual(invalidIdentity ? null : results);
     expect(await rows("game_player_results", gameId)).toEqual([]);
     expect(
       (await pool.query("SELECT * FROM game_results WHERE game_id = $1", [gameId])).rows,
@@ -456,7 +456,7 @@ describe("Casper browser snapshot persistence", () => {
         players.map((p) => (p.seat === 1 ? { ...p, id: CASPER_PLAYER_ID } : p)),
     ],
     ["incomplete roster", (players: GameState["players"]) => players.slice(1)],
-  ])("does not project active seats for Casper with %s", async (_label, alter) => {
+  ])("does not project active seats for Casper with %s", async (label, alter) => {
     const { host, baseline } = await createRoster();
     const created = await app.inject({
       method: "POST",
@@ -471,8 +471,9 @@ describe("Casper browser snapshot persistence", () => {
       game: { ...baseline, players: alter(baseline.players) },
     };
     const saved = await save(gameId, state);
-    expect(saved.statusCode, saved.body).toBe(200);
-    expect((await read(gameId)).json().session.state).toEqual(state);
+    const invalidIdentity = label === "wrong seat" || label === "duplicate synthetic ID";
+    expect(saved.statusCode, saved.body).toBe(invalidIdentity ? 400 : 200);
+    expect((await read(gameId)).json().session.state).toEqual(invalidIdentity ? {} : state);
     expect(await rows("game_session_players", gameId)).toEqual([]);
   });
 
@@ -524,7 +525,13 @@ describe("Casper browser snapshot persistence", () => {
               p.seat === 1 ? { ...p, playerId: invalidId } : p,
             ),
           };
-      expect((await save(gameId, state, results)).statusCode).toBe(200);
+      const rejected = await save(gameId, state, results);
+      expect(rejected.statusCode, rejected.body).toBe(invalidHost ? 400 : 409);
+      expect((await read(gameId)).json().session).toMatchObject({
+        state: {},
+        results: null,
+        revision: 1,
+      });
       expect(await rows("game_session_players", gameId)).toEqual([]);
       expect(await rows("game_player_results", gameId)).toEqual([]);
       expect(

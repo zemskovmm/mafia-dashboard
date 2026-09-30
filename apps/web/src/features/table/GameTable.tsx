@@ -146,8 +146,12 @@ export const GameTable = ({
             !seat.inactive &&
             (seat.status ?? "active") === "active";
           const showRole = seat.role !== undefined && !privacyHidden;
-          const className = `table-card player-seat status-${seat.status ?? "active"}${seat.current ? " is-current" : ""}${seat.mafiaShooter ? " is-mafia-shooter" : ""}${seat.sheriffHighlight ? " is-sheriff-highlight" : ""}${seat.nightCheckHighlight ? " is-night-check-highlight" : ""}${seat.goodbyeHighlight ? " is-goodbye-highlight" : ""}${seat.votingHighlight ? " is-voting-highlight" : ""}${seat.dimmed ? " is-dimmed" : ""}${seat.inactive ? " is-inactive" : ""}${seat.provisionalDeceased ? " is-provisional-deceased" : ""}`;
-          const lightingKind = resolvePlayerLightingKind(seat);
+          const className = `table-card player-seat status-${seat.status ?? "active"}${seat.current ? " is-current" : ""}${seat.mafiaShooter && !privacyHidden ? " is-mafia-shooter" : ""}${seat.sheriffHighlight && !privacyHidden ? " is-sheriff-highlight" : ""}${seat.nightCheckHighlight && !privacyHidden ? " is-night-check-highlight" : ""}${seat.goodbyeHighlight ? " is-goodbye-highlight" : ""}${seat.votingHighlight ? " is-voting-highlight" : ""}${seat.dimmed && !privacyHidden ? " is-dimmed" : ""}${seat.inactive ? " is-inactive" : ""}${seat.provisionalDeceased ? " is-provisional-deceased" : ""}`;
+          const lightingKind = resolvePlayerLightingKind({
+            ...seat,
+            mafiaShooter: !privacyHidden && seat.mafiaShooter,
+            sheriffHighlight: !privacyHidden && seat.sheriffHighlight,
+          });
           const content = (
             <>
               <VgpuPlayerLightingCanvas kind={lightingKind} />

@@ -3,8 +3,14 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { CompletedGameSessionSummary, RemoteGameSession } from "../../api/client.js";
 import { I18nProvider } from "../../i18n/I18nProvider.js";
-import { GameTimelineScreen } from "./GameTimelineScreen.js";
+import { GameTimelineScreen as TimelineScreen } from "./GameTimelineScreen.js";
 import { createSampleGameHistory } from "./sample-game-data.js";
+import { namedProfiles } from "../../test-player-directory.js";
+
+const sampleProfiles = namedProfiles("sample-player-");
+const GameTimelineScreen = (props: React.ComponentProps<typeof TimelineScreen>) => (
+  <TimelineScreen {...props} players={props.players ?? sampleProfiles} />
+);
 
 const deferred = <T,>() => {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -20,7 +26,7 @@ const completedSummary = (gameId: string, name: string): CompletedGameSessionSum
   gameId,
   name,
   revision: 1,
-  hostName: `${name} host`,
+  hostPlayerId: null,
   outcome: "red",
   winner: "red",
   reason: null,
@@ -50,7 +56,7 @@ const canonicalSession = (
       setup: null,
       game: history.game,
       hostPlayerId: null,
-      hostName: summary.hostName,
+      hostName: null,
       playlistId: "",
       log: [],
       undoHistory: [],
@@ -66,6 +72,76 @@ const canonicalSession = (
 };
 
 describe("GameTimelineScreen", () => {
+  it("refreshes replay labels after rename and retirement without refetching or changing canonical history", async () => {
+    const user = userEvent.setup();
+    const summary = {
+      ...completedSummary("00000000-0000-4000-8000-000000000701", "Retained table"),
+      hostPlayerId: "sample-player-2",
+    };
+    const original = canonicalSession(summary);
+    const bytes = JSON.stringify(original.state);
+    const getSession = vi.fn(() => Promise.resolve(original));
+    const loaders = { listCompleted: () => Promise.resolve([summary]), getSession };
+    const props = {
+      clubId: "00000000-0000-4000-8000-000000000101",
+      onBack: () => undefined,
+      loaders,
+    };
+    const { rerender } = render(<GameTimelineScreen {...props} />);
+
+    await user.selectOptions(
+      await screen.findByRole("combobox", { name: "Completed game" }),
+      summary.gameId,
+    );
+    expect(
+      await screen.findByRole("button", { name: "Don checked Player 1: Sheriff" }),
+    ).toBeInTheDocument();
+    rerender(
+      <GameTimelineScreen
+        {...props}
+        players={sampleProfiles.map((profile) =>
+          profile.id === "sample-player-1"
+            ? { ...profile, nickname: "Renamed host-era player" }
+            : profile,
+        )}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: "Don checked Renamed host-era player: Sheriff" }),
+    ).toBeInTheDocument();
+    rerender(
+      <GameTimelineScreen
+        {...props}
+        players={sampleProfiles.filter(({ id }) => id !== "sample-player-1")}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: "Don checked Anonymous player: Sheriff" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Don checked Player 1: Sheriff" })).toBeNull();
+    expect(screen.getByText(/Player 2 ·/)).toBeInTheDocument();
+    rerender(
+      <GameTimelineScreen
+        {...props}
+        players={sampleProfiles.map((profile) =>
+          profile.id === "sample-player-2" ? { ...profile, nickname: "Renamed host" } : profile,
+        )}
+      />,
+    );
+    expect(screen.getByText(/Renamed host ·/)).toBeInTheDocument();
+    rerender(
+      <GameTimelineScreen
+        {...props}
+        players={sampleProfiles.filter(({ id }) => id !== "sample-player-2")}
+      />,
+    );
+    expect(screen.getByText(/Anonymous player ·/)).toBeInTheDocument();
+    expect(screen.queryByText(/Renamed host ·/)).toBeNull();
+    expect(getSession).toHaveBeenCalledOnce();
+    expect(JSON.stringify(original.state)).toBe(bytes);
+    expect(bytes).not.toContain("Player 1");
+  });
+
   it("opens an unfiltered completed game, clears filters back to the list, and reopens its replay", async () => {
     const user = userEvent.setup();
     const clubId = "00000000-0000-4000-8000-000000000101";
@@ -597,7 +673,7 @@ describe("GameTimelineScreen", () => {
                 setup: null,
                 game: null,
                 hostPlayerId: null,
-                hostName: selected.hostName,
+                hostName: null,
                 playlistId: "",
                 log: [],
                 undoHistory: [],
@@ -744,7 +820,7 @@ describe("GameTimelineScreen", () => {
         gameId: "00000000-0000-4000-8000-000000000701",
         name: "First",
         revision: 1,
-        hostName: "Host A",
+        hostPlayerId: null,
         outcome: "red" as const,
         winner: "red" as const,
         reason: null,
@@ -759,7 +835,7 @@ describe("GameTimelineScreen", () => {
         gameId: "00000000-0000-4000-8000-000000000702",
         name: "Second",
         revision: 1,
-        hostName: "Host B",
+        hostPlayerId: null,
         outcome: "black" as const,
         winner: "black" as const,
         reason: null,
@@ -800,7 +876,7 @@ describe("GameTimelineScreen", () => {
       gameId,
       name: "Legacy",
       revision: 5,
-      hostName: "Host",
+      hostPlayerId: null,
       outcome: "red" as const,
       winner: "red" as const,
       reason: null,
@@ -832,7 +908,7 @@ describe("GameTimelineScreen", () => {
                 setup: null,
                 game,
                 hostPlayerId: null,
-                hostName: "Host",
+                hostName: null,
                 playlistId: "",
                 log: [
                   {

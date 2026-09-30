@@ -352,12 +352,10 @@ export const SetupWizard = ({
     () =>
       selectedPlayerIds.flatMap((playerId, index) => {
         if (playerId === CASPER_PLAYER_ID && index === CASPER_SEAT - 1) {
-          return [{ id: CASPER_PLAYER_ID, name: CASPER_NAME, seat: CASPER_SEAT }];
+          return [{ id: CASPER_PLAYER_ID, seat: CASPER_SEAT }];
         }
         const player = selectablePlayers.find(({ id }) => id === playerId);
-        return player === undefined
-          ? []
-          : [{ id: player.id, name: player.nickname, seat: index + 1 }];
+        return player === undefined ? [] : [{ id: player.id, seat: index + 1 }];
       }),
     [selectablePlayers, selectedPlayerIds],
   );
@@ -422,7 +420,7 @@ export const SetupWizard = ({
       onStartGame();
       onEvent("setup.players-selected", {
         hostPlayerId,
-        players: players.map(({ id, name, seat }) => ({ id, name, seat })),
+        players: players.map(({ id, seat }) => ({ id, seat })),
       });
       onEvent("setup.role-draw-started", {});
     }
@@ -526,7 +524,11 @@ export const SetupWizard = ({
               hostName={hostPlayer?.nickname ?? t("setup.unknownHost")}
               seats={setup.players.map((player) => ({
                 seat: player.seat,
-                name: player.name,
+                name:
+                  player.id === CASPER_PLAYER_ID
+                    ? CASPER_NAME
+                    : (selectablePlayers.find(({ id }) => id === player.id)?.nickname ??
+                      t("player.anonymous")),
                 role: setup.assignments[player.seat],
               }))}
               seatActionLabel={(seat) =>

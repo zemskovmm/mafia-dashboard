@@ -1,6 +1,7 @@
 import type { Message } from "./types.js";
 
 const englishGameMessages = {
+  "player.anonymous": "Anonymous player",
   "available.close": "Close available players",
   "available.count": "{available} available · {registered} registered",
   "available.empty": "No matching players",
@@ -166,6 +167,7 @@ const englishGameMessages = {
 } as const satisfies Record<string, Message>;
 
 const russianGameMessages = {
+  "player.anonymous": "Анонимный игрок",
   "available.close": "Закрыть список доступных игроков",
   "available.count": "Доступно: {available} · всего зарегистрировано: {registered}",
   "available.empty": "Игроки не найдены",
