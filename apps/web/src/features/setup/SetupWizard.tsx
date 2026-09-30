@@ -51,6 +51,7 @@ export interface SetupWizardSessionState {
   readonly step: WizardStep | "music";
   readonly hostPlayerId?: string;
   readonly selectedPlayerIds: readonly string[];
+  readonly bestMoveEnabled?: boolean;
   readonly setup: SetupState | null;
 }
 

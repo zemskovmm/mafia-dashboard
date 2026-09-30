@@ -99,6 +99,163 @@ afterAll(async () => {
 });
 
 describe("server-backed game records", () => {
+  it("round-trips partial player setup, then role progress and settings on one unfinished game ID", async () => {
+    const players = new PlayerStore(pool);
+    const roster = await Promise.all(
+      Array.from({ length: 11 }, (_, index) =>
+        players.create({
+          nickname: `Setup ${index} ${randomUUID()}`,
+          consent: false,
+          firstName: null,
+          lastName: null,
+          email: null,
+        }),
+      ),
+    );
+    const hostId = roster[0]!.id;
+    const seatIds = roster.slice(1).map(({ id }) => id);
+    const selectedPlayerIds = Array.from({ length: 10 }, () => "");
+    selectedPlayerIds[0] = seatIds[0]!;
+    selectedPlayerIds[4] = seatIds[4]!;
+    const state = {
+      setup: {
+        step: "players",
+        hostPlayerId: "",
+        selectedPlayerIds,
+        setup: null,
+        bestMoveEnabled: false,
+      },
+      game: null,
+      hostPlayerId: null,
+      playlistId: "PL-setup-table",
+      log: [],
+      undoHistory: [],
+      undoBudget: 0,
+      initialGame: null,
+      events: [],
+      headEventId: null,
+      resetReturnEventId: null,
+      legacyLog: [],
+    };
+    const body = payload({ name: "Unfinished setup", state, results: null });
+    const created = await create(body);
+    expect(created.statusCode, created.body).toBe(201);
+    const gameId = created.json().gameId as string;
+    expect(created.json()).toMatchObject({
+      gameId,
+      revision: 1,
+      status: "active",
+      state,
+      results: null,
+    });
+
+    const active = await app.inject({ method: "GET", url: "/api/game-sessions?status=active" });
+    expect(active.statusCode, active.body).toBe(200);
+    expect(active.json().sessions).toMatchObject([
+      { gameId, name: "Unfinished setup", revision: 1, hostPlayerId: null, phase: "players" },
+    ]);
+    const detail = await app.inject({ method: "GET", url: `/api/game-sessions/${gameId}` });
+    expect(detail.statusCode, detail.body).toBe(200);
+    expect(detail.json().session).toMatchObject({ gameId, state, status: "active", results: null });
+    expect(detail.json().session.state.setup.selectedPlayerIds).toEqual(selectedPlayerIds);
+
+    // Clearing an assigned seat is an update, not a fresh game or a completed result.
+    const changedSeats = [...selectedPlayerIds];
+    changedSeats[0] = "";
+    changedSeats[1] = seatIds[1]!;
+    const editedState = { ...state, setup: { ...state.setup, selectedPlayerIds: changedSeats } };
+    const edited = await app.inject({
+      method: "PUT",
+      url: `/api/game-sessions/${gameId}`,
+      payload: { name: body.name, mutationId: randomUUID(), state: editedState, results: null },
+    });
+    expect(edited.statusCode, edited.body).toBe(200);
+    expect(edited.json()).toMatchObject({
+      gameId,
+      revision: 2,
+      status: "active",
+      state: editedState,
+      results: null,
+    });
+    const editedDetail = await app.inject({ method: "GET", url: `/api/game-sessions/${gameId}` });
+    expect(editedDetail.statusCode, editedDetail.body).toBe(200);
+    expect(editedDetail.json().session.state).toEqual(editedState);
+
+    const setup = drawRoleForSeat(
+      beginRoleDraw(
+        createSetup(seatIds.map((id, index) => ({ id, seat: index + 1 }))),
+        createSeededRandom(41),
+      ),
+      1,
+    );
+    expect(setup.assignments[1]).toBeDefined();
+    expect(setup.remainingRoles).toHaveLength(9);
+    const roleState = {
+      ...editedState,
+      hostPlayerId: hostId,
+      setup: {
+        step: "roles",
+        hostPlayerId: hostId,
+        selectedPlayerIds: seatIds,
+        setup,
+        bestMoveEnabled: false,
+      },
+    };
+    const roleSave = await app.inject({
+      method: "PUT",
+      url: `/api/game-sessions/${gameId}`,
+      payload: { name: body.name, mutationId: randomUUID(), state: roleState, results: null },
+    });
+    expect(roleSave.statusCode, roleSave.body).toBe(200);
+    expect(roleSave.json()).toMatchObject({
+      gameId,
+      revision: 3,
+      status: "active",
+      state: roleState,
+      results: null,
+    });
+    const resumed = await app.inject({ method: "GET", url: `/api/game-sessions/${gameId}` });
+    expect(resumed.statusCode, resumed.body).toBe(200);
+    expect(resumed.json().session).toMatchObject({
+      gameId,
+      revision: 3,
+      state: roleState,
+      status: "active",
+      results: null,
+    });
+    expect(resumed.json().session.state.setup.setup).toEqual(setup);
+    const listed = await app.inject({ method: "GET", url: "/api/game-sessions" });
+    expect(listed.statusCode, listed.body).toBe(200);
+    expect(listed.json().sessions).toMatchObject([
+      { gameId, revision: 3, hostPlayerId: hostId, phase: "roles" },
+    ]);
+    const history = await app.inject({ method: "GET", url: "/api/game-sessions?status=completed" });
+    expect(history.statusCode, history.body).toBe(200);
+    expect(history.json().sessions).toEqual([]);
+    const retry = await create(body);
+    expect(retry.statusCode, retry.body).toBe(200);
+    expect(retry.json()).toMatchObject({ gameId, revision: 3, duplicate: true, state: roleState });
+    const persisted = await pool.query(
+      `SELECT id, revision, status, state, results FROM game_sessions WHERE club_id = $1 AND id = $2`,
+      [DEFAULT_CLUB_ID, gameId],
+    );
+    expect(persisted.rows).toEqual([
+      { id: gameId, revision: 3, status: "active", state: roleState, results: null },
+    ]);
+    const projections = await pool.query(
+      `SELECT
+        (SELECT COUNT(*)::int FROM game_session_creations WHERE club_id = $1 AND creation_id = $2) AS creations,
+        (SELECT COUNT(*)::int FROM game_sessions WHERE club_id = $1) AS sessions,
+        (SELECT COUNT(*)::int FROM game_results WHERE club_id = $1 AND game_id = $3) AS results,
+        (SELECT COUNT(*)::int FROM game_player_results WHERE club_id = $1 AND game_id = $3) AS player_results,
+        (SELECT COUNT(*)::int FROM game_events WHERE club_id = $1 AND game_id = $3) AS events`,
+      [DEFAULT_CLUB_ID, body.creationId, gameId],
+    );
+    expect(projections.rows).toEqual([
+      { creations: 1, sessions: 1, results: 0, player_results: 0, events: 0 },
+    ]);
+  });
+
   it("rejects structured copied identities on create and save without changing accepted bytes", async () => {
     const accepted = await create(payload({ state: { arbitrary: "allowed" } }));
     expect(accepted.statusCode).toBe(201);

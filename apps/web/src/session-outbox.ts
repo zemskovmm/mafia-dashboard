@@ -361,11 +361,23 @@ export class GameSessionOutbox {
 
   public enqueue(name: string, state: GameSessionState, results: FinalGameResults | null): void {
     this.synchronizeDurableState();
-    if (this.envelope.removed || this.envelope.gameId === null) return;
+    if (
+      this.envelope.removed ||
+      (this.envelope.gameId === null && this.envelope.creationId === null)
+    )
+      return;
     if (!isCurrentGameSessionState(state)) throw new Error("Invalid current game session state");
-    const normalizedState = remapEventGameIds(state, this.envelope.gameId);
+    const normalizedState =
+      this.envelope.gameId === null ? state : remapEventGameIds(state, this.envelope.gameId);
     const current = { name, state: normalizedState, results };
     if (sameCurrent(this.envelope.current, current)) return;
+    if (this.envelope.gameId === null) {
+      // The pending POST uses the latest durable snapshot on retry. If it is
+      // already in flight, reconciliation after acknowledgment queues a PUT.
+      this.envelope = { ...this.envelope, current, failed: false, clearFailed: false };
+      this.persist();
+      return;
+    }
     const retained = this.flushPromise === null ? [] : this.envelope.outbox.slice(0, 1);
     this.envelope = {
       ...this.envelope,
@@ -390,6 +402,7 @@ export class GameSessionOutbox {
   public park(): void {
     this.synchronizeDurableState();
     this.assertStorageGuard();
+    if (this.isCreating) throw new Error("Game creation must finish before switching games");
     const identity = this.envelope.gameId ?? this.envelope.creationId;
     if (identity === null || this.envelope.current === null) return;
     const serialized = JSON.stringify(this.envelope);
@@ -456,6 +469,8 @@ export class GameSessionOutbox {
     this.synchronizeDurableState();
     const gameId = this.envelope.gameId;
     if (gameId === null) {
+      this.generation += 1;
+      this.flushPromise = null;
       this.envelope = emptyEnvelope(this.options.clubId);
       this.persist();
       return;
@@ -518,16 +533,32 @@ export class GameSessionOutbox {
         if (!isUuid(remote.gameId) || !isCurrentGameSessionState(remote.state)) {
           throw new Error("Invalid game creation response");
         }
+        const latest = this.envelope.current;
+        if (latest === null) throw new Error("Creation is missing its game snapshot");
+        const adopted = {
+          name: latest.name,
+          state: remapEventGameIds(latest.state, remote.gameId),
+          results: latest.results,
+        };
+        const acknowledged = { name: remote.name, state: remote.state, results: remote.results };
         this.envelope = {
           ...this.envelope,
           gameId: remote.gameId,
           creationId: null,
           revision: remote.revision,
-          current: {
-            name: remote.name,
-            state: remapEventGameIds(current.state, remote.gameId),
-            results: current.results,
-          },
+          current: adopted,
+          outbox: sameCurrent(acknowledged, adopted)
+            ? this.envelope.outbox
+            : [
+                ...this.envelope.outbox,
+                {
+                  kind: "snapshot",
+                  name: adopted.name,
+                  mutationId: this.options.createId(),
+                  state: adopted.state,
+                  results: adopted.results,
+                },
+              ],
           failed: false,
           legacyGameId: null,
         };

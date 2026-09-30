@@ -9,6 +9,7 @@ import {
 } from "react";
 import {
   applyGameEvent,
+  CASPER_PLAYER_ID,
   createGameLogEntry,
   hashGameState,
   isCasperPlayer,
@@ -288,6 +289,11 @@ const currentFullscreenElement = (): Element | null =>
 
 const defaultPlaylistId = import.meta.env.VITE_YOUTUBE_PLAYLIST_ID ?? "";
 
+const setupHumanPlayerIds = (setup: SetupWizardSessionState | null) =>
+  [setup?.hostPlayerId ?? "", ...(setup?.selectedPlayerIds ?? [])].filter(
+    (id) => id !== "" && id !== CASPER_PLAYER_ID,
+  );
+
 const hasSetupProgress = ({
   step,
   hostPlayerId,
@@ -472,8 +478,12 @@ export const ClubWorkspace = ({
   );
   const [players, setPlayers] = useState<readonly PlayerProfile[]>([]);
   const [playersLoaded, setPlayersLoaded] = useState(false);
-  const [availablePlayerIds, setAvailablePlayerIds] = useState<ReadonlySet<string>>(() =>
-    readAvailablePlayerIds(window.localStorage, club.id),
+  const [availablePlayerIds, setAvailablePlayerIds] = useState<ReadonlySet<string>>(
+    () =>
+      new Set([
+        ...readAvailablePlayerIds(window.localStorage, club.id),
+        ...setupHumanPlayerIds(initialState.setup),
+      ]),
   );
   const [playersError, setPlayersError] = useState(false);
   const [languageSaving, setLanguageSaving] = useState(false);
@@ -842,13 +852,12 @@ export const ClubWorkspace = ({
       resetReturnEventId,
       legacyLog,
     } as CurrentGameSessionState;
-    if (sessionSync.gameId === null) {
+    if (sessionSync.gameId === null && !sessionSync.isCreating) {
       if (
         !sessionSync.needsRemoteVerification &&
         !sessionSync.isRemoved &&
-        !sessionSync.isCreating &&
-        setupSession?.step === "roles" &&
-        setupSession.setup?.step === "role-draw"
+        setupSession !== null &&
+        hasSetupProgress(setupSession)
       ) {
         sessionSync.beginCreation(sessionName, snapshot, finalResults);
         sessionRetry.requestAutoSync();
@@ -1158,6 +1167,23 @@ export const ClubWorkspace = ({
   };
 
   const updatePlayerAvailability = (playerId: string, available: boolean) => {
+    if (
+      !available &&
+      game === null &&
+      setupSession !== null &&
+      (setupSession.hostPlayerId === playerId || setupSession.selectedPlayerIds.includes(playerId))
+    ) {
+      // The wizard is unmounted in the availability screen. Save deliberate
+      // removals now, rather than waiting for it to prune selections on return.
+      handleSetupSessionChange({
+        ...setupSession,
+        step: "players",
+        hostPlayerId:
+          setupSession.hostPlayerId === playerId ? "" : (setupSession.hostPlayerId ?? ""),
+        selectedPlayerIds: setupSession.selectedPlayerIds.map((id) => (id === playerId ? "" : id)),
+        setup: null,
+      });
+    }
     setAvailablePlayerIds((current) => {
       const next = new Set(current);
       if (available) next.add(playerId);
@@ -1230,11 +1256,19 @@ export const ClubWorkspace = ({
 
   const handleSetupSessionChange = useCallback(
     (next: SetupWizardSessionState) => {
-      if (sessionSync.isCreating || sessionSync.isRemoved) return;
+      if (sessionSync.isRemoved) return;
       // A local edit supersedes any GET that was started from the Manage drawer.
       resumeRequestRef.current += 1;
       phaseRef.current = setupPhase(next.step);
-      setSetupSession(hasSetupProgress(next) ? next : null);
+      setSetupSession((current) =>
+        hasSetupProgress(next) || current !== null
+          ? {
+              ...next,
+              bestMoveEnabled:
+                current?.bestMoveEnabled ?? next.bestMoveEnabled ?? club.bestMoveEnabled,
+            }
+          : null,
+      );
       const nextHostId = next.hostPlayerId;
       if (nextHostId === undefined || nextHostId === "") {
         setHostPlayerId(null);
@@ -1242,7 +1276,7 @@ export const ClubWorkspace = ({
       }
       setHostPlayerId(nextHostId);
     },
-    [sessionSync],
+    [club.bestMoveEnabled, sessionSync],
   );
 
   const applyRemoteSession = useCallback(
@@ -1288,6 +1322,9 @@ export const ClubWorkspace = ({
         restored.undoBudget ?? getRemainingUndoBudget(restored.events, restored.headEventId),
       );
       setSetupSession(restored.setup);
+      setAvailablePlayerIds(
+        (current) => new Set([...current, ...setupHumanPlayerIds(restored.setup)]),
+      );
       setHostPlayerId(restored.hostPlayerId);
       setPlaylistId(restored.playlistId);
       setFinalResults(current.results);
@@ -1309,6 +1346,10 @@ export const ClubWorkspace = ({
     setResumeGameId(gameId);
     setActiveSessionsError(false);
     try {
+      // An unacknowledged draft cannot be parked under its eventual server ID.
+      // Finish creation first; failures leave the latest editable setup active.
+      if (sessionSync.isCreating) await sessionSync.flush();
+      if (resumeRequestRef.current !== request || unavailableGameIdsRef.current.has(gameId)) return;
       const session = await getGameSession(gameId, club.id);
       if (resumeRequestRef.current !== request || unavailableGameIdsRef.current.has(gameId)) return;
       applyRemoteSession(session);
@@ -1389,9 +1430,12 @@ export const ClubWorkspace = ({
     syncRender,
   ]);
 
-  const startNewGame = (openAvailablePlayers = false) => {
+  const startNewGame = async (openAvailablePlayers = false) => {
     if (!window.confirm(t("startNewGameConfirmation"))) return;
+    const request = ++resumeRequestRef.current;
     try {
+      if (sessionSync.isCreating) await sessionSync.flush();
+      if (resumeRequestRef.current !== request) return;
       sessionSync.park();
     } catch (error) {
       reportError(error, { source: "persistence", context: "game-session.park" });
@@ -2327,7 +2371,7 @@ export const ClubWorkspace = ({
             key={setupInstanceKey}
             players={availablePlayersForSetup}
             playersLoading={!playersLoaded}
-            bestMoveEnabled={club.bestMoveEnabled}
+            bestMoveEnabled={setupSession?.bestMoveEnabled ?? club.bestMoveEnabled}
             showDevelopmentTools={isManager && devUnlocked && devModeEnabled}
             onPopulateDevelopmentPlayers={populateDevelopmentPlayers}
             onOpenAvailablePlayers={() => setAvailabilityScreenOpen(true)}

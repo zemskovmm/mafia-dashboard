@@ -737,7 +737,7 @@ describe("GameSessionOutbox", () => {
         clearingGameId: null,
       }),
     );
-    const create = vi.fn().mockResolvedValue(remote());
+    const create = vi.fn().mockResolvedValue({ ...remote(), name: "Unsent table" });
     const outbox = new GameSessionOutbox({
       storage: localStorage,
       clubId,
@@ -751,6 +751,254 @@ describe("GameSessionOutbox", () => {
     await outbox.flush();
     expect(create).toHaveBeenCalledWith({ creationId, name: "Unsent table", state, results: null });
   });
+  it("persists pending-creation edits and saves the latest snapshot after a late POST", async () => {
+    const localStorage = storage();
+    const posting = deferred<RemoteGameSession>();
+    const create = vi.fn().mockReturnValue(posting.promise);
+    const save = vi.fn().mockResolvedValue({ revision: 2 });
+    const outbox = new GameSessionOutbox({
+      storage: localStorage,
+      clubId,
+      createId: ids(creationId, mutationId),
+      create,
+      save,
+    });
+    const first = { ...state, playlistId: "initial" };
+    const latest = eventState(1, creationId);
+    const results = {
+      hostPlayerId: setupPlayers[0]!.id,
+      outcome: "cancelled" as const,
+      winner: null,
+      reason: "test",
+      playedAt: "2026-09-26T20:00:00.000Z",
+      players: [],
+    };
+    outbox.beginCreation("Initial", first, null);
+    const flushing = outbox.flush();
+    outbox.enqueue("Middle", { ...state, playlistId: "middle" }, null);
+    outbox.enqueue("Latest", latest, results);
+    expect(readPersisted(localStorage)).toMatchObject({
+      gameId: null,
+      creationId,
+      current: { name: "Latest", state: latest, results },
+    });
+    expect(outbox.pendingCount).toBeGreaterThan(0);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledWith({
+      creationId,
+      name: "Initial",
+      state: first,
+      results: null,
+    });
+
+    posting.resolve({ ...remote(), name: "Initial", state: first });
+    await flushing;
+    const mapped = {
+      ...latest,
+      events: latest.events.map((event) => ({ ...event, gameId: serverGameId })),
+    };
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save).toHaveBeenCalledWith(serverGameId, {
+      kind: "snapshot",
+      name: "Latest",
+      mutationId,
+      state: mapped,
+      results,
+    });
+    expect(outbox.current).toEqual({ name: "Latest", state: mapped, results });
+    expect(readPersisted(localStorage)).toMatchObject({
+      gameId: serverGameId,
+      creationId: null,
+      revision: 2,
+      current: { name: "Latest", state: mapped, results },
+      outbox: [],
+    });
+    const reloaded = new GameSessionOutbox({
+      storage: localStorage,
+      clubId,
+      createId: vi.fn(),
+      create,
+      save,
+    });
+    expect(reloaded.current).toEqual(outbox.current);
+    expect(reloaded.pendingCount).toBe(0);
+  });
+
+  it("retries the latest pending draft with one creation ID across reload, then updates a stale duplicate", async () => {
+    const localStorage = storage();
+    const create = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce({
+        ...remote(),
+        name: "Initial",
+        state: { ...state, playlistId: "initial" },
+        duplicate: true,
+      });
+    const save = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("save offline"))
+      .mockResolvedValueOnce({ revision: 2 });
+    const first = new GameSessionOutbox({
+      storage: localStorage,
+      clubId,
+      createId: ids(creationId, mutationId),
+      create,
+      save,
+    });
+    first.beginCreation("Initial", { ...state, playlistId: "initial" }, null);
+    await expect(first.flush()).rejects.toThrow("offline");
+    first.enqueue("Edited", { ...state, playlistId: "edited" }, null);
+    expect(readPersisted(localStorage)).toMatchObject({
+      gameId: null,
+      creationId,
+      current: { name: "Edited" },
+    });
+
+    const reloaded = new GameSessionOutbox({
+      storage: localStorage,
+      clubId,
+      createId: () => mutationId,
+      create,
+      save,
+    });
+    reloaded.enqueue("Latest", { ...state, playlistId: "latest" }, null);
+    await expect(reloaded.flush()).rejects.toThrow("save offline");
+    expect(create).toHaveBeenNthCalledWith(2, {
+      creationId,
+      name: "Latest",
+      state: { ...state, playlistId: "latest" },
+      results: null,
+    });
+    expect(readPersisted(localStorage)).toMatchObject({
+      gameId: serverGameId,
+      creationId: null,
+      failed: true,
+      current: { name: "Latest", state: { ...state, playlistId: "latest" } },
+      outbox: [{ mutationId, name: "Latest" }],
+    });
+    const afterSaveFailure = new GameSessionOutbox({
+      storage: localStorage,
+      clubId,
+      createId: vi.fn(),
+      create,
+      save,
+    });
+    await afterSaveFailure.flush();
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(save.mock.calls[0]).toEqual(save.mock.calls[1]);
+    expect(afterSaveFailure.current?.name).toBe("Latest");
+    expect(afterSaveFailure.pendingCount).toBe(0);
+  });
+
+  it("ignores a late creation response after clearing the unacknowledged draft", async () => {
+    const localStorage = storage();
+    const posting = deferred<RemoteGameSession>();
+    const save = vi.fn();
+    const outbox = new GameSessionOutbox({
+      storage: localStorage,
+      clubId,
+      createId: () => creationId,
+      create: () => posting.promise,
+      save,
+    });
+    outbox.beginCreation("Discard", state, null);
+    const flushing = outbox.flush();
+    await outbox.clear(vi.fn());
+    posting.resolve(remote());
+    await flushing;
+    expect(outbox.gameId).toBeNull();
+    expect(outbox.current).toBeNull();
+    expect(localStorage.getItem(gameSessionStorageKey)).toBeNull();
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it("keeps a newer browser record when an obsolete creation response arrives", async () => {
+    const localStorage = storage();
+    const posting = deferred<RemoteGameSession>();
+    const outbox = new GameSessionOutbox({
+      storage: localStorage,
+      clubId,
+      createId: () => creationId,
+      create: () => posting.promise,
+      save: vi.fn(),
+    });
+    outbox.beginCreation("Original", state, null);
+    const flushing = outbox.flush();
+    const newerRaw = JSON.stringify({
+      ...readPersisted(localStorage),
+      current: { name: "Replacement", state: { ...state, playlistId: "newer" }, results: null },
+    });
+    localStorage.setItem(gameSessionStorageKey, newerRaw);
+    posting.resolve(remote());
+    await expect(flushing).rejects.toThrow("Local session changed in another browser context");
+    expect(localStorage.getItem(gameSessionStorageKey)).toBe(newerRaw);
+  });
+
+  it("requires creation acknowledgment before parking and switching games", async () => {
+    const localStorage = storage();
+    const posting = deferred<RemoteGameSession>();
+    const save = vi.fn().mockResolvedValue(remote());
+    const outbox = new GameSessionOutbox({
+      storage: localStorage,
+      clubId,
+      createId: () => creationId,
+      create: () => posting.promise,
+      save,
+    });
+    outbox.beginCreation("Draft", state, null);
+    const flushing = outbox.flush();
+    outbox.enqueue("Edited", { ...state, playlistId: "edited" }, null);
+    const other = { ...remote(), gameId: "00000000-0000-4000-8000-000000000005" };
+    expect(() => outbox.activateRemote(other)).toThrow(
+      "Game creation must finish before switching games",
+    );
+    expect(outbox.current?.name).toBe("Edited");
+    posting.resolve(remote());
+    await flushing;
+    expect(save).toHaveBeenCalledWith(
+      serverGameId,
+      expect.objectContaining({
+        name: "Edited",
+        state: { ...state, playlistId: "edited" },
+      }),
+    );
+    outbox.activateRemote(other);
+    expect(outbox.gameId).toBe("00000000-0000-4000-8000-000000000005");
+    expect(outbox.current?.name).toBe("Table A");
+    expect(localStorage.getItem(`${gameSessionStorageKey}.parked.${creationId}`)).toBeNull();
+    expect(
+      parseCurrentGameSessionEnvelope(
+        localStorage.getItem(`${gameSessionStorageKey}.parked.${serverGameId}`)!,
+      ),
+    ).toMatchObject({
+      gameId: serverGameId,
+      creationId: null,
+      current: { name: "Edited", state: { playlistId: "edited" } },
+    });
+  });
+
+  it("requires the storage guard for edits before creation acknowledgment", async () => {
+    const localStorage = storage();
+    let outbox: GameSessionOutbox | undefined;
+    await withBrowserGameStorageGuard((storageGuard) => {
+      outbox = new GameSessionOutbox({
+        storage: localStorage,
+        storageGuard,
+        clubId,
+        createId: () => creationId,
+        create: vi.fn(),
+        save: vi.fn(),
+      });
+      outbox.beginCreation("Draft", state, null);
+    });
+    expect(() => outbox?.enqueue("Edited", { ...state, playlistId: "edited" }, null)).toThrow(
+      "Browser game storage lock is not held",
+    );
+    expect(readPersisted(localStorage)).toMatchObject({ current: { name: "Draft" } });
+  });
+
   it("persists the creation retry identity before the first POST and adopts only its server GUID", async () => {
     const localStorage = storage();
     const create = vi.fn().mockResolvedValue(remote());

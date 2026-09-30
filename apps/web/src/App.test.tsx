@@ -3381,18 +3381,32 @@ describe("authoritative game session lifecycle", () => {
     expect(screen.queryByRole("heading", { name: "Live test game" })).not.toBeInTheDocument();
   });
 
-  it("keeps incomplete player and music setup out of the durable game session", async () => {
+  it("saves incomplete setup as an unfinished game and restores it after reload", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    const first = render(<App />);
     await waitFor(() => expect(api.listPlayers).toHaveBeenCalledOnce());
+
+    expect(api.createGameSession).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Save setup progress" }));
 
-    await waitFor(() =>
-      expect(screen.getByRole("heading", { name: "Restored setup" })).toBeVisible(),
+    await waitFor(() => expect(api.createGameSession).toHaveBeenCalledOnce());
+    const saved = JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5")!);
+    expect(saved.current.state).toMatchObject({
+      setup: {
+        hostPlayerId,
+        selectedPlayerIds: [assignedGame.players[0]!.id, ...Array(9).fill("")],
+      },
+      game: null,
+    });
+    expect(saved.current.results).toBeNull();
+    first.unmount();
+    render(<App />);
+    expect(JSON.parse(screen.getByTestId("setup-session").textContent!)).toEqual(
+      saved.current.state.setup,
     );
-    expect(api.saveGameSession).not.toHaveBeenCalled();
-    expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBeNull();
+    expect(api.createGameSession).toHaveBeenCalledOnce();
   });
 
   it("creates the first durable snapshot when valid setup enters role giveaway", async () => {
@@ -3411,6 +3425,7 @@ describe("authoritative game session lifecycle", () => {
           setup: {
             step: "roles",
             hostPlayerId,
+            bestMoveEnabled: true,
             selectedPlayerIds: assignedGame.players.map(({ id }) => id),
             setup: {
               step: "role-draw",
@@ -3435,83 +3450,281 @@ describe("authoritative game session lifecycle", () => {
     });
   });
 
-  it("saves and reloads a real Casper role draw before creating its canonical game", async () => {
+  it("restores real partial seats without browser availability and honors deliberate removals", async () => {
     const { SetupWizard: RealSetupWizard } = await vi.importActual<typeof setupWizardModule>(
       "./features/setup/SetupWizard.js",
     );
-    const setupMock = vi
-      .spyOn(setupWizardModule, "SetupWizard")
-      .mockImplementation(RealSetupWizard);
-    const humans = assignedGame.players.slice(0, 9);
-    api.listPlayers.mockResolvedValue([
-      ...humans.map((seat) => player(playerLabel(seat), seat.id)),
-      player("Host Player", hostPlayerId),
-    ]);
-    window.localStorage.setItem(
-      `mafia-dashboard.available-player-ids.${testClub.id}`,
-      JSON.stringify([...humans.map(({ id }) => id), hostPlayerId]),
-    );
+    vi.spyOn(setupWizardModule, "SetupWizard").mockImplementation(RealSetupWizard);
     const user = userEvent.setup();
+    const creation = deferred<RemoteGameSession>();
+    api.createGameSession.mockReturnValue(creation.promise);
+    const first = renderView(<App />);
+    await user.click(screen.getByRole("button", { name: "Select available players" }));
+    await user.click(screen.getByRole("button", { name: "Mark Player 1 available" }));
+    await user.click(screen.getByRole("button", { name: "Mark Host Player available" }));
+    await user.click(screen.getByRole("button", { name: "Close available players" }));
+    await user.click(screen.getByRole("combobox", { name: "Seat 4 player" }));
+    await user.click(screen.getByRole("option", { name: "Player 1" }));
+    await waitFor(() => expect(api.createGameSession).toHaveBeenCalledOnce());
+    await user.click(screen.getByRole("combobox", { name: "Host player" }));
+    await user.click(screen.getByRole("option", { name: "Host Player" }));
+    const saved = JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5")!);
+    expect(saved.current.state.setup.hostPlayerId).toBe(hostPlayerId);
+    expect(saved.current.state.hostPlayerId).toBe(hostPlayerId);
+    expect(saved.current.state.setup.selectedPlayerIds).toEqual([
+      "",
+      "",
+      "",
+      assignedGame.players[0]!.id,
+      ...Array(6).fill(""),
+    ]);
+    first.unmount();
+    window.localStorage.removeItem(`mafia-dashboard.available-player-ids.${testClub.id}`);
+    const profiles = deferred<readonly PlayerProfile[]>();
+    api.listPlayers.mockReturnValue(profiles.promise);
+    const restored = renderView(<App />);
+    expect(
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5")!).current.state
+        .setup,
+    ).toEqual(saved.current.state.setup);
+    await act(async () =>
+      profiles.resolve([
+        ...assignedGame.players.map((seat) => player(playerLabel(seat), seat.id)),
+        player("Host Player", hostPlayerId),
+      ]),
+    );
+    expect(screen.getByRole("combobox", { name: "Seat 4 player" })).toHaveValue("Player 1");
+    expect(screen.getByRole("combobox", { name: "Host player" })).toHaveValue("Host Player");
+    expect(screen.getByRole("combobox", { name: "Seat 1 player" })).toHaveValue("");
+    await waitFor(() => expect(api.createGameSession).toHaveBeenCalledTimes(2));
     const gameId = "00000000-0000-4000-8000-000000000090";
-    try {
-      const first = renderView(<App />);
-      await waitFor(() => expect(api.listPlayers).toHaveBeenCalledWith(testClub.id));
-      await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
-      await user.click(screen.getByRole("button", { name: "Players screen" }));
-      await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
-      await user.click(screen.getByRole("button", { name: "Start new game" }));
-      await user.click(await screen.findByRole("combobox", { name: "Host player" }));
-      await user.click(await screen.findByRole("option", { name: "Host Player" }));
-      await user.click(screen.getByRole("switch", { name: "Include Casper" }));
-      await user.click(screen.getByRole("button", { name: "Assign players" }));
-      await user.click(screen.getByRole("button", { name: "Start game" }));
-      await waitFor(() => expect(api.createGameSession).toHaveBeenCalledOnce());
-      expect(api.createGameSession.mock.calls[0]?.[0].state.setup.setup).toMatchObject({
-        assignments: { 10: "citizen" },
-        players: expect.arrayContaining([{ id: "casper", seat: 10 }]),
-      });
-      await user.click(screen.getByRole("button", { name: "Draw role for Player 1" }));
-      await waitFor(() =>
-        expect(
-          api.saveGameSession.mock.lastCall?.[1].state.setup.setup.remainingRoles,
-        ).toHaveLength(8),
+    await act(async () =>
+      creation.resolve({
+        ...remoteSession(gameId, "Partial setup", "", 1, 0),
+        state: api.createGameSession.mock.calls[0]![0].state,
+      }),
+    );
+    await waitFor(() =>
+      expect(api.saveGameSession.mock.lastCall?.[1].state.hostPlayerId).toBe(hostPlayerId),
+    );
+    expect(api.createGameSession.mock.calls.map(([input]) => input.creationId)).toEqual([
+      saved.creationId,
+      saved.creationId,
+    ]);
+    await user.click(screen.getByRole("button", { name: "Select available players" }));
+    await user.click(screen.getByRole("button", { name: "Mark Player 1 unavailable" }));
+    await user.click(screen.getByRole("button", { name: "Mark Host Player unavailable" }));
+    restored.unmount();
+    renderView(<App />);
+    await waitFor(() =>
+      expect(screen.getByRole("combobox", { name: "Host player" })).not.toBeDisabled(),
+    );
+    expect(screen.getByRole("combobox", { name: "Seat 4 player" })).toHaveValue("");
+    expect(screen.getByRole("combobox", { name: "Host player" })).toHaveValue("");
+    await waitFor(() =>
+      expect(api.saveGameSession.mock.lastCall?.[1].state.setup).toMatchObject({
+        hostPlayerId: "",
+        selectedPlayerIds: Array(10).fill(""),
+        bestMoveEnabled: true,
+        setup: null,
+      }),
+    );
+    expect(api.createGameSession).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5")!).gameId).toBe(
+      gameId,
+    );
+  });
+
+  it.each(["resume", "new"])(
+    "settles pending creation before %s can leave the setup",
+    async (action) => {
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      const { SetupWizard: RealSetupWizard } = await vi.importActual<typeof setupWizardModule>(
+        "./features/setup/SetupWizard.js",
       );
-      first.unmount();
+      vi.spyOn(setupWizardModule, "SetupWizard").mockImplementation(RealSetupWizard);
+      window.localStorage.setItem(
+        `mafia-dashboard.available-player-ids.${testClub.id}`,
+        JSON.stringify([assignedGame.players[0]!.id, hostPlayerId]),
+      );
+      const creation = deferred<RemoteGameSession>();
+      api.createGameSession.mockReturnValue(creation.promise);
+      const otherGameId = "00000000-0000-4000-8000-000000000020";
+      api.listActiveGameSessions.mockResolvedValue([
+        {
+          gameId: otherGameId,
+          name: "Other table",
+          revision: 1,
+          hostPlayerId,
+          phase: "day-speech",
+          day: 1,
+          updatedAt: "2026-09-30T10:00:00.000Z",
+        },
+      ]);
+      api.getGameSession.mockResolvedValue(
+        remoteSession(otherGameId, "Other table", "Host Player", 1, 1),
+      );
+      const user = userEvent.setup();
       renderView(<App />);
-      expect(await screen.findByRole("button", { name: "Casper: citizen" })).toBeDisabled();
-      expect(screen.getByText("Draw roles · 8 remaining")).toBeInTheDocument();
-      for (const seat of humans.slice(1)) {
-        await user.click(
-          screen.getByRole("button", { name: `Draw role for ${playerLabel(seat)}` }),
-        );
-      }
-      await user.click(screen.getByRole("button", { name: "Begin Mafia planning stage" }));
-      await waitFor(() =>
-        expect(gameScreenHarness.liveGame?.players[9]).toMatchObject({
-          id: "casper",
-          seat: 10,
-          role: "citizen",
-          team: "red",
+      await user.click(await screen.findByRole("combobox", { name: "Seat 4 player" }));
+      await user.click(await screen.findByRole("option", { name: "Player 1" }));
+      await waitFor(() => expect(api.createGameSession).toHaveBeenCalledOnce());
+      await user.click(screen.getByRole("combobox", { name: "Host player" }));
+      await user.click(screen.getByRole("option", { name: "Host Player" }));
+      await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+      await user.click(
+        await screen.findByRole("button", {
+          name: action === "resume" ? "Resume Other table" : "Start new game",
         }),
       );
-      expect(gameScreenHarness.liveGame?.players[9]).not.toHaveProperty("name");
-      await waitFor(() =>
-        expect(
-          api.saveGameSession.mock.lastCall?.[1].state.initialGame.game.players[9],
-        ).toMatchObject({ id: "casper", role: "citizen" }),
+      const readEnvelope = () =>
+        JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null");
+      expect(readEnvelope()).toMatchObject({ gameId: null, current: { state: { hostPlayerId } } });
+      const input = api.createGameSession.mock.calls[0]![0];
+      const gameId = "00000000-0000-4000-8000-000000000090";
+      await act(async () =>
+        creation.resolve({
+          ...remoteSession(gameId, input.name, "", 1, 0),
+          state: input.state,
+        }),
       );
-      expect(api.createGameSession).toHaveBeenCalledOnce();
-      expect(new Set(api.saveGameSession.mock.calls.map(([id]) => id))).toEqual(new Set([gameId]));
-      const state = api.saveGameSession.mock.lastCall?.[1].state;
-      expect(replayGameLog(state.initialGame, state.events).game.players[9]).toMatchObject({
-        id: "casper",
-        role: "citizen",
+      await waitFor(() =>
+        expect(api.saveGameSession.mock.lastCall?.[1].state.hostPlayerId).toBe(hostPlayerId),
+      );
+      expect(api.saveGameSession.mock.lastCall?.[0]).toBe(gameId);
+      await waitFor(() =>
+        expect(readEnvelope()?.gameId ?? null).toBe(action === "resume" ? otherGameId : null),
+      );
+      expect(
+        window.localStorage.getItem(`mafia-dashboard.game-session.v5.parked.${input.creationId}`),
+      ).toBeNull();
+      const parked = JSON.parse(
+        window.localStorage.getItem(`mafia-dashboard.game-session.v5.parked.${gameId}`)!,
+      );
+      expect(parked.current.state.setup).toMatchObject({
+        hostPlayerId,
+        selectedPlayerIds: ["", "", "", assignedGame.players[0]!.id, ...Array(6).fill("")],
       });
-    } finally {
-      cleanup();
-      setupMock.mockRestore();
-    }
-  });
+    },
+  );
+
+  it.each([false, undefined])(
+    "resumes a real Casper draw with saved Best Move %s before creating its canonical game",
+    async (savedBestMove) => {
+      const { SetupWizard: RealSetupWizard } = await vi.importActual<typeof setupWizardModule>(
+        "./features/setup/SetupWizard.js",
+      );
+      const setupMock = vi
+        .spyOn(setupWizardModule, "SetupWizard")
+        .mockImplementation(RealSetupWizard);
+      const humans = assignedGame.players.slice(0, 9);
+      api.listPlayers.mockResolvedValue([
+        ...humans.map((seat) => player(playerLabel(seat), seat.id)),
+        player("Host Player", hostPlayerId),
+      ]);
+      window.localStorage.setItem(
+        `mafia-dashboard.available-player-ids.${testClub.id}`,
+        JSON.stringify([...humans.map(({ id }) => id), hostPlayerId]),
+      );
+      const user = userEvent.setup();
+      const gameId = "00000000-0000-4000-8000-000000000090";
+      try {
+        const first = renderView(
+          <ClubWorkspace
+            club={{ ...testClub, bestMoveEnabled: false }}
+            onExit={() => undefined}
+            onEditClub={() => undefined}
+            onDeleteClub={() => Promise.resolve()}
+          />,
+        );
+        await waitFor(() => expect(api.listPlayers).toHaveBeenCalledWith(testClub.id));
+        await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+        await user.click(screen.getByRole("button", { name: "Players screen" }));
+        await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+        await user.click(screen.getByRole("button", { name: "Start new game" }));
+        await user.click(await screen.findByRole("combobox", { name: "Host player" }));
+        await user.click(await screen.findByRole("option", { name: "Host Player" }));
+        await waitFor(() => expect(api.createGameSession).toHaveBeenCalledOnce());
+        expect(api.createGameSession.mock.calls[0]?.[0].state.setup).toMatchObject({
+          step: "players",
+          hostPlayerId,
+          bestMoveEnabled: false,
+          setup: null,
+        });
+        await user.click(screen.getByRole("switch", { name: "Include Casper" }));
+        await user.click(screen.getByRole("button", { name: "Assign players" }));
+        await user.click(screen.getByRole("button", { name: "Start game" }));
+        await waitFor(() => expect(api.createGameSession).toHaveBeenCalledOnce());
+        expect(api.saveGameSession.mock.lastCall?.[1].state.setup.setup).toMatchObject({
+          assignments: { 10: "citizen" },
+          players: expect.arrayContaining([{ id: "casper", seat: 10 }]),
+        });
+        await user.click(screen.getByRole("button", { name: "Draw role for Player 1" }));
+        await waitFor(() =>
+          expect(
+            api.saveGameSession.mock.lastCall?.[1].state.setup.setup.remainingRoles,
+          ).toHaveLength(8),
+        );
+        const savedState = api.saveGameSession.mock.lastCall?.[1].state;
+        if (savedBestMove === undefined) delete savedState.setup.bestMoveEnabled;
+        first.unmount();
+        window.localStorage.clear();
+        api.listActiveGameSessions.mockResolvedValue([
+          {
+            gameId,
+            name: "Saved setup",
+            revision: 2,
+            hostPlayerId,
+            phase: "setup-roles",
+            day: 0,
+            updatedAt: "2026-09-30T10:00:00.000Z",
+          },
+        ]);
+        api.getGameSession.mockResolvedValue({
+          ...remoteSession(gameId, "Saved setup", "Host Player", 2, 0),
+          state: savedState,
+        });
+        renderView(<App />);
+        await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+        await user.click(await screen.findByRole("button", { name: "Resume Saved setup" }));
+        expect(await screen.findByRole("button", { name: "Casper: citizen" })).toBeDisabled();
+        expect(screen.getByText("Draw roles · 8 remaining")).toBeInTheDocument();
+        for (const seat of humans.slice(1)) {
+          await user.click(
+            screen.getByRole("button", { name: `Draw role for ${playerLabel(seat)}` }),
+          );
+        }
+        await user.click(screen.getByRole("button", { name: "Begin Mafia planning stage" }));
+        await waitFor(() =>
+          expect(gameScreenHarness.liveGame?.players[9]).toMatchObject({
+            id: "casper",
+            seat: 10,
+            role: "citizen",
+            team: "red",
+          }),
+        );
+        expect(gameScreenHarness.liveGame?.players[9]).not.toHaveProperty("name");
+        expect(gameScreenHarness.liveGame?.bestMoveEnabled).toBe(savedBestMove ?? true);
+        await waitFor(() =>
+          expect(
+            api.saveGameSession.mock.lastCall?.[1].state.initialGame.game.players[9],
+          ).toMatchObject({ id: "casper", role: "citizen" }),
+        );
+        expect(api.createGameSession).toHaveBeenCalledOnce();
+        expect(new Set(api.saveGameSession.mock.calls.map(([id]) => id))).toEqual(
+          new Set([gameId]),
+        );
+        const state = api.saveGameSession.mock.lastCall?.[1].state;
+        expect(replayGameLog(state.initialGame, state.events).game.players[9]).toMatchObject({
+          id: "casper",
+          role: "citizen",
+        });
+      } finally {
+        cleanup();
+        setupMock.mockRestore();
+      }
+    },
+  );
 
   it("restores zero and partial role giveaway snapshots and completes on the same game ID", async () => {
     const user = userEvent.setup();
@@ -4711,7 +4924,7 @@ describe("authoritative game session lifecycle", () => {
     expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBe(savedSession);
   });
 
-  it("parks an unresolved POST without inventing a GUID or deleting another game", async () => {
+  it("keeps failed creation recoverable instead of parking it when New game is requested", async () => {
     const user = userEvent.setup();
     const firstCreate = deferred<{ revision: number; duplicate: boolean }>();
     api.saveGameSession.mockImplementationOnce(() => firstCreate.promise);
@@ -4719,9 +4932,8 @@ describe("authoritative game session lifecycle", () => {
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
     await waitFor(() => expect(api.createGameSession).toHaveBeenCalledOnce());
-    expect(
-      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null"),
-    ).toMatchObject({ gameId: null, creationId: expect.any(String) });
+    const pending = JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5")!);
+    expect(pending).toMatchObject({ gameId: null, creationId: expect.any(String) });
 
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Start new game" }));
@@ -4729,18 +4941,30 @@ describe("authoritative game session lifecycle", () => {
       "Start a new game? The current game will stay saved and can be resumed later.",
     );
     expect(api.clearGameSession).not.toHaveBeenCalled();
-    expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBeNull();
+    expect(
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5")!),
+    ).toMatchObject({
+      gameId: null,
+      creationId: pending.creationId,
+      current: pending.current,
+    });
     expect(
       [...Array(window.localStorage.length).keys()]
         .map((index) => window.localStorage.key(index))
         .some((key) => key?.includes(".parked.")),
-    ).toBe(true);
-    firstCreate.resolve({ revision: 1, duplicate: false });
+    ).toBe(false);
     await act(async () => {
-      await firstCreate.promise;
-      await Promise.resolve();
+      firstCreate.reject(new TypeError("Failed to fetch"));
     });
-    expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBeNull();
+    expect(
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5")!),
+    ).toMatchObject({
+      gameId: null,
+      creationId: pending.creationId,
+      current: pending.current,
+      failed: true,
+    });
+    expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
   });
 
   it("does not reset a newer resumed game after an older DELETE completes", async () => {
