@@ -428,7 +428,10 @@ test("Azure passes one explicit managed-identity Storage target through every de
   );
   assert.match(app, /param initializeStorage bool = false/);
   assert.match(app, /name: 'AZURE_STORAGE_INITIALIZE'\s+value: 'false'/);
-  assert.match(app, /name: 'AZURE_STORAGE_INITIALIZE'\s+value: string\(initializeStorage\)/);
+  assert.match(
+    app,
+    /name: 'AZURE_STORAGE_INITIALIZE'\s+value: initializeStorage \? 'true' : 'false'/,
+  );
   assert.match(app, /name: 'initialize-storage'\s+image: image/);
   assert.match(app, /'apps\/server\/dist\/initialize-storage.js'/);
   assert.match(app, /env: initializationEnv/);

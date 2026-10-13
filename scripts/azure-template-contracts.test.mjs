@@ -155,7 +155,7 @@ compiledTemplateTest(
     assert.match(env, /'AZURE_STORAGE_INITIALIZE', 'value', 'false'/);
     assert.match(
       initContainers[0].env,
-      /'AZURE_STORAGE_INITIALIZE', 'value', string\(parameters\('initializeStorage'\)\)/,
+      /'AZURE_STORAGE_INITIALIZE', 'value', if\(parameters\('initializeStorage'\), 'true', 'false'\)/,
     );
     assert.equal(containers.length, 1);
     assert.equal(initContainers.length, 1);

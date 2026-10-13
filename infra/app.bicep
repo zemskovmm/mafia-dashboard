@@ -161,7 +161,7 @@ var appEnv = concat(
 var initializationEnv = concat(storageEnv, [
   {
     name: 'AZURE_STORAGE_INITIALIZE'
-    value: string(initializeStorage)
+    value: initializeStorage ? 'true' : 'false'
   }
 ])
 
