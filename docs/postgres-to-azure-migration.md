@@ -1,8 +1,49 @@
 # One-time PostgreSQL → Azure business-data migration
 
 This is an **explicit operator tool**, not an application startup task. The initial
-Azure release starts empty. No production export, import, cloud write, merge or
-PostgreSQL deletion is authorized or performed by this delivery.
+Azure release starts empty. Production export/import requires separate operator
+authorization; deployment never runs it automatically. Neither migration nor its
+execution workflow authorizes a merge, reset or PostgreSQL deletion.
+
+## Approved production execution transport
+
+The manual **One-time PostgreSQL import** workflow
+(`.github/workflows/migrate-postgres-to-azure.yml`) runs the existing compiled CLI
+in a short-lived Container Apps job in the application's private-network
+environment. It is deliberately bound to the reviewed source/target and immutable
+application image in `scripts/production-postgres-migration.mjs`; live revision or
+image drift refuses instead of silently adopting another release. It is not a
+general-purpose migration service.
+
+1. Hold automatic deployment with `AZURE_DEPLOY_ENABLED=false`, recording its
+   original value. Both migration and deployment share `azure-production`
+   concurrency. Dispatch only the reviewed main commit, using `mode=export` and
+   a fresh private archive name `migration-` followed by 32 lowercase hex digits.
+   Leave `sha256` empty. The existing production `POSTGRES_PASSWORD` secret is
+   supplied only to export; no credentials appear in command arguments or logs.
+2. Export verifies TLS and the expected database/backend identity, uses read-only
+   SQL, invokes export/validate, and retains the package in the separate private
+   archive container. No business records are written to the live target. Check
+   the exact job execution outcome and retained receipt/manifest hash; a submitted
+   job is not proof of success. Never use GitHub artifacts for the package.
+3. Review the package identity, exclusions and counts, then quiesce the live app
+   by deactivating its exact serving revision. Dispatch `mode=apply` with the same
+   archive and exact approved `sha256`. The controller refuses while any app
+   revision is active. The existing importer still independently rejects any
+   populated/foreign target and fences partial publication.
+4. After complete verified import, reactivate the original app revision and
+   verify readiness/version and data readback. Restore/read back the original
+   deployment flag. Remove only the owned temporary job after package retention
+   and final state are verified; retain the archive and PostgreSQL.
+
+There are no automatic job retries, parallel replicas, app restarts or target
+cleanup. An ambiguous Start response requires inspecting the exact job before
+another dispatch. Failed/partial imports and their packages must be retained;
+do not restore an apparently healthy app over an unverified target. No maintenance
+page, public PostgreSQL endpoint, new database user or standing broad permission
+is needed. The archive is protected plaintext in private Blob Storage, not an
+independent disaster-recovery backup. Runtime staging uses the image's writable,
+node-owned `/app/apps/server/.AI`, without changing the app image or running root.
 
 ## Runnable interface
 
@@ -329,4 +370,4 @@ configuration to prove explicit configuration use.
 Workspace typecheck, targeted ESLint and Prettier checks accompany this suite.
 The integration owner runs the ordinary `npm run check:local` gate and wires the
 entrypoint into the release build; the focused worker does not run a competing
-broad check. Production migration remains unexecuted.
+broad check. Fixture success alone is not evidence of production migration.
