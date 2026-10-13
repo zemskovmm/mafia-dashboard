@@ -22,11 +22,22 @@ test("local launch forwards explicit YouTube settings only to the API", async ()
   const selected = googleEnvironment({ ...google, UNRELATED_SECRET: "must-not-leak" });
   assert.deepEqual(selected, google);
   assert.deepEqual(googleEnvironment({ GOOGLE_CLIENT_ID: "" }), {});
+  const storage = {
+    STORAGE_PROVIDER: "azure",
+    AZURE_STORAGE_CONNECTION_STRING:
+      "DefaultEndpointsProtocol=http;AccountName=mafiadev;AccountKey=private-emulator-key;BlobEndpoint=http://127.0.0.1:13500/mafiadev;TableEndpoint=http://127.0.0.1:13502/mafiadev",
+    AZURE_STORAGE_TABLE_NAME: "MafiaDevRecords",
+    AZURE_STORAGE_CONTAINER_NAME: "mafia-dev-records",
+    AZURE_STORAGE_PARTITION_KEY: "local",
+    AZURE_STORAGE_INITIALIZE: "true",
+  };
   const api = apiSettings({
-    databaseUrl: "postgresql://mafia@127.0.0.1:54328/mafia_local",
+    storage,
     origin: canonicalOrigin,
     google: selected,
   });
+  for (const [key, value] of Object.entries(storage)) assert.equal(api[key], value);
+  assert.equal(api.DATABASE_URL, undefined);
   for (const [key, value] of Object.entries(google)) assert.equal(api[key], value);
   assert.equal(api.UNRELATED_SECRET, undefined);
   const inherited = { ...google, UNRELATED_SECRET: "must-not-leak" };
@@ -35,7 +46,7 @@ test("local launch forwards explicit YouTube settings only to the API", async ()
     Object.assign(process.env, inherited);
     const web = viteSettings();
     const apiWithoutExplicitConfig = apiSettings({
-      databaseUrl: api.DATABASE_URL,
+      storage,
       origin: canonicalOrigin,
       google: {},
     });

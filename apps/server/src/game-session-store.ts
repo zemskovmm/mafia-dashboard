@@ -198,7 +198,7 @@ const updateLastPlayed = async (
   );
 };
 
-interface ProjectableResults {
+export interface ProjectableResults {
   readonly hostPlayerId: string;
   readonly outcome: "red" | "black" | "draw" | "cancelled";
   readonly winner: "red" | "black" | null;
@@ -215,7 +215,7 @@ interface ProjectableResults {
   }[];
 }
 
-const projectableResults = (value: FinalGameResults | null): ProjectableResults | null => {
+export const projectableResults = (value: FinalGameResults | null): ProjectableResults | null => {
   if (!isRecord(value)) return null;
   const hostPlayerId = value.hostPlayerId;
   const outcome = value.outcome;
@@ -303,7 +303,7 @@ const projectableResults = (value: FinalGameResults | null): ProjectableResults 
 
 // The aggregate is authoritative; game_results is only a derived statistics
 // projection and can be absent from an otherwise completed historical session.
-const completionMetadata = (value: FinalGameResults | null) => {
+export const completionMetadata = (value: FinalGameResults | null) => {
   if (!isRecord(value)) return null;
   const { outcome, winner, reason, playedAt } = value;
   if (

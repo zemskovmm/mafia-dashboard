@@ -13,6 +13,10 @@ on:
         description: Force infrastructure deployment (otherwise detect changes automatically)
         type: boolean
         default: false
+      initialize_storage:
+        description: Initialize the explicitly approved empty Storage namespace (never reset)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -98,10 +102,14 @@ jobs:
       AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
       AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
       AZURE_NAME_PREFIX: ${{ vars.AZURE_NAME_PREFIX }}
-      AZURE_DATABASE_NAME: ${{ vars.AZURE_DATABASE_NAME }}
+      AZURE_STORAGE_ACCOUNT_NAME: ${{ vars.AZURE_STORAGE_ACCOUNT_NAME }}
+      AZURE_STORAGE_TABLE_NAME: ${{ vars.AZURE_STORAGE_TABLE_NAME }}
+      AZURE_STORAGE_CONTAINER_NAME: ${{ vars.AZURE_STORAGE_CONTAINER_NAME }}
+      AZURE_STORAGE_PARTITION_KEY: ${{ vars.AZURE_STORAGE_PARTITION_KEY }}
+      INITIALIZE_STORAGE: ${{ github.event_name == 'workflow_dispatch' && inputs.initialize_storage == true }}
       GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
       GHCR_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
-      POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+
       GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
       GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
       MUSIC_TOKEN_ENCRYPTION_KEY: ${{ secrets.MUSIC_TOKEN_ENCRYPTION_KEY }}
@@ -116,29 +124,53 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          : "${AZURE_RESOURCE_GROUP:?Missing AZURE_RESOURCE_GROUP}"
-          : "${AZURE_LOCATION:?Missing AZURE_LOCATION}"
-          : "${AZURE_NAME_PREFIX:?Missing AZURE_NAME_PREFIX}"
-          : "${AZURE_DATABASE_NAME:?Missing AZURE_DATABASE_NAME}"
-          if [[ ! "$AZURE_DATABASE_NAME" =~ ^[a-z][a-z0-9_]{0,62}$ ]]; then
-            echo "AZURE_DATABASE_NAME must be 1-63 lowercase letters, digits, or underscores, starting with a letter" >&2
+          node --input-type=module -e 'import { deploymentTarget } from "./scripts/azure-deployment-plan.mjs"; deploymentTarget();'
+          if [[ ! "$DEPLOY_IMAGE" =~ ^ghcr\.io/[a-z0-9_.-]+/[a-z0-9_.-]+@sha256:[0-9a-f]{64}$ ]]; then
+            echo "DEPLOY_IMAGE must be an immutable GHCR image digest" >&2
+            exit 1
+          fi
+          if [[ "$INITIALIZE_STORAGE" != 'true' && "$INITIALIZE_STORAGE" != 'false' ]]; then
+            echo "INITIALIZE_STORAGE must be true or false" >&2
             exit 1
           fi
           : "${GHCR_USERNAME:?Missing GHCR_USERNAME}"
           : "${GHCR_TOKEN:?Missing GHCR_PULL_TOKEN}"
-          : "${POSTGRES_PASSWORD:?Missing POSTGRES_PASSWORD}"
       - name: Select infrastructure deployment
         id: plan
         env:
           DEPLOY_INFRASTRUCTURE: ${{ inputs.deploy_infrastructure == true }}
         run: node scripts/azure-deployment-plan.mjs
-      - name: Create resource group
+      - name: Verify existing deployment target
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "$(az account show --query id --output tsv)" == "$AZURE_SUBSCRIPTION_ID" ]]
+          az group show --name "$AZURE_RESOURCE_GROUP" --output none
+          environment_id=$(az containerapp show --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "${AZURE_NAME_PREFIX}-app" --query properties.managedEnvironmentId --output tsv)
+          expected_environment="/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/$AZURE_RESOURCE_GROUP/providers/Microsoft.App/managedEnvironments/${AZURE_NAME_PREFIX}-env"
+          [[ "${environment_id,,}" == "${expected_environment,,}" ]]
+          profile=$(az containerapp env show --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "${AZURE_NAME_PREFIX}-env" \
+            --query "properties.workloadProfiles[?workloadProfileType == 'Consumption'].name | [0]" --output tsv)
+          [[ -n "$profile" && "$profile" != 'null' ]]
+      - name: Refuse unknown Storage account adoption
         if: steps.plan.outputs.deploy == 'true'
-        run: >-
-          az group create
-          --name "$AZURE_RESOURCE_GROUP"
-          --location "$AZURE_LOCATION"
-          --output none
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          existing=$(az storage account list --resource-group "$AZURE_RESOURCE_GROUP" \
+            --query "[?name == '$AZURE_STORAGE_ACCOUNT_NAME'].name | [0]" --output tsv)
+          if [[ -n "$existing" && "$existing" != 'null' ]]; then
+            recorded=$(az deployment group show --resource-group "$AZURE_RESOURCE_GROUP" \
+              --name mafia-foundation \
+              --query "properties.{state:provisioningState,account:outputs.storageAccountName.value,app:outputs.containerAppName.value}" --output json)
+            jq --exit-status --arg account "$AZURE_STORAGE_ACCOUNT_NAME" --arg app "${AZURE_NAME_PREFIX}-app" \
+              '.state == "Succeeded" and .account == $account and .app == $app' <<<"$recorded" >/dev/null
+          else
+            available=$(az storage account check-name --name "$AZURE_STORAGE_ACCOUNT_NAME" --query nameAvailable --output tsv)
+            [[ "$available" == 'true' ]]
+          fi
       - name: Validate foundation
         if: steps.plan.outputs.deploy == 'true'
         env:
@@ -149,12 +181,39 @@ jobs:
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --template-file infra/main.bicep \
             --parameters \
-              databaseName="$AZURE_DATABASE_NAME" \
+              storageAccountName="$AZURE_STORAGE_ACCOUNT_NAME" \
+              storageTableName="$AZURE_STORAGE_TABLE_NAME" \
+              storageContainerName="$AZURE_STORAGE_CONTAINER_NAME" \
               location="$AZURE_LOCATION" \
               namePrefix="$AZURE_NAME_PREFIX" \
               foundationFingerprint="$FOUNDATION_FINGERPRINT" \
-              postgresPassword="$POSTGRES_PASSWORD" \
             --output none
+      - name: Inspect foundation changes
+        if: steps.plan.outputs.deploy == 'true'
+        env:
+          FOUNDATION_FINGERPRINT: ${{ steps.plan.outputs.fingerprint }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          az deployment group what-if \
+            --mode Incremental \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --template-file infra/main.bicep \
+            --parameters \
+              storageAccountName="$AZURE_STORAGE_ACCOUNT_NAME" \
+              storageTableName="$AZURE_STORAGE_TABLE_NAME" \
+              storageContainerName="$AZURE_STORAGE_CONTAINER_NAME" \
+              location="$AZURE_LOCATION" \
+              namePrefix="$AZURE_NAME_PREFIX" \
+              foundationFingerprint="$FOUNDATION_FINGERPRINT" \
+            --no-pretty-print --output json > "$RUNNER_TEMP/foundation-what-if.json"
+          jq --exit-status '
+            .status == "Succeeded" and (.changes | type == "array") and
+            all(.changes[]; .changeType != "Delete" and
+              ((.changeType == "NoChange" or .changeType == "Ignore") or
+                (.resourceId | test("/providers/Microsoft[.](Storage/storageAccounts|ManagedIdentity/userAssignedIdentities|Authorization/roleAssignments)/"; "i"))))
+          ' "$RUNNER_TEMP/foundation-what-if.json" >/dev/null
+          jq '[.changes[] | {resourceId, changeType}]' "$RUNNER_TEMP/foundation-what-if.json"
       - name: Deploy foundation
         id: foundation
         if: steps.plan.outputs.deploy == 'true'
@@ -163,23 +222,24 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          outputs=$(az deployment group create \
+          az deployment group create \
             --name "mafia-foundation" \
             --mode Incremental \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --template-file infra/main.bicep \
             --parameters \
-              databaseName="$AZURE_DATABASE_NAME" \
+              storageAccountName="$AZURE_STORAGE_ACCOUNT_NAME" \
+              storageTableName="$AZURE_STORAGE_TABLE_NAME" \
+              storageContainerName="$AZURE_STORAGE_CONTAINER_NAME" \
               location="$AZURE_LOCATION" \
               namePrefix="$AZURE_NAME_PREFIX" \
               foundationFingerprint="$FOUNDATION_FINGERPRINT" \
-              postgresPassword="$POSTGRES_PASSWORD" \
-            --query properties.outputs \
-            --output json)
-          database_name=$(jq -er '.deployedDatabaseName.value' <<<"$outputs")
-          [[ "$database_name" == "$AZURE_DATABASE_NAME" ]]
+            --output none
+          record=$(az deployment group show --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name mafia-foundation --query 'properties.{state:provisioningState,outputs:outputs}' --output json)
           jq --exit-status --arg fingerprint "$FOUNDATION_FINGERPRINT" \
-            '.foundationFingerprint.value == $fingerprint' <<<"$outputs" >/dev/null
+            --arg account "$AZURE_STORAGE_ACCOUNT_NAME" --arg table "$AZURE_STORAGE_TABLE_NAME" --arg container "$AZURE_STORAGE_CONTAINER_NAME" \
+            '.state == "Succeeded" and .outputs.foundationFingerprint.value == $fingerprint and .outputs.storageAccountName.value == $account and .outputs.storageTableName.value == $table and .outputs.storageContainerName.value == $container' <<<"$record" >/dev/null
       - name: Deploy application
         id: app
         env:
@@ -194,11 +254,9 @@ jobs:
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --name "$app_name" \
             --query properties.configuration.ingress.fqdn \
-            --output tsv 2>/dev/null || true)
-          public_url=''
-          if [[ -n "$existing_fqdn" ]]; then
-            public_url="https://$existing_fqdn"
-          fi
+            --output tsv)
+          [[ -n "$existing_fqdn" && "$existing_fqdn" != 'null' ]]
+          public_url="https://$existing_fqdn"
           deploy() {
             az deployment group create \
               --name "mafia-app-${GITHUB_RUN_ID}" \
@@ -208,10 +266,13 @@ jobs:
               --parameters \
                 location="$AZURE_LOCATION" \
                 namePrefix="$AZURE_NAME_PREFIX" \
-                databaseName="$AZURE_DATABASE_NAME" \
+                storageAccountName="$AZURE_STORAGE_ACCOUNT_NAME" \
+                storageTableName="$AZURE_STORAGE_TABLE_NAME" \
+                storageContainerName="$AZURE_STORAGE_CONTAINER_NAME" \
+                storagePartitionKey="$AZURE_STORAGE_PARTITION_KEY" \
+                initializeStorage="$INITIALIZE_STORAGE" \
                 image="$image" \
                 publicAppUrl="$1" \
-                postgresPassword="$POSTGRES_PASSWORD" \
                 ghcrUsername="$GHCR_USERNAME" \
                 ghcrToken="$GHCR_TOKEN" \
                 googleClientId="$GOOGLE_CLIENT_ID" \
@@ -220,21 +281,14 @@ jobs:
               --output none
           }
           deploy "$public_url"
-          if [[ -z "$public_url" ]]; then
-            fqdn=$(az containerapp show \
-              --resource-group "$AZURE_RESOURCE_GROUP" \
-              --name "$app_name" \
-              --query properties.configuration.ingress.fqdn \
-              --output tsv)
-            public_url="https://$fqdn"
-            deploy "$public_url"
-          fi
+
           echo "public_url=$public_url" >> "$GITHUB_OUTPUT"
           {
             echo "### Azure deployment"
             echo "- Image: \`$image\`"
             echo "- URL: $public_url"
-            echo "- Database: ${{ steps.plan.outputs.database_name }}"
+            echo "- Storage: $AZURE_STORAGE_ACCOUNT_NAME / $AZURE_STORAGE_TABLE_NAME / $AZURE_STORAGE_CONTAINER_NAME / $AZURE_STORAGE_PARTITION_KEY"
+            echo "- Empty-store initialization requested: $INITIALIZE_STORAGE"
             echo "- Infrastructure: $FOUNDATION_REASON"
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Verify Azure deployment
@@ -253,11 +307,27 @@ jobs:
           configuration=$(az containerapp show \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --name "$app_name" \
-            --query '{provisioningState:properties.provisioningState,minReplicas:properties.template.scale.minReplicas,maxReplicas:properties.template.scale.maxReplicas,targetPort:properties.configuration.ingress.targetPort,image:properties.template.containers[0].image,initImage:properties.template.initContainers[0].image}' \
+            --query '{provisioningState:properties.provisioningState,minReplicas:properties.template.scale.minReplicas,maxReplicas:properties.template.scale.maxReplicas,targetPort:properties.configuration.ingress.targetPort,image:properties.template.containers[0].image,initImage:properties.template.initContainers[0].image,identity:identity,env:properties.template.containers[0].env,initEnv:properties.template.initContainers[0].env}' \
             --output json)
           jq --exit-status --arg image "$DEPLOY_IMAGE" \
-            '.provisioningState == "Succeeded" and .minReplicas == 1 and .maxReplicas == 1 and .targetPort == 3000 and .image == $image and .initImage == $image' \
-            <<<"$configuration" >/dev/null
+            --arg account "$AZURE_STORAGE_ACCOUNT_NAME" --arg table "$AZURE_STORAGE_TABLE_NAME" \
+            --arg container "$AZURE_STORAGE_CONTAINER_NAME" --arg partition "$AZURE_STORAGE_PARTITION_KEY" \
+            --arg initialize "$INITIALIZE_STORAGE" \
+            --arg identity "/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/$AZURE_RESOURCE_GROUP/providers/Microsoft.ManagedIdentity/userAssignedIdentities/${AZURE_NAME_PREFIX}-storage" '
+              def fields: map({key: .name, value: .value}) | from_entries;
+              . as $app | (.env | fields) as $env | (.initEnv | fields) as $init |
+              .provisioningState == "Succeeded" and .minReplicas == 1 and .maxReplicas == 1 and
+              .targetPort == 3000 and .image == $image and .initImage == $image and
+              .identity.type == "UserAssigned" and
+              ((.identity.userAssignedIdentities | keys | map(ascii_downcase)) == [($identity | ascii_downcase)]) and
+              ($app.identity.userAssignedIdentities | to_entries[0].value.clientId) as $client |
+              ($client | type == "string") and ($client | length > 0) and
+              all([$env, $init][]; .STORAGE_PROVIDER == "azure" and
+                .AZURE_STORAGE_ACCOUNT_NAME == $account and .AZURE_STORAGE_TABLE_NAME == $table and
+                .AZURE_STORAGE_CONTAINER_NAME == $container and .AZURE_STORAGE_PARTITION_KEY == $partition and
+                .AZURE_CLIENT_ID == $client and (has("DATABASE_URL") | not) and (has("AZURE_STORAGE_CONNECTION_STRING") | not)) and
+              $env.AZURE_STORAGE_INITIALIZE == "false" and $init.AZURE_STORAGE_INITIALIZE == $initialize
+            ' <<<"$configuration" >/dev/null
           printf '%s\n' "$configuration"
           for _ in $(seq 1 30); do
             if curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
@@ -292,7 +362,7 @@ jobs:
               --resource-group "$AZURE_RESOURCE_GROUP" \
               --name "$app_name" \
               --revision "$failed_revision" \
-              --container migrate \
+              --container initialize-storage \
               --type console \
               --tail 50 || true
           fi

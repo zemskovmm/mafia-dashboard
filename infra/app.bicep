@@ -7,17 +7,29 @@ param location string = 'northeurope'
 @maxLength(18)
 param namePrefix string = 'mafiadashboard'
 
-@secure()
-param postgresPassword string
+@description('Explicit account from the approved Storage foundation.')
+@minLength(3)
+@maxLength(24)
+param storageAccountName string
 
-param postgresAdminUser string = 'mafiaadmin'
-
-@description('Explicit target database; use a new name for an approved current-only cutover.')
-@minLength(1)
+@minLength(3)
 @maxLength(63)
-param databaseName string
+param storageTableName string = 'MafiaEntities'
 
-param image string = ''
+@minLength(3)
+@maxLength(63)
+param storageContainerName string = 'mafia-live'
+
+@description('Stable partition identity. Changing this selects another dataset, not a migration.')
+@minLength(1)
+@maxLength(256)
+param storagePartitionKey string
+
+@description('Explicit first empty-store initialization only. Routine deployments must leave this false.')
+param initializeStorage bool = false
+
+@minLength(1)
+param image string
 param publicAppUrl string = ''
 param ghcrUsername string = ''
 
@@ -32,22 +44,12 @@ param googleClientSecret string = ''
 @secure()
 param musicTokenEncryptionKey string = ''
 
-var uniqueSuffix = uniqueString(subscription().id, resourceGroup().id)
-var postgresServerName = take('${namePrefix}-pg-${uniqueSuffix}', 63)
 var environmentName = '${namePrefix}-env'
 var appName = '${namePrefix}-app'
-var encodedPostgresPassword = uriComponent(postgresPassword)
-var databaseUrl = 'postgresql://${postgresAdminUser}:${encodedPostgresPassword}@${postgres.properties.fullyQualifiedDomainName}:5432/${database.name}?sslmode=verify-full'
 var googleConfigured = !empty(googleClientId) && !empty(googleClientSecret) && !empty(publicAppUrl)
 var musicConfigured = googleConfigured && !empty(musicTokenEncryptionKey)
 var ghcrConfigured = !empty(ghcrUsername) && !empty(ghcrToken)
 var appSecrets = concat(
-  [
-    {
-      name: 'database-url'
-      value: databaseUrl
-    }
-  ],
   googleConfigured
     ? [
         {
@@ -73,7 +75,34 @@ var appSecrets = concat(
       ]
     : []
 )
+var storageEnv = [
+  {
+    name: 'STORAGE_PROVIDER'
+    value: 'azure'
+  }
+  {
+    name: 'AZURE_STORAGE_ACCOUNT_NAME'
+    value: storageAccountName
+  }
+  {
+    name: 'AZURE_STORAGE_TABLE_NAME'
+    value: storageTableName
+  }
+  {
+    name: 'AZURE_STORAGE_CONTAINER_NAME'
+    value: storageContainerName
+  }
+  {
+    name: 'AZURE_STORAGE_PARTITION_KEY'
+    value: storagePartitionKey
+  }
+  {
+    name: 'AZURE_CLIENT_ID'
+    value: storageIdentity.properties.clientId
+  }
+]
 var appEnv = concat(
+  storageEnv,
   [
     {
       name: 'NODE_ENV'
@@ -96,8 +125,8 @@ var appEnv = concat(
       value: '/app/apps/web/dist'
     }
     {
-      name: 'DATABASE_URL'
-      secretRef: 'database-url'
+      name: 'AZURE_STORAGE_INITIALIZE'
+      value: 'false'
     }
     {
       name: 'PUBLIC_APP_URL'
@@ -129,20 +158,15 @@ var appEnv = concat(
       ]
     : []
 )
-var migrationEnv = [
+var initializationEnv = concat(storageEnv, [
   {
-    name: 'DATABASE_URL'
-    secretRef: 'database-url'
+    name: 'AZURE_STORAGE_INITIALIZE'
+    value: string(initializeStorage)
   }
-]
+])
 
-resource postgres 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' existing = {
-  name: postgresServerName
-}
-
-resource database 'Microsoft.DBforPostgreSQL/flexibleServers/databases@2024-08-01' existing = {
-  parent: postgres
-  name: databaseName
+resource storageIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' existing = {
+  name: '${namePrefix}-storage'
 }
 
 resource environment 'Microsoft.App/managedEnvironments@2024-03-01' existing = {
@@ -152,6 +176,12 @@ resource environment 'Microsoft.App/managedEnvironments@2024-03-01' existing = {
 resource app 'Microsoft.App/containerApps@2024-03-01' = {
   name: appName
   location: location
+  identity: {
+    type: 'UserAssigned'
+    userAssignedIdentities: {
+      '${storageIdentity.id}': {}
+    }
+  }
   properties: {
     managedEnvironmentId: environment.id
     configuration: {
@@ -176,15 +206,15 @@ resource app 'Microsoft.App/containerApps@2024-03-01' = {
     template: {
       initContainers: [
         {
-          name: 'migrate'
+          name: 'initialize-storage'
           image: image
           command: [
             'node'
           ]
           args: [
-            'apps/server/dist/migrate.js'
+            'apps/server/dist/initialize-storage.js'
           ]
-          env: migrationEnv
+          env: initializationEnv
           resources: {
             cpu: json('0.25')
             memory: '0.5Gi'

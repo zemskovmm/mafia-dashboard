@@ -4,7 +4,7 @@ A self-hosted web dashboard for moderating in-person Club Mafia games.
 
 ## Status
 
-This repository contains the implemented touch-first TypeScript web application, its PostgreSQL service, and deployment configuration.
+This repository contains the touch-first TypeScript web application with Azure Table/private Blob persistence for local development and Azure deployment. PostgreSQL remains available for Docker Compose, reference tests and deferred one-time data migration. The Azure release starts empty; deployment never imports or deletes the old PostgreSQL data.
 
 ## Documentation
 
@@ -12,19 +12,21 @@ This repository contains the implemented touch-first TypeScript web application,
 - [`docs/product-outline.md`](docs/product-outline.md) — approved setup wizard, round-table UI, music/timer behavior, phase flow, and interaction contracts.
 - [`docs/architecture.md`](docs/architecture.md) — current workspace boundaries, client rendering, and lighting-renderer lifecycle.
 - [`docs/adr/0001-typescript-modular-monolith.md`](docs/adr/0001-typescript-modular-monolith.md) — initial SPA/API/PostgreSQL architecture decision.
-- [`docs/azure-deployment.md`](docs/azure-deployment.md) — Azure Container Apps, private PostgreSQL, GitHub OIDC deployment, and rollback runbook.
+- [`docs/azure-deployment.md`](docs/azure-deployment.md) — Azure Container Apps, identity-authenticated Table/private Blob storage, GitHub OIDC deployment and rollback boundaries.
 - [`docs/self-hosted-deployment.md`](docs/self-hosted-deployment.md) — single-host Docker Compose, one-shot migrations, external TLS, bounded logs, upgrades, and rollback.
 - [`docs/postgresql-backup-and-recovery.md`](docs/postgresql-backup-and-recovery.md) — scheduled PostgreSQL backups, off-server retention, restore verification, and disaster recovery.
+- [`docs/azure-storage-backup-and-recovery.md`](docs/azure-storage-backup-and-recovery.md) — local Table/private Blob packages, owner-checked freeze recovery and isolated restore; not a production cutover.
+- [`docs/postgres-to-azure-migration.md`](docs/postgres-to-azure-migration.md) — explicit deferred business-data import into an empty target, excluding sessions and music connections; never run automatically by deployment.
 - [`docs/security-and-privacy.md`](docs/security-and-privacy.md) — threat model, security controls, supply-chain gates, verification, and residual risks.
 - [GitHub issues](https://github.com/zemskovmm/mafia-dashboard/issues) — dependency-aware implementation backlog.
 
 ## Architecture direction
 
-The application is a TypeScript npm workspace with a React/Vite SPA, Fastify API, pure game-domain package, and a revisioned PostgreSQL game-session aggregate. Setup state is persisted directly; live play is derived from an immutable game baseline and parent-linked semantic events. The client defaults to V-GPU lighting, retains existing CSS lighting while V-GPU starts or fails, and offers a **Raytracing** toggle to switch between GPU and legacy CSS. Local development starts the API, Vite, and an owned native PostgreSQL cluster together; Docker Compose remains an alternative. Production deploys to Azure Container Apps with private PostgreSQL Flexible Server persistence.
+The application is a TypeScript npm workspace with a React/Vite SPA, Fastify API, pure game-domain package, and remotely published game-session snapshots. Setup state is persisted directly; live play is derived from an immutable game baseline and parent-linked semantic events. The client defaults to V-GPU lighting, retains existing CSS lighting while V-GPU starts or fails, and offers a **Raytracing** toggle to switch between GPU and legacy CSS. Local development starts the API, Vite, and an owned Azurite emulator together, without PostgreSQL. Azure deployment explicitly selects Table/Blob with managed identity; Docker Compose retains PostgreSQL. [IDD-0006](.idd/intent/IDD-0006.adr-azure-table-and-blob-persistence.md) records persistence and deferred migration boundaries. Automated production Storage backups are not configured by this release.
 
 ## Default development app (Mac and iPad)
 
-Prerequisites: Node 22+, npm 10+, and PostgreSQL **17** tools (`initdb`, `pg_ctl`, `createdb`, `psql`) on `PATH`. The default private HTTPS route also requires this Mac's Tailscale connection and existing Serve mapping:
+Prerequisites: Node 22+ and npm 10+; the pinned Azurite dependency is installed with the workspace. PostgreSQL **17** tools (`initdb`, `pg_ctl`, `createdb`, `psql`) on `PATH` are needed only for the retained reference tests/checks, not normal Azure development. The default private HTTPS route also requires this Mac's Tailscale connection and existing Serve mapping:
 
 **<https://mbp16.tail102fab.ts.net> → `http://127.0.0.1:5173`**
 
@@ -33,9 +35,9 @@ npm install
 npm run dev
 ```
 
-This starts persistent PostgreSQL on loopback port 54328, validates/initializes the current schema, starts the real API on port 3000 and the Vite frontend on port 5173, and checks readiness. The launcher verifies the existing Tailscale route without changing Serve, enabling Funnel, or opening LAN listeners. It fails on occupied ports rather than silently choosing another app URL. Press Ctrl+C to stop its processes; data is retained under ignored `postgres-data/local/`. It never automatically resets an existing database.
+This starts an owned loopback Azurite service (Blob/Queue/Table ports 13500/13501/13502), initializes or validates its application namespace, starts the real API on port 3000 and the Vite frontend on port 5173, and checks readiness. The launcher verifies the existing Tailscale route without changing Serve, enabling Funnel, or opening LAN listeners. It fails on occupied ports rather than silently choosing another app URL. Press Ctrl+C to stop its processes; the private persistent dataset is retained under ignored `.AI/local-azurite/dev/`. It never automatically resets an existing dataset or imports the previous local PostgreSQL data.
 
-The native development database uses loopback-only trust authentication and owner-only storage. Use it on a trusted, single-user development machine: other local OS users could access it. It is not a production database configuration.
+The emulator uses loopback-only services, a generated local account key and owner-only storage. Treat it as a trusted single-user development fixture, not production storage. Production Azure access uses the application's server identity; emulator credentials are never a remote-storage fallback.
 
 For real Google sign-in, supply `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in the ignored, owner-readable-only `.env.local` file. The launcher does not reuse the Docker `.env` implicitly. Register this exact redirect URI in your Google **Web application** OAuth client:
 
@@ -99,11 +101,11 @@ npm run verify:compose
 npm run verify:backup
 ```
 
-`npm run dev` initializes or validates the current schema before starting the server and web watchers. Production Compose and Azure run the same advisory-locked, transaction-protected bundle as a one-shot job before the web process starts. Only an empty database or the current schema is supported; historical schema upgrades and data backfills are not provided. Keep unsupported databases intact and do not bypass the startup gate or reset an existing environment automatically.
+`npm run dev` initializes an empty recognized Azure namespace or validates its current control record before starting the server and web watchers. The unchanged production Compose/Azure PostgreSQL deployment still runs its advisory-locked, transaction-protected schema bundle as a one-shot job. Only empty or recognized current stores are supported; historical upgrades and data imports are not provided. Keep unsupported stores intact rather than bypassing the startup gate or resetting them automatically.
 
-`test:local` runs the existing tests against a fresh disposable PostgreSQL cluster. `check:local` runs the full `npm run check` (format, lint, typecheck, tests, build) in that same kind of isolated environment. Each run uses its own loopback port and directory under ignored `postgres-data/tests/`, removes only its owned disposable data afterward, and preserves the child command's exit status. Tests do not load development OAuth credentials, use the development database, or change Tailscale routing. Focused commands can use the same wrapper, for example `npm run test:local -- -- npm run test -w @mafia/server -- src/config.test.ts`.
+`test:local` runs Azure regressions against owned disposable Azurite fixtures and retains the existing SQL reference suites against a fresh disposable PostgreSQL cluster. `check:local` runs the full `npm run check` (format, lint, typecheck, tests, build) with both protected test backends available. Generated test targets are loopback-only and isolated from the persistent development dataset; each launcher removes only its owned disposable state and preserves the child exit status. Tests do not load development OAuth credentials or change Tailscale routing. Focused commands can use the same wrapper, for example `npm run test:local -- -- npm run test -w @mafia/server -- src/config.test.ts`. `node scripts/test-local.mjs --postgres --check` retains the PostgreSQL-only outer wrapper; Azure regression cases still own their independent emulator fixtures.
 
-`verify:local` starts a separate real frontend/API/database and exercises cookie-session authentication, club isolation, and persistence. Synthetic short-lived sessions are confined to its disposable database; application API responses are not mocked. This does **not** validate Google's external login/consent flow or prove an actual iPad session. Those require a separate check through the private HTTPS URL and iPad Safari.
+`verify:local` still qualifies the retained PostgreSQL reference stack with a separate real frontend/API/database. Synthetic short-lived sessions are confined to its disposable database; application API responses are not mocked. Azure regressions execute real emulator-backed authenticated API flows in the canonical checks. Neither path validates Google's external login/consent flow or proves an actual iPad session; those require a separate check through the private HTTPS URL and iPad Safari.
 
 Direct `npm run test` and `npm run check` keep their existing externally provisioned PostgreSQL contract (`TEST_DATABASE_URL`, otherwise the test endpoint on port 54329). Never point them at an application database. Native-cluster lifecycle tests are explicitly skipped where PostgreSQL tools are unavailable; the local wrappers require them.
 

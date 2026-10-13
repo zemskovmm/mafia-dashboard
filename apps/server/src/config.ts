@@ -1,12 +1,38 @@
 import { z } from "zod";
 import type { GoogleAuthConfig } from "./google-auth.js";
 import type { YouTubeOAuthConfig } from "./youtube-oauth.js";
+import type { AzureStorageOptions } from "./storage-contracts.js";
 
 const emptyToUndefined = (value: unknown) => (value === "" ? undefined : value);
 
 const environment = z
   .object({
     DATABASE_URL: z.url().default("postgresql://mafia:mafia@127.0.0.1:5432/mafia"),
+    STORAGE_PROVIDER: z.enum(["postgres", "azure"]).default("postgres"),
+    AZURE_STORAGE_CONNECTION_STRING: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+    AZURE_STORAGE_ACCOUNT_NAME: z.preprocess(
+      emptyToUndefined,
+      z
+        .string()
+        .regex(/^[a-z0-9]{3,24}$/)
+        .optional(),
+    ),
+    AZURE_STORAGE_TABLE_NAME: z
+      .string()
+      .regex(/^[A-Za-z][A-Za-z0-9]{2,62}$/)
+      .default("MafiaEntities"),
+    AZURE_STORAGE_CONTAINER_NAME: z
+      .string()
+      .regex(/^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])$/)
+      .default("mafia-live"),
+    AZURE_STORAGE_PARTITION_KEY: z.preprocess(
+      emptyToUndefined,
+      z.string().min(1).max(256).optional(),
+    ),
+    AZURE_STORAGE_INITIALIZE: z
+      .enum(["true", "false"])
+      .default("false")
+      .transform((value) => value === "true"),
     HOST: z.string().default("0.0.0.0"),
     PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
     TRUST_PROXY_HOPS: z
@@ -36,6 +62,63 @@ const environment = z
     ),
   })
   .superRefine((value, context) => {
+    if (value.STORAGE_PROVIDER === "azure") {
+      if (
+        value.AZURE_STORAGE_PARTITION_KEY === undefined ||
+        [...value.AZURE_STORAGE_PARTITION_KEY].some(
+          (character) =>
+            "/\\#?".includes(character) ||
+            character.charCodeAt(0) < 32 ||
+            (character.charCodeAt(0) >= 127 && character.charCodeAt(0) <= 159),
+        )
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "Azure storage requires a stable valid partition key",
+        });
+      }
+      if (
+        (value.AZURE_STORAGE_ACCOUNT_NAME === undefined) ===
+        (value.AZURE_STORAGE_CONNECTION_STRING === undefined)
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "Azure storage requires exactly one of account name or local connection string",
+        });
+      }
+      if (value.AZURE_STORAGE_CONNECTION_STRING !== undefined) {
+        const endpoints = [
+          ...value.AZURE_STORAGE_CONNECTION_STRING.matchAll(
+            /(?:^|;)(?:BlobEndpoint|TableEndpoint)=([^;]+)/g,
+          ),
+        ].map((match) => match[1]!);
+        if (
+          endpoints.length !== 2 ||
+          endpoints.some((endpoint) => {
+            try {
+              const url = new URL(endpoint);
+              return (
+                url.protocol !== "http:" ||
+                url.hostname !== "127.0.0.1" ||
+                url.username !== "" ||
+                url.password !== "" ||
+                url.search !== ""
+              );
+            } catch {
+              return true;
+            }
+          }) ||
+          !value.AZURE_STORAGE_CONNECTION_STRING.includes("DefaultEndpointsProtocol=http") ||
+          value.AZURE_STORAGE_CONNECTION_STRING.includes("SharedAccessSignature=")
+        ) {
+          context.addIssue({
+            code: "custom",
+            message:
+              "Azure storage connection string is only allowed for explicit loopback Blob and Table endpoints",
+          });
+        }
+      }
+    }
     if ((value.GOOGLE_CLIENT_ID === undefined) !== (value.GOOGLE_CLIENT_SECRET === undefined)) {
       context.addIssue({
         code: "custom",
@@ -66,9 +149,25 @@ const environment = z
       GOOGLE_CLIENT_SECRET,
       GOOGLE_OAUTH_REDIRECT_URI,
       MUSIC_TOKEN_ENCRYPTION_KEY,
+      AZURE_STORAGE_CONNECTION_STRING,
+      AZURE_STORAGE_ACCOUNT_NAME,
+      AZURE_STORAGE_TABLE_NAME,
+      AZURE_STORAGE_CONTAINER_NAME,
+      AZURE_STORAGE_PARTITION_KEY,
       ...server
     }) => ({
       ...server,
+      azureStorage:
+        server.STORAGE_PROVIDER === "azure"
+          ? {
+              tableName: AZURE_STORAGE_TABLE_NAME,
+              containerName: AZURE_STORAGE_CONTAINER_NAME,
+              partitionKey: AZURE_STORAGE_PARTITION_KEY!,
+              ...(AZURE_STORAGE_CONNECTION_STRING === undefined
+                ? { accountName: AZURE_STORAGE_ACCOUNT_NAME! }
+                : { connectionString: AZURE_STORAGE_CONNECTION_STRING }),
+            }
+          : undefined,
       googleAuth:
         GOOGLE_CLIENT_ID === undefined ||
         GOOGLE_CLIENT_SECRET === undefined ||
@@ -97,6 +196,7 @@ const environment = z
 export type ServerConfig = z.infer<typeof environment> & {
   readonly googleAuth?: GoogleAuthConfig;
   readonly youtubeOAuth?: YouTubeOAuthConfig;
+  readonly azureStorage?: AzureStorageOptions;
 };
 
 export const loadConfig = (source: NodeJS.ProcessEnv = process.env): ServerConfig =>

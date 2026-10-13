@@ -5,7 +5,7 @@ import { clearTimeout, setTimeout } from "node:timers";
 import { fileURLToPath, URL } from "node:url";
 import { join } from "node:path";
 import { createServer } from "node:net";
-import { startPostgres } from "./local-postgres.mjs";
+import { startAzurite } from "./local-azurite.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const apiOrigin = "http://127.0.0.1:3000";
@@ -36,8 +36,20 @@ const googleKeys = new Set([
   "GOOGLE_OAUTH_REDIRECT_URI",
   "MUSIC_TOKEN_ENCRYPTION_KEY",
 ]);
+const storageKeys = [
+  "STORAGE_PROVIDER",
+  "AZURE_STORAGE_CONNECTION_STRING",
+  "AZURE_STORAGE_TABLE_NAME",
+  "AZURE_STORAGE_CONTAINER_NAME",
+  "AZURE_STORAGE_PARTITION_KEY",
+  "AZURE_STORAGE_INITIALIZE",
+];
 const pinnedKeys = new Set([
   "DATABASE_URL",
+  "TEST_DATABASE_URL",
+  "AZURITE_ACCOUNTS",
+  ...storageKeys,
+  ...storageKeys.map((key) => `TEST_${key}`),
   "PUBLIC_APP_URL",
   "STATIC_DIR",
   "HOST",
@@ -279,9 +291,9 @@ const waitFor = async ({ label, url, validate, children }) => {
   throw new Error(`${label} did not become ready within 30 seconds (${lastError}).`);
 };
 
-export const apiSettings = ({ databaseUrl, origin, google }) =>
+export const apiSettings = ({ storage, origin, google }) =>
   childEnvironment({
-    DATABASE_URL: databaseUrl,
+    ...Object.fromEntries(storageKeys.map((key) => [key, storage[key]])),
     PUBLIC_APP_URL: origin,
     HOST: "127.0.0.1",
     PORT: "3000",
@@ -294,7 +306,7 @@ export const viteSettings = () => childEnvironment({ MAFIA_API_PROXY_TARGET: api
 export const main = async () => {
   const mode = parseLaunchMode(process.argv.slice(2));
   const managed = [];
-  let postgres;
+  let azurite;
   let cleanupPromise;
   let signalName;
   let resolveSignal;
@@ -304,15 +316,16 @@ export const main = async () => {
   const cleanup = () => {
     cleanupPromise ??= (async () => {
       await Promise.allSettled([...managed].reverse().map(stopProcess));
-      const database = postgres;
-      postgres = undefined;
-      await database?.stop();
+      const storage = azurite;
+      azurite = undefined;
+      await storage?.stop();
     })();
     return cleanupPromise;
   };
   const onSignal = (name) => {
     signalName ??= name;
-    void cleanup().finally(() => resolveSignal(signalName));
+    resolveSignal(signalName);
+    void cleanup();
   };
   const onSigint = () => onSignal("SIGINT");
   const onSigterm = () => onSignal("SIGTERM");
@@ -332,35 +345,15 @@ export const main = async () => {
     const google = googleEnvironment(localConfiguration);
     await Promise.all([assertAvailablePort(3000), assertAvailablePort(5173)]);
     throwIfInterrupted();
-    const database = await startPostgres();
+    const storage = await startAzurite({ mode: "dev" });
     if (signalName !== undefined) {
-      await database.stop();
+      await storage.stop();
       throwIfInterrupted();
     }
-    postgres = database;
-    const apiEnvironment = apiSettings({ databaseUrl: database.url, origin, google });
+    azurite = storage;
+    const apiEnvironment = apiSettings({ storage: storage.environment, origin, google });
 
-    const migration = createProcess("npm", ["run", "migrate", "-w", "@mafia/server"], {
-      cwd: root,
-      env: apiEnvironment,
-    });
-    managed.push(migration);
-    const migrationOutcome = await Promise.race([
-      migration.exited,
-      delay(60_000).then(() => undefined),
-    ]);
-    if (migrationOutcome === undefined) {
-      await stopProcess(migration);
-      throw new Error("Local database migration timed out after 60 seconds.");
-    }
-    managed.splice(managed.indexOf(migration), 1);
-    throwIfInterrupted();
-    if (migrationOutcome.code !== 0) {
-      throw new Error(
-        `npm run migrate -w @mafia/server exited with ${migrationOutcome.code ?? migrationOutcome.signal ?? "an unknown status"}`,
-      );
-    }
-
+    // Azure storage initialization is performed by the server on startup; no PostgreSQL migration.
     const api = createProcess("npm", ["run", "dev", "-w", "@mafia/server"], {
       cwd: root,
       env: apiEnvironment,

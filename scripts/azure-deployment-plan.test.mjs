@@ -9,7 +9,10 @@ const target = {
   resourceGroup: "test-group",
   location: "northeurope",
   namePrefix: "testapp",
-  databaseName: "mafia_current",
+  storageAccountName: "testappstorage",
+  storageTableName: "MafiaEntities",
+  storageContainerName: "mafia-live",
+  storagePartitionKey: "production-v1",
 };
 const resourceId = `/subscriptions/${target.subscriptionId}/resourceGroups/${target.resourceGroup}/providers/Microsoft.App/managedEnvironments/testapp-env`;
 const fingerprint = "a".repeat(64);
@@ -18,7 +21,10 @@ const record = {
   outputs: {
     foundationFingerprint: { value: fingerprint },
     containerAppName: { value: "testapp-app" },
-    deployedDatabaseName: { value: "mafia_current" },
+    storageAccountName: { value: target.storageAccountName },
+    storageTableName: { value: target.storageTableName },
+    storageContainerName: { value: target.storageContainerName },
+    environmentName: { value: "testapp-env" },
     resourceIds: { value: [resourceId] },
   },
 };
@@ -80,7 +86,9 @@ test("lookup failures and malformed successful records stop deployment", () => {
   for (const bad of [
     "not a deployment record",
     {},
-    { ...record, outputs: { ...record.outputs, deployedDatabaseName: { value: "other" } } },
+    ...["storageAccountName", "storageTableName", "storageContainerName", "environmentName"].map(
+      (name) => ({ ...record, outputs: { ...record.outputs, [name]: { value: "other" } } }),
+    ),
     { ...record, outputs: { ...record.outputs, containerAppName: { value: "other-app" } } },
     { ...record, outputs: { ...record.outputs, resourceIds: { value: [] } } },
     {
@@ -122,6 +130,9 @@ test("unknown and malformed resource types fail before resource lookup", () => {
     "Microsoft.App/managedEnvironments/",
     "Microsoft.Network/virtualNetworks//subnets/test",
     "Microsoft.Network/virtualNetworks/test/subnets",
+    "Microsoft.Storage/storageAccounts/test/providers/Microsoft.Unknown/widgets/test",
+    "Microsoft.Storage/storageAccounts/test/providers/Microsoft.Authorization/roleAssignments",
+    "Microsoft.Network/virtualNetworks/test/providers/Microsoft.Authorization/roleAssignments/test",
   ]) {
     const previous = {
       ...record,
@@ -169,6 +180,50 @@ test("resource lookup versions match every foundation Bicep type", async () => {
       },
     });
     assert.equal(result.deploy, false);
+  }
+});
+
+test("deployment targets validate Storage namespace before Azure lookup without legacy SQL inputs", async () => {
+  const { deploymentTarget } = await import("./azure-deployment-plan.mjs");
+  assert.equal(typeof deploymentTarget, "function", "deployment target validator must exist");
+  const env = {
+    AZURE_SUBSCRIPTION_ID: "sub",
+    AZURE_RESOURCE_GROUP: "group",
+    AZURE_LOCATION: "northeurope",
+    AZURE_NAME_PREFIX: "app",
+    AZURE_STORAGE_ACCOUNT_NAME: "appstorage",
+    AZURE_STORAGE_TABLE_NAME: "MafiaEntities",
+    AZURE_STORAGE_CONTAINER_NAME: "mafia-live",
+    AZURE_STORAGE_PARTITION_KEY: "production-v1",
+  };
+  assert.equal(deploymentTarget(env).storagePartitionKey, "production-v1");
+  for (const [key, invalid] of Object.entries({
+    AZURE_STORAGE_ACCOUNT_NAME: [undefined, "", "Uppercase", "a-b", "a".repeat(25)],
+    AZURE_STORAGE_TABLE_NAME: [undefined, "", "1table", "a-b", "aa", "a".repeat(64)],
+    AZURE_STORAGE_CONTAINER_NAME: [
+      undefined,
+      "",
+      "Uppercase",
+      "a--b",
+      "ab",
+      "-abc",
+      "abc-",
+      "a".repeat(64),
+    ],
+    AZURE_STORAGE_PARTITION_KEY: [
+      undefined,
+      "",
+      "a/b",
+      "a\\b",
+      "a?b",
+      "a#b",
+      "a\nb",
+      "a\u0085b",
+      "a".repeat(257),
+    ],
+  })) {
+    for (const value of invalid)
+      assert.throws(() => deploymentTarget({ ...env, [key]: value }), new RegExp(key));
   }
 });
 

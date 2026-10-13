@@ -28,10 +28,11 @@ filenames, file paths, or Markdown links in this column. Resolve an identifier t
 the unique current `.idd/intent/IDD-NNNN.*.md` file when the document must be
 opened.
 
-| Document | Role | Area                                | Notes                                                           | Replaces |
-| -------- | ---- | ----------------------------------- | --------------------------------------------------------------- | -------- |
-| IDD-0001 | Spec | Club access and player identity     | Membership, consent and privacy-preserving historical retention |          |
-| IDD-0002 | Spec | Club Mafia gameplay                 | Setup, Casper, voting, discipline, checks and outcomes          |          |
-| IDD-0003 | Spec | Host controls and presentation      | Privacy, language, accessibility, media and timers              |          |
-| IDD-0004 | Spec | Game records and continuity         | Snapshot authority, recovery, history, correction and deletion  |          |
-| IDD-0005 | Spec | Data compatibility and preservation | Supported storage boundaries and safe rejection                 |          |
+| Document | Role | Area                                | Notes                                                                    | Replaces |
+| -------- | ---- | ----------------------------------- | ------------------------------------------------------------------------ | -------- |
+| IDD-0001 | Spec | Club access and player identity     | Membership, consent and privacy-preserving historical retention          |          |
+| IDD-0002 | Spec | Club Mafia gameplay                 | Setup, Casper, voting, discipline, checks and outcomes                   |          |
+| IDD-0003 | Spec | Host controls and presentation      | Privacy, language, accessibility, media and timers                       |          |
+| IDD-0004 | Spec | Game records and continuity         | Snapshot authority, recovery, history, correction and deletion           |          |
+| IDD-0005 | Spec | Data compatibility and preservation | Supported storage boundaries and safe rejection                          |          |
+| IDD-0006 | ADR  | Azure Table and Blob persistence    | Durable publication, small-partition tradeoffs and transition boundaries |          |

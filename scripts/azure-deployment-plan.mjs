@@ -8,13 +8,14 @@ const root = new URL("../", import.meta.url);
 
 // Keep resource GETs on the same supported API versions as infra/main.bicep.
 const resourceApiVersions = new Map([
-  ["microsoft.network/virtualnetworks", "2024-05-01"],
-  ["microsoft.network/virtualnetworks/subnets", "2024-05-01"],
-  ["microsoft.network/privatednszones", "2024-06-01"],
-  ["microsoft.network/privatednszones/virtualnetworklinks", "2024-06-01"],
-  ["microsoft.dbforpostgresql/flexibleservers", "2024-08-01"],
-  ["microsoft.dbforpostgresql/flexibleservers/databases", "2024-08-01"],
   ["microsoft.app/managedenvironments", "2024-03-01"],
+  ["microsoft.storage/storageaccounts", "2025-01-01"],
+  ["microsoft.storage/storageaccounts/blobservices", "2025-01-01"],
+  ["microsoft.storage/storageaccounts/blobservices/containers", "2025-01-01"],
+  ["microsoft.storage/storageaccounts/tableservices", "2025-01-01"],
+  ["microsoft.storage/storageaccounts/tableservices/tables", "2025-01-01"],
+  ["microsoft.managedidentity/userassignedidentities", "2023-01-31"],
+  ["microsoft.authorization/roleassignments", "2022-04-01"],
 ]);
 
 export function foundationFingerprint(files, target) {
@@ -49,7 +50,10 @@ export function selectFoundation({ target, fingerprint, force, readAzure }) {
   }
   if (
     outputs.containerAppName?.value !== `${target.namePrefix}-app` ||
-    outputs.deployedDatabaseName?.value !== target.databaseName
+    outputs.environmentName?.value !== `${target.namePrefix}-env` ||
+    outputs.storageAccountName?.value !== target.storageAccountName ||
+    outputs.storageTableName?.value !== target.storageTableName ||
+    outputs.storageContainerName?.value !== target.storageContainerName
   ) {
     throw new Error("Foundation record target does not match deployment inputs");
   }
@@ -64,7 +68,16 @@ export function selectFoundation({ target, fingerprint, force, readAzure }) {
     throw new Error("Foundation record has invalid resource IDs");
   }
   for (const id of ids) {
-    const [namespace, ...segments] = id.slice(prefix.length).toLowerCase().split("/");
+    const scopes = id.slice(prefix.length).toLowerCase().split("/providers/");
+    if (
+      scopes.length > 2 ||
+      (scopes.length === 2 &&
+        (!/^microsoft\.storage\/storageaccounts\/[^/]+$/.test(scopes[0]) ||
+          !scopes[1].startsWith("microsoft.authorization/roleassignments/")))
+    ) {
+      throw new Error("Foundation record has an unsupported or malformed resource ID");
+    }
+    const [namespace, ...segments] = scopes.at(-1).split("/");
     const type = [namespace, ...segments.filter((_, index) => index % 2 === 0)].join("/");
     const apiVersion = resourceApiVersions.get(type);
     if (!apiVersion || segments.length % 2 !== 0 || segments.some((segment) => !segment)) {
@@ -113,17 +126,45 @@ export function readAzure(args) {
   return value;
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const target = {
-    subscriptionId: process.env.AZURE_SUBSCRIPTION_ID,
-    resourceGroup: process.env.AZURE_RESOURCE_GROUP,
-    location: process.env.AZURE_LOCATION,
-    namePrefix: process.env.AZURE_NAME_PREFIX,
-    databaseName: process.env.AZURE_DATABASE_NAME,
+export function deploymentTarget(env = process.env) {
+  const fields = {
+    subscriptionId: "AZURE_SUBSCRIPTION_ID",
+    resourceGroup: "AZURE_RESOURCE_GROUP",
+    location: "AZURE_LOCATION",
+    namePrefix: "AZURE_NAME_PREFIX",
+    storageAccountName: "AZURE_STORAGE_ACCOUNT_NAME",
+    storageTableName: "AZURE_STORAGE_TABLE_NAME",
+    storageContainerName: "AZURE_STORAGE_CONTAINER_NAME",
+    storagePartitionKey: "AZURE_STORAGE_PARTITION_KEY",
   };
-  if (Object.values(target).some((value) => !value || /[\r\n]/.test(value))) {
-    throw new Error("Missing or invalid non-secret deployment target");
-  }
+  const patterns = {
+    storageAccountName: /^[a-z0-9]{3,24}$/,
+    storageTableName: /^[A-Za-z][A-Za-z0-9]{2,62}$/,
+    storageContainerName: /^(?!.*--)[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/,
+    storagePartitionKey: /^[^/\\?#]{1,256}$/u,
+    namePrefix: /^[a-z][a-z0-9-]{2,17}$/,
+  };
+  return Object.fromEntries(
+    Object.entries(fields).map(([field, key]) => {
+      const value = env[key];
+      if (
+        typeof value !== "string" ||
+        !value ||
+        [...value].some((character) => {
+          const code = character.codePointAt(0);
+          return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
+        }) ||
+        (patterns[field] && !patterns[field].test(value))
+      ) {
+        throw new Error(`Missing or invalid ${key}`);
+      }
+      return [field, value];
+    }),
+  );
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const target = deploymentTarget();
   const paths = [
     ...readdirSync(new URL("infra/", root), { recursive: true })
       .filter((path) => path.endsWith(".bicep"))
@@ -141,7 +182,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   });
   appendFileSync(
     process.env.GITHUB_OUTPUT,
-    `deploy=${selection.deploy}\nreason=${selection.reason}\nfingerprint=${fingerprint}\napp_name=${target.namePrefix}-app\ndatabase_name=${target.databaseName}\n`,
+    `deploy=${selection.deploy}\nreason=${selection.reason}\nfingerprint=${fingerprint}\napp_name=${target.namePrefix}-app\nstorage_account_name=${target.storageAccountName}\nstorage_table_name=${target.storageTableName}\nstorage_container_name=${target.storageContainerName}\nstorage_partition_key=${target.storagePartitionKey}\n`,
   );
   console.log(`Infrastructure deployment: ${selection.deploy} (${selection.reason})`);
 }

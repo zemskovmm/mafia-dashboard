@@ -42,12 +42,77 @@ interface UserRow {
   readonly picture: string | null;
 }
 
+export interface GoogleAccountStore {
+  upsertUser(identity: {
+    readonly id: string;
+    readonly subject: string;
+    readonly email: string;
+    readonly name: string;
+    readonly picture: string | null;
+  }): Promise<AppUser>;
+  saveSession(userId: string, hash: Buffer, expiresAt: Date): Promise<void>;
+  findSession(hash: Buffer, now: Date): Promise<AppUser | null>;
+  removeSession(hash: Buffer): Promise<void>;
+}
+export type GoogleAuthPort = Pick<
+  GoogleAuthService,
+  | "configured"
+  | "createAuthorizationUrl"
+  | "completeAuthorization"
+  | "getUserForSession"
+  | "endSession"
+>;
+
 const mapUser = (row: UserRow): AppUser => ({
   id: row.id,
   email: row.email,
   name: row.display_name,
   picture: row.picture,
 });
+
+export class PostgresGoogleAccountStore implements GoogleAccountStore {
+  public constructor(private readonly pool: Pool) {}
+  public async upsertUser(
+    identity: Parameters<GoogleAccountStore["upsertUser"]>[0],
+  ): Promise<AppUser> {
+    const result = await this.pool.query<UserRow>(
+      `INSERT INTO users (id, google_subject, email, display_name, picture)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (google_subject) DO UPDATE
+         SET email = EXCLUDED.email,
+             display_name = EXCLUDED.display_name,
+             picture = EXCLUDED.picture,
+             updated_at = NOW()
+       RETURNING id, email, display_name, picture`,
+      [identity.id, identity.subject, identity.email, identity.name, identity.picture],
+    );
+    const user = result.rows[0];
+    if (user === undefined) throw new Error("Google user could not be persisted");
+    return mapUser(user);
+  }
+  public async saveSession(userId: string, hash: Buffer, expiresAt: Date): Promise<void> {
+    await this.pool.query("DELETE FROM user_sessions WHERE expires_at <= NOW()");
+    await this.pool.query(
+      `INSERT INTO user_sessions (id, token_hash, user_id, expires_at)
+       VALUES ($1, $2, $3, $4)`,
+      [randomUUID(), hash, userId, expiresAt],
+    );
+  }
+  public async findSession(hash: Buffer, now: Date): Promise<AppUser | null> {
+    void now; // PostgreSQL uses its own database clock for expiry, preserving legacy behavior.
+    const result = await this.pool.query<UserRow>(
+      `SELECT app_user.id, app_user.email, app_user.display_name, app_user.picture
+         FROM user_sessions AS session
+         JOIN users AS app_user ON app_user.id = session.user_id
+        WHERE session.token_hash = $1 AND session.expires_at > NOW()`,
+      [hash],
+    );
+    return result.rows[0] === undefined ? null : mapUser(result.rows[0]);
+  }
+  public async removeSession(hash: Buffer): Promise<void> {
+    await this.pool.query("DELETE FROM user_sessions WHERE token_hash = $1", [hash]);
+  }
+}
 
 const sessionHash = (token: string): Buffer => createHash("sha256").update(token).digest();
 
@@ -66,11 +131,15 @@ export class GoogleAuthService {
   public readonly configured = true;
 
   public constructor(
-    private readonly pool: Pool,
+    poolOrStore: Pool | GoogleAccountStore,
     private readonly config: GoogleAuthConfig,
     private readonly fetcher: typeof fetch = fetch,
     private readonly now: () => Date = () => new Date(),
-  ) {}
+  ) {
+    this.accounts =
+      "query" in poolOrStore ? new PostgresGoogleAccountStore(poolOrStore) : poolOrStore;
+  }
+  private readonly accounts: GoogleAccountStore;
 
   public createAuthorizationUrl(state: string): string {
     const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
@@ -117,52 +186,26 @@ export class GoogleAuthService {
       throw new Error("Google user profile returned an invalid identity");
     }
 
-    const userId = randomUUID();
-    const userResult = await this.pool.query<UserRow>(
-      `INSERT INTO users (id, google_subject, email, display_name, picture)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (google_subject) DO UPDATE
-         SET email = EXCLUDED.email,
-             display_name = EXCLUDED.display_name,
-             picture = EXCLUDED.picture,
-             updated_at = NOW()
-       RETURNING id, email, display_name, picture`,
-      [
-        userId,
-        profile.data.sub,
-        profile.data.email,
-        profile.data.name,
-        profile.data.picture ?? null,
-      ],
-    );
-    const user = userResult.rows[0];
-    if (user === undefined) throw new Error("Google user could not be persisted");
-
+    const user = await this.accounts.upsertUser({
+      id: randomUUID(),
+      subject: profile.data.sub,
+      email: profile.data.email,
+      name: profile.data.name,
+      picture: profile.data.picture ?? null,
+    });
     const sessionToken = randomBytes(32).toString("base64url");
     const expiresAt = new Date(this.now().getTime() + APPLICATION_SESSION_TTL_MS);
-    await this.pool.query("DELETE FROM user_sessions WHERE expires_at <= NOW()");
-    await this.pool.query(
-      `INSERT INTO user_sessions (id, token_hash, user_id, expires_at)
-       VALUES ($1, $2, $3, $4)`,
-      [randomUUID(), sessionHash(sessionToken), user.id, expiresAt],
-    );
-    return { user: mapUser(user), sessionToken, expiresAt };
+    await this.accounts.saveSession(user.id, sessionHash(sessionToken), expiresAt);
+    return { user, sessionToken, expiresAt };
   }
 
   public async getUserForSession(token: string | null): Promise<AppUser | null> {
     if (token === null || token.length === 0) return null;
-    const result = await this.pool.query<UserRow>(
-      `SELECT app_user.id, app_user.email, app_user.display_name, app_user.picture
-         FROM user_sessions AS session
-         JOIN users AS app_user ON app_user.id = session.user_id
-        WHERE session.token_hash = $1 AND session.expires_at > NOW()`,
-      [sessionHash(token)],
-    );
-    return result.rows[0] === undefined ? null : mapUser(result.rows[0]);
+    return this.accounts.findSession(sessionHash(token), this.now());
   }
 
   public async endSession(token: string | null): Promise<void> {
     if (token === null || token.length === 0) return;
-    await this.pool.query("DELETE FROM user_sessions WHERE token_hash = $1", [sessionHash(token)]);
+    await this.accounts.removeSession(sessionHash(token));
   }
 }

@@ -1,154 +1,123 @@
 # Azure deployment
 
-Mafia Dashboard deploys to Azure Container Apps from `.github/workflows/deploy-azure.yml` using Azure OIDC. The deployment is a single-region, single-replica pilot topology:
+Mafia Dashboard releases use `.github/workflows/deploy-azure.yml`, GitHub OIDC and immutable GHCR image digests. The approved Azure transition selects a **new empty Azure Table/private Blob store**, with no SQL connection, SQL migration init container, fallback or dual write. Historical business-data import is a separate later operation; it is not run during deployment. Users sign in again and reconnect music. Browser epoch rejection is not a deployment requirement.
 
-The production workflow bakes the full Git SHA into the image and exposes it with the package version at `/health/version`. Use the [v1.0.0 release checklist](releases/v1.0.0.md) for exact-candidate qualification and evidence requirements.
+## Target and resource ownership
 
-- Azure Container Apps Consumption, 0.5 vCPU / 1 GiB, exactly 1 always-warm replica
-- Azure Database for PostgreSQL Flexible Server 17, private VNet access, B1ms, 32 GiB, 7-day backups
-- private immutable images in GitHub Container Registry
-- no Azure Files, storage account, Dapr, Redis, NAT Gateway, or retained Log Analytics workspace
+The existing pilot target is subscription `9f0da8f6-9da5-4bef-9738-cb26f2a19e58`, resource group `rg-mafia-dashboard-prod-weu`, region `northeurope`, app `mafiadashboard-app`, environment `mafiadashboard-env`. Preserve the public hostname and Google callback origins. The app remains 0.5 vCPU / 1 GiB, `minReplicas: 1`, `maxReplicas: 1`. One warm replica avoids scale-to-zero but is not high availability.
 
-There is no fixed all-in monthly estimate. Azure bills Container Apps per second; a minimum replica is charged at the reduced idle rate only while it is inactive, and at the active rate while starting or processing work. The public North Europe pay-as-you-go feed currently lists Standard idle usage at **US$0.000003 per vCPU-second** and **US$0.000003 per GiB-second**. Actual cost depends on active time, request volume, the subscription-wide free grant, PostgreSQL usage, storage/backup, egress, tax, and price changes. See the [Azure Container Apps pricing page](https://azure.microsoft.com/en-us/pricing/details/container-apps/) and the [North Europe retail-price feed](https://prices.azure.com/api/retail/prices?%24filter=serviceName%20eq%20%27Azure%20Container%20Apps%27%20and%20armRegionName%20eq%20%27northeurope%27). B1ms and a single app/database are pilot-grade, not HA.
+- `infra/main.bicep` adds a dedicated Standard GPv2 LRS account, its Table/Blob services and empty table/container, user-assigned identity `${namePrefix}-storage`, and Storage Table Data Contributor / Storage Blob Data Contributor roles scoped **only to that account**. These data roles support the adapter's table/container initialization and data access. No account keys or connection string are supplied. TLS 1.2/HTTPS are required, shared-key access and anonymous Blob access are disabled, and the container has `publicAccess: None`.
+- Private data means authenticated, non-public Blob content; the account's HTTPS service endpoints remain publicly reachable. This is **not** a private-endpoint deployment. No VNet, subnet, DNS or private-endpoint changes are made. Do not expose the retained private PostgreSQL server to perform this transition.
+- `infra/app.bicep` writes **only the Container App**, referencing the existing environment and foundation-managed identity. Both web and `initialize-storage` containers run the same explicit immutable image. The web container always has `STORAGE_PROVIDER=azure` and `AZURE_STORAGE_INITIALIZE=false`.
+- Both foundation and app applies use **Incremental**, never Complete. PostgreSQL, its database, platform backups, VNet/subnets, DNS and the existing Container Apps environment are deliberately no longer managed by the Storage foundation; they remain intact. Removing them from the template is not retirement authority. Retained PostgreSQL costs continue.
 
-## GitHub production environment
+Record and review the exact Storage account/table/container/partition names before applying the compiled template. The account name is an explicit parameter, not an implicit existing-account lookup. Stop on a collision or unknown namespace; do not adopt, merge or clear it. `infra/parameters.example.json` is a **foundation-only** example, not an executable app parameter file or a secret store.
 
-The `production` environment must contain these variables:
+## GitHub operator configuration
 
-- `AZURE_CLIENT_ID`
-- `AZURE_TENANT_ID`
-- `AZURE_SUBSCRIPTION_ID`
-- `AZURE_RESOURCE_GROUP`
-- `AZURE_LOCATION`
-- `AZURE_NAME_PREFIX`
-- `AZURE_DATABASE_NAME` (required explicit target, for example `mafia_current_20260905`)
-- `GHCR_USERNAME`
-- `AZURE_DEPLOY_ENABLED=true`
+The `production` environment supplies these non-secret variables:
 
-`AZURE_DATABASE_NAME` is a non-secret deployment identity: 1–63 lowercase letters, digits, or underscores, beginning with a letter. There is no fallback database name. All Bicep validation, foundation, and application paths receive the same target; the workflow verifies the foundation's database-name output and includes it in the deployment summary. Direct Bicep callers must also supply `databaseName` explicitly and follow the same naming rule.
+| Variable                       | Value or requirement                                                                                                   |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `AZURE_CLIENT_ID`              | Existing **deployment** OIDC identity's client ID; not the application's Storage identity                              |
+| `AZURE_TENANT_ID`              | Existing deployment tenant                                                                                             |
+| `AZURE_SUBSCRIPTION_ID`        | `9f0da8f6-9da5-4bef-9738-cb26f2a19e58`                                                                                 |
+| `AZURE_RESOURCE_GROUP`         | `rg-mafia-dashboard-prod-weu`                                                                                          |
+| `AZURE_LOCATION`               | `northeurope`                                                                                                          |
+| `AZURE_NAME_PREFIX`            | `mafiadashboard`                                                                                                       |
+| `AZURE_STORAGE_ACCOUNT_NAME`   | Operator-selected, globally available, never-used name: 3–24 lowercase letters/digits                                  |
+| `AZURE_STORAGE_TABLE_NAME`     | `MafiaEntities` (3–63 alphanumeric characters, beginning with a letter)                                                |
+| `AZURE_STORAGE_CONTAINER_NAME` | `mafia-live` (3–63 lowercase letters/digits/hyphens; no adjacent or leading/trailing hyphen)                           |
+| `AZURE_STORAGE_PARTITION_KEY`  | Explicit stable namespace, recommended `production-v1`; 1–256 characters, no `/`, `\\`, `#`, `?` or control characters |
+| `GHCR_USERNAME`                | Existing registry username                                                                                             |
 
-It must contain these secrets:
+The workflow requires all four Storage variables, with no SQL or connection-string fallback. Treat a partition change as selection of a different dataset, **not migration**. Do not casually rename the account, table, container or partition on routine releases.
 
-- `POSTGRES_PASSWORD`
-- `GHCR_PULL_TOKEN` with `read:packages` access
-- `GOOGLE_CLIENT_ID`
-- `GOOGLE_CLIENT_SECRET`
-- `MUSIC_TOKEN_ENCRYPTION_KEY`
+Preserve the existing environment secrets: `GHCR_PULL_TOKEN` (`read:packages`), `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `MUSIC_TOKEN_ENCRYPTION_KEY`. Keep the existing key for newly stored encrypted music credentials and future recovery. The new workflow no longer consumes `POSTGRES_PASSWORD` or `AZURE_DATABASE_NAME`; retaining those old configuration items does not create a runtime SQL dependency and does not authorize deleting the old database or secret.
 
-Azure login uses the resource-group-scoped user-assigned managed identity `mafiadashboard-github`. Its federated subject uses GitHub's immutable owner and repository IDs:
+`AZURE_DEPLOY_ENABLED` is the **repository-level** automatic-release gate read by job conditions before production-environment initialization. Record its original value and scope, hold it at `false` before publication, and read it back. Manual dispatch with `deploy=true` bypasses this hold. Restore/read back the prior value only after verified acceptance or an explicitly reconciled abort. A production-environment variable alone must not be assumed to hold automatic jobs.
+
+### Deployment identity and application identity are different
+
+The existing OIDC trust uses `mafiadashboard-github` and the federated subject:
 
 ```text
 repo:zemskovmm@8973322/mafia-dashboard@1320321469:environment:production
 ```
 
-The deployment identity has Contributor only on the deployment resource group. The federated credential is an Azure Managed Identity resource created through Azure Resource Manager, so routine GitHub deployments need no user login, stored Azure client secret, or Microsoft Graph application-registration permission.
+The existing `scripts/bootstrap-azure-oidc.sh` can bootstrap/repair that trust, but **Contributor alone cannot create role assignments**. Before a foundation apply, the operator must explicitly arrange resource-group-scoped role-assignment creation authority (for example appropriately scoped Role Based Access Control Administrator), or provision the foundation with an authorized operator identity. Do not silently grant Owner/subscription-wide authority or change OIDC trust. App-only releases still need permissions to update the app and attach/use the existing user-assigned identity.
 
-Bootstrap or repair that trust once from an interactively authenticated Azure CLI session:
+The application receives the Storage identity's `clientId` as **container** `AZURE_CLIENT_ID`; `DefaultAzureCredential` uses it. It receives no deployment OIDC identity, Azure client secret, account key or production connection string. The environment must be a **workload-profile environment with a Consumption profile**: Microsoft supports managed identity in its init containers, unlike legacy consumption-only environments. The workflow checks this prerequisite without changing the environment. See [Container Apps managed identity](https://learn.microsoft.com/en-us/azure/container-apps/managed-identity).
+
+## Initialization and repeat releases
+
+The published server build must contain `apps/server/dist/initialize-storage.js`. That entrypoint loads the explicit Azure config, uses managed identity, retries storage readiness within a bounded wait for RBAC propagation, and exits nonzero with a credential-safe diagnostic on failure. It must never dump Azure SDK error/request objects or seed business accounts, clubs, games or sessions.
+
+- `initialize_storage=false` is the workflow-dispatch default, and every automatic push uses false. The init container validates `ready()` only. Missing/unknown authority fails the revision instead of selecting PostgreSQL or silently creating another dataset.
+- Set `initialize_storage=true` **only for the approved, independently verified empty target**. The init container invokes the existing `initialize(true)` path: create the recognized control/schema authority if absent, refuse unrecognized Table rows, then verify readiness. Infrastructure creates only an empty table and private container. A control row/dataset UUID is operational metadata, not business seed.
+- Existing recognized state is never reset, even when initialization is explicitly requested again. Routine release with false leaves business rows, canonical blobs and dataset identity untouched. Do not clear or reconcile a populated target to enable later migration.
+- Readiness verifies authority and private-container access; it is not proof of a full write/read/delete roundtrip or an empty business dataset. An operator must verify initial emptiness and a bounded disposable-namespace data probe separately. Current initialization does not inspect arbitrary orphan blobs; the never-used dedicated-account precondition remains important.
+
+## Release flow and safety gates
+
+Pushes to `main` publish/deploy only when the repository flag is `true`; pull requests retain their separate CI. Manual dispatch always permits publishing:
+
+| Inputs                                       | Effect                                                                              |
+| -------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `deploy=false`                               | Publish only; no Azure login/apply, regardless of other inputs                      |
+| `deploy=true`, `deploy_infrastructure=false` | Deploy app; automatically detect whether the Storage foundation must be applied     |
+| `deploy=true`, `deploy_infrastructure=true`  | Explicit foundation reconciliation, still incremental and collision/what-if guarded |
+| `deploy=true`, `initialize_storage=true`     | Explicit first empty-store initialization; not import/reset                         |
+
+Publication builds Linux `amd64`, bakes the full Git SHA and workflow build index into the image, pushes its commit tag, verifies the pushed manifest digest through registry readback, and passes only `ghcr.io/...@sha256:...` to deployment. Rebuilding a SHA is not proof of the same artifact. Package-write and OIDC permissions remain job-scoped, actions remain immutable-SHA pinned, and the whole release remains serialized with `cancel-in-progress: false`.
+
+Foundation detection fingerprints sorted Bicep/workflow/helper bytes and non-secret subscription/RG/location/prefix/Storage namespace inputs. Secrets are not hashed. The stable successful `mafia-foundation` deployment record holds the fingerprint and target/resource outputs. App-only is allowed only after matching state/fingerprint/target outputs and existence of all recorded foundation resources. Resource GETs use each Bicep type's explicit API version, including account-scoped RBAC extension IDs. Missing/failed/changed records or missing resources require apply; authorization, network or malformed responses fail closed. External drift still requires operator review; a fingerprint is not a complete drift detector.
+
+The workflow checks the existing subscription/app/environment, refuses unknown account adoption, validates foundation inputs and rejects foundation what-if deletions or writes to retained SQL/network/environment resources. It applies the foundation incrementally, reads back the exact successful record, and then deploys the app to its **existing** canonical HTTPS hostname. It does not recreate a missing target or invent a replacement hostname. Initialization must succeed before web startup. Release readback requires the expected image in both containers, one replica, port 3000, the exact Storage identity/namespace/provider and absence of SQL/connection-string env. Existing `/health/ready` and `/health/version` checks still require the expected commit and composed version.
+
+### Approved first cutover checklist
+
+1. Confirm subscription, RG, app/environment identity, old private SQL resources and rollback-eligible SQL image/config without printing credentials. Confirm workload-profile init identity support and foundation RBAC authority. Stop on drift or destructive what-if.
+2. Hold/read back repository `AZURE_DEPLOY_ENABLED=false`, qualify the dependency-complete local candidate, and publish only after final local checks/review. Preserve the old SQL app while adding the Storage foundation incrementally.
+3. Select/read back all four new Storage variables. Verify the exact never-used account name is globally available, inspect compiled resource identities/namespace and what-if, then provision the foundation. No table rows/blobs or business seed are created by Bicep. Read back account/namespace, identity, role scopes and unchanged PostgreSQL/network resources.
+4. Publish and record the exact verified commit/image digest. Dispatch that qualified ref with `deploy=true`, `initialize_storage=true`. Do not infer artifact identity from the commit tag or a later rebuild. Require bounded initialization, readiness and matching commit/version.
+5. Verify the serving revision uses Azure and managed identity, the business dataset is empty, old SQL-serving revisions cannot serve traffic, and an explicitly disposable namespace can write/read/delete a small Table/Blob probe. Never use a real account/game as the probe and never clear business data to restore emptiness. Fresh-login/new-club behavior is covered by local retained HTTP tests; no broad live-browser audit is added by this deployment.
+6. Run a routine release with `initialize_storage=false` and confirm no dataset reset. Read back remote SHA/workflow/digest/active traffic, unchanged SQL resources and the restored automatic-release flag. Report live gaps distinctly from local qualification. Do not execute the deferred production migration.
+
+## Local compiled verification
+
+Use ignored, private repository-local `.AI` outputs, not adjacent tracked JSON files:
 
 ```bash
-AZURE_SUBSCRIPTION_ID=9f0da8f6-9da5-4bef-9738-cb26f2a19e58 \
-AZURE_TENANT_ID=b41b72d0-4e9f-4c26-8a69-f949f367c91d \
-AZURE_RESOURCE_GROUP=rg-mafia-dashboard-prod-weu \
-AZURE_LOCATION=northeurope \
-scripts/bootstrap-azure-oidc.sh
+mkdir -p .AI/azure-release-deployment
+az bicep build --file infra/main.bicep --outfile .AI/azure-release-deployment/foundation.json
+az bicep build --file infra/app.bicep --outfile .AI/azure-release-deployment/app.json
+export AZURE_FOUNDATION_TEMPLATE_PATH="$PWD/.AI/azure-release-deployment/foundation.json"
+export AZURE_APP_TEMPLATE_PATH="$PWD/.AI/azure-release-deployment/app.json"
+npm run test:azure-contracts
+actionlint .github/workflows/deploy-azure.yml
+npm run check:local
 ```
 
-After this bootstrap, `azure/login` exchanges GitHub's short-lived OIDC assertion for an Azure token on every run. Interactive Azure login is needed only to bootstrap or repair the managed identity, not for normal deployments.
+Both compiled-template assertion groups must execute with these actual paths; skipped optional assertions are not release evidence. `check:local` owns disposable local PostgreSQL/Azurite qualification for both retained backends. Compilation and local fixtures do **not** prove live Azure RBAC/readiness or production empty-store acceptance. Never commit `.AI`, local deployment parameter files with secrets, or captured backup data. Use the [v1.0.0 release checklist](releases/v1.0.0.md) for remaining exact-candidate gates; its older PostgreSQL-only operational assumptions are not claims that Azure backup automation exists.
 
-## Deployment flow
+## Ingress, callbacks and workflow limits
 
-Pull requests run the `CI` workflow. Pushes to `main` run only the Azure workflow, and automatic deployment starts when `AZURE_DEPLOY_ENABLED=true`.
+Container Apps HTTPS ingress is the sole public app route. `TRUST_PROXY_HOPS=1` trusts only its rightmost supplied client address for the in-process authentication-attempt limiter, not caller-controlled addresses to the left. Adding a CDN/Front Door/other ingress needs a separate validated policy; do not enable unbounded proxy trust. The limiter and session assumptions remain single-replica. See [Container Apps ingress headers](https://learn.microsoft.com/azure/container-apps/ingress-overview#http-headers).
 
-The Azure workflow:
-
-1. builds and publishes `ghcr.io/zemskovmm/mafia-dashboard:<full-git-sha>` for Linux `amd64`;
-2. verifies the published digest and passes that immutable reference to deployment;
-3. logs into Azure using GitHub OIDC;
-4. selects whether the infrastructure foundation needs deployment;
-5. when required, deploys the private network, PostgreSQL, and Container Apps environment from `infra/main.bicep`;
-6. deploys the Container App from `infra/app.bicep`, containing the immutable image as both a migration init container and the web container;
-7. requires the init migration to complete before the revision's web container starts;
-8. discovers the generated Container Apps HTTPS hostname and applies it as `PUBLIC_APP_URL`;
-9. verifies the Container App configuration, `/health/ready`, and the deployed commit identity.
-
-`infra/main.bicep` owns only the foundation; `infra/app.bicep` owns only the Container App and references the existing foundation identities. Routine application releases therefore do not write network, PostgreSQL, database, or managed-environment resources. The app template keeps `minReplicas: 1` and `maxReplicas: 1`; one running replica avoids scale-to-zero cold starts but is not high availability.
-
-Foundation selection uses a deterministic, non-secret fingerprint over sorted deployment-file paths and contents (all `infra/` Bicep files, the deployment workflow, and the deployment-selection helper) and the explicit target context: subscription, resource group, location, name prefix, and database name. The workflow stores this fingerprint through the successful, stable ARM deployment record named `mafia-foundation`. It reuses that record only when it succeeded, its fingerprint and non-secret target outputs match, and the required foundation resources still exist. A missing or unsuccessful record, changed or unrecorded fingerprint, or missing resource applies the foundation. A matching fingerprint with invalid target outputs or resource IDs fails closed, as do authorization, network, and malformed-response errors. A fingerprint detects represented changes, not all out-of-band drift.
-
-On initial provisioning, the workflow can update the Container App once more after Azure has generated the HTTPS hostname so the final revision receives the canonical `PUBLIC_APP_URL`.
-
-Manual deployment is available from **Actions → Deploy Azure → Run workflow**.
-
-- `deploy=true` (the default) publishes and deploys the application. `deploy_infrastructure=false` (the default) means automatic foundation detection, not “never deploy foundation.”
-- `deploy_infrastructure=true` forces the foundation apply. Use it for deliberate drift reconciliation and secret rotation, because secrets are intentionally excluded from the fingerprint.
-- `deploy=false` is publish-only: it performs no Azure deployment regardless of `deploy_infrastructure`.
-
-Foundation and application deployment remain serialized in the existing workflow and production concurrency group. A failed foundation is never recorded as applied and blocks the application deployment; retry after correcting the failure. For an app-only release, the workflow resolves and validates the existing foundation identities and explicit database target before applying the app template.
-
-## Fresh current-only database cutover
-
-This is an explicitly approved data reset, not an upgrade. The selected cutover deliberately omits backup creation, restore verification, a PITR server, a production write freeze, and rollback preparation. Existing platform backup settings remain unchanged, but recoverability is not verified or promised.
-
-The new database contains only current DDL and bootstrap seeds. Existing users, clubs, players, sessions, games, and OAuth connections are not copied. Old sessions become invalid; users sign in again, create clubs, and reconnect music as needed. Writes accepted by the old app during cutover are not carried forward and will be lost when the old database is deleted. The Container App hostname and Google callback URLs remain unchanged. Shared-secret updates and revision activation may interrupt service; zero downtime is not promised.
-
-1. Obtain explicit approval for publishing, deploying, and deleting the old database after acceptance. Confirm Azure access and the exact subscription, resource group, PostgreSQL server, app, old database, and distinct never-used new database name. Do not read credentials into logs.
-2. Before pushing, pause automatic deployment using `AZURE_DEPLOY_ENABLED=false` at the scopes supplying the workflow's job conditions, including any repository/organization-level value; read back the effective configuration and check that no deployment is already in flight. A production-environment variable alone must not be assumed to gate jobs before environment initialization. Manual dispatch with `deploy=true` bypasses this automatic-deployment switch. Do not freeze application writes.
-3. Qualify and publish the scoped change, verify the remote SHA, then set and read back production `AZURE_DATABASE_NAME` to the new name. Keep automatic deployment paused while checking inputs. The existing incremental ARM deployment creates/selects the named database on the same server; it does **not** delete the old database.
-4. Dispatch the qualified ref with deployment enabled. Record the run's actual pushed digest and verify that the deployed init and app containers use it. Rebuilding the same SHA is not proof of an identical artifact. Require migration success, a healthy serving revision, and `/health/live`, `/health/ready`, and `/health/version` matching the expected commit.
-5. Verify both containers target the new database without exposing the connection string. At the unchanged origin, verify rejection of an old session, fresh Google sign-in, club creation/isolation, and a current-format game save/reload. Confirm historical records were not copied and clean up only verifier-owned data. If any acceptance check fails or cannot be completed, stop with the old database undeleted; do not improvise rollback.
-6. After acceptance passes, deactivate obsolete revisions and verify only the new healthy revision can serve traffic. Old revisions must not restart against changed app-level secrets.
-7. Immediately before deletion, re-read the exact server, old database `mafia`, new database, and active app target. Require old and new names to differ and the app to use the verified new database. Delete only the old database resource—never the server, resource group, or a wildcard. Stop on uncertain identity or connections rather than forcing a broad cleanup.
-8. Read back database resources: the old database must be absent and the new one present. Recheck health, exact version, and current-game persistence after deletion. Report verified results and restore the intended automatic-deployment setting only when the target is correct. No old-database retention or rollback guarantee applies to this cutover.
-
-## Trusted ingress and authentication limiting
-
-Azure Container Apps managed HTTPS ingress is the only public route to the application container. The deployment therefore sets `TRUST_PROXY_HOPS=1`: Fastify uses the rightmost `X-Forwarded-For` address supplied by that single ingress for the authentication-attempt limiter. [Container Apps documents](https://learn.microsoft.com/azure/container-apps/ingress-overview#http-headers) that ingress appends the request sender and that only this rightmost address is supplied by Container Apps; caller-controlled values to its left are not trusted.
-
-Do not replace this with unbounded proxy trust. Adding Front Door, a CDN, or another ingress changes the hop model and requires a separately validated policy before deployment. The limiter remains in-process and supports the current single-replica configuration only.
-
-## Workflow boundaries
-
-The deployment workflow intentionally does not repeat pull-request formatting, lint, typecheck, tests, or automated vulnerability scans. A main push builds, publishes, and deploys directly. Job permissions scope package writes only to publishing and Azure OIDC only to deployment, and all external actions remain pinned to immutable commits. See [`security-and-privacy.md`](security-and-privacy.md) for the retained application controls and residual risks.
-
-### Known diagnostic limitation
-
-The deployment verifier can finish its health wait before reporting `ActivationFailed`; by then, the failed migration init replica may no longer be available for console logs. When investigating activation failures, inspect revision state and capture init-container logs early. Failing fast and automatically capturing those logs remains a deferred workflow improvement, not part of the fresh-database cutover.
-
-## Google OAuth callbacks
-
-After the first Azure deployment, obtain the URL from the workflow summary. Add both callback URLs to the Google OAuth Web application client:
+Keep both exact Google callback URLs authorized at the unchanged origin:
 
 ```text
-https://<azure-container-app-host>/api/auth/google/callback
-https://<azure-container-app-host>/api/music/oauth/callback
+https://<existing-container-app-host>/api/auth/google/callback
+https://<existing-container-app-host>/api/music/oauth/callback
 ```
 
-Until those exact URLs are authorized by Google, the Azure application is healthy but Google sign-in or YouTube Music connection can be rejected by Google.
+The deployment workflow intentionally does not repeat local formatting/lint/typecheck/tests or vulnerability scans before a main release. Perform the canonical local check/review before publication; a green build alone is not qualification. See [security and privacy](security-and-privacy.md). On activation failure, capture `initialize-storage` logs early: failed init replicas may disappear before the verifier's diagnostic tail is available.
 
-## Local validation
+## Recovery, costs and deferred work
 
-```bash
-npm run check
-npm run verify:compose
-az bicep build --file infra/main.bicep
-az bicep build --file infra/app.bicep
-az deployment group validate \
-  --resource-group <resource-group> \
-  --template-file infra/main.bicep \
-  --parameters databaseName='<explicit-database-name>' postgresPassword='<redacted>'
-actionlint .github/workflows/deploy-azure.yml
-```
+No historical data is imported and no new production backup scheduler is configured. Existing backups and private SQL source/resources remain untouched. Local Azure backup/restore tooling and recovery hooks are preserved; see [Azure Storage backup and recovery](azure-storage-backup-and-recovery.md). Passing local recovery drills does not mean a production backup job is operating. Standard LRS is not an application-consistent backup or regional HA.
 
-Never commit deployment parameter files containing real passwords or OAuth secrets.
+Before the new store accepts writes, an operator can restore the saved SQL image/config at the unchanged app. After Azure writes begin, switching back to SQL is **not lossless**: preserve new data and stop for an explicit recovery/reconciliation decision. For a routine Azure application rollback, redeploy the recorded known-good compatible image digest through `infra/app.bicep` with `initializeStorage=false` and the identical namespace. Neither rollback nor forced foundation reconciliation may restore, rename, reset or delete data automatically. Do not delete manifests still needed by serving or rollback-eligible revisions.
 
-## Rollback
-
-The fresh cutover above intentionally has no planned rollback and deletes its old database after verification. The general guidance below is not a recovery guarantee for that reset.
-
-The publish job uses the full Git SHA as a traceable GHCR tag, captures and verifies the pushed manifest digest, and deploys Azure from `ghcr.io/...@sha256:<digest>`. Record the deployed digest with the release evidence. To roll back an application release, redeploy the previous known-good digest through `infra/app.bicep`; rerunning an old commit creates a new artifact and is not an artifact-identical rollback. Do not delete manifests referenced by healthy or rollback-eligible revisions.
-
-Reverting a foundation template or non-secret target input changes the fingerprint and re-applies the foundation. Manual `deploy_infrastructure=true` is for an intentional reconciliation, not a full drift detector or a database rollback. Do not use an app rollback to restore, rename, or delete PostgreSQL resources.
-
-Each revision runs the advisory-locked, transaction-protected schema initialization container before the app container. Only an empty database or the current schema with current-format rows is supported. Historical upgrades and backfills are not provided, and an unsupported schema prevents the revision from becoming ready without repairing or deleting existing data. Independently verify the database contract before selecting a rollback image; a previous digest is not automatically compatible.
-
-Database rollback is separate: application rollback must not automatically restore PostgreSQL. Use Flexible Server point-in-time restore only for an incompatible or destructive database change.
+Costs include the warm Container App, Storage requests/capacity/egress and the retained PostgreSQL/network estate. This pilot remains single-region/non-HA. Resource retirement, historical migration execution, production backup scheduling and any private-endpoint redesign require separate authorized work.

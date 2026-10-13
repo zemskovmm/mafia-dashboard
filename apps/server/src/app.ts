@@ -6,14 +6,10 @@ import Fastify from "fastify";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { EventStore } from "./event-store.js";
+
 import { InvalidGameIdentityError, UnsupportedGameFormatError } from "./game-session-identity.js";
 import { DeletedGameError } from "./game-lifecycle.js";
-import {
-  GameSessionNotFoundError,
-  GameSessionOperationError,
-  GameSessionStore,
-} from "./game-session-store.js";
+import { GameSessionNotFoundError, GameSessionOperationError } from "./game-session-store.js";
 import {
   gameSessionCreationSchema,
   gameSessionMutationSchema,
@@ -23,12 +19,13 @@ import {
   ClubAccessConsentRequiredError,
   ManagerLockedError,
   OwnerProfileForbiddenError,
-  PlayerStore,
 } from "./player-store.js";
 import { YouTubePlaylistAccessError, YouTubeReconnectRequiredError } from "./youtube-oauth.js";
-import type { YouTubeOAuthService } from "./youtube-oauth.js";
-import { ClubStore } from "./club-store.js";
-import type { AppUser, GoogleAuthService } from "./google-auth.js";
+import type { YouTubeOAuthPort } from "./youtube-oauth.js";
+import type { AppUser, GoogleAuthPort } from "./google-auth.js";
+import type { ApplicationStores } from "./storage-contracts.js";
+import { createPostgresStores } from "./storage-contracts.js";
+import { StorageAccessError } from "./azure-storage.js";
 import { createFixedWindowLimiter, hasExactOrigin, isUnsafeMethod } from "./http-security.js";
 
 const gameIdParams = z.object({ gameId: z.uuid() });
@@ -189,6 +186,7 @@ const cookie = ({
 
 export const buildApp = async ({
   pool,
+  stores,
   staticDir,
   googleAuth,
   authenticateRequest,
@@ -199,12 +197,13 @@ export const buildApp = async ({
   trustedProxyHops = 0,
   authRateLimit,
 }: {
-  readonly pool: Pool;
+  readonly pool?: Pool;
+  readonly stores?: ApplicationStores;
   readonly staticDir?: string;
-  readonly googleAuth?: GoogleAuthService;
+  readonly googleAuth?: GoogleAuthPort;
   readonly authenticateRequest?: (request: FastifyRequest) => Promise<AppUser | null>;
   readonly defaultClubId?: string;
-  readonly youtubeOAuth?: YouTubeOAuthService;
+  readonly youtubeOAuth?: YouTubeOAuthPort;
   readonly publicAppUrl?: string;
   readonly releaseIdentity?: { readonly version: string; readonly commit: string };
   readonly trustedProxyHops?: 0 | 1;
@@ -216,6 +215,10 @@ export const buildApp = async ({
     readonly now?: () => number;
   };
 }) => {
+  if ((pool === undefined) === (stores === undefined)) {
+    throw new Error("Exactly one exclusive application storage backend must be supplied");
+  }
+  const selectedStores = stores ?? createPostgresStores(pool!);
   const app = Fastify({
     logger: false,
     bodyLimit: 4 * 1024 * 1024,
@@ -248,6 +251,7 @@ export const buildApp = async ({
     },
   });
   app.setErrorHandler((error, _request, reply) => {
+    if (error instanceof StorageAccessError) return reply.code(403).send({ error: error.code });
     if (error instanceof YouTubeReconnectRequiredError) {
       return reply.code(409).send({ error: "youtube_reconnect_required" });
     }
@@ -268,10 +272,10 @@ export const buildApp = async ({
     reply.header("permissions-policy", "picture-in-picture=()");
     if (request.url.startsWith("/api/")) reply.header("cache-control", "no-store");
   });
-  const store = new EventStore(pool);
-  const gameSessionStore = new GameSessionStore(pool);
-  const playerStore = new PlayerStore(pool);
-  const clubStore = new ClubStore(pool);
+  const store = selectedStores.events;
+  const gameSessionStore = selectedStores.games;
+  const playerStore = selectedStores.players;
+  const clubStore = selectedStores.clubs;
   const authAttemptLimiter = createFixedWindowLimiter({
     limit: authRateLimit?.limit ?? 10,
     windowMs: authRateLimit?.windowMs ?? 10 * 60 * 1_000,
@@ -326,7 +330,7 @@ export const buildApp = async ({
   );
   app.get("/health/ready", async (_request, reply) => {
     try {
-      await pool.query("SELECT 1");
+      await selectedStores.ready();
       return { status: "ready" };
     } catch {
       return reply.code(503).send({ status: "not-ready" });
@@ -380,6 +384,22 @@ export const buildApp = async ({
       return null;
     }
     return context.clubId;
+  };
+  const authorized = <T>(
+    userId: string,
+    clubId: string,
+    manager: boolean,
+    work: () => Promise<T>,
+  ): Promise<T> => selectedStores.runAuthorized?.(userId, clubId, manager, work) ?? work();
+  const authorizedRequest = async <T>(
+    request: FastifyRequest,
+    clubId: string,
+    manager: boolean,
+    work: () => Promise<T>,
+  ): Promise<T> => {
+    const user = await authenticate(request);
+    if (user === null) throw new Error("Club authorization context lost");
+    return authorized(user.id, clubId, manager, work);
   };
 
   app.get("/api/auth/session", async (request) => ({
@@ -481,7 +501,9 @@ export const buildApp = async ({
     const role = await clubStore.getRole(user.id, params.data.clubId);
     if (role === null) return reply.code(403).send({ error: "club_access_denied" });
     if (role !== "manager") return reply.code(403).send({ error: "club_manager_required" });
-    const club = await clubStore.update(user.id, params.data.clubId, body.data);
+    const club = await authorized(user.id, params.data.clubId, true, () =>
+      clubStore.update(user.id, params.data.clubId, body.data),
+    );
     return club === null ? reply.code(404).send({ error: "club_not_found" }) : reply.send({ club });
   });
 
@@ -491,8 +513,15 @@ export const buildApp = async ({
     const user = await requireUser(request, reply);
     if (user === null) return;
     const role = await clubStore.getRole(user.id, params.data.clubId);
-    if (role === null) return reply.code(403).send({ error: "club_access_denied" });
+    if (role === null) {
+      const resumed = await clubStore.resumeDeletion?.(user.id, params.data.clubId);
+      return resumed
+        ? reply.code(204).send()
+        : reply.code(403).send({ error: "club_access_denied" });
+    }
     if (role !== "manager") return reply.code(403).send({ error: "club_manager_required" });
+    // Deletion owns its transaction-level authorization and durable purge actor.
+    // Ordinary membership guards must not deny it after its own tombstone.
     return (await clubStore.delete(user.id, params.data.clubId))
       ? reply.code(204).send()
       : reply.code(404).send({ error: "club_not_found" });
@@ -596,7 +625,9 @@ export const buildApp = async ({
   app.get("/api/players", async (request, reply) => {
     const clubId = await selectedClub(request, reply);
     if (clubId === null) return;
-    return { players: await playerStore.list(clubId) };
+    return {
+      players: await authorizedRequest(request, clubId, false, () => playerStore.list(clubId)),
+    };
   });
 
   app.post("/api/players", async (request, reply) => {
@@ -607,14 +638,16 @@ export const buildApp = async ({
       return reply.code(400).send(validationFailure(parsed.error.issues));
     }
     try {
-      const player = await playerStore.create(
-        {
-          ...parsed.data,
-          firstName: parsed.data.firstName ?? null,
-          lastName: parsed.data.lastName ?? null,
-          email: parsed.data.email ?? null,
-        },
-        clubId,
+      const player = await authorizedRequest(request, clubId, true, () =>
+        playerStore.create(
+          {
+            ...parsed.data,
+            firstName: parsed.data.firstName ?? null,
+            lastName: parsed.data.lastName ?? null,
+            email: parsed.data.email ?? null,
+          },
+          clubId,
+        ),
       );
       return reply.code(201).send({ player });
     } catch (error) {
@@ -642,16 +675,18 @@ export const buildApp = async ({
       return reply.code(400).send(validationFailure(body.error.issues));
     }
     try {
-      const player = await playerStore.update(
-        params.data.playerId,
-        {
-          ...body.data,
-          firstName: body.data.firstName ?? null,
-          lastName: body.data.lastName ?? null,
-          email: body.data.email ?? null,
-        },
-        clubId,
-        actor.id,
+      const player = await authorizedRequest(request, clubId, true, () =>
+        playerStore.update(
+          params.data.playerId,
+          {
+            ...body.data,
+            firstName: body.data.firstName ?? null,
+            lastName: body.data.lastName ?? null,
+            email: body.data.email ?? null,
+          },
+          clubId,
+          actor.id,
+        ),
       );
       if (player === null) {
         return reply.code(404).send({ error: "player_not_found" });
@@ -681,7 +716,9 @@ export const buildApp = async ({
     if (!params.success) {
       return reply.code(400).send(validationFailure(params.error.issues));
     }
-    const result = await playerStore.delete(params.data.playerId, clubId);
+    const result = await authorizedRequest(request, clubId, true, () =>
+      playerStore.delete(params.data.playerId, clubId),
+    );
     if (result === "not_found") return reply.code(404).send({ error: "player_not_found" });
     if (result === "active_game") return reply.code(409).send({ error: "active_game" });
     if (result === "manager_locked") return reply.code(409).send({ error: "manager_locked" });
@@ -695,7 +732,7 @@ export const buildApp = async ({
     if (!query.success) return reply.code(400).send(validationFailure(query.error.issues));
     try {
       return {
-        sessions:
+        sessions: await authorizedRequest(request, clubId, false, async () =>
           query.data.status === "completed"
             ? await gameSessionStore.listCompleted(clubId, {
                 ...(query.data.from === undefined ? {} : { from: query.data.from }),
@@ -704,6 +741,7 @@ export const buildApp = async ({
                 ...(query.data.outcome === undefined ? {} : { outcome: query.data.outcome }),
               })
             : await gameSessionStore.listActive(clubId),
+        ),
       };
     } catch (error) {
       if (error instanceof UnsupportedGameFormatError)
@@ -719,7 +757,9 @@ export const buildApp = async ({
     if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
     let session;
     try {
-      session = await gameSessionStore.get(params.data.gameId, clubId);
+      session = await authorizedRequest(request, clubId, false, () =>
+        gameSessionStore.get(params.data.gameId, clubId),
+      );
     } catch (error) {
       if (error instanceof UnsupportedGameFormatError)
         return reply.code(409).send({ error: error.code });
@@ -735,7 +775,9 @@ export const buildApp = async ({
     const body = gameSessionCreationSchema.safeParse(request.body);
     if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
     try {
-      const session = await gameSessionStore.create({ clubId, ...body.data });
+      const session = await authorizedRequest(request, clubId, false, () =>
+        gameSessionStore.create({ clubId, ...body.data }),
+      );
       return reply.code(session.duplicate ? 200 : 201).send(session);
     } catch (error) {
       return sendGameSessionMutationError(reply, error);
@@ -750,14 +792,16 @@ export const buildApp = async ({
     if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
     if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
     try {
-      const session = await gameSessionStore.save({
-        clubId,
-        gameId: params.data.gameId,
-        name: body.data.name,
-        mutationId: body.data.mutationId,
-        state: body.data.state,
-        results: body.data.results,
-      });
+      const session = await authorizedRequest(request, clubId, false, () =>
+        gameSessionStore.save({
+          clubId,
+          gameId: params.data.gameId,
+          name: body.data.name,
+          mutationId: body.data.mutationId,
+          state: body.data.state,
+          results: body.data.results,
+        }),
+      );
       return reply.code(200).send(session);
     } catch (error) {
       return sendGameSessionMutationError(reply, error);
@@ -770,10 +814,12 @@ export const buildApp = async ({
     const params = gameIdParams.safeParse(request.params);
     if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
     try {
-      await gameSessionStore.clear({
-        clubId,
-        gameId: params.data.gameId,
-      });
+      await authorizedRequest(request, clubId, false, () =>
+        gameSessionStore.clear({
+          clubId,
+          gameId: params.data.gameId,
+        }),
+      );
       return reply.code(204).send();
     } catch (error) {
       return sendGameSessionMutationError(reply, error);
@@ -795,12 +841,14 @@ export const buildApp = async ({
     try {
       // Older raw-event fixtures need not have an aggregate row. A present
       // aggregate still must pass identity-only read admission first.
-      await gameSessionStore.get(params.data.gameId, clubId);
-      const events = await store.read(
-        params.data.gameId,
-        { includeSecrets: query.data.visibility === "host" },
-        clubId,
-      );
+      const events = await authorizedRequest(request, clubId, false, async () => {
+        await gameSessionStore.get(params.data.gameId, clubId);
+        return store.read(
+          params.data.gameId,
+          { includeSecrets: query.data.visibility === "host" },
+          clubId,
+        );
+      });
       return { events };
     } catch (error) {
       if (error instanceof UnsupportedGameFormatError)

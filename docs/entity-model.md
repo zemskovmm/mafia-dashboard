@@ -1,13 +1,40 @@
 # Entity model
 
-This document describes the current PostgreSQL persistence model and the core game-domain model. It is derived from:
+This document describes the transition persistence models and the core game-domain model. The unchanged production/reference adapter uses PostgreSQL; the new local adapter uses Azure Tables and private blobs. It is derived from:
 
 - [`apps/server/src/schema.sql`](../apps/server/src/schema.sql) for physical tables, keys, and foreign keys;
 - [`packages/game-domain/src/types.ts`](../packages/game-domain/src/types.ts) for game state;
 - [`packages/game-domain/src/game-events.ts`](../packages/game-domain/src/game-events.ts) for canonical events and replay metadata;
-- [`apps/server/src/game-session-store.ts`](../apps/server/src/game-session-store.ts) and [`apps/server/src/event-store.ts`](../apps/server/src/event-store.ts) for persistence mappings.
+- [`apps/server/src/game-session-store.ts`](../apps/server/src/game-session-store.ts) and [`apps/server/src/event-store.ts`](../apps/server/src/event-store.ts) for PostgreSQL persistence mappings;
+- [`apps/server/src/azure-storage.ts`](../apps/server/src/azure-storage.ts), [`azure-game-session-store.ts`](../apps/server/src/azure-game-session-store.ts), [`azure-club-player-store.ts`](../apps/server/src/azure-club-player-store.ts) and [`azure-account-store.ts`](../apps/server/src/azure-account-store.ts) for the Azure adapter.
 
 The first diagram is physical: `PK` and `FK` reflect PostgreSQL constraints. The later diagrams are conceptual TypeScript models; their relationships describe containment, extension, or event payloads rather than database foreign keys. `o|`, `||`, and `o{` mean zero-or-one, exactly one, and zero-or-many respectively.
+
+## Azure logical entities
+
+These are logical RowKey families in one physical table and application partition, not independent tables or SQL foreign keys. Club-prefixed keys constrain lookup scope; server authorization is still required. [IDD-0006](../.idd/intent/IDD-0006.adr-azure-table-and-blob-persistence.md) records the decision and tradeoffs.
+
+| Family                                                         | Contents / relationship                                                                                                                                 |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `control`                                                      | Schema version, persisted dataset identity, write mode and conditional commit revision; included in every structured mutation.                          |
+| `commit:<attempt>`                                             | Exact atomic publication receipt, also included in the mutation; it proves an ambiguous commit even after a later writer.                               |
+| `user:<id>`, `subject:<digest>`, `email:<digest>`              | Account profile plus unique provider/exact-email reservations; verified normalized email matching remains separate.                                     |
+| `session:<token-digest>`                                       | Hashed application token, user identity and expiry; no clear session token.                                                                             |
+| `music:<userId>`                                               | Existing encrypted music token material, expiry, scope and account label.                                                                               |
+| `club:<clubId>:meta`, `member:<userId>`                        | Settings/owner and club-local membership/access-player link; oversized logo values use private blob references.                                         |
+| `club:<clubId>:player:<id>`, `nickname:<digest>`               | Permanent club-scoped identity, erasable consenting profile and normalized nickname reservation. Retired profiles retain only their anonymous identity. |
+| `club:<clubId>:game:<gameId>`                                  | Bounded catalog head, revision/status/ruleset and the selected immutable snapshot blob's name, length and transport checksum.                           |
+| `club:<clubId>:creation:<creationId>`                          | Original creation request to server-issued game identity; retained after game deletion.                                                                 |
+| `club:<clubId>:participant:<gameId>:<playerId>`                | Bounded selected host/seat projection; not a reconstruction of the authoritative setup.                                                                 |
+| `club:<clubId>:result:<gameId>:<playerId>`                     | Bounded noncancelled player/host result projection; statistics scan result families once.                                                               |
+| `club:<clubId>:deleted-game:<gameId>`, `deleted-club:<clubId>` | Non-resurrection and resumable purge markers.                                                                                                           |
+| `cleanup:<digest>`                                             | Retired immutable blob reference awaiting separately scoped cleanup.                                                                                    |
+
+The complete versioned game envelope is a private, create-only JSON blob. It preserves the accepted state/results and the current projected event view, including partial setup, empty seats, role draw, playlist, canonical baseline/history and Undo fields. There is no Table entity per canonical event. Free-text reasons and variable passthrough fields stay in the envelope; bounded summaries may fall back to the authoritative blob rather than truncate or reject a previously accepted value.
+
+Blob bytes are verified before the conditional transaction publishes the head and synchronized projections. The stored SHA-256 is a transport-integrity checksum, not a new canonical replay hash. A selected missing/corrupt blob is an error; no older revision or empty snapshot is substituted. Typed Table scalars/dates/binary values omit SQL-style nulls via full replacement. Relationships, uniqueness, consent and active-identity admission are enforced under the same conditional control boundary, not through Azure foreign keys.
+
+The PostgreSQL diagram below remains the physical model of the production/reference adapter during transition. No live data import or resource migration is performed by adding the Azure adapter.
 
 ## PostgreSQL entities
 

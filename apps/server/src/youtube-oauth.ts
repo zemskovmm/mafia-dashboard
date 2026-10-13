@@ -99,12 +99,111 @@ export interface YouTubePlaylistItem {
   readonly thumbnailUrl: string | null;
 }
 
+export interface MusicCredential {
+  readonly accessTokenEncrypted: Buffer;
+  readonly refreshTokenEncrypted: Buffer;
+  readonly expiresAt: Date;
+  readonly accountLabel: string;
+  readonly scope: string | null;
+}
+export interface YouTubeCredentialStore {
+  putCredential(userId: string, credential: MusicCredential): Promise<void>;
+  getCredential(userId: string): Promise<MusicCredential | null>;
+  refreshCredential(
+    userId: string,
+    update: Pick<MusicCredential, "accessTokenEncrypted" | "expiresAt"> & {
+      readonly scope?: string;
+    },
+  ): Promise<void>;
+  deleteCredential(userId: string): Promise<void>;
+}
+export type YouTubeOAuthPort = Pick<
+  YouTubeOAuthService,
+  | "createAuthorizationUrl"
+  | "exchangeCode"
+  | "getStatus"
+  | "listPlaylists"
+  | "listPlaylistItems"
+  | "disconnect"
+>;
+
+export class PostgresYouTubeCredentialStore implements YouTubeCredentialStore {
+  public constructor(private readonly pool: Pool) {}
+  public async putCredential(userId: string, credential: MusicCredential): Promise<void> {
+    await this.pool.query(
+      `INSERT INTO youtube_oauth_credentials
+         (user_id, singleton, access_token_encrypted, refresh_token_encrypted, expires_at, account_label, scope)
+       VALUES ($1, TRUE, $2, $3, $4, $5, $6)
+       ON CONFLICT (user_id) DO UPDATE
+         SET access_token_encrypted = EXCLUDED.access_token_encrypted,
+             refresh_token_encrypted = EXCLUDED.refresh_token_encrypted,
+             expires_at = EXCLUDED.expires_at,
+             account_label = EXCLUDED.account_label,
+             scope = EXCLUDED.scope,
+             updated_at = NOW()`,
+      [
+        userId,
+        credential.accessTokenEncrypted,
+        credential.refreshTokenEncrypted,
+        credential.expiresAt,
+        credential.accountLabel,
+        credential.scope,
+      ],
+    );
+  }
+  public async getCredential(userId: string): Promise<MusicCredential | null> {
+    const result = await this.pool.query<{
+      access_token_encrypted: Buffer;
+      refresh_token_encrypted: Buffer;
+      expires_at: Date;
+      account_label: string;
+      scope: string | null;
+    }>(
+      "SELECT access_token_encrypted, refresh_token_encrypted, expires_at, account_label, scope FROM youtube_oauth_credentials WHERE user_id = $1",
+      [userId],
+    );
+    const row = result.rows[0];
+    return row === undefined
+      ? null
+      : {
+          accessTokenEncrypted: row.access_token_encrypted,
+          refreshTokenEncrypted: row.refresh_token_encrypted,
+          expiresAt: row.expires_at,
+          accountLabel: row.account_label,
+          scope: row.scope,
+        };
+  }
+  public async refreshCredential(
+    userId: string,
+    update: Pick<MusicCredential, "accessTokenEncrypted" | "expiresAt"> & {
+      readonly scope?: string;
+    },
+  ): Promise<void> {
+    await this.pool.query(
+      `UPDATE youtube_oauth_credentials
+          SET access_token_encrypted = $1,
+              expires_at = $2,
+              scope = COALESCE($3, scope),
+              updated_at = NOW()
+        WHERE user_id = $4`,
+      [update.accessTokenEncrypted, update.expiresAt, update.scope ?? null, userId],
+    );
+  }
+  public async deleteCredential(userId: string): Promise<void> {
+    await this.pool.query("DELETE FROM youtube_oauth_credentials WHERE user_id = $1", [userId]);
+  }
+}
+
 export class YouTubeOAuthService {
   public constructor(
-    private readonly pool: Pool,
+    poolOrStore: Pool | YouTubeCredentialStore,
     private readonly config: YouTubeOAuthConfig,
     private readonly fetcher: typeof fetch = fetch,
-  ) {}
+  ) {
+    this.credentials =
+      "query" in poolOrStore ? new PostgresYouTubeCredentialStore(poolOrStore) : poolOrStore;
+  }
+  private readonly credentials: YouTubeCredentialStore;
 
   public createAuthorizationUrl(state: string): string {
     const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");
@@ -144,26 +243,13 @@ export class YouTubeOAuthService {
       throw new Error(`YouTube channel lookup failed with HTTP ${accountResponse.status}`);
     }
     const account = channelResponse.parse(await accountResponse.json());
-    await this.pool.query(
-      `INSERT INTO youtube_oauth_credentials
-         (user_id, singleton, access_token_encrypted, refresh_token_encrypted, expires_at, account_label, scope)
-       VALUES ($1, TRUE, $2, $3, $4, $5, $6)
-       ON CONFLICT (user_id) DO UPDATE
-         SET access_token_encrypted = EXCLUDED.access_token_encrypted,
-             refresh_token_encrypted = EXCLUDED.refresh_token_encrypted,
-             expires_at = EXCLUDED.expires_at,
-             account_label = EXCLUDED.account_label,
-             scope = EXCLUDED.scope,
-             updated_at = NOW()`,
-      [
-        userId,
-        encrypt(tokens.access_token, this.config.encryptionKey),
-        encrypt(tokens.refresh_token, this.config.encryptionKey),
-        new Date(Date.now() + tokens.expires_in * 1_000),
-        account.items[0]!.snippet.title,
-        tokens.scope,
-      ],
-    );
+    await this.credentials.putCredential(userId, {
+      accessTokenEncrypted: encrypt(tokens.access_token, this.config.encryptionKey),
+      refreshTokenEncrypted: encrypt(tokens.refresh_token, this.config.encryptionKey),
+      expiresAt: new Date(Date.now() + tokens.expires_in * 1_000),
+      accountLabel: account.items[0]!.snippet.title,
+      scope: tokens.scope ?? null,
+    });
   }
 
   public async getStatus(userId: string): Promise<{
@@ -171,14 +257,11 @@ export class YouTubeOAuthService {
     readonly connected: boolean;
     readonly accountLabel: string | null;
   }> {
-    const result = await this.pool.query<{ account_label: string }>(
-      "SELECT account_label FROM youtube_oauth_credentials WHERE user_id = $1",
-      [userId],
-    );
+    const credential = await this.credentials.getCredential(userId);
     return {
       configured: true,
-      connected: result.rowCount === 1,
-      accountLabel: result.rows[0]?.account_label ?? null,
+      connected: credential !== null,
+      accountLabel: credential?.accountLabel ?? null,
     };
   }
 
@@ -268,39 +351,25 @@ export class YouTubeOAuthService {
   }
 
   public async disconnect(userId: string): Promise<void> {
-    const result = await this.pool.query<{ refresh_token_encrypted: Buffer }>(
-      "SELECT refresh_token_encrypted FROM youtube_oauth_credentials WHERE user_id = $1",
-      [userId],
-    );
-    const credentials = result.rows[0];
-    if (credentials === undefined) return;
+    const credentials = await this.credentials.getCredential(userId);
+    if (credentials === null) return;
     const response = await this.fetcher("https://oauth2.googleapis.com/revoke", {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
-        token: decrypt(credentials.refresh_token_encrypted, this.config.encryptionKey),
+        token: decrypt(credentials.refreshTokenEncrypted, this.config.encryptionKey),
       }).toString(),
     });
     if (!response.ok)
       throw new Error(`Google token revocation failed with HTTP ${response.status}`);
-    await this.pool.query("DELETE FROM youtube_oauth_credentials WHERE user_id = $1", [userId]);
+    await this.credentials.deleteCredential(userId);
   }
 
   private async getAccessToken(userId: string): Promise<string> {
-    const result = await this.pool.query<{
-      access_token_encrypted: Buffer;
-      refresh_token_encrypted: Buffer;
-      expires_at: Date;
-    }>(
-      `SELECT access_token_encrypted, refresh_token_encrypted, expires_at
-         FROM youtube_oauth_credentials
-        WHERE user_id = $1`,
-      [userId],
-    );
-    const credentials = result.rows[0];
-    if (credentials === undefined) throw new Error("YouTube account is not connected");
-    if (credentials.expires_at.getTime() > Date.now() + 60_000) {
-      return decrypt(credentials.access_token_encrypted, this.config.encryptionKey);
+    const credentials = await this.credentials.getCredential(userId);
+    if (credentials === null) throw new Error("YouTube account is not connected");
+    if (credentials.expiresAt.getTime() > Date.now() + 60_000) {
+      return decrypt(credentials.accessTokenEncrypted, this.config.encryptionKey);
     }
 
     const response = await this.fetcher("https://oauth2.googleapis.com/token", {
@@ -309,7 +378,7 @@ export class YouTubeOAuthService {
       body: new URLSearchParams({
         client_id: this.config.clientId,
         client_secret: this.config.clientSecret,
-        refresh_token: decrypt(credentials.refresh_token_encrypted, this.config.encryptionKey),
+        refresh_token: decrypt(credentials.refreshTokenEncrypted, this.config.encryptionKey),
         grant_type: "refresh_token",
       }),
     });
@@ -325,20 +394,11 @@ export class YouTubeOAuthService {
       throw new Error(`Google token refresh failed with HTTP ${response.status}`);
     }
     const tokens = accessTokenResponse.parse(await response.json());
-    await this.pool.query(
-      `UPDATE youtube_oauth_credentials
-          SET access_token_encrypted = $1,
-              expires_at = $2,
-              scope = COALESCE($3, scope),
-              updated_at = NOW()
-        WHERE user_id = $4`,
-      [
-        encrypt(tokens.access_token, this.config.encryptionKey),
-        new Date(Date.now() + tokens.expires_in * 1_000),
-        tokens.scope ?? null,
-        userId,
-      ],
-    );
+    await this.credentials.refreshCredential(userId, {
+      accessTokenEncrypted: encrypt(tokens.access_token, this.config.encryptionKey),
+      expiresAt: new Date(Date.now() + tokens.expires_in * 1_000),
+      ...(tokens.scope === undefined ? {} : { scope: tokens.scope }),
+    });
     return tokens.access_token;
   }
 }

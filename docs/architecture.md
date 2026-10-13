@@ -3,12 +3,28 @@
 Mafia Dashboard is a TypeScript npm workspace with three primary application boundaries:
 
 - `apps/web/` is the React/Vite browser application for club setup and moderated play.
-- `apps/server/` is the Fastify API and static host. It owns authentication, club isolation, and PostgreSQL persistence.
+- `apps/server/` is the Fastify API and static host. It owns authentication, club isolation, and explicit persistence adapters: PostgreSQL for Compose/reference fixtures, or Azure Table + private Blob Storage for local development and Azure deployment.
 - `packages/game-domain/` contains framework-independent Club Mafia rules, canonical events, and replay logic.
 
 The browser owns game rules, setup checks, and semantic replay. On entering Role giveaway it creates a server-backed game record and receives its server-generated GUID; subsequent full-snapshot updates address that GUID. The server authorizes the authenticated club manager (admin/owner), preserves club isolation, and stores the client snapshot without validating game rules, replay, claims, or revisions. Concurrent updates are last-write-wins.
 
 A club may have multiple active games. The client lists and opens those server records without takeover, and permanently deletes a selected game through the same club-scoped API. Updates never create missing records, so a deleted game cannot be resurrected by a late save. There are no game claims, heartbeats, expiry or stale-writer fencing. New games require a server response before play; existing games retain offline save retries. Deletion is acknowledged only after the server succeeds, and another client discovers deletion on its next request.
+
+## Persistence adapters
+
+The accepted storage decision is [IDD-0006](../.idd/intent/IDD-0006.adr-azure-table-and-blob-persistence.md). Provider selection never silently falls back or dual-writes. The Azure adapter does not need PostgreSQL for readiness, authentication, club access, profiles, games or music credentials.
+
+Azure Tables hold typed account/session/access/profile records, game heads, creation mappings, deletion markers and bounded participant/result projections. Private immutable blobs hold exact game revision envelopes (including the projected event view) and large club logos. The complete accepted snapshot remains the recovery authority; projections cannot rewrite canonical hashes or reconstruct missing setup fields. No Table row is created for each canonical event.
+
+All structured records share one persisted application partition. Each transaction conditionally updates a control row and publishes its related changes atomically. A private blob is uploaded and verified before its pointer is published; an exact atomic commit receipt proves publication, including a lost response followed by another writer's commit. Saves are acknowledged only after remote proof. Internal CAS retries recheck permissions and identities and preserve last-commit-wins; they do not introduce client revision fencing. Combined reads verify a stable control ETag around Table pages and selected blobs.
+
+Large or arbitrary payloads stay in blobs; Table records use scalar/date/binary properties with nullable values omitted through full replacement. Azure's 100-operation and 4-MiB transaction bounds include the control and receipt. Over-limit operations fail without partial publication. The SDK's batch-delete API has no per-delete ETag option; its deletion group is fenced by the same conditional control update. This relies on every application writer using the adapter rather than directly changing business entities.
+
+Game deletion retains its original creation mapping and a tombstone. Player retirement checks active full snapshots, including incomplete setup. Club deletion first makes the club unavailable, then purges its owned entities/assets in bounded resumable steps. Retired blob references are tracked separately for later cleanup; no independent archive is deleted as a side effect.
+
+Local Azure development uses an owned loopback Azurite fixture under ignored `.AI/`, with a stable development namespace and disposable isolated test namespaces. Normal development needs no PostgreSQL server; the canonical check wrapper additionally owns a disposable PostgreSQL fixture so the retained reference suites actually execute. Production configuration uses the named Azure account and server identity, not emulator credentials. Explicit initialization can create an empty dataset; unknown schemas and nonempty unrecognized state fail closed without reset.
+
+**Transition boundary:** Azure deployment starts empty and leaves the original PostgreSQL data intact. The separately invoked migration tool can later import business data into an empty target, excluding login sessions and music connections; deployment never runs it. No special browser-epoch rejection is required. Local backup/restore tooling does not configure production scheduling or qualify live disaster recovery. Azurite is not proof of live RBAC, networking or availability. Consistent backups must cover both Table records and referenced blob bytes; storage replication alone is not backup.
 
 ## Lighting renderer
 

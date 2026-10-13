@@ -4,14 +4,9 @@
   "parameters": {
     "location": { "value": "northeurope" },
     "namePrefix": { "value": "mafiadashboard" },
-    "deployApp": { "value": false },
-    "image": { "value": "" },
-    "publicAppUrl": { "value": "" },
-    "ghcrUsername": { "value": "replace-with-github-owner" },
-    "ghcrToken": { "value": "replace-securely-at-deployment" },
-    "googleClientId": { "value": "" },
-    "googleClientSecret": { "value": "" },
-    "musicTokenEncryptionKey": { "value": "" },
-    "postgresPassword": { "value": "replace-securely-at-deployment" }
+    "storageAccountName": { "value": "replacewithunusedaccount" },
+    "storageTableName": { "value": "MafiaEntities" },
+    "storageContainerName": { "value": "mafia-live" },
+    "foundationFingerprint": { "value": "replace-with-selection-fingerprint" }
   }
 }
