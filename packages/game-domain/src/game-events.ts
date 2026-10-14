@@ -16,6 +16,8 @@ import {
   disputeVotingCount,
   finalizeBestMove,
   inspectFederationCandidate,
+  selectHostVotingCandidate,
+  recordHostVote,
   mentionVotingCandidate,
   recordActualMultipleShot,
   ruleOnVotingDispute,
@@ -146,6 +148,8 @@ export const canonicalGameEventTypes = [
   "voting.candidate-stopped",
   "voting.live-advanced",
   "vote.accepted",
+  "vote.recorded",
+  "voting.candidate-selected",
   "vote.corrected",
   "voting.count-disputed",
   "voting.count-ruled",
@@ -239,6 +243,11 @@ export type CanonicalGameEventDraft =
       { readonly candidateSeat: number }
     >
   | EventDraft<"vote.accepted", { readonly voterSeat: number; readonly candidateSeat: number }>
+  | EventDraft<
+      "vote.recorded",
+      { readonly voterSeat: number; readonly candidateSeat: number | null }
+    >
+  | EventDraft<"voting.candidate-selected", { readonly candidateSeat: number }>
   | EventDraft<
       "vote.corrected",
       { readonly voterSeat: number; readonly candidateSeat: number | null; readonly reason: string }
@@ -354,6 +363,8 @@ export const canonicalGameEventSecrecy = {
   "voting.candidate-stopped": false,
   "voting.live-advanced": false,
   "vote.accepted": false,
+  "vote.recorded": true,
+  "voting.candidate-selected": true,
   "vote.corrected": true,
   "voting.count-disputed": false,
   "voting.count-ruled": true,
@@ -652,6 +663,7 @@ const assertCanonicalPayload = (
       return;
     case "voting.candidate-mentioned":
     case "voting.candidate-inspected":
+    case "voting.candidate-selected":
     case "voting.candidate-stopped":
     case "voting.live-advanced":
       assertExactKeys(payload, ["candidateSeat"], `${type} payload`);
@@ -661,6 +673,12 @@ const assertCanonicalPayload = (
       assertExactKeys(payload, ["voterSeat", "candidateSeat"], `${type} payload`);
       assertSeat(payload.voterSeat, `${type}.voterSeat`);
       assertSeat(payload.candidateSeat, `${type}.candidateSeat`);
+      return;
+    case "vote.recorded":
+      assertExactKeys(payload, ["voterSeat", "candidateSeat"], `${type} payload`);
+      assertSeat(payload.voterSeat, `${type}.voterSeat`);
+      if (payload.candidateSeat !== null)
+        assertSeat(payload.candidateSeat, `${type}.candidateSeat`);
       return;
     case "vote.corrected":
       assertExactKeys(payload, ["voterSeat", "candidateSeat", "reason"], `${type} payload`);
@@ -1164,7 +1182,7 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
           "acceptedCandidateSeats",
           "reviewedCandidateSeats",
         ],
-        ["dispute", "finalRuling"],
+        ["dispute", "finalRuling", "hostRecording"],
         `${context}.ballot`,
       );
       if (
@@ -1172,6 +1190,8 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
         ![0, 1, 2].includes(ballot.mention as number)
       )
         throw new Error("Ballot announcements/mentions are invalid");
+      if (ballot.hostRecording !== undefined && ballot.hostRecording !== true)
+        throw new Error("Host recording must be explicitly enabled");
       assertBoolean(ballot.stopped, `${context}.ballot.stopped`);
       assertSeat(ballot.selectedCandidateSeat, `${context}.ballot.selectedCandidateSeat`);
       assertSeatArray(ballot.acceptedCandidateSeats, `${context}.ballot.acceptedCandidateSeats`);
@@ -1219,8 +1239,9 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
         if (
           game.phase !== "voting" ||
           candidateIndex < 0 ||
-          candidateIndex > (game.currentTurnIndex as number) ||
-          (candidateIndex === game.currentTurnIndex && ballot.mention !== 2)
+          (!ballot.hostRecording &&
+            (candidateIndex > (game.currentTurnIndex as number) ||
+              (candidateIndex === game.currentTurnIndex && ballot.mention !== 2)))
         )
           throw new Error("A pending dispute must refer to an actually called live count");
         if (ballot.reviewedCandidateSeats.includes(dispute.candidateSeat))
@@ -1762,6 +1783,10 @@ const applyValidatedGameEvent = (game: GameState, event: CanonicalGameEventDraft
       return announceDisciplinaryRemovals(game, event.payload.seats);
     case "voting.order-announced":
       return announceVotingOrder(game);
+    case "voting.candidate-selected":
+      return selectHostVotingCandidate(game, event.payload.candidateSeat);
+    case "vote.recorded":
+      return recordHostVote(game, event.payload.voterSeat, event.payload.candidateSeat);
     case "voting.candidate-inspected":
       return inspectFederationCandidate(game, event.payload.candidateSeat);
     case "voting.candidate-mentioned":

@@ -194,6 +194,31 @@ export const describeFederationEvent = (
           player: player(payload.candidateSeat),
         }),
       );
+    case "voting.candidate-selected":
+      if (!Number.isInteger(payload.candidateSeat)) return null;
+      return named(
+        "voting-call",
+        "vote",
+        text.t("Candidate selected: {player}", {
+          player: player(payload.candidateSeat),
+        }),
+      );
+    case "vote.recorded":
+      if (
+        !Number.isInteger(payload.voterSeat) ||
+        (payload.candidateSeat !== null && !Number.isInteger(payload.candidateSeat))
+      )
+        return null;
+      return named(
+        "vote-correction",
+        "vote",
+        payload.candidateSeat === null
+          ? text.t("Recorded vote cleared: {voter}", { voter: player(payload.voterSeat) })
+          : text.t("Vote recorded: {voter} → {candidate}", {
+              voter: player(payload.voterSeat),
+              candidate: player(payload.candidateSeat),
+            }),
+      );
     case "voting.candidate-inspected":
       if (!Number.isInteger(payload.candidateSeat)) return null;
       return named(

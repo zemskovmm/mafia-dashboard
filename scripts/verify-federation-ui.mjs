@@ -75,6 +75,14 @@ const sources = [
   "apps/web/src/i18n/messages/shell.ts",
   "packages/game-domain/src/game.ts",
   "packages/game-domain/src/game-events.ts",
+  "packages/game-domain/src/federation-actions.ts",
+  "packages/game-domain/src/federation-discipline.ts",
+  "packages/game-domain/src/day-actions.ts",
+  "packages/game-domain/src/types.ts",
+  "apps/web/src/features/game/GameUtilityPanels.tsx",
+  "apps/web/src/features/game/FederationDisciplineControls.tsx",
+  "apps/web/src/features/game/FederationJudgeDialog.tsx",
+  "apps/web/src/i18n/messages/federation-discipline.ts",
 ];
 const sourceHashes = async () =>
   Object.fromEntries(
@@ -441,6 +449,7 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     );
     await assertTableCorners(page);
     row.scenarios.push({ name: "fresh-v2-short-opening-greeting-reload", ...fresh.proof });
+    await expect(page.getByRole("region", { name: "Voting order", exact: true })).toHaveCount(0);
     row.screenshots.push(await capture(page, "fresh-day", width, height));
     const template = fresh.env.current.state,
       day = clone(template.game);
@@ -469,12 +478,11 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     assert.equal(ballot.phase, "voting", "Completed nominated day opens ballot");
     const ballotId = randomUUID();
     await seed(page, api, checkpoint(ballot, template, ballotId), ballotId);
-    await expect(page.getByRole("button", { name: /^Vote as / }).first()).toBeDisabled();
-    for (const n of [1, 2])
-      await page.getByRole("button", { name: `Announce full order (${n}/2)`, exact: true }).click();
-    await page.getByRole("button", { name: "Mention candidate #4 (1/2)", exact: true }).click();
-    await expect(page.getByRole("button", { name: /^Vote as / }).first()).toBeDisabled();
-    await page.getByRole("button", { name: "Mention candidate #4 (2/2)", exact: true }).click();
+    await expect(page.getByRole("button", { name: /^Vote as / }).first()).toBeEnabled();
+    await expect(
+      page.getByRole("button", { name: /Announce full order|Mention candidate|STOP/ }),
+    ).toHaveCount(0);
+    await expect(page.getByText("Judge-private nomination list.", { exact: false })).toHaveCount(0);
     for (let s = 1; s <= 3; s++)
       await page
         .getByRole("button", {
@@ -490,45 +498,71 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
           .map((animation) => animation.finished.catch(() => {})),
       );
     });
+    const order = page.getByRole("region", { name: "Voting order", exact: true });
+    const lastRow = order.getByRole("button", { name: `#5 ${display(day, 5)}`, exact: true });
+    const hitBox = await lastRow.boundingBox();
+    const rowBox = await lastRow.locator("..").boundingBox();
+    assert.ok(Math.abs(hitBox.width - rowBox.width) < 3, "Whole row is the touch target");
+    await page.touchscreen.tap(hitBox.x + hitBox.width - 6, hitBox.y + hitBox.height / 2);
+    await page
+      .getByRole("button", { name: `${display(day, 10)} voted for seat 5`, exact: true })
+      .tap();
+    const corrected = await settled(page, api);
+    assert.equal(corrected.current.state.game.voteAssignments[10], undefined);
+    await page.reload({ waitUntil: "networkidle" });
+    const restoredCorrection = await settled(page, api);
+    assert.deepEqual(
+      restoredCorrection.current.state.game.voteAssignments,
+      corrected.current.state.game.voteAssignments,
+    );
+    replay(restoredCorrection.current.state);
+    await order.getByRole("button", { name: `#4 ${display(day, 4)}`, exact: true }).focus();
+    await page.keyboard.press("Space");
+    assert.equal((await settled(page, api)).current.state.game.ballot.selectedCandidateSeat, 4);
+    await page.mouse.move(0, 0);
+    await page.locator(".table-stage").evaluate(async (stage) => {
+      await Promise.all(
+        stage
+          .getAnimations({ subtree: true })
+          .filter((animation) => animation.effect?.getComputedTiming().iterations !== Infinity)
+          .map((animation) => animation.finished.catch(() => {})),
+      );
+    });
     const stopBeforeTools = await page
-      .getByRole("button", { name: "STOP — accept count", exact: true })
+      .getByRole("button", { name: "Next candidate", exact: true })
       .boundingBox();
-    const toolsToggle = page.getByRole("button", { name: "Ballot rules & review", exact: true });
+    const toolsToggle = page.getByRole("button", { name: "Rules", exact: true });
     await toolsToggle.focus();
     await page.keyboard.press("Enter");
     await expect(toolsToggle).toHaveAttribute("aria-expanded", "true");
-    await expect(
-      page.getByText("Federation ballots cannot be skipped by host choice.", { exact: false }),
-    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Judge discipline", exact: true })).toHaveCount(
+      0,
+    );
     await page.getByText("Dispute count", { exact: true }).click();
     await page
       .getByLabel("Dispute reason", { exact: true })
       .fill("Judge requests external recording review");
     await page.getByRole("button", { name: "Pause voting for review", exact: true }).click();
-    await expect(
-      page.getByRole("button", { name: "STOP — accept count", exact: true }),
-    ).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Next candidate", exact: true })).toBeDisabled();
     await expect(page.getByRole("button", { name: /^Vote as / }).first()).toBeDisabled();
     await expect(
       page.getByRole("button", { name: "Accept final reviewed count", exact: true }),
     ).toBeDisabled();
     row.screenshots.push(await capture(page, "ballot-dispute", width, height));
     const disputed = await settled(page, api);
-    const sheet = page.locator(".federation-ballot-sheet");
+    const sheet = page.getByRole("dialog", { name: "Rules", exact: true });
     const sheetBox = await sheet.boundingBox();
     assert.ok(
       sheetBox.x >= 0 && sheetBox.y >= 0 && sheetBox.y + sheetBox.height <= height + 1,
       "Review sheet bounded by viewport",
     );
-    await page.getByRole("button", { name: "Close ballot tools", exact: true }).click();
+    await sheet.getByRole("button", { name: "Close", exact: true }).click();
     await expect(toolsToggle).toBeFocused();
-    await expect(
-      page.getByRole("button", { name: "STOP — accept count", exact: true }),
-    ).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Next candidate", exact: true })).toBeDisabled();
     assert.deepEqual(
-      await page.getByRole("button", { name: "STOP — accept count", exact: true }).boundingBox(),
+      await page.getByRole("button", { name: "Next candidate", exact: true }).boundingBox(),
       stopBeforeTools,
-      "Opening/scrolling review never moves STOP",
+      "Opening/scrolling review never moves the table controls",
     );
     row.screenshots.push(await capture(page, "ballot-dispute-table", width, height));
     await page.keyboard.press("Enter");
@@ -539,22 +573,18 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
       .getByRole("checkbox", { name: "I reviewed the external recording", exact: true })
       .check();
     await page.getByRole("button", { name: "Accept final reviewed count", exact: true }).click();
-    await sheet.focus();
+    await sheet.getByRole("button", { name: "Close", exact: true }).focus();
     await page.keyboard.press("Escape");
     await expect(sheet).toBeHidden();
     await expect(toolsToggle).toBeFocused();
-    await page.getByRole("button", { name: "STOP — accept count", exact: true }).click();
     await page.getByRole("button", { name: "Next candidate", exact: true }).click();
-    await page.getByRole("button", { name: "Mention candidate #5 (1/2)", exact: true }).click();
-    await page.getByRole("button", { name: "Mention candidate #5 (2/2)", exact: true }).click();
     const accepted = await settled(page, api);
     replay(accepted.current.state);
     assert.deepEqual(
       accepted.current.state.game.voteAssignments,
       Object.fromEntries(Array.from({ length: 10 }, (_, i) => [i + 1, i < 3 ? 4 : 5])),
     );
-    await page.getByRole("button", { name: "STOP — accept count", exact: true }).click();
-    row.screenshots.push(await capture(page, "ballot-stop", width, height));
+    row.screenshots.push(await capture(page, "ballot-ready", width, height));
     await page.getByRole("button", { name: "Finish voting", exact: true }).click();
     const resolved = await saveReplay(page, api, "ballot-resolved", width, height);
     assert.equal(branch(resolved.env.current.state).at(-1).type, "voting.resolved");
@@ -566,11 +596,13 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     const ballotUndo = await settled(page, api);
     replay(ballotUndo.current.state);
     assert.equal(ballotUndo.current.state.game.phase, "voting");
-    assert.equal(ballotUndo.current.state.game.ballot.stopped, true);
+    assert.equal(ballotUndo.current.state.game.ballot.stopped, false);
+    assert.equal(ballotUndo.current.state.game.ballot.orderAnnouncements, 0);
+    assert.equal(ballotUndo.current.state.game.ballot.hostRecording, true);
     await page.getByRole("button", { name: "Finish voting", exact: true }).click();
     const reruled = await saveReplay(page, api, "ballot-reaccepted", width, height);
     row.scenarios.push({
-      name: "ordered-ballot-dispute-reviewed-stop-auto-last-resolution-undo-reload",
+      name: "tap-correction-row-selection-dispute-auto-last-resolution-undo-reload",
       ...reruled.proof,
     });
     const previousLanguage = club.language;
@@ -578,21 +610,74 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
       club.language = "ru";
       await seed(page, api, disputed.current.state, disputed.gameId);
       const russianTools = page.getByRole("button", {
-        name: "Правила и проверка голосования",
+        name: "Правила",
         exact: true,
       });
+      await russianTools.click();
       await expect(russianTools).toHaveAttribute("aria-expanded", "true");
       await expect(
         page.getByRole("checkbox", { name: "Я просмотрел внешнюю запись", exact: true }),
       ).toBeVisible();
       row.screenshots.push(await capture(page, "ballot-dispute-ru", width, height));
-      await page
-        .getByRole("button", { name: "Закрыть инструменты голосования", exact: true })
-        .click();
+      await page.getByRole("button", { name: "Закрыть", exact: true }).click();
       await expect(russianTools).toBeFocused();
       row.screenshots.push(await capture(page, "ballot-dispute-table-ru", width, height));
     } finally {
       club.language = previousLanguage;
+    }
+    for (const locale of ["en", "ru"]) {
+      try {
+        club.language = locale;
+        const id = randomUUID();
+        await seed(page, api, checkpoint(day, template, id), id);
+        await page
+          .getByRole("button", { name: locale === "en" ? "Rules" : "Правила", exact: true })
+          .click();
+        const dialog = page.getByRole("dialog", {
+          name: locale === "en" ? "Rules" : "Правила",
+          exact: true,
+        });
+        await dialog
+          .getByRole("combobox", {
+            name: locale === "en" ? "Discipline action" : "Дисциплинарное действие",
+            exact: true,
+          })
+          .selectOption("removal");
+        const rule = dialog.getByRole("combobox", {
+          name: locale === "en" ? "Removal rule" : "Пункт удаления",
+          exact: true,
+        });
+        const options = await rule.locator("option").allTextContents();
+        assert.equal(options.length, 14);
+        for (const option of options.slice(1)) {
+          const [number, description] = option.split(" · ");
+          assert.match(number, /^6\.2\.(?:[1-9]|1[0-3])$/);
+          assert.ok(description.trim().split(/\s+/).length <= 2);
+        }
+        await rule.selectOption("6.2.2");
+        await dialog
+          .getByRole("combobox", {
+            name: locale === "en" ? "Occurrence timing" : "Момент нарушения",
+            exact: true,
+          })
+          .selectOption("day-discussion");
+        await page.screenshot({
+          path: path.join(evidence, `${width}x${height}-discipline-${locale}.png`),
+        });
+        await dialog
+          .getByRole("button", {
+            name: locale === "en" ? "Confirm discipline" : "Подтвердить взыскание",
+            exact: true,
+          })
+          .click();
+        const removed = await saveReplay(page, api, `rule-only-removal-${locale}`, width, height);
+        assert.equal(removed.env.current.state.game.disciplinaryRemovals[0].reason, "");
+        await page.reload({ waitUntil: "networkidle" });
+        replay((await settled(page, api)).current.state);
+        row.scenarios.push({ name: `rule-only-removal-${locale}`, ...removed.proof });
+      } finally {
+        club.language = previousLanguage;
+      }
     }
     // Domain-produced previous miss is a precondition, not the tested draw outcome.
     let priorMiss = completeMafiaShots(resolveMafiaShots(beginNight(day)).game);
@@ -603,6 +688,7 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     assert.equal(priorMiss.phase, "day");
     const drawId = randomUUID();
     await seed(page, api, checkpoint(beginNight(priorMiss), template, drawId), drawId);
+    await expect(page.getByRole("region", { name: "Voting order", exact: true })).toHaveCount(0);
     for (const name of [
       "Evaluate Mafia shots",
       "Continue night",
@@ -770,7 +856,7 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     }
 
     api.clean();
-    assert.equal(row.scenarios.length, 7);
+    assert.equal(row.scenarios.length, 9);
     assert.deepEqual(row.geometryFailures, [], "No primary-control overflow");
     console.log(
       `Federation integrated UI ${width}x${height}: PASS (${row.scenarios.length} scenarios)`,

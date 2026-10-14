@@ -261,7 +261,7 @@ const browser =
     ? await webkit.launch({ headless: true })
     : await chromium.launch({ channel: "chrome", headless: true });
 const context = await browser.newContext({
-  hasTouch: headerOnly || layoutOnly,
+  hasTouch: headerOnly || layoutOnly || federationOnly,
   isMobile: layoutOnly && browserName === "webkit",
   viewport:
     Number.isFinite(viewportWidth) &&

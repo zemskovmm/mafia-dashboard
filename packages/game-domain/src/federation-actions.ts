@@ -108,6 +108,45 @@ export const inspectFederationCandidate = (game: GameState, candidateSeat: numbe
     throw new Error("Inspection requires a ballot candidate");
   return { ...game, ballot: { ...game.ballot, selectedCandidateSeat: candidateSeat } };
 };
+export const selectHostVotingCandidate = (game: GameState, candidateSeat: number): GameState => {
+  const ballot = requireFederationBallot(game);
+  if (!game.turnOrder.includes(candidateSeat)) throw new Error("Select a ballot candidate");
+  const voteAssignments = { ...game.voteAssignments };
+  if (
+    candidateSeat === game.turnOrder.at(-1) &&
+    !ballot.reviewedCandidateSeats.includes(candidateSeat)
+  ) {
+    for (const player of game.players)
+      if (player.status === "active" && voteAssignments[player.seat] === undefined)
+        voteAssignments[player.seat] = candidateSeat;
+  }
+  return {
+    ...game,
+    voteAssignments,
+    ballot: { ...ballot, hostRecording: true, selectedCandidateSeat: candidateSeat },
+  };
+};
+export const recordHostVote = (
+  game: GameState,
+  voterSeat: number,
+  candidateSeat: number | null,
+): GameState => {
+  const ballot = requireFederationBallot(game);
+  if (
+    ballot.reviewedCandidateSeats.some(
+      (seat) => seat === candidateSeat || seat === game.voteAssignments[voterSeat],
+    )
+  )
+    throw new Error("A reviewed judge ruling is final; use authorized history correction");
+  if (requireSeat(game, voterSeat).status !== "active")
+    throw new Error("Only active voters may vote");
+  if (candidateSeat !== null && candidateSeat !== ballot.selectedCandidateSeat)
+    throw new Error("A recorded vote must target the selected ballot candidate");
+  const voteAssignments = { ...game.voteAssignments };
+  if (candidateSeat === null) delete voteAssignments[voterSeat];
+  else voteAssignments[voterSeat] = candidateSeat;
+  return { ...game, voteAssignments, ballot: { ...ballot, hostRecording: true } };
+};
 export const advanceFederationCandidate = (game: GameState): GameState => {
   const ballot = requireFederationBallot(game);
   if (!ballot.stopped || game.currentTurnIndex >= game.turnOrder.length - 1)
@@ -165,8 +204,10 @@ export const disputeVotingCount = (
   const ballot = requireFederationBallot(game);
   assertJudgeReason(reason);
   if (
-    !game.turnOrder.slice(0, game.currentTurnIndex + 1).includes(candidateSeat) ||
-    (game.turnOrder[game.currentTurnIndex] === candidateSeat && ballot.mention !== 2)
+    !game.turnOrder.includes(candidateSeat) ||
+    (!ballot.hostRecording &&
+      (!game.turnOrder.slice(0, game.currentTurnIndex + 1).includes(candidateSeat) ||
+        (game.turnOrder[game.currentTurnIndex] === candidateSeat && ballot.mention !== 2)))
   )
     throw new Error("Only an actually called count can be disputed");
   if (ballot.reviewedCandidateSeats.includes(candidateSeat))

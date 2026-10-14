@@ -596,21 +596,21 @@ export const GameScreen = ({
               : phaseTitle(game, t)}
           </h1>
         </div>
-        {federation && mode !== "preview" ? (
-          <FederationDisciplineControls
-            key={`${game.phase}:${disciplineRequest?.id ?? 0}`}
-            game={game}
-            request={disciplineRequest}
-            onComplete={() => setDisciplineRequest(null)}
-            onGameChange={onGameChange}
-            onEvent={onEvent}
-            onAcceptedEvent={onAcceptedEvent}
-          />
-        ) : null}
       </header>
 
       <div className="live-layout">
         <section className="table-workspace">
+          {federation && mode !== "preview" ? (
+            <FederationDisciplineControls
+              key={`${game.phase}:${disciplineRequest?.id ?? 0}`}
+              game={game}
+              request={disciplineRequest}
+              onComplete={() => setDisciplineRequest(null)}
+              onGameChange={onGameChange}
+              onEvent={onEvent}
+              onAcceptedEvent={onAcceptedEvent}
+            />
+          ) : null}
           <div
             className="team-counts"
             aria-label={

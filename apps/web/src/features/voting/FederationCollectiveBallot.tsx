@@ -78,11 +78,9 @@ export const FederationCollectiveBallot = ({
           inactive: p.status !== "active",
           votingHighlight: votes[p.seat] === true,
         }))}
-        seatActionDisabled={(seat) =>
-          seat.status !== "active" || !eligibility.permitted || votes[seat.seat] !== undefined
-        }
+        seatActionDisabled={(seat) => seat.status !== "active" || !eligibility.permitted}
         seatActionLabel={(seat) => t("voteAsEliminateAll", { name: seat.name })}
-        onSeatClick={(seat) => transcribe(seat, "yes")}
+        onSeatClick={(seat) => transcribe(seat, votes[seat] === true ? "no" : "yes")}
         renderSeatActions={(seat) =>
           seat.status === "active" && onFoul !== undefined ? (
             <button
@@ -119,10 +117,8 @@ export const FederationCollectiveBallot = ({
           )}
         </p>
       ) : null}
-      <p>{t("noGenericSkip")}</p>
-      <section className="federation-ballot-tools" aria-label={t("carCrashDecision")}>
-        <p>{t("liftDraftGuidance")}</p>
-        {earlyClose ? <p className="federation-ballot-notice">{t("determinedGuidance")}</p> : null}
+      <details className="federation-ballot-tools">
+        <summary>{t("correction")}</summary>
         {voters.map((p) => (
           <div key={p.seat} className="federation-review-row">
             <label htmlFor={`${id}-vote-${p.seat}`}>
@@ -140,7 +136,7 @@ export const FederationCollectiveBallot = ({
             </select>
           </div>
         ))}
-      </section>
+      </details>
     </div>
   );
 };

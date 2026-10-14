@@ -44,7 +44,7 @@ export const assertRemovalObservation = (observation: RemovalObservation): void 
     throw new Error("A recorded occurrence stage is required");
   if (typeof observation.rule !== "string" || !/^6\.2\.(?:[1-9]|1[0-3])$/.test(observation.rule))
     throw new Error("Removal requires a rule 6.2.1–6.2.13 basis");
-  assertJudgeReason(observation.reason);
+  if (observation.reason !== "") assertJudgeReason(observation.reason);
   if (
     typeof observation.checkInProgress !== "boolean" ||
     (observation.checkInProgress &&

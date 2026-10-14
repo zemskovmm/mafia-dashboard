@@ -22,6 +22,10 @@ Persist all domain fields unchanged. V2 baseline/event admission validates their
 
 ## Ordered ballot APIs and events
 
+The current host UI uses `voting.candidate-selected {candidateSeat}` (`selectHostVotingCandidate`) and `vote.recorded {voterSeat,candidateSeat:number|null}` (`recordHostVote`). Both are private canonical events. They enable optional `ballot.hostRecording:true` without changing or inventing any recorded announcement/mention/STOP facts. The selected nominee receives taps; null clears a transcription. Deliberate selection of the final unreviewed nominee assigns the remaining eligible votes. Restoration never does. A dispute pauses recording/selection/resolution, and a reviewed candidate's count cannot be changed through ordinary recording. Other candidates can still be recorded. Dispute and final-ruling reasons remain mandatory.
+
+The APIs below retain their historical ceremonial meaning and unchanged replay hashes. The host UI does not require or emit these ceremony events; older saved ballots can continue through the explicit new actions. `currentTurnIndex` retains the old ordered-call meaning; host navigation uses `selectedCandidateSeat` only.
+
 `FederationBallot` is `{orderAnnouncements:0|1|2, mention:0|1|2, stopped:boolean, selectedCandidateSeat:number, acceptedCandidateSeats:readonly number[], reviewedCandidateSeats:readonly number[], dispute?:{candidateSeat:number,reason:string}, finalRuling?:{candidateSeat:number,reason:string,externalReviewAcknowledged:true}}`.
 
 `currentTurnIndex` remains the **live ordered cursor**. Inspection uses `ballot.selectedCandidateSeat`; do not set the live cursor from inspected cards.
@@ -41,7 +45,7 @@ Persist all domain fields unchanged. V2 baseline/event admission validates their
 
 Announce the whole order twice; each candidate has two mentions; accept that live candidate's hands only between the second mention and STOP. Then advance. Accepted votes cannot be toggled off/recast; corrections require the explicit reasoned correction API. Actual last-candidate second mention fills remaining eligible assignments once. Inspection does not fill or call anything. Dispute pauses acceptance, STOP, advancement and resolution until a human recording-review acknowledgement and final ruling; an ordinary repeat appeal of that reviewed count is rejected. No video API is assumed.
 
-Existing `voting.resolved {voteAssignments,result}` remains the accepted result event, but v2 must summarize the exact already-accepted map, not overwrite it or synthesize a cursor. `resolveVote` requires STOP and either complete assignments or a mathematically conclusive winner. It never invents missing votes. Existing collective resolution may similarly accept a conclusive partial yes/no map; preserve the supplied decisions and eligible-voter count.
+Existing `voting.resolved {voteAssignments,result}` remains the accepted result event, but v2 must summarize the exact already-recorded map, not overwrite it or synthesize a cursor. `resolveVote` requires either explicit host recording or historical STOP, and complete assignments or a mathematically conclusive winner. It never invents missing votes. Existing collective resolution may similarly accept a conclusive partial yes/no map; preserve the supplied decisions and eligible-voter count.
 
 A later sole nominee leaves automatically with the rule's implicit eligible votes as discussion completes, without an open ballot. No nominees and zero-round sole nominees go directly to night with a named basis. Generic `skipVoting` and `cancelVoting(...host-skipped)` are rejected in federation play.
 
@@ -60,7 +64,7 @@ A later sole nominee leaves automatically with the rule's implicit eligible vote
 
 ## Discipline and publication
 
-`RemovalObservation` is exactly `{seat:number, stage:RemovalOccurrenceStage, rule:string, reason:string, checkInProgress:boolean}`. Rules are `6.2.1`–`6.2.13`; reasons are trimmed 1–500 characters. Host supplies the physical occurrence/check timing fact explicitly; an app timestamp or timer is not that fact.
+`RemovalObservation` is exactly `{seat:number, stage:RemovalOccurrenceStage, rule:string, reason:string, checkInProgress:boolean}`. Rules are `6.2.1`–`6.2.13`; an additional reason is optional, represented by an empty string. Supplied notes are trimmed, at most 500 characters, and preserved. This applies to fourth-foul removals too; other reason-requiring actions are unchanged. Host supplies the physical occurrence/check timing fact explicitly; an app timestamp or timer is not that fact. UI options show the unchanged number plus a localized one/two-word rule description; descriptions are not substituted for host notes in stored events.
 
 Stages: `'agreement'|'before-shooting-count'|'shooting-count'|'don-check'|'sheriff-check'|'day-discussion'|'open-voting'|'after-voting-result'|'farewell'`.
 

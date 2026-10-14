@@ -158,6 +158,8 @@ export type LegalVotingSkipReason =
   | "zero-round-sole-nominee"
   | "disciplinary-cancellation";
 export interface FederationBallot {
+  /** Enabled only by an explicit recording action; historical call state stays intact. */
+  readonly hostRecording?: true;
   readonly orderAnnouncements: 0 | 1 | 2;
   readonly mention: 0 | 1 | 2;
   readonly stopped: boolean;

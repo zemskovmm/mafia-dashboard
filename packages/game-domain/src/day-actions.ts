@@ -479,8 +479,11 @@ export const countVotes = (game: GameState): Record<number, number> => {
 };
 
 export const resolveVote = (game: GameState): VoteResult => {
-  if (isFederationGame(game) && !requireFederationBallot(game).stopped)
-    throw new Error("Voting must reach an accepted STOP before resolution");
+  if (isFederationGame(game)) {
+    const ballot = requireFederationBallot(game);
+    if (!ballot.hostRecording && !ballot.stopped)
+      throw new Error("Voting must reach an accepted STOP before resolution");
+  }
   if (game.phase !== "voting") {
     throw new Error("A vote can only be resolved during voting");
   }

@@ -7,7 +7,12 @@ import type {
   RemovalOccurrenceStage,
 } from "@mafia/game-domain";
 import { useMessages } from "../../i18n/I18nProvider.js";
-import { federationDisciplineMessages } from "../../i18n/messages/federation-discipline.js";
+import {
+  federationDisciplineMessages,
+  removalRules,
+} from "../../i18n/messages/federation-discipline.js";
+import { votingMessages } from "../../i18n/messages/voting.js";
+import { FederationBallotTools } from "../voting/FederationBallotTools.js";
 import { usePlayerDisplayName } from "../players/player-display.js";
 import { hasImmediateRemovalAnnouncement, removalStagesForPhase } from "./federation-ui-state.js";
 import { FederationJudgeDialog } from "./FederationJudgeDialog.js";
@@ -34,6 +39,7 @@ export const FederationDisciplineControls = ({
   readonly onComplete?: () => void;
 }) => {
   const { t } = useMessages(federationDisciplineMessages);
+  const { t: votingT } = useMessages(votingMessages);
   const displayName = usePlayerDisplayName();
   const [open, setOpen] = useState(!!request);
   const [seat, setSeat] = useState(
@@ -53,7 +59,7 @@ export const FederationDisciplineControls = ({
     (stage === "don-check" && player?.role === "don" && game.phase === "night-don") ||
     (stage === "sheriff-check" && player?.role === "sheriff" && game.phase === "night-sheriff");
   const observation: RemovalObservation | null =
-    stage && reason.trim() && (fourth || rule)
+    stage && (fourth || rule)
       ? {
           seat,
           stage,
@@ -82,7 +88,7 @@ export const FederationDisciplineControls = ({
         : { type: "discipline.removal-observed", payload: observation }
       : null;
   const legal = event ? tryApplyGameEvent(game, event).ok : false;
-  const accept = (draft: CanonicalGameEventDraft) => {
+  const submit = (draft: CanonicalGameEventDraft) => {
     const result = tryApplyGameEvent(game, draft);
     if (!result.ok) return;
     if (onAcceptedEvent) onAcceptedEvent(draft);
@@ -90,6 +96,10 @@ export const FederationDisciplineControls = ({
       onGameChange(result.game);
       onEvent(draft.type, { ...draft.payload });
     }
+  };
+  const accept = (draft: CanonicalGameEventDraft) => {
+    if (!tryApplyGameEvent(game, draft).ok) return;
+    submit(draft);
     setOpen(false);
     setReason("");
     setStage("");
@@ -125,19 +135,29 @@ export const FederationDisciplineControls = ({
         </section>
       ) : null}
       {stages.length ? (
-        <button type="button" onClick={() => setOpen(true)}>
-          {t("discipline.title")}
+        <button
+          type="button"
+          className="federation-ballot-tools-toggle"
+          aria-expanded={open}
+          onClick={(event) => {
+            event.currentTarget.focus();
+            setOpen(true);
+          }}
+        >
+          {votingT("ballotRulesLabel")}
         </button>
       ) : null}
-      {stages.length && open ? (
+      {stages.length ? (
         <FederationJudgeDialog
-          title={t("discipline.title")}
+          active={open}
+          title={votingT("ballotRulesLabel")}
           closeLabel={t("discipline.close")}
           onDismiss={() => {
             setOpen(false);
             onComplete?.();
           }}
         >
+          <h2>{t("discipline.title")}</h2>
           <form
             className="federation-discipline-form"
             onSubmit={(e) => {
@@ -145,7 +165,6 @@ export const FederationDisciplineControls = ({
               if (event && legal) accept(event);
             }}
           >
-            <p>{t("discipline.reference")}</p>
             <label>
               {t("discipline.player")}
               <select
@@ -210,9 +229,9 @@ export const FederationDisciplineControls = ({
                     onChange={(e) => setRule(e.target.value)}
                   >
                     <option value="">{t("discipline.chooseRule")}</option>
-                    {Array.from({ length: 13 }, (_, i) => `6.2.${i + 1}`).map((value) => (
+                    {removalRules.map((value) => (
                       <option key={value} value={value}>
-                        {value}
+                        {value} · {t(`rule.${value}`)}
                       </option>
                     ))}
                   </select>
@@ -241,6 +260,20 @@ export const FederationDisciplineControls = ({
               {t("discipline.confirm")}
             </button>
           </form>
+          {game.phase === "voting" ? (
+            <FederationBallotTools
+              key={game.ballot?.selectedCandidateSeat}
+              game={game}
+              submit={submit}
+            />
+          ) : null}
+          <details>
+            <summary>{t("discipline.referenceTitle")}</summary>
+            <p>{t("discipline.reference")}</p>
+            <a href="https://mafgame.org/pages/rules" target="_blank" rel="noreferrer">
+              {t("discipline.rulebook")}
+            </a>
+          </details>
         </FederationJudgeDialog>
       ) : null}
     </div>

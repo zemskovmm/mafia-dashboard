@@ -8,6 +8,7 @@ import {
   createSeededRandom,
   createSetup,
   drawRoleForSeat,
+  nominate,
 } from "@mafia/game-domain";
 import type { GameState, PlayerInput } from "@mafia/game-domain";
 import { LiveSidePanel } from "./LiveSidePanel.js";
@@ -23,7 +24,7 @@ const createDayGame = (): GameState => {
   }));
   let setup = beginRoleDraw(createSetup(players), createSeededRandom(13));
   for (let seat = 1; seat <= 10; seat += 1) setup = drawRoleForSeat(setup, seat);
-  return advanceSetupPhase(advanceSetupPhase(createGame(completeRoleDraw(setup))));
+  return nominate(advanceSetupPhase(advanceSetupPhase(createGame(completeRoleDraw(setup)))), 1, 2);
 };
 
 describe("LiveSidePanel", () => {
@@ -60,14 +61,12 @@ describe("LiveSidePanel", () => {
     expect(
       screen.getByRole("region", { name: "Timer controls", hidden: true }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Voting order", hidden: true })).toHaveTextContent(
-      "No nominations yet",
-    );
+    expect(screen.queryByRole("region", { name: "Voting order", hidden: true })).toBeNull();
   });
 
   it("uses one grip to hide both utilities without unmounting the Timer", () => {
     render(
-      <LiveSidePanel game={null}>
+      <LiveSidePanel game={createDayGame()}>
         <div>Music</div>
       </LiveSidePanel>,
     );

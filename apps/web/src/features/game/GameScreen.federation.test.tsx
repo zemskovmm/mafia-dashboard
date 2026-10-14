@@ -89,6 +89,47 @@ const Harness = ({
 
 describe("federation GameScreen", () => {
   it.each(["en", "ru"] as const)(
+    "shows short removal rules and accepts no extra reason in %s",
+    async (locale) => {
+      const user = userEvent.setup();
+      const accepted = vi.fn();
+      render(
+        <I18nProvider locale={locale}>
+          <Harness initial={day()} accepted={accepted} />
+        </I18nProvider>,
+      );
+      await user.click(screen.getByRole("button", { name: locale === "en" ? "Rules" : "Правила" }));
+      expect(screen.queryByRole("button", { name: /Judge discipline|Дисциплина/ })).toBeNull();
+      const rule = screen.getByLabelText(locale === "en" ? "Removal rule" : "Пункт удаления");
+      const options = within(rule).getAllByRole("option").slice(1);
+      expect(options).toHaveLength(13);
+      for (const option of options) {
+        const [number, description = ""] = (option.textContent ?? "").split(" · ");
+        expect(number).toMatch(/^6\.2\.(?:[1-9]|1[0-3])$/);
+        expect(description.trim().split(/\s+/).length).toBeLessThanOrEqual(2);
+        expect(description.trim().length).toBeGreaterThan(0);
+      }
+      expect(options[1]).toHaveTextContent(
+        locale === "en" ? "6.2.2 · Insults" : "6.2.2 · Оскорбления",
+      );
+      await user.selectOptions(rule, "6.2.2");
+      const confirm = screen.getByRole("button", {
+        name: locale === "en" ? "Confirm discipline" : "Подтвердить взыскание",
+      });
+      expect(confirm).toBeDisabled();
+      await user.selectOptions(
+        screen.getByLabelText(locale === "en" ? "Occurrence timing" : "Момент нарушения"),
+        "day-discussion",
+      );
+      expect(confirm).toBeEnabled();
+      await user.click(confirm);
+      expect(accepted.mock.lastCall?.[0]).toMatchObject({
+        type: "discipline.removal-observed",
+        payload: { rule: "6.2.2", reason: "" },
+      });
+    },
+  );
+  it.each(["en", "ru"] as const)(
     "takes two opening advances in %s with a separate Sheriff greeting and no checks or kills",
     async (locale) => {
       const user = userEvent.setup();
@@ -501,12 +542,15 @@ describe("federation GameScreen", () => {
       const changed = vi.fn();
       const accepted = vi.fn();
       render(<Harness initial={initial} changed={changed} accepted={accepted} />);
-      await user.click(screen.getByText("Judge discipline"));
+      await user.click(screen.getByRole("button", { name: "Rules" }));
       await user.selectOptions(screen.getByLabelText("Discipline player"), "1");
       expect(screen.getByRole("button", { name: "Confirm discipline" })).toBeDisabled();
       await user.selectOptions(screen.getByLabelText("Occurrence timing"), stage);
       await user.selectOptions(screen.getByLabelText("Removal rule"), "6.2.2");
-      await user.type(screen.getByLabelText("Discipline reason"), "Judge observed a violation");
+      await user.type(
+        screen.getByLabelText("Discipline reason (optional)"),
+        "Judge observed a violation",
+      );
       await user.click(screen.getByRole("button", { name: "Confirm discipline" }));
       expect(accepted.mock.lastCall?.[0]).toEqual({
         type: "discipline.removal-observed",
@@ -565,7 +609,7 @@ describe("federation GameScreen", () => {
     expect(changed).not.toHaveBeenCalled();
     await user.selectOptions(screen.getByLabelText("Occurrence timing"), "day-discussion");
     await user.type(
-      screen.getByLabelText("Discipline reason"),
+      screen.getByLabelText("Discipline reason (optional)"),
       "Fourth foul for speaking out of turn",
     );
     await user.click(screen.getByRole("button", { name: "Confirm discipline" }));
@@ -599,12 +643,12 @@ describe("federation GameScreen", () => {
     const owner = initial.players.find((p) => p.role === "don")!;
     const changed = vi.fn();
     render(<Harness initial={initial} changed={changed} />);
-    await user.click(screen.getByText("Judge discipline"));
+    await user.click(screen.getByRole("button", { name: "Rules" }));
     await user.selectOptions(screen.getByLabelText("Discipline player"), String(owner.seat));
     await user.selectOptions(screen.getByLabelText("Occurrence timing"), "don-check");
     await user.selectOptions(screen.getByLabelText("Removal rule"), "6.2.2");
     await user.type(
-      screen.getByLabelText("Discipline reason"),
+      screen.getByLabelText("Discipline reason (optional)"),
       "Check already physically underway",
     );
     await user.click(
@@ -642,11 +686,14 @@ describe("federation GameScreen", () => {
     const victim = initial.goodbyeSeats![0]!;
     const changed = vi.fn();
     render(<Harness initial={initial} changed={changed} />);
-    await user.click(screen.getByText("Judge discipline"));
+    await user.click(screen.getByRole("button", { name: "Rules" }));
     await user.selectOptions(screen.getByLabelText("Discipline player"), String(victim));
     await user.selectOptions(screen.getByLabelText("Occurrence timing"), "farewell");
     await user.selectOptions(screen.getByLabelText("Removal rule"), "6.2.2");
-    await user.type(screen.getByLabelText("Discipline reason"), "Disqualified during farewell");
+    await user.type(
+      screen.getByLabelText("Discipline reason (optional)"),
+      "Disqualified during farewell",
+    );
     await user.click(screen.getByRole("button", { name: "Confirm discipline" }));
     expect(changed.mock.lastCall?.[0].ballotCancellationDay).toBeUndefined();
     expect(

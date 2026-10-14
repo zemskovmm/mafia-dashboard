@@ -2563,7 +2563,7 @@ describe("developer menu", () => {
 
     const rail = screen.getByRole("complementary", { name: "Live game controls" });
     expect(within(rail).getByRole("region", { name: "Timer controls" })).toBeInTheDocument();
-    expect(within(rail).getByRole("region", { name: "Voting order" })).toBeInTheDocument();
+    expect(within(rail).queryByRole("region", { name: "Voting order" })).toBeNull();
     expect(rail.lastElementChild).toBe(player.closest(".youtube-dock"));
     expect(screen.getByTestId("youtube-player")).toBe(player);
   });
@@ -2574,9 +2574,7 @@ describe("developer menu", () => {
     const rail = screen.getByRole("complementary", { name: "Live game controls" });
     const player = await screen.findByTestId("youtube-player");
     const timer = within(rail).getByRole("region", { name: "Timer controls" });
-    expect(within(rail).getByRole("region", { name: "Voting order" })).toHaveTextContent(
-      "No nominations yet",
-    );
+    expect(within(rail).queryByRole("region", { name: "Voting order" })).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Select available players" }));
     expect(screen.getAllByRole("heading", { name: "Available players" })).toHaveLength(2);
@@ -2689,7 +2687,7 @@ describe("developer menu", () => {
     expect(screen.getByTestId("youtube-player")).toBe(player);
     expect(player.closest(".youtube-dock")).not.toHaveAttribute("hidden");
     expect(screen.getByRole("region", { name: "Timer controls" })).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Voting order" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Voting order" })).toBeNull();
     expect(musicPlayerHarness).toMatchObject({ mounts: 1, unmounts: 0 });
 
     await user.click(screen.getByRole("button", { name: "Exit preview" }));
@@ -2890,7 +2888,7 @@ describe("developer menu", () => {
     await user.click(screen.getByRole("button", { name: "Record meaningful checkpoint" }));
     await user.click(screen.getByRole("button", { name: "Open game log" }));
     await user.click(screen.getByRole("button", { name: "Preview state after log #1" }));
-    expect(within(order).queryByRole("button", { name: /#2|#3/i })).toBeNull();
+    expect(screen.queryAllByRole("button", { name: /#2|#3/i })).toHaveLength(0);
     expect(gameScreenHarness.previewGame?.voteAssignments).toEqual({});
   });
 
@@ -4770,11 +4768,9 @@ describe("authoritative game session lifecycle", () => {
     for (let step = 0; step < 8; step += 1)
       await user.click(screen.getByRole("button", { name: "Next player" }));
     await user.click(screen.getByRole("button", { name: "Begin voting" }));
-    await user.click(screen.getByRole("button", { name: "Announce full order (1/2)" }));
+    await user.click(screen.getByRole("button", { name: "Vote as Player 1 for Player 4" }));
     await waitFor(() =>
-      expect(api.saveGameSession.mock.lastCall?.[1].state.events.at(-1).type).toBe(
-        "voting.order-announced",
-      ),
+      expect(api.saveGameSession.mock.lastCall?.[1].state.events.at(-1).type).toBe("vote.recorded"),
     );
     const saved = api.saveGameSession.mock.lastCall![1].state;
     expect(saved.game.phase).toBe("voting");
@@ -4785,9 +4781,9 @@ describe("authoritative game session lifecycle", () => {
     expect(replayGameLog(saved.initialGame, saved.events).game).toEqual(saved.game);
     cleanup();
     render(<App />);
-    expect(await screen.findByRole("button", { name: "Announce full order (2/2)" })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: "Player 1 voted for seat 4" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: /undo last action/i }));
-    expect(screen.getByRole("button", { name: "Announce full order (1/2)" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Vote as Player 1 for Player 4" })).toBeEnabled();
     await waitFor(() =>
       expect(api.saveGameSession.mock.lastCall?.[1].state.headEventId).not.toBe(saved.headEventId),
     );
@@ -4865,7 +4861,7 @@ describe("authoritative game session lifecycle", () => {
     },
   );
 
-  it("records side-panel federation candidate inspection without moving the live ballot cursor", async () => {
+  it("records side-panel federation selection without inventing ceremonial observations", async () => {
     let state = federationGame();
     for (let step = 0; step < 5; step += 1) state = advanceSetupPhase(state);
     state = startVoting({
@@ -4906,14 +4902,14 @@ describe("authoritative game session lifecycle", () => {
       expect(
         api.saveGameSession.mock.calls.some(([, operation]) =>
           operation.state.events?.some(
-            (event: GameLogEntry) => event.type === "voting.candidate-inspected",
+            (event: GameLogEntry) => event.type === "voting.candidate-selected",
           ),
         ),
       ).toBe(true),
     );
     const saved = api.saveGameSession.mock.calls.find(([, operation]) =>
       operation.state.events?.some(
-        (event: GameLogEntry) => event.type === "voting.candidate-inspected",
+        (event: GameLogEntry) => event.type === "voting.candidate-selected",
       ),
     )![1];
     expect(replayGameLog(saved.state.initialGame, saved.state.events).game).toEqual(

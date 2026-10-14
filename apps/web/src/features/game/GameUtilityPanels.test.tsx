@@ -37,7 +37,7 @@ const createDayGame = (federation = false): GameState => {
 };
 
 describe("GameUtilityPanels", () => {
-  it("distinguishes the inspected nominee from the ordered live cursor with private-list guidance", async () => {
+  it("highlights the selected nominee without disclosure or live-cursor reminders", async () => {
     const user = userEvent.setup();
     let day = nominate(createDayGame(true), 1, 2);
     day = nominate(completeCurrentTurn(day), 2, 3);
@@ -52,14 +52,16 @@ describe("GameUtilityPanels", () => {
       "aria-pressed",
       "true",
     );
-    expect(screen.getAllByRole("listitem")[0]).toHaveAttribute("aria-current", "step");
-    expect(screen.getByText("Live call: #2")).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem")[1]).toHaveAttribute("aria-current", "step");
+    expect(screen.queryByText("Live call: #2")).toBeNull();
     expect(
-      screen.getByText(
+      screen.queryByText(
         "Judge-private nomination list. Do not disclose it in response to player requests.",
       ),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Unassigned votes: 10")).toBeInTheDocument();
+    ).toBeNull();
+    expect(screen.getByRole("button", { name: "#2 Player 2" })).toHaveClass(
+      "nomination-row-target",
+    );
     await user.click(screen.getByRole("button", { name: "#2 Player 2" }));
     expect(onSelect).toHaveBeenCalledWith(2);
   });
@@ -129,13 +131,11 @@ describe("GameUtilityPanels", () => {
     expect(screen.getByText("1 active vote")).toBeInTheDocument();
   });
 
-  it("keeps Timer available and shows an empty voting state before a game exists", () => {
+  it("keeps Timer available without an empty voting panel before a game exists", () => {
     render(<GameUtilityPanels game={null} />);
 
     expect(screen.getByRole("region", { name: "Timer controls" })).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Voting order" })).toHaveTextContent(
-      "No nominations yet",
-    );
+    expect(screen.queryByRole("region", { name: "Voting order" })).toBeNull();
     expect(screen.queryByRole("listitem")).not.toBeInTheDocument();
   });
 
@@ -146,7 +146,6 @@ describe("GameUtilityPanels", () => {
     "car-crash-decision",
     "car-crash-result",
     "goodbye-speech",
-    "night-mafia",
   ] as const)("does not retain the candidate highlight in %s", (phase) => {
     const game: GameState = {
       ...createDayGame(),
@@ -159,8 +158,34 @@ describe("GameUtilityPanels", () => {
     expect(screen.getByRole("listitem")).toHaveAttribute("aria-current", "step");
     expect(screen.getByRole("listitem")).toHaveClass("is-voting-highlight");
 
-    rerender(<GameUtilityPanels game={{ ...game, phase }} />);
+    rerender(<GameUtilityPanels game={{ ...game, phase, goodbyeNext: "night" }} />);
     expect(screen.getByRole("listitem")).not.toHaveAttribute("aria-current");
     expect(screen.getByRole("listitem")).not.toHaveClass("is-voting-highlight");
+  });
+  it.each([
+    "night-mafia",
+    "night-don",
+    "night-sheriff",
+    "night-resolution",
+    "best-move",
+    "mafia-planning",
+    "finished",
+    "cancelled",
+    "draw",
+    "goodbye-speech",
+  ] as const)("hides even stale nominations during %s and keeps the timer", (phase) => {
+    render(
+      <GameUtilityPanels
+        game={{
+          ...createDayGame(),
+          phase,
+          goodbyeNext: "day",
+          nominations: [{ candidateSeat: 2, nominatorSeat: 1, order: 1 }],
+        }}
+      />,
+    );
+    expect(screen.queryByRole("region", { name: "Voting order" })).toBeNull();
+    expect(document.querySelector('[data-panel="voting"]')).toBeNull();
+    expect(screen.getByRole("region", { name: "Timer controls" })).toBeInTheDocument();
   });
 });

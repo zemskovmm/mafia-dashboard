@@ -248,6 +248,8 @@ const eventMessageKeys: Readonly<Record<string, ShellMessageKey>> = {
   "voting.candidate-stopped": "eventCandidateStopped",
   "voting.live-advanced": "eventLiveAdvanced",
   "vote.accepted": "eventVoteAccepted",
+  "vote.recorded": "eventVoteRecorded",
+  "voting.candidate-selected": "eventCandidateSelected",
   "vote.corrected": "eventVoteCorrected",
   "voting.count-disputed": "eventCountDisputed",
   "voting.count-ruled": "eventCountRuled",
@@ -2522,7 +2524,7 @@ export const ClubWorkspace = ({
                 if (canApplyGameScreenMutation() && game.phase === "voting") {
                   if (isFederationGame(game)) {
                     acceptGameEvent({
-                      type: "voting.candidate-inspected",
+                      type: "voting.candidate-selected",
                       payload: { candidateSeat: seat },
                     });
                   } else {

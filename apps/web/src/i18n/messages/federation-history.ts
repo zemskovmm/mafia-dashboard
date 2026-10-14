@@ -1,6 +1,9 @@
 import type { Message } from "./types.js";
 
 const en = {
+  "Candidate selected: {player}": "Candidate selected: {player}",
+  "Recorded vote cleared: {voter}": "Recorded vote cleared: {voter}",
+  "Vote recorded: {voter} → {candidate}": "Vote recorded: {voter} → {candidate}",
   "Collective lift prohibited": "Collective lift prohibited",
   "Phase mafia sleep": "mafia sleeps",
   "Phase don identification": "masked Don identification",
@@ -81,6 +84,9 @@ const en = {
 
 type FederationHistoryMessageKey = keyof typeof en;
 const ru = {
+  "Candidate selected: {player}": "Выбран кандидат: {player}",
+  "Recorded vote cleared: {voter}": "Запись голоса удалена: {voter}",
+  "Vote recorded: {voter} → {candidate}": "Голос записан: {voter} → {candidate}",
   "Collective lift prohibited": "Общий подъём запрещён",
   "Phase mafia sleep": "мафия засыпает",
   "Phase don identification": "знакомство дона в маске",

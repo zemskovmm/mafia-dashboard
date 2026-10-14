@@ -1,0 +1,34 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`host recording > pins the original ceremonial ballot bytes and hashes 1`] = `
+[
+  {
+    "stateHashAfter": "sha256:eb2c113c792e5493cd9552bdd656677a16bd0204a11ddc45c1c3d5660802cf65",
+    "stateHashBefore": undefined,
+  },
+  {
+    "stateHashAfter": "sha256:8f5baff07556cd7042ec6aa83c8b661b1684f1a4d37be7b5ebbc885c52604ad5",
+    "stateHashBefore": undefined,
+  },
+  {
+    "stateHashAfter": "sha256:e8c690626b3afedf7c7c89d93705ff42fea43fd2ece4ef22b734756c0b89cb95",
+    "stateHashBefore": undefined,
+  },
+  {
+    "stateHashAfter": "sha256:27c7ee9407e35486c786b7b2e12235bcc67fa0772b964924cc1fb4de68a468de",
+    "stateHashBefore": undefined,
+  },
+  {
+    "stateHashAfter": "sha256:138280f7970fcab7a0f9a7cb512e07f3aafdfac4b970634fe30905c547f7fdf0",
+    "stateHashBefore": undefined,
+  },
+  {
+    "stateHashAfter": "sha256:1dfaf18682470fea2aad4325f1a99fbd6c39df6b70b347a1034ef2f2b58877d7",
+    "stateHashBefore": undefined,
+  },
+  {
+    "stateHashAfter": "sha256:e2caabf3d604d54cbcffb2a8587c9ae4166eb5fd99b5871e3870dab2240f5240",
+    "stateHashBefore": undefined,
+  },
+]
+`;

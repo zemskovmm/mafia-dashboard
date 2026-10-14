@@ -26,8 +26,9 @@ export const FederationBallotTools = ({
   const canDispute =
     game.ballot !== undefined &&
     game.ballot.dispute === undefined &&
-    game.turnOrder.slice(0, game.currentTurnIndex + 1).includes(disputeSeat) &&
-    (game.turnOrder[game.currentTurnIndex] !== disputeSeat || game.ballot.mention === 2) &&
+    (game.ballot.hostRecording ||
+      (game.turnOrder.slice(0, game.currentTurnIndex + 1).includes(disputeSeat) &&
+        (game.turnOrder[game.currentTurnIndex] !== disputeSeat || game.ballot.mention === 2))) &&
     !game.ballot.reviewedCandidateSeats.includes(disputeSeat);
   const correctionPermitted =
     game.ballot !== undefined &&
@@ -45,59 +46,61 @@ export const FederationBallotTools = ({
           submit={submit}
         />
       ) : null}
-      <details className="federation-ballot-tools">
-        <summary>{t("correction")}</summary>
-        <p>{t("correctionGuidance")}</p>
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (!correctionPermitted || !reason.trim()) return;
-            submit({
-              type: "vote.corrected",
-              payload: { voterSeat: voter, candidateSeat: target, reason: reason.trim() },
-            });
-            setReason("");
-          }}
-        >
-          <label htmlFor={`${id}-voter`}>{t("correctionVoter")}</label>
-          <select
-            id={`${id}-voter`}
-            value={voter}
-            onChange={(event) => setVoter(Number(event.target.value))}
+      {!game.ballot?.hostRecording ? (
+        <details className="federation-ballot-tools">
+          <summary>{t("correction")}</summary>
+          <p>{t("correctionGuidance")}</p>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!correctionPermitted || !reason.trim()) return;
+              submit({
+                type: "vote.corrected",
+                payload: { voterSeat: voter, candidateSeat: target, reason: reason.trim() },
+              });
+              setReason("");
+            }}
           >
-            {voters.map((p) => (
-              <option key={p.seat} value={p.seat}>
-                #{p.seat} {displayName(p)}
-              </option>
-            ))}
-          </select>
-          <label htmlFor={`${id}-target`}>{t("correctedVote")}</label>
-          <select
-            id={`${id}-target`}
-            value={target ?? "unassigned"}
-            onChange={(event) =>
-              setTarget(event.target.value === "unassigned" ? null : Number(event.target.value))
-            }
-          >
-            <option value="unassigned">{t("unassigned")}</option>
-            {game.turnOrder.map((seat) => (
-              <option key={seat} value={seat}>
-                #{seat}
-              </option>
-            ))}
-          </select>
-          <label htmlFor={`${id}-reason`}>{t("correctionReason")}</label>
-          <input
-            id={`${id}-reason`}
-            maxLength={500}
-            value={reason}
-            onChange={(event) => setReason(event.target.value)}
-          />
-          <button type="submit" disabled={!correctionPermitted || !reason.trim()}>
-            {t("applyCorrection")}
-          </button>
-        </form>
-      </details>
+            <label htmlFor={`${id}-voter`}>{t("correctionVoter")}</label>
+            <select
+              id={`${id}-voter`}
+              value={voter}
+              onChange={(event) => setVoter(Number(event.target.value))}
+            >
+              {voters.map((p) => (
+                <option key={p.seat} value={p.seat}>
+                  #{p.seat} {displayName(p)}
+                </option>
+              ))}
+            </select>
+            <label htmlFor={`${id}-target`}>{t("correctedVote")}</label>
+            <select
+              id={`${id}-target`}
+              value={target ?? "unassigned"}
+              onChange={(event) =>
+                setTarget(event.target.value === "unassigned" ? null : Number(event.target.value))
+              }
+            >
+              <option value="unassigned">{t("unassigned")}</option>
+              {game.turnOrder.map((seat) => (
+                <option key={seat} value={seat}>
+                  #{seat}
+                </option>
+              ))}
+            </select>
+            <label htmlFor={`${id}-reason`}>{t("correctionReason")}</label>
+            <input
+              id={`${id}-reason`}
+              maxLength={500}
+              value={reason}
+              onChange={(event) => setReason(event.target.value)}
+            />
+            <button type="submit" disabled={!correctionPermitted || !reason.trim()}>
+              {t("applyCorrection")}
+            </button>
+          </form>
+        </details>
+      ) : null}
       <details className="federation-ballot-tools">
         <summary>{t("dispute")}</summary>
         <form

@@ -21,6 +21,7 @@ import type { CanonicalGameEventDraft, GameState, PlayerInput } from "@mafia/gam
 import { I18nProvider } from "../../i18n/I18nProvider.js";
 import { VotingStage } from "./VotingStage.js";
 import { GameUtilityPanels } from "../game/GameUtilityPanels.js";
+import { FederationDisciplineControls } from "../game/FederationDisciplineControls.js";
 import { expectServerAcceptsEvent } from "../../test-game-event-contract.js";
 import { namedProfiles, renderWithProfiles } from "../../test-player-directory.js";
 
@@ -132,6 +133,16 @@ const FederationHarness = ({
   return (
     <>
       <output data-testid="federation-state">{JSON.stringify(game)}</output>
+      <FederationDisciplineControls
+        game={game}
+        request={null}
+        onGameChange={setGame}
+        onEvent={() => undefined}
+        onAcceptedEvent={(event) => {
+          onAccepted(event);
+          setGame((current) => applyGameEvent(current, event));
+        }}
+      />
       <VotingStage
         game={game}
         onGameChange={setGame}
@@ -146,7 +157,12 @@ const FederationHarness = ({
       <GameUtilityPanels
         game={game}
         onSelectVotingCandidate={(seat) =>
-          setGame((current) => selectVotingCandidate(current, seat))
+          setGame((current) =>
+            applyGameEvent(current, {
+              type: "voting.candidate-selected",
+              payload: { candidateSeat: seat },
+            }),
+          )
         }
       />
     </>
@@ -158,8 +174,8 @@ const federationState = (): GameState =>
 
 describe("Federation voting", () => {
   it.each([
-    ["en", "Ballot rules & review", "Dispute count", "Dispute reason"],
-    ["ru", "Правила и проверка голосования", "Оспорить подсчёт", "Причина спора"],
+    ["en", "Rules", "Dispute count", "Dispute reason"],
+    ["ru", "Правила", "Оспорить подсчёт", "Причина спора"],
   ] as const)(
     "keeps %s review drafts accessible across keyboard dismissal",
     async (locale, label, dispute, reason) => {
@@ -178,8 +194,7 @@ describe("Federation voting", () => {
       expect(toggle).toHaveAttribute("aria-expanded", "false");
       expect(toggle).toHaveFocus();
       await user.keyboard("{Enter}");
-      const sheet = screen.getByRole("complementary", { name: label });
-      expect(sheet.id).toBe(toggle.getAttribute("aria-controls"));
+      const sheet = screen.getByRole("dialog", { name: label });
       await user.click(within(sheet).getByText(dispute));
       await user.type(within(sheet).getByLabelText(reason), "Recorded draft");
       await user.keyboard("{Escape}");
@@ -191,26 +206,14 @@ describe("Federation voting", () => {
     },
   );
 
-  it("allows disputes only for actually called counts, not inspected future nominees", async () => {
+  it("allows a host-recorded count to be disputed without announcement clicks", async () => {
     const user = userEvent.setup();
     render(<FederationHarness />);
-    await user.click(screen.getByRole("button", { name: "Ballot rules & review" }));
+    await user.click(screen.getByRole("button", { name: "Vote as Player 1 for Player 4" }));
+    await user.click(screen.getByRole("button", { name: "Rules" }));
     await user.click(screen.getByText("Dispute count"));
     await user.type(screen.getByLabelText("Dispute reason"), "Count contested");
     const pause = screen.getByRole("button", { name: "Pause voting for review" });
-    expect(pause).toBeDisabled();
-    await user.click(screen.getByRole("button", { name: "Announce full order (1/2)" }));
-    await user.click(screen.getByRole("button", { name: "Announce full order (2/2)" }));
-    await user.click(screen.getByRole("button", { name: "Mention candidate #4 (1/2)" }));
-    expect(pause).toBeDisabled();
-    await user.click(screen.getByRole("button", { name: "Mention candidate #4 (2/2)" }));
-    expect(pause).toBeEnabled();
-    await user.selectOptions(screen.getByLabelText("Disputed candidate"), "6");
-    expect(pause).toBeDisabled();
-    await user.click(screen.getByRole("button", { name: "STOP — accept count" }));
-    await user.click(screen.getByRole("button", { name: "Next candidate" }));
-    expect(pause).toBeDisabled();
-    await user.selectOptions(screen.getByLabelText("Disputed candidate"), "4");
     expect(pause).toBeEnabled();
     await user.click(pause);
     expect(federationState().ballot?.dispute?.candidateSeat).toBe(4);
@@ -471,7 +474,7 @@ describe("Federation voting", () => {
     expect(screen.queryByRole("button", { name: "Resolve car crash" })).toBeNull();
   });
 
-  it("offers a determined early close only after STOP without fabricating uncast remainder", async () => {
+  it("offers an explicit determined early close without STOP or fabricated uncast remainder", async () => {
     const user = userEvent.setup();
     let game = federationVotingGame();
     const drafts: CanonicalGameEventDraft[] = [
@@ -488,21 +491,15 @@ describe("Federation voting", () => {
       });
     const events = vi.fn();
     render(<FederationHarness initial={game} onAccepted={events} />);
-    await user.click(screen.getByRole("button", { name: "Ballot rules & review" }));
     expect(screen.getByRole("button", { name: "Finish voting" })).toBeDisabled();
-    await user.click(screen.getByRole("button", { name: "STOP — accept count" }));
-    expect(
-      screen.getByText(
-        "Outcome is determined. Unassigned votes remain uncast; closing does not assign them.",
-      ),
-    ).toBeInTheDocument();
-    expect(screen.getAllByText("Unassigned votes: 4")).toHaveLength(2);
+    await user.click(screen.getByRole("button", { name: "Player 1 voted for seat 4" }));
+    await user.click(screen.getByRole("button", { name: "Vote as Player 1 for Player 4" }));
     expect(
       within(screen.getByRole("region", { name: "Mafia table" })).getByRole("button", {
-        name: "Close determined result",
+        name: "Finish voting",
       }),
     ).toBeEnabled();
-    await user.click(screen.getByRole("button", { name: "Close determined result" }));
+    await user.click(screen.getByRole("button", { name: "Finish voting" }));
     expect(federationState().phase).toBe("goodbye-speech");
     expect(federationState().voteAssignments).toEqual({ 1: 4, 2: 4, 3: 4, 4: 4, 5: 4, 6: 4 });
     expect(events).toHaveBeenLastCalledWith({
@@ -515,7 +512,6 @@ describe("Federation voting", () => {
   });
 
   it("does not offer early close for a merely leading STOPped candidate", async () => {
-    const user = userEvent.setup();
     let game = federationVotingGame();
     const drafts: CanonicalGameEventDraft[] = [
       { type: "voting.order-announced", payload: {} },
@@ -535,7 +531,6 @@ describe("Federation voting", () => {
     });
     render(<FederationHarness initial={game} />);
     expect(screen.queryByRole("button", { name: "Close determined result" })).toBeNull();
-    await user.click(screen.getByRole("button", { name: "Ballot rules & review" }));
     expect(screen.getByRole("button", { name: "Finish voting" })).toBeDisabled();
   });
 
@@ -552,7 +547,7 @@ describe("Federation voting", () => {
     for (const event of drafts) game = applyGameEvent(game, event);
     const events = vi.fn();
     const { rerender } = render(<FederationHarness initial={game} onAccepted={events} />);
-    await user.click(screen.getByRole("button", { name: "Ballot rules & review" }));
+    await user.click(screen.getByRole("button", { name: "Rules" }));
     await user.click(screen.getByText("Dispute count"));
     expect(screen.getByRole("button", { name: "Pause voting for review" })).toBeDisabled();
     await user.type(screen.getByLabelText("Dispute reason"), "Count contested");
@@ -564,11 +559,12 @@ describe("Federation voting", () => {
     const paused = JSON.parse(JSON.stringify(federationState())) as GameState;
     rerender(<FederationHarness key="restored" initial={paused} onAccepted={events} />);
     expect(screen.getByRole("alert")).toHaveTextContent("Voting paused — technical dispute");
-    expect(screen.getByRole("button", { name: "STOP — accept count" })).toBeDisabled();
+
     expect(screen.getByRole("button", { name: "Next candidate" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Finish voting" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Vote as Player 2 for Player 4" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Foul Player 2" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Rules" }));
     await user.selectOptions(screen.getByLabelText("Reviewed vote for #1 · Player 1"), "6");
     await user.type(screen.getByLabelText("Final ruling reason"), "Recording confirms seat six");
     const rule = screen.getByRole("button", { name: "Accept final reviewed count" });
@@ -582,7 +578,7 @@ describe("Federation voting", () => {
       reason: "Recording confirms seat six",
       externalReviewAcknowledged: true,
     });
-    expect(screen.getByRole("button", { name: "STOP — accept count" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Next candidate" })).toBeEnabled();
     expect(
       screen.getByText(
         "Reviewed ruling is final for ordinary appeals. Clerical correction remains separate.",
@@ -615,7 +611,7 @@ describe("Federation voting", () => {
     for (const event of drafts) game = applyGameEvent(game, event);
     const events = vi.fn();
     render(<FederationHarness initial={game} onAccepted={events} />);
-    await user.click(screen.getByRole("button", { name: "Ballot rules & review" }));
+    await user.click(screen.getByRole("button", { name: "Rules" }));
     await user.click(screen.getByText("Correct transcription"));
     expect(screen.getByRole("button", { name: "Apply transcription correction" })).toBeDisabled();
     await user.selectOptions(screen.getByLabelText("Corrected vote"), "6");
@@ -634,41 +630,37 @@ describe("Federation voting", () => {
     expect(federationState().voteAssignments).toEqual({});
   });
 
-  it("accepts votes only between the second ordered mention and STOP, independently of inspection", async () => {
+  it("records and corrects votes with direct taps and deliberate final-candidate selection", async () => {
     const user = userEvent.setup();
     const events = vi.fn();
     render(<FederationHarness onAccepted={events} />);
-    await user.click(screen.getByRole("button", { name: "Ballot rules & review" }));
     expect(screen.queryByRole("button", { name: "Skip voting" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Next candidate" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Vote as Player 1 for Player 4" })).toBeDisabled();
-    await user.click(screen.getByRole("button", { name: "Announce full order (1/2)" }));
-    await user.click(screen.getByRole("button", { name: "Announce full order (2/2)" }));
-    await user.click(screen.getByRole("button", { name: "Mention candidate #4 (1/2)" }));
-    expect(screen.getByRole("button", { name: "Vote as Player 1 for Player 4" })).toBeDisabled();
-    await user.click(screen.getByRole("button", { name: "Mention candidate #4 (2/2)" }));
-    await user.click(screen.getByRole("button", { name: "#6 Player 6" }));
-    expect(federationState().currentTurnIndex).toBe(0);
-    expect(federationState().voteAssignments).toEqual({});
-    expect(screen.getByRole("status", { name: "Live call" })).toHaveTextContent("#4 Player 4");
+    expect(
+      screen.queryByRole("button", { name: /Announce full order|Mention candidate|STOP/ }),
+    ).toBeNull();
+    expect(screen.getByRole("button", { name: "Next candidate" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "Vote as Player 1 for Player 4" }));
     const accepted = screen.getByRole("button", { name: "Player 1 voted for seat 4" });
     await user.click(accepted);
-    expect(federationState().voteAssignments).toEqual({ 1: 4 });
-    await user.click(screen.getByRole("button", { name: "STOP — accept count" }));
-    expect(screen.getByRole("button", { name: "Vote as Player 2 for Player 4" })).toBeDisabled();
+    expect(federationState().voteAssignments).toEqual({});
+    await user.click(screen.getByRole("button", { name: "Vote as Player 1 for Player 4" }));
     await user.click(screen.getByRole("button", { name: "Next candidate" }));
-    expect(federationState().currentTurnIndex).toBe(1);
-    expect(federationState().voteAssignments).toEqual({ 1: 4 });
-    await user.click(screen.getByRole("button", { name: "Mention candidate #6 (1/2)" }));
-    await user.click(screen.getByRole("button", { name: "Mention candidate #6 (2/2)" }));
     expect(Object.keys(federationState().voteAssignments)).toHaveLength(10);
+    await user.click(screen.getByRole("button", { name: "Player 1 voted for seat 4" }));
+    expect(federationState().voteAssignments[1]).toBe(6);
+    await user.click(screen.getByRole("button", { name: "Player 1 voted for seat 6" }));
+    expect(federationState().voteAssignments[1]).toBeUndefined();
+    expect(federationState().ballot).toMatchObject({
+      orderAnnouncements: 0,
+      mention: 0,
+      stopped: false,
+    });
     expect(events).toHaveBeenCalledWith({
-      type: "vote.accepted",
+      type: "vote.recorded",
       payload: { voterSeat: 1, candidateSeat: 4 },
     });
     expect(events).toHaveBeenCalledWith({
-      type: "voting.live-advanced",
+      type: "voting.candidate-selected",
       payload: { candidateSeat: 6 },
     });
   });

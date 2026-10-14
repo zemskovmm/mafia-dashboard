@@ -8,6 +8,9 @@
 .federation-ballot-workspace > .table-stage {
   min-height: 100%;
 }
+.game-shell.phase-voting .federation-ballot-workspace .table-vote-center:has(> [role="alert"]) {
+  transform: translateY(-24px);
+}
 
 /* Judge tools scroll independently; never move the live table or STOP. */
 .federation-ballot-tools-toggle {

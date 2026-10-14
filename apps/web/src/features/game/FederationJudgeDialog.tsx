@@ -7,32 +7,43 @@ export const FederationJudgeDialog = ({
   closeLabel,
   onDismiss,
   children,
+  active = true,
 }: {
   readonly title: string;
   readonly closeLabel: string;
   readonly onDismiss: () => void;
   readonly children: ReactNode;
+  readonly active?: boolean;
 }) => {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
   useEffect(() => {
     const dialog = ref.current;
-    if (!dialog) return;
+    if (!dialog || !active) return;
     const previousFocus =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
     if (typeof dialog.showModal === "function") dialog.showModal();
-    else dialog.setAttribute("open", "");
+    else {
+      dialog.setAttribute("open", "");
+      dialog.querySelector<HTMLButtonElement>("button")?.focus();
+    }
     return () => {
       if (dialog.open && typeof dialog.close === "function") dialog.close();
+      else dialog.removeAttribute("open");
       if (previousFocus?.isConnected) previousFocus.focus();
     };
-  }, []);
+  }, [active]);
   return createPortal(
     <dialog
       ref={ref}
       className="federation-judge-dialog"
       aria-labelledby={titleId}
       onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          onDismiss();
+          return;
+        }
         if (event.key !== "Tab") return;
         const focusable = [
           ...event.currentTarget.querySelectorAll<HTMLElement>(
