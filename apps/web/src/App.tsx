@@ -794,9 +794,9 @@ export const ClubWorkspace = ({
   }, [refreshActiveSessions, refreshPlayers]);
 
   useEffect(() => {
-    document.title = `${club.name} · Mafia Dashboard`;
+    document.title = club.name === "La Verdad" ? "La Verdad" : `${club.name} · La Verdad`;
     return () => {
-      document.title = "Mafia Dashboard";
+      document.title = "La Verdad";
     };
   }, [club.name]);
 

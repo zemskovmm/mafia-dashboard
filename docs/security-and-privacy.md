@@ -2,7 +2,7 @@
 
 ## Scope and product decisions
 
-Mafia Dashboard is an internet-reachable, authenticated moderator application. It has no anonymous club, game, replay, spectator, or public-display API. Google OpenID Connect establishes application accounts; the app then authorizes every club request from a server-side membership.
+La Verdad is an internet-reachable, authenticated moderator application. It has no anonymous club, game, replay, spectator, or public-display API. Google OpenID Connect establishes application accounts; the app then authorizes every club request from a server-side membership.
 
 The accepted authorization model has two roles:
 

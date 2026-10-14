@@ -904,7 +904,7 @@ describe("club welcome", () => {
     );
     try {
       expect(await screen.findByRole("alert")).toHaveTextContent(
-        "Mafia Dashboard уже открыт в другой вкладке. Используйте её или закройте и перезагрузите эту страницу.",
+        "Приложение La Verdad уже открыто в другой вкладке. Используйте её или закройте и перезагрузите эту страницу.",
       );
       expect(screen.queryByRole("button")).toBeNull();
     } finally {
@@ -949,7 +949,7 @@ describe("club welcome", () => {
     try {
       await user.click(open);
       expect(await screen.findByRole("alert")).toHaveTextContent(
-        "Mafia Dashboard is already open in another tab. Please use that tab, or close it and reload this page.",
+        "La Verdad is already open in another tab. Please use that tab, or close it and reload this page.",
       );
       expect(api.listPlayers).not.toHaveBeenCalled();
       expect(screen.queryByRole("button", { name: /New club|Sign out|Open Manage/ })).toBeNull();
@@ -996,7 +996,7 @@ describe("club welcome", () => {
     const view = render(<WelcomeApp />);
     try {
       expect(await screen.findByRole("alert")).toHaveTextContent(
-        "Mafia Dashboard is already open in another tab. Please use that tab, or close it and reload this page.",
+        "La Verdad is already open in another tab. Please use that tab, or close it and reload this page.",
       );
       expect(screen.queryByRole("button", { name: /New club|Sign out|La Verdad/ })).toBeNull();
       expect(api.listPlayers).not.toHaveBeenCalled();
@@ -1642,7 +1642,7 @@ describe("club player gate", () => {
     const user = userEvent.setup();
     const onExit = vi.fn();
     api.listPlayers.mockResolvedValue([]);
-    render(
+    const { rerender, unmount } = render(
       <ClubWorkspace
         club={testClub}
         onExit={onExit}
@@ -1656,7 +1656,7 @@ describe("club player gate", () => {
     expect(
       screen.getByText("Mafia Malaga", { selector: ".active-club-title-name" }),
     ).toBeInTheDocument();
-    expect(document.title).toBe("Mafia Malaga · Mafia Dashboard");
+    expect(document.title).toBe("Mafia Malaga · La Verdad");
     expect(screen.getByText("Need 10 players · 0 registered")).toBeInTheDocument();
 
     await user.click(
@@ -1668,6 +1668,17 @@ describe("club player gate", () => {
     await user.click(screen.getByRole("button", { name: "Start new game" }));
     expect(screen.getByRole("alert")).toHaveTextContent("Add 10 more registered players");
     expect(screen.getByRole("heading", { name: "Players & statistics" })).toBeInTheDocument();
+    rerender(
+      <ClubWorkspace
+        club={{ ...testClub, name: "La Verdad" }}
+        onExit={onExit}
+        onEditClub={() => undefined}
+        onDeleteClub={() => Promise.resolve()}
+      />,
+    );
+    expect(document.title).toBe("La Verdad");
+    unmount();
+    expect(document.title).toBe("La Verdad");
   });
 
   it("returns from the under-eleven player directory to the existing setup without a navigation trap", async () => {
@@ -3224,7 +3235,7 @@ describe("developer menu", () => {
     await user.click(screen.getByRole("button", { name: "Clear all data" }));
 
     expect(confirm).toHaveBeenCalledWith(
-      "Clear all data stored by Mafia Dashboard in this browser? Server players, sessions, results, and music will not be deleted.",
+      "Clear all data stored by La Verdad in this browser? Server players, sessions, results, and music will not be deleted.",
     );
     expect(api.clearAllData).not.toHaveBeenCalled();
     await waitFor(() => {

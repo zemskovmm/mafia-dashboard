@@ -1,6 +1,6 @@
 # Self-hosted production deployment
 
-This guide deploys Mafia Dashboard on one Linux host with Docker Engine and Docker Compose v2. PostgreSQL runs in a private Compose network with a named volume; the application binds to loopback by default and expects an external HTTPS reverse proxy.
+This guide deploys La Verdad on one Linux host with Docker Engine and Docker Compose v2. PostgreSQL runs in a private Compose network with a named volume; the application binds to loopback by default and expects an external HTTPS reverse proxy.
 
 The Compose deployment is pilot-grade rather than highly available. Use the delivered logical backup, off-server copy, and isolated restore procedure in [PostgreSQL backup and disaster recovery](postgresql-backup-and-recovery.md); a Docker volume alone is not a backup.
 

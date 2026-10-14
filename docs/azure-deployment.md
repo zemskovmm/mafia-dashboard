@@ -1,6 +1,6 @@
 # Azure deployment
 
-Mafia Dashboard releases use `.github/workflows/deploy-azure.yml`, GitHub OIDC and immutable GHCR image digests. The approved Azure transition selects a **new empty Azure Table/private Blob store**, with no SQL connection, SQL migration init container, fallback or dual write. Historical business-data import is a separate later operation; it is not run during deployment. Users sign in again and reconnect music. Browser epoch rejection is not a deployment requirement.
+La Verdad releases use `.github/workflows/deploy-azure.yml`, GitHub OIDC and immutable GHCR image digests. The approved Azure transition selects a **new empty Azure Table/private Blob store**, with no SQL connection, SQL migration init container, fallback or dual write. Historical business-data import is a separate later operation; it is not run during deployment. Users sign in again and reconnect music. Browser epoch rejection is not a deployment requirement.
 
 ## Target and resource ownership
 

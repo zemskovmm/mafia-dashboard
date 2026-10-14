@@ -12,7 +12,7 @@ const hostTextAttributes = new Set([
   "alt",
 ]);
 const timelineTextProperties = new Set(["label", "ariaLabel", "accessibleLabel"]);
-const allowedText = new Set(["K", "Q", "YouTube", "YouTube Music", "Mafia Dashboard"]);
+const allowedText = new Set(["K", "Q", "YouTube", "YouTube Music", "La Verdad"]);
 
 const productionTsx = (directory: string): string[] =>
   readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {

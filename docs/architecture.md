@@ -1,6 +1,6 @@
 # Architecture
 
-Mafia Dashboard is a TypeScript npm workspace with three primary application boundaries:
+La Verdad is a TypeScript npm workspace with three primary application boundaries:
 
 - `apps/web/` is the React/Vite browser application for club setup and moderated play.
 - `apps/server/` is the Fastify API and static host. It owns authentication, club isolation, and explicit persistence adapters: PostgreSQL for Compose/reference fixtures, or Azure Table + private Blob Storage for local development and Azure deployment.

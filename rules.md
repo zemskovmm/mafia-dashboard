@@ -1,4 +1,4 @@
-# Mafia Dashboard — Rules and Product Baseline
+# La Verdad — Rules and Product Baseline
 
 > **Status:** maintained product and rules baseline
 > **Primary mode:** in-person, moderator-led **Club Mafia**
@@ -20,7 +20,7 @@ The product standardizes on **Club Mafia**, whose common format uses:
 - moderator-tracked nominations, votes, night shots, checks, and fouls;
 - music or masking sound during the night.[S3][S4]
 
-Therefore, Mafia Dashboard implements a versioned Club Mafia rules baseline only. Alternate player counts, role sets, and party-game ruleset modules are outside the product scope.
+Therefore, La Verdad implements a versioned Club Mafia rules baseline only. Alternate player counts, role sets, and party-game ruleset modules are outside the product scope.
 
 ## 2. Product scope
 
@@ -321,7 +321,7 @@ The product SHOULD use neutral UI wording such as “eliminated” and “night 
 
 ## 6. Club Mafia configuration boundary
 
-Mafia Dashboard supports the ten-seat Club Mafia rules in this document. Player count, role distribution, role reveal, speech order, nominations, voting, tie resolution, night actions, checks, draw suggestion, and foul policy are not alternate-ruleset selectors.
+La Verdad supports the ten-seat Club Mafia rules in this document. Player count, role distribution, role reveal, speech order, nominations, voting, tie resolution, night actions, checks, draw suggestion, and foul policy are not alternate-ruleset selectors.
 
 Canonical events carry a replay-format version, but the UI does not expose a ruleset selector. Best Move is the one settled club-level rules control: it is enabled by default, configurable per club, and snapshotted into each new game before play begins.
 

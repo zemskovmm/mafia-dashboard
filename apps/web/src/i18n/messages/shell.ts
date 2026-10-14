@@ -2,6 +2,8 @@ import type { FeatureMessages } from "../I18nProvider.js";
 import type { Message } from "./types.js";
 
 const englishShellMessages = {
+  applicationName: "La Verdad",
+  officialClubApplication: "Official app of La Verdad · Málaga",
   backgroundBlack: "black",
   backgroundGrey33: "33% grey",
   backgroundGrey66: "66% grey",
@@ -34,7 +36,7 @@ const englishShellMessages = {
   deleteSessionConfirmation:
     'Delete "{name}" and all associated game statistics? This cannot be undone.',
   clearApplicationDataConfirmation:
-    "Clear all data stored by Mafia Dashboard in this browser? Server players, sessions, results, and music will not be deleted.",
+    "Clear all data stored by La Verdad in this browser? Server players, sessions, results, and music will not be deleted.",
   pendingChanges: {
     one: "{count} change",
     other: "{count} changes",
@@ -65,7 +67,7 @@ const englishShellMessages = {
   browserGameEyebrow: "Browser game",
   browserGameLockWaiting: "Waiting for this browser's game storage lock…",
   browserGameLockBusy:
-    "Mafia Dashboard is already open in another tab. Please use that tab, or close it and reload this page.",
+    "La Verdad is already open in another tab. Please use that tab, or close it and reload this page.",
   browserGameLockUnavailable: "This browser cannot safely lock local game storage.",
   browserGameInvalidTitle: "Browser game data needs attention",
   browserGameInvalidBody:
@@ -279,6 +281,8 @@ const englishShellMessages = {
 export type ShellMessageKey = keyof typeof englishShellMessages;
 
 const russianShellMessages = {
+  applicationName: "La Verdad",
+  officialClubApplication: "Официальное приложение клуба La Verdad · Малага",
   backgroundBlack: "чёрный",
   backgroundGrey33: "серый 33%",
   backgroundGrey66: "серый 66%",
@@ -313,7 +317,7 @@ const russianShellMessages = {
   deleteSessionConfirmation:
     "Удалить «{name}» и всю связанную игровую статистику? Это действие нельзя отменить.",
   clearApplicationDataConfirmation:
-    "Очистить все данные Mafia Dashboard в этом браузере? Игроки, сессии, результаты и музыка на сервере удалены не будут.",
+    "Очистить все данные La Verdad в этом браузере? Игроки, сессии, результаты и музыка на сервере удалены не будут.",
   pendingChanges: {
     one: "{count} изменение",
     few: "{count} изменения",
@@ -349,7 +353,7 @@ const russianShellMessages = {
   browserGameEyebrow: "Игра в браузере",
   browserGameLockWaiting: "Ожидание блокировки хранилища игры в этом браузере…",
   browserGameLockBusy:
-    "Mafia Dashboard уже открыт в другой вкладке. Используйте её или закройте и перезагрузите эту страницу.",
+    "Приложение La Verdad уже открыто в другой вкладке. Используйте её или закройте и перезагрузите эту страницу.",
   browserGameLockUnavailable:
     "Этот браузер не поддерживает безопасную блокировку локального хранилища игры.",
   browserGameInvalidTitle: "Данные игры в браузере требуют внимания",

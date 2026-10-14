@@ -1091,7 +1091,7 @@ try {
   assertExactOrigin(page.url(), expectedOrigin);
   browserAppUrl = page.url();
   storageMutationUrl = new URL("/health/ready", browserAppUrl).href;
-  if ((await page.title()) !== "Mafia Dashboard") throw new Error("Unexpected page title");
+  if ((await page.title()) !== "La Verdad") throw new Error("Unexpected page title");
   const clubPortal = page.getByRole("heading", { name: "Choose your club" });
   if (await clubPortal.isVisible()) {
     await page.locator(".club-playing-card:not(.new-club-card)").first().click();

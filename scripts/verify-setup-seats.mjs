@@ -445,7 +445,7 @@ async function scenario(browser, browserName, viewport, language) {
   try {
     await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
     assertExactOrigin(page.url(), origin);
-    assert.equal(await page.title(), "Mafia Dashboard");
+    assert.equal(await page.title(), "La Verdad");
     await enterSetup(page);
     await expect(page.locator(".player-setup-card h1")).toHaveText(labels[language].setup);
     // Real fixture player directory and availability UI, not DOM-injected setup state.

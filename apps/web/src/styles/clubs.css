@@ -74,10 +74,31 @@
   letter-spacing: -0.04em;
 }
 
-.club-portal-suit {
-  margin: 0 0 -10px;
+.club-portal-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.club-portal-brand img {
+  display: block;
+  flex: none;
+}
+
+.club-portal-brand strong {
   color: var(--portal-gold);
-  font-size: 2.4rem;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.5rem;
+}
+
+.club-portal-brand a {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  color: var(--portal-text);
+  font-size: 0.85rem;
+  text-underline-offset: 3px;
 }
 
 .portal-theme-color-field {

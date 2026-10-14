@@ -1,6 +1,6 @@
-# Mafia Dashboard
+# La Verdad
 
-A self-hosted web dashboard for moderating in-person Club Mafia games.
+The official application of [La Verdad · Málaga](https://mafiamalaga.es): a self-hosted web dashboard for moderating in-person Club Mafia games.
 
 ## Status
 

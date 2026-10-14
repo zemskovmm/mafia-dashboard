@@ -227,9 +227,11 @@ export const ClubPortal = ({
             onChange={(event) => onThemeColorChange(event.currentTarget.value)}
           />
         </label>
-        <p className="club-portal-suit" aria-hidden="true">
-          ♠
-        </p>
+        <div className="club-portal-brand">
+          <img src="/la-verdad.svg" width="72" height="72" alt={t("applicationName")} />
+          <strong>{t("applicationName")}</strong>
+          <a href="https://mafiamalaga.es">{t("officialClubApplication")}</a>
+        </div>
         <h1>{portalTitle}</h1>
         {user === null ? (
           loading ? (

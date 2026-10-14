@@ -16,6 +16,56 @@ const creator = {
 };
 
 describe("ClubPortal", () => {
+  it.each([
+    ["en", "Official app of La Verdad · Málaga"],
+    ["ru", "Официальное приложение клуба La Verdad · Малага"],
+  ] as const)(
+    "retains official branding through %s authentication states",
+    (locale, attribution) => {
+      const portal = (loading: boolean, authUnavailable: boolean) => (
+        <I18nProvider locale={locale}>
+          <ClubPortal
+            user={null}
+            authConfigured
+            authUnavailable={authUnavailable}
+            themeColor="#c39a58"
+            clubs={[]}
+            loading={loading}
+            error={null}
+            editing={null}
+            onSignOut={vi.fn().mockResolvedValue(undefined)}
+            onThemeColorChange={vi.fn()}
+            onEditingChange={vi.fn()}
+            onSaveClub={vi.fn().mockResolvedValue(undefined)}
+            onOpenClub={vi.fn()}
+          />
+        </I18nProvider>
+      );
+      const { rerender } = render(portal(true, false));
+      for (const [loading, unavailable] of [
+        [true, false],
+        [false, true],
+        [false, false],
+      ] as const) {
+        rerender(portal(loading, unavailable));
+        expect(screen.getByRole("img", { name: "La Verdad" })).toHaveAttribute(
+          "src",
+          "/la-verdad.svg",
+        );
+        expect(screen.getByRole("link", { name: attribution })).toHaveAttribute(
+          "href",
+          "https://mafiamalaga.es",
+        );
+        expect(screen.getByText("La Verdad")).toBeInTheDocument();
+      }
+      expect(
+        screen.getByRole("link", {
+          name: locale === "en" ? "Continue with Google" : "Продолжить с Google",
+        }),
+      ).toHaveAttribute("href", "/api/auth/google/start");
+    },
+  );
+
   it("renders the Russian club form and authentication copy", () => {
     render(
       <I18nProvider locale="ru">

@@ -1,6 +1,6 @@
 # PostgreSQL backup and recovery
 
-This runbook defines the production recovery checkpoint for Mafia Dashboard. A successful backup is a private PostgreSQL custom archive that has been structurally inspected, copied to an off-server destination, and later restored into an isolated database with application-level checks.
+This runbook defines the production recovery checkpoint for La Verdad. A successful backup is a private PostgreSQL custom archive that has been structurally inspected, copied to an off-server destination, and later restored into an isolated database with application-level checks.
 
 ## Recovery contract
 
