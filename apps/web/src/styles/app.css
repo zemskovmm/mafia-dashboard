@@ -218,7 +218,21 @@ h2 {
 }
 
 .app-shell {
-  --dock-edge-inset: 14px;
+  --layout-gutter: 14px;
+  --layout-top: max(var(--layout-gutter), env(safe-area-inset-top));
+  --layout-right: max(var(--layout-gutter), env(safe-area-inset-right));
+  --layout-bottom: max(var(--layout-gutter), env(safe-area-inset-bottom));
+  --layout-left: max(var(--layout-gutter), env(safe-area-inset-left));
+  --layout-header-height: 48px;
+  --layout-content-top: calc(
+    var(--layout-top) + var(--layout-header-height) + var(--layout-gutter)
+  );
+  --toolbar-count: 6;
+  --toolbar-width: calc(
+    var(--toolbar-count) * 48px + (var(--toolbar-count) - 1) * var(--layout-gutter)
+  );
+  --header-leading-inset: 0px;
+  --dock-edge-inset: var(--layout-gutter);
   width: 100%;
   height: 100%;
   min-height: 0;
@@ -1327,6 +1341,9 @@ h2 {
   gap: 7px;
   width: 100%;
 }
+.phase-voting .table-advance-options {
+  gap: 12px;
+}
 .table-advance-secondary {
   min-height: 30px;
   padding: 3px 12px;
@@ -1409,6 +1426,14 @@ h2 {
 }
 .table-center-secondary:hover:not(:disabled) {
   background: rgb(255 255 255 / 9%);
+}
+.night-observation-control {
+  display: grid;
+  gap: 4px;
+}
+.night-observation-control > button[aria-pressed="true"] {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 .table-vote-center,
 .table-night-center,
@@ -1507,7 +1532,12 @@ h2 {
     color 280ms ease,
     border-color 280ms ease,
     box-shadow 280ms ease,
+    scale 280ms ease,
     transform 280ms ease;
+}
+.table-stage .player-seat.is-voted {
+  scale: 0.88;
+  opacity: 0.55;
 }
 .player-seat.is-current {
   background: linear-gradient(145deg, rgb(113 112 255 / 24%), rgb(22 24 25 / 94%)), #161819;
@@ -1771,6 +1801,52 @@ button.player-seat.is-voting-highlight::after,
   border-color: #ffe9ac;
   background: linear-gradient(145deg, #34312a, #191c23 65%);
 }
+/* One translucent material for idle and highlighted table cards. Lighting and
+   crisp content remain siblings of the edge-only refractive surface. */
+.app-shell .table-stage .table-card.player-seat {
+  background: transparent;
+}
+.table-stage .player-seat:is(.is-current, .is-voting-highlight, .is-goodbye-highlight) {
+  --liquid-card-rim: conic-gradient(from 135deg, #ffe9a3, #d6ae5c99, #fff6cd, #d6ae5c99, #ffe9a3);
+  --liquid-state-rgb: 246 191 96;
+}
+.table-stage .player-seat.is-sheriff-highlight {
+  --liquid-card-tint: linear-gradient(145deg, #779dff26, #315cb10c);
+  --liquid-card-rim: conic-gradient(from 135deg, #c8e3ff, #5993f877, #e3f1ff, #5993f877, #c8e3ff);
+  --liquid-state-rgb: 103 154 255;
+}
+.table-stage .player-seat.is-mafia-shooter {
+  --liquid-card-rim: conic-gradient(from 135deg, #ffd1c8, #e4666666, #ffdcd5, #e4666666, #ffd1c8);
+  --liquid-state-rgb: 232 81 81;
+}
+.app-shell[data-lighting-renderer="legacy"]
+  .table-stage
+  .player-seat:is(
+    .is-current,
+    .is-voting-highlight,
+    .is-goodbye-highlight,
+    .is-sheriff-highlight,
+    .is-mafia-shooter
+  ) {
+  /* Soft glow only: no spread shadow that would form a second hard rim. */
+  animation: liquid-state-pulse 1.8s ease-in-out infinite alternate;
+  box-shadow: 0 0 15px rgb(var(--liquid-state-rgb) / 45%);
+}
+@keyframes liquid-state-pulse {
+  to {
+    box-shadow: 0 0 26px rgb(var(--liquid-state-rgb) / 65%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-shell[data-lighting-renderer="legacy"] .table-stage .player-seat {
+    animation: none;
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .table-stage .player-seat.is-voted {
+    opacity: 1;
+  }
+}
 .deceased-cross {
   position: absolute;
   z-index: 3;
@@ -1897,6 +1973,24 @@ button.player-seat.is-voting-highlight::after,
   opacity: 1;
 }
 .table-stage button {
+  border-radius: var(--table-control-radius);
+}
+.table-stage .seat-actions > button {
+  border-radius: 0;
+}
+.table-stage .seat-actions > button:first-child {
+  border-radius: var(
+    --action-first-radius,
+    var(--table-control-radius) 0 0 var(--table-control-radius)
+  );
+}
+.table-stage .seat-actions > button:last-child {
+  border-radius: var(
+    --action-last-radius,
+    0 var(--table-control-radius) var(--table-control-radius) 0
+  );
+}
+.table-stage .seat-actions > button:only-child {
   border-radius: var(--table-control-radius);
 }
 .game-shell {
@@ -3090,12 +3184,14 @@ button.player-seat.is-voting-highlight::after,
 
 @media (min-width: 1160px) and (min-height: 720px) {
   .app-shell {
-    --header-top: max(14px, env(safe-area-inset-top));
-    --layout-gutter: 14px;
+    --header-top: var(--layout-top);
     --right-panel-width: 406px;
-    --main-card-width: min(918px, calc(100vw - 448px));
-    --main-card-top: calc(var(--header-top) + 76px);
-    --main-card-height: calc(100dvh - var(--main-card-top) - 14px);
+    --main-card-width: calc(
+      100vw - var(--layout-left) - var(--layout-right) - var(--right-panel-width) -
+        var(--layout-gutter)
+    );
+    --main-card-top: var(--layout-content-top);
+    --main-card-height: calc(100dvh - var(--main-card-top) - var(--layout-bottom));
     overflow: hidden;
   }
   .app-shell.is-fullscreen {
@@ -3300,9 +3396,7 @@ button.player-seat.is-voting-highlight::after,
   .game-shell.phase-voting .round-table:has(.voting-candidate-identity) .table-advance {
     top: calc(75% - 34px);
   }
-  .game-shell.phase-voting .round-table:has(.voting-candidate-identity) .table-advance-options {
-    gap: 0;
-  }
+
   .game-shell.phase-voting
     .round-table:has(.voting-candidate-identity)
     .table-advance-options
@@ -3476,12 +3570,15 @@ html:-webkit-full-screen #root {
 /* Samsung Tab S6 Lite: 2000×1200 panel / ~1000×600 CSS viewport in landscape. */
 @media (min-width: 900px) and (max-width: 1159px) and (orientation: landscape) {
   .app-shell {
-    --s6-edge: 7px;
-    --s6-header-height: 44px;
-    --s6-content-top: 58px;
+    --layout-gutter: 7px;
+    --s6-edge: var(--layout-gutter);
+    --s6-header-height: var(--layout-header-height);
+    --s6-content-top: var(--layout-content-top);
     --s6-rail-width: 335px;
-    --s6-toolbar-width: 360px;
-    --s6-main-width: calc(100vw - var(--s6-rail-width) - var(--s6-edge) * 3);
+    --s6-toolbar-width: var(--toolbar-width);
+    --s6-main-width: calc(
+      100vw - var(--s6-rail-width) - var(--layout-left) - var(--layout-right) - var(--layout-gutter)
+    );
     --dock-edge-inset: var(--s6-edge);
     width: 100%;
     height: 100dvh;
@@ -3805,16 +3902,40 @@ html:-webkit-full-screen #root {
     /* The compact title can wrap beside a club logo; retain positive clearance. */
     top: calc(50% + 2px);
   }
-  .game-shell:is(.phase-day, .phase-voting, .phase-goodbye-speech)
+  .game-shell:is(
+      .phase-day,
+      .phase-voting,
+      .phase-goodbye-speech,
+      .phase-car-crash-decision,
+      .phase-car-crash-result,
+      .phase-car-crash-skipped,
+      .phase-voting-cancelled
+    )
     .seat-anchor:is([data-seat="1"], [data-seat="10"]) {
     /* Reserve the full action stack without moving the upper judge-menu orbit. */
     top: calc(50% - 14px);
   }
-  .game-shell:is(.phase-day, .phase-voting, .phase-goodbye-speech)
+  .game-shell:is(
+      .phase-day,
+      .phase-voting,
+      .phase-goodbye-speech,
+      .phase-car-crash-decision,
+      .phase-car-crash-result,
+      .phase-car-crash-skipped,
+      .phase-voting-cancelled
+    )
     .seat-anchor:is([data-seat="2"], [data-seat="9"]) {
     top: calc(50% - 8px);
   }
-  .game-shell:is(.phase-day, .phase-voting, .phase-goodbye-speech)
+  .game-shell:is(
+      .phase-day,
+      .phase-voting,
+      .phase-goodbye-speech,
+      .phase-car-crash-decision,
+      .phase-car-crash-result,
+      .phase-car-crash-skipped,
+      .phase-voting-cancelled
+    )
     .seat-anchor:is([data-seat="1"], [data-seat="10"])
     .seat-actions {
     top: 5px;
@@ -3822,13 +3943,31 @@ html:-webkit-full-screen #root {
     width: 48px;
     flex-direction: column;
     transform: none;
+    --action-first-radius: var(--table-control-radius) var(--table-control-radius) 0 0;
+    --action-last-radius: 0 0 var(--table-control-radius) var(--table-control-radius);
   }
-  .game-shell:is(.phase-day, .phase-voting, .phase-goodbye-speech)
+  .game-shell:is(
+      .phase-day,
+      .phase-voting,
+      .phase-goodbye-speech,
+      .phase-car-crash-decision,
+      .phase-car-crash-result,
+      .phase-car-crash-skipped,
+      .phase-voting-cancelled
+    )
     .seat-anchor[data-seat="1"]
     .seat-actions {
     left: calc(-48px - 5px);
   }
-  .game-shell:is(.phase-day, .phase-voting, .phase-goodbye-speech)
+  .game-shell:is(
+      .phase-day,
+      .phase-voting,
+      .phase-goodbye-speech,
+      .phase-car-crash-decision,
+      .phase-car-crash-result,
+      .phase-car-crash-skipped,
+      .phase-voting-cancelled
+    )
     .seat-anchor[data-seat="10"]
     .seat-actions {
     left: calc(100% + 5px);
@@ -3840,6 +3979,8 @@ html:-webkit-full-screen #root {
     width: 48px;
     flex-direction: column;
     transform: translateY(-50%);
+    --action-first-radius: var(--table-control-radius) var(--table-control-radius) 0 0;
+    --action-last-radius: 0 0 var(--table-control-radius) var(--table-control-radius);
   }
   .seat-anchor:is([data-seat="2"], [data-seat="3"]) .seat-actions {
     left: calc(100% + 5px);
@@ -3867,6 +4008,8 @@ html:-webkit-full-screen #root {
     .seat-actions:has(> .shooter-button) {
     width: 48px;
     flex-direction: column;
+    --action-first-radius: var(--table-control-radius) var(--table-control-radius) 0 0;
+    --action-last-radius: 0 0 var(--table-control-radius) var(--table-control-radius);
   }
   .game-shell.phase-night-mafia
     .seat-anchor:is([data-seat="1"], [data-seat="10"])
@@ -4199,12 +4342,13 @@ html:-webkit-full-screen #root {
 /* Tab S6 Lite portrait: retain the table and keep all overflow app-owned. */
 @media (min-width: 540px) and (max-width: 760px) and (orientation: portrait) {
   .app-shell {
-    --s6p-edge: 7px;
-    --s6p-header-height: 102px;
-    --s6p-content-top: 109px;
+    --layout-gutter: 7px;
+    --s6p-edge: var(--layout-gutter);
+    --s6p-header-height: calc(var(--layout-header-height) * 2 + var(--layout-gutter));
+    --s6p-content-top: calc(var(--layout-top) + var(--s6p-header-height) + var(--layout-gutter));
     --s6p-dock-height: 180px;
     --s6p-utility-height: 128px;
-    --s6p-toolbar-width: 332px;
+    --s6p-toolbar-width: var(--toolbar-width);
     --dock-edge-inset: var(--s6p-edge);
     width: 100%;
     height: 100dvh;
@@ -4212,8 +4356,7 @@ html:-webkit-full-screen #root {
     overflow: hidden;
   }
   .app-shell.has-game-screen {
-    --s6p-header-height: 44px;
-    --s6p-content-top: 51px;
+    --s6p-header-height: calc(var(--layout-header-height) * 2 + var(--layout-gutter));
   }
   .app-status-bar,
   .table-layout-shell .game-header {
@@ -4713,6 +4856,243 @@ html:-webkit-full-screen #root {
     flex-wrap: wrap;
     height: auto;
     padding-right: 0;
+  }
+}
+
+/* Workspace spacing follows the visible 48px title/control row. */
+.app-shell:has(.app-fixed-toolbar > :nth-child(7)) {
+  --toolbar-count: 7;
+}
+.app-shell:has(.app-fixed-toolbar > :nth-child(8)) {
+  --toolbar-count: 8;
+}
+.app-fixed-toolbar {
+  top: var(--layout-top);
+  right: var(--layout-right);
+  gap: var(--layout-gutter);
+}
+.app-status-bar,
+.table-layout-shell .game-header,
+.table-layout-shell .role-draw-screen .game-header {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: var(--layout-gutter);
+  max-width: none;
+  height: var(--layout-header-height);
+  min-height: var(--layout-header-height);
+  margin: 0 0 var(--layout-gutter);
+  padding: 0 calc(var(--toolbar-width) + var(--layout-gutter)) 0 var(--header-leading-inset);
+}
+.app-status-bar {
+  top: var(--layout-top);
+  right: var(--layout-right);
+  left: var(--layout-left);
+  width: auto;
+}
+.app-status-bar > div:not(.phase-banner),
+.table-layout-shell .game-header > div:not(.phase-banner) {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  justify-content: space-between;
+  width: auto;
+  min-width: 0;
+  height: var(--layout-header-height);
+}
+.app-status-bar > :first-child,
+.table-layout-shell .game-header > :first-child,
+.app-shell.is-fullscreen .app-status-bar > :first-child,
+.app-shell.is-fullscreen.table-layout-shell .game-header > :first-child {
+  margin-left: 0;
+}
+.app-status-bar .eyebrow,
+.table-layout-shell .game-header .eyebrow {
+  margin: 0 0 5px;
+  font-size: 11px;
+  line-height: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app-status-bar h1,
+.table-layout-shell .game-header h1,
+.table-layout-shell .role-draw-heading h1 {
+  margin: 0;
+  overflow: hidden;
+  font-size: clamp(20px, 2vw, 27px);
+  line-height: 30px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app-status-bar > .phase-banner,
+.table-layout-shell .game-header > .phase-banner,
+.table-layout-shell .role-draw-screen .game-header > .phase-banner {
+  position: static;
+  display: grid;
+  flex: 0 1 auto;
+  place-items: center;
+  width: auto;
+  min-width: 0;
+  height: var(--layout-header-height);
+  margin: 0;
+  padding: 0 var(--layout-gutter);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transform: none;
+}
+.table-layout-shell .game-header > div.role-draw-heading {
+  flex-direction: row;
+  justify-content: flex-start;
+  align-items: center;
+  gap: var(--layout-gutter);
+}
+.role-draw-heading > div {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-width: 0;
+  height: var(--layout-header-height);
+}
+.live-layout,
+.table-layout-shell .live-layout {
+  max-width: none;
+  gap: var(--layout-gutter);
+}
+
+@media (min-width: 1160px) and (min-height: 720px) {
+  .app-shell.is-fullscreen {
+    --header-top: var(--layout-top);
+  }
+  .table-layout-shell .game-shell {
+    padding: var(--layout-top) var(--layout-right) var(--layout-bottom) var(--layout-left);
+  }
+  .table-layout-shell .live-layout {
+    width: 100%;
+  }
+  .setup-shell.is-player-setup,
+  .setup-shell.is-music-setup {
+    margin-left: var(--layout-left);
+    padding-top: var(--main-card-top);
+    padding-bottom: var(--layout-bottom);
+  }
+  .youtube-dock.is-compact,
+  .live-side-panel.has-live-utilities {
+    right: var(--layout-right);
+    bottom: var(--layout-bottom);
+  }
+}
+@media (min-width: 1160px) and (min-height: 780px) {
+  .app-shell.is-fullscreen {
+    --header-leading-inset: 88px;
+  }
+}
+
+@media (max-width: 1159px), (max-height: 719px) {
+  .app-shell {
+    --layout-gutter: 7px;
+  }
+  .app-fixed-toolbar button,
+  .app-fixed-toolbar .icon-toolbar-button,
+  .app-fixed-toolbar .save-indicator {
+    width: 48px;
+    min-width: 48px;
+    height: 48px;
+    min-height: 48px;
+  }
+}
+@media (min-width: 900px) and (max-width: 1159px) and (orientation: landscape) {
+  .app-status-bar,
+  .table-layout-shell .game-header,
+  .table-layout-shell .role-draw-screen .game-header {
+    top: 0;
+    left: 0;
+    width: 100%;
+  }
+  .app-status-bar {
+    top: var(--layout-top);
+    left: var(--layout-left);
+    width: calc(100% - var(--layout-left) - var(--layout-right));
+  }
+  .table-layout-shell .game-shell {
+    padding-top: var(--layout-top);
+  }
+  .setup-shell.is-player-setup,
+  .setup-shell.is-music-setup {
+    padding-top: var(--layout-content-top);
+  }
+}
+@media (min-width: 761px) and (max-width: 1159px) and (orientation: portrait),
+  (min-width: 761px) and (max-width: 899px),
+  (min-width: 1160px) and (max-height: 719px) {
+  .table-layout-shell .game-shell {
+    padding: var(--layout-top) var(--layout-right) var(--layout-bottom) var(--layout-left);
+  }
+  .has-top-level-screen > .setup-shell:is(.is-player-setup, .is-music-setup) {
+    width: calc(100% - var(--layout-left) - var(--layout-right));
+    margin: 0 var(--layout-left);
+    padding: var(--layout-content-top) 0 var(--layout-bottom);
+  }
+  .setup-shell.is-player-setup .player-setup-card,
+  .setup-shell.is-music-setup .music-step {
+    width: 100%;
+    margin-inline: 0;
+  }
+}
+@media (max-width: 760px) {
+  .app-shell {
+    --layout-header-height: 48px;
+    --layout-content-top: calc(var(--layout-top) + 110px);
+  }
+  .app-fixed-toolbar {
+    max-width: calc(100% - var(--layout-left) - var(--layout-right));
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  .app-status-bar,
+  .table-layout-shell .game-header,
+  .table-layout-shell .role-draw-screen .game-header {
+    flex-wrap: nowrap;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 103px;
+    min-height: 103px;
+    padding: 55px 0 0;
+  }
+  .app-status-bar {
+    position: relative;
+    left: var(--layout-left);
+    width: calc(100% - var(--layout-left) - var(--layout-right));
+    margin-top: var(--layout-top);
+  }
+  .app-status-bar > .phase-banner {
+    max-width: 42%;
+    font-size: 0.65rem;
+  }
+  .table-layout-shell .game-shell {
+    padding: var(--layout-top) var(--layout-right) var(--layout-bottom) var(--layout-left);
+  }
+  .has-top-level-screen > .setup-shell:is(.is-player-setup, .is-music-setup) {
+    width: calc(100% - var(--layout-left) - var(--layout-right));
+    margin: 0 var(--layout-left);
+    padding: 0;
+  }
+}
+@media (max-width: 449px) {
+  .app-shell {
+    --layout-content-top: calc(var(--layout-top) + 165px);
+  }
+  .app-status-bar,
+  .table-layout-shell .game-header,
+  .table-layout-shell .role-draw-screen .game-header {
+    height: 158px;
+    min-height: 158px;
+    padding-top: 110px;
+  }
+  .app-status-bar > .phase-banner {
+    display: none;
   }
 }
 

@@ -1,10 +1,16 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { ReplayFrame } from "@mafia/game-domain";
+import {
+  createGameLogEntry,
+  createInitialGameBaseline,
+  replayGameLog,
+  type ReplayFrame,
+} from "@mafia/game-domain";
 import { namedProfiles } from "../../test-player-directory.js";
 import { GameTimelineScreen } from "./GameTimelineScreen.js";
 import { createFederationSampleGameHistory } from "./sample-game-data.js";
+import { I18nProvider } from "../../i18n/I18nProvider.js";
 
 const props = {
   clubId: "00000000-0000-4000-8000-000000000101",
@@ -14,6 +20,72 @@ const props = {
 };
 
 describe("federation current-history screen", () => {
+  it.each(["en", "ru"] as const)(
+    "reviews repeated same-target shots privately in %s without duplicate list keys",
+    (locale) => {
+      const initial = createFederationSampleGameHistory().frames.find(
+        ({ entry }) => entry.type === "mafia.multiple-shot-observed",
+      )!.before;
+      const shooterSeat = initial.players.find(
+        (p) => p.status === "active" && p.team === "black",
+      )!.seat;
+      const root = createGameLogEntry({
+        gameId: "observations",
+        id: "root",
+        sequence: 1,
+        parentEventId: null,
+        createdAt: "2026-10-14T16:00:00Z",
+        before: initial,
+        draft: { type: "game.checkpointed", payload: {} },
+      });
+      const observed = createGameLogEntry({
+        gameId: "observations",
+        id: "observed",
+        sequence: 2,
+        parentEventId: "root",
+        createdAt: "2026-10-14T16:00:01Z",
+        before: root.after,
+        draft: {
+          type: "mafia.shots-observed",
+          payload: {
+            shotAssignments: { [shooterSeat]: 9 },
+            observations: [
+              { shooterSeat, targetSeat: 9 },
+              { shooterSeat, targetSeat: 9 },
+              { shooterSeat, targetSeat: 10 },
+            ],
+          },
+        },
+      });
+      const { frames } = replayGameLog(createInitialGameBaseline(initial), [
+        root.entry,
+        observed.entry,
+      ]);
+      const errors = vi.spyOn(console, "error");
+      const view = render(
+        <I18nProvider locale={locale}>
+          <GameTimelineScreen
+            {...props}
+            currentHistory={{ label: "Physical shots", frames, headEventId: "observed" }}
+          />
+        </I18nProvider>,
+      );
+      const inspector = within(
+        screen.getByRole("complementary", {
+          name: locale === "en" ? "Selected event details" : "Детали выбранного события",
+        }),
+      );
+      const items = inspector.getAllByRole("listitem");
+      expect(items).toHaveLength(3);
+      expect(items[0]).toHaveTextContent(`#${shooterSeat}`);
+      expect(items[0]).toHaveTextContent("#9");
+      expect(items[1]).toHaveTextContent("2:");
+      expect(items[2]).toHaveTextContent("#10");
+      expect(errors).not.toHaveBeenCalled();
+      errors.mockRestore();
+      view.unmount();
+    },
+  );
   it("previews and resets the selected accepted Best Move prefix rather than the final transcript", async () => {
     const history = createFederationSampleGameHistory();
     const retainedBytes = JSON.stringify(history);

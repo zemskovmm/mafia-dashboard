@@ -1,8 +1,8 @@
 import { useId } from "react";
 import {
   getCollectiveLiftEligibility,
-  resolveCarCrashVote,
-  acceptCarCrashBallot,
+  resolveCompletedCarCrashCount,
+  acceptCompletedCarCrashCount,
 } from "@mafia/game-domain";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { votingMessages } from "../../i18n/messages/voting.js";
@@ -33,12 +33,11 @@ export const FederationCollectiveBallot = ({
   const uncastCount = voters.filter((p) => votes[p.seat] === undefined).length;
   let canResolve = false;
   try {
-    resolveCarCrashVote(game);
+    resolveCompletedCarCrashCount(game);
     canResolve = true;
   } catch {
-    /* Domain owns the determined-result test. */
+    /* Completion still validates phase, eligibility and recorded voter inputs. */
   }
-  const earlyClose = canResolve && uncastCount > 0;
   const transcribe = (seat: number, value: string) => {
     if (!eligibility.permitted) return;
     const next = { ...votes };
@@ -48,7 +47,7 @@ export const FederationCollectiveBallot = ({
   };
   const resolve = () => {
     if (!canResolve) return;
-    const result = resolveCarCrashVote(game);
+    const result = resolveCompletedCarCrashCount(game);
     const acceptedVotes = Object.fromEntries(
       Object.entries(votes).filter(
         (entry): entry is [string, boolean] => typeof entry[1] === "boolean",
@@ -56,12 +55,12 @@ export const FederationCollectiveBallot = ({
     );
     if (onAcceptedEvent !== undefined)
       onAcceptedEvent({
-        type: "car-crash.ballot-resolved",
+        type: "car-crash.count-completed",
         payload: { votes: acceptedVotes, result },
       });
     else {
-      onGameChange(acceptCarCrashBallot(game));
-      onEvent("car-crash.ballot-resolved", { votes, result });
+      onGameChange(acceptCompletedCarCrashCount(game));
+      onEvent("car-crash.count-completed", { votes, result });
     }
   };
   return (
@@ -76,6 +75,7 @@ export const FederationCollectiveBallot = ({
           ...p,
           name: displayName(p),
           inactive: p.status !== "active",
+          voted: votes[p.seat] !== undefined,
           votingHighlight: votes[p.seat] === true,
         }))}
         seatActionDisabled={(seat) => seat.status !== "active" || !eligibility.permitted}
@@ -102,7 +102,7 @@ export const FederationCollectiveBallot = ({
         }
         advance={
           <button type="button" disabled={!canResolve} onClick={resolve}>
-            {t(earlyClose ? "closeDetermined" : "resolveCarCrash")}
+            {t("resolveCarCrash")}
           </button>
         }
       />

@@ -794,11 +794,7 @@ export const SetupWizard = ({
             <div>
               <p className="eyebrow">{t("setup.firstStage")}</p>
               <h1>{t("setup.roleDraw")}</h1>
-              {editionLabel}
             </div>
-          </div>
-          <div className="phase-banner">
-            {t("setup.drawRolesRemaining", { count: setup.remainingRoles.length })}
           </div>
         </header>
         <div className="live-layout">
@@ -915,7 +911,12 @@ export const SetupWizard = ({
                     <strong>{t("setup.allRolesAssigned")}</strong>
                   </div>
                 ) : (
-                  <span className="table-prompt">{t("setup.tapRevealRole")}</span>
+                  <div className="table-check-center">
+                    <span className="table-prompt">{t("setup.tapRevealRole")}</span>
+                    <strong>
+                      {t("setup.drawRolesRemaining", { count: setup.remainingRoles.length })}
+                    </strong>
+                  </div>
                 )
               }
               advance={

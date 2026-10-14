@@ -9,6 +9,7 @@ import {
 } from "../effects/vgpu/VgpuLightingCanvas.js";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { gameMessages, type GameMessageKey } from "../../i18n/messages/game.js";
+import { LiquidCardGlass } from "../theme/LiquidCardGlass.js";
 
 export interface TableSeatView {
   readonly seat: number;
@@ -24,6 +25,7 @@ export interface TableSeatView {
   readonly nightCheckHighlight?: boolean;
   readonly goodbyeHighlight?: boolean;
   readonly votingHighlight?: boolean;
+  readonly voted?: boolean;
   readonly dimmed?: boolean;
   readonly inactive?: boolean;
   readonly provisionalDeceased?: boolean;
@@ -146,7 +148,7 @@ export const GameTable = ({
             !seat.inactive &&
             (seat.status ?? "active") === "active";
           const showRole = seat.role !== undefined && !privacyHidden;
-          const className = `table-card player-seat status-${seat.status ?? "active"}${seat.current ? " is-current" : ""}${seat.mafiaShooter && !privacyHidden ? " is-mafia-shooter" : ""}${seat.sheriffHighlight && !privacyHidden ? " is-sheriff-highlight" : ""}${seat.nightCheckHighlight && !privacyHidden ? " is-night-check-highlight" : ""}${seat.goodbyeHighlight ? " is-goodbye-highlight" : ""}${seat.votingHighlight ? " is-voting-highlight" : ""}${seat.dimmed && !privacyHidden ? " is-dimmed" : ""}${seat.inactive ? " is-inactive" : ""}${seat.provisionalDeceased ? " is-provisional-deceased" : ""}`;
+          const className = `table-card player-seat status-${seat.status ?? "active"}${seat.current ? " is-current" : ""}${seat.mafiaShooter && !privacyHidden ? " is-mafia-shooter" : ""}${seat.sheriffHighlight && !privacyHidden ? " is-sheriff-highlight" : ""}${seat.nightCheckHighlight && !privacyHidden ? " is-night-check-highlight" : ""}${seat.goodbyeHighlight ? " is-goodbye-highlight" : ""}${seat.votingHighlight ? " is-voting-highlight" : ""}${seat.voted ? " is-voted" : ""}${seat.dimmed && !privacyHidden ? " is-dimmed" : ""}${seat.inactive ? " is-inactive" : ""}${seat.provisionalDeceased ? " is-provisional-deceased" : ""}`;
           const lightingKind = resolvePlayerLightingKind({
             ...seat,
             mafiaShooter: !privacyHidden && seat.mafiaShooter,
@@ -154,6 +156,7 @@ export const GameTable = ({
           });
           const content = (
             <>
+              <LiquidCardGlass />
               <VgpuPlayerLightingCanvas kind={lightingKind} />
               <span className="seat-number">{seat.seat}</span>
               <PersonIcon />

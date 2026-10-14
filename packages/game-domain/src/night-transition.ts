@@ -7,6 +7,8 @@ export const transitionToNight = (game: GameState): GameState => ({
   ...(isFederationGame(game)
     ? {
         actualMultipleShotSeats: [],
+        // Do not inject a new default into old hashed snapshots/replays.
+        ...(Object.hasOwn(game, "shotObservations") ? { shotObservations: [] } : {}),
         ballot: undefined,
         currentSpeechRestricted: false,
         ballotCancellationDay:

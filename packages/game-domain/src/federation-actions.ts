@@ -7,6 +7,7 @@ import type {
   FederationBallot,
   GameState,
   OpponentVictoryAdjudication,
+  ShotObservation,
 } from "./types.js";
 
 export const assertFederationAction = (game: GameState): void => {
@@ -271,6 +272,31 @@ export const recordActualMultipleShot = (game: GameState, shooterSeat: number): 
     ...game,
     actualMultipleShotSeats: [...(game.actualMultipleShotSeats ?? []), shooterSeat],
   };
+};
+
+export const recordShotObservations = (
+  game: GameState,
+  observations: readonly Pick<ShotObservation, "shooterSeat" | "targetSeat">[],
+): GameState => {
+  assertFederationAction(game);
+  if (game.phase !== "night-mafia" || observations.length === 0)
+    throw new Error("Physical shots require a nonempty observation during shooting");
+  const shotAssignments = { ...game.shotAssignments };
+  const shotObservations = [...(game.shotObservations ?? [])];
+  for (const { shooterSeat, targetSeat } of observations) {
+    const shooter = requireSeat(game, shooterSeat);
+    requireSeat(game, targetSeat);
+    if (shooter.status !== "active" || shooter.team !== "black")
+      throw new Error("Physical-shot observation requires an eligible shooter");
+    const additional =
+      shotAssignments[shooterSeat] !== undefined ||
+      shotObservations.some((shot) => shot.shooterSeat === shooterSeat) ||
+      game.actualMultipleShotSeats?.includes(shooterSeat) === true;
+    shotObservations.push({ shooterSeat, targetSeat, additional });
+    // Only an unassigned shooter's first physical shot supplies a primary assignment.
+    if (!additional) shotAssignments[shooterSeat] = targetSeat;
+  }
+  return { ...game, shotAssignments, shotObservations };
 };
 export const prepareBestMove = (game: GameState): GameState => {
   assertFederationAction(game);

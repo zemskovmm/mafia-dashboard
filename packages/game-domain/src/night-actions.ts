@@ -152,7 +152,11 @@ export const resolveMafiaShots = (
   const targets = new Set(secretShots.map(({ targetSeat }) => targetSeat));
   const result =
     secretShots.length === shooters.length &&
-    (!isFederationGame(game) || !game.actualMultipleShotSeats?.length)
+    (!isFederationGame(game) ||
+      (!game.actualMultipleShotSeats?.length &&
+        !game.shotObservations?.some(
+          (shot) => shot.additional && shooters.some((p) => p.seat === shot.shooterSeat),
+        )))
       ? resultForTargets(game, targets)
       : { kind: "miss" as const };
 
@@ -182,7 +186,11 @@ export const getMafiaShotResult = (game: GameState): NightShotResult => {
   });
   if (
     assignedTargets.length !== shooters.length ||
-    (isFederationGame(game) && game.actualMultipleShotSeats?.length)
+    (isFederationGame(game) &&
+      (game.actualMultipleShotSeats?.length ||
+        game.shotObservations?.some(
+          (shot) => shot.additional && shooters.some((p) => p.seat === shot.shooterSeat),
+        )))
   )
     return { kind: "miss" };
   const targets = new Set(assignedTargets);

@@ -647,7 +647,10 @@ export const assignCarCrashVote = (
   };
 };
 
-export const resolveCarCrashVote = (game: GameState): CarCrashVoteResult => {
+const resolveCarCrashCount = (
+  game: GameState,
+  explicitlyCompleted: boolean,
+): CarCrashVoteResult => {
   if (
     isFederationGame(game) &&
     !getCollectiveLiftEligibility(game, game.carCrashSeats ?? []).permitted
@@ -676,8 +679,9 @@ export const resolveCarCrashVote = (game: GameState): CarCrashVoteResult => {
     throw new Error("Every car-crash vote must be a boolean decision");
   }
   if (
-    voteEntries.length !== eligibleVoters ||
-    [...eligibleSeats].some((seat) => !Object.hasOwn(game.carCrashVotes ?? {}, seat))
+    !explicitlyCompleted &&
+    (voteEntries.length !== eligibleVoters ||
+      [...eligibleSeats].some((seat) => !Object.hasOwn(game.carCrashVotes ?? {}, seat)))
   ) {
     const yes = voteEntries.filter(([, vote]) => vote === true).length;
     const remaining = eligibleVoters - voteEntries.length;
@@ -702,6 +706,35 @@ export const acceptCarCrashBallot = (game: GameState): GameState => ({
   ...game,
   phase: "car-crash-result",
   carCrashResult: resolveCarCrashVote(game),
+  winner: null,
+});
+
+/** Provisional closure retains the historical mathematically-conclusive safeguard. */
+export const resolveCarCrashVote = (game: GameState): CarCrashVoteResult =>
+  resolveCarCrashCount(game, false);
+
+/** The host finished a physical hand count; absent individual entries stay unobserved. */
+export const resolveCompletedCarCrashCount = (game: GameState): CarCrashVoteResult => {
+  if (!isFederationGame(game))
+    throw new Error("Explicit hand-count completion requires federation rules");
+  const seats = game.carCrashSeats ?? [];
+  if (
+    seats.length < 2 ||
+    new Set(seats).size !== seats.length ||
+    seats.some(
+      (seat) =>
+        !Number.isSafeInteger(seat) ||
+        game.players.find((p) => p.seat === seat)?.status !== "active",
+    )
+  )
+    throw new Error("A completed collective count requires distinct active tied seats");
+  return resolveCarCrashCount(game, true);
+};
+
+export const acceptCompletedCarCrashCount = (game: GameState): GameState => ({
+  ...game,
+  phase: "car-crash-result",
+  carCrashResult: resolveCompletedCarCrashCount(game),
   winner: null,
 });
 

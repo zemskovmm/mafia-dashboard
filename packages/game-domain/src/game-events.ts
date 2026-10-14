@@ -20,11 +20,13 @@ import {
   recordHostVote,
   mentionVotingCandidate,
   recordActualMultipleShot,
+  recordShotObservations,
   ruleOnVotingDispute,
   stopVotingCandidate,
 } from "./federation-actions.js";
 import {
   acceptCarCrashBallot,
+  acceptCompletedCarCrashCount,
   beginCarCrash,
   beginCarCrashDecision,
   beginSkippedCarCrashDecision,
@@ -34,6 +36,7 @@ import {
   nominate,
   redCard,
   resolveCarCrashVote,
+  resolveCompletedCarCrashCount,
   resolveVote,
   skipVoting,
   skipFederationVoting,
@@ -76,6 +79,7 @@ import type {
   GameState,
   NightShotResult,
   ShotAssignment,
+  ShotObservation,
   VoteResult,
   BestMoveCompletionReason,
   LegalVotingSkipReason,
@@ -162,6 +166,8 @@ export const canonicalGameEventTypes = [
   "discipline.removal-observed",
   "discipline.removals-announced",
   "discipline.foul-issued",
+  "car-crash.count-completed",
+  "mafia.shots-observed",
 ] as const;
 
 export type CanonicalGameEventType = (typeof canonicalGameEventTypes)[number];
@@ -263,6 +269,21 @@ export type CanonicalGameEventDraft =
     >
   | EventDraft<"voting.legally-skipped", { readonly reason: LegalVotingSkipReason }>
   | EventDraft<"mafia.multiple-shot-observed", { readonly shooterSeat: number }>
+  | EventDraft<
+      "mafia.shots-observed",
+      {
+        /** Captures the provisional transcription atomically with the accepted physical facts. */
+        readonly shotAssignments: Readonly<Partial<Record<number, number>>>;
+        readonly observations: readonly Pick<ShotObservation, "shooterSeat" | "targetSeat">[];
+      }
+    >
+  | EventDraft<
+      "car-crash.count-completed",
+      {
+        readonly votes: Readonly<Record<number, boolean>>;
+        readonly result: CarCrashVoteResult;
+      }
+    >
   | EventDraft<"best-move.number-accepted", { readonly seat: number }>
   | EventDraft<
       "best-move.slip-corrected",
@@ -377,6 +398,8 @@ export const canonicalGameEventSecrecy = {
   "discipline.removal-observed": true,
   "discipline.removals-announced": false,
   "discipline.foul-issued": true,
+  "car-crash.count-completed": false,
+  "mafia.shots-observed": true,
 } as const satisfies Readonly<Record<CanonicalGameEventType, boolean>>;
 
 export const canonicalSecretGameEventTypes = canonicalGameEventTypes.filter(
@@ -712,6 +735,18 @@ const assertCanonicalPayload = (
       assertExactKeys(payload, ["shooterSeat"], `${type} payload`);
       assertSeat(payload.shooterSeat, `${type}.shooterSeat`);
       return;
+    case "mafia.shots-observed":
+      assertExactKeys(payload, ["shotAssignments", "observations"], `${type} payload`);
+      assertCanonicalSeatRecord(payload.shotAssignments, `${type}.shotAssignments`, assertSeat);
+      if (!Array.isArray(payload.observations) || payload.observations.length === 0)
+        throw new Error("Physical-shot observations require a nonempty array");
+      for (const [index, value] of payload.observations.entries()) {
+        const shot = requireRecord(value, `${type}.observations[${index}]`);
+        assertExactKeys(shot, ["shooterSeat", "targetSeat"], `${type}.observations[${index}]`);
+        assertSeat(shot.shooterSeat, `${type}.observations[${index}].shooterSeat`);
+        assertSeat(shot.targetSeat, `${type}.observations[${index}].targetSeat`);
+      }
+      return;
     case "best-move.number-accepted":
       assertExactKeys(payload, ["seat"], `${type} payload`);
       assertSeat(payload.seat, `${type}.seat`);
@@ -794,6 +829,7 @@ const assertCanonicalPayload = (
       return;
     case "car-crash.resolved":
     case "car-crash.ballot-resolved":
+    case "car-crash.count-completed":
       assertExactKeys(payload, ["votes", "result"], `${type} payload`);
       assertCanonicalSeatRecord(payload.votes, `${type} payload.votes`, assertBoolean);
       assertCarCrashVoteResult(payload.result, `${type} payload.result`);
@@ -942,6 +978,7 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
             "firstDayDepartureSeats",
             "currentSpeechRestricted",
             "actualMultipleShotSeats",
+            "shotObservations",
             "ballot",
             "ballotSkipReason",
             "ballotCancellationDay",
@@ -1129,6 +1166,30 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
         )
       )
         throw new Error("Multiple shooting requires a black-team shooter");
+    }
+    if (game.shotObservations !== undefined) {
+      if (!Array.isArray(game.shotObservations))
+        throw new Error("Shot observations must be an array");
+      const observedShooters = new Set<number>();
+      for (const [index, value] of game.shotObservations.entries()) {
+        const shot = requireRecord(value, `${context}.shotObservations[${index}]`);
+        assertExactKeys(
+          shot,
+          ["shooterSeat", "targetSeat", "additional"],
+          `${context}.shotObservations[${index}]`,
+        );
+        assertSeat(shot.shooterSeat, `${context}.shotObservations[${index}].shooterSeat`);
+        assertSeat(shot.targetSeat, `${context}.shotObservations[${index}].targetSeat`);
+        assertBoolean(shot.additional, `${context}.shotObservations[${index}].additional`);
+        if (
+          (game.players as GameState["players"]).find((p) => p.seat === shot.shooterSeat)?.team !==
+            "black" ||
+          !(game.players as GameState["players"]).some((p) => p.seat === shot.targetSeat) ||
+          (observedShooters.has(shot.shooterSeat) && shot.additional !== true)
+        )
+          throw new Error("Physical-shot observation ledger is inconsistent");
+        observedShooters.add(shot.shooterSeat);
+      }
     }
     if (game.ballotCancellationDay !== undefined)
       assertSafeInteger(game.ballotCancellationDay, `${context}.ballotCancellationDay`, 1);
@@ -1825,6 +1886,15 @@ const applyValidatedGameEvent = (game: GameState, event: CanonicalGameEventDraft
       return skipFederationVoting(game, event.payload.reason);
     case "mafia.multiple-shot-observed":
       return recordActualMultipleShot(game, event.payload.shooterSeat);
+    case "mafia.shots-observed": {
+      // Unlike ordinary corrections, these physical facts are accepted immediately.
+      // Carry the displayed assignments into canonical state so a draft/acceptance
+      // race cannot turn an extra physical shot into a first shot or discard its basis.
+      let observed: GameState = { ...game, shotAssignments: {} };
+      for (const [shooter, target] of Object.entries(event.payload.shotAssignments))
+        observed = recordMafiaShot(observed, Number(shooter), target!);
+      return recordShotObservations(observed, event.payload.observations);
+    }
     case "best-move.number-accepted":
       return acceptBestMoveSeat(game, event.payload.seat);
     case "best-move.slip-corrected":
@@ -1932,6 +2002,13 @@ const applyValidatedGameEvent = (game: GameState, event: CanonicalGameEventDraft
         throw new Error("Car-crash result payload does not match the accepted votes");
       }
       return acceptCarCrashBallot(decision);
+    }
+    case "car-crash.count-completed": {
+      const decision: GameState = { ...game, carCrashVotes: { ...event.payload.votes } };
+      const result = resolveCompletedCarCrashCount(decision);
+      if (!sameValue(result, event.payload.result))
+        throw new Error("Completed hand-count result does not match the observed support");
+      return acceptCompletedCarCrashCount(decision);
     }
     case "mafia.shots-resolved": {
       let shotGame: GameState = { ...advanceToMafiaShots(game), shotAssignments: {} };

@@ -84,39 +84,48 @@ describe("federation NightStage", () => {
         </I18nProvider>,
       );
       expect(
-        screen.getByText(
+        screen.queryByText(
           locale === "en"
             ? "Call every seat: 1–10, even inactive."
             : "Назовите все номера 1–10, включая выбывших.",
         ),
-      ).toBeInTheDocument();
+      ).toBeNull();
       await user.click(
         screen.getByText(
           locale === "en" ? "Observed multiple shooting" : "Зафиксирована многократная стрельба",
         ),
       );
-      await user.selectOptions(
-        screen.getByLabelText(locale === "en" ? "Observed shooter" : "Стрелявший игрок"),
-        String(shooter.seat),
-      );
-      const confirm = screen.getByRole("button", {
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(accepted).not.toHaveBeenCalled();
+      const toggle = screen.getByRole("button", {
         name:
-          locale === "en" ? "Record actual multiple shot" : "Записать факт многократной стрельбы",
+          locale === "en" ? "Observed multiple shooting" : "Зафиксирована многократная стрельба",
       });
-      expect(confirm).toBeDisabled();
-      await user.click(
-        screen.getByRole("checkbox", {
+      expect(toggle).toHaveAttribute("aria-pressed", "true");
+      const observationButton = (seat: number) =>
+        screen.getByRole("button", {
           name:
             locale === "en"
-              ? "Judge observed repeated physical shooting"
-              : "Судья наблюдал повторную физическую стрельбу",
-        }),
-      );
-      await user.click(confirm);
+              ? `Record observed shot by #${shooter.seat} at Player ${seat}`
+              : `Записать наблюдаемый выстрел №${shooter.seat} в игрока Player ${seat}`,
+        });
+      for (let repeat = 0; repeat < 12; repeat++) await user.click(observationButton(target.seat));
+      await user.click(observationButton(10));
       expect(accepted.mock.lastCall?.[0]).toEqual({
-        type: "mafia.multiple-shot-observed",
-        payload: { shooterSeat: shooter.seat },
+        type: "mafia.shots-observed",
+        payload: {
+          shotAssignments: toggleAllMafiaShotsForTarget(initial, target.seat).shotAssignments,
+          observations: [{ shooterSeat: shooter.seat, targetSeat: 10 }],
+        },
       });
+      expect(changed.mock.lastCall?.[0].shotAssignments).toEqual(
+        toggleAllMafiaShotsForTarget(initial, target.seat).shotAssignments,
+      );
+      expect(changed.mock.lastCall?.[0].shotObservations).toHaveLength(13);
+      await user.click(toggle);
+      expect(toggle).toHaveAttribute("aria-pressed", "false");
+      await user.click(toggle);
+      expect(changed.mock.lastCall?.[0].shotObservations).toHaveLength(13);
       await user.click(
         screen.getByRole("button", {
           name: locale === "en" ? "Evaluate Mafia shots" : "Определить результат выстрелов мафии",

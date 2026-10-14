@@ -27,6 +27,14 @@ const en = {
     "Removal status: departure: {departure}; announcement: {announcement}",
   "Check completion pending": "Check completion pending",
   "Actual multiple shot observed: {player}": "Actual multiple shot observed: {player}",
+  "Physical shots observed": {
+    one: "{count} physical shot observed",
+    other: "{count} physical shots observed",
+  },
+  "Observed shot {number}: #{shooterSeat} {shooter} → #{targetSeat} {target}":
+    "Observed shot {number}: #{shooterSeat} {shooter} → #{targetSeat} {target}",
+  "Hand count completed: {outcome}": "Hand count completed: {outcome}",
+  "Hand count support: {yes} of {eligible}": "Supporting hands: {yes} of {eligible}",
   "Adjudicated win: {team}": "Adjudicated win: {team}",
   "Adjudication losing team: {team}": "losing team: {team}",
   "Adjudication offender: {player}": "offender: {player}",
@@ -111,6 +119,16 @@ const ru = {
   "Check completion pending": "Проверка должна быть завершена",
   "Actual multiple shot observed: {player}":
     "Зафиксированы несколько фактических выстрелов: {player}",
+  "Physical shots observed": {
+    one: "Зафиксирован {count} физический выстрел",
+    few: "Зафиксировано {count} физических выстрела",
+    many: "Зафиксировано {count} физических выстрелов",
+    other: "Зафиксировано {count} физических выстрелов",
+  },
+  "Observed shot {number}: #{shooterSeat} {shooter} → #{targetSeat} {target}":
+    "Наблюдаемый выстрел {number}: #{shooterSeat} {shooter} → #{targetSeat} {target}",
+  "Hand count completed: {outcome}": "Подсчёт рук завершён: {outcome}",
+  "Hand count support: {yes} of {eligible}": "Поддержавшие руки: {yes} из {eligible}",
   "Adjudicated win: {team}": "Победа по судейскому решению: {team}",
   "Adjudication losing team: {team}": "Поражение присуждено: {team}",
   "Adjudication offender: {player}": "Нарушитель: {player}",

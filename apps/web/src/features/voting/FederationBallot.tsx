@@ -57,6 +57,7 @@ export const FederationBallot = ({
           ...player,
           name: displayName(player),
           votingHighlight: game.voteAssignments[player.seat] === ballot.selectedCandidateSeat,
+          voted: game.voteAssignments[player.seat] !== undefined,
           inactive: player.status !== "active",
           voteTargetSeat: game.voteAssignments[player.seat],
         }))}

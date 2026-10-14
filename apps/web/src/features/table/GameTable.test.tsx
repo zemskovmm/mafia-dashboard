@@ -27,6 +27,27 @@ const ContextActionHarness = () => {
 };
 
 describe("GameTable", () => {
+  it("shows reversible voted progress independently of role masking and keeps correction usable", () => {
+    const onSeatClick = vi.fn();
+    const { rerender } = render(
+      <GameTable
+        seats={[{ ...seats[0]!, role: "sheriff", voted: true, voteTargetSeat: 9 }]}
+        privacyHidden
+        onSeatClick={onSeatClick}
+      />,
+    );
+    const card = screen.getByRole("button", { name: "Seat 1: Player 1" });
+    expect(card).toHaveClass("is-voted");
+    expect(card).not.toHaveClass("is-inactive", "is-dimmed");
+    expect(card.querySelector(".role-badge")).toBeNull();
+    expect(card.querySelector(".state-badge")).toHaveTextContent("9");
+    fireEvent.click(card);
+    expect(onSeatClick).toHaveBeenCalledWith(1);
+    rerender(<GameTable seats={[seats[0]!]} privacyHidden onSeatClick={onSeatClick} />);
+    expect(card).not.toHaveClass("is-voted");
+    expect(card.querySelector(".state-badge")).toBeNull();
+  });
+
   it("starts the ten-seat orbit at 198 degrees so seats 1 and 10 split the lower edge", () => {
     render(<GameTable seats={seats} hostName="Host Player" />);
 

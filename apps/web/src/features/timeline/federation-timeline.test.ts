@@ -56,6 +56,92 @@ const replayFrames = (
 };
 
 describe("federation timeline projections", () => {
+  it.each([text, russian])(
+    "retains repeated target-specific private physical shots in occurrence order",
+    (localized) => {
+      const initial = createFederationSampleGameHistory().frames.find(
+        ({ entry }) => entry.type === "mafia.multiple-shot-observed",
+      )!.before;
+      const shooterSeat = initial.players.find(
+        (p) => p.team === "black" && p.status === "active",
+      )!.seat;
+      const frames = replayFrames(initial, [
+        {
+          type: "mafia.shots-observed",
+          payload: {
+            shotAssignments: { [shooterSeat]: 9 },
+            observations: [
+              { shooterSeat, targetSeat: 9 },
+              { shooterSeat, targetSeat: 9 },
+              { shooterSeat, targetSeat: 10 },
+            ],
+          },
+        },
+      ]);
+      const marker = buildTimeline(frames, localized).markers[0]!;
+      expect(marker.kind).toBe("mafia-shots");
+      expect(
+        marker.shots?.map(({ shooterSeat: shooter, targetSeat, occurrence }) => [
+          shooter,
+          targetSeat,
+          occurrence,
+        ]),
+      ).toEqual([
+        [shooterSeat, 9, 1],
+        [shooterSeat, 9, 2],
+        [shooterSeat, 10, 3],
+      ]);
+      expect(marker.ariaLabel).toContain(`#${shooterSeat}`);
+      expect(marker.ariaLabel).toContain("#9");
+      expect(marker.ariaLabel).toContain("#10");
+      expect(marker.ariaLabel).not.toContain("{number}");
+      expect(buildPublicTimeline(frames, localized).markers).toEqual([]);
+      expect(JSON.stringify(buildPublicTimeline(frames, localized))).not.toContain(
+        "shotObservations",
+      );
+    },
+  );
+
+  it.each([text, russian])(
+    "distinguishes an explicit zero-support collective hand-count completion",
+    (localized) => {
+      const base = createFederationSampleGameHistory().frames.find(
+        ({ entry }) => entry.type === "mafia.multiple-shot-observed",
+      )!.before;
+      const seats = base.players
+        .filter((p) => p.status === "active")
+        .slice(0, 2)
+        .map((p) => p.seat);
+      const initial = {
+        ...base,
+        phase: "car-crash-decision" as const,
+        carCrashSeats: seats,
+        carCrashVotes: {},
+      };
+      const frames = replayFrames(initial, [
+        {
+          type: "car-crash.count-completed",
+          payload: {
+            votes: {},
+            result: {
+              eliminate: false,
+              seats,
+              yesVotes: 0,
+              eligibleVoters: initial.players.filter((p) => p.status === "active").length,
+            },
+          },
+        },
+      ]);
+      const marker = buildTimeline(frames, localized).markers[0]!;
+      expect(marker.kind).toBe("car-crash-result");
+      expect(marker.result).toBe("kept");
+      expect(marker.ariaLabel).toContain("0");
+      expect(marker.label).toContain(
+        localized === text ? "Hand count completed" : "Подсчёт рук завершён",
+      );
+      expect(buildPublicTimeline(frames, localized).markers).toHaveLength(1);
+    },
+  );
   it.each([
     ["discipline.foul-issued", { removal: null }],
     [

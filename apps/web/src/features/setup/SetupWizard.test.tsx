@@ -152,6 +152,90 @@ const requestReroll = async (user: ReturnType<typeof userEvent.setup>) => {
 };
 
 describe("SetupWizard federation setup", () => {
+  it.each(["en", "ru"] as const)(
+    "keeps role progress in the table with a clean giveaway header in %s",
+    async (locale) => {
+      const user = userEvent.setup();
+      const session = federationRoleSession();
+      const onSessionStateChange = vi.fn();
+      const onStartGame = vi.fn();
+      const onComplete = vi.fn();
+      const title = locale === "en" ? "Role giveaway" : "Раздача ролей";
+      const backLabel = locale === "en" ? "Player setup" : "Выбор игроков";
+      const remaining = (count: number) =>
+        locale === "en" ? `Draw roles · ${count} remaining` : `Раздайте роли · осталось ${count}`;
+      const complete = locale === "en" ? "All roles assigned" : "Все роли распределены";
+      const planning =
+        locale === "en" ? "Begin Mafia planning stage" : "Начать этап планирования мафии";
+      const { container } = render(
+        <I18nProvider locale={locale}>
+          <SetupWizard
+            players={availablePlayers}
+            initialSessionState={session}
+            onComplete={onComplete}
+            onStartGame={onStartGame}
+            onSessionStateChange={onSessionStateChange}
+          />
+        </I18nProvider>,
+      );
+      const inspectHeader = () => {
+        const header = container.querySelector(".game-header")!;
+        const heading = screen.getByRole("heading", { level: 1, name: title });
+        const back = within(header as HTMLElement).getByRole("button", { name: backLabel });
+        expect(back.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(
+          0,
+        );
+        expect(header.querySelector(".setup-edition-label")).toBeNull();
+        expect(header.querySelector(".phase-banner")).toBeNull();
+        expect(header).not.toHaveTextContent(/MAFGAME|2026|Legacy club rules/);
+      };
+      inspectHeader();
+      const center = container.querySelector(".table-center")!;
+      expect(center).toHaveTextContent(remaining(9));
+      expect(center).toHaveTextContent(
+        locale === "en"
+          ? "Tap a player to reveal their role"
+          : "Нажмите на игрока, чтобы раскрыть его роль",
+      );
+      expect(screen.getByRole("button", { name: planning })).toBeDisabled();
+      expect(onSessionStateChange.mock.lastCall?.[0].setup).toEqual(session.setup);
+      for (let seat = 2; seat <= 10; seat += 1) {
+        await user.click(
+          screen.getByRole("button", {
+            name:
+              locale === "en"
+                ? `Draw role for Player ${seat}`
+                : `Раздать роль игроку Player ${seat}`,
+          }),
+        );
+        if (seat < 10) expect(center).toHaveTextContent(remaining(10 - seat));
+      }
+      inspectHeader();
+      expect(center).toHaveTextContent(complete);
+      expect(center).not.toHaveTextContent(remaining(0));
+      expect(screen.getByRole("button", { name: planning })).toBeEnabled();
+      const completedSetup = onSessionStateChange.mock.lastCall?.[0].setup;
+      expect(completedSetup.rulesEdition).toBe(FEDERATION_RULES_EDITION);
+      expect(Object.keys(completedSetup.assignments)).toHaveLength(10);
+      await user.click(screen.getByRole("button", { name: backLabel }));
+      expect(
+        screen.getByRole("heading", {
+          name: locale === "en" ? "Select 10 players + host" : "Выберите 10 игроков и ведущего",
+        }),
+      ).toHaveFocus();
+      expect(container.querySelector(".setup-edition-label")).toHaveTextContent(/MAFGAME/);
+      expect(onSessionStateChange.mock.lastCall?.[0].setup).toEqual(completedSetup);
+      await user.click(
+        screen.getByRole("button", { name: locale === "en" ? "Start game" : "Начать игру" }),
+      );
+      inspectHeader();
+      expect(container.querySelector(".table-center")).toHaveTextContent(complete);
+      expect(onSessionStateChange.mock.lastCall?.[0].setup).toEqual(completedSetup);
+      expect(onStartGame).not.toHaveBeenCalled();
+      expect(onComplete).not.toHaveBeenCalled();
+    },
+  );
+
   it("captures the edition on the first real selection, retaining it through prop changes and redraw", async () => {
     const user = userEvent.setup();
     const onSessionStateChange = vi.fn();
@@ -199,7 +283,8 @@ describe("SetupWizard federation setup", () => {
     expect(onSessionStateChange.mock.lastCall?.[0].setup).not.toHaveProperty("rulesEdition");
   });
 
-  it("uses a restored domain setup edition even when the session discriminator is missing", () => {
+  it("uses a restored domain setup edition even when the session discriminator is missing", async () => {
+    const user = userEvent.setup();
     const { setup, selectedPlayerIds, hostPlayerId, step } = federationRoleSession();
     const session = { setup, selectedPlayerIds, hostPlayerId, step };
     const onSessionStateChange = vi.fn();
@@ -211,6 +296,8 @@ describe("SetupWizard federation setup", () => {
         onSessionStateChange={onSessionStateChange}
       />,
     );
+    expect(screen.queryByText("MAFGAME · 1 July 2026")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Player setup" }));
     expect(screen.getByText("MAFGAME · 1 July 2026")).toBeInTheDocument();
     expect(onSessionStateChange.mock.lastCall?.[0].rulesEdition).toBe(FEDERATION_RULES_EDITION);
   });
@@ -249,9 +336,9 @@ describe("SetupWizard federation setup", () => {
           }
         />,
       );
-      expect(screen.getByText("Legacy club rules")).toBeInTheDocument();
       if (stage === "role-draw")
         await user.click(screen.getByRole("button", { name: "Player setup" }));
+      expect(screen.getByText("Legacy club rules")).toBeInTheDocument();
       await choosePlayer(user, "Seat 1 player", replacementPlayer);
       await user.click(screen.getByRole("button", { name: "Start game" }));
       expect(onSessionStateChange.mock.lastCall?.[0]).not.toHaveProperty("rulesEdition");
@@ -1536,7 +1623,7 @@ describe("SetupWizard", () => {
       await user.click(screen.getByRole("button", { name: `Draw role for ${player.nickname}` }));
     }
 
-    expect(screen.getByText("Draw roles · 0 remaining")).toBeInTheDocument();
+    expect(screen.getByText("All roles assigned")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Player 1: sheriff/i })).not.toHaveAttribute(
       "aria-haspopup",
     );

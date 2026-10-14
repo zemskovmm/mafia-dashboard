@@ -450,7 +450,8 @@ export const VotingStage = ({
         ...player,
         name: displayName(player),
         votingHighlight: game.voteAssignments[player.seat] === selectedCandidate,
-        inactive: game.voteAssignments[player.seat] !== undefined || player.status !== "active",
+        voted: game.voteAssignments[player.seat] !== undefined,
+        inactive: player.status !== "active",
         voteTargetSeat: game.voteAssignments[player.seat],
       }))}
       renderSeatActions={renderFoulAction}

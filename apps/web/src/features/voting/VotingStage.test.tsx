@@ -297,14 +297,14 @@ describe("Federation voting", () => {
       render(<FederationHarness initial={decision} />);
       expect(federationState().phase).toBe("car-crash-decision");
       expect(screen.getByLabelText("Lift vote for #1 · Player 1")).toBeEnabled();
-      expect(screen.getByRole("button", { name: "Resolve car crash" })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Resolve car crash" })).toBeEnabled();
       expect(screen.queryByRole("alert")).toBeNull();
     },
   );
 
-  it.each([true, false])(
-    "closes only a determined collective lift, preserving unknown votes (%s)",
-    async (yes) => {
+  it.each([0, 2, 5, 6])(
+    "explicitly completes a permitted collective count with %i hands, preserving unknown votes",
+    async (count) => {
       const user = userEvent.setup();
       const votes = Object.fromEntries(
         Array.from({ length: 10 }, (_, index) => [index + 1, index < 5 ? 4 : 6]),
@@ -317,31 +317,35 @@ describe("Federation voting", () => {
       const events = vi.fn();
       render(<FederationHarness initial={decision} onAccepted={events} />);
       expect(screen.queryByRole("button", { name: "Skip voting" })).toBeNull();
-      expect(screen.getByRole("button", { name: "Resolve car crash" })).toBeDisabled();
-      const count = yes ? 6 : 5;
+      expect(screen.getByRole("button", { name: "Resolve car crash" })).toBeEnabled();
       for (let seat = 1; seat <= count; seat += 1) {
         await user.selectOptions(
           screen.getByLabelText(`Lift vote for #${seat} · Player ${seat}`),
-          yes ? "yes" : "no",
+          "yes",
         );
-        if (seat < count)
-          expect(screen.getByRole("button", { name: "Resolve car crash" })).toBeDisabled();
+        expect(screen.getByRole("button", { name: "Resolve car crash" })).toBeEnabled();
       }
       const recorded = Object.fromEntries(
-        Array.from({ length: count }, (_, index) => [index + 1, yes]),
+        Array.from({ length: count }, (_, index) => [index + 1, true]),
       );
       expect(federationState().carCrashVotes).toEqual(recorded);
-      await user.click(screen.getByRole("button", { name: "Close determined result" }));
+      await user.click(screen.getByRole("button", { name: "Resolve car crash" }));
       expect(federationState().phase).toBe("car-crash-result");
       expect(federationState().carCrashVotes).toEqual(recorded);
-      expect(federationState().carCrashResult?.eliminate).toBe(yes);
+      expect(federationState().carCrashResult?.eliminate).toBe(count > 5);
       expect(events).toHaveBeenLastCalledWith({
-        type: "car-crash.ballot-resolved",
+        type: "car-crash.count-completed",
         payload: {
           votes: recorded,
-          result: { eliminate: yes, seats: [4, 6], yesVotes: yes ? count : 0, eligibleVoters: 10 },
+          result: { eliminate: count > 5, seats: [4, 6], yesVotes: count, eligibleVoters: 10 },
         },
       });
+      await expectServerAcceptsEvent(decision, events.mock.lastCall![0]);
+      if (count <= 5) {
+        await user.click(screen.getByRole("button", { name: "Continue" }));
+        expect(federationState().phase).toBe("night-mafia");
+        expect(federationState().players.every((p) => p.status === "active")).toBe(true);
+      }
     },
   );
 
@@ -428,9 +432,9 @@ describe("Federation voting", () => {
         screen.getByLabelText(`Lift vote for #${seat} · Player ${seat}`),
         "yes",
       );
-    expect(screen.getByRole("button", { name: "Resolve car crash" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Resolve car crash" })).toBeEnabled();
     await user.selectOptions(screen.getByLabelText("Lift vote for #5 · Player 5"), "yes");
-    await user.click(screen.getByRole("button", { name: "Close determined result" }));
+    await user.click(screen.getByRole("button", { name: "Resolve car crash" }));
     expect(federationState().carCrashResult).toEqual({
       eliminate: true,
       seats: [4, 6, 8],
@@ -450,7 +454,7 @@ describe("Federation voting", () => {
     render(<FederationHarness initial={repeatedFederationBallot(initial, votes)} />);
     await user.click(screen.getByRole("button", { name: "Finish voting" }));
     expect(federationState().phase).toBe("car-crash-decision");
-    expect(screen.getByRole("button", { name: "Resolve car crash" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Resolve car crash" })).toBeEnabled();
     expect(screen.queryByText(/Five players tied again on the zero round/)).toBeNull();
   });
 
@@ -1235,7 +1239,8 @@ describe("VotingStage", () => {
     expect(finish).toBeDisabled();
     await user.click(screen.getByRole("button", { name: /vote as player 4 for player 4/i }));
     const firstSelected = screen.getByRole("button", { name: /player 4 voted for seat 4/i });
-    expect(firstSelected).toHaveClass("is-inactive", "is-voting-highlight");
+    expect(firstSelected).toHaveClass("is-voted", "is-voting-highlight");
+    expect(firstSelected).not.toHaveClass("is-inactive");
     await user.click(screen.getByRole("button", { name: /vote as player 1 for player 4/i }));
     expect(screen.getByRole("button", { name: /player 1 voted for seat 4/i })).toHaveClass(
       "is-voting-highlight",

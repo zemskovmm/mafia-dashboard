@@ -91,6 +91,7 @@ export interface TimelineShot {
   readonly targetSeat: number;
   readonly shooterLabel: string;
   readonly targetLabel: string;
+  readonly occurrence?: number;
 }
 
 export interface TimelineMarker {
@@ -411,7 +412,8 @@ const describeMarker = (frame: ReplayFrame, text: TimelineText): MarkerDescripti
         result: "host-skipped",
       };
     case "car-crash.resolved":
-    case "car-crash.ballot-resolved": {
+    case "car-crash.ballot-resolved":
+    case "car-crash.count-completed": {
       const result = asRecord(payload.result);
       const seats = Array.isArray(result?.seats) ? result.seats : null;
       if (
@@ -426,11 +428,20 @@ const describeMarker = (frame: ReplayFrame, text: TimelineText): MarkerDescripti
       const outcome = result.eliminate
         ? text.t("Players eliminated", { players, count: seats.length })
         : text.t("Players kept", { players, count: seats.length });
+      const completed = eventType === "car-crash.count-completed";
+      const label = text.t(completed ? "Hand count completed: {outcome}" : "Car crash: {outcome}", {
+        outcome,
+      });
       return {
         kind: "car-crash-result",
         icon: "car-front",
-        label: text.t("Car crash: {outcome}", { outcome }),
-        ariaLabel: text.t("Car-crash decision: {outcome}", { outcome }),
+        label,
+        ariaLabel: completed
+          ? `${label}; ${text.t("Hand count support: {yes} of {eligible}", {
+              yes: Number(result.yesVotes),
+              eligible: Number(result.eligibleVoters),
+            })}`
+          : text.t("Car-crash decision: {outcome}", { outcome }),
         result: result.eliminate ? "eliminated" : "kept",
       };
     }

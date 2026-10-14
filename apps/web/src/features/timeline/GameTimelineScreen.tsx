@@ -574,9 +574,20 @@ const TimelineInspector = ({
           {marker.accessibleLabel === marker.label ? null : <p>{marker.accessibleLabel}</p>}
           {marker.shots === undefined ? null : (
             <ul>
-              {marker.shots.map((shot) => (
-                <li key={`${shot.shooterSeat}-${shot.targetSeat}`}>
-                  {shot.shooterLabel} → {shot.targetLabel}
+              {marker.shots.map((shot, index) => (
+                <li key={`${index}-${shot.shooterSeat}-${shot.targetSeat}`}>
+                  {shot.occurrence === undefined
+                    ? `${shot.shooterLabel} → ${shot.targetLabel}`
+                    : text.t(
+                        "Observed shot {number}: #{shooterSeat} {shooter} → #{targetSeat} {target}",
+                        {
+                          number: shot.occurrence,
+                          shooterSeat: shot.shooterSeat,
+                          shooter: shot.shooterLabel,
+                          targetSeat: shot.targetSeat,
+                          target: shot.targetLabel,
+                        },
+                      )}
                 </li>
               ))}
             </ul>

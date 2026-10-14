@@ -3096,7 +3096,8 @@ describe("developer menu", () => {
           );
         }
         expect(table.querySelectorAll(".role-badge")).toHaveLength(10);
-        expect(screen.getByText("Draw roles · 0 remaining")).toBeVisible();
+        expect(within(table).getByText("All roles assigned")).toBeVisible();
+        expect(screen.queryByText("Draw roles · 0 remaining")).not.toBeInTheDocument();
         await user.click(screen.getByRole("button", { name: "Begin Mafia planning stage" }));
         expect(screen.queryByRole("heading", { name: "Role giveaway" })).not.toBeInTheDocument();
         const gameTable = screen.getByRole("region", { name: "Mafia table" });

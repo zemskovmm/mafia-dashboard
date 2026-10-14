@@ -716,7 +716,7 @@ export const GameScreen = ({
                     player.status === "active" &&
                     player.team === "black",
                   sheriffHighlight:
-                    game.phase === "sheriff-wake" &&
+                    (game.phase === "sheriff-wake" || game.phase === "sheriff-identification") &&
                     player.status === "active" &&
                     player.role === "sheriff",
                   dimmed:

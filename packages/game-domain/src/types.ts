@@ -71,6 +71,13 @@ export interface ShotAssignment {
   readonly secret: true;
 }
 
+/** Ordered private physical facts, independent of clerical assignment corrections. */
+export interface ShotObservation {
+  readonly shooterSeat: number;
+  readonly targetSeat: number;
+  readonly additional: boolean;
+}
+
 export interface GameState {
   readonly rulesEdition?: RulesEdition;
   readonly completedGameNights?: number;
@@ -78,6 +85,7 @@ export interface GameState {
   readonly firstDayDepartureSeats?: readonly number[];
   readonly currentSpeechRestricted?: boolean;
   readonly actualMultipleShotSeats?: readonly number[];
+  readonly shotObservations?: readonly ShotObservation[];
   readonly ballot?: FederationBallot;
   readonly ballotSkipReason?: LegalVotingSkipReason;
   readonly ballotCancellationDay?: number;

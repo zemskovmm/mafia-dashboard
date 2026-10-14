@@ -3,6 +3,7 @@ import { fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
+  advanceOpeningPhase,
   advanceSetupPhase,
   beginRoleDraw,
   completeRoleDraw,
@@ -10,8 +11,9 @@ import {
   createSeededRandom,
   createSetup,
   drawRoleForSeat,
+  FEDERATION_RULES_EDITION,
 } from "@mafia/game-domain";
-import type { GameState, PlayerInput } from "@mafia/game-domain";
+import type { GameState, PlayerInput, RulesEdition } from "@mafia/game-domain";
 import { I18nProvider } from "../../i18n/I18nProvider.js";
 import { GameScreen } from "./GameScreen.js";
 import { expectServerAcceptsEvent } from "../../test-game-event-contract.js";
@@ -20,12 +22,12 @@ import { namedProfiles, playerLabel, renderWithProfiles } from "../../test-playe
 const render = (ui: Parameters<typeof renderWithProfiles>[0]) =>
   renderWithProfiles(ui, namedProfiles("player-"));
 
-const createPlanningGame = (): GameState => {
+const createPlanningGame = (rulesEdition?: RulesEdition): GameState => {
   const players: PlayerInput[] = Array.from({ length: 10 }, (_, index) => ({
     id: `player-${index + 1}`,
     seat: index + 1,
   }));
-  let setup = beginRoleDraw(createSetup(players), createSeededRandom(13));
+  let setup = beginRoleDraw(createSetup(players, { rulesEdition }), createSeededRandom(13));
   for (let seat = 1; seat <= 10; seat += 1) {
     setup = drawRoleForSeat(setup, seat);
   }
@@ -65,6 +67,65 @@ const DayHarness = () => {
 };
 
 describe("GameScreen", () => {
+  it.each([
+    ["sheriff-identification", FEDERATION_RULES_EDITION, "Begin round zero"],
+    ["sheriff-wake", undefined, "Begin day one"],
+  ] as const)(
+    "highlights only the active Sheriff during %s and conceals the cue on entering day",
+    async (phase, rulesEdition, nextAction) => {
+      const user = userEvent.setup();
+      const planning = createPlanningGame(rulesEdition);
+      const game: GameState = { ...planning, phase };
+      const sheriff = game.players.find(({ role }) => role === "sheriff")!;
+      const snapshot = JSON.stringify(game);
+      const onGameChange = vi.fn();
+      const onEvent = vi.fn();
+      const props = { hostName: "Host", onGameChange, onEvent };
+      const { container, rerender } = render(
+        <GameScreen {...props} game={planning} privacyHidden />,
+      );
+      expect(container.querySelector(".is-sheriff-highlight")).toBeNull();
+      rerender(<GameScreen {...props} game={game} privacyHidden />);
+      const card = screen.getByRole("button", {
+        name: `Seat ${sheriff.seat}: ${playerLabel(sheriff)}`,
+      });
+      expect(card).toHaveClass("is-sheriff-highlight");
+      expect(card.querySelector(".vgpu-player-lighting")).not.toBeNull();
+      expect(card.querySelector(".role-badge")).toHaveTextContent("sheriff");
+      expect(container.querySelectorAll(".is-sheriff-highlight")).toHaveLength(1);
+      expect(container.querySelector(".game-shell")).toHaveClass("is-table-cycle-night");
+      rerender(<GameScreen {...props} game={game} privacyHidden={false} />);
+      expect(card).toHaveClass("is-sheriff-highlight");
+      for (const status of ["eliminated", "red-carded"] as const) {
+        rerender(
+          <GameScreen
+            {...props}
+            game={{
+              ...game,
+              players: game.players.map((player) =>
+                player.seat === sheriff.seat ? { ...player, status } : player,
+              ),
+            }}
+            privacyHidden
+          />,
+        );
+        expect(container.querySelector(".is-sheriff-highlight")).toBeNull();
+      }
+      expect(JSON.stringify(game)).toBe(snapshot);
+      expect(onGameChange).not.toHaveBeenCalled();
+      expect(onEvent).not.toHaveBeenCalled();
+      rerender(<GameScreen {...props} game={game} privacyHidden />);
+      await user.click(screen.getByRole("button", { name: nextAction }));
+      const day = advanceOpeningPhase(game);
+      expect(onGameChange).toHaveBeenCalledExactlyOnceWith(day);
+      expect(onEvent).toHaveBeenCalledExactlyOnceWith("phase.changed", { from: phase, to: "day" });
+      rerender(<GameScreen {...props} game={day} privacyHidden />);
+      expect(container.querySelector(".game-shell")).toHaveClass("is-table-cycle-day");
+      expect(container.querySelector(".is-sheriff-highlight")).toBeNull();
+      expect(container.querySelector(".role-badge")).toBeNull();
+    },
+  );
+
   it("renders the live day controls in Russian", () => {
     const day = advanceSetupPhase(advanceSetupPhase(createPlanningGame()));
 

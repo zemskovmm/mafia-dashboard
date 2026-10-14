@@ -110,6 +110,40 @@ export const describeFederationEvent = (
     };
   }
   switch (frame.entry.type) {
+    case "mafia.shots-observed": {
+      if (!Array.isArray(payload.observations) || payload.observations.length === 0) return null;
+      const shots = [];
+      for (const [index, value] of payload.observations.entries()) {
+        if (value == null || typeof value !== "object") return null;
+        const { shooterSeat, targetSeat } = value as Record<string, unknown>;
+        if (!Number.isInteger(shooterSeat) || !Number.isInteger(targetSeat)) return null;
+        shots.push({
+          shooterSeat: shooterSeat as number,
+          targetSeat: targetSeat as number,
+          shooterLabel: player(shooterSeat),
+          targetLabel: player(targetSeat),
+          occurrence: (frame.before.shotObservations?.length ?? 0) + index + 1,
+        });
+      }
+      const label = text.t("Physical shots observed", { count: shots.length });
+      return {
+        kind: "mafia-shots",
+        icon: "crosshair",
+        label,
+        shots,
+        ariaLabel: `${label}; ${shots
+          .map((shot) =>
+            text.t("Observed shot {number}: #{shooterSeat} {shooter} → #{targetSeat} {target}", {
+              number: shot.occurrence,
+              shooterSeat: shot.shooterSeat,
+              shooter: shot.shooterLabel,
+              targetSeat: shot.targetSeat,
+              target: shot.targetLabel,
+            }),
+          )
+          .join("; ")}`,
+      };
+    }
     case "mafia.multiple-shot-observed":
       if (!Number.isInteger(payload.shooterSeat)) return null;
       return named(

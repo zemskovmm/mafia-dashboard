@@ -38,6 +38,7 @@ import {
   Undo2,
   Wrench,
 } from "lucide-react";
+import { ShotObservationDetails } from "./features/night/ShotObservationDetails.js";
 import {
   ApiError,
   checkServerReady,
@@ -233,6 +234,7 @@ const eventMessageKeys: Readonly<Record<string, ShellMessageKey>> = {
   "voting.resolved": "eventVotingResolved",
   "car-crash.resolved": "eventCarCrashResolved",
   "car-crash.ballot-resolved": "eventCarCrashBallotResolved",
+  "car-crash.count-completed": "eventCollectiveCountCompleted",
   "mafia.shots-resolved": "eventMafiaShotsResolved",
   "don.checked": "eventDonChecked",
   "don.check-skipped": "eventDonCheckSkipped",
@@ -255,6 +257,7 @@ const eventMessageKeys: Readonly<Record<string, ShellMessageKey>> = {
   "voting.count-ruled": "eventCountRuled",
   "voting.legally-skipped": "eventVotingSkipped",
   "mafia.multiple-shot-observed": "eventMultipleShot",
+  "mafia.shots-observed": "eventPhysicalShotsObserved",
   "best-move.number-accepted": "eventBestMoveNumber",
   "best-move.slip-corrected": "eventBestMoveSlip",
   "best-move.finalized": "eventBestMoveCompleted",
@@ -2013,6 +2016,9 @@ export const ClubWorkspace = ({
                   <span className="log-sequence">#{entry.sequence}</span>
                   <div>
                     <strong>{eventLabel(entry.type, t)}</strong>
+                    {!privacyHidden && entry.type === "mafia.shots-observed" ? (
+                      <ShotObservationDetails observations={entry.payload.observations} />
+                    ) : null}
                     <small>
                       {phaseLabel(entry.phase, t)} · {formatTime(entry.createdAt)}
                     </small>

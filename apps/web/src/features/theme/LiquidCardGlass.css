@@ -1,0 +1,141 @@
+/* Decorative direct-child surface. Keep host text/focus and V-GPU siblings
+   outside this clipping/filter context. The host must have a transparent fill;
+   its existing border and this rim share one edge, never an inset second line. */
+.liquid-card-glass {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  display: block;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
+/* Outrank the existing player-seat > :not(.vgpu-player-lighting) rule without
+   changing shared styles or moving the lighting canvas above the card text.
+   The card's existing 1px border and the glass rim occupy the SAME perimeter;
+   keep the host border/status colour instead of drawing an inset second edge. */
+.player-seat > .liquid-card-glass[aria-hidden="true"] {
+  z-index: 0;
+  inset: calc(-1 * var(--liquid-card-host-border-width, 1px));
+}
+
+.liquid-card-glass * {
+  pointer-events: none;
+}
+
+.liquid-card-glass__backdrop,
+.liquid-card-glass__caustics,
+.liquid-card-glass__rim {
+  position: absolute;
+  inset: 0;
+  display: block;
+  border-radius: inherit;
+}
+
+.liquid-card-glass__backdrop {
+  background: var(--liquid-card-tint, linear-gradient(145deg, #ffffff10, #ffffff02 42%, #b9e3cf09));
+  -webkit-backdrop-filter: blur(2px) saturate(1.18);
+  backdrop-filter: blur(2px) saturate(1.18);
+}
+
+/* WebKit accepts URL syntax but does not render SVG backdrop displacement.
+   Engines exposing its prefixed backdrop API deliberately retain CSS blur;
+   syntax support alone must not silently replace that working fallback. */
+@supports (backdrop-filter: url("#liquid-card-support-probe") blur(0.6px)) and
+  (not (-webkit-backdrop-filter: blur(1px))) {
+  .liquid-card-glass[data-liquid-card-lens="ready"] .liquid-card-glass__backdrop {
+    backdrop-filter: var(--liquid-card-refraction) blur(0.6px) saturate(1.18);
+  }
+}
+
+.liquid-card-glass__caustics {
+  opacity: 0.72;
+  -webkit-mask-image: var(
+    --liquid-card-edge-mask,
+    radial-gradient(ellipse at center, transparent 60%, #000 100%)
+  );
+  mask-image: var(
+    --liquid-card-edge-mask,
+    radial-gradient(ellipse at center, transparent 60%, #000 100%)
+  );
+  -webkit-mask-size: 100% 100%;
+  mask-size: 100% 100%;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+}
+
+.liquid-card-glass__light {
+  position: absolute;
+  inset: -25%;
+  display: block;
+  background:
+    radial-gradient(ellipse 34% 23% at 28% 20%, #fff9dfb3, #e4fff840 48%, transparent 80%),
+    radial-gradient(ellipse 27% 21% at 80% 82%, #d0ffe480, transparent 78%);
+  filter: blur(0.7px);
+  transform-origin: center;
+}
+
+/* Only this same-edge rim is stroked. No inner inset border/shadow. */
+.liquid-card-glass__rim {
+  border: 1px solid var(--liquid-card-edge-color, #f4f2df66);
+}
+
+@supports (mask-composite: exclude) or (-webkit-mask-composite: xor) {
+  .liquid-card-glass__rim {
+    padding: 1px;
+    border: 0;
+    background: var(
+      --liquid-card-rim,
+      conic-gradient(
+        from 135deg,
+        #fff4 0deg,
+        #fff1 70deg,
+        #efffdab3 140deg,
+        #fff2 190deg,
+        #fff1 260deg,
+        #fff9 320deg,
+        #fff4
+      )
+    );
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+  }
+}
+
+.liquid-card-glass__defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .liquid-card-glass__light {
+    animation: none;
+    transition: none;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .liquid-card-glass__backdrop {
+    background: var(--liquid-card-opaque-fill, #1b2520);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .liquid-card-glass[data-liquid-card-lens="ready"] .liquid-card-glass__backdrop {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .liquid-card-glass__caustics {
+    display: none;
+  }
+}

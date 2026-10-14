@@ -1,0 +1,22 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`physical counts and observations > pins old shooter-only observations and conclusive collective closure bytes/hashes 1`] = `
+[
+  {
+    "bytes": "11ddcfd98759cb395385395a564014955aaf9fb1a03347fedca905d59b06430d",
+    "hasObservations": false,
+    "hashes": [
+      "sha256:e1a1a3b8ea82bb1b4427e46c326e123d64242ce3c528d85bdcf4cfb821d16eeb",
+      "sha256:302b8dd01781209ccf9db20c84bbc1bb827550992f68360ea1bd7c7242f1ec3c",
+    ],
+  },
+  {
+    "bytes": "8787318b5a30086bb376cb03dbc4eaa004856b5771411b0e1792fd3f801d0277",
+    "hasObservations": false,
+    "hashes": [
+      "sha256:778f8ea8dc8974a03dfaf481032a5103bc598d97f2583fe5ce377815d809cda2",
+      "sha256:efa4b8bc8a86530459f888edb62857f8265e801eeeb7e4a0078aa9567f778fcd",
+    ],
+  },
+]
+`;

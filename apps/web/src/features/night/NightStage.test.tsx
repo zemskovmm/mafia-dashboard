@@ -249,7 +249,7 @@ describe("NightStage", () => {
     ["en", "Call every seat: 1–10, even inactive."],
     ["ru", "Назовите все номера 1–10, включая выбывших."],
   ] as const)(
-    "prompts all ten shooting calls in %s even with an inactive seat",
+    "omits redundant %s shooting text while retaining all ten targets, including an inactive seat",
     (locale, prompt) => {
       const base = createNightGame();
       const inactive = base.players.find(({ role }) => role === "citizen")!;
@@ -266,7 +266,17 @@ describe("NightStage", () => {
           <NightStage game={game} onGameChange={onGameChange} onEvent={onEvent} />
         </I18nProvider>,
       );
-      expect(screen.getByText(prompt)).toBeInTheDocument();
+      expect(screen.queryByText(prompt)).toBeNull();
+      for (const player of game.players) {
+        expect(
+          screen.getByRole("button", {
+            name:
+              locale === "en"
+                ? `Assign all Mafia shots to Player ${player.seat}`
+                : `Назначить все выстрелы мафии в игрока Player ${player.seat}`,
+          }),
+        ).toBeEnabled();
+      }
       expect(onGameChange).not.toHaveBeenCalled();
       expect(onEvent).not.toHaveBeenCalled();
     },

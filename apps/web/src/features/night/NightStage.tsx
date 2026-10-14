@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import {
   completeMafiaShots,
   completeNight,
@@ -11,6 +11,7 @@ import {
   performDonCheck,
   performSheriffCheck,
   resolveMafiaShots,
+  recordShotObservations,
   skipDonCheck,
   skipSheriffCheck,
   toggleAllMafiaShotsForTarget,
@@ -50,6 +51,9 @@ export const NightStage = ({
   const { t } = useMessages(nightMessages);
   const displayName = usePlayerDisplayName();
   const tableHostName = hostName ?? t("night.host");
+  // Scope the transient mode to this shooting night; retained facts live in the domain.
+  const [observationNight, setObservationNight] = useState<number | null>(null);
+  const observingShots = isFederationGame(game) && observationNight === game.day;
   const activePlayers = game.players.filter(({ status }) => status === "active");
   const donEligible = isNightCheckEligible(game, "don");
   const sheriffEligible = isNightCheckEligible(game, "sheriff");
@@ -76,6 +80,22 @@ export const NightStage = ({
     const shooters = activePlayers
       .filter(({ team }) => team === "black")
       .sort((left, right) => left.seat - right.seat);
+    const observe = (targetSeat: number, shooterSeats: readonly number[]) => {
+      if (shooterSeats.length === 0) return;
+      const observations = shooterSeats.map((shooterSeat) => ({ shooterSeat, targetSeat }));
+      if (onAcceptedEvent) {
+        onAcceptedEvent({
+          type: "mafia.shots-observed",
+          payload: {
+            shotAssignments: { ...game.shotAssignments },
+            observations,
+          },
+        });
+      } else {
+        onGameChange(recordShotObservations(game, observations));
+        onEvent("mafia.shots-observed", { shotAssignments: game.shotAssignments, observations });
+      }
+    };
     return (
       <GameTable
         hostName={tableHostName}
@@ -89,11 +109,22 @@ export const NightStage = ({
           mafiaShooter: player.status === "active" && player.team === "black",
         }))}
         seatActionLabel={(seat) =>
-          shooters.every(({ seat: shooterSeat }) => game.shotAssignments[shooterSeat] === seat.seat)
-            ? t("night.removeAllShots", { name: seat.name })
-            : t("night.assignAllShots", { name: seat.name })
+          observingShots
+            ? t("night.observeAllShots", { name: seat.name })
+            : shooters.every(
+                  ({ seat: shooterSeat }) => game.shotAssignments[shooterSeat] === seat.seat,
+                )
+              ? t("night.removeAllShots", { name: seat.name })
+              : t("night.assignAllShots", { name: seat.name })
         }
-        onSeatClick={(targetSeat) => onGameChange(toggleAllMafiaShotsForTarget(game, targetSeat))}
+        onSeatClick={(targetSeat) =>
+          observingShots
+            ? observe(
+                targetSeat,
+                shooters.map((p) => p.seat),
+              )
+            : onGameChange(toggleAllMafiaShotsForTarget(game, targetSeat))
+        }
         renderSeatActions={(target) =>
           shooters.map((shooter) => {
             const assignedTarget = game.shotAssignments[shooter.seat];
@@ -104,12 +135,20 @@ export const NightStage = ({
                 key={shooter.seat}
                 className={`shooter-button${selected ? " is-selected" : ""}`}
                 aria-pressed={selected}
-                aria-label={t(selected ? "night.removeShooter" : "night.assignShooter", {
-                  shooter: shooter.seat,
-                  target: target.name,
-                })}
+                aria-label={t(
+                  observingShots
+                    ? "night.observeShooter"
+                    : selected
+                      ? "night.removeShooter"
+                      : "night.assignShooter",
+                  {
+                    shooter: shooter.seat,
+                    target: target.name,
+                  },
+                )}
                 onClick={() => {
-                  onGameChange(toggleMafiaShot(game, shooter.seat, target.seat));
+                  if (observingShots) observe(target.seat, [shooter.seat]);
+                  else onGameChange(toggleMafiaShot(game, shooter.seat, target.seat));
                 }}
               >
                 #{shooter.seat}
@@ -126,13 +165,11 @@ export const NightStage = ({
                 shooters: shooters.length,
               })}
             </strong>
-            <small>{t("night.shootingCalls")}</small>
             {isFederationGame(game) ? (
               <NightShootingObservation
                 game={game}
-                onGameChange={onGameChange}
-                onEvent={onEvent}
-                onAcceptedEvent={onAcceptedEvent}
+                active={observingShots}
+                onToggle={() => setObservationNight(observingShots ? null : game.day)}
               />
             ) : null}
           </div>

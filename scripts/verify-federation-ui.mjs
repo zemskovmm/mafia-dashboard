@@ -218,25 +218,54 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
         card: radii(stage.querySelector(".table-card")),
         buttons: [...stage.querySelectorAll("button")]
           .filter((button) => button.getClientRects().length > 0)
-          .map((button) => ({
-            label: button.getAttribute("aria-label") ?? button.textContent.trim(),
-            radii: radii(button),
-          })),
+          .map((button) => {
+            const group = button.parentElement;
+            const joined = group.classList.contains("seat-actions") && group.children.length > 1;
+            return {
+              label: button.getAttribute("aria-label") ?? button.textContent.trim(),
+              radii: radii(button),
+              joined,
+              vertical: joined && getComputedStyle(group).flexDirection === "column",
+              first: button === group.firstElementChild,
+              last: button === group.lastElementChild,
+            };
+          }),
       };
     });
     assert.ok(corners.buttons.length > 0, "Table controls must be present");
     assert.equal(new Set(corners.card).size, 1, "Card corners must be uniform");
-    for (const button of corners.buttons)
-      assert.deepEqual(button.radii, corners.card, `Table corners: ${button.label}`);
+    for (const button of corners.buttons) {
+      const r = corners.card[0];
+      const expected = !button.joined
+        ? corners.card
+        : button.vertical
+          ? [
+              button.first ? r : "0px",
+              button.first ? r : "0px",
+              button.last ? r : "0px",
+              button.last ? r : "0px",
+            ]
+          : [
+              button.first ? r : "0px",
+              button.last ? r : "0px",
+              button.last ? r : "0px",
+              button.first ? r : "0px",
+            ];
+      assert.deepEqual(button.radii, expected, `Table corners: ${button.label}`);
+    }
   }
   async function draw(page) {
     await page.getByRole("button", { name: "Start game", exact: true }).click();
+    await expect(page.locator(".game-header")).not.toContainText("MAFGAME");
+    await expect(page.locator(".game-header .phase-banner")).toHaveCount(0);
+    await expect(page.locator(".table-center")).toContainText("10 remaining");
     for (let i = 0; i < 10; i++)
       await page
         .getByRole("button", { name: /^Draw role for / })
         .first()
         .click();
     await assertTableCorners(page);
+    await expect(page.locator(".table-center")).toContainText("All roles assigned");
     await page.getByRole("button", { name: "Begin Mafia planning stage", exact: true }).click();
   }
   const read = async (page) => page.evaluate((k) => JSON.parse(localStorage.getItem(k)), key);
@@ -414,6 +443,16 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     await assertTableCorners(page);
     row.screenshots.push(await capture(page, "sheriff-greeting", width, height));
     const greeting = await settled(page, api);
+    const sheriff = greeting.current.state.game.players.find((player) => player.role === "sheriff");
+    await expect(
+      page.locator(`.seat-anchor[data-seat="${sheriff.seat}"] .player-seat`),
+    ).toHaveClass(/is-sheriff-highlight/);
+    assert.equal(
+      await page
+        .locator(".is-sheriff-highlight")
+        .evaluate((card) => getComputedStyle(card).borderColor),
+      "rgb(103, 183, 255)",
+    );
     replay(greeting.current.state);
     await page.reload({ waitUntil: "networkidle" });
     assert.equal((await settled(page, api)).current.state.game.phase, "sheriff-identification");
@@ -438,6 +477,7 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     await settled(page, api);
     await page.getByRole("button", { name: "Begin round zero", exact: true }).click();
     const fresh = await saveReplay(page, api, "fresh-opening", width, height);
+    await expect(page.locator(".is-sheriff-highlight")).toHaveCount(0);
     assert.equal(fresh.env.current.state.game.phase, "day");
     assert.equal(fresh.env.current.state.game.completedGameNights, 1);
     assert.equal(fresh.env.current.state.game.sheriffChecksPerformed, 0);
@@ -499,6 +539,34 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
       );
     });
     const order = page.getByRole("region", { name: "Voting order", exact: true });
+    const voted = page.locator('.seat-anchor[data-seat="1"] .player-seat');
+    await expect(voted).toHaveClass(/is-voted/);
+    const progressStyle = await voted.evaluate((card) => {
+      const style = getComputedStyle(card);
+      return {
+        scale: Number(style.scale),
+        opacity: Number(style.opacity),
+        transition: style.transitionProperty,
+      };
+    });
+    assert.ok(progressStyle.scale < 1 && progressStyle.scale > 0.7, "Voted card becomes smaller");
+    assert.ok(
+      progressStyle.opacity < 0.8 && progressStyle.opacity > 0.35,
+      "Voted card remains legible but fades",
+    );
+    assert.ok(
+      progressStyle.transition.includes("scale") && progressStyle.transition.includes("opacity"),
+    );
+    const nextBox = await page
+      .getByRole("button", { name: "Next candidate", exact: true })
+      .boundingBox();
+    const finishBox = await page
+      .getByRole("button", { name: "Finish voting", exact: true })
+      .boundingBox();
+    assert.ok(
+      finishBox.y - (nextBox.y + nextBox.height) >= 11,
+      "Separate voting actions by at least the card-action gap",
+    );
     const lastRow = order.getByRole("button", { name: `#5 ${display(day, 5)}`, exact: true });
     const hitBox = await lastRow.boundingBox();
     const rowBox = await lastRow.locator("..").boundingBox();
@@ -509,6 +577,9 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
       .tap();
     const corrected = await settled(page, api);
     assert.equal(corrected.current.state.game.voteAssignments[10], undefined);
+    await expect(page.locator('.seat-anchor[data-seat="10"] .player-seat')).not.toHaveClass(
+      /is-voted/,
+    );
     await page.reload({ waitUntil: "networkidle" });
     const restoredCorrection = await settled(page, api);
     assert.deepEqual(
@@ -679,6 +750,84 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
         club.language = previousLanguage;
       }
     }
+    // Untouched zero-support counts are explicitly finished, not fabricated no votes.
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const id = randomUUID();
+      const count = {
+        ...clone(day),
+        phase: "car-crash-decision",
+        carCrashSeats: [1, 2],
+        carCrashVotes: {},
+      };
+      await seed(page, api, checkpoint(count, template, id), id);
+      const finish = page.getByRole("button", { name: "Resolve car crash", exact: true });
+      await expect(finish).toBeEnabled();
+      await finish.click();
+      const completed = await saveReplay(page, api, `zero-support-count-${attempt}`, width, height);
+      assert.equal(completed.env.current.state.game.carCrashResult.yesVotes, 0);
+      assert.equal(completed.env.current.state.game.carCrashResult.eliminate, false);
+      assert.deepEqual(completed.env.current.state.game.carCrashVotes, {});
+      assert.equal(branch(completed.env.current.state).at(-1).type, "car-crash.count-completed");
+      await page.reload({ waitUntil: "networkidle" });
+      replay((await settled(page, api)).current.state);
+      row.screenshots.push(await capture(page, `zero-support-count-${attempt}`, width, height));
+      row.scenarios.push({ name: `zero-support-count-${attempt}-reload`, ...completed.proof });
+    }
+
+    const shotsId = randomUUID();
+    await seed(page, api, checkpoint(beginNight(day), template, shotsId), shotsId);
+    const target = day.players.find((p) => p.role === "citizen").seat;
+    const shooter = day.players.find((p) => p.team === "black").seat;
+    await page
+      .getByRole("button", {
+        name: `Assign all Mafia shots to ${display(day, target)}`,
+        exact: true,
+      })
+      .click();
+    const assigned = (await settled(page, api)).current.state.game.shotAssignments;
+    const observationMode = page.getByRole("button", {
+      name: "Observed multiple shooting",
+      exact: true,
+    });
+    await observationMode.click();
+    await expect(observationMode).toHaveAttribute("aria-pressed", "true");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    assert.equal((await settled(page, api)).current.state.game.shotObservations, undefined);
+    const extra = page.getByRole("button", {
+      name: `Record observed shot by #${shooter} at ${display(day, target)}`,
+      exact: true,
+    });
+    for (let i = 0; i < 4; i++) await extra.click();
+    await observationMode.click();
+    await observationMode.click();
+    const otherTarget = target === 9 ? 8 : 9;
+    await page
+      .getByRole("button", {
+        name: `Record observed shot by #${shooter} at ${display(day, otherTarget)}`,
+        exact: true,
+      })
+      .click();
+    const observed = await saveReplay(page, api, "inline-observations", width, height);
+    assert.deepEqual(observed.env.current.state.game.shotAssignments, assigned);
+    assert.equal(observed.env.current.state.game.shotObservations.length, 5);
+    assert.deepEqual(
+      observed.env.current.state.game.shotObservations.map((shot) => shot.targetSeat),
+      [target, target, target, target, otherTarget],
+    );
+    row.screenshots.push(await capture(page, "inline-observations", width, height));
+    await page.reload({ waitUntil: "networkidle" });
+    assert.deepEqual(
+      (await settled(page, api)).current.state.game.shotObservations,
+      observed.env.current.state.game.shotObservations,
+    );
+    await page.getByRole("button", { name: "Evaluate Mafia shots", exact: true }).click();
+    const missed = await saveReplay(page, api, "multiple-shots-miss", width, height);
+    assert.equal(missed.env.current.state.game.nightResult.kind, "miss");
+    row.scenarios.push({
+      name: "inline-repeated-same-and-different-shots-reload-miss",
+      ...missed.proof,
+    });
+
     // Domain-produced previous miss is a precondition, not the tested draw outcome.
     let priorMiss = completeMafiaShots(resolveMafiaShots(beginNight(day)).game);
     if (priorMiss.phase === "night-don") priorMiss = skipDonCheck(priorMiss);
@@ -856,7 +1005,7 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     }
 
     api.clean();
-    assert.equal(row.scenarios.length, 9);
+    assert.equal(row.scenarios.length, 12);
     assert.deepEqual(row.geometryFailures, [], "No primary-control overflow");
     console.log(
       `Federation integrated UI ${width}x${height}: PASS (${row.scenarios.length} scenarios)`,
