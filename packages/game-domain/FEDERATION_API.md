@@ -4,7 +4,9 @@ Scope: `rulesEdition: "mafgame-2026-07-01"` only. Missing edition remains legacy
 
 ## Lifecycle and state
 
-`advanceSetupPhase` takes five accepted steps: `mafia-planning → mafia-sleep → don-identification → sheriff-identification → free-seating → day`. These are masked identification, not checks. Complete free seating before entering the zero round (stored `day: 1`). Each step has the existing canonical `phase.changed {to}` event.
+`advanceOpeningPhase` is the current host flow: `mafia-planning → sheriff-identification → day`. The first action confirms that the host put Mafia to sleep; the separate Sheriff greeting recommends ten seconds before **Begin round zero**. These are not role checks or shots. The final action counts game night one exactly once and enters the zero round (stored `day: 1`). This streamlined club opening is not a claim of exact rulebook opening-procedure compliance.
+
+`advanceSetupPhase` retains the recorded five-step contract: `mafia-planning → mafia-sleep → don-identification → sheriff-identification → free-seating → day`. Existing canonical `phase.changed {to}` events and their hashes remain valid. Canonical replay accepts only the explicit short destinations in addition to the original transitions; it does not generally allow meaningful-phase skipping. Restored `mafia-sleep` or `don-identification` can explicitly continue to the Sheriff greeting, and restored `free-seating` can complete normally. No saved record is rewritten on restoration. Legacy callers retain their original two-step behavior.
 
 New federation state (exported from `types.ts`):
 

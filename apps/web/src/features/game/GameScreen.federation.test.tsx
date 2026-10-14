@@ -89,64 +89,39 @@ const Harness = ({
 
 describe("federation GameScreen", () => {
   it.each(["en", "ru"] as const)(
-    "takes five masked opening advances in %s without checks or kills",
+    "takes two opening advances in %s with a separate Sheriff greeting and no checks or kills",
     async (locale) => {
       const user = userEvent.setup();
       const accepted = vi.fn();
       const changed = vi.fn();
       const headings =
         locale === "en"
-          ? [
-              "Night one · Mafia agreement",
-              "Night one · Mafia sleep",
-              "Night one · Masked Don identification",
-              "Night one · Masked Sheriff identification",
-              "Night one · Free seating",
-              "Zero round",
-            ]
-          : [
-              "Первая ночь · договорка мафии",
-              "Первая ночь · мафия засыпает",
-              "Первая ночь · Дон в маске",
-              "Первая ночь · Шериф в маске",
-              "Первая ночь · свободная рассадка",
-              "Нулевой круг",
-            ];
+          ? ["Night one · Mafia agreement", "Night one · Sheriff greeting", "Zero round"]
+          : ["Первая ночь · договорка мафии", "Первая ночь · приветствие Шерифа", "Нулевой круг"];
       const buttons =
         locale === "en"
-          ? [
-              "Mafia asleep",
-              "Confirm masked Don identification",
-              "Confirm masked Sheriff identification",
-              "Begin free seating",
-              "Begin zero round",
-            ]
-          : [
-              "Мафия уснула",
-              "Подтвердить Дона в маске",
-              "Подтвердить Шерифа в маске",
-              "Начать свободную рассадку",
-              "Начать нулевой круг",
-            ];
+          ? ["Mafia asleep", "Begin round zero"]
+          : ["Мафия уснула", "Начать нулевой круг"];
       render(
         <I18nProvider locale={locale}>
           <Harness initial={planning()} accepted={accepted} changed={changed} />
         </I18nProvider>,
       );
-      for (let i = 0; i < 5; i += 1) {
+      for (let i = 0; i < 2; i += 1) {
         expect(screen.getByRole("heading", { level: 1, name: headings[i] })).toBeInTheDocument();
         expect(document.querySelector(".game-shell")).toHaveClass("is-table-cycle-night");
-        if (i === 3)
+        expect(document.querySelector(".table-center")).not.toHaveTextContent(/masked|маск/i);
+        if (i === 1)
           expect(
             screen.getByText(
               locale === "en"
-                ? "Sheriff stays masked. Identify without a role check."
-                : "Шериф остаётся в маске. Знакомство без проверки роли.",
+                ? "Wake the Sheriff. Give them 10 seconds to look around the table and greet the host."
+                : "Разбудите Шерифа. Дайте ему 10 секунд, чтобы осмотреть стол и поприветствовать ведущего.",
             ),
           ).toBeInTheDocument();
         await user.click(screen.getByRole("button", { name: buttons[i] }));
       }
-      expect(screen.getByRole("heading", { name: headings[5] })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: headings[2] })).toBeInTheDocument();
       expect(changed.mock.lastCall?.[0]).toMatchObject({
         day: 1,
         completedGameNights: 1,
@@ -156,15 +131,82 @@ describe("federation GameScreen", () => {
         changed.mock.lastCall?.[0].players.every((p: { status: string }) => p.status === "active"),
       ).toBe(true);
       expect(accepted.mock.calls.map(([event]) => event)).toEqual(
-        ["mafia-sleep", "don-identification", "sheriff-identification", "free-seating", "day"].map(
-          (to) => ({ type: "phase.changed", payload: { to } }),
-        ),
+        ["sheriff-identification", "day"].map((to) => ({ type: "phase.changed", payload: { to } })),
       );
     },
   );
 
+  it.each([
+    "mafia-planning",
+    "mafia-sleep",
+    "don-identification",
+    "sheriff-identification",
+    "free-seating",
+  ] as const)(
+    "continues %s through the direct-state callback without changing state on render",
+    async (phase) => {
+      const user = userEvent.setup();
+      const changed = vi.fn();
+      const event = vi.fn();
+      let initial = planning();
+      while (initial.phase !== phase) initial = advanceSetupPhase(initial);
+      const original = JSON.stringify(initial);
+      render(
+        <GameScreen
+          game={initial}
+          hostName="Host"
+          privacyHidden
+          onGameChange={changed}
+          onEvent={event}
+        />,
+      );
+      expect(changed).not.toHaveBeenCalled();
+      expect(event).not.toHaveBeenCalled();
+      expect(JSON.stringify(initial)).toBe(original);
+      const toDay = phase === "sheriff-identification" || phase === "free-seating";
+      await user.click(
+        screen.getByRole("button", {
+          name: toDay
+            ? "Begin round zero"
+            : phase === "mafia-planning"
+              ? "Mafia asleep"
+              : "Wake the Sheriff",
+        }),
+      );
+      expect(changed).toHaveBeenCalledTimes(1);
+      expect(changed.mock.calls[0]?.[0]).toEqual(
+        toDay ? day() : { ...initial, phase: "sheriff-identification" },
+      );
+      expect(JSON.stringify(initial)).toBe(original);
+    },
+  );
+
+  it("keeps the Sheriff greeting manual when its ten-second timer expires", () => {
+    vi.useFakeTimers();
+    const changed = vi.fn();
+    const accepted = vi.fn();
+    render(
+      <>
+        <Harness
+          initial={{ ...planning(), phase: "sheriff-identification" }}
+          changed={changed}
+          accepted={accepted}
+        />
+        <TimerControls />
+      </>,
+    );
+    expect(screen.getByText(/Wake the Sheriff. Give them 10 seconds/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Start 10 second timer" }));
+    expect(screen.getByRole("button", { name: "Pause timer" })).toHaveTextContent("10");
+    act(() => vi.advanceTimersByTime(10_000));
+    expect(screen.getByRole("button", { name: "Timer face" })).toHaveTextContent("00");
+    expect(changed).not.toHaveBeenCalled();
+    expect(accepted).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Begin round zero" })).toBeEnabled();
+  });
+
   it.each(["live", "preview"] as const)(
-    "shows the captured edition and acknowledged deviations without role labels in %s",
+    "omits the dated badge but retains acknowledged deviations without role labels in %s",
     async (mode) => {
       const user = userEvent.setup();
       render(
@@ -180,9 +222,9 @@ describe("federation GameScreen", () => {
           />
         </I18nProvider>,
       );
-      expect(screen.getByText("MAFGAME · 1 июля 2026")).toBeInTheDocument();
+      expect(screen.queryByText("MAFGAME · 1 июля 2026")).toBeNull();
       await user.click(screen.getByText("Нестандартные клубные отклонения"));
-      const notice = screen.getByRole("group", { name: "MAFGAME · 1 июля 2026" });
+      const notice = screen.getByRole("group", { name: "Нестандартные клубные отклонения" });
       expect(notice).toHaveTextContent("Роль была перераздана по усмотрению ведущего.");
       expect(notice).toHaveTextContent("Лучший ход отключён.");
       expect(notice).toHaveTextContent("Каспер заменяет живого игрока.");
@@ -190,6 +232,22 @@ describe("federation GameScreen", () => {
       expect(notice).not.toHaveTextContent("Player");
     },
   );
+
+  it.each(["live", "preview"] as const)("omits empty rules notices in English %s", (mode) => {
+    render(
+      <GameScreen
+        game={day()}
+        hostName="Host"
+        privacyHidden
+        mode={mode}
+        onGameChange={vi.fn()}
+        onEvent={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText("MAFGAME · 1 July 2026")).toBeNull();
+    expect(document.querySelector(".federation-rules-notice")).toBeNull();
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Zero round");
+  });
 
   it.each([0, 1, 2, 3])(
     "accepts a %i-number prefix at night before a separate morning action",

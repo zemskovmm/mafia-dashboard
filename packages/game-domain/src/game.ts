@@ -153,6 +153,19 @@ export const advanceSetupPhase = (game: GameState): GameState => {
   throw new Error(`Cannot advance setup from phase ${game.phase}`);
 };
 
+/** Host opening flow; advanceSetupPhase retains the recorded step-by-step contract. */
+export const advanceOpeningPhase = (game: GameState): GameState => {
+  if (isFederationGame(game)) {
+    if (["mafia-planning", "mafia-sleep", "don-identification"].includes(game.phase)) {
+      return { ...game, phase: "sheriff-identification" };
+    }
+    if (game.phase === "sheriff-identification") {
+      return advanceSetupPhase({ ...game, phase: "free-seating" });
+    }
+  }
+  return advanceSetupPhase(game);
+};
+
 export const markPlayerInactive = (
   game: GameState,
   seat: number,

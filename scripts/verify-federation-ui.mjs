@@ -1,4 +1,4 @@
-/* global URL, document, innerWidth, innerHeight, localStorage */
+/* global URL, document, innerWidth, innerHeight, localStorage, getComputedStyle */
 /*
  * Scenario module imported by verify-ui.mjs; reuses its page and API fixtures.
  * Browser save/reload evidence is NOT database/backend qualification.
@@ -70,6 +70,10 @@ const sources = [
   "apps/web/src/features/setup/SetupWizard.css",
   "apps/web/src/features/table/GameTable.tsx",
   "apps/web/src/styles/app.css",
+  "apps/web/src/features/game/FederationRulesNotice.tsx",
+  "apps/web/src/i18n/messages/game.ts",
+  "apps/web/src/i18n/messages/shell.ts",
+  "packages/game-domain/src/game.ts",
   "packages/game-domain/src/game-events.ts",
 ];
 const sourceHashes = async () =>
@@ -191,6 +195,32 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     await page.getByRole("button", { name: "Assign players" }).click();
     await expect(page.getByRole("button", { name: "Start game", exact: true })).toBeEnabled();
   }
+  async function assertTableCorners(page) {
+    const corners = await page.locator(".table-stage").evaluate((stage) => {
+      const radii = (element) => {
+        const style = getComputedStyle(element);
+        return [
+          style.borderTopLeftRadius,
+          style.borderTopRightRadius,
+          style.borderBottomRightRadius,
+          style.borderBottomLeftRadius,
+        ];
+      };
+      return {
+        card: radii(stage.querySelector(".table-card")),
+        buttons: [...stage.querySelectorAll("button")]
+          .filter((button) => button.getClientRects().length > 0)
+          .map((button) => ({
+            label: button.getAttribute("aria-label") ?? button.textContent.trim(),
+            radii: radii(button),
+          })),
+      };
+    });
+    assert.ok(corners.buttons.length > 0, "Table controls must be present");
+    assert.equal(new Set(corners.card).size, 1, "Card corners must be uniform");
+    for (const button of corners.buttons)
+      assert.deepEqual(button.radii, corners.card, `Table corners: ${button.label}`);
+  }
   async function draw(page) {
     await page.getByRole("button", { name: "Start game", exact: true }).click();
     for (let i = 0; i < 10; i++)
@@ -198,6 +228,7 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
         .getByRole("button", { name: /^Draw role for / })
         .first()
         .click();
+    await assertTableCorners(page);
     await page.getByRole("button", { name: "Begin Mafia planning stage", exact: true }).click();
   }
   const read = async (page) => page.evaluate((k) => JSON.parse(localStorage.getItem(k)), key);
@@ -237,6 +268,7 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     return { env, proof };
   }
   async function capture(page, label, width, height) {
+    await assertTableCorners(page);
     const file = path.join(evidence, `${width}x${height}-${label}.png`);
     await page.screenshot({ path: file, animations: "disabled" });
     const geometry = await page.locator(".game-shell").evaluate((shell) => {
@@ -362,14 +394,41 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     const planning = await settled(page, api);
     assert.equal(planning.current.state.initialGame.replayVersion, 2);
     assert.equal(planning.current.state.game.rulesEdition, FEDERATION_RULES_EDITION);
-    for (const name of [
-      "Mafia asleep",
-      "Confirm masked Don identification",
-      "Confirm masked Sheriff identification",
-      "Begin free seating",
-      "Begin zero round",
-    ])
-      await page.getByRole("button", { name, exact: true }).click();
+    await expect(page.locator(".game-header")).not.toContainText("MAFGAME");
+    await assertTableCorners(page);
+    await page.getByRole("button", { name: "Mafia asleep", exact: true }).click();
+    await expect(
+      page.getByRole("heading", { name: "Night one · Sheriff greeting", exact: true }),
+    ).toBeVisible();
+    await expect(page.locator(".table-center")).toContainText(
+      "Give them 10 seconds to look around the table and greet the host",
+    );
+    await assertTableCorners(page);
+    row.screenshots.push(await capture(page, "sheriff-greeting", width, height));
+    const greeting = await settled(page, api);
+    replay(greeting.current.state);
+    await page.reload({ waitUntil: "networkidle" });
+    assert.equal((await settled(page, api)).current.state.game.phase, "sheriff-identification");
+    const openingLanguage = club.language;
+    try {
+      club.language = "ru";
+      await page.reload({ waitUntil: "networkidle" });
+      await expect(
+        page.getByRole("heading", { name: "Первая ночь · приветствие Шерифа", exact: true }),
+      ).toBeVisible();
+      await expect(page.locator(".table-center")).toContainText("Дайте ему 10 секунд");
+      await expect(page.locator(".game-header")).not.toContainText("MAFGAME");
+      row.screenshots.push(await capture(page, "sheriff-greeting-ru", width, height));
+    } finally {
+      club.language = openingLanguage;
+    }
+    await page.reload({ waitUntil: "networkidle" });
+    await settled(page, api);
+    await undo(page);
+    assert.equal((await settled(page, api)).current.state.game.phase, "mafia-planning");
+    await page.getByRole("button", { name: "Mafia asleep", exact: true }).click();
+    await settled(page, api);
+    await page.getByRole("button", { name: "Begin round zero", exact: true }).click();
     const fresh = await saveReplay(page, api, "fresh-opening", width, height);
     assert.equal(fresh.env.current.state.game.phase, "day");
     assert.equal(fresh.env.current.state.game.completedGameNights, 1);
@@ -378,9 +437,10 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
       branch(fresh.env.current.state)
         .slice(1)
         .map((e) => e.payload.to),
-      ["mafia-sleep", "don-identification", "sheriff-identification", "free-seating", "day"],
+      ["sheriff-identification", "day"],
     );
-    row.scenarios.push({ name: "fresh-v2-five-step-opening", ...fresh.proof });
+    await assertTableCorners(page);
+    row.scenarios.push({ name: "fresh-v2-short-opening-greeting-reload", ...fresh.proof });
     row.screenshots.push(await capture(page, "fresh-day", width, height));
     const template = fresh.env.current.state,
       day = clone(template.game);

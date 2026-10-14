@@ -58,6 +58,59 @@ const day = () =>
   ).game;
 
 describe("strict federation canonical replay", () => {
+  it("preserves recorded five-step opening hashes", () => {
+    const { entries } = chain(
+      opening(),
+      ["mafia-sleep", "don-identification", "sheriff-identification", "free-seating", "day"].map(
+        (to) => ({ type: "phase.changed", payload: { to } }) as CanonicalGameEventDraft,
+      ),
+    );
+    expect(entries.map((entry) => entry.stateHashAfter)).toEqual([
+      "sha256:ed40401e8d1e8c408896a044d63813486438a45b5ac5462ac1c12b9557de3b42",
+      "sha256:38e0718280246f37fba559c75919b1f45b30daeaa12a466873c0191eae207dc4",
+      "sha256:ab3eb1e7089429d4e2ffc05d3c4f9b958259b9a035a33fa16e01421bfdb69182",
+      "sha256:cdece188732628980966714a38af401b566e750ff2234bb598a6f37a9995c6d2",
+      "sha256:2380cd5102dc05c82519ec9c734baf49ca20018acdac0cad7b8ca5162344ea24",
+      "sha256:0b151152689982107b6096699f72fd6e957e2974ede71377ddd55dc1febba436",
+    ]);
+  });
+
+  it.each(["mafia-sleep", "don-identification"] as const)(
+    "continues a restored %s explicitly without rewriting its recorded prefix",
+    (phase) => {
+      const prefix = ["mafia-sleep", "don-identification"].slice(
+        0,
+        phase === "mafia-sleep" ? 1 : 2,
+      );
+      const { game, entries } = chain(opening(), [
+        ...prefix.map(
+          (to) => ({ type: "phase.changed", payload: { to } }) as CanonicalGameEventDraft,
+        ),
+        { type: "phase.changed", payload: { to: "sheriff-identification" } },
+        { type: "phase.changed", payload: { to: "day" } },
+      ]);
+      expect(entries[1]?.stateHashAfter).toBe(
+        "sha256:38e0718280246f37fba559c75919b1f45b30daeaa12a466873c0191eae207dc4",
+      );
+      expect(game).toEqual(day());
+    },
+  );
+
+  it("replays a separate Sheriff greeting followed directly by round zero", () => {
+    const initial = opening();
+    const { game, entries } = chain(initial, [
+      { type: "phase.changed", payload: { to: "sheriff-identification" } },
+      { type: "phase.changed", payload: { to: "day" } },
+    ]);
+    expect(entries).toHaveLength(3);
+    expect(game).toEqual(day());
+    expect(game).toMatchObject({ completedGameNights: 1, sheriffChecksPerformed: 0 });
+    expect(game.players).toEqual(initial.players);
+    for (const to of ["day", "free-seating", "night-mafia", "sheriff-wake"] as const) {
+      expect(() => applyGameEvent(initial, { type: "phase.changed", payload: { to } })).toThrow();
+    }
+  });
+
   it("round-trips every accepted ordered call, clerical correction and reviewed count", () => {
     let game = day();
     game = applyGameEvent(game, {

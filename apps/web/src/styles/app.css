@@ -1117,6 +1117,7 @@ h2 {
 }
 
 .table-stage {
+  --table-control-radius: 14px;
   display: grid;
   place-items: center;
   width: 100%;
@@ -1289,7 +1290,7 @@ h2 {
     linear-gradient(135deg, rgb(var(--accent-rgb) / 78%), rgb(var(--accent-rgb) / 38%)),
     rgb(9 14 12 / 88%);
   border: 1px solid rgb(var(--accent-rgb) / 72%);
-  border-radius: 999px 999px 999px 24px;
+  border-radius: var(--table-control-radius);
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 18%),
     0 10px 28px rgb(0 0 0 / 42%),
@@ -1494,7 +1495,7 @@ h2 {
   justify-items: center;
   align-content: center;
   border: 1px solid transparent;
-  border-radius: 14px;
+  border-radius: var(--table-control-radius);
 }
 .player-seat {
   background: #161819;
@@ -1894,6 +1895,9 @@ button.player-seat.is-voting-highlight::after,
   background: rgb(178 38 43 / 88%);
   border-color: #ff8177;
   opacity: 1;
+}
+.table-stage button {
+  border-radius: var(--table-control-radius);
 }
 .game-shell {
   min-height: 100vh;
@@ -3753,10 +3757,12 @@ html:-webkit-full-screen #root {
     top: 50%;
     width: 96px;
   }
+  .table-stage {
+    --table-control-radius: 10px;
+  }
   .table-card {
     height: 76px;
     padding: 4px;
-    border-radius: 10px;
   }
   .person-icon {
     width: 24px;
@@ -4431,10 +4437,12 @@ html:-webkit-full-screen #root {
     transform: translate(-50%, -50%) rotate(var(--seat-angle))
       translateY(calc(-1 * var(--table-radius))) rotate(calc(-1 * var(--seat-angle)));
   }
+  .table-stage {
+    --table-control-radius: 10px;
+  }
   .table-card {
     height: 76px;
     padding: 4px;
-    border-radius: 10px;
   }
   .person-icon {
     width: 24px;

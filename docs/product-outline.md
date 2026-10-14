@@ -114,10 +114,10 @@ Primary hit targets are at least 48×48 CSS pixels. A destructive action require
 - Mafia receive 60 seconds to agree, then sleep. The screen remains host-private and low-glare.
 - Timer controls remain auxiliary and host-started; expiry never advances phase.
 
-### Step 5 — Masked identification and free seating
+### Step 5 — Sheriff greeting
 
-- The judge identifies Don, then Sheriff, while their masks stay on; this is not a Sheriff wake-up/check.
-- A separate 30-second free-seating period follows identification before the judge begins the zero round.
+- After manually putting Mafia to sleep and confirming **Mafia asleep**, the host sees a separate reminder to wake Sheriff for ten seconds to look around the table and greet the host.
+- **Begin round zero** follows directly, without Don-identification confirmation, masked-identification prompts or a separate free-seating stop. This streamlined club opening is not a claim of exact rulebook opening-procedure compliance. Previously recorded opening steps remain supported without rewriting their history.
 - No target check or shot occurs in the initial planning night. It is official game night one; the first shooting night is game night two.
 
 ### Step 6 — Zero-round discussion
@@ -157,7 +157,7 @@ The queue changes only IFrame playback order. Account authorization remains read
 
 - Preset buttons: **+60**, **+30**, **+20**, and **+10**.
 - Pressing a preset immediately starts/replaces the active countdown; the timer face pauses or resumes it.
-- Recommended durations are 60 seconds for ordinary speech/planning, 30 for tie/free-seating/short-table speech, 20 for Best Move and 10 for checks. The host starts the applicable timer explicitly.
+- Recommended durations are 60 seconds for ordinary speech/planning, 30 for tie/restored free-seating/short-table speech, 20 for Best Move and 10 for Sheriff greeting/checks. The host starts the applicable timer explicitly.
 - When remaining time first reaches 10 seconds, play one faint chime and show a subtle warning state.
 - A 10-second timer plays the warning once at start.
 - Timer position derives from a local start timestamp, not accumulated browser interval counts.

@@ -36,7 +36,13 @@ import {
   skipVoting,
   skipFederationVoting,
 } from "./day-actions.js";
-import { advanceSetupPhase, cancelGame, confirmDraw, isTerminalGamePhase } from "./game.js";
+import {
+  advanceOpeningPhase,
+  advanceSetupPhase,
+  cancelGame,
+  confirmDraw,
+  isTerminalGamePhase,
+} from "./game.js";
 import { GameHistoryError, withHistoryDiagnostic } from "./history-diagnostics.js";
 import {
   beginNight,
@@ -1578,6 +1584,15 @@ const advancePhaseOnce = (game: GameState): GameState => {
 
 const applyPhaseChange = (game: GameState, to: GamePhase): GameState => {
   if (game.phase === to) throw new Error(`Phase change must advance from ${game.phase}`);
+  if (
+    isFederationGame(game) &&
+    ["mafia-planning", "mafia-sleep", "don-identification", "sheriff-identification"].includes(
+      game.phase,
+    )
+  ) {
+    const opening = advanceOpeningPhase(game);
+    if (opening.phase === to) return opening;
+  }
   let next = game;
   for (let step = 0; step < 20 && next.phase !== to; step += 1) {
     const phaseBeforeStep = next.phase;

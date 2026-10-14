@@ -1,6 +1,6 @@
 import { useState } from "react";
 import {
-  advanceSetupPhase,
+  advanceOpeningPhase,
   completeBestMove,
   completeEliminations,
   completeGoodbyeSpeech,
@@ -247,7 +247,7 @@ export const GameScreen = ({
     ) : undefined;
 
   const continueSetup = () => {
-    const next = advanceSetupPhase(game);
+    const next = advanceOpeningPhase(game);
     if (onAcceptedEvent !== undefined) {
       onAcceptedEvent({ type: "phase.changed", payload: { to: next.phase } });
     } else {
@@ -506,9 +506,9 @@ export const GameScreen = ({
     if (opening) {
       const action: Partial<Record<GameState["phase"], GameMessageKey>> = {
         "mafia-planning": "game.confirmSleep",
-        "mafia-sleep": "game.confirmDon",
-        "don-identification": "game.confirmSheriff",
-        "sheriff-identification": "game.beginFreeSeating",
+        "mafia-sleep": "game.beginSheriffGreeting",
+        "don-identification": "game.beginSheriffGreeting",
+        "sheriff-identification": "game.beginZeroRound",
         "free-seating": "game.beginZeroRound",
       };
       return (

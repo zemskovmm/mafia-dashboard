@@ -11,20 +11,17 @@ export const FederationRulesNotice = ({
   readonly clubDeviationsAcknowledged?: readonly ClubDeviationAcknowledgement[];
 }) => {
   const { t } = useMessages(setupMessages);
-  const edition = t(federation ? "setup.edition.federation" : "setup.edition.legacy");
+  if (!federation || clubDeviationsAcknowledged.length === 0) return null;
   return (
-    <div className="federation-rules-notice" role="group" aria-label={edition}>
-      <small>{edition}</small>
-      {federation && clubDeviationsAcknowledged.length > 0 ? (
-        <details>
-          <summary>{t("setup.deviations.title")}</summary>
-          <ul>
-            {[...new Set(clubDeviationsAcknowledged)].map((deviation) => (
-              <li key={deviation}>{t(`setup.deviations.${deviation}`)}</li>
-            ))}
-          </ul>
-        </details>
-      ) : null}
+    <div className="federation-rules-notice" role="group" aria-label={t("setup.deviations.title")}>
+      <details>
+        <summary>{t("setup.deviations.title")}</summary>
+        <ul>
+          {[...new Set(clubDeviationsAcknowledged)].map((deviation) => (
+            <li key={deviation}>{t(`setup.deviations.${deviation}`)}</li>
+          ))}
+        </ul>
+      </details>
     </div>
   );
 };
