@@ -2455,6 +2455,30 @@ button.player-seat.is-voting-highlight::after,
   margin: 0 0 10px;
   font-size: 1rem;
 }
+.youtube-session-queue-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.youtube-session-queue-heading h2 {
+  flex: 0 0 auto;
+  margin: 0;
+}
+.queue-playlist-picker {
+  flex: 1 1 0;
+  min-width: 0;
+}
+.queue-playlist-picker select {
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  text-overflow: ellipsis;
+}
+.queue-playlist-picker p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
 .youtube-session-queue p {
   color: var(--muted);
 }

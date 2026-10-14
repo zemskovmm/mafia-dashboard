@@ -8,7 +8,14 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { forwardRef, StrictMode, useEffect, useImperativeHandle, useState } from "react";
+import {
+  forwardRef,
+  StrictMode,
+  useEffect,
+  useImperativeHandle,
+  useState,
+  type ReactNode,
+} from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   advanceSetupPhase,
@@ -601,6 +608,8 @@ vi.mock("./features/music/YouTubePlaylistPlayer.js", () => ({
       {
         playlistId,
         rememberedQueueOrder = [],
+        playlistPicker,
+        expanded,
         onQueueOrderChange,
         onStateChange,
         initialStageEntryKeys = [],
@@ -610,6 +619,8 @@ vi.mock("./features/music/YouTubePlaylistPlayer.js", () => ({
       }: {
         playlistId: string;
         rememberedQueueOrder?: readonly string[];
+        playlistPicker?: ReactNode;
+        expanded?: boolean;
         onQueueOrderChange?: (playlistId: string, order: readonly string[]) => void;
         onStateChange: (state: "idle" | "loading" | "playing" | "paused" | "error") => void;
         initialStageEntryKeys?: readonly string[];
@@ -643,6 +654,12 @@ vi.mock("./features/music/YouTubePlaylistPlayer.js", () => ({
             data-initial-keys={initialStageEntryKeys.join(",")}
             data-endgame-keys={endgameEntryKeys.join(",")}
           />
+          {expanded ? (
+            <section aria-label="Session playlist queue">
+              <h2>Session queue</h2>
+              {playlistPicker}
+            </section>
+          ) : null}
           <button
             type="button"
             aria-label="Remember mock queue order"
@@ -688,6 +705,7 @@ vi.mock("./features/music/YouTubePlaylistPlayer.js", () => ({
 
 vi.mock("./features/music/AccountPlaylistPicker.js", () => ({
   AccountPlaylistPicker: ({
+    view,
     playlistId,
     onPlaylistIdChange,
     onAccountDisconnected,
@@ -696,6 +714,7 @@ vi.mock("./features/music/AccountPlaylistPicker.js", () => ({
     status = { configured: true, connected: true, accountLabel: "Mafia Host" },
     statusError = false,
   }: {
+    view: "account" | "playlist";
     playlistId: string;
     onPlaylistIdChange: (playlistId: string) => void;
     onAccountDisconnected: () => void;
@@ -708,6 +727,8 @@ vi.mock("./features/music/AccountPlaylistPicker.js", () => ({
     status?: { configured: boolean; connected: boolean; accountLabel: string | null } | null;
     statusError?: boolean;
   }) => {
+    if (view === "playlist" && (statusError || !status?.configured || !status.connected))
+      return null;
     if (statusError) {
       return (
         <button type="button" onClick={onRetry}>
@@ -728,23 +749,26 @@ vi.mock("./features/music/AccountPlaylistPicker.js", () => ({
     }
     return (
       <>
-        <select
-          aria-label="YouTube Music playlist"
-          value={playlistId}
-          onChange={(event) => onPlaylistIdChange(event.target.value)}
-        >
-          <option value="">No playlist</option>
-          <option value="dev-playlist">Dev playlist</option>
-        </select>
-        <button
-          type="button"
-          onClick={() => {
-            onAccountDisconnected();
-            onStatusChange?.({ configured: true, connected: false, accountLabel: null });
-          }}
-        >
-          Disconnect account
-        </button>
+        {view === "playlist" ? (
+          <select
+            aria-label="YouTube Music playlist"
+            value={playlistId}
+            onChange={(event) => onPlaylistIdChange(event.target.value)}
+          >
+            <option value="">No playlist</option>
+            <option value="dev-playlist">Dev playlist</option>
+          </select>
+        ) : (
+          <button
+            type="button"
+            onClick={() => {
+              onAccountDisconnected();
+              onStatusChange?.({ configured: true, connected: false, accountLabel: null });
+            }}
+          >
+            Disconnect account
+          </button>
+        )}
       </>
     );
   },
@@ -2695,11 +2719,18 @@ describe("developer menu", () => {
     expect(musicPlayerHarness).toMatchObject({ mounts: 1, unmounts: 0 });
   });
 
-  it("keeps music player setup behind the Manage menu", async () => {
+  it("selects playlists in the expanded queue while retaining account setup behind Manage", async () => {
     const user = userEvent.setup();
     render(<App />);
     const player = await screen.findByTestId("youtube-player");
 
+    expect(screen.queryByRole("combobox", { name: "YouTube Music playlist" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Music player panel handle" }));
+    const queue = screen.getByRole("region", { name: "Session playlist queue" });
+    const playlist = within(queue).getByRole("combobox", { name: "YouTube Music playlist" });
+    await user.selectOptions(playlist, "dev-playlist");
+    expect(playlist).toHaveValue("dev-playlist");
+    expect(player).toHaveAttribute("data-playlist-id", "dev-playlist");
     expect(screen.queryByRole("region", { name: "Music player setup" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     expect(screen.queryByRole("button", { name: "Reload music player" })).toBeNull();
@@ -2710,11 +2741,16 @@ describe("developer menu", () => {
     expect(screen.queryByLabelText("Low")).toBeNull();
     expect(screen.queryByLabelText("High")).toBeNull();
     expect(screen.queryByRole("combobox", { name: "Voting playlist" })).toBeNull();
-    const playlist = screen.getByRole("combobox", { name: "YouTube Music playlist" });
+    expect(
+      within(screen.getByRole("region", { name: "Music player setup" })).queryByRole("combobox"),
+    ).toBeNull();
+    expect(screen.getByRole("button", { name: "Disconnect account" })).toBeInTheDocument();
     expect(screen.getByTestId("youtube-player")).toBe(player);
     expect(musicPlayerHarness).toMatchObject({ mounts: 1, unmounts: 0 });
-    await user.selectOptions(playlist, "dev-playlist");
-    expect(playlist).toHaveValue("dev-playlist");
+    await user.click(screen.getByRole("button", { name: "Close Manage menu" }));
+    await user.click(screen.getByRole("button", { name: "Music player panel handle" }));
+    expect(screen.queryByRole("combobox", { name: "YouTube Music playlist" })).toBeNull();
+    expect(musicPlayerHarness).toMatchObject({ mounts: 1, unmounts: 0 });
   });
 
   it("does not expose runtime glass settings in Dev", async () => {
@@ -2782,8 +2818,7 @@ describe("developer menu", () => {
   it("persists Initial and Endgame tags for the one active playlist", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
-    await user.click(screen.getByRole("button", { name: "Music player setup" }));
+    await user.click(await screen.findByRole("button", { name: "Music player panel handle" }));
     await user.selectOptions(
       screen.getByRole("combobox", { name: "YouTube Music playlist" }),
       "dev-playlist",
@@ -2826,8 +2861,7 @@ describe("developer menu", () => {
   it("remembers a newly selected playlist for this club", async () => {
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
-    await user.click(screen.getByRole("button", { name: "Music player setup" }));
+    await user.click(await screen.findByRole("button", { name: "Music player panel handle" }));
     await user.selectOptions(
       screen.getByRole("combobox", { name: "YouTube Music playlist" }),
       "dev-playlist",
@@ -3236,8 +3270,7 @@ describe("developer menu", () => {
     });
     const privacy = screen.getByRole("button", { name: "Hide private info" });
     for (let tap = 0; tap < 5; tap += 1) fireEvent.click(privacy);
-    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
-    await user.click(screen.getByRole("button", { name: "Music player setup" }));
+    await user.click(screen.getByRole("button", { name: "Music player panel handle" }));
     const playlist = screen.getByRole("combobox", { name: "YouTube Music playlist" });
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     await user.click(screen.getByRole("button", { name: "Console" }));
@@ -5436,8 +5469,7 @@ describe("authoritative game session lifecycle", () => {
     const user = userEvent.setup();
     const firstRender = render(<App />);
     await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
-    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
-    await user.click(screen.getByRole("button", { name: "Music player setup" }));
+    await user.click(await screen.findByRole("button", { name: "Music player panel handle" }));
     await user.selectOptions(
       screen.getByRole("combobox", { name: "YouTube Music playlist" }),
       "dev-playlist",

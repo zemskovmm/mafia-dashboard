@@ -33,9 +33,14 @@ declare global {
         index?: number,
         startSeconds?: number,
       ): void;
-      loadPlaylist(playlist: readonly string[], index?: number, startSeconds?: number): void;
+      loadPlaylist(
+        playlist: string | readonly string[],
+        index?: number,
+        startSeconds?: number,
+      ): void;
       getPlaylistIndex(): number;
       getCurrentTime(): number;
+      getPlayerState(): number;
       playVideoAt(index: number): void;
       destroy(): void;
     }

@@ -6,6 +6,7 @@ import { useMessages } from "../../i18n/I18nProvider.js";
 import { playersMusicMessages } from "../../i18n/messages/players-music.js";
 
 interface AccountPlaylistPickerProps {
+  readonly view: "account" | "playlist";
   readonly playlistId: string;
   readonly onPlaylistIdChange: (playlistId: string) => void;
   readonly onAccountDisconnected: () => void;
@@ -16,6 +17,7 @@ interface AccountPlaylistPickerProps {
 }
 
 export const AccountPlaylistPicker = ({
+  view,
   playlistId,
   onPlaylistIdChange,
   onAccountDisconnected,
@@ -36,7 +38,7 @@ export const AccountPlaylistPicker = ({
     setPlaylists(null);
     setPlaylistLoadFailed(false);
     setPlaylistReconnectRequired(false);
-    if (status?.connected !== true) return undefined;
+    if (view !== "playlist" || statusError || status?.connected !== true) return undefined;
     let current = true;
     void listMusicPlaylists()
       .then((next) => {
@@ -54,7 +56,9 @@ export const AccountPlaylistPicker = ({
     return () => {
       current = false;
     };
-  }, [playlistReload, status?.accountLabel, status?.connected]);
+  }, [playlistReload, status?.accountLabel, status?.connected, statusError, view]);
+
+  if (view === "playlist" && (statusError || !status?.configured || !status.connected)) return null;
 
   if (statusError) {
     return (
@@ -94,42 +98,45 @@ export const AccountPlaylistPicker = ({
     );
   }
   return (
-    <section className="account-playlist-picker">
-      <div className="account-playlist-heading">
-        <div>
-          <h2>{t("Music library")}</h2>
-          <p className="muted">
-            {t("Connected as {account}", { account: status.accountLabel ?? "" })}
-          </p>
-        </div>
-        <button
-          type="button"
-          disabled={disconnecting}
-          onClick={() => {
-            setDisconnecting(true);
-            setDisconnectFailed(false);
-            void disconnectMusicAccount()
-              .then(() => {
-                onAccountDisconnected();
-                setPlaylists(null);
-                onStatusChange({ configured: true, connected: false, accountLabel: null });
-              })
-              .catch((error: unknown) => {
-                reportError(error, { source: "api", context: "music-account.disconnect" });
-                setDisconnectFailed(true);
-              })
-              .finally(() => setDisconnecting(false));
-          }}
-        >
-          {disconnecting ? t("Disconnecting…") : t("Disconnect account")}
-        </button>
-      </div>
-      {disconnectFailed ? (
-        <p className="account-playlist-error" role="alert">
-          {t("Music account disconnect failed")}
-        </p>
-      ) : null}
-      {playlistLoadFailed ? (
+    <section className={view === "playlist" ? "queue-playlist-picker" : "account-playlist-picker"}>
+      {view === "account" ? (
+        <>
+          <div className="account-playlist-heading">
+            <div>
+              <h2>{t("Music library")}</h2>
+              <p className="muted">
+                {t("Connected as {account}", { account: status.accountLabel ?? "" })}
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={disconnecting}
+              onClick={() => {
+                setDisconnecting(true);
+                setDisconnectFailed(false);
+                void disconnectMusicAccount()
+                  .then(() => {
+                    onAccountDisconnected();
+                    setPlaylists(null);
+                    onStatusChange({ configured: true, connected: false, accountLabel: null });
+                  })
+                  .catch((error: unknown) => {
+                    reportError(error, { source: "api", context: "music-account.disconnect" });
+                    setDisconnectFailed(true);
+                  })
+                  .finally(() => setDisconnecting(false));
+              }}
+            >
+              {disconnecting ? t("Disconnecting…") : t("Disconnect account")}
+            </button>
+          </div>
+          {disconnectFailed ? (
+            <p className="account-playlist-error" role="alert">
+              {t("Music account disconnect failed")}
+            </p>
+          ) : null}
+        </>
+      ) : playlistLoadFailed ? (
         <div>
           <p className="account-playlist-error" role="alert">
             {t(
@@ -154,21 +161,18 @@ export const AccountPlaylistPicker = ({
         </p>
       ) : (
         <>
-          <label className="wide-field">
-            <span>{t("Music playlist")}</span>
-            <select
-              aria-label={t("Music playlist")}
-              value={playlistId}
-              onChange={(event) => onPlaylistIdChange(event.target.value)}
-            >
-              <option value="">{t("Choose a playlist")}</option>
-              {playlists.map((playlist) => (
-                <option key={playlist.id} value={playlist.id}>
-                  {playlist.title} · {t("Playlist tracks", { count: playlist.itemCount })}
-                </option>
-              ))}
-            </select>
-          </label>
+          <select
+            aria-label={t("Music playlist")}
+            value={playlistId}
+            onChange={(event) => onPlaylistIdChange(event.target.value)}
+          >
+            <option value="">{t("Choose a playlist")}</option>
+            {playlists.map((playlist) => (
+              <option key={playlist.id} value={playlist.id}>
+                {playlist.title} · {t("Playlist tracks", { count: playlist.itemCount })}
+              </option>
+            ))}
+          </select>
           {playlists.length === 0 ? <p className="muted">{t("No account playlists")}</p> : null}
         </>
       )}

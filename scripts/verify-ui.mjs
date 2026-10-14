@@ -449,6 +449,27 @@ const verifyMusicExpansion = async (label, expectedRows = 5) => {
     const list = document.querySelector(".youtube-session-queue ol");
     return list !== null && list.children.length === count;
   }, expectedRows);
+  const picker = page.getByRole("combobox", { name: "YouTube Music playlist" });
+  await picker.waitFor();
+  const headingGeometry = await page
+    .locator(".youtube-session-queue-heading")
+    .evaluate((header) => {
+      const title = header.querySelector("h2").getBoundingClientRect();
+      const select = header.querySelector("select").getBoundingClientRect();
+      const bounds = header.getBoundingClientRect();
+      return { title: title.toJSON(), select: select.toJSON(), bounds: bounds.toJSON() };
+    });
+  if (
+    headingGeometry.select.left < headingGeometry.title.right ||
+    headingGeometry.select.right > headingGeometry.bounds.right + 1 ||
+    Math.abs(
+      (headingGeometry.title.top + headingGeometry.title.bottom) / 2 -
+        (headingGeometry.select.top + headingGeometry.select.bottom) / 2,
+    ) > 1
+  )
+    throw new Error(
+      `Playlist picker must fit beside Session queue: ${JSON.stringify(headingGeometry)}`,
+    );
   const expanded = await measureMusic();
   await page.screenshot({
     path: screenshotPath.replace(/\.png$/i, `-music-${label}.png`),
@@ -501,6 +522,7 @@ const verifyMusicExpansion = async (label, expectedRows = 5) => {
   });
   await page.locator(".youtube-dock:not(.is-expanded)").waitFor();
   await handle.dispatchEvent("click"); // Consume the swipe's compatibility click.
+  if (await picker.isVisible()) throw new Error("Collapsed player exposes playlist picker");
   if (
     !(await player.evaluate(
       (element) =>
@@ -1327,13 +1349,12 @@ try {
     const musicSetup = page.getByRole("region", { name: "Music player setup" });
     await musicSetup.waitFor();
     await musicSetup.getByRole("button", { name: "Reload music player" }).waitFor();
-    await musicSetup.getByRole("combobox", { name: "YouTube Music playlist" }).waitFor();
     if (
       (await musicSetup.getByLabel("Low").count()) !== 0 ||
       (await musicSetup.getByLabel("High").count()) !== 0 ||
-      (await musicSetup.getByRole("combobox").count()) !== 1
+      (await musicSetup.getByRole("combobox").count()) !== 0
     ) {
-      throw new Error("Dev music setup must expose one playlist and no app volume presets");
+      throw new Error("Music setup must expose neither playlist selection nor app volume presets");
     }
     await page.screenshot({ path: screenshotPath, fullPage: true });
     await page.getByRole("button", { name: "Close Manage menu" }).click();
@@ -3285,6 +3306,7 @@ try {
         this.volume = 65;
         this.volumeChanges = [];
         this.played = false;
+        this.state = -1;
         this.videoIds = [];
         this.iframe = document.createElement("iframe");
         window.__uiYouTubePlayer = this;
@@ -3292,18 +3314,23 @@ try {
       }
       playVideo() {
         this.played = true;
+        this.state = 1;
         this.options.events?.onStateChange?.({ target: this, data: 1 });
       }
       pauseVideo() {
+        this.state = 2;
         this.options.events?.onStateChange?.({ target: this, data: 2 });
       }
       cuePlaylist(videoIds, index = 0) {
         this.videoIds = [...videoIds];
         this.playlistIndex = index;
+        this.state = 5;
         this.options.events?.onStateChange?.({ target: this, data: 5 });
       }
-      loadPlaylist(_videoIds, index = 0) {
+      loadPlaylist(videoIds, index = 0) {
+        this.videoIds = [...videoIds];
         this.playlistIndex = index;
+        this.state = 1;
         this.options.events?.onStateChange?.({ target: this, data: 1 });
       }
       playVideoAt(index) {
@@ -3326,6 +3353,9 @@ try {
       getCurrentTime() {
         return 0;
       }
+      getPlayerState() {
+        return this.state;
+      }
       destroy() {}
     }
     window.YT = {
@@ -3336,11 +3366,18 @@ try {
   await page.getByRole("button", { name: "Open Manage menu" }).click();
   await page.getByRole("button", { name: "Music player setup" }).click();
   const musicSetup = page.getByRole("region", { name: "Music player setup" });
-  await musicSetup.getByLabel("YouTube Music playlist").selectOption("test-playlist");
-  await page.getByText("Ready · paused").waitFor();
-  await page.screenshot({ path: screenshotPath, fullPage: true });
+  if ((await musicSetup.getByRole("combobox").count()) !== 0)
+    throw new Error("Playlist selection must not remain in Music player setup");
+  await musicSetup.getByRole("button", { name: "Disconnect account" }).waitFor();
+  await musicSetup.getByRole("button", { name: "Reload music player" }).waitFor();
   await page.getByRole("button", { name: "Close Manage menu" }).click();
   const queueHandle = page.getByRole("button", { name: "Music player panel handle" });
+  await queueHandle.click();
+  await page
+    .getByRole("combobox", { name: "YouTube Music playlist" })
+    .selectOption("test-playlist");
+  await page.screenshot({ path: screenshotPath, fullPage: true });
+  await queueHandle.click();
   await verifyMusicExpansion("setup");
   if (musicOnly) {
     await page.getByRole("button", { name: "Start game", exact: true }).click();
@@ -3355,12 +3392,11 @@ try {
     await page.getByRole("button", { name: "Hide timer and voting" }).click();
     await verifyMusicExpansion("live-utilities-hidden");
     for (const count of [0, 4, 40]) {
-      await page.getByRole("button", { name: "Open Manage menu" }).click();
-      if (!(await musicSetup.isVisible())) {
-        await page.getByRole("button", { name: "Music player setup" }).click();
-      }
-      await musicSetup.getByLabel("YouTube Music playlist").selectOption(`test-queue-${count}`);
-      await page.getByRole("button", { name: "Close Manage menu" }).click();
+      await queueHandle.click();
+      await page
+        .getByRole("combobox", { name: "YouTube Music playlist" })
+        .selectOption(`test-queue-${count}`);
+      await queueHandle.click();
       await verifyMusicExpansion(`live-hidden-${count}`, count);
       // Exercise both layout states; portrait's existing utility grip can sit behind the dock.
       await page.getByRole("button", { name: "Show timer and voting" }).dispatchEvent("click");
@@ -3533,13 +3569,22 @@ try {
     openingPlayer.played !== true ||
     openingPlayer.playlistIndex !== 0 ||
     openingPlayer.videoIds[0] !== openingCurrentVideoId ||
-    openingPlayer.videoIds[1] !== openingNextVideoId ||
+    openingPlayer.videoIds.length !== 1 ||
     openingPlayer.volumeChanges[0] !== 0
   ) {
     throw new Error(
       `Start game did not build and fade the constrained opening queue: ${JSON.stringify({ openingRows, openingPlayer })}`,
     );
   }
+  await page.evaluate(() => {
+    const player = window.__uiYouTubePlayer;
+    player.state = 0;
+    player.options.events.onStateChange({ target: player, data: 0 });
+  });
+  await page.waitForFunction(
+    (expected) => window.__uiYouTubePlayer.videoIds[0] === expected,
+    openingNextVideoId,
+  );
   await queueHandle.click();
 
   for (const { nickname } of selectedPlayers) {

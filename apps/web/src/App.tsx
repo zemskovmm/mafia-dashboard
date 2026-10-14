@@ -1750,6 +1750,19 @@ export const ClubWorkspace = ({
       setMusicAccountStatusRequest((request) => request + 1);
     }
   };
+  const musicPickerProps = {
+    playlistId,
+    onPlaylistIdChange: changePlaylistId,
+    onAccountDisconnected: clearMusicAccountState,
+    status: musicAccountStatus,
+    statusError: musicAccountStatusError,
+    onRetry: () => setMusicAccountStatusRequest((request) => request + 1),
+    onStatusChange: (status: MusicAccountStatus) => {
+      musicAccountStatusRevision.current += 1;
+      setMusicAccountStatusError(false);
+      setMusicAccountStatus(status);
+    },
+  };
   const musicSetupPanel = musicSetupOpen ? (
     <section
       id="manage-music-setup"
@@ -1767,19 +1780,7 @@ export const ClubWorkspace = ({
           </button>
         </>
       ) : null}
-      <AccountPlaylistPicker
-        playlistId={playlistId}
-        onPlaylistIdChange={changePlaylistId}
-        onAccountDisconnected={clearMusicAccountState}
-        status={musicAccountStatus}
-        statusError={musicAccountStatusError}
-        onRetry={() => setMusicAccountStatusRequest((request) => request + 1)}
-        onStatusChange={(status) => {
-          musicAccountStatusRevision.current += 1;
-          setMusicAccountStatusError(false);
-          setMusicAccountStatus(status);
-        }}
-      />
+      <AccountPlaylistPicker {...musicPickerProps} view="account" />
     </section>
   ) : null;
   const activeSessionsPanel = (
@@ -2561,6 +2562,7 @@ export const ClubWorkspace = ({
             <YouTubePlaylistPlayer
               ref={musicRef}
               playlistId={playlistId}
+              playlistPicker={<AccountPlaylistPicker {...musicPickerProps} view="playlist" />}
               onStateChange={handleMusicState}
               expanded={musicPlayerExpanded}
               reloadRequest={musicReloadRequest}

@@ -1,6 +1,6 @@
 import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState, type ComponentType } from "react";
+import { useState, type ComponentProps, type ComponentType } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
@@ -9,7 +9,18 @@ import {
   type MusicAccountStatus,
 } from "../../api/client.js";
 import { I18nProvider } from "../../i18n/I18nProvider.js";
-import { AccountPlaylistPicker } from "./AccountPlaylistPicker.js";
+import { AccountPlaylistPicker as Picker } from "./AccountPlaylistPicker.js";
+
+const AccountPlaylistPicker = (props: Omit<ComponentProps<typeof Picker>, "view">) => (
+  <>
+    <section aria-label="Account setup">
+      <Picker {...props} view="account" />
+    </section>
+    <section aria-label="Queue header">
+      <Picker {...props} view="playlist" />
+    </section>
+  </>
+);
 
 vi.mock(import("../../api/client.js"), async (importOriginal) => ({
   ...(await importOriginal()),
@@ -84,6 +95,18 @@ describe("AccountPlaylistPicker", () => {
       />,
     );
     const picker = await screen.findByRole("combobox", { name: "YouTube Music playlist" });
+    expect(
+      within(screen.getByRole("region", { name: "Account setup" })).queryByRole("combobox"),
+    ).toBeNull();
+    expect(within(screen.getByRole("region", { name: "Queue header" })).getByRole("combobox")).toBe(
+      picker,
+    );
+    expect(
+      within(screen.getByRole("region", { name: "Queue header" })).queryByRole("button", {
+        name: "Disconnect account",
+      }),
+    ).toBeNull();
+    expect(listMusicPlaylists).toHaveBeenCalledOnce();
     expect(screen.getByText("Connected as Mafia Host")).toBeInTheDocument();
     expect(
       within(picker).getByRole("option", { name: "Dinner mix · 12 tracks" }),
