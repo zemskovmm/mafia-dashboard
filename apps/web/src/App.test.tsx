@@ -1816,6 +1816,54 @@ describe("manage menu", () => {
 });
 
 describe("developer menu", () => {
+  it("tunes device-local glass in a collapsed drawer section and resets only glass", async () => {
+    const user = userEvent.setup();
+    const first = render(<App />);
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    const section = screen.getByText("Glass", { selector: "summary" });
+    expect(section.closest("details")).not.toHaveAttribute("open");
+    await user.click(section);
+    const toggle = screen.getByRole("button", { name: "Enable enhanced glass" });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByLabelText("Refraction strength")).toHaveValue("10");
+    expect(screen.getByLabelText("Refraction strength")).toBeDisabled();
+    expect(screen.getByLabelText("Gold background light")).toHaveValue("25");
+    fireEvent.change(screen.getByLabelText("Gold background light"), { target: { value: "63" } });
+    expect(document.querySelector(".app-shell")).toHaveStyle("--glass-gold-light: 0.63");
+    await user.click(toggle);
+    expect(screen.getByRole("button", { name: "Disable enhanced glass" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    const key = "mafia-dashboard.glass.v1";
+    expect(JSON.parse(window.localStorage.getItem(key) ?? "null")).toEqual({
+      version: 1,
+      enabled: true,
+      refraction: 10,
+      goldLight: 63,
+    });
+    await user.click(screen.getByRole("button", { name: "Hide developer mode" }));
+    expect(JSON.parse(window.localStorage.getItem(key) ?? "null").enabled).toBe(true);
+    first.unmount();
+    window.localStorage.setItem(DEVELOPER_UNLOCKED_STORAGE_KEY, "unlocked");
+    const lightingBefore = window.localStorage.getItem(LIGHTING_RENDERER_STORAGE_KEY);
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByText("Glass", { selector: "summary" }));
+    expect(screen.getByLabelText("Gold background light")).toHaveValue("63");
+    expect(screen.getByRole("button", { name: "Disable enhanced glass" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    await user.click(screen.getByRole("button", { name: "Reset glass settings" }));
+    expect(screen.getByLabelText("Gold background light")).toHaveValue("25");
+    expect(screen.getByRole("button", { name: "Enable enhanced glass" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(window.localStorage.getItem(LIGHTING_RENDERER_STORAGE_KEY)).toBe(lightingBefore);
+  });
+
   it("keeps player lighting enabled with a retired disabled setting while retaining Raytracing and pulse controls", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem("mafia-dashboard.player-lighting.v1", "disabled");
@@ -2764,7 +2812,7 @@ describe("developer menu", () => {
     expect(musicPlayerHarness).toMatchObject({ mounts: 1, unmounts: 0 });
   });
 
-  it("does not expose runtime glass settings in Dev", async () => {
+  it("exposes only the approved bounded glass controls, not retired arbitrary glass settings", async () => {
     const user = userEvent.setup();
     render(
       <ClubWorkspace
@@ -2779,7 +2827,9 @@ describe("developer menu", () => {
 
     expect(screen.queryByRole("group", { name: "Glass settings" })).not.toBeInTheDocument();
     expect(screen.queryByRole("spinbutton", { name: /Glass/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Reset glass settings" })).not.toBeInTheDocument();
+    expect(screen.getByText("Glass", { selector: "summary" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Refraction strength")).toHaveAttribute("max", "24");
+    expect(screen.getByLabelText("Gold background light")).toHaveAttribute("max", "100");
   });
 
   it("restores the club's last playlist when no active game session supplies one", async () => {

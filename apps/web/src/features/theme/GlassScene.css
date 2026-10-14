@@ -1,0 +1,161 @@
+.dev-glass-controls {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.dev-glass-controls summary {
+  min-height: 48px;
+  padding: 14px;
+  cursor: pointer;
+}
+.dev-glass-fields {
+  display: grid;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+.dev-glass-fields :is(button, input) {
+  min-height: 48px;
+}
+
+/* Own the existing body wash inside this workspace so no unscaled duplicate
+   survives behind it. Entry/management retain their own HTML materials. */
+.app-shell[data-glass-settings] {
+  --glass-bg: var(--bg);
+  --glass-top: var(--page-top);
+  background:
+    radial-gradient(circle at 76% 82%, rgb(23 90 69 / 24%), transparent 30rem),
+    repeating-linear-gradient(128deg, transparent 0 50px, rgb(255 255 255 / 3%) 51px 52px),
+    linear-gradient(180deg, var(--glass-top) 0%, var(--glass-bg) 45%);
+}
+.app-shell[data-glass-settings]::before {
+  /* Separate opacity scales only the broad wash, never semantic lighting or
+     edge highlights, without nested relative-color alpha arithmetic. */
+  background:
+    radial-gradient(circle at 86% 42%, rgb(from var(--theme-base) r g b / 28%), transparent 24rem),
+    radial-gradient(circle at 50% -20%, rgb(from var(--theme-base) r g b / 18%), transparent 38rem),
+    radial-gradient(
+      circle at 74% 16%,
+      rgb(from var(--theme-base) r g b / 34%) 0 4%,
+      transparent 25%
+    ),
+    radial-gradient(
+      circle at 28% 72%,
+      rgb(from var(--theme-base) r g b / 18%) 0 8%,
+      transparent 32%
+    ),
+    conic-gradient(
+      from 135deg at 64% 48%,
+      transparent 0 18%,
+      rgb(from var(--theme-base) r g b / 14%) 25%,
+      transparent 34% 68%,
+      rgb(from var(--theme-base) r g b / 10%) 78%,
+      transparent 88%
+    );
+  opacity: var(--glass-gold-light);
+}
+.app-shell[data-glass-settings] .live-side-panel {
+  isolation: isolate;
+  background:
+    linear-gradient(105deg, rgb(255 255 255 / 9%), transparent 34% 72%, rgb(74 161 124 / 8%)),
+    linear-gradient(145deg, rgb(255 255 255 / 14%), transparent 42%),
+    color-mix(in oklch, var(--theme-base) 8%, rgb(12 10 8 / 66%));
+}
+.app-shell[data-glass-settings] .live-side-panel::after {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  content: "";
+  background: radial-gradient(circle at 12% 5%, rgb(255 241 202 / 24%), transparent 26%);
+  opacity: var(--glass-gold-light);
+}
+.app-shell[data-glass-settings].is-background-grey-33 {
+  --glass-bg: #545454;
+  --glass-top: #545454;
+}
+.app-shell[data-glass-settings].is-background-grey-66 {
+  --glass-bg: #a8a8a8;
+  --glass-top: #a8a8a8;
+}
+.app-shell[data-glass-settings].is-light-background {
+  --glass-bg: #f5f5f2;
+  --glass-top: #f5f5f2;
+}
+
+.glass-scene-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.app-shell[data-glass-status="ready"] > .glass-scene-canvas {
+  visibility: visible;
+}
+.app-shell[data-glass-status="ready"] {
+  isolation: isolate;
+}
+.app-shell[data-glass-status="ready"] > .game-shell,
+.app-shell[data-glass-status="ready"] > .live-side-panel {
+  z-index: 1;
+}
+.app-shell[data-glass-status="ready"]::before,
+.app-shell[data-glass-status="ready"] .live-side-panel::after {
+  content: none;
+}
+.app-shell[data-glass-status="ready"]
+  :is(.game-shell, .table-workspace, .round-table, .live-side-panel, .nomination-panel) {
+  background: transparent !important;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.app-shell[data-glass-status="ready"] .round-table {
+  border-color: transparent;
+  box-shadow: none;
+}
+.app-shell[data-glass-status="ready"] .round-table::before {
+  content: none;
+}
+/* No second material/SVG bitmap and no redundant animated row lighting. */
+.app-shell[data-glass-settings] .nomination-panel li {
+  min-height: 48px;
+  border-radius: 10px;
+  background: linear-gradient(145deg, #ffffff0a, #ffffff02);
+  animation: none !important;
+}
+.app-shell[data-glass-settings] .nomination-panel li::after {
+  content: none !important;
+}
+.app-shell[data-glass-settings] .nomination-panel li.is-voting-highlight {
+  border-color: #ffe9ac;
+  box-shadow: inset 0 0 14px #ffd76618;
+}
+.app-shell[data-glass-settings] .nomination-panel li :is(.nomination-copy, .nomination-total) {
+  background: none;
+  box-shadow: none;
+}
+.app-shell[data-glass-status="ready"] .nomination-panel li {
+  background: transparent !important;
+}
+@media (prefers-reduced-transparency: reduce) {
+  .app-shell[data-glass-settings] .live-side-panel {
+    background: #1b1712;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .glass-scene-canvas {
+    visibility: hidden !important;
+  }
+  .app-shell[data-glass-settings] .nomination-panel li {
+    background: #1b2520;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Override higher-specificity legacy state pulses, but retain static glow. */
+  .app-shell[data-glass-settings] .table-stage .player-seat,
+  .app-shell[data-glass-settings] .table-stage .player-seat::after {
+    animation: none !important;
+  }
+}

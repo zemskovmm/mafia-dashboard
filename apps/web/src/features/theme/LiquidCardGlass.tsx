@@ -1,4 +1,5 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useContext, useEffect, useId, useRef, useState } from "react";
+import { SharedGlassContext } from "./SharedGlassContext.js";
 import type { CSSProperties } from "react";
 import { createLiquidCardLens } from "./liquid-card-lens.js";
 import type { LiquidCardLens } from "./liquid-card-lens.js";
@@ -29,6 +30,10 @@ const localRadius = (surface: HTMLElement, width: number, height: number): numbe
  * fill, focus outline and state colours; this span owns only the glass surface.
  */
 export const LiquidCardGlass = () => {
+  return useContext(SharedGlassContext) ? null : <ExistingLiquidCardGlass />;
+};
+
+const ExistingLiquidCardGlass = () => {
   const surfaceRef = useRef<HTMLSpanElement>(null);
   const lightRef = useRef<HTMLSpanElement>(null);
   const filterId = `liquid-card-lens-${useId()}`;

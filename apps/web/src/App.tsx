@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type CSSProperties,
 } from "react";
 import {
   applyGameEvent,
@@ -97,6 +98,16 @@ import {
 } from "./features/effects/lighting-preferences.js";
 import { VgpuLightingProvider } from "./features/effects/vgpu/VgpuLightingProvider.js";
 import { GameScreen } from "./features/game/GameScreen.js";
+import { GlassControls, type GlassStatus } from "./features/developer/GlassControls.js";
+import {
+  readGlassSettings,
+  validateGlassSettings,
+  writeGlassSettings,
+  type GlassSettings,
+} from "./features/theme/glass-preferences.js";
+import "./features/theme/GlassScene.css";
+import { GlassScene } from "./features/theme/GlassScene.js";
+import { SharedGlassContext } from "./features/theme/SharedGlassContext.js";
 import { AdjudicationControls } from "./features/game/AdjudicationControls.js";
 import { isCriticalState } from "./features/game/critical-state.js";
 import { LiveSidePanel } from "./features/game/LiveSidePanel.js";
@@ -630,6 +641,13 @@ export const ClubWorkspace = ({
   const [roleDrawBackAction, setRoleDrawBackAction] = useState<(() => void) | null>(null);
   const [musicSetupOpen, setMusicSetupOpen] = useState(false);
   const [backgroundShade, setBackgroundShade] = useState<BackgroundShade>("black");
+  const [glass, setGlass] = useState(() => readGlassSettings());
+  const [glassStatus, setGlassStatus] = useState<GlassStatus>("initializing");
+  const changeGlass = useCallback((settings: GlassSettings) => {
+    const valid = validateGlassSettings(settings);
+    setGlass(valid);
+    writeGlassSettings(valid);
+  }, []);
   const [lighting, dispatchLighting] = useReducer(
     lightingRendererReducer,
     window.localStorage,
@@ -1855,6 +1873,13 @@ export const ClubWorkspace = ({
     </section>
   );
 
+  const glassSceneMounted = glass.enabled && view === "game" && game !== null;
+  const effectiveGlassStatus: GlassStatus = !glass.enabled
+    ? "off"
+    : !glassSceneMounted
+      ? "inactive"
+      : glassStatus;
+  const sharedGlassReady = glassSceneMounted && effectiveGlassStatus === "ready";
   const content = (
     <div
       ref={appShellRef}
@@ -1864,6 +1889,10 @@ export const ClubWorkspace = ({
         showApplicationStatus ? " has-top-level-screen" : ""
       }${isFullscreen ? " is-fullscreen" : ""}`}
       data-background-shade={backgroundShade}
+      data-glass-settings="local"
+      data-glass-requested={glass.enabled ? "enhanced" : "existing"}
+      data-glass-status={effectiveGlassStatus}
+      style={{ "--glass-gold-light": glass.goldLight / 100 } as CSSProperties}
       data-lighting-renderer={lighting.effectiveRenderer}
       data-lighting-renderer-requested={lighting.requestedRenderer}
       data-vgpu-status={lighting.vgpuStatus}
@@ -1871,6 +1900,7 @@ export const ClubWorkspace = ({
       data-player-pulse-speed={lighting.playerPulse.speed}
       data-player-pulse-strength={lighting.playerPulse.strength}
     >
+      {glassSceneMounted ? <GlassScene settings={glass} onStatus={setGlassStatus} /> : null}
       {showApplicationStatus ? (
         <header
           className="app-status-bar game-header"
@@ -2232,6 +2262,7 @@ export const ClubWorkspace = ({
             </p>
           </div>
           <div className="dev-menu-actions">
+            <GlassControls settings={glass} status={effectiveGlassStatus} onChange={changeGlass} />
             <button
               type="button"
               className="dev-setting-toggle"
@@ -2602,7 +2633,9 @@ export const ClubWorkspace = ({
         onReady={reportVgpuReady}
         onFailure={reportVgpuFailure}
       >
-        <PlayerDirectoryProvider profiles={players}>{content}</PlayerDirectoryProvider>
+        <SharedGlassContext.Provider value={sharedGlassReady}>
+          <PlayerDirectoryProvider profiles={players}>{content}</PlayerDirectoryProvider>
+        </SharedGlassContext.Provider>
       </VgpuLightingProvider>
     </LightingRendererContext.Provider>
   );

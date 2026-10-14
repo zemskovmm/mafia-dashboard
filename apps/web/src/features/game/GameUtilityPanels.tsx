@@ -5,7 +5,6 @@ import { gameMessages } from "../../i18n/messages/game.js";
 
 import { TimerControls } from "../timer/TimerControls.js";
 import { usePlayerDisplayName } from "../players/player-display.js";
-import { VgpuPlayerLightingCanvas } from "../effects/vgpu/VgpuLightingCanvas.js";
 
 export interface GameUtilityPanelsProps {
   readonly game: GameState | null;
@@ -87,7 +86,6 @@ export const GameUtilityPanels = ({ game, onSelectVotingCandidate }: GameUtility
                       className={current ? "is-voting-highlight" : undefined}
                       aria-current={current ? "step" : undefined}
                     >
-                      <VgpuPlayerLightingCanvas kind={current ? "attention" : null} />
                       <span className="nomination-copy">
                         <strong>
                           #{candidateSeat}{" "}
