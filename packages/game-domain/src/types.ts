@@ -1,3 +1,5 @@
+import type { RulesEdition } from "./rules-edition.js";
+
 export type Role = "sheriff" | "citizen" | "mafia" | "don";
 
 export type Team = "red" | "black";
@@ -8,6 +10,10 @@ export type PlayerStatus = "active" | "eliminated" | "red-carded";
 
 export type GamePhase =
   | "mafia-planning"
+  | "mafia-sleep"
+  | "don-identification"
+  | "sheriff-identification"
+  | "free-seating"
   | "sheriff-wake"
   | "day"
   | "voting"
@@ -37,6 +43,7 @@ export interface PlayerInput {
 }
 
 export interface SetupState {
+  readonly rulesEdition?: RulesEdition;
   readonly step: SetupStep;
   readonly players: readonly PlayerInput[];
   readonly roleDeck: readonly Role[];
@@ -65,6 +72,18 @@ export interface ShotAssignment {
 }
 
 export interface GameState {
+  readonly rulesEdition?: RulesEdition;
+  readonly completedGameNights?: number;
+  readonly sheriffChecksPerformed?: number;
+  readonly firstDayDepartureSeats?: readonly number[];
+  readonly currentSpeechRestricted?: boolean;
+  readonly actualMultipleShotSeats?: readonly number[];
+  readonly ballot?: FederationBallot;
+  readonly ballotSkipReason?: LegalVotingSkipReason;
+  readonly ballotCancellationDay?: number;
+  readonly adjudication?: OpponentVictoryAdjudication;
+  readonly rulesDrawReason?: RulesDrawReason;
+  readonly disciplinaryRemovals?: readonly DisciplinaryRemoval[];
   readonly phase: GamePhase;
   readonly day: number;
   readonly bestMoveEnabled?: boolean;
@@ -98,6 +117,8 @@ export interface GameState {
     readonly playerSeat: number;
     readonly selectedSeats: readonly number[];
     readonly mafiaHits?: number;
+    readonly completionReason?: BestMoveCompletionReason;
+    readonly readbackAcknowledged?: boolean;
   };
   readonly winner: Winner;
 }
@@ -106,6 +127,7 @@ export interface VoteResult {
   readonly kind: "winner" | "car-crash" | "eliminate-both-vote" | "eliminate-all-skipped";
   readonly seats: readonly number[];
   readonly totals: Readonly<Record<number, number>>;
+  readonly skipReason?: CollectiveLiftSkipReason;
 }
 
 export interface CarCrashVoteResult {
@@ -125,4 +147,66 @@ export interface SecretCheckResult {
   readonly targetSeat: number;
   readonly match: boolean;
   readonly secret: true;
+}
+
+export type BestMoveCompletionReason =
+  "complete-list" | "interrupted" | "time-expired" | "declined" | "finished-early";
+export type CollectiveLiftSkipReason = "all-active" | "nine-three-restricted" | "zero-round-five";
+export type LegalVotingSkipReason =
+  | CollectiveLiftSkipReason
+  | "no-nominees"
+  | "zero-round-sole-nominee"
+  | "disciplinary-cancellation";
+export interface FederationBallot {
+  readonly orderAnnouncements: 0 | 1 | 2;
+  readonly mention: 0 | 1 | 2;
+  readonly stopped: boolean;
+  readonly selectedCandidateSeat: number;
+  readonly acceptedCandidateSeats: readonly number[];
+  readonly reviewedCandidateSeats: readonly number[];
+  readonly dispute?: { readonly candidateSeat: number; readonly reason: string };
+  readonly finalRuling?: {
+    readonly candidateSeat: number;
+    readonly reason: string;
+    readonly externalReviewAcknowledged: true;
+  };
+}
+export interface OpponentVictoryAdjudication {
+  readonly losingTeam: Team;
+  readonly offenderSeat?: number;
+  readonly rule: string;
+  readonly reason: string;
+  readonly committeeApproved: boolean;
+}
+export interface RulesDrawReason {
+  readonly rule: "6.5.6";
+  readonly completedGameNights: number;
+  readonly consecutiveUnchangedNights: 3;
+}
+
+export type RemovalOccurrenceStage =
+  | "agreement"
+  | "before-shooting-count"
+  | "shooting-count"
+  | "don-check"
+  | "sheriff-check"
+  | "day-discussion"
+  | "open-voting"
+  | "after-voting-result"
+  | "farewell";
+export interface RemovalObservation {
+  readonly seat: number;
+  readonly stage: RemovalOccurrenceStage;
+  readonly rule: string;
+  readonly reason: string;
+  readonly checkInProgress: boolean;
+}
+export interface DisciplinaryRemoval extends RemovalObservation {
+  readonly occurredPhase: GamePhase;
+  readonly day: number;
+  readonly effectiveExcluded: true;
+  readonly departure: "pending" | "departed";
+  readonly announcement: "pending" | "announced";
+  readonly shotDeath: boolean;
+  readonly checkCompletionPending: boolean;
 }

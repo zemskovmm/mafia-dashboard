@@ -250,6 +250,7 @@ const browserName = process.env.UI_BROWSER ?? "chromium";
 const viewportWidth = Number(process.env.UI_VIEWPORT_WIDTH ?? "");
 const viewportHeight = Number(process.env.UI_VIEWPORT_HEIGHT ?? "");
 const headerOnly = process.env.UI_HEADER_ONLY === "1";
+const federationOnly = process.env.UI_FEDERATION_ONLY === "1";
 const privacyOnly = process.env.UI_PRIVACY_ONLY === "1";
 const layoutOnly = process.env.UI_LAYOUT_ONLY === "1";
 const musicOnly = process.env.UI_MUSIC_ONLY === "1";
@@ -499,7 +500,7 @@ const assertCoreLayout = async (label, selectors = coreTargetSelectors) => {
           Math.min(left.right, right.right) - Math.max(left.left, right.left) > 0.5 &&
           Math.min(left.bottom, right.bottom) - Math.max(left.top, right.top) > 0.5
         )
-          overlaps.push([left.label, right.label]);
+          overlaps.push([left, right]);
       }
     }
     return {
@@ -891,7 +892,75 @@ await page.route("**/api/game-sessions/**", async (route) => {
   });
 });
 
+const { tsImport } = await import("tsx/esm/api");
+const { runFederationScenarios, legacySetupState } = await tsImport(
+  "./verify-federation-ui.mjs",
+  import.meta.url,
+);
+const federationApi = {
+  sessions: mockSessions,
+  clean: assertNoPageErrors,
+  seed: (gameId, state) =>
+    mockSnapshot(gameId, {
+      name: "Federation UI verification",
+      state,
+      results: null,
+    }),
+};
+const verifyFederationJourney = async () => {
+  const size = page.viewportSize();
+  await runFederationScenarios({
+    page,
+    baseUrl,
+    club: testClub,
+    players: testPlayers,
+    api: federationApi,
+    evidenceDir:
+      process.env.FEDERATION_UI_EVIDENCE_DIR ??
+      `.AI/federation-ui/${browserName}-${size.width}x${size.height}`,
+  });
+};
+const restoreLegacySetup = async () => {
+  // An actual edition-less unfinished setup, not a fresh-policy override.
+  const state = legacySetupState();
+  const gameId = crypto.randomUUID();
+  federationApi.seed(gameId, state);
+  await page.goto(new URL("/health/ready", expectedOrigin).href);
+  await page.evaluate(
+    ({ clubId, gameId, state }) => {
+      localStorage.setItem(
+        "mafia-dashboard.game-session.v5",
+        JSON.stringify({
+          version: 5,
+          clubId,
+          gameId,
+          creationId: null,
+          revision: 1,
+          current: { name: "Restored legacy regression setup", state, results: null },
+          outbox: [],
+          failed: false,
+          clearFailed: false,
+          clearingGameId: null,
+          removed: false,
+          legacyGameId: null,
+        }),
+      );
+    },
+    { clubId: testClub.id, gameId, state },
+  );
+  await page.goto(browserAppUrl, { waitUntil: "networkidle" });
+  await page.getByRole("heading", { name: "Select 10 players + host" }).waitFor();
+  await unlockDeveloperMenu(page);
+};
+
 try {
+  if (federationOnly) {
+    await verifyFederationJourney();
+    assertNoPageErrors();
+    console.log("Federation-only integrated verification: PASS");
+    await browser.close();
+    process.exit(0);
+  }
   await page.goto(browserAppUrl, { waitUntil: "networkidle" });
   assertExactOrigin(page.url(), expectedOrigin);
   browserAppUrl = page.url();
@@ -912,6 +981,7 @@ try {
     await page.getByRole("button", { name: "Game screen" }).click();
   }
   await setupHeading.waitFor();
+  await restoreLegacySetup();
   if (layoutOnly) {
     const { verifyIpadLayout } = await import("./verify-ipad-layout.mjs");
     await verifyIpadLayout(page, { assertVisibleFocus, assertCoreLayout, assertCoreTargets });
@@ -1466,9 +1536,53 @@ try {
       const voteGeometry = await page.locator(".table-vote-center").evaluate((center) => {
         const count = center.querySelector("span:last-child")?.getBoundingClientRect();
         const advance = document.querySelector(".table-advance button")?.getBoundingClientRect();
-        return { countBottom: count?.bottom ?? 0, advanceTop: advance?.top ?? 0 };
+        const identity = center.querySelector(".voting-candidate-identity");
+        const original = identity.textContent;
+        try {
+          // Exercise the permitted three-line identity, not a randomly short drawn name.
+          identity.textContent = "#10 A candidate with a longer display name";
+          return {
+            countBottom: count?.bottom ?? 0,
+            advanceTop: advance?.top ?? 0,
+            longNameCountBottom: center.querySelector("span:last-child").getBoundingClientRect()
+              .bottom,
+          };
+        } finally {
+          identity.textContent = original;
+        }
       });
-      if (voteGeometry.countBottom + 4 > voteGeometry.advanceTop) {
+      if (
+        Math.max(voteGeometry.countBottom, voteGeometry.longNameCountBottom) + 4 >
+        voteGeometry.advanceTop
+      ) {
+        await page.screenshot({
+          path: tableScreenshotPath.replace(/\.png$/i, "-count-overlap.png"),
+        });
+        const settledGeometry = await page
+          .locator(".table-vote-center")
+          .evaluate(async (center) => {
+            await document.fonts.ready;
+            await Promise.all(
+              document
+                .getAnimations()
+                .filter((animation) => animation.effect?.getTiming().iterations !== Infinity)
+                .map((animation) => animation.finished.catch(() => undefined)),
+            );
+            const count = center.querySelector("span:last-child").getBoundingClientRect();
+            const advance = document.querySelector(".table-advance button").getBoundingClientRect();
+            return {
+              countBottom: count.bottom,
+              advanceTop: advance.top,
+              text: center.textContent,
+              transform: getComputedStyle(center).transform,
+              rootFont: getComputedStyle(document.documentElement).fontSize,
+              zoom: getComputedStyle(document.documentElement).zoom,
+            };
+          });
+        console.log(
+          "Count overlap after fonts/transitions settled:",
+          JSON.stringify(settledGeometry),
+        );
         throw new Error(
           `Voting count is obscured by the next action: ${JSON.stringify(voteGeometry)}`,
         );
@@ -2058,6 +2172,11 @@ try {
     if ((await page.locator(".timeline-marker").count()) !== 2) {
       throw new Error("The current Timeline must contain exactly root and Day checkpoints");
     }
+    const hiddenLivePanel = page.locator(".live-side-panel[hidden]");
+    await hiddenLivePanel.waitFor({ state: "attached" });
+    if (await hiddenLivePanel.isVisible()) {
+      throw new Error("Hidden live controls must not render over the timeline at any breakpoint");
+    }
     await page.getByRole("button", { name: "Phase: day" }).click();
     await page.getByRole("button", { name: "Preview timeline checkpoint" }).click();
     await page.getByRole("heading", { name: /preview/i }).waitFor();
@@ -2175,17 +2294,28 @@ try {
           cardWidth: card?.width ?? 0,
           actionsWidth: actions?.width ?? 0,
           buttonWidths: buttons.map(({ width }) => width),
+          buttonHeights: buttons.map(({ height }) => height),
+          column:
+            getComputedStyle(anchor.querySelector(".seat-actions")).flexDirection === "column",
+          stacked: buttons.length === 2 && buttons[0].bottom <= buttons[1].top + 1,
+          bottom: actions?.bottom ?? 0,
+          workspaceBottom: document.querySelector(".table-workspace").getBoundingClientRect()
+            .bottom,
         };
       });
     if (
       actionGeometry.buttonWidths.length !== 2 ||
-      Math.abs(actionGeometry.actionsWidth - actionGeometry.cardWidth) > 1 ||
-      actionGeometry.buttonWidths.some(
-        (width) => Math.abs(width - actionGeometry.actionsWidth / 2) > 1,
-      )
+      actionGeometry.buttonHeights.some((height) => height < 47.99) ||
+      actionGeometry.bottom > actionGeometry.workspaceBottom + 1 ||
+      (actionGeometry.column
+        ? !actionGeometry.stacked || actionGeometry.buttonWidths.some((width) => width < 47.99)
+        : Math.abs(actionGeometry.actionsWidth - actionGeometry.cardWidth) > 1 ||
+          actionGeometry.buttonWidths.some(
+            (width) => Math.abs(width - actionGeometry.actionsWidth / 2) > 1,
+          ))
     ) {
       throw new Error(
-        `Foul and Vote must split the full action bar: ${JSON.stringify(actionGeometry)}`,
+        `Foul and Vote must fit as a split row or touch-size compact column: ${JSON.stringify(actionGeometry)}`,
       );
     }
 
@@ -3887,9 +4017,27 @@ try {
   await page.getByRole("button", { name: "Exit fullscreen" }).click();
   await page.waitForFunction(() => document.fullscreenElement === null);
   assertNoPageErrors();
+  // Retain every legacy regression first, then qualify the real fresh v2 default.
+  console.log("Legacy UI regression journey: PASS (federation journey still required)");
+  await page.goto(new URL("/health/ready", expectedOrigin).href);
+  await page.evaluate(() => localStorage.clear());
+  mockSessions.clear();
+  await verifyFederationJourney();
+  assertNoPageErrors();
   console.log(
     `UI browser verification: PASS ${JSON.stringify({ playersScreenshotPath, selectionScreenshotPath, screenshotPath, tableScreenshotPath, legacyLightingScreenshotPath, vgpuLightingScreenshotPath, vgpuPlayerLightingScreenshotPath, vgpuPlayerCanvasScreenshotPath, vgpuEvidence, vgpuTableLightingEvidence, vgpuPlayerLightingEvidence, reducedMotionEvidence, alwaysEnabledPlayerLightingEvidence, independentTableLightingEvidence, playerPulseEvidence })}`,
   );
+} catch (error) {
+  if (!page.isClosed()) {
+    await page
+      .screenshot({
+        path:
+          process.env.UI_FAILURE_SCREENSHOT ?? screenshotPath.replace(/\.png$/i, "-failure.png"),
+        animations: "disabled",
+      })
+      .catch(() => {});
+  }
+  throw error;
 } finally {
   await browser.close();
 }

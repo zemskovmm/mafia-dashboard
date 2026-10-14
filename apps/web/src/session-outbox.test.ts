@@ -3,9 +3,12 @@ import {
   beginRoleDraw,
   completeRoleDraw,
   createGame,
+  createInitialGameBaseline,
   createSetup,
   drawRoleForSeat,
+  FEDERATION_RULES_EDITION,
   type GameLogEntry,
+  type RulesEdition,
 } from "@mafia/game-domain";
 import { ApiError, type GameSessionState, type RemoteGameSession } from "./api/client.js";
 import { withBrowserGameStorageGuard } from "./browser-game-storage-lock.js";
@@ -61,8 +64,8 @@ const roleDrawSetup = () => ({
   setup: beginRoleDraw(createSetup(setupPlayers), () => 0),
 });
 
-const playedGame = () => {
-  let setup = beginRoleDraw(createSetup(setupPlayers), () => 0);
+const playedGame = (rulesEdition?: RulesEdition) => {
+  let setup = beginRoleDraw(createSetup(setupPlayers, { rulesEdition }), () => 0);
   for (let seat = 1; seat <= 10; seat += 1) setup = drawRoleForSeat(setup, seat);
   return createGame(completeRoleDraw(setup));
 };
@@ -132,7 +135,7 @@ const ids = (...values: string[]) => {
 const readPersisted = (storage: Storage) =>
   JSON.parse(storage.getItem(gameSessionStorageKey) ?? "null") as Record<string, unknown>;
 
-const currentEnvelope = (state: GameSessionState, ownerGameId = gameId) =>
+const currentEnvelope = (state: unknown, ownerGameId = gameId) =>
   JSON.stringify({
     version: 5,
     clubId,
@@ -147,6 +150,80 @@ const currentEnvelope = (state: GameSessionState, ownerGameId = gameId) =>
   });
 
 describe("GameSessionOutbox current-v5 persistence", () => {
+  it("round-trips a supported federation edition without rewriting its draft", () => {
+    const game = playedGame(FEDERATION_RULES_EDITION);
+    const state = {
+      ...completeState(),
+      setup: null,
+      game,
+      initialGame: createInitialGameBaseline(game),
+    };
+    const raw = currentEnvelope(state);
+    expect(parseCurrentGameSessionEnvelope(raw)?.current?.state).toEqual(state);
+  });
+
+  it.each([
+    { game: { ...playedGame(), rulesEdition: "unknown-future-rules" } },
+    { initialGame: { replayVersion: 99, game: playedGame() } },
+    { initialGame: { game: playedGame() } },
+    {
+      game: { ...playedGame(), rulesEdition: FEDERATION_RULES_EDITION },
+      initialGame: { replayVersion: 1, game: playedGame() },
+    },
+    { setup: { ...emptyPlayerSetup(), rulesEdition: "unknown-future-rules" } },
+    { events: [{ replayVersion: 2, rulesEdition: FEDERATION_RULES_EDITION }] },
+  ])("rejects unsupported or crossed editions without clearing the original", (changes) => {
+    const storage = memoryStorage();
+    const raw = currentEnvelope({ ...completeState(), ...changes });
+    storage.setItem(gameSessionStorageKey, raw);
+    expect(parseCurrentGameSessionEnvelope(raw)).toBeNull();
+    expect(
+      () => new GameSessionOutbox({ storage, clubId, createId: ids(), save: vi.fn() }),
+    ).toThrow();
+    expect(storage.getItem(gameSessionStorageKey)).toBe(raw);
+  });
+
+  it("refuses an unsupported server edition before replacing unsent current work", () => {
+    const storage = memoryStorage();
+    const outbox = new GameSessionOutbox({ storage, clubId, createId: ids(), save: vi.fn() });
+    outbox.activateRemote(remoteSession());
+    outbox.enqueue("Unsent correction", completeState("PL-pending"), null);
+    const original = storage.getItem(gameSessionStorageKey);
+    expect(() =>
+      outbox.activateRemote(
+        remoteSession("Unsupported", {
+          ...completeState(),
+          game: { ...playedGame(), rulesEdition: "unknown-future-rules" },
+        }),
+      ),
+    ).toThrow("Invalid server game session");
+    expect(storage.getItem(gameSessionStorageKey)).toBe(original);
+    expect(outbox.pendingCount).toBe(1);
+  });
+
+  it("preserves an unsupported parked copy and the active pending game on resume", () => {
+    const storage = memoryStorage();
+    const outbox = new GameSessionOutbox({ storage, clubId, createId: ids(), save: vi.fn() });
+    outbox.activateRemote(
+      remoteSession("Other game", completeState(), 1, "00000000-0000-4000-8000-000000000202"),
+    );
+    outbox.enqueue("Current unsent work", completeState("PL-unsent"), null);
+    const original = storage.getItem(gameSessionStorageKey);
+    const parkedKey = `${gameSessionStorageKey}.parked.${gameId}`;
+    const parked = currentEnvelope({
+      ...completeState(),
+      game: {
+        ...playedGame(),
+        rulesEdition: "unknown-future-rules",
+      },
+    });
+    storage.setItem(parkedKey, parked);
+    expect(() => outbox.activateRemote(remoteSession())).toThrow("Unsupported parked game session");
+    expect(storage.getItem(parkedKey)).toBe(parked);
+    expect(storage.getItem(gameSessionStorageKey)).toBe(original);
+    expect(outbox.pendingCount).toBe(1);
+  });
+
   it("writes identity-only canonical game/setup while leaving the game title independent", () => {
     const storage = memoryStorage();
     const outbox = new GameSessionOutbox({

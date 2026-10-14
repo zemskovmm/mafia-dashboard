@@ -1,5 +1,6 @@
 import {
-  CURRENT_REPLAY_VERSION,
+  FEDERATION_RULES_EDITION,
+  createInitialGameBaseline,
   assignRoleForSeat,
   beginRoleDraw,
   completeRoleDraw,
@@ -19,6 +20,7 @@ import {
 import { getActiveBranch } from "../game/game-history.js";
 
 export const SAMPLE_GAME_LABEL = "Sample game · not saved" as const;
+export const FEDERATION_SAMPLE_GAME_LABEL = "Federation sample game · not saved" as const;
 
 const SAMPLE_GAME_ID = "00000000-0000-4000-8000-000000000700";
 const SAMPLE_STARTED_AT = Date.UTC(2026, 7, 24, 18, 0, 0);
@@ -42,8 +44,11 @@ const rolesBySeat: readonly Role[] = [
   "don",
 ];
 
-const createInitialGame = (): GameState => {
-  let setup = beginRoleDraw(createSetup(samplePlayers()), createSeededRandom(20260824));
+const createInitialGame = (federation = false): GameState => {
+  let setup = beginRoleDraw(
+    createSetup(samplePlayers(), federation ? { rulesEdition: FEDERATION_RULES_EDITION } : {}),
+    createSeededRandom(20260824),
+  );
   for (const [index, role] of rolesBySeat.entries()) {
     setup = assignRoleForSeat(setup, index + 1, role);
   }
@@ -65,7 +70,7 @@ const deepFreeze = <Value>(value: Value): Value => {
 };
 
 export interface SampleGameHistory {
-  readonly label: typeof SAMPLE_GAME_LABEL;
+  readonly label: typeof SAMPLE_GAME_LABEL | typeof FEDERATION_SAMPLE_GAME_LABEL;
   readonly baseline: InitialGameBaseline;
   readonly entries: readonly GameLogEntry[];
   readonly headEventId: string;
@@ -75,10 +80,7 @@ export interface SampleGameHistory {
 }
 
 export const createSampleGameHistory = (): SampleGameHistory => {
-  const baseline: InitialGameBaseline = deepFreeze({
-    replayVersion: CURRENT_REPLAY_VERSION,
-    game: createInitialGame(),
-  });
+  const baseline = deepFreeze(createInitialGameBaseline(createInitialGame()));
   const entries: GameLogEntry[] = [];
   let game = baseline.game;
   let parentEventId: string | null = null;
@@ -211,4 +213,178 @@ export const createSampleGameHistory = (): SampleGameHistory => {
     frames: replayed.frames,
     game: replayed.game,
   };
+};
+
+/** Explicit v2 example; the existing development sample remains a v1 history. */
+export const createFederationSampleGameHistory = (
+  outcome: "adjudicated" | "rules-draw" = "adjudicated",
+): SampleGameHistory => {
+  const baseline = deepFreeze(createInitialGameBaseline(createInitialGame(true)));
+  const entries: GameLogEntry[] = [];
+  let game = baseline.game;
+  const append = (draft: CanonicalGameEventDraft): void => {
+    const sequence = entries.length + 1;
+    const created = createGameLogEntry({
+      gameId: SAMPLE_GAME_ID,
+      id: eventId(sequence),
+      sequence,
+      parentEventId: entries.at(-1)?.id ?? null,
+      createdAt: eventTime(sequence),
+      before: game,
+      draft,
+    });
+    entries.push(created.entry);
+    game = created.after;
+  };
+  const history = (): SampleGameHistory => {
+    const headEventId = entries.at(-1)!.id;
+    const activeEntries = getActiveBranch(entries, headEventId);
+    const replayed = replayGameLog(baseline, activeEntries);
+    return {
+      label: FEDERATION_SAMPLE_GAME_LABEL,
+      baseline,
+      entries,
+      headEventId,
+      activeEntries,
+      frames: replayed.frames,
+      game: replayed.game,
+    };
+  };
+  append({ type: "game.started", payload: {} });
+  for (const to of [
+    "mafia-sleep",
+    "don-identification",
+    "sheriff-identification",
+    "free-seating",
+    "day",
+  ] as const) {
+    append({ type: "phase.changed", payload: { to } });
+  }
+  if (outcome === "rules-draw") {
+    for (let night = 2; night <= 3; night += 1) {
+      append({ type: "voting.legally-skipped", payload: { reason: "no-nominees" } });
+      append({
+        type: "mafia.shots-resolved",
+        payload: {
+          shots: [8, 9, 10].map((shooterSeat) => ({
+            shooterSeat,
+            targetSeat: shooterSeat - 5,
+            secret: true as const,
+          })),
+          result: { kind: "miss" },
+        },
+      });
+      append({ type: "phase.changed", payload: { to: "night-don" } });
+      append({ type: "don.check-skipped", payload: {} });
+      append({ type: "sheriff.check-skipped", payload: {} });
+      append({ type: "phase.changed", payload: { to: night === 3 ? "draw" : "day" } });
+    }
+    return history();
+  }
+  append({ type: "player.nominated", payload: { nominatorSeat: 1, candidateSeat: 7 } });
+  append({ type: "player.nominated", payload: { nominatorSeat: 2, candidateSeat: 6 } });
+  append({ type: "phase.changed", payload: { to: "voting" } });
+  append({ type: "voting.order-announced", payload: {} });
+  append({ type: "voting.order-announced", payload: {} });
+  append({ type: "voting.candidate-inspected", payload: { candidateSeat: 6 } });
+  append({ type: "voting.candidate-mentioned", payload: { candidateSeat: 7 } });
+  append({ type: "voting.candidate-mentioned", payload: { candidateSeat: 7 } });
+  append({ type: "vote.accepted", payload: { voterSeat: 1, candidateSeat: 7 } });
+  append({ type: "voting.count-disputed", payload: { candidateSeat: 7, reason: "Missed hand" } });
+  append({
+    type: "voting.count-ruled",
+    payload: {
+      voteAssignments: { 1: 7 },
+      externalReviewAcknowledged: true,
+      reason: "Final reviewed count",
+    },
+  });
+  append({
+    type: "vote.corrected",
+    payload: { voterSeat: 1, candidateSeat: null, reason: "Obvious transcription slip" },
+  });
+  append({
+    type: "vote.corrected",
+    payload: { voterSeat: 1, candidateSeat: 7, reason: "Accepted hand restored" },
+  });
+  for (const voterSeat of [2, 3, 4, 5, 6])
+    append({ type: "vote.accepted", payload: { voterSeat, candidateSeat: 7 } });
+  append({ type: "voting.candidate-stopped", payload: { candidateSeat: 7 } });
+  append({ type: "voting.live-advanced", payload: { candidateSeat: 6 } });
+  append({ type: "voting.candidate-mentioned", payload: { candidateSeat: 6 } });
+  append({ type: "voting.candidate-mentioned", payload: { candidateSeat: 6 } });
+  append({ type: "voting.candidate-stopped", payload: { candidateSeat: 6 } });
+  append({
+    type: "voting.resolved",
+    payload: {
+      voteAssignments: { 1: 7, 2: 7, 3: 7, 4: 7, 5: 7, 6: 7, 7: 6, 8: 6, 9: 6, 10: 6 },
+      result: { kind: "winner", seats: [7], totals: { 7: 6, 6: 4 } },
+    },
+  });
+  append({ type: "phase.changed", payload: { to: "night-mafia" } });
+  append({
+    type: "mafia.shots-resolved",
+    payload: {
+      shots: [8, 9, 10].map((shooterSeat) => ({
+        shooterSeat,
+        targetSeat: 2,
+        secret: true as const,
+      })),
+      result: { kind: "kill", targetSeat: 2 },
+    },
+  });
+  append({ type: "phase.changed", payload: { to: "night-don" } });
+  append({ type: "don.checked", payload: { targetSeat: 1, match: true } });
+  append({ type: "sheriff.checked", payload: { targetSeat: 10, match: true } });
+  append({ type: "phase.changed", payload: { to: "night-resolution" } });
+  append({ type: "phase.changed", payload: { to: "best-move" } });
+  append({ type: "best-move.number-accepted", payload: { seat: 8 } });
+  append({ type: "best-move.number-accepted", payload: { seat: 8 } });
+  append({
+    type: "best-move.slip-corrected",
+    payload: { index: 1, seat: 9, reason: "Obvious spoken slip" },
+  });
+  append({
+    type: "best-move.finalized",
+    payload: { reason: "finished-early", readbackAcknowledged: true },
+  });
+  append({ type: "phase.changed", payload: { to: "goodbye-speech" } });
+  append({ type: "phase.changed", payload: { to: "day" } });
+  append({
+    type: "discipline.removal-observed",
+    payload: {
+      seat: 9,
+      stage: "day-discussion",
+      rule: "6.2.3",
+      reason: "Referee observed prohibited interaction",
+      checkInProgress: false,
+    },
+  });
+  append({ type: "discipline.removals-announced", payload: { seats: [9] } });
+  append({ type: "voting.legally-skipped", payload: { reason: "disciplinary-cancellation" } });
+  append({ type: "phase.changed", payload: { to: "night-mafia" } });
+  append({ type: "mafia.multiple-shot-observed", payload: { shooterSeat: 8 } });
+  append({
+    type: "mafia.shots-resolved",
+    payload: {
+      shots: [8, 10].map((shooterSeat) => ({ shooterSeat, targetSeat: 3, secret: true as const })),
+      result: { kind: "miss" },
+    },
+  });
+  append({ type: "phase.changed", payload: { to: "night-don" } });
+  append({ type: "don.check-skipped", payload: {} });
+  append({ type: "sheriff.check-skipped", payload: {} });
+  append({ type: "phase.changed", payload: { to: "day" } });
+  append({
+    type: "game.adjudicated",
+    payload: {
+      losingTeam: "black",
+      offenderSeat: 10,
+      rule: "6.3.5",
+      reason: "Committee-approved disciplinary loss",
+      committeeApproved: true,
+    },
+  });
+  append({ type: "game.completed", payload: { winner: "red" } });
+  return history();
 };

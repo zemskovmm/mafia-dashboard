@@ -1,9 +1,16 @@
-import type { GameState, ReplayFrame } from "@mafia/game-domain";
+import {
+  isFederationGame,
+  isSecretGameEventType,
+  isTerminalGamePhase,
+  type GameState,
+  type ReplayFrame,
+} from "@mafia/game-domain";
 import {
   timelineConsoleMessages,
   type TimelineConsoleMessageKey,
 } from "../../i18n/messages/timeline-console.js";
 import type { Message, MessageValues } from "../../i18n/messages/types.js";
+import { describeFederationEvent } from "./federation-timeline.js";
 
 export interface TimelineText {
   readonly t: (key: TimelineConsoleMessageKey, values?: MessageValues) => string;
@@ -62,6 +69,10 @@ export type TimelineMarkerKind =
   | "turn"
   | "nomination"
   | "voting-result"
+  | "voting-call"
+  | "voting-dispute"
+  | "vote-correction"
+  | "vote"
   | "voting-cancelled"
   | "car-crash-result"
   | "mafia-shots"
@@ -69,6 +80,7 @@ export type TimelineMarkerKind =
   | "sheriff-check"
   | "check-skipped"
   | "foul"
+  | "discipline"
   | "red-card"
   | "best-move"
   | "completion"
@@ -120,7 +132,7 @@ interface RegionIdentity {
   readonly day: number;
 }
 
-interface MarkerDescription {
+export interface MarkerDescription {
   readonly kind: TimelineMarkerKind;
   readonly icon: string;
   readonly label: string;
@@ -134,18 +146,18 @@ const regionForState = (game: GameState, text: TimelineText): RegionIdentity | n
     return {
       id: "initial-night",
       kind: "initial-night",
-      label: text.t("Initial night"),
+      label: text.t(isFederationGame(game) ? "Night 1 · Mafia planning" : "Initial night"),
       color: TIMELINE_REGION_COLORS.initialNight,
       day: 0,
     };
   }
 
-  if (game.phase === "finished") return null;
+  if (isTerminalGamePhase(game.phase)) return null;
   if (game.phase.startsWith("night-")) {
     return {
       id: `night-${game.day}`,
       kind: "night",
-      label: text.t("Night {day}", { day: game.day }),
+      label: text.t("Night {day}", { day: game.day + (isFederationGame(game) ? 1 : 0) }),
       color: TIMELINE_REGION_COLORS.night,
       day: game.day,
     };
@@ -161,7 +173,10 @@ const regionForState = (game: GameState, text: TimelineText): RegionIdentity | n
     return {
       id: `voting-${game.day}`,
       kind: "voting",
-      label: text.t("Voting {day}", { day: game.day }),
+      label:
+        isFederationGame(game) && game.day === 1
+          ? text.t("Voting · zero round")
+          : text.t("Voting {day}", { day: game.day - (isFederationGame(game) ? 1 : 0) }),
       color: TIMELINE_REGION_COLORS.voting,
       day: game.day,
     };
@@ -169,7 +184,10 @@ const regionForState = (game: GameState, text: TimelineText): RegionIdentity | n
   return {
     id: `day-${game.day}`,
     kind: "day",
-    label: text.t("Day {day}", { day: game.day }),
+    label:
+      isFederationGame(game) && game.day === 1
+        ? text.t("Zero round")
+        : text.t("Day {day}", { day: game.day - (isFederationGame(game) ? 1 : 0) }),
     color: TIMELINE_REGION_COLORS.day,
     day: game.day,
   };
@@ -179,16 +197,18 @@ const regionForFrame = (frame: ReplayFrame, text: TimelineText): RegionIdentity 
   if (
     frame.entry.type === "game.completed" ||
     frame.entry.type === "game.drawn" ||
-    frame.entry.type === "game.cancelled"
+    frame.entry.type === "game.cancelled" ||
+    frame.entry.type === "game.adjudicated" ||
+    (frame.entry.type === "phase.changed" && isTerminalGamePhase(frame.after.phase))
   ) {
     return null;
   }
-  if (frame.entry.type === "best-move.completed") {
+  if (frame.entry.type.startsWith("best-move.")) {
     const day = frame.before.day;
     return {
       id: `night-${day}`,
       kind: "night",
-      label: text.t("Night {day}", { day }),
+      label: text.t("Night {day}", { day: day + (isFederationGame(frame.before) ? 1 : 0) }),
       color: TIMELINE_REGION_COLORS.night,
       day,
     };
@@ -205,6 +225,10 @@ const hiddenPhaseTargets = new Set(["sheriff-wake", "night-don", "night-sheriff"
 
 const phaseMessageKeys = {
   "mafia-planning": "Phase mafia planning",
+  "mafia-sleep": "Phase mafia sleep",
+  "don-identification": "Phase don identification",
+  "sheriff-identification": "Phase sheriff identification",
+  "free-seating": "Phase free seating",
   "sheriff-wake": "Phase sheriff wake",
   day: "Phase day",
   voting: "Phase voting",
@@ -223,6 +247,8 @@ const phaseMessageKeys = {
   "night-sheriff-result": "Phase night sheriff result",
   "night-resolution": "Phase night resolution",
   finished: "Phase finished",
+  draw: "Phase drawn",
+  cancelled: "Phase cancelled",
 } as const satisfies Readonly<Record<string, TimelineConsoleMessageKey>>;
 
 export const formatTimelinePhase = (phase: string, text: TimelineText): string =>
@@ -280,6 +306,8 @@ const describeMarker = (frame: ReplayFrame, text: TimelineText): MarkerDescripti
   const eventType = String(frame.entry.type);
   const payload = asRecord(frame.entry.payload);
   if (payload === null) return genericDescription(eventType, text);
+  const federation = describeFederationEvent(frame, text, (seat) => playerLabel(frame, seat, text));
+  if (federation !== null) return federation;
 
   switch (eventType) {
     case "game.started":
@@ -348,6 +376,24 @@ const describeMarker = (frame: ReplayFrame, text: TimelineText): MarkerDescripti
           ? text.t("Players eliminated", { players, count: seats.length })
           : text.t("Players tied", { players, count: seats.length });
       const totals = voteTotalsLabel(frame, result.totals, text);
+      if (result.kind === "eliminate-all-skipped" && typeof result.skipReason === "string") {
+        const basisKeys = {
+          "all-active": "Skip basis all active",
+          "nine-three-restricted": "Skip basis nine three restricted",
+          "zero-round-five": "Skip basis zero round five",
+        } as const satisfies Record<string, TimelineConsoleMessageKey>;
+        const basisKey = basisKeys[result.skipReason as keyof typeof basisKeys];
+        if (basisKey !== undefined) {
+          const label = text.t("Collective lift prohibited: {basis}", { basis: text.t(basisKey) });
+          return {
+            kind: "voting-result",
+            icon: "vote",
+            label,
+            ariaLabel: `${label}; ${players}${totals.length > 0 ? `; ${totals}` : ""}`,
+            result: "eliminate-all-skipped",
+          };
+        }
+      }
       return {
         kind: "voting-result",
         icon: "vote",
@@ -642,3 +688,17 @@ export const buildTimeline = (
 };
 
 export const buildTimelineModel = buildTimeline;
+
+export type PublicTimelineModel = Pick<TimelineModel, "regions" | "markers">;
+
+/** Display-only public projection. Never return replay frames or use this as a replay log. */
+export const buildPublicTimeline = (
+  frames: readonly ReplayFrame[],
+  text: TimelineText = englishTimelineText,
+): PublicTimelineModel => {
+  const { regions, markers } = buildTimeline(
+    frames.filter(({ entry }) => !isSecretGameEventType(String(entry.type))),
+    text,
+  );
+  return { regions, markers };
+};

@@ -16,8 +16,17 @@ import {
   beginRoleDraw,
   completeRoleDraw,
   createGame,
+  createGameLogEntry,
+  createInitialGameBaseline,
   createSeededRandom,
   createSetup,
+  FEDERATION_RULES_EDITION,
+  beginNight,
+  completeMafiaShots,
+  completeNight,
+  skipDonCheck,
+  skipSheriffCheck,
+  startVoting,
   replayGameLog,
   selectVotingCandidate,
   toggleVote,
@@ -201,6 +210,50 @@ const deferred = <T,>() => {
     reject = nextReject;
   });
   return { promise, resolve, reject };
+};
+
+const federationGame = () => {
+  let setup = beginRoleDraw(
+    createSetup(
+      assignedGame.players.map(({ id, seat }) => ({ id, seat })),
+      {
+        rulesEdition: FEDERATION_RULES_EDITION,
+      },
+    ),
+    createSeededRandom(13),
+  );
+  for (const player of assignedGame.players)
+    setup = assignRoleForSeat(setup, player.seat, player.role);
+  return createGame(completeRoleDraw(setup));
+};
+
+const restoreFederationCheckpoint = (game: GameState) => {
+  const gameId = "00000000-0000-4000-8000-000000000399";
+  const root = createGameLogEntry({
+    gameId,
+    id: crypto.randomUUID(),
+    sequence: 1,
+    parentEventId: null,
+    createdAt: "2026-10-14T12:00:00.000Z",
+    before: game,
+    draft: { type: "game.checkpointed", payload: {} },
+  });
+  new GameSessionOutbox({
+    storage: window.localStorage,
+    clubId: testClub.id,
+    createId: () => crypto.randomUUID(),
+    save: vi.fn(),
+  }).activateRemote({
+    ...remoteSession(gameId, "Federation progression", "Host", 1, 1),
+    state: {
+      ...browserSessionState(""),
+      game: root.after,
+      hostPlayerId,
+      initialGame: createInitialGameBaseline(game),
+      events: [root.entry],
+      headEventId: root.entry.id,
+    },
+  });
 };
 
 vi.mock(import("./api/client.js"), async (importOriginal) => ({
@@ -3006,6 +3059,12 @@ describe("developer menu", () => {
         const host = await screen.findByRole("combobox", { name: "Host player" });
         await user.click(host);
         await user.click(screen.getByRole("option", { name: "Host Player" }));
+        await waitFor(() =>
+          expect(
+            JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5")!).current
+              .state.setup.rulesEdition,
+          ).toBe(FEDERATION_RULES_EDITION),
+        );
         for (const seat of assignedGame.players) {
           await user.click(screen.getByRole("combobox", { name: `Seat ${seat.seat} player` }));
           await user.click(screen.getByRole("option", { name: playerLabel(seat) }));
@@ -3050,6 +3109,15 @@ describe("developer menu", () => {
         );
         await user.click(screen.getByRole("button", { name: "Show private info" }));
         expect(gameTable.querySelectorAll(".role-badge")).toHaveLength(10);
+        await waitFor(() =>
+          expect(api.saveGameSession.mock.lastCall?.[1].state.initialGame?.replayVersion).toBe(2),
+        );
+        const saved = api.saveGameSession.mock.lastCall![1].state;
+        expect(saved.game).toMatchObject({
+          rulesEdition: FEDERATION_RULES_EDITION,
+          bestMoveEnabled: true,
+        });
+        expect(replayGameLog(saved.initialGame, saved.events).game).toEqual(saved.game);
       } finally {
         cleanup();
         setupMock.mockRestore();
@@ -3653,6 +3721,10 @@ describe("authoritative game session lifecycle", () => {
         });
         await user.click(screen.getByRole("switch", { name: "Include Casper" }));
         await user.click(screen.getByRole("button", { name: "Assign players" }));
+        expect(screen.getByRole("button", { name: "Start game" })).toBeDisabled();
+        await user.click(
+          screen.getByRole("checkbox", { name: "I acknowledge these nonstandard club deviations" }),
+        );
         await user.click(screen.getByRole("button", { name: "Start game" }));
         await waitFor(() => expect(api.createGameSession).toHaveBeenCalledOnce());
         expect(api.saveGameSession.mock.lastCall?.[1].state.setup.setup).toMatchObject({
@@ -3666,7 +3738,13 @@ describe("authoritative game session lifecycle", () => {
           ).toHaveLength(8),
         );
         const savedState = api.saveGameSession.mock.lastCall?.[1].state;
-        if (savedBestMove === undefined) delete savedState.setup.bestMoveEnabled;
+        if (savedBestMove === undefined) {
+          // Model an unfinished legacy deal, before any canonical baseline/hash exists.
+          delete savedState.setup.bestMoveEnabled;
+          delete savedState.setup.rulesEdition;
+          delete savedState.setup.setup.rulesEdition;
+          delete savedState.setup.clubDeviationsAcknowledged;
+        }
         first.unmount();
         window.localStorage.clear();
         api.listActiveGameSessions.mockResolvedValue([
@@ -3715,6 +3793,7 @@ describe("authoritative game session lifecycle", () => {
           new Set([gameId]),
         );
         const state = api.saveGameSession.mock.lastCall?.[1].state;
+        expect(state.initialGame.replayVersion).toBe(savedBestMove === undefined ? 1 : 2);
         expect(replayGameLog(state.initialGame, state.events).game.players[9]).toMatchObject({
           id: "casper",
           role: "citizen",
@@ -4607,6 +4686,351 @@ describe("authoritative game session lifecycle", () => {
     heldCompletion.resolve({ revision: operation.baseRevision + 1, duplicate: false });
     expect(await screen.findByRole("button", { name: "Start test game" })).toBeInTheDocument();
   });
+
+  it("retains acknowledged federation setup deviations after the real role draw completes and reloads", async () => {
+    const gameScreenSpy = vi.spyOn(gameScreenModule, "GameScreen");
+    const { SetupWizard: RealSetupWizard } = await vi.importActual<typeof setupWizardModule>(
+      "./features/setup/SetupWizard.js",
+    );
+    const setupMock = vi
+      .spyOn(setupWizardModule, "SetupWizard")
+      .mockImplementation(RealSetupWizard);
+    let setup = beginRoleDraw(
+      createSetup(
+        assignedGame.players.map(({ id, seat }) => ({ id, seat })),
+        { rulesEdition: FEDERATION_RULES_EDITION },
+      ),
+      createSeededRandom(13),
+    );
+    for (const player of assignedGame.players)
+      setup = assignRoleForSeat(setup, player.seat, player.role);
+    const savedSetup: SetupWizardSessionState = {
+      step: "roles",
+      hostPlayerId,
+      selectedPlayerIds: assignedGame.players.map(({ id }) => id),
+      setup,
+      rulesEdition: FEDERATION_RULES_EDITION,
+      bestMoveEnabled: true,
+      clubDeviationsAcknowledged: ["role-reroll"],
+    };
+    const outbox = new GameSessionOutbox({
+      storage: window.localStorage,
+      clubId: testClub.id,
+      createId: () => crypto.randomUUID(),
+      save: vi.fn(),
+    });
+    outbox.activateRemote({
+      ...remoteSession("00000000-0000-4000-8000-000000000399", "Federation setup", "Host", 1, 1),
+      state: { ...browserSessionState(""), setup: savedSetup, hostPlayerId },
+    });
+    try {
+      const user = userEvent.setup();
+      const first = render(<App />);
+      await user.click(await screen.findByRole("button", { name: "Begin Mafia planning stage" }));
+      await waitFor(() =>
+        expect(api.saveGameSession.mock.lastCall?.[1].state.game?.rulesEdition).toBe(
+          FEDERATION_RULES_EDITION,
+        ),
+      );
+      const state = api.saveGameSession.mock.lastCall![1].state;
+      expect(state.setup).toEqual(savedSetup);
+      expect(state.initialGame.replayVersion).toBe(2);
+      expect(replayGameLog(state.initialGame, state.events).game).toEqual(state.game);
+      first.unmount();
+      render(<App />);
+      expect(
+        JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5")!).current.state
+          .setup,
+      ).toEqual(savedSetup);
+      expect(gameScreenHarness.liveGame?.rulesEdition).toBe(FEDERATION_RULES_EDITION);
+      expect(gameScreenSpy.mock.lastCall?.[0].clubDeviationsAcknowledged).toEqual(["role-reroll"]);
+    } finally {
+      cleanup();
+      setupMock.mockRestore();
+    }
+  });
+
+  it("persists real federation speaker progression before fouls and ordered voting", async () => {
+    const { GameScreen } = await vi.importActual<typeof gameScreenModule>(
+      "./features/game/GameScreen.js",
+    );
+    vi.spyOn(gameScreenModule, "GameScreen").mockImplementation(GameScreen);
+    let state = federationGame();
+    for (let step = 0; step < 5; step += 1) state = advanceSetupPhase(state);
+    restoreFederationCheckpoint(state);
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "Nominate Player 4" }));
+    await user.click(screen.getByRole("button", { name: "Next player" }));
+    await waitFor(() =>
+      expect(api.saveGameSession.mock.lastCall?.[1].state.game.currentTurnIndex).toBe(1),
+    );
+    await user.click(screen.getByRole("button", { name: "Foul Player 2" }));
+    await user.click(screen.getByRole("button", { name: "Nominate Player 5" }));
+    for (let step = 0; step < 8; step += 1)
+      await user.click(screen.getByRole("button", { name: "Next player" }));
+    await user.click(screen.getByRole("button", { name: "Begin voting" }));
+    await user.click(screen.getByRole("button", { name: "Announce full order (1/2)" }));
+    await waitFor(() =>
+      expect(api.saveGameSession.mock.lastCall?.[1].state.events.at(-1).type).toBe(
+        "voting.order-announced",
+      ),
+    );
+    const saved = api.saveGameSession.mock.lastCall![1].state;
+    expect(saved.game.phase).toBe("voting");
+    expect(saved.game.players[1].fouls).toBe(1);
+    expect(
+      saved.events.filter((event: GameLogEntry) => event.type === "turn.completed"),
+    ).toHaveLength(10);
+    expect(replayGameLog(saved.initialGame, saved.events).game).toEqual(saved.game);
+    cleanup();
+    render(<App />);
+    expect(await screen.findByRole("button", { name: "Announce full order (2/2)" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: /undo last action/i }));
+    expect(screen.getByRole("button", { name: "Announce full order (1/2)" })).toBeEnabled();
+    await waitFor(() =>
+      expect(api.saveGameSession.mock.lastCall?.[1].state.headEventId).not.toBe(saved.headEventId),
+    );
+    const undone = api.saveGameSession.mock.lastCall![1].state;
+    expect(replayGameLog(undone.initialGame, undone.events).game).toEqual(undone.game);
+  });
+
+  it.each([0, 2])(
+    "persists real federation Best Move entry before accepting %s numbers and finalizing",
+    async (count) => {
+      const { GameScreen } = await vi.importActual<typeof gameScreenModule>(
+        "./features/game/GameScreen.js",
+      );
+      vi.spyOn(gameScreenModule, "GameScreen").mockImplementation(GameScreen);
+      let state = federationGame();
+      for (let step = 0; step < 5; step += 1) state = advanceSetupPhase(state);
+      state = skipSheriffCheck(
+        skipDonCheck(
+          completeMafiaShots(
+            resolveMafiaShots(toggleAllMafiaShotsForTarget(beginNight(state), 2)).game,
+          ),
+        ),
+      );
+      expect(state.phase).toBe("night-resolution");
+      restoreFederationCheckpoint(state);
+      const user = userEvent.setup();
+      render(<App />);
+      await user.click(await screen.findByRole("button", { name: "Record Best Move" }));
+      await waitFor(() =>
+        expect(api.saveGameSession.mock.lastCall?.[1].state.game.phase).toBe("best-move"),
+      );
+      for (let seat = 1; seat <= count; seat += 1)
+        await user.click(screen.getByRole("button", { name: `Accept number ${seat}` }));
+      await user.click(
+        screen.getByRole("checkbox", { name: "Numbers read back and accepted; player sleeps" }),
+      );
+      await user.click(
+        screen.getByRole("button", { name: count === 0 ? "Skip Best Move" : "Finish early" }),
+      );
+      await waitFor(() =>
+        expect(api.saveGameSession.mock.lastCall?.[1].state.game.bestMove.completionReason).toBe(
+          count === 0 ? "declined" : "finished-early",
+        ),
+      );
+      const saved = api.saveGameSession.mock.lastCall![1].state;
+      expect(saved.game.phase).toBe("night-resolution");
+      expect(saved.game.bestMove.selectedSeats).toEqual(count === 0 ? [] : [1, 2]);
+      expect(saved.game.bestMoveEnabled).toBe(true);
+      expect(replayGameLog(saved.initialGame, saved.events).game).toEqual(saved.game);
+      cleanup();
+      render(<App />);
+      expect(await screen.findByRole("button", { name: "Announce morning" })).toBeEnabled();
+      await user.click(screen.getByRole("button", { name: /undo last action/i }));
+      expect(
+        screen.getByRole("button", { name: count === 0 ? "Skip Best Move" : "Finish early" }),
+      ).toBeDisabled();
+      await waitFor(() =>
+        expect(api.saveGameSession.mock.lastCall?.[1].state.game.phase).toBe("best-move"),
+      );
+      const undone = api.saveGameSession.mock.lastCall![1].state;
+      expect(undone.game.bestMove.selectedSeats).toEqual(count === 0 ? [] : [1, 2]);
+      expect(replayGameLog(undone.initialGame, undone.events).game).toEqual(undone.game);
+      await user.click(
+        screen.getByRole("checkbox", { name: "Numbers read back and accepted; player sleeps" }),
+      );
+      await user.click(
+        screen.getByRole("button", { name: count === 0 ? "Skip Best Move" : "Finish early" }),
+      );
+      await user.click(screen.getByRole("button", { name: "Announce morning" }));
+      await waitFor(() =>
+        expect(api.saveGameSession.mock.lastCall?.[1].state.game.phase).toBe("goodbye-speech"),
+      );
+      const morning = api.saveGameSession.mock.lastCall![1].state;
+      expect(replayGameLog(morning.initialGame, morning.events).game).toEqual(morning.game);
+    },
+  );
+
+  it("records side-panel federation candidate inspection without moving the live ballot cursor", async () => {
+    let state = federationGame();
+    for (let step = 0; step < 5; step += 1) state = advanceSetupPhase(state);
+    state = startVoting({
+      ...state,
+      nominations: [
+        { nominatorSeat: 1, candidateSeat: 1, order: 1 },
+        { nominatorSeat: 2, candidateSeat: 2, order: 2 },
+      ],
+    });
+    const outbox = new GameSessionOutbox({
+      storage: window.localStorage,
+      clubId: testClub.id,
+      createId: () => crypto.randomUUID(),
+      save: vi.fn(),
+    });
+    outbox.activateRemote({
+      ...remoteSession("00000000-0000-4000-8000-000000000399", "Federation ballot", "Host", 1, 1),
+      state: {
+        ...browserSessionState(""),
+        game: state,
+        hostPlayerId,
+        initialGame: createInitialGameBaseline(state),
+      },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    act(() => gameScreenHarness.liveOnAcceptedEvent?.({ type: "game.checkpointed", payload: {} }));
+    await user.click(
+      within(screen.getByRole("region", { name: "Voting order" })).getByRole("button", {
+        name: /^#2 /,
+      }),
+    );
+    expect(gameScreenHarness.liveGame).toMatchObject({
+      ballot: { selectedCandidateSeat: 2 },
+      currentTurnIndex: 0,
+    });
+    await waitFor(() =>
+      expect(
+        api.saveGameSession.mock.calls.some(([, operation]) =>
+          operation.state.events?.some(
+            (event: GameLogEntry) => event.type === "voting.candidate-inspected",
+          ),
+        ),
+      ).toBe(true),
+    );
+    const saved = api.saveGameSession.mock.calls.find(([, operation]) =>
+      operation.state.events?.some(
+        (event: GameLogEntry) => event.type === "voting.candidate-inspected",
+      ),
+    )![1];
+    expect(replayGameLog(saved.state.initialGame, saved.state.events).game).toEqual(
+      saved.state.game,
+    );
+  });
+
+  it("finishes an automatic federation draw without inventing a manual draw event", async () => {
+    let state = federationGame();
+    for (let step = 0; step < 5; step += 1) state = advanceSetupPhase(state);
+    const quietNight = (game: GameState) =>
+      skipSheriffCheck(skipDonCheck(completeMafiaShots(resolveMafiaShots(beginNight(game)).game)));
+    state = quietNight(completeNight(quietNight(state)));
+    expect(state).toMatchObject({ phase: "night-resolution", completedGameNights: 2 });
+    const outbox = new GameSessionOutbox({
+      storage: window.localStorage,
+      clubId: testClub.id,
+      createId: () => crypto.randomUUID(),
+      save: vi.fn(),
+    });
+    outbox.activateRemote({
+      ...remoteSession("00000000-0000-4000-8000-000000000399", "Federation draw", "Host", 1, 1),
+      state: {
+        ...browserSessionState(""),
+        game: state,
+        hostPlayerId,
+        initialGame: createInitialGameBaseline(state),
+      },
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    act(() => gameScreenHarness.liveOnAcceptedEvent?.({ type: "game.checkpointed", payload: {} }));
+    act(() =>
+      gameScreenHarness.liveOnAcceptedEvent?.({ type: "phase.changed", payload: { to: "draw" } }),
+    );
+    expect(gameScreenHarness.liveGame).toMatchObject({
+      phase: "draw",
+      rulesDrawReason: { rule: "6.5.6" },
+    });
+    await user.click(screen.getByRole("button", { name: "Finish the game" }));
+    await waitFor(() =>
+      expect(
+        api.saveGameSession.mock.calls.some(
+          ([, operation]) => operation.results?.outcome === "draw",
+        ),
+      ).toBe(true),
+    );
+    const saved = api.saveGameSession.mock.calls.find(
+      ([, operation]) => operation.results?.outcome === "draw",
+    )![1];
+    expect(saved.results.reason).toBe(
+      "MAFGAME 6.5.6: three consecutive game nights without a departure",
+    );
+    expect(saved.state.events.some((event: GameLogEntry) => event.type === "game.drawn")).toBe(
+      false,
+    );
+    expect(replayGameLog(saved.state.initialGame, saved.state.events).game).toEqual(
+      saved.state.game,
+    );
+  });
+
+  it.each(["red", "black"] as const)(
+    "preserves a %s losing-team ruling through Finish and canonical replay",
+    async (losingTeam) => {
+      const state = federationGame();
+      const outbox = new GameSessionOutbox({
+        storage: window.localStorage,
+        clubId: testClub.id,
+        createId: () => crypto.randomUUID(),
+        save: vi.fn(),
+      });
+      outbox.activateRemote({
+        ...remoteSession("00000000-0000-4000-8000-000000000399", "Federation ruling", "Host", 1, 1),
+        state: {
+          ...browserSessionState(""),
+          game: state,
+          hostPlayerId,
+          initialGame: createInitialGameBaseline(state),
+        },
+      });
+      const user = userEvent.setup();
+      render(<App />);
+      act(() =>
+        gameScreenHarness.liveOnAcceptedEvent?.({ type: "game.checkpointed", payload: {} }),
+      );
+      await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+      await user.click(screen.getByText("Referee-awarded victory"));
+      await user.selectOptions(screen.getByLabelText("Losing team"), losingTeam);
+      await user.type(screen.getByLabelText("Judge's reason"), "Verified violation");
+      await user.click(screen.getByRole("button", { name: "Award victory to opposing team" }));
+      expect(gameScreenHarness.liveGame).toMatchObject({
+        phase: "finished",
+        winner: losingTeam === "red" ? "black" : "red",
+        adjudication: { losingTeam, rule: "6.3.1", reason: "Verified violation" },
+      });
+      expect(gameScreenHarness.liveGame?.players).toEqual(state.players);
+      await user.click(screen.getByRole("button", { name: "Finish the game" }));
+      await waitFor(() =>
+        expect(
+          api.saveGameSession.mock.calls.some(
+            ([, operation]) => operation.results?.adjudication?.losingTeam === losingTeam,
+          ),
+        ).toBe(true),
+      );
+      const saved = api.saveGameSession.mock.calls.find(
+        ([, operation]) => operation.results?.adjudication?.losingTeam === losingTeam,
+      )![1];
+      expect(saved.results).toMatchObject({
+        outcome: losingTeam === "red" ? "black" : "red",
+        reason: null,
+        adjudication: { losingTeam, reason: "Verified violation" },
+      });
+      expect(replayGameLog(saved.state.initialGame, saved.state.events).game).toEqual(
+        saved.state.game,
+      );
+    },
+  );
 
   it("stores final results and returns to the initial setup after Finish the game", async () => {
     const user = userEvent.setup();

@@ -1,0 +1,41 @@
+import type { Message } from "./types.js";
+
+const en = {
+  "best.close": "Close",
+  "best.cutoff": "Choose Best Move cutoff",
+  "best.acceptNumber": "Accept number {seat}",
+  "best.accepted": "Accepted Best Move numbers",
+  "best.timer": "20 seconds · record only judge-accepted numbers",
+  "best.readback": "Numbers read back and accepted; player sleeps",
+  "best.skip": "Skip Best Move",
+  "best.early": "Finish early",
+  "best.complete": "Accept Best Move",
+  "best.timeExpired": "Finish: time expired",
+  "best.interrupted": "Finish: interrupted",
+  "best.slip": "Correct an obvious slip",
+  "best.entry": "Accepted entry",
+  "best.correctNumber": "Correct number",
+  "best.reason": "Slip correction reason",
+  "best.confirmSlip": "Confirm slip correction",
+  "best.finalized": "Best Move accepted · player sleeps",
+} as const satisfies Record<string, Message>;
+const ru = {
+  "best.close": "Закрыть",
+  "best.cutoff": "Выбрать причину завершения лучшего хода",
+  "best.acceptNumber": "Принять номер {seat}",
+  "best.accepted": "Принятые номера лучшего хода",
+  "best.timer": "20 секунд · записывайте только принятые судьёй номера",
+  "best.readback": "Номера повторены и приняты; игрок засыпает",
+  "best.skip": "Пропустить лучший ход",
+  "best.early": "Завершить досрочно",
+  "best.complete": "Принять лучший ход",
+  "best.timeExpired": "Завершить: время истекло",
+  "best.interrupted": "Завершить: речь прервана",
+  "best.slip": "Исправить очевидную оговорку",
+  "best.entry": "Принятая запись",
+  "best.correctNumber": "Правильный номер",
+  "best.reason": "Причина исправления оговорки",
+  "best.confirmSlip": "Подтвердить исправление оговорки",
+  "best.finalized": "Лучший ход принят · игрок засыпает",
+} as const satisfies Record<keyof typeof en, Message>;
+export const federationBestMoveMessages = { en, ru } as const;

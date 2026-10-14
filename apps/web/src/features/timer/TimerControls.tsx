@@ -6,7 +6,7 @@ import { readCountdown, startCountdown, toggleCountdown } from "./timer.js";
 import type { CountdownState } from "./timer.js";
 
 export interface TimerControlsHandle {
-  start(seconds: 10 | 30 | 60): void;
+  start(seconds: 10 | 20 | 30 | 60): void;
 }
 
 const scheduleFaintChime = (context: AudioContext, seconds: number): OscillatorNode => {
@@ -65,7 +65,7 @@ export const TimerControls = forwardRef<TimerControlsHandle>((_, ref) => {
     }
   };
 
-  const start = (seconds: 10 | 30 | 60) => {
+  const start = (seconds: 10 | 20 | 30 | 60) => {
     cancelScheduledWarning();
     const now = Date.now();
     const reading = readCountdown(startCountdown(seconds, now), now);
@@ -111,14 +111,18 @@ export const TimerControls = forwardRef<TimerControlsHandle>((_, ref) => {
 
   return (
     <section className="timer-panel" aria-label={t("timer.controls")}>
-      <button
-        type="button"
-        className="timer-preset-60"
-        aria-label={t("timer.start", { seconds: 60 })}
-        onClick={() => start(60)}
-      >
-        +60
-      </button>
+      <div className="timer-side-presets">
+        {([60, 30] as const).map((seconds) => (
+          <button
+            type="button"
+            key={seconds}
+            aria-label={t("timer.start", { seconds })}
+            onClick={() => start(seconds)}
+          >
+            +{seconds}
+          </button>
+        ))}
+      </div>
       <button
         type="button"
         className={`timer-display${remaining <= 10 && remaining > 0 ? " is-warning" : ""}`}
@@ -137,7 +141,7 @@ export const TimerControls = forwardRef<TimerControlsHandle>((_, ref) => {
         <span>{t("timer.seconds")}</span>
       </button>
       <div className="timer-side-presets">
-        {([30, 10] as const).map((seconds) => (
+        {([20, 10] as const).map((seconds) => (
           <button
             type="button"
             key={seconds}

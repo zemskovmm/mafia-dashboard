@@ -1,4 +1,5 @@
 import { CASPER_SEAT, assertCasperPlayer, assertCasperRole, isCasperPlayer } from "./casper.js";
+import { assertRulesEdition, type RulesEdition } from "./rules-edition.js";
 import type { PlayerInput, Role, SetupState } from "./types.js";
 
 const CANONICAL_ROLE_DECK: readonly Role[] = [
@@ -44,7 +45,11 @@ export const roleCounts = (roles: readonly Role[]): Record<Role, number> => {
   return counts;
 };
 
-export const createSetup = (players: readonly PlayerInput[]): SetupState => {
+export const createSetup = (
+  players: readonly PlayerInput[],
+  { rulesEdition }: { readonly rulesEdition?: RulesEdition } = {},
+): SetupState => {
+  if (rulesEdition !== undefined) assertRulesEdition(rulesEdition);
   if (players.length !== 10) {
     throw new Error("Setup requires exactly ten players");
   }
@@ -75,6 +80,7 @@ export const createSetup = (players: readonly PlayerInput[]): SetupState => {
   players.forEach(assertCasperPlayer);
 
   return {
+    ...(rulesEdition === undefined ? {} : { rulesEdition }),
     step: "music",
     players: players.map(({ id, seat }) => ({ id, seat })),
     roleDeck: [...CANONICAL_ROLE_DECK],
@@ -174,6 +180,7 @@ export const assignRoleForSeat = (state: SetupState, seat: number, role: Role): 
 };
 
 export const assertCompleteRoleAssignments = (state: SetupState): void => {
+  if (Object.hasOwn(state, "rulesEdition")) assertRulesEdition(state.rulesEdition);
   if (Object.keys(state.assignments).length !== 10 || state.remainingRoles.length !== 0) {
     throw new Error("All ten seats must have a role before setup can continue");
   }

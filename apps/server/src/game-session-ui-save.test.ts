@@ -20,6 +20,7 @@ import {
 import { buildApp } from "./app.js";
 import { DEFAULT_CLUB_ID } from "./club-store.js";
 import { initializeSchema } from "./initialize-schema.js";
+import { verifyAdjudicationHttp } from "./test-helpers/adjudication-http.js";
 
 const databaseUrl =
   process.env.TEST_DATABASE_URL ?? "postgresql://mafia@127.0.0.1:54329/mafia_test";
@@ -386,5 +387,9 @@ describe("whole snapshot save", () => {
       vi.unstubAllGlobals();
       dom.window.close();
     }
+  });
+
+  it("preserves a pending and completed adjudication through PostgreSQL HTTP reads", async () => {
+    await verifyAdjudicationHttp(app, DEFAULT_CLUB_ID);
   });
 });

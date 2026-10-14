@@ -9,6 +9,10 @@ import {
   createSeededRandom,
   createSetup,
   drawRoleForSeat,
+  completeCurrentTurn,
+  nominate,
+  selectVotingCandidate,
+  startVoting,
 } from "@mafia/game-domain";
 import type { GameState, PlayerInput } from "@mafia/game-domain";
 import { GameUtilityPanels } from "./GameUtilityPanels.js";
@@ -17,17 +21,48 @@ import { namedProfiles, renderWithProfiles } from "../../test-player-directory.j
 const render = (ui: Parameters<typeof renderWithProfiles>[0]) =>
   renderWithProfiles(ui, namedProfiles("player-"));
 
-const createDayGame = (): GameState => {
+const createDayGame = (federation = false): GameState => {
   const players: PlayerInput[] = Array.from({ length: 10 }, (_, index) => ({
     id: `player-${index + 1}`,
     seat: index + 1,
   }));
-  let setup = beginRoleDraw(createSetup(players), createSeededRandom(13));
+  let setup = beginRoleDraw(
+    createSetup(players, federation ? { rulesEdition: "mafgame-2026-07-01" } : {}),
+    createSeededRandom(13),
+  );
   for (let seat = 1; seat <= 10; seat += 1) setup = drawRoleForSeat(setup, seat);
-  return advanceSetupPhase(advanceSetupPhase(createGame(completeRoleDraw(setup))));
+  let game = createGame(completeRoleDraw(setup));
+  while (game.phase !== "day") game = advanceSetupPhase(game);
+  return game;
 };
 
 describe("GameUtilityPanels", () => {
+  it("distinguishes the inspected nominee from the ordered live cursor with private-list guidance", async () => {
+    const user = userEvent.setup();
+    let day = nominate(createDayGame(true), 1, 2);
+    day = nominate(completeCurrentTurn(day), 2, 3);
+    const game = selectVotingCandidate(startVoting(day), 3);
+    const onSelect = vi.fn();
+    render(<GameUtilityPanels game={game} onSelectVotingCandidate={onSelect} />);
+    expect(screen.getByRole("button", { name: "#2 Player 2" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(screen.getByRole("button", { name: "#3 Player 3" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getAllByRole("listitem")[0]).toHaveAttribute("aria-current", "step");
+    expect(screen.getByText("Live call: #2")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Judge-private nomination list. Do not disclose it in response to player requests.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Unassigned votes: 10")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "#2 Player 2" }));
+    expect(onSelect).toHaveBeenCalledWith(2);
+  });
   it("offers the nominee names as pressed-state buttons only for an open live ballot", async () => {
     const user = userEvent.setup();
     const onSelectVotingCandidate = vi.fn();

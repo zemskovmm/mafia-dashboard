@@ -8,6 +8,7 @@ import { AzureEventStore, AzureGameSessionStore } from "./azure-game-session-sto
 import type { AppUser } from "./google-auth.js";
 import type { ApplicationStores } from "./storage-contracts.js";
 import { createStorageFixture } from "./test-helpers/storage-fixture.js";
+import { verifyAdjudicationHttp } from "./test-helpers/adjudication-http.js";
 
 let fixture: Awaited<ReturnType<typeof createStorageFixture>>;
 beforeAll(async () => {
@@ -99,6 +100,15 @@ it("resumes an interrupted club purge through HTTP only for its original manager
     expect(await fixture.storage.read((tx) => tx.list(`club:${clubId}:`))).toEqual([]);
   } finally {
     fault.mockRestore();
+    await app.close();
+  }
+});
+
+it("preserves a pending and completed adjudication through Azure HTTP reads", async () => {
+  const { app, clubId } = await setup();
+  try {
+    await verifyAdjudicationHttp(app, clubId);
+  } finally {
     await app.close();
   }
 });

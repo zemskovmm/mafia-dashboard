@@ -70,10 +70,17 @@ describe("critical state", () => {
     expect(isCriticalState(withActiveCounts(day, 4, 3, phase))).toBe(true);
   });
 
-  it.each<GamePhase>(["mafia-planning", "sheriff-wake", "finished"])(
-    "does not show Critical outside active play during phase %s",
-    (phase) => {
-      expect(isCriticalState(withActiveCounts(day, 4, 3, phase))).toBe(false);
-    },
-  );
+  it.each<GamePhase>([
+    "mafia-planning",
+    "mafia-sleep",
+    "don-identification",
+    "sheriff-identification",
+    "free-seating",
+    "sheriff-wake",
+    "finished",
+    "draw",
+    "cancelled",
+  ])("does not show Critical outside active play during phase %s", (phase) => {
+    expect(isCriticalState(withActiveCounts(day, 4, 3, phase))).toBe(false);
+  });
 });

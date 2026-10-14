@@ -6,6 +6,7 @@ import type {
   RemoteGameSession,
 } from "./api/client.js";
 import { ApiError } from "./api/client.js";
+import { FEDERATION_RULES_EDITION } from "@mafia/game-domain";
 import {
   assertBrowserGameStorageGuard,
   type BrowserGameStorageGuard,
@@ -84,11 +85,47 @@ const containsCopiedPlayerName = (value: unknown): boolean => {
   return Object.values(value).some(containsCopiedPlayerName);
 };
 
-/**
- * Game-rule integrity is enforced by the client game domain. Storage only rejects
- * malformed envelopes, so a historical session is never dropped due to a later
- * domain schema change.
- */
+/** Edition admission does not validate gameplay or rewrite provisional drafts. */
+const hasSupportedEdition = (state: Record<string, unknown>): boolean => {
+  const editionVersion = (value: Record<string, unknown>) =>
+    value.rulesEdition === undefined ? 1 : value.rulesEdition === FEDERATION_RULES_EDITION ? 2 : 0;
+  const baseline = isRecord(state.initialGame) ? state.initialGame : null;
+  const game = isRecord(state.game) ? state.game : null;
+  const setup = isRecord(state.setup) ? state.setup : null;
+  const roleSetup = setup !== null && isRecord(setup.setup) ? setup.setup : null;
+  const baselineGame = baseline !== null && isRecord(baseline.game) ? baseline.game : null;
+  const version =
+    baseline?.replayVersion ??
+    (game !== null
+      ? editionVersion(game)
+      : roleSetup !== null
+        ? editionVersion(roleSetup)
+        : setup !== null
+          ? editionVersion(setup)
+          : 1);
+  if (version !== 1 && version !== 2) return false;
+  const declaredStates = [game, roleSetup, baselineGame];
+  if (setup !== null && Object.hasOwn(setup, "rulesEdition")) declaredStates.push(setup);
+  if (declaredStates.some((value) => value !== null && editionVersion(value) !== version))
+    return false;
+  if (
+    baseline !== null &&
+    (baseline.replayVersion !== version ||
+      baselineGame === null ||
+      editionVersion(baseline) !== version)
+  )
+    return false;
+  if (game !== null && version === 2 && baseline === null) return false;
+  return (
+    Array.isArray(state.events) &&
+    state.events.every(
+      (entry) =>
+        isRecord(entry) && entry.replayVersion === version && editionVersion(entry) === version,
+    )
+  );
+};
+
+/** Structural/edition admission only; the client domain owns gameplay integrity. */
 export const isCurrentGameSessionState = (value: unknown): value is CurrentGameSessionState =>
   isRecord(value) &&
   [
@@ -106,6 +143,7 @@ export const isCurrentGameSessionState = (value: unknown): value is CurrentGameS
     "legacyLog",
   ].every((field) => Object.hasOwn(value, field)) &&
   Array.isArray(value.events) &&
+  hasSupportedEdition(value) &&
   !containsCopiedPlayerName(value);
 
 const isResults = (value: unknown): value is FinalGameResults | null =>
@@ -424,15 +462,18 @@ export class GameSessionOutbox {
       throw new Error("Invalid server game session");
     }
     if (this.envelope.gameId === session.gameId && this.envelope.outbox.length > 0) return;
+    const parkedKey = this.parkedStorageKey(session.gameId);
+    const parkedRaw = this.options.storage.getItem(parkedKey);
+    const parked = parkedRaw === null ? null : parseCurrentGameSessionEnvelope(parkedRaw);
+    if (parkedRaw !== null && (parked === null || parked.gameId !== session.gameId)) {
+      throw new Error("Unsupported parked game session; original data was preserved");
+    }
     if (
       this.envelope.current !== null &&
       (this.envelope.gameId !== session.gameId || this.envelope.creationId !== null)
     ) {
       this.park();
     }
-    const parkedKey = this.parkedStorageKey(session.gameId);
-    const parkedRaw = this.options.storage.getItem(parkedKey);
-    const parked = parkedRaw === null ? null : parseCurrentGameSessionEnvelope(parkedRaw);
     if (
       parked?.gameId === session.gameId &&
       parked.current !== null &&

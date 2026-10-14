@@ -1,6 +1,16 @@
 import type { GamePhase, GameState } from "@mafia/game-domain";
 
-const nonPlayingPhases = new Set<GamePhase>(["mafia-planning", "sheriff-wake", "finished"]);
+const nonPlayingPhases = new Set<GamePhase>([
+  "mafia-planning",
+  "mafia-sleep",
+  "don-identification",
+  "sheriff-identification",
+  "free-seating",
+  "sheriff-wake",
+  "finished",
+  "draw",
+  "cancelled",
+]);
 
 export const isCriticalState = (game: GameState): boolean => {
   if (nonPlayingPhases.has(game.phase) || game.winner !== null) return false;

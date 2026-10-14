@@ -14,10 +14,17 @@ export const buildFinalGameResults = (
         ? game.phase
         : null;
   const reasonedOutcome = outcome === "draw" || outcome === "cancelled";
+  const outcomeReason =
+    outcome === "draw" && game.rulesDrawReason !== undefined
+      ? "MAFGAME 6.5.6: three consecutive game nights without a departure"
+      : reason;
   if (
     outcome === null ||
     (reasonedOutcome &&
-      (reason === null || reason.length === 0 || reason.length > 500 || reason !== reason.trim()))
+      (outcomeReason === null ||
+        outcomeReason.length === 0 ||
+        outcomeReason.length > 500 ||
+        outcomeReason !== outcomeReason.trim()))
   ) {
     return null;
   }
@@ -26,7 +33,10 @@ export const buildFinalGameResults = (
     hostPlayerId,
     outcome,
     winner: outcome === "red" || outcome === "black" ? outcome : null,
-    reason: reasonedOutcome ? reason : null,
+    reason: reasonedOutcome ? outcomeReason : null,
+    ...(game.phase === "finished" && game.adjudication !== undefined
+      ? { adjudication: game.adjudication }
+      : {}),
     playedAt: playedAt.toISOString(),
     players: game.players.map((player) => ({
       playerId: player.id,

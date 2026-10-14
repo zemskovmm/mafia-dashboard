@@ -14,6 +14,7 @@ import {
   drawRoleForSeat,
 } from "@mafia/game-domain";
 import type { GameState, PlayerInput, SetupState } from "@mafia/game-domain";
+import { createFederationSampleGameHistory } from "../timeline/sample-game-data.js";
 import {
   getActiveBranch,
   getRemainingUndoBudget,
@@ -80,6 +81,61 @@ const fixture = () => {
 };
 
 describe("active game history", () => {
+  it("rejects a branch that crosses rules edition or replay version before projecting it", () => {
+    const old = fixture().root.entry;
+    const federation = createFederationSampleGameHistory();
+    const last = federation.activeEntries.at(-1)!;
+    const crossed = { ...last, parentEventId: old.id, id: "crossed", gameId: old.gameId };
+    expect(() => getActiveBranch([old, crossed], crossed.id)).toThrow(/edition|version/i);
+    const mismatchedEdition = {
+      ...federation.activeEntries[0]!,
+      rulesEdition: undefined,
+      id: "edition-mismatch",
+    } as unknown as GameLogEntry;
+    const head = { ...last, id: "edition-head", parentEventId: mismatchedEdition.id };
+    expect(() => getActiveBranch([mismatchedEdition, head], head.id)).toThrow(/edition|version/i);
+  });
+
+  it("restores accepted federation prefixes and reviewed counts rather than the final screen", () => {
+    const history = createFederationSampleGameHistory();
+    for (const type of [
+      "best-move.number-accepted",
+      "best-move.slip-corrected",
+      "best-move.finalized",
+      "voting.count-disputed",
+      "voting.count-ruled",
+      "discipline.removal-observed",
+      "game.adjudicated",
+    ] as const) {
+      const checkpoint = history.frames.find(({ entry }) => entry.type === type)!;
+      expect(replayToEvent(history.baseline, history.entries, checkpoint.entry.id)).toEqual(
+        checkpoint.after,
+      );
+    }
+    const accepted = history.frames.find(
+      ({ entry }) => entry.type === "best-move.number-accepted",
+    )!;
+    expect(
+      replayToEvent(history.baseline, history.entries, accepted.entry.id).bestMove?.selectedSeats,
+    ).toEqual([8]);
+  });
+
+  it("keeps adjudicated outcomes and automatic draws undoable before the parent Finish gate", () => {
+    for (const outcome of ["adjudicated", "rules-draw"] as const) {
+      const history = createFederationSampleGameHistory(outcome);
+      const undoable = getUndoableEvents(history.activeEntries);
+      const expectedBudget = outcome === "adjudicated" ? 1 : 3;
+      expect(undoable).toHaveLength(expectedBudget);
+      expect(undoable.at(-1)?.type).toBe(
+        outcome === "adjudicated" ? "game.adjudicated" : "phase.changed",
+      );
+      expect(getRemainingUndoBudget(history.entries, history.headEventId)).toBe(expectedBudget);
+      const last = undoable.at(-1)!;
+      expect(replayToEvent(history.baseline, history.entries, last.parentEventId!).phase).not.toBe(
+        outcome === "adjudicated" ? "finished" : "draw",
+      );
+    }
+  });
   it("follows parent links and excludes inactive sibling branches", () => {
     const { root, first, second, left, right } = fixture();
     const all = [root.entry, first.entry, second.entry, left.entry, right.entry];

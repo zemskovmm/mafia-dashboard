@@ -6,6 +6,7 @@ import { DEFAULT_CLUB_ID } from "./club-store.js";
 import { DeletedGameError, lockAggregateProjectionTables, lockClubGame } from "./game-lifecycle.js";
 import { initializeSchema } from "./initialize-schema.js";
 import { assertSupportedGame, validateGameIdentities } from "./game-session-identity.js";
+import { adjudicationMetadataSchema } from "./game-session-validation.js";
 
 export type GameSessionState = Readonly<Record<string, unknown>>;
 export type FinalGameResults = Readonly<Record<string, unknown>>;
@@ -91,6 +92,20 @@ export class GameSessionNotFoundError extends GameSessionOperationError {
     super("game_session_not_found", "The game session does not exist in the selected club");
   }
 }
+
+/** Bound new result metadata without interpreting rules or altering saved JSON. */
+export const assertValidResultAdjudication = (results: FinalGameResults | null): void => {
+  if (
+    results !== null &&
+    results.adjudication !== undefined &&
+    !adjudicationMetadataSchema.safeParse(results.adjudication).success
+  ) {
+    throw new GameSessionOperationError(
+      "invalid_game_adjudication",
+      "Invalid adjudication metadata",
+    );
+  }
+};
 
 interface SessionRow {
   readonly id: string;
@@ -574,6 +589,7 @@ export class GameSessionStore {
         await client.query("COMMIT");
         return mapSession(row, true);
       }
+      assertValidResultAdjudication(input.results);
       await validateGameIdentities(client, clubId, input.state, input.results, true);
       const gameId = randomUUID();
       const mutationId = randomUUID();
@@ -628,6 +644,7 @@ export class GameSessionStore {
       if (current === undefined) throw new GameSessionNotFoundError();
       assertSupportedGame(current.state, current.results);
       await assertSupportedEvents(client, clubId, [input.gameId]);
+      assertValidResultAdjudication(input.results);
       await validateGameIdentities(client, clubId, input.state, input.results, false);
       const status = input.results === null ? "active" : "completed";
       const updated = await client.query<SessionRow>(

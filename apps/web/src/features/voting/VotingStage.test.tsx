@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   advanceSetupPhase,
   applyGameEvent,
+  resolveVote,
   beginRoleDraw,
   completeCurrentTurn,
   completeRoleDraw,
@@ -67,6 +68,611 @@ const Harness = ({
     </>
   );
 };
+
+const federationVotingGame = (nominees = [4, 6]): GameState => {
+  const players = Array.from({ length: 10 }, (_, index) => ({
+    id: `p-${index + 1}`,
+    seat: index + 1,
+  }));
+  let setup = beginRoleDraw(
+    createSetup(players, { rulesEdition: "mafgame-2026-07-01" }),
+    createSeededRandom(9),
+  );
+  for (let seat = 1; seat <= 10; seat += 1) setup = drawRoleForSeat(setup, seat);
+  let game = createGame(completeRoleDraw(setup));
+  while (game.phase !== "day") game = advanceSetupPhase(game);
+  for (const [index, seat] of nominees.entries()) {
+    game = nominate(game, index + 1, seat);
+    if (index < nominees.length - 1) game = completeCurrentTurn(game);
+  }
+  return startVoting(game);
+};
+
+const stoppedFederationBallot = (initial: GameState, votes: Record<number, number>): GameState => {
+  let game = applyGameEvent(initial, { type: "voting.order-announced", payload: {} });
+  game = applyGameEvent(game, { type: "voting.order-announced", payload: {} });
+  for (const [index, candidateSeat] of game.turnOrder.entries()) {
+    game = applyGameEvent(game, { type: "voting.candidate-mentioned", payload: { candidateSeat } });
+    game = applyGameEvent(game, { type: "voting.candidate-mentioned", payload: { candidateSeat } });
+    for (const [voter, candidate] of Object.entries(votes)) {
+      if (candidate === candidateSeat && game.voteAssignments[Number(voter)] === undefined)
+        game = applyGameEvent(game, {
+          type: "vote.accepted",
+          payload: { voterSeat: Number(voter), candidateSeat },
+        });
+    }
+    game = applyGameEvent(game, { type: "voting.candidate-stopped", payload: { candidateSeat } });
+    if (index < game.turnOrder.length - 1)
+      game = applyGameEvent(game, {
+        type: "voting.live-advanced",
+        payload: { candidateSeat: game.turnOrder[index + 1]! },
+      });
+  }
+  return game;
+};
+
+const repeatedFederationBallot = (initial: GameState, votes: Record<number, number>): GameState => {
+  let game = stoppedFederationBallot(initial, votes);
+  game = applyGameEvent(game, {
+    type: "voting.resolved",
+    payload: { voteAssignments: votes, result: resolveVote(game) },
+  });
+  while (game.phase === "car-crash") game = completeCurrentTurn(game);
+  return stoppedFederationBallot(game, votes);
+};
+
+const FederationHarness = ({
+  initial = federationVotingGame(),
+  onAccepted = () => undefined,
+}: {
+  initial?: GameState;
+  onAccepted?: (event: CanonicalGameEventDraft) => void;
+}) => {
+  const [game, setGame] = useState(initial);
+  return (
+    <>
+      <output data-testid="federation-state">{JSON.stringify(game)}</output>
+      <VotingStage
+        game={game}
+        onGameChange={setGame}
+        onResolved={() => undefined}
+        onEvent={() => undefined}
+        onAcceptedEvent={(event) => {
+          onAccepted(event);
+          setGame((current) => applyGameEvent(current, event));
+        }}
+        onFoul={() => undefined}
+      />
+      <GameUtilityPanels
+        game={game}
+        onSelectVotingCandidate={(seat) =>
+          setGame((current) => selectVotingCandidate(current, seat))
+        }
+      />
+    </>
+  );
+};
+
+const federationState = (): GameState =>
+  JSON.parse(screen.getByTestId("federation-state").textContent!) as GameState;
+
+describe("Federation voting", () => {
+  it.each([
+    ["en", "Ballot rules & review", "Dispute count", "Dispute reason"],
+    ["ru", "Правила и проверка голосования", "Оспорить подсчёт", "Причина спора"],
+  ] as const)(
+    "keeps %s review drafts accessible across keyboard dismissal",
+    async (locale, label, dispute, reason) => {
+      const user = userEvent.setup();
+      render(
+        <I18nProvider locale={locale}>
+          <FederationHarness />
+        </I18nProvider>,
+      );
+      const toggle = screen.getByRole("button", { name: label });
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      toggle.focus();
+      await user.keyboard("{Enter}");
+      expect(toggle).toHaveAttribute("aria-expanded", "true");
+      await user.keyboard("{Escape}");
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      expect(toggle).toHaveFocus();
+      await user.keyboard("{Enter}");
+      const sheet = screen.getByRole("complementary", { name: label });
+      expect(sheet.id).toBe(toggle.getAttribute("aria-controls"));
+      await user.click(within(sheet).getByText(dispute));
+      await user.type(within(sheet).getByLabelText(reason), "Recorded draft");
+      await user.keyboard("{Escape}");
+      expect(toggle).toHaveFocus();
+      expect(sheet).not.toBeVisible();
+      await user.keyboard("{Enter}");
+      expect(sheet).toBeVisible();
+      expect(within(sheet).getByLabelText(reason)).toHaveValue("Recorded draft");
+    },
+  );
+
+  it("allows disputes only for actually called counts, not inspected future nominees", async () => {
+    const user = userEvent.setup();
+    render(<FederationHarness />);
+    await user.click(screen.getByRole("button", { name: "Ballot rules & review" }));
+    await user.click(screen.getByText("Dispute count"));
+    await user.type(screen.getByLabelText("Dispute reason"), "Count contested");
+    const pause = screen.getByRole("button", { name: "Pause voting for review" });
+    expect(pause).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Announce full order (1/2)" }));
+    await user.click(screen.getByRole("button", { name: "Announce full order (2/2)" }));
+    await user.click(screen.getByRole("button", { name: "Mention candidate #4 (1/2)" }));
+    expect(pause).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Mention candidate #4 (2/2)" }));
+    expect(pause).toBeEnabled();
+    await user.selectOptions(screen.getByLabelText("Disputed candidate"), "6");
+    expect(pause).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "STOP — accept count" }));
+    await user.click(screen.getByRole("button", { name: "Next candidate" }));
+    expect(pause).toBeDisabled();
+    await user.selectOptions(screen.getByLabelText("Disputed candidate"), "4");
+    expect(pause).toBeEnabled();
+    await user.click(pause);
+    expect(federationState().ballot?.dispute?.candidateSeat).toBe(4);
+  });
+
+  it("uses the canonical federation resolver even without the accepted-event callback", async () => {
+    const user = userEvent.setup();
+    const game = stoppedFederationBallot(federationVotingGame(), {
+      1: 4,
+      2: 4,
+      3: 4,
+      4: 4,
+      5: 4,
+      6: 4,
+    });
+    const onGameChange = vi.fn();
+    const onResolved = vi.fn();
+    render(
+      <VotingStage
+        game={game}
+        onGameChange={onGameChange}
+        onResolved={onResolved}
+        onEvent={() => undefined}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Finish voting" }));
+    expect(onResolved).not.toHaveBeenCalled();
+    expect(onGameChange.mock.calls[0]?.[0]).toMatchObject({
+      phase: "goodbye-speech",
+      goodbyeSeats: [4],
+    });
+  });
+
+  it("names a legal disciplinary cancellation rather than presenting a generic host skip", () => {
+    const game = applyGameEvent(federationVotingGame(), {
+      type: "discipline.removal-observed",
+      payload: {
+        seat: 1,
+        stage: "open-voting",
+        rule: "6.2.1",
+        reason: "Judge observed violation",
+        checkInProgress: false,
+      },
+    });
+    render(<FederationHarness initial={game} />);
+    expect(federationState().phase).toBe("voting-cancelled");
+    expect(
+      screen.getByText(
+        "A disciplinary removal cancels this day’s ballot under the rules. Proceed to night without a voted-out player or farewell speech.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Voting was skipped by the host.")).toBeNull();
+  });
+
+  it.each(["nine-three", "later-five"])(
+    "permits a lift only at valid rule boundaries (%s)",
+    (kind) => {
+      const nominees = kind === "nine-three" ? [4, 6, 8] : [4, 6, 7, 8, 9];
+      const initial = federationVotingGame(nominees);
+      const active = kind === "nine-three" ? 9 : 10;
+      const game: GameState = {
+        ...initial,
+        day: 3,
+        completedGameNights: 3,
+        sheriffChecksPerformed: 2,
+        players: initial.players.map((p) =>
+          active === 9 && p.seat === 10 ? { ...p, status: "eliminated" } : p,
+        ),
+      };
+      const votes = Object.fromEntries(
+        Array.from({ length: active }, (_, index) => [
+          index + 1,
+          nominees[Math.floor(index / (active / nominees.length))]!,
+        ]),
+      );
+      const repeated = repeatedFederationBallot(game, votes);
+      const decision = applyGameEvent(repeated, {
+        type: "voting.resolved",
+        payload: { voteAssignments: votes, result: resolveVote(repeated) },
+      });
+      render(<FederationHarness initial={decision} />);
+      expect(federationState().phase).toBe("car-crash-decision");
+      expect(screen.getByLabelText("Lift vote for #1 · Player 1")).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Resolve car crash" })).toBeDisabled();
+      expect(screen.queryByRole("alert")).toBeNull();
+    },
+  );
+
+  it.each([true, false])(
+    "closes only a determined collective lift, preserving unknown votes (%s)",
+    async (yes) => {
+      const user = userEvent.setup();
+      const votes = Object.fromEntries(
+        Array.from({ length: 10 }, (_, index) => [index + 1, index < 5 ? 4 : 6]),
+      );
+      const repeated = repeatedFederationBallot(federationVotingGame(), votes);
+      const decision = applyGameEvent(repeated, {
+        type: "voting.resolved",
+        payload: { voteAssignments: votes, result: resolveVote(repeated) },
+      });
+      const events = vi.fn();
+      render(<FederationHarness initial={decision} onAccepted={events} />);
+      expect(screen.queryByRole("button", { name: "Skip voting" })).toBeNull();
+      expect(screen.getByRole("button", { name: "Resolve car crash" })).toBeDisabled();
+      const count = yes ? 6 : 5;
+      for (let seat = 1; seat <= count; seat += 1) {
+        await user.selectOptions(
+          screen.getByLabelText(`Lift vote for #${seat} · Player ${seat}`),
+          yes ? "yes" : "no",
+        );
+        if (seat < count)
+          expect(screen.getByRole("button", { name: "Resolve car crash" })).toBeDisabled();
+      }
+      const recorded = Object.fromEntries(
+        Array.from({ length: count }, (_, index) => [index + 1, yes]),
+      );
+      expect(federationState().carCrashVotes).toEqual(recorded);
+      await user.click(screen.getByRole("button", { name: "Close determined result" }));
+      expect(federationState().phase).toBe("car-crash-result");
+      expect(federationState().carCrashVotes).toEqual(recorded);
+      expect(federationState().carCrashResult?.eliminate).toBe(yes);
+      expect(events).toHaveBeenLastCalledWith({
+        type: "car-crash.ballot-resolved",
+        payload: {
+          votes: recorded,
+          result: { eliminate: yes, seats: [4, 6], yesVotes: yes ? count : 0, eligibleVoters: 10 },
+        },
+      });
+    },
+  );
+
+  it("explains the zero-round five-way restriction after a complete repeat-vote journey", async () => {
+    const user = userEvent.setup();
+    const nominees = [4, 6, 7, 8, 9];
+    const votes = Object.fromEntries(
+      Array.from({ length: 10 }, (_, index) => [index + 1, nominees[Math.floor(index / 2)]!]),
+    );
+    const game = repeatedFederationBallot(federationVotingGame(nominees), votes);
+    render(<FederationHarness initial={game} />);
+    await user.click(screen.getByRole("button", { name: "Finish voting" }));
+    expect(federationState().phase).toBe("car-crash-skipped");
+    expect(federationState().ballotSkipReason).toBe("zero-round-five");
+    expect(
+      screen.getByText(
+        "Five players tied again on the zero round. No collective-lift ballot is held; proceed to night without elimination or farewell speeches.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        "All active players are tied. Eliminating everyone would leave no way to determine a winner.",
+      ),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Resolve car crash" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Begin night" })).toBeEnabled();
+    expect(screen.getByRole("region", { name: "Rule-specific skip explanation" })).toHaveAttribute(
+      "tabindex",
+      "0",
+    );
+  });
+
+  it.each([
+    [2, 2],
+    [3, 1],
+    [1, 0],
+  ])(
+    "explains the nine/three AND gate without exposing private counters (%i nights, %i checks)",
+    (nights, checks) => {
+      const initial = federationVotingGame([4, 6, 8]);
+      const game: GameState = {
+        ...initial,
+        day: nights,
+        completedGameNights: nights,
+        sheriffChecksPerformed: checks,
+        players: initial.players.map((p) => (p.seat === 10 ? { ...p, status: "eliminated" } : p)),
+      };
+      const votes = Object.fromEntries(
+        Array.from({ length: 9 }, (_, index) => [index + 1, [4, 6, 8][Math.floor(index / 3)]!]),
+      );
+      const repeated = repeatedFederationBallot(game, votes);
+      const skipped = applyGameEvent(repeated, {
+        type: "voting.resolved",
+        payload: { voteAssignments: votes, result: resolveVote(repeated) },
+      });
+      render(<FederationHarness initial={skipped} />);
+      expect(
+        screen.getByText(
+          "Three tied players with nine active: collective lift is unavailable until the third official night is completed AND at least two actual Sheriff checks have been performed. Proceed to night without elimination or farewell speeches.",
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/Checks performed:|Sheriff result|Sheriff target/)).toBeNull();
+    },
+  );
+  it("permits nine/three lift only after both boundaries, with a strict majority", async () => {
+    const user = userEvent.setup();
+    const initial = federationVotingGame([4, 6, 8]);
+    const game: GameState = {
+      ...initial,
+      day: 3,
+      completedGameNights: 3,
+      sheriffChecksPerformed: 2,
+      players: initial.players.map((p) => (p.seat === 10 ? { ...p, status: "eliminated" } : p)),
+    };
+    const votes = Object.fromEntries(
+      Array.from({ length: 9 }, (_, index) => [index + 1, [4, 6, 8][Math.floor(index / 3)]!]),
+    );
+    render(<FederationHarness initial={repeatedFederationBallot(game, votes)} />);
+    await user.click(screen.getByRole("button", { name: "Finish voting" }));
+    expect(federationState().phase).toBe("car-crash-decision");
+    expect(screen.queryByText(/Checks performed:|Sheriff result|Sheriff target/)).toBeNull();
+    for (let seat = 1; seat <= 4; seat += 1)
+      await user.selectOptions(
+        screen.getByLabelText(`Lift vote for #${seat} · Player ${seat}`),
+        "yes",
+      );
+    expect(screen.getByRole("button", { name: "Resolve car crash" })).toBeDisabled();
+    await user.selectOptions(screen.getByLabelText("Lift vote for #5 · Player 5"), "yes");
+    await user.click(screen.getByRole("button", { name: "Close determined result" }));
+    expect(federationState().carCrashResult).toEqual({
+      eliminate: true,
+      seats: [4, 6, 8],
+      yesVotes: 5,
+      eligibleVoters: 9,
+    });
+    expect(Object.keys(federationState().carCrashVotes!)).toHaveLength(5);
+  });
+
+  it("permits a later five-way repeated tie rather than applying the zero-round restriction", async () => {
+    const user = userEvent.setup();
+    const nominees = [4, 6, 7, 8, 9];
+    const votes = Object.fromEntries(
+      Array.from({ length: 10 }, (_, index) => [index + 1, nominees[Math.floor(index / 2)]!]),
+    );
+    const initial = { ...federationVotingGame(nominees), day: 2, completedGameNights: 2 };
+    render(<FederationHarness initial={repeatedFederationBallot(initial, votes)} />);
+    await user.click(screen.getByRole("button", { name: "Finish voting" }));
+    expect(federationState().phase).toBe("car-crash-decision");
+    expect(screen.getByRole("button", { name: "Resolve car crash" })).toBeDisabled();
+    expect(screen.queryByText(/Five players tied again on the zero round/)).toBeNull();
+  });
+
+  it("retains nomination order for a shrinking tie instead of starting a collective lift", async () => {
+    const user = userEvent.setup();
+    const nominees = [4, 6, 7, 8, 9];
+    const votes = Object.fromEntries(
+      Array.from({ length: 10 }, (_, index) => [index + 1, nominees[Math.floor(index / 2)]!]),
+    );
+    let game = stoppedFederationBallot(federationVotingGame(nominees), votes);
+    game = applyGameEvent(game, {
+      type: "voting.resolved",
+      payload: { voteAssignments: votes, result: resolveVote(game) },
+    });
+    while (game.phase === "car-crash") game = completeCurrentTurn(game);
+    const shrinkingVotes = { 1: 4, 2: 4, 3: 4, 4: 6, 5: 6, 6: 6, 7: 7, 8: 7, 9: 7, 10: 8 };
+    render(<FederationHarness initial={stoppedFederationBallot(game, shrinkingVotes)} />);
+    await user.click(screen.getByRole("button", { name: "Finish voting" }));
+    expect(federationState().phase).toBe("car-crash");
+    expect(federationState().turnOrder).toEqual([4, 6, 7]);
+    expect(screen.queryByRole("button", { name: "Resolve car crash" })).toBeNull();
+  });
+
+  it("offers a determined early close only after STOP without fabricating uncast remainder", async () => {
+    const user = userEvent.setup();
+    let game = federationVotingGame();
+    const drafts: CanonicalGameEventDraft[] = [
+      { type: "voting.order-announced", payload: {} },
+      { type: "voting.order-announced", payload: {} },
+      { type: "voting.candidate-mentioned", payload: { candidateSeat: 4 } },
+      { type: "voting.candidate-mentioned", payload: { candidateSeat: 4 } },
+    ];
+    for (const event of drafts) game = applyGameEvent(game, event);
+    for (let voterSeat = 1; voterSeat <= 6; voterSeat += 1)
+      game = applyGameEvent(game, {
+        type: "vote.accepted",
+        payload: { voterSeat, candidateSeat: 4 },
+      });
+    const events = vi.fn();
+    render(<FederationHarness initial={game} onAccepted={events} />);
+    await user.click(screen.getByRole("button", { name: "Ballot rules & review" }));
+    expect(screen.getByRole("button", { name: "Finish voting" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "STOP — accept count" }));
+    expect(
+      screen.getByText(
+        "Outcome is determined. Unassigned votes remain uncast; closing does not assign them.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("Unassigned votes: 4")).toHaveLength(2);
+    expect(
+      within(screen.getByRole("region", { name: "Mafia table" })).getByRole("button", {
+        name: "Close determined result",
+      }),
+    ).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Close determined result" }));
+    expect(federationState().phase).toBe("goodbye-speech");
+    expect(federationState().voteAssignments).toEqual({ 1: 4, 2: 4, 3: 4, 4: 4, 5: 4, 6: 4 });
+    expect(events).toHaveBeenLastCalledWith({
+      type: "voting.resolved",
+      payload: {
+        voteAssignments: { 1: 4, 2: 4, 3: 4, 4: 4, 5: 4, 6: 4 },
+        result: { kind: "winner", seats: [4], totals: { 4: 6, 6: 0 } },
+      },
+    });
+  });
+
+  it("does not offer early close for a merely leading STOPped candidate", async () => {
+    const user = userEvent.setup();
+    let game = federationVotingGame();
+    const drafts: CanonicalGameEventDraft[] = [
+      { type: "voting.order-announced", payload: {} },
+      { type: "voting.order-announced", payload: {} },
+      { type: "voting.candidate-mentioned", payload: { candidateSeat: 4 } },
+      { type: "voting.candidate-mentioned", payload: { candidateSeat: 4 } },
+    ];
+    for (const event of drafts) game = applyGameEvent(game, event);
+    for (let voterSeat = 1; voterSeat <= 5; voterSeat += 1)
+      game = applyGameEvent(game, {
+        type: "vote.accepted",
+        payload: { voterSeat, candidateSeat: 4 },
+      });
+    game = applyGameEvent(game, {
+      type: "voting.candidate-stopped",
+      payload: { candidateSeat: 4 },
+    });
+    render(<FederationHarness initial={game} />);
+    expect(screen.queryByRole("button", { name: "Close determined result" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Ballot rules & review" }));
+    expect(screen.getByRole("button", { name: "Finish voting" })).toBeDisabled();
+  });
+
+  it("freezes a disputed count through restoration until an acknowledged external-review final ruling", async () => {
+    const user = userEvent.setup();
+    let game = federationVotingGame();
+    const drafts: CanonicalGameEventDraft[] = [
+      { type: "voting.order-announced", payload: {} },
+      { type: "voting.order-announced", payload: {} },
+      { type: "voting.candidate-mentioned", payload: { candidateSeat: 4 } },
+      { type: "voting.candidate-mentioned", payload: { candidateSeat: 4 } },
+      { type: "vote.accepted", payload: { voterSeat: 1, candidateSeat: 4 } },
+    ];
+    for (const event of drafts) game = applyGameEvent(game, event);
+    const events = vi.fn();
+    const { rerender } = render(<FederationHarness initial={game} onAccepted={events} />);
+    await user.click(screen.getByRole("button", { name: "Ballot rules & review" }));
+    await user.click(screen.getByText("Dispute count"));
+    expect(screen.getByRole("button", { name: "Pause voting for review" })).toBeDisabled();
+    await user.type(screen.getByLabelText("Dispute reason"), "Count contested");
+    await user.click(screen.getByRole("button", { name: "Pause voting for review" }));
+    expect(federationState().ballot?.dispute).toEqual({
+      candidateSeat: 4,
+      reason: "Count contested",
+    });
+    const paused = JSON.parse(JSON.stringify(federationState())) as GameState;
+    rerender(<FederationHarness key="restored" initial={paused} onAccepted={events} />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Voting paused — technical dispute");
+    expect(screen.getByRole("button", { name: "STOP — accept count" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Next candidate" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Finish voting" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Vote as Player 2 for Player 4" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Foul Player 2" })).toBeEnabled();
+    await user.selectOptions(screen.getByLabelText("Reviewed vote for #1 · Player 1"), "6");
+    await user.type(screen.getByLabelText("Final ruling reason"), "Recording confirms seat six");
+    const rule = screen.getByRole("button", { name: "Accept final reviewed count" });
+    expect(rule).toBeDisabled();
+    await user.click(screen.getByRole("checkbox", { name: "I reviewed the external recording" }));
+    await user.click(rule);
+    expect(federationState().voteAssignments).toEqual({ 1: 6 });
+    expect(federationState().ballot?.dispute).toBeUndefined();
+    expect(federationState().ballot?.finalRuling).toEqual({
+      candidateSeat: 4,
+      reason: "Recording confirms seat six",
+      externalReviewAcknowledged: true,
+    });
+    expect(screen.getByRole("button", { name: "STOP — accept count" })).toBeEnabled();
+    expect(
+      screen.getByText(
+        "Reviewed ruling is final for ordinary appeals. Clerical correction remains separate.",
+      ),
+    ).toBeInTheDocument();
+    await user.click(screen.getByText("Dispute count"));
+    expect(screen.getByRole("button", { name: "Pause voting for review" })).toBeDisabled();
+    expect(events).toHaveBeenCalledWith({
+      type: "voting.count-ruled",
+      payload: {
+        voteAssignments: { 1: 6 },
+        externalReviewAcknowledged: true,
+        reason: "Recording confirms seat six",
+      },
+    });
+  });
+
+  it("requires a reasoned transcription correction without recasting or moving the live cursor", async () => {
+    const user = userEvent.setup();
+    let game = federationVotingGame();
+    const drafts: CanonicalGameEventDraft[] = [
+      { type: "voting.order-announced", payload: {} },
+      { type: "voting.order-announced", payload: {} },
+      { type: "voting.candidate-mentioned", payload: { candidateSeat: 4 } },
+      { type: "voting.candidate-mentioned", payload: { candidateSeat: 4 } },
+      { type: "vote.accepted", payload: { voterSeat: 1, candidateSeat: 4 } },
+      { type: "voting.candidate-stopped", payload: { candidateSeat: 4 } },
+      { type: "voting.live-advanced", payload: { candidateSeat: 6 } },
+    ];
+    for (const event of drafts) game = applyGameEvent(game, event);
+    const events = vi.fn();
+    render(<FederationHarness initial={game} onAccepted={events} />);
+    await user.click(screen.getByRole("button", { name: "Ballot rules & review" }));
+    await user.click(screen.getByText("Correct transcription"));
+    expect(screen.getByRole("button", { name: "Apply transcription correction" })).toBeDisabled();
+    await user.selectOptions(screen.getByLabelText("Corrected vote"), "6");
+    await user.type(screen.getByLabelText("Correction reason"), "Wrong seat entered");
+    await user.click(screen.getByRole("button", { name: "Apply transcription correction" }));
+    expect(federationState().voteAssignments).toEqual({ 1: 6 });
+    expect(federationState().currentTurnIndex).toBe(1);
+    expect(federationState().ballot?.mention).toBe(0);
+    expect(events).toHaveBeenCalledWith({
+      type: "vote.corrected",
+      payload: { voterSeat: 1, candidateSeat: 6, reason: "Wrong seat entered" },
+    });
+    await user.selectOptions(screen.getByLabelText("Corrected vote"), "unassigned");
+    await user.type(screen.getByLabelText("Correction reason"), "Duplicate entry");
+    await user.click(screen.getByRole("button", { name: "Apply transcription correction" }));
+    expect(federationState().voteAssignments).toEqual({});
+  });
+
+  it("accepts votes only between the second ordered mention and STOP, independently of inspection", async () => {
+    const user = userEvent.setup();
+    const events = vi.fn();
+    render(<FederationHarness onAccepted={events} />);
+    await user.click(screen.getByRole("button", { name: "Ballot rules & review" }));
+    expect(screen.queryByRole("button", { name: "Skip voting" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Next candidate" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Vote as Player 1 for Player 4" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Announce full order (1/2)" }));
+    await user.click(screen.getByRole("button", { name: "Announce full order (2/2)" }));
+    await user.click(screen.getByRole("button", { name: "Mention candidate #4 (1/2)" }));
+    expect(screen.getByRole("button", { name: "Vote as Player 1 for Player 4" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Mention candidate #4 (2/2)" }));
+    await user.click(screen.getByRole("button", { name: "#6 Player 6" }));
+    expect(federationState().currentTurnIndex).toBe(0);
+    expect(federationState().voteAssignments).toEqual({});
+    expect(screen.getByRole("status", { name: "Live call" })).toHaveTextContent("#4 Player 4");
+    await user.click(screen.getByRole("button", { name: "Vote as Player 1 for Player 4" }));
+    const accepted = screen.getByRole("button", { name: "Player 1 voted for seat 4" });
+    await user.click(accepted);
+    expect(federationState().voteAssignments).toEqual({ 1: 4 });
+    await user.click(screen.getByRole("button", { name: "STOP — accept count" }));
+    expect(screen.getByRole("button", { name: "Vote as Player 2 for Player 4" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Next candidate" }));
+    expect(federationState().currentTurnIndex).toBe(1);
+    expect(federationState().voteAssignments).toEqual({ 1: 4 });
+    await user.click(screen.getByRole("button", { name: "Mention candidate #6 (1/2)" }));
+    await user.click(screen.getByRole("button", { name: "Mention candidate #6 (2/2)" }));
+    expect(Object.keys(federationState().voteAssignments)).toHaveLength(10);
+    expect(events).toHaveBeenCalledWith({
+      type: "vote.accepted",
+      payload: { voterSeat: 1, candidateSeat: 4 },
+    });
+    expect(events).toHaveBeenCalledWith({
+      type: "voting.live-advanced",
+      payload: { candidateSeat: 6 },
+    });
+  });
+});
 
 describe("VotingStage", () => {
   it("does not enable Finish for a full-looking but invalid ballot", () => {

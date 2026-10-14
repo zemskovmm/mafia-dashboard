@@ -15,6 +15,7 @@ export const getActiveBranch = (
   const reversed: GameLogEntry[] = [];
   const visited = new Set<string>();
   let branchGameId: string | null = null;
+  let branchHead: GameLogEntry | undefined;
   let currentId: string | null = headEventId;
   while (currentId !== null) {
     if (visited.has(currentId)) throw new Error(`Game history contains a cycle at ${currentId}`);
@@ -24,6 +25,13 @@ export const getActiveBranch = (
     if (branchGameId === null) branchGameId = entry.gameId;
     else if (entry.gameId !== branchGameId) {
       throw new Error(`Game history crosses games at ${entry.id}`);
+    }
+    if (branchHead === undefined) branchHead = entry;
+    else if (
+      entry.replayVersion !== branchHead.replayVersion ||
+      entry.rulesEdition !== branchHead.rulesEdition
+    ) {
+      throw new Error(`Game history crosses rules editions or replay versions at ${entry.id}`);
     }
     reversed.push(entry);
     currentId = entry.parentEventId;

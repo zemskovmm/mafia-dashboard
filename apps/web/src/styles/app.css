@@ -1423,6 +1423,10 @@ h2 {
 .deceased-player-card > strong {
   font-size: 1.05rem;
 }
+.table-vote-center:has(> .voting-candidate-identity) {
+  /* Keep the count clear when the scrollable identity uses all three lines. */
+  transform: translateY(-24px);
+}
 .table-vote-center > .voting-candidate-identity {
   max-height: 3.45em;
   overflow-y: auto;
@@ -2010,7 +2014,8 @@ button.player-seat.is-voting-highlight::after,
   gap: 8px;
 }
 
-.live-side-panel[hidden] {
+.live-side-panel[hidden],
+.live-side-panel.has-live-utilities[hidden] {
   display: none;
 }
 .utility-panel-section {
@@ -3240,7 +3245,8 @@ button.player-seat.is-voting-highlight::after,
     min-height: 0;
     padding: 14px;
     aspect-ratio: 1;
-    overflow: hidden;
+    /* A fixed table must not auto-scroll when transformed seats receive focus. */
+    overflow: clip;
   }
   .table-layout-shell .table-stage {
     container-type: size;
@@ -3395,10 +3401,10 @@ button.player-seat.is-voting-highlight::after,
     height: 220px;
   }
   @media (max-height: 800px) {
-    /* The short laptop ballot can straddle the 700px table-container breakpoint;
-       keep its count above the next action on either side of that boundary. */
+    /* Reserve the full three-line candidate identity on short laptop ballots,
+       including either side of the 700px table-container breakpoint. */
     .table-vote-center:has(> .voting-candidate-identity) {
-      transform: translateY(-48px);
+      transform: translateY(-88px);
     }
     /* A multi-nominee panel grows; keep the compact video's controls within the rail. */
     .live-side-panel.has-live-utilities:has(.nomination-panel li:nth-child(2))
@@ -3727,7 +3733,7 @@ html:-webkit-full-screen #root {
     height: 100%;
     min-height: 0;
     padding: 6px;
-    overflow: hidden;
+    overflow: clip;
     border-radius: 14px;
   }
   .table-stage,
@@ -3791,7 +3797,20 @@ html:-webkit-full-screen #root {
     transform: translateX(-50%);
   }
   /* Bottom daytime cards have no 48px clearance below them at 600px. */
-  .game-shell:is(.phase-day, .phase-voting)
+  .game-shell.phase-day .seat-anchor:is([data-seat="5"], [data-seat="6"]) {
+    /* The compact title can wrap beside a club logo; retain positive clearance. */
+    top: calc(50% + 2px);
+  }
+  .game-shell:is(.phase-day, .phase-voting, .phase-goodbye-speech)
+    .seat-anchor:is([data-seat="1"], [data-seat="10"]) {
+    /* Reserve the full action stack without moving the upper judge-menu orbit. */
+    top: calc(50% - 14px);
+  }
+  .game-shell:is(.phase-day, .phase-voting, .phase-goodbye-speech)
+    .seat-anchor:is([data-seat="2"], [data-seat="9"]) {
+    top: calc(50% - 8px);
+  }
+  .game-shell:is(.phase-day, .phase-voting, .phase-goodbye-speech)
     .seat-anchor:is([data-seat="1"], [data-seat="10"])
     .seat-actions {
     top: 5px;
@@ -3800,10 +3819,14 @@ html:-webkit-full-screen #root {
     flex-direction: column;
     transform: none;
   }
-  .game-shell:is(.phase-day, .phase-voting) .seat-anchor[data-seat="1"] .seat-actions {
+  .game-shell:is(.phase-day, .phase-voting, .phase-goodbye-speech)
+    .seat-anchor[data-seat="1"]
+    .seat-actions {
     left: calc(-48px - 5px);
   }
-  .game-shell:is(.phase-day, .phase-voting) .seat-anchor[data-seat="10"] .seat-actions {
+  .game-shell:is(.phase-day, .phase-voting, .phase-goodbye-speech)
+    .seat-anchor[data-seat="10"]
+    .seat-actions {
     left: calc(100% + 5px);
   }
   .seat-anchor:is([data-seat="2"], [data-seat="3"]) .seat-actions,
@@ -3824,7 +3847,7 @@ html:-webkit-full-screen #root {
   .game-shell:is(.phase-day, .phase-voting)
     .seat-anchor:is([data-seat="2"], [data-seat="9"])
     .seat-actions {
-    top: calc(50% - 8px);
+    top: calc(50% - 12px);
   }
   /* At 600px, keep one to three live shooters beside diagonal cards instead
      of widening across their neighbors or the center action. */
@@ -3931,9 +3954,14 @@ html:-webkit-full-screen #root {
   }
   .table-vote-center > .voting-candidate-identity {
     font-size: 1.64rem;
+    /* Long names remain keyboard-scrollable without covering the upper seat actions. */
+    max-height: 2.3em;
   }
   .table-vote-center:has(> .voting-candidate-identity) {
-    transform: translateY(-44px);
+    transform: translateY(-56px);
+  }
+  .game-shell.phase-voting .round-table:has(.voting-candidate-identity) .table-advance {
+    top: calc(75% - 14px);
   }
   .candidate-navigation button,
   .table-choice-actions button,
@@ -4338,7 +4366,7 @@ html:-webkit-full-screen #root {
     height: 100%;
     min-height: 0;
     padding: 6px;
-    overflow: hidden;
+    overflow: clip;
     border-radius: 14px;
   }
   .table-stage,
@@ -4580,9 +4608,12 @@ html:-webkit-full-screen #root {
 .player-setup-card .player-combobox-clear {
   width: 48px;
   height: 48px;
-  right: 24px;
+  right: 40px;
   background: transparent;
   border-color: transparent;
+}
+.player-setup-card .player-combobox input {
+  padding-right: 96px;
 }
 .setup-seat-drag-handle {
   display: grid;

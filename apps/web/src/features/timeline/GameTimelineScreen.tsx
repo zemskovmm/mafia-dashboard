@@ -531,6 +531,7 @@ const TimelineInspector = ({
   readonly onReset?: (eventId: string) => void;
 }) => {
   const resultMessageKeys: Readonly<Record<string, TimelineConsoleMessageKey>> = {
+    "eliminate-all-skipped": "Collective lift prohibited",
     winner: "Winner",
     tie: "Tie",
     "host-skipped": "Skipped by host",

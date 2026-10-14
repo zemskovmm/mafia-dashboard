@@ -33,7 +33,7 @@
     "test:release-contracts": "node --test scripts/release-verifier-contracts.test.mjs",
     "test:security-contracts": "node --test scripts/security-workflow-contracts.test.mjs",
     "test:azure-contracts": "node --test scripts/azure-deployment-plan.test.mjs scripts/azure-deployment-cli.test.mjs scripts/azure-template-contracts.test.mjs",
-    "test:verifier-contracts": "node --test scripts/session-verifier-contracts.test.mjs",
+    "test:verifier-contracts": "node --test scripts/session-verifier-contracts.test.mjs scripts/federation-ui-verifier.test.mjs",
     "verify:oauth": "node scripts/verify-oauth.mjs",
     "verify:release": "node scripts/verify-release.mjs",
     "verify:compose": "node scripts/verify-production-compose.mjs",

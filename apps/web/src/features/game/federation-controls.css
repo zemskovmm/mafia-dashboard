@@ -1,0 +1,124 @@
+.federation-gameplay-boundary {
+  display: contents;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+}
+.game-header .federation-discipline {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  z-index: 20;
+  transform: translateX(-50%);
+  max-width: 32rem;
+  font-size: 0.8rem;
+}
+.federation-announcements {
+  display: flex;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.federation-discipline button,
+.federation-shooting-observation button,
+.federation-transcript button {
+  min-height: 48px;
+}
+.federation-best-move,
+.federation-transcript {
+  display: grid;
+  gap: 0.35rem;
+  color: #f7f4ef;
+  font-size: 0.8rem;
+}
+.federation-transcript ol {
+  display: flex;
+  justify-content: center;
+  gap: 1.5rem;
+  margin: 0.2rem 0;
+  padding-left: 1.2rem;
+  min-height: 1.2em;
+}
+.federation-best-move > label {
+  display: block;
+  cursor: pointer;
+}
+.federation-best-move input[type="checkbox"],
+.federation-judge-dialog input[type="checkbox"] {
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  vertical-align: middle;
+  margin-right: 0.5rem;
+}
+.game-shell .federation-best-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 48px;
+  gap: 0.35rem;
+}
+.game-shell .federation-best-actions > button {
+  min-height: 48px;
+  padding: 0.4rem;
+}
+@media (min-width: 540px) {
+  .game-shell.phase-best-move .table-center:has(.federation-best-move) {
+    transform: translate(-50%, -65%);
+  }
+  .game-shell.phase-best-move .table-advance:has(.federation-best-actions) {
+    width: min(210px, 50%);
+  }
+}
+.federation-judge-dialog {
+  position: fixed;
+  width: min(28rem, calc(100vw - 2rem));
+  max-height: 85dvh;
+  overflow-y: auto;
+  margin: auto;
+  padding: 1rem;
+  border: 1px solid var(--border, #555);
+  border-radius: 0.75rem;
+  background: #211e19;
+  color: #f7f4ef;
+  box-shadow: 0 0.75rem 2rem #0008;
+  font-size: 0.85rem;
+}
+.federation-judge-dialog::backdrop {
+  background: #0009;
+}
+.federation-judge-dialog[open],
+.federation-judge-dialog form,
+.federation-judge-dialog label {
+  display: grid;
+  gap: 0.5rem;
+}
+.federation-judge-dialog header {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  justify-content: space-between;
+}
+.federation-judge-dialog :is(button, input:not([type="checkbox"]), select) {
+  min-height: 48px;
+}
+.federation-rules-notice {
+  position: relative;
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  font-size: 0.7rem;
+}
+.federation-rules-notice summary {
+  cursor: pointer;
+}
+.federation-rules-notice ul {
+  position: absolute;
+  z-index: 80;
+  width: min(28rem, calc(100vw - 2rem));
+  padding: 1rem 1rem 1rem 2rem;
+  border: 1px solid var(--border, #555);
+  border-radius: 0.75rem;
+  background: #211e19;
+  color: #f7f4ef;
+}

@@ -3,6 +3,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { AzureGameSessionStore, AzureEventStore } from "./azure-game-session-store.js";
 import { createStorageFixture } from "./test-helpers/storage-fixture.js";
 import { blobFields, blobReference, digest, type AzureStorage } from "./azure-storage.js";
+import { AzurePlayerStore } from "./azure-club-player-store.js";
+import { federationRecord } from "./test-helpers/federation-record.js";
 
 let storage: AzureStorage;
 let close: () => Promise<void>;
@@ -31,6 +33,181 @@ afterAll(async () => {
 });
 
 describe("Azure game snapshot store", () => {
+  it.each(["red", "black"] as const)(
+    "round-trips federation snapshots and a %s-team ruling without changing win projections",
+    async (losingTeam) => {
+      const {
+        state: initial,
+        completedState,
+        results,
+        hostPlayerId,
+        players,
+        winner,
+      } = federationRecord(losingTeam);
+      await storage.mutate(async (tx) => {
+        for (const id of [hostPlayerId, ...players.map(({ id }) => id)]) {
+          await tx.set(`club:${clubId}:player:${id}`, {
+            id,
+            nickname: id,
+            clubAccess: "none",
+            consent: false,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          });
+        }
+      });
+      const creationId = randomUUID();
+      const created = await games.create({
+        clubId,
+        creationId,
+        name: "Federation",
+        state: initial,
+        results: null,
+      });
+      expect(created.state).toEqual(initial);
+      expect(created).toMatchObject({ status: "active", revision: 1, results: null });
+      const resumed = new AzureGameSessionStore(storage);
+      expect((await resumed.get(created.gameId, clubId))?.state).toEqual(initial);
+      expect(await resumed.listActive(clubId)).toContainEqual(
+        expect.objectContaining({ gameId: created.gameId, phase: "voting" }),
+      );
+      const operation = {
+        clubId,
+        gameId: created.gameId,
+        name: "Referee ruling",
+        mutationId: randomUUID(),
+        state: completedState,
+        results,
+      };
+      const saved = await resumed.save(operation);
+      expect(saved.state).toEqual(completedState);
+      expect(saved.results).toEqual(results);
+      expect(saved).toMatchObject({ status: "completed", revision: 2 });
+      const retried = await resumed.save(operation);
+      expect(retried).toMatchObject({ revision: 3, duplicate: false });
+      const creationRetry = await resumed.create({
+        clubId,
+        creationId,
+        name: "Stale",
+        state: {},
+        results: null,
+      });
+      expect(creationRetry).toMatchObject({ gameId: created.gameId, revision: 3, duplicate: true });
+      expect(creationRetry.state).toEqual(completedState);
+      expect(creationRetry.results).toEqual(results);
+      const loaded = await new AzureGameSessionStore(storage).get(created.gameId, clubId);
+      expect(loaded?.state).toEqual(completedState);
+      expect(loaded?.results).toEqual(results);
+      const row = await storage.getEntity(`club:${clubId}:game:${created.gameId}`);
+      const raw = await storage.read((tx) =>
+        tx.readBlob<{ session: { state: unknown; results: unknown } }>(blobReference(row!)),
+      );
+      expect(raw.session.state).toEqual(completedState);
+      expect(raw.session.results).toEqual(results);
+      const rows = await storage.read((tx) =>
+        tx.list<{ playerId: string }>(`club:${clubId}:result:${created.gameId}:`),
+      );
+      expect(rows).toHaveLength(11);
+      expect(rows.find(({ playerId }) => playerId === hostPlayerId)).toMatchObject({
+        isHost: true,
+        outcome: winner,
+        winner,
+      });
+      for (const player of players) {
+        expect(rows.find(({ playerId }) => playerId === player.id)).toMatchObject({
+          isHost: false,
+          status: player.status,
+          won: player.team === winner,
+          outcome: winner,
+          winner,
+        });
+      }
+      // Ruling prose belongs only to the authoritative JSON, not typed statistics rows.
+      expect(
+        rows.every((row) => !Object.hasOwn(row, "adjudication") && !Object.hasOwn(row, "reason")),
+      ).toBe(true);
+      const directory = new AzurePlayerStore(storage);
+      for (const player of players) {
+        expect((await directory.get(player.id, clubId))?.statistics).toMatchObject({
+          gamesPlayed: 1,
+          wins: player.team === winner ? 1 : 0,
+          losses: player.team === winner ? 0 : 1,
+          redWins: player.team === "red" && winner === "red" ? 1 : 0,
+          blackWins: player.team === "black" && winner === "black" ? 1 : 0,
+          eliminations: 0,
+          redCards: 0,
+        });
+      }
+      expect((await directory.get(hostPlayerId, clubId))?.statistics).toMatchObject({
+        hostedGames: 1,
+        gamesPlayed: 0,
+      });
+      expect(await resumed.listActive(clubId)).not.toContainEqual(
+        expect.objectContaining({ gameId: created.gameId }),
+      );
+      expect(await resumed.listCompleted(clubId)).toContainEqual(
+        expect.objectContaining({
+          gameId: created.gameId,
+          winner,
+          outcome: winner,
+          reason: null,
+          eventCount: 2,
+        }),
+      );
+      const eventView = await events.read(created.gameId, { includeSecrets: true }, clubId);
+      expect(eventView).toHaveLength(2);
+      expect(eventView.every(({ replayVersion }) => replayVersion === 1)).toBe(true);
+      expect(completedState.initialGame.replayVersion).toBe(2);
+      expect(completedState.events.every(({ replayVersion }) => replayVersion === 2)).toBe(true);
+      expect(loaded?.state.events).toEqual(completedState.events);
+
+      const completedCreation = await resumed.create({
+        clubId,
+        creationId: randomUUID(),
+        name: "Created completed",
+        state: completedState,
+        results,
+      });
+      expect(completedCreation.results).toEqual(results);
+      expect((await resumed.get(completedCreation.gameId, clubId))?.state).toEqual(completedState);
+      expect((await resumed.get(completedCreation.gameId, clubId))?.results).toEqual(results);
+      expect(
+        await storage.read((tx) => tx.list(`club:${clubId}:result:${completedCreation.gameId}:`)),
+      ).toHaveLength(11);
+    },
+  );
+
+  it("preserves discriminator-free legacy baselines across create, save and resume", async () => {
+    const legacy = {
+      game: { phase: "legacy-client-phase", marker: null },
+      initialGame: { replayVersion: 1, game: { phase: "legacy-client-phase", marker: null } },
+      events: [{ id: randomUUID(), replayVersion: 1, sequence: 1, payload: {} }],
+      undoHistory: [{ phase: "legacy-client-phase" }],
+    };
+    const created = await games.create({
+      clubId,
+      creationId: randomUUID(),
+      name: "Legacy",
+      state: legacy,
+      results: null,
+    });
+    const saved = await games.save({
+      clubId,
+      gameId: created.gameId,
+      mutationId: randomUUID(),
+      name: "Legacy",
+      state: legacy,
+      results: { winner: "red", reason: null },
+    });
+    expect(saved.state).toEqual(legacy);
+    expect(saved.results).toEqual({ winner: "red", reason: null });
+    const loaded = await new AzureGameSessionStore(storage).get(created.gameId, clubId);
+    expect(loaded?.state).toEqual(legacy);
+    expect(loaded?.results).not.toHaveProperty("adjudication");
+    expect(loaded?.state.initialGame).not.toHaveProperty("rulesEdition");
+    expect(loaded?.state.game).not.toHaveProperty("rulesEdition");
+  });
+
   it("preserves the SQL event-view conflict rules without changing canonical history", async () => {
     const id = randomUUID();
     const candidate = (eventId: string, sequence: number) => ({
@@ -129,6 +306,49 @@ describe("Azure game snapshot store", () => {
         results: null,
       }),
     ).rejects.toMatchObject({ code: "game_session_not_found" });
+  });
+
+  it("rejects malformed adjudication without publishing a snapshot or changing an accepted game", async () => {
+    const creationId = randomUUID();
+    const invalid = {
+      adjudication: {
+        losingTeam: "red",
+        rule: "6.3.1",
+        reason: "r".repeat(501),
+        committeeApproved: false,
+      },
+    };
+    await expect(
+      games.create({
+        clubId,
+        creationId,
+        name: "Invalid",
+        state: state("invalid"),
+        results: invalid,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_game_adjudication" });
+    expect(await storage.getEntity(`club:${clubId}:creation:${creationId}`)).toBeUndefined();
+    const accepted = await games.create({
+      clubId,
+      creationId,
+      name: "Accepted",
+      state: state("accepted"),
+      results: null,
+    });
+    const key = `club:${clubId}:game:${accepted.gameId}`;
+    const before = await storage.getEntity(key);
+    await expect(
+      games.save({
+        clubId,
+        gameId: accepted.gameId,
+        mutationId: randomUUID(),
+        name: "Invalid",
+        state: state("invalid"),
+        results: invalid,
+      }),
+    ).rejects.toMatchObject({ code: "invalid_game_adjudication" });
+    expect(await storage.getEntity(key)).toEqual(before);
+    expect(await games.get(accepted.gameId, clubId)).toEqual(accepted);
   });
 
   it("keeps save update-only, last-commit-wins even with the same mutation ID, and deletion non-resurrecting", async () => {

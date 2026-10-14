@@ -7,6 +7,29 @@ import { inspectGameIdentities } from "./game-session-identity.js";
  */
 const snapshotObject = z.object({}).passthrough();
 
+// Admission checks shape and size only: rule applicability, committee agreement
+// and the winner are browser-domain decisions. Do not trim accepted JSON.
+export const adjudicationMetadataSchema = z
+  .object({
+    losingTeam: z.enum(["red", "black"]),
+    offenderSeat: z.number().int().min(1).max(10).optional(),
+    rule: z
+      .string()
+      .min(1)
+      .max(100)
+      .refine((value) => value === value.trim()),
+    reason: z
+      .string()
+      .min(1)
+      .max(500)
+      .refine((value) => value === value.trim()),
+    committeeApproved: z.boolean(),
+  })
+  .strict();
+const resultsObject = z
+  .object({ adjudication: adjudicationMetadataSchema.optional() })
+  .passthrough();
+
 export const publicHistoryValidationIssue = (issue: z.core.$ZodIssue) => ({
   path: issue.path,
   message: issue.message,
@@ -30,7 +53,7 @@ export const gameSessionCreationSchema = z
     creationId: z.uuid(),
     name: z.string().trim().min(1).max(100),
     state: snapshotObject,
-    results: snapshotObject.nullable(),
+    results: resultsObject.nullable(),
   })
   .strict()
   .superRefine(identityOnly);
@@ -42,7 +65,7 @@ export const gameSessionMutationSchema = z
     name: z.string().trim().min(1).max(100),
     mutationId: z.uuid(),
     state: snapshotObject,
-    results: snapshotObject.nullable(),
+    results: resultsObject.nullable(),
   })
   .strict()
   .superRefine(identityOnly);

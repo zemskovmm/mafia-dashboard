@@ -1,8 +1,20 @@
+import { isFederationGame } from "./rules-edition.js";
 import type { GameState } from "./types.js";
 
 export const transitionToNight = (game: GameState): GameState => ({
   ...game,
   phase: "night-mafia",
+  ...(isFederationGame(game)
+    ? {
+        actualMultipleShotSeats: [],
+        ballot: undefined,
+        currentSpeechRestricted: false,
+        ballotCancellationDay:
+          game.ballotCancellationDay !== undefined && game.ballotCancellationDay <= game.day
+            ? undefined
+            : game.ballotCancellationDay,
+      }
+    : {}),
   nominations: [],
   voteAssignments: {},
   votingRound: undefined,
@@ -14,10 +26,14 @@ export const transitionToNight = (game: GameState): GameState => ({
   shotAssignments: {},
   nightCheckEligibility: {
     don: game.players.some(
-      ({ role, status }) => role === "don" && (status === "active" || status === "eliminated"),
+      ({ role, status }) =>
+        role === "don" &&
+        (status === "active" || (!isFederationGame(game) && status === "eliminated")),
     ),
     sheriff: game.players.some(
-      ({ role, status }) => role === "sheriff" && (status === "active" || status === "eliminated"),
+      ({ role, status }) =>
+        role === "sheriff" &&
+        (status === "active" || (!isFederationGame(game) && status === "eliminated")),
     ),
   },
   checkResult: undefined,

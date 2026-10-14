@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   acceptCarCrashBallot,
+  applyGameEvent,
   advanceVotingCandidate,
   beginCarCrash,
   beginCarCrashDecision,
@@ -9,6 +10,7 @@ import {
   completeCarCrashResult,
   countVotes,
   getCurrentVotingCandidateSeat,
+  isFederationGame,
   resolveCarCrashVote,
   resolveVote,
   skipVoting,
@@ -20,7 +22,10 @@ import { votingMessages } from "../../i18n/messages/voting.js";
 import { GameTable, type TableSeatView } from "../table/GameTable.js";
 import { usePlayerDisplayName } from "../players/player-display.js";
 
-interface VotingStageProps {
+import { FederationBallot } from "./FederationBallot.js";
+import { FederationCollectiveBallot } from "./FederationCollectiveBallot.js";
+
+export interface VotingStageProps {
   readonly game: GameState;
   readonly onGameChange: (game: GameState) => void;
   readonly onResolved: (game: GameState, seats: readonly number[]) => void;
@@ -121,6 +126,22 @@ export const VotingStage = ({
       });
       return;
     }
+    if (isFederationGame(game)) {
+      const event: CanonicalGameEventDraft = {
+        type: "voting.resolved",
+        payload: {
+          voteAssignments: Object.fromEntries(
+            Object.entries(game.voteAssignments).filter(
+              (entry): entry is [string, number] => entry[1] !== undefined,
+            ),
+          ),
+          result,
+        },
+      };
+      onGameChange(applyGameEvent(game, event));
+      onEvent(event.type, event.payload);
+      return;
+    }
     if (result.kind === "car-crash") {
       onGameChange(beginCarCrash(game, result.seats));
       onEvent("voting.resolved", { kind: result.kind, seats: result.seats, totals: result.totals });
@@ -140,9 +161,32 @@ export const VotingStage = ({
     onEvent("voting.resolved", { kind: result.kind, seats: result.seats, totals: result.totals });
   };
 
+  if (isFederationGame(game) && game.phase === "voting") {
+    return (
+      <FederationBallot
+        game={game}
+        onGameChange={onGameChange}
+        onResolved={onResolved}
+        onEvent={onEvent}
+        onAcceptedEvent={onAcceptedEvent}
+        hostName={hostName}
+        privacyHidden={privacyHidden}
+        onSeatSwipe={onSeatSwipe}
+        swipeAction={swipeAction}
+        onDismissSwipeAction={onDismissSwipeAction}
+        onFoul={onFoul}
+        canResolve={allVotesAssigned}
+        onResolve={resolve}
+      />
+    );
+  }
+
   if (game.phase === "voting-cancelled") {
-    const cancellationMessage =
-      game.votingCancellation?.reason === "red-card" ? t("redCardCancelled") : t("hostSkipped");
+    const cancellationMessage = isFederationGame(game)
+      ? t("disciplinaryCancellation")
+      : game.votingCancellation?.reason === "red-card"
+        ? t("redCardCancelled")
+        : t("hostSkipped");
     return (
       <GameTable
         hostName={hostName}
@@ -188,10 +232,35 @@ export const VotingStage = ({
         }))}
         renderSeatActions={renderFoulAction}
         center={
-          <div className="table-vote-center" role="status" aria-label={t("carCrashResult")}>
+          <div
+            className={
+              isFederationGame(game)
+                ? "table-vote-center federation-skip-center"
+                : "table-vote-center"
+            }
+            role="status"
+            aria-label={t("carCrashResult")}
+          >
             <span className="table-prompt">{t("carCrash")}</span>
             <strong>{t("eliminateAllSkipped")}</strong>
-            <span className="car-crash-skip-message">{t("skipMessage")}</span>
+            <span
+              className={
+                isFederationGame(game)
+                  ? "car-crash-skip-message federation-skip-explanation"
+                  : "car-crash-skip-message"
+              }
+              role={isFederationGame(game) ? "region" : undefined}
+              aria-label={isFederationGame(game) ? t("skipExplanation") : undefined}
+              tabIndex={isFederationGame(game) ? 0 : undefined}
+            >
+              {t(
+                isFederationGame(game) && game.ballotSkipReason === "nine-three-restricted"
+                  ? "nineThreeRestricted"
+                  : isFederationGame(game) && game.ballotSkipReason === "zero-round-five"
+                    ? "zeroRoundFive"
+                    : "skipMessage",
+              )}
+            </span>
           </div>
         }
         advance={
@@ -204,6 +273,22 @@ export const VotingStage = ({
   }
 
   if (game.phase === "car-crash-decision") {
+    if (isFederationGame(game))
+      return (
+        <FederationCollectiveBallot
+          game={game}
+          onGameChange={onGameChange}
+          onResolved={onResolved}
+          onEvent={onEvent}
+          onAcceptedEvent={onAcceptedEvent}
+          onFoul={onFoul}
+          hostName={hostName}
+          privacyHidden={privacyHidden}
+          onSeatSwipe={onSeatSwipe}
+          swipeAction={swipeAction}
+          onDismissSwipeAction={onDismissSwipeAction}
+        />
+      );
     const carCrashSeats = game.carCrashSeats ?? [];
     const nominees = formatList(
       carCrashSeats.map((seat) => {

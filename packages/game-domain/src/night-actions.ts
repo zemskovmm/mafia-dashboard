@@ -1,4 +1,12 @@
-import { evaluateVictory, getDayOrder, markPlayerInactive } from "./game.js";
+import { settleCheckRemoval, settleShootingRemovals } from "./federation-discipline.js";
+import { isFederationGame } from "./rules-edition.js";
+import { acceptBestMoveSeat, finalizeBestMove, prepareBestMove } from "./federation-actions.js";
+import {
+  completeFederationGameNight,
+  evaluateVictory,
+  getDayOrder,
+  markPlayerInactive,
+} from "./game.js";
 import { isCasperPlayer } from "./casper.js";
 import { transitionToNight } from "./night-transition.js";
 import type { GameState, NightShotResult, SecretCheckResult, ShotAssignment } from "./types.js";
@@ -10,12 +18,20 @@ const playerAt = (game: GameState, seat: number) => {
 };
 
 export const isNightCheckEligible = (game: GameState, role: "don" | "sheriff"): boolean => {
+  const ownerStatus = game.players.find((p) => p.role === role)?.status;
+  if (isFederationGame(game) && ownerStatus === "red-carded") {
+    const owner = game.players.find((p) => p.role === role);
+    return (
+      (game.phase === `night-${role}` || game.phase === `night-${role}-result`) &&
+      !!game.disciplinaryRemovals?.some((r) => r.seat === owner?.seat && r.checkCompletionPending)
+    );
+  }
   const snapshot = game.nightCheckEligibility?.[role];
   if (snapshot !== undefined) return snapshot;
   const owner = game.players.find(({ role: playerRole }) => playerRole === role);
   return (
     owner?.status === "active" ||
-    owner?.status === "eliminated" ||
+    (!isFederationGame(game) && owner?.status === "eliminated") ||
     (game.nightResult?.kind === "kill" && game.nightResult.targetSeat === owner?.seat)
   );
 };
@@ -23,7 +39,12 @@ export const isNightCheckEligible = (game: GameState, role: "don" | "sheriff"): 
 const resultForTargets = (game: GameState, targets: ReadonlySet<number>): NightShotResult => {
   if (targets.size !== 1) return { kind: "miss" };
   const targetSeat = [...targets][0]!;
-  return playerAt(game, targetSeat).status === "active"
+  const simultaneousDisqualification =
+    isFederationGame(game) &&
+    game.disciplinaryRemovals?.some(
+      (r) => r.seat === targetSeat && r.stage === "shooting-count" && r.day === game.day,
+    );
+  return playerAt(game, targetSeat).status === "active" || simultaneousDisqualification
     ? { kind: "kill", targetSeat }
     : { kind: "no-effect", targetSeat };
 };
@@ -35,6 +56,16 @@ const nextPrivatePhase = (game: GameState): GameState["phase"] => {
 };
 
 export const beginNight = (game: GameState): GameState => {
+  if (
+    isFederationGame(game) &&
+    (game.phase === "voting" ||
+      (game.phase === "day" &&
+        (game.nominations.length >= 2 || (game.day > 1 && game.nominations.length === 1)) &&
+        game.ballotCancellationDay !== game.day))
+  )
+    throw new Error(
+      "An unresolved federation ballot cannot be bypassed; accept its result or a named legal cancellation",
+    );
   if (
     game.phase !== "day" &&
     game.phase !== "voting" &&
@@ -120,12 +151,18 @@ export const resolveMafiaShots = (
   });
   const targets = new Set(secretShots.map(({ targetSeat }) => targetSeat));
   const result =
-    secretShots.length === shooters.length
+    secretShots.length === shooters.length &&
+    (!isFederationGame(game) || !game.actualMultipleShotSeats?.length)
       ? resultForTargets(game, targets)
       : { kind: "miss" as const };
 
   return {
-    game: { ...game, phase: "night-mafia-result" },
+    game: isFederationGame(game)
+      ? settleShootingRemovals(
+          { ...game, phase: "night-mafia-result", nightResult: result },
+          result.kind === "kill" ? result.targetSeat : undefined,
+        )
+      : { ...game, phase: "night-mafia-result" },
     result,
     secretShots,
   };
@@ -135,6 +172,7 @@ export const getMafiaShotResult = (game: GameState): NightShotResult => {
   if (game.phase !== "night-mafia-result") {
     throw new Error("Mafia shot results are only available after evaluation");
   }
+  if (isFederationGame(game) && game.nightResult !== undefined) return game.nightResult;
   const shooters = game.players.filter(
     ({ team, status }) => team === "black" && status === "active",
   );
@@ -142,20 +180,35 @@ export const getMafiaShotResult = (game: GameState): NightShotResult => {
     const targetSeat = game.shotAssignments[seat];
     return targetSeat === undefined ? [] : [targetSeat];
   });
-  if (assignedTargets.length !== shooters.length) return { kind: "miss" };
+  if (
+    assignedTargets.length !== shooters.length ||
+    (isFederationGame(game) && game.actualMultipleShotSeats?.length)
+  )
+    return { kind: "miss" };
   const targets = new Set(assignedTargets);
   return resultForTargets(game, targets);
 };
 
 export const completeMafiaShots = (game: GameState): GameState => {
+  if (
+    isFederationGame(game) &&
+    game.disciplinaryRemovals?.some(
+      (r) => r.stage === "shooting-count" && r.announcement === "pending",
+    )
+  )
+    throw new Error("Count-stage removal announcement is required before private checks");
   if (game.phase !== "night-mafia-result") {
     throw new Error("Mafia shots can only complete after evaluation");
   }
   const result = getMafiaShotResult(game);
   const resolvedGame =
-    result.kind === "kill" ? markPlayerInactive(game, result.targetSeat, "eliminated") : game;
+    result.kind === "kill" &&
+    (!isFederationGame(game) || playerAt(game, result.targetSeat).status === "active")
+      ? markPlayerInactive(game, result.targetSeat, "eliminated")
+      : game;
   const withResult = { ...resolvedGame, nightResult: result, shotAssignments: {} };
-  const winner = result.kind === "kill" ? evaluateVictory(withResult.players) : null;
+  const winner =
+    result.kind === "kill" || isFederationGame(game) ? evaluateVictory(withResult.players) : null;
   if (winner !== null) return { ...withResult, phase: "finished", winner };
   return { ...withResult, phase: nextPrivatePhase(withResult), winner: null };
 };
@@ -189,10 +242,16 @@ export const continueDonCheck = (game: GameState): GameState => {
   }
   if (!isNightCheckEligible(game, "don")) throw new Error("There is no available Don");
   const phase = isNightCheckEligible(game, "sheriff") ? "night-sheriff" : "night-resolution";
-  return { ...game, phase, checkResult: undefined };
+  const continued: GameState = { ...game, phase, checkResult: undefined };
+  return isFederationGame(game) ? settleCheckRemoval(continued, "don") : continued;
 };
 
 export const skipDonCheck = (game: GameState): GameState => {
+  if (
+    isFederationGame(game) &&
+    game.disciplinaryRemovals?.some((r) => r.stage === "don-check" && r.checkCompletionPending)
+  )
+    throw new Error("An already-underway sanctioned check must be completed");
   if (game.phase !== "night-don") throw new Error("The Don check is not active");
   if (game.nightCheckEligibility !== undefined && !isNightCheckEligible(game, "don")) {
     throw new Error("There is no available Don");
@@ -222,7 +281,14 @@ export const performSheriffCheck = (
     secret: true,
   };
   return {
-    game: { ...game, phase: "night-sheriff-result", checkResult: result },
+    game: {
+      ...game,
+      phase: "night-sheriff-result",
+      checkResult: result,
+      ...(isFederationGame(game)
+        ? { sheriffChecksPerformed: (game.sheriffChecksPerformed ?? 0) + 1 }
+        : {}),
+    },
     result,
   };
 };
@@ -232,18 +298,58 @@ export const continueSheriffCheck = (game: GameState): GameState => {
     throw new Error("The Sheriff result is not ready to continue");
   }
   if (!isNightCheckEligible(game, "sheriff")) throw new Error("There is no available Sheriff");
-  return { ...game, phase: "night-resolution", checkResult: undefined };
+  const continued: GameState = { ...game, phase: "night-resolution", checkResult: undefined };
+  return isFederationGame(game) ? settleCheckRemoval(continued, "sheriff") : continued;
 };
 
 export const skipSheriffCheck = (game: GameState): GameState => {
+  if (
+    isFederationGame(game) &&
+    game.disciplinaryRemovals?.some((r) => r.stage === "sheriff-check" && r.checkCompletionPending)
+  )
+    throw new Error("An already-underway sanctioned check must be completed");
   if (game.phase !== "night-sheriff") throw new Error("The Sheriff check is not active");
   if (game.nightCheckEligibility !== undefined && !isNightCheckEligible(game, "sheriff")) {
     throw new Error("There is no available Sheriff");
   }
-  return { ...game, phase: "night-resolution", checkResult: undefined };
+  const continued: GameState = { ...game, phase: "night-resolution", checkResult: undefined };
+  return isFederationGame(game) ? settleCheckRemoval(continued, "sheriff") : continued;
 };
 
 export const completeNight = (game: GameState): GameState => {
+  if (isFederationGame(game)) {
+    if (game.disciplinaryRemovals?.some((r) => r.announcement === "pending"))
+      throw new Error(
+        "Required night removal announcements must be accepted before morning/Best Move",
+      );
+    const prepared = prepareBestMove(game);
+    if (prepared.phase === "best-move") return prepared;
+    const completed = completeFederationGameNight(prepared);
+    if (completed.phase === "draw") return completed;
+    const previousOpeningSeat = game.dayOpeningSeat ?? 1;
+    const turnOrder = getDayOrder(game.players, previousOpeningSeat + 1);
+    const targetSeat = game.nightResult?.kind === "kill" ? game.nightResult.targetSeat : undefined;
+    const victim = game.players.find((p) => p.seat === targetSeat);
+    const goodbyeSeats = victim?.status === "eliminated" ? [victim.seat] : [];
+    return {
+      ...completed,
+      phase: goodbyeSeats.length ? "goodbye-speech" : "day",
+      day: game.day + 1,
+      dayOpeningSeat: turnOrder[0],
+      turnOrder,
+      currentTurnIndex: 0,
+      nominations: [],
+      voteAssignments: {},
+      shotAssignments: {},
+      nightCheckEligibility: undefined,
+      checkResult: undefined,
+      goodbyeSeats: goodbyeSeats.length ? goodbyeSeats : undefined,
+      goodbyeNext: goodbyeSeats.length ? "day" : undefined,
+      currentSpeechRestricted:
+        game.players.find((p) => p.seat === turnOrder[0])?.mutePending ?? false,
+      redCardIssuedThisDay: undefined,
+    };
+  }
   if (game.phase !== "night-resolution") {
     throw new Error("Night can only complete after all available checks");
   }
@@ -305,6 +411,7 @@ export const completeNight = (game: GameState): GameState => {
 };
 
 export const toggleBestMoveSeat = (game: GameState, seat: number): GameState => {
+  if (isFederationGame(game)) return acceptBestMoveSeat(game, seat);
   if (game.phase !== "best-move" || game.bestMove === undefined) {
     throw new Error("Best move selections require the Best move phase");
   }
@@ -326,6 +433,16 @@ export const toggleBestMoveSeat = (game: GameState, seat: number): GameState => 
 };
 
 export const completeBestMove = (game: GameState): GameState => {
+  if (isFederationGame(game))
+    return finalizeBestMove(
+      game,
+      game.bestMove?.selectedSeats.length === 0
+        ? "declined"
+        : game.bestMove?.selectedSeats.length === 3
+          ? "complete-list"
+          : "finished-early",
+      true,
+    );
   if (game.phase !== "best-move" || game.bestMove === undefined) {
     throw new Error("Only a Best move can be completed");
   }

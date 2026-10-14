@@ -1,3 +1,15 @@
+import type { LegalVotingSkipReason, RemovalObservation, RemovalOccurrenceStage } from "./types.js";
+import { isFederationGame } from "./rules-edition.js";
+import { observeDisciplinaryRemoval } from "./federation-discipline.js";
+import {
+  acceptFederationVote,
+  advanceFederationCandidate,
+  assertFederationAction,
+  createFederationBallot,
+  getCollectiveLiftEligibility,
+  inspectFederationCandidate,
+  requireFederationBallot,
+} from "./federation-actions.js";
 import { evaluateVictory, markPlayerInactive } from "./game.js";
 import { beginNight } from "./night-actions.js";
 import { transitionToNight } from "./night-transition.js";
@@ -22,6 +34,16 @@ export const cancelVoting = (
   game: GameState,
   votingCancellation: NonNullable<GameState["votingCancellation"]>,
 ): GameState => {
+  if (
+    isFederationGame(game) &&
+    (votingCancellation.reason !== "red-card" ||
+      (game.ballotCancellationDay !== game.day && !game.redCardIssuedThisDay) ||
+      game.phase === "car-crash-result" ||
+      game.phase === "car-crash-skipped")
+  )
+    throw new Error(
+      "Federation cancellation requires applicable current-day disciplinary debt; a completed result is preserved",
+    );
   const cancellablePhases: ReadonlySet<GameState["phase"]> = new Set([
     "day",
     "voting",
@@ -37,6 +59,9 @@ export const cancelVoting = (
   return {
     ...game,
     phase: "voting-cancelled",
+    ...(isFederationGame(game)
+      ? { ballot: undefined, ballotSkipReason: "disciplinary-cancellation" as const }
+      : {}),
     voteAssignments: {},
     votingRound: undefined,
     carCrashSeats: undefined,
@@ -46,18 +71,36 @@ export const cancelVoting = (
   };
 };
 
-export const skipVoting = (game: GameState): GameState =>
-  cancelVoting(game, { reason: "host-skipped" });
+export const skipVoting = (game: GameState): GameState => {
+  if (isFederationGame(game))
+    throw new Error("Federation voting requires a named legal skip, not a host override");
+  return cancelVoting(game, { reason: "host-skipped" });
+};
 
 export const isVotingRequired = (day: number, nominationCount: number): boolean =>
   nominationCount > 0 && (day > 1 || nominationCount > 1);
 
 const completeDay = (game: GameState): GameState => {
   const nominations = getActiveNominations(game);
-  if (game.redCardIssuedThisDay === true) {
+  if (
+    game.redCardIssuedThisDay === true ||
+    (isFederationGame(game) && game.ballotCancellationDay === game.day)
+  ) {
     return cancelVoting({ ...game, nominations }, { reason: "red-card" });
   }
-  if (!isVotingRequired(game.day, nominations.length)) return beginNight({ ...game, nominations });
+  if (!isVotingRequired(game.day, nominations.length))
+    return beginNight({
+      ...game,
+      nominations,
+      ...(isFederationGame(game)
+        ? {
+            ballotSkipReason:
+              nominations.length === 0
+                ? ("no-nominees" as const)
+                : ("zero-round-sole-nominee" as const),
+          }
+        : {}),
+    });
   const voting: GameState = {
     ...game,
     phase: "voting",
@@ -66,9 +109,47 @@ const completeDay = (game: GameState): GameState => {
     currentTurnIndex: 0,
     voteAssignments: {},
     votingRound: "initial",
+    ...(isFederationGame(game)
+      ? { ballot: createFederationBallot(nominations[0]!.candidateSeat) }
+      : {}),
   };
+  if (isFederationGame(game) && nominations.length === 1) {
+    const seat = nominations[0]!.candidateSeat;
+    return completeEliminations(
+      {
+        ...voting,
+        voteAssignments: Object.fromEntries(
+          game.players.filter((p) => p.status === "active").map((p) => [p.seat, seat]),
+        ),
+        ballot: undefined,
+      },
+      [seat],
+    );
+  }
   if (nominations.length !== 1) return voting;
   return selectVotingCandidate(voting, nominations[0]!.candidateSeat);
+};
+
+export const skipFederationVoting = (game: GameState, reason: LegalVotingSkipReason): GameState => {
+  assertFederationAction(game);
+  if (reason === "no-nominees" || reason === "zero-round-sole-nominee") {
+    if (
+      game.phase !== "day" ||
+      game.nominations.length !== (reason === "no-nominees" ? 0 : 1) ||
+      (reason === "zero-round-sole-nominee" && game.day !== 1)
+    )
+      throw new Error("Named discussion skip does not match nominees/round");
+    return { ...beginNight(game), ballotSkipReason: reason };
+  }
+  if (reason === "disciplinary-cancellation") {
+    if (game.ballotCancellationDay !== game.day && !game.redCardIssuedThisDay)
+      throw new Error("No disciplinary cancellation applies to this day");
+    return { ...cancelVoting(game, { reason: "red-card" }), ballotSkipReason: reason };
+  }
+  const eligibility = getCollectiveLiftEligibility(game, game.carCrashSeats ?? game.turnOrder);
+  if (game.phase !== "car-crash-decision" || eligibility.permitted || eligibility.reason !== reason)
+    throw new Error("Named collective-lift skip does not match the current legal restriction");
+  return beginSkippedCarCrashDecision(game, game.carCrashSeats ?? []);
 };
 
 export const nominate = (
@@ -102,7 +183,12 @@ export const nominate = (
   };
 };
 
-export const issueFoul = (game: GameState, seat: number): GameState => {
+export const issueFoul = (
+  game: GameState,
+  seat: number,
+  removalObservation?: RemovalObservation,
+): GameState => {
+  if (isFederationGame(game)) assertFederationAction(game);
   const player = game.players.find((candidate) => candidate.seat === seat);
   if (player === undefined || player.status !== "active") {
     throw new Error("A foul can only be issued to an active player");
@@ -117,7 +203,13 @@ export const issueFoul = (game: GameState, seat: number): GameState => {
         : candidate,
     ),
   };
-  return fouls >= 4 ? redCard(updated, seat) : updated;
+  if (
+    isFederationGame(game) &&
+    removalObservation &&
+    (fouls !== 4 || removalObservation.rule !== "6.2.1")
+  )
+    throw new Error("Only a fourth foul may carry its removal observation");
+  return fouls >= 4 ? redCard(updated, seat, removalObservation) : updated;
 };
 
 export const completeCurrentTurn = (game: GameState): GameState => {
@@ -130,6 +222,7 @@ export const completeCurrentTurn = (game: GameState): GameState => {
           currentTurnIndex: 0,
           voteAssignments: {},
           votingRound: "repeat",
+          ...(isFederationGame(game) ? { ballot: createFederationBallot(game.turnOrder[0]!) } : {}),
         }
       : { ...game, currentTurnIndex: nextIndex };
   }
@@ -138,7 +231,11 @@ export const completeCurrentTurn = (game: GameState): GameState => {
   }
   const seat = currentSpeakerSeat(game);
   const players = game.players.map((player) =>
-    player.seat === seat && player.mutePending ? { ...player, mutePending: false } : player,
+    player.seat === seat &&
+    player.mutePending &&
+    (!isFederationGame(game) || game.currentSpeechRestricted)
+      ? { ...player, mutePending: false }
+      : player,
   );
   const nextIndex = game.currentTurnIndex + 1;
 
@@ -150,10 +247,46 @@ export const completeCurrentTurn = (game: GameState): GameState => {
     });
   }
 
-  return { ...game, players, currentTurnIndex: nextIndex };
+  return {
+    ...game,
+    players,
+    currentTurnIndex: nextIndex,
+    ...(isFederationGame(game)
+      ? {
+          currentSpeechRestricted:
+            players.find((p) => p.seat === game.turnOrder[nextIndex])?.mutePending ?? false,
+        }
+      : {}),
+  };
 };
 
-export const redCard = (game: GameState, seat: number): GameState => {
+export const redCard = (
+  game: GameState,
+  seat: number,
+  observation?: RemovalObservation,
+): GameState => {
+  if (isFederationGame(game)) {
+    if (!observation) {
+      const player = game.players.find((p) => p.seat === seat);
+      const stage: RemovalOccurrenceStage | undefined =
+        game.phase === "day"
+          ? "day-discussion"
+          : ["voting", "car-crash", "car-crash-decision", "voting-cancelled"].includes(game.phase)
+            ? "open-voting"
+            : ["car-crash-result", "car-crash-skipped"].includes(game.phase)
+              ? "after-voting-result"
+              : game.phase === "goodbye-speech"
+                ? "farewell"
+                : undefined;
+      if (!stage) throw new Error("Night disqualification requires explicit occurrence timing");
+      if (player?.fouls !== 4)
+        throw new Error("A federation red card requires a reasoned removal observation");
+      observation = { seat, stage, rule: "6.2.1", reason: "Fourth foul", checkInProgress: false };
+    }
+    if (observation.seat !== seat)
+      throw new Error("Removal observation seat does not match the action subject");
+    return observeDisciplinaryRemoval(game, observation);
+  }
   const allowedPhases: ReadonlySet<GameState["phase"]> = new Set([
     "day",
     "voting",
@@ -239,6 +372,7 @@ export const assignVote = (
   voterSeat: number,
   candidateSeat: number,
 ): GameState => {
+  if (isFederationGame(game)) return acceptFederationVote(game, voterSeat, candidateSeat);
   if (game.phase !== "voting") {
     throw new Error("Votes can only be assigned during voting");
   }
@@ -266,6 +400,7 @@ export const toggleVote = (
   voterSeat: number,
   candidateSeat: number,
 ): GameState => {
+  if (isFederationGame(game)) return acceptFederationVote(game, voterSeat, candidateSeat);
   const assignedCandidateSeat = game.voteAssignments[voterSeat];
   if (assignedCandidateSeat === undefined) return assignVote(game, voterSeat, candidateSeat);
   if (game.phase !== "voting") {
@@ -302,6 +437,7 @@ export const getCurrentVotingCandidateSeat = (game: GameState): number => {
 };
 
 export const selectVotingCandidate = (game: GameState, candidateSeat: number): GameState => {
+  if (isFederationGame(game)) return inspectFederationCandidate(game, candidateSeat);
   getCurrentVotingCandidateSeat(game);
   const nextIndex = game.nominations.findIndex(
     (nomination) => nomination.candidateSeat === candidateSeat,
@@ -321,6 +457,7 @@ export const selectVotingCandidate = (game: GameState, candidateSeat: number): G
 };
 
 export const advanceVotingCandidate = (game: GameState): GameState => {
+  if (isFederationGame(game)) return advanceFederationCandidate(game);
   getCurrentVotingCandidateSeat(game);
   const candidateSeat = game.turnOrder[game.currentTurnIndex + 1];
   if (candidateSeat === undefined) {
@@ -342,6 +479,8 @@ export const countVotes = (game: GameState): Record<number, number> => {
 };
 
 export const resolveVote = (game: GameState): VoteResult => {
+  if (isFederationGame(game) && !requireFederationBallot(game).stopped)
+    throw new Error("Voting must reach an accepted STOP before resolution");
   if (game.phase !== "voting") {
     throw new Error("A vote can only be resolved during voting");
   }
@@ -372,7 +511,18 @@ export const resolveVote = (game: GameState): VoteResult => {
     assignedVoterSeats.size !== eligibleVoterSeats.length ||
     eligibleVoterSeats.some((seat) => !assignedVoterSeats.has(seat))
   ) {
-    throw new Error("Every eligible player must vote before resolution");
+    const totals = countVotes(game);
+    const remaining = eligibleVoterSeats.length - assignedVoterSeats.size;
+    const leader = game.turnOrder.find((seat) =>
+      game.turnOrder.every(
+        (other) => other === seat || (totals[seat] ?? 0) > (totals[other] ?? 0) + remaining,
+      ),
+    );
+    if (!isFederationGame(game) || leader === undefined)
+      throw new Error(
+        "Every eligible player must vote unless the result is conclusively determined",
+      );
+    return { kind: "winner", seats: [leader], totals };
   }
 
   const totals = countVotes(game);
@@ -383,6 +533,9 @@ export const resolveVote = (game: GameState): VoteResult => {
     game.votingRound === "repeat" &&
     previousTiedSeats.size === seats.length &&
     seats.every((seat) => previousTiedSeats.has(seat));
+  const liftEligibility = getCollectiveLiftEligibility(game, seats);
+  if (isFederationGame(game) && repeatedSameTie && !liftEligibility.permitted)
+    return { kind: "eliminate-all-skipped", seats, totals, skipReason: liftEligibility.reason };
   const allActivePlayersTied =
     seats.length === eligibleVoterSeats.length &&
     eligibleVoterSeats.every((seat) => seats.includes(seat));
@@ -427,6 +580,8 @@ export const beginCarCrash = (game: GameState, seats: readonly number[]): GameSt
 };
 
 export const beginCarCrashDecision = (game: GameState, seats: readonly number[]): GameState => {
+  if (isFederationGame(game) && !getCollectiveLiftEligibility(game, seats).permitted)
+    throw new Error("This collective lift is prohibited by federation rules");
   if (game.phase !== "voting" || game.votingRound !== "repeat" || seats.length < 2) {
     throw new Error("An eliminate-both ballot requires a repeated car-crash tie");
   }
@@ -450,12 +605,20 @@ export const beginSkippedCarCrashDecision = (
     .filter(({ status }) => status === "active")
     .map(({ seat }) => seat);
   const tied = new Set(seats);
-  if (tied.size !== activeSeats.length || activeSeats.some((seat) => !tied.has(seat))) {
+  const eligibility = getCollectiveLiftEligibility(game, seats);
+  if (
+    isFederationGame(game)
+      ? eligibility.permitted
+      : tied.size !== activeSeats.length || activeSeats.some((seat) => !tied.has(seat))
+  ) {
     throw new Error("The eliminate-all ballot is skipped only when every active player is tied");
   }
   return {
     ...game,
     phase: "car-crash-skipped",
+    ...(isFederationGame(game) && !eligibility.permitted
+      ? { ballotSkipReason: eligibility.reason }
+      : {}),
     voteAssignments: {},
     carCrashSeats: [...seats],
     carCrashVotes: undefined,
@@ -482,6 +645,11 @@ export const assignCarCrashVote = (
 };
 
 export const resolveCarCrashVote = (game: GameState): CarCrashVoteResult => {
+  if (
+    isFederationGame(game) &&
+    !getCollectiveLiftEligibility(game, game.carCrashSeats ?? []).permitted
+  )
+    throw new Error("This collective lift is prohibited by federation rules");
   if (game.phase !== "car-crash-decision") {
     throw new Error("Only a car-crash decision can be resolved");
   }
@@ -508,7 +676,15 @@ export const resolveCarCrashVote = (game: GameState): CarCrashVoteResult => {
     voteEntries.length !== eligibleVoters ||
     [...eligibleSeats].some((seat) => !Object.hasOwn(game.carCrashVotes ?? {}, seat))
   ) {
-    throw new Error("Every eligible player must vote before resolution");
+    const yes = voteEntries.filter(([, vote]) => vote === true).length;
+    const remaining = eligibleVoters - voteEntries.length;
+    if (
+      !isFederationGame(game) ||
+      !(yes > eligibleVoters / 2 || yes + remaining <= eligibleVoters / 2)
+    )
+      throw new Error(
+        "Every eligible player must vote unless the lift result is conclusively determined",
+      );
   }
   const yesVotes = voteEntries.filter(([, vote]) => vote === true).length;
   return {
@@ -535,7 +711,9 @@ export const completeEliminations = (game: GameState, seats: readonly number[]):
   if (winner !== null) return { ...afterElimination, phase: "finished", winner };
 
   const goodbyeSeats = seats.filter(
-    (seat) => !afterElimination.players.find((player) => player.seat === seat)?.mutePending,
+    (seat) =>
+      isFederationGame(game) ||
+      !afterElimination.players.find((player) => player.seat === seat)?.mutePending,
   );
   if (goodbyeSeats.length === 0) return transitionToNight(afterElimination);
   return {
@@ -553,7 +731,11 @@ export const completeCarCrashResult = (game: GameState): GameState => {
   }
   if (!game.carCrashResult.eliminate) return transitionToNight(game);
 
-  const seats = game.carCrashResult.seats;
+  const seats = isFederationGame(game)
+    ? game.carCrashResult.seats.filter(
+        (seat) => game.players.find((p) => p.seat === seat)?.status === "active",
+      )
+    : game.carCrashResult.seats;
   const cleared = {
     ...game,
     votingRound: undefined,

@@ -1,7 +1,8 @@
-import { countVotes, getCurrentVotingCandidateSeat } from "@mafia/game-domain";
+import { countVotes, getCurrentVotingCandidateSeat, isFederationGame } from "@mafia/game-domain";
 import type { GameState } from "@mafia/game-domain";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { gameMessages } from "../../i18n/messages/game.js";
+import { votingMessages } from "../../i18n/messages/voting.js";
 import { TimerControls } from "../timer/TimerControls.js";
 import { usePlayerDisplayName } from "../players/player-display.js";
 import { VgpuPlayerLightingCanvas } from "../effects/vgpu/VgpuLightingCanvas.js";
@@ -13,9 +14,12 @@ export interface GameUtilityPanelsProps {
 
 export const GameUtilityPanels = ({ game, onSelectVotingCandidate }: GameUtilityPanelsProps) => {
   const { t } = useMessages(gameMessages);
+  const { t: votingT } = useMessages(votingMessages);
+  const federation = game !== null && isFederationGame(game);
   const displayName = usePlayerDisplayName();
   const nominationTotals = game === null ? {} : countVotes(game);
   const currentCandidate = game?.phase === "voting" ? getCurrentVotingCandidateSeat(game) : null;
+  const inspectedCandidate = federation ? game?.ballot?.selectedCandidateSeat : currentCandidate;
   const activeSeats = (game?.players ?? [])
     .filter(({ status }) => status === "active")
     .map(({ seat }) => seat);
@@ -45,6 +49,23 @@ export const GameUtilityPanels = ({ game, onSelectVotingCandidate }: GameUtility
       <div className="utility-panel-section" data-panel="voting">
         <section className="nomination-panel" aria-label={t("utility.votingOrder")}>
           <p className="eyebrow">{t("utility.votingOrder")}</p>
+          {federation ? (
+            <>
+              <p className="muted">{votingT("nominationPrivate")}</p>
+              {game?.phase === "voting" ? (
+                <>
+                  <p>{votingT("panelLiveCall", { seat: currentCandidate ?? "" })}</p>
+                  <p>
+                    {votingT("uncastVotes", {
+                      count: game.players.filter(
+                        (p) => p.status === "active" && game.voteAssignments[p.seat] === undefined,
+                      ).length,
+                    })}
+                  </p>
+                </>
+              ) : null}
+            </>
+          ) : null}
           {showVoteTotals ? (
             <p className="vote-count-summary">
               {t("utility.activeVotes", { count: activeVoteCount })}
@@ -69,7 +90,7 @@ export const GameUtilityPanels = ({ game, onSelectVotingCandidate }: GameUtility
                       {game.phase === "voting" && onSelectVotingCandidate !== undefined ? (
                         <button
                           type="button"
-                          aria-pressed={current}
+                          aria-pressed={candidateSeat === inspectedCandidate}
                           onClick={() => onSelectVotingCandidate(candidateSeat)}
                         >
                           #{candidateSeat}{" "}

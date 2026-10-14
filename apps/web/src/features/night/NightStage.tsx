@@ -6,6 +6,8 @@ import {
   continueSheriffCheck,
   getMafiaShotResult,
   isNightCheckEligible,
+  isFederationGame,
+  prepareBestMove,
   performDonCheck,
   performSheriffCheck,
   resolveMafiaShots,
@@ -17,6 +19,8 @@ import {
 import type { CanonicalGameEventDraft, GameState, NightShotResult } from "@mafia/game-domain";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { nightMessages } from "../../i18n/messages/night.js";
+import { NightShootingObservation } from "./NightShootingObservation.js";
+import { FederationBestMoveTranscript } from "../game/FederationBestMoveStage.js";
 import { GameTable } from "../table/GameTable.js";
 import { usePlayerDisplayName } from "../players/player-display.js";
 
@@ -122,6 +126,15 @@ export const NightStage = ({
                 shooters: shooters.length,
               })}
             </strong>
+            <small>{t("night.shootingCalls")}</small>
+            {isFederationGame(game) ? (
+              <NightShootingObservation
+                game={game}
+                onGameChange={onGameChange}
+                onEvent={onEvent}
+                onAcceptedEvent={onAcceptedEvent}
+              />
+            ) : null}
           </div>
         }
         advance={
@@ -174,6 +187,12 @@ export const NightStage = ({
         advance={
           <button
             type="button"
+            disabled={
+              isFederationGame(game) &&
+              !!game.disciplinaryRemovals?.some(
+                (r) => r.stage === "shooting-count" && r.announcement === "pending",
+              )
+            }
             onClick={() => {
               const next = completeMafiaShots(game);
               if (onAcceptedEvent !== undefined) {
@@ -238,12 +257,32 @@ export const NightStage = ({
               <button type="button" disabled>
                 {t("night.selectPlayer")}
               </button>
-              <button type="button" className="table-advance-secondary" onClick={skipDon}>
+              <button
+                type="button"
+                className="table-advance-secondary"
+                disabled={
+                  isFederationGame(game) &&
+                  !!game.disciplinaryRemovals?.some(
+                    (r) => r.stage === "don-check" && r.checkCompletionPending,
+                  )
+                }
+                onClick={skipDon}
+              >
                 {t("night.skipDon")}
               </button>
             </div>
           ) : (
-            <button type="button" className="table-advance-secondary" onClick={skipDon}>
+            <button
+              type="button"
+              className="table-advance-secondary"
+              disabled={
+                isFederationGame(game) &&
+                !!game.disciplinaryRemovals?.some(
+                  (r) => r.stage === "don-check" && r.checkCompletionPending,
+                )
+              }
+              onClick={skipDon}
+            >
               {t("night.skipDon")}
             </button>
           )
@@ -269,14 +308,16 @@ export const NightStage = ({
         }))}
         center={
           <div className="table-check-center" role="status" aria-label={t("night.donCheckResult")}>
-            <span className="table-prompt">
+            <strong>
               {t("night.donChecked", {
+                seat: game.checkResult.targetSeat,
                 name: target === undefined ? t("night.player") : displayName(target),
               })}
-            </span>
+            </strong>
             <div className="secret-result">
               {game.checkResult.match ? t("night.sheriffFound") : t("night.notSheriff")}
             </div>
+            <small>{t("night.donReadback", { seat: game.checkResult.targetSeat })}</small>
           </div>
         }
         advance={
@@ -344,12 +385,32 @@ export const NightStage = ({
               <button type="button" disabled>
                 {t("night.selectPlayer")}
               </button>
-              <button type="button" className="table-advance-secondary" onClick={skipSheriff}>
+              <button
+                type="button"
+                className="table-advance-secondary"
+                disabled={
+                  isFederationGame(game) &&
+                  !!game.disciplinaryRemovals?.some(
+                    (r) => r.stage === "sheriff-check" && r.checkCompletionPending,
+                  )
+                }
+                onClick={skipSheriff}
+              >
                 {t("night.skipSheriff")}
               </button>
             </div>
           ) : (
-            <button type="button" className="table-advance-secondary" onClick={skipSheriff}>
+            <button
+              type="button"
+              className="table-advance-secondary"
+              disabled={
+                isFederationGame(game) &&
+                !!game.disciplinaryRemovals?.some(
+                  (r) => r.stage === "sheriff-check" && r.checkCompletionPending,
+                )
+              }
+              onClick={skipSheriff}
+            >
               {t("night.skipSheriff")}
             </button>
           )
@@ -379,14 +440,23 @@ export const NightStage = ({
             role="status"
             aria-label={t("night.sheriffCheckResult")}
           >
-            <span className="table-prompt">
+            <strong>
               {t("night.sheriffChecked", {
+                seat: game.checkResult.targetSeat,
                 name: target === undefined ? t("night.player") : displayName(target),
               })}
-            </span>
+            </strong>
             <div className="secret-result">
               {game.checkResult.match ? t("night.mafiaFound") : t("night.notMafia")}
             </div>
+            <small>
+              {t(
+                game.checkResult.match ? "night.sheriffBlackReadback" : "night.sheriffRedReadback",
+                {
+                  seat: game.checkResult.targetSeat,
+                },
+              )}
+            </small>
           </div>
         }
         advance={
@@ -421,6 +491,14 @@ export const NightStage = ({
         center={
           <div className="table-check-center">
             <span className="table-prompt">{t("night.stageComplete")}</span>
+            {isFederationGame(game) && game.bestMove?.completionReason ? (
+              <FederationBestMoveTranscript
+                game={game}
+                onGameChange={onGameChange}
+                onEvent={onEvent}
+                onAcceptedEvent={onAcceptedEvent}
+              />
+            ) : null}
             {game.nightResult === undefined ? null : (
               <MafiaShotResultCard game={game} result={game.nightResult} />
             )}
@@ -429,6 +507,10 @@ export const NightStage = ({
         advance={
           <button
             type="button"
+            disabled={
+              isFederationGame(game) &&
+              !!game.disciplinaryRemovals?.some((r) => r.announcement === "pending")
+            }
             onClick={() => {
               const next = completeNight(game);
               if (onAcceptedEvent !== undefined) {
@@ -446,7 +528,13 @@ export const NightStage = ({
               }
             }}
           >
-            {t("night.beginDay", { day: game.day + 1 })}
+            {isFederationGame(game)
+              ? t(
+                  prepareBestMove(game).phase === "best-move"
+                    ? "night.recordBestMove"
+                    : "night.announceMorning",
+                )
+              : t("night.beginDay", { day: game.day + 1 })}
           </button>
         }
       />

@@ -23,6 +23,48 @@ const createAssignedGame = (): GameState => {
 };
 
 describe("buildFinalGameResults", () => {
+  it.each(["red", "black"] as const)(
+    "preserves a %s-team adjudication without invented departures",
+    (losingTeam) => {
+      const game = createAssignedGame();
+      const winner = losingTeam === "red" ? "black" : "red";
+      const adjudication = {
+        losingTeam,
+        offenderSeat: game.players.find(({ team }) => team === losingTeam)!.seat,
+        rule: "6.3.5",
+        reason: "Committee confirmed the referee ruling",
+        committeeApproved: true,
+      };
+      const results = buildFinalGameResults(
+        { ...game, phase: "finished", winner, adjudication },
+        new Date("2026-10-14T08:00:00.000Z"),
+        "host-player-id",
+      );
+      expect(results).toMatchObject({ outcome: winner, winner, reason: null, adjudication });
+      expect(results?.players.map(({ status }) => status)).toEqual(
+        game.players.map(({ status }) => status),
+      );
+    },
+  );
+
+  it("retains the deterministic rules-draw basis without requiring a manual reason", () => {
+    const results = buildFinalGameResults(
+      {
+        ...createAssignedGame(),
+        phase: "draw",
+        winner: null,
+        rulesDrawReason: { rule: "6.5.6", completedGameNights: 3, consecutiveUnchangedNights: 3 },
+      },
+      new Date("2026-10-14T08:00:00.000Z"),
+      "host-player-id",
+    );
+    expect(results).toMatchObject({
+      outcome: "draw",
+      winner: null,
+      reason: "MAFGAME 6.5.6: three consecutive game nights without a departure",
+    });
+  });
+
   it("returns null until victory has finalized the game", () => {
     expect(buildFinalGameResults(createAssignedGame(), new Date(), "host-player-id")).toBeNull();
   });

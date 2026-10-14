@@ -1,0 +1,639 @@
+import { randomUUID } from "node:crypto";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { Pool } from "pg";
+import { hashGameState, isSecretGameEventType, replayGameLog } from "@mafia/game-domain";
+import { buildApp } from "./app.js";
+import { AzureAccountStore } from "./azure-account-store.js";
+import { AzureClubStore, AzurePlayerStore } from "./azure-club-player-store.js";
+import { AzureEventStore, AzureGameSessionStore } from "./azure-game-session-store.js";
+import { AzureStorage, blobReference } from "./azure-storage.js";
+import { DEFAULT_CLUB_ID } from "./club-store.js";
+import { initializeSchema } from "./initialize-schema.js";
+import { createPostgresStores, type ApplicationStores } from "./storage-contracts.js";
+import type { FinalGameResults, GameSessionState } from "./game-session-store.js";
+import type { AppUser } from "./google-auth.js";
+import { createStorageFixture } from "./test-helpers/storage-fixture.js";
+import {
+  buildAcceptedResults,
+  createCanonicalHistory,
+  generateAutomaticDraw,
+  generateBestMoveAndBallot,
+  generateRoleDeal,
+  jsonHash,
+  jsonRoundTrip,
+  type CanonicalSnapshot,
+} from "./test-helpers/canonical-history.js";
+
+type RawRecord = { state: GameSessionState; results: FinalGameResults | null };
+type Context = {
+  app: Awaited<ReturnType<typeof buildApp>>;
+  clubId: string;
+  stores: () => ApplicationStores;
+  raw: (gameId: string) => Promise<RawRecord>;
+  projections: (gameId: string) => Promise<{
+    outcome: unknown;
+    winner: unknown;
+    reason: unknown;
+    players: {
+      playerId: string;
+      status: string;
+      won: boolean | null;
+      bestMoveHits: number | null;
+    }[];
+  }>;
+  reopen: () => Promise<void>;
+  close: () => Promise<void>;
+};
+
+const openAzure = async (): Promise<Context> => {
+  const fixture = await createStorageFixture();
+  let storage = fixture.storage;
+  try {
+    const owner = await new AzureAccountStore(storage).upsertUser({
+      id: randomUUID(),
+      subject: randomUUID(),
+      email: `${randomUUID()}@example.test`,
+      name: "Canonical owner",
+      picture: null,
+    });
+    const stores = (): ApplicationStores => ({
+      clubs: new AzureClubStore(storage),
+      players: new AzurePlayerStore(storage),
+      games: new AzureGameSessionStore(storage),
+      events: new AzureEventStore(storage),
+      ready: () => storage.ready(),
+      runAuthorized: (userId, clubId, manager, work) =>
+        storage.runAuthorized(userId, clubId, manager, work),
+    });
+    const makeApp = () => buildApp({ stores: stores(), authenticateRequest: async () => owner });
+    const context: Context = {
+      app: await makeApp(),
+      clubId: "",
+      stores,
+      raw: async (gameId) => {
+        const row = await storage.getEntity(`club:${context.clubId}:game:${gameId}`);
+        if (!row) throw new Error("Missing accepted Azure game pointer");
+        const body = await storage.read((tx) =>
+          tx.readBlob<{ session: RawRecord }>(blobReference(row)),
+        );
+        return { state: body.session.state, results: body.session.results };
+      },
+      projections: async (gameId) => {
+        const summary = (await stores().games.listCompleted(context.clubId)).find(
+          (row) => row.gameId === gameId,
+        );
+        if (!summary) throw new Error("Missing Azure completed projection");
+        const rows = await storage.read((tx) =>
+          tx.list<{
+            playerId: string;
+            isHost: boolean;
+            status: string;
+            won?: boolean;
+            bestMoveHits?: number;
+          }>(`club:${context.clubId}:result:${gameId}:`),
+        );
+        return {
+          outcome: summary.outcome,
+          winner: summary.winner,
+          reason: summary.reason,
+          players: rows
+            .filter(({ isHost }) => !isHost)
+            .map((row) => ({
+              playerId: row.playerId,
+              status: row.status,
+              won: row.won ?? null,
+              bestMoveHits: row.bestMoveHits ?? null,
+            })),
+        };
+      },
+      reopen: async () => {
+        await context.app.close();
+        await storage.end();
+        storage = new AzureStorage(fixture.options);
+        await storage.ready();
+        context.app = await makeApp();
+      },
+      close: async () => {
+        try {
+          await context.app.close();
+        } finally {
+          await storage.end();
+          await fixture.close();
+        }
+      },
+    };
+    const club = await context.app.inject({
+      method: "POST",
+      url: "/api/clubs",
+      payload: {
+        name: "Canonical history",
+        city: "London",
+        language: "en",
+        ownerConsent: true,
+        headerLogo: null,
+        cardLogo: null,
+      },
+    });
+    expect(club.statusCode, club.body).toBe(201);
+    context.clubId = club.json().club.id as string;
+    return context;
+  } catch (error) {
+    await fixture.close();
+    throw error;
+  }
+};
+
+const openPostgres = async (): Promise<Context> => {
+  // No personal/configured fallback. The protected runner supplies a disposable
+  // database; an unwrapped invocation fails before connecting or issuing DDL.
+  const databaseUrl = process.env.TEST_DATABASE_URL;
+  if (!databaseUrl) throw new Error("Run canonical persistence via npm run test:local");
+  const target = new URL(databaseUrl);
+  if (
+    target.protocol !== "postgresql:" ||
+    target.hostname !== "127.0.0.1" ||
+    target.pathname !== "/mafia_test" ||
+    !target.port ||
+    target.search ||
+    target.hash
+  )
+    throw new Error("Expected the owned loopback PostgreSQL fixture");
+  const schemaName = `canonical_history_${randomUUID().replaceAll("-", "")}`;
+  const schemaPool = new Pool({ connectionString: databaseUrl });
+  let pool = new Pool({ connectionString: databaseUrl, options: `-c search_path=${schemaName}` });
+  try {
+    await schemaPool.query(`CREATE SCHEMA ${schemaName}`);
+    await initializeSchema(pool);
+    const actor: AppUser = {
+      id: "00000000-0000-4000-8000-000000000001",
+      email: "owner@mafiamalaga.es",
+      name: "Owner",
+      picture: null,
+    };
+    const stores = () => createPostgresStores(pool);
+    const makeApp = () =>
+      buildApp({
+        stores: stores(),
+        defaultClubId: DEFAULT_CLUB_ID,
+        authenticateRequest: async () => actor,
+      });
+    const context: Context = {
+      app: await makeApp(),
+      clubId: DEFAULT_CLUB_ID,
+      stores,
+      raw: async (gameId) => {
+        const row = (
+          await pool.query<RawRecord>(
+            "SELECT state, results FROM game_sessions WHERE id = $1 AND club_id = $2",
+            [gameId, DEFAULT_CLUB_ID],
+          )
+        ).rows[0];
+        if (!row) throw new Error("Missing accepted PostgreSQL game");
+        return row;
+      },
+      projections: async (gameId) => {
+        const summary = (
+          await pool.query("SELECT outcome, winner, reason FROM game_results WHERE game_id = $1", [
+            gameId,
+          ])
+        ).rows[0];
+        if (!summary) throw new Error("Missing PostgreSQL completed projection");
+        const players = (
+          await pool.query<{
+            playerId: string;
+            status: string;
+            won: boolean | null;
+            bestMoveHits: number | null;
+          }>(
+            'SELECT player_id AS "playerId", final_status AS status, won, best_move_hits AS "bestMoveHits" FROM game_player_results WHERE game_id = $1',
+            [gameId],
+          )
+        ).rows;
+        return { ...summary, players };
+      },
+      reopen: async () => {
+        await context.app.close();
+        await pool.end();
+        pool = new Pool({ connectionString: databaseUrl, options: `-c search_path=${schemaName}` });
+        context.app = await makeApp();
+      },
+      close: async () => {
+        try {
+          await context.app.close();
+        } finally {
+          await pool.end();
+          await schemaPool.query(`DROP SCHEMA IF EXISTS ${schemaName} CASCADE`);
+          await schemaPool.end();
+        }
+      },
+    };
+    return context;
+  } catch (error) {
+    await pool.end();
+    await schemaPool.query(`DROP SCHEMA IF EXISTS ${schemaName} CASCADE`);
+    await schemaPool.end();
+    throw error;
+  }
+};
+
+const createRecord = async (context: Context, federation = true, viaHttp = true) => {
+  const headers = { "x-club-id": context.clubId };
+  const ids: string[] = [];
+  for (let index = 0; index < 11; index += 1) {
+    const profile = await context.app.inject({
+      method: "POST",
+      url: "/api/players",
+      headers,
+      payload: { nickname: `Canonical ${randomUUID()}`, consent: false },
+    });
+    expect(profile.statusCode, profile.body).toBe(201);
+    ids.push(profile.json().player.id as string);
+  }
+  const host = ids[0]!;
+  const players = ids.slice(1);
+  const draft = generateRoleDeal(host, players, federation).draftState;
+  const creationId = randomUUID();
+  const creation = { creationId, name: "Canonical draft", state: draft, results: null };
+  let created: { gameId: string };
+  if (viaHttp) {
+    const response = await context.app.inject({
+      method: "POST",
+      url: "/api/game-sessions",
+      headers,
+      payload: creation,
+    });
+    expect(response.statusCode, response.body).toBe(201);
+    created = response.json() as { gameId: string };
+  } else {
+    created = await context.stores().games.create({ clubId: context.clubId, ...creation });
+  }
+  const url = `/api/game-sessions/${created.gameId}`;
+  const read = await context.app.inject({ url, headers });
+  expect(read.statusCode, read.body).toBe(200);
+  expect(read.json().session.state).toEqual(draft);
+  expect((await context.raw(created.gameId)).state).toEqual(draft);
+  expect(draft.initialGame).toBeNull();
+  expect(draft.events).toEqual([]);
+  expect(draft.game).toBeNull();
+  expect(draft.setup.step).toBe("role-draw");
+  expect(Object.keys(draft.setup.assignments)).toHaveLength(1);
+  // Gameplay starts only after the server-issued identity and completed deal.
+  return {
+    gameId: created.gameId,
+    creationId,
+    headers,
+    url,
+    history: createCanonicalHistory(created.gameId, host, players, federation),
+  };
+};
+
+const verifyCanonical = (actual: unknown, expected: CanonicalSnapshot, gameId: string) => {
+  expect(actual).toEqual(expected);
+  const state = actual as CanonicalSnapshot;
+  expect(jsonHash(state.initialGame)).toBe(jsonHash(expected.initialGame));
+  expect(jsonHash(state.events)).toBe(jsonHash(expected.events));
+  expect(hashGameState(state.initialGame.game)).toBe(hashGameState(expected.initialGame.game));
+  const replay = replayGameLog(state.initialGame, state.events, gameId);
+  expect(replay.game).toEqual(state.game);
+  expect(hashGameState(replay.game)).toBe(hashGameState(expected.game));
+  expect(replay.frames.map(({ after }) => hashGameState(after))).toEqual(
+    expected.events.map(({ stateHashAfter }) => stateHashAfter),
+  );
+  expect(state.headEventId).toBe(state.events.at(-1)?.id);
+  expect(
+    state.events.every(
+      ({ replayVersion, rulesEdition }) =>
+        replayVersion === state.initialGame.replayVersion &&
+        rulesEdition === state.initialGame.rulesEdition,
+    ),
+  ).toBe(true);
+  // Negative control: the replay proof actually rejects a changed retained hash.
+  const corrupt = state.events.map((entry, index) =>
+    index === state.events.length - 1
+      ? { ...entry, stateHashAfter: `sha256:${"0".repeat(64)}` }
+      : entry,
+  );
+  expect(() => replayGameLog(state.initialGame, corrupt, gameId)).toThrow();
+};
+
+const saveAndRead = async (
+  context: Context,
+  gameId: string,
+  state: CanonicalSnapshot,
+  results: FinalGameResults | null = null,
+  viaHttp = true,
+) => {
+  // Explicit JSON serialization before the write, never just in-memory equality.
+  const accepted = jsonRoundTrip({ state, results });
+  const operation = {
+    clubId: context.clubId,
+    gameId,
+    mutationId: randomUUID(),
+    name: "Accepted canonical history",
+    ...accepted,
+  };
+  let acceptedRevision: number;
+  if (viaHttp) {
+    const response = await context.app.inject({
+      method: "PUT",
+      url: `/api/game-sessions/${gameId}`,
+      headers: { "x-club-id": context.clubId },
+      payload: {
+        mutationId: operation.mutationId,
+        name: operation.name,
+        state: accepted.state,
+        results: accepted.results,
+      },
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    verifyCanonical(response.json().state, accepted.state, gameId);
+    expect(response.json().results).toEqual(accepted.results);
+    acceptedRevision = response.json().revision as number;
+  } else {
+    const saved = await context.stores().games.save(operation);
+    verifyCanonical(saved.state, accepted.state, gameId);
+    expect(saved.results).toEqual(accepted.results);
+    acceptedRevision = saved.revision;
+  }
+  // Existing saves are last-commit-wins, not mutation-id idempotent. Repeating
+  // the accepted payload advances revision but must retain replay/result hashes
+  // and replace (rather than double-count) projections.
+  const retry = await context.stores().games.save(operation);
+  expect(retry.duplicate).toBe(false);
+  expect(retry.revision).toBe(acceptedRevision + 1);
+  verifyCanonical(retry.state, accepted.state, gameId);
+  expect(retry.results).toEqual(accepted.results);
+  await readAndVerify(context, gameId, accepted.state, accepted.results);
+};
+
+const readAndVerify = async (
+  context: Context,
+  gameId: string,
+  state: CanonicalSnapshot,
+  results: FinalGameResults | null = null,
+) => {
+  const accepted = jsonRoundTrip({ state, results });
+  const loaded = await context.stores().games.get(gameId, context.clubId);
+  expect(loaded).not.toBeNull();
+  verifyCanonical(loaded!.state, accepted.state, gameId);
+  expect(loaded!.results).toEqual(accepted.results);
+  const raw = await context.raw(gameId);
+  verifyCanonical(raw.state, accepted.state, gameId);
+  expect(raw.results).toEqual(accepted.results);
+  expect(jsonHash(raw.results)).toBe(jsonHash(accepted.results));
+  const read = await context.app.inject({
+    url: `/api/game-sessions/${gameId}`,
+    headers: { "x-club-id": context.clubId },
+  });
+  expect(read.statusCode, read.body).toBe(200);
+  verifyCanonical(read.json().session.state, accepted.state, gameId);
+  expect(read.json().session.results).toEqual(accepted.results);
+  expect(read.json().session.status).toBe(results === null ? "active" : "completed");
+  const active = await context.app.inject({
+    url: "/api/game-sessions?status=active",
+    headers: { "x-club-id": context.clubId },
+  });
+  expect(active.statusCode, active.body).toBe(200);
+  if (results === null)
+    expect(active.json().sessions).toContainEqual(
+      expect.objectContaining({ gameId, phase: state.game.phase, day: state.game.day }),
+    );
+  else expect(active.json().sessions).not.toContainEqual(expect.objectContaining({ gameId }));
+};
+
+const verifyViews = async (
+  context: Context,
+  gameId: string,
+  state: CanonicalSnapshot,
+  results: FinalGameResults,
+) => {
+  const headers = { "x-club-id": context.clubId };
+  const host = await context.app.inject({
+    url: `/api/games/${gameId}/events?visibility=host`,
+    headers,
+  });
+  const publicView = await context.app.inject({
+    url: `/api/games/${gameId}/events?visibility=public`,
+    headers,
+  });
+  expect(host.statusCode, host.body).toBe(200);
+  expect(publicView.statusCode, publicView.body).toBe(200);
+  const hostEvents = host.json().events as {
+    id: string;
+    payload: unknown;
+    replayVersion: number;
+    parentEventId: null;
+    stateHashAfter: null;
+  }[];
+  const publicEvents = publicView.json().events as {
+    id: string;
+    payload: unknown;
+    stateHashAfter: null;
+  }[];
+  expect(hostEvents).toHaveLength(state.events.length);
+  expect(publicEvents).toHaveLength(state.events.length);
+  expect(hostEvents.map(({ id }) => id)).toEqual(state.events.map(({ id }) => id));
+  expect(hostEvents.map(({ payload }) => payload)).toEqual(
+    state.events.map(({ payload }) => payload),
+  );
+  // /events remains a lossy version-1 projection, NOT canonical v2 authority.
+  expect(
+    hostEvents.every(
+      ({ replayVersion, parentEventId, stateHashAfter }) =>
+        replayVersion === 1 && parentEventId === null && stateHashAfter === null,
+    ),
+  ).toBe(true);
+  for (const [index, entry] of state.events.entries()) {
+    expect(publicEvents[index]!.stateHashAfter).toBeNull();
+    expect(publicEvents[index]!.payload).toEqual(
+      isSecretGameEventType(entry.type) ? { redacted: true } : entry.payload,
+    );
+  }
+  const listing = await context.app.inject({ url: "/api/game-sessions?status=completed", headers });
+  expect(listing.statusCode, listing.body).toBe(200);
+  expect(listing.json().sessions).toContainEqual(
+    expect.objectContaining({
+      gameId,
+      outcome: results.outcome,
+      winner: results.winner,
+      reason: results.reason,
+      eventCount: state.events.length,
+    }),
+  );
+  const projection = await context.projections(gameId);
+  expect(projection).toMatchObject({
+    outcome: results.outcome,
+    winner: results.winner,
+    reason: results.reason,
+  });
+  expect(projection.players).toHaveLength(10);
+  for (const player of state.game.players)
+    expect(projection.players).toContainEqual({
+      playerId: player.id,
+      status: player.status,
+      won: results.winner === null ? null : player.team === results.winner,
+      bestMoveHits:
+        state.game.bestMove?.playerSeat === player.seat
+          ? (state.game.bestMove.mafiaHits ?? null)
+          : null,
+    });
+};
+
+for (const [provider, open] of [
+  ["Azure Table/Blob", openAzure],
+  ["PostgreSQL", openPostgres],
+] as const) {
+  describe(`${provider} canonical-history persistence`, () => {
+    let context: Context;
+    beforeAll(async () => {
+      context = await open();
+    });
+    afterAll(async () => {
+      await context?.close();
+    });
+
+    it.each([
+      { losingTeam: "black", completion: "finished-early" },
+      { losingTeam: "red", completion: "declined" },
+    ] as const)(
+      "replays $completion Best Move, disputed/ruled ballot and $losingTeam losing-team adjudication after actual save/reload",
+      async ({ losingTeam, completion }) => {
+        const record = await createRecord(context);
+        const { history, gameId, creationId, headers, url } = record;
+        await saveAndRead(context, gameId, history.snapshot());
+        const stages = generateBestMoveAndBallot(history, completion);
+        expect(stages.partialBestMove.game.bestMove?.selectedSeats).toEqual(
+          completion === "declined" ? [] : [stages.victim, stages.blackSeat],
+        );
+        expect(stages.partialBestMove.game.bestMove).not.toHaveProperty("completionReason");
+        expect(stages.finalizedBestMove.game.bestMove).toMatchObject({
+          completionReason: completion,
+          readbackAcknowledged: true,
+          mafiaHits: completion === "declined" ? 0 : 1,
+        });
+        expect(stages.dispute.game.ballot?.dispute).toBeDefined();
+        expect(stages.ruling.game.ballot).toMatchObject({
+          reviewedCandidateSeats: [stages.dispute.game.ballot!.dispute!.candidateSeat],
+          finalRuling: { externalReviewAcknowledged: true },
+        });
+        expect(stages.ruling.game.ballot?.dispute).toBeUndefined();
+        for (const [index, state] of [
+          stages.partialBestMove,
+          stages.finalizedBestMove,
+          stages.dispute,
+          stages.ruling,
+          stages.closedBallot,
+        ].entries())
+          await saveAndRead(context, gameId, state, null, index % 2 === 0);
+        const beforeRuling = history.snapshot();
+        const offenderSeat = history
+          .current()
+          .players.find(({ team, status }) => team === losingTeam && status === "active")!.seat;
+        history.append({
+          type: "game.adjudicated",
+          payload: {
+            losingTeam,
+            offenderSeat,
+            rule: "6.3.5",
+            reason: "ППК — reasoned opponent victory, committee agreement recorded",
+            committeeApproved: true,
+          },
+        });
+        const pendingFinish = history.snapshot();
+        expect(pendingFinish.game.players).toEqual(beforeRuling.game.players);
+        await saveAndRead(context, gameId, pendingFinish);
+        history.append({
+          type: "game.completed",
+          payload: { winner: losingTeam === "black" ? "red" : "black" },
+        });
+        const completed = history.snapshot();
+        const results = await buildAcceptedResults(completed);
+        expect(results).toMatchObject({
+          outcome: completed.game.winner,
+          winner: completed.game.winner,
+          reason: null,
+          adjudication: completed.game.adjudication,
+        });
+        await saveAndRead(context, gameId, completed, results, false);
+        await context.reopen();
+        await readAndVerify(context, gameId, completed, results);
+        await verifyViews(context, gameId, completed, results);
+        const retry = await context.app.inject({
+          method: "POST",
+          url: "/api/game-sessions",
+          headers,
+          payload: {
+            creationId,
+            name: "Stale draft creation retry",
+            state: history.draftState,
+            results: null,
+          },
+        });
+        expect(retry.statusCode, retry.body).toBe(200);
+        expect(retry.json()).toMatchObject({ gameId, duplicate: true });
+        verifyCanonical(retry.json().state, completed, gameId);
+        expect(retry.json().results).toEqual(results);
+        verifyCanonical(
+          (await context.app.inject({ url, headers })).json().session.state,
+          completed,
+          gameId,
+        );
+        expect(completed.initialGame.replayVersion).toBe(2);
+        expect(completed.events.every(({ replayVersion }) => replayVersion === 2)).toBe(true);
+      },
+    );
+
+    it("replays the automatic planning-plus-two-miss draw and real Finish result without a fabricated manual draw event", async () => {
+      const { history, gameId } = await createRecord(context);
+      const completed = generateAutomaticDraw(history);
+      expect(completed.game).toMatchObject({
+        phase: "draw",
+        completedGameNights: 3,
+        rulesDrawReason: { rule: "6.5.6", completedGameNights: 3, consecutiveUnchangedNights: 3 },
+      });
+      expect(completed.events.some(({ type }) => type === "game.drawn")).toBe(false);
+      expect(completed.events.at(-1)).toMatchObject({
+        type: "phase.changed",
+        payload: { to: "draw" },
+      });
+      await saveAndRead(context, gameId, completed);
+      const results = await buildAcceptedResults(completed);
+      expect(results).toMatchObject({
+        outcome: "draw",
+        winner: null,
+        reason: "MAFGAME 6.5.6: three consecutive game nights without a departure",
+      });
+      await saveAndRead(context, gameId, completed, results, false);
+      await context.reopen();
+      await readAndVerify(context, gameId, completed, results);
+      await verifyViews(context, gameId, completed, results);
+    });
+
+    it("preserves a generated valid v1 open-ballot/finished chain and every original hash without injecting v2 defaults", async () => {
+      const { history, gameId } = await createRecord(context, false, false);
+      history.append({ type: "player.nominated", payload: { nominatorSeat: 1, candidateSeat: 1 } });
+      history.append({ type: "player.nominated", payload: { nominatorSeat: 2, candidateSeat: 2 } });
+      history.append({ type: "phase.changed", payload: { to: "voting" } });
+      const ballot = history.snapshot();
+      await saveAndRead(context, gameId, ballot);
+      history.append({ type: "game.drawn", payload: { reason: "Legacy moderator draw" } });
+      const completed = history.snapshot();
+      const results = await buildAcceptedResults(completed, "Legacy moderator draw");
+      await saveAndRead(context, gameId, completed, results, false);
+      await context.reopen();
+      await readAndVerify(context, gameId, completed, results);
+      await verifyViews(context, gameId, completed, results);
+      expect(completed.initialGame.replayVersion).toBe(1);
+      for (const value of [
+        completed.setup,
+        completed.initialGame,
+        completed.initialGame.game,
+        completed.game,
+        ...completed.events,
+      ])
+        expect(value).not.toHaveProperty("rulesEdition");
+      expect(completed.game).not.toHaveProperty("completedGameNights");
+      expect(completed.game).not.toHaveProperty("currentSpeechRestricted");
+    });
+  });
+}

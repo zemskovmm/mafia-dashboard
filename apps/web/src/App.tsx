@@ -10,7 +10,10 @@ import {
 import {
   applyGameEvent,
   CASPER_PLAYER_ID,
+  FEDERATION_RULES_EDITION,
   createGameLogEntry,
+  isFederationGame,
+  createInitialGameBaseline,
   hashGameState,
   isCasperPlayer,
   isMeaningfulGameEventDraft,
@@ -93,6 +96,7 @@ import {
 } from "./features/effects/lighting-preferences.js";
 import { VgpuLightingProvider } from "./features/effects/vgpu/VgpuLightingProvider.js";
 import { GameScreen } from "./features/game/GameScreen.js";
+import { AdjudicationControls } from "./features/game/AdjudicationControls.js";
 import { isCriticalState } from "./features/game/critical-state.js";
 import { LiveSidePanel } from "./features/game/LiveSidePanel.js";
 import {
@@ -189,6 +193,10 @@ type ShellTranslator = FeatureI18n<ShellMessageKey>["t"];
 const phaseMessageKeys: Readonly<Record<string, ShellMessageKey>> = {
   "setup-players": "phaseSetupPlayers",
   "mafia-planning": "phaseMafiaPlanning",
+  "mafia-sleep": "phaseMafiaSleep",
+  "don-identification": "phaseDonIdentification",
+  "sheriff-identification": "phaseSheriffIdentification",
+  "free-seating": "phaseFreeSeating",
   "sheriff-wake": "phaseSheriffWake",
   day: "phaseDay",
   voting: "phaseVoting",
@@ -207,6 +215,8 @@ const phaseMessageKeys: Readonly<Record<string, ShellMessageKey>> = {
   "night-sheriff-result": "phaseNightSheriffResult",
   "night-resolution": "phaseNightResolution",
   finished: "phaseFinished",
+  draw: "phaseDraw",
+  cancelled: "phaseCancelled",
 };
 const eventMessageKeys: Readonly<Record<string, ShellMessageKey>> = {
   "game.created": "eventGameCreated",
@@ -230,6 +240,26 @@ const eventMessageKeys: Readonly<Record<string, ShellMessageKey>> = {
   "sheriff.check-skipped": "eventSheriffCheckSkipped",
   "best-move.completed": "eventBestMoveCompleted",
   "game.completed": "eventGameCompleted",
+  "game.drawn": "eventGameDrawn",
+  "game.cancelled": "eventGameCancelled",
+  "voting.order-announced": "eventOrderAnnounced",
+  "voting.candidate-mentioned": "eventCandidateMentioned",
+  "voting.candidate-inspected": "eventCandidateInspected",
+  "voting.candidate-stopped": "eventCandidateStopped",
+  "voting.live-advanced": "eventLiveAdvanced",
+  "vote.accepted": "eventVoteAccepted",
+  "vote.corrected": "eventVoteCorrected",
+  "voting.count-disputed": "eventCountDisputed",
+  "voting.count-ruled": "eventCountRuled",
+  "voting.legally-skipped": "eventVotingSkipped",
+  "mafia.multiple-shot-observed": "eventMultipleShot",
+  "best-move.number-accepted": "eventBestMoveNumber",
+  "best-move.slip-corrected": "eventBestMoveSlip",
+  "best-move.finalized": "eventBestMoveCompleted",
+  "game.adjudicated": "eventAdjudicated",
+  "discipline.removal-observed": "eventRemovalObserved",
+  "discipline.removals-announced": "eventRemovalsAnnounced",
+  "discipline.foul-issued": "eventFoulIssued",
 };
 const phaseLabel = (phase: string, t: ShellTranslator): string =>
   t(phaseMessageKeys[phase] ?? "unknownPhase", { value: phase });
@@ -937,7 +967,9 @@ export const ClubWorkspace = ({
       const before = canonicalGameRef.current;
       const gameId = sessionSync.gameId;
       if (baseline === null || before === null || gameId === null) return;
-      if (!isMeaningfulGameEventDraft(draft)) {
+      // V1 folds provisional turns into later decisions. V2 reducers require the
+      // exact accepted phase/cursor, so judge progression must also be canonical.
+      if (!isFederationGame(before) && !isMeaningfulGameEventDraft(draft)) {
         const nextDraft = applyGameEvent(game ?? before, draft);
         hasIntermediateDraftRef.current = true;
         phaseRef.current = nextDraft.phase;
@@ -1075,7 +1107,9 @@ export const ClubWorkspace = ({
       acceptGameEvent({ type: "game.completed", payload: { winner: game.winner } });
       playedAt = eventsRef.current.at(-1)?.createdAt;
     } else if (
-      (game.phase === "draw" && outcomeEvent?.type !== "game.drawn") ||
+      (game.phase === "draw" &&
+        game.rulesDrawReason === undefined &&
+        outcomeEvent?.type !== "game.drawn") ||
       (game.phase === "cancelled" && outcomeEvent?.type !== "game.cancelled")
     )
       return;
@@ -2093,6 +2127,23 @@ export const ClubWorkspace = ({
             ) : null}
           </div>
           {isManager ? musicSetupPanel : null}
+          {game !== null &&
+          isFederationGame(game) &&
+          !["finished", "draw", "cancelled"].includes(game.phase) &&
+          finalResults === null &&
+          previewGame === null &&
+          !privacyHidden &&
+          finishGameState !== "blocked" &&
+          canApplyGameScreenMutation() ? (
+            <AdjudicationControls
+              game={game}
+              onAcceptedEvent={(draft) => {
+                if (!canApplyGameScreenMutation()) return;
+                acceptGameEvent(draft);
+                setActiveDrawer(null);
+              }}
+            />
+          ) : null}
           {activeSessionsPanel}
           {isManager ? (
             <div className="manage-menu-actions manage-club-actions">
@@ -2371,6 +2422,9 @@ export const ClubWorkspace = ({
             key={setupInstanceKey}
             players={availablePlayersForSetup}
             playersLoading={!playersLoaded}
+            rulesEdition={
+              setupSession === null ? FEDERATION_RULES_EDITION : setupSession.rulesEdition
+            }
             bestMoveEnabled={setupSession?.bestMoveEnabled ?? club.bestMoveEnabled}
             showDevelopmentTools={isManager && devUnlocked && devModeEnabled}
             onPopulateDevelopmentPlayers={populateDevelopmentPlayers}
@@ -2386,7 +2440,7 @@ export const ClubWorkspace = ({
             onComplete={(next, selectedHostPlayerId) => {
               const gameId = sessionSync.gameId;
               if (gameId === null || sessionSync.isCreating || sessionSync.isRemoved) return;
-              const baseline: InitialGameBaseline = { replayVersion: 1, game: next };
+              const baseline = createInitialGameBaseline(next);
               const sequence =
                 Math.max(0, ...legacyLogRef.current.map((entry) => entry.sequence)) + 1;
               const started = createGameLogEntry({
@@ -2409,7 +2463,8 @@ export const ClubWorkspace = ({
               setResetReturnEventId(null);
               setUndoBudget(0);
               phaseRef.current = next.phase;
-              setSetupSession(null);
+              // Federation setup records retain acknowledged club deviations after play starts.
+              if (!isFederationGame(next)) setSetupSession(null);
               setHostPlayerId(selectedHostPlayerId);
               setFinalResults(null);
               if (musicState === "playing") musicRef.current?.playFirstRegularTrack();
@@ -2422,6 +2477,7 @@ export const ClubWorkspace = ({
           key={`${previewGame === null ? "live" : "preview"}-${renderedGameScreenMutationGeneration}`}
           game={previewGame ?? game}
           gameName={sessionName}
+          clubDeviationsAcknowledged={setupSession?.clubDeviationsAcknowledged}
           hostName={
             hostPlayerId === null
               ? t("host")
@@ -2464,7 +2520,14 @@ export const ClubWorkspace = ({
           game?.phase === "voting"
             ? (seat) => {
                 if (canApplyGameScreenMutation() && game.phase === "voting") {
-                  changeGame(selectVotingCandidate(game, seat));
+                  if (isFederationGame(game)) {
+                    acceptGameEvent({
+                      type: "voting.candidate-inspected",
+                      payload: { candidateSeat: seat },
+                    });
+                  } else {
+                    changeGame(selectVotingCandidate(game, seat));
+                  }
                 }
               }
             : undefined

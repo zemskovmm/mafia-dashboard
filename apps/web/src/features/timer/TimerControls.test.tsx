@@ -67,9 +67,38 @@ afterEach(() => {
 });
 
 describe("TimerControls", () => {
+  it("explicitly replaces the countdown with twenty seconds and preserves pause/resume through expiry", () => {
+    vi.useFakeTimers();
+    render(<TimerControls />);
+
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(screen.getByRole("button", { name: "Timer face" })).toHaveTextContent("00");
+    fireEvent.click(screen.getByRole("button", { name: "Start 60 second timer" }));
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(screen.getByRole("button", { name: "Pause timer" })).toHaveTextContent("55");
+
+    fireEvent.click(screen.getByRole("button", { name: "Start 20 second timer" }));
+    expect(screen.getByRole("button", { name: "Pause timer" })).toHaveTextContent("20");
+    act(() => vi.advanceTimersByTime(3_250));
+    fireEvent.click(screen.getByRole("button", { name: "Pause timer" }));
+    act(() => vi.advanceTimersByTime(120_000));
+    expect(screen.getByRole("button", { name: "Resume timer" })).toHaveTextContent("17");
+
+    fireEvent.click(screen.getByRole("button", { name: "Resume timer" }));
+    act(() => vi.advanceTimersByTime(6_800));
+    expect(screen.getByRole("button", { name: "Pause timer" })).toHaveTextContent("10");
+    expect(screen.getByRole("button", { name: "Pause timer" })).toHaveClass("is-warning");
+    act(() => vi.advanceTimersByTime(9_800));
+    expect(screen.getByRole("button", { name: "Pause timer" })).toHaveTextContent("01");
+    act(() => vi.advanceTimersByTime(200));
+    expect(screen.getByRole("button", { name: "Timer face" })).toHaveTextContent("00");
+    expect(screen.getByRole("button", { name: "Timer face" })).toBeDisabled();
+  });
+
   it.each([
     [60, 50],
     [30, 20],
+    [20, 10],
     [10, 0],
   ] as const)(
     "pre-schedules exactly one ten-second warning for the %i second preset",
@@ -148,6 +177,7 @@ describe("TimerControls", () => {
   it.each([
     [60, 50_050],
     [30, 20_050],
+    [20, 10_050],
     [10, 0],
   ])(
     "does not replay the %i second preset warning when paused after its threshold between ticks",
@@ -165,7 +195,7 @@ describe("TimerControls", () => {
     },
   );
 
-  it.each([60, 30, 10])("starts a fresh %i second preset while paused", (seconds) => {
+  it.each([60, 30, 20, 10])("starts a fresh %i second preset while paused", (seconds) => {
     vi.useFakeTimers();
     render(<TimerControls />);
     fireEvent.click(screen.getByRole("button", { name: "Start 60 second timer" }));

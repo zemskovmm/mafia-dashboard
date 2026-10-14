@@ -107,6 +107,14 @@ export interface FinalGameResults {
   readonly winner: "red" | "black" | null;
   readonly reason: string | null;
   readonly playedAt: string;
+  /** Referee ruling retained in authoritative JSON, not the win reason projection. */
+  readonly adjudication?: {
+    readonly losingTeam: "red" | "black";
+    readonly offenderSeat?: number;
+    readonly rule: string;
+    readonly reason: string;
+    readonly committeeApproved: boolean;
+  };
   readonly players: readonly {
     readonly playerId: string;
     readonly seat: number;

@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { screen } from "@testing-library/react";
+import { act, fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   advanceSetupPhase,
   beginNight,
@@ -12,14 +12,18 @@ import {
   createSetup,
   drawRoleForSeat,
   markPlayerInactive,
+  performDonCheck,
 } from "@mafia/game-domain";
 import type { GameState, PlayerInput } from "@mafia/game-domain";
 import { I18nProvider } from "../../i18n/I18nProvider.js";
 import { NightStage } from "./NightStage.js";
+import { TimerControls } from "../timer/TimerControls.js";
 import { namedProfiles, playerLabel, renderWithProfiles } from "../../test-player-directory.js";
 
 const render = (ui: Parameters<typeof renderWithProfiles>[0]) =>
   renderWithProfiles(ui, namedProfiles("p-"));
+
+afterEach(() => vi.useRealTimers());
 
 const createNightGame = (): GameState => {
   const players: PlayerInput[] = Array.from({ length: 10 }, (_, index) => ({
@@ -55,6 +59,50 @@ const Harness = ({
 };
 
 describe("NightStage", () => {
+  it.each([
+    ["en", "night-don", "10s: select a player to check for Sheriff"],
+    ["en", "night-sheriff", "10s: select a player to check for Mafia"],
+    ["ru", "night-don", "10 с: выберите игрока для проверки на Шерифа"],
+    ["ru", "night-sheriff", "10 с: выберите игрока для проверки на мафию"],
+  ] as const)(
+    "prompts the %s/%s ten-second window without advancing or recording timer expiry",
+    (locale, phase, prompt) => {
+      vi.useFakeTimers();
+      const game: GameState = { ...createNightGame(), phase };
+      const onGameChange = vi.fn();
+      const onEvent = vi.fn();
+      const onAcceptedEvent = vi.fn();
+      render(
+        <I18nProvider locale={locale}>
+          <NightStage
+            game={game}
+            onGameChange={onGameChange}
+            onEvent={onEvent}
+            onAcceptedEvent={onAcceptedEvent}
+          />
+          <TimerControls />
+        </I18nProvider>,
+      );
+      expect(screen.getByText(prompt)).toBeInTheDocument();
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: locale === "en" ? "Start 10 second timer" : "Запустить таймер на 10 секунд",
+        }),
+      );
+      act(() => vi.advanceTimersByTime(10_000));
+      const timerFace = screen.getByRole("button", {
+        name: locale === "en" ? "Timer face" : "Циферблат таймера",
+      });
+      expect(timerFace).toHaveTextContent("00");
+      expect(timerFace).toBeDisabled();
+      expect(onGameChange).not.toHaveBeenCalled();
+      expect(onEvent).not.toHaveBeenCalled();
+      expect(onAcceptedEvent).not.toHaveBeenCalled();
+      expect(game.phase).toBe(phase);
+      expect(screen.getByText(prompt)).toBeInTheDocument();
+    },
+  );
+
   it.each(["night-mafia", "night-don", "night-sheriff", "night-resolution"] as const)(
     "keeps role badges visible in %s with the daytime toggle on",
     (phase) => {
@@ -70,29 +118,100 @@ describe("NightStage", () => {
       expect(document.querySelectorAll(".role-badge")).toHaveLength(10);
     },
   );
-  it("renders a Russian Don result while preserving the checked player's name", () => {
-    const base = createNightGame();
-    const target = base.players.find(({ team }) => team === "red")!;
-    render(
-      <I18nProvider locale="ru">
-        <NightStage
-          game={{
-            ...base,
-            phase: "night-don-result",
-            checkResult: { kind: "don-check", targetSeat: target.seat, match: false, secret: true },
-          }}
-          onGameChange={() => undefined}
-          onEvent={() => undefined}
-        />
-      </I18nProvider>,
-    );
+  it.each(["en", "ru"] as const)(
+    "renders a numbered %s Don result and readback while preserving the player's name",
+    (locale) => {
+      const base = createNightGame();
+      const target = base.players.find(({ role }) => role === "citizen")!;
+      render(
+        <I18nProvider locale={locale}>
+          <NightStage
+            game={performDonCheck({ ...base, phase: "night-don" }, target.seat).game}
+            onGameChange={() => undefined}
+            onEvent={() => undefined}
+          />
+        </I18nProvider>,
+      );
 
-    expect(screen.getByRole("status", { name: "Результат проверки Дона" })).toHaveTextContent(
-      `Дон проверил игрока ${playerLabel(target)}`,
-    );
-    expect(screen.getByText("Не является Шерифом")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Перейти к проверке Шерифа" })).toBeInTheDocument();
-  });
+      const result = screen.getByRole("status", {
+        name: locale === "en" ? "Don check result" : "Результат проверки Дона",
+      });
+      const checked =
+        locale === "en"
+          ? `Don checked #${target.seat} · ${playerLabel(target)}`
+          : `Дон проверил №${target.seat} · ${playerLabel(target)}`;
+      expect(result).toHaveTextContent(checked);
+      expect(result.querySelector("strong")).toHaveTextContent(checked);
+      expect(result).toHaveTextContent(
+        locale === "en"
+          ? `Read back #${target.seat}, then show the result.`
+          : `Повторите №${target.seat}, затем покажите результат.`,
+      );
+      expect(
+        screen.getByText(locale === "en" ? "Not the Sheriff" : "Не является Шерифом"),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", {
+          name: locale === "en" ? "Proceed to Sheriff check" : "Перейти к проверке Шерифа",
+        }),
+      ).toBeInTheDocument();
+    },
+  );
+
+  it.each([
+    ["en", "red", "Not Mafia", "Red — thumb up."],
+    ["en", "black", "Mafia found", "Black — thumb down."],
+    ["ru", "red", "Не является мафией", "Красный — большой палец вверх."],
+    ["ru", "black", "Мафия найдена", "Чёрный — большой палец вниз."],
+  ] as const)(
+    "reads back the checked seat and correct %s/%s Sheriff gesture without changing check meaning",
+    async (locale, team, meaning, gesture) => {
+      const user = userEvent.setup();
+      const initial: GameState = { ...createNightGame(), phase: "night-sheriff" };
+      const target = initial.players.find((player) => player.team === team)!;
+      const onEvent = vi.fn();
+      const onGameChange = vi.fn();
+      render(
+        <I18nProvider locale={locale}>
+          <Harness initial={initial} onEvent={onEvent} onGameChange={onGameChange} />
+        </I18nProvider>,
+      );
+
+      await user.click(
+        screen.getByRole("button", {
+          name:
+            locale === "en"
+              ? `Sheriff check ${playerLabel(target)}`
+              : `Проверка Шерифа: ${playerLabel(target)}`,
+        }),
+      );
+      const result = screen.getByRole("status", {
+        name: locale === "en" ? "Sheriff check result" : "Результат проверки Шерифа",
+      });
+      const checked =
+        locale === "en"
+          ? `Sheriff checked #${target.seat} · ${playerLabel(target)}`
+          : `Шериф проверил №${target.seat} · ${playerLabel(target)}`;
+      expect(result).toHaveTextContent(checked);
+      expect(result.querySelector("strong")).toHaveTextContent(checked);
+      expect(result).toHaveTextContent(meaning);
+      expect(result).toHaveTextContent(
+        locale === "en"
+          ? `Read back #${target.seat}. ${gesture}`
+          : `Повторите №${target.seat}. ${gesture}`,
+      );
+      expect(onEvent).toHaveBeenCalledExactlyOnceWith("sheriff.checked", {
+        kind: "sheriff-check",
+        targetSeat: target.seat,
+        match: team === "black",
+        secret: true,
+      });
+      expect(onGameChange).toHaveBeenCalledTimes(1);
+      expect(onGameChange.mock.lastCall?.[0]).toMatchObject({ phase: "night-sheriff-result" });
+      expect(initial.phase).toBe("night-sheriff");
+      expect(initial.checkResult).toBeUndefined();
+    },
+  );
 
   it("does not show inline Red controls during Don and Sheriff checks", () => {
     const base = createNightGame();
@@ -125,6 +244,33 @@ describe("NightStage", () => {
       unmount();
     }
   });
+
+  it.each([
+    ["en", "Call every seat: 1–10, even inactive."],
+    ["ru", "Назовите все номера 1–10, включая выбывших."],
+  ] as const)(
+    "prompts all ten shooting calls in %s even with an inactive seat",
+    (locale, prompt) => {
+      const base = createNightGame();
+      const inactive = base.players.find(({ role }) => role === "citizen")!;
+      const game: GameState = {
+        ...base,
+        players: base.players.map((player) =>
+          player.seat === inactive.seat ? { ...player, status: "eliminated" } : player,
+        ),
+      };
+      const onGameChange = vi.fn();
+      const onEvent = vi.fn();
+      render(
+        <I18nProvider locale={locale}>
+          <NightStage game={game} onGameChange={onGameChange} onEvent={onEvent} />
+        </I18nProvider>,
+      );
+      expect(screen.getByText(prompt)).toBeInTheDocument();
+      expect(onGameChange).not.toHaveBeenCalled();
+      expect(onEvent).not.toHaveBeenCalled();
+    },
+  );
 
   it("uses the table with one sorted shooter button per target", async () => {
     const user = userEvent.setup();

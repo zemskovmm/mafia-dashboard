@@ -1,0 +1,865 @@
+{
+  "initialSetup": {
+    "step": "music",
+    "players": [
+      {
+        "id": "player-1",
+        "seat": 1
+      },
+      {
+        "id": "player-2",
+        "seat": 2
+      },
+      {
+        "id": "player-3",
+        "seat": 3
+      },
+      {
+        "id": "player-4",
+        "seat": 4
+      },
+      {
+        "id": "player-5",
+        "seat": 5
+      },
+      {
+        "id": "player-6",
+        "seat": 6
+      },
+      {
+        "id": "player-7",
+        "seat": 7
+      },
+      {
+        "id": "player-8",
+        "seat": 8
+      },
+      {
+        "id": "player-9",
+        "seat": 9
+      },
+      {
+        "id": "player-10",
+        "seat": 10
+      }
+    ],
+    "roleDeck": [
+      "sheriff",
+      "citizen",
+      "citizen",
+      "citizen",
+      "citizen",
+      "citizen",
+      "citizen",
+      "mafia",
+      "mafia",
+      "don"
+    ],
+    "remainingRoles": [
+      "sheriff",
+      "citizen",
+      "citizen",
+      "citizen",
+      "citizen",
+      "citizen",
+      "citizen",
+      "mafia",
+      "mafia",
+      "don"
+    ],
+    "assignments": {}
+  },
+  "initialSetupBytesHash": "sha256:4afae345e00e4d3db912714aad4fea5c6eb9bb5363a498780addcf650867e2a9",
+  "cases": [
+    {
+      "name": "initial-setup",
+      "baseline": {
+        "replayVersion": 1,
+        "game": {
+          "phase": "mafia-planning",
+          "day": 0,
+          "bestMoveEnabled": true,
+          "skipCasperBestMove": true,
+          "cyclesWithoutElimination": 0,
+          "eliminationOccurredThisCycle": false,
+          "players": [
+            {
+              "id": "player-1",
+              "seat": 1,
+              "role": "don",
+              "team": "black",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-2",
+              "seat": 2,
+              "role": "sheriff",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-3",
+              "seat": 3,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-4",
+              "seat": 4,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-5",
+              "seat": 5,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-6",
+              "seat": 6,
+              "role": "mafia",
+              "team": "black",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-7",
+              "seat": 7,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-8",
+              "seat": 8,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-9",
+              "seat": 9,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-10",
+              "seat": 10,
+              "role": "mafia",
+              "team": "black",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            }
+          ],
+          "turnOrder": [],
+          "currentTurnIndex": 0,
+          "nominations": [],
+          "voteAssignments": {},
+          "shotAssignments": {},
+          "winner": null
+        }
+      },
+      "events": [
+        {
+          "type": "game.started",
+          "payload": {},
+          "replayVersion": 1,
+          "id": "initial-setup-1",
+          "gameId": "v1-characterization",
+          "sequence": 1,
+          "parentEventId": null,
+          "phaseBefore": "mafia-planning",
+          "phaseAfter": "mafia-planning",
+          "dayBefore": 0,
+          "dayAfter": 0,
+          "stateHashAfter": "sha256:9816c7bc538343186ab9cf2b9e9450bac882347b328c272df4fc5956ba105170",
+          "createdAt": "2026-10-14T10:00:00.000Z"
+        },
+        {
+          "type": "phase.changed",
+          "payload": {
+            "to": "day"
+          },
+          "replayVersion": 1,
+          "id": "initial-setup-2",
+          "gameId": "v1-characterization",
+          "sequence": 2,
+          "parentEventId": "initial-setup-1",
+          "phaseBefore": "mafia-planning",
+          "phaseAfter": "day",
+          "dayBefore": 0,
+          "dayAfter": 1,
+          "stateHashAfter": "sha256:889f7431bca56f1f5520618be3aa880192448e6af49423489f7cfd03e77fb13f",
+          "createdAt": "2026-10-14T10:00:00.000Z"
+        }
+      ],
+      "initialHash": "sha256:9816c7bc538343186ab9cf2b9e9450bac882347b328c272df4fc5956ba105170",
+      "finalHash": "sha256:889f7431bca56f1f5520618be3aa880192448e6af49423489f7cfd03e77fb13f",
+      "baselineBytesHash": "sha256:6ff4f97d79ab687040b305d860eea65a31f04e046abc21467f3bb613b4bae188",
+      "eventBytesHash": "sha256:ac38416a435b4cefb342e072170a68667abf2808d55cb3bf05efcdfc6629d30f"
+    },
+    {
+      "name": "open-ballot",
+      "baseline": {
+        "replayVersion": 1,
+        "game": {
+          "phase": "voting",
+          "day": 1,
+          "bestMoveEnabled": true,
+          "skipCasperBestMove": true,
+          "cyclesWithoutElimination": 0,
+          "eliminationOccurredThisCycle": false,
+          "players": [
+            {
+              "id": "player-1",
+              "seat": 1,
+              "role": "don",
+              "team": "black",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-2",
+              "seat": 2,
+              "role": "sheriff",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-3",
+              "seat": 3,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-4",
+              "seat": 4,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-5",
+              "seat": 5,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-6",
+              "seat": 6,
+              "role": "mafia",
+              "team": "black",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-7",
+              "seat": 7,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-8",
+              "seat": 8,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-9",
+              "seat": 9,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-10",
+              "seat": 10,
+              "role": "mafia",
+              "team": "black",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            }
+          ],
+          "turnOrder": [4, 6],
+          "currentTurnIndex": 0,
+          "nominations": [
+            {
+              "nominatorSeat": 1,
+              "candidateSeat": 4,
+              "order": 1
+            },
+            {
+              "nominatorSeat": 2,
+              "candidateSeat": 6,
+              "order": 2
+            }
+          ],
+          "voteAssignments": {
+            "1": 4
+          },
+          "shotAssignments": {},
+          "winner": null,
+          "dayOpeningSeat": 1,
+          "votingRound": "initial"
+        }
+      },
+      "events": [
+        {
+          "type": "game.checkpointed",
+          "payload": {},
+          "replayVersion": 1,
+          "id": "open-ballot-1",
+          "gameId": "v1-characterization",
+          "sequence": 1,
+          "parentEventId": null,
+          "phaseBefore": "voting",
+          "phaseAfter": "voting",
+          "dayBefore": 1,
+          "dayAfter": 1,
+          "stateHashAfter": "sha256:02a6a26fe3d2d116eed86b53037e4ed1381ee42c2ef97d0d44aad3e620d2e992",
+          "createdAt": "2026-10-14T10:00:00.000Z"
+        }
+      ],
+      "initialHash": "sha256:02a6a26fe3d2d116eed86b53037e4ed1381ee42c2ef97d0d44aad3e620d2e992",
+      "finalHash": "sha256:02a6a26fe3d2d116eed86b53037e4ed1381ee42c2ef97d0d44aad3e620d2e992",
+      "baselineBytesHash": "sha256:c828a04948904027d0e5b6ca06c27b916e488b949019b691ee3ff6b15e9d53ac",
+      "eventBytesHash": "sha256:94718e5bcba3e40b8621489ef80e274e4d5c3bb5529051024c2dec5132b1ff10"
+    },
+    {
+      "name": "night-check",
+      "baseline": {
+        "replayVersion": 1,
+        "game": {
+          "phase": "night-sheriff-result",
+          "day": 1,
+          "bestMoveEnabled": true,
+          "skipCasperBestMove": true,
+          "cyclesWithoutElimination": 0,
+          "eliminationOccurredThisCycle": false,
+          "players": [
+            {
+              "id": "player-1",
+              "seat": 1,
+              "role": "don",
+              "team": "black",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-2",
+              "seat": 2,
+              "role": "sheriff",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-3",
+              "seat": 3,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-4",
+              "seat": 4,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-5",
+              "seat": 5,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-6",
+              "seat": 6,
+              "role": "mafia",
+              "team": "black",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-7",
+              "seat": 7,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-8",
+              "seat": 8,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-9",
+              "seat": 9,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-10",
+              "seat": 10,
+              "role": "mafia",
+              "team": "black",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            }
+          ],
+          "turnOrder": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+          "currentTurnIndex": 0,
+          "nominations": [],
+          "voteAssignments": {},
+          "shotAssignments": {},
+          "winner": null,
+          "dayOpeningSeat": 1,
+          "nightCheckEligibility": {
+            "don": true,
+            "sheriff": true
+          },
+          "checkResult": {
+            "kind": "sheriff-check",
+            "targetSeat": 1,
+            "match": true,
+            "secret": true
+          },
+          "nightResult": {
+            "kind": "miss"
+          }
+        }
+      },
+      "events": [
+        {
+          "type": "game.checkpointed",
+          "payload": {},
+          "replayVersion": 1,
+          "id": "night-check-1",
+          "gameId": "v1-characterization",
+          "sequence": 1,
+          "parentEventId": null,
+          "phaseBefore": "night-sheriff-result",
+          "phaseAfter": "night-sheriff-result",
+          "dayBefore": 1,
+          "dayAfter": 1,
+          "stateHashAfter": "sha256:7f08987a583e01fa5f1e319f0e8f9135db99a90cc9a1bfff3bcd300890639bcf",
+          "createdAt": "2026-10-14T10:00:00.000Z"
+        },
+        {
+          "type": "phase.changed",
+          "payload": {
+            "to": "night-resolution"
+          },
+          "replayVersion": 1,
+          "id": "night-check-2",
+          "gameId": "v1-characterization",
+          "sequence": 2,
+          "parentEventId": "night-check-1",
+          "phaseBefore": "night-sheriff-result",
+          "phaseAfter": "night-resolution",
+          "dayBefore": 1,
+          "dayAfter": 1,
+          "stateHashAfter": "sha256:426487cb8fba32a5ec7bbc69d3080293702ee1ae4944cd7a20105f418c809853",
+          "createdAt": "2026-10-14T10:00:00.000Z"
+        },
+        {
+          "type": "phase.changed",
+          "payload": {
+            "to": "day"
+          },
+          "replayVersion": 1,
+          "id": "night-check-3",
+          "gameId": "v1-characterization",
+          "sequence": 3,
+          "parentEventId": "night-check-2",
+          "phaseBefore": "night-resolution",
+          "phaseAfter": "day",
+          "dayBefore": 1,
+          "dayAfter": 2,
+          "stateHashAfter": "sha256:e2facf2f5f36e30aa0aa05ed35af21eb69a488ed288f2a5bba1dd2d6a8a0ba63",
+          "createdAt": "2026-10-14T10:00:00.000Z"
+        }
+      ],
+      "initialHash": "sha256:7f08987a583e01fa5f1e319f0e8f9135db99a90cc9a1bfff3bcd300890639bcf",
+      "finalHash": "sha256:e2facf2f5f36e30aa0aa05ed35af21eb69a488ed288f2a5bba1dd2d6a8a0ba63",
+      "baselineBytesHash": "sha256:20c8542ed5a097a655c57fd15c10c21bda06b704b77f045d24766a6674e89ec7",
+      "eventBytesHash": "sha256:3d45b3c4a0c50d3658e64a50ed93ebe7749d824e20c71215e4ce57535e91572a"
+    },
+    {
+      "name": "completed",
+      "baseline": {
+        "replayVersion": 1,
+        "game": {
+          "phase": "finished",
+          "day": 1,
+          "bestMoveEnabled": true,
+          "skipCasperBestMove": true,
+          "cyclesWithoutElimination": 0,
+          "eliminationOccurredThisCycle": true,
+          "players": [
+            {
+              "id": "player-1",
+              "seat": 1,
+              "role": "don",
+              "team": "black",
+              "status": "eliminated",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-2",
+              "seat": 2,
+              "role": "sheriff",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-3",
+              "seat": 3,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-4",
+              "seat": 4,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-5",
+              "seat": 5,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-6",
+              "seat": 6,
+              "role": "mafia",
+              "team": "black",
+              "status": "eliminated",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-7",
+              "seat": 7,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-8",
+              "seat": 8,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-9",
+              "seat": 9,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-10",
+              "seat": 10,
+              "role": "mafia",
+              "team": "black",
+              "status": "eliminated",
+              "fouls": 0,
+              "mutePending": false
+            }
+          ],
+          "turnOrder": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+          "currentTurnIndex": 0,
+          "nominations": [],
+          "voteAssignments": {},
+          "shotAssignments": {},
+          "winner": "red",
+          "dayOpeningSeat": 1
+        }
+      },
+      "events": [
+        {
+          "type": "game.checkpointed",
+          "payload": {},
+          "replayVersion": 1,
+          "id": "completed-1",
+          "gameId": "v1-characterization",
+          "sequence": 1,
+          "parentEventId": null,
+          "phaseBefore": "finished",
+          "phaseAfter": "finished",
+          "dayBefore": 1,
+          "dayAfter": 1,
+          "stateHashAfter": "sha256:e1f7fe0f3d9964b8c94e59c6acecdda1e9875211a492c52b32895f0360baac41",
+          "createdAt": "2026-10-14T10:00:00.000Z"
+        },
+        {
+          "type": "game.completed",
+          "payload": {
+            "winner": "red"
+          },
+          "replayVersion": 1,
+          "id": "completed-2",
+          "gameId": "v1-characterization",
+          "sequence": 2,
+          "parentEventId": "completed-1",
+          "phaseBefore": "finished",
+          "phaseAfter": "finished",
+          "dayBefore": 1,
+          "dayAfter": 1,
+          "stateHashAfter": "sha256:e1f7fe0f3d9964b8c94e59c6acecdda1e9875211a492c52b32895f0360baac41",
+          "createdAt": "2026-10-14T10:00:00.000Z"
+        }
+      ],
+      "initialHash": "sha256:e1f7fe0f3d9964b8c94e59c6acecdda1e9875211a492c52b32895f0360baac41",
+      "finalHash": "sha256:e1f7fe0f3d9964b8c94e59c6acecdda1e9875211a492c52b32895f0360baac41",
+      "baselineBytesHash": "sha256:77d7bec50227e3f696743c41834e3ae13ad4055f5c60bf98d6fc3a1f389e8143",
+      "eventBytesHash": "sha256:a5512892ea4722384e69d72228f337f49f034ba63eb1927c18189851190c5eee"
+    },
+    {
+      "name": "saved-casper",
+      "baseline": {
+        "replayVersion": 1,
+        "game": {
+          "phase": "night-resolution",
+          "day": 1,
+          "bestMoveEnabled": true,
+          "cyclesWithoutElimination": 0,
+          "eliminationOccurredThisCycle": true,
+          "players": [
+            {
+              "id": "player-1",
+              "seat": 1,
+              "role": "don",
+              "team": "black",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-2",
+              "seat": 2,
+              "role": "sheriff",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-3",
+              "seat": 3,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-4",
+              "seat": 4,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-5",
+              "seat": 5,
+              "role": "mafia",
+              "team": "black",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-6",
+              "seat": 6,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-7",
+              "seat": 7,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-8",
+              "seat": 8,
+              "role": "citizen",
+              "team": "red",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "player-9",
+              "seat": 9,
+              "role": "mafia",
+              "team": "black",
+              "status": "active",
+              "fouls": 0,
+              "mutePending": false
+            },
+            {
+              "id": "casper",
+              "seat": 10,
+              "role": "citizen",
+              "team": "red",
+              "status": "eliminated",
+              "fouls": 0,
+              "mutePending": false
+            }
+          ],
+          "turnOrder": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+          "currentTurnIndex": 0,
+          "nominations": [],
+          "voteAssignments": {},
+          "shotAssignments": {},
+          "winner": null,
+          "dayOpeningSeat": 1,
+          "nightCheckEligibility": {
+            "don": true,
+            "sheriff": true
+          },
+          "nightResult": {
+            "kind": "kill",
+            "targetSeat": 10
+          }
+        }
+      },
+      "events": [
+        {
+          "type": "game.checkpointed",
+          "payload": {},
+          "replayVersion": 1,
+          "id": "saved-casper-1",
+          "gameId": "v1-characterization",
+          "sequence": 1,
+          "parentEventId": null,
+          "phaseBefore": "night-resolution",
+          "phaseAfter": "night-resolution",
+          "dayBefore": 1,
+          "dayAfter": 1,
+          "stateHashAfter": "sha256:2da393670fea8f9694c515a908d0b2ebcfddc2b16e115e7c63c6caa20977debd",
+          "createdAt": "2026-10-14T10:00:00.000Z"
+        },
+        {
+          "type": "best-move.completed",
+          "payload": {
+            "playerSeat": 10,
+            "selectedSeats": [1, 2, 3],
+            "mafiaHits": 1
+          },
+          "replayVersion": 1,
+          "id": "saved-casper-2",
+          "gameId": "v1-characterization",
+          "sequence": 2,
+          "parentEventId": "saved-casper-1",
+          "phaseBefore": "night-resolution",
+          "phaseAfter": "goodbye-speech",
+          "dayBefore": 1,
+          "dayAfter": 2,
+          "stateHashAfter": "sha256:6881dc9bc7da3b8a1d73b2cc66600ddc2749edd232f41dfe81a27eb6ee19cef3",
+          "createdAt": "2026-10-14T10:00:00.000Z"
+        }
+      ],
+      "initialHash": "sha256:2da393670fea8f9694c515a908d0b2ebcfddc2b16e115e7c63c6caa20977debd",
+      "finalHash": "sha256:6881dc9bc7da3b8a1d73b2cc66600ddc2749edd232f41dfe81a27eb6ee19cef3",
+      "baselineBytesHash": "sha256:f7de79a4261f33473cd3c97c5c6b4a2310788ec857d9eb7a8b71b54ed28c5a8b",
+      "eventBytesHash": "sha256:bd18c9039e20fac649c877f823daff760a42f3306ec3f03a9eceec5999077105"
+    }
+  ]
+}

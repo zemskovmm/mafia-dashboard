@@ -4,7 +4,13 @@ import { describe, expect, it, vi } from "vitest";
 import type { PlayerProfile } from "../../api/client.js";
 import { I18nProvider } from "../../i18n/I18nProvider.js";
 import { SetupWizard, type SetupWizardSessionState } from "./SetupWizard.js";
-import { beginRoleDraw, createSetup, drawRoleForSeat, type GameState } from "@mafia/game-domain";
+import {
+  beginRoleDraw,
+  createSetup,
+  drawRoleForSeat,
+  FEDERATION_RULES_EDITION,
+  type GameState,
+} from "@mafia/game-domain";
 
 const availablePlayers: readonly PlayerProfile[] = Array.from({ length: 11 }, (_, index) => ({
   id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
@@ -121,6 +127,400 @@ const seatPointer = (element: Element, type: string, pointerId = 1) => {
   Object.assign(event, { pointerId, isPrimary: true, button: 0, clientX: 100, clientY: 100 });
   fireEvent(element, event);
 };
+
+const federationRoleSession = (): SetupWizardSessionState => {
+  const session = partialRoleSession();
+  return {
+    ...session,
+    rulesEdition: FEDERATION_RULES_EDITION,
+    setup: { ...session.setup, rulesEdition: FEDERATION_RULES_EDITION },
+  };
+};
+
+const finishAllRoles = async (user: ReturnType<typeof userEvent.setup>) => {
+  for (const card of screen.queryAllByRole("button", { name: /^Draw role for Player/ })) {
+    await user.click(card);
+  }
+  await user.click(screen.getByRole("button", { name: "Begin Mafia planning stage" }));
+};
+
+const requestReroll = async (user: ReturnType<typeof userEvent.setup>) => {
+  const card = screen.getByRole("button", { name: /^Player 1: .*Triple tap/ });
+  await user.click(card);
+  await user.click(card);
+  await user.click(card);
+};
+
+describe("SetupWizard federation setup", () => {
+  it("captures the edition on the first real selection, retaining it through prop changes and redraw", async () => {
+    const user = userEvent.setup();
+    const onSessionStateChange = vi.fn();
+    const onComplete = vi.fn();
+    const props = { players: playersWithReplacement, onComplete, onSessionStateChange };
+    const { rerender } = render(<SetupWizard {...props} rulesEdition={FEDERATION_RULES_EDITION} />);
+    expect(onSessionStateChange.mock.lastCall?.[0]).not.toHaveProperty("rulesEdition");
+    await choosePlayer(user, "Host player", availablePlayers[10]!);
+    expect(onSessionStateChange.mock.lastCall?.[0].rulesEdition).toBe(FEDERATION_RULES_EDITION);
+    rerender(<SetupWizard {...props} />);
+    for (let index = 0; index < 10; index += 1) {
+      await choosePlayer(user, `Seat ${index + 1} player`, availablePlayers[index]!);
+    }
+    await user.click(screen.getByRole("button", { name: "Start game" }));
+    expect(onSessionStateChange.mock.lastCall?.[0].setup.rulesEdition).toBe(
+      FEDERATION_RULES_EDITION,
+    );
+    await user.click(screen.getByRole("button", { name: "Draw role for Player 1" }));
+    await user.click(screen.getByRole("button", { name: "Player setup" }));
+    await choosePlayer(user, "Seat 1 player", replacementPlayer);
+    expect(onSessionStateChange.mock.lastCall?.[0].setup).toBeNull();
+    expect(onSessionStateChange.mock.lastCall?.[0].rulesEdition).toBe(FEDERATION_RULES_EDITION);
+    await user.click(screen.getByRole("button", { name: "Start game" }));
+    await finishAllRoles(user);
+    expect(onComplete.mock.lastCall?.[0]).toMatchObject({
+      rulesEdition: FEDERATION_RULES_EDITION,
+      bestMoveEnabled: true,
+      phase: "mafia-planning",
+    });
+    expect(onComplete.mock.lastCall?.[0].players).toHaveLength(10);
+  });
+
+  it("keeps a fresh legacy selection legacy when the application policy later changes", async () => {
+    const user = userEvent.setup();
+    const onSessionStateChange = vi.fn();
+    const props = { players: availablePlayers, onComplete: vi.fn(), onSessionStateChange };
+    const { rerender } = render(<SetupWizard {...props} />);
+    await choosePlayer(user, "Host player", availablePlayers[10]!);
+    rerender(<SetupWizard {...props} rulesEdition={FEDERATION_RULES_EDITION} />);
+    expect(screen.getByText("Legacy club rules")).toBeInTheDocument();
+    for (let index = 0; index < 10; index += 1) {
+      await choosePlayer(user, `Seat ${index + 1} player`, availablePlayers[index]!);
+    }
+    await user.click(screen.getByRole("button", { name: "Start game" }));
+    expect(onSessionStateChange.mock.lastCall?.[0].setup).not.toHaveProperty("rulesEdition");
+  });
+
+  it("uses a restored domain setup edition even when the session discriminator is missing", () => {
+    const { setup, selectedPlayerIds, hostPlayerId, step } = federationRoleSession();
+    const session = { setup, selectedPlayerIds, hostPlayerId, step };
+    const onSessionStateChange = vi.fn();
+    render(
+      <SetupWizard
+        players={availablePlayers}
+        onComplete={vi.fn()}
+        initialSessionState={session}
+        onSessionStateChange={onSessionStateChange}
+      />,
+    );
+    expect(screen.getByText("MAFGAME · 1 July 2026")).toBeInTheDocument();
+    expect(onSessionStateChange.mock.lastCall?.[0].rulesEdition).toBe(FEDERATION_RULES_EDITION);
+  });
+
+  it("does not capture an edition from provisional search text", async () => {
+    const user = userEvent.setup();
+    const onSessionStateChange = vi.fn();
+    render(
+      <SetupWizard
+        players={availablePlayers}
+        onComplete={vi.fn()}
+        rulesEdition={FEDERATION_RULES_EDITION}
+        onSessionStateChange={onSessionStateChange}
+      />,
+    );
+    await user.type(screen.getByRole("combobox", { name: "Host player" }), "Player");
+    await user.keyboard("{Escape}");
+    expect(onSessionStateChange.mock.lastCall?.[0]).not.toHaveProperty("rulesEdition");
+  });
+
+  it.each(["partial-selection", "role-draw"])(
+    "never stamps a restored legacy %s with the fresh-game edition",
+    async (stage) => {
+      const user = userEvent.setup();
+      const onComplete = vi.fn();
+      const onSessionStateChange = vi.fn();
+      const session = partialRoleSession();
+      render(
+        <SetupWizard
+          players={playersWithReplacement}
+          onComplete={onComplete}
+          rulesEdition={FEDERATION_RULES_EDITION}
+          onSessionStateChange={onSessionStateChange}
+          initialSessionState={
+            stage === "role-draw" ? session : { ...session, step: "players", setup: null }
+          }
+        />,
+      );
+      expect(screen.getByText("Legacy club rules")).toBeInTheDocument();
+      if (stage === "role-draw")
+        await user.click(screen.getByRole("button", { name: "Player setup" }));
+      await choosePlayer(user, "Seat 1 player", replacementPlayer);
+      await user.click(screen.getByRole("button", { name: "Start game" }));
+      expect(onSessionStateChange.mock.lastCall?.[0]).not.toHaveProperty("rulesEdition");
+      expect(onSessionStateChange.mock.lastCall?.[0].setup).not.toHaveProperty("rulesEdition");
+      await finishAllRoles(user);
+      expect(onComplete.mock.lastCall?.[0]).not.toHaveProperty("rulesEdition");
+    },
+  );
+
+  it("restores the captured edition before there is a domain setup", async () => {
+    const user = userEvent.setup();
+    const session = federationRoleSession();
+    const onSessionStateChange = vi.fn();
+    render(
+      <SetupWizard
+        players={availablePlayers}
+        onComplete={vi.fn()}
+        initialSessionState={{ ...session, step: "players", setup: null }}
+        onSessionStateChange={onSessionStateChange}
+      />,
+    );
+    expect(screen.getByText("MAFGAME · 1 July 2026")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Start game" }));
+    expect(onSessionStateChange.mock.lastCall?.[0].setup.rulesEdition).toBe(
+      FEDERATION_RULES_EDITION,
+    );
+  });
+
+  it("blocks Casper until the host acknowledges the nonstandard setup and requires new consent after removal", async () => {
+    const user = userEvent.setup();
+    const onSessionStateChange = vi.fn();
+    render(
+      <SetupWizard
+        players={availablePlayers}
+        onComplete={vi.fn()}
+        rulesEdition={FEDERATION_RULES_EDITION}
+        onSessionStateChange={onSessionStateChange}
+      />,
+    );
+    await fillPlayerSelection(user);
+    await user.click(screen.getByRole("switch", { name: "Include Casper" }));
+    expect(screen.getByText("Nonstandard club deviations")).toBeInTheDocument();
+    expect(screen.getByText("Casper replaces a human player.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start game" })).toBeDisabled();
+    await user.click(
+      screen.getByRole("checkbox", { name: "I acknowledge these nonstandard club deviations" }),
+    );
+    expect(onSessionStateChange.mock.lastCall?.[0].clubDeviationsAcknowledged).toEqual(["casper"]);
+    expect(screen.getByRole("button", { name: "Start game" })).toBeEnabled();
+    await user.click(screen.getByRole("switch", { name: "Include Casper" }));
+    await user.click(screen.getByRole("switch", { name: "Include Casper" }));
+    expect(
+      screen.getByRole("checkbox", { name: "I acknowledge these nonstandard club deviations" }),
+    ).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Start game" })).toBeDisabled();
+  });
+
+  it("requires Best Move-off acknowledgement and retains the saved choice and acknowledgement on resume", async () => {
+    const user = userEvent.setup();
+    const onSessionStateChange = vi.fn();
+    const props = { players: availablePlayers, onComplete: vi.fn(), onSessionStateChange };
+    const { unmount } = render(
+      <SetupWizard {...props} rulesEdition={FEDERATION_RULES_EDITION} bestMoveEnabled={false} />,
+    );
+    await fillPlayerSelection(user);
+    expect(screen.getByText("Best Move is disabled.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Start game" })).toBeDisabled();
+    await user.click(
+      screen.getByRole("checkbox", { name: "I acknowledge these nonstandard club deviations" }),
+    );
+    const saved = onSessionStateChange.mock.lastCall?.[0] as SetupWizardSessionState;
+    expect(saved.bestMoveEnabled).toBe(false);
+    expect(saved.clubDeviationsAcknowledged).toEqual(["best-move-disabled"]);
+    unmount();
+    const onComplete = vi.fn();
+    render(
+      <SetupWizard
+        players={availablePlayers}
+        onComplete={onComplete}
+        initialSessionState={saved}
+        bestMoveEnabled
+      />,
+    );
+    expect(
+      screen.getByRole("checkbox", { name: "I acknowledge these nonstandard club deviations" }),
+    ).toBeChecked();
+    await user.click(screen.getByRole("button", { name: "Start game" }));
+    expect(screen.getByText("Best Move is disabled.")).toBeInTheDocument();
+    await finishAllRoles(user);
+    expect(onComplete.mock.lastCall?.[0].bestMoveEnabled).toBe(false);
+  });
+
+  it("requires an explicit reroll acknowledgement, not three accidental taps, and supports cancellation", async () => {
+    const user = userEvent.setup();
+    const onEvent = vi.fn();
+    const onSessionStateChange = vi.fn();
+    const session = federationRoleSession();
+    render(
+      <SetupWizard
+        players={availablePlayers}
+        onComplete={vi.fn()}
+        onEvent={onEvent}
+        onSessionStateChange={onSessionStateChange}
+        initialSessionState={session}
+      />,
+    );
+    await requestReroll(user);
+    const dialog = screen.getByRole("dialog", { name: "Nonstandard role reroll" });
+    expect(onEvent).not.toHaveBeenCalledWith("setup.role-rerolled", expect.anything());
+    expect(onSessionStateChange.mock.lastCall?.[0].setup).toEqual(session.setup);
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(
+      screen.queryByRole("dialog", { name: "Nonstandard role reroll" }),
+    ).not.toBeInTheDocument();
+    await requestReroll(user);
+    await user.click(screen.getByRole("button", { name: "Acknowledge deviation and reroll" }));
+    expect(onEvent).toHaveBeenCalledWith(
+      "setup.role-rerolled",
+      expect.objectContaining({ seat: 1, secret: true }),
+    );
+    expect(onSessionStateChange.mock.lastCall?.[0].clubDeviationsAcknowledged).toEqual([
+      "role-reroll",
+    ]);
+    expect(screen.getByText("A discretionary role reroll was used.")).toBeInTheDocument();
+  });
+
+  it("restores reroll acknowledgement with its deal and clears it when the deal is discarded", async () => {
+    const user = userEvent.setup();
+    const onSessionStateChange = vi.fn();
+    const props = { players: playersWithReplacement, onComplete: vi.fn(), onSessionStateChange };
+    const { unmount } = render(
+      <SetupWizard {...props} initialSessionState={federationRoleSession()} />,
+    );
+    await requestReroll(user);
+    await user.click(screen.getByRole("button", { name: "Acknowledge deviation and reroll" }));
+    const saved = onSessionStateChange.mock.lastCall?.[0] as SetupWizardSessionState;
+    unmount();
+    render(<SetupWizard {...props} initialSessionState={saved} />);
+    expect(screen.getByText("A discretionary role reroll was used.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Player setup" }));
+    expect(screen.getByText("A discretionary role reroll was used.")).toBeInTheDocument();
+    await choosePlayer(user, "Seat 1 player", replacementPlayer);
+    expect(screen.queryByText("A discretionary role reroll was used.")).not.toBeInTheDocument();
+    expect(onSessionStateChange.mock.lastCall?.[0].rulesEdition).toBe(FEDERATION_RULES_EDITION);
+    expect(onSessionStateChange.mock.lastCall?.[0].clubDeviationsAcknowledged ?? []).toEqual([]);
+  });
+
+  it("supports keyboard cancellation and restores focus to the reroll card", async () => {
+    const user = userEvent.setup();
+    render(
+      <SetupWizard
+        players={availablePlayers}
+        onComplete={vi.fn()}
+        initialSessionState={federationRoleSession()}
+      />,
+    );
+    const card = screen.getByRole("button", { name: /^Player 1:/ });
+    card.focus();
+    await user.keyboard("{Enter}{Enter}{Enter}");
+    expect(screen.getByRole("button", { name: "Acknowledge deviation and reroll" })).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(
+      screen.queryByRole("dialog", { name: "Nonstandard role reroll" }),
+    ).not.toBeInTheDocument();
+    expect(card).toHaveFocus();
+  });
+
+  it("prevents a pending persistence write from confirming a reroll or changing acknowledgements", async () => {
+    const user = userEvent.setup();
+    const onSessionStateChange = vi.fn();
+    const onEvent = vi.fn();
+    const props = {
+      players: availablePlayers,
+      onComplete: vi.fn(),
+      onSessionStateChange,
+      onEvent,
+      initialSessionState: federationRoleSession(),
+    };
+    const { rerender } = render(<SetupWizard {...props} />);
+    await requestReroll(user);
+    const before = onSessionStateChange.mock.lastCall?.[0].setup;
+    rerender(<SetupWizard {...props} persistencePending />);
+    const confirm = screen.getByRole("button", { name: "Acknowledge deviation and reroll" });
+    expect(confirm).toBeDisabled();
+    await user.click(confirm);
+    expect(onEvent).not.toHaveBeenCalledWith("setup.role-rerolled", expect.anything());
+    expect(onSessionStateChange.mock.lastCall?.[0].setup).toEqual(before);
+  });
+
+  it("blocks federation start from a restored Casper draw without an acknowledgement", async () => {
+    const user = userEvent.setup();
+    const session = federationRoleSession();
+    let setup = beginRoleDraw(
+      createSetup(
+        session.setup!.players.map((player) =>
+          player.seat === 10 ? { id: "casper", seat: 10 } : player,
+        ),
+        { rulesEdition: FEDERATION_RULES_EDITION },
+      ),
+      () => 0,
+    );
+    for (let seat = 1; seat < 10; seat += 1) setup = drawRoleForSeat(setup, seat);
+    const onComplete = vi.fn();
+    render(
+      <SetupWizard
+        players={availablePlayers}
+        onComplete={onComplete}
+        initialSessionState={{
+          ...session,
+          selectedPlayerIds: [...session.selectedPlayerIds.slice(0, 9), "casper"],
+          setup,
+        }}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Begin Mafia planning stage" })).toBeDisabled();
+    await user.click(
+      screen.getByRole("checkbox", { name: "I acknowledge these nonstandard club deviations" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Begin Mafia planning stage" }));
+    expect(onComplete.mock.lastCall?.[0].rulesEdition).toBe(FEDERATION_RULES_EDITION);
+  });
+
+  it("labels physical deal correction separately and never treats it as a discretionary reroll", async () => {
+    const user = userEvent.setup();
+    const onEvent = vi.fn();
+    const onSessionStateChange = vi.fn();
+    render(
+      <SetupWizard
+        players={availablePlayers}
+        onComplete={vi.fn()}
+        onEvent={onEvent}
+        onSessionStateChange={onSessionStateChange}
+        initialSessionState={federationRoleSession()}
+      />,
+    );
+    fireEvent.keyDown(screen.getByRole("button", { name: /^Player 1:/ }), { key: "ContextMenu" });
+    expect(
+      screen.getByText(
+        "Record or correct the physically dealt card; do not choose a new deal for convenience.",
+      ),
+    ).toBeInTheDocument();
+    await user.click(screen.getAllByRole("button", { name: /Assign .* to seat 1/ })[0]!);
+    expect(onEvent).toHaveBeenCalledWith(
+      "setup.role-assigned",
+      expect.objectContaining({ seat: 1, secret: true }),
+    );
+    expect(onSessionStateChange.mock.lastCall?.[0].clubDeviationsAcknowledged ?? []).toEqual([]);
+    expect(screen.queryByText("Nonstandard club deviations")).not.toBeInTheDocument();
+  });
+
+  it("localizes edition and deviation acknowledgement in Russian", async () => {
+    const user = userEvent.setup();
+    render(
+      <I18nProvider locale="ru">
+        <SetupWizard
+          players={availablePlayers}
+          onComplete={vi.fn()}
+          rulesEdition={FEDERATION_RULES_EDITION}
+        />
+      </I18nProvider>,
+    );
+    expect(screen.getByText("MAFGAME · 1 июля 2026")).toBeInTheDocument();
+    await user.click(screen.getByRole("switch", { name: "Добавить Каспера" }));
+    expect(screen.getByText("Нестандартные клубные отклонения")).toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", { name: "Я подтверждаю эти нестандартные клубные отклонения" }),
+    ).not.toBeChecked();
+  });
+});
 
 describe("SetupWizard", () => {
   it("groups the accessible Casper switch with the selection heading", async () => {

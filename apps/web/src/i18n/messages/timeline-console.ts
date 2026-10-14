@@ -1,7 +1,9 @@
 import type { FeatureMessages } from "../I18nProvider.js";
 import type { Message } from "./types.js";
+import { federationHistoryMessages } from "./federation-history.js";
 
 const englishTimelineConsoleMessages = {
+  ...federationHistoryMessages.en,
   Back: "Back",
   "Initial night": "Initial night",
   "Night {day}": "Night {day}",
@@ -182,6 +184,7 @@ const englishTimelineConsoleMessages = {
 export type TimelineConsoleMessageKey = keyof typeof englishTimelineConsoleMessages;
 
 const russianTimelineConsoleMessages = {
+  ...federationHistoryMessages.ru,
   Back: "Назад",
   "Initial night": "Нулевая ночь",
   "Night {day}": "Ночь {day}",

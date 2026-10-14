@@ -6,6 +6,8 @@ Mafia Dashboard is a host-operated, touch-first single-page application for runn
 
 Players do not use accounts or phones. The authenticated host controls setup, music, timers, turns, nominations, voting, night actions, penalties, eliminations, and corrections from one device. The browser persists the authoritative full setup/live snapshot; semantic events provide validated Log, Timeline, and Preview history, while timer and music controls remain local UI state.
 
+The current gameplay contract is owned by [IDD-0002](../.idd/intent/IDD-0002.spec-club-mafia-gameplay.md): new games use the MAFGAME 1 July 2026 edition, while supported pre-federation games retain their original rules and replay hashes. The captured edition does not change on resume. Explicit Casper, Best Move-off or discretionary referee overrides are club deviations, not federation compliance. This outline describes the product contract, not a claim of completed release qualification.
+
 ## 2. Current product goals
 
 - Make the current game phase and next legal host action obvious.
@@ -107,23 +109,18 @@ Primary hit targets are at least 48×48 CSS pixels. A destructive action require
 - **Active games** lists all active games stored on the server for the selected club. Club admins/owners may open any game or delete it directly from this list. Multiple active games are allowed; starting another game does not delete a saved one. Deletion permanently removes the stored game without recording results, and is confirmed only after the server acknowledges it.
 - There is no session claim, takeover, heartbeat, or stale-writer protection. Concurrent clients may overwrite each other's snapshots. A removed GUID cannot be recreated by an update; an already-open client discovers removal on its next request.
 
-### Step 4 — Night zero: Mafia free seating
+### Step 4 — Initial game night: Mafia planning
 
-- The screen changes to a low-glare night state with a prominent `NIGHT ZERO · MAFIA FREE SEATING` phase banner.
-- Mafia establish their target order during free seating; the center action advances to the
-  night-zero Sheriff wake-up.
-- The host uses the `+60` timer control to start negotiation.
-- Starting or stopping the timer is local UI behavior and is not added to the durable game log; timer expiry does not advance the phase automatically.
+- Mafia receive 60 seconds to agree, then sleep. The screen remains host-private and low-glare.
+- Timer controls remain auxiliary and host-started; expiry never advances phase.
 
-### Step 5 — Night zero: Sheriff wake-up
+### Step 5 — Masked identification and free seating
 
-- The night screen changes to `NIGHT ZERO · SHERIFF — 10 SECONDS`.
-- The host starts the 10-second timer.
-- Night zero does not add Don or Sheriff target checks; recorded checks begin in the ordinary
-  nightly sequence after day one.
-- Finishing this step enables **Begin day one**.
+- The judge identifies Don, then Sheriff, while their masks stay on; this is not a Sheriff wake-up/check.
+- A separate 30-second free-seating period follows identification before the judge begins the zero round.
+- No target check or shot occurs in the initial planning night. It is official game night one; the first shooting night is game night two.
 
-### Step 6 — First day
+### Step 6 — Zero-round discussion
 
 - The app reveals no roles publicly.
 - Day one begins with seat 1 and continues through seat 10, skipping any inactive seat.
@@ -158,9 +155,9 @@ The queue changes only IFrame playback order. Account authorization remains read
 
 ## 8. Timer behavior
 
-- Preset buttons: **+60**, **+30**, and **+10**.
-- Pressing a preset immediately starts/replaces the active countdown after confirmation if another timer is running.
-- **Stop** cancels the countdown and resets it to zero; pause/resume is not part of the current timer control.
+- Preset buttons: **+60**, **+30**, **+20**, and **+10**.
+- Pressing a preset immediately starts/replaces the active countdown; the timer face pauses or resumes it.
+- Recommended durations are 60 seconds for ordinary speech/planning, 30 for tie/free-seating/short-table speech, 20 for Best Move and 10 for checks. The host starts the applicable timer explicitly.
 - When remaining time first reaches 10 seconds, play one faint chime and show a subtle warning state.
 - A 10-second timer plays the warning once at start.
 - Timer position derives from a local start timestamp, not accumulated browser interval counts.
@@ -182,27 +179,30 @@ The queue changes only IFrame playback order. Account authorization remains read
 - The current seat is highlighted with text/icon and a visible next-seat preview.
 - The center button starts that player’s timer.
 - A normal active turn defaults to 60 seconds.
-- A player with a pending third-foul penalty receives a 10-second nomination-only turn instead.
+- A player with a pending third-foul restriction may nominate but has no ordinary speech; with three or four remaining players, that turn receives 30 seconds. A tie speech remains available and does not consume this restriction.
 - The host can end a turn early; the next eligible seat becomes current.
 - Completing the final eligible turn moves the game to voting if candidates exist, otherwise to night.
 
 ### 9.3 Player actions
 
-- **Foul:** increments foul count and logs the reason/note when provided. Controls remain available for active players throughout live non-night day-play phases, including voting, car-crash handling, and goodbye speeches. They are unavailable during setup, night, Best Move (treated as night for this control), preview, and completed play.
-- **Third foul:** creates one pending muted turn. That next turn lasts 10 seconds and permits only one nomination. A player who is still muted receives no goodbye speech. Any unconsumed mute expires when the day advances, before the new day's Best Move or goodbye speech; it never carries into the next day.
-- **Red card:** immediately removes the player, with confirmation, no final speech, and an immediate victory check.
-- **Nominate:** during the current player’s eligible window, choose one other active player. Each candidate appears once in first-nomination order.
+- **Foul:** records the judge's accepted sanction. Third foul affects the next ordinary discussion turn, survives night and does not retroactively shorten a speech underway. It is distinct from farewell eligibility.
+- **Red card:** no farewell; removal/announcement timing follows its day/night occurrence. During shooting/checks, preserve required completion boundaries, exclude a disqualified shooter's shot and retain legitimate combined shot/removal facts. A participant departs only once.
+- **Voting cancellation:** apply the current or nearest affected ballot, including the next day after a result, with rulebook victim exceptions. Several removals do not create several consecutive cancelled days.
+- **Nominate:** during the current player’s eligible window, choose an active player, including self. Each candidate appears once in first-nomination order; no ordinary withdrawal.
 
 ## 10. Voting
 
 - The candidate queue remains visible in nomination order.
-- Select the candidate currently receiving votes.
+- Announce the full order twice. Live candidate calls follow that order and accept votes on the second mention until judge STOP; inspection of another candidate does not change the live cursor.
 - Tap eligible player icons to assign their votes to that candidate.
 - A voter can be assigned to at most one candidate per voting round.
 - Tapping an assigned voter again removes/reassigns the vote only through an explicit action.
 - Eliminated/red-carded players cannot vote.
 - Candidate totals and unassigned eligible voters remain visible.
-- Finish voting is disabled until every eligible voter is assigned or the host records an explained override.
+- Finish voting requires a complete or mathematically conclusive ballot; no invented uncast votes. Last-candidate remainder applies when that candidate is actually called, not when inspected. A merely leading candidate cannot finish early.
+- A count dispute immediately pauses further voting until the judge acknowledges external video review and records the final ruling. Physical vote acceptance remains a judge decision, not an app-timer measurement.
+- A lone zero-round nominee is not voted out; a lone later nominee leaves with all votes when discussion ends. Generic convenience skip is not a federation rule exception.
+- Thirty-second tie speeches precede revoting; shrinking ties repeat. Collective lift requires a strict majority and is not held for all remaining players. It is also prohibited for a zero-round five-way tie, and for three tied at nine unless official game night three has completed and Sheriff actually checked at least twice.
 - The highest total wins; ties enter the configured tie flow from `rules.md` rather than being resolved randomly.
 - Elimination is logged and victory is checked before night begins.
 
@@ -210,9 +210,9 @@ The queue changes only IFrame playback order. Account authorization remains read
 
 Night is a host-private guided sequence.
 
-Don/Sheriff check eligibility is captured when the ordinary night begins. Active and eliminated role owners may check: both screens remain available on the night of death and every subsequent ordinary night, with target selection, private results, Continue, and Skip still usable. Owners red-carded before the night remain ineligible. Checks do not revive players or restore shooting, voting, or speaking rights. During their own eligible check selection screen, deceased owners retain the existing full-bright role highlight and deceased marker; result screens retain their normal presentation.
+Don/Sheriff check eligibility is captured for the night. A previously departed owner cannot continue checking. A non-decisively shot same-night owner may finish that night's check before leaving unless an applicable disqualification prevents it. Inactive target seats remain checkable. Checks never restore shooting, voting or speech rights.
 
-Previously saved nights retain their captured eligibility until the next ordinary night. Canonical replay remains current-rules-only: older logs whose transition hashes encode the former post-death skip rule are rejected, not silently rewritten or migrated.
+Supported pre-federation games retain their original post-departure check rules and canonical hashes; they are not replayed with new reducer semantics or silently migrated.
 
 ### 11.1 Mafia shots
 
@@ -221,7 +221,7 @@ Previously saved nights retain their captured eligibility until the next ordinar
 - Each active shooter may have at most one recorded target when the host resolves the shots.
 - If all active shooters selected the same active target, the target is eliminated; the same
   selection against an inactive seated player has no effect.
-- Missing or conflicting shots result in a miss and no elimination; unseated targets are rejected.
+- Missing/conflicting shots or an actual multiple shot by one shooter result in a miss; unseated targets are rejected. A correction of transcription is distinct from recording an actual multiple shot.
 - Individual shooter-to-target assignments are retained for replay; the timeline summarizes the
   collective result and eliminated target when applicable.
 
@@ -230,6 +230,7 @@ Previously saved nights retain their captured eligibility until the next ordinar
 - If the Don is eligible for this night, show `DON CHECK`.
 - Tap one seated target, including deceased players, or skip the check.
 - Host-private result is Sheriff / not Sheriff.
+- The judge has a ten-second check window and reads back the numbered target; the UI includes seat number, not only player name.
 - The result is stored as a secret event.
 
 ### 11.3 Sheriff check
@@ -237,13 +238,21 @@ Previously saved nights retain their captured eligibility until the next ordinar
 - If the Sheriff is eligible for this night, show `SHERIFF CHECK`.
 - Tap one seated target, including deceased players, or skip the check.
 - Host-private result is Mafia-aligned / not Mafia-aligned.
+- Read back the target number and signal **red = thumb up**, **black = thumb down** during the ten-second check window. Skipping does not increment the actual-check counter.
 - The result is stored as a secret event.
 
 ### 11.4 Night completion
 
 - Apply the Mafia result and evaluate victory.
-- If no side has won, increment the day and derive its rotated active-player order.
-- Return to the table in day mode.
+- If eligible, complete Best Move before announcing morning, then provide the victim's farewell and the rotated discussion order. Do not increment the night/day boundary twice through these steps.
+- After three completed game nights with no participant-count change during that period, award a rules draw. Initial planning counts as game night one under the adopted literal reading; any intervening day/night departure resets the streak.
+
+### 11.5 Best Move
+
+- The first shooting-night victim may give up to three accepted numbers, in order, during night with a twenty-second time allowance. Two or more first-day departures suppress eligibility.
+- Preserve an accepted prefix of zero through three numbers when time, interruption or decline ends the attempt. Ordinary changes/additions after acceptance are not allowed; an obvious-slip correction is explicit.
+- **Skip Best Move** records decline for an empty list and continues to morning/farewell without changing preferences. **Finish early** preserves already accepted numbers. Timer expiry signals STOP but never advances automatically.
+- The judge reads back the numbers and says accepted; only then does morning follow. Recorded hits are descriptive, not tournament scoring.
 
 ## 12. Victory
 
@@ -251,6 +260,8 @@ Previously saved nights retain their captured eligibility until the next ordinar
 - Mafia wins when active Mafia-aligned players are equal to or greater than active red players.
 - Victory is evaluated after every elimination or red card and before starting another phase.
 - The final result and role reveal are recorded, but private role information remains behind the host privacy control.
+- The referee may award a reasoned opposing-team victory (ППК), retaining rule, losing side and required committee acknowledgement without fabricating deaths. Authoritative result detail retains this basis separately from normal win statistics.
+- A detected win/draw/cancellation stops ordinary play but remains distinct from explicit **Finish game**, preserving authorized Undo/Reset until Finish.
 
 ## 13. Game log
 
@@ -283,13 +294,17 @@ SETUP_PLAYERS
   → SETUP_MUSIC
   → SETUP_ROLE_DRAW
   → SETUP_MAFIA_NEGOTIATION
-  → SETUP_SHERIFF_WAKE
+  → SETUP_DON_IDENTIFICATION
+  → SETUP_SHERIFF_IDENTIFICATION
+  → SETUP_FREE_SEATING
   → DAY_TURNS
   → VOTING (when candidates exist)
   → NIGHT_MAFIA_SHOTS
   → NIGHT_DON_CHECK (when Don eligible this night)
   → NIGHT_SHERIFF_CHECK (when Sheriff eligible this night)
   → NIGHT_RESOLUTION
+  → BEST_MOVE (when eligible, still night; accepted prefix or Skip)
+  → MORNING / FAREWELL (when applicable)
   → DAY_TURNS ...
   → FINISHED
 ```
@@ -313,6 +328,6 @@ The setup durability/back-navigation, full-volume playback, foul/mute, opening-s
 
 Implemented and accepted behavior includes the current 2-second fade-in, 500-millisecond quick fade-out, 3-second slow fade-out, faint ten-second warning chime, no final speech after a red card, the tie-vote flow in `rules.md`, and complete English/Russian localization of every host-facing surface. Before a club is opened, the portal follows the browser language (`ru` locales use Russian; all others use English). Language is then controlled by the club: existing clubs migrate to English, new clubs default from the creator's browser, owners and managers/editors can change it, and an accepted change applies immediately without altering an active game.
 
-Best Move is implemented as a per-club setting enabled by default. Its resolved value is copied into each game when play starts, so later club-setting changes do not rewrite active or completed games.
+Best Move is enabled for standard new federation games and captured during meaningful setup. A club override is explicitly nonstandard; later preference changes do not rewrite existing games. The per-attempt Skip action never changes that setting. Supported older setup retains its documented setting fallback rather than gaining federation defaults.
 
 Production recovery uses PostgreSQL custom archives with configurable 14-day local and 30-day off-server retention defaults, daily scheduling, weekly isolated semantic restore tests, and the disaster-recovery procedure in `postgresql-backup-and-recovery.md`. Point-in-time recovery remains outside the single-server baseline.

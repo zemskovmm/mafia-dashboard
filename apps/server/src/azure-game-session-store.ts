@@ -5,6 +5,7 @@ import { DEFAULT_CLUB_ID } from "./club-store.js";
 import type { GameEvent } from "./event-store.js";
 import {
   completionMetadata,
+  assertValidResultAdjudication,
   GameSessionNotFoundError,
   projectableResults,
   type CompletedGameSessionFilters,
@@ -197,6 +198,7 @@ const eligiblePlayers = async (
   results: FinalGameResults | null,
   newSelection: boolean,
 ): Promise<void> => {
+  assertValidResultAdjudication(results);
   const refs = inspectGameIdentities(state, results);
   assertSupportedGame(state, results);
   if (refs.invalid || state.hostPlayerId === CASPER_PLAYER_ID) throw new InvalidGameIdentityError();

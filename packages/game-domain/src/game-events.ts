@@ -1,5 +1,27 @@
 import { assertCasperRole } from "./casper.js";
 import {
+  announceDisciplinaryRemovals,
+  assertRemovalObservation,
+  observeDisciplinaryRemoval,
+} from "./federation-discipline.js";
+import {
+  acceptBestMoveSeat,
+  acceptFederationVote,
+  adjudicateOpponentVictory,
+  advanceFederationCandidate,
+  announceVotingOrder,
+  assertJudgeReason,
+  correctAcceptedVote,
+  correctBestMoveSlip,
+  disputeVotingCount,
+  finalizeBestMove,
+  inspectFederationCandidate,
+  mentionVotingCandidate,
+  recordActualMultipleShot,
+  ruleOnVotingDispute,
+  stopVotingCandidate,
+} from "./federation-actions.js";
+import {
   acceptCarCrashBallot,
   beginCarCrash,
   beginCarCrashDecision,
@@ -12,6 +34,7 @@ import {
   resolveCarCrashVote,
   resolveVote,
   skipVoting,
+  skipFederationVoting,
 } from "./day-actions.js";
 import { advanceSetupPhase, cancelGame, confirmDraw, isTerminalGamePhase } from "./game.js";
 import { GameHistoryError, withHistoryDiagnostic } from "./history-diagnostics.js";
@@ -33,6 +56,12 @@ import {
 } from "./night-actions.js";
 import { completeCurrentTurn } from "./day-actions.js";
 import { toGameRuleError, type GameRuleError } from "./rule-error.js";
+import {
+  FEDERATION_RULES_EDITION,
+  assertRulesEdition,
+  isFederationGame,
+  type RulesEdition,
+} from "./rules-edition.js";
 import type {
   CarCrashVoteResult,
   GamePhase,
@@ -40,9 +69,49 @@ import type {
   NightShotResult,
   ShotAssignment,
   VoteResult,
+  BestMoveCompletionReason,
+  LegalVotingSkipReason,
+  OpponentVictoryAdjudication,
+  RemovalObservation,
 } from "./types.js";
 
-export const CURRENT_REPLAY_VERSION = 1 as const;
+export const LEGACY_REPLAY_VERSION = 1 as const;
+export const FEDERATION_REPLAY_VERSION = 2 as const;
+/** @deprecated Retained for legacy callers; derive new baselines from state instead. */
+export const CURRENT_REPLAY_VERSION = LEGACY_REPLAY_VERSION;
+export type ReplayVersion = typeof LEGACY_REPLAY_VERSION | typeof FEDERATION_REPLAY_VERSION;
+
+const assertReplayVersion: (value: unknown) => asserts value is ReplayVersion = (value) => {
+  if (value !== LEGACY_REPLAY_VERSION && value !== FEDERATION_REPLAY_VERSION) {
+    throw new Error(`Unsupported replay version ${String(value)}`);
+  }
+};
+
+type ReplayMetadata =
+  | { readonly replayVersion: typeof LEGACY_REPLAY_VERSION; readonly rulesEdition?: never }
+  | {
+      readonly replayVersion: typeof FEDERATION_REPLAY_VERSION;
+      readonly rulesEdition: RulesEdition;
+    };
+
+export const getGameReplayVersion = (game: GameState): ReplayVersion => {
+  if (Object.hasOwn(game, "rulesEdition")) assertRulesEdition(game.rulesEdition);
+  return isFederationGame(game) ? FEDERATION_REPLAY_VERSION : LEGACY_REPLAY_VERSION;
+};
+
+const gameReplayMetadata = (game: GameState): ReplayMetadata =>
+  getGameReplayVersion(game) === LEGACY_REPLAY_VERSION
+    ? { replayVersion: LEGACY_REPLAY_VERSION }
+    : { replayVersion: FEDERATION_REPLAY_VERSION, rulesEdition: FEDERATION_RULES_EDITION };
+
+const assertGameReplayMetadata = (game: GameState, metadata: ReplayMetadata): void => {
+  if (
+    metadata.replayVersion !== getGameReplayVersion(game) ||
+    metadata.rulesEdition !== game.rulesEdition
+  ) {
+    throw new Error("Replay version and rules edition must match the game state edition");
+  }
+};
 
 export const canonicalGameEventTypes = [
   "game.started",
@@ -65,6 +134,24 @@ export const canonicalGameEventTypes = [
   "game.completed",
   "game.drawn",
   "game.cancelled",
+  "voting.order-announced",
+  "voting.candidate-mentioned",
+  "voting.candidate-inspected",
+  "voting.candidate-stopped",
+  "voting.live-advanced",
+  "vote.accepted",
+  "vote.corrected",
+  "voting.count-disputed",
+  "voting.count-ruled",
+  "voting.legally-skipped",
+  "mafia.multiple-shot-observed",
+  "best-move.number-accepted",
+  "best-move.slip-corrected",
+  "best-move.finalized",
+  "game.adjudicated",
+  "discipline.removal-observed",
+  "discipline.removals-announced",
+  "discipline.foul-issued",
 ] as const;
 
 export type CanonicalGameEventType = (typeof canonicalGameEventTypes)[number];
@@ -136,26 +223,70 @@ export type CanonicalGameEventDraft =
     >
   | EventDraft<"game.completed", { readonly winner: "red" | "black" }>
   | EventDraft<"game.drawn", { readonly reason: string }>
-  | EventDraft<"game.cancelled", { readonly reason: string }>;
+  | EventDraft<"game.cancelled", { readonly reason: string }>
+  | EventDraft<"voting.order-announced", Record<string, never>>
+  | EventDraft<
+      | "voting.candidate-mentioned"
+      | "voting.candidate-inspected"
+      | "voting.candidate-stopped"
+      | "voting.live-advanced",
+      { readonly candidateSeat: number }
+    >
+  | EventDraft<"vote.accepted", { readonly voterSeat: number; readonly candidateSeat: number }>
+  | EventDraft<
+      "vote.corrected",
+      { readonly voterSeat: number; readonly candidateSeat: number | null; readonly reason: string }
+    >
+  | EventDraft<"voting.count-disputed", { readonly candidateSeat: number; readonly reason: string }>
+  | EventDraft<
+      "voting.count-ruled",
+      {
+        readonly voteAssignments: Readonly<Record<number, number>>;
+        readonly externalReviewAcknowledged: true;
+        readonly reason: string;
+      }
+    >
+  | EventDraft<"voting.legally-skipped", { readonly reason: LegalVotingSkipReason }>
+  | EventDraft<"mafia.multiple-shot-observed", { readonly shooterSeat: number }>
+  | EventDraft<"best-move.number-accepted", { readonly seat: number }>
+  | EventDraft<
+      "best-move.slip-corrected",
+      { readonly index: number; readonly seat: number; readonly reason: string }
+    >
+  | EventDraft<
+      "best-move.finalized",
+      { readonly reason: BestMoveCompletionReason; readonly readbackAcknowledged: true }
+    >
+  | EventDraft<"game.adjudicated", OpponentVictoryAdjudication>
+  | EventDraft<"discipline.removal-observed", RemovalObservation>
+  | EventDraft<"discipline.removals-announced", { readonly seats: readonly number[] }>
+  | EventDraft<
+      "discipline.foul-issued",
+      {
+        readonly seat: number;
+        readonly foulNumber: 4;
+        readonly redCarded: true;
+        readonly removal: RemovalObservation;
+      }
+    >;
 
-export interface InitialGameBaseline {
-  readonly replayVersion: typeof CURRENT_REPLAY_VERSION;
+export type InitialGameBaseline = ReplayMetadata & {
   readonly game: GameState;
-}
-
-export type GameLogEntry = CanonicalGameEventDraft & {
-  readonly replayVersion: typeof CURRENT_REPLAY_VERSION;
-  readonly id: string;
-  readonly gameId: string;
-  readonly sequence: number;
-  readonly parentEventId: string | null;
-  readonly phaseBefore: GamePhase;
-  readonly phaseAfter: GamePhase;
-  readonly dayBefore: number;
-  readonly dayAfter: number;
-  readonly stateHashAfter: string;
-  readonly createdAt: string;
 };
+
+export type GameLogEntry = CanonicalGameEventDraft &
+  ReplayMetadata & {
+    readonly id: string;
+    readonly gameId: string;
+    readonly sequence: number;
+    readonly parentEventId: string | null;
+    readonly phaseBefore: GamePhase;
+    readonly phaseAfter: GamePhase;
+    readonly dayBefore: number;
+    readonly dayAfter: number;
+    readonly stateHashAfter: string;
+    readonly createdAt: string;
+  };
 
 export interface ReplayFrame {
   readonly entry: GameLogEntry;
@@ -211,6 +342,24 @@ export const canonicalGameEventSecrecy = {
   "game.completed": false,
   "game.drawn": false,
   "game.cancelled": false,
+  "voting.order-announced": true,
+  "voting.candidate-mentioned": false,
+  "voting.candidate-inspected": true,
+  "voting.candidate-stopped": false,
+  "voting.live-advanced": false,
+  "vote.accepted": false,
+  "vote.corrected": true,
+  "voting.count-disputed": false,
+  "voting.count-ruled": true,
+  "voting.legally-skipped": false,
+  "mafia.multiple-shot-observed": true,
+  "best-move.number-accepted": true,
+  "best-move.slip-corrected": true,
+  "best-move.finalized": true,
+  "game.adjudicated": false,
+  "discipline.removal-observed": true,
+  "discipline.removals-announced": false,
+  "discipline.foul-issued": true,
 } as const satisfies Readonly<Record<CanonicalGameEventType, boolean>>;
 
 export const canonicalSecretGameEventTypes = canonicalGameEventTypes.filter(
@@ -224,6 +373,10 @@ export const isSecretGameEventType = (value: string): boolean =>
 
 const canonicalGamePhaseSet = new Set<string>([
   "mafia-planning",
+  "mafia-sleep",
+  "don-identification",
+  "sheriff-identification",
+  "free-seating",
   "sheriff-wake",
   "day",
   "voting",
@@ -344,9 +497,17 @@ const assertCanonicalSeatRecord = (
   }
 };
 
-const assertVoteResult = (value: unknown, context: string): void => {
+const assertVoteResult = (value: unknown, context: string, federation = false): void => {
   const result = requireRecord(value, context);
-  assertExactKeys(result, ["kind", "seats", "totals"], context);
+  assertObjectKeys(result, ["kind", "seats", "totals"], federation ? ["skipReason"] : [], context);
+  if (
+    result.skipReason !== undefined &&
+    (result.kind !== "eliminate-all-skipped" ||
+      !["all-active", "nine-three-restricted", "zero-round-five"].includes(
+        result.skipReason as string,
+      ))
+  )
+    throw new Error(`${context}.skipReason is invalid`);
   if (
     result.kind !== "winner" &&
     result.kind !== "car-crash" &&
@@ -396,9 +557,159 @@ const assertOptionalDisciplineContext = (payload: UnknownRecord, context: string
   assertSafeInteger(payload.currentTurnIndex, `${context}.currentTurnIndex`, 0);
 };
 
-const assertCanonicalPayload = (type: CanonicalGameEventType, value: unknown): void => {
+const federationOnlyEventTypes = new Set<string>(canonicalGameEventTypes.slice(20));
+const federationOnlyPhases = new Set<string>([
+  "mafia-sleep",
+  "don-identification",
+  "sheriff-identification",
+  "free-seating",
+]);
+const bestMoveCompletionReasons = [
+  "complete-list",
+  "interrupted",
+  "time-expired",
+  "declined",
+  "finished-early",
+];
+const legalVotingSkipReasons = [
+  "all-active",
+  "nine-three-restricted",
+  "zero-round-five",
+  "no-nominees",
+  "zero-round-sole-nominee",
+  "disciplinary-cancellation",
+];
+const assertAdjudication = (value: unknown, context: string): void => {
+  const ruling = requireRecord(value, context);
+  assertObjectKeys(
+    ruling,
+    ["losingTeam", "rule", "reason", "committeeApproved"],
+    ["offenderSeat"],
+    context,
+  );
+  if (ruling.losingTeam !== "red" && ruling.losingTeam !== "black")
+    throw new Error(`${context}.losingTeam is invalid`);
+  if (typeof ruling.rule !== "string" || !/^(6\.3\.[1-5]|6\.6\.4)$/.test(ruling.rule))
+    throw new Error(`${context}.rule is invalid`);
+  assertJudgeReason(ruling.reason as string);
+  assertBoolean(ruling.committeeApproved, `${context}.committeeApproved`);
+  if (ruling.rule === "6.3.5" && !ruling.committeeApproved)
+    throw new Error("Rule 6.3.5 requires committee agreement");
+  if (ruling.offenderSeat !== undefined) assertSeat(ruling.offenderSeat, `${context}.offenderSeat`);
+};
+const assertCanonicalPayload = (
+  type: CanonicalGameEventType,
+  value: unknown,
+  replayVersion: ReplayVersion,
+): void => {
   const payload = requireRecord(value, `${type} payload`);
+  const federation = replayVersion === FEDERATION_REPLAY_VERSION;
+  if (!federation && federationOnlyEventTypes.has(type))
+    throw new Error("Federation events require replay version 2");
+  if (!federation && federationOnlyPhases.has(payload.phase as string))
+    throw new Error("Federation discipline phases require replay version 2");
   switch (type) {
+    case "discipline.foul-issued": {
+      assertExactKeys(payload, ["seat", "foulNumber", "redCarded", "removal"], `${type} payload`);
+      assertSeat(payload.seat, `${type}.seat`);
+      const removal = requireRecord(payload.removal, `${type}.removal`);
+      assertExactKeys(
+        removal,
+        ["seat", "stage", "rule", "reason", "checkInProgress"],
+        `${type}.removal`,
+      );
+      assertRemovalObservation(removal as unknown as RemovalObservation);
+      if (
+        payload.foulNumber !== 4 ||
+        payload.redCarded !== true ||
+        removal.seat !== payload.seat ||
+        removal.rule !== "6.2.1"
+      )
+        throw new Error("Fourth-foul removal metadata contradicts the action");
+      return;
+    }
+    case "discipline.removal-observed":
+      assertExactKeys(
+        payload,
+        ["seat", "stage", "rule", "reason", "checkInProgress"],
+        `${type} payload`,
+      );
+      assertRemovalObservation(payload as unknown as RemovalObservation);
+      return;
+    case "discipline.removals-announced":
+      assertExactKeys(payload, ["seats"], `${type} payload`);
+      assertSeatArray(payload.seats, `${type}.seats`);
+      if (!payload.seats.length) throw new Error("A removal announcement needs seats");
+      return;
+    case "voting.order-announced":
+      assertExactKeys(payload, [], `${type} payload`);
+      return;
+    case "voting.candidate-mentioned":
+    case "voting.candidate-inspected":
+    case "voting.candidate-stopped":
+    case "voting.live-advanced":
+      assertExactKeys(payload, ["candidateSeat"], `${type} payload`);
+      assertSeat(payload.candidateSeat, `${type}.candidateSeat`);
+      return;
+    case "vote.accepted":
+      assertExactKeys(payload, ["voterSeat", "candidateSeat"], `${type} payload`);
+      assertSeat(payload.voterSeat, `${type}.voterSeat`);
+      assertSeat(payload.candidateSeat, `${type}.candidateSeat`);
+      return;
+    case "vote.corrected":
+      assertExactKeys(payload, ["voterSeat", "candidateSeat", "reason"], `${type} payload`);
+      assertSeat(payload.voterSeat, `${type}.voterSeat`);
+      if (payload.candidateSeat !== null)
+        assertSeat(payload.candidateSeat, `${type}.candidateSeat`);
+      assertJudgeReason(payload.reason as string);
+      return;
+    case "voting.count-disputed":
+      assertExactKeys(payload, ["candidateSeat", "reason"], `${type} payload`);
+      assertSeat(payload.candidateSeat, `${type}.candidateSeat`);
+      assertJudgeReason(payload.reason as string);
+      return;
+    case "voting.count-ruled":
+      assertExactKeys(
+        payload,
+        ["voteAssignments", "externalReviewAcknowledged", "reason"],
+        `${type} payload`,
+      );
+      assertCanonicalSeatRecord(payload.voteAssignments, `${type}.voteAssignments`, assertSeat);
+      if (payload.externalReviewAcknowledged !== true)
+        throw new Error("External recording review requires explicit judge acknowledgement");
+      assertJudgeReason(payload.reason as string);
+      return;
+    case "voting.legally-skipped":
+      assertExactKeys(payload, ["reason"], `${type} payload`);
+      if (!legalVotingSkipReasons.includes(payload.reason as string))
+        throw new Error("A named legal skip reason is required");
+      return;
+    case "mafia.multiple-shot-observed":
+      assertExactKeys(payload, ["shooterSeat"], `${type} payload`);
+      assertSeat(payload.shooterSeat, `${type}.shooterSeat`);
+      return;
+    case "best-move.number-accepted":
+      assertExactKeys(payload, ["seat"], `${type} payload`);
+      assertSeat(payload.seat, `${type}.seat`);
+      return;
+    case "best-move.slip-corrected":
+      assertExactKeys(payload, ["index", "seat", "reason"], `${type} payload`);
+      assertSafeInteger(payload.index, `${type}.index`, 0);
+      if (payload.index > 2) throw new Error("Slip index exceeds three-entry transcript");
+      assertSeat(payload.seat, `${type}.seat`);
+      assertJudgeReason(payload.reason as string);
+      return;
+    case "best-move.finalized":
+      assertExactKeys(payload, ["reason", "readbackAcknowledged"], `${type} payload`);
+      if (
+        !bestMoveCompletionReasons.includes(payload.reason as string) ||
+        payload.readbackAcknowledged !== true
+      )
+        throw new Error("Best Move completion requires legal cutoff and acknowledged readback");
+      return;
+    case "game.adjudicated":
+      assertAdjudication(payload, `${type} payload`);
+      return;
     case "game.started":
     case "game.checkpointed":
     case "don.check-skipped":
@@ -407,6 +718,11 @@ const assertCanonicalPayload = (type: CanonicalGameEventType, value: unknown): v
       return;
     case "phase.changed":
       assertExactKeys(payload, ["to"], `${type} payload`);
+      if (
+        (!federation && federationOnlyPhases.has(payload.to as string)) ||
+        (federation && payload.to === "sheriff-wake")
+      )
+        throw new Error("Phase belongs to another rules edition");
       if (typeof payload.to !== "string" || !canonicalGamePhaseSet.has(payload.to)) {
         throw new Error(`${type} payload.to is not a canonical game phase`);
       }
@@ -450,7 +766,7 @@ const assertCanonicalPayload = (type: CanonicalGameEventType, value: unknown): v
         `${type} payload.voteAssignments`,
         (entry, entryContext) => assertSeat(entry, entryContext),
       );
-      assertVoteResult(payload.result, `${type} payload.result`);
+      assertVoteResult(payload.result, `${type} payload.result`, federation);
       return;
     case "car-crash.resolved":
     case "car-crash.ballot-resolved":
@@ -489,6 +805,8 @@ const assertCanonicalPayload = (type: CanonicalGameEventType, value: unknown): v
       assertBoolean(payload.match, `${type} payload.match`);
       return;
     case "best-move.completed":
+      if (federation)
+        throw new Error("Federation Best Move requires accepted-number and finalized events");
       assertExactKeys(payload, ["playerSeat", "selectedSeats", "mafiaHits"], `${type} payload`);
       assertSeat(payload.playerSeat, `${type} payload.playerSeat`);
       assertSeatArray(payload.selectedSeats, `${type} payload.selectedSeats`);
@@ -519,13 +837,16 @@ const assertCanonicalPayload = (type: CanonicalGameEventType, value: unknown): v
 
 export const assertCanonicalGameEventDraft: (
   value: unknown,
-) => asserts value is CanonicalGameEventDraft = (value) => {
+  replayVersion?: ReplayVersion,
+) => asserts value is CanonicalGameEventDraft = (value, replayVersion = LEGACY_REPLAY_VERSION) => {
+  // Edition-specific actions must be admitted here without expanding the legacy contract.
+  assertReplayVersion(replayVersion);
   const event = requireRecord(value, "Canonical event draft");
   assertExactKeys(event, ["type", "payload"], "Canonical event draft");
   if (typeof event.type !== "string" || !isCanonicalGameEventType(event.type)) {
     throw new Error("Canonical event type is invalid");
   }
-  assertCanonicalPayload(event.type, event.payload);
+  assertCanonicalPayload(event.type, event.payload, replayVersion);
 };
 
 const gameLogEntryKeys = [
@@ -589,6 +910,22 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
       "winner",
     ],
     [
+      "rulesEdition",
+      ...(game.rulesEdition === FEDERATION_RULES_EDITION
+        ? [
+            "completedGameNights",
+            "sheriffChecksPerformed",
+            "firstDayDepartureSeats",
+            "currentSpeechRestricted",
+            "actualMultipleShotSeats",
+            "ballot",
+            "ballotSkipReason",
+            "ballotCancellationDay",
+            "adjudication",
+            "rulesDrawReason",
+            "disciplinaryRemovals",
+          ]
+        : []),
       "votingCancellation",
       "votingRound",
       "carCrashSeats",
@@ -610,7 +947,14 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
     ],
     context,
   );
+  if (Object.hasOwn(game, "rulesEdition")) assertRulesEdition(game.rulesEdition);
   assertGamePhase(game.phase, `${context}.phase`);
+  const federation = game.rulesEdition === FEDERATION_RULES_EDITION;
+  if (
+    (!federation && federationOnlyPhases.has(game.phase)) ||
+    (federation && game.phase === "sheriff-wake")
+  )
+    throw new Error("State phase belongs to another rules edition");
   assertSafeInteger(game.day, `${context}.day`, 0);
   if (game.bestMoveEnabled !== undefined) {
     assertBoolean(game.bestMoveEnabled, `${context}.bestMoveEnabled`);
@@ -680,6 +1024,218 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
     roleCounts.don !== 1
   ) {
     throw new Error(`${context}.players must contain the canonical role distribution`);
+  }
+  if (federation) {
+    assertSafeInteger(game.completedGameNights, `${context}.completedGameNights`, 0);
+    assertSafeInteger(game.sheriffChecksPerformed, `${context}.sheriffChecksPerformed`, 0);
+    assertBoolean(game.currentSpeechRestricted, `${context}.currentSpeechRestricted`);
+    assertSeatArray(game.firstDayDepartureSeats, `${context}.firstDayDepartureSeats`);
+    if (
+      game.sheriffChecksPerformed > game.completedGameNights ||
+      (game.day === 0 && game.completedGameNights !== 0) ||
+      (game.day > 0 &&
+        game.completedGameNights !== game.day &&
+        !(game.phase === "draw" && game.completedGameNights === game.day + 1))
+    )
+      throw new Error("Federation night/check counters are inconsistent with lifecycle");
+    if (
+      game.firstDayDepartureSeats.some(
+        (seat) =>
+          (game.players as GameState["players"]).find((p) => p.seat === seat)?.status === "active",
+      )
+    )
+      throw new Error("First-day departures must identify inactive players");
+    if (game.disciplinaryRemovals !== undefined) {
+      if (!Array.isArray(game.disciplinaryRemovals))
+        throw new Error("Disciplinary removal ledger must be an array");
+      const seen = new Set<number>();
+      for (const item of game.disciplinaryRemovals) {
+        const removal = requireRecord(item, `${context}.disciplinaryRemovals`);
+        assertExactKeys(
+          removal,
+          [
+            "seat",
+            "stage",
+            "rule",
+            "reason",
+            "checkInProgress",
+            "occurredPhase",
+            "day",
+            "effectiveExcluded",
+            "departure",
+            "announcement",
+            "shotDeath",
+            "checkCompletionPending",
+          ],
+          `${context}.disciplinaryRemovals`,
+        );
+        assertRemovalObservation(removal as unknown as RemovalObservation);
+        assertGamePhase(removal.occurredPhase, `${context}.disciplinaryRemovals.occurredPhase`);
+        assertSafeInteger(removal.day, `${context}.disciplinaryRemovals.day`, 0);
+        assertBoolean(removal.shotDeath, `${context}.disciplinaryRemovals.shotDeath`);
+        assertBoolean(
+          removal.checkCompletionPending,
+          `${context}.disciplinaryRemovals.checkCompletionPending`,
+        );
+        if (
+          seen.has(removal.seat as number) ||
+          removal.day > game.day ||
+          removal.effectiveExcluded !== true ||
+          !["pending", "departed"].includes(removal.departure as string) ||
+          !["pending", "announced"].includes(removal.announcement as string)
+        )
+          throw new Error("Disciplinary removal ledger is inconsistent");
+        seen.add(removal.seat as number);
+        if (
+          (game.players as GameState["players"]).find((p) => p.seat === removal.seat)?.status !==
+            "red-carded" ||
+          (removal.checkCompletionPending &&
+            (!removal.checkInProgress || removal.departure !== "pending")) ||
+          (removal.announcement === "announced" && removal.departure !== "departed")
+        )
+          throw new Error("Disciplinary exclusion/departure/announcement disagree");
+      }
+    }
+    if (game.actualMultipleShotSeats !== undefined) {
+      assertSeatArray(game.actualMultipleShotSeats, `${context}.actualMultipleShotSeats`);
+      if (
+        game.actualMultipleShotSeats.some(
+          (seat) =>
+            (game.players as GameState["players"]).find((p) => p.seat === seat)?.team !== "black",
+        )
+      )
+        throw new Error("Multiple shooting requires a black-team shooter");
+    }
+    if (game.ballotCancellationDay !== undefined)
+      assertSafeInteger(game.ballotCancellationDay, `${context}.ballotCancellationDay`, 1);
+    if (
+      game.ballotSkipReason !== undefined &&
+      !legalVotingSkipReasons.includes(game.ballotSkipReason as string)
+    )
+      throw new Error("Invalid legal ballot skip reason");
+    if (game.adjudication !== undefined) {
+      assertAdjudication(game.adjudication, `${context}.adjudication`);
+      const ruling = game.adjudication as OpponentVictoryAdjudication;
+      if (
+        game.phase !== "finished" ||
+        game.winner !== (ruling.losingTeam === "red" ? "black" : "red")
+      )
+        throw new Error("Adjudication and terminal winner disagree");
+      if (
+        ruling.offenderSeat !== undefined &&
+        (game.players as GameState["players"]).find((p) => p.seat === ruling.offenderSeat)?.team !==
+          ruling.losingTeam
+      )
+        throw new Error("Adjudication offender and losing team disagree");
+    }
+    if (game.rulesDrawReason !== undefined) {
+      const reason = requireRecord(game.rulesDrawReason, `${context}.rulesDrawReason`);
+      assertExactKeys(
+        reason,
+        ["rule", "completedGameNights", "consecutiveUnchangedNights"],
+        `${context}.rulesDrawReason`,
+      );
+      if (
+        game.phase !== "draw" ||
+        reason.rule !== "6.5.6" ||
+        reason.consecutiveUnchangedNights !== 3 ||
+        reason.completedGameNights !== game.completedGameNights ||
+        game.cyclesWithoutElimination !== 3
+      )
+        throw new Error("Rules draw basis and lifecycle disagree");
+    }
+    if (game.phase === "voting" && !game.ballot)
+      throw new Error("Federation voting requires ordered ballot state");
+    if (game.ballot !== undefined) {
+      const ballot = requireRecord(game.ballot, `${context}.ballot`);
+      assertObjectKeys(
+        ballot,
+        [
+          "orderAnnouncements",
+          "mention",
+          "stopped",
+          "selectedCandidateSeat",
+          "acceptedCandidateSeats",
+          "reviewedCandidateSeats",
+        ],
+        ["dispute", "finalRuling"],
+        `${context}.ballot`,
+      );
+      if (
+        ![0, 1, 2].includes(ballot.orderAnnouncements as number) ||
+        ![0, 1, 2].includes(ballot.mention as number)
+      )
+        throw new Error("Ballot announcements/mentions are invalid");
+      assertBoolean(ballot.stopped, `${context}.ballot.stopped`);
+      assertSeat(ballot.selectedCandidateSeat, `${context}.ballot.selectedCandidateSeat`);
+      assertSeatArray(ballot.acceptedCandidateSeats, `${context}.ballot.acceptedCandidateSeats`);
+      assertSeatArray(ballot.reviewedCandidateSeats, `${context}.ballot.reviewedCandidateSeats`);
+      if (
+        game.phase === "voting" &&
+        (!(game.turnOrder as number[]).includes(ballot.selectedCandidateSeat) ||
+          (ballot.mention !== 0 && ballot.orderAnnouncements !== 2) ||
+          (ballot.stopped && ballot.mention !== 2) ||
+          ballot.acceptedCandidateSeats.some(
+            (seat) => !(game.turnOrder as number[]).includes(seat),
+          ))
+      )
+        throw new Error("Ordered ballot state is inconsistent");
+      if (game.phase === "voting") {
+        const order = game.turnOrder as number[];
+        const index = game.currentTurnIndex as number;
+        if (
+          index >= order.length ||
+          !sameValue(
+            ballot.acceptedCandidateSeats,
+            order.slice(0, index + (ballot.stopped ? 1 : 0)),
+          )
+        )
+          throw new Error("Accepted STOP seats must match the ordered live prefix");
+        for (const [voter, candidate] of Object.entries(
+          game.voteAssignments as Readonly<Record<number, number>>,
+        )) {
+          if (
+            (game.players as GameState["players"]).find((p) => p.seat === Number(voter))?.status !==
+              "active" ||
+            !order.includes(candidate)
+          )
+            throw new Error(
+              "Accepted ballot assignments require eligible voters and actual candidates",
+            );
+        }
+      }
+      if (ballot.dispute !== undefined) {
+        const dispute = requireRecord(ballot.dispute, `${context}.ballot.dispute`);
+        assertExactKeys(dispute, ["candidateSeat", "reason"], `${context}.ballot.dispute`);
+        assertSeat(dispute.candidateSeat, `${context}.ballot.dispute.candidateSeat`);
+        assertJudgeReason(dispute.reason as string);
+        const candidateIndex = (game.turnOrder as number[]).indexOf(dispute.candidateSeat);
+        if (
+          game.phase !== "voting" ||
+          candidateIndex < 0 ||
+          candidateIndex > (game.currentTurnIndex as number) ||
+          (candidateIndex === game.currentTurnIndex && ballot.mention !== 2)
+        )
+          throw new Error("A pending dispute must refer to an actually called live count");
+        if (ballot.reviewedCandidateSeats.includes(dispute.candidateSeat))
+          throw new Error("A final ruling cannot be reappealed");
+      }
+      if (ballot.finalRuling !== undefined) {
+        const ruling = requireRecord(ballot.finalRuling, `${context}.ballot.finalRuling`);
+        assertExactKeys(
+          ruling,
+          ["candidateSeat", "reason", "externalReviewAcknowledged"],
+          `${context}.ballot.finalRuling`,
+        );
+        assertSeat(ruling.candidateSeat, `${context}.ballot.finalRuling.candidateSeat`);
+        assertJudgeReason(ruling.reason as string);
+        if (
+          ruling.externalReviewAcknowledged !== true ||
+          !ballot.reviewedCandidateSeats.includes(ruling.candidateSeat)
+        )
+          throw new Error("Final reviewed count lacks human acknowledgement");
+      }
+    }
   }
   assertSeatArray(game.turnOrder, `${context}.turnOrder`);
   assertSafeInteger(game.currentTurnIndex, `${context}.currentTurnIndex`, 0);
@@ -801,13 +1357,39 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
     assertObjectKeys(
       bestMove,
       ["playerSeat", "selectedSeats"],
-      ["mafiaHits"],
+      federation ? ["mafiaHits", "completionReason", "readbackAcknowledged"] : ["mafiaHits"],
       `${context}.bestMove`,
     );
     assertSeat(bestMove.playerSeat, `${context}.bestMove.playerSeat`);
-    assertSeatArray(bestMove.selectedSeats, `${context}.bestMove.selectedSeats`);
+    if (federation) {
+      if (!Array.isArray(bestMove.selectedSeats) || bestMove.selectedSeats.length > 3)
+        throw new Error("Best Move contains at most three accepted numbers");
+      for (const seat of bestMove.selectedSeats)
+        assertSeat(seat, `${context}.bestMove.selectedSeats`);
+      if (
+        bestMove.completionReason !== undefined &&
+        (!bestMoveCompletionReasons.includes(bestMove.completionReason as string) ||
+          bestMove.readbackAcknowledged !== true)
+      )
+        throw new Error("Completed Best Move needs legal cutoff and accepted readback");
+      if (bestMove.completionReason === "declined" && bestMove.selectedSeats.length !== 0)
+        throw new Error("A declined Best Move has zero accepted entries");
+      if (bestMove.completionReason === "complete-list" && bestMove.selectedSeats.length !== 3)
+        throw new Error("Complete Best Move contains three entries");
+    } else assertSeatArray(bestMove.selectedSeats, `${context}.bestMove.selectedSeats`);
     if (bestMove.mafiaHits !== undefined) {
       assertSafeInteger(bestMove.mafiaHits, `${context}.bestMove.mafiaHits`, 0);
+    }
+    if (federation) {
+      const expectedHits = (game.players as GameState["players"]).filter(
+        (p) => p.team === "black" && new Set(bestMove.selectedSeats as number[]).has(p.seat),
+      ).length;
+      if (
+        bestMove.completionReason !== undefined
+          ? bestMove.mafiaHits !== expectedHits
+          : bestMove.mafiaHits !== undefined
+      )
+        throw new Error("Best Move score must derive from the accepted finalized transcript");
     }
   }
   if (game.winner !== null && game.winner !== "red" && game.winner !== "black") {
@@ -816,21 +1398,34 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
   if ((game.phase === "finished") !== (game.winner !== null)) {
     throw new Error(`${context}.phase and winner are inconsistent`);
   }
-  if (game.day === 0 && game.phase !== "mafia-planning" && game.phase !== "sheriff-wake") {
+  if (
+    game.day === 0 &&
+    game.phase !== "mafia-planning" &&
+    game.phase !== "sheriff-wake" &&
+    !(federation && (federationOnlyPhases.has(game.phase) || isTerminalGamePhase(game.phase)))
+  ) {
     throw new Error(`${context}.day zero has an invalid phase`);
   }
 };
 
 export const assertGameLogEntry: (value: unknown) => asserts value is GameLogEntry = (value) => {
   const entry = requireRecord(value, "Game event envelope");
-  assertExactKeys(entry, gameLogEntryKeys, "Game event envelope");
-  assertCanonicalGameEventDraft({
-    type: entry.type,
-    payload: entry.payload,
-  });
-  if (entry.replayVersion !== CURRENT_REPLAY_VERSION) {
-    throw new Error(`Unsupported replay version ${String(entry.replayVersion)}`);
-  }
+  assertExactKeys(
+    entry,
+    entry.replayVersion === FEDERATION_REPLAY_VERSION
+      ? [...gameLogEntryKeys, "rulesEdition"]
+      : gameLogEntryKeys,
+    "Game event envelope",
+  );
+  assertReplayVersion(entry.replayVersion);
+  assertCanonicalGameEventDraft(
+    {
+      type: entry.type,
+      payload: entry.payload,
+    },
+    entry.replayVersion,
+  );
+  if (entry.replayVersion === FEDERATION_REPLAY_VERSION) assertRulesEdition(entry.rulesEdition);
   assertNonEmptyString(entry.id, "Event id");
   assertNonEmptyString(entry.gameId, "Event gameId");
   assertReplaySequence(entry.sequence);
@@ -838,6 +1433,11 @@ export const assertGameLogEntry: (value: unknown) => asserts value is GameLogEnt
     assertNonEmptyString(entry.parentEventId, "Event parentEventId");
   assertGamePhase(entry.phaseBefore, "Event phaseBefore");
   assertGamePhase(entry.phaseAfter, "Event phaseAfter");
+  if (
+    entry.replayVersion === LEGACY_REPLAY_VERSION &&
+    (federationOnlyPhases.has(entry.phaseBefore) || federationOnlyPhases.has(entry.phaseAfter))
+  )
+    throw new Error("Federation phases require replay version 2");
   assertSafeInteger(entry.dayBefore, "Event dayBefore", 0);
   assertSafeInteger(entry.dayAfter, "Event dayAfter", 0);
   if (
@@ -956,7 +1556,11 @@ const sameValue = (left: unknown, right: unknown): boolean =>
   JSON.stringify(canonicalJsonValue(left)) === JSON.stringify(canonicalJsonValue(right));
 
 const advancePhaseOnce = (game: GameState): GameState => {
-  if (game.phase === "mafia-planning" || game.phase === "sheriff-wake") {
+  if (
+    game.phase === "mafia-planning" ||
+    game.phase === "sheriff-wake" ||
+    (isFederationGame(game) && federationOnlyPhases.has(game.phase))
+  ) {
     return advanceSetupPhase(game);
   }
   if (game.phase === "day" || game.phase === "car-crash") return completeCurrentTurn(game);
@@ -1023,6 +1627,11 @@ const applyDisciplineContext = (
   context: { readonly phase?: GamePhase; readonly currentTurnIndex?: number },
 ): GameState => {
   if (context.phase === undefined || context.currentTurnIndex === undefined) return game;
+  if (isFederationGame(game)) {
+    if (context.phase !== game.phase || context.currentTurnIndex !== game.currentTurnIndex)
+      throw new Error("A v2 discipline context cannot advance the ordered live state");
+    return game;
+  }
   if (
     game.day < 1 ||
     context.phase === "mafia-planning" ||
@@ -1097,15 +1706,98 @@ const applyDisciplineContext = (
 };
 
 const applyValidatedGameEvent = (game: GameState, event: CanonicalGameEventDraft): GameState => {
-  assertCanonicalGameEventDraft(event);
+  assertCanonicalGameEventDraft(event, getGameReplayVersion(game));
+  if (
+    isFederationGame(game) &&
+    game.disciplinaryRemovals?.some(
+      (r) =>
+        r.announcement === "pending" &&
+        !["shooting-count", "don-check", "sheriff-check"].includes(r.stage),
+    ) &&
+    ![
+      "discipline.removals-announced",
+      "discipline.removal-observed",
+      "game.checkpointed",
+      "game.adjudicated",
+    ].includes(event.type)
+  )
+    throw new Error("An immediate public removal announcement is required before further gameplay");
   if (
     isTerminalGamePhase(game.phase) &&
     event.type !== "game.checkpointed" &&
-    !(game.phase === "finished" && event.type === "game.completed")
+    !(game.phase === "finished" && event.type === "game.completed") &&
+    !(
+      isFederationGame(game) &&
+      game.phase === "finished" &&
+      event.type === "discipline.removals-announced"
+    )
   ) {
     throw new Error("A terminal game is outside active play and cannot accept more actions");
   }
   switch (event.type) {
+    case "discipline.foul-issued": {
+      const next = issueFoul(game, event.payload.seat, event.payload.removal);
+      if (next.players.find((p) => p.seat === event.payload.seat)?.fouls !== 4)
+        throw new Error("Fourth-foul event does not match the subject counter");
+      return next;
+    }
+    case "discipline.removal-observed":
+      return observeDisciplinaryRemoval(game, event.payload);
+    case "discipline.removals-announced":
+      return announceDisciplinaryRemovals(game, event.payload.seats);
+    case "voting.order-announced":
+      return announceVotingOrder(game);
+    case "voting.candidate-inspected":
+      return inspectFederationCandidate(game, event.payload.candidateSeat);
+    case "voting.candidate-mentioned":
+      if (game.turnOrder[game.currentTurnIndex] !== event.payload.candidateSeat)
+        throw new Error("The mentioned candidate must match the live cursor");
+      return mentionVotingCandidate(game);
+    case "voting.candidate-stopped":
+      if (game.turnOrder[game.currentTurnIndex] !== event.payload.candidateSeat)
+        throw new Error("STOP must match the live candidate");
+      return stopVotingCandidate(game);
+    case "voting.live-advanced": {
+      const next = advanceFederationCandidate(game);
+      if (next.turnOrder[next.currentTurnIndex] !== event.payload.candidateSeat)
+        throw new Error("Live advancement must follow nomination order");
+      return next;
+    }
+    case "vote.accepted":
+      return acceptFederationVote(game, event.payload.voterSeat, event.payload.candidateSeat);
+    case "vote.corrected":
+      return correctAcceptedVote(
+        game,
+        event.payload.voterSeat,
+        event.payload.candidateSeat,
+        event.payload.reason,
+      );
+    case "voting.count-disputed":
+      return disputeVotingCount(game, event.payload.candidateSeat, event.payload.reason);
+    case "voting.count-ruled":
+      return ruleOnVotingDispute(
+        game,
+        event.payload.voteAssignments,
+        event.payload.externalReviewAcknowledged,
+        event.payload.reason,
+      );
+    case "voting.legally-skipped":
+      return skipFederationVoting(game, event.payload.reason);
+    case "mafia.multiple-shot-observed":
+      return recordActualMultipleShot(game, event.payload.shooterSeat);
+    case "best-move.number-accepted":
+      return acceptBestMoveSeat(game, event.payload.seat);
+    case "best-move.slip-corrected":
+      return correctBestMoveSlip(
+        game,
+        event.payload.index,
+        event.payload.seat,
+        event.payload.reason,
+      );
+    case "best-move.finalized":
+      return finalizeBestMove(game, event.payload.reason, event.payload.readbackAcknowledged);
+    case "game.adjudicated":
+      return adjudicateOpponentVictory(game, event.payload);
     case "game.started":
       if (game.phase !== "mafia-planning") {
         throw new Error("game.started requires a mafia-planning state");
@@ -1162,12 +1854,16 @@ const applyValidatedGameEvent = (game: GameState, event: CanonicalGameEventDraft
       );
     }
     case "voting.resolved": {
-      const prepared = advanceToVoting(game);
-      const voting: GameState = {
-        ...prepared,
-        voteAssignments: { ...event.payload.voteAssignments },
-        currentTurnIndex: prepared.turnOrder.length - 1,
-      };
+      const prepared = isFederationGame(game) ? game : advanceToVoting(game);
+      if (isFederationGame(game) && !sameValue(game.voteAssignments, event.payload.voteAssignments))
+        throw new Error("A v2 result summary cannot rewrite accepted votes");
+      const voting: GameState = isFederationGame(game)
+        ? prepared
+        : {
+            ...prepared,
+            voteAssignments: { ...event.payload.voteAssignments },
+            currentTurnIndex: prepared.turnOrder.length - 1,
+          };
       const result = resolveVote(voting);
       if (!sameValue(result, event.payload.result)) {
         throw new Error("Voting result payload does not match the accepted votes");
@@ -1254,7 +1950,10 @@ export const tryApplyGameEvent = (
   event: CanonicalGameEventDraft,
 ): GameActionResult => {
   try {
-    return { ok: true, game: applyValidatedGameEvent(game, event) };
+    if (isFederationGame(game)) assertGameState(game, "Federation action before state");
+    const next = applyValidatedGameEvent(game, event);
+    if (isFederationGame(next)) assertGameState(next, "Federation action after state");
+    return { ok: true, game: next };
   } catch (error) {
     return {
       ok: false,
@@ -1283,6 +1982,11 @@ interface CreateGameLogEntryInput {
   readonly draft: CanonicalGameEventDraft;
 }
 
+export const createInitialGameBaseline = (game: GameState): InitialGameBaseline => {
+  assertGameState(game, "Initial game baseline.game");
+  return { ...gameReplayMetadata(game), game };
+};
+
 export const createGameLogEntry = (
   input: CreateGameLogEntryInput,
 ): { readonly entry: GameLogEntry; readonly after: GameState } => {
@@ -1297,11 +2001,11 @@ export const createGameLogEntry = (
   }
   assertCreatedAt(input.createdAt);
   assertGameState(input.before, "Event before state");
-  assertCanonicalGameEventDraft(input.draft);
+  assertCanonicalGameEventDraft(input.draft, getGameReplayVersion(input.before));
   const after = applyGameEvent(input.before, input.draft);
   const entry = {
     ...input.draft,
-    replayVersion: CURRENT_REPLAY_VERSION,
+    ...gameReplayMetadata(input.before),
     id: input.id,
     gameId: input.gameId,
     sequence: input.sequence,
@@ -1322,6 +2026,7 @@ export const createGameLogEntry = (
 
 export const applyCurrentGameLogEntry = (game: GameState, entry: GameLogEntry): GameState => {
   assertGameLogEntry(entry);
+  assertGameReplayMetadata(game, entry);
   if (entry.phaseBefore !== game.phase || entry.dayBefore !== game.day) {
     throw new Error(`Event ${entry.id} does not start from the current game state`);
   }
@@ -1342,11 +2047,18 @@ export const replayGameLog = (
 ): { readonly game: GameState; readonly frames: readonly ReplayFrame[] } => {
   withHistoryDiagnostic({ code: "history.invalid_baseline" }, () => {
     const baselineRecord = requireRecord(baseline, "Initial game baseline");
-    assertExactKeys(baselineRecord, ["replayVersion", "game"], "Initial game baseline");
-    if (baseline.replayVersion !== CURRENT_REPLAY_VERSION) {
-      throw new Error(`Unsupported replay version ${baseline.replayVersion}`);
-    }
+    assertExactKeys(
+      baselineRecord,
+      baselineRecord.replayVersion === FEDERATION_REPLAY_VERSION
+        ? ["replayVersion", "rulesEdition", "game"]
+        : ["replayVersion", "game"],
+      "Initial game baseline",
+    );
+    assertReplayVersion(baselineRecord.replayVersion);
+    if (baseline.replayVersion === FEDERATION_REPLAY_VERSION)
+      assertRulesEdition(baseline.rulesEdition);
     assertGameState(baselineRecord.game, "Initial game baseline.game");
+    assertGameReplayMetadata(baselineRecord.game, baseline);
   });
   let game = baseline.game;
   let parentEventId: string | null = null;
@@ -1414,8 +2126,11 @@ export const replayGameLog = (
         replayIndex,
       });
     }
-    if (entry.replayVersion !== baseline.replayVersion) {
-      throw new GameHistoryError(`Replay version mismatch at event ${entry.id}`, {
+    if (
+      entry.replayVersion !== baseline.replayVersion ||
+      entry.rulesEdition !== baseline.rulesEdition
+    ) {
+      throw new GameHistoryError(`Replay version/rules edition mismatch at event ${entry.id}`, {
         code: "history.version",
         replayIndex,
       });
