@@ -24,12 +24,12 @@ export const LiveSidePanel = ({
   const suppressNextClickRef = useRef(false);
 
   return (
-    <aside
+    <GlassSurface
+      as="aside"
       className="live-side-panel has-live-utilities"
       aria-label={t("live.panel")}
       hidden={hidden}
     >
-      <GlassSurface aria-hidden="true" className="live-side-panel-glass" radius={20} />
       <button
         type="button"
         className="panel-swipe-handle utility-panels-toggle"
@@ -66,6 +66,6 @@ export const LiveSidePanel = ({
         />
       </div>
       {children}
-    </aside>
+    </GlassSurface>
   );
 };

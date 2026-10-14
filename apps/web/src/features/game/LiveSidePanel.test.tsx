@@ -95,10 +95,13 @@ describe("LiveSidePanel", () => {
     );
 
     const rail = screen.getByRole("complementary", { name: "Live game controls" });
-    const glass = rail.querySelector<HTMLElement>(".live-side-panel-glass");
-    expect(glass).toHaveClass("glass-surface");
-    expect(glass).not.toHaveClass("is-glass-fallback", "is-glass-refractive");
-    expect(glass).not.toHaveAttribute("theme");
-    expect(glass?.style.getPropertyValue("--glass-radius")).toBe("20px");
+    expect(rail).toHaveClass("glass-surface");
+    expect(rail).not.toHaveClass("is-glass-fallback", "is-glass-refractive");
+    expect(rail).not.toHaveAttribute("theme");
+    expect(rail.style.getPropertyValue("--glass-radius")).toBe("20px");
+    expect(rail.querySelector(".glass-surface")).toBeNull();
+    expect(rail.firstElementChild).toBe(
+      screen.getByRole("button", { name: "Hide timer and voting" }),
+    );
   });
 });

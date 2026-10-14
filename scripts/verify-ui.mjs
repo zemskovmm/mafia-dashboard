@@ -191,6 +191,110 @@ const assertRolePresentation = async (page, { masked, roleLighting, phase }) => 
 };
 const evidencePath = (name) => `.AI/mafia-dashboard-${name}.png`;
 const screenshotPath = process.env.UI_SCREENSHOT ?? evidencePath("setup");
+const verifyUtilityToggle = async () => {
+  const rail = page.locator(".live-side-panel.has-live-utilities");
+  const toggle = rail.locator(".utility-panels-toggle");
+  const timer = rail.locator(".timer-display");
+  const originalTimer = await timer.elementHandle();
+  const music = rail.locator(".youtube-dock");
+  const originalMusic = await music.elementHandle();
+  await page.evaluate(() => document.fonts.ready);
+  await page.mouse.move(0, 0);
+  const corner = await rail.evaluate((panel) => {
+    const bounds = panel.getBoundingClientRect();
+    return { x: bounds.left + 2, y: bounds.top + 2, width: 2, height: 2 };
+  });
+  const cornerBefore = await page.screenshot({ clip: corner });
+  const measure = async (state) => {
+    await toggle.evaluate(async (button) => {
+      await Promise.all(button.getAnimations().map((animation) => animation.finished));
+    });
+    const evidence = await toggle.evaluate((button) => {
+      const panel = button.parentElement;
+      const bounds = panel.getBoundingClientRect();
+      const rect = button.getBoundingClientRect();
+      const outer = getComputedStyle(panel);
+      const inner = getComputedStyle(button);
+      return {
+        edges: [
+          rect.left - bounds.left - parseFloat(outer.borderLeftWidth),
+          bounds.right - rect.right - parseFloat(outer.borderRightWidth),
+          rect.top - bounds.top - parseFloat(outer.borderTopWidth),
+        ],
+        position: inner.position,
+        margins: [inner.marginTop, inner.marginRight, inner.marginBottom, inner.marginLeft],
+        radii: [
+          inner.borderTopLeftRadius,
+          inner.borderTopRightRadius,
+          inner.borderBottomLeftRadius,
+          inner.borderBottomRightRadius,
+        ],
+        transform: inner.transform,
+        overflow: outer.overflowX,
+        parentRadius: outer.borderTopLeftRadius,
+        height: rect.height,
+        focusVisible: button.matches(":focus-visible"),
+        outlineWidth: inner.outlineWidth,
+        outlineOffset: inner.outlineOffset,
+      };
+    });
+    await page.screenshot({ path: screenshotPath.replace(/\.png$/i, `-toggle-${state}.png`) });
+    // WebKit hit-testing ignores rounded overflow; compare the actual clipped pixels instead.
+    const cornerClipped = cornerBefore.equals(await page.screenshot({ clip: corner }));
+    if (
+      evidence.edges.some((edge) => Math.abs(edge) > 0.1) ||
+      evidence.position !== "static" ||
+      evidence.transform !== "none" ||
+      evidence.margins.some((margin) => parseFloat(margin) !== 0) ||
+      evidence.radii.some((radius) => parseFloat(radius) !== 0) ||
+      !["hidden", "clip"].includes(evidence.overflow) ||
+      parseFloat(evidence.parentRadius) === 0 ||
+      !cornerClipped ||
+      evidence.height < 48 ||
+      (state === "focus" &&
+        (!evidence.focusVisible ||
+          parseFloat(evidence.outlineWidth) < 2 ||
+          parseFloat(evidence.outlineOffset) >= 0))
+    )
+      throw new Error(
+        `Utility toggle must flow flush inside parent clipping (${state}): ${JSON.stringify({ ...evidence, cornerClipped })}`,
+      );
+    console.log(`Utility toggle ${state}: ${JSON.stringify({ ...evidence, cornerClipped })}`);
+  };
+  await toggle.hover();
+  await measure("expanded-hover");
+  await page.getByRole("button", { name: "Start 60 second timer", exact: true }).click();
+  await page.getByRole("button", { name: "Pause timer", exact: true }).click();
+  const paused = await timer.locator("strong").innerText();
+  await toggle.hover();
+  await page.mouse.down();
+  await measure("pressed");
+  await page.mouse.up();
+  await page.locator("#game-utility-panels[hidden]").waitFor({ state: "attached" });
+  await measure("collapsed-hover");
+  await page.keyboard.press("Tab");
+  await toggle.focus();
+  await measure("focus");
+  await page.keyboard.press("Enter");
+  await page.getByRole("button", { name: "Resume timer", exact: true }).waitFor();
+  if (
+    !(await timer.evaluate((node, original) => node === original, originalTimer)) ||
+    !(await music.evaluate((node, original) => node === original, originalMusic)) ||
+    (await timer.locator("strong").innerText()) !== paused ||
+    (await toggle.getAttribute("aria-expanded")) !== "true"
+  ) {
+    throw new Error("Utility toggle remounted or reset the paused timer");
+  }
+  await page.getByRole("button", { name: "Resume timer", exact: true }).click();
+  await page.getByRole("button", { name: "Pause timer", exact: true }).waitFor();
+  await toggle.press("Space");
+  await page.waitForFunction(
+    (before) => Number(document.querySelector(".timer-display strong").textContent) < before,
+    Number(paused),
+  );
+  await toggle.press("Enter");
+  await page.getByRole("button", { name: "Pause timer", exact: true }).click();
+};
 const tableScreenshotPath = process.env.UI_TABLE_SCREENSHOT ?? evidencePath("table");
 const sidePanelScreenshotPath = process.env.UI_SIDE_PANEL_SCREENSHOT ?? evidencePath("side-panel");
 const queueTagsScreenshotPath = process.env.UI_QUEUE_TAGS_SCREENSHOT ?? evidencePath("queue-tags");
@@ -982,6 +1086,13 @@ try {
   }
   await setupHeading.waitFor();
   await restoreLegacySetup();
+  if (process.env.UI_SIDE_PANEL_ONLY === "1") {
+    await verifyUtilityToggle();
+    assertNoPageErrors();
+    console.log("Utility toggle verification: PASS");
+    await browser.close();
+    process.exit(0);
+  }
   if (layoutOnly) {
     const { verifyIpadLayout } = await import("./verify-ipad-layout.mjs");
     await verifyIpadLayout(page, { assertVisibleFocus, assertCoreLayout, assertCoreTargets });
@@ -1414,6 +1525,16 @@ try {
       };
     });
     const near = (actual, expected, tolerance = 1) => Math.abs(actual - expected) <= tolerance;
+    const railContent = {
+      left: sidePanelGeometry.rail.left + sidePanelGeometry.railStyle.borderLeftWidth,
+      right: sidePanelGeometry.rail.right - sidePanelGeometry.railStyle.borderRightWidth,
+      top: sidePanelGeometry.rail.top + sidePanelGeometry.railStyle.borderTopWidth,
+      bottom: sidePanelGeometry.rail.bottom - sidePanelGeometry.railStyle.borderBottomWidth,
+      width:
+        sidePanelGeometry.rail.width -
+        sidePanelGeometry.railStyle.borderLeftWidth -
+        sidePanelGeometry.railStyle.borderRightWidth,
+    };
     const expectedSidePanelGeometry =
       sidePanelGeometry.viewportWidth >= 1160
         ? { edge: 14, mainWidth: 918, gap: 14, railWidth: 406 }
@@ -1443,7 +1564,7 @@ try {
       !near(sidePanelGeometry.rail.right - sidePanelGeometry.timer.right, 8) ||
       !near(sidePanelGeometry.voting.left - sidePanelGeometry.rail.left, 8) ||
       !near(sidePanelGeometry.rail.right - sidePanelGeometry.voting.right, 8) ||
-      !near(sidePanelGeometry.music.width, sidePanelGeometry.rail.width)
+      !near(sidePanelGeometry.music.width, railContent.width)
     ) {
       throw new Error(
         `Integrated pane widths violate the utility-inset/music-flush contract: ${JSON.stringify(
@@ -1452,29 +1573,20 @@ try {
       );
     }
     if (
-      !near(sidePanelGeometry.upperGrip.left, sidePanelGeometry.rail.left) ||
-      !near(sidePanelGeometry.upperGrip.right, sidePanelGeometry.rail.right) ||
-      !near(sidePanelGeometry.upperGrip.top, sidePanelGeometry.rail.top) ||
-      !near(sidePanelGeometry.music.left, sidePanelGeometry.rail.left) ||
-      !near(sidePanelGeometry.music.right, sidePanelGeometry.rail.right) ||
-      !near(sidePanelGeometry.music.bottom, sidePanelGeometry.rail.bottom)
+      !near(sidePanelGeometry.upperGrip.left, railContent.left, 0.1) ||
+      !near(sidePanelGeometry.upperGrip.right, railContent.right, 0.1) ||
+      !near(sidePanelGeometry.upperGrip.top, railContent.top, 0.1) ||
+      !near(sidePanelGeometry.music.left, railContent.left, 0.1) ||
+      !near(sidePanelGeometry.music.right, railContent.right, 0.1) ||
+      !near(sidePanelGeometry.music.bottom, railContent.bottom, 0.1)
     ) {
       throw new Error(
         `Top grip and music must meet the pane edges: ${JSON.stringify(sidePanelGeometry)}`,
       );
     }
     if (
-      (sidePanelGeometry.viewportWidth >= 1160
-        ? !near(
-            sidePanelGeometry.upperGripStyle.borderTopLeftRadius,
-            sidePanelGeometry.railStyle.borderTopLeftRadius,
-          ) ||
-          !near(
-            sidePanelGeometry.upperGripStyle.borderTopRightRadius,
-            sidePanelGeometry.railStyle.borderTopRightRadius,
-          )
-        : sidePanelGeometry.upperGripStyle.borderTopLeftRadius !== 0 ||
-          sidePanelGeometry.upperGripStyle.borderTopRightRadius !== 0) ||
+      sidePanelGeometry.upperGripStyle.borderTopLeftRadius !== 0 ||
+      sidePanelGeometry.upperGripStyle.borderTopRightRadius !== 0 ||
       sidePanelGeometry.musicStyle.borderLeftWidth !== 0 ||
       sidePanelGeometry.musicStyle.borderRightWidth !== 0 ||
       sidePanelGeometry.musicStyle.borderBottomWidth !== 0
@@ -2034,7 +2146,7 @@ try {
 
     await page.waitForFunction(() => {
       const rail = document.querySelector(".live-side-panel.has-live-utilities");
-      const surface = rail?.querySelector(".live-side-panel-glass");
+      const surface = rail;
       if (!(rail instanceof HTMLElement) || !(surface instanceof HTMLElement)) return false;
       const style = getComputedStyle(surface);
       const computedFilter = style.backdropFilter || style.webkitBackdropFilter || "";
@@ -2042,7 +2154,7 @@ try {
     });
     const glassEvidence = await page.evaluate(() => {
       const rail = document.querySelector(".live-side-panel.has-live-utilities");
-      const surface = rail?.querySelector(".live-side-panel-glass");
+      const surface = rail;
       if (!(surface instanceof HTMLElement)) throw new Error("Live rail glass surface is missing");
       const style = getComputedStyle(surface);
       const computedFilter = style.backdropFilter || style.webkitBackdropFilter || "";

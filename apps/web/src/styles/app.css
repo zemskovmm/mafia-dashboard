@@ -2027,6 +2027,18 @@ button.player-seat.is-voting-highlight::after,
   width: 100%;
   min-width: 0;
 }
+@media not (prefers-reduced-transparency: reduce) {
+  .live-side-panel {
+    background:
+      radial-gradient(circle at 12% 5%, rgb(255 241 202 / 24%), transparent 26%),
+      linear-gradient(105deg, rgb(255 255 255 / 9%), transparent 34% 72%, rgb(74 161 124 / 8%)),
+      linear-gradient(145deg, rgb(255 255 255 / 14%), transparent 42%),
+      color-mix(in oklch, var(--theme-base) 8%, rgb(12 10 8 / 66%));
+  }
+}
+.utility-panels-toggle:focus-visible {
+  outline-offset: -4px;
+}
 .panel-swipe-handle {
   display: grid;
   place-items: center;
@@ -3344,35 +3356,14 @@ button.player-seat.is-voting-highlight::after,
   .live-side-panel[hidden] {
     display: none;
   }
-  .live-side-panel-glass {
-    position: absolute;
-    z-index: 0;
-    inset: 0;
-    pointer-events: none;
-  }
-  .live-side-panel-glass::after {
-    position: absolute;
-    inset: 1px;
-    content: "";
-    background:
-      radial-gradient(circle at 12% 5%, rgb(255 241 202 / 24%), transparent 26%),
-      linear-gradient(105deg, rgb(255 255 255 / 9%), transparent 34% 72%, rgb(74 161 124 / 8%));
-    border-radius: 19px;
-  }
-
-  .live-side-panel.has-live-utilities > :not(.live-side-panel-glass) {
-    position: relative;
-    z-index: 1;
+  .live-side-panel.has-live-utilities > * {
     flex: 0 0 auto;
     width: 100%;
     min-width: 0;
   }
-  .live-side-panel.has-live-utilities > .utility-panels-toggle {
-    border-radius: 20px 20px 0 0;
-  }
   .live-side-panel.has-live-utilities > #game-utility-panels {
-    --nomination-inset: 8px;
-    padding: 8px 8px 0;
+    --nomination-inset: 7px;
+    padding: 8px var(--nomination-inset) 0;
   }
   .live-side-panel.has-live-utilities .timer-panel,
   .live-side-panel.has-live-utilities .nomination-panel {
@@ -3688,22 +3679,14 @@ html:-webkit-full-screen #root {
     overflow-y: auto;
     overscroll-behavior: contain;
   }
-  .live-side-panel-glass {
-    position: absolute;
-    z-index: 0;
-    inset: 0;
-    pointer-events: none;
-  }
-  .live-side-panel.has-live-utilities > :not(.live-side-panel-glass) {
-    position: relative;
-    z-index: 1;
+  .live-side-panel.has-live-utilities > * {
     flex: 0 0 auto;
     width: 100%;
     min-width: 0;
   }
   .live-side-panel.has-live-utilities > #game-utility-panels {
-    --nomination-inset: 7px;
-    padding: 7px 7px 0;
+    --nomination-inset: 6px;
+    padding: 7px var(--nomination-inset) 0;
   }
   .live-side-panel.has-live-utilities .timer-panel,
   .live-side-panel.has-live-utilities .nomination-panel {
