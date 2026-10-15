@@ -52,10 +52,6 @@ export const GameUtilityPanels = ({ game, onSelectVotingCandidate }: GameUtility
     (game?.phase === "car-crash-decision" && !skippedCarCrash) ||
     game?.phase === "car-crash-result" ||
     game?.phase === "goodbye-speech";
-  const activeVoteCount =
-    game?.phase === "car-crash-decision" || game?.phase === "car-crash-result"
-      ? Object.keys(game.carCrashVotes ?? {}).length
-      : Object.keys(game?.voteAssignments ?? {}).length;
 
   return (
     <>
@@ -67,11 +63,6 @@ export const GameUtilityPanels = ({ game, onSelectVotingCandidate }: GameUtility
           <section className="nomination-panel" aria-label={t("utility.votingOrder")}>
             <p className="eyebrow">{t("utility.votingOrder")}</p>
 
-            {showVoteTotals ? (
-              <p className="vote-count-summary">
-                {t("utility.activeVotes", { count: activeVoteCount })}
-              </p>
-            ) : null}
             {game === null || game.nominations.length === 0 ? (
               <p className="muted">{t("utility.noNominations")}</p>
             ) : (

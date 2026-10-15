@@ -93,6 +93,7 @@ export const GlassScene = ({
         }
         if (clip[2] === 0 || clip[3] === 0) return [];
         const s = getComputedStyle(element);
+        const radius = parseFloat(s.borderTopLeftRadius);
         const tint: readonly [number, number, number] = element.matches(".is-sheriff-highlight")
           ? [0.3, 0.5, 0.85]
           : element.matches(".is-mafia-shooter")
@@ -104,7 +105,7 @@ export const GlassScene = ({
           {
             rect,
             clip,
-            radius: Math.min(parseFloat(s.borderTopLeftRadius) || 10, rect[2] / 2, rect[3] / 2),
+            radius: Math.min(Number.isFinite(radius) ? radius : 10, rect[2] / 2, rect[3] / 2),
             tint,
             opacity: Number(s.opacity),
           },

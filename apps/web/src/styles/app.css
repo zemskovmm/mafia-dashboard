@@ -52,17 +52,20 @@
   color: var(--text);
 }
 
-.glass-surface {
-  position: relative;
+.glass-surface,
+.table-workspace {
   border-radius: var(--glass-radius, 20px);
-  background:
-    linear-gradient(145deg, rgb(255 255 255 / 14%), transparent 42%),
-    color-mix(in oklch, var(--theme-base) 8%, rgb(12 10 8 / 66%));
   border: 1px solid color-mix(in oklch, var(--theme-base) 30%, transparent);
   box-shadow:
     inset 0 1px 0 rgb(255 255 255 / 22%),
     inset 1px 0 0 rgb(255 255 255 / 8%),
     0 20px 70px rgb(0 0 0 / 45%);
+}
+.glass-surface {
+  position: relative;
+  background:
+    linear-gradient(145deg, rgb(255 255 255 / 14%), transparent 42%),
+    color-mix(in oklch, var(--theme-base) 8%, rgb(12 10 8 / 66%));
   backdrop-filter: blur(14px) saturate(1.16);
   -webkit-backdrop-filter: blur(14px) saturate(1.16);
 }
@@ -2040,8 +2043,6 @@ button.player-seat.is-voting-highlight::after,
   min-width: 0;
   padding: 10px;
   background: rgb(15 16 17 / 48%);
-  border: 1px solid var(--border);
-  border-radius: 18px;
   overflow: visible;
 }
 .team-counts {
@@ -2276,16 +2277,10 @@ button.player-seat.is-voting-highlight::after,
   color: var(--muted);
   font-size: 0.72rem;
 }
-.nomination-total,
-.vote-count-summary {
+.nomination-total {
   color: var(--muted);
   font-size: 1.44rem;
-}
-.nomination-total {
   flex: 0 0 auto;
-}
-.vote-count-summary {
-  margin: 0;
 }
 .phase-banner {
   margin: 0 auto 6px;
@@ -4988,6 +4983,16 @@ html:-webkit-full-screen #root {
 @media (min-width: 1160px) and (min-height: 720px) {
   .app-shell.is-fullscreen {
     --header-top: var(--layout-top);
+  }
+  /* Extend panel borders to the common gutter; keep the safe area inside them. */
+  .app-shell.has-live-game {
+    --layout-bottom: var(--layout-gutter);
+  }
+  .table-layout-shell.has-live-game .table-workspace {
+    padding-bottom: max(var(--layout-gutter), env(safe-area-inset-bottom));
+  }
+  .has-live-game .live-side-panel.has-live-utilities {
+    padding-bottom: max(0px, calc(env(safe-area-inset-bottom) - var(--layout-gutter)));
   }
   .table-layout-shell .game-shell {
     padding: var(--layout-top) var(--layout-right) var(--layout-bottom) var(--layout-left);

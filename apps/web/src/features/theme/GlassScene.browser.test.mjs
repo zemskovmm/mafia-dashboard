@@ -101,9 +101,9 @@ try {
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
   const url = `http://127.0.0.1:${server.address().port}`;
   for (const config of [
+    { name: "chrome-ipad", engine: chromium, viewport: { width: 1366, height: 1024 } },
     { name: "webkit-ipad", engine: webkit, viewport: { width: 1366, height: 1024 } },
     { name: "webkit-compact", engine: webkit, viewport: { width: 1000, height: 600 } },
-    { name: "chrome-ipad", engine: chromium, viewport: { width: 1366, height: 1024 } },
     { name: "chrome-landscape", engine: chromium, viewport: { width: 1366, height: 768 } },
     { name: "chrome-compact", engine: chromium, viewport: { width: 1000, height: 600 } },
   ]) {
@@ -136,6 +136,163 @@ try {
       const shell = page.locator(".app-shell");
       assert.equal(await shell.getAttribute("data-glass-status"), "off");
       assert.equal(await page.locator(".glass-scene-canvas").count(), 0);
+      const panelAppearance = await page.evaluate(() => {
+        const read = (selector) => {
+          const el = document.querySelector(selector);
+          const s = getComputedStyle(el);
+          const r = el.getBoundingClientRect();
+          return {
+            edge: [
+              s.borderTopWidth,
+              s.borderTopStyle,
+              s.borderTopColor,
+              s.borderTopLeftRadius,
+              s.borderTopRightRadius,
+              s.borderBottomLeftRadius,
+              s.borderBottomRightRadius,
+              s.boxShadow,
+            ],
+            bounds: { left: r.left, right: r.right, bottom: r.bottom },
+          };
+        };
+        return {
+          table: read(".table-workspace"),
+          side: read(".live-side-panel"),
+          width: innerWidth,
+          height: innerHeight,
+        };
+      });
+      console.log("PANEL BASELINE", config.name, JSON.stringify(panelAppearance));
+      await page.screenshot({ path: join(evidence, `${config.name}-panel-layout.png`) });
+      assert.deepEqual(panelAppearance.table.edge, panelAppearance.side.edge);
+      assert.ok(
+        Math.abs(panelAppearance.table.bounds.bottom - panelAppearance.side.bounds.bottom) <= 1,
+      );
+      assert.ok(
+        Math.abs(
+          panelAppearance.height -
+            panelAppearance.table.bounds.bottom -
+            panelAppearance.table.bounds.left,
+        ) <= 1,
+      );
+      assert.ok(
+        Math.abs(
+          panelAppearance.height -
+            panelAppearance.side.bounds.bottom -
+            (panelAppearance.width - panelAppearance.side.bounds.right),
+        ) <= 1,
+      );
+      const assertSquareRows = async () => {
+        const radii = await page
+          .locator(".nomination-panel li, .nomination-row-target")
+          .evaluateAll((elements) =>
+            elements.flatMap((el) => {
+              const s = getComputedStyle(el);
+              return [
+                s.borderTopLeftRadius,
+                s.borderTopRightRadius,
+                s.borderBottomLeftRadius,
+                s.borderBottomRightRadius,
+              ];
+            }),
+          );
+        assert.ok(
+          radii.length > 0 && radii.every((radius) => radius === "0px"),
+          JSON.stringify(radii),
+        );
+        assert.ok(
+          await page
+            .locator(".table-stage .player-seat")
+            .first()
+            .evaluate((el) => parseFloat(getComputedStyle(el).borderTopLeftRadius) > 0),
+        );
+      };
+      await assertSquareRows();
+      if (config.name === "chrome-ipad") {
+        const cdp = await page.context().newCDPSession(page);
+        await cdp.send("Emulation.setSafeAreaInsetsOverride", {
+          insets: { top: 0, right: 0, bottom: 28, left: 0 },
+        });
+        await page.reload();
+        await page.locator(".nomination-panel li").first().waitFor();
+        await page.evaluate(() =>
+          document.documentElement.style.setProperty(
+            "--test-safe-area-bottom",
+            "env(safe-area-inset-bottom)",
+          ),
+        );
+        await page.waitForFunction(
+          () =>
+            getComputedStyle(document.documentElement)
+              .getPropertyValue("--test-safe-area-bottom")
+              .trim() === "28px",
+        );
+        const insetLayout = await page.evaluate(() => {
+          const table = document.querySelector(".table-workspace").getBoundingClientRect();
+          const side = document.querySelector(".live-side-panel").getBoundingClientRect();
+          const sideStyle = getComputedStyle(document.querySelector(".live-side-panel"));
+          const tableStage = document.querySelector(".table-stage").getBoundingClientRect();
+          return {
+            left: table.left,
+            right: innerWidth - side.right,
+            tableBottom: innerHeight - table.bottom,
+            sideBottom: innerHeight - side.bottom,
+            sideContentBottom:
+              innerHeight -
+              side.bottom +
+              parseFloat(sideStyle.paddingBottom) +
+              parseFloat(sideStyle.borderBottomWidth),
+            tableContentBottom: innerHeight - tableStage.bottom,
+          };
+        });
+        console.log("SAFE AREA LAYOUT", JSON.stringify(insetLayout));
+        await page.screenshot({ path: join(evidence, "chrome-ipad-safe-area.png") });
+        assert.equal(insetLayout.tableBottom, insetLayout.left);
+        assert.equal(insetLayout.sideBottom, insetLayout.right);
+        assert.ok(
+          insetLayout.sideContentBottom >= 28,
+          "Panel content stays above the home-indicator inset",
+        );
+        assert.ok(
+          insetLayout.tableContentBottom >= 28,
+          "Table controls stay above the home-indicator inset",
+        );
+        await page.getByRole("button", { name: "Enter fullscreen" }).click();
+        await page.waitForFunction(() =>
+          document.querySelector(".app-shell").classList.contains("is-fullscreen"),
+        );
+        const fullscreenGutters = await page
+          .locator(".table-workspace, .live-side-panel")
+          .evaluateAll((elements) =>
+            elements.map((el) => innerHeight - el.getBoundingClientRect().bottom),
+          );
+        assert.deepEqual(fullscreenGutters, [14, 14]);
+        await page.screenshot({ path: join(evidence, "chrome-ipad-safe-area-fullscreen.png") });
+        await page.getByRole("button", { name: "Exit fullscreen" }).click();
+        await page.waitForFunction(
+          () => !document.querySelector(".app-shell").classList.contains("is-fullscreen"),
+        );
+        results.push({ engine: config.name, insetLayout, fullscreenGutters });
+        await cdp.send("Emulation.setSafeAreaInsetsOverride", { insets: {} });
+        await page.reload();
+        await page.locator(".nomination-panel li").first().waitFor();
+        await page.evaluate(() =>
+          document.documentElement.style.setProperty(
+            "--test-safe-area-bottom",
+            "env(safe-area-inset-bottom)",
+          ),
+        );
+        await page.waitForFunction(
+          () =>
+            getComputedStyle(document.documentElement)
+              .getPropertyValue("--test-safe-area-bottom")
+              .trim() === "0px",
+        );
+        await page.evaluate(() =>
+          document.documentElement.style.removeProperty("--test-safe-area-bottom"),
+        );
+        await cdp.detach();
+      }
       const baseline = await page.evaluate(() =>
         localStorage.getItem("mafia-dashboard.game-session.v5"),
       );
@@ -193,6 +350,16 @@ try {
         () => document.querySelector(".app-shell")?.dataset.glassStatus === "ready",
       );
       assert.equal(await range("Refraction strength").isDisabled(), false);
+      await assertSquareRows();
+      assert.equal(
+        await page.locator(".glass-scene-canvas").evaluate((canvas) => {
+          const gl = canvas.getContext("webgl");
+          const program = gl.getParameter(gl.CURRENT_PROGRAM);
+          // The last lens drawn is a nomination row: inspect the actual GPU uniform.
+          return gl.getUniform(program, gl.getUniformLocation(program, "u_radius"));
+        }),
+        0,
+      );
       assert.equal(await page.locator(".table-stage .liquid-card-glass").count(), 0);
       assert.equal(await page.locator(".nomination-panel .vgpu-player-lighting").count(), 0);
       assert.equal(
@@ -280,6 +447,7 @@ try {
       await page.screenshot({ path: join(evidence, `${config.name}-controls.png`) });
       await page.getByRole("button", { name: "Close developer menu" }).click();
       await page.screenshot({ path: join(evidence, `${config.name}-maximum.png`) });
+      await assertSquareRows();
       // The semantic row target covers name, count and both edges; real taps switch
       // the canonical ballot, and keyboard works without changing cast votes.
       for (const target of ["left", "name", "count", "right"]) {
@@ -298,6 +466,7 @@ try {
         assert.equal(await row.locator("button").getAttribute("aria-pressed"), "true");
         await page.locator(".nomination-panel li").first().locator("button").focus();
         await page.keyboard.press("Enter");
+        await assertSquareRows();
         assert.equal(
           await page
             .locator(".nomination-panel li")
@@ -522,6 +691,8 @@ try {
       results.push({
         engine: config.name,
         normal,
+        panelAppearance,
+        squareRows: "fallback, enhanced GPU radius, selected and keyboard focus",
         maximum,
         gold,
         theme,

@@ -121,7 +121,7 @@
 /* No second material/SVG bitmap and no redundant animated row lighting. */
 .app-shell[data-glass-settings] .nomination-panel li {
   min-height: 48px;
-  border-radius: 10px;
+  border-radius: 0;
   background: linear-gradient(145deg, #ffffff0a, #ffffff02);
   animation: none !important;
 }

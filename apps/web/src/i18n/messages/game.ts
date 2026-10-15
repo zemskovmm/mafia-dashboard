@@ -175,10 +175,6 @@ const englishGameMessages = {
   "timer.start": "Start {seconds} second timer",
   "timer.pause": "Pause timer",
   "timer.resume": "Resume timer",
-  "utility.activeVotes": {
-    one: "{count} active vote",
-    other: "{count} active votes",
-  },
   "utility.initiatedBy": "Initiated by #{seat} {name}",
   "utility.noNominations": "No nominations yet",
   "utility.seat": "Seat {seat}",
@@ -368,12 +364,6 @@ const russianGameMessages = {
   "timer.start": "Запустить таймер на {seconds} секунд",
   "timer.pause": "Приостановить таймер",
   "timer.resume": "Продолжить таймер",
-  "utility.activeVotes": {
-    one: "{count} активный голос",
-    few: "{count} активных голоса",
-    many: "{count} активных голосов",
-    other: "{count} активного голоса",
-  },
   "utility.initiatedBy": "Выдвинул: №{seat} {name}",
   "utility.noNominations": "Пока нет выдвижений",
   "utility.seat": "Место {seat}",

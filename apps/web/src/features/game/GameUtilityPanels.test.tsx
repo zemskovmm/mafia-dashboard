@@ -16,6 +16,7 @@ import {
 } from "@mafia/game-domain";
 import type { GameState, PlayerInput } from "@mafia/game-domain";
 import { GameUtilityPanels } from "./GameUtilityPanels.js";
+import { I18nProvider } from "../../i18n/I18nProvider.js";
 import { namedProfiles, renderWithProfiles } from "../../test-player-directory.js";
 
 const render = (ui: Parameters<typeof renderWithProfiles>[0]) =>
@@ -113,23 +114,44 @@ describe("GameUtilityPanels", () => {
     expect(screen.getByRole("listitem")).not.toHaveClass("is-voting-highlight");
   });
 
-  it("shows current vote totals only during voting-related phases", () => {
-    const base: GameState = {
-      ...createDayGame(),
-      day: 2,
-      nominations: [{ candidateSeat: 2, nominatorSeat: 1, order: 1 }],
-      voteAssignments: { 1: 2 },
-    };
-    const { rerender } = render(<GameUtilityPanels game={base} />);
-    expect(screen.queryByText(/active vote/i)).toBeNull();
+  it.each(["en", "ru"] as const)(
+    "shows candidate totals without an aggregate summary in %s",
+    (locale) => {
+      const base: GameState = {
+        ...createDayGame(),
+        day: 2,
+        nominations: [{ candidateSeat: 2, nominatorSeat: 1, order: 1 }],
+        voteAssignments: { 1: 2 },
+      };
+      const view = (game: GameState) => (
+        <I18nProvider locale={locale}>
+          <GameUtilityPanels game={game} />
+        </I18nProvider>
+      );
+      const { rerender } = render(view(base));
+      expect(screen.queryByText(/active vote|активн/i)).toBeNull();
+      expect(screen.getByRole("listitem").querySelector(".nomination-total")).toBeNull();
 
-    rerender(
-      <GameUtilityPanels
-        game={{ ...base, phase: "voting", turnOrder: [2], currentTurnIndex: 0 }}
-      />,
-    );
-    expect(screen.getByText("1 active vote")).toBeInTheDocument();
-  });
+      rerender(view({ ...base, phase: "voting", turnOrder: [2], currentTurnIndex: 0 }));
+      expect(screen.queryByText(/active vote|активн/i)).toBeNull();
+      expect(screen.getByRole("listitem").querySelector(".nomination-total")).toHaveTextContent(
+        "1",
+      );
+      rerender(
+        view({
+          ...base,
+          phase: "voting",
+          voteAssignments: {},
+          turnOrder: [2],
+          currentTurnIndex: 0,
+        }),
+      );
+      expect(screen.queryByText(/active vote|активн/i)).toBeNull();
+      expect(screen.getByRole("listitem").querySelector(".nomination-total")).toHaveTextContent(
+        "0",
+      );
+    },
+  );
 
   it("keeps Timer available without an empty voting panel before a game exists", () => {
     render(<GameUtilityPanels game={null} />);
