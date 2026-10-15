@@ -184,6 +184,7 @@
   color: rgb(var(--portal-muted-rgb) / 72%);
   font-size: 0.72rem;
   background: transparent;
+  border: 0;
 }
 
 .club-user-avatar {
