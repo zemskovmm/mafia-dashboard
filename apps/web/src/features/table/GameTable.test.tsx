@@ -2,6 +2,8 @@ import { useState } from "react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { GameTable, type TableSeatView } from "./GameTable.js";
+import { PlayerCardAppearanceContext } from "../theme/PlayerCardAppearanceContext.js";
+import { DEFAULT_GLASS_SETTINGS } from "../theme/glass-preferences.js";
 
 const seats: TableSeatView[] = Array.from({ length: 10 }, (_, index) => ({
   seat: index + 1,
@@ -27,6 +29,301 @@ const ContextActionHarness = () => {
 };
 
 describe("GameTable", () => {
+  it("separates round nominations, additional supporters and the current speaker selection with live icons", () => {
+    const nominatedSeats = [
+      { ...seats[0]!, nominated: true, supportCount: 9, nominationSelected: true },
+    ];
+    const { rerender } = render(
+      <PlayerCardAppearanceContext.Provider value={DEFAULT_GLASS_SETTINGS}>
+        <GameTable seats={nominatedSeats} />
+      </PlayerCardAppearanceContext.Provider>,
+    );
+    const card = screen.getByRole("button", { name: "Seat 1: Player 1" });
+    expect(card).toHaveClass("is-nominated", "has-nomination-selection-outline");
+    expect(card).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("img", { name: "Nominated" })).toHaveClass("card-status-slot");
+    expect(screen.getByRole("img", { name: "Additional supporters: 9" })).toHaveTextContent("+9");
+    expect(screen.getByRole("img", { name: "Selected by current speaker" })).toHaveClass(
+      "card-status-slot",
+    );
+    expect(card.querySelector(".lucide-vote")).not.toBeNull();
+    expect(card.querySelector(".lucide-hand")).not.toBeNull();
+    rerender(
+      <PlayerCardAppearanceContext.Provider
+        value={{
+          ...DEFAULT_GLASS_SETTINGS,
+          nominationTint: 0,
+          nominationTreatment: "tint",
+          nominationIcon: "flag",
+          supportIcon: "thumbs-up",
+          selectionStyle: "check",
+        }}
+      >
+        <GameTable seats={nominatedSeats} />
+      </PlayerCardAppearanceContext.Provider>,
+    );
+    expect(card).not.toHaveClass("has-nomination-selection-outline");
+    expect(card.querySelector(".lucide-flag")).not.toBeNull();
+    expect(card.querySelector(".lucide-thumbs-up")).not.toBeNull();
+    expect(screen.getByRole("img", { name: "Nominated" })).toBeVisible();
+    expect(screen.getByRole("img", { name: "Selected by current speaker" })).toBeVisible();
+    rerender(<GameTable seats={[{ ...nominatedSeats[0]!, nominationSelected: false }]} readOnly />);
+    expect(screen.getByRole("group", { name: "Seat 1: Player 1" })).toHaveClass("is-nominated");
+    expect(screen.queryByRole("img", { name: "Selected by current speaker" })).toBeNull();
+    expect(screen.getByRole("img", { name: "Additional supporters: 9" })).toHaveTextContent("+9");
+  });
+
+  it("issues one downward-swipe foul without a tap and keeps the next intentional tap usable", () => {
+    const foul = vi.fn();
+    const click = vi.fn();
+    const penalty = vi.fn();
+    const horizontal = vi.fn();
+    render(
+      <GameTable
+        seats={seats}
+        onSeatFoul={foul}
+        onSeatClick={click}
+        onSeatPenalty={penalty}
+        onSeatSwipe={horizontal}
+      />,
+    );
+    const card = screen.getByRole("button", { name: "Seat 1: Player 1" });
+    fireEvent.touchStart(card, { touches: [{ identifier: 1, clientX: 100, clientY: 100 }] });
+    fireEvent.touchEnd(card, { changedTouches: [{ identifier: 1, clientX: 102, clientY: 170 }] });
+    fireEvent.click(card);
+    expect(foul).toHaveBeenCalledExactlyOnceWith(1);
+    expect(click).not.toHaveBeenCalled();
+    expect(penalty).not.toHaveBeenCalled();
+    expect(horizontal).not.toHaveBeenCalled();
+    fireEvent.touchStart(card, { touches: [{ identifier: 2, clientX: 100, clientY: 100 }] });
+    fireEvent.touchEnd(card, { changedTouches: [{ identifier: 2, clientX: 100, clientY: 100 }] });
+    fireEvent.click(card);
+    expect(click).toHaveBeenCalledExactlyOnceWith(1);
+  });
+
+  it.each(["active", "red-carded"] as const)(
+    "cancels the original swipe when a second finger touches another %s card",
+    (status) => {
+      const foul = vi.fn();
+      const click = vi.fn();
+      const penalty = vi.fn();
+      const horizontal = vi.fn();
+      render(
+        <GameTable
+          seats={[seats[0]!, { ...seats[1]!, status }]}
+          onSeatFoul={foul}
+          onSeatClick={click}
+          onSeatPenalty={penalty}
+          onSeatSwipe={horizontal}
+        />,
+      );
+      const first = screen.getByRole("button", { name: "Seat 1: Player 1" });
+      const second = screen.getByRole("button", { name: "Seat 2: Player 2" });
+      const primary = { identifier: 1, clientX: 100, clientY: 100 };
+      const secondary = { identifier: 2, clientX: 200, clientY: 100 };
+      fireEvent.touchStart(first, { touches: [primary] });
+      fireEvent.touchStart(second, { touches: [primary, secondary] });
+      fireEvent.touchEnd(second, { touches: [primary], changedTouches: [secondary] });
+      fireEvent.touchEnd(first, { touches: [], changedTouches: [{ ...primary, clientY: 170 }] });
+      fireEvent.click(first);
+      for (const action of [foul, click, penalty, horizontal])
+        expect(action).not.toHaveBeenCalled();
+      fireEvent.touchStart(first, { touches: [primary] });
+      fireEvent.touchEnd(first, { touches: [], changedTouches: [primary] });
+      fireEvent.click(first);
+      expect(click).toHaveBeenCalledExactlyOnceWith(1);
+    },
+  );
+
+  it.each(["tap", "downward swipe"])(
+    "finishes a touch %s after implicit pointer capture is released",
+    (gesture) => {
+      const foul = vi.fn();
+      const click = vi.fn();
+      render(<GameTable seats={seats} onSeatFoul={foul} onSeatClick={click} />);
+      const card = screen.getByRole("button", { name: "Seat 1: Player 1" });
+      const touch = { identifier: 1, clientX: 100, clientY: 100 };
+      const pointer = (type: string) =>
+        fireEvent(
+          card,
+          Object.assign(new MouseEvent(type, { bubbles: true }), {
+            pointerId: 7,
+            pointerType: "touch",
+          }),
+        );
+      pointer("pointerdown");
+      fireEvent.touchStart(card, { touches: [touch] });
+      pointer("gotpointercapture");
+      pointer("pointerup");
+      pointer("lostpointercapture");
+      fireEvent.touchEnd(card, {
+        touches: [],
+        changedTouches: [{ ...touch, clientY: gesture === "tap" ? 100 : 170 }],
+      });
+      fireEvent.click(card);
+      if (gesture === "tap") {
+        expect(click).toHaveBeenCalledExactlyOnceWith(1);
+        expect(foul).not.toHaveBeenCalled();
+      } else {
+        expect(foul).toHaveBeenCalledExactlyOnceWith(1);
+        expect(click).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("keeps mouse and keyboard fouls independent of disabled taps and rejects cancelled gestures", () => {
+    const foul = vi.fn();
+    const click = vi.fn();
+    const { rerender } = render(
+      <GameTable
+        seats={seats}
+        onSeatFoul={foul}
+        onSeatClick={click}
+        seatActionDisabled={() => true}
+      />,
+    );
+    const card = screen.getByRole("button", { name: "Seat 1: Player 1" });
+    expect(card).not.toBeDisabled();
+    expect(card).toHaveAttribute("aria-disabled", "true");
+    card.focus();
+    fireEvent.keyDown(card, { key: "f" });
+    expect(foul).toHaveBeenCalledExactlyOnceWith(1);
+    fireEvent.keyDown(card, { key: "f", repeat: true });
+    fireEvent.keyDown(card, { key: "f", ctrlKey: true });
+    fireEvent.click(card);
+    expect(click).not.toHaveBeenCalled();
+    const pointer = (type: string, y: number) =>
+      fireEvent(
+        card,
+        Object.assign(
+          new MouseEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            clientX: 100,
+            clientY: y,
+            button: 0,
+          }),
+          { pointerId: 3, pointerType: "mouse" },
+        ),
+      );
+    const capture = vi.fn();
+    Object.defineProperty(card, "setPointerCapture", { value: capture });
+    pointer("pointerdown", 100);
+    expect(capture).toHaveBeenCalledExactlyOnceWith(3);
+    pointer("pointerup", 170);
+    expect(foul).toHaveBeenCalledTimes(2);
+    for (const cancellation of ["pointercancel", "lostpointercapture"]) {
+      pointer("pointerdown", 100);
+      pointer(cancellation, 170);
+      pointer("pointerup", 180);
+    }
+    expect(foul).toHaveBeenCalledTimes(2);
+    for (const kind of ["cancel", "multi", "short", "diagonal"] as const) {
+      fireEvent.touchStart(card, { touches: [{ identifier: 1, clientX: 100, clientY: 100 }] });
+      if (kind === "cancel") fireEvent.touchCancel(card);
+      if (kind === "multi")
+        fireEvent.touchMove(card, {
+          touches: [
+            { identifier: 1, clientX: 100, clientY: 110 },
+            { identifier: 2, clientX: 110, clientY: 110 },
+          ],
+        });
+      fireEvent.touchEnd(card, {
+        changedTouches: [
+          {
+            identifier: 1,
+            clientX: kind === "diagonal" ? 160 : 100,
+            clientY: kind === "short" ? 125 : 170,
+          },
+        ],
+      });
+    }
+    expect(foul).toHaveBeenCalledTimes(2);
+    rerender(<GameTable seats={[{ ...seats[0]!, status: "red-carded" }]} onSeatFoul={foul} />);
+    fireEvent.keyDown(card, { key: "f" });
+    fireEvent.touchStart(card, { touches: [{ identifier: 1, clientX: 100, clientY: 100 }] });
+    fireEvent.touchEnd(card, { changedTouches: [{ identifier: 1, clientX: 100, clientY: 170 }] });
+    expect(foul).toHaveBeenCalledTimes(2);
+  });
+
+  it("opens an upward penalty gesture independently of a disabled card action and suppresses its click", () => {
+    const penalty = vi.fn();
+    const click = vi.fn();
+    const horizontal = vi.fn();
+    const { rerender } = render(
+      <GameTable
+        seats={seats}
+        onSeatPenalty={penalty}
+        onSeatClick={click}
+        onSeatSwipe={horizontal}
+        seatActionDisabled={() => true}
+      />,
+    );
+    const card = screen.getByRole("button", { name: "Seat 1: Player 1" });
+    expect(card).toBeDisabled();
+    fireEvent.touchStart(card, { touches: [{ identifier: 1, clientX: 100, clientY: 180 }] });
+    fireEvent.touchEnd(card, { changedTouches: [{ identifier: 1, clientX: 104, clientY: 100 }] });
+    expect(penalty).toHaveBeenCalledExactlyOnceWith(1);
+    expect(horizontal).not.toHaveBeenCalled();
+    rerender(<GameTable seats={seats} onSeatPenalty={penalty} onSeatClick={click} />);
+    fireEvent.click(card);
+    expect(click).not.toHaveBeenCalled();
+  });
+
+  it("ignores short, downward, diagonal, cancelled, multitouch and read-only penalty gestures", () => {
+    const penalty = vi.fn();
+    const { rerender } = render(<GameTable seats={seats} onSeatPenalty={penalty} />);
+    const card = screen.getByRole("button", { name: "Seat 1: Player 1" });
+    for (const [x, y] of [
+      [100, 150],
+      [100, 260],
+      [170, 110],
+    ]) {
+      fireEvent.touchStart(card, { touches: [{ identifier: 1, clientX: 100, clientY: 180 }] });
+      fireEvent.touchEnd(card, { changedTouches: [{ identifier: 1, clientX: x, clientY: y }] });
+    }
+    fireEvent.touchStart(card, { touches: [{ identifier: 1, clientX: 100, clientY: 180 }] });
+    fireEvent.touchCancel(card);
+    fireEvent.touchEnd(card, { changedTouches: [{ identifier: 1, clientX: 100, clientY: 100 }] });
+    fireEvent.touchStart(card, {
+      touches: [
+        { identifier: 1, clientX: 100, clientY: 180 },
+        { identifier: 2, clientX: 120, clientY: 180 },
+      ],
+    });
+    fireEvent.touchEnd(card, { changedTouches: [{ identifier: 1, clientX: 100, clientY: 100 }] });
+    rerender(<GameTable seats={seats} onSeatPenalty={penalty} readOnly />);
+    const preview = screen.getByRole("group", { name: "Seat 1: Player 1" });
+    fireEvent.touchStart(preview, { touches: [{ identifier: 1, clientX: 100, clientY: 180 }] });
+    fireEvent.touchEnd(preview, {
+      changedTouches: [{ identifier: 1, clientX: 100, clientY: 100 }],
+    });
+    expect(penalty).not.toHaveBeenCalled();
+  });
+  it.each([false, true])(
+    "registers only player surface hosts with one first decorative glass child (readOnly: %s)",
+    (readOnly) => {
+      const onSeatClick = vi.fn();
+      const { container } = render(
+        <GameTable seats={seats} readOnly={readOnly} onSeatClick={onSeatClick} hostName="Host" />,
+      );
+      const cards = screen.getAllByRole(readOnly ? "group" : "button", { name: /^Seat \d+:/ });
+      expect(cards).toHaveLength(10);
+      expect(container.querySelectorAll("[data-player-glass]")).toHaveLength(cards.length);
+      for (const card of cards) {
+        expect(card).toHaveAttribute("data-player-glass", "table");
+        expect(card.firstElementChild).toHaveClass("liquid-card-glass");
+        expect(card.firstElementChild).toHaveAttribute("aria-hidden", "true");
+        expect(card.querySelectorAll(".liquid-card-glass")).toHaveLength(1);
+        expect(card.querySelector(".seat-name")).not.toHaveAttribute("data-player-glass");
+      }
+      if (!readOnly) {
+        fireEvent.click(cards[6]!);
+        expect(onSeatClick).toHaveBeenCalledExactlyOnceWith(7);
+      }
+    },
+  );
+
   it("fades outgoing active light, reverses interrupted exits and releases the canvas", () => {
     vi.useFakeTimers();
     try {
@@ -152,8 +449,8 @@ describe("GameTable", () => {
     expect(container.querySelector(".round-table > .vgpu-table-lighting-host")).not.toBeNull();
   });
 
-  it("keeps the nickname separate while player status pills wrap together", () => {
-    render(
+  it("keeps identity separate from red foul dots and the pending-mute speech bubble", () => {
+    const { rerender } = render(
       <GameTable
         seats={seats.map((seat) =>
           seat.seat === 1 ? { ...seat, role: "citizen", fouls: 1, nominated: true } : seat,
@@ -165,8 +462,23 @@ describe("GameTable", () => {
     expect(player.querySelector(".seat-name")).toHaveTextContent("Player 1");
     const badges = player.querySelector(".seat-badges");
     expect(badges).toHaveTextContent("citizen");
-    expect(badges).toHaveTextContent("Foul ×1");
-    expect(badges).toHaveTextContent("Nominated");
+    expect(badges).not.toHaveTextContent("Foul");
+    expect(screen.getByRole("img", { name: "Foul ×1" }).querySelectorAll(".foul-dot")).toHaveLength(
+      1,
+    );
+    expect(player.querySelector('.card-nomination-status [aria-label="Nominated"]')).not.toBeNull();
+    rerender(<GameTable seats={[{ ...seats[0]!, fouls: 3, muted: true }]} />);
+    expect(screen.getByRole("img", { name: "Foul ×3" }).querySelectorAll(".foul-dot")).toHaveLength(
+      3,
+    );
+    expect(
+      screen.getByRole("img", { name: "Muted turn" }).querySelector(".lucide-message-circle-off"),
+    ).not.toBeNull();
+    rerender(<GameTable seats={[{ ...seats[0]!, fouls: 4, muted: false }]} />);
+    expect(screen.getByRole("img", { name: "Foul ×4" }).querySelectorAll(".foul-dot")).toHaveLength(
+      3,
+    );
+    expect(screen.queryByRole("img", { name: "Muted turn" })).toBeNull();
   });
 
   it("maps game-state highlights into V-GPU player lighting surfaces", () => {
@@ -217,7 +529,9 @@ describe("GameTable", () => {
     const attention = screen.getByRole("button", { name: "Seat 4: Player 4" });
     expect(attention).toHaveClass("is-voting-highlight");
     expect(attention.querySelector(".vgpu-player-lighting")).not.toBeNull();
-    expect(attention).toHaveTextContent("Nominated");
+    expect(
+      attention.querySelector('.card-nomination-status [aria-label="Nominated"]'),
+    ).not.toBeNull();
     rerender(<GameTable seats={roleSeats} />);
     expect(screen.getByRole("button", { name: "Seat 2: Player 2" })).toHaveClass(
       "is-mafia-shooter",

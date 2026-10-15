@@ -12,8 +12,50 @@
   gap: 8px;
   padding: 0 12px 12px;
 }
-.dev-glass-fields :is(button, input) {
+.dev-glass-fields :is(button, input, select) {
   min-height: 48px;
+}
+
+.dev-player-card-appearance {
+  min-width: 0;
+  border-top: 1px solid var(--border);
+}
+.dev-player-card-appearance > :not(summary) {
+  margin-block: 8px;
+}
+.dev-player-card-appearance label {
+  display: grid;
+  gap: 6px;
+}
+.dev-player-card-appearance :is(input, select) {
+  width: 100%;
+  min-width: 0;
+}
+
+.dev-player-card-colors {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+.dev-player-card-colors button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.dev-player-card-colors button > span {
+  flex: 0 0 14px;
+  height: 14px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+}
+.dev-player-card-mute {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dev-player-card-mute svg {
+  flex-shrink: 0;
 }
 
 /* Own the existing body wash inside this workspace so no unscaled duplicate

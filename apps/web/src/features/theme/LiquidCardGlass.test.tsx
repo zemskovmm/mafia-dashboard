@@ -1,6 +1,9 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LiquidCardGlass } from "./LiquidCardGlass.js";
+import { SharedGlassContext } from "./SharedGlassContext.js";
+import { PlayerCardAppearanceContext } from "./PlayerCardAppearanceContext.js";
+import { DEFAULT_GLASS_SETTINGS } from "./glass-preferences.js";
 
 class TestResizeObserver {
   static instances: TestResizeObserver[] = [];
@@ -79,6 +82,43 @@ afterEach(() => {
 });
 
 describe("LiquidCardGlass", () => {
+  it("exposes live nomination material variables independently of glass readiness without rebuilding optics", () => {
+    const fixture = (
+      nominationTint = 18,
+      nominationTreatment: "icons" | "tint" | "hybrid" = "hybrid",
+      shared = false,
+    ) => (
+      <PlayerCardAppearanceContext.Provider
+        value={{
+          ...DEFAULT_GLASS_SETTINGS,
+          nominationTint,
+          nominationColor: "#88c7e3",
+          nominationTreatment,
+        }}
+      >
+        <SharedGlassContext.Provider value={shared}>
+          <button className="player-seat is-nominated">
+            <LiquidCardGlass />
+            Ada
+          </button>
+        </SharedGlassContext.Provider>
+      </PlayerCardAppearanceContext.Provider>
+    );
+    const { container, rerender } = render(fixture());
+    const surface = container.querySelector<HTMLElement>(".liquid-card-glass")!;
+    const filter = container.querySelector("filter");
+    expect(surface.style.getPropertyValue("--card-nomination-color")).toBe("#88c7e3");
+    expect(surface.style.getPropertyValue("--card-nomination-rgb")).toBe("136 199 227");
+    expect(surface.style.getPropertyValue("--card-nomination-tint")).toBe("0.18");
+    rerender(fixture(50, "tint"));
+    expect(surface.style.getPropertyValue("--card-nomination-tint")).toBe("0.5");
+    expect(container.querySelector("filter")).toBe(filter);
+    rerender(fixture(50, "icons"));
+    expect(surface.style.getPropertyValue("--card-nomination-tint")).toBe("0");
+    rerender(fixture(0, "tint", true));
+    expect(container.querySelector(".liquid-card-glass")).toBeNull();
+    expect(screen.getByRole("button", { name: "Ada" })).toBeInTheDocument();
+  });
   it("keeps card semantics/content outside unique, locally measured background filters", () => {
     const { container, unmount } = render(
       <>

@@ -183,6 +183,58 @@ export const nominate = (
   };
 };
 
+/** Reversible current-speaker attribution, independent of actual ballot assignments. */
+export const setNominationSelection = (
+  game: GameState,
+  nominatorSeat: number,
+  candidateSeat: number,
+  selected: boolean,
+): GameState => {
+  if (game.phase !== "day") throw new Error("Nominations are only accepted during the day");
+  if (typeof selected !== "boolean") throw new Error("Nomination selection must be a boolean");
+  if (currentSpeakerSeat(game) !== nominatorSeat)
+    throw new Error("Only the current speaker may select a nomination");
+  if (!game.players.some((player) => player.seat === nominatorSeat && player.status === "active"))
+    throw new Error("Only an active current speaker may select a nomination");
+  if (!game.players.some((player) => player.seat === candidateSeat && player.status === "active"))
+    throw new Error("The nomination target must be an active player");
+
+  const nomination = game.nominations.find((entry) => entry.candidateSeat === candidateSeat);
+  if (!nomination) {
+    if (!selected || game.nominations.some((entry) => entry.nominatorSeat === nominatorSeat))
+      return game;
+    return nominate(game, nominatorSeat, candidateSeat);
+  }
+  if (nomination.nominatorSeat === nominatorSeat) {
+    if (selected) return game;
+    return {
+      ...game,
+      nominations: game.nominations
+        .filter((entry) => entry !== nomination)
+        .map((entry, index) => ({ ...entry, order: index + 1 })),
+    };
+  }
+  const supporters = nomination.supporterSeats ?? [];
+  if (supporters.includes(nominatorSeat) === selected) return game;
+  const supporterSeats = selected
+    ? [...supporters, nominatorSeat]
+    : supporters.filter((seat) => seat !== nominatorSeat);
+  // Do not manufacture empty support observations in historical or corrected state.
+  const original = {
+    nominatorSeat: nomination.nominatorSeat,
+    candidateSeat: nomination.candidateSeat,
+    order: nomination.order,
+  };
+  return {
+    ...game,
+    nominations: game.nominations.map((entry) =>
+      entry === nomination
+        ? { ...original, ...(supporterSeats.length > 0 ? { supporterSeats } : {}) }
+        : entry,
+    ),
+  };
+};
+
 export const issueFoul = (
   game: GameState,
   seat: number,

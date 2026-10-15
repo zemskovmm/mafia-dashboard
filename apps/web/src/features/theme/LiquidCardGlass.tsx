@@ -1,5 +1,7 @@
 import { useContext, useEffect, useId, useRef, useState } from "react";
 import { SharedGlassContext } from "./SharedGlassContext.js";
+import { PlayerCardAppearanceContext } from "./PlayerCardAppearanceContext.js";
+import { DEFAULT_GLASS_SETTINGS, validateGlassSettings } from "./glass-preferences.js";
 import type { CSSProperties } from "react";
 import { createLiquidCardLens } from "./liquid-card-lens.js";
 import type { LiquidCardLens } from "./liquid-card-lens.js";
@@ -34,6 +36,10 @@ export const LiquidCardGlass = () => {
 };
 
 const ExistingLiquidCardGlass = () => {
+  const appearance = validateGlassSettings({
+    ...DEFAULT_GLASS_SETTINGS,
+    ...useContext(PlayerCardAppearanceContext),
+  });
   const surfaceRef = useRef<HTMLSpanElement>(null);
   const lightRef = useRef<HTMLSpanElement>(null);
   const filterId = `liquid-card-lens-${useId()}`;
@@ -163,6 +169,12 @@ const ExistingLiquidCardGlass = () => {
   }, []);
 
   const style = {
+    "--card-nomination-color": appearance.nominationColor,
+    "--card-nomination-rgb": [1, 3, 5]
+      .map((offset) => parseInt(appearance.nominationColor.slice(offset, offset + 2), 16))
+      .join(" "),
+    "--card-nomination-tint":
+      appearance.nominationTreatment === "icons" ? 0 : appearance.nominationTint / 100,
     ...(lens === null
       ? {}
       : {

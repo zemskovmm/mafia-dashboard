@@ -1,6 +1,14 @@
 import type { Message } from "./types.js";
 
 const en = {
+  "Nomination selections": {
+    one: "Nomination selections: {count} candidate",
+    other: "Nomination selections: {count} candidates",
+  },
+  "No nomination selections": "No nomination selections",
+  "{candidate} — nominated by {nominator}": "{candidate} — nominated by {nominator}",
+  "Additional supporters (+{count}): {supporters}":
+    "Additional supporters (+{count}): {supporters}",
   "Candidate selected: {player}": "Candidate selected: {player}",
   "Recorded vote cleared: {voter}": "Recorded vote cleared: {voter}",
   "Vote recorded: {voter} → {candidate}": "Vote recorded: {voter} → {candidate}",
@@ -92,6 +100,16 @@ const en = {
 
 type FederationHistoryMessageKey = keyof typeof en;
 const ru = {
+  "Nomination selections": {
+    one: "Выставления: {count} кандидат",
+    few: "Выставления: {count} кандидата",
+    many: "Выставления: {count} кандидатов",
+    other: "Выставления: {count} кандидата",
+  },
+  "No nomination selections": "Нет выставлений и поддержки",
+  "{candidate} — nominated by {nominator}": "{candidate} — выставил {nominator}",
+  "Additional supporters (+{count}): {supporters}":
+    "Дополнительно поддержали (+{count}): {supporters}",
   "Candidate selected: {player}": "Выбран кандидат: {player}",
   "Recorded vote cleared: {voter}": "Запись голоса удалена: {voter}",
   "Vote recorded: {voter} → {candidate}": "Голос записан: {voter} → {candidate}",

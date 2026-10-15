@@ -10,7 +10,7 @@ import {
   isFederationGame,
   isVotingRequired,
   issueFoul,
-  nominate,
+  setNominationSelection,
   redCard,
   toggleBestMoveSeat,
 } from "@mafia/game-domain";
@@ -178,9 +178,18 @@ export const GameScreen = ({
   const votingRequired =
     game.redCardIssuedThisDay !== true &&
     isVotingRequired(game.day, getActiveNominations(game).length);
-  const currentSpeakerHasNominated = game.nominations.some(
-    ({ nominatorSeat }) => nominatorSeat === currentPlayer?.seat,
-  );
+  const nominationView = (seat: number) => {
+    const nomination = game.nominations.find(({ candidateSeat }) => candidateSeat === seat);
+    return {
+      nominated: nomination !== undefined,
+      supportCount: nomination?.supporterSeats?.length ?? 0,
+      nominationSelected:
+        game.phase === "day" && currentPlayer !== undefined
+          ? nomination?.nominatorSeat === currentPlayer.seat ||
+            (nomination?.supporterSeats?.includes(currentPlayer.seat) ?? false)
+          : undefined,
+    };
+  };
   const activeCitizens = game.players.filter(
     ({ team, status }) => team === "red" && status === "active",
   ).length;
@@ -190,7 +199,8 @@ export const GameScreen = ({
   const swipedPlayer = game.players.find(
     ({ seat, status }) => seat === swipedSeat && status === "active",
   );
-  const foulAvailable = mode === "live" && game.day >= 1 && foulPhases.has(game.phase);
+  const foulAvailable =
+    mode === "live" && !gameplayBlocked && game.day >= 1 && foulPhases.has(game.phase);
   const disciplineAvailable =
     mode === "live" &&
     game.day >= 1 &&
@@ -269,6 +279,11 @@ export const GameScreen = ({
   };
 
   const foulPlayer = (seat: number) => {
+    if (
+      !foulAvailable ||
+      !game.players.some((player) => player.seat === seat && player.status === "active")
+    )
+      return;
     if (federation && game.players.find((p) => p.seat === seat)?.fouls === 3) {
       setDisciplineRequest((previous) => ({ seat, action: "foul", id: (previous?.id ?? 0) + 1 }));
       setSwipedSeat(null);
@@ -293,6 +308,27 @@ export const GameScreen = ({
       if (player?.status === "red-carded") {
         onEvent("player.red-carded", { seat, source: "fourth-foul" });
       }
+    }
+  };
+
+  const toggleNomination = (seat: number) => {
+    if (
+      mode !== "live" ||
+      gameplayBlocked ||
+      game.phase !== "day" ||
+      !currentPlayer ||
+      !game.players.some((player) => player.seat === seat && player.status === "active")
+    )
+      return;
+    const selected = !nominationView(seat).nominationSelected;
+    const next = setNominationSelection(game, currentPlayer.seat, seat, selected);
+    // Preflight against the displayed turn. Ignored second nominations never enter history.
+    if (next === game) return;
+    const payload = { nominatorSeat: currentPlayer.seat, candidateSeat: seat, selected };
+    if (onAcceptedEvent) onAcceptedEvent({ type: "nomination.selection-set", payload });
+    else {
+      onGameChange(next);
+      onEvent("nomination.selection-set", payload);
     }
   };
 
@@ -653,9 +689,7 @@ export const GameScreen = ({
                       game.checkResult?.targetSeat === player.seat,
                     fouls: player.fouls,
                     muted: player.mutePending,
-                    nominated: game.nominations.some(
-                      ({ candidateSeat }) => candidateSeat === player.seat,
-                    ),
+                    ...nominationView(player.seat),
                   }))}
                   center={tableCenter}
                   readOnly
@@ -705,6 +739,7 @@ export const GameScreen = ({
                 />
               ) : (
                 <GameTable
+                  onSeatFoul={foulAvailable ? foulPlayer : undefined}
                   animateActive={game.phase === "day" || game.phase === "car-crash"}
                   hostName={hostName}
                   privacyHidden={effectivePrivacyHidden}
@@ -740,68 +775,32 @@ export const GameScreen = ({
                         game.bestMove?.selectedSeats.includes(player.seat)),
                     fouls: player.fouls,
                     muted: player.mutePending,
-                    nominated: game.nominations.some(
-                      ({ candidateSeat }) => candidateSeat === player.seat,
-                    ),
+                    ...nominationView(player.seat),
                   }))}
-                  renderSeatActions={(seat) =>
-                    foulAvailable && seat.status === "active" ? (
-                      <>
-                        <button
-                          type="button"
-                          aria-label={t("game.foul", { name: seat.name })}
-                          onClick={() => foulPlayer(seat.seat)}
-                        >
-                          {t("table.foul")}
-                        </button>
-                        {game.phase === "day" ? (
-                          <button
-                            type="button"
-                            aria-label={t("game.nominate", { name: seat.name })}
-                            disabled={
-                              currentPlayer === undefined ||
-                              seat.nominated ||
-                              currentSpeakerHasNominated
-                            }
-                            onClick={() => {
-                              if (currentPlayer === undefined) return;
-                              if (onAcceptedEvent !== undefined) {
-                                onAcceptedEvent({
-                                  type: "player.nominated",
-                                  payload: {
-                                    nominatorSeat: currentPlayer.seat,
-                                    candidateSeat: seat.seat,
-                                  },
-                                });
-                              } else {
-                                onGameChange(nominate(game, currentPlayer.seat, seat.seat));
-                                onEvent("player.nominated", {
-                                  nominatorSeat: currentPlayer.seat,
-                                  candidateSeat: seat.seat,
-                                });
-                              }
-                            }}
-                          >
-                            {t("game.vote")}
-                          </button>
-                        ) : null}
-                      </>
-                    ) : null
-                  }
                   seatActionLabel={(seat) =>
-                    game.phase === "best-move"
-                      ? seat.status !== "active" || seat.seat === game.bestMove?.playerSeat
-                        ? t("table.seat", { seat: seat.seat, name: seat.name })
-                        : game.bestMove?.selectedSeats.includes(seat.seat)
-                          ? t("bestMove.remove", { name: seat.name })
-                          : t("bestMove.add", { name: seat.name })
-                      : t("table.seat", { seat: seat.seat, name: seat.name })
+                    game.phase === "day" && currentPlayer !== undefined && seat.status === "active"
+                      ? t(
+                          seat.nominationSelected
+                            ? "game.removeSelection"
+                            : seat.nominated
+                              ? "game.support"
+                              : "game.nominate",
+                          { name: seat.name },
+                        )
+                      : game.phase === "best-move"
+                        ? seat.status !== "active" || seat.seat === game.bestMove?.playerSeat
+                          ? t("table.seat", { seat: seat.seat, name: seat.name })
+                          : game.bestMove?.selectedSeats.includes(seat.seat)
+                            ? t("bestMove.remove", { name: seat.name })
+                            : t("bestMove.add", { name: seat.name })
+                        : t("table.seat", { seat: seat.seat, name: seat.name })
                   }
                   seatActionDisabled={(seat) =>
                     game.phase === "best-move" &&
                     (seat.status !== "active" || seat.seat === game.bestMove?.playerSeat)
                   }
                   onSeatClick={(seat) => {
+                    if (game.phase === "day") toggleNomination(seat);
                     if (game.phase === "best-move") {
                       const player = game.players.find((candidate) => candidate.seat === seat);
                       if (player?.status !== "active" || seat === game.bestMove?.playerSeat) return;

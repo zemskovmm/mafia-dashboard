@@ -500,8 +500,7 @@ describe("federation GameScreen", () => {
     expect(screen.getByRole("button", { name: "Next player" })).toBeEnabled();
   });
 
-  it("shows the short-table thirty-second entitlement and does not shorten a current speech at foul three", async () => {
-    const user = userEvent.setup();
+  it("shows the short-table thirty-second entitlement and does not shorten a current speech at foul three", () => {
     const initial = day();
     const short: GameState = {
       ...initial,
@@ -523,7 +522,9 @@ describe("federation GameScreen", () => {
         }}
       />,
     );
-    await user.click(screen.getByRole("button", { name: "Foul Player 1" }));
+    fireEvent.keyDown(document.querySelector('.seat-anchor[data-seat="1"] > .player-seat')!, {
+      key: "f",
+    });
     expect(screen.getByText("60-second speech")).toBeInTheDocument();
     expect(screen.queryByText("Nomination only · no ordinary speech")).toBeNull();
   });
@@ -599,7 +600,9 @@ describe("federation GameScreen", () => {
         accepted={accepted}
       />,
     );
-    await user.click(screen.getByRole("button", { name: "Foul Player 2" }));
+    const card = document.querySelector('.seat-anchor[data-seat="2"] > .player-seat')!;
+    fireEvent.touchStart(card, { touches: [{ clientX: 100, clientY: 100 }] });
+    fireEvent.touchEnd(card, { changedTouches: [{ clientX: 100, clientY: 170 }] });
     expect(changed).not.toHaveBeenCalled();
     await user.selectOptions(screen.getByLabelText("Occurrence timing"), "day-discussion");
     await user.type(

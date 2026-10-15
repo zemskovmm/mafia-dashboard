@@ -12,6 +12,7 @@ import {
   completeCurrentTurn,
   nominate,
   selectVotingCandidate,
+  setNominationSelection,
   startVoting,
 } from "@mafia/game-domain";
 import type { GameState, PlayerInput } from "@mafia/game-domain";
@@ -38,6 +39,50 @@ const createDayGame = (federation = false): GameState => {
 };
 
 describe("GameUtilityPanels", () => {
+  it.each([false, true])(
+    "shows surviving additional supporters separately from actual ballot totals (federation=%s)",
+    (federation) => {
+      let game = setNominationSelection(createDayGame(federation), 1, 7, true);
+      game = completeCurrentTurn(game);
+      game = setNominationSelection(game, 2, 7, true);
+      game = setNominationSelection(game, 2, 8, true);
+      game = completeCurrentTurn(game);
+      game = setNominationSelection(game, 3, 7, true);
+      game = setNominationSelection(game, 3, 7, false);
+      game = setNominationSelection(game, 3, 7, true);
+      game = setNominationSelection(game, 3, 7, false);
+      game = setNominationSelection(game, 3, 8, true);
+      const view = (locale: "en" | "ru", state = game) => (
+        <I18nProvider locale={locale}>
+          <GameUtilityPanels game={state} />
+        </I18nProvider>
+      );
+      const { rerender } = render(view("en"));
+      const rows = screen.getAllByRole("listitem");
+      expect(rows[0]).toHaveTextContent("Initiated by #1 Player 1");
+      expect(rows[0]).toHaveTextContent("Additional supporters (+1): #2 Player 2");
+      expect(rows[0]).not.toHaveTextContent("#3 Player 3");
+      expect(rows[1]).toHaveTextContent("Additional supporters (+1): #3 Player 3");
+      expect(rows[0]!.querySelector(".nomination-total")).toBeNull();
+      rerender(view("ru"));
+      expect(screen.getAllByRole("listitem")[0]).toHaveTextContent(
+        "Дополнительно поддержали (+1): #2 Player 2",
+      );
+      rerender(view("en", { ...startVoting(game), voteAssignments: { 1: 7 } }));
+      const votingRows = screen.getAllByRole("listitem");
+      expect(votingRows[0]!.querySelector(".nomination-total")).toHaveTextContent("1");
+      expect(votingRows[1]!.querySelector(".nomination-total")).toHaveTextContent("0");
+      expect(votingRows[0]).toHaveTextContent("Additional supporters (+1): #2 Player 2");
+    },
+  );
+
+  it("does not invent supporter observations for older nominations", () => {
+    const game = nominate(createDayGame(), 1, 7);
+    render(<GameUtilityPanels game={game} />);
+    expect(screen.getByRole("listitem")).not.toHaveTextContent(/supporter|\+0/i);
+    expect(game.nominations[0]).not.toHaveProperty("supporterSeats");
+  });
+
   it("highlights the selected nominee without disclosure or live-cursor reminders", async () => {
     const user = userEvent.setup();
     let day = nominate(createDayGame(true), 1, 2);

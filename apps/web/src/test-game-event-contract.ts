@@ -28,22 +28,33 @@ export const captureUiEvent = (
       privacyHidden: false,
       onGameChange: () => undefined,
       onEvent: () => undefined,
-      onAcceptedEvent: (draft) => drafts.push(draft),
+      onAcceptedEvent: (draft) => {
+        drafts.push(draft);
+      },
     }),
   );
   try {
-    if (action === "red-card") {
-      const card = view.getByRole("button", { name: `Seat ${seat}: Anonymous player` });
-      fireEvent.touchStart(card, { touches: [{ clientX: 20, clientY: 50 }] });
-      fireEvent.touchEnd(card, { changedTouches: [{ clientX: 82, clientY: 52 }] });
+    if (action === "foul") {
+      const card = view.container.querySelector<HTMLElement>(
+        `.seat-anchor[data-seat="${seat}"] > .table-card`,
+      );
+      expect(card).not.toBeNull();
+      fireEvent.touchStart(card!, { touches: [{ clientX: 20, clientY: 20 }] });
+      fireEvent.touchEnd(card!, { changedTouches: [{ clientX: 22, clientY: 82 }] });
+    } else {
+      if (action === "red-card") {
+        const card = view.container.querySelector<HTMLElement>(
+          `.seat-anchor[data-seat="${seat}"] > .table-card`,
+        );
+        expect(card).not.toBeNull();
+        fireEvent.touchStart(card!, { touches: [{ clientX: 20, clientY: 50 }] });
+        fireEvent.touchEnd(card!, { changedTouches: [{ clientX: 82, clientY: 52 }] });
+      }
+      const actionName = action === "ballot" ? "Resolve car crash" : "Red card Anonymous player";
+      const controls = view.getAllByRole("button", { name: actionName });
+      // Anonymous seats can share a control label; the table keeps seat order.
+      fireEvent.click(controls.length === 1 ? controls[0]! : controls[seat - 1]!);
     }
-    const actionName =
-      action === "ballot"
-        ? "Resolve car crash"
-        : `${action === "foul" ? "Foul" : "Red card"} Anonymous player`;
-    const controls = view.getAllByRole("button", { name: actionName });
-    // Anonymous seats can share a control label; the table keeps seat order.
-    fireEvent.click(controls.length === 1 ? controls[0]! : controls[seat - 1]!);
     expect(drafts).toHaveLength(1);
     return drafts[0]!;
   } finally {

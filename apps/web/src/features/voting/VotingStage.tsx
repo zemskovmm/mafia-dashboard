@@ -19,7 +19,7 @@ import {
 import type { CanonicalGameEventDraft, GameState } from "@mafia/game-domain";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { votingMessages } from "../../i18n/messages/voting.js";
-import { GameTable, type TableSeatView } from "../table/GameTable.js";
+import { GameTable } from "../table/GameTable.js";
 import { usePlayerDisplayName } from "../players/player-display.js";
 
 import { FederationBallot } from "./FederationBallot.js";
@@ -73,16 +73,6 @@ export const VotingStage = ({
 
   const selectedCandidate = game.phase === "voting" ? getCurrentVotingCandidateSeat(game) : null;
   const selectedCandidateIndex = game.phase === "voting" ? game.currentTurnIndex : -1;
-  const renderFoulAction = (seat: TableSeatView) =>
-    seat.status === "active" && onFoul !== undefined ? (
-      <button
-        type="button"
-        aria-label={t("foulLabel", { name: seat.name })}
-        onClick={() => onFoul(seat.seat)}
-      >
-        {t("foul")}
-      </button>
-    ) : null;
 
   const beginNightFromAcceptedState = () => {
     if (onAcceptedEvent !== undefined) {
@@ -197,9 +187,10 @@ export const VotingStage = ({
         seats={game.players.map((player) => ({
           ...player,
           name: displayName(player),
+          muted: player.mutePending,
           inactive: player.status !== "active",
         }))}
-        renderSeatActions={renderFoulAction}
+        onSeatFoul={onFoul}
         center={
           <div className="table-vote-center" role="status" aria-label={t("votingCancelled")}>
             <span className="table-prompt">{t("voting")}</span>
@@ -227,10 +218,11 @@ export const VotingStage = ({
         seats={game.players.map((player) => ({
           ...player,
           name: displayName(player),
+          muted: player.mutePending,
           current: game.carCrashSeats?.includes(player.seat),
           inactive: player.status !== "active",
         }))}
-        renderSeatActions={renderFoulAction}
+        onSeatFoul={onFoul}
         center={
           <div
             className={
@@ -306,11 +298,12 @@ export const VotingStage = ({
         seats={game.players.map((player) => ({
           ...player,
           name: displayName(player),
+          muted: player.mutePending,
           current: game.carCrashSeats?.includes(player.seat),
           votingHighlight: game.carCrashVotes?.[player.seat] === true,
           inactive: player.status !== "active",
         }))}
-        renderSeatActions={renderFoulAction}
+        onSeatFoul={onFoul}
         seatActionDisabled={(seat) => seat.status !== "active"}
         seatActionLabel={(seat) => {
           const selected = game.carCrashVotes?.[seat.seat] === true;
@@ -398,10 +391,11 @@ export const VotingStage = ({
         seats={game.players.map((player) => ({
           ...player,
           name: displayName(player),
+          muted: player.mutePending,
           current: result.seats.includes(player.seat),
           provisionalDeceased: result.eliminate && result.seats.includes(player.seat),
         }))}
-        renderSeatActions={renderFoulAction}
+        onSeatFoul={onFoul}
         center={
           <div className="table-vote-center" role="status" aria-label={t("carCrashResult")}>
             <span className="table-prompt">{t("carCrashResult")}</span>
@@ -450,12 +444,13 @@ export const VotingStage = ({
       seats={game.players.map((player) => ({
         ...player,
         name: displayName(player),
+        muted: player.mutePending,
         currentVoter: game.voteAssignments[player.seat] === selectedCandidate,
         voted: game.voteAssignments[player.seat] !== undefined,
         inactive: player.status !== "active",
         voteTargetSeat: game.voteAssignments[player.seat],
       }))}
-      renderSeatActions={renderFoulAction}
+      onSeatFoul={onFoul}
       seatActionDisabled={(seat) => seat.status !== "active"}
       seatActionLabel={(seat) => {
         const assigned = game.voteAssignments[seat.seat];

@@ -3,7 +3,11 @@ import {
   beginRoleDraw,
   completeRoleDraw,
   createGame,
+  createGameLogEntry,
   createInitialGameBaseline,
+  hashGameState,
+  replayGameLog,
+  type CanonicalGameEventDraft,
   createSetup,
   drawRoleForSeat,
   FEDERATION_RULES_EDITION,
@@ -12,6 +16,7 @@ import {
 } from "@mafia/game-domain";
 import { ApiError, type GameSessionState, type RemoteGameSession } from "./api/client.js";
 import { withBrowserGameStorageGuard } from "./browser-game-storage-lock.js";
+import { prepareBrowserGameStorage } from "./browser-game-storage.js";
 import {
   GameSessionOutbox,
   gameSessionStorageKey,
@@ -150,6 +155,150 @@ const currentEnvelope = (state: unknown, ownerGameId = gameId) =>
   });
 
 describe("GameSessionOutbox current-v5 persistence", () => {
+  it.each([undefined, FEDERATION_RULES_EDITION])(
+    "recovers nomination selections, supports and append-only corrections through browser reload and retry (%s)",
+    async (rulesEdition) => {
+      const storage = memoryStorage();
+      let game = playedGame(rulesEdition);
+      const baseline = createInitialGameBaseline(game);
+      const entries: GameLogEntry[] = [];
+      const append = (draft: CanonicalGameEventDraft) => {
+        const accepted = createGameLogEntry({
+          gameId,
+          id: crypto.randomUUID(),
+          sequence: entries.length + 1,
+          parentEventId: entries.at(-1)?.id ?? null,
+          createdAt: "2026-10-15T16:00:00.000Z",
+          before: game,
+          draft,
+        });
+        entries.push(accepted.entry);
+        game = accepted.after;
+      };
+      append({ type: "game.started", payload: {} });
+      for (const to of rulesEdition
+        ? ([
+            "mafia-sleep",
+            "don-identification",
+            "sheriff-identification",
+            "free-seating",
+            "day",
+          ] as const)
+        : (["sheriff-wake", "day"] as const))
+        append({ type: "phase.changed", payload: { to } });
+      // Keep a real old-style nomination in the same accepted chain.
+      append({
+        type: "player.nominated",
+        payload: { nominatorSeat: 1, candidateSeat: 7 },
+      });
+      expect(game.nominations[0]).not.toHaveProperty("supporterSeats");
+      append({ type: "turn.completed", payload: { seat: 1 } });
+      const select = (nominatorSeat: number, candidateSeat: number, selected = true) =>
+        append({
+          type: "nomination.selection-set",
+          payload: { nominatorSeat, candidateSeat, selected },
+        });
+      select(2, 7);
+      select(2, 8);
+      append({ type: "turn.completed", payload: { seat: 2 } });
+      select(3, 7);
+      select(3, 8);
+      select(3, 9);
+      append({
+        type: "foul.issued",
+        payload: { seat: 10, foulNumber: 1, redCarded: false },
+      });
+      const retained = JSON.stringify(entries);
+      select(3, 7, false);
+      select(3, 9, false);
+      append({
+        type: "foul.issued",
+        payload: { seat: 6, foulNumber: 1, redCarded: false },
+      });
+      select(3, 9);
+      select(3, 7);
+      expect(JSON.stringify(entries.slice(0, JSON.parse(retained).length))).toBe(retained);
+      expect(game.nominations).toEqual([
+        {
+          nominatorSeat: 1,
+          candidateSeat: 7,
+          order: 1,
+          supporterSeats: [2, 3],
+        },
+        { nominatorSeat: 2, candidateSeat: 8, order: 2, supporterSeats: [3] },
+        { nominatorSeat: 3, candidateSeat: 9, order: 3 },
+      ]);
+      expect(game.voteAssignments).toEqual({});
+      const state = {
+        ...completeState(),
+        setup: null,
+        game,
+        initialGame: baseline,
+        events: entries,
+        headEventId: entries.at(-1)!.id,
+      };
+      const failedSave = vi.fn().mockRejectedValue(new Error("offline nomination save"));
+      const outbox = new GameSessionOutbox({
+        storage,
+        clubId,
+        createId: () => crypto.randomUUID(),
+        save: failedSave,
+      });
+      outbox.activateRemote(remoteSession());
+      outbox.enqueue("Selections", state, null);
+      await expect(outbox.flush()).rejects.toThrow("offline nomination save");
+      const raw = storage.getItem(gameSessionStorageKey)!;
+      const persisted = parseCurrentGameSessionEnvelope(raw)!;
+      expect(persisted.current?.state).toEqual(state);
+      expect(persisted.outbox[0]?.state).toEqual(state);
+      expect(await prepareBrowserGameStorage({ localStorage: storage })).toMatchObject({
+        kind: "ready",
+        attachment: { clubId, gameId, pendingCount: 1, unresolved: true },
+      });
+      expect(storage.getItem(gameSessionStorageKey)).toBe(raw);
+      const save = vi.fn().mockResolvedValue({ revision: 2 });
+      const restored = new GameSessionOutbox({
+        storage,
+        clubId,
+        createId: () => crypto.randomUUID(),
+        save,
+      });
+      restored.activateRemote(remoteSession());
+      expect(restored.current?.state).toEqual(state);
+      await restored.flush();
+      expect(save).toHaveBeenCalledExactlyOnceWith(gameId, persisted.outbox[0]);
+      const loaded = new GameSessionOutbox({
+        storage,
+        clubId,
+        createId: () => crypto.randomUUID(),
+        save,
+      });
+      expect(loaded.pendingCount).toBe(0);
+      expect(loaded.current?.state).toEqual(state);
+      const actual = loaded.current!.state;
+      const replay = replayGameLog(actual.initialGame!, actual.events, gameId);
+      expect(replay.game).toEqual(game);
+      expect(hashGameState(replay.game)).toBe(entries.at(-1)!.stateHashAfter);
+      expect(replay.frames.map(({ after }) => hashGameState(after))).toEqual(
+        entries.map(({ stateHashAfter }) => stateHashAfter),
+      );
+      expect(actual.headEventId).toBe(entries.at(-1)!.id);
+      expect(
+        replay.frames.find(({ entry }) => entry.type === "player.nominated")!.after.nominations[0],
+      ).not.toHaveProperty("supporterSeats");
+      expect(replay.game.nominations[2]).not.toHaveProperty("supporterSeats");
+      expect(
+        replay.game.players.filter(({ fouls }) => fouls === 1).map(({ seat }) => seat),
+      ).toEqual([6, 10]);
+      expect(
+        actual.events.every(
+          ({ replayVersion, rulesEdition }) =>
+            replayVersion === baseline.replayVersion && rulesEdition === baseline.rulesEdition,
+        ),
+      ).toBe(true);
+    },
+  );
+
   it("round-trips a supported federation edition without rewriting its draft", () => {
     const game = playedGame(FEDERATION_RULES_EDITION);
     const state = {

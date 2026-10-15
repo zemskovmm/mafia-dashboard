@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 import type { GlassStatus } from "../developer/GlassControls.js";
-import type { GlassSettings } from "./glass-preferences.js";
+import { validateGlassSettings, type GlassSettings } from "./glass-preferences.js";
 import {
   createGlassRenderer,
   type GlassRenderer,
@@ -37,10 +37,10 @@ export const GlassScene = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const settingsRef = useRef(settings);
   const redrawRef = useRef<(() => void) | null>(null);
-  settingsRef.current = settings;
+  settingsRef.current = validateGlassSettings(settings);
   useEffect(() => {
     redrawRef.current?.();
-  }, [settings.refraction, settings.goldLight]);
+  }, [settings]);
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
@@ -76,6 +76,7 @@ export const GlassScene = ({
       const variable = (name: string, fallback: readonly number[]) =>
         color(style.getPropertyValue(name), fallback);
       const view: SceneRect = [0, 0, window.innerWidth, window.innerHeight];
+      const night = root.querySelector(".is-table-cycle-night") !== null;
       const surfaces = [
         ...root.querySelectorAll(".table-stage .table-card.player-seat, .nomination-panel li"),
       ].flatMap((element) => {
@@ -94,19 +95,41 @@ export const GlassScene = ({
         if (clip[2] === 0 || clip[3] === 0) return [];
         const s = getComputedStyle(element);
         const radius = parseFloat(s.borderTopLeftRadius);
-        const tint: readonly [number, number, number] = element.matches(".is-sheriff-highlight")
+        const baseTint: readonly [number, number, number] = element.matches(".is-sheriff-highlight")
           ? [0.3, 0.5, 0.85]
           : element.matches(".is-mafia-shooter")
             ? [0.75, 0.24, 0.22]
             : element.matches(".is-current,.is-voting-highlight,.is-goodbye-highlight")
               ? [0.67, 0.51, 0.25]
               : [0.08, 0.1, 0.09];
+        const appearance = settingsRef.current;
+        const nominated =
+          !night &&
+          element.matches(
+            ".player-seat.is-nominated:not(.is-current,.is-voting-highlight,.is-goodbye-highlight,.is-sheriff-highlight,.is-mafia-shooter,.is-night-check-highlight,.is-availability-selected)",
+          );
+        const extra =
+          nominated && appearance.nominationTreatment !== "icons"
+            ? appearance.nominationTint / 100
+            : 0;
+
+        const base = 0.13;
+        const tintAmount = base + extra * (1 - base);
+        const nomination = color(appearance.nominationColor, [230 / 255, 188 / 255, 126 / 255]);
+        // Compose the extra wash into the existing tint uniform. This is
+        // algebraically the same two mixes as the fallback, with no new
+        // shader path or duplicated base-tint control. Active cues skip it.
+        const channel = (index: number) =>
+          (baseTint[index]! * base * (1 - extra) + nomination[index]! * extra) / tintAmount;
+        const tint: readonly [number, number, number] =
+          extra > 0 ? [channel(0), channel(1), channel(2)] : baseTint;
         return [
           {
             rect,
             clip,
             radius: Math.min(Number.isFinite(radius) ? radius : 10, rect[2] / 2, rect[3] / 2),
             tint,
+            tintAmount,
             opacity: Number(s.opacity),
           },
         ];
@@ -122,7 +145,7 @@ export const GlassScene = ({
         theme: variable("--theme-base", [0.765, 0.604, 0.345]),
         felt: variable("--felt", [0.09, 0.23, 0.18]),
         feltDark: variable("--felt-dark", [0.04, 0.14, 0.11]),
-        night: root.querySelector(".is-table-cycle-night") !== null,
+        night,
         gold: settingsRef.current.goldLight / 100,
         strength: settingsRef.current.refraction,
         surfaces,

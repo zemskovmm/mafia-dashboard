@@ -1,6 +1,11 @@
+import { MessageCircleOff } from "lucide-react";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { shellMessages } from "../../i18n/messages/shell.js";
-import { DEFAULT_GLASS_SETTINGS, type GlassSettings } from "../theme/glass-preferences.js";
+import {
+  DEFAULT_GLASS_SETTINGS,
+  validateGlassSettings,
+  type GlassSettings,
+} from "../theme/glass-preferences.js";
 
 export type GlassStatus =
   | "off"
@@ -80,6 +85,128 @@ export const GlassControls = ({
             }
           />
         </label>
+        <details className="dev-player-card-appearance">
+          <summary>{t("playerCardAppearance")}</summary>
+          <div className="dev-glass-fields">
+            <p id="player-card-appearance-description" className="dev-renderer-status">
+              {t("playerCardAppearanceDescription")}
+            </p>
+            <label className="dev-renderer-field">
+              <span>{t("nominationTintValue", { value: settings.nominationTint })}</span>
+              <input
+                type="range"
+                min="0"
+                max="50"
+                step="1"
+                aria-label={t("nominationTint")}
+                aria-describedby="player-card-appearance-description"
+                value={settings.nominationTint}
+                onChange={(event) =>
+                  onChange({ ...settings, nominationTint: Number(event.currentTarget.value) })
+                }
+              />
+            </label>
+            <label className="dev-renderer-field">
+              <span>
+                {t("nominationColor")}: <code>{settings.nominationColor}</code>
+              </span>
+              <input
+                type="color"
+                aria-label={t("nominationColor")}
+                value={settings.nominationColor}
+                onChange={(event) =>
+                  onChange({ ...settings, nominationColor: event.currentTarget.value })
+                }
+              />
+            </label>
+            <div
+              className="dev-player-card-colors"
+              role="group"
+              aria-label={t("nominationColorPresets")}
+            >
+              {(
+                [
+                  ["#e6bc7e", "nominationColorAmber"],
+                  ["#88c7e3", "nominationColorBlue"],
+                  ["#bda5ec", "nominationColorLilac"],
+                  ["#a8d6b1", "nominationColorGreen"],
+                ] as const
+              ).map(([color, label]) => (
+                <button
+                  key={color}
+                  type="button"
+                  aria-label={t(label)}
+                  aria-pressed={settings.nominationColor.toLowerCase() === color}
+                  onClick={() => onChange({ ...settings, nominationColor: color })}
+                >
+                  <span aria-hidden="true" style={{ backgroundColor: color }} />
+                  {t(label)}
+                </button>
+              ))}
+            </div>
+            {(
+              [
+                [
+                  "nominationTreatment",
+                  "nominationTreatment",
+                  [
+                    ["icons", "nominationTreatmentIcons"],
+                    ["tint", "nominationTreatmentTint"],
+                    ["hybrid", "nominationTreatmentHybrid"],
+                  ],
+                ],
+                [
+                  "nominationIcon",
+                  "nominationIcon",
+                  [
+                    ["vote", "nominationIconVote"],
+                    ["flag", "nominationIconFlag"],
+                  ],
+                ],
+                [
+                  "supportIcon",
+                  "supportIcon",
+                  [
+                    ["hand", "supportIconHand"],
+                    ["thumbs-up", "supportIconThumbsUp"],
+                  ],
+                ],
+                [
+                  "selectionStyle",
+                  "speakerSelectionStyle",
+                  [
+                    ["check-outline", "speakerSelectionCheckOutline"],
+                    ["check", "speakerSelectionCheck"],
+                  ],
+                ],
+              ] as const
+            ).map(([field, label, choices]) => (
+              <label key={field} className="dev-renderer-field">
+                <span>{t(label)}</span>
+                <select
+                  aria-label={t(label)}
+                  value={settings[field]}
+                  aria-describedby="player-card-appearance-description"
+                  onChange={(event) =>
+                    onChange(
+                      validateGlassSettings({ ...settings, [field]: event.currentTarget.value }),
+                    )
+                  }
+                >
+                  {choices.map(([value, choice]) => (
+                    <option key={value} value={value}>
+                      {t(choice)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ))}
+            <p className="dev-renderer-status dev-player-card-mute">
+              <MessageCircleOff aria-hidden="true" size={18} />
+              {t("playerCardMuteIndicator")}
+            </p>
+          </div>
+        </details>
         <button type="button" onClick={() => onChange(DEFAULT_GLASS_SETTINGS)}>
           {t("resetGlassSettings")}
         </button>

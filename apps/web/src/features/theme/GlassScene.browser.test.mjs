@@ -3,13 +3,44 @@ import assert from "node:assert/strict";
 import { build } from "esbuild";
 import { chromium, webkit } from "@playwright/test";
 import { createServer } from "node:http";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, mkdir, writeFile, rm } from "node:fs/promises";
 import { resolve, join } from "node:path";
+import process from "node:process";
+import {
+  capturePlayerCardSources,
+  verifyPlayerCards,
+} from "./GlassScene.player-card-scenarios.mjs";
 
 // Bundle the actual workspace, drawer, game and shared scene. Only API transport
 // and canonical synthetic input are fixtures; no demo code or product mutation.
 const root = resolve(import.meta.dirname, "../../../../..");
-const evidence = resolve(root, ".AI/reports/app-glass");
+const evidence = resolve(
+  root,
+  process.env.GLASS_SCENARIO === "player-cards"
+    ? `.AI/qa/player-card-production/${new Date().toISOString().replaceAll(":", "-")}`
+    : ".AI/reports/app-glass",
+);
+assert.ok(
+  !process.env.GLASS_SCENARIO || ["legacy", "player-cards"].includes(process.env.GLASS_SCENARIO),
+  "Unknown GLASS_SCENARIO",
+);
+assert.ok(
+  !process.env.GLASS_BROWSER ||
+    [
+      "chrome-ipad",
+      "webkit-ipad",
+      "webkit-landscape",
+      "webkit-compact",
+      "chrome-landscape",
+      "chrome-compact",
+    ].includes(process.env.GLASS_BROWSER),
+  "Unknown GLASS_BROWSER",
+);
+assert.ok(
+  process.env.GLASS_BROWSER !== "webkit-landscape" || process.env.GLASS_SCENARIO === "player-cards",
+  "webkit-landscape is supported by GLASS_SCENARIO=player-cards only",
+);
 await mkdir(evidence, { recursive: true });
 const temp = await mkdtemp(join(evidence, "fixture-"));
 const entry = `
@@ -23,9 +54,11 @@ import {createSetup,beginRoleDraw,createSeededRandom,drawRoleForSeat,createGame,
 import {beginNight} from "@mafia/game-domain";
 import "./apps/web/src/styles/app.css";
 import "./apps/web/src/features/theme/GlassScene.css";
-const club={id:"00000000-0000-4000-8000-000000000101",name:"Glass regression",city:"Test",headerLogo:null,cardLogo:null,language:"en",bestMoveEnabled:true,role:"manager",createdAt:"2026-10-15T00:00:00.000Z",updatedAt:"2026-10-15T00:00:00.000Z"};
+const query=new URLSearchParams(location.search);
+const locale=query.get("locale")==="ru"?"ru":"en";
+const club={id:"00000000-0000-4000-8000-000000000101",name:"Glass regression",city:"Test",headerLogo:null,cardLogo:null,language:locale,bestMoveEnabled:true,role:"manager",createdAt:"2026-10-15T00:00:00.000Z",updatedAt:"2026-10-15T00:00:00.000Z"};
 const players=Array.from({length:10},(_,i)=>({id:"00000000-0000-4000-8000-"+String(i+1).padStart(12,"0"),seat:i+1}));
-let setup=beginRoleDraw(createSetup(players,{rulesEdition:"mafgame-2026-07-01"}),createSeededRandom(13));
+let setup=beginRoleDraw(createSetup(players,query.get("edition")==="legacy"?{}:{rulesEdition:"mafgame-2026-07-01"}),createSeededRandom(13));
 for(let seat=1;seat<=10;seat++)setup=drawRoleForSeat(setup,seat);
 let day=createGame(completeRoleDraw(setup));
 while(day.phase!=="day")day=advanceSetupPhase(day);
@@ -33,7 +66,7 @@ const plainDay=day;
 day=nominate(day,1,2);day=nominate(completeCurrentTurn(day),2,3);
 const phase=new URLSearchParams(location.search).get("phase");
 const emptySetup=new URLSearchParams(location.search).has("empty");
-const game=phase==="day"?day:phase==="night"?beginNight(plainDay):selectVotingCandidate(startVoting(day),2);
+const game=phase==="player-cards"?plainDay:phase==="day"?day:phase==="night"?beginNight(plainDay):selectVotingCandidate(startVoting(day),2);
 const gameId="00000000-0000-4000-8000-000000000399";
 const checkpoint=createGameLogEntry({gameId,id:"00000000-0000-4000-8000-000000000398",sequence:1,parentEventId:null,createdAt:"2026-10-15T00:00:00.000Z",before:game,draft:{type:"game.checkpointed",payload:{}}});
 const profiles=players.map(p=>({...p,nickname:"Player "+p.seat,realName:null,consentToStoreRealName:false,createdAt:club.createdAt,updatedAt:club.createdAt}));
@@ -64,15 +97,20 @@ if(!localStorage.getItem("mafia-dashboard.glass-fixture-seeded")){
  if(new URLSearchParams(location.search).has("glass"))localStorage.setItem("mafia-dashboard.glass.v1",JSON.stringify({version:1,enabled:true,refraction:10,goldLight:25}));
 }
 const app=createRoot(document.getElementById("root"));
-app.render(<React.StrictMode><I18nProvider locale="en"><ClubWorkspace storageGuard={storageGuard} club={club} onExit={()=>app.unmount()} onEditClub={()=>{}} onDeleteClub={()=>Promise.resolve()}/></I18nProvider></React.StrictMode>);
+app.render(<React.StrictMode><I18nProvider locale={locale}><ClubWorkspace storageGuard={storageGuard} club={club} onExit={()=>app.unmount()} onEditClub={()=>{}} onDeleteClub={()=>Promise.resolve()}/></I18nProvider></React.StrictMode>);
 await new Promise(()=>{});
 });
 `;
 let server;
 const results = [];
+const sourceBefore =
+  process.env.GLASS_SCENARIO === "player-cards" ? await capturePlayerCardSources(root) : null;
+if (sourceBefore)
+  await writeFile(join(evidence, "source-before.json"), JSON.stringify(sourceBefore, null, 2));
 try {
-  for (const mode of ["production", "development"])
-    await build({
+  const bundleBinding = {};
+  for (const mode of ["production", "development"]) {
+    const built = await build({
       stdin: {
         contents: entry,
         loader: "tsx",
@@ -81,12 +119,28 @@ try {
       },
       outfile: join(temp, mode === "production" ? "fixture.js" : "strict.js"),
       bundle: true,
+      metafile: process.env.GLASS_SCENARIO === "player-cards",
       format: "esm",
       jsx: "automatic",
       define: { "process.env.NODE_ENV": JSON.stringify(mode), "import.meta.env": "{}" },
       loader: { ".svg": "dataurl", ".png": "dataurl" },
       logLevel: "silent",
     });
+    if (sourceBefore) {
+      const outputs = {};
+      for (const path of Object.keys(built.metafile.outputs))
+        outputs[path.replace(temp, "fixture-root")] = createHash("sha256")
+          .update(await readFile(resolve(root, path)))
+          .digest("hex");
+      bundleBinding[mode] = {
+        sourceDigest: sourceBefore.digest,
+        outputs,
+        inputs: built.metafile.inputs,
+      };
+    }
+  }
+  if (sourceBefore)
+    await writeFile(join(evidence, "bundle-binding.json"), JSON.stringify(bundleBinding, null, 2));
   server = createServer(async (req, res) => {
     try {
       const path = req.url?.split("?")[0];
@@ -109,15 +163,22 @@ try {
   for (const config of [
     { name: "chrome-ipad", engine: chromium, viewport: { width: 1366, height: 1024 } },
     { name: "webkit-ipad", engine: webkit, viewport: { width: 1366, height: 1024 } },
+    ...(process.env.GLASS_SCENARIO === "player-cards"
+      ? [{ name: "webkit-landscape", engine: webkit, viewport: { width: 1366, height: 768 } }]
+      : []),
     { name: "webkit-compact", engine: webkit, viewport: { width: 1000, height: 600 } },
     { name: "chrome-landscape", engine: chromium, viewport: { width: 1366, height: 768 } },
     { name: "chrome-compact", engine: chromium, viewport: { width: 1000, height: 600 } },
-  ]) {
+  ].filter((config) => !process.env.GLASS_BROWSER || config.name === process.env.GLASS_BROWSER)) {
     const browser = await config.engine.launch({
       headless: true,
       ...(config.engine === chromium ? { channel: "chrome" } : {}),
     });
     try {
+      if (process.env.GLASS_SCENARIO === "player-cards") {
+        await verifyPlayerCards({ browser, config, url, evidence, results });
+        continue;
+      }
       for (const empty of [true, false]) {
         const setupPage = await browser.newPage({
           viewport: config.viewport,
@@ -469,7 +530,7 @@ try {
           throw error;
         });
       assert.equal(await page.locator(".dev-glass-controls").getAttribute("open"), null);
-      await page.locator(".dev-glass-controls summary").click();
+      await page.locator(".dev-glass-controls > summary").click();
       const range = (label) => page.getByLabel(label, { exact: true });
       const setRange = async (label, value) => {
         const previous = await range(label).inputValue();
@@ -756,7 +817,7 @@ try {
         () => document.querySelector(".app-shell")?.dataset.glassStatus === "ready",
       );
       await page.getByRole("button", { name: "Open developer menu" }).click();
-      await page.locator(".dev-glass-controls summary").click();
+      await page.locator(".dev-glass-controls > summary").click();
       await page.getByRole("button", { name: "Hide developer mode" }).click();
       assert.equal(await shell.getAttribute("data-glass-status"), "ready");
       await page.reload();
@@ -770,7 +831,7 @@ try {
       });
       await page.reload();
       await page.getByRole("button", { name: "Open developer menu" }).click();
-      await page.locator(".dev-glass-controls summary").click();
+      await page.locator(".dev-glass-controls > summary").click();
       assert.equal(await range("Gold background light").inputValue(), "100");
       assert.equal(await range("Refraction strength").inputValue(), "24");
       // Root theme changes (outside the canvas's workspace subtree) must redraw.
@@ -806,7 +867,7 @@ try {
       await page.getByRole("button", { name: "Close developer menu" }).click();
       await page.screenshot({ path: join(evidence, `${config.name}-game.png`) });
       await page.getByRole("button", { name: "Open developer menu" }).click();
-      await page.locator(".dev-glass-controls summary").click();
+      await page.locator(".dev-glass-controls > summary").click();
       await page.evaluate(() => {
         window.releasedGlass = document.querySelector(".glass-scene-canvas").getContext("webgl");
       });
@@ -909,7 +970,7 @@ try {
         const glow = await readGlow();
         assert.notEqual(glow.shadow, "none");
         await phasePage.getByRole("button", { name: "Open developer menu" }).click();
-        await phasePage.locator(".dev-glass-controls summary").click();
+        await phasePage.locator(".dev-glass-controls > summary").click();
         await phasePage.getByLabel("Gold background light", { exact: true }).evaluate((el) => {
           const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
           setter.call(el, "0");
@@ -926,7 +987,7 @@ try {
         assert.equal(await phasePage.locator(".role-badge").count(), phase === "day" ? 0 : 10);
         await phasePage.getByRole("button", { name: "Show private info" }).click();
         await phasePage.getByRole("button", { name: "Open developer menu" }).click();
-        await phasePage.locator(".dev-glass-controls summary").click();
+        await phasePage.locator(".dev-glass-controls > summary").click();
         await phasePage.getByRole("button", { name: "Enable Raytracing" }).click();
         await phasePage.waitForFunction(
           () => document.querySelector(".app-shell")?.dataset.lightingRenderer === "vgpu",
@@ -1012,7 +1073,7 @@ try {
       );
       assert.equal(await failed.locator(".liquid-card-glass").count(), 10);
       await failed.getByRole("button", { name: "Open developer menu" }).click();
-      await failed.locator(".dev-glass-controls summary").click();
+      await failed.locator(".dev-glass-controls > summary").click();
       assert.equal(
         await failed.getByLabel("Refraction strength", { exact: true }).isDisabled(),
         true,
@@ -1060,6 +1121,38 @@ try {
       await browser.close();
     }
   }
+  console.log(JSON.stringify(results, null, 2));
+  if (process.env.GLASS_SCENARIO === "player-cards")
+    assert.equal(
+      results.filter((result) => result.status === "failed").length,
+      0,
+      "Player-card regression failures; see retained per-case evidence",
+    );
+} finally {
+  if (sourceBefore) {
+    const after = await capturePlayerCardSources(root);
+    const changed = [
+      ...new Set([...Object.keys(sourceBefore.files), ...Object.keys(after.files)]),
+    ].filter((path) => sourceBefore.files[path] !== after.files[path]);
+    await writeFile(join(evidence, "source-after.json"), JSON.stringify(after, null, 2));
+    await writeFile(
+      join(evidence, "source-binding.json"),
+      JSON.stringify(
+        {
+          before: sourceBefore.digest,
+          after: after.digest,
+          finalTreeMatches: changed.length === 0,
+          changed,
+        },
+        null,
+        2,
+      ),
+    );
+    console.log(
+      "PLAYER CARD SOURCE BINDING",
+      JSON.stringify({ evidence, before: sourceBefore.digest, after: after.digest, changed }),
+    );
+  }
   await writeFile(
     join(evidence, "browser-results.json"),
     JSON.stringify(
@@ -1072,8 +1165,6 @@ try {
       2,
     ),
   );
-  console.log(JSON.stringify(results, null, 2));
-} finally {
   await new Promise((done) => server?.close(done) ?? done());
   await rm(temp, { recursive: true, force: true });
 }

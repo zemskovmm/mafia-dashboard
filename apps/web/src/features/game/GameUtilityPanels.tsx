@@ -2,6 +2,8 @@ import { countVotes, getCurrentVotingCandidateSeat, isFederationGame } from "@ma
 import type { GameState } from "@mafia/game-domain";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { gameMessages } from "../../i18n/messages/game.js";
+import { federationHistoryMessages } from "../../i18n/messages/federation-history.js";
+import { getNominationSupporterSeats } from "../timeline/nomination-history.js";
 
 import { TimerControls } from "../timer/TimerControls.js";
 import { usePlayerDisplayName } from "../players/player-display.js";
@@ -13,6 +15,7 @@ export interface GameUtilityPanelsProps {
 
 export const GameUtilityPanels = ({ game, onSelectVotingCandidate }: GameUtilityPanelsProps) => {
   const { t } = useMessages(gameMessages);
+  const nominationText = useMessages(federationHistoryMessages);
 
   const federation = game !== null && isFederationGame(game);
   const displayName = usePlayerDisplayName();
@@ -67,7 +70,9 @@ export const GameUtilityPanels = ({ game, onSelectVotingCandidate }: GameUtility
               <p className="muted">{t("utility.noNominations")}</p>
             ) : (
               <ol>
-                {game.nominations.map(({ candidateSeat, nominatorSeat }) => {
+                {game.nominations.map((nomination) => {
+                  const { candidateSeat, nominatorSeat } = nomination;
+                  const supporters = getNominationSupporterSeats(nomination);
                   const candidate = game.players.find(({ seat }) => seat === candidateSeat);
                   const nominator = game.players.find(({ seat }) => seat === nominatorSeat);
                   const current = candidateSeat === currentCandidate;
@@ -93,6 +98,21 @@ export const GameUtilityPanels = ({ game, onSelectVotingCandidate }: GameUtility
                                 : displayName(nominator),
                           })}
                         </span>
+                        {supporters.length === 0 ? null : (
+                          <span>
+                            {nominationText.t("Additional supporters (+{count}): {supporters}", {
+                              count: supporters.length,
+                              supporters: nominationText.formatList(
+                                supporters.map((seat) => {
+                                  const supporter = game.players.find(
+                                    (player) => player.seat === seat,
+                                  );
+                                  return `#${seat} ${supporter === undefined ? t("utility.seat", { seat }) : displayName(supporter)}`;
+                                }),
+                              ),
+                            })}
+                          </span>
+                        )}
                       </span>
                       {game.phase === "voting" && onSelectVotingCandidate !== undefined ? (
                         <button

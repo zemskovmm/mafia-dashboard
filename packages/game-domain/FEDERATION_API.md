@@ -1,6 +1,6 @@
 # Federation domain integration contract
 
-Scope: `rulesEdition: "mafgame-2026-07-01"` only. Missing edition remains legacy. `createSetup` has no new default. `CURRENT_REPLAY_VERSION` remains 1; derive the baseline/event edition through `createInitialGameBaseline` and `createGameLogEntry` rather than hardcoding the constant. The v1 fixtures and hashes are unchanged.
+Scope: `rulesEdition: "mafgame-2026-07-01"`, except the explicitly shared nomination/support contract below. Missing edition remains legacy. `createSetup` has no new default. `CURRENT_REPLAY_VERSION` remains 1; derive the baseline/event edition through `createInitialGameBaseline` and `createGameLogEntry` rather than hardcoding the constant. The v1 fixtures and hashes are unchanged.
 
 ## Lifecycle and state
 
@@ -18,7 +18,37 @@ New federation state (exported from `types.ts`):
 - `adjudication?: OpponentVictoryAdjudication` exactly `{losingTeam:'red'|'black', offenderSeat?:number, rule:string, reason:string, committeeApproved:boolean}`.
 - `rulesDrawReason?: RulesDrawReason` exactly `{rule:'6.5.6', completedGameNights:number, consecutiveUnchangedNights:3}`. **Use this exact field for Finish/save/result reason**, not `shouldSuggestDraw` or a fabricated `game.drawn` action. Automatic termination occurs on the third unchanged completed game night, including planning. A real departure resets the streak immediately.
 
-Persist all domain fields unchanged. V2 baseline/event admission validates their shape and consistency, including counters, STOP prefixes, ballot voter/candidate eligibility, reviewed rulings, removal ledgers, transcript-derived Best Move score, draw basis and adjudication/winner agreement. New fields/phases/events are not admitted under v1. V2 canonical actions validate their input and output states.
+Persist all domain fields unchanged. V2 baseline/event admission validates their shape and consistency, including counters, STOP prefixes, ballot voter/candidate eligibility, reviewed rulings, removal ledgers, transcript-derived Best Move score, draw basis and adjudication/winner agreement. Federation-specific fields/phases/events are not admitted under v1. V2 canonical actions validate their input and output states.
+
+## Reversible nomination/support attribution (both supported editions)
+
+This additive observation/correction contract is **not a new rules edition**. The package root exports:
+
+```ts
+interface Nomination {
+  readonly nominatorSeat: number;
+  readonly candidateSeat: number;
+  readonly order: number;
+  readonly supporterSeats?: readonly number[];
+}
+setNominationSelection(
+  game: GameState,
+  nominatorSeat: number,
+  candidateSeat: number,
+  selected: boolean,
+): GameState;
+// CanonicalGameEventDraft:
+// { type: 'nomination.selection-set',
+//   payload: { nominatorSeat: number, candidateSeat: number, selected: boolean } }
+```
+
+- Direct calls require a day-phase active current speaker and an active seated target. Each speaker may create one new nominee and additionally support any number of existing nominees, once per target. Support does not consume the new-nomination allowance. The original nominator is never an additional supporter; candidates may support their own candidacy when nominated by someone else.
+- `selected: false` removes only the actor's support, or their own original nomination (restoring their allowance). Removing an original nominee removes that entry and renumbers survivors; it never replaces another nominee. Surviving supporters retain insertion order. Existing edition-specific candidate-removal cleanup remains unchanged. Inactive original nominators/supporters remain attributed on surviving candidates, not eligible as current actors or ballot votes.
+- Direct duplicate selections, absent deselections and attempts at a second new nominee return the **identical `game` object**. Check this before recording a card action. Canonical admission rejects those no-ops with `GameRuleError.code === 'duplicate-action'` and message `Nomination selection must change the actor's relation`; `tryApplyGameEvent` returns `{ok:false,error}`. Do not append a no-op or discard later unrelated accepted events to implement a correction.
+- Canonical application folds omitted provisional day turns forward to the payload actor using the same normalization as `player.nominated`. Earlier, inactive and unreachable actors are rejected; the application must take the actor from its displayed current speaker, not arbitrary card input. The direct helper never advances the speaker.
+- The new canonical event is meaningful and **secret/host-only**. Admission validates exact payload keys, a boolean selection, seats 1–10 and unique additional supporters. Use each game's captured replay/rules metadata through `createGameLogEntry`; v1 remains v1 and v2 remains v2.
+- `supporterSeats` is optional on both editions. Missing remains missing, including after legacy actions; removing the last support omits the property. Snapshot admission rejects duplicate/out-of-range/non-integer supporters and nominators also listed as supporters. Existing `nominate` / `player.nominated` keep their old strict meaning, secrecy, JSON shapes and hashes. No historical supporters are invented and there is no metadata/version bump.
+- Counts/summaries derive surviving `nominations` relations, not the number of selection events. Turn changes keep relations; existing round/night transitions clear current-round nominations while earlier replay frames retain attribution. Supports never modify `voteAssignments`, actual ballot totals or outcome/rating rules.
 
 ## Ordered ballot APIs and events
 

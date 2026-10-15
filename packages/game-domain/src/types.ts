@@ -63,6 +63,8 @@ export interface Nomination {
   readonly nominatorSeat: number;
   readonly candidateSeat: number;
   readonly order: number;
+  /** Additional unique supporters only; absent on unobserved historical nominations. */
+  readonly supporterSeats?: readonly number[];
 }
 
 export interface ShotAssignment {

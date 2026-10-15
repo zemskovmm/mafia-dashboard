@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { screen, within } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -593,8 +593,12 @@ describe("Federation voting", () => {
 
     expect(screen.getByRole("button", { name: "Next candidate" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Finish voting" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Vote as Player 2 for Player 4" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Foul Player 2" })).toBeEnabled();
+    const pausedCard = screen.getByRole("button", { name: "Vote as Player 2 for Player 4" });
+    expect(pausedCard).toHaveAttribute("aria-disabled", "true");
+    expect(pausedCard).toHaveAttribute("aria-keyshortcuts", "F");
+    const beforeTap = federationState();
+    await user.click(pausedCard);
+    expect(federationState()).toEqual(beforeTap);
     await user.click(screen.getByRole("button", { name: "Rules" }));
     await user.selectOptions(screen.getByLabelText("Reviewed vote for #1 · Player 1"), "6");
     await user.type(screen.getByLabelText("Final ruling reason"), "Recording confirms seat six");
@@ -833,7 +837,7 @@ describe("VotingStage", () => {
     expect(
       screen.getByRole("button", { name: "Проголосовать игроком Player 1 за Player 4" }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Фол: Player 1" })).toBeInTheDocument();
+    expect(screen.getAllByTitle("Смахните вниз или нажмите F, чтобы выдать фол")).toHaveLength(10);
   });
 
   it("shows a cancellation step when the host skips voting", async () => {
@@ -978,8 +982,7 @@ describe("VotingStage", () => {
       phase: "car-crash-skipped" as const,
       state: { carCrashSeats: [4, 6], carCrashVotes: {} },
     },
-  ])("keeps Foul controls visible during $phase", async ({ phase, state }) => {
-    const user = userEvent.setup();
+  ])("keeps card fouls available without buttons during $phase", ({ phase, state }) => {
     const onFoul = vi.fn<(seat: number) => void>();
     render(
       <VotingStage
@@ -991,8 +994,11 @@ describe("VotingStage", () => {
       />,
     );
 
-    expect(screen.getAllByRole("button", { name: /^Foul Player/i })).toHaveLength(10);
-    await user.click(screen.getByRole("button", { name: "Foul Player 1" }));
+    expect(screen.queryByRole("button", { name: /^Foul Player/i })).toBeNull();
+    expect(screen.getAllByTitle("Swipe down or press F to issue a foul")).toHaveLength(10);
+    fireEvent.keyDown(document.querySelector('.seat-anchor[data-seat="1"] > .player-seat')!, {
+      key: "f",
+    });
     expect(onFoul).toHaveBeenCalledWith(1);
   });
 

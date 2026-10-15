@@ -74,6 +74,7 @@ export const FederationCollectiveBallot = ({
         seats={game.players.map((p) => ({
           ...p,
           name: displayName(p),
+          muted: p.mutePending,
           inactive: p.status !== "active",
           voted: votes[p.seat] !== undefined,
           votingHighlight: votes[p.seat] === true,
@@ -81,17 +82,7 @@ export const FederationCollectiveBallot = ({
         seatActionDisabled={(seat) => seat.status !== "active" || !eligibility.permitted}
         seatActionLabel={(seat) => t("voteAsEliminateAll", { name: seat.name })}
         onSeatClick={(seat) => transcribe(seat, votes[seat] === true ? "no" : "yes")}
-        renderSeatActions={(seat) =>
-          seat.status === "active" && onFoul !== undefined ? (
-            <button
-              type="button"
-              aria-label={t("foulLabel", { name: seat.name })}
-              onClick={() => onFoul(seat.seat)}
-            >
-              {t("foul")}
-            </button>
-          ) : null
-        }
+        onSeatFoul={onFoul}
         center={
           <div className="table-vote-center" role="status" aria-label={t("carCrashDecision")}>
             <span className="table-prompt">{t("carCrash")}</span>

@@ -34,6 +34,7 @@ import {
   completeEliminations,
   issueFoul,
   nominate,
+  setNominationSelection,
   redCard,
   resolveCarCrashVote,
   resolveCompletedCarCrashCount,
@@ -66,7 +67,7 @@ import {
   toggleBestMoveSeat,
 } from "./night-actions.js";
 import { completeCurrentTurn } from "./day-actions.js";
-import { toGameRuleError, type GameRuleError } from "./rule-error.js";
+import { toGameRuleError, GameRuleError } from "./rule-error.js";
 import {
   FEDERATION_RULES_EDITION,
   assertRulesEdition,
@@ -168,6 +169,7 @@ export const canonicalGameEventTypes = [
   "discipline.foul-issued",
   "car-crash.count-completed",
   "mafia.shots-observed",
+  "nomination.selection-set",
 ] as const;
 
 export type CanonicalGameEventType = (typeof canonicalGameEventTypes)[number];
@@ -189,6 +191,10 @@ export type CanonicalGameEventDraft =
   | EventDraft<
       "player.nominated",
       { readonly nominatorSeat: number; readonly candidateSeat: number }
+    >
+  | EventDraft<
+      "nomination.selection-set",
+      { readonly nominatorSeat: number; readonly candidateSeat: number; readonly selected: boolean }
     >
   | EventDraft<
       "foul.issued",
@@ -400,6 +406,7 @@ export const canonicalGameEventSecrecy = {
   "discipline.foul-issued": true,
   "car-crash.count-completed": false,
   "mafia.shots-observed": true,
+  "nomination.selection-set": true,
 } as const satisfies Readonly<Record<CanonicalGameEventType, boolean>>;
 
 export const canonicalSecretGameEventTypes = canonicalGameEventTypes.filter(
@@ -597,7 +604,9 @@ const assertOptionalDisciplineContext = (payload: UnknownRecord, context: string
   assertSafeInteger(payload.currentTurnIndex, `${context}.currentTurnIndex`, 0);
 };
 
-const federationOnlyEventTypes = new Set<string>(canonicalGameEventTypes.slice(20));
+const federationOnlyEventTypes = new Set<string>(
+  canonicalGameEventTypes.slice(20).filter((type) => type !== "nomination.selection-set"),
+);
 const federationOnlyPhases = new Set<string>([
   "mafia-sleep",
   "don-identification",
@@ -799,6 +808,12 @@ const assertCanonicalPayload = (
       assertExactKeys(payload, ["nominatorSeat", "candidateSeat"], `${type} payload`);
       assertSeat(payload.nominatorSeat, `${type} payload.nominatorSeat`);
       assertSeat(payload.candidateSeat, `${type} payload.candidateSeat`);
+      return;
+    case "nomination.selection-set":
+      assertExactKeys(payload, ["nominatorSeat", "candidateSeat", "selected"], `${type} payload`);
+      assertSeat(payload.nominatorSeat, `${type} payload.nominatorSeat`);
+      assertSeat(payload.candidateSeat, `${type} payload.candidateSeat`);
+      assertBoolean(payload.selected, `${type} payload.selected`);
       return;
     case "foul.issued":
       assertObjectKeys(
@@ -1335,14 +1350,20 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
   const nominationSpeakers = new Set<number>();
   for (const [index, value] of game.nominations.entries()) {
     const nomination = requireRecord(value, `${context}.nominations[${index}]`);
-    assertExactKeys(
+    assertObjectKeys(
       nomination,
       ["nominatorSeat", "candidateSeat", "order"],
+      ["supporterSeats"],
       `${context}.nominations[${index}]`,
     );
     assertSeat(nomination.nominatorSeat, `${context}.nominations[${index}].nominatorSeat`);
     assertSeat(nomination.candidateSeat, `${context}.nominations[${index}].candidateSeat`);
     assertSafeInteger(nomination.order, `${context}.nominations[${index}].order`, 1);
+    if (Object.hasOwn(nomination, "supporterSeats")) {
+      assertSeatArray(nomination.supporterSeats, `${context}.nominations[${index}].supporterSeats`);
+      if (nomination.supporterSeats.includes(nomination.nominatorSeat))
+        throw new Error("An original nominator cannot also be an additional supporter");
+    }
     if (
       nominationCandidates.has(nomination.candidateSeat) ||
       nominationSpeakers.has(nomination.nominatorSeat) ||
@@ -1942,6 +1963,26 @@ const applyValidatedGameEvent = (game: GameState, event: CanonicalGameEventDraft
         event.payload.nominatorSeat,
         event.payload.candidateSeat,
       );
+    case "nomination.selection-set": {
+      const prepared = advanceToDaySpeaker(game, event.payload.nominatorSeat);
+      const next = setNominationSelection(
+        prepared,
+        event.payload.nominatorSeat,
+        event.payload.candidateSeat,
+        event.payload.selected,
+      );
+      if (next === prepared)
+        throw new GameRuleError(
+          "duplicate-action",
+          "Nomination selection must change the actor's relation",
+          {
+            eventType: event.type,
+            phase: game.phase,
+            day: game.day,
+          },
+        );
+      return next;
+    }
     case "foul.issued": {
       const next = issueFoul(applyDisciplineContext(game, event.payload), event.payload.seat);
       const player = next.players.find(({ seat }) => seat === event.payload.seat);

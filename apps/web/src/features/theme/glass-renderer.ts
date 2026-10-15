@@ -6,6 +6,7 @@ export interface GlassSurfaceGeometry {
   readonly clip: SceneRect;
   readonly radius: number;
   readonly tint: readonly [number, number, number];
+  readonly tintAmount?: number;
   readonly opacity: number;
 }
 export interface GlassSceneGeometry {
@@ -40,6 +41,7 @@ uniform vec3 u_theme;
 uniform vec3 u_felt;
 uniform vec3 u_feltDark;
 uniform vec3 u_tint;
+uniform float u_tintAmount;
 uniform float u_radius;
 uniform float u_opacity;
 uniform float u_night;
@@ -91,7 +93,7 @@ void main(){
  vec2 normal=normalize(q/(u_rect.zw*.5)+vec2(.00001));
  vec2 displaced=p-normal*u_strength*(.20+edge*.80);
  vec3 col=scene(displaced);
- col=mix(col,u_tint,.13);
+ col=mix(col,u_tint,u_tintAmount);
  float rim=(1.0-smoothstep(.35,2.0,-d));
  float light=pow(max(0.0,dot(normal,normalize(vec2(-.65,-.75)))),5.0);
  col+=vec3(.30,.27,.20)*rim+vec3(.12,.115,.10)*light*edge;
@@ -211,6 +213,7 @@ export const createGlassRenderer = (canvas: HTMLCanvasElement): GlassRenderer =>
           scalar("u_radius", surface.radius);
           scalar("u_opacity", surface.opacity);
           rgb("u_tint", surface.tint);
+          scalar("u_tintAmount", surface.tintAmount ?? 0.13);
           gl.drawArrays(gl.TRIANGLES, 0, 6);
         }
         gl.disable(gl.SCISSOR_TEST);

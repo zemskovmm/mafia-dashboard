@@ -10,7 +10,8 @@ import {
   type TimelineConsoleMessageKey,
 } from "../../i18n/messages/timeline-console.js";
 import type { Message, MessageValues } from "../../i18n/messages/types.js";
-import { describeFederationEvent } from "./federation-timeline.js";
+import { describeFederationEvent, describeNominationSelections } from "./federation-timeline.js";
+import { projectNominationHistory } from "./nomination-history.js";
 
 export interface TimelineText {
   readonly t: (key: TimelineConsoleMessageKey, values?: MessageValues) => string;
@@ -635,8 +636,11 @@ const createMarker = (
   frameIndex: number,
   regionId: string | null,
   text: TimelineText,
+  nominationSummary = false,
 ): TimelineMarker => {
-  const description = describeMarker(frame, text);
+  const description = nominationSummary
+    ? describeNominationSelections(frame, text, (seat) => playerLabel(frame, seat, text))
+    : describeMarker(frame, text);
   return {
     id: `marker-${frame.entry.id}`,
     eventId: frame.entry.id,
@@ -654,7 +658,8 @@ export const buildTimeline = (
   frames: readonly ReplayFrame[],
   text: TimelineText = englishTimelineText,
 ): TimelineModel => {
-  const visibleFrames = frames.filter(({ entry }) =>
+  const projection = projectNominationHistory(frames);
+  const visibleFrames = projection.frames.filter(({ entry }) =>
     isVisibleTimelineEvent(String(entry.type), entry.payload),
   );
   const regions: TimelineRegion[] = [];
@@ -685,7 +690,7 @@ export const buildTimeline = (
   });
 
   const markers = visibleFrames.map((frame, index) =>
-    createMarker(frame, index, regionIds[index] ?? null, text),
+    createMarker(frame, index, regionIds[index] ?? null, text, projection.summaryFrames.has(frame)),
   );
   const frameModels = visibleFrames.map((replayFrame, index) => ({
     index,

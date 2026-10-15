@@ -41,6 +41,30 @@
   backdrop-filter: blur(2px) saturate(1.18);
 }
 
+/* Nomination is an extra material wash, not a second base-tint control or a
+   semantic light. Night/speaker/ballot/goodbye/role cues retain their priority.
+   Keep the existing base background and all glyphs, borders and geometry. */
+.player-seat.is-nominated:not(
+    :where(
+      .is-current,
+      .is-voting-highlight,
+      .is-goodbye-highlight,
+      .is-sheriff-highlight,
+      .is-mafia-shooter,
+      .is-night-check-highlight,
+      .is-availability-selected,
+      .is-table-cycle-night *
+    )
+  )
+  > .liquid-card-glass
+  .liquid-card-glass__backdrop::after {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  content: "";
+  background: rgb(var(--card-nomination-rgb, 230 188 126) / var(--card-nomination-tint, 0.18));
+}
+
 /* WebKit accepts URL syntax but does not render SVG backdrop displacement.
    Engines exposing its prefixed backdrop API deliberately retain CSS blur;
    syntax support alone must not silently replace that working fallback. */

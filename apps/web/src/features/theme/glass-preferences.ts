@@ -5,6 +5,12 @@ export interface GlassSettings {
   readonly enabled: boolean;
   readonly refraction: number;
   readonly goldLight: number;
+  readonly nominationTint: number;
+  readonly nominationColor: string;
+  readonly nominationTreatment: "icons" | "tint" | "hybrid";
+  readonly nominationIcon: "vote" | "flag";
+  readonly supportIcon: "hand" | "thumbs-up";
+  readonly selectionStyle: "check-outline" | "check";
 }
 
 export const DEFAULT_GLASS_SETTINGS: GlassSettings = Object.freeze({
@@ -12,6 +18,12 @@ export const DEFAULT_GLASS_SETTINGS: GlassSettings = Object.freeze({
   enabled: false,
   refraction: 10,
   goldLight: 25,
+  nominationTint: 18,
+  nominationColor: "#e6bc7e",
+  nominationTreatment: "hybrid",
+  nominationIcon: "vote",
+  supportIcon: "hand",
+  selectionStyle: "check-outline",
 });
 
 const validNumber = (value: unknown, maximum: number, fallback: number): number =>
@@ -28,6 +40,31 @@ export const validateGlassSettings = (value: unknown): GlassSettings => {
     enabled: typeof record.enabled === "boolean" ? record.enabled : false,
     refraction: validNumber(record.refraction, 24, 10),
     goldLight: validNumber(record.goldLight, 100, 25),
+    nominationTint: validNumber(record.nominationTint, 50, DEFAULT_GLASS_SETTINGS.nominationTint),
+    nominationColor:
+      typeof record.nominationColor === "string" &&
+      /^#[\da-f]{6}$/i.test(record.nominationColor) &&
+      record.nominationColor.length === 7
+        ? record.nominationColor
+        : DEFAULT_GLASS_SETTINGS.nominationColor,
+    nominationTreatment:
+      record.nominationTreatment === "icons" ||
+      record.nominationTreatment === "tint" ||
+      record.nominationTreatment === "hybrid"
+        ? record.nominationTreatment
+        : DEFAULT_GLASS_SETTINGS.nominationTreatment,
+    nominationIcon:
+      record.nominationIcon === "vote" || record.nominationIcon === "flag"
+        ? record.nominationIcon
+        : DEFAULT_GLASS_SETTINGS.nominationIcon,
+    supportIcon:
+      record.supportIcon === "hand" || record.supportIcon === "thumbs-up"
+        ? record.supportIcon
+        : DEFAULT_GLASS_SETTINGS.supportIcon,
+    selectionStyle:
+      record.selectionStyle === "check-outline" || record.selectionStyle === "check"
+        ? record.selectionStyle
+        : DEFAULT_GLASS_SETTINGS.selectionStyle,
   };
 };
 

@@ -1959,6 +1959,83 @@ button.player-seat.is-voting-highlight::after,
     500 0.68rem "JetBrains Mono",
     monospace;
 }
+.card-nomination-status,
+.card-discipline-status {
+  position: absolute;
+  top: calc(50% - 26px);
+  right: 3px;
+  display: grid;
+  justify-items: center;
+  gap: 3px;
+  pointer-events: none;
+}
+.card-nomination-status {
+  right: auto;
+  left: 1px;
+  color: var(--card-nomination-color, #e6bc7e);
+}
+.card-discipline-status {
+  top: calc(50% - 16px);
+  right: 1px;
+  gap: 0;
+}
+.card-nomination-status[data-treatment="tint"] .card-nomination-symbol {
+  opacity: 0.75;
+}
+.card-status-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 25px;
+  min-height: 16px;
+  font-variant-numeric: tabular-nums;
+}
+.card-status-slot svg {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.8;
+}
+.card-support {
+  gap: 1px;
+  font:
+    500 9px/1 "JetBrains Mono",
+    monospace;
+}
+.card-support svg {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+}
+.card-selection {
+  position: absolute;
+  top: 5px;
+  right: 3px;
+  color: #b7f1d8;
+  pointer-events: none;
+}
+.card-selection svg {
+  border-radius: 50%;
+  background: rgb(183 241 216 / 15%);
+  stroke-width: 2.2;
+}
+.player-seat.has-nomination-selection-outline:not(:focus-visible) {
+  outline: 1px solid rgb(183 241 216 / 35%);
+  outline-offset: -3px;
+}
+.foul-markers {
+  gap: 3px;
+  min-height: 5px;
+}
+.foul-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #f36e77;
+  box-shadow: 0 0 4px rgb(243 110 119 / 25%);
+}
+.card-mute {
+  color: #f5a6ad;
+}
 .seat-name {
   max-width: 100%;
   overflow: hidden;

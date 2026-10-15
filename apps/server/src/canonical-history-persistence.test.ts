@@ -401,12 +401,7 @@ const readAndVerify = async (
   else expect(active.json().sessions).not.toContainEqual(expect.objectContaining({ gameId }));
 };
 
-const verifyViews = async (
-  context: Context,
-  gameId: string,
-  state: CanonicalSnapshot,
-  results: FinalGameResults,
-) => {
+const verifyEventViews = async (context: Context, gameId: string, state: CanonicalSnapshot) => {
   const headers = { "x-club-id": context.clubId };
   const host = await context.app.inject({
     url: `/api/games/${gameId}/events?visibility=host`,
@@ -448,8 +443,26 @@ const verifyViews = async (
     expect(publicEvents[index]!.payload).toEqual(
       isSecretGameEventType(entry.type) ? { redacted: true } : entry.payload,
     );
+    if (entry.type === "nomination.selection-set") {
+      // Explicit privacy oracle: do not merely trust the classification helper.
+      expect(publicEvents[index]!.payload).toEqual({ redacted: true });
+      expect(JSON.stringify(publicEvents[index])).not.toContain(entry.stateHashAfter);
+    }
   }
-  const listing = await context.app.inject({ url: "/api/game-sessions?status=completed", headers });
+};
+
+const verifyViews = async (
+  context: Context,
+  gameId: string,
+  state: CanonicalSnapshot,
+  results: FinalGameResults,
+) => {
+  await verifyEventViews(context, gameId, state);
+  const headers = { "x-club-id": context.clubId };
+  const listing = await context.app.inject({
+    url: "/api/game-sessions?status=completed",
+    headers,
+  });
   expect(listing.statusCode, listing.body).toBe(200);
   expect(listing.json().sessions).toContainEqual(
     expect.objectContaining({
@@ -491,6 +504,183 @@ for (const [provider, open] of [
     afterAll(async () => {
       await context?.close();
     });
+
+    it.each([false, true])(
+      "round-trips multi-speaker selections through the browser outbox, lost HTTP reply and reopened stores (federation=%s)",
+      async (federation) => {
+        const { history, gameId, headers, url } = await createRecord(context, federation);
+        history.append({
+          type: "player.nominated",
+          payload: { nominatorSeat: 1, candidateSeat: 7 },
+        });
+        const oldNomination = history.snapshot();
+        expect(oldNomination.game.nominations[0]).not.toHaveProperty("supporterSeats");
+        await saveAndRead(context, gameId, oldNomination);
+        history.append({ type: "turn.completed", payload: { seat: 1 } });
+        const select = (nominatorSeat: number, candidateSeat: number, selected = true) =>
+          history.append({
+            type: "nomination.selection-set",
+            payload: { nominatorSeat, candidateSeat, selected },
+          });
+        select(2, 7);
+        select(2, 8);
+        history.append({ type: "turn.completed", payload: { seat: 2 } });
+        select(3, 7);
+        select(3, 8);
+        select(3, 9);
+        history.append({
+          type: "foul.issued",
+          payload: { seat: 10, foulNumber: 1, redCarded: false },
+        });
+        const supported = history.snapshot();
+        await saveAndRead(context, gameId, supported, null, false);
+        select(3, 7, false);
+        select(3, 9, false);
+        history.append({
+          type: "foul.issued",
+          payload: { seat: 6, foulNumber: 1, redCarded: false },
+        });
+        const removed = history.snapshot();
+        expect(removed.game.nominations).toEqual([
+          { nominatorSeat: 1, candidateSeat: 7, order: 1, supporterSeats: [2] },
+          { nominatorSeat: 2, candidateSeat: 8, order: 2, supporterSeats: [3] },
+        ]);
+        // The shared server-only fixture omits playlistId; the real browser
+        // envelope requires it even when no playlist is selected.
+        const browserRemoved = { ...removed, playlistId: "" };
+        await saveAndRead(context, gameId, browserRemoved);
+        select(3, 9);
+        select(3, 7);
+        const accepted = history.snapshot();
+        expect(accepted.events.slice(0, supported.events.length)).toEqual(supported.events);
+        expect(accepted.game.nominations).toEqual([
+          {
+            nominatorSeat: 1,
+            candidateSeat: 7,
+            order: 1,
+            supporterSeats: [2, 3],
+          },
+          { nominatorSeat: 2, candidateSeat: 8, order: 2, supporterSeats: [3] },
+          { nominatorSeat: 3, candidateSeat: 9, order: 3 },
+        ]);
+        expect(accepted.game.voteAssignments).toEqual({});
+        expect(
+          accepted.game.players.filter(({ fouls }) => fouls === 1).map(({ seat }) => seat),
+        ).toEqual([6, 10]);
+        const state = { ...accepted, playlistId: "" };
+        type BrowserState = typeof state;
+        type BrowserOperation = {
+          kind: "snapshot";
+          mutationId: string;
+          name: string;
+          state: BrowserState;
+          results: null;
+        };
+        type BrowserOutbox = {
+          activateRemote: (session: unknown) => void;
+          enqueue: (name: string, state: BrowserState, results: null) => void;
+          flush: () => Promise<void>;
+          readonly current: { state: BrowserState } | null;
+          readonly pendingCount: number;
+        };
+        const source = new URL("../../web/src/session-outbox.ts", import.meta.url).href;
+        // eslint-disable-next-line no-unsanitized/method -- Fixed local production browser module; no custom transport implementation.
+        const { GameSessionOutbox } = (await import(/* @vite-ignore */ source)) as {
+          GameSessionOutbox: new (options: {
+            storage: Storage;
+            clubId: string;
+            createId: () => string;
+            save: (id: string, operation: BrowserOperation) => Promise<{ revision: number }>;
+          }) => BrowserOutbox;
+        };
+        const storageSource = new URL("../../web/src/browser-game-storage.ts", import.meta.url)
+          .href;
+        // eslint-disable-next-line no-unsanitized/method -- Fixed local production browser admission module.
+        const { prepareBrowserGameStorage } = (await import(/* @vite-ignore */ storageSource)) as {
+          prepareBrowserGameStorage: (options: { localStorage: Storage }) => Promise<unknown>;
+        };
+        const values = new Map<string, string>();
+        const storage: Storage = {
+          get length() {
+            return values.size;
+          },
+          clear: () => values.clear(),
+          getItem: (key) => values.get(key) ?? null,
+          key: (index) => [...values.keys()][index] ?? null,
+          removeItem: (key) => void values.delete(key),
+          setItem: (key, value) => void values.set(key, value),
+        };
+        const writes: BrowserOperation[] = [];
+        const options = {
+          storage,
+          clubId: context.clubId,
+          createId: randomUUID,
+          save: async (id: string, operation: BrowserOperation) => {
+            expect(id).toBe(gameId);
+            writes.push(jsonRoundTrip(operation));
+            const response = await context.app.inject({
+              method: "PUT",
+              url,
+              headers,
+              payload: operation,
+            });
+            expect(response.statusCode, response.body).toBe(200);
+            await readAndVerify(context, gameId, state);
+            if (writes.length === 1) throw new Error("Nomination reply lost after actual commit");
+            return response.json() as { revision: number };
+          },
+        };
+        const initialRead = await context.app.inject({ url, headers });
+        expect(initialRead.statusCode, initialRead.body).toBe(200);
+        const outbox = new GameSessionOutbox(options);
+        outbox.activateRemote(initialRead.json().session);
+        outbox.enqueue("Durable card selections", state, null);
+        await expect(outbox.flush()).rejects.toThrow("Nomination reply lost after actual commit");
+        expect(outbox.pendingCount).toBe(1);
+        const raw = storage.getItem("mafia-dashboard.game-session.v5");
+        await context.reopen();
+        expect(await prepareBrowserGameStorage({ localStorage: storage })).toMatchObject({
+          kind: "ready",
+          attachment: {
+            clubId: context.clubId,
+            gameId,
+            pendingCount: 1,
+            unresolved: true,
+          },
+        });
+        expect(storage.getItem("mafia-dashboard.game-session.v5")).toBe(raw);
+        const restored = new GameSessionOutbox(options);
+        const remote = await context.app.inject({ url, headers });
+        expect(remote.statusCode, remote.body).toBe(200);
+        restored.activateRemote(remote.json().session);
+        expect(restored.current?.state).toEqual(state);
+        await restored.flush();
+        expect(writes).toHaveLength(2);
+        expect(writes[1]).toEqual(writes[0]);
+        expect(restored.pendingCount).toBe(0);
+        const reloaded = new GameSessionOutbox(options);
+        expect(reloaded.current?.state).toEqual(state);
+        verifyCanonical(reloaded.current!.state, state, gameId);
+        await readAndVerify(context, gameId, state);
+        await verifyEventViews(context, gameId, state);
+        const replay = replayGameLog(state.initialGame, state.events, gameId);
+        expect(
+          replay.frames.find(({ entry }) => entry.type === "player.nominated")!.after
+            .nominations[0],
+        ).not.toHaveProperty("supporterSeats");
+        expect(replay.game.nominations[2]).not.toHaveProperty("supporterSeats");
+        history.append({ type: "phase.changed", payload: { to: "voting" } });
+        const ballot = { ...history.snapshot(), playlistId: "" };
+        expect(ballot.game.nominations.map(({ candidateSeat }) => candidateSeat)).toEqual([
+          7, 8, 9,
+        ]);
+        expect(ballot.game.voteAssignments).toEqual({});
+        await saveAndRead(context, gameId, ballot);
+        await context.reopen();
+        await readAndVerify(context, gameId, ballot);
+        await verifyEventViews(context, gameId, ballot);
+      },
+    );
 
     it.each([
       { losingTeam: "black", completion: "finished-early" },

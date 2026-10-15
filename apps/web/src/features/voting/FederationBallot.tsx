@@ -57,22 +57,13 @@ export const FederationBallot = ({
         seats={game.players.map((player) => ({
           ...player,
           name: displayName(player),
+          muted: player.mutePending,
           currentVoter: game.voteAssignments[player.seat] === ballot.selectedCandidateSeat,
           voted: game.voteAssignments[player.seat] !== undefined,
           inactive: player.status !== "active",
           voteTargetSeat: game.voteAssignments[player.seat],
         }))}
-        renderSeatActions={(seat) =>
-          seat.status === "active" && onFoul !== undefined ? (
-            <button
-              type="button"
-              aria-label={t("foulLabel", { name: seat.name })}
-              onClick={() => onFoul(seat.seat)}
-            >
-              {t("foul")}
-            </button>
-          ) : null
-        }
+        onSeatFoul={onFoul}
         seatActionDisabled={(seat) =>
           seat.status !== "active" ||
           !open ||

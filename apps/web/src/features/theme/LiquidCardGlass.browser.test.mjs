@@ -1,4 +1,4 @@
-/* global document, window, getComputedStyle, CSS, matchMedia */
+/* global document, window, getComputedStyle, CSS, matchMedia, requestAnimationFrame */
 // Standalone component optics checks. Run with node --test <this file>.
 // This mounts the real component, not a second implementation of the lens.
 import assert from "node:assert/strict";
@@ -26,11 +26,17 @@ const built = await build({
       import React from "react";
       import { createRoot } from "react-dom/client";
       import { LiquidCardGlass } from ${JSON.stringify(join(themeDirectory, "LiquidCardGlass.tsx"))};
-      createRoot(document.getElementById("fixture")).render(
+      import { PlayerCardAppearanceContext } from ${JSON.stringify(join(themeDirectory, "PlayerCardAppearanceContext.ts"))};
+      import { DEFAULT_GLASS_SETTINGS } from ${JSON.stringify(join(themeDirectory, "glass-preferences.ts"))};
+      const root = createRoot(document.getElementById("fixture"));
+      window.renderAppearance = (appearance = {}) => root.render(
+        <PlayerCardAppearanceContext.Provider value={{...DEFAULT_GLASS_SETTINGS,...appearance}}>
         <button className="player-seat" aria-label="Ada" onClick={() => window.cardClicks += 1}>
           <LiquidCardGlass /><span className="card-content">Ada</span>
         </button>
+        </PlayerCardAppearanceContext.Provider>
       );
+      window.renderAppearance();
       window.cardClicks = 0;
     `,
     loader: "tsx",
@@ -49,9 +55,13 @@ const stylesheet = built.outputFiles.find((file) => file.path.endsWith(".css"))?
 assert.ok(javascript && stylesheet, "The actual component JS and CSS must be bundled");
 const bundleDigest = createHash("sha256").update(javascript).update(stylesheet).digest("hex");
 const sources = await Promise.all(
-  ["LiquidCardGlass.tsx", "LiquidCardGlass.css", "liquid-card-lens.ts"].map((file) =>
-    readFile(join(themeDirectory, file)),
-  ),
+  [
+    "LiquidCardGlass.tsx",
+    "LiquidCardGlass.css",
+    "PlayerCardAppearanceContext.ts",
+    "glass-preferences.ts",
+    "liquid-card-lens.ts",
+  ].map((file) => readFile(join(themeDirectory, file))),
 );
 const sourceDigest = createHash("sha256").update(Buffer.concat(sources)).digest("hex");
 
@@ -172,6 +182,79 @@ for (const [engine, launch] of [
       }
       await writeFile(join(outputRoot, `${engine}-refracted.png`), refracted);
       await writeFile(join(outputRoot, `${engine}-neutral.png`), neutral);
+
+      // The real local material adds nomination over the existing base tint;
+      // changing this state must not rebuild the lens or change host geometry.
+      await card.evaluate((el) => el.classList.add("is-nominated"));
+      const appearance = async (
+        nominationTint,
+        nominationColor = "#e6bc7e",
+        nominationTreatment = "hybrid",
+      ) => {
+        await page.evaluate((value) => window.renderAppearance(value), {
+          nominationTint,
+          nominationColor,
+          nominationTreatment,
+        });
+        await page.waitForFunction(
+          (amount) =>
+            document
+              .querySelector(".liquid-card-glass")
+              .style.getPropertyValue("--card-nomination-tint") === String(amount),
+          nominationTreatment === "icons" ? 0 : nominationTint / 100,
+        );
+        await page.evaluate(
+          () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))),
+        );
+        return card.screenshot();
+      };
+      const zeroNomination = await appearance(0);
+      const goldNomination = await appearance(50);
+      const blueNomination = await appearance(50, "#88c7e3", "tint");
+      const region = { left: 32, right: 92, top: 28, bottom: 80 };
+      const nominationStrengthDifference = regionDifference(zeroNomination, goldNomination, region);
+      const nominationColorDifference = regionDifference(goldNomination, blueNomination, region);
+      assert.ok(
+        nominationStrengthDifference > 8,
+        `Nomination strength must alter actual local pixels (${nominationStrengthDifference})`,
+      );
+      assert.ok(
+        nominationColorDifference > 8,
+        `Nomination color must alter actual local pixels (${nominationColorDifference})`,
+      );
+      assert.equal(
+        regionDifference(zeroNomination, await appearance(50, "#88c7e3", "icons"), region),
+        0,
+      );
+      await appearance(50);
+      for (const priority of [
+        "is-current",
+        "is-voting-highlight",
+        "is-sheriff-highlight",
+        "is-mafia-shooter",
+        "is-night-check-highlight",
+        "is-goodbye-highlight",
+      ]) {
+        await card.evaluate((el, priority) => el.classList.add(priority), priority);
+        assert.equal(
+          regionDifference(zeroNomination, await card.screenshot(), region),
+          0,
+          `${priority} must retain priority over nomination material`,
+        );
+        await card.evaluate((el, priority) => el.classList.remove(priority), priority);
+      }
+      await page.evaluate(() => document.body.classList.add("is-table-cycle-night"));
+      assert.equal(
+        regionDifference(zeroNomination, await card.screenshot(), region),
+        0,
+        "Night material must not acquire nomination tint",
+      );
+      await page.evaluate(() => document.body.classList.remove("is-table-cycle-night"));
+      assert.deepEqual(await card.boundingBox(), { x: 64, y: 64, width: 124, height: 108 });
+      await writeFile(join(outputRoot, `${engine}-nomination-gold.png`), goldNomination);
+      await writeFile(join(outputRoot, `${engine}-nomination-blue.png`), blueNomination);
+      await card.evaluate((el) => el.classList.remove("is-nominated"));
+      await page.evaluate(() => window.renderAppearance());
 
       // Force the CSS-only path, without removing or replacing the component.
       await page.locator(".liquid-card-glass").evaluate((surface) => {
@@ -310,6 +393,8 @@ for (const [engine, launch] of [
         initialOptics,
         edgeMeanDifference,
         centreMeanDifference,
+        nominationStrengthDifference,
+        nominationColorDifference,
         fallbackStyle,
         fallbackBackgroundDifference,
         normalVoteTransition,

@@ -10,6 +10,7 @@ import {
 } from "react";
 import {
   applyGameEvent,
+  CASPER_NAME,
   CASPER_PLAYER_ID,
   FEDERATION_RULES_EDITION,
   createGameLogEntry,
@@ -115,6 +116,7 @@ import {
 import "./features/theme/GlassScene.css";
 import { GlassScene } from "./features/theme/GlassScene.js";
 import { SharedGlassContext } from "./features/theme/SharedGlassContext.js";
+import { PlayerCardAppearanceContext } from "./features/theme/PlayerCardAppearanceContext.js";
 import { AdjudicationControls } from "./features/game/AdjudicationControls.js";
 import { isCriticalState } from "./features/game/critical-state.js";
 import { LiveSidePanel } from "./features/game/LiveSidePanel.js";
@@ -142,10 +144,13 @@ import { buildFinalGameResults } from "./features/players/game-results.js";
 import { SetupWizard, type SetupWizardSessionState } from "./features/setup/SetupWizard.js";
 import { AvailablePlayersScreen } from "./features/setup/AvailablePlayersScreen.js";
 import { GameTimelineScreen } from "./features/timeline/GameTimelineScreen.js";
+import { buildTimeline } from "./features/timeline/timeline-model.js";
+import { projectNominationHistory } from "./features/timeline/nomination-history.js";
 import { PlayerDirectoryProvider } from "./features/players/player-display.js";
 import { useMessages, type FeatureI18n, type Locale } from "./i18n/I18nProvider.js";
 import { LanguageSelector } from "./i18n/LanguageSelector.js";
 import { shellMessages, type ShellMessageKey } from "./i18n/messages/shell.js";
+import { timelineConsoleMessages } from "./i18n/messages/timeline-console.js";
 
 import {
   clearApplicationBrowserStorage,
@@ -437,6 +442,7 @@ export const ClubWorkspace = ({
   readonly onThemeColorChange?: (color: string) => void;
 }) => {
   const { t, formatTime } = useMessages(shellMessages);
+  const timelineI18n = useMessages(timelineConsoleMessages);
   const isManager = club.role === "manager";
   const sessionSyncRef = useRef<GameSessionOutbox | null>(null);
   if (sessionSyncRef.current === null) {
@@ -775,6 +781,27 @@ export const ClubWorkspace = ({
     }
   })();
   const log: readonly LocalLogEntry[] = [...legacyLog, ...activeBranch.map(toLocalLogEntry)];
+  // Collapse only the display; canonical events and the persisted log stay untouched.
+  const nominationLogView = (() => {
+    if (activeDrawer !== "log" || !currentTimelineHistory) return null;
+    const projection = projectNominationHistory(currentTimelineHistory.frames);
+    const summaryIds = new Set([...projection.summaryFrames].map(({ entry }) => entry.id));
+    const timeline = buildTimeline(currentTimelineHistory.frames, {
+      ...timelineI18n,
+      playerName: (id) =>
+        id === CASPER_PLAYER_ID
+          ? CASPER_NAME
+          : players.find((player) => player.id === id)?.nickname,
+    });
+    return {
+      entries: [...legacyLog, ...projection.frames.map(({ entry }) => toLocalLogEntry(entry))],
+      summaries: new Map(
+        timeline.markers
+          .filter(({ eventId }) => summaryIds.has(eventId))
+          .map((marker) => [marker.eventId, marker]),
+      ),
+    };
+  })();
   const undoHistory = undoBudget === 0 ? [] : getUndoableEvents(activeBranch).slice(-undoBudget);
   const undoCount = finalResults === null ? undoHistory.length : 0;
   const previewEntry = events.find(({ id }) => id === previewTargetEventId);
@@ -1905,7 +1932,17 @@ export const ClubWorkspace = ({
       data-glass-settings="local"
       data-glass-requested={glass.enabled ? "enhanced" : "existing"}
       data-glass-status={effectiveGlassStatus}
-      style={{ "--glass-gold-light": glass.goldLight / 100 } as CSSProperties}
+      style={
+        {
+          "--glass-gold-light": glass.goldLight / 100,
+          "--card-nomination-color": glass.nominationColor,
+          "--card-nomination-rgb": [1, 3, 5]
+            .map((i) => parseInt(glass.nominationColor.slice(i, i + 2), 16))
+            .join(" "),
+          "--card-nomination-tint":
+            glass.nominationTreatment === "icons" ? 0 : glass.nominationTint / 100,
+        } as CSSProperties
+      }
       data-lighting-renderer={lighting.effectiveRenderer}
       data-lighting-renderer-requested={lighting.requestedRenderer}
       data-vgpu-status={lighting.vgpuStatus}
@@ -2053,13 +2090,17 @@ export const ClubWorkspace = ({
           <h2 tabIndex={-1}>{t("log")}</h2>
           <div className="game-log-list">
             {log.length === 0 ? <p>{t("noActionsRecorded")}</p> : null}
-            {[...log].reverse().map((entry) => {
+            {[...(nominationLogView?.entries ?? log)].reverse().map((entry) => {
               const previewable = events.some(({ id }) => id === entry.id);
+              const nominationSummary = nominationLogView?.summaries.get(entry.id);
               return (
                 <article key={entry.id}>
                   <span className="log-sequence">#{entry.sequence}</span>
                   <div>
-                    <strong>{eventLabel(entry.type, t)}</strong>
+                    <strong>{nominationSummary?.label ?? eventLabel(entry.type, t)}</strong>
+                    {nominationSummary && !privacyHidden ? (
+                      <p>{nominationSummary.ariaLabel}</p>
+                    ) : null}
                     {!privacyHidden && entry.type === "mafia.shots-observed" ? (
                       <ShotObservationDetails observations={entry.payload.observations} />
                     ) : null}
@@ -2648,7 +2689,9 @@ export const ClubWorkspace = ({
         onFailure={reportVgpuFailure}
       >
         <SharedGlassContext.Provider value={sharedGlassReady}>
-          <PlayerDirectoryProvider profiles={players}>{content}</PlayerDirectoryProvider>
+          <PlayerCardAppearanceContext.Provider value={glass}>
+            <PlayerDirectoryProvider profiles={players}>{content}</PlayerDirectoryProvider>
+          </PlayerCardAppearanceContext.Provider>
         </SharedGlassContext.Provider>
       </VgpuLightingProvider>
     </LightingRendererContext.Provider>

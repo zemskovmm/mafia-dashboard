@@ -8,6 +8,40 @@ import type {
 } from "@mafia/game-domain";
 import type { TimelineConsoleMessageKey } from "../../i18n/messages/timeline-console.js";
 import type { MarkerDescription, TimelineText } from "./timeline-model.js";
+import { getNominationSupporterSeats } from "./nomination-history.js";
+
+export const describeNominationSelections = (
+  frame: ReplayFrame,
+  text: TimelineText,
+  player: (seat: number) => string,
+): MarkerDescription => {
+  const nominations = frame.after.nominations;
+  const label = text.t(
+    nominations.length === 0 ? "No nomination selections" : "Nomination selections",
+    {
+      count: nominations.length,
+    },
+  );
+  const details = nominations.map((nomination) => {
+    const supporters = getNominationSupporterSeats(nomination);
+    const attribution = text.t("{candidate} — nominated by {nominator}", {
+      candidate: `#${nomination.candidateSeat} ${player(nomination.candidateSeat)}`,
+      nominator: `#${nomination.nominatorSeat} ${player(nomination.nominatorSeat)}`,
+    });
+    return supporters.length === 0
+      ? attribution
+      : `${attribution}; ${text.t("Additional supporters (+{count}): {supporters}", {
+          count: supporters.length,
+          supporters: text.formatList(supporters.map((seat) => `#${seat} ${player(seat)}`)),
+        })}`;
+  });
+  return {
+    kind: nominations.length === 0 ? "generic" : "nomination",
+    icon: nominations.length === 0 ? "circle" : "user-plus",
+    label,
+    ariaLabel: [label, ...details].join("; "),
+  };
+};
 
 const bestMoveEndings = {
   "complete-list": "Best Move complete list",

@@ -1885,6 +1885,12 @@ describe("developer menu", () => {
       enabled: true,
       refraction: 10,
       goldLight: 63,
+      nominationTint: 18,
+      nominationColor: "#e6bc7e",
+      nominationTreatment: "hybrid",
+      nominationIcon: "vote",
+      supportIcon: "hand",
+      selectionStyle: "check-outline",
     });
     await user.click(screen.getByRole("button", { name: "Hide developer mode" }));
     expect(JSON.parse(window.localStorage.getItem(key) ?? "null").enabled).toBe(true);
@@ -4894,6 +4900,91 @@ describe("authoritative game session lifecycle", () => {
     }
   });
 
+  it("persists real card selections and applies Developer appearance live without changing history", async () => {
+    const { GameScreen } = await vi.importActual<typeof gameScreenModule>(
+      "./features/game/GameScreen.js",
+    );
+    vi.spyOn(gameScreenModule, "GameScreen").mockImplementation(GameScreen);
+    let state = federationGame();
+    while (state.phase !== "day") state = advanceSetupPhase(state);
+    restoreFederationCheckpoint(state);
+    const user = userEvent.setup();
+    const first = render(<App />);
+    const card = (seat: number) =>
+      document.querySelector<HTMLButtonElement>(
+        `.seat-anchor[data-seat="${seat}"] > .player-seat`,
+      )!;
+    const saved = () =>
+      JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5")!).current.state;
+    await user.click(await screen.findByRole("button", { name: "Nominate Player 7" }));
+    await user.click(screen.getByRole("button", { name: "Next player" }));
+    await user.click(card(7));
+    await user.click(card(8));
+    const countBeforeIgnoredTap = saved().events.length;
+    await user.click(card(9));
+    expect(saved().events).toHaveLength(countBeforeIgnoredTap);
+    fireEvent.keyDown(card(7), { key: "f" });
+    await user.click(card(7));
+    await user.click(card(7));
+    await waitFor(() =>
+      expect(saved().game.nominations).toEqual([
+        { nominatorSeat: 1, candidateSeat: 7, order: 1, supporterSeats: [2] },
+        { nominatorSeat: 2, candidateSeat: 8, order: 2 },
+      ]),
+    );
+    const beforeAppearance = saved();
+    expect(beforeAppearance.game.players.find((p: { seat: number }) => p.seat === 7).fouls).toBe(1);
+    expect(replayGameLog(beforeAppearance.initialGame, beforeAppearance.events).game).toEqual(
+      beforeAppearance.game,
+    );
+    expect(
+      beforeAppearance.events.filter(
+        (e: { type: string }) => e.type === "nomination.selection-set",
+      ),
+    ).toHaveLength(5);
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByText("Glass", { selector: "summary" }));
+    fireEvent.change(screen.getByLabelText("Nomination tint"), { target: { value: "0" } });
+    fireEvent.change(screen.getByLabelText("Nomination color"), { target: { value: "#88c7e3" } });
+    await user.selectOptions(screen.getByLabelText("Nomination icon"), "flag");
+    await user.selectOptions(screen.getByLabelText("Support icon"), "thumbs-up");
+    await user.selectOptions(screen.getByLabelText("Nomination treatment"), "tint");
+    expect(card(7).querySelector(".lucide-flag")).not.toBeNull();
+    expect(card(7).querySelector(".lucide-thumbs-up")).not.toBeNull();
+    expect(document.querySelector(".app-shell")).toHaveStyle(
+      "--card-nomination-color: #88c7e3; --card-nomination-tint: 0",
+    );
+    expect(saved().events).toEqual(beforeAppearance.events);
+    expect(saved().game).toEqual(beforeAppearance.game);
+    first.unmount();
+    render(<App />);
+    await waitFor(() => expect(card(7)).toHaveAttribute("aria-pressed", "true"));
+    expect(card(7).querySelector(".lucide-flag")).not.toBeNull();
+    expect(card(7).querySelector(".card-support")).toHaveTextContent("+1");
+    expect(saved().events).toEqual(beforeAppearance.events);
+    await user.click(screen.getByRole("button", { name: "Open game log" }));
+    const logDrawer = screen.getByRole("dialog", { name: "Game log" });
+    expect(
+      within(logDrawer).getAllByText("Nomination selections: 2 candidates", { selector: "strong" }),
+    ).toHaveLength(1);
+    expect(logDrawer).toHaveTextContent("Additional supporters (+1): #2 Player 2");
+    expect(logDrawer).not.toHaveTextContent("nomination.selection-set");
+    expect(within(logDrawer).getByText("Foul issued", { selector: "strong" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Hide private info" }));
+    expect(logDrawer).not.toHaveTextContent("Additional supporters");
+    await user.click(screen.getByRole("button", { name: "Show private info" }));
+    const summary = within(logDrawer)
+      .getByText("Nomination selections: 2 candidates", { selector: "strong" })
+      .closest("article")!;
+    await user.click(within(summary).getByRole("button", { name: /Preview state after log/ }));
+    expect(screen.getByRole("heading", { name: "Zero round · Preview" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Seat 7: Player 7" })).toBeInTheDocument();
+    expect(document.querySelector('.seat-anchor[data-seat="7"] .card-support')).toHaveTextContent(
+      "+1",
+    );
+    expect(saved().events).toEqual(beforeAppearance.events);
+  });
+
   it("persists real federation speaker progression before fouls and ordered voting", async () => {
     const { GameScreen } = await vi.importActual<typeof gameScreenModule>(
       "./features/game/GameScreen.js",
@@ -4909,7 +5000,9 @@ describe("authoritative game session lifecycle", () => {
     await waitFor(() =>
       expect(api.saveGameSession.mock.lastCall?.[1].state.game.currentTurnIndex).toBe(1),
     );
-    await user.click(screen.getByRole("button", { name: "Foul Player 2" }));
+    fireEvent.keyDown(document.querySelector('.seat-anchor[data-seat="2"] > .player-seat')!, {
+      key: "f",
+    });
     await user.click(screen.getByRole("button", { name: "Nominate Player 5" }));
     for (let step = 0; step < 8; step += 1)
       await user.click(screen.getByRole("button", { name: "Next player" }));
