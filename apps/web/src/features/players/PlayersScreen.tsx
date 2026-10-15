@@ -6,6 +6,7 @@ import { reportError } from "../console/error-console.js";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { playersMusicMessages } from "../../i18n/messages/players-music.js";
 import { GlassSurface } from "../theme/GlassSurface.js";
+import { LiquidCardGlass } from "../theme/LiquidCardGlass.js";
 
 interface PlayersScreenProps {
   readonly players: readonly PlayerProfile[];
@@ -234,8 +235,10 @@ const PlayerCard = ({
   return (
     <article
       className="player-profile-card"
+      data-player-glass="profile"
       aria-label={t("Player {nickname}", { nickname: player.nickname })}
     >
+      <LiquidCardGlass />
       <header>
         <h2>{player.nickname}</h2>
         {player.lastPlayedAt === null ? null : (

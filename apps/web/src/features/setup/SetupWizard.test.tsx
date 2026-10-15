@@ -692,6 +692,49 @@ describe("SetupWizard federation setup", () => {
 });
 
 describe("SetupWizard", () => {
+  it("gives every empty, assigned and Casper seat a shared glass host without decorating picker options", async () => {
+    const user = userEvent.setup();
+    const session = { ...partialRoleSession(), step: "players" as const, setup: null };
+    session.selectedPlayerIds[6] = "";
+    session.selectedPlayerIds[9] = "casper";
+    const onSessionStateChange = vi.fn();
+    const { container } = render(
+      <SetupWizard
+        players={availablePlayers}
+        onComplete={vi.fn()}
+        initialSessionState={session}
+        onSessionStateChange={onSessionStateChange}
+      />,
+    );
+    const cards = container.querySelectorAll(".setup-seat-card");
+    expect(cards).toHaveLength(10);
+    expect(container.querySelectorAll("[data-player-glass]")).toHaveLength(10);
+    for (const card of cards) {
+      expect(card).toHaveAttribute("data-player-glass", "setup");
+      expect(card.firstElementChild).toHaveClass("liquid-card-glass");
+      expect(card.firstElementChild).toHaveAttribute("aria-hidden", "true");
+      expect(card.querySelectorAll(".liquid-card-glass")).toHaveLength(1);
+    }
+    const emptySeat = screen.getByRole("combobox", { name: "Seat 7 player" });
+    expect(emptySeat).toHaveValue("");
+    expect(screen.getByRole("combobox", { name: "Seat 1 player" })).toHaveValue("Player 1");
+    expect(screen.getByRole("textbox", { name: "Seat 10 player" })).toHaveAttribute("readonly");
+    await user.click(emptySeat);
+    await user.type(emptySeat, "Player 7");
+    const option = screen.getByRole("option", { name: "Player 7" });
+    expect(option).not.toHaveAttribute("data-player-glass");
+    expect(option.querySelector(".liquid-card-glass")).toBeNull();
+    await user.keyboard("{Enter}");
+    expect(emptySeat).toHaveValue("Player 7");
+    await user.click(screen.getByRole("button", { name: "Clear Seat 7" }));
+    expect(emptySeat).toHaveValue("");
+    expect(onSessionStateChange.mock.lastCall?.[0]).toMatchObject({
+      hostPlayerId: session.hostPlayerId,
+      selectedPlayerIds: session.selectedPlayerIds,
+    });
+    expect(container.querySelectorAll('[data-player-glass="setup"]')).toHaveLength(10);
+  });
+
   it("groups the accessible Casper switch with the selection heading", async () => {
     const user = userEvent.setup();
     render(<Harness onComplete={vi.fn()} />);

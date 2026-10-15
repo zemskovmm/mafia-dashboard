@@ -8,6 +8,7 @@ export interface GlassSurfaceGeometry {
   readonly tint: readonly [number, number, number];
   readonly tintAmount?: number;
   readonly opacity: number;
+  readonly roundedClips?: readonly { readonly rect: SceneRect; readonly radius: number }[];
 }
 export interface GlassSceneGeometry {
   readonly width: number;
@@ -15,6 +16,10 @@ export interface GlassSceneGeometry {
   readonly table: SceneRect;
   readonly panel: SceneRect;
   readonly nomination: SceneRect;
+  readonly workspace: SceneRect;
+  readonly workspaceRadius: number;
+  readonly noir: boolean;
+  readonly noirContrast: number;
   readonly background: readonly number[];
   readonly top: readonly number[];
   readonly theme: readonly number[];
@@ -23,6 +28,12 @@ export interface GlassSceneGeometry {
   readonly night: boolean;
   readonly gold: number;
   readonly strength: number;
+  readonly matte: boolean;
+  readonly profile: "edge" | "simple";
+  readonly frosting: number;
+  readonly tintAmount: number;
+  readonly edgeHighlights: number;
+  readonly caustics: number;
   readonly surfaces: readonly GlassSurfaceGeometry[];
 }
 
@@ -34,6 +45,12 @@ uniform vec2 u_view;
 uniform vec4 u_table;
 uniform vec4 u_panel;
 uniform vec4 u_nomination;
+uniform vec4 u_workspace;
+uniform float u_workspaceRadius;
+uniform float u_noir;
+uniform float u_noirContrast;
+uniform vec4 u_clips[4];
+uniform vec4 u_clipRadii;
 uniform vec4 u_rect;
 uniform vec3 u_bg;
 uniform vec3 u_top;
@@ -41,12 +58,17 @@ uniform vec3 u_theme;
 uniform vec3 u_felt;
 uniform vec3 u_feltDark;
 uniform vec3 u_tint;
-uniform float u_tintAmount;
 uniform float u_radius;
 uniform float u_opacity;
 uniform float u_night;
 uniform float u_gold;
 uniform float u_strength;
+uniform float u_matte;
+uniform float u_profile;
+uniform float u_frosting;
+uniform float u_tintAmount;
+uniform float u_edgeHighlights;
+uniform float u_caustics;
 uniform float u_lens;
 float sdRound(vec2 p,vec4 r,float radius){
  vec2 q=abs(p-r.xy-r.zw*.5)-(r.zw*.5-vec2(radius));
@@ -81,6 +103,21 @@ vec3 scene(vec2 p){
  }
  if(u_nomination.z>0.0 && sdRound(p,u_nomination,14.0)<0.0)
   col=mix(col,vec3(.04,.04,.03)+u_theme*.08,.34);
+ if(u_workspace.z>0.0 && sdRound(p,u_workspace,u_workspaceRadius)<0.0){
+  // This is the existing setup panel's fill, not a new background theme.
+  col=mix(col,vec3(15.0,16.0,17.0)/255.0,.84);
+  if(u_noir>.5){
+   vec2 local=p-u_workspace.xy;
+   vec2 uv=local/u_workspace.zw;
+   col=mix(vec3(.1255,.149,.1373),vec3(.0824,.102,.0941),clamp(uv.x*.4+uv.y*.6,0.0,1.0));
+   col+=u_theme*u_gold*.25*exp(-dot(uv,uv)*2.3);
+   float t=mod(local.x*.829+local.y*.559+390.0,195.0);
+   float band=smoothstep(78.0,95.0,t)*(1.0-smoothstep(119.0,144.0,t));
+   float mask=mix(.08,.8,smoothstep(0.0,.38,uv.y))*(1.0-.60*smoothstep(.82,1.0,uv.y));
+   col+=vec3(.125,.120,.091)*band*mask*u_noirContrast;
+   col+=sin(local.x*1.73+local.y*2.31)*sin(local.y*1.17-local.x*.83)*.002;
+  }
+ }
  return col;
 }
 void main(){
@@ -88,15 +125,34 @@ void main(){
  if(u_lens<.5){gl_FragColor=vec4(scene(p),1.0);return;}
  float d=sdRound(p,u_rect,u_radius);
  if(d>0.0)discard;
+ for(int i=0;i<4;i++){
+  if(u_clips[i].z>0.0 && sdRound(p,u_clips[i],u_clipRadii[i])>0.0)discard;
+ }
  float edge=1.0-smoothstep(0.0,18.0,-d);
  vec2 q=p-u_rect.xy-u_rect.zw*.5;
  vec2 normal=normalize(q/(u_rect.zw*.5)+vec2(.00001));
- vec2 displaced=p-normal*u_strength*(.20+edge*.80);
+ float amount=u_strength*(.20+edge*.80);
+ if(u_profile>.5){
+  normal=normalize(vec2(sdRound(p+vec2(.5,0.0),u_rect,u_radius)-sdRound(p-vec2(.5,0.0),u_rect,u_radius),
+   sdRound(p+vec2(0.0,.5),u_rect,u_radius)-sdRound(p-vec2(0.0,.5),u_rect,u_radius))+vec2(.00001));
+  float band=min(18.0,min(u_rect.z,u_rect.w)*.25);
+  float t=clamp(1.0+d/band,0.0,1.0);
+  amount=u_strength*t*t*(3.0-2.0*t);
+ }
+ // Capped-DPR canvas reconstruction must not spill displacement past the rim.
+ amount*=smoothstep(1.25,2.25,-d);
+ vec2 displaced=p-normal*amount;
  vec3 col=scene(displaced);
+ // Fixed five-tap frosting of the same displaced decoration, in CSS pixels.
+ // Clear mode keeps one sample; rims, tint and HTML content are not blurred.
+ if(u_matte>.5 && u_frosting>0.0){
+  col=col*.4+.15*(scene(displaced+vec2(u_frosting,0.0))+scene(displaced-vec2(u_frosting,0.0))
+   +scene(displaced+vec2(0.0,u_frosting))+scene(displaced-vec2(0.0,u_frosting)));
+ }
  col=mix(col,u_tint,u_tintAmount);
  float rim=(1.0-smoothstep(.35,2.0,-d));
  float light=pow(max(0.0,dot(normal,normalize(vec2(-.65,-.75)))),5.0);
- col+=vec3(.30,.27,.20)*rim+vec3(.12,.115,.10)*light*edge;
+ col+=vec3(.30,.27,.20)*rim*u_edgeHighlights+vec3(.12,.115,.10)*light*edge*u_caustics;
  gl_FragColor=vec4(col,u_opacity);
 }`;
 
@@ -161,7 +217,10 @@ export const createGlassRenderer = (canvas: HTMLCanvasElement): GlassRenderer =>
     const rgb = (name: string, value: readonly number[]) =>
       gl.uniform3f(uniform(name), value[0]!, value[1]!, value[2]!);
     const rect = (name: string, value: SceneRect) => gl.uniform4f(uniform(name), ...value);
-    const maximumSize = gl.getParameter(gl.MAX_RENDERBUFFER_SIZE) as number;
+    const maximumSize = Math.min(
+      gl.getParameter(gl.MAX_RENDERBUFFER_SIZE) as number,
+      ...(gl.getParameter(gl.MAX_VIEWPORT_DIMS) as Int32Array),
+    );
     return {
       dispose,
       draw: (scene) => {
@@ -185,6 +244,10 @@ export const createGlassRenderer = (canvas: HTMLCanvasElement): GlassRenderer =>
         rect("u_table", scene.table);
         rect("u_panel", scene.panel);
         rect("u_nomination", scene.nomination);
+        rect("u_workspace", scene.workspace);
+        scalar("u_workspaceRadius", scene.workspaceRadius);
+        scalar("u_noir", scene.noir ? 1 : 0);
+        scalar("u_noirContrast", scene.noirContrast);
         rgb("u_bg", scene.background);
         rgb("u_top", scene.top);
         rgb("u_theme", scene.theme);
@@ -193,6 +256,12 @@ export const createGlassRenderer = (canvas: HTMLCanvasElement): GlassRenderer =>
         scalar("u_night", scene.night ? 1 : 0);
         scalar("u_gold", scene.gold);
         scalar("u_strength", scene.strength);
+        scalar("u_matte", scene.matte ? 1 : 0);
+        scalar("u_profile", scene.profile === "edge" ? 1 : 0);
+        scalar("u_frosting", scene.frosting);
+        scalar("u_tintAmount", scene.tintAmount);
+        scalar("u_edgeHighlights", scene.edgeHighlights);
+        scalar("u_caustics", scene.caustics);
         scalar("u_lens", 0);
         gl.disable(gl.SCISSOR_TEST);
         gl.disable(gl.BLEND);
@@ -213,7 +282,13 @@ export const createGlassRenderer = (canvas: HTMLCanvasElement): GlassRenderer =>
           scalar("u_radius", surface.radius);
           scalar("u_opacity", surface.opacity);
           rgb("u_tint", surface.tint);
-          scalar("u_tintAmount", surface.tintAmount ?? 0.13);
+          scalar("u_tintAmount", surface.tintAmount ?? scene.tintAmount);
+          const clips = surface.roundedClips ?? [];
+          for (let i = 0; i < 4; i++) rect(`u_clips[${i}]`, clips[i]?.rect ?? [0, 0, 0, 0]);
+          gl.uniform4fv(
+            uniform("u_clipRadii"),
+            Float32Array.from({ length: 4 }, (_, i) => clips[i]?.radius ?? 0),
+          );
           gl.drawArrays(gl.TRIANGLES, 0, 6);
         }
         gl.disable(gl.SCISSOR_TEST);

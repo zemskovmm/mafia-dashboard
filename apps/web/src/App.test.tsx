@@ -1860,8 +1860,74 @@ describe("developer menu", () => {
     expect(gameScreenHarness.liveGame).toBe(gameBefore);
   });
 
+  it("reports the live opaque accessibility override even with enhanced glass saved off", async () => {
+    const original = window.matchMedia;
+    const transparency = Object.assign(new EventTarget(), { matches: true });
+    window.matchMedia = ((query: string) =>
+      query === "(prefers-reduced-transparency: reduce)"
+        ? transparency
+        : Object.assign(new EventTarget(), { matches: false })) as typeof window.matchMedia;
+    window.localStorage.setItem(
+      "mafia-dashboard.glass.v1",
+      JSON.stringify({ version: 1, enabled: false }),
+    );
+    const user = userEvent.setup();
+    const view = render(<App />);
+    try {
+      await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+      await user.click(screen.getByText("Glass", { selector: "summary" }));
+      await user.click(screen.getByText("Fine tuning", { selector: "summary" }));
+      expect(document.querySelector(".app-shell")).toHaveAttribute(
+        "data-glass-status",
+        "reduced-transparency",
+      );
+      expect(screen.getByLabelText("Frosting amount")).toBeDisabled();
+      expect(screen.getByLabelText("Glass tint")).toBeDisabled();
+      expect(screen.getByLabelText("Edge highlights")).toBeDisabled();
+      expect(screen.getByLabelText("Caustic light")).toBeDisabled();
+      act(() => {
+        transparency.matches = false;
+        transparency.dispatchEvent(new Event("change"));
+      });
+      expect(document.querySelector(".app-shell")).toHaveAttribute("data-glass-status", "off");
+      expect(screen.getByLabelText("Frosting amount")).toBeEnabled();
+      expect(screen.getByLabelText("Glass tint")).toBeEnabled();
+      expect(
+        JSON.parse(window.localStorage.getItem("mafia-dashboard.glass.v1") ?? "null").enabled,
+      ).toBe(false);
+    } finally {
+      view.unmount();
+      window.matchMedia = original;
+    }
+  });
+
+  it("mounts fresh shared glass across setup, availability and player management without developer access", async () => {
+    window.localStorage.removeItem(DEVELOPER_UNLOCKED_STORAGE_KEY);
+    const user = userEvent.setup();
+    renderView(<App />);
+    await screen.findByRole("button", { name: "Select available players" });
+    expect(document.querySelector(".glass-scene-canvas")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open developer menu" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Select available players" }));
+    expect(document.querySelector(".glass-scene-canvas")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Close available players" }));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    await user.click(screen.getByRole("button", { name: "Players screen" }));
+    expect(document.querySelector(".glass-scene-canvas")).toBeInTheDocument();
+  });
+
   it("tunes device-local glass in a collapsed drawer section and resets only glass", async () => {
     const user = userEvent.setup();
+    window.localStorage.setItem(
+      "mafia-dashboard.glass.v1",
+      JSON.stringify({
+        version: 1,
+        enabled: false,
+        refraction: 10,
+        goldLight: 25,
+        matte: true,
+      }),
+    );
     const first = render(<App />);
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     const section = screen.getByText("Glass", { selector: "summary" });
@@ -1869,6 +1935,9 @@ describe("developer menu", () => {
     await user.click(section);
     const toggle = screen.getByRole("button", { name: "Enable enhanced glass" });
     expect(toggle).toHaveAttribute("aria-pressed", "false");
+    expect(document.querySelector(".app-shell")).toHaveStyle("--glass-matte-blur: 2px");
+    await user.click(screen.getByRole("button", { name: "Disable matte glass" }));
+    expect(document.querySelector(".app-shell")).toHaveStyle("--glass-matte-blur: 0px");
     expect(screen.getByLabelText("Refraction strength")).toHaveValue("10");
     expect(screen.getByLabelText("Refraction strength")).toBeDisabled();
     expect(screen.getByLabelText("Gold background light")).toHaveValue("25");
@@ -1885,6 +1954,13 @@ describe("developer menu", () => {
       enabled: true,
       refraction: 10,
       goldLight: 63,
+      matte: false,
+      profile: "edge",
+      frosting: 50,
+      tint: 13,
+      edgeHighlights: 100,
+      caustics: 100,
+      noirContrast: 100,
       nominationTint: 18,
       nominationColor: "#e6bc7e",
       nominationTreatment: "hybrid",
@@ -1894,6 +1970,7 @@ describe("developer menu", () => {
     });
     await user.click(screen.getByRole("button", { name: "Hide developer mode" }));
     expect(JSON.parse(window.localStorage.getItem(key) ?? "null").enabled).toBe(true);
+    expect(document.querySelector(".app-shell")).toHaveStyle("--glass-matte-blur: 0px");
     first.unmount();
     window.localStorage.setItem(DEVELOPER_UNLOCKED_STORAGE_KEY, "unlocked");
     const lightingBefore = window.localStorage.getItem(LIGHTING_RENDERER_STORAGE_KEY);
@@ -1901,17 +1978,32 @@ describe("developer menu", () => {
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     await user.click(screen.getByText("Glass", { selector: "summary" }));
     expect(screen.getByLabelText("Gold background light")).toHaveValue("63");
+    expect(screen.getByRole("button", { name: "Enable matte glass" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(document.querySelector(".app-shell")).toHaveStyle("--glass-matte-blur: 0px");
     expect(screen.getByRole("button", { name: "Disable enhanced glass" })).toHaveAttribute(
       "aria-pressed",
       "true",
     );
     await user.click(screen.getByRole("button", { name: "Reset glass settings" }));
     expect(screen.getByLabelText("Gold background light")).toHaveValue("25");
-    expect(screen.getByRole("button", { name: "Enable enhanced glass" })).toHaveAttribute(
+    expect(screen.getByRole("button", { name: "Disable enhanced glass" })).toHaveAttribute(
       "aria-pressed",
-      "false",
+      "true",
     );
     expect(window.localStorage.getItem(LIGHTING_RENDERER_STORAGE_KEY)).toBe(lightingBefore);
+    expect(screen.getByRole("button", { name: "Disable matte glass" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(document.querySelector(".app-shell")).toHaveStyle("--glass-matte-blur: 2px");
+    await user.click(screen.getByText("Fine tuning", { selector: "summary" }));
+    fireEvent.change(screen.getByLabelText("Frosting amount"), { target: { value: "100" } });
+    expect(document.querySelector(".app-shell")).toHaveStyle("--glass-matte-blur: 4px");
+    fireEvent.change(screen.getByLabelText("Glass tint"), { target: { value: "30" } });
+    expect(document.querySelector(".app-shell")).toHaveStyle("--glass-tint: 0.3");
   });
 
   it("keeps player lighting enabled with a retired disabled setting while retaining Raytracing and pulse controls", async () => {
@@ -2603,7 +2695,9 @@ describe("developer menu", () => {
     await user.click(firstCard);
     expect(firstCard).toHaveAttribute("aria-pressed", "true");
     expect(firstCard).toHaveClass("is-availability-selected");
-    expect(firstCard.querySelector(".vgpu-player-lighting")).not.toBeNull();
+    expect(firstCard.querySelector(".vgpu-player-lighting")).toBeNull();
+    expect(firstCard.querySelector(".liquid-card-glass")).not.toBeNull();
+    expect(firstCard).toHaveAttribute("data-player-glass", "availability");
     expect(document.querySelector(".app-shell")).not.toHaveAttribute("data-player-lighting");
 
     await user.type(
@@ -4972,6 +5066,9 @@ describe("authoritative game session lifecycle", () => {
     expect(within(logDrawer).getByText("Foul issued", { selector: "strong" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Hide private info" }));
     expect(logDrawer).not.toHaveTextContent("Additional supporters");
+    expect(logDrawer).not.toHaveTextContent("Nomination selections:");
+    expect(logDrawer).not.toHaveTextContent("nomination.selection-set");
+    expect(within(logDrawer).getByText("Foul issued", { selector: "strong" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Show private info" }));
     const summary = within(logDrawer)
       .getByText("Nomination selections: 2 candidates", { selector: "strong" })

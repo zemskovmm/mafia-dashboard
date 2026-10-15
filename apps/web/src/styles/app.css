@@ -968,31 +968,31 @@ h2 {
   overscroll-behavior: contain;
 }
 .player-seat.availability-player-card {
-  /* Availability is binary; keep the card indicator ahead of any V-GPU registration. */
+  /* Binary gold selection remains visible independently of graphics readiness. */
   transition: none;
+  animation: none !important;
+}
+.app-shell .player-seat.availability-player-card::after {
+  content: none !important;
+  animation: none !important;
 }
 .player-seat.availability-player-card .availability-player-icon {
   transition: none;
 }
 .player-seat.availability-player-card[data-availability-state="selected"]
   .availability-player-icon {
-  fill: rgb(255 103 72 / 42%);
-  stroke: #ffe0bd;
+  fill: rgb(220 177 87 / 32%);
+  stroke: #ffe7aa;
 }
 .player-seat.availability-player-card[data-availability-state="selected"] .state-badge {
-  color: #ffe0bd;
-  background: rgb(255 93 73 / 32%);
+  color: #ffe7aa;
+  background: rgb(220 177 87 / 20%);
 }
-.app-shell[data-lighting-renderer="vgpu"]
-  .player-seat.availability-player-card[data-availability-state="selected"]
-  .state-badge,
 .app-shell[data-lighting-renderer="vgpu"] .player-seat.is-mafia-shooter .role-badge {
   /* Keep small labels readable over the selected turbulent fire folds. */
   background: rgb(48 14 11 / 88%);
 }
-.app-shell[data-lighting-renderer="vgpu"]
-  .player-seat:is(.is-availability-selected, .is-mafia-shooter)
-  .seat-name {
+.app-shell[data-lighting-renderer="vgpu"] .player-seat.is-mafia-shooter .seat-name {
   /* Long names can reach beyond the shader's protected centre. */
   background: rgb(10 10 10 / 45%);
   border-radius: 3px;
@@ -1011,11 +1011,15 @@ h2 {
 .availability-player-grid .player-seat.availability-player-card {
   z-index: auto;
 }
-.availability-player-grid .player-seat.availability-player-card.is-availability-selected {
-  background-color: #161819;
-}
-.availability-player-grid .player-seat.availability-player-card .vgpu-player-lighting {
-  z-index: 0;
+.app-shell[data-lighting-renderer]
+  .availability-player-grid
+  .player-seat.availability-player-card[data-availability-state="selected"] {
+  border-color: #ebc779;
+  box-shadow:
+    0 0 0 1px rgb(235 199 121 / 30%),
+    0 8px 22px rgb(0 0 0 / 30%);
+  --liquid-state-rgb: 220 177 87;
+  --liquid-card-rim: conic-gradient(from 135deg, #ffe9a3, #d6ae5c99, #fff6cd, #d6ae5c99, #ffe9a3);
 }
 .availability-player-card {
   height: 108px;
@@ -2054,7 +2058,6 @@ button.player-seat.is-voting-highlight::after,
   min-height: 0;
 }
 .role-badge,
-.foul-badge,
 .state-badge {
   padding: 2px 5px;
   border-radius: 99px;
@@ -2069,10 +2072,6 @@ button.player-seat.is-voting-highlight::after,
 .role-don {
   color: #ffccd0;
   background: rgb(239 93 104 / 18%);
-}
-.foul-badge {
-  color: #ffe0ad;
-  background: rgb(229 169 77 / 16%);
 }
 .state-badge {
   color: #f4d3ff;
@@ -4070,7 +4069,6 @@ html:-webkit-full-screen #root {
     font-size: 0.62rem;
   }
   .role-badge,
-  .foul-badge,
   .state-badge {
     padding: 1px 4px;
     font-size: 0.43rem;
@@ -4823,7 +4821,6 @@ html:-webkit-full-screen #root {
     font-size: 0.62rem;
   }
   .role-badge,
-  .foul-badge,
   .state-badge {
     padding: 1px 4px;
     font-size: 0.43rem;

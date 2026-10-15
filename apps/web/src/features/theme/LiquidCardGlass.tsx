@@ -32,10 +32,7 @@ const localRadius = (surface: HTMLElement, width: number, height: number): numbe
  * fill, focus outline and state colours; this span owns only the glass surface.
  */
 export const LiquidCardGlass = () => {
-  return useContext(SharedGlassContext) ? null : <ExistingLiquidCardGlass />;
-};
-
-const ExistingLiquidCardGlass = () => {
+  const sharedReady = useContext(SharedGlassContext);
   const appearance = validateGlassSettings({
     ...DEFAULT_GLASS_SETTINGS,
     ...useContext(PlayerCardAppearanceContext),
@@ -46,6 +43,10 @@ const ExistingLiquidCardGlass = () => {
   const [lens, setLens] = useState<LiquidCardLens | null>(null);
 
   useEffect(() => {
+    if (sharedReady) {
+      setLens(null);
+      return;
+    }
     const surface = surfaceRef.current;
     const view = surface?.ownerDocument.defaultView;
     if (surface === null || view === null || view === undefined) return;
@@ -97,7 +98,7 @@ const ExistingLiquidCardGlass = () => {
       view.removeEventListener("resize", onWindowResize);
       reducedTransparency?.removeEventListener?.("change", updateLens);
     };
-  }, []);
+  }, [sharedReady]);
 
   useEffect(() => {
     const surface = surfaceRef.current;
@@ -105,6 +106,7 @@ const ExistingLiquidCardGlass = () => {
     const host = surface?.parentElement;
     const view = surface?.ownerDocument.defaultView;
     if (surface === null || light === null || host == null || view == null) return;
+    if (sharedReady || host.dataset.playerGlass === "nomination") return;
     const motion = view.matchMedia?.("(prefers-reduced-motion: reduce)");
     const transparency = view.matchMedia?.("(prefers-reduced-transparency: reduce)");
     let animation: Animation | null = null;
@@ -166,7 +168,7 @@ const ExistingLiquidCardGlass = () => {
       motion?.removeEventListener?.("change", cancelSweep);
       transparency?.removeEventListener?.("change", cancelSweep);
     };
-  }, []);
+  }, [sharedReady]);
 
   const style = {
     "--card-nomination-color": appearance.nominationColor,

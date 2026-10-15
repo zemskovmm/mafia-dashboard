@@ -15,6 +15,7 @@ import {
   FEDERATION_RULES_EDITION,
   createGameLogEntry,
   isFederationGame,
+  isSecretGameEventType,
   createInitialGameBaseline,
   hashGameState,
   isCasperPlayer,
@@ -654,14 +655,26 @@ export const ClubWorkspace = ({
   const [roleDrawBackAction, setRoleDrawBackAction] = useState<(() => void) | null>(null);
   const [musicSetupOpen, setMusicSetupOpen] = useState(false);
   const [backgroundShade, setBackgroundShade] = useState<BackgroundShade>("black");
+  const [glass, setGlass] = useState(() => readGlassSettings());
   const [playerExit, setPlayerExit] = useState(readPlayerExitSettings);
   const changePlayerExit = useCallback((settings: PlayerExitSettings) => {
     const valid = validatePlayerExitSettings(settings);
     setPlayerExit(valid);
     writePlayerExitSettings(valid);
   }, []);
-  const [glass, setGlass] = useState(() => readGlassSettings());
   const [glassStatus, setGlassStatus] = useState<GlassStatus>("initializing");
+  const [glassReducedTransparency, setGlassReducedTransparency] = useState(
+    () => window.matchMedia?.("(prefers-reduced-transparency: reduce)").matches === true,
+  );
+  useEffect(() => {
+    // Accessibility applies to CSS fallback too, even when no renderer mounts.
+    const media = window.matchMedia?.("(prefers-reduced-transparency: reduce)");
+    if (media === undefined) return;
+    const update = () => setGlassReducedTransparency(media.matches);
+    update();
+    media.addEventListener?.("change", update);
+    return () => media.removeEventListener?.("change", update);
+  }, []);
   const changeGlass = useCallback((settings: GlassSettings) => {
     const valid = validateGlassSettings(settings);
     setGlass(valid);
@@ -784,9 +797,12 @@ export const ClubWorkspace = ({
   // Collapse only the display; canonical events and the persisted log stay untouched.
   const nominationLogView = (() => {
     if (activeDrawer !== "log" || !currentTimelineHistory) return null;
-    const projection = projectNominationHistory(currentTimelineHistory.frames);
+    const frames = privacyHidden
+      ? currentTimelineHistory.frames.filter(({ entry }) => !isSecretGameEventType(entry.type))
+      : currentTimelineHistory.frames;
+    const projection = projectNominationHistory(frames);
     const summaryIds = new Set([...projection.summaryFrames].map(({ entry }) => entry.id));
-    const timeline = buildTimeline(currentTimelineHistory.frames, {
+    const timeline = buildTimeline(frames, {
       ...timelineI18n,
       playerName: (id) =>
         id === CASPER_PLAYER_ID
@@ -1913,12 +1929,14 @@ export const ClubWorkspace = ({
     </section>
   );
 
-  const glassSceneMounted = glass.enabled && view === "game" && game !== null;
-  const effectiveGlassStatus: GlassStatus = !glass.enabled
-    ? "off"
-    : !glassSceneMounted
-      ? "inactive"
-      : glassStatus;
+  const glassSceneMounted = glass.enabled && (view === "game" || view === "players");
+  const effectiveGlassStatus: GlassStatus = glassReducedTransparency
+    ? "reduced-transparency"
+    : !glass.enabled
+      ? "off"
+      : !glassSceneMounted
+        ? "inactive"
+        : glassStatus;
   const sharedGlassReady = glassSceneMounted && effectiveGlassStatus === "ready";
   const content = (
     <div
@@ -1935,6 +1953,12 @@ export const ClubWorkspace = ({
       style={
         {
           "--glass-gold-light": glass.goldLight / 100,
+          "--glass-matte-blur": `${glass.matte ? glass.frosting * 0.04 : 0}px`,
+          "--glass-matte-lens-blur": `${glass.matte ? glass.frosting * 0.012 : 0}px`,
+          "--glass-tint": glass.tint / 100,
+          "--glass-edge-highlights": glass.edgeHighlights / 100,
+          "--glass-caustics": glass.caustics / 100,
+          "--glass-noir-contrast": glass.noirContrast / 100,
           "--card-nomination-color": glass.nominationColor,
           "--card-nomination-rgb": [1, 3, 5]
             .map((i) => parseInt(glass.nominationColor.slice(i, i + 2), 16))

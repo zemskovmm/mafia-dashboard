@@ -627,18 +627,16 @@ export async function verifyPlayerCards({ browser, config, url, evidence, result
             });
           },
         );
-        await check(
-          "upward swipe leaves base state intact; sideways context retains its action",
-          async () => {
-            await unchanged(page, async () => {
-              await mouseDrag(page, 7, 0, -60);
-              assert.equal(await page.getByRole("dialog").count(), 0);
-              await mouseDrag(page, 7, 60, 0);
-              await page.getByRole("dialog", { name: "Player actions", exact: true }).waitFor();
-              await page.locator(".table-swipe-backdrop").click({ position: { x: 4, y: 4 } });
-            });
-          },
-        );
+        await check("upward penalty and sideways context retain their actions", async () => {
+          await unchanged(page, async () => {
+            await mouseDrag(page, 7, 0, -60);
+            await page.getByRole("dialog").waitFor();
+            await page.getByRole("button", { name: "Close", exact: true }).click();
+            await mouseDrag(page, 7, 60, 0);
+            await page.getByRole("dialog", { name: "Player actions", exact: true }).waitFor();
+            await page.locator(".table-swipe-backdrop").click({ position: { x: 4, y: 4 } });
+          });
+        });
 
         const canonicalBeforeAppearance = await state(page);
         await check(

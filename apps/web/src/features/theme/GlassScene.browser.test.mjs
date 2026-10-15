@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, mkdir, writeFile, rm } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import process from "node:process";
+import { verifySharedPlayerGlass } from "./GlassScene.shared-scenarios.mjs";
 import {
   capturePlayerCardSources,
   verifyPlayerCards,
@@ -22,7 +23,8 @@ const evidence = resolve(
     : ".AI/reports/app-glass",
 );
 assert.ok(
-  !process.env.GLASS_SCENARIO || ["legacy", "player-cards"].includes(process.env.GLASS_SCENARIO),
+  !process.env.GLASS_SCENARIO ||
+    ["shared", "legacy", "player-cards"].includes(process.env.GLASS_SCENARIO),
   "Unknown GLASS_SCENARIO",
 );
 assert.ok(
@@ -51,7 +53,7 @@ import {I18nProvider} from "./apps/web/src/i18n/I18nProvider.tsx";
 import {GameSessionOutbox} from "./apps/web/src/session-outbox.ts";
 import {withBrowserGameStorageGuard} from "./apps/web/src/browser-game-storage-lock.ts";
 import {createSetup,beginRoleDraw,createSeededRandom,drawRoleForSeat,createGame,completeRoleDraw,advanceSetupPhase,nominate,completeCurrentTurn,startVoting,selectVotingCandidate,createGameLogEntry,createInitialGameBaseline} from "@mafia/game-domain";
-import {beginNight} from "@mafia/game-domain";
+import {beginNight,toggleAllMafiaShotsForTarget,resolveMafiaShots} from "@mafia/game-domain";
 import "./apps/web/src/styles/app.css";
 import "./apps/web/src/features/theme/GlassScene.css";
 const query=new URLSearchParams(location.search);
@@ -66,15 +68,24 @@ const plainDay=day;
 day=nominate(day,1,2);day=nominate(completeCurrentTurn(day),2,3);
 const phase=new URLSearchParams(location.search).get("phase");
 const emptySetup=new URLSearchParams(location.search).has("empty");
-const game=phase==="player-cards"?plainDay:phase==="day"?day:phase==="night"?beginNight(plainDay):selectVotingCandidate(startVoting(day),2);
+const deceasedNight=resolveMafiaShots(toggleAllMafiaShotsForTarget(beginNight(plainDay),1)).game;
+const game=phase==="player-cards"?plainDay:phase==="day"?day:phase==="night"?beginNight(plainDay):phase==="deceased"?deceasedNight:selectVotingCandidate(startVoting(day),2);
 const gameId="00000000-0000-4000-8000-000000000399";
 const checkpoint=createGameLogEntry({gameId,id:"00000000-0000-4000-8000-000000000398",sequence:1,parentEventId:null,createdAt:"2026-10-15T00:00:00.000Z",before:game,draft:{type:"game.checkpointed",payload:{}}});
-const profiles=players.map(p=>({...p,nickname:"Player "+p.seat,realName:null,consentToStoreRealName:false,createdAt:club.createdAt,updatedAt:club.createdAt}));
+const statistics=Object.fromEntries(["hostedGames","gamesPlayed","wins","losses","redGames","redWins","blackGames","blackWins","sheriffGames","citizenGames","mafiaGames","donGames","totalFouls","eliminations","redCards","bestMoves","bestMoveMafiaHits"].map(key=>[key,0]));
+const profiles=players.map(p=>({...p,nickname:"Player "+p.seat,consent:false,clubAccess:"none",managerLocked:false,firstName:null,lastName:null,email:null,consentAt:null,lastPlayedAt:null,statistics:{...statistics},createdAt:club.createdAt,updatedAt:club.createdAt}));
 const host={...profiles[0],id:"00000000-0000-4000-8000-000000000011",nickname:"Host"};
 if(phase==="setup")profiles.push(host);
 const playerSetup=phase==="setup"?{step:"players",hostPlayerId:emptySetup?"":host.id,selectedPlayerIds:players.map(p=>emptySetup?"":p.id),rulesEdition:"mafgame-2026-07-01",setup:null}:null;
+window.fixtureRequests=[];
 window.fetch=async(url,options={})=>{const path=new URL(url,location.origin).pathname;let body={};
-if(path.includes("/players"))body={players:profiles};
+window.fixtureRequests.push({path,method:options.method??"GET",body:options.body?JSON.parse(options.body):null});
+if(path.startsWith("/api/players/")&&options.method==="PUT"){
+ const index=profiles.findIndex(p=>p.id===path.split("/").at(-1));
+ if(index<0)throw new Error("Unknown fixture player "+path);
+ profiles[index]={...profiles[index],...JSON.parse(options.body)};body={player:profiles[index]};
+}
+else if(path==="/api/players")body={players:profiles};
 else if(path.includes("/version"))body={version:"glass-regression"};
 else if(phase==="setup"&&path==="/api/music/oauth/status")body={configured:true,connected:true,accountLabel:"Layout fixture"};
 else if(phase==="setup"&&path==="/api/music/playlists")body={playlists:[]};
@@ -91,10 +102,15 @@ withBrowserGameStorageGuard(async storageGuard=>{
 if(!localStorage.getItem("mafia-dashboard.glass-fixture-seeded")){
  new GameSessionOutbox({storage:localStorage,storageGuard,clubId:club.id,createId:()=>crypto.randomUUID(),save:()=>Promise.resolve()}).activateRemote({gameId,clubId:club.id,name:"Glass regression",hostName:"Host",status:"active",revision:1,appliedOperationId:null,results:null,createdAt:club.createdAt,updatedAt:club.updatedAt,state:{setup:playerSetup,game:playerSetup?null:checkpoint.after,hostPlayerId:playerSetup?.hostPlayerId||null,playlistId:"",log:[],undoHistory:[],undoBudget:0,initialGame:playerSetup?null:createInitialGameBaseline(game),events:playerSetup?[]:[checkpoint.entry],headEventId:playerSetup?null:checkpoint.entry.id,resetReturnEventId:null,legacyLog:[]}});
  localStorage.setItem("mafia-dashboard.glass-fixture-seeded","yes");
+ if(!new URLSearchParams(location.search).has("fresh")){
  localStorage.setItem("mafia-dashboard.developer-unlocked.v1","unlocked");
  if(!playerSetup)localStorage.setItem("mafia-dashboard.developer-mode.v1","enabled");
+ }
  localStorage.setItem("mafia-dashboard.lighting-renderer.v1","legacy");
- if(new URLSearchParams(location.search).has("glass"))localStorage.setItem("mafia-dashboard.glass.v1",JSON.stringify({version:1,enabled:true,refraction:10,goldLight:25}));
+ // Preserve the pre-rollout broad material scenario explicitly. The new fresh
+ // scenarios independently prove edge-default refraction on every family.
+ if(new URLSearchParams(location.search).has("glass"))localStorage.setItem("mafia-dashboard.glass.v1",JSON.stringify({version:1,enabled:true,refraction:10,goldLight:25,profile:"simple"}));
+ else if(!new URLSearchParams(location.search).has("fresh"))localStorage.setItem("mafia-dashboard.glass.v1",JSON.stringify({version:1,enabled:false,refraction:10,goldLight:25,profile:"simple"}));
 }
 const app=createRoot(document.getElementById("root"));
 app.render(<React.StrictMode><I18nProvider locale={locale}><ClubWorkspace storageGuard={storageGuard} club={club} onExit={()=>app.unmount()} onEditClub={()=>{}} onDeleteClub={()=>Promise.resolve()}/></I18nProvider></React.StrictMode>);
@@ -103,10 +119,19 @@ await new Promise(()=>{});
 `;
 let server;
 const results = [];
+const runId = new Date().toISOString();
 const sourceBefore =
   process.env.GLASS_SCENARIO === "player-cards" ? await capturePlayerCardSources(root) : null;
 if (sourceBefore)
   await writeFile(join(evidence, "source-before.json"), JSON.stringify(sourceBefore, null, 2));
+async function previousResults(path) {
+  try {
+    return JSON.parse(await readFile(path, "utf8")).results ?? [];
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    return [];
+  }
+}
 try {
   const bundleBinding = {};
   for (const mode of ["production", "development"]) {
@@ -123,7 +148,7 @@ try {
       format: "esm",
       jsx: "automatic",
       define: { "process.env.NODE_ENV": JSON.stringify(mode), "import.meta.env": "{}" },
-      loader: { ".svg": "dataurl", ".png": "dataurl" },
+      loader: { ".svg": "dataurl", ".png": "dataurl", ".webp": "dataurl", ".ttf": "dataurl" },
       logLevel: "silent",
     });
     if (sourceBefore) {
@@ -179,6 +204,9 @@ try {
         await verifyPlayerCards({ browser, config, url, evidence, results });
         continue;
       }
+      if (!process.env.GLASS_SCENARIO || process.env.GLASS_SCENARIO === "shared")
+        await verifySharedPlayerGlass({ browser, config, url, evidence, results });
+      if (process.env.GLASS_SCENARIO === "shared") continue;
       for (const empty of [true, false]) {
         const setupPage = await browser.newPage({
           viewport: config.viewport,
@@ -194,6 +222,12 @@ try {
         await setupPage.goto(`${url}/?phase=setup${empty ? "&empty" : ""}`);
         await setupPage.locator(".player-setup-card").waitFor();
         await setupPage.locator(".music-panel-handle").waitFor();
+        if (!empty)
+          await setupPage.waitForFunction(
+            () =>
+              document.querySelector("#host-player")?.value === "Host" &&
+              document.querySelector("#seat-10-player")?.value === "Player 10",
+          );
         assert.equal(await setupPage.locator("#host-player").inputValue(), empty ? "" : "Host");
         assert.equal(
           await setupPage.locator("#seat-10-player").inputValue(),
@@ -210,7 +244,13 @@ try {
             const read = (selector) => {
               const el = document.querySelector(selector);
               const bounds = el.getBoundingClientRect();
-              const style = getComputedStyle(el);
+              // The published layout keeps safe-area clearance in the controls
+              // footer, not the side-panel wrapper. Measure the actual content.
+              const content =
+                selector === ".live-side-panel" ? el.querySelector(".live-music-controls") : el;
+              if (!content) throw new Error("Missing panel content for safe-area measurement");
+              const contentBounds = content.getBoundingClientRect();
+              const style = getComputedStyle(content);
               return {
                 top: bounds.top,
                 bottom: bounds.bottom,
@@ -218,7 +258,7 @@ try {
                 width: bounds.width,
                 contentBottom:
                   innerHeight -
-                  bounds.bottom +
+                  contentBounds.bottom +
                   parseFloat(style.paddingBottom) +
                   parseFloat(style.borderBottomWidth),
               };
@@ -451,18 +491,24 @@ try {
         const insetLayout = await page.evaluate(() => {
           const table = document.querySelector(".table-workspace").getBoundingClientRect();
           const side = document.querySelector(".live-side-panel").getBoundingClientRect();
-          const sideStyle = getComputedStyle(document.querySelector(".live-side-panel"));
+          // Music controls can be absent when the account is unconfigured.
+          // Verify the last visible interactive control, not an empty panel edge.
+          const controls = [
+            ...document.querySelectorAll(".live-side-panel :is(button,input,select)"),
+          ].filter(
+            (el) => el.getClientRects().length > 0 && getComputedStyle(el).visibility === "visible",
+          );
+          if (!controls.length) throw new Error("Missing live panel controls");
+          const controlBottom = Math.max(
+            ...controls.map((el) => el.getBoundingClientRect().bottom),
+          );
           const tableStage = document.querySelector(".table-stage").getBoundingClientRect();
           return {
             left: table.left,
             right: innerWidth - side.right,
             tableBottom: innerHeight - table.bottom,
             sideBottom: innerHeight - side.bottom,
-            sideContentBottom:
-              innerHeight -
-              side.bottom +
-              parseFloat(sideStyle.paddingBottom) +
-              parseFloat(sideStyle.borderBottomWidth),
+            sideContentBottom: innerHeight - controlBottom,
             tableContentBottom: innerHeight - tableStage.bottom,
           };
         });
@@ -581,7 +627,12 @@ try {
         }),
         0,
       );
-      assert.equal(await page.locator(".table-stage .liquid-card-glass").count(), 0);
+      assert.equal(await page.locator(".table-stage .liquid-card-glass").count(), 10);
+      assert.ok(
+        await page
+          .locator('.table-stage [data-player-glass="table"]')
+          .evaluateAll((nodes) => nodes.every((node) => node.dataset.glassPainted === "true")),
+      );
       assert.equal(await page.locator(".nomination-panel .vgpu-player-lighting").count(), 0);
       assert.equal(
         await page.locator(".glass-scene-canvas").getAttribute("data-glass-surfaces"),
@@ -595,46 +646,53 @@ try {
           gl.readPixels(0, 0, c.width, c.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
           window[key] = pixels;
         }, key);
-      const compare = async (key) =>
-        page.evaluate((key) => {
-          const c = document.querySelector(".glass-scene-canvas");
-          const gl = c.getContext("webgl");
-          const now = new Uint8Array(c.width * c.height * 4);
-          gl.readPixels(0, 0, c.width, c.height, gl.RGBA, gl.UNSIGNED_BYTE, now);
-          const old = window[key];
-          const dpr = c.width / innerWidth;
-          const count = (r) => {
-            let diff = 0;
-            for (
-              let y = Math.max(0, Math.ceil(r.y * dpr));
-              y < Math.min(c.height, Math.floor((r.y + r.height) * dpr));
-              y++
-            )
+      const compare = async (key, threshold = 3) =>
+        page.evaluate(
+          ({ key, threshold }) => {
+            const c = document.querySelector(".glass-scene-canvas");
+            const gl = c.getContext("webgl");
+            const now = new Uint8Array(c.width * c.height * 4);
+            gl.readPixels(0, 0, c.width, c.height, gl.RGBA, gl.UNSIGNED_BYTE, now);
+            const old = window[key];
+            const dpr = c.width / innerWidth;
+            const count = (r) => {
+              let diff = 0;
               for (
-                let x = Math.max(0, Math.ceil(r.x * dpr));
-                x < Math.min(c.width, Math.floor((r.x + r.width) * dpr));
-                x++
-              ) {
-                const i = ((c.height - 1 - y) * c.width + x) * 4;
-                if (
-                  Math.abs(now[i] - old[i]) +
-                    Math.abs(now[i + 1] - old[i + 1]) +
-                    Math.abs(now[i + 2] - old[i + 2]) >
-                  3
-                )
-                  diff++;
-              }
-            return diff;
-          };
-          return {
-            surfaces: [
-              ...document.querySelectorAll(
-                ".table-stage .table-card.player-seat,.nomination-panel li",
-              ),
-            ].map((el) => count(el.getBoundingClientRect())),
-            outside: count({ x: 2, y: innerHeight - 40, width: 30, height: 30 }),
-          };
-        }, key);
+                let y = Math.max(0, Math.ceil(r.y * dpr));
+                y < Math.min(c.height, Math.floor((r.y + r.height) * dpr));
+                y++
+              )
+                for (
+                  let x = Math.max(0, Math.ceil(r.x * dpr));
+                  x < Math.min(c.width, Math.floor((r.x + r.width) * dpr));
+                  x++
+                ) {
+                  const i = ((c.height - 1 - y) * c.width + x) * 4;
+                  if (
+                    Math.abs(now[i] - old[i]) +
+                      Math.abs(now[i + 1] - old[i + 1]) +
+                      Math.abs(now[i + 2] - old[i + 2]) >
+                    threshold
+                  )
+                    diff++;
+                }
+              return diff;
+            };
+            return {
+              surfaces: [
+                ...document.querySelectorAll(
+                  ".table-stage .table-card.player-seat,.nomination-panel li",
+                ),
+              ].map((el) => count(el.getBoundingClientRect())),
+              outside: count({ x: 2, y: innerHeight - 40, width: 30, height: 30 }),
+            };
+          },
+          { key, threshold },
+        );
+      // Keep the existing >10-pixel displacement proof on the legacy simple
+      // profile. Illuminate the sampled source instead of lowering thresholds
+      // when a compact/square row sits in a nearly uniform dark background.
+      await setRange("Gold background light", 100);
       await setRange("Refraction strength", 0);
       await save("glassZero");
       await setRange("Refraction strength", 10);
@@ -652,6 +710,71 @@ try {
         JSON.stringify(maximum),
       );
       assert.equal(maximum.outside, 0);
+      await setRange("Gold background light", 25);
+      // Matte changes only material samples, not optics, geometry, state or
+      // graphics resources. Read actual GPU pixels, not just accepted uniforms.
+      const materialState = () =>
+        page
+          .locator(".table-stage .table-card.player-seat,.nomination-panel li")
+          .evaluateAll((elements) =>
+            elements.map((el) => {
+              const style = getComputedStyle(el);
+              return {
+                rect: el.getBoundingClientRect().toJSON(),
+                classes: el.className,
+                text: el.textContent,
+                border: style.borderColor,
+                shadow: style.boxShadow,
+                color: style.color,
+                contentFilters: [...el.querySelectorAll("strong,span,button")].map(
+                  (child) => getComputedStyle(child).filter,
+                ),
+              };
+            }),
+          );
+      const preservedMaterial = await materialState();
+      const matteToggle = page.getByRole("button", { name: "Disable matte glass" });
+      assert.equal(await matteToggle.getAttribute("aria-pressed"), "true");
+      assert.ok((await matteToggle.boundingBox()).height >= 48);
+      await save("matteOn");
+      const beforeMatte = await page
+        .locator(".glass-scene-canvas")
+        .getAttribute("data-glass-draws");
+      await page.evaluate(() => {
+        window.matteContext = document.querySelector(".glass-scene-canvas").getContext("webgl");
+        window.matteProgram = window.matteContext.getParameter(window.matteContext.CURRENT_PROGRAM);
+      });
+      await matteToggle.focus();
+      await page.keyboard.press("Space");
+      await page.waitForFunction(
+        (before) =>
+          Number(document.querySelector(".glass-scene-canvas").dataset.glassDraws) > Number(before),
+        beforeMatte,
+      );
+      const matte = await compare("matteOn", 0);
+      assert.equal(matte.surfaces.length, 12);
+      assert.ok(
+        matte.surfaces.every((count) => count > 10),
+        JSON.stringify(matte),
+      );
+      assert.equal(matte.outside, 0);
+      assert.deepEqual(await materialState(), preservedMaterial);
+      assert.equal(await range("Refraction strength").inputValue(), "24");
+      assert.equal(await range("Gold background light").inputValue(), "25");
+      assert.equal(
+        await page.evaluate(() => {
+          const gl = document.querySelector(".glass-scene-canvas").getContext("webgl");
+          return (
+            gl === window.matteContext &&
+            gl.getParameter(gl.CURRENT_PROGRAM) === window.matteProgram
+          );
+        }),
+        true,
+      );
+      assert.equal(
+        await page.getByRole("button", { name: "Enable matte glass" }).getAttribute("aria-pressed"),
+        "false",
+      );
       await setRange("Gold background light", 0);
       await save("goldZero");
       await setRange("Gold background light", 100);
@@ -812,6 +935,16 @@ try {
         () => document.querySelector(".app-shell")?.dataset.glassStatus === "context-lost",
       );
       assert.equal(await page.locator(".table-stage .liquid-card-glass").count(), 10);
+      assert.match(
+        await page
+          .locator(".liquid-card-glass__backdrop")
+          .first()
+          .evaluate(
+            (el) =>
+              getComputedStyle(el).backdropFilter || getComputedStyle(el).webkitBackdropFilter,
+          ),
+        /blur\(0px\)/,
+      );
       await page.evaluate(() => window.glassContextLoss.restoreContext());
       await page.waitForFunction(
         () => document.querySelector(".app-shell")?.dataset.glassStatus === "ready",
@@ -834,6 +967,10 @@ try {
       await page.locator(".dev-glass-controls > summary").click();
       assert.equal(await range("Gold background light").inputValue(), "100");
       assert.equal(await range("Refraction strength").inputValue(), "24");
+      assert.equal(
+        await page.getByRole("button", { name: "Enable matte glass" }).getAttribute("aria-pressed"),
+        "false",
+      );
       // Root theme changes (outside the canvas's workspace subtree) must redraw.
       await save("beforeTheme");
       const themeDraws = await canvas.getAttribute("data-glass-draws");
@@ -872,10 +1009,46 @@ try {
         window.releasedGlass = document.querySelector(".glass-scene-canvas").getContext("webgl");
       });
       await page.getByRole("button", { name: "Reset glass settings" }).click();
+      await page.waitForFunction(
+        () => document.querySelector(".app-shell")?.dataset.glassStatus === "ready",
+      );
+      assert.equal(await canvas.count(), 1);
+      assert.equal(await range("Gold background light").inputValue(), "25");
+      assert.equal(await range("Refraction strength").inputValue(), "14");
+      assert.equal(
+        await page
+          .getByRole("button", { name: "Disable matte glass" })
+          .getAttribute("aria-pressed"),
+        "true",
+      );
+      // Reset is now ON. Explicitly request OFF for the retained fallback,
+      // resource-release and denied-storage checks; do not weaken those checks.
+      await page.getByRole("button", { name: "Disable enhanced glass" }).click();
       assert.equal(await shell.getAttribute("data-glass-status"), "off");
       assert.equal(await canvas.count(), 0);
-      assert.equal(await range("Gold background light").inputValue(), "25");
-      assert.equal(await range("Refraction strength").inputValue(), "10");
+      const fallbackBlur = () =>
+        page
+          .locator(".liquid-card-glass__backdrop")
+          .evaluateAll((elements) =>
+            elements.map(
+              (el) =>
+                getComputedStyle(el).backdropFilter || getComputedStyle(el).webkitBackdropFilter,
+            ),
+          );
+      // The global reduced-motion rule still leaves a 0.01ms transition;
+      // wait for the actual material value rather than sampling its first frame.
+      await page.waitForFunction(() =>
+        [...document.querySelectorAll(".liquid-card-glass__backdrop")].every((el) =>
+          /blur\((2|0\.6)px\)/.test(
+            getComputedStyle(el).backdropFilter || getComputedStyle(el).webkitBackdropFilter,
+          ),
+        ),
+      );
+      const fallbackFilters = await fallbackBlur();
+      assert.ok(
+        fallbackFilters.every((filter) => /blur\((2|0\.6)px\)/.test(filter)),
+        JSON.stringify(fallbackFilters),
+      );
       assert.equal(await page.evaluate(() => window.releasedGlass.isContextLost()), true);
       await setRange("Gold background light", 0);
       await page.waitForFunction(
@@ -905,6 +1078,21 @@ try {
         };
       });
       await setRange("Gold background light", 50);
+      await page.getByRole("button", { name: "Disable matte glass" }).click();
+      await page.waitForFunction(() =>
+        [...document.querySelectorAll(".liquid-card-glass__backdrop")].every((el) =>
+          /blur\(0px\)/.test(
+            getComputedStyle(el).backdropFilter || getComputedStyle(el).webkitBackdropFilter,
+          ),
+        ),
+      );
+      assert.ok((await fallbackBlur()).every((filter) => /blur\(0px\)/.test(filter)));
+      assert.equal(
+        await page.evaluate(
+          () => JSON.parse(localStorage.getItem("mafia-dashboard.glass.v1")).matte,
+        ),
+        true,
+      );
       assert.equal(await range("Gold background light").inputValue(), "50");
       assert.equal(
         await page.evaluate(
@@ -919,6 +1107,7 @@ try {
         panelAppearance,
         squareRows: "fallback, enhanced GPU radius, selected and keyboard focus",
         maximum,
+        matte,
         gold,
         theme,
         shades,
@@ -971,6 +1160,8 @@ try {
         assert.notEqual(glow.shadow, "none");
         await phasePage.getByRole("button", { name: "Open developer menu" }).click();
         await phasePage.locator(".dev-glass-controls > summary").click();
+        await phasePage.getByRole("button", { name: "Disable matte glass" }).click();
+        assert.deepEqual(await readGlow(), glow);
         await phasePage.getByLabel("Gold background light", { exact: true }).evaluate((el) => {
           const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
           setter.call(el, "0");
@@ -1024,14 +1215,37 @@ try {
             await phasePage.getByLabel("Refraction strength", { exact: true }).isDisabled(),
             true,
           );
+          await phasePage.screenshot({
+            path: join(evidence, `${config.name}-${phase}-reduced-transparency.png`),
+          });
           const material = await phasePage
-            .locator(".liquid-card-glass")
+            .locator(".liquid-card-glass__backdrop")
             .first()
             .evaluate((el) => ({
               background: getComputedStyle(el).backgroundColor,
+              hostBackground: getComputedStyle(el.closest("[data-player-glass]")).backgroundColor,
               filter: getComputedStyle(el).backdropFilter,
             }));
+          console.log("ACCESSIBILITY MATERIAL", config.name, phase, JSON.stringify(material));
           assert.equal(material.filter, "none");
+          assert.equal(material.background, "rgb(27, 37, 32)");
+          await phasePage.waitForFunction(() =>
+            [...document.querySelectorAll(".nomination-panel li")].every(
+              (el) =>
+                getComputedStyle(el).backgroundColor === "rgb(27, 37, 32)" &&
+                getComputedStyle(el).backdropFilter === "none",
+            ),
+          );
+          const opaqueRows = await phasePage
+            .locator(".nomination-panel li")
+            .evaluateAll((elements) =>
+              elements.map((el) => ({
+                background: getComputedStyle(el).backgroundColor,
+                filter: getComputedStyle(el).backdropFilter,
+              })),
+            );
+          for (const row of opaqueRows)
+            assert.deepEqual(row, { background: "rgb(27, 37, 32)", filter: "none" });
           await cdp.send("Emulation.setEmulatedMedia", { features: [] });
           await phasePage.waitForFunction(
             () => document.querySelector(".app-shell")?.dataset.glassStatus === "ready",
@@ -1071,7 +1285,7 @@ try {
       await failed.waitForFunction(
         () => document.querySelector(".app-shell")?.dataset.glassStatus === "unavailable",
       );
-      assert.equal(await failed.locator(".liquid-card-glass").count(), 10);
+      assert.equal(await failed.locator(".liquid-card-glass").count(), 12);
       await failed.getByRole("button", { name: "Open developer menu" }).click();
       await failed.locator(".dev-glass-controls > summary").click();
       assert.equal(
@@ -1106,7 +1320,12 @@ try {
         await strict.locator(".glass-scene-canvas").getAttribute("data-glass-surfaces"),
         "12",
       );
-      assert.equal(await strict.locator(".liquid-card-glass").count(), 0);
+      assert.equal(await strict.locator(".liquid-card-glass").count(), 12);
+      assert.ok(
+        await strict
+          .locator("[data-player-glass]")
+          .evaluateAll((nodes) => nodes.every((node) => node.dataset.glassPainted === "true")),
+      );
       const attempts = await strict.evaluate(() => window.strictGlassAttempts);
       assert.ok(attempts >= 2);
       assert.deepEqual(strictErrors, []);
@@ -1121,6 +1340,7 @@ try {
       await browser.close();
     }
   }
+
   console.log(JSON.stringify(results, null, 2));
   if (process.env.GLASS_SCENARIO === "player-cards")
     assert.equal(
@@ -1129,6 +1349,7 @@ try {
       "Player-card regression failures; see retained per-case evidence",
     );
 } finally {
+  // Persist partial/failing runs too, appending rather than erasing prior evidence.
   if (sourceBefore) {
     const after = await capturePlayerCardSources(root);
     const changed = [
@@ -1153,13 +1374,15 @@ try {
       JSON.stringify({ evidence, before: sourceBefore.digest, after: after.digest, changed }),
     );
   }
+  const resultsPath = join(evidence, "browser-results.json");
+  const previous = await previousResults(resultsPath);
   await writeFile(
-    join(evidence, "browser-results.json"),
+    resultsPath,
     JSON.stringify(
       {
         scope: "Actual application workspace with isolated synthetic canonical game/API transport",
         physicalIpadStandalone: "not verified",
-        results,
+        results: [...previous, ...results.map((result) => ({ runId, ...result }))],
       },
       null,
       2,

@@ -7,6 +7,7 @@ import { getNominationSupporterSeats } from "../timeline/nomination-history.js";
 
 import { TimerControls } from "../timer/TimerControls.js";
 import { usePlayerDisplayName } from "../players/player-display.js";
+import { LiquidCardGlass } from "../theme/LiquidCardGlass.js";
 
 export interface GameUtilityPanelsProps {
   readonly game: GameState | null;
@@ -79,9 +80,11 @@ export const GameUtilityPanels = ({ game, onSelectVotingCandidate }: GameUtility
                   return (
                     <li
                       key={candidateSeat}
+                      data-player-glass="nomination"
                       className={current ? "is-voting-highlight" : undefined}
                       aria-current={current ? "step" : undefined}
                     >
+                      <LiquidCardGlass />
                       <span className="nomination-copy">
                         <strong>
                           #{candidateSeat}{" "}

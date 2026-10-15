@@ -15,19 +15,18 @@
 .dev-glass-fields :is(button, input, select) {
   min-height: 48px;
 }
-
-.dev-player-card-appearance {
+:is(.dev-glass-advanced, .dev-player-card-appearance) {
   min-width: 0;
   border-top: 1px solid var(--border);
 }
-.dev-player-card-appearance > :not(summary) {
+:is(.dev-glass-advanced, .dev-player-card-appearance) > :not(summary) {
   margin-block: 8px;
 }
-.dev-player-card-appearance label {
+:is(.dev-glass-advanced, .dev-player-card-appearance) label {
   display: grid;
   gap: 6px;
 }
-.dev-player-card-appearance :is(input, select) {
+:is(.dev-glass-advanced, .dev-player-card-appearance) :is(input, select) {
   width: 100%;
   min-width: 0;
 }
@@ -143,12 +142,24 @@
 .app-shell[data-glass-status="ready"] > .live-side-panel {
   z-index: 1;
 }
+.app-shell[data-glass-status="ready"] > :is(.setup-shell, .players-shell) {
+  position: relative;
+  z-index: 1;
+}
 .app-shell[data-glass-status="ready"]::before,
 .app-shell[data-glass-status="ready"] .live-side-panel::after {
   content: none;
 }
 .app-shell[data-glass-status="ready"]
-  :is(.game-shell, .table-workspace, .round-table, .live-side-panel, .nomination-panel) {
+  :is(
+    .game-shell,
+    .table-workspace,
+    .round-table,
+    .live-side-panel,
+    .nomination-panel,
+    .player-setup-card,
+    .availability-selection-card
+  ) {
   background: transparent !important;
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
@@ -160,11 +171,13 @@
 .app-shell[data-glass-status="ready"] .round-table::before {
   content: none;
 }
-/* No second material/SVG bitmap and no redundant animated row lighting. */
+/* Nomination rows keep square geometry and a static shared child material. */
 .app-shell[data-glass-settings] .nomination-panel li {
   min-height: 48px;
   border-radius: 0;
-  background: linear-gradient(145deg, #ffffff0a, #ffffff02);
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
   animation: none !important;
 }
 .app-shell[data-glass-settings] .nomination-panel li::after {
@@ -178,8 +191,39 @@
   background: none;
   box-shadow: none;
 }
-.app-shell[data-glass-status="ready"] .nomination-panel li {
-  background: transparent !important;
+.app-shell .availability-selection-card {
+  isolation: isolate;
+  background: linear-gradient(125deg, #202623, #151a18);
+}
+.availability-selection-card::before,
+.availability-selection-card::after {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  border-radius: inherit;
+  content: "";
+}
+.availability-selection-card::before {
+  background: repeating-linear-gradient(
+    146deg,
+    transparent 0 78px,
+    #20201a 95px 119px,
+    transparent 144px 195px
+  );
+  opacity: var(--glass-noir-contrast, 1);
+}
+.availability-selection-card::after {
+  background: radial-gradient(
+    ellipse at 0 0,
+    rgb(from var(--theme-base) r g b / 25%),
+    transparent 78%
+  );
+  opacity: var(--glass-gold-light, 0.25);
+}
+.app-shell[data-glass-status="ready"] .availability-selection-card::before,
+.app-shell[data-glass-status="ready"] .availability-selection-card::after {
+  content: none;
 }
 @media (prefers-reduced-transparency: reduce) {
   .app-shell[data-glass-settings] .live-side-panel {
@@ -191,7 +235,9 @@
     visibility: hidden !important;
   }
   .app-shell[data-glass-settings] .nomination-panel li {
-    background: #1b2520;
+    background: #1b2520 !important;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
   }
 }
 @media (prefers-reduced-motion: reduce) {

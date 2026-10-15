@@ -17,7 +17,8 @@
    changing shared styles or moving the lighting canvas above the card text.
    The card's existing 1px border and the glass rim occupy the SAME perimeter;
    keep the host border/status colour instead of drawing an inset second edge. */
-.player-seat > .liquid-card-glass[aria-hidden="true"] {
+.player-seat > .liquid-card-glass[aria-hidden="true"],
+[data-player-glass] > .liquid-card-glass[aria-hidden="true"] {
   z-index: 0;
   inset: calc(-1 * var(--liquid-card-host-border-width, 1px));
 }
@@ -36,9 +37,15 @@
 }
 
 .liquid-card-glass__backdrop {
-  background: var(--liquid-card-tint, linear-gradient(145deg, #ffffff10, #ffffff02 42%, #b9e3cf09));
-  -webkit-backdrop-filter: blur(2px) saturate(1.18);
-  backdrop-filter: blur(2px) saturate(1.18);
+  background: rgb(
+    var(--liquid-state-rgb, 20 26 23) /
+      calc(
+        var(--liquid-card-contrast-floor, 0) + (1 - var(--liquid-card-contrast-floor, 0)) *
+          var(--glass-tint, 0.13)
+      )
+  );
+  -webkit-backdrop-filter: blur(var(--glass-matte-blur, 2px)) saturate(1.18);
+  backdrop-filter: blur(var(--glass-matte-blur, 2px)) saturate(1.18);
 }
 
 /* Nomination is an extra material wash, not a second base-tint control or a
@@ -71,12 +78,13 @@
 @supports (backdrop-filter: url("#liquid-card-support-probe") blur(0.6px)) and
   (not (-webkit-backdrop-filter: blur(1px))) {
   .liquid-card-glass[data-liquid-card-lens="ready"] .liquid-card-glass__backdrop {
-    backdrop-filter: var(--liquid-card-refraction) blur(0.6px) saturate(1.18);
+    backdrop-filter: var(--liquid-card-refraction) blur(var(--glass-matte-lens-blur, 0.6px))
+      saturate(1.18);
   }
 }
 
 .liquid-card-glass__caustics {
-  opacity: 0.72;
+  opacity: calc(0.72 * var(--glass-caustics, 1));
   -webkit-mask-image: var(
     --liquid-card-edge-mask,
     radial-gradient(ellipse at center, transparent 60%, #000 100%)
@@ -105,6 +113,7 @@
 /* Only this same-edge rim is stroked. No inner inset border/shadow. */
 .liquid-card-glass__rim {
   border: 1px solid var(--liquid-card-edge-color, #f4f2df66);
+  opacity: var(--glass-edge-highlights, 1);
 }
 
 @supports (mask-composite: exclude) or (-webkit-mask-composite: xor) {
@@ -140,6 +149,32 @@
   width: 0;
   height: 0;
   overflow: hidden;
+}
+
+/* Host borders, geometry, form/popover layout and content stay independent. */
+[data-player-glass="profile"] {
+  /* Preserve the profile's former 84% dark material independently of the
+     decorative tint slider. Shared GPU surfaces read this same local floor. */
+  --liquid-card-contrast-floor: 0.84;
+}
+[data-player-glass] {
+  position: relative;
+}
+.app-shell[data-glass-settings] [data-player-glass] {
+  background: transparent !important;
+}
+/* Static block contents also need a stacking position. Zero specificity keeps
+   existing absolute badges/crosses/controls in their original positions. */
+:where(
+  [data-player-glass] > :not(.liquid-card-glass, .vgpu-player-lighting, .active-player-lighting)
+) {
+  position: relative;
+}
+[data-player-glass] > :not(.liquid-card-glass, .vgpu-player-lighting, .active-player-lighting) {
+  z-index: 1;
+}
+.app-shell[data-glass-status="ready"] [data-glass-painted="true"] > .liquid-card-glass {
+  visibility: hidden;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -27,6 +27,7 @@ export const GlassControls = ({
 }>) => {
   const { t } = useMessages(shellMessages);
   const active = settings.enabled && status === "ready";
+  const reducedTransparency = status === "reduced-transparency";
   const reason = !settings.enabled
     ? t("glassOffReason")
     : status === "inactive"
@@ -55,6 +56,20 @@ export const GlassControls = ({
         <p id="glass-renderer-reason" role="status" className="dev-renderer-status">
           {active ? t("glassActive") : reason}
         </p>
+        <button
+          type="button"
+          className="dev-setting-toggle"
+          aria-label={t(settings.matte ? "disableMatteGlass" : "enableMatteGlass")}
+          aria-describedby="glass-material-reason"
+          aria-pressed={settings.matte}
+          onClick={() => onChange({ ...settings, matte: !settings.matte })}
+        >
+          <strong>{t("matteGlass")}</strong>
+          <span>{t(settings.matte ? "settingOn" : "settingOff")}</span>
+        </button>
+        <p id="glass-material-reason" className="dev-renderer-status">
+          {t(reducedTransparency ? "glassMaterialReducedReason" : "glassMaterialDescription")}
+        </p>
         <label className="dev-renderer-field">
           <span>{t("refractionValue", { value: settings.refraction })}</span>
           <input
@@ -79,12 +94,106 @@ export const GlassControls = ({
             max="100"
             step="1"
             aria-label={t("goldBackgroundLight")}
+            aria-describedby="glass-gold-description"
             value={settings.goldLight}
             onChange={(event) =>
               onChange({ ...settings, goldLight: Number(event.currentTarget.value) })
             }
           />
         </label>
+        <p id="glass-gold-description" className="dev-renderer-status">
+          {t("glassGoldDescription")}
+        </p>
+        <details className="dev-glass-advanced">
+          <summary>{t("glassFineTuning")}</summary>
+          <div className="dev-glass-fields">
+            <label className="dev-renderer-field">
+              <span>{t("refractionProfile")}</span>
+              <select
+                aria-label={t("refractionProfile")}
+                aria-describedby="glass-renderer-reason"
+                value={settings.profile}
+                disabled={!active}
+                onChange={(event) =>
+                  onChange({
+                    ...settings,
+                    profile: event.currentTarget.value === "simple" ? "simple" : "edge",
+                  })
+                }
+              >
+                <option value="edge">{t("refractionProfileEdge")}</option>
+                <option value="simple">{t("refractionProfileSimple")}</option>
+              </select>
+            </label>
+            <label className="dev-renderer-field">
+              <span>{t("frostingValue", { value: settings.frosting })}</span>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                aria-label={t("frostingAmount")}
+                aria-describedby={
+                  !settings.matte && !reducedTransparency
+                    ? "glass-frosting-reason glass-material-reason"
+                    : "glass-material-reason"
+                }
+                value={settings.frosting}
+                disabled={!settings.matte || reducedTransparency}
+                onChange={(event) =>
+                  onChange({ ...settings, frosting: Number(event.currentTarget.value) })
+                }
+              />
+            </label>
+            {!settings.matte && !reducedTransparency && (
+              <p id="glass-frosting-reason" className="dev-renderer-status">
+                {t("glassFrostingOffReason")}
+              </p>
+            )}
+            {(
+              [
+                ["tint", "glassTint", "glassTintValue", 30],
+                ["edgeHighlights", "edgeHighlights", "edgeHighlightsValue", 100],
+                ["caustics", "causticLight", "causticLightValue", 100],
+              ] as const
+            ).map(([field, label, valueLabel, maximum]) => (
+              <label key={field} className="dev-renderer-field">
+                <span>{t(valueLabel, { value: settings[field] })}</span>
+                <input
+                  type="range"
+                  min="0"
+                  max={maximum}
+                  step="1"
+                  aria-label={t(label)}
+                  aria-describedby="glass-material-reason"
+                  value={settings[field]}
+                  disabled={reducedTransparency}
+                  onChange={(event) =>
+                    onChange({ ...settings, [field]: Number(event.currentTarget.value) })
+                  }
+                />
+              </label>
+            ))}
+            <label className="dev-renderer-field">
+              <span>{t("noirContrastValue", { value: settings.noirContrast })}</span>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                aria-label={t("noirContrast")}
+                aria-describedby="glass-noir-description"
+                value={settings.noirContrast}
+                onChange={(event) =>
+                  onChange({ ...settings, noirContrast: Number(event.currentTarget.value) })
+                }
+              />
+            </label>
+            <p id="glass-noir-description" className="dev-renderer-status">
+              {t("glassNoirDescription")}
+            </p>
+          </div>
+        </details>
         <details className="dev-player-card-appearance">
           <summary>{t("playerCardAppearance")}</summary>
           <div className="dev-glass-fields">

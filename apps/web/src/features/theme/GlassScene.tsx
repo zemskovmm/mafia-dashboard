@@ -46,6 +46,10 @@ export const GlassScene = ({
     const canvas = canvasRef.current;
     const root = canvas?.closest(".app-shell");
     if (canvas === null || !(root instanceof HTMLElement)) return;
+    if (typeof window.matchMedia !== "function" || typeof ResizeObserver !== "function") {
+      onStatus("unavailable");
+      return;
+    }
     const transparency = window.matchMedia("(prefers-reduced-transparency: reduce)");
     const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
     let renderer: GlassRenderer | null = null;
@@ -55,6 +59,14 @@ export const GlassScene = ({
     let draws = 0;
     let lastGeometry = "";
     let lost = false;
+    let painted = new Set<HTMLElement>();
+    let collected: HTMLElement[] = [];
+    const markPainted = (elements: readonly HTMLElement[]) => {
+      const next = new Set(elements);
+      for (const element of painted) if (!next.has(element)) delete element.dataset.glassPainted;
+      for (const element of next) element.dataset.glassPainted = "true";
+      painted = next;
+    };
     const colors = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
     const colorCache = new Map<string, readonly number[]>();
     const color = (value: string, fallback: readonly number[]): readonly number[] => {
@@ -77,69 +89,92 @@ export const GlassScene = ({
         color(style.getPropertyValue(name), fallback);
       const view: SceneRect = [0, 0, window.innerWidth, window.innerHeight];
       const night = root.querySelector(".is-table-cycle-night") !== null;
-      const surfaces = [
-        ...root.querySelectorAll(".table-stage .table-card.player-seat, .nomination-panel li"),
-      ].flatMap((element) => {
-        const rect = visibleRect(element);
-        if (rect[2] === 0 || rect[3] === 0) return [];
-        let clip = intersect(rect, view);
-        for (
-          let parent = element.parentElement;
-          parent !== null && parent !== root;
-          parent = parent.parentElement
-        ) {
-          const parentStyle = getComputedStyle(parent);
-          if (/auto|scroll|hidden|clip/.test(parentStyle.overflowX + parentStyle.overflowY))
-            clip = intersect(clip, visibleRect(parent));
-        }
-        if (clip[2] === 0 || clip[3] === 0) return [];
-        const s = getComputedStyle(element);
-        const radius = parseFloat(s.borderTopLeftRadius);
-        const baseTint: readonly [number, number, number] = element.matches(".is-sheriff-highlight")
-          ? [0.3, 0.5, 0.85]
-          : element.matches(".is-mafia-shooter")
-            ? [0.75, 0.24, 0.22]
-            : element.matches(".is-current,.is-voting-highlight,.is-goodbye-highlight")
-              ? [0.67, 0.51, 0.25]
-              : [0.08, 0.1, 0.09];
-        const appearance = settingsRef.current;
-        const nominated =
-          !night &&
-          element.matches(
-            ".player-seat.is-nominated:not(.is-current,.is-voting-highlight,.is-goodbye-highlight,.is-sheriff-highlight,.is-mafia-shooter,.is-night-check-highlight,.is-availability-selected)",
-          );
-        const extra =
-          nominated && appearance.nominationTreatment !== "icons"
-            ? appearance.nominationTint / 100
-            : 0;
+      collected = [];
+      const surfaces = [...root.querySelectorAll<HTMLElement>("[data-player-glass]")].flatMap(
+        (element) => {
+          const rect = visibleRect(element);
+          if (rect[2] === 0 || rect[3] === 0) return [];
+          let clip = intersect(rect, view);
+          const roundedClips: { rect: SceneRect; radius: number }[] = [];
+          for (
+            let parent = element.parentElement;
+            parent !== null && parent !== root;
+            parent = parent.parentElement
+          ) {
+            const parentStyle = getComputedStyle(parent);
+            if (/auto|scroll|hidden|clip/.test(parentStyle.overflowX + parentStyle.overflowY)) {
+              const bounds = visibleRect(parent);
+              clip = intersect(clip, bounds);
+              const radius = parseFloat(parentStyle.borderTopLeftRadius);
+              if (radius > 0) roundedClips.push({ rect: bounds, radius });
+            }
+          }
+          // Retain local fallback rather than pretending unsupported clipping painted.
+          if (clip[2] === 0 || clip[3] === 0 || roundedClips.length > 4) return [];
+          const s = getComputedStyle(element);
+          const radius = parseFloat(s.borderTopLeftRadius) * (rect[2] / element.offsetWidth);
+          const baseTint: readonly [number, number, number] = element.matches(
+            ".is-sheriff-highlight",
+          )
+            ? [0.3, 0.5, 0.85]
+            : element.matches(".is-mafia-shooter")
+              ? [0.75, 0.24, 0.22]
+              : element.matches(
+                    ".is-current,.is-voting-highlight,.is-goodbye-highlight,.is-availability-selected",
+                  )
+                ? [0.67, 0.51, 0.25]
+                : [0.08, 0.1, 0.09];
+          const appearance = settingsRef.current;
+          const nominated =
+            !night &&
+            element.matches(
+              ".player-seat.is-nominated:not(.is-current,.is-voting-highlight,.is-goodbye-highlight,.is-sheriff-highlight,.is-mafia-shooter,.is-night-check-highlight,.is-availability-selected)",
+            );
+          const extra =
+            nominated && appearance.nominationTreatment !== "icons"
+              ? appearance.nominationTint / 100
+              : 0;
 
-        const base = 0.13;
-        const tintAmount = base + extra * (1 - base);
-        const nomination = color(appearance.nominationColor, [230 / 255, 188 / 255, 126 / 255]);
-        // Compose the extra wash into the existing tint uniform. This is
-        // algebraically the same two mixes as the fallback, with no new
-        // shader path or duplicated base-tint control. Active cues skip it.
-        const channel = (index: number) =>
-          (baseTint[index]! * base * (1 - extra) + nomination[index]! * extra) / tintAmount;
-        const tint: readonly [number, number, number] =
-          extra > 0 ? [channel(0), channel(1), channel(2)] : baseTint;
-        return [
-          {
-            rect,
-            clip,
-            radius: Math.min(Number.isFinite(radius) ? radius : 10, rect[2] / 2, rect[3] / 2),
-            tint,
-            tintAmount,
-            opacity: Number(s.opacity),
-          },
-        ];
-      });
+          const contrastFloor = Math.min(
+            1,
+            Math.max(0, parseFloat(s.getPropertyValue("--liquid-card-contrast-floor")) || 0),
+          );
+          const base = contrastFloor + (1 - contrastFloor) * (appearance.tint / 100);
+          const tintAmount = base + extra * (1 - base);
+          const nomination = color(appearance.nominationColor, [230 / 255, 188 / 255, 126 / 255]);
+          // Compose the extra wash into the existing tint uniform. This is
+          // algebraically the same two mixes as the fallback, with no new
+          // shader path or duplicated base-tint control. Active cues skip it.
+          const channel = (index: number) =>
+            (baseTint[index]! * base * (1 - extra) + nomination[index]! * extra) / tintAmount;
+          const tint: readonly [number, number, number] =
+            extra > 0 ? [channel(0), channel(1), channel(2)] : baseTint;
+          collected.push(element);
+          return [
+            {
+              rect,
+              clip,
+              radius: Math.min(Number.isFinite(radius) ? radius : 10, rect[2] / 2, rect[3] / 2),
+              tint,
+              tintAmount,
+              opacity: Number(s.opacity),
+              roundedClips,
+            },
+          ];
+        },
+      );
+      const workspace = root.querySelector(".availability-selection-card,.player-setup-card");
       return {
         width: view[2],
         height: view[3],
         table: visibleRect(root.querySelector(".round-table")),
         panel: visibleRect(root.querySelector(".live-side-panel")),
         nomination: visibleRect(root.querySelector(".nomination-panel")),
+        workspace: visibleRect(workspace),
+        workspaceRadius:
+          workspace === null ? 0 : parseFloat(getComputedStyle(workspace).borderTopLeftRadius),
+        noir: workspace?.matches(".availability-selection-card") ?? false,
+        noirContrast: settingsRef.current.noirContrast / 100,
         background: variable("--glass-bg", [0.047, 0.043, 0.04]),
         top: variable("--glass-top", [0.063, 0.055, 0.043]),
         theme: variable("--theme-base", [0.765, 0.604, 0.345]),
@@ -148,6 +183,12 @@ export const GlassScene = ({
         night,
         gold: settingsRef.current.goldLight / 100,
         strength: settingsRef.current.refraction,
+        matte: settingsRef.current.matte,
+        profile: settingsRef.current.profile,
+        frosting: settingsRef.current.frosting * 0.04,
+        tintAmount: settingsRef.current.tint / 100,
+        edgeHighlights: settingsRef.current.edgeHighlights / 100,
+        caustics: settingsRef.current.caustics / 100,
         surfaces,
       };
     };
@@ -170,8 +211,11 @@ export const GlassScene = ({
           canvas.dataset.glassSurfaces = String(scene.surfaces.length);
           onStatus("ready");
         }
+        // A filtered/replaced host may reuse pixels at identical geometry.
+        markPainted(collected);
         if (now < until) frame = requestAnimationFrame(draw);
       } catch {
+        markPainted([]);
         stop();
         renderer?.dispose(false);
         renderer = null;
@@ -191,6 +235,7 @@ export const GlassScene = ({
       renderer?.dispose(false);
       renderer = null;
       lastGeometry = "";
+      markPainted([]);
       if (transparency.matches) {
         onStatus("reduced-transparency");
         return;
@@ -215,6 +260,7 @@ export const GlassScene = ({
     const contextLost = (event: Event) => {
       event.preventDefault();
       lost = true;
+      markPainted([]);
       stop();
       renderer?.dispose(false);
       renderer = null;
@@ -240,7 +286,9 @@ export const GlassScene = ({
     // The observed contents can change without resizing their fixed viewport.
     const watchLayout = () => {
       const current = new Set(
-        root.querySelectorAll(".round-table,.live-side-panel,.nomination-panel,.player-seat"),
+        root.querySelectorAll(
+          ".round-table,.live-side-panel,.nomination-panel,.player-setup-card,.availability-selection-card,[data-player-glass]",
+        ),
       );
       for (const node of observed)
         if (!current.has(node)) {
@@ -275,6 +323,7 @@ export const GlassScene = ({
     start();
     return () => {
       disposed = true;
+      markPainted([]);
       stop();
       mutation.disconnect();
       children.disconnect();

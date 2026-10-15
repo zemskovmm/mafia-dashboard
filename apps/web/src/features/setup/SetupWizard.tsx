@@ -23,6 +23,7 @@ import { setupMessages } from "../../i18n/messages/setup.js";
 import "./SetupWizard.css";
 import { reportError } from "../console/error-console.js";
 import { GameTable } from "../table/GameTable.js";
+import { LiquidCardGlass } from "../theme/LiquidCardGlass.js";
 
 interface SetupWizardProps {
   readonly players: readonly PlayerProfile[];
@@ -898,8 +899,10 @@ export const SetupWizard = ({
               <div
                 key={index}
                 data-setup-seat={index + 1}
+                data-player-glass="setup"
                 className={`setup-seat-card${seatDrag?.source === index ? " is-dragging" : ""}${seatDrag?.target === index ? " is-drop-target" : ""}`}
               >
+                <LiquidCardGlass />
                 <span className="setup-seat-number" aria-hidden="true">
                   {index + 1}
                 </span>

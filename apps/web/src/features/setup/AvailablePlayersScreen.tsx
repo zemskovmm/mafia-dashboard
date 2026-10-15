@@ -2,7 +2,7 @@ import { useState } from "react";
 import { X } from "lucide-react";
 import { isCasperPlayer } from "@mafia/game-domain";
 import type { PlayerProfile } from "../../api/client.js";
-import { VgpuPlayerLightingCanvas } from "../effects/vgpu/VgpuLightingCanvas.js";
+import { LiquidCardGlass } from "../theme/LiquidCardGlass.js";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { gameMessages } from "../../i18n/messages/game.js";
 
@@ -99,10 +99,11 @@ export const AvailablePlayersScreen = ({
                     availability: t(available ? "available.unavailable" : "available.available"),
                   })}
                   aria-pressed={available}
+                  data-player-glass="availability"
                   data-availability-state={availabilityState}
                   onClick={() => onAvailabilityChange(player.id, !available)}
                 >
-                  <VgpuPlayerLightingCanvas kind={available ? "mafia" : null} />
+                  <LiquidCardGlass />
                   <PersonIcon available={available} />
                   <span className="seat-name">{player.nickname}</span>
                   <span className="state-badge">

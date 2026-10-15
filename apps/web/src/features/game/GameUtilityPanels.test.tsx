@@ -83,6 +83,44 @@ describe("GameUtilityPanels", () => {
     expect(game.nominations[0]).not.toHaveProperty("supporterSeats");
   });
 
+  it.each(["day", "voting"] as const)(
+    "registers nomination row hosts with shared glass without decorating names or hit targets in %s",
+    async (phase) => {
+      const user = userEvent.setup();
+      let day = nominate(createDayGame(true), 1, 2);
+      day = nominate(completeCurrentTurn(day), 2, 3);
+      const game = phase === "voting" ? selectVotingCandidate(startVoting(day), 3) : day;
+      const onSelectVotingCandidate = vi.fn();
+      const { container } = render(
+        <GameUtilityPanels game={game} onSelectVotingCandidate={onSelectVotingCandidate} />,
+      );
+      const rows = screen.getAllByRole("listitem");
+      expect(rows).toHaveLength(2);
+      expect(container.querySelectorAll("[data-player-glass]")).toHaveLength(rows.length);
+      for (const row of rows) {
+        expect(row).toHaveAttribute("data-player-glass", "nomination");
+        expect(row.firstElementChild).toHaveClass("liquid-card-glass");
+        expect(row.firstElementChild).toHaveAttribute("aria-hidden", "true");
+        expect(row.querySelectorAll(".liquid-card-glass")).toHaveLength(1);
+        expect(row.querySelector(".nomination-copy")).not.toHaveAttribute("data-player-glass");
+        expect(row.querySelector("[data-player-glass]")).toBeNull();
+      }
+      expect(container.querySelector('[data-panel="timer"] [data-player-glass]')).toBeNull();
+      if (phase === "voting") {
+        const target = screen.getByRole("button", { name: "#2 Player 2" });
+        expect(target).toHaveAttribute("aria-pressed", "false");
+        expect(target).toHaveClass("nomination-row-target");
+        expect(target).not.toHaveAttribute("data-player-glass");
+        expect(target.querySelector(".liquid-card-glass")).toBeNull();
+        target.focus();
+        await user.keyboard("{Enter}");
+        expect(onSelectVotingCandidate).toHaveBeenCalledExactlyOnceWith(2);
+      } else {
+        expect(screen.queryByRole("button", { name: "#2 Player 2" })).toBeNull();
+      }
+    },
+  );
+
   it("highlights the selected nominee without disclosure or live-cursor reminders", async () => {
     const user = userEvent.setup();
     let day = nominate(createDayGame(true), 1, 2);

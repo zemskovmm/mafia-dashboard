@@ -20,6 +20,7 @@ export const FederationCollectiveBallot = ({
   hostName,
   privacyHidden,
   onSeatSwipe,
+  onSeatPenalty,
   swipeAction,
   onDismissSwipeAction,
 }: VotingStageProps) => {
@@ -69,6 +70,7 @@ export const FederationCollectiveBallot = ({
         hostName={hostName}
         privacyHidden={privacyHidden}
         onSeatSwipe={onSeatSwipe}
+        onSeatPenalty={onSeatPenalty}
         swipeAction={swipeAction}
         onDismissSwipeAction={onDismissSwipeAction}
         seats={game.players.map((p) => ({

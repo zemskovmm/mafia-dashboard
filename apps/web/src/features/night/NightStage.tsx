@@ -23,6 +23,7 @@ import { nightMessages } from "../../i18n/messages/night.js";
 import { NightShootingObservation } from "./NightShootingObservation.js";
 import { FederationBestMoveTranscript } from "../game/FederationBestMoveStage.js";
 import { GameTable } from "../table/GameTable.js";
+import { LiquidCardGlass } from "../theme/LiquidCardGlass.js";
 import { usePlayerDisplayName } from "../players/player-display.js";
 
 interface NightStageProps {
@@ -34,6 +35,7 @@ interface NightStageProps {
   // The parent may supply the daytime toggle, but every NightStage phase is exempt.
   readonly privacyHidden?: boolean;
   readonly onSeatSwipe?: (seat: number) => void;
+  readonly onSeatPenalty?: (seat: number) => void;
   readonly swipeAction?: ReactNode;
   readonly onDismissSwipeAction?: () => void;
 }
@@ -45,6 +47,7 @@ export const NightStage = ({
   onAcceptedEvent,
   hostName,
   onSeatSwipe,
+  onSeatPenalty,
   swipeAction,
   onDismissSwipeAction,
 }: NightStageProps) => {
@@ -101,6 +104,7 @@ export const NightStage = ({
         hostName={tableHostName}
         privacyHidden={false}
         onSeatSwipe={onSeatSwipe}
+        onSeatPenalty={onSeatPenalty}
         swipeAction={swipeAction}
         onDismissSwipeAction={onDismissSwipeAction}
         seats={game.players.map((player) => ({
@@ -216,6 +220,7 @@ export const NightStage = ({
     const result = getMafiaShotResult(game);
     return (
       <GameTable
+        onSeatPenalty={onSeatPenalty}
         hostName={tableHostName}
         privacyHidden={false}
         onSeatSwipe={onSeatSwipe}
@@ -263,6 +268,7 @@ export const NightStage = ({
   if (game.phase === "night-don") {
     return (
       <GameTable
+        onSeatPenalty={onSeatPenalty}
         hostName={tableHostName}
         privacyHidden={false}
         onSeatSwipe={donEligible ? onSeatSwipe : undefined}
@@ -343,6 +349,7 @@ export const NightStage = ({
     const target = game.players.find(({ seat }) => seat === game.checkResult?.targetSeat);
     return (
       <GameTable
+        onSeatPenalty={onSeatPenalty}
         hostName={tableHostName}
         privacyHidden={false}
         onSeatSwipe={onSeatSwipe}
@@ -391,6 +398,7 @@ export const NightStage = ({
   if (game.phase === "night-sheriff") {
     return (
       <GameTable
+        onSeatPenalty={onSeatPenalty}
         hostName={tableHostName}
         privacyHidden={false}
         onSeatSwipe={sheriffEligible ? onSeatSwipe : undefined}
@@ -471,6 +479,7 @@ export const NightStage = ({
     const target = game.players.find(({ seat }) => seat === game.checkResult?.targetSeat);
     return (
       <GameTable
+        onSeatPenalty={onSeatPenalty}
         hostName={tableHostName}
         privacyHidden={false}
         onSeatSwipe={onSeatSwipe}
@@ -530,6 +539,7 @@ export const NightStage = ({
   if (game.phase === "night-resolution") {
     return (
       <GameTable
+        onSeatPenalty={onSeatPenalty}
         hostName={tableHostName}
         privacyHidden={false}
         onSeatSwipe={onSeatSwipe}
@@ -634,7 +644,13 @@ const MafiaShotResultCard = ({
     );
   }
   return (
-    <div className="deceased-player-card" role="group" aria-label={t("night.deceasedPlayer")}>
+    <div
+      className="deceased-player-card"
+      data-player-glass="deceased"
+      role="group"
+      aria-label={t("night.deceasedPlayer")}
+    >
+      <LiquidCardGlass />
       <span className="table-prompt">{t("night.deceasedPlayer")}</span>
       <strong>#{target?.seat ?? result.targetSeat}</strong>
       <span>

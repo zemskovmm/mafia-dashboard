@@ -13,6 +13,8 @@ import {
   drawRoleForSeat,
   markPlayerInactive,
   performDonCheck,
+  resolveMafiaShots,
+  toggleAllMafiaShotsForTarget,
 } from "@mafia/game-domain";
 import type { GameState, PlayerInput } from "@mafia/game-domain";
 import { I18nProvider } from "../../i18n/I18nProvider.js";
@@ -59,6 +61,31 @@ const Harness = ({
 };
 
 describe("NightStage", () => {
+  it.each(["night-mafia-result", "night-resolution"] as const)(
+    "uses the shared decorative material only on the deceased identity surface in %s",
+    (phase) => {
+      const base = createNightGame();
+      const target = base.players.find(({ role }) => role === "citizen")!;
+      const resolved = resolveMafiaShots(toggleAllMafiaShotsForTarget(base, target.seat));
+      const { container } = render(
+        <NightStage
+          game={{ ...resolved.game, phase, nightResult: resolved.result }}
+          onGameChange={vi.fn()}
+          onEvent={vi.fn()}
+        />,
+      );
+      const card = screen.getByRole("group", { name: "Deceased player" });
+      expect(card).toHaveAttribute("data-player-glass", "deceased");
+      expect(card.firstElementChild).toHaveClass("liquid-card-glass");
+      expect(card.firstElementChild).toHaveAttribute("aria-hidden", "true");
+      expect(card.querySelectorAll(".liquid-card-glass")).toHaveLength(1);
+      expect(card).toHaveTextContent(`#${target.seat}`);
+      expect(card).toHaveTextContent(playerLabel(target));
+      expect(container.querySelectorAll('[data-player-glass="deceased"]')).toHaveLength(1);
+      expect(container.querySelector("[data-player-glass] [data-player-glass]")).toBeNull();
+    },
+  );
+
   it.each([
     ["en", "night-don", "10s: select a player to check for Sheriff"],
     ["en", "night-sheriff", "10s: select a player to check for Mafia"],
@@ -310,6 +337,10 @@ describe("NightStage", () => {
     expect(targetButtons.map((button) => button.textContent)).toEqual(
       shooters.map(({ seat }) => `#${seat}`),
     );
+    for (const button of document.querySelectorAll(".shooter-button")) {
+      expect(button).not.toHaveAttribute("data-player-glass");
+      expect(button.querySelector(".liquid-card-glass")).toBeNull();
+    }
 
     await user.click(targetButtons[0]!);
     const selectedShot = screen.getByRole("button", {
@@ -364,6 +395,10 @@ describe("NightStage", () => {
     await user.click(evaluate);
 
     expect(screen.getByRole("group", { name: "Mafia missed" })).toHaveTextContent("No player died");
+    expect(screen.getByRole("group", { name: "Mafia missed" })).not.toHaveAttribute(
+      "data-player-glass",
+    );
+    expect(document.querySelector(".night-miss-card .liquid-card-glass")).toBeNull();
   });
 
   it("keeps a deciding victim alive during shot review and skips checks on host continuation", async () => {
@@ -430,6 +465,10 @@ describe("NightStage", () => {
     expect(screen.getByRole("status", { name: "Mafia shots had no effect" })).toHaveTextContent(
       `${playerLabel(deceased)} was already out`,
     );
+    expect(screen.getByRole("status", { name: "Mafia shots had no effect" })).not.toHaveAttribute(
+      "data-player-glass",
+    );
+    expect(document.querySelector(".night-miss-card .liquid-card-glass")).toBeNull();
     expect(
       screen.getByRole("button", { name: `Seat ${deceased.seat}: ${playerLabel(deceased)}` }),
     ).toHaveClass("status-eliminated");

@@ -88,6 +88,84 @@ const Harness = ({
 };
 
 describe("federation GameScreen", () => {
+  it.each([
+    ["day", day],
+    ["night-mafia", () => beginNight(day())],
+    ["best-move", bestMove],
+  ] as const)(
+    "opens the existing discipline form by upward card swipe in %s without applying an action",
+    (_phase, createInitial) => {
+      const initial = createInitial();
+      const accepted = vi.fn();
+      const changed = vi.fn();
+      render(<Harness initial={initial} accepted={accepted} changed={changed} />);
+      const seat = initial.players.find((player) => player.status === "active")!.seat;
+      const card = document.querySelector(`[data-seat="${seat}"] .player-seat`)!;
+      fireEvent.touchStart(card, { touches: [{ identifier: 1, clientX: 100, clientY: 180 }] });
+      fireEvent.touchEnd(card, { changedTouches: [{ identifier: 1, clientX: 100, clientY: 100 }] });
+      fireEvent.click(card);
+      expect(screen.getByRole("dialog", { name: "Rules" })).toBeVisible();
+      expect(screen.getByLabelText("Discipline player")).toHaveValue(String(seat));
+      expect(screen.getByLabelText("Discipline action")).toHaveValue("removal");
+      expect(screen.getByLabelText("Occurrence timing")).toHaveValue("");
+      expect(screen.getByRole("button", { name: "Confirm discipline" })).toBeDisabled();
+      expect(accepted).not.toHaveBeenCalled();
+      expect(changed).not.toHaveBeenCalled();
+    },
+  );
+
+  it("confirms an upward-card removal only through the baseline explicit timing and rule controls", async () => {
+    const user = userEvent.setup();
+    const accepted = vi.fn();
+    render(<Harness initial={day()} accepted={accepted} />);
+    const card = document.querySelector('[data-seat="2"] .player-seat')!;
+    fireEvent.touchStart(card, { touches: [{ identifier: 1, clientX: 100, clientY: 180 }] });
+    fireEvent.touchEnd(card, { changedTouches: [{ identifier: 1, clientX: 100, clientY: 100 }] });
+    await user.selectOptions(screen.getByLabelText("Occurrence timing"), "day-discussion");
+    await user.selectOptions(screen.getByLabelText("Removal rule"), "6.2.3");
+    await user.click(screen.getByRole("button", { name: "Confirm discipline" }));
+    expect(accepted).toHaveBeenCalledExactlyOnceWith({
+      type: "discipline.removal-observed",
+      payload: {
+        seat: 2,
+        stage: "day-discussion",
+        rule: "6.2.3",
+        reason: "",
+        checkInProgress: false,
+      },
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it.each([
+    ["agreement", planning, "live"],
+    ["shooting result", () => resolveMafiaShots(beginNight(day())).game, "live"],
+    ["preview", day, "preview"],
+  ] as const)(
+    "does not widen baseline upward-penalty eligibility in %s",
+    (_label, createInitial, mode) => {
+      const accepted = vi.fn();
+      const changed = vi.fn();
+      render(
+        <GameScreen
+          game={createInitial()}
+          mode={mode}
+          hostName="Host"
+          privacyHidden
+          onGameChange={changed}
+          onEvent={vi.fn()}
+          onAcceptedEvent={accepted}
+        />,
+      );
+      const card = document.querySelector('[data-seat="2"] .table-card')!;
+      fireEvent.touchStart(card, { touches: [{ identifier: 1, clientX: 100, clientY: 180 }] });
+      fireEvent.touchEnd(card, { changedTouches: [{ identifier: 1, clientX: 100, clientY: 100 }] });
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(accepted).not.toHaveBeenCalled();
+      expect(changed).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(["en", "ru"] as const)(
     "shows short removal rules and accepts no extra reason in %s",
     async (locale) => {

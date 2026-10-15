@@ -116,9 +116,23 @@ describe("LiquidCardGlass", () => {
     rerender(fixture(50, "icons"));
     expect(surface.style.getPropertyValue("--card-nomination-tint")).toBe("0");
     rerender(fixture(0, "tint", true));
-    expect(container.querySelector(".liquid-card-glass")).toBeNull();
+    expect(surface.style.getPropertyValue("--card-nomination-tint")).toBe("0");
     expect(screen.getByRole("button", { name: "Ada" })).toBeInTheDocument();
   });
+  it("retains a readable local fallback until this surface is painted by the shared scene", () => {
+    const { container } = render(
+      <SharedGlassContext.Provider value={true}>
+        <button data-player-glass="profile">
+          <LiquidCardGlass />
+          Ada
+        </button>
+      </SharedGlassContext.Provider>,
+    );
+    expect(screen.getByRole("button", { name: "Ada" })).toBeInTheDocument();
+    expect(container.querySelector(".liquid-card-glass__backdrop")).toBeInTheDocument();
+    expect(container.querySelector("filter")).toBeNull();
+  });
+
   it("keeps card semantics/content outside unique, locally measured background filters", () => {
     const { container, unmount } = render(
       <>

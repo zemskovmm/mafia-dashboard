@@ -21,4 +21,13 @@ Object.defineProperties(window, {
   sessionStorage: { configurable: true, value: memoryStorage() },
 });
 
+window.matchMedia ??= (query) =>
+  Object.assign(new EventTarget(), {
+    media: query,
+    matches: false,
+    onchange: null,
+    addListener: () => undefined,
+    removeListener: () => undefined,
+  });
+
 afterEach(cleanup);

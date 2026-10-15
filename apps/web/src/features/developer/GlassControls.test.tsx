@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../../i18n/I18nProvider.js";
@@ -8,7 +8,7 @@ import { DEFAULT_GLASS_SETTINGS, type GlassSettings } from "../theme/glass-prefe
 
 const Harness = ({
   status,
-  initialSettings = { ...DEFAULT_GLASS_SETTINGS, enabled: true },
+  initialSettings = DEFAULT_GLASS_SETTINGS,
   onChange,
 }: {
   readonly status: GlassStatus;
@@ -32,7 +32,7 @@ describe("Glass controls", () => {
   it("changes player-card appearance independently, retains essential indicators, and resets defaults", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
-    render(<Harness status="ready" initialSettings={DEFAULT_GLASS_SETTINGS} onChange={onChange} />);
+    render(<Harness status="ready" onChange={onChange} />);
     await user.click(screen.getByText("Glass", { selector: "summary" }));
     await user.click(screen.getByText("Player cards", { selector: "summary" }));
     const tint = screen.getByRole("slider", { name: "Nomination tint" });
@@ -84,6 +84,7 @@ describe("Glass controls", () => {
     ).toBeInTheDocument();
     expect(document.querySelector(".lucide-message-circle-off")).not.toBeNull();
     expect(screen.queryByRole("combobox", { name: /mute/i })).not.toBeInTheDocument();
+    expect(screen.getAllByLabelText("Glass tint", { exact: true })).toHaveLength(1);
     await user.click(screen.getByRole("button", { name: "Reset glass settings" }));
     expect(onChange).toHaveBeenLastCalledWith(DEFAULT_GLASS_SETTINGS);
     expect(tint).toHaveValue("18");
@@ -130,10 +131,118 @@ describe("Glass controls", () => {
     fireEvent.change(screen.getByLabelText("Gold background light"), { target: { value: "0" } });
     expect(refraction).toHaveValue("24");
     expect(screen.getByRole("status")).toHaveTextContent("Enhanced glass active");
-    await user.click(screen.getByRole("button", { name: "Reset glass settings" }));
-    expect(refraction).toHaveValue("10");
+    const matte = screen.getByRole("button", { name: "Disable matte glass" });
+    expect(matte).toHaveAttribute("aria-pressed", "true");
+    matte.focus();
+    await user.keyboard(" ");
+    expect(screen.getByRole("button", { name: "Enable matte glass" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(refraction).toHaveValue("24");
+    expect(screen.getByLabelText("Gold background light")).toHaveValue("0");
+    expect(screen.getByRole("status")).toHaveTextContent("Enhanced glass active");
+    await user.click(screen.getByRole("button", { name: "Disable enhanced glass" }));
     expect(refraction).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Reset glass settings" }));
+    expect(refraction).toHaveValue("14");
+    expect(refraction).not.toBeDisabled();
     expect(screen.getByLabelText("Gold background light")).toHaveValue("25");
+    expect(screen.getByRole("button", { name: "Disable matte glass" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByLabelText("Refraction profile")).toHaveValue("edge");
+    expect(screen.getByLabelText("Frosting amount")).toHaveValue("50");
+    expect(screen.getByLabelText("Glass tint")).toHaveValue("13");
+    expect(screen.getByLabelText("Edge highlights")).toHaveValue("100");
+    expect(screen.getByLabelText("Caustic light")).toHaveValue("100");
+    expect(screen.getByLabelText("Noir contrast · Available players only")).toHaveValue("100");
+  });
+  it("groups fine tuning and updates each bounded control independently", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<Harness status="ready" onChange={onChange} />);
+    await user.click(screen.getByText("Glass", { selector: "summary" }));
+    const summary = screen.getByText("Fine tuning", { selector: "summary" });
+    const advanced = summary.closest("details");
+    expect(advanced).toHaveClass("dev-glass-advanced");
+    expect(advanced).not.toHaveAttribute("open");
+    await user.click(summary);
+    expect(advanced).toHaveAttribute("open");
+    const profile = screen.getByRole("combobox", { name: "Refraction profile" });
+    expect(profile.closest("details")).toBe(advanced);
+    expect(profile).toHaveValue("edge");
+    expect(within(profile).getByRole("option", { name: "Reference-inspired edge" })).toHaveValue(
+      "edge",
+    );
+    expect(within(profile).getByRole("option", { name: "Current simple" })).toHaveValue("simple");
+    await user.selectOptions(profile, "simple");
+    let expected: GlassSettings = { ...DEFAULT_GLASS_SETTINGS, profile: "simple" };
+    expect(onChange).toHaveBeenLastCalledWith(expected);
+    const ranges = [
+      ["refraction", "Refraction strength", 24, 14, false],
+      ["goldLight", "Gold background light", 100, 25, false],
+      ["frosting", "Frosting amount", 100, 50, true],
+      ["tint", "Glass tint", 30, 13, true],
+      ["edgeHighlights", "Edge highlights", 100, 100, true],
+      ["caustics", "Caustic light", 100, 100, true],
+      ["noirContrast", "Noir contrast · Available players only", 100, 100, true],
+    ] as const;
+    for (const [field, name, maximum, initial, isAdvanced] of ranges) {
+      const slider = screen.getByRole("slider", { name });
+      expect(slider).toHaveValue(String(initial));
+      expect(slider).toHaveAttribute("min", "0");
+      expect(slider).toHaveAttribute("max", String(maximum));
+      expect(slider).toHaveAttribute("step", "1");
+      expect(slider.closest("details") === advanced).toBe(isAdvanced);
+      for (const value of [0, maximum]) {
+        fireEvent.change(slider, { target: { value: String(value) } });
+        expected = { ...expected, [field]: value };
+        expect(onChange).toHaveBeenLastCalledWith(expected);
+        expect(slider).toHaveValue(String(value));
+        expect(slider.closest("label")).toHaveTextContent(
+          `${value}${field === "refraction" ? "" : "%"}`,
+        );
+      }
+    }
+    expect(
+      screen.getByLabelText("Noir contrast · Available players only"),
+    ).toHaveAccessibleDescription(
+      "Only the Available players background; other screens stay unchanged.",
+    );
+    await user.click(screen.getByRole("button", { name: "Reset glass settings" }));
+    expect(onChange).toHaveBeenLastCalledWith(DEFAULT_GLASS_SETTINGS);
+    for (const [, name, , initial] of ranges) {
+      expect(screen.getByRole("slider", { name })).toHaveValue(String(initial));
+    }
+    expect(profile).toHaveValue("edge");
+  });
+  it("retains frosting and other tuning while Matte is toggled by keyboard", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<Harness status="ready" onChange={onChange} />);
+    await user.click(screen.getByText("Glass", { selector: "summary" }));
+    await user.click(screen.getByText("Fine tuning", { selector: "summary" }));
+    const frosting = screen.getByRole("slider", { name: "Frosting amount" });
+    fireEvent.change(frosting, { target: { value: "77" } });
+    screen.getByRole("button", { name: "Disable matte glass" }).focus();
+    await user.keyboard(" ");
+    expect(onChange).toHaveBeenLastCalledWith({
+      ...DEFAULT_GLASS_SETTINGS,
+      matte: false,
+      frosting: 77,
+    });
+    expect(frosting).toBeDisabled();
+    expect(frosting).toHaveValue("77");
+    expect(frosting).toHaveAccessibleDescription(/Turn on Matte glass to adjust frosting/);
+    expect(screen.getByLabelText("Refraction strength")).not.toBeDisabled();
+    expect(screen.getByLabelText("Glass tint")).not.toBeDisabled();
+    expect(screen.getByLabelText("Gold background light")).toHaveValue("25");
+    await user.keyboard(" ");
+    expect(frosting).not.toBeDisabled();
+    expect(frosting).toHaveValue("77");
+    expect(onChange).toHaveBeenLastCalledWith({ ...DEFAULT_GLASS_SETTINGS, frosting: 77 });
   });
   it.each([
     "inactive",
@@ -149,8 +258,61 @@ describe("Glass controls", () => {
       "glass-renderer-reason",
     );
     expect(screen.getByLabelText("Gold background light")).not.toBeDisabled();
+    expect(screen.getByLabelText("Disable matte glass")).not.toBeDisabled();
+    expect(screen.getByLabelText("Refraction profile")).toBeDisabled();
+    expect(screen.getByLabelText("Refraction profile")).toHaveAttribute(
+      "aria-describedby",
+      "glass-renderer-reason",
+    );
+    expect(screen.getByLabelText("Noir contrast · Available players only")).not.toBeDisabled();
+    for (const name of ["Frosting amount", "Glass tint", "Edge highlights", "Caustic light"]) {
+      const control = screen.getByLabelText(name);
+      expect(control.hasAttribute("disabled")).toBe(status === "reduced-transparency");
+      if (status === "reduced-transparency") {
+        expect(control).toHaveAccessibleDescription(/Reduced transparency uses opaque glass/);
+      }
+    }
     expect(screen.getByRole("status")).not.toHaveTextContent("Enhanced glass active");
   });
+  it.each(["ready", "reduced-transparency"] as const)(
+    "preserves saved OFF with honest %s material availability",
+    (status) => {
+      render(
+        <Harness
+          status={status}
+          initialSettings={{ ...DEFAULT_GLASS_SETTINGS, enabled: false, refraction: 10 }}
+        />,
+      );
+      expect(screen.getByRole("status")).toHaveTextContent("Enhanced glass off");
+      expect(screen.getByLabelText("Refraction strength")).toHaveValue("10");
+      expect(screen.getByLabelText("Refraction strength")).toBeDisabled();
+      expect(screen.getByLabelText("Refraction profile")).toBeDisabled();
+      expect(screen.getByLabelText("Disable matte glass")).not.toBeDisabled();
+      expect(screen.getByLabelText("Gold background light")).not.toBeDisabled();
+      expect(screen.getByLabelText("Glass tint").hasAttribute("disabled")).toBe(
+        status === "reduced-transparency",
+      );
+      if (status === "reduced-transparency") {
+        expect(screen.getByLabelText("Disable matte glass")).toHaveAccessibleDescription(
+          /Reduced transparency uses opaque glass/,
+        );
+      }
+    },
+  );
+  it.each([
+    ["en", "Enhanced glass requested · no eligible player-card surface is active"],
+    ["ru", "Улучшенное стекло запрошено · подходящие карточки игроков сейчас не показаны"],
+  ] as const)(
+    "explains inactive shared surfaces rather than a table-only scope in %s",
+    (locale, reason) => {
+      render(
+        <I18nProvider locale={locale}>
+          <Harness status="inactive" />
+        </I18nProvider>,
+      );
+      expect(screen.getByRole("status")).toHaveTextContent(reason);
+    },
+  );
   it("localizes all controls and fallback status in Russian", () => {
     const onChange = vi.fn();
     render(
@@ -169,6 +331,30 @@ describe("Glass controls", () => {
     );
     expect(screen.getByLabelText("Сила преломления")).toBeDisabled();
     expect(screen.getByLabelText("Золотой фоновый свет")).toHaveValue("25");
+    expect(
+      screen.getByText("Тонкая настройка", { selector: "summary" }).closest("details"),
+    ).toHaveClass("dev-glass-advanced");
+    expect(screen.getByLabelText("Профиль преломления")).toBeDisabled();
+    expect(screen.getByRole("option", { name: "Краевой, по образцу", hidden: true })).toHaveValue(
+      "edge",
+    );
+    expect(screen.getByRole("option", { name: "Прежний простой", hidden: true })).toHaveValue(
+      "simple",
+    );
+    expect(screen.getByLabelText("Степень матовости")).toHaveValue("50");
+    expect(screen.getByLabelText("Тонировка стекла")).toHaveValue("13");
+    expect(screen.getByLabelText("Блики на краях")).toHaveValue("100");
+    expect(screen.getByLabelText("Каустический свет")).toHaveValue("100");
+    expect(screen.getByLabelText("Контраст Noir · только Доступные игроки")).toHaveValue("100");
+    expect(
+      screen.getByLabelText("Контраст Noir · только Доступные игроки"),
+    ).toHaveAccessibleDescription(
+      "Только фон экрана «Доступные игроки»; остальные экраны не меняются.",
+    );
+    expect(screen.getByRole("button", { name: "Выключить матовое стекло" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     expect(screen.getByText("Карточки игроков", { selector: "summary" })).toBeInTheDocument();
     expect(screen.getByLabelText("Тонировка выставления")).toHaveValue("18");
     expect(screen.getByLabelText("Цвет выставления")).toHaveValue("#e6bc7e");

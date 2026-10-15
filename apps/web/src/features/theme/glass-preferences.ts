@@ -5,6 +5,13 @@ export interface GlassSettings {
   readonly enabled: boolean;
   readonly refraction: number;
   readonly goldLight: number;
+  readonly matte: boolean;
+  readonly profile: "edge" | "simple";
+  readonly frosting: number;
+  readonly tint: number;
+  readonly edgeHighlights: number;
+  readonly caustics: number;
+  readonly noirContrast: number;
   readonly nominationTint: number;
   readonly nominationColor: string;
   readonly nominationTreatment: "icons" | "tint" | "hybrid";
@@ -15,9 +22,16 @@ export interface GlassSettings {
 
 export const DEFAULT_GLASS_SETTINGS: GlassSettings = Object.freeze({
   version: 1,
-  enabled: false,
-  refraction: 10,
+  enabled: true,
+  refraction: 14,
   goldLight: 25,
+  matte: true,
+  profile: "edge",
+  frosting: 50,
+  tint: 13,
+  edgeHighlights: 100,
+  caustics: 100,
+  noirContrast: 100,
   nominationTint: 18,
   nominationColor: "#e6bc7e",
   nominationTreatment: "hybrid",
@@ -37,9 +51,19 @@ export const validateGlassSettings = (value: unknown): GlassSettings => {
   const record = value as Record<string, unknown>;
   return {
     version: 1,
-    enabled: typeof record.enabled === "boolean" ? record.enabled : false,
-    refraction: validNumber(record.refraction, 24, 10),
-    goldLight: validNumber(record.goldLight, 100, 25),
+    enabled: typeof record.enabled === "boolean" ? record.enabled : DEFAULT_GLASS_SETTINGS.enabled,
+    refraction: validNumber(record.refraction, 24, DEFAULT_GLASS_SETTINGS.refraction),
+    goldLight: validNumber(record.goldLight, 100, DEFAULT_GLASS_SETTINGS.goldLight),
+    matte: typeof record.matte === "boolean" ? record.matte : DEFAULT_GLASS_SETTINGS.matte,
+    profile:
+      record.profile === "edge" || record.profile === "simple"
+        ? record.profile
+        : DEFAULT_GLASS_SETTINGS.profile,
+    frosting: validNumber(record.frosting, 100, DEFAULT_GLASS_SETTINGS.frosting),
+    tint: validNumber(record.tint, 30, DEFAULT_GLASS_SETTINGS.tint),
+    edgeHighlights: validNumber(record.edgeHighlights, 100, DEFAULT_GLASS_SETTINGS.edgeHighlights),
+    caustics: validNumber(record.caustics, 100, DEFAULT_GLASS_SETTINGS.caustics),
+    noirContrast: validNumber(record.noirContrast, 100, DEFAULT_GLASS_SETTINGS.noirContrast),
     nominationTint: validNumber(record.nominationTint, 50, DEFAULT_GLASS_SETTINGS.nominationTint),
     nominationColor:
       typeof record.nominationColor === "string" &&

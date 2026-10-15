@@ -48,6 +48,44 @@ const profile = (overrides: Partial<PlayerProfile> = {}): PlayerProfile => ({
 });
 
 describe("PlayersScreen", () => {
+  it("registers profile articles with shared decorative glass while preserving editing and filtering", async () => {
+    const user = userEvent.setup();
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
+    const { container } = render(
+      <PlayersScreen
+        players={[profile(), profile({ id: "player-bravo", nickname: "Bravo" })]}
+        onCreate={vi.fn()}
+        onUpdate={onUpdate}
+      />,
+    );
+    const cards = screen.getAllByRole("article");
+    expect(cards).toHaveLength(2);
+    expect(container.querySelectorAll("[data-player-glass]")).toHaveLength(2);
+    for (const card of cards) {
+      expect(card).toHaveAttribute("data-player-glass", "profile");
+      expect(card.firstElementChild).toHaveClass("liquid-card-glass");
+      expect(card.firstElementChild).toHaveAttribute("aria-hidden", "true");
+      expect(card.querySelectorAll(".liquid-card-glass")).toHaveLength(1);
+      expect(card.querySelector("form")).not.toHaveAttribute("data-player-glass");
+    }
+    expect(container.querySelector(".new-player-panel")).not.toHaveAttribute("data-player-glass");
+    expect(container.querySelector(".new-player-panel .liquid-card-glass")).toBeNull();
+    const nickname = screen.getByLabelText("Alpha nickname");
+    await user.clear(nickname);
+    await user.type(nickname, "Updated Alpha");
+    await user.click(screen.getByRole("button", { name: "Save Alpha" }));
+    expect(onUpdate).toHaveBeenCalledExactlyOnceWith(
+      profile().id,
+      expect.objectContaining({ nickname: "Updated Alpha" }),
+    );
+    await user.type(screen.getByRole("searchbox"), "bravo");
+    expect(screen.getAllByRole("article")).toHaveLength(1);
+    expect(screen.getByRole("article", { name: "Player Bravo" })).toHaveAttribute(
+      "data-player-glass",
+      "profile",
+    );
+  });
+
   it("omits synthetic Casper from profiles and search while allowing a real Casper to be managed", async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn().mockResolvedValue(undefined);

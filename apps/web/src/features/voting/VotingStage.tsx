@@ -34,6 +34,7 @@ export interface VotingStageProps {
   readonly hostName?: string;
   readonly privacyHidden?: boolean;
   readonly onSeatSwipe?: (seat: number) => void;
+  readonly onSeatPenalty?: (seat: number) => void;
   readonly swipeAction?: ReactNode;
   readonly onDismissSwipeAction?: () => void;
   readonly onFoul?: (seat: number) => void;
@@ -48,6 +49,7 @@ export const VotingStage = ({
   hostName: suppliedHostName,
   privacyHidden = false,
   onSeatSwipe,
+  onSeatPenalty,
   swipeAction,
   onDismissSwipeAction,
   onFoul,
@@ -154,6 +156,7 @@ export const VotingStage = ({
   if (isFederationGame(game) && game.phase === "voting") {
     return (
       <FederationBallot
+        onSeatPenalty={onSeatPenalty}
         game={game}
         onGameChange={onGameChange}
         onResolved={onResolved}
@@ -179,6 +182,7 @@ export const VotingStage = ({
         : t("hostSkipped");
     return (
       <GameTable
+        onSeatPenalty={onSeatPenalty}
         hostName={hostName}
         privacyHidden={privacyHidden}
         onSeatSwipe={onSeatSwipe}
@@ -210,6 +214,7 @@ export const VotingStage = ({
   if (game.phase === "car-crash-skipped") {
     return (
       <GameTable
+        onSeatPenalty={onSeatPenalty}
         hostName={hostName}
         privacyHidden={privacyHidden}
         onSeatSwipe={onSeatSwipe}
@@ -268,6 +273,7 @@ export const VotingStage = ({
     if (isFederationGame(game))
       return (
         <FederationCollectiveBallot
+          onSeatPenalty={onSeatPenalty}
           game={game}
           onGameChange={onGameChange}
           onResolved={onResolved}
@@ -293,6 +299,7 @@ export const VotingStage = ({
         hostName={hostName}
         privacyHidden={privacyHidden}
         onSeatSwipe={onSeatSwipe}
+        onSeatPenalty={onSeatPenalty}
         swipeAction={swipeAction}
         onDismissSwipeAction={onDismissSwipeAction}
         seats={game.players.map((player) => ({
@@ -395,6 +402,7 @@ export const VotingStage = ({
           current: result.seats.includes(player.seat),
           provisionalDeceased: result.eliminate && result.seats.includes(player.seat),
         }))}
+        onSeatPenalty={onSeatPenalty}
         onSeatFoul={onFoul}
         center={
           <div className="table-vote-center" role="status" aria-label={t("carCrashResult")}>
@@ -435,6 +443,7 @@ export const VotingStage = ({
   const candidate = game.players.find(({ seat }) => seat === selectedCandidate);
   return (
     <GameTable
+      onSeatPenalty={onSeatPenalty}
       animateActive
       hostName={hostName}
       privacyHidden={privacyHidden}

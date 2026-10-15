@@ -80,6 +80,45 @@ const Harness = ({
 };
 
 describe("AvailablePlayersScreen", () => {
+  it("uses one shared decorative glass child on selected and unselected availability cards", async () => {
+    const user = userEvent.setup();
+    const onAvailabilityChange = vi.fn();
+    const { container } = render(
+      <Harness
+        initialAvailableIds={[players[0]!.id]}
+        onAvailabilityChange={onAvailabilityChange}
+      />,
+    );
+    for (const card of screen.getAllByRole("button", { name: /^Mark / })) {
+      expect(card).toHaveAttribute("data-player-glass", "availability");
+      expect(card.firstElementChild).toHaveClass("liquid-card-glass");
+      expect(card.firstElementChild).toHaveAttribute("aria-hidden", "true");
+      expect(card.querySelectorAll(".liquid-card-glass")).toHaveLength(1);
+    }
+    expect(container.querySelectorAll("[data-player-glass]")).toHaveLength(2);
+    const card = screen.getByRole("button", { name: "Mark Bravo available" });
+    card.focus();
+    await user.keyboard("{Enter}");
+    expect(card).toHaveAttribute("aria-pressed", "true");
+    expect(card).toHaveAttribute("data-availability-state", "selected");
+    expect(card.firstElementChild).toHaveClass("liquid-card-glass");
+    expect(screen.getByText("2 available · 2 registered")).toBeInTheDocument();
+    expect(onAvailabilityChange).toHaveBeenCalledExactlyOnceWith(players[1]!.id, true);
+    await user.type(screen.getByRole("searchbox"), "brav");
+    expect(container.querySelectorAll('[data-player-glass="availability"]')).toHaveLength(1);
+    expect(card.querySelector(".seat-name")).not.toHaveAttribute("data-player-glass");
+  });
+
+  it("does not mount availability fire or lighting canvases before or after selection changes", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<Harness initialAvailableIds={[players[0]!.id]} />);
+    expect(container.querySelector(".vgpu-player-lighting, canvas")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Mark Alpha unavailable" }));
+    await user.click(screen.getByRole("button", { name: "Mark Bravo available" }));
+    expect(container.querySelector(".vgpu-player-lighting, canvas")).toBeNull();
+    expect(screen.getByText("1 available · 2 registered")).toBeInTheDocument();
+  });
+
   it("excludes only the synthetic ID from cards, search and counts, retaining a real Casper profile", async () => {
     const user = userEvent.setup();
     const onAvailabilityChange = vi.fn();

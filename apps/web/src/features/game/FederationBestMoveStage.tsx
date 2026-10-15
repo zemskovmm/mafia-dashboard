@@ -107,9 +107,11 @@ export const FederationBestMoveStage = ({
   onEvent,
   onAcceptedEvent,
   blocked = false,
+  onSeatPenalty,
 }: TranscriptProps & {
   readonly hostName: string;
   readonly blocked?: boolean;
+  readonly onSeatPenalty?: (seat: number) => void;
 }) => {
   const { t } = useMessages(federationBestMoveMessages);
   const displayName = usePlayerDisplayName();
@@ -127,6 +129,7 @@ export const FederationBestMoveStage = ({
   };
   return (
     <GameTable
+      onSeatPenalty={onSeatPenalty}
       hostName={hostName}
       privacyHidden={false}
       seats={game.players.map((player) => ({

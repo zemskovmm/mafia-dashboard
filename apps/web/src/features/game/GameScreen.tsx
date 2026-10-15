@@ -21,7 +21,7 @@ import {
   FederationDisciplineControls,
   type DisciplineRequest,
 } from "./FederationDisciplineControls.js";
-import { hasImmediateRemovalAnnouncement } from "./federation-ui-state.js";
+import { hasImmediateRemovalAnnouncement, removalStagesForPhase } from "./federation-ui-state.js";
 import { FederationBestMoveStage } from "./FederationBestMoveStage.js";
 import { NightStage } from "../night/NightStage.js";
 import { usePlayerDisplayName } from "../players/player-display.js";
@@ -211,6 +211,34 @@ export const GameScreen = ({
     game.phase !== "finished" &&
     game.phase !== "draw" &&
     game.phase !== "cancelled";
+  const openPenalty =
+    federation &&
+    disciplineAvailable &&
+    !gameplayBlocked &&
+    finishGameState !== "blocked" &&
+    removalStagesForPhase(game.phase).length > 0
+      ? (seat: number) => {
+          const player = game.players.find((candidate) => candidate.seat === seat);
+          if (
+            !player ||
+            (player.status !== "active" &&
+              !(
+                player.status === "eliminated" &&
+                (game.goodbyeSeats?.includes(seat) ||
+                  (game.nightResult?.kind === "kill" && game.nightResult.targetSeat === seat) ||
+                  (game.carCrashResult?.eliminate && game.carCrashResult.seats.includes(seat)))
+              ))
+          )
+            return;
+          setSwipedSeat(null);
+          setDisciplineRequest((previous) => ({
+            seat,
+            action: "removal",
+            id: (previous?.id ?? 0) + 1,
+            game,
+          }));
+        }
+      : undefined;
   const revealDisciplineAction = (seat: number) => {
     const player = game.players.find((candidate) => candidate.seat === seat);
     setSwipedSeat((current) =>
@@ -700,6 +728,7 @@ export const GameScreen = ({
                 game.phase === "car-crash-result" ||
                 game.phase === "car-crash-skipped" ? (
                 <VotingStage
+                  onSeatPenalty={openPenalty}
                   game={game}
                   hostName={hostName}
                   privacyHidden={effectivePrivacyHidden}
@@ -719,6 +748,7 @@ export const GameScreen = ({
                 />
               ) : federation && game.phase === "best-move" ? (
                 <FederationBestMoveStage
+                  onSeatPenalty={openPenalty}
                   game={game}
                   hostName={hostName}
                   onGameChange={onGameChange}
@@ -727,6 +757,7 @@ export const GameScreen = ({
                 />
               ) : game.phase.startsWith("night-") ? (
                 <NightStage
+                  onSeatPenalty={openPenalty}
                   game={game}
                   hostName={hostName}
                   privacyHidden={effectivePrivacyHidden}
@@ -739,6 +770,7 @@ export const GameScreen = ({
                 />
               ) : (
                 <GameTable
+                  onSeatPenalty={openPenalty}
                   onSeatFoul={foulAvailable ? foulPlayer : undefined}
                   animateActive={game.phase === "day" || game.phase === "car-crash"}
                   hostName={hostName}
