@@ -32,13 +32,19 @@ while(day.phase!=="day")day=advanceSetupPhase(day);
 const plainDay=day;
 day=nominate(day,1,2);day=nominate(completeCurrentTurn(day),2,3);
 const phase=new URLSearchParams(location.search).get("phase");
+const emptySetup=new URLSearchParams(location.search).has("empty");
 const game=phase==="day"?day:phase==="night"?beginNight(plainDay):selectVotingCandidate(startVoting(day),2);
 const gameId="00000000-0000-4000-8000-000000000399";
 const checkpoint=createGameLogEntry({gameId,id:"00000000-0000-4000-8000-000000000398",sequence:1,parentEventId:null,createdAt:"2026-10-15T00:00:00.000Z",before:game,draft:{type:"game.checkpointed",payload:{}}});
 const profiles=players.map(p=>({...p,nickname:"Player "+p.seat,realName:null,consentToStoreRealName:false,createdAt:club.createdAt,updatedAt:club.createdAt}));
+const host={...profiles[0],id:"00000000-0000-4000-8000-000000000011",nickname:"Host"};
+if(phase==="setup")profiles.push(host);
+const playerSetup=phase==="setup"?{step:"players",hostPlayerId:emptySetup?"":host.id,selectedPlayerIds:players.map(p=>emptySetup?"":p.id),rulesEdition:"mafgame-2026-07-01",setup:null}:null;
 window.fetch=async(url,options={})=>{const path=new URL(url,location.origin).pathname;let body={};
 if(path.includes("/players"))body={players:profiles};
 else if(path.includes("/version"))body={version:"glass-regression"};
+else if(phase==="setup"&&path==="/api/music/oauth/status")body={configured:true,connected:true,accountLabel:"Layout fixture"};
+else if(phase==="setup"&&path==="/api/music/playlists")body={playlists:[]};
 else if(path.includes("/ready"))body={ready:true};
 else if(path==="/api/game-sessions")body={sessions:[]};
 else if(path.includes("/game-sessions/")){
@@ -50,10 +56,10 @@ else if(path.includes("/game-sessions/")){
 return new Response(JSON.stringify(body),{status:200,headers:{"Content-Type":"application/json"}});};
 withBrowserGameStorageGuard(async storageGuard=>{
 if(!localStorage.getItem("mafia-dashboard.glass-fixture-seeded")){
- new GameSessionOutbox({storage:localStorage,storageGuard,clubId:club.id,createId:()=>crypto.randomUUID(),save:()=>Promise.resolve()}).activateRemote({gameId,clubId:club.id,name:"Glass regression",hostName:"Host",status:"active",revision:1,appliedOperationId:null,results:null,createdAt:club.createdAt,updatedAt:club.updatedAt,state:{setup:null,game:checkpoint.after,hostPlayerId:null,playlistId:"",log:[],undoHistory:[],undoBudget:0,initialGame:createInitialGameBaseline(game),events:[checkpoint.entry],headEventId:checkpoint.entry.id,resetReturnEventId:null,legacyLog:[]}});
+ new GameSessionOutbox({storage:localStorage,storageGuard,clubId:club.id,createId:()=>crypto.randomUUID(),save:()=>Promise.resolve()}).activateRemote({gameId,clubId:club.id,name:"Glass regression",hostName:"Host",status:"active",revision:1,appliedOperationId:null,results:null,createdAt:club.createdAt,updatedAt:club.updatedAt,state:{setup:playerSetup,game:playerSetup?null:checkpoint.after,hostPlayerId:playerSetup?.hostPlayerId||null,playlistId:"",log:[],undoHistory:[],undoBudget:0,initialGame:playerSetup?null:createInitialGameBaseline(game),events:playerSetup?[]:[checkpoint.entry],headEventId:playerSetup?null:checkpoint.entry.id,resetReturnEventId:null,legacyLog:[]}});
  localStorage.setItem("mafia-dashboard.glass-fixture-seeded","yes");
  localStorage.setItem("mafia-dashboard.developer-unlocked.v1","unlocked");
- localStorage.setItem("mafia-dashboard.developer-mode.v1","enabled");
+ if(!playerSetup)localStorage.setItem("mafia-dashboard.developer-mode.v1","enabled");
  localStorage.setItem("mafia-dashboard.lighting-renderer.v1","legacy");
  if(new URLSearchParams(location.search).has("glass"))localStorage.setItem("mafia-dashboard.glass.v1",JSON.stringify({version:1,enabled:true,refraction:10,goldLight:25}));
 }
@@ -112,6 +118,152 @@ try {
       ...(config.engine === chromium ? { channel: "chrome" } : {}),
     });
     try {
+      for (const empty of [true, false]) {
+        const setupPage = await browser.newPage({
+          viewport: config.viewport,
+          deviceScaleFactor: 2,
+          hasTouch: true,
+          reducedMotion: "reduce",
+        });
+        const setupErrors = [];
+        setupPage.on("pageerror", (error) => setupErrors.push(error.message));
+        await setupPage.route("**/*", (route) =>
+          route.request().url().startsWith(url) ? route.continue() : route.abort(),
+        );
+        await setupPage.goto(`${url}/?phase=setup${empty ? "&empty" : ""}`);
+        await setupPage.locator(".player-setup-card").waitFor();
+        await setupPage.locator(".music-panel-handle").waitFor();
+        assert.equal(await setupPage.locator("#host-player").inputValue(), empty ? "" : "Host");
+        assert.equal(
+          await setupPage.locator("#seat-10-player").inputValue(),
+          empty ? "" : "Player 10",
+        );
+        const assertPanelAlignment = async (label, inset) => {
+          await setupPage.evaluate(
+            () =>
+              new Promise((resolve) =>
+                window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)),
+              ),
+          );
+          const geometry = await setupPage.evaluate(() => {
+            const read = (selector) => {
+              const el = document.querySelector(selector);
+              const bounds = el.getBoundingClientRect();
+              const style = getComputedStyle(el);
+              return {
+                top: bounds.top,
+                bottom: bounds.bottom,
+                height: bounds.height,
+                width: bounds.width,
+                contentBottom:
+                  innerHeight -
+                  bounds.bottom +
+                  parseFloat(style.paddingBottom) +
+                  parseFloat(style.borderBottomWidth),
+              };
+            };
+            return {
+              main: read(".player-setup-card, .table-workspace"),
+              side: read(".live-side-panel"),
+              gutter: parseFloat(
+                getComputedStyle(document.querySelector(".app-shell")).getPropertyValue(
+                  "--layout-gutter",
+                ),
+              ),
+              setupPadding:
+                document.querySelector(".setup-shell") &&
+                getComputedStyle(document.querySelector(".setup-shell")).padding,
+              viewportHeight: innerHeight,
+              documentOverflow:
+                document.documentElement.scrollHeight > innerHeight ||
+                document.documentElement.scrollWidth > innerWidth,
+            };
+          });
+          console.log("SETUP PANEL GEOMETRY", config.name, label, inset, JSON.stringify(geometry));
+          await setupPage.screenshot({
+            path: join(evidence, `${config.name}-${label}-inset-${inset}.png`),
+          });
+          for (const edge of ["top", "bottom", "height"])
+            assert.ok(
+              Math.abs(geometry.main[edge] - geometry.side[edge]) <= 1,
+              `${config.name} ${label} ${edge}: ${JSON.stringify(geometry)}`,
+            );
+          assert.equal(geometry.documentOverflow, false);
+          if (config.viewport.width >= 1160) {
+            assert.equal(geometry.viewportHeight - geometry.main.bottom, geometry.gutter);
+            assert.ok(geometry.main.contentBottom >= inset);
+            assert.ok(geometry.side.contentBottom >= inset);
+          }
+          results.push({ engine: config.name, panelState: label, inset, geometry });
+          return geometry;
+        };
+        const cdp =
+          config.engine === chromium ? await setupPage.context().newCDPSession(setupPage) : null;
+        for (const inset of cdp ? [0, 28] : [0]) {
+          if (cdp) {
+            await cdp.send("Emulation.setSafeAreaInsetsOverride", {
+              insets: { top: 0, right: 0, bottom: inset, left: 0 },
+            });
+            await setupPage.reload();
+            await setupPage.locator(".player-setup-card").waitFor();
+            await setupPage.locator(".music-panel-handle").waitFor();
+            await setupPage.evaluate(() =>
+              document.documentElement.style.setProperty(
+                "--test-safe-area-bottom",
+                "env(safe-area-inset-bottom)",
+              ),
+            );
+            await setupPage.waitForFunction(
+              (inset) =>
+                getComputedStyle(document.documentElement)
+                  .getPropertyValue("--test-safe-area-bottom")
+                  .trim() === `${inset}px`,
+              inset,
+            );
+          }
+          const label = empty ? "setup-empty" : "setup-filled";
+          const collapsed = await assertPanelAlignment(label, inset);
+          await setupPage.locator(".music-panel-handle").click();
+          await setupPage.locator(".youtube-dock.is-expanded").waitFor();
+          const expanded = await assertPanelAlignment(`${label}-expanded`, inset);
+          assert.equal(expanded.main.width, collapsed.main.width);
+          assert.equal(expanded.side.width, collapsed.side.width);
+          await setupPage.locator(".music-panel-handle").click();
+          if (cdp && inset > 0) {
+            await setupPage.getByRole("button", { name: "Enter fullscreen" }).click();
+            await setupPage.waitForFunction(() =>
+              document.querySelector(".app-shell").classList.contains("is-fullscreen"),
+            );
+            await assertPanelAlignment(`${label}-fullscreen`, inset);
+            await setupPage.getByRole("button", { name: "Exit fullscreen" }).click();
+            await setupPage.waitForFunction(
+              () => !document.querySelector(".app-shell").classList.contains("is-fullscreen"),
+            );
+          }
+        }
+        await setupPage.locator(".player-setup-actions").scrollIntoViewIfNeeded();
+        const actionsVisible = await setupPage.locator(".player-setup-actions").evaluate((el) => {
+          const card = el.closest(".player-setup-card");
+          const actions = el.getBoundingClientRect();
+          const bounds = card.getBoundingClientRect();
+          return (
+            actions.top >= bounds.top &&
+            actions.bottom <= bounds.bottom &&
+            (card.scrollHeight <= card.clientHeight || card.scrollTop > 0)
+          );
+        });
+        assert.ok(actionsVisible, "Setup actions remain reachable by scrolling inside the card");
+        if (!empty) {
+          await setupPage.getByRole("button", { name: "Start game", exact: true }).click();
+          await setupPage
+            .locator(".table-layout-shell .role-draw-screen .table-workspace")
+            .waitFor();
+          await assertPanelAlignment("role-giveaway", cdp ? 28 : 0);
+        }
+        assert.deepEqual(setupErrors, []);
+        await cdp?.detach();
+        await setupPage.close();
+      }
       const page = await browser.newPage({
         viewport: config.viewport,
         deviceScaleFactor: 2,
@@ -152,7 +304,13 @@ try {
               s.borderBottomRightRadius,
               s.boxShadow,
             ],
-            bounds: { left: r.left, right: r.right, bottom: r.bottom },
+            bounds: {
+              left: r.left,
+              right: r.right,
+              top: r.top,
+              bottom: r.bottom,
+              height: r.height,
+            },
           };
         };
         return {
@@ -165,9 +323,11 @@ try {
       console.log("PANEL BASELINE", config.name, JSON.stringify(panelAppearance));
       await page.screenshot({ path: join(evidence, `${config.name}-panel-layout.png`) });
       assert.deepEqual(panelAppearance.table.edge, panelAppearance.side.edge);
-      assert.ok(
-        Math.abs(panelAppearance.table.bounds.bottom - panelAppearance.side.bounds.bottom) <= 1,
-      );
+      for (const edge of ["top", "bottom", "height"])
+        assert.ok(
+          Math.abs(panelAppearance.table.bounds[edge] - panelAppearance.side.bounds[edge]) <= 1,
+          `${config.name} live panel ${edge}`,
+        );
       assert.ok(
         Math.abs(
           panelAppearance.height -

@@ -3430,7 +3430,7 @@ button.player-seat.is-voting-highlight::after,
   .has-top-level-screen > .setup-shell:is(.is-player-setup, .is-music-setup) {
     width: var(--main-card-width);
     height: 100%;
-    padding: var(--main-card-top) 0 14px;
+    padding: var(--main-card-top) 0 var(--layout-bottom);
   }
   .setup-shell.is-player-setup .player-setup-card,
   .setup-shell.is-music-setup .music-step {
@@ -3440,6 +3440,7 @@ button.player-seat.is-voting-highlight::after,
     height: 100%;
     margin: 0;
     padding: 34px 42px;
+    padding-bottom: max(34px, calc(env(safe-area-inset-bottom) - var(--layout-bottom)));
     overflow-y: auto;
     overscroll-behavior: contain;
     -webkit-overflow-scrolling: touch;
@@ -3776,9 +3777,9 @@ html:-webkit-full-screen #root {
   }
   .has-top-level-screen > .setup-shell:is(.is-player-setup, .is-music-setup) {
     width: var(--s6-main-width);
-    height: calc(100% - 51px);
+    height: calc(100% - var(--layout-header-height) - var(--layout-gutter));
     margin: 0 0 0 var(--s6-edge);
-    padding: var(--s6-edge) 0 var(--s6-edge);
+    padding: var(--layout-top) 0 var(--s6-edge);
   }
   .setup-shell.is-player-setup .player-setup-card,
   .setup-shell.is-music-setup .music-step {
@@ -5102,13 +5103,14 @@ html:-webkit-full-screen #root {
     --header-top: var(--layout-top);
   }
   /* Extend panel borders to the common gutter; keep the safe area inside them. */
-  .app-shell.has-live-game {
+  .app-shell.has-live-game,
+  .app-shell:has(> .setup-shell:is(.is-player-setup, .is-music-setup)) {
     --layout-bottom: var(--layout-gutter);
   }
   .table-layout-shell.has-live-game .table-workspace {
     padding-bottom: max(var(--layout-gutter), env(safe-area-inset-bottom));
   }
-  .has-live-game .live-side-panel.has-live-utilities {
+  .live-side-panel.has-live-utilities {
     padding-bottom: max(0px, calc(env(safe-area-inset-bottom) - var(--layout-gutter)));
   }
   .table-layout-shell .game-shell {
@@ -5116,12 +5118,6 @@ html:-webkit-full-screen #root {
   }
   .table-layout-shell .live-layout {
     width: 100%;
-  }
-  .setup-shell.is-player-setup,
-  .setup-shell.is-music-setup {
-    margin-left: var(--layout-left);
-    padding-top: var(--main-card-top);
-    padding-bottom: var(--layout-bottom);
   }
   .youtube-dock.is-compact,
   .live-side-panel.has-live-utilities {
@@ -5163,10 +5159,6 @@ html:-webkit-full-screen #root {
   }
   .table-layout-shell .game-shell {
     padding-top: var(--layout-top);
-  }
-  .setup-shell.is-player-setup,
-  .setup-shell.is-music-setup {
-    padding-top: var(--layout-content-top);
   }
 }
 @media (min-width: 761px) and (max-width: 1159px) and (orientation: portrait),
