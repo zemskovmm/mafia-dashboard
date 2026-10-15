@@ -191,29 +191,37 @@ const assertRolePresentation = async (page, { masked, roleLighting, phase }) => 
 };
 const evidencePath = (name) => `.AI/mafia-dashboard-${name}.png`;
 const screenshotPath = process.env.UI_SCREENSHOT ?? evidencePath("setup");
-const verifyFadeFooter = async (state) => {
+const verifyFadeFooter = async (state, expectedInset) => {
   const evidence = await page.locator(".live-side-panel").evaluate((panel) => {
     const dock = panel.querySelector(".youtube-dock");
     const controls = dock.querySelector(".live-music-controls");
-    const bottomInset = (element) => {
-      const style = getComputedStyle(element);
-      return parseFloat(style.borderBottomWidth) + parseFloat(style.paddingBottom);
-    };
+    const bottomBorder = (element) => parseFloat(getComputedStyle(element).borderBottomWidth);
+    const probe = document.createElement("div");
+    probe.style.paddingBottom = "env(safe-area-inset-bottom)";
+    document.body.append(probe);
+    const safeArea = parseFloat(getComputedStyle(probe).paddingBottom);
+    probe.remove();
     const panelBounds = panel.getBoundingClientRect();
     const dockBounds = dock.getBoundingClientRect();
     const controlsBounds = controls.getBoundingClientRect();
+    const innerBottom = panelBounds.bottom - bottomBorder(panel);
+    const normalPadding = innerWidth >= 1160 && innerHeight >= 720 ? 8 : 6;
+    const expectedPadding = Math.max(normalPadding, safeArea - (innerHeight - innerBottom));
     return {
       panel: panelBounds.toJSON(),
       dock: dockBounds.toJSON(),
       controls: controlsBounds.toJSON(),
       panelPadding: getComputedStyle(panel).paddingBottom,
       controlPadding: getComputedStyle(controls).paddingBottom,
+      normalPadding,
+      expectedPadding,
+      safeArea,
+      viewport: { width: innerWidth, height: innerHeight },
       gaps: [
-        panelBounds.bottom - bottomInset(panel) - dockBounds.bottom,
-        dockBounds.bottom - bottomInset(dock) - controlsBounds.bottom,
+        innerBottom - dockBounds.bottom,
+        dockBounds.bottom - bottomBorder(dock) - controlsBounds.bottom,
         ...[...controls.querySelectorAll("button")].map(
-          (button) =>
-            controlsBounds.bottom - bottomInset(controls) - button.getBoundingClientRect().bottom,
+          (button) => innerBottom - expectedPadding - button.getBoundingClientRect().bottom,
         ),
       ],
       buttons: [...controls.querySelectorAll("button")].map((button) =>
@@ -225,15 +233,59 @@ const verifyFadeFooter = async (state) => {
   await page.screenshot({ path: screenshotPath.replace(/\.png$/i, `-fade-${state}.png`) });
   if (
     evidence.gaps.some((gap) => Math.abs(gap) > 1) ||
-    parseFloat(evidence.controlPadding) <= 0 ||
+    Math.abs(parseFloat(evidence.controlPadding) - evidence.expectedPadding) > 1 ||
+    (expectedInset !== undefined && evidence.safeArea !== expectedInset) ||
     evidence.buttons.length !== 3 ||
-    evidence.buttons.some((button) => button.width < 48 || button.height < 48)
+    evidence.buttons.some(
+      (button) =>
+        button.width < 48 ||
+        button.height < 48 ||
+        evidence.viewport.height - button.bottom < evidence.safeArea,
+    )
   ) {
     throw new Error(
-      `Fade controls must stay at the padded card bottom (${state}): ${JSON.stringify(evidence)}`,
+      `Fade footer must meet the card border without a strip (${state}): ${JSON.stringify(evidence)}`,
     );
   }
   console.log(`Fade footer ${state}: ${JSON.stringify(evidence)}`);
+};
+const verifyFadeSafeAreas = async (state) => {
+  if (browserName !== "chromium") return;
+  const cdp = await context.newCDPSession(page);
+  const panel = page.locator(".live-side-panel");
+  const originalBounds = await panel.boundingBox();
+  for (const bottom of [20, 34, 0]) {
+    await cdp.send("Emulation.setSafeAreaInsetsOverride", {
+      insets: { top: 0, right: 0, bottom, left: 0 },
+    });
+    // Reload so existing padding is recomputed under the new native environment.
+    await page.reload({ waitUntil: "networkidle" });
+    await page.locator(".game-shell.phase-day").waitFor();
+    const bounds = await panel.boundingBox();
+    if (
+      Object.keys(originalBounds).some((key) => Math.abs(bounds[key] - originalBounds[key]) > 1)
+    ) {
+      throw new Error(`Safe-area spacing changed the card dimensions: ${JSON.stringify(bounds)}`);
+    }
+    await verifyFadeFooter(`${state}-safe-area-${bottom}px`, bottom);
+    if (bottom > 0) {
+      await page.locator(".music-panel-handle").click();
+      await page.locator(".youtube-session-queue").waitFor();
+      await verifyFadeFooter(`${state}-safe-area-${bottom}px-expanded`, bottom);
+      await page.locator(".utility-panels-toggle").click();
+      await verifyFadeFooter(`${state}-safe-area-${bottom}px-utilities-hidden`, bottom);
+      await page.locator(".utility-panels-toggle").click();
+      await page.locator(".music-panel-handle").click();
+      const fullscreen = page.getByRole("button", { name: "Enter fullscreen", exact: true });
+      if (await fullscreen.isVisible()) {
+        await fullscreen.click();
+        await page.getByRole("button", { name: "Exit fullscreen", exact: true }).waitFor();
+        await verifyFadeFooter(`${state}-safe-area-${bottom}px-fullscreen`, bottom);
+        await page.getByRole("button", { name: "Exit fullscreen", exact: true }).click();
+      }
+    }
+  }
+  await cdp.detach();
 };
 const verifyUtilityToggle = async () => {
   const rail = page.locator(".live-side-panel.has-live-utilities");
@@ -1195,6 +1247,8 @@ try {
     await page.getByRole("button", { name: "Begin Mafia planning stage" }).click();
     await page.getByRole("button", { name: "Continue night zero to Sheriff wake-up" }).click();
     await page.getByRole("button", { name: "Begin day one" }).click();
+    await verifyFadeFooter("day-one-no-nominees");
+    await verifyFadeSafeAreas("day-one-no-nominees");
     for (let index = 0; index < 3; index += 1) {
       const current = await page.locator(".player-seat.is-current .seat-name").innerText();
       await page.getByRole("button", { name: `Nominate ${current}`, exact: true }).click();
@@ -1229,39 +1283,7 @@ try {
     await page.locator(".youtube-session-queue").waitFor();
     await verifyFadeFooter("russian-nominees-expanded");
     await page.locator(".music-panel-handle").click();
-    if (browserName === "chromium") {
-      const cdp = await context.newCDPSession(page);
-      await cdp.send("Emulation.setSafeAreaInsetsOverride", {
-        insets: { top: 0, right: 0, bottom: 34, left: 0 },
-      });
-      // Reload so existing padding is recomputed under the new native environment.
-      await page.reload({ waitUntil: "networkidle" });
-      await page.locator(".game-shell.phase-day").waitFor();
-      const safeArea = await page.evaluate(() => {
-        const probe = document.createElement("div");
-        probe.style.paddingBottom = "env(safe-area-inset-bottom)";
-        document.body.append(probe);
-        const inset = parseFloat(getComputedStyle(probe).paddingBottom);
-        probe.remove();
-        return {
-          inset,
-          clearance:
-            innerHeight -
-            document.querySelector(".live-music-controls button").getBoundingClientRect().bottom,
-        };
-      });
-      if (safeArea.inset !== 34 || safeArea.clearance < safeArea.inset) {
-        throw new Error(`Fade footer lost safe-area protection: ${JSON.stringify(safeArea)}`);
-      }
-      await verifyFadeFooter("safe-area-34px");
-      await cdp.send("Emulation.setSafeAreaInsetsOverride", {
-        insets: { top: 0, right: 0, bottom: 0, left: 0 },
-      });
-      await page.reload({ waitUntil: "networkidle" });
-      await page.locator(".game-shell.phase-day").waitFor();
-      await verifyFadeFooter("safe-area-cleared");
-      await cdp.detach();
-    }
+    await verifyFadeSafeAreas("russian-nominees");
     assertNoPageErrors();
     console.log("Utility toggle verification: PASS");
     await browser.close();

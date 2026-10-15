@@ -3888,7 +3888,6 @@ html:-webkit-full-screen #root {
     width: var(--s6-rail-width);
     min-height: 0;
     padding: 0;
-    padding-bottom: max(0px, calc(env(safe-area-inset-bottom) - var(--s6-edge)));
     overflow: hidden;
     border-radius: 14px;
   }
@@ -3941,6 +3940,9 @@ html:-webkit-full-screen #root {
   .live-side-panel.has-live-utilities .music-panel-handle {
     position: relative;
     z-index: 2;
+  }
+  .live-side-panel.has-live-utilities .live-music-controls {
+    padding-bottom: max(6px, calc(env(safe-area-inset-bottom) - var(--s6-edge) - 1px));
   }
   .table-workspace,
   .table-layout-shell .table-workspace {
@@ -5119,8 +5121,9 @@ html:-webkit-full-screen #root {
   .table-layout-shell.has-live-game .table-workspace {
     padding-bottom: max(var(--layout-gutter), env(safe-area-inset-bottom));
   }
-  .live-side-panel.has-live-utilities {
-    padding-bottom: max(0px, calc(env(safe-area-inset-bottom) - var(--layout-gutter)));
+  .live-side-panel.has-live-utilities .live-music-controls {
+    /* Keep clearance inside the footer, counting the outer gutter and card border. */
+    padding-bottom: max(8px, calc(env(safe-area-inset-bottom) - var(--layout-gutter) - 1px));
   }
   .table-layout-shell .game-shell {
     padding: var(--layout-top) var(--layout-right) var(--layout-bottom) var(--layout-left);
