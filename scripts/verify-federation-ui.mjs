@@ -1,4 +1,4 @@
-/* global URL, document, innerWidth, innerHeight, localStorage, getComputedStyle */
+/* global URL, document, innerWidth, innerHeight, localStorage, getComputedStyle, requestAnimationFrame, performance */
 /*
  * Scenario module imported by verify-ui.mjs; reuses its page and API fixtures.
  * Browser save/reload evidence is NOT database/backend qualification.
@@ -172,6 +172,105 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     screenshots: [],
   };
   const row = report;
+  const activeTransitions = [];
+  report.activeTransitions = activeTransitions;
+  const checkActiveTransition = async (trigger, { reverse = false, reduced = false } = {}) => {
+    const frames = await trigger.evaluate(
+      async (button, { reverse }) => {
+        const cards = [...document.querySelectorAll(".table-stage .player-seat")];
+        const read = () =>
+          cards.map((card) => {
+            const style = getComputedStyle(card);
+            const light = card.querySelector(".active-player-lighting");
+            const anchor = card.closest(".seat-anchor").getBoundingClientRect();
+            return {
+              seat: card.closest(".seat-anchor").getAttribute("data-seat"),
+              active: card.classList.contains("is-current"),
+              voted: card.classList.contains("is-voted"),
+              scale: style.scale === "none" ? 1 : Number(style.scale),
+              light: Number(getComputedStyle(light).opacity),
+              center: [anchor.x + anchor.width / 2, anchor.y + anchor.height / 2],
+            };
+          });
+        const frames = [read()];
+        button.click();
+        const start = performance.now();
+        let reversed = false;
+        do {
+          await new Promise(requestAnimationFrame);
+          frames.push(read());
+          if (reverse && !reversed && performance.now() - start >= 100) {
+            button.click();
+            reversed = true;
+          }
+        } while (performance.now() - start < 550);
+        return frames;
+      },
+      { reverse },
+    );
+    const first = frames[0],
+      last = frames.at(-1);
+    const changed = first.flatMap((before, index) => {
+      const samples = frames.map((frame) => frame[index]);
+      if (!samples.some((sample) => sample.active !== before.active)) return [];
+      if (!reduced) {
+        assert.ok(
+          samples.some((s) => s.scale > 0.88 && s.scale < 1.2 && s.scale !== 1),
+          `Seat ${before.seat}: intermediate size, not a snap`,
+        );
+        assert.ok(
+          samples.some((s) => s.light > 0 && s.light < 1),
+          `Seat ${before.seat}: intermediate light on entry/exit`,
+        );
+      } else {
+        assert.ok(
+          samples.every((s) => s.light === 0 || s.light === 1),
+          "Reduced motion is immediate",
+        );
+      }
+      return [
+        {
+          seat: before.seat,
+          from: before.scale,
+          to: last[index].scale,
+          intermediateLight: samples.some((s) => s.light > 0 && s.light < 1),
+        },
+      ];
+    });
+    assert.ok(changed.length > 0, "The real UI action changes active emphasis");
+    for (const frame of frames)
+      for (const [index, card] of frame.entries())
+        assert.deepEqual(
+          card.center,
+          first[index].center,
+          "Seat anchors never move during emphasis",
+        );
+    for (const card of last) {
+      assert.equal(card.scale, card.active ? 1.2 : card.voted ? 0.88 : 1);
+      assert.equal(card.light, card.active ? 1 : 0);
+    }
+    activeTransitions.push({ reverse, reduced, frames: frames.length, changed });
+  };
+  const cardPresentation = async (card) => {
+    await card.evaluate(async (element) => {
+      await Promise.all(
+        element
+          .getAnimations({ subtree: true })
+          .filter((animation) => animation.effect?.getComputedTiming().iterations !== Infinity)
+          .map((animation) => animation.finished.catch(() => {})),
+      );
+    });
+    return card.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        scale: style.scale === "none" ? 1 : Number(style.scale),
+        opacity: Number(style.opacity),
+        transition: style.transitionProperty,
+        animation: style.animationName,
+        width: element.getBoundingClientRect().width,
+      };
+    });
+  };
   async function enter(page) {
     await page.goto(baseUrl, { waitUntil: "networkidle" });
     assertExactOrigin(page.url(), origin);
@@ -383,9 +482,9 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
         `${label}: Fixed table scrolled: ${JSON.stringify(geometry.workspaceScroll)}`,
       );
     if (
-      width === 1000 &&
-      height === 600 &&
-      (label === "fresh-day" || label.startsWith("ballot-"))
+      label === "fresh-day" ||
+      label.startsWith("ballot-") ||
+      label.startsWith("current-voters")
     ) {
       for (const overlap of geometry.overlappingSeatTargets)
         row.geometryFailures.push(`${label}: Seat targets overlap: ${JSON.stringify(overlap)}`);
@@ -491,6 +590,8 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     row.scenarios.push({ name: "fresh-v2-short-opening-greeting-reload", ...fresh.proof });
     await expect(page.getByRole("region", { name: "Voting order", exact: true })).toHaveCount(0);
     row.screenshots.push(await capture(page, "fresh-day", width, height));
+    const speakerStyle = await cardPresentation(page.locator(".player-seat.is-current"));
+    await checkActiveTransition(page.getByRole("button", { name: "Next player", exact: true }));
     const template = fresh.env.current.state,
       day = clone(template.game);
 
@@ -541,22 +642,23 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     const order = page.getByRole("region", { name: "Voting order", exact: true });
     const voted = page.locator('.seat-anchor[data-seat="1"] .player-seat');
     await expect(voted).toHaveClass(/is-voted/);
-    const progressStyle = await voted.evaluate((card) => {
-      const style = getComputedStyle(card);
-      return {
-        scale: Number(style.scale),
-        opacity: Number(style.opacity),
-        transition: style.transitionProperty,
-      };
-    });
-    assert.ok(progressStyle.scale < 1 && progressStyle.scale > 0.7, "Voted card becomes smaller");
-    assert.ok(
-      progressStyle.opacity < 0.8 && progressStyle.opacity > 0.35,
-      "Voted card remains legible but fades",
-    );
+    await expect(voted).toHaveClass(/is-current/);
+    await expect(voted).not.toHaveAttribute("aria-current");
+    const progressStyle = await cardPresentation(voted);
+    assert.equal(progressStyle.scale, 1.2, "Current voters grow to 120%");
+    assert.equal(progressStyle.opacity, 1, "Current voters do not fade");
+    assert.equal(progressStyle.scale, speakerStyle.scale);
+    assert.equal(progressStyle.opacity, speakerStyle.opacity);
+    assert.equal(progressStyle.animation, speakerStyle.animation);
     assert.ok(
       progressStyle.transition.includes("scale") && progressStyle.transition.includes("opacity"),
     );
+    const unvotedStyle = await cardPresentation(
+      page.locator('.seat-anchor[data-seat="4"] .player-seat'),
+    );
+    assert.equal(unvotedStyle.scale, 1);
+    assert.equal(unvotedStyle.opacity, 1);
+    row.screenshots.push(await capture(page, "current-voters-first", width, height));
     const nextBox = await page
       .getByRole("button", { name: "Next candidate", exact: true })
       .boundingBox();
@@ -572,6 +674,65 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     const rowBox = await lastRow.locator("..").boundingBox();
     assert.ok(Math.abs(hitBox.width - rowBox.width) < 3, "Whole row is the touch target");
     await page.touchscreen.tap(hitBox.x + hitBox.width - 6, hitBox.y + hitBox.height / 2);
+    await expect(voted).not.toHaveClass(/is-current/);
+    const priorStyle = await cardPresentation(voted);
+    assert.equal(priorStyle.scale, 0.88, "Other candidate voters retain their smaller appearance");
+    assert.equal(
+      priorStyle.opacity,
+      0.55,
+      "Other candidate voters retain their subdued appearance",
+    );
+    const current = page.locator('.seat-anchor[data-seat="4"] .player-seat');
+    await expect(current).toHaveClass(/is-current/);
+    const currentStyle = await cardPresentation(current);
+    assert.equal(currentStyle.scale, 1.2);
+    assert.equal(currentStyle.opacity, 1);
+    assert.ok(
+      currentStyle.width > priorStyle.width,
+      "Current voters are visibly larger than prior voters",
+    );
+    row.screenshots.push(await capture(page, "current-voters-second", width, height));
+    const beforeMasking = (await settled(page, api)).current.state.game.voteAssignments;
+    await page.getByRole("button", { name: "Hide private info", exact: true }).click();
+    await expect(page.locator(".player-seat .role-badge")).toHaveCount(0);
+    assert.equal((await cardPresentation(current)).opacity, 1);
+    assert.equal((await cardPresentation(voted)).opacity, 0.55);
+    const firstRow = order.getByRole("button", { name: `#4 ${display(day, 4)}`, exact: true });
+    await checkActiveTransition(firstRow);
+    await checkActiveTransition(lastRow);
+    await checkActiveTransition(current, { reverse: true });
+    await checkActiveTransition(current);
+    await checkActiveTransition(current);
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await checkActiveTransition(firstRow, { reduced: true });
+    await checkActiveTransition(lastRow, { reduced: true });
+    assert.equal((await cardPresentation(current)).scale, 1.2);
+    assert.equal((await cardPresentation(voted)).scale, 0.88);
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await page.getByRole("button", { name: "Show private info", exact: true }).click();
+    assert.deepEqual((await settled(page, api)).current.state.game.voteAssignments, beforeMasking);
+    const developerMenu = page.getByRole("button", { name: "Open developer menu", exact: true });
+    if (!(await developerMenu.isVisible())) {
+      const privacy = page.getByRole("button", { name: /^(Hide|Show) private info$/ });
+      for (let tap = 0; tap < 5; tap++) await privacy.dispatchEvent("click");
+    }
+    await developerMenu.click();
+    await page.locator(".dev-glass-controls summary").click();
+    await page.getByRole("button", { name: "Enable enhanced glass", exact: true }).click();
+    await expect(page.locator(".app-shell")).toHaveAttribute("data-glass-status", "ready");
+    await page.getByRole("button", { name: "Close developer menu", exact: true }).click();
+    assert.equal((await cardPresentation(current)).scale, 1.2);
+    assert.equal((await cardPresentation(current)).opacity, 1);
+    assert.equal((await cardPresentation(voted)).scale, 0.88);
+    assert.equal((await cardPresentation(voted)).opacity, 0.55);
+    row.screenshots.push(await capture(page, "current-voters-glass", width, height));
+    await checkActiveTransition(firstRow);
+    await checkActiveTransition(lastRow);
+    await developerMenu.click();
+    await page.locator(".dev-glass-controls summary").click();
+    await page.getByRole("button", { name: "Disable enhanced glass", exact: true }).click();
+    await page.getByRole("button", { name: "Close developer menu", exact: true }).click();
+    assert.deepEqual((await settled(page, api)).current.state.game.voteAssignments, beforeMasking);
     await page
       .getByRole("button", { name: `${display(day, 10)} voted for seat 5`, exact: true })
       .tap();
@@ -590,6 +751,10 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     await order.getByRole("button", { name: `#4 ${display(day, 4)}`, exact: true }).focus();
     await page.keyboard.press("Space");
     assert.equal((await settled(page, api)).current.state.game.ballot.selectedCandidateSeat, 4);
+    await expect(voted).toHaveClass(/is-current/);
+    assert.equal((await cardPresentation(voted)).scale, 1.2);
+    assert.equal((await cardPresentation(voted)).opacity, 1);
+    assert.equal((await cardPresentation(current)).scale, 0.88);
     await page.mouse.move(0, 0);
     await page.locator(".table-stage").evaluate(async (stage) => {
       await Promise.all(

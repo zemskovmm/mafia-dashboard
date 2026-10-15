@@ -1538,7 +1538,17 @@ h2 {
     scale 280ms ease,
     transform 280ms ease;
 }
-.table-stage .player-seat.is-voted {
+.table-stage.has-active-emphasis {
+  --seat-active-overhang: 10%;
+}
+.table-stage.has-active-emphasis .player-seat {
+  scale: 1;
+  transition-duration: 250ms;
+}
+.table-stage.has-active-emphasis .player-seat.is-current {
+  scale: 1.2;
+}
+.table-stage .player-seat.is-voted:not(.is-current) {
   scale: 0.88;
   opacity: 0.55;
 }
@@ -1840,7 +1850,58 @@ button.player-seat.is-voting-highlight::after,
     box-shadow: 0 0 26px rgb(var(--liquid-state-rgb) / 65%);
   }
 }
+/* Keep public active lighting mounted through exit, independently of the card
+   and role cues. Opacity transitions reverse naturally on rapid reselection. */
+.player-seat > .active-player-lighting {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 250ms ease;
+}
+.active-player-lighting[data-active="true"] {
+  opacity: 1;
+}
+@starting-style {
+  .player-seat > .active-player-lighting[data-active="true"] {
+    opacity: 0;
+  }
+}
+.active-player-lighting .vgpu-player-lighting {
+  opacity: 0;
+  transition: opacity 250ms ease;
+}
+.active-player-lighting .vgpu-player-lighting[data-vgpu-ready="true"] {
+  opacity: 1;
+}
+.app-shell[data-lighting-renderer="legacy"] .active-player-lighting::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  --liquid-state-rgb: 246 191 96;
+  box-shadow: 0 0 15px rgb(var(--liquid-state-rgb) / 45%);
+  animation: liquid-state-pulse 1.8s ease-in-out infinite alternate;
+}
+.app-shell[data-lighting-renderer] .table-stage.has-active-emphasis .player-seat.is-current {
+  /* The persistent light layer, not the card box, now owns the active pulse. */
+  animation: none;
+  box-shadow: 0 9px 25px rgb(0 0 0 / 40%);
+}
+.app-shell[data-lighting-renderer="legacy"] .active-player-lighting[data-active="false"]::before {
+  animation-play-state: paused;
+}
 @media (prefers-reduced-motion: reduce) {
+  .table-stage.has-active-emphasis .player-seat,
+  .player-seat > .active-player-lighting,
+  .active-player-lighting .vgpu-player-lighting {
+    transition: none;
+  }
+  .app-shell[data-lighting-renderer="legacy"] .active-player-lighting::before {
+    animation: none;
+  }
   .app-shell[data-lighting-renderer="legacy"] .table-stage .player-seat {
     animation: none;
   }
@@ -1943,13 +2004,13 @@ button.player-seat.is-voting-highlight::after,
 .seat-actions {
   position: absolute;
   left: 50%;
-  bottom: calc(100% + 5px);
+  bottom: calc(100% + 5px + var(--seat-active-overhang, 0%));
   display: flex;
   width: 100%;
   transform: translateX(-50%);
 }
 .seat-anchor:is([data-seat="5"], [data-seat="6"]) .seat-actions {
-  top: calc(100% + 5px);
+  top: calc(100% + 5px + var(--seat-active-overhang, 0%));
   bottom: auto;
 }
 .seat-actions button {
@@ -3202,6 +3263,35 @@ button.player-seat.is-voting-highlight::after,
 }
 
 @media (min-width: 1160px) and (min-height: 720px) {
+  /* Keep side-seat actions outside enlarged cards without moving the seats. */
+  .table-stage.has-active-emphasis
+    .seat-anchor:is(
+      [data-seat="2"],
+      [data-seat="3"],
+      [data-seat="4"],
+      [data-seat="7"],
+      [data-seat="8"],
+      [data-seat="9"]
+    )
+    .seat-actions {
+    top: 50%;
+    bottom: auto;
+    width: 48px;
+    flex-direction: column;
+    transform: translateY(-50%);
+    --action-first-radius: var(--table-control-radius) var(--table-control-radius) 0 0;
+    --action-last-radius: 0 0 var(--table-control-radius) var(--table-control-radius);
+  }
+  .table-stage.has-active-emphasis
+    .seat-anchor:is([data-seat="2"], [data-seat="4"], [data-seat="8"])
+    .seat-actions {
+    left: calc(-48px - 5px - var(--seat-active-overhang));
+  }
+  .table-stage.has-active-emphasis
+    .seat-anchor:is([data-seat="3"], [data-seat="7"], [data-seat="9"])
+    .seat-actions {
+    left: calc(100% + 5px + var(--seat-active-overhang));
+  }
   .app-shell {
     --header-top: var(--layout-top);
     --right-panel-width: 406px;
@@ -3901,7 +3991,7 @@ html:-webkit-full-screen #root {
   }
 
   .seat-actions {
-    bottom: calc(100% + 3px);
+    bottom: calc(100% + 3px + var(--seat-active-overhang, 0%));
   }
   .seat-actions button {
     width: auto;
@@ -3912,7 +4002,7 @@ html:-webkit-full-screen #root {
     font-size: 0.5rem;
   }
   .seat-anchor:is([data-seat="1"], [data-seat="10"]) .seat-actions {
-    top: calc(100% + 5px);
+    top: calc(100% + 5px + var(--seat-active-overhang, 0%));
     bottom: auto;
     transform: translateX(-50%);
   }
@@ -3976,7 +4066,7 @@ html:-webkit-full-screen #root {
     )
     .seat-anchor[data-seat="1"]
     .seat-actions {
-    left: calc(-48px - 5px);
+    left: calc(-48px - 5px - var(--seat-active-overhang, 0%));
   }
   .game-shell:is(
       .phase-day,
@@ -3989,7 +4079,7 @@ html:-webkit-full-screen #root {
     )
     .seat-anchor[data-seat="10"]
     .seat-actions {
-    left: calc(100% + 5px);
+    left: calc(100% + 5px + var(--seat-active-overhang, 0%));
   }
   .seat-anchor:is([data-seat="2"], [data-seat="3"]) .seat-actions,
   .seat-anchor:is([data-seat="8"], [data-seat="9"]) .seat-actions {
@@ -4002,16 +4092,43 @@ html:-webkit-full-screen #root {
     --action-last-radius: 0 0 var(--table-control-radius) var(--table-control-radius);
   }
   .seat-anchor:is([data-seat="2"], [data-seat="3"]) .seat-actions {
-    left: calc(100% + 5px);
+    left: calc(100% + 5px + var(--seat-active-overhang, 0%));
   }
   .seat-anchor:is([data-seat="8"], [data-seat="9"]) .seat-actions {
-    right: calc(100% + 5px);
+    right: calc(100% + 5px + var(--seat-active-overhang, 0%));
     left: auto;
   }
   .game-shell:is(.phase-day, .phase-voting)
     .seat-anchor:is([data-seat="2"], [data-seat="9"])
     .seat-actions {
     top: calc(50% - 12px);
+  }
+  .game-shell
+    .table-stage.has-active-emphasis
+    .seat-anchor:is([data-seat="2"], [data-seat="9"])
+    .seat-actions {
+    top: calc(50% - 20px);
+  }
+  .game-shell
+    .table-stage.has-active-emphasis
+    .seat-anchor:is([data-seat="1"], [data-seat="10"])
+    .seat-actions {
+    top: 12px;
+    width: max-content;
+    flex-direction: row;
+    --action-first-radius: var(--table-control-radius) 0 0 var(--table-control-radius);
+    --action-last-radius: 0 var(--table-control-radius) var(--table-control-radius) 0;
+  }
+  .game-shell
+    .table-stage.has-active-emphasis
+    .seat-anchor:is([data-seat="1"], [data-seat="10"])
+    .seat-actions
+    button {
+    width: 48px;
+  }
+  .game-shell .table-stage.has-active-emphasis .seat-anchor[data-seat="1"] .seat-actions {
+    left: auto;
+    right: calc(100% + 5px + var(--seat-active-overhang));
   }
   /* At 600px, keep one to three live shooters beside diagonal cards instead
      of widening across their neighbors or the center action. */

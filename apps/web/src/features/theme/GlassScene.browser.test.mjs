@@ -489,6 +489,10 @@ try {
       );
       await voter.tap();
       assert.ok((await voter.getAttribute("class")).includes("is-voted"));
+      // Current-candidate voters retain active emphasis; switching candidates
+      // exercises the existing shrink/fade transition for other-candidate voters.
+      assert.ok((await voter.getAttribute("class")).includes("is-current"));
+      await page.locator(".nomination-panel li").nth(1).locator("button").click();
       await page.waitForTimeout(320);
       const voted = await voter.evaluate((el) => ({
         opacity: Number(getComputedStyle(el).opacity),

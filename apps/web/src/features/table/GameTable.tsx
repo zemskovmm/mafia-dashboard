@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { resolvePlayerLightingKind } from "../effects/PlayerCardLighting.js";
 import {
+  ActivePlayerLighting,
   VgpuPlayerLightingCanvas,
   VgpuTableLightingCanvas,
 } from "../effects/vgpu/VgpuLightingCanvas.js";
@@ -17,6 +18,7 @@ export interface TableSeatView {
   readonly status?: PlayerStatus;
   readonly role?: Role;
   readonly current?: boolean;
+  readonly currentVoter?: boolean;
   readonly fouls?: number;
   readonly nominated?: boolean;
   readonly muted?: boolean;
@@ -34,6 +36,7 @@ export interface TableSeatView {
 
 interface GameTableProps {
   readonly seats: readonly TableSeatView[];
+  readonly animateActive?: boolean;
   readonly hostName?: string;
   readonly privacyHidden?: boolean;
   readonly seatActionLabel?: (seat: TableSeatView) => string;
@@ -67,6 +70,7 @@ const roleMessageKeys: Record<Role, GameMessageKey> = {
 
 export const GameTable = ({
   seats,
+  animateActive = false,
   privacyHidden = false,
   seatActionLabel,
   seatActionDisabled,
@@ -107,7 +111,7 @@ export const GameTable = ({
   const table = (
     <section
       ref={tableRef}
-      className={`table-stage${swipeAction !== undefined && onDismissSwipeAction !== undefined ? " is-context-action-open" : ""}`}
+      className={`table-stage${animateActive ? " has-active-emphasis" : ""}${swipeAction !== undefined && onDismissSwipeAction !== undefined ? " is-context-action-open" : ""}`}
       aria-label={t("game.table")}
       onKeyDown={(event) => {
         if (event.key !== "Escape" || keyboardContextSeat === null || !actionOpen) return;
@@ -148,16 +152,22 @@ export const GameTable = ({
             !seat.inactive &&
             (seat.status ?? "active") === "active";
           const showRole = seat.role !== undefined && !privacyHidden;
-          const className = `table-card player-seat status-${seat.status ?? "active"}${seat.current ? " is-current" : ""}${seat.mafiaShooter && !privacyHidden ? " is-mafia-shooter" : ""}${seat.sheriffHighlight && !privacyHidden ? " is-sheriff-highlight" : ""}${seat.nightCheckHighlight && !privacyHidden ? " is-night-check-highlight" : ""}${seat.goodbyeHighlight ? " is-goodbye-highlight" : ""}${seat.votingHighlight ? " is-voting-highlight" : ""}${seat.voted ? " is-voted" : ""}${seat.dimmed && !privacyHidden ? " is-dimmed" : ""}${seat.inactive ? " is-inactive" : ""}${seat.provisionalDeceased ? " is-provisional-deceased" : ""}`;
+          // Voters share speaker visuals, not the current-speaker aria semantics.
+          const activeEmphasis = seat.current || seat.currentVoter;
+          const className = `table-card player-seat status-${seat.status ?? "active"}${activeEmphasis ? " is-current" : ""}${seat.mafiaShooter && !privacyHidden ? " is-mafia-shooter" : ""}${seat.sheriffHighlight && !privacyHidden ? " is-sheriff-highlight" : ""}${seat.nightCheckHighlight && !privacyHidden ? " is-night-check-highlight" : ""}${seat.goodbyeHighlight ? " is-goodbye-highlight" : ""}${seat.votingHighlight ? " is-voting-highlight" : ""}${seat.voted ? " is-voted" : ""}${seat.dimmed && !privacyHidden ? " is-dimmed" : ""}${seat.inactive ? " is-inactive" : ""}${seat.provisionalDeceased ? " is-provisional-deceased" : ""}`;
           const lightingKind = resolvePlayerLightingKind({
             ...seat,
+            current: activeEmphasis,
             mafiaShooter: !privacyHidden && seat.mafiaShooter,
             sheriffHighlight: !privacyHidden && seat.sheriffHighlight,
           });
           const content = (
             <>
               <LiquidCardGlass />
-              <VgpuPlayerLightingCanvas kind={lightingKind} />
+              {animateActive ? <ActivePlayerLighting active={Boolean(activeEmphasis)} /> : null}
+              <VgpuPlayerLightingCanvas
+                kind={animateActive && lightingKind === "speaker" ? null : lightingKind}
+              />
               <span className="seat-number">{seat.seat}</span>
               <PersonIcon />
               <span className="seat-name">{seat.name}</span>

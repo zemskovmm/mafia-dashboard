@@ -441,6 +441,7 @@ export const VotingStage = ({
   const candidate = game.players.find(({ seat }) => seat === selectedCandidate);
   return (
     <GameTable
+      animateActive
       hostName={hostName}
       privacyHidden={privacyHidden}
       onSeatSwipe={onSeatSwipe}
@@ -449,7 +450,7 @@ export const VotingStage = ({
       seats={game.players.map((player) => ({
         ...player,
         name: displayName(player),
-        votingHighlight: game.voteAssignments[player.seat] === selectedCandidate,
+        currentVoter: game.voteAssignments[player.seat] === selectedCandidate,
         voted: game.voteAssignments[player.seat] !== undefined,
         inactive: player.status !== "active",
         voteTargetSeat: game.voteAssignments[player.seat],

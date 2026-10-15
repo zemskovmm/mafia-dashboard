@@ -2578,13 +2578,13 @@ try {
     const toggleVoter = page.locator(".player-seat").nth(toggleVoterIndex);
     await toggleVoter.click();
     const selectedAfterFirstTap = await toggleVoter.evaluate((card) =>
-      card.classList.contains("is-voting-highlight"),
+      card.classList.contains("is-current"),
     );
     await toggleVoter.click();
     const voteToggleState = {
       selectedAfterFirstTap,
       selectedAfterSecondTap: await toggleVoter.evaluate((card) =>
-        card.classList.contains("is-voting-highlight"),
+        card.classList.contains("is-current"),
       ),
       labelAfterSecondTap: await toggleVoter.getAttribute("aria-label"),
       candidateTextAfterSecondTap: await votingCandidate.innerText(),
@@ -2601,7 +2601,7 @@ try {
     }
     await toggleVoter.click();
     await page.locator(".player-seat:not(.is-inactive)").first().click();
-    const votingHighlight = page.locator(".player-seat.is-voting-highlight");
+    const votingHighlight = page.locator(".player-seat.is-current");
     if ((await votingHighlight.count()) !== 2) {
       throw new Error("Every voter for the current candidate must remain highlighted");
     }
@@ -2613,7 +2613,7 @@ try {
     const votingScreenshotPath = tableScreenshotPath.replace(/\.png$/i, "-voting.png");
     await page.screenshot({ path: votingScreenshotPath, fullPage: true });
     await page.getByRole("button", { name: "Next candidate" }).click();
-    const autoVotingHighlight = page.locator(".player-seat.is-voting-highlight");
+    const autoVotingHighlight = page.locator(".player-seat.is-current");
     if ((await autoVotingHighlight.count()) !== 8) {
       throw new Error("Every auto-assigned voter for the final candidate must be highlighted");
     }
@@ -2679,7 +2679,7 @@ try {
     });
     if (
       (await corrected.count()) !== 1 ||
-      (await page.locator(".player-seat.is-voting-highlight").count()) !== 3
+      (await page.locator(".player-seat.is-current").count()) !== 3
     ) {
       throw new Error(
         "Reassigned voter must have one assignment and be highlighted for the selected nominee",
@@ -2706,7 +2706,7 @@ try {
       return citizen.seat;
     }, Number(secondNominatorMatch[1]));
     const redCardTarget = page.locator(
-      `.seat-anchor[data-seat="${redCardTargetSeat}"] .player-seat.is-voting-highlight`,
+      `.seat-anchor[data-seat="${redCardTargetSeat}"] .player-seat.is-current`,
     );
     const redCardTargetName = await redCardTarget.locator(".seat-name").innerText();
     // Auto-assigned voters are inactive for swipe actions; a fourth foul still red-cards

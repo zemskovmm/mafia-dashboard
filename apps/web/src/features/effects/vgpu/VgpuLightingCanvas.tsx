@@ -72,6 +72,40 @@ export const VgpuPlayerLightingCanvas = ({
   );
 };
 
+// Retain only the public active-player light during its exit. Role lighting
+// still unmounts immediately, so privacy changes never wait for a fade.
+export const ActivePlayerLighting = ({ active }: Readonly<{ active: boolean }>) => {
+  const [retained, setRetained] = useState(active);
+  useEffect(() => {
+    if (active) {
+      setRetained(true);
+      return;
+    }
+    if (!retained) return;
+    const motion = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+    const clear = () => setRetained(false);
+    if (motion?.matches) {
+      clear();
+      return;
+    }
+    // A small paint allowance follows the 250 ms CSS fade; no idle GPU work.
+    const timeout = window.setTimeout(clear, 300);
+    const onMotionChange = () => {
+      if (motion?.matches) clear();
+    };
+    motion?.addEventListener("change", onMotionChange);
+    return () => {
+      window.clearTimeout(timeout);
+      motion?.removeEventListener("change", onMotionChange);
+    };
+  }, [active, retained]);
+  return (
+    <span className="active-player-lighting" data-active={String(active)} aria-hidden="true">
+      {active || retained ? <VgpuPlayerLightingCanvas kind="speaker" /> : null}
+    </span>
+  );
+};
+
 export const VgpuTableLightingCanvas = () => {
   const { requestedRenderer } = useLightingRenderer();
   const canvasRef = useRef<HTMLSpanElement>(null);

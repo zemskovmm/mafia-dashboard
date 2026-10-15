@@ -173,6 +173,33 @@ const federationState = (): GameState =>
   JSON.parse(screen.getByTestId("federation-state").textContent!) as GameState;
 
 describe("Federation voting", () => {
+  it("moves daytime-active voter emphasis with the selected candidate without changing votes", async () => {
+    const user = userEvent.setup();
+    render(<FederationHarness initial={federationVotingGame([4, 6, 8])} />);
+    const first = screen.getByRole("button", { name: "Vote as Player 1 for Player 4" });
+    const second = screen.getByRole("button", { name: "Vote as Player 2 for Player 4" });
+    await user.click(first);
+    expect(first).toHaveClass("is-current", "is-voted");
+    expect(first).not.toHaveAttribute("aria-current");
+    expect(second).not.toHaveClass("is-current", "is-voted");
+    await user.click(screen.getByRole("button", { name: "Next candidate" }));
+    expect(first).toHaveClass("is-voted");
+    expect(first).not.toHaveClass("is-current");
+    await user.click(second);
+    expect(second).toHaveClass("is-current", "is-voted");
+    const assignments = federationState().voteAssignments;
+    expect(assignments).toEqual({ 1: 4, 2: 6 });
+    const order = screen.getByRole("region", { name: "Voting order" });
+    await user.click(within(order).getByRole("button", { name: "#4 Player 4" }));
+    expect(federationState().voteAssignments).toEqual(assignments);
+    expect(first).toHaveClass("is-current");
+    expect(second).not.toHaveClass("is-current");
+    expect(second).toHaveClass("is-voted");
+    await user.click(first);
+    expect(first).not.toHaveClass("is-current", "is-voted");
+    expect(federationState().voteAssignments).toEqual({ 2: 6 });
+  });
+
   it.each([
     ["en", "Rules", "Dispute count", "Dispute reason"],
     ["ru", "Правила", "Оспорить подсчёт", "Причина спора"],
@@ -727,29 +754,30 @@ describe("VotingStage", () => {
 
     expect(table.querySelector(".is-current")).toBeNull();
     expect(table.querySelector("[aria-current]")).toBeNull();
-    expect(candidate).not.toHaveClass("is-voting-highlight");
+    expect(candidate).not.toHaveClass("is-current");
     expect(rows[0]).toHaveClass("is-voting-highlight");
     expect(rows[0]).toHaveAttribute("aria-current", "step");
     expect(rows[1]).not.toHaveClass("is-voting-highlight");
 
     await user.click(candidate);
-    expect(candidate).toHaveClass("is-voting-highlight");
-    expect(candidate).not.toHaveClass("is-current");
+    expect(candidate).toHaveClass("is-current");
+    expect(candidate).not.toHaveAttribute("aria-current");
     await user.click(candidate);
-    expect(candidate).not.toHaveClass("is-voting-highlight");
+    expect(candidate).not.toHaveClass("is-current");
     expect(rows[0]).toHaveClass("is-voting-highlight");
 
     await user.click(screen.getByRole("button", { name: /vote as player 1 for player 4/i }));
     const voter = screen.getByRole("button", { name: /player 1 voted for seat 4/i });
-    expect(voter).toHaveClass("is-voting-highlight");
+    expect(voter).toHaveClass("is-current");
     await user.click(screen.getByRole("button", { name: "Next candidate" }));
     expect(rows[0]).not.toHaveClass("is-voting-highlight");
     expect(rows[0]).not.toHaveAttribute("aria-current");
     expect(rows[1]).toHaveClass("is-voting-highlight");
     expect(rows[1]).toHaveAttribute("aria-current", "step");
-    expect(voter).not.toHaveClass("is-voting-highlight");
-    expect(table.querySelector(".is-current")).toBeNull();
-    expect(table.querySelectorAll(".is-voting-highlight")).toHaveLength(9);
+    expect(voter).not.toHaveClass("is-current");
+    expect(voter).toHaveClass("is-voted");
+    expect(table.querySelector("[aria-current]")).toBeNull();
+    expect(table.querySelectorAll(".is-current")).toHaveLength(9);
 
     await user.click(screen.getByRole("button", { name: "Skip voting" }));
     expect(order.querySelector(".is-voting-highlight")).toBeNull();
@@ -1215,13 +1243,13 @@ describe("VotingStage", () => {
 
     await user.click(screen.getByRole("button", { name: /vote as player 1 for player 4/i }));
     const selectedCard = screen.getByRole("button", { name: /player 1 voted for seat 4/i });
-    expect(selectedCard).toHaveClass("is-voting-highlight");
+    expect(selectedCard).toHaveClass("is-current");
     expect(screen.getByText("1 vote")).toBeInTheDocument();
 
     await user.click(selectedCard);
 
     expect(screen.getByRole("button", { name: /vote as player 1 for player 4/i })).not.toHaveClass(
-      "is-voting-highlight",
+      "is-current",
     );
     expect(screen.getByText("0 votes")).toBeInTheDocument();
   });
@@ -1239,13 +1267,13 @@ describe("VotingStage", () => {
     expect(finish).toBeDisabled();
     await user.click(screen.getByRole("button", { name: /vote as player 4 for player 4/i }));
     const firstSelected = screen.getByRole("button", { name: /player 4 voted for seat 4/i });
-    expect(firstSelected).toHaveClass("is-voted", "is-voting-highlight");
+    expect(firstSelected).toHaveClass("is-voted", "is-current");
     expect(firstSelected).not.toHaveClass("is-inactive");
     await user.click(screen.getByRole("button", { name: /vote as player 1 for player 4/i }));
     expect(screen.getByRole("button", { name: /player 1 voted for seat 4/i })).toHaveClass(
-      "is-voting-highlight",
+      "is-current",
     );
-    expect(firstSelected).toHaveClass("is-voting-highlight");
+    expect(firstSelected).toHaveClass("is-current");
     for (const seat of [2, 3, 5, 6, 7]) {
       await user.click(
         screen.getByRole("button", {
@@ -1258,13 +1286,9 @@ describe("VotingStage", () => {
     const firstCandidateVoters = screen.getAllByRole("button", { name: /voted for seat 4/i });
     const autoAssignedVoters = screen.getAllByRole("button", { name: /voted for seat 6/i });
     expect(firstCandidateVoters).toHaveLength(7);
-    expect(
-      firstCandidateVoters.every((card) => !card.classList.contains("is-voting-highlight")),
-    ).toBe(true);
+    expect(firstCandidateVoters.every((card) => !card.classList.contains("is-current"))).toBe(true);
     expect(autoAssignedVoters).toHaveLength(3);
-    expect(autoAssignedVoters.every((card) => card.classList.contains("is-voting-highlight"))).toBe(
-      true,
-    );
+    expect(autoAssignedVoters.every((card) => card.classList.contains("is-current"))).toBe(true);
     expect(screen.getByText("3 votes")).toBeInTheDocument();
     await user.click(autoAssignedVoters[0]!);
     expect(screen.getAllByRole("button", { name: /voted for seat 6/i })).toHaveLength(2);

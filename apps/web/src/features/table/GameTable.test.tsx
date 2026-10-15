@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { GameTable, type TableSeatView } from "./GameTable.js";
 
@@ -27,6 +27,72 @@ const ContextActionHarness = () => {
 };
 
 describe("GameTable", () => {
+  it("fades outgoing active light, reverses interrupted exits and releases the canvas", () => {
+    vi.useFakeTimers();
+    try {
+      const tree = (currentVoter: boolean) => (
+        <GameTable animateActive seats={[{ ...seats[0]!, currentVoter, voted: true }]} />
+      );
+      const { rerender, unmount } = render(tree(true));
+      const card = screen.getByRole("button", { name: "Seat 1: Player 1" });
+      const canvas = card.querySelector(".vgpu-player-lighting");
+      expect(canvas).not.toBeNull();
+      expect(card).not.toHaveAttribute("aria-current");
+      rerender(tree(false));
+      expect(card).not.toHaveClass("is-current");
+      expect(card.querySelector(".vgpu-player-lighting")).toBe(canvas);
+      act(() => vi.advanceTimersByTime(100));
+      rerender(tree(true));
+      act(() => vi.advanceTimersByTime(300));
+      expect(card.querySelector(".vgpu-player-lighting")).toBe(canvas);
+      rerender(tree(false));
+      act(() => vi.advanceTimersByTime(300));
+      expect(card.querySelector(".vgpu-player-lighting")).toBeNull();
+      rerender(tree(true));
+      rerender(tree(false));
+      unmount();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears active lighting immediately with reduced motion and never retains private cues", () => {
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => ({ matches: true })),
+    );
+    try {
+      const { container, rerender } = render(
+        <GameTable animateActive seats={[{ ...seats[0]!, current: true, role: "sheriff" }]} />,
+      );
+      expect(container.querySelector("[aria-current=step]")).not.toBeNull();
+      rerender(<GameTable animateActive seats={[seats[0]!]} privacyHidden />);
+      expect(container.querySelector(".vgpu-player-lighting")).toBeNull();
+      expect(container.querySelector(".role-badge")).toBeNull();
+      rerender(<GameTable animateActive seats={[{ ...seats[0]!, sheriffHighlight: true }]} />);
+      expect(container.querySelector(".vgpu-player-lighting")).not.toBeNull();
+      rerender(
+        <GameTable
+          animateActive
+          seats={[{ ...seats[0]!, sheriffHighlight: true }]}
+          privacyHidden
+        />,
+      );
+      expect(container.querySelector(".vgpu-player-lighting")).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps other current-card uses outside the speaker/voter animation", () => {
+    const { container, rerender } = render(<GameTable seats={[{ ...seats[0]!, current: true }]} />);
+    expect(container.querySelector(".has-active-emphasis")).toBeNull();
+    expect(container.querySelector(".active-player-lighting")).toBeNull();
+    rerender(<GameTable seats={[seats[0]!]} />);
+    expect(container.querySelector(".vgpu-player-lighting")).toBeNull();
+  });
+
   it("shows reversible voted progress independently of role masking and keeps correction usable", () => {
     const onSeatClick = vi.fn();
     const { rerender } = render(

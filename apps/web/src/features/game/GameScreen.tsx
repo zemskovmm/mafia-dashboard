@@ -639,6 +639,7 @@ export const GameScreen = ({
           <fieldset className="federation-gameplay-boundary" disabled={gameplayBlocked}>
             {mode === "preview" ? (
               <GameTable
+                animateActive={game.phase === "day" || game.phase === "car-crash"}
                 hostName={hostName}
                 privacyHidden={effectivePrivacyHidden}
                 seats={game.players.map((player) => ({
@@ -701,6 +702,7 @@ export const GameScreen = ({
               />
             ) : (
               <GameTable
+                animateActive={game.phase === "day" || game.phase === "car-crash"}
                 hostName={hostName}
                 privacyHidden={effectivePrivacyHidden}
                 onSeatSwipe={disciplineAvailable ? revealDisciplineAction : undefined}
