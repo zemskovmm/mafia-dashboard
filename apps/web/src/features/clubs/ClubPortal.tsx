@@ -10,13 +10,11 @@ interface ClubPortalProps {
   readonly user: AppUser | null;
   readonly authConfigured: boolean | null;
   readonly authUnavailable: boolean;
-  readonly themeColor: string;
   readonly clubs: readonly Club[];
   readonly loading: boolean;
   readonly error: string | null;
   readonly editing: Club | "new" | null;
   readonly onSignOut: () => Promise<void>;
-  readonly onThemeColorChange: (color: string) => void;
   readonly onEditingChange: (editing: Club | "new" | null) => void;
   readonly onSaveClub: (clubId: string | null, input: ClubInput | ClubUpdateInput) => Promise<void>;
   readonly onOpenClub: (club: Club) => void;
@@ -177,13 +175,11 @@ export const ClubPortal = ({
   user,
   authConfigured,
   authUnavailable,
-  themeColor,
   clubs,
   loading,
   error,
   editing,
   onSignOut,
-  onThemeColorChange,
   onEditingChange,
   onSaveClub,
   onOpenClub,
@@ -194,7 +190,7 @@ export const ClubPortal = ({
     editing === "new"
       ? t("createNewClub")
       : editing === null
-        ? t("chooseYourClub")
+        ? t("clubPortalSlogan")
         : t("editClubTitle", { name: editing.name });
 
   useEffect(() => {
@@ -217,22 +213,30 @@ export const ClubPortal = ({
     <main className="club-portal">
       <div className="curtain curtain-left" aria-hidden="true" />
       <div className="curtain curtain-right" aria-hidden="true" />
+      {user !== null && editing === null ? (
+        <div className="club-user-chip">
+          <span className="club-user-avatar">
+            {user.picture === null ? (
+              user.name.slice(0, 1).toUpperCase()
+            ) : (
+              <img src={user.picture} alt="" referrerPolicy="no-referrer" />
+            )}
+          </span>
+          <span>
+            <strong title={user.name}>{user.name}</strong>
+            <small title={user.email}>{user.email}</small>
+          </span>
+          <button type="button" disabled={loading} onClick={() => void onSignOut()}>
+            {t("signOut")}
+          </button>
+        </div>
+      ) : null}
       <section className="club-portal-content">
-        <label className="portal-theme-color-field">
-          <span>{t("glassColor")}</span>
-          <input
-            type="color"
-            aria-label={t("glassColor")}
-            value={themeColor}
-            onChange={(event) => onThemeColorChange(event.currentTarget.value)}
-          />
-        </label>
         <div className="club-portal-brand">
           <img src="/la-verdad.svg" width="72" height="72" alt={t("applicationName")} />
           <strong>{t("applicationName")}</strong>
-          <a href="https://mafiamalaga.es">{t("officialClubApplication")}</a>
         </div>
-        <h1>{portalTitle}</h1>
+        <h1 className={editing === null ? "club-portal-slogan" : undefined}>{portalTitle}</h1>
         {user === null ? (
           loading ? (
             <p className="club-auth-status" role="status">
@@ -278,63 +282,45 @@ export const ClubPortal = ({
             onSave={save}
           />
         ) : (
-          <>
-            <div className="club-user-chip">
-              <span className="club-user-avatar">
-                {user.picture === null ? (
-                  user.name.slice(0, 1).toUpperCase()
-                ) : (
-                  <img src={user.picture} alt="" referrerPolicy="no-referrer" />
-                )}
-              </span>
-              <span>
-                <strong>{user.name}</strong>
-                <small>{user.email}</small>
-              </span>
-              <button type="button" disabled={loading} onClick={() => void onSignOut()}>
-                {t("signOut")}
-              </button>
-            </div>
-            <div className="club-card-grid" aria-label={t("availableClubs")}>
-              {clubs.map((club, index) => (
-                <article
-                  key={club.id}
-                  className="club-playing-card"
-                  style={{ "--card-index": index } as React.CSSProperties}
-                >
-                  <button
-                    type="button"
-                    className="club-card-open"
-                    aria-label={t("openClub", { name: club.name, city: club.city })}
-                    onClick={() => onOpenClub(club)}
-                  >
-                    <span className="club-card-corner" aria-hidden="true">
-                      {index % 2 === 0 ? "K" : "Q"}
-                      <small>♥</small>
-                    </span>
-                    <span className="club-card-logo" aria-hidden="true">
-                      {club.cardLogo === null ? (
-                        <span>{club.name.slice(0, 2).toUpperCase()}</span>
-                      ) : (
-                        <img src={club.cardLogo} alt="" />
-                      )}
-                    </span>
-                    <strong>{club.name}</strong>
-                    <span>{club.city}</span>
-                  </button>
-                </article>
-              ))}
-              <button
-                type="button"
-                className="club-playing-card new-club-card"
-                onClick={() => onEditingChange("new")}
+          <div className="club-card-grid" aria-label={t("availableClubs")}>
+            {clubs.map((club, index) => (
+              <article
+                key={club.id}
+                className="club-playing-card"
+                style={{ "--card-index": index } as React.CSSProperties}
               >
-                <span aria-hidden="true">＋</span>
-                <strong>{t("newClub")}</strong>
-                <small>{t("createFreely")}</small>
-              </button>
-            </div>
-          </>
+                <button
+                  type="button"
+                  className="club-card-open"
+                  aria-label={t("openClub", { name: club.name, city: club.city })}
+                  onClick={() => onOpenClub(club)}
+                >
+                  <span className="club-card-corner" aria-hidden="true">
+                    {index % 2 === 0 ? "K" : "Q"}
+                    <small>♥</small>
+                  </span>
+                  <span className="club-card-logo" aria-hidden="true">
+                    {club.cardLogo === null ? (
+                      <span>{club.name.slice(0, 2).toUpperCase()}</span>
+                    ) : (
+                      <img src={club.cardLogo} alt="" />
+                    )}
+                  </span>
+                  <strong>{club.name}</strong>
+                  <span>{club.city}</span>
+                </button>
+              </article>
+            ))}
+            <button
+              type="button"
+              className="club-playing-card new-club-card"
+              onClick={() => onEditingChange("new")}
+            >
+              <span aria-hidden="true">＋</span>
+              <strong>{t("newClub")}</strong>
+              <small>{t("createFreely")}</small>
+            </button>
+          </div>
         )}
         {error === null ? null : (
           <p className="club-portal-error" role="alert">

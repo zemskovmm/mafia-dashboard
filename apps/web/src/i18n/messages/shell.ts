@@ -3,7 +3,6 @@ import type { Message } from "./types.js";
 
 const englishShellMessages = {
   applicationName: "La Verdad",
-  officialClubApplication: "Official app of La Verdad · Málaga",
   backgroundBlack: "black",
   backgroundGrey33: "33% grey",
   backgroundGrey66: "66% grey",
@@ -280,7 +279,7 @@ const englishShellMessages = {
   savingClub: "Saving club…",
   saveClub: "Save club",
   createNewClub: "Create a new club",
-  chooseYourClub: "Choose your club",
+  clubPortalSlogan: "The city sleeps. The game begins.",
   editClubTitle: "Edit {name}",
   checkingSecureSession: "Checking secure session…",
   signInStatusUnavailable: "Sign-in status unavailable",
@@ -298,7 +297,6 @@ export type ShellMessageKey = keyof typeof englishShellMessages;
 
 const russianShellMessages = {
   applicationName: "La Verdad",
-  officialClubApplication: "Официальное приложение клуба La Verdad · Малага",
   backgroundBlack: "чёрный",
   backgroundGrey33: "серый 33%",
   backgroundGrey66: "серый 66%",
@@ -587,7 +585,7 @@ const russianShellMessages = {
   savingClub: "Сохранение клуба…",
   saveClub: "Сохранить клуб",
   createNewClub: "Создать новый клуб",
-  chooseYourClub: "Выберите клуб",
+  clubPortalSlogan: "Город засыпает. Игра начинается.",
   editClubTitle: "Изменить: {name}",
   checkingSecureSession: "Проверка защищённой сессии…",
   signInStatusUnavailable: "Статус входа недоступен",

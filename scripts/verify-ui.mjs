@@ -1147,7 +1147,7 @@ try {
   browserAppUrl = page.url();
   storageMutationUrl = new URL("/health/ready", browserAppUrl).href;
   if ((await page.title()) !== "La Verdad") throw new Error("Unexpected page title");
-  const clubPortal = page.getByRole("heading", { name: "Choose your club" });
+  const clubPortal = page.getByRole("heading", { name: "The city sleeps. The game begins." });
   if (await clubPortal.isVisible()) {
     await page.locator(".club-playing-card:not(.new-club-card)").first().click();
     await page.waitForTimeout(950);

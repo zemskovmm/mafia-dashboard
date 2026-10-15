@@ -1272,7 +1272,9 @@ describe("club welcome", () => {
 
   it("starts with the secure Google authorization entry point", async () => {
     render(<WelcomeApp />);
-    expect(screen.getByRole("heading", { name: "Choose your club" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { name: "The city sleeps. The game begins." }),
+    ).toBeInTheDocument();
     expect(await screen.findByRole("link", { name: "Continue with Google" })).toHaveAttribute(
       "href",
       "/api/auth/google/start",
@@ -1289,10 +1291,11 @@ describe("club welcome", () => {
     ).toHaveTextContent("Reload this page to try again");
   });
 
-  it("applies and persists the selected glass color", () => {
+  it("preserves the saved glass color without a portal picker", () => {
+    window.localStorage.setItem(THEME_COLOR_STORAGE_KEY, "#7170ff");
     render(<WelcomeApp />);
 
-    fireEvent.change(screen.getByLabelText("Glass color"), { target: { value: "#7170ff" } });
+    expect(screen.queryByLabelText("Glass color")).not.toBeInTheDocument();
 
     expect(document.documentElement.style.getPropertyValue("--theme-base")).toBe("#7170ff");
     expect(document.documentElement).not.toHaveAttribute("data-theme");
@@ -1427,7 +1430,9 @@ describe("club welcome", () => {
     await user.click(
       screen.getByRole("button", { name: "Choose another club · current club Mafia Malaga" }),
     );
-    expect(await screen.findByRole("heading", { name: "Choose your club" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "The city sleeps. The game begins." }),
+    ).toBeInTheDocument();
   });
 
   it("deletes a club from Manage and returns to the welcome screen", async () => {
@@ -1458,7 +1463,9 @@ describe("club welcome", () => {
     expect(api.deleteClub).toHaveBeenCalledWith(testClub.id);
     expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBeNull();
     expect(window.localStorage.getItem("unrelated-local")).toBe("keep");
-    expect(await screen.findByRole("heading", { name: "Choose your club" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "The city sleeps. The game begins." }),
+    ).toBeInTheDocument();
     await waitFor(() =>
       expect(
         screen.queryByRole("button", { name: /Mafia Malaga.*Málaga/i }),
@@ -2281,6 +2288,15 @@ describe("developer menu", () => {
     await user.click(await screen.findByRole("button", { name: "Open Manage menu" }));
     fireEvent.change(screen.getByLabelText("Glass color"), { target: { value: "#7170ff" } });
 
+    expect(document.documentElement.style.getPropertyValue("--theme-base")).toBe("#7170ff");
+    expect(window.localStorage.getItem(THEME_COLOR_STORAGE_KEY)).toBe("#7170ff");
+    await user.click(
+      screen.getByRole("button", { name: "Choose another club · current club Mafia Malaga" }),
+    );
+    expect(
+      await screen.findByRole("heading", { name: "The city sleeps. The game begins." }),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Glass color")).not.toBeInTheDocument();
     expect(document.documentElement.style.getPropertyValue("--theme-base")).toBe("#7170ff");
   });
 

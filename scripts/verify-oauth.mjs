@@ -104,7 +104,7 @@ try {
 
   await page.goto(targetUrl.href, { waitUntil: "networkidle" });
   assertExactOrigin(page.url(), targetUrl.origin);
-  const clubPortal = page.getByRole("heading", { name: "Choose your club" });
+  const clubPortal = page.getByRole("heading", { name: "The city sleeps. The game begins." });
   await clubPortal.waitFor();
   await page
     .getByRole("button", {

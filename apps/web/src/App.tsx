@@ -3072,13 +3072,11 @@ export const App = () => {
         user={user}
         authConfigured={authConfigured}
         authUnavailable={authUnavailable}
-        themeColor={themeColor}
         clubs={clubs}
         loading={loading}
         error={error === null ? null : t(error)}
         editing={editingClub}
         onSignOut={endSession}
-        onThemeColorChange={setThemeColor}
         onEditingChange={setEditingClub}
         onSaveClub={saveClub}
         onOpenClub={openClub}

@@ -92,42 +92,19 @@
   font-size: 1.5rem;
 }
 
-.club-portal-brand a {
-  display: flex;
-  min-height: 48px;
-  align-items: center;
-  color: var(--portal-text);
-  font-size: 0.85rem;
-  text-underline-offset: 3px;
+.club-portal-content .club-portal-slogan {
+  max-width: 20ch;
+  font-size: clamp(2rem, 4vw, 3.6rem);
+  line-height: 1.14;
+  text-wrap: balance;
 }
 
-.portal-theme-color-field {
-  position: fixed;
-  top: 18px;
-  right: 18px;
-  z-index: 4;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 6px 7px 6px 12px;
-  color: rgb(var(--portal-muted-rgb) / 72%);
-  font-size: 0.7rem;
-  font-weight: 700;
-  background: rgb(0 0 0 / 28%);
-  border: 1px solid rgb(var(--portal-muted-rgb) / 16%);
-  border-radius: 999px;
-  backdrop-filter: blur(12px);
+.club-portal:has(> .club-user-chip) {
+  padding-top: 88px;
 }
 
-.portal-theme-color-field input[type="color"] {
-  width: 34px;
-  height: 34px;
-  min-height: 34px;
-  padding: 2px;
-  overflow: hidden;
-  background: transparent;
-  border-radius: 50%;
-  cursor: pointer;
+.club-user-chip + .club-portal-content {
+  max-height: calc(100dvh - 106px);
 }
 
 .google-auth-button {
@@ -166,19 +143,32 @@
 }
 
 .club-user-chip {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  z-index: 4;
   display: flex;
+  max-width: min(440px, calc(100vw - 36px));
   align-items: center;
   gap: 10px;
-  margin-bottom: 10px;
   padding: 7px 8px;
   text-align: left;
   background: rgb(0 0 0 / 28%);
   border: 1px solid rgb(var(--portal-muted-rgb) / 14%);
   border-radius: 999px;
+  backdrop-filter: blur(12px);
 }
 
 .club-user-chip > span:nth-child(2) {
   display: grid;
+  min-width: 0;
+}
+
+.club-user-chip strong,
+.club-user-chip small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .club-user-chip small {
@@ -186,7 +176,9 @@
 }
 
 .club-user-chip > button {
-  min-height: 34px;
+  min-width: 48px;
+  min-height: 48px;
+  flex: none;
   margin-left: 8px;
   padding: 0 11px;
   color: rgb(var(--portal-muted-rgb) / 72%);
@@ -198,6 +190,7 @@
   display: grid;
   width: 34px;
   height: 34px;
+  flex: none;
   place-items: center;
   overflow: hidden;
   color: var(--portal-card-ink);
@@ -648,12 +641,13 @@
 
   .club-portal-content {
     width: calc(100vw - 42px);
-    padding-top: 66px;
+    padding-top: 12px;
   }
 
-  .portal-theme-color-field {
+  .club-user-chip {
     top: 10px;
     right: 10px;
+    max-width: calc(100vw - 20px);
   }
 
   .club-card-grid {

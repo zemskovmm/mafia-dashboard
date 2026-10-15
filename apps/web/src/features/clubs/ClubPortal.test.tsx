@@ -1,8 +1,8 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Club } from "../../api/client.js";
+import type { AppUser, Club } from "../../api/client.js";
 import { I18nProvider } from "../../i18n/I18nProvider.js";
 import { ClubPortal } from "./ClubPortal.js";
 
@@ -17,24 +17,32 @@ const creator = {
 
 describe("ClubPortal", () => {
   it.each([
-    ["en", "Official app of La Verdad · Málaga"],
-    ["ru", "Официальное приложение клуба La Verdad · Малага"],
+    [
+      "en",
+      "The city sleeps. The game begins.",
+      "Official app of La Verdad · Málaga",
+      "Choose your club",
+    ],
+    [
+      "ru",
+      "Город засыпает. Игра начинается.",
+      "Официальное приложение клуба La Verdad · Малага",
+      "Выберите клуб",
+    ],
   ] as const)(
-    "retains official branding through %s authentication states",
-    (locale, attribution) => {
+    "shows the localized slogan with app branding through %s authentication states",
+    (locale, slogan, attribution, oldHeading) => {
       const portal = (loading: boolean, authUnavailable: boolean) => (
         <I18nProvider locale={locale}>
           <ClubPortal
             user={null}
             authConfigured
             authUnavailable={authUnavailable}
-            themeColor="#c39a58"
             clubs={[]}
             loading={loading}
             error={null}
             editing={null}
             onSignOut={vi.fn().mockResolvedValue(undefined)}
-            onThemeColorChange={vi.fn()}
             onEditingChange={vi.fn()}
             onSaveClub={vi.fn().mockResolvedValue(undefined)}
             onOpenClub={vi.fn()}
@@ -52,10 +60,9 @@ describe("ClubPortal", () => {
           "src",
           "/la-verdad.svg",
         );
-        expect(screen.getByRole("link", { name: attribution })).toHaveAttribute(
-          "href",
-          "https://mafiamalaga.es",
-        );
+        expect(screen.getByRole("heading", { name: slogan })).toBeInTheDocument();
+        expect(screen.queryByText(attribution)).not.toBeInTheDocument();
+        expect(screen.queryByRole("heading", { name: oldHeading })).not.toBeInTheDocument();
         expect(screen.getByText("La Verdad")).toBeInTheDocument();
       }
       expect(
@@ -73,13 +80,11 @@ describe("ClubPortal", () => {
           user={creator}
           authConfigured
           authUnavailable={false}
-          themeColor="#c39a58"
           clubs={[]}
           loading={false}
           error={null}
           editing="new"
           onSignOut={vi.fn().mockResolvedValue(undefined)}
-          onThemeColorChange={vi.fn()}
           onEditingChange={vi.fn()}
           onSaveClub={vi.fn().mockResolvedValue(undefined)}
           onOpenClub={vi.fn()}
@@ -105,13 +110,11 @@ describe("ClubPortal", () => {
           user={creator}
           authConfigured
           authUnavailable={false}
-          themeColor="#c39a58"
           clubs={[]}
           loading={false}
           error={null}
           editing={editing}
           onSignOut={vi.fn().mockResolvedValue(undefined)}
-          onThemeColorChange={vi.fn()}
           onEditingChange={setEditing}
           onSaveClub={onSaveClub}
           onOpenClub={vi.fn()}
@@ -165,13 +168,11 @@ describe("ClubPortal", () => {
           user={creator}
           authConfigured
           authUnavailable={false}
-          themeColor="#c39a58"
           clubs={[]}
           loading={false}
           error={null}
           editing="new"
           onSignOut={vi.fn().mockResolvedValue(undefined)}
-          onThemeColorChange={vi.fn()}
           onEditingChange={vi.fn()}
           onSaveClub={onSaveClub}
           onOpenClub={vi.fn()}
@@ -192,33 +193,55 @@ describe("ClubPortal", () => {
     );
   });
 
-  it("changes the one glass skin through a native color picker", () => {
-    const onThemeColorChange = vi.fn();
+  it.each(["en", "ru"] as const)(
+    "preserves account actions without a %s portal colour picker",
+    async (locale) => {
+      const user = userEvent.setup();
+      const onSignOut = vi.fn().mockResolvedValue(undefined);
+      const portal = (account: AppUser | null, loading = false, editing: "new" | null = null) => (
+        <I18nProvider locale={locale}>
+          <ClubPortal
+            user={account}
+            authConfigured
+            authUnavailable={false}
+            clubs={[]}
+            loading={loading}
+            error={null}
+            editing={editing}
+            onSignOut={onSignOut}
+            onEditingChange={vi.fn()}
+            onSaveClub={vi.fn().mockResolvedValue(undefined)}
+            onOpenClub={vi.fn()}
+          />
+        </I18nProvider>
+      );
+      const signOutName = locale === "en" ? "Sign out" : "Выйти";
+      const { container, rerender } = render(portal(creator));
 
-    render(
-      <ClubPortal
-        user={creator}
-        authConfigured
-        authUnavailable={false}
-        themeColor="#c39a58"
-        clubs={[]}
-        loading={false}
-        error={null}
-        editing={null}
-        onSignOut={vi.fn().mockResolvedValue(undefined)}
-        onThemeColorChange={onThemeColorChange}
-        onEditingChange={vi.fn()}
-        onSaveClub={vi.fn().mockResolvedValue(undefined)}
-        onOpenClub={vi.fn()}
-      />,
-    );
+      expect(
+        screen.queryByLabelText(locale === "en" ? "Glass color" : "Цвет стекла"),
+      ).not.toBeInTheDocument();
+      expect(screen.getByText(creator.name)).toBeInTheDocument();
+      expect(screen.getByText(creator.email)).toBeInTheDocument();
+      expect(container.querySelector(".club-user-avatar")).toHaveTextContent("C");
+      await user.click(screen.getByRole("button", { name: signOutName }));
+      expect(onSignOut).toHaveBeenCalledTimes(1);
 
-    const picker = screen.getByLabelText("Glass color");
-    expect(picker).toHaveAttribute("type", "color");
-    expect(picker).toHaveValue("#c39a58");
+      rerender(portal({ ...creator, picture: "https://example.test/avatar.png" }, true));
+      expect(container.querySelector(".club-user-avatar img")).toHaveAttribute(
+        "referrerpolicy",
+        "no-referrer",
+      );
+      expect(screen.getByRole("button", { name: signOutName })).toBeDisabled();
+      await user.click(screen.getByRole("button", { name: signOutName }));
+      expect(onSignOut).toHaveBeenCalledTimes(1);
 
-    fireEvent.change(picker, { target: { value: "#7170ff" } });
-    expect(onThemeColorChange).toHaveBeenCalledWith("#7170ff");
-    expect(screen.queryByRole("button", { name: /theme/i })).not.toBeInTheDocument();
-  });
+      for (const state of [portal(null), portal(creator, false, "new")]) {
+        rerender(state);
+        expect(screen.queryByRole("button", { name: signOutName })).not.toBeInTheDocument();
+        expect(screen.queryByText(creator.email)).not.toBeInTheDocument();
+        expect(container.querySelector('input[type="color"]')).toBeNull();
+      }
+    },
+  );
 });
