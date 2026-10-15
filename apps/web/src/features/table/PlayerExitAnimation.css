@@ -1,0 +1,89 @@
+.seat-anchor:has(> .is-exiting),
+.player-exit-preview {
+  perspective: 800px;
+}
+.seat-anchor:has(> .is-exiting) {
+  z-index: 10;
+}
+.table-stage .player-seat.is-exiting,
+.player-exit-preview .player-seat.is-exiting {
+  transform-style: preserve-3d;
+  animation: none;
+  transition: none;
+  filter: none;
+  opacity: 1;
+  will-change: transform, rotate;
+}
+.table-stage .player-seat.is-awaiting-goodbye {
+  filter: none;
+  opacity: 1;
+}
+.player-exit-face {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  padding: inherit;
+  border-radius: inherit;
+  /* The existing glass/opacity host can flatten 3D children. Visibility is
+     explicitly switched at 90 degrees; browser backface culling would hide the reverse. */
+  backface-visibility: visible;
+  pointer-events: none;
+}
+.player-exit-back {
+  transform: rotateY(180deg);
+  visibility: hidden;
+}
+.player-exit-preview {
+  width: 126px;
+  margin: 18px auto;
+}
+.player-exit-preview .person-icon {
+  pointer-events: none;
+}
+.player-exit-controls {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.player-exit-controls summary {
+  min-height: 48px;
+  padding: 14px;
+  cursor: pointer;
+}
+.player-exit-fields {
+  display: grid;
+  gap: 14px;
+  padding: 0 12px 12px;
+}
+.player-exit-fields fieldset {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.player-exit-fields label {
+  display: grid;
+  gap: 6px;
+}
+.player-exit-fields select,
+.player-exit-fields input {
+  width: 100%;
+  min-width: 0;
+}
+.player-exit-fields output {
+  font-variant-numeric: tabular-nums;
+}
+.player-exit-fields :is(button, input, select) {
+  min-height: 48px;
+}
+.player-exit-fields input[type="range"] {
+  accent-color: var(--theme-base, #c89b43);
+}
+.player-exit-fields p {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}

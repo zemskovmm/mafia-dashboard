@@ -99,6 +99,13 @@ import {
 import { VgpuLightingProvider } from "./features/effects/vgpu/VgpuLightingProvider.js";
 import { GameScreen } from "./features/game/GameScreen.js";
 import { GlassControls, type GlassStatus } from "./features/developer/GlassControls.js";
+import { PlayerExitControls } from "./features/developer/PlayerExitControls.js";
+import {
+  readPlayerExitSettings,
+  validatePlayerExitSettings,
+  writePlayerExitSettings,
+  type PlayerExitSettings,
+} from "./features/effects/player-exit-preferences.js";
 import {
   readGlassSettings,
   validateGlassSettings,
@@ -641,6 +648,12 @@ export const ClubWorkspace = ({
   const [roleDrawBackAction, setRoleDrawBackAction] = useState<(() => void) | null>(null);
   const [musicSetupOpen, setMusicSetupOpen] = useState(false);
   const [backgroundShade, setBackgroundShade] = useState<BackgroundShade>("black");
+  const [playerExit, setPlayerExit] = useState(readPlayerExitSettings);
+  const changePlayerExit = useCallback((settings: PlayerExitSettings) => {
+    const valid = validatePlayerExitSettings(settings);
+    setPlayerExit(valid);
+    writePlayerExitSettings(valid);
+  }, []);
   const [glass, setGlass] = useState(() => readGlassSettings());
   const [glassStatus, setGlassStatus] = useState<GlassStatus>("initializing");
   const changeGlass = useCallback((settings: GlassSettings) => {
@@ -2263,6 +2276,7 @@ export const ClubWorkspace = ({
           </div>
           <div className="dev-menu-actions">
             <GlassControls settings={glass} status={effectiveGlassStatus} onChange={changeGlass} />
+            <PlayerExitControls settings={playerExit} onChange={changePlayerExit} />
             <button
               type="button"
               className="dev-setting-toggle"
@@ -2514,6 +2528,7 @@ export const ClubWorkspace = ({
         </>
       ) : (
         <GameScreen
+          playerExitSettings={playerExit}
           key={`${previewGame === null ? "live" : "preview"}-${renderedGameScreenMutationGeneration}`}
           game={previewGame ?? game}
           gameName={sessionName}

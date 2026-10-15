@@ -11,6 +11,8 @@ import {
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { gameMessages, type GameMessageKey } from "../../i18n/messages/game.js";
 import { LiquidCardGlass } from "../theme/LiquidCardGlass.js";
+import { usePlayerExits } from "../game/PlayerExitProvider.js";
+import { PlayerExitAnimation } from "./PlayerExitAnimation.js";
 
 export interface TableSeatView {
   readonly seat: number;
@@ -85,6 +87,7 @@ export const GameTable = ({
   readOnly = false,
 }: GameTableProps) => {
   const { t } = useMessages(gameMessages);
+  const exits = usePlayerExits();
   const tableRef = useRef<HTMLElement | null>(null);
   const seatButtonsRef = useRef(new Map<number, HTMLButtonElement>());
   const [keyboardContextSeat, setKeyboardContextSeat] = useState<number | null>(null);
@@ -151,10 +154,16 @@ export const GameTable = ({
             !disabled &&
             !seat.inactive &&
             (seat.status ?? "active") === "active";
-          const showRole = seat.role !== undefined && !privacyHidden;
+          const exit = exits.requests[seat.seat];
+          const waiting = seat.status === "eliminated" && exits.waiting.includes(seat.seat);
+          const showRole =
+            seat.role !== undefined &&
+            !privacyHidden &&
+            !exit?.hideRole &&
+            !(exit && exits.privacyHidden);
           // Voters share speaker visuals, not the current-speaker aria semantics.
           const activeEmphasis = seat.current || seat.currentVoter;
-          const className = `table-card player-seat status-${seat.status ?? "active"}${activeEmphasis ? " is-current" : ""}${seat.mafiaShooter && !privacyHidden ? " is-mafia-shooter" : ""}${seat.sheriffHighlight && !privacyHidden ? " is-sheriff-highlight" : ""}${seat.nightCheckHighlight && !privacyHidden ? " is-night-check-highlight" : ""}${seat.goodbyeHighlight ? " is-goodbye-highlight" : ""}${seat.votingHighlight ? " is-voting-highlight" : ""}${seat.voted ? " is-voted" : ""}${seat.dimmed && !privacyHidden ? " is-dimmed" : ""}${seat.inactive ? " is-inactive" : ""}${seat.provisionalDeceased ? " is-provisional-deceased" : ""}`;
+          const className = `table-card player-seat status-${seat.status ?? "active"}${activeEmphasis ? " is-current" : ""}${seat.mafiaShooter && !privacyHidden ? " is-mafia-shooter" : ""}${seat.sheriffHighlight && !privacyHidden ? " is-sheriff-highlight" : ""}${seat.nightCheckHighlight && !privacyHidden ? " is-night-check-highlight" : ""}${seat.goodbyeHighlight ? " is-goodbye-highlight" : ""}${seat.votingHighlight ? " is-voting-highlight" : ""}${seat.voted ? " is-voted" : ""}${seat.dimmed && !privacyHidden ? " is-dimmed" : ""}${seat.inactive ? " is-inactive" : ""}${seat.provisionalDeceased ? " is-provisional-deceased" : ""}${exit ? " is-exiting" : ""}${waiting ? " is-awaiting-goodbye" : ""}`;
           const lightingKind = resolvePlayerLightingKind({
             ...seat,
             current: activeEmphasis,
@@ -164,35 +173,44 @@ export const GameTable = ({
           const content = (
             <>
               <LiquidCardGlass />
-              {animateActive ? <ActivePlayerLighting active={Boolean(activeEmphasis)} /> : null}
-              <VgpuPlayerLightingCanvas
-                kind={animateActive && lightingKind === "speaker" ? null : lightingKind}
-              />
-              <span className="seat-number">{seat.seat}</span>
-              <PersonIcon />
-              <span className="seat-name">{seat.name}</span>
-              <span className="seat-badges">
-                {showRole ? (
-                  <span className={`role-badge role-${seat.role}`}>
-                    {t(roleMessageKeys[seat.role])}
-                  </span>
-                ) : null}
-                {seat.fouls ? (
-                  <span className="foul-badge">{t("table.foulCount", { count: seat.fouls })}</span>
-                ) : null}
-                {seat.muted ? <span className="state-badge">{t("table.mutedTurn")}</span> : null}
-                {seat.nominated ? (
-                  <span className="state-badge">{t("table.nominated")}</span>
-                ) : null}
-                {seat.voteTargetSeat === undefined ? null : (
-                  <span className="state-badge">
-                    {t("table.voteTarget", { seat: seat.voteTargetSeat })}
-                  </span>
-                )}
-              </span>
-              {seat.status === "eliminated" ? (
-                <span className="deceased-cross" aria-hidden="true" />
+              {animateActive ? (
+                <ActivePlayerLighting active={Boolean(activeEmphasis) && !exit} />
               ) : null}
+              <VgpuPlayerLightingCanvas
+                kind={exit || (animateActive && lightingKind === "speaker") ? null : lightingKind}
+              />
+              <PlayerExitAnimation
+                request={exit}
+                deceased={
+                  !waiting && (seat.status === "eliminated" || seat.status === "red-carded")
+                }
+                onComplete={(id) => exits.complete(seat.seat, id)}
+              >
+                <span className="seat-number">{seat.seat}</span>
+                <PersonIcon />
+                <span className="seat-name">{seat.name}</span>
+                <span className="seat-badges">
+                  {showRole ? (
+                    <span className={`role-badge role-${seat.role}`}>
+                      {t(roleMessageKeys[seat.role])}
+                    </span>
+                  ) : null}
+                  {seat.fouls ? (
+                    <span className="foul-badge">
+                      {t("table.foulCount", { count: seat.fouls })}
+                    </span>
+                  ) : null}
+                  {seat.muted ? <span className="state-badge">{t("table.mutedTurn")}</span> : null}
+                  {seat.nominated ? (
+                    <span className="state-badge">{t("table.nominated")}</span>
+                  ) : null}
+                  {seat.voteTargetSeat === undefined ? null : (
+                    <span className="state-badge">
+                      {t("table.voteTarget", { seat: seat.voteTargetSeat })}
+                    </span>
+                  )}
+                </span>
+              </PlayerExitAnimation>
             </>
           );
           return (
@@ -206,6 +224,7 @@ export const GameTable = ({
                 <div
                   className={className}
                   role="group"
+                  data-player-exit={exit?.id}
                   aria-label={label}
                   aria-current={seat.current ? "step" : undefined}
                 >
@@ -220,6 +239,7 @@ export const GameTable = ({
                   type="button"
                   disabled={disabled}
                   className={className}
+                  data-player-exit={exit?.id}
                   aria-label={label}
                   aria-current={seat.current ? "step" : undefined}
                   aria-haspopup={contextActionAvailable ? "dialog" : undefined}

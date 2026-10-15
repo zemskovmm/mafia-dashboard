@@ -1,0 +1,66 @@
+import type { FeatureMessages } from "../I18nProvider.js";
+import type { Message } from "./types.js";
+
+const en = {
+  section: "Player exit animation",
+  enable: "Enable player exit animation",
+  disable: "Disable player exit animation",
+  on: "On",
+  off: "Off",
+  liftMs: "Lift duration",
+  landingMs: "Landing duration",
+  overlap: "Lift / flip overlap",
+  durationValue: "{value} ms",
+  overlapValue: "{value}% · {duration} ms",
+  lift: "Lift",
+  flip: "Flip",
+  drop: "Drop",
+  easing: "{phase} easing",
+  strength: "{phase} easing strength",
+  linear: "Linear / steady",
+  in: "Ease in",
+  out: "Ease out",
+  "in-out": "Ease in & out",
+  original: "Original curve",
+  timing: "Flip starts at {start} ms; drop starts at {apex} ms. Both land at {end} ms.",
+  help: "0% overlap waits for the lift; 100% starts lifting and flipping together. Landing duration runs from the top to the final stop. Changes apply to the next exit.",
+  easeHelp:
+    "Ease in: gentle start. Ease out: gentle finish. Strength blends from steady to fully eased.",
+  local: "Saved only in this browser. Reduced motion shows the final state without a flip.",
+  preview: "Preview exit",
+  sample: "Preview player",
+  reset: "Reset exit animation settings",
+} as const satisfies Record<string, Message>;
+const ru = {
+  section: "Анимация ухода игрока",
+  enable: "Включить анимацию ухода игрока",
+  disable: "Выключить анимацию ухода игрока",
+  on: "Вкл.",
+  off: "Выкл.",
+  liftMs: "Длительность подъёма",
+  landingMs: "Длительность опускания",
+  overlap: "Перекрытие подъёма и переворота",
+  durationValue: "{value} мс",
+  overlapValue: "{value}% · {duration} мс",
+  lift: "Подъём",
+  flip: "Переворот",
+  drop: "Опускание",
+  easing: "{phase}: плавность",
+  strength: "{phase}: сила сглаживания",
+  linear: "Равномерно",
+  in: "Плавное начало",
+  out: "Плавное завершение",
+  "in-out": "Плавное начало и завершение",
+  original: "Исходная кривая",
+  timing:
+    "Переворот начинается на {start} мс, опускание — на {apex} мс. Оба завершаются на {end} мс.",
+  help: "При 0% перекрытия переворот ждёт окончания подъёма; при 100% они начинаются вместе. Длительность опускания отсчитывается от верхней точки до остановки. Изменения применятся к следующему уходу.",
+  easeHelp:
+    "Плавное начало замедляет старт, плавное завершение — финиш. Сила сглаживания задаёт переход от равномерного движения к выбранной кривой.",
+  local:
+    "Сохраняется только в этом браузере. При ограничении движения конечное состояние показывается без переворота.",
+  preview: "Посмотреть анимацию",
+  sample: "Пример игрока",
+  reset: "Сбросить настройки анимации ухода",
+} as const satisfies Record<keyof typeof en, Message>;
+export const playerExitMessages: FeatureMessages<keyof typeof en> = { en, ru };

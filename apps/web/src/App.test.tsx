@@ -1823,6 +1823,43 @@ describe("manage menu", () => {
 });
 
 describe("developer menu", () => {
+  it("persists player exit defaults and tuning without preview changing the live game", async () => {
+    const user = userEvent.setup();
+    const first = render(<App />);
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByText("Player exit animation", { selector: "summary" }));
+    expect(screen.getByLabelText("Lift duration")).toHaveValue("100");
+    expect(screen.getByLabelText("Landing duration")).toHaveValue("480");
+    expect(screen.getByLabelText("Lift / flip overlap")).toHaveValue("100");
+    const gameBefore = gameScreenHarness.liveGame;
+    await user.click(screen.getByRole("button", { name: "Preview exit" }));
+    expect(gameScreenHarness.liveGame).toBe(gameBefore);
+    fireEvent.change(screen.getByLabelText("Lift duration"), { target: { value: "200" } });
+    await user.selectOptions(screen.getByLabelText("Flip easing"), "in");
+    const key = "mafia-dashboard.player-exit.v1";
+    expect(JSON.parse(window.localStorage.getItem(key) ?? "null")).toMatchObject({
+      liftMs: 200,
+      landingMs: 480,
+      overlap: 100,
+      flip: { easing: "in", strength: 100 },
+    });
+    first.unmount();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByText("Player exit animation", { selector: "summary" }));
+    expect(screen.getByLabelText("Lift duration")).toHaveValue("200");
+    expect(screen.getByLabelText("Flip easing")).toHaveValue("in");
+    const glassBefore = window.localStorage.getItem("mafia-dashboard.glass.v1");
+    await user.click(screen.getByRole("button", { name: "Reset exit animation settings" }));
+    expect(screen.getByLabelText("Lift duration")).toHaveValue("100");
+    for (const phase of ["Lift", "Flip", "Drop"]) {
+      expect(screen.getByLabelText(`${phase} easing`)).toHaveValue("out");
+      expect(screen.getByLabelText(`${phase} easing strength`)).toHaveValue("100");
+    }
+    expect(window.localStorage.getItem("mafia-dashboard.glass.v1")).toBe(glassBefore);
+    expect(gameScreenHarness.liveGame).toBe(gameBefore);
+  });
+
   it("tunes device-local glass in a collapsed drawer section and resets only glass", async () => {
     const user = userEvent.setup();
     const first = render(<App />);
