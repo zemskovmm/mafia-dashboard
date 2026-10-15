@@ -39,6 +39,7 @@ declare global {
         startSeconds?: number,
       ): void;
       getPlaylistIndex(): number;
+      getPlaylist(): readonly string[] | undefined;
       getCurrentTime(): number;
       getPlayerState(): number;
       playVideoAt(index: number): void;

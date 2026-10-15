@@ -23,6 +23,21 @@ const deferred = <T,>() => {
   return { promise, reject, resolve };
 };
 
+const playlistMethods = () => {
+  const getPlaylistIndex = vi.fn(() => 0);
+  const getPlaylist = vi.fn<() => readonly string[] | undefined>(() => undefined);
+  const applyPlaylist = (...args: Parameters<YT.Player["loadPlaylist"]>) => {
+    getPlaylistIndex.mockReturnValue(args[1] ?? 0);
+    getPlaylist.mockReturnValue(typeof args[0] === "string" ? undefined : args[0]);
+  };
+  return {
+    cuePlaylist: vi.fn(applyPlaylist),
+    loadPlaylist: vi.fn(applyPlaylist),
+    getPlaylistIndex,
+    getPlaylist,
+  };
+};
+
 const installQueuePlayer = () => {
   const iframe = document.createElement("iframe");
   const player = {
@@ -31,11 +46,10 @@ const installQueuePlayer = () => {
     setVolume: vi.fn(),
     getVolume: vi.fn(() => 80),
     getIframe: vi.fn(() => iframe),
-    cuePlaylist: vi.fn(),
-    loadPlaylist: vi.fn(),
-    getPlaylistIndex: vi.fn(() => 0),
+    ...playlistMethods(),
     getCurrentTime: vi.fn(() => 42),
     getPlayerState: vi.fn(() => 1),
+    getVideoData: vi.fn(() => ({ video_id: "a" })),
     playVideoAt: vi.fn(),
     destroy: vi.fn(),
   };
@@ -200,13 +214,257 @@ describe("YouTubePlaylistPlayer", () => {
       act(() => {
         expect(handle.current!.playFirstRegularTrack()).toBe(true);
       });
-      expect(fake.player.loadPlaylist).toHaveBeenCalledExactlyOnceWith(["c"], 0, 0);
+      expect(fake.player.loadPlaylist).toHaveBeenCalledExactlyOnceWith(["a", "c", "b"], 1, 0);
     } finally {
       vi.useRealTimers();
     }
   });
 
-  it("advances through the edited queue once on natural completion without provider auto-advance", async () => {
+  it.each([2, -1, 3])(
+    "reconciles native Next on early state %s before video identity changes or the old successor plays",
+    async (earlyState) => {
+      api.listMusicPlaylistItems.mockResolvedValue([
+        { videoId: "a", title: "A", position: 0, thumbnailUrl: null },
+        { videoId: "b", title: "B", position: 1, thumbnailUrl: null },
+        { videoId: "c", title: "C", position: 2, thumbnailUrl: null },
+        { videoId: "d", title: "D", position: 3, thumbnailUrl: null },
+      ]);
+      const fake = installQueuePlayer();
+      const onStateChange = vi.fn();
+      render(
+        <YouTubePlaylistPlayer playlistId="PL-native" onStateChange={onStateChange} expanded />,
+      );
+      await fake.ready();
+      fake.state(1);
+      fireEvent.click(screen.getByRole("button", { name: "Play C next" }));
+      fireEvent.click(screen.getByRole("button", { name: "Play D next" }));
+      expect(fake.player.loadPlaylist).not.toHaveBeenCalled();
+
+      fake.player.getPlaylistIndex.mockReturnValue(1); // Old provider successor is B.
+      fake.state(earlyState);
+      expect(fake.player.getVideoData).not.toHaveBeenCalled();
+      expect(fake.player.loadPlaylist).toHaveBeenCalledExactlyOnceWith(["a", "d", "c", "b"], 1, 0);
+      expect(onStateChange).toHaveBeenLastCalledWith("loading");
+      expect(screen.getByRole("button", { name: "Play D now" })).toBeDisabled();
+      fake.state(0, 3); // Delayed ENDED while the replacement is buffering.
+      expect(fake.player.loadPlaylist).toHaveBeenCalledTimes(1);
+      fake.state(1);
+
+      fake.player.getPlaylistIndex.mockReturnValue(2);
+      fake.state(3);
+      fake.state(1);
+      expect(fake.player.loadPlaylist).toHaveBeenCalledTimes(1);
+      fireEvent.click(screen.getByRole("button", { name: "Play C next" }));
+      expect(fake.player.loadPlaylist).toHaveBeenCalledTimes(1);
+      fake.state(0);
+      expect(fake.player.loadPlaylist).toHaveBeenLastCalledWith(["a", "d", "c", "b"], 3, 0);
+    },
+  );
+
+  it("tracks rapid native selections while the preceding native track is still buffering", async () => {
+    api.listMusicPlaylistItems.mockResolvedValue([
+      { videoId: "a", title: "A", position: 0, thumbnailUrl: null },
+      { videoId: "b", title: "B", position: 1, thumbnailUrl: null },
+      { videoId: "c", title: "C", position: 2, thumbnailUrl: null },
+    ]);
+    const fake = installQueuePlayer();
+    const onQueueOrderChange = vi.fn();
+    render(
+      <YouTubePlaylistPlayer
+        playlistId="PL-rapid"
+        onStateChange={vi.fn()}
+        onQueueOrderChange={onQueueOrderChange}
+        expanded
+      />,
+    );
+    await fake.ready();
+    fake.state(1);
+    fake.player.getPlaylistIndex.mockReturnValue(1);
+    fake.state(3);
+    fake.player.getPlaylistIndex.mockReturnValue(2);
+    fake.state(3);
+    fake.state(1);
+    expect(screen.getByRole("button", { name: "Play C now" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Play C next" }));
+    expect(onQueueOrderChange).not.toHaveBeenCalled();
+    fake.state(0);
+    expect(fake.player.loadPlaylist).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    "accepts rapid native Next after the replacement starts buffering (stale snapshot first: %s)",
+    async (staleFirst) => {
+      api.listMusicPlaylistItems.mockResolvedValue(
+        ["a", "b", "c", "d"].map((videoId, position) => ({
+          videoId,
+          title: videoId.toUpperCase(),
+          position,
+          thumbnailUrl: null,
+        })),
+      );
+      const fake = installQueuePlayer();
+      const onQueueOrderChange = vi.fn();
+      render(
+        <YouTubePlaylistPlayer
+          playlistId="PL-replacement-rapid"
+          onStateChange={vi.fn()}
+          onQueueOrderChange={onQueueOrderChange}
+          expanded
+        />,
+      );
+      await fake.ready();
+      fake.state(1);
+      fireEvent.click(screen.getByRole("button", { name: "Play C next" }));
+      fake.player.getPlaylistIndex.mockReturnValue(1);
+      fake.state(3);
+      expect(fake.player.loadPlaylist).toHaveBeenCalledExactlyOnceWith(["a", "c", "b", "d"], 1, 0);
+      if (staleFirst) {
+        fake.player.getPlaylist.mockReturnValue(["a", "b", "c", "d"]);
+        fake.state(3);
+        fake.player.getPlaylistIndex.mockReturnValue(2);
+        fake.state(3);
+        fake.state(1);
+        expect(screen.getByRole("button", { name: "Play B now" })).toBeDisabled();
+        fake.player.getPlaylist.mockReturnValue(["a", "c", "b", "d"]);
+        fake.player.getPlaylistIndex.mockReturnValue(1);
+      }
+      fake.state(3); // The replacement has started buffering at its expected index.
+      fake.player.getPlaylistIndex.mockReturnValue(2);
+      fake.state(3);
+      fake.state(1);
+      expect(screen.getByRole("button", { name: "Play B now" })).toBeEnabled();
+      onQueueOrderChange.mockClear();
+      fireEvent.click(screen.getByRole("button", { name: "Play B next" }));
+      expect(onQueueOrderChange).not.toHaveBeenCalled();
+      fake.state(0);
+      expect(fake.player.loadPlaylist).toHaveBeenLastCalledWith(["a", "c", "b", "d"], 3, 0);
+    },
+  );
+
+  it("ignores old provider indices while a transition replacement settles at its new index", async () => {
+    api.listMusicPlaylistItems.mockResolvedValue([
+      { videoId: "a", title: "A", position: 0, thumbnailUrl: null },
+      { videoId: "b", title: "B", position: 1, thumbnailUrl: null },
+      { videoId: "c", title: "C", position: 2, thumbnailUrl: null },
+      { videoId: "d", title: "D", position: 3, thumbnailUrl: null },
+    ]);
+    const fake = installQueuePlayer();
+    render(<YouTubePlaylistPlayer playlistId="PL-settle" onStateChange={vi.fn()} expanded />);
+    await fake.ready();
+    fake.player.getPlaylistIndex.mockReturnValue(2);
+    fake.state(1);
+    fireEvent.click(screen.getByRole("button", { name: "Play A next" }));
+    fake.player.getPlaylistIndex.mockReturnValue(3);
+    fake.state(2);
+    expect(fake.player.loadPlaylist).toHaveBeenCalledExactlyOnceWith(["b", "c", "a", "d"], 2, 0);
+    fake.player.getPlaylistIndex.mockReturnValue(3);
+    for (const state of [2, -1, 3, 5, 1, 0]) fake.state(state);
+    expect(fake.player.loadPlaylist).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Play A now" })).toBeDisabled();
+    fake.player.getPlaylistIndex.mockReturnValue(2);
+    fake.state(2);
+    expect(screen.getByRole("button", { name: "Play A now" })).toBeEnabled();
+    fake.state(1);
+    fake.state(0);
+    expect(fake.player.loadPlaylist).toHaveBeenLastCalledWith(["b", "c", "a", "d"], 3, 0);
+  });
+
+  it("does not double-advance when provider auto-next changes index before ENDED arrives", async () => {
+    api.listMusicPlaylistItems.mockResolvedValue([
+      { videoId: "a", title: "A", position: 0, thumbnailUrl: null },
+      { videoId: "b", title: "B", position: 1, thumbnailUrl: null },
+      { videoId: "c", title: "C", position: 2, thumbnailUrl: null },
+    ]);
+    const fake = installQueuePlayer();
+    const onStateChange = vi.fn();
+    render(<YouTubePlaylistPlayer playlistId="PL-race" onStateChange={onStateChange} expanded />);
+    await fake.ready();
+    fake.state(1);
+    fake.player.getPlaylistIndex.mockReturnValue(1);
+    fake.state(0);
+    fake.state(0);
+    expect(fake.player.loadPlaylist).not.toHaveBeenCalled();
+    fake.state(1);
+    fake.state(0, 1);
+    expect(fake.player.loadPlaylist).not.toHaveBeenCalled();
+    fake.player.getPlaylistIndex.mockReturnValue(2);
+    fake.state(3);
+    fake.state(1);
+    expect(fake.player.loadPlaylist).not.toHaveBeenCalled();
+    fake.state(0);
+    expect(onStateChange).toHaveBeenLastCalledWith("paused");
+    expect(fake.player.loadPlaylist).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["Previous", 2, 1],
+    ["direct selection", 0, 3],
+  ] as const)(
+    "keeps snapshot occurrence identity for native %s after queue edits",
+    async (_action, from, selected) => {
+      api.listMusicPlaylistItems.mockResolvedValue([
+        { videoId: "duplicate", title: "Earlier", position: 0, thumbnailUrl: null },
+        { videoId: "middle", title: "Middle", position: 1, thumbnailUrl: null },
+        { videoId: "current", title: "Current", position: 2, thumbnailUrl: null },
+        { videoId: "duplicate", title: "Later", position: 3, thumbnailUrl: null },
+      ]);
+      const fake = installQueuePlayer();
+      const onQueueOrderChange = vi.fn();
+      render(
+        <YouTubePlaylistPlayer
+          playlistId="PL-selection"
+          onStateChange={vi.fn()}
+          onQueueOrderChange={onQueueOrderChange}
+          expanded
+        />,
+      );
+      await fake.ready();
+      fake.player.getPlaylistIndex.mockReturnValue(from);
+      fake.state(1);
+      fireEvent.click(
+        screen.getByRole("button", { name: from === 2 ? "Play Earlier next" : "Play Later next" }),
+      );
+      const order =
+        from === 2
+          ? ["middle", "current", "duplicate", "duplicate"]
+          : ["duplicate", "duplicate", "middle", "current"];
+      const expectedIndex = from === 2 ? 0 : 1;
+      fake.player.getPlaylistIndex.mockReturnValue(selected);
+      fake.state(3);
+      expect(fake.player.loadPlaylist).toHaveBeenCalledExactlyOnceWith(order, expectedIndex, 0);
+      fake.state(1);
+      onQueueOrderChange.mockClear();
+      fireEvent.click(
+        screen.getByRole("button", { name: from === 2 ? "Play Middle next" : "Play Later next" }),
+      );
+      expect(onQueueOrderChange).not.toHaveBeenCalled();
+    },
+  );
+
+  it("leaves a last-loaded native Next unavailable after Play next but advances naturally", async () => {
+    api.listMusicPlaylistItems.mockResolvedValue([
+      { videoId: "a", title: "A", position: 0, thumbnailUrl: null },
+      { videoId: "b", title: "B", position: 1, thumbnailUrl: null },
+    ]);
+    const fake = installQueuePlayer();
+    render(<YouTubePlaylistPlayer playlistId="PL-last" onStateChange={vi.fn()} expanded />);
+    await fake.ready();
+    fake.player.getPlaylistIndex.mockReturnValue(1);
+    fake.state(3);
+    fake.state(1);
+    fireEvent.click(screen.getByRole("button", { name: "Play A next" }));
+    // There is deliberately no provider update to enable native Next at the last slot.
+    expect(fake.player.cuePlaylist).toHaveBeenCalledExactlyOnceWith(["a", "b"], 0, 0);
+    expect(fake.player.loadPlaylist).not.toHaveBeenCalled();
+    fake.state(0);
+    expect(fake.player.loadPlaylist).toHaveBeenCalledExactlyOnceWith(["b", "a"], 1, 0);
+    fake.state(0);
+    fake.state(1);
+    fake.state(0);
+    expect(fake.player.loadPlaylist).toHaveBeenCalledTimes(1);
+  });
+
+  it("advances through the edited queue once on natural completion and ignores stale ENDED", async () => {
     api.listMusicPlaylistItems.mockResolvedValue([
       { videoId: "a", title: "A", position: 0, thumbnailUrl: null },
       { videoId: "b", title: "B", position: 1, thumbnailUrl: null },
@@ -222,17 +480,21 @@ describe("YouTubePlaylistPlayer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Play C next" }));
 
     fake.state(0);
-    expect(fake.player.loadPlaylist).toHaveBeenCalledExactlyOnceWith(["c"], 0, 0);
-    expect(fake.player.cuePlaylist).toHaveBeenCalledExactlyOnceWith(["a"], 0, 0);
+    expect(fake.player.loadPlaylist).toHaveBeenCalledExactlyOnceWith(["a", "c", "b"], 1, 0);
+    expect(fake.player.cuePlaylist).toHaveBeenCalledExactlyOnceWith(["a", "b", "c"], 0, 0);
     expect(onStateChange).toHaveBeenLastCalledWith("loading");
     fake.state(0);
     expect(fake.player.loadPlaylist).toHaveBeenCalledTimes(1);
+    fake.state(1, 0); // Delayed old-entry PLAYING must not arm a duplicate ENDED.
+    fake.state(0);
+    expect(fake.player.loadPlaylist).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Play C now" })).toBeDisabled();
 
     fake.state(1);
     fake.state(0, 1);
     expect(fake.player.loadPlaylist).toHaveBeenCalledTimes(1);
     fake.state(0);
-    expect(fake.player.loadPlaylist).toHaveBeenLastCalledWith(["b"], 0, 0);
+    expect(fake.player.loadPlaylist).toHaveBeenLastCalledWith(["a", "c", "b"], 2, 0);
     expect(fake.player.loadPlaylist).toHaveBeenCalledTimes(2);
     fake.state(1);
     fake.state(0);
@@ -241,14 +503,19 @@ describe("YouTubePlaylistPlayer", () => {
   });
 
   it.each([
-    ["quickFadeOut", 500],
-    ["slowFadeOut", 3_000],
+    ["quickFadeOut", 500, "natural"],
+    ["slowFadeOut", 3_000, "natural"],
+    ["quickFadeOut", 500, "native"],
+    ["slowFadeOut", 3_000, "native"],
   ] as const)(
-    "resumes after %s pauses a naturally advanced track before PLAYING",
-    async (fadeMethod, duration) => {
+    "resumes after %s (%i ms) pauses a %s transition before PLAYING",
+    async (fadeMethod, duration, transition) => {
       api.listMusicPlaylistItems.mockResolvedValue([
         { videoId: "a", title: "A", position: 0, thumbnailUrl: null },
         { videoId: "b", title: "B", position: 1, thumbnailUrl: null },
+        ...(transition === "native"
+          ? [{ videoId: "c", title: "C", position: 2, thumbnailUrl: null }]
+          : []),
       ]);
       const fake = installQueuePlayer();
       const handle = createRef<YouTubePlayerHandle>();
@@ -267,8 +534,18 @@ describe("YouTubePlaylistPlayer", () => {
       try {
         const fade = handle.current![fadeMethod]();
         await vi.advanceTimersByTimeAsync(100);
-        fake.state(0);
-        expect(fake.player.loadPlaylist).toHaveBeenCalledExactlyOnceWith(["b"], 0, 0);
+        if (transition === "native") {
+          fireEvent.click(screen.getByRole("button", { name: "Play C next" }));
+          expect(fake.player.loadPlaylist).not.toHaveBeenCalled();
+          expect(fake.player.pauseVideo).not.toHaveBeenCalled();
+          fake.player.getPlaylistIndex.mockReturnValue(1);
+          fake.state(3);
+          expect(fake.player.loadPlaylist).toHaveBeenCalledExactlyOnceWith(["a", "c", "b"], 1, 0);
+        } else {
+          fake.state(0);
+          expect(fake.player.loadPlaylist).toHaveBeenCalledExactlyOnceWith(["a", "b"], 1, 0);
+        }
+        expect(vi.getTimerCount()).toBe(1);
         expect(screen.getByRole("button", { name: "Play B now" })).toBeDisabled();
         if (fadeMethod === "slowFadeOut") {
           fake.state(2, 3); // A delayed old-entry PAUSED while B is still buffering.
@@ -319,7 +596,11 @@ describe("YouTubePlaylistPlayer", () => {
     } finally {
       vi.useRealTimers();
     }
-    expect(fake.player.loadPlaylist).toHaveBeenLastCalledWith(["opening"], 0, 0);
+    expect(fake.player.loadPlaylist).toHaveBeenLastCalledWith(
+      ["duplicate", "opening", "duplicate", "last"],
+      1,
+      0,
+    );
     fake.state(1);
     fake.player.cuePlaylist.mockClear();
     fake.player.loadPlaylist.mockClear();
@@ -359,7 +640,11 @@ describe("YouTubePlaylistPlayer", () => {
 
     fake.state(1);
     fake.state(0);
-    expect(fake.player.loadPlaylist).toHaveBeenLastCalledWith(["duplicate"], 0, 0);
+    expect(fake.player.loadPlaylist).toHaveBeenLastCalledWith(
+      ["opening", "duplicate", "last", "duplicate"],
+      1,
+      0,
+    );
     fake.state(1);
     fireEvent.click(screen.getByRole("button", { name: "Play Earlier duplicate next" }));
     expect(onQueueOrderChange).toHaveBeenLastCalledWith("PL-duplicates", [
@@ -384,7 +669,11 @@ describe("YouTubePlaylistPlayer", () => {
     expect(fake.player.loadPlaylist).toHaveBeenCalledTimes(3);
     fake.state(1);
     fake.state(0);
-    expect(fake.player.loadPlaylist).toHaveBeenLastCalledWith(["last"], 0, 0);
+    expect(fake.player.loadPlaylist).toHaveBeenLastCalledWith(
+      ["opening", "duplicate", "duplicate", "last"],
+      3,
+      0,
+    );
     expect(fake.player.loadPlaylist).toHaveBeenCalledTimes(4);
   });
 
@@ -443,10 +732,10 @@ describe("YouTubePlaylistPlayer", () => {
     expect(onStateChange).not.toHaveBeenCalled();
     expect(fake.player.loadPlaylist).not.toHaveBeenCalled();
     await fake.ready();
-    expect(fake.player.cuePlaylist).toHaveBeenLastCalledWith(["a"], 0, 0);
+    expect(fake.player.cuePlaylist).toHaveBeenLastCalledWith(["a", "c", "b"], 0, 0);
     fake.state(1);
     fake.state(0);
-    expect(fake.player.loadPlaylist).toHaveBeenCalledExactlyOnceWith(["c"], 0, 0);
+    expect(fake.player.loadPlaylist).toHaveBeenCalledExactlyOnceWith(["a", "c", "b"], 1, 0);
   });
 
   it("cues and presents the supplied playlist order before enabling playback", async () => {
@@ -467,10 +756,9 @@ describe("YouTubePlaylistPlayer", () => {
       setVolume: vi.fn(),
       getVolume: vi.fn(() => 65),
       getIframe: vi.fn(() => iframe),
-      cuePlaylist: vi.fn(),
-      getPlaylistIndex: vi.fn(() => 0),
+      ...playlistMethods(),
       getCurrentTime: vi.fn(() => 42),
-      loadPlaylist: vi.fn(),
+      getPlayerState: vi.fn(() => 1),
       playVideoAt: vi.fn(),
       destroy: vi.fn(),
     } as unknown as YT.Player;
@@ -509,7 +797,7 @@ describe("YouTubePlaylistPlayer", () => {
       playerEvents?.onReady?.({ target: player });
     });
     expect(api.listMusicPlaylistItems).toHaveBeenCalledWith("PL-selected");
-    expect(player.cuePlaylist).toHaveBeenCalledWith(["video-1"], 0, 0);
+    expect(player.cuePlaylist).toHaveBeenCalledWith(["video-1", "video-2", "video-3"], 0, 0);
     expect(player.setVolume).not.toHaveBeenCalled();
     expect(player.playVideo).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: /set music volume/i })).toBeNull();
@@ -568,7 +856,7 @@ describe("YouTubePlaylistPlayer", () => {
 
       expect(playerHandle.current?.playFirstRegularTrack()).toBe(true);
       expect(player.setVolume).toHaveBeenLastCalledWith(100);
-      expect(player.loadPlaylist).toHaveBeenLastCalledWith(["video-2"], 0, 0);
+      expect(player.loadPlaylist).toHaveBeenLastCalledWith(["video-1", "video-2", "video-3"], 1, 0);
       expect(vi.mocked(player.setVolume).mock.invocationCallOrder.at(-1)!).toBeLessThan(
         vi.mocked(player.loadPlaylist).mock.invocationCallOrder.at(-1)!,
       );
@@ -632,7 +920,7 @@ describe("YouTubePlaylistPlayer", () => {
     vi.useFakeTimers();
     fireEvent.click(screen.getByRole("button", { name: "Play Middle now" }));
     expect(player.setVolume).toHaveBeenNthCalledWith(1, 0);
-    expect(player.loadPlaylist).toHaveBeenCalledWith(["video-2"], 0, 0);
+    expect(player.loadPlaylist).toHaveBeenCalledWith(["video-1", "video-3", "video-2"], 2, 0);
     expect(vi.mocked(player.setVolume).mock.invocationCallOrder[0]).toBeLessThan(
       vi.mocked(player.loadPlaylist).mock.invocationCallOrder[0]!,
     );
@@ -679,7 +967,7 @@ describe("YouTubePlaylistPlayer", () => {
       expect.stringContaining("Finale"),
     ]);
     expect(screen.getByText("Finale").closest("li")).not.toHaveClass("is-next");
-    expect(player.cuePlaylist).toHaveBeenLastCalledWith(["video-2"], 0, 42);
+    expect(player.cuePlaylist).toHaveBeenLastCalledWith(["video-1", "video-2", "video-3"], 1, 42);
     expect(onQueueOrderChange).toHaveBeenLastCalledWith("PL-selected", [
       "video-1:0",
       "video-2:1",
@@ -693,7 +981,7 @@ describe("YouTubePlaylistPlayer", () => {
     vi.mocked(player.loadPlaylist).mockClear();
     vi.spyOn(Math, "random").mockReturnValue(0);
     expect(playerHandle.current?.shuffleQueue({ preferEndgame: true })).toBe(true);
-    expect(player.cuePlaylist).toHaveBeenLastCalledWith(["video-3"], 0, 0);
+    expect(player.cuePlaylist).toHaveBeenLastCalledWith(["video-3", "video-2", "video-1"], 0, 0);
     expect(player.loadPlaylist).not.toHaveBeenCalled();
     expect(onQueueOrderChange).toHaveBeenLastCalledWith("PL-selected", [
       "video-3:2",
@@ -716,10 +1004,8 @@ describe("YouTubePlaylistPlayer", () => {
       setVolume: vi.fn(),
       getVolume: vi.fn(() => 65),
       getIframe: vi.fn(() => document.createElement("iframe")),
-      cuePlaylist: vi.fn(),
-      getPlaylistIndex: vi.fn(() => 0),
+      ...playlistMethods(),
       getCurrentTime: vi.fn(() => 0),
-      loadPlaylist: vi.fn(),
       playVideoAt: vi.fn(),
       destroy: vi.fn(),
     } as unknown as YT.Player;
@@ -781,7 +1067,11 @@ describe("YouTubePlaylistPlayer", () => {
         "ordinary-a:1",
         "initial-a:0",
       ]);
-      expect(player.cuePlaylist).toHaveBeenCalledWith(["initial-b"], 0, 0);
+      expect(player.cuePlaylist).toHaveBeenCalledWith(
+        ["initial-b", "ordinary-b", "endgame", "ordinary-a", "initial-a"],
+        0,
+        0,
+      );
       expect(player.playVideo).not.toHaveBeenCalled();
       expect(onStateChange).toHaveBeenLastCalledWith("loading");
 
@@ -811,10 +1101,8 @@ describe("YouTubePlaylistPlayer", () => {
       setVolume: vi.fn(),
       getVolume: vi.fn(() => 80),
       getIframe: vi.fn(() => iframe),
-      cuePlaylist: vi.fn(),
-      getPlaylistIndex: vi.fn(() => 0),
+      ...playlistMethods(),
       getCurrentTime: vi.fn(() => 0),
-      loadPlaylist: vi.fn(),
       playVideoAt: vi.fn(),
       destroy: vi.fn(),
     } as unknown as YT.Player;
@@ -850,7 +1138,7 @@ describe("YouTubePlaylistPlayer", () => {
     await act(async () => {
       playerEvents?.onReady?.({ target: player });
     });
-    expect(player.cuePlaylist).toHaveBeenCalledWith(["duplicate"], 0, 0);
+    expect(player.cuePlaylist).toHaveBeenCalledWith(["duplicate", "other", "duplicate"], 0, 0);
   });
 
   it("applies a changed remembered order for the current playlist from provider order", async () => {
@@ -866,10 +1154,8 @@ describe("YouTubePlaylistPlayer", () => {
       setVolume: vi.fn(),
       getVolume: vi.fn(() => 80),
       getIframe: vi.fn(() => iframe),
-      cuePlaylist: vi.fn(),
-      getPlaylistIndex: vi.fn(() => 0),
+      ...playlistMethods(),
       getCurrentTime: vi.fn(() => 7),
-      loadPlaylist: vi.fn(),
       playVideoAt: vi.fn(),
       destroy: vi.fn(),
     } as unknown as YT.Player;
@@ -915,11 +1201,48 @@ describe("YouTubePlaylistPlayer", () => {
       expect.stringContaining("A"),
       expect.stringContaining("B"),
     ]);
-    expect(player.cuePlaylist).toHaveBeenLastCalledWith(["video-a"], 0, 7);
+    expect(player.cuePlaylist).toHaveBeenLastCalledWith(["video-c", "video-a", "video-b"], 1, 7);
     expect(player.cuePlaylist).toHaveBeenCalledTimes(2);
     expect(api.listMusicPlaylistItems).toHaveBeenCalledTimes(1);
     expect(constructorSpy).toHaveBeenCalledTimes(1);
     expect(player.destroy).not.toHaveBeenCalled();
+  });
+
+  it("uses the refreshed occurrence index and stops at the logical end after a playing reorder", async () => {
+    api.listMusicPlaylistItems.mockResolvedValue([
+      { videoId: "a", title: "A", position: 0, thumbnailUrl: null },
+      { videoId: "b", title: "B", position: 1, thumbnailUrl: null },
+      { videoId: "c", title: "C", position: 2, thumbnailUrl: null },
+    ]);
+    const fake = installQueuePlayer();
+    const onStateChange = vi.fn();
+    const { rerender } = render(
+      <YouTubePlaylistPlayer playlistId="PL-reorder-end" onStateChange={onStateChange} expanded />,
+    );
+    await fake.ready();
+    fake.player.getPlaylistIndex.mockReturnValue(1);
+    fake.state(1);
+    rerender(
+      <YouTubePlaylistPlayer
+        playlistId="PL-reorder-end"
+        rememberedQueueOrder={["b:1", "c:2", "a:0"]}
+        onStateChange={onStateChange}
+        expanded
+      />,
+    );
+    expect(fake.player.loadPlaylist).toHaveBeenCalledExactlyOnceWith(["b", "c", "a"], 0, 42);
+    fake.state(1);
+    fake.player.getPlaylistIndex.mockReturnValue(1); // Provider already moved B -> C.
+    fake.state(0);
+    fake.state(0);
+    expect(fake.player.loadPlaylist).toHaveBeenCalledTimes(1);
+    fake.state(1);
+    fake.state(0);
+    expect(fake.player.loadPlaylist).toHaveBeenLastCalledWith(["b", "c", "a"], 2, 0);
+    fake.state(1);
+    fake.state(0);
+    expect(fake.player.loadPlaylist).toHaveBeenCalledTimes(2);
+    expect(onStateChange).toHaveBeenLastCalledWith("paused");
   });
 
   it("does not re-cue when the parent echoes the just-emitted queue order", async () => {
@@ -936,10 +1259,8 @@ describe("YouTubePlaylistPlayer", () => {
       setVolume: vi.fn(),
       getVolume: vi.fn(() => 80),
       getIframe: vi.fn(() => iframe),
-      cuePlaylist: vi.fn(),
-      getPlaylistIndex: vi.fn(() => 0),
+      ...playlistMethods(),
       getCurrentTime: vi.fn(() => 5),
-      loadPlaylist: vi.fn(),
       playVideoAt: vi.fn(),
       destroy: vi.fn(),
     } as unknown as YT.Player;
@@ -1009,10 +1330,8 @@ describe("YouTubePlaylistPlayer", () => {
       setVolume: vi.fn(),
       getVolume: vi.fn(() => 80),
       getIframe: vi.fn(() => iframe),
-      cuePlaylist: vi.fn(),
-      getPlaylistIndex: vi.fn(() => 0),
+      ...playlistMethods(),
       getCurrentTime: vi.fn(() => 9),
-      loadPlaylist: vi.fn(),
       playVideoAt: vi.fn(),
       destroy: vi.fn(),
     } as unknown as YT.Player;
@@ -1093,10 +1412,8 @@ describe("YouTubePlaylistPlayer", () => {
       setVolume: vi.fn(),
       getVolume: vi.fn(() => 80),
       getIframe: vi.fn(() => iframe),
-      cuePlaylist: vi.fn(),
-      getPlaylistIndex: vi.fn(() => 0),
+      ...playlistMethods(),
       getCurrentTime: vi.fn(() => 4),
-      loadPlaylist: vi.fn(),
       playVideoAt: vi.fn(),
       destroy: vi.fn(),
     } as unknown as YT.Player;
@@ -1192,10 +1509,8 @@ describe("YouTubePlaylistPlayer", () => {
       setVolume: vi.fn(),
       getVolume: vi.fn(() => 80),
       getIframe: vi.fn(() => iframe),
-      cuePlaylist: vi.fn(),
-      getPlaylistIndex: vi.fn(() => 0),
+      ...playlistMethods(),
       getCurrentTime: vi.fn(() => 4),
-      loadPlaylist: vi.fn(),
       playVideoAt: vi.fn(),
       destroy: vi.fn(),
     } as unknown as YT.Player;
@@ -1278,10 +1593,8 @@ describe("YouTubePlaylistPlayer", () => {
       setVolume: vi.fn(),
       getVolume: vi.fn(() => 80),
       getIframe: vi.fn(() => iframe),
-      cuePlaylist: vi.fn(),
-      getPlaylistIndex: vi.fn(() => 0),
+      ...playlistMethods(),
       getCurrentTime: vi.fn(() => 0),
-      loadPlaylist: vi.fn(),
       playVideoAt: vi.fn(),
       destroy: vi.fn(),
     } as unknown as YT.Player;
@@ -1358,10 +1671,8 @@ describe("YouTubePlaylistPlayer", () => {
       setVolume: vi.fn(),
       getVolume: vi.fn(() => 80),
       getIframe: vi.fn(() => iframe),
-      cuePlaylist: vi.fn(),
-      getPlaylistIndex: vi.fn(() => 0),
+      ...playlistMethods(),
       getCurrentTime: vi.fn(() => 0),
-      loadPlaylist: vi.fn(),
       playVideoAt: vi.fn(),
       destroy: vi.fn(),
     } as unknown as YT.Player;
@@ -1423,10 +1734,8 @@ describe("YouTubePlaylistPlayer", () => {
       setVolume: vi.fn(),
       getVolume: vi.fn(() => 80),
       getIframe: vi.fn(() => iframe),
-      cuePlaylist: vi.fn(),
-      getPlaylistIndex: vi.fn(() => 0),
+      ...playlistMethods(),
       getCurrentTime: vi.fn(() => 0),
-      loadPlaylist: vi.fn(),
       playVideoAt: vi.fn(),
       destroy: vi.fn(),
     } as unknown as YT.Player;
@@ -1490,10 +1799,8 @@ describe("YouTubePlaylistPlayer", () => {
       setVolume: vi.fn(),
       getVolume: vi.fn(() => 80),
       getIframe: vi.fn(() => iframe),
-      cuePlaylist: vi.fn(),
-      getPlaylistIndex: vi.fn(() => 0),
+      ...playlistMethods(),
       getCurrentTime: vi.fn(() => 0),
-      loadPlaylist: vi.fn(),
       playVideoAt: vi.fn(),
       destroy: vi.fn(),
     } as unknown as YT.Player;
@@ -1544,10 +1851,8 @@ describe("YouTubePlaylistPlayer", () => {
       setVolume: vi.fn(),
       getVolume: vi.fn(() => 65),
       getIframe: vi.fn(() => iframe),
-      cuePlaylist: vi.fn(),
-      getPlaylistIndex: vi.fn(() => 0),
+      ...playlistMethods(),
       getCurrentTime: vi.fn(() => 0),
-      loadPlaylist: vi.fn(),
       playVideoAt: vi.fn(),
       destroy: vi.fn(),
     } as unknown as YT.Player;

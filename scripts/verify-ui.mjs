@@ -3350,6 +3350,9 @@ try {
       getPlaylistIndex() {
         return this.playlistIndex ?? 0;
       }
+      getPlaylist() {
+        return this.videoIds;
+      }
       getCurrentTime() {
         return 0;
       }
@@ -3569,7 +3572,7 @@ try {
     openingPlayer.played !== true ||
     openingPlayer.playlistIndex !== 0 ||
     openingPlayer.videoIds[0] !== openingCurrentVideoId ||
-    openingPlayer.videoIds.length !== 1 ||
+    openingPlayer.videoIds.length !== openingRows.length ||
     openingPlayer.volumeChanges[0] !== 0
   ) {
     throw new Error(
@@ -3580,11 +3583,16 @@ try {
     const player = window.__uiYouTubePlayer;
     player.state = 0;
     player.options.events.onStateChange({ target: player, data: 0 });
+    if (player.playlistIndex === 0) {
+      player.playlistIndex = 1;
+      player.state = 1;
+      player.options.events.onStateChange({ target: player, data: 1 });
+    }
   });
-  await page.waitForFunction(
-    (expected) => window.__uiYouTubePlayer.videoIds[0] === expected,
-    openingNextVideoId,
-  );
+  await page.waitForFunction((expected) => {
+    const player = window.__uiYouTubePlayer;
+    return player.videoIds[player.playlistIndex] === expected;
+  }, openingNextVideoId);
   await queueHandle.click();
 
   for (const { nickname } of selectedPlayers) {

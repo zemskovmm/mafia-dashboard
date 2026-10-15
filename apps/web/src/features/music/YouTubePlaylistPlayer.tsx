@@ -137,10 +137,14 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
     const controllerRef = useRef<MusicController | null>(null);
     const iframeReadyRef = useRef(false);
     const readyRef = useRef(false);
+    const awaitingProviderLoadRef = useRef(false);
     const queueRef = useRef<readonly MusicPlaylistItem[]>([]);
-    // Resolved queues are application-owned. Loading just one entry prevents
-    // YouTube from auto-advancing its old order before an ENDED callback arrives.
-    const loadedEntryRef = useRef<MusicPlaylistItem | null>(null);
+    // Play next edits the desired order only. Native controls keep navigating
+    // this occurrence snapshot until a transition can apply the latest order.
+    const loadedQueueRef = useRef<{
+      readonly items: readonly MusicPlaylistItem[];
+      readonly index: number;
+    } | null>(null);
     const providerQueueRef = useRef<{
       readonly playlistId: string;
       readonly items: readonly MusicPlaylistItem[];
@@ -183,7 +187,8 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
 
     useEffect(() => {
       queueRef.current = [];
-      loadedEntryRef.current = null;
+      loadedQueueRef.current = null;
+      awaitingProviderLoadRef.current = false;
       providerQueueRef.current = null;
       appliedRememberedQueueOrderRef.current = null;
       queueUnavailableRef.current = false;
@@ -325,7 +330,9 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
                   normalizedPlaylistIdRef.current.length === 0
                 )
                   return;
+                if (reconcileNativeTransition(target, data)) return;
                 if (data === window.YT?.PlayerState.CUED) {
+                  awaitingProviderLoadRef.current = false;
                   playbackStateRef.current = "paused";
                   readyRef.current = true;
                   setPlayerReady(true);
@@ -340,12 +347,18 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
                     onStateChangeRef.current("paused");
                   }
                 } else if (data === window.YT?.PlayerState.PLAYING) {
+                  if (
+                    !readyRef.current &&
+                    target.getPlayerState() !== window.YT?.PlayerState.PLAYING
+                  )
+                    return;
+                  awaitingProviderLoadRef.current = false;
                   playbackStateRef.current = "playing";
                   readyRef.current = true;
                   setPlayerReady(true);
                   onStateChangeRef.current("playing");
                 } else if (data === window.YT?.PlayerState.ENDED) {
-                  const loadedEntry = loadedEntryRef.current;
+                  const loadedEntry = currentEntry();
                   if (loadedEntry !== null) {
                     // A second ENDED while the next entry is loading must not
                     // skip it. A paused track must never start the next one.
@@ -374,6 +387,7 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
                     readyRef.current = true;
                     setPlayerReady(true);
                   }
+                  awaitingProviderLoadRef.current = false;
                   playbackStateRef.current = "paused";
                   onStateChangeRef.current("paused");
                 }
@@ -409,17 +423,78 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
         controllerRef.current = null;
         iframeReadyRef.current = false;
         readyRef.current = false;
-        loadedEntryRef.current = null;
+        loadedQueueRef.current = null;
+        awaitingProviderLoadRef.current = false;
         pendingOpeningFadeRef.current = false;
       },
       [elementId],
     );
 
+    function currentEntry() {
+      const loaded = loadedQueueRef.current;
+      return loaded?.items[loaded.index] ?? null;
+    }
+
+    function reconcileNativeTransition(player: YT.Player, state: number): boolean {
+      const loaded = loadedQueueRef.current;
+      if (loaded === null) return false; // Source-playlist fallback stays provider-owned.
+      const index = player.getPlaylistIndex();
+      if (!Number.isInteger(index) || index < 0 || index >= loaded.items.length) return false;
+      if (index === loaded.index) {
+        // BUFFERING already acknowledges a replacement once both its index
+        // and playlist agree. Do not wait for PLAYING: native Next can move
+        // again before then. Old-list buffering must not release the fence.
+        if (
+          awaitingProviderLoadRef.current &&
+          state === window.YT?.PlayerState.BUFFERING &&
+          player.getPlayerState() === state &&
+          queueOrdersEqual(
+            player.getPlaylist() ?? [],
+            loaded.items.map((item) => item.videoId),
+          )
+        ) {
+          awaitingProviderLoadRef.current = false;
+        }
+        return false;
+      }
+      // After an application load/cue, getters and callbacks may still describe
+      // the old list. It must not be mistaken for another native selection.
+      if (awaitingProviderLoadRef.current) return true;
+
+      const current = loaded.items[loaded.index]!;
+      const selected = loaded.items[index]!;
+      const desired = queueRef.current;
+      if (!queueOrdersEqual(loaded.items.map(queueEntryKey), desired.map(queueEntryKey))) {
+        const currentIndex = desired.findIndex(
+          (item) => queueEntryKey(item) === queueEntryKey(current),
+        );
+        // Only the adjacent forward transition means Next. Previous (including
+        // provider wraparound) and nonadjacent selection keep snapshot identity.
+        const next =
+          index === loaded.index + 1
+            ? currentIndex < 0
+              ? undefined
+              : desired[currentIndex + 1]
+            : selected;
+        applyEntry(next ?? current, 0, next !== undefined, false);
+        return true;
+      }
+
+      loadedQueueRef.current = { ...loaded, index };
+      readyRef.current = false;
+      setPlayerReady(false);
+      playbackStateRef.current = "loading";
+      onStateChangeRef.current("loading");
+      // ENDED belongs to the outgoing entry even if its getter has already
+      // moved. The new occurrence must settle before it can finish in turn.
+      return state === window.YT?.PlayerState.ENDED;
+    }
+
     const currentPosition = () => {
       const player = playerRef.current;
       if (player === null || !readyRef.current) return null;
       return {
-        item: loadedEntryRef.current,
+        item: currentEntry(),
         seconds: player.getCurrentTime(),
       };
     };
@@ -427,7 +502,8 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
     function applyPlaylist(playlist: string, index: number, seconds: number) {
       const player = playerRef.current;
       if (player === null) return;
-      loadedEntryRef.current = null;
+      loadedQueueRef.current = null;
+      awaitingProviderLoadRef.current = false;
       readyRef.current = false;
       setPlayerReady(false);
       controllerRef.current?.cancelActiveFade();
@@ -447,14 +523,19 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
     ) {
       const player = playerRef.current;
       if (player === null) return;
-      loadedEntryRef.current = item;
+      const items = [...queueRef.current];
+      const index = items.findIndex((entry) => queueEntryKey(entry) === queueEntryKey(item));
+      if (index < 0) return;
+      loadedQueueRef.current = { items, index };
+      awaitingProviderLoadRef.current = true;
       readyRef.current = false;
       setPlayerReady(false);
       if (cancelFade) controllerRef.current?.cancelActiveFade();
       playbackStateRef.current = "loading";
       onStateChangeRef.current("loading");
-      if (autoplay) player.loadPlaylist([item.videoId], 0, seconds);
-      else player.cuePlaylist([item.videoId], 0, seconds);
+      const videoIds = items.map((entry) => entry.videoId);
+      if (autoplay) player.loadPlaylist(videoIds, index, seconds);
+      else player.cuePlaylist(videoIds, index, seconds);
     }
 
     function applyQueue(
@@ -501,7 +582,7 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
 
     const playNext = (selectedIndex: number) => {
       const selected = queueRef.current[selectedIndex];
-      const current = loadedEntryRef.current ?? queueRef.current[0];
+      const current = currentEntry() ?? queueRef.current[0];
       if (
         selected === undefined ||
         current === undefined ||
