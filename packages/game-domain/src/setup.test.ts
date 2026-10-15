@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { CASPER_PLAYER_ID, CASPER_SEAT } from "./index.js";
+import { CASPER_PLAYER_ID, CASPER_SEAT, FEDERATION_RULES_EDITION } from "./index.js";
 import {
   assignRoleForSeat,
   beginRoleDraw,
+  clearRoleForSeat,
   completeRoleDraw,
   createSeededRandom,
   createSetup,
@@ -168,6 +169,45 @@ describe("setup", () => {
     expect(assigned.assignments[1]).toBe("sheriff");
     expect(assigned.remainingRoles).toHaveLength(9);
     expect(() => assignRoleForSeat(assigned, 2, "sheriff")).toThrow(/not available/i);
+  });
+
+  it.each([undefined, FEDERATION_RULES_EDITION])(
+    "clears and reassigns a full %s deal without changing its deck",
+    (rulesEdition) => {
+      let drawing = beginRoleDraw(createSetup(players(), { rulesEdition }), createSeededRandom(19));
+      for (let seat = 1; seat <= 10; seat += 1) drawing = drawRoleForSeat(drawing, seat);
+      const before = structuredClone(drawing);
+      const role = drawing.assignments[3]!;
+      const cleared = clearRoleForSeat(drawing, 3);
+      expect(drawing).toEqual(before);
+      expect(cleared.assignments[3]).toBeUndefined();
+      expect(cleared.remainingRoles).toEqual([role]);
+      expect(cleared.roleDeck).toEqual(drawing.roleDeck);
+      expect(cleared.rulesEdition).toBe(rulesEdition);
+      expect(clearRoleForSeat(cleared, 3)).toBe(cleared);
+      expect(() => completeRoleDraw(cleared)).toThrow(/all ten seats/i);
+      expect(assignRoleForSeat(cleared, 3, role)).toEqual(drawing);
+      expect(() => assignRoleForSeat(cleared, 3, role === "don" ? "sheriff" : "don")).toThrow(
+        /not available/i,
+      );
+    },
+  );
+
+  it("only clears real human seats during role draw", () => {
+    const initial = createSetup(withCasper());
+    const drawing = beginRoleDraw(initial, createSeededRandom(19));
+    expect(() => clearRoleForSeat(initial, 1)).toThrow(/during role draw/i);
+    expect(() => clearRoleForSeat({ ...drawing, step: "mafia-planning" }, 1)).toThrow(
+      /during role draw/i,
+    );
+    expect(() => clearRoleForSeat(drawing, 0)).toThrow(/does not exist/i);
+    expect(() => clearRoleForSeat(drawing, CASPER_SEAT)).toThrow(/Casper/i);
+    const partial = drawRoleForSeat(drawing, 1);
+    expect(clearRoleForSeat(partial, 1).remainingRoles).toEqual([
+      ...partial.remainingRoles,
+      partial.assignments[1],
+    ]);
+    expect(clearRoleForSeat(partial, 1).assignments).toEqual({ [CASPER_SEAT]: "citizen" });
   });
 
   it("cannot finish role drawing until all ten seats are assigned", () => {

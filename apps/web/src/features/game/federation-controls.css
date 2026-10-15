@@ -104,23 +104,3 @@
 .federation-judge-dialog :is(button, input:not([type="checkbox"]), select) {
   min-height: 48px;
 }
-.federation-rules-notice {
-  position: relative;
-  display: flex;
-  gap: 0.75rem;
-  align-items: center;
-  font-size: 0.7rem;
-}
-.federation-rules-notice summary {
-  cursor: pointer;
-}
-.federation-rules-notice ul {
-  position: absolute;
-  z-index: 80;
-  width: min(28rem, calc(100vw - 2rem));
-  padding: 1rem 1rem 1rem 2rem;
-  border: 1px solid var(--border, #555);
-  border-radius: 0.75rem;
-  background: #211e19;
-  color: #f7f4ef;
-}

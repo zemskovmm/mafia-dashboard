@@ -6,6 +6,7 @@ import {
   CASPER_NAME,
   CASPER_PLAYER_ID,
   CASPER_SEAT,
+  clearRoleForSeat,
   completeRoleDraw,
   createGame,
   createSetup,
@@ -297,12 +298,9 @@ export const SetupWizard = ({
   const capturedEdition = editionCapture.captured ? editionCapture.edition : rulesEdition;
   const federationSetup = capturedEdition === FEDERATION_RULES_EDITION;
   const gameBestMoveEnabled = initialSessionState?.bestMoveEnabled ?? bestMoveEnabled;
-  const [acknowledgedDeviations, setAcknowledgedDeviations] = useState<
-    readonly SetupClubDeviation[]
-  >(initialSessionState?.clubDeviationsAcknowledged ?? []);
-  const [rerollSeat, setRerollSeat] = useState<number | null>(null);
-  const rerollConfirmRef = useRef<HTMLButtonElement>(null);
-  const rerollReturnFocusRef = useRef<HTMLButtonElement | null>(null);
+  // Retain historical metadata without creating or requiring acknowledgements.
+  const acknowledgedDeviations = initialSessionState?.clubDeviationsAcknowledged;
+
   const captureEdition = useCallback(() => {
     setEditionCapture((current) =>
       current.captured ? current : { captured: true, edition: rulesEdition },
@@ -322,16 +320,7 @@ export const SetupWizard = ({
   );
   const includeCasper = selectedPlayerIds[CASPER_SEAT - 1] === CASPER_PLAYER_ID;
   const humanSeatCount = includeCasper ? 9 : 10;
-  const deviations: readonly SetupClubDeviation[] = federationSetup
-    ? [
-        ...(includeCasper ? ["casper" as const] : []),
-        ...(!gameBestMoveEnabled ? ["best-move-disabled" as const] : []),
-        ...(acknowledgedDeviations.includes("role-reroll") ? ["role-reroll" as const] : []),
-      ]
-    : [];
-  const deviationsAcknowledged = deviations.every((deviation) =>
-    acknowledgedDeviations.includes(deviation),
-  );
+
   const sessionOptions = useMemo(
     () => ({
       ...(editionCapture.captured && capturedEdition !== undefined
@@ -342,7 +331,7 @@ export const SetupWizard = ({
       !gameBestMoveEnabled
         ? { bestMoveEnabled: gameBestMoveEnabled }
         : {}),
-      ...(federationSetup && acknowledgedDeviations.length > 0
+      ...(acknowledgedDeviations !== undefined
         ? { clubDeviationsAcknowledged: acknowledgedDeviations }
         : {}),
     }),
@@ -355,26 +344,7 @@ export const SetupWizard = ({
       initialSessionState?.bestMoveEnabled,
     ],
   );
-  useEffect(() => {
-    setAcknowledgedDeviations((current) => {
-      const next = current.filter((deviation) =>
-        deviation === "casper"
-          ? includeCasper
-          : deviation === "best-move-disabled"
-            ? !gameBestMoveEnabled
-            : true,
-      );
-      return next.length === current.length ? current : next;
-    });
-  }, [gameBestMoveEnabled, includeCasper]);
-  useEffect(() => {
-    if (rerollSeat !== null) {
-      rerollConfirmRef.current?.focus();
-    } else {
-      rerollReturnFocusRef.current?.focus();
-      rerollReturnFocusRef.current = null;
-    }
-  }, [rerollSeat]);
+
   const [hostPlayerId, setHostPlayerId] = useState(initialSessionState?.hostPlayerId ?? "");
   const [setup, setSetup] = useState<SetupState | null>(initialSessionState?.setup ?? null);
   const [developmentPlayers, setDevelopmentPlayers] = useState<readonly PlayerProfile[]>([]);
@@ -396,13 +366,7 @@ export const SetupWizard = ({
   const discardDeal = useCallback(() => {
     setSetup(null);
     setManualRoleSeat(null);
-    setRerollSeat(null);
     roleTapState.current = null;
-    setAcknowledgedDeviations((current) =>
-      current.includes("role-reroll")
-        ? current.filter((deviation) => deviation !== "role-reroll")
-        : current,
-    );
   }, []);
 
   const cancelSeatDrag = () => {
@@ -603,7 +567,7 @@ export const SetupWizard = ({
   }, [captureEdition, discardDeal, hostPlayerId, humanSeatCount, includeCasper, selectablePlayers]);
 
   const startRoleDraw = () => {
-    if (!playersReady || hostPlayer === undefined || !deviationsAcknowledged) return;
+    if (!playersReady || hostPlayer === undefined) return;
     captureEdition();
     const resumeRoleDraw = setup !== null && roleDrawMatchesPlayers(setup, players);
     const nextSetup = resumeRoleDraw
@@ -654,13 +618,7 @@ export const SetupWizard = ({
     roleTapState.current = { seat, count, at: now };
     if (count < 3) return;
     roleTapState.current = null;
-    if (federationSetup) {
-      rerollReturnFocusRef.current =
-        document.activeElement instanceof HTMLButtonElement ? document.activeElement : null;
-      setManualRoleSeat(null);
-      setRerollSeat(seat);
-      return;
-    }
+
     const nextSetup = rerollRoleForSeat(setup, seat, Math.random);
     setSetup(nextSetup);
     publishSessionState("roles", nextSetup);
@@ -678,57 +636,36 @@ export const SetupWizard = ({
     const nextSetup = assignRoleForSeat(setup, manualRoleSeat, role);
     setSetup(nextSetup);
     setManualRoleSeat(null);
+    roleTapState.current = null;
     publishSessionState("roles", nextSetup);
     onEvent("setup.role-assigned", { seat: manualRoleSeat, role, secret: true });
   };
 
-  const confirmReroll = () => {
-    if (
-      persistencePending ||
-      setup === null ||
-      rerollSeat === null ||
-      setup.remainingRoles.length === 0
-    )
-      return;
-    const nextSetup = rerollRoleForSeat(setup, rerollSeat, Math.random);
-    const nextAcknowledgements: readonly SetupClubDeviation[] = acknowledgedDeviations.includes(
-      "role-reroll",
-    )
-      ? acknowledgedDeviations
-      : [...acknowledgedDeviations, "role-reroll"];
-    setAcknowledgedDeviations(nextAcknowledgements);
+  const clearManualRole = () => {
+    if (persistencePending || setup === null || manualRoleSeat === null) return;
+    if (includeCasper && manualRoleSeat === CASPER_SEAT) return;
+    const role = setup.assignments[manualRoleSeat];
+    if (role === undefined) return;
+    const nextSetup = clearRoleForSeat(setup, manualRoleSeat);
     setSetup(nextSetup);
-    setRerollSeat(null);
-    onSessionStateChange?.({
-      step: "roles",
-      hostPlayerId,
-      selectedPlayerIds,
-      setup: nextSetup,
-      ...sessionOptions,
-      clubDeviationsAcknowledged: nextAcknowledgements,
-    });
-    onEvent("setup.role-rerolled", {
-      seat: rerollSeat,
-      role: nextSetup.assignments[rerollSeat],
-      secret: true,
-      clubDeviationAcknowledged: "role-reroll",
-    });
+    setManualRoleSeat(null);
+    roleTapState.current = null;
+    publishSessionState("roles", nextSetup);
+    onEvent("setup.role-cleared", { seat: manualRoleSeat, role, secret: true });
   };
 
   const finishRoleDraw = () => {
     if (persistencePending) return;
-    if (setup === null || hostPlayer === undefined || !deviationsAcknowledged) return;
+    if (setup === null || hostPlayer === undefined) return;
     const game = createGame(completeRoleDraw(setup), { bestMoveEnabled: gameBestMoveEnabled });
     onEvent("setup.completed", {
       phase: game.phase,
-      ...(federationSetup ? { clubDeviationsAcknowledged: deviations } : {}),
     });
     onComplete(game, hostPlayerId, hostPlayer.nickname);
   };
 
   const returnToPlayerSelection = useCallback(() => {
     setManualRoleSeat(null);
-    setRerollSeat(null);
     roleTapState.current = null;
     focusPlayerHeading.current = true;
     setStep("players");
@@ -749,39 +686,6 @@ export const SetupWizard = ({
       {setupT(federationSetup ? "setup.edition.federation" : "setup.edition.legacy")}
     </span>
   );
-  const deviationNotice =
-    deviations.length === 0 ? null : (
-      <section className="setup-deviations" aria-label={setupT("setup.deviations.title")}>
-        <strong>{setupT("setup.deviations.title")}</strong>
-        <ul>
-          {deviations.map((deviation) => (
-            <li key={deviation}>{setupT(`setup.deviations.${deviation}`)}</li>
-          ))}
-        </ul>
-        <label>
-          <input
-            type="checkbox"
-            checked={deviationsAcknowledged}
-            disabled={
-              persistencePending || deviations.every((deviation) => deviation === "role-reroll")
-            }
-            onChange={(event) => {
-              if (event.currentTarget.checked) {
-                captureEdition();
-                setAcknowledgedDeviations(deviations);
-                onEvent("setup.club-deviations-acknowledged", { deviations });
-              } else {
-                // Reroll consent records a past action; only option acknowledgements can be withdrawn.
-                setAcknowledgedDeviations((current) =>
-                  current.filter((deviation) => deviation === "role-reroll"),
-                );
-              }
-            }}
-          />
-          <span>{setupT("setup.deviations.acknowledge")}</span>
-        </label>
-      </section>
-    );
 
   if (step === "roles" && setup !== null) {
     return (
@@ -799,7 +703,6 @@ export const SetupWizard = ({
         </header>
         <div className="live-layout">
           <section className="table-workspace">
-            {deviationNotice}
             <GameTable
               hostName={hostPlayer?.nickname ?? t("setup.unknownHost")}
               seats={setup.players.map((player) => ({
@@ -814,67 +717,26 @@ export const SetupWizard = ({
               seatActionLabel={(seat) =>
                 seat.role === undefined
                   ? t("setup.drawRole", { name: seat.name })
-                  : federationSetup &&
+                  : t(
                       setup.remainingRoles.length > 0 &&
-                      !(includeCasper && seat.seat === CASPER_SEAT)
-                    ? setupT("setup.reroll.card", {
-                        name: seat.name,
-                        role: t(roleMessageKeys[seat.role]),
-                      })
-                    : t(
-                        setup.remainingRoles.length > 0 &&
-                          !(includeCasper && seat.seat === CASPER_SEAT)
-                          ? "setup.roleDrawCardReroll"
-                          : "setup.roleDrawCard",
-                        { name: seat.name, role: t(roleMessageKeys[seat.role]) },
-                      )
+                        !(includeCasper && seat.seat === CASPER_SEAT)
+                        ? "setup.roleDrawCardReroll"
+                        : "setup.roleDrawCard",
+                      { name: seat.name, role: t(roleMessageKeys[seat.role]) },
+                    )
               }
               onSeatClick={handleRoleCardTap}
               seatActionDisabled={(seat) =>
-                persistencePending ||
-                rerollSeat !== null ||
-                (includeCasper && seat.seat === CASPER_SEAT)
+                persistencePending || (includeCasper && seat.seat === CASPER_SEAT)
               }
-              onSeatSwipe={
-                setup.remainingRoles.length > 0
-                  ? (seat) => {
-                      if (persistencePending || rerollSeat !== null) return;
-                      if (includeCasper && seat === CASPER_SEAT) return;
-                      setManualRoleSeat((current) => (current === seat ? null : seat));
-                    }
-                  : undefined
-              }
-              contextActionOpen={manualRoleSeat !== null || rerollSeat !== null}
+              onSeatSwipe={(seat) => {
+                if (persistencePending || (includeCasper && seat === CASPER_SEAT)) return;
+                roleTapState.current = null;
+                setManualRoleSeat((current) => (current === seat ? null : seat));
+              }}
+              contextActionOpen={manualRoleSeat !== null}
               center={
-                rerollSeat !== null ? (
-                  <div
-                    className="manual-role-menu setup-reroll-confirm"
-                    role="dialog"
-                    aria-label={setupT("setup.reroll.title")}
-                    data-context-action
-                    onKeyDown={(event) => {
-                      if (event.key === "Escape") {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        setRerollSeat(null);
-                      }
-                    }}
-                  >
-                    <strong>{setupT("setup.reroll.title")}</strong>
-                    <p>{setupT("setup.reroll.explanation")}</p>
-                    <button
-                      ref={rerollConfirmRef}
-                      type="button"
-                      disabled={persistencePending}
-                      onClick={confirmReroll}
-                    >
-                      {setupT("setup.reroll.confirm")}
-                    </button>
-                    <button type="button" onClick={() => setRerollSeat(null)}>
-                      {t("setup.cancel")}
-                    </button>
-                  </div>
-                ) : manualRoleSeat !== null && setup.remainingRoles.length > 0 ? (
+                manualRoleSeat !== null ? (
                   <div
                     className="manual-role-menu"
                     role="dialog"
@@ -884,12 +746,22 @@ export const SetupWizard = ({
                     <span className="table-prompt">
                       {t("setup.chooseRoleForSeat", { seat: manualRoleSeat })}
                     </span>
-                    {federationSetup ? <p>{setupT("setup.physicalDeal")}</p> : null}
+                    {setup.assignments[manualRoleSeat] === undefined ? null : (
+                      <button
+                        type="button"
+                        aria-label={setupT("setup.clearRoleForSeat", { seat: manualRoleSeat })}
+                        disabled={persistencePending}
+                        onClick={clearManualRole}
+                      >
+                        {setupT("setup.clearRole")}
+                      </button>
+                    )}
                     <div>
                       {[...new Set(setup.remainingRoles)].map((role) => (
                         <button
                           type="button"
                           key={role}
+                          disabled={persistencePending}
                           aria-label={t("setup.assignRole", {
                             role: t(roleMessageKeys[role]),
                             seat: manualRoleSeat,
@@ -924,7 +796,7 @@ export const SetupWizard = ({
                   type="button"
                   disabled={
                     persistencePending ||
-                    !deviationsAcknowledged ||
+                    manualRoleSeat !== null ||
                     setup.remainingRoles.length > 0 ||
                     hostPlayer === undefined
                   }
@@ -966,7 +838,6 @@ export const SetupWizard = ({
             </label>
           </header>
           {editionLabel}
-          {deviationNotice}
           {selectablePlayers.length < humanSeatCount + 1 ? (
             <p className="player-guidance">
               {t("setup.playerGuidance", { count: humanSeatCount + 1 })}
@@ -1108,7 +979,7 @@ export const SetupWizard = ({
             <button
               className="primary-action"
               type="button"
-              disabled={!playersReady || !deviationsAcknowledged}
+              disabled={!playersReady}
               onClick={startRoleDraw}
             >
               {t("setup.startGame")}

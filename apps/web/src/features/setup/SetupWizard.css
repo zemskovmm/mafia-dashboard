@@ -5,43 +5,10 @@
   font-size: 0.8rem;
 }
 
-.setup-deviations {
-  flex: 0 0 auto;
-  margin: 0.5rem 0;
-  padding: 0.5rem 0.75rem;
-  border: 1px solid var(--border);
-  border-radius: 0.5rem;
-  background: var(--panel);
-  font-size: 0.85rem;
-}
-
-.setup-deviations ul {
-  margin: 0.25rem 0;
-  padding-left: 1.25rem;
-}
-
-.setup-deviations label {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
+.role-draw-screen .manual-role-menu button {
   min-height: 48px;
-  cursor: pointer;
 }
 
-.setup-deviations input {
-  flex: 0 0 auto;
-  width: 1.25rem;
-  height: 1.25rem;
-}
-
-.setup-reroll-confirm p,
-.role-draw-screen .manual-role-menu p {
-  margin: 0.25rem 0;
-  font-size: 0.8rem;
-  line-height: 1.4;
-}
-
-.setup-reroll-confirm button {
-  min-height: 48px;
-  white-space: normal;
+.role-draw-screen .table-stage:has(.manual-role-menu) .table-advance {
+  visibility: hidden;
 }

@@ -260,13 +260,15 @@ describe("GameTable", () => {
     expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
   });
 
-  it("shows a table action menu after horizontally swiping a player card", () => {
+  it.each([-60, 60])("opens an action menu after a %ipx swipe without also clicking", (deltaX) => {
+    const onSeatClick = vi.fn();
     const Harness = () => {
       const [swipedSeat, setSwipedSeat] = useState<number | null>(null);
       return (
         <GameTable
           seats={seats}
           onSeatSwipe={setSwipedSeat}
+          onSeatClick={onSeatClick}
           swipeAction={
             swipedSeat === null ? undefined : (
               <button type="button" className="table-swipe-red-card">
@@ -281,8 +283,10 @@ describe("GameTable", () => {
     const player = screen.getByRole("button", { name: "Seat 1: Player 1" });
     expect(screen.queryByRole("button", { name: "Red card Player 1" })).toBeNull();
 
-    fireEvent.touchStart(player, { touches: [{ clientX: 10, clientY: 40 }] });
-    fireEvent.touchEnd(player, { changedTouches: [{ clientX: 70, clientY: 42 }] });
+    fireEvent.touchStart(player, { touches: [{ clientX: 100, clientY: 40 }] });
+    fireEvent.touchEnd(player, { changedTouches: [{ clientX: 100 + deltaX, clientY: 42 }] });
+    fireEvent.click(player);
+    expect(onSeatClick).not.toHaveBeenCalled();
 
     expect(screen.getByRole("button", { name: "Red card Player 1" })).toHaveClass(
       "table-swipe-red-card",
@@ -290,6 +294,23 @@ describe("GameTable", () => {
     expect(screen.getByRole("button", { name: "Red card Player 1" }).parentElement).toHaveClass(
       "table-swipe-menu",
     );
+  });
+
+  it("does not open an action menu for vertical, short or cancelled gestures", () => {
+    const onSeatSwipe = vi.fn();
+    render(<GameTable seats={seats} onSeatSwipe={onSeatSwipe} />);
+    const player = screen.getByRole("button", { name: "Seat 1: Player 1" });
+    for (const [x, y] of [
+      [110, 140],
+      [130, 42],
+    ]) {
+      fireEvent.touchStart(player, { touches: [{ clientX: 100, clientY: 40 }] });
+      fireEvent.touchEnd(player, { changedTouches: [{ clientX: x, clientY: y }] });
+    }
+    fireEvent.touchStart(player, { touches: [{ clientX: 100, clientY: 40 }] });
+    fireEvent.touchCancel(player);
+    fireEvent.touchEnd(player, { changedTouches: [{ clientX: 170, clientY: 42 }] });
+    expect(onSeatSwipe).not.toHaveBeenCalled();
   });
 
   it("intercepts outside interaction without activating a seat and allows reopening", () => {

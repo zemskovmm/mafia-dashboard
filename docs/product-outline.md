@@ -6,7 +6,7 @@ La Verdad is the official application of the [La Verdad club in Málaga](https:/
 
 Players do not use accounts or phones. The authenticated host controls setup, music, timers, turns, nominations, voting, night actions, penalties, eliminations, and corrections from one device. The browser persists the authoritative full setup/live snapshot; semantic events provide validated Log, Timeline, and Preview history, while timer and music controls remain local UI state.
 
-The current gameplay contract is owned by [IDD-0002](../.idd/intent/IDD-0002.spec-club-mafia-gameplay.md): new games use the MAFGAME 1 July 2026 edition, while supported pre-federation games retain their original rules and replay hashes. The captured edition does not change on resume. Explicit Casper, Best Move-off or discretionary referee overrides are club deviations, not federation compliance. This outline describes the product contract, not a claim of completed release qualification.
+The current gameplay contract is owned by [IDD-0002](../.idd/intent/IDD-0002.spec-club-mafia-gameplay.md): new games use the MAFGAME 1 July 2026 edition, while supported pre-federation games retain their original rules and replay hashes. The captured edition does not change on resume. Casper, Best Move-off and direct role corrections remain club options without deviation warnings or acknowledgement screens; they do not imply exact federation compliance. Role giveaway supports immediate triple-tap reroll and either-direction swipe to clear or select an available role. Discretionary referee rulings retain their own safeguards. This outline describes the product contract, not a claim of completed release qualification.
 
 ## 2. Current product goals
 

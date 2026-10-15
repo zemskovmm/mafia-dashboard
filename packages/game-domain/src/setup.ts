@@ -156,6 +156,18 @@ export const rerollRoleForSeat = (
   };
 };
 
+export const clearRoleForSeat = (state: SetupState, seat: number): SetupState => {
+  if (state.step !== "role-draw") throw new Error("Roles can only be cleared during role draw");
+  const player = state.players.find((candidate) => candidate.seat === seat);
+  if (player === undefined) throw new Error(`Seat ${seat} does not exist`);
+  if (isCasperPlayer(player)) throw new Error("Casper's role cannot be cleared");
+  const role = state.assignments[seat];
+  if (role === undefined) return state;
+  const assignments = { ...state.assignments };
+  delete assignments[seat];
+  return { ...state, assignments, remainingRoles: [...state.remainingRoles, role] };
+};
+
 export const assignRoleForSeat = (state: SetupState, seat: number, role: Role): SetupState => {
   if (state.step !== "role-draw") throw new Error("Roles can only be assigned during role draw");
   if (!state.players.some((player) => player.seat === seat)) {

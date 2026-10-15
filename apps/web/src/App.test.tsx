@@ -3814,10 +3814,8 @@ describe("authoritative game session lifecycle", () => {
         });
         await user.click(screen.getByRole("switch", { name: "Include Casper" }));
         await user.click(screen.getByRole("button", { name: "Assign players" }));
-        expect(screen.getByRole("button", { name: "Start game" })).toBeDisabled();
-        await user.click(
-          screen.getByRole("checkbox", { name: "I acknowledge these nonstandard club deviations" }),
-        );
+        expect(screen.getByRole("button", { name: "Start game" })).toBeEnabled();
+        expect(screen.queryByText("Nonstandard club deviations")).toBeNull();
         await user.click(screen.getByRole("button", { name: "Start game" }));
         await waitFor(() => expect(api.createGameSession).toHaveBeenCalledOnce());
         expect(api.saveGameSession.mock.lastCall?.[1].state.setup.setup).toMatchObject({
@@ -4836,7 +4834,7 @@ describe("authoritative game session lifecycle", () => {
           .setup,
       ).toEqual(savedSetup);
       expect(gameScreenHarness.liveGame?.rulesEdition).toBe(FEDERATION_RULES_EDITION);
-      expect(gameScreenSpy.mock.lastCall?.[0].clubDeviationsAcknowledged).toEqual(["role-reroll"]);
+      expect(gameScreenSpy.mock.lastCall?.[0]).not.toHaveProperty("clubDeviationsAcknowledged");
     } finally {
       cleanup();
       setupMock.mockRestore();

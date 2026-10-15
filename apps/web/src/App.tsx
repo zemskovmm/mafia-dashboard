@@ -2503,7 +2503,7 @@ export const ClubWorkspace = ({
               setResetReturnEventId(null);
               setUndoBudget(0);
               phaseRef.current = next.phase;
-              // Federation setup records retain acknowledged club deviations after play starts.
+              // Preserve historical setup metadata without exposing it as live controls.
               if (!isFederationGame(next)) setSetupSession(null);
               setHostPlayerId(selectedHostPlayerId);
               setFinalResults(null);
@@ -2517,7 +2517,6 @@ export const ClubWorkspace = ({
           key={`${previewGame === null ? "live" : "preview"}-${renderedGameScreenMutationGeneration}`}
           game={previewGame ?? game}
           gameName={sessionName}
-          clubDeviationsAcknowledged={setupSession?.clubDeviationsAcknowledged}
           hostName={
             hostPlayerId === null
               ? t("host")

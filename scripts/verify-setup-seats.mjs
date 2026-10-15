@@ -1,4 +1,4 @@
-/* global URL, structuredClone, document, innerWidth, innerHeight, getComputedStyle */
+/* global URL, structuredClone, document, innerWidth, innerHeight, getComputedStyle, fetch */
 /*
  * Focused real-app setup correction regression. Run against an owned local Vite
  * origin (APP_URL defaults to http://127.0.0.1:8080). Mock API is strict and
@@ -88,6 +88,7 @@ function fixture(page, language) {
     headerLogo: null,
     cardLogo: null,
     language,
+    bestMoveEnabled: language === "en",
     role: "manager",
     createdAt: "2026-08-21T00:00:00.000Z",
     updatedAt: "2026-08-21T00:00:00.000Z",
@@ -401,7 +402,8 @@ async function roleHeading(page, language, label) {
   await expect(title).toHaveText(labels[language].role);
   const b = await back.boundingBox();
   const h = await title.boundingBox();
-  const progress = await page.locator(".phase-banner").boundingBox();
+  await expect(page.locator(".phase-banner, .setup-edition-label")).toHaveCount(0);
+  const progress = await page.locator(".table-center").boundingBox();
   const toolbar = await page.locator(".app-fixed-toolbar").boundingBox();
   assert.ok(
     b && h && progress && b.width >= 48 && b.height >= 48,
@@ -422,11 +424,170 @@ async function roleHeading(page, language, label) {
     toolbar && progress.x + progress.width <= toolbar.x,
     `${label}: role progress overlaps fixed toolbar`,
   );
-  assert.ok(h.x + h.width <= progress.x, `${label}: role title overlaps progress`);
+  assert.ok(
+    h.y + h.height <= progress.y ||
+      h.x + h.width <= progress.x ||
+      h.x >= progress.x + progress.width,
+    `${label}: role title overlaps central progress`,
+  );
   await expect(
     page.locator(".role-draw-heading .role-draw-back span[aria-hidden='true']"),
   ).toHaveText("←");
   await expect(page.locator(".role-draw-heading .role-draw-back")).toBeVisible();
+}
+
+const roleCard = (page, seat) => page.locator(`.seat-anchor[data-seat="${seat}"] .player-seat`);
+const noDeviationUI = async (page) => {
+  await expect(
+    page.locator(".setup-deviations, .setup-reroll-confirm, .federation-rules-notice"),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText(
+      /Nonstandard club deviations|Нестандартные клубные отклонения|Nonstandard role reroll|Нестандартная перераздача роли/,
+    ),
+  ).toHaveCount(0);
+};
+
+async function swipeRole(page, cdp, seat, dx, dy = 0, cancel = false) {
+  const start = await center(roleCard(page, seat));
+  onscreen(page, { x: start.x + dx, y: start.y + dy }, "Role swipe destination");
+  const points = (fraction) => [{ x: start.x + dx * fraction, y: start.y + dy * fraction, id: 1 }];
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: points(0) });
+  for (let step = 1; step <= 6; step += 1) {
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchMove",
+      touchPoints: points(step / 6),
+    });
+  }
+  await cdp.send("Input.dispatchTouchEvent", {
+    type: cancel ? "touchCancel" : "touchEnd",
+    touchPoints: [],
+  });
+}
+
+async function roleCorrections(page, state, language, tag, cdp) {
+  const menu = page.getByRole("dialog", {
+    name: language === "en" ? "Choose role" : "Выберите роль",
+    exact: true,
+  });
+  const clear = page.getByRole("button", {
+    name: language === "en" ? "Clear role for seat 1" : "Сбросить роль для места 1",
+  });
+  const cancel = page.getByRole("button", {
+    name: language === "en" ? "Cancel" : "Отмена",
+    exact: true,
+  });
+  const choose = (role) =>
+    page.getByRole("button", {
+      name:
+        language === "en"
+          ? `Assign ${role} to seat 1`
+          : `Назначить роль «${role === "sheriff" ? "Шериф" : "Дон"}» месту 1`,
+    });
+  const activate = (locator) => (cdp ? locator.tap() : locator.click());
+  const open = async (direction) => {
+    if (cdp) await swipeRole(page, cdp, 1, direction * 70);
+    else await roleCard(page, 1).press("Shift+F10");
+    await expect(menu).toBeVisible();
+    const targets = await menu.locator("button").evaluateAll((buttons) =>
+      buttons.map((button) => {
+        const { x, y, width, height } = button.getBoundingClientRect();
+        const hit = document.elementFromPoint(x + width / 2, y + height / 2);
+        return {
+          label: button.textContent,
+          x,
+          y,
+          width,
+          height,
+          reachable: hit === button || button.contains(hit),
+        };
+      }),
+    );
+    for (const target of targets) {
+      assert.ok(
+        target.width >= 48 && target.height >= 48 && target.reachable,
+        `${tag}: role menu target is undersized or obstructed: ${JSON.stringify(target)}`,
+      );
+      onscreen(page, { x: target.x, y: target.y }, "Role menu top-left");
+      onscreen(
+        page,
+        { x: target.x + target.width - 1, y: target.y + target.height - 1 },
+        "Role menu bottom-right",
+      );
+    }
+  };
+  const original = checkpoint(state);
+  await noDeviationUI(page);
+  await open(-1);
+  await expect(clear).toHaveCount(0);
+  await activate(choose("sheriff"));
+  await expect.poll(() => state.latest()?.state.setup?.setup?.assignments[1]).toBe("sheriff");
+  const assigned = checkpoint(state);
+  await activate(roleCard(page, 1));
+  await activate(roleCard(page, 1));
+  unchanged(state, assigned, `${tag}: first two taps rerolled`);
+  await activate(roleCard(page, 1));
+  await expect.poll(() => state.latest()?.state.setup?.setup?.assignments[1]).not.toBe("sheriff");
+  await expect(menu).toHaveCount(0);
+  await noDeviationUI(page);
+  assert.equal(state.latest().state.setup.setup.remainingRoles.length, 9);
+  await open(1);
+  await page.screenshot({ path: path.join(evidence, `${tag}-role-menu.png`), fullPage: true });
+  await activate(clear);
+  await expect.poll(() => state.latest()?.state.setup?.setup?.remainingRoles.length).toBe(10);
+  const cleared = checkpoint(state);
+  if (cdp) {
+    await swipeRole(page, cdp, 1, 0, -70);
+    await expect(menu).toHaveCount(0);
+    await swipeRole(page, cdp, 1, 70, 0, true);
+    await expect(menu).toHaveCount(0);
+    unchanged(state, cleared, `${tag}: vertical/cancelled swipe mutated roles`);
+  }
+  await roleCard(page, 1).press("Shift+F10");
+  await expect(menu).toBeVisible();
+  await expect(menu.locator("button").first()).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveCount(0);
+  await expect(roleCard(page, 1)).toBeFocused();
+  await open(-1);
+  await activate(cancel);
+  unchanged(state, cleared, `${tag}: cancelled chooser mutated roles`);
+  await open(1);
+  await activate(choose("don"));
+  for (let seat = 2; seat <= 10; seat += 1) await activate(roleCard(page, seat));
+  await expect.poll(() => state.latest()?.state.setup?.setup?.remainingRoles.length).toBe(0);
+  const complete = checkpoint(state);
+  await open(-1);
+  await activate(clear);
+  await expect.poll(() => state.latest()?.state.setup?.setup?.remainingRoles).toEqual(["don"]);
+  const clearedFull = checkpoint(state);
+  same(
+    clearedFull.state.setup.setup.assignments,
+    Object.fromEntries(
+      Object.entries(complete.state.setup.setup.assignments).filter(([seat]) => seat !== "1"),
+    ),
+    `${tag}: clearing changed another seat`,
+  );
+  await expect(page.locator(".table-advance button")).toBeDisabled();
+  await page.screenshot({ path: path.join(evidence, `${tag}-role-cleared.png`), fullPage: true });
+  await awaitSave(page, state);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(roleCard(page, 1).locator(".role-badge")).toHaveCount(0);
+  await expect(page.locator(".table-advance button")).toBeDisabled();
+  await noDeviationUI(page);
+  unchanged(state, clearedFull, `${tag}: reload lost cleared role`);
+  const remote = await page.evaluate(
+    async (id) => (await fetch(`/api/game-sessions/${id}`)).json(),
+    original.gameId,
+  );
+  same(remote.session.state.setup, clearedFull.state.setup, `${tag}: fixture readback differs`);
+  await open(1);
+  await activate(choose("don"));
+  await expect.poll(() => state.latest()?.state.setup?.setup).toEqual(complete.state.setup.setup);
+  await expect(page.locator(".table-advance button")).toBeEnabled();
+  assert.equal(state.latest().gameId, original.gameId, `${tag}: role correction changed identity`);
+  assert.equal(state.latest().state.setup.bestMoveEnabled, language === "en");
+  assert.equal(state.latest().state.setup.clubDeviationsAcknowledged, undefined);
 }
 
 async function scenario(browser, browserName, viewport, language) {
@@ -434,6 +595,7 @@ async function scenario(browser, browserName, viewport, language) {
   const context = await browser.newContext({ viewport, hasTouch: browserName === "chromium" });
   const page = await context.newPage();
   page.setDefaultTimeout(15000);
+  const cdp = browserName === "chromium" ? await context.newCDPSession(page) : null;
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("dialog", (dialog) => {
@@ -615,6 +777,7 @@ async function scenario(browser, browserName, viewport, language) {
       0,
       `${tag}: reload restored old deal`,
     );
+    await roleCorrections(page, state, language, tag, cdp);
     await page.locator(".role-draw-back").click();
 
     // Casper's virtual seat is neither a drag source nor a valid destination.
@@ -638,10 +801,21 @@ async function scenario(browser, browserName, viewport, language) {
     unchanged(state, locked, `${tag}: Casper source`);
     assert.equal(await page.locator("#casper-player").inputValue(), "Casper");
     await page.screenshot({ path: path.join(evidence, `${tag}-casper.png`), fullPage: true });
+    await noDeviationUI(page);
+    await expect(page.getByRole("button", { name: labels[language].start })).toBeEnabled();
+    await page.getByRole("button", { name: labels[language].start }).click();
+    await expect(roleCard(page, 10)).toBeDisabled();
+    for (let seat = 1; seat <= 9; seat += 1) await roleCard(page, seat).click();
+    await page.locator(".table-advance button").click();
+    await expect.poll(() => state.latest()?.state.game?.phase).toBe("mafia-planning");
+    await noDeviationUI(page);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.locator(".game-shell:not(.role-draw-screen) .game-header h1")).toBeVisible();
+    await noDeviationUI(page);
     state.ensureClean();
     same(errors, [], `${tag}: browser exceptions`);
     console.log(
-      `PASS ${tag}: mouse move/swap/no-op, cancelled search, role reset, reload, Casper; ${JSON.stringify({ gameId: drawn.gameId, screenshots: 3, viewport: layout.viewport })}`,
+      `PASS ${tag}: seat corrections, triple-tap reroll, ${cdp ? "trusted left/right swipes" : "keyboard role menu"}, clear/select, full-deal reload/readback, Casper/live without deviation prompts; ${JSON.stringify({ gameId: drawn.gameId, screenshots: 5, viewport: layout.viewport })}`,
     );
   } catch (error) {
     await page.screenshot({ path: path.join(evidence, `${tag}-failure.png`), fullPage: true });

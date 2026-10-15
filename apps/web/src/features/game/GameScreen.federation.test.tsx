@@ -247,9 +247,8 @@ describe("federation GameScreen", () => {
   });
 
   it.each(["live", "preview"] as const)(
-    "omits the dated badge but retains acknowledged deviations without role labels in %s",
-    async (mode) => {
-      const user = userEvent.setup();
+    "omits the dated badge and deviation notices in Russian %s",
+    (mode) => {
       render(
         <I18nProvider locale="ru">
           <GameScreen
@@ -257,20 +256,15 @@ describe("federation GameScreen", () => {
             hostName="Host"
             privacyHidden
             mode={mode}
-            clubDeviationsAcknowledged={["role-reroll", "best-move-disabled", "casper"]}
+
             onGameChange={vi.fn()}
             onEvent={vi.fn()}
           />
         </I18nProvider>,
       );
       expect(screen.queryByText("MAFGAME · 1 июля 2026")).toBeNull();
-      await user.click(screen.getByText("Нестандартные клубные отклонения"));
-      const notice = screen.getByRole("group", { name: "Нестандартные клубные отклонения" });
-      expect(notice).toHaveTextContent("Роль была перераздана по усмотрению ведущего.");
-      expect(notice).toHaveTextContent("Лучший ход отключён.");
-      expect(notice).toHaveTextContent("Каспер заменяет живого игрока.");
-      expect(notice.querySelectorAll(".role-badge")).toHaveLength(0);
-      expect(notice).not.toHaveTextContent("Player");
+      expect(screen.queryByText("Нестандартные клубные отклонения")).toBeNull();
+      expect(document.querySelector(".federation-rules-notice")).toBeNull();
     },
   );
 

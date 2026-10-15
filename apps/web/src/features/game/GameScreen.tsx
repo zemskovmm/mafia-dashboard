@@ -21,10 +21,6 @@ import {
   FederationDisciplineControls,
   type DisciplineRequest,
 } from "./FederationDisciplineControls.js";
-import {
-  FederationRulesNotice,
-  type ClubDeviationAcknowledgement,
-} from "./FederationRulesNotice.js";
 import { hasImmediateRemovalAnnouncement } from "./federation-ui-state.js";
 import { FederationBestMoveStage } from "./FederationBestMoveStage.js";
 import { NightStage } from "../night/NightStage.js";
@@ -37,7 +33,6 @@ import { VotingStage } from "../voting/VotingStage.js";
 interface GameScreenProps {
   readonly game: GameState;
   readonly gameName?: string;
-  readonly clubDeviationsAcknowledged?: readonly ClubDeviationAcknowledgement[];
   readonly hostName: string;
   readonly onGameChange: (game: GameState) => void;
   readonly onEvent: (type: string, payload: Record<string, unknown>) => void;
@@ -133,7 +128,6 @@ const phaseTitle = (game: GameState, t: GameTranslator): string => {
 export const GameScreen = ({
   game,
   gameName,
-  clubDeviationsAcknowledged,
   hostName,
   onGameChange,
   onEvent,
@@ -586,10 +580,6 @@ export const GameScreen = ({
             {t("game.live")} · {clubName === undefined ? "" : `${clubName} · `}
             {displayGameName}
           </p>
-          <FederationRulesNotice
-            federation={federation}
-            clubDeviationsAcknowledged={clubDeviationsAcknowledged}
-          />
           <h1>
             {mode === "preview"
               ? `${phaseTitle(game, t)} · ${t("game.preview")}`
