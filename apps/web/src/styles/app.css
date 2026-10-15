@@ -1430,13 +1430,13 @@ h2 {
 .table-center-secondary:hover:not(:disabled) {
   background: rgb(255 255 255 / 9%);
 }
-.night-observation-control {
-  display: grid;
-  gap: 4px;
-}
-.night-observation-control > button[aria-pressed="true"] {
-  color: var(--accent);
-  border-color: var(--accent);
+.federation-shooting-observation > button[aria-pressed="true"] {
+  color: var(--accent-hover);
+  background: rgb(from var(--accent) r g b / 18%);
+  border-color: var(--accent-hover);
+  box-shadow:
+    inset 0 0 16px rgb(from var(--accent) r g b / 16%),
+    0 0 18px rgb(from var(--accent) r g b / 35%);
 }
 .table-vote-center,
 .table-night-center,
@@ -2035,6 +2035,12 @@ button.player-seat.is-voting-highlight::after,
   background: rgb(178 38 43 / 88%);
   border-color: #ff8177;
   opacity: 1;
+}
+.seat-actions .shooter-button.has-additional-shots {
+  border-color: var(--accent-hover);
+  box-shadow:
+    inset 0 0 0 1px var(--accent-hover),
+    0 0 12px rgb(from var(--accent) r g b / 24%);
 }
 .table-stage button {
   border-radius: var(--table-control-radius);

@@ -102,6 +102,8 @@ describe("federation NightStage", () => {
           locale === "en" ? "Observed multiple shooting" : "Зафиксирована многократная стрельба",
       });
       expect(toggle).toHaveAttribute("aria-pressed", "true");
+      expect(toggle.parentElement?.textContent).toBe(toggle.textContent);
+      expect(toggle).not.toHaveAttribute("aria-describedby");
       const observationButton = (seat: number) =>
         screen.getByRole("button", {
           name:
@@ -109,8 +111,19 @@ describe("federation NightStage", () => {
               ? `Record observed shot by #${shooter.seat} at Player ${seat}`
               : `Записать наблюдаемый выстрел №${shooter.seat} в игрока Player ${seat}`,
         });
+      expect(observationButton(target.seat)).toHaveClass("is-selected");
+      expect(observationButton(target.seat)).not.toHaveClass("has-additional-shots");
       for (let repeat = 0; repeat < 12; repeat++) await user.click(observationButton(target.seat));
       await user.click(observationButton(10));
+      expect(observationButton(target.seat)).toHaveClass("is-selected", "has-additional-shots");
+      expect(observationButton(target.seat)).toHaveAttribute(
+        "aria-description",
+        locale === "en" ? "Additional shots recorded: 12" : "Дополнительных выстрелов: 12",
+      );
+      expect(observationButton(10)).toHaveClass("has-additional-shots");
+      expect(observationButton(10)).not.toHaveClass("is-selected");
+      expect(observationButton(10)).toHaveAttribute("aria-pressed", "true");
+      expect(toggle.parentElement?.textContent).toBe(toggle.textContent);
       expect(accepted.mock.lastCall?.[0]).toEqual({
         type: "mafia.shots-observed",
         payload: {
@@ -124,6 +137,18 @@ describe("federation NightStage", () => {
       expect(changed.mock.lastCall?.[0].shotObservations).toHaveLength(13);
       await user.click(toggle);
       expect(toggle).toHaveAttribute("aria-pressed", "false");
+      const correction = screen.getByRole("button", {
+        name:
+          locale === "en"
+            ? `Assign shooter ${shooter.seat} to target Player 10`
+            : `Назначить цель для стрелка ${shooter.seat}: Player 10`,
+      });
+      expect(correction).toHaveClass("has-additional-shots");
+      expect(correction).toHaveAttribute("aria-pressed", "false");
+      expect(correction).toHaveAttribute(
+        "aria-description",
+        locale === "en" ? "Additional shots recorded: 1" : "Дополнительных выстрелов: 1",
+      );
       await user.click(toggle);
       expect(changed.mock.lastCall?.[0].shotObservations).toHaveLength(13);
       await user.click(

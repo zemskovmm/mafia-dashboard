@@ -62,6 +62,9 @@ const sources = [
   "apps/web/src/features/setup/SetupWizard.tsx",
   "apps/web/src/features/game/GameScreen.tsx",
   "apps/web/src/features/night/NightStage.tsx",
+  "apps/web/src/features/night/NightShootingObservation.tsx",
+  "apps/web/src/i18n/messages/night.ts",
+  "scripts/verify-federation-ui.mjs",
   "apps/web/src/features/game/FederationBestMoveStage.tsx",
   "apps/web/src/features/voting/FederationBallot.tsx",
   "apps/web/src/features/voting/FederationBallotTools.tsx",
@@ -70,7 +73,6 @@ const sources = [
   "apps/web/src/features/setup/SetupWizard.css",
   "apps/web/src/features/table/GameTable.tsx",
   "apps/web/src/styles/app.css",
-  "apps/web/src/features/game/FederationRulesNotice.tsx",
   "apps/web/src/i18n/messages/game.ts",
   "apps/web/src/i18n/messages/shell.ts",
   "packages/game-domain/src/game.ts",
@@ -950,12 +952,42 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
       })
       .click();
     const assigned = (await settled(page, api)).current.state.game.shotAssignments;
+    const shotButton = (seat) =>
+      page
+        .locator(`.seat-anchor[data-seat="${seat}"] .shooter-button`)
+        .filter({ hasText: new RegExp(`^#${shooter}$`) });
+    const appearance = async (button) => {
+      await page.mouse.move(0, 0);
+      return button.evaluate(async (element) => {
+        await Promise.all(element.getAnimations().map((animation) => animation.finished));
+        const style = getComputedStyle(element);
+        const bounds = element.getBoundingClientRect();
+        return {
+          border: style.borderColor,
+          shadow: style.boxShadow,
+          background: style.backgroundColor,
+          size: [bounds.width, bounds.height],
+        };
+      });
+    };
     const observationMode = page.getByRole("button", {
       name: "Observed multiple shooting",
       exact: true,
     });
+    const inactiveMode = await appearance(observationMode);
+    const primaryShot = await appearance(shotButton(target));
+    await expect(shotButton(target)).toHaveClass(/is-selected/);
+    await expect(page.locator(".has-additional-shots")).toHaveCount(0);
     await observationMode.click();
     await expect(observationMode).toHaveAttribute("aria-pressed", "true");
+    const activeMode = await appearance(observationMode);
+    assert.notEqual(activeMode.shadow, inactiveMode.shadow, "Active recording has a visible glow");
+    assert.notEqual(activeMode.shadow, "none");
+    assert.notEqual(activeMode.border, inactiveMode.border);
+    assert.deepEqual(activeMode.size, inactiveMode.size);
+    await expect(page.locator(".federation-shooting-observation")).toHaveText(
+      "Observed multiple shooting",
+    );
     await expect(page.getByRole("dialog")).toHaveCount(0);
     assert.equal((await settled(page, api)).current.state.game.shotObservations, undefined);
     const extra = page.getByRole("button", {
@@ -964,8 +996,12 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     });
     for (let i = 0; i < 4; i++) await extra.click();
     await observationMode.click();
+    await expect(observationMode).toHaveAttribute("aria-pressed", "false");
+    assert.equal((await appearance(observationMode)).shadow, inactiveMode.shadow);
+    await expect(shotButton(target)).toHaveClass(/has-additional-shots/);
     await observationMode.click();
     const otherTarget = target === 9 ? 8 : 9;
+    const unselectedShot = await appearance(shotButton(otherTarget));
     await page
       .getByRole("button", {
         name: `Record observed shot by #${shooter} at ${display(day, otherTarget)}`,
@@ -973,6 +1009,25 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
       })
       .click();
     const observed = await saveReplay(page, api, "inline-observations", width, height);
+    await expect(shotButton(target)).toHaveClass(/is-selected/);
+    await expect(shotButton(target)).toHaveClass(/has-additional-shots/);
+    await expect(shotButton(otherTarget)).toHaveClass(/has-additional-shots/);
+    await expect(shotButton(otherTarget)).not.toHaveClass(/is-selected/);
+    await expect(page.locator(".has-additional-shots")).toHaveCount(2);
+    const repeatedShot = await appearance(shotButton(target));
+    const additionalShot = await appearance(shotButton(otherTarget));
+    assert.equal(repeatedShot.background, primaryShot.background, "Original fill is retained");
+    assert.notEqual(repeatedShot.border, primaryShot.border, "Repeated original gains gold border");
+    assert.equal(additionalShot.border, repeatedShot.border, "Additional pairs use the same gold");
+    assert.notEqual(additionalShot.border, unselectedShot.border);
+    assert.notEqual(additionalShot.shadow, unselectedShot.shadow);
+    assert.deepEqual(repeatedShot.size, primaryShot.size);
+    assert.deepEqual(additionalShot.size, unselectedShot.size);
+    assert.ok(
+      additionalShot.size.every((size) => size >= 48),
+      "Shot targets remain touch-sized",
+    );
+    row.shotFeedback = { inactiveMode, activeMode, primaryShot, repeatedShot, additionalShot };
     assert.deepEqual(observed.env.current.state.game.shotAssignments, assigned);
     assert.equal(observed.env.current.state.game.shotObservations.length, 5);
     assert.deepEqual(
@@ -985,9 +1040,58 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
       (await settled(page, api)).current.state.game.shotObservations,
       observed.env.current.state.game.shotObservations,
     );
+    await expect(observationMode).toHaveAttribute("aria-pressed", "false");
+    assert.equal((await appearance(observationMode)).shadow, inactiveMode.shadow);
+    assert.deepEqual(await appearance(shotButton(target)), repeatedShot);
+    assert.deepEqual(await appearance(shotButton(otherTarget)), additionalShot);
+    const shootingLanguage = club.language;
+    try {
+      club.language = "ru";
+      await page.reload({ waitUntil: "networkidle" });
+      const russianMode = page.getByRole("button", {
+        name: "Зафиксирована многократная стрельба",
+        exact: true,
+      });
+      await russianMode.focus();
+      await page.keyboard.press("Space");
+      await expect(russianMode).toHaveAttribute("aria-pressed", "true");
+      assert.equal((await appearance(russianMode)).shadow, activeMode.shadow);
+      await expect(page.locator(".federation-shooting-observation")).toHaveText(
+        "Зафиксирована многократная стрельба",
+      );
+      await expect(shotButton(otherTarget)).toHaveAttribute(
+        "aria-description",
+        "Дополнительных выстрелов: 1",
+      );
+      row.screenshots.push(await capture(page, "inline-observations-ru", width, height));
+    } finally {
+      club.language = shootingLanguage;
+    }
+    await page.reload({ waitUntil: "networkidle" });
     await page.getByRole("button", { name: "Evaluate Mafia shots", exact: true }).click();
     const missed = await saveReplay(page, api, "multiple-shots-miss", width, height);
     assert.equal(missed.env.current.state.game.nightResult.kind, "miss");
+    await page.getByRole("button", { name: "Open developer menu", exact: true }).click();
+    const enableDev = page.getByRole("button", { name: "Enable dev mode", exact: true });
+    if (await enableDev.isVisible()) await enableDev.click();
+    await page.getByRole("button", { name: "Past game timeline", exact: true }).click();
+    const shotDetails = page.getByRole("complementary", { name: "Selected event details" });
+    await expect(
+      shotDetails.getByRole("heading", { name: "Mafia miss", exact: true }),
+    ).toBeVisible();
+    await expect(shotDetails.getByRole("listitem")).toHaveCount(Object.keys(assigned).length);
+    await page
+      .getByRole("button", { name: /^1 physical shot observed;/ })
+      .last()
+      .click();
+    await expect(shotDetails.getByRole("listitem")).toHaveCount(1);
+    await expect(shotDetails.getByRole("listitem")).toContainText(`#${shooter}`);
+    await expect(shotDetails.getByRole("listitem")).toContainText(`#${otherTarget}`);
+    const timelineImage = path.join(evidence, `${width}x${height}-shot-timeline.png`);
+    await page.screenshot({ path: timelineImage });
+    row.screenshots.push(timelineImage);
+    await page.reload({ waitUntil: "networkidle" });
+    assert.deepEqual((await settled(page, api)).current.state, missed.env.current.state);
     row.scenarios.push({
       name: "inline-repeated-same-and-different-shots-reload-miss",
       ...missed.proof,

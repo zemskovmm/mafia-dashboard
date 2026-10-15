@@ -129,12 +129,24 @@ export const NightStage = ({
           shooters.map((shooter) => {
             const assignedTarget = game.shotAssignments[shooter.seat];
             const selected = assignedTarget === target.seat;
+            const additionalShots =
+              game.shotObservations?.filter(
+                (shot) =>
+                  shot.additional &&
+                  shot.shooterSeat === shooter.seat &&
+                  shot.targetSeat === target.seat,
+              ).length ?? 0;
             return (
               <button
                 type="button"
                 key={shooter.seat}
-                className={`shooter-button${selected ? " is-selected" : ""}`}
-                aria-pressed={selected}
+                className={`shooter-button${selected ? " is-selected" : ""}${additionalShots > 0 ? " has-additional-shots" : ""}`}
+                aria-pressed={selected || (observingShots && additionalShots > 0)}
+                aria-description={
+                  additionalShots > 0
+                    ? t("night.additionalShots", { count: additionalShots })
+                    : undefined
+                }
                 aria-label={t(
                   observingShots
                     ? "night.observeShooter"
@@ -167,7 +179,6 @@ export const NightStage = ({
             </strong>
             {isFederationGame(game) ? (
               <NightShootingObservation
-                game={game}
                 active={observingShots}
                 onToggle={() => setObservationNight(observingShots ? null : game.day)}
               />

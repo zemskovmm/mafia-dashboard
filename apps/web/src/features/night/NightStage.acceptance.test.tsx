@@ -229,6 +229,20 @@ describe("App physical-count acceptance and recovery", () => {
         { shooterSeat: 8, targetSeat: 9, additional: true },
         { shooterSeat: 8, targetSeat: 7, additional: true },
       ]);
+      const expectShotFeedback = () => {
+        expect(document.querySelectorAll(".shooter-button.has-additional-shots")).toHaveLength(2);
+        expect(document.querySelector('.seat-anchor[data-seat="9"] .shooter-button')).toHaveClass(
+          "is-selected",
+          "has-additional-shots",
+        );
+        expect(document.querySelector('.seat-anchor[data-seat="7"] .shooter-button')).toHaveClass(
+          "has-additional-shots",
+        );
+        expect(
+          document.querySelector('.seat-anchor[data-seat="7"] .shooter-button'),
+        ).not.toHaveClass("is-selected");
+      };
+      expectShotFeedback();
       const accepted = current();
       expect(hashGameState(replayGameLog(accepted.initialGame!, accepted.events).game)).toBe(
         hashGameState(game()),
@@ -248,6 +262,7 @@ describe("App physical-count acceptance and recovery", () => {
         "aria-pressed",
         "false",
       );
+      expectShotFeedback();
       recovered.unmount();
       // This is the real remote admission/local-cache path, with IO mocked only at the API boundary.
       window.localStorage.clear();
@@ -255,6 +270,7 @@ describe("App physical-count acceptance and recovery", () => {
       renderWorkspace(locale);
       expect(game().shotAssignments).toEqual({ 8: 9, 9: 9, 10: 9 });
       expect(game().shotObservations).toEqual((accepted.game as GameState).shotObservations);
+      expectShotFeedback();
       // Ordinary corrections after restoration do not erase accepted physical facts.
       await user.click(
         await screen.findByRole("button", {
@@ -266,6 +282,7 @@ describe("App physical-count acceptance and recovery", () => {
       );
       expect(game().shotAssignments).toEqual({ 8: 7, 9: 7, 10: 7 });
       expect(game().shotObservations).toEqual((accepted.game as GameState).shotObservations);
+      expect(document.querySelectorAll(".shooter-button.has-additional-shots")).toHaveLength(2);
       await user.click(
         await screen.findByRole("button", {
           name: locale === "en" ? "Evaluate Mafia shots" : "Определить результат выстрелов мафии",
@@ -333,6 +350,8 @@ describe("App physical-count acceptance and recovery", () => {
               : "Записать наблюдаемые выстрелы всей мафии в игрока Player 9",
         }),
       );
+      expect(document.querySelectorAll(".shooter-button.is-selected")).toHaveLength(3);
+      expect(document.querySelectorAll(".shooter-button.has-additional-shots")).toHaveLength(0);
       await user.click(
         screen.getByRole("button", {
           name:
@@ -342,6 +361,9 @@ describe("App physical-count acceptance and recovery", () => {
         }),
       );
       expect(game().shotObservations).toHaveLength(6);
+      expect(
+        document.querySelectorAll(".shooter-button.is-selected.has-additional-shots"),
+      ).toHaveLength(3);
       expect(
         game()
           .shotObservations?.slice(0, 3)
@@ -388,6 +410,7 @@ describe("App physical-count acceptance and recovery", () => {
       );
       expect(game().shotObservations).toHaveLength(3);
       expect(game().shotObservations?.every((shot) => !shot.additional)).toBe(true);
+      expect(document.querySelectorAll(".shooter-button.has-additional-shots")).toHaveLength(0);
       await user.click(
         screen.getByRole("button", {
           name:

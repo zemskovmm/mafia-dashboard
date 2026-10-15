@@ -5,6 +5,7 @@ import {
   createGameLogEntry,
   createInitialGameBaseline,
   replayGameLog,
+  resolveMafiaShots,
   type ReplayFrame,
 } from "@mafia/game-domain";
 import { namedProfiles } from "../../test-player-directory.js";
@@ -22,7 +23,8 @@ const props = {
 describe("federation current-history screen", () => {
   it.each(["en", "ru"] as const)(
     "reviews repeated same-target shots privately in %s without duplicate list keys",
-    (locale) => {
+    async (locale) => {
+      const user = userEvent.setup();
       const initial = createFederationSampleGameHistory().frames.find(
         ({ entry }) => entry.type === "mafia.multiple-shot-observed",
       )!.before;
@@ -57,22 +59,52 @@ describe("federation current-history screen", () => {
           },
         },
       });
+      const resolution = resolveMafiaShots(observed.after);
+      const resolved = createGameLogEntry({
+        gameId: "observations",
+        id: "resolved",
+        sequence: 3,
+        parentEventId: "observed",
+        createdAt: "2026-10-14T16:00:02Z",
+        before: observed.after,
+        draft: {
+          type: "mafia.shots-resolved",
+          payload: { shots: resolution.secretShots, result: resolution.result },
+        },
+      });
       const { frames } = replayGameLog(createInitialGameBaseline(initial), [
         root.entry,
         observed.entry,
+        resolved.entry,
       ]);
       const errors = vi.spyOn(console, "error");
       const view = render(
         <I18nProvider locale={locale}>
           <GameTimelineScreen
             {...props}
-            currentHistory={{ label: "Physical shots", frames, headEventId: "observed" }}
+            currentHistory={{ label: "Physical shots", frames, headEventId: "resolved" }}
           />
         </I18nProvider>,
       );
       const inspector = within(
         screen.getByRole("complementary", {
           name: locale === "en" ? "Selected event details" : "Детали выбранного события",
+        }),
+      );
+      expect(
+        inspector.getByRole("heading", {
+          name: locale === "en" ? "Mafia miss" : "Мафия промахнулась",
+        }),
+      ).toBeInTheDocument();
+      const original = inspector.getAllByRole("listitem");
+      expect(original).toHaveLength(1);
+      expect(original[0]).toHaveTextContent(`Player ${shooterSeat} → Player 9`);
+      await user.click(
+        screen.getByRole("button", {
+          name:
+            locale === "en"
+              ? /^3 physical shots observed;/
+              : /^Зафиксировано 3 физических выстрела;/,
         }),
       );
       const items = inspector.getAllByRole("listitem");
