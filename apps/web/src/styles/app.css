@@ -3573,7 +3573,10 @@ button.player-seat.is-voting-highlight::after,
   }
   .live-side-panel.has-live-utilities > #game-utility-panels {
     --nomination-inset: 7px;
+    flex: 0 1 auto;
+    min-height: 0;
     padding: 8px var(--nomination-inset) 0;
+    overflow-y: auto;
   }
   .live-side-panel.has-live-utilities .timer-panel,
   .live-side-panel.has-live-utilities .nomination-panel {
@@ -3885,12 +3888,9 @@ html:-webkit-full-screen #root {
     width: var(--s6-rail-width);
     min-height: 0;
     padding: 0;
+    padding-bottom: max(0px, calc(env(safe-area-inset-bottom) - var(--s6-edge)));
     overflow: hidden;
     border-radius: 14px;
-  }
-  .game-shell:has(.nomination-panel li:nth-child(2)) .live-side-panel.has-live-utilities {
-    overflow-y: auto;
-    overscroll-behavior: contain;
   }
   .live-side-panel.has-live-utilities > * {
     flex: 0 0 auto;
@@ -3899,7 +3899,10 @@ html:-webkit-full-screen #root {
   }
   .live-side-panel.has-live-utilities > #game-utility-panels {
     --nomination-inset: 6px;
+    flex: 0 1 auto;
+    min-height: 0;
     padding: 7px var(--nomination-inset) 0;
+    overflow-y: auto;
   }
   .live-side-panel.has-live-utilities .timer-panel,
   .live-side-panel.has-live-utilities .nomination-panel {

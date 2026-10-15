@@ -191,6 +191,50 @@ const assertRolePresentation = async (page, { masked, roleLighting, phase }) => 
 };
 const evidencePath = (name) => `.AI/mafia-dashboard-${name}.png`;
 const screenshotPath = process.env.UI_SCREENSHOT ?? evidencePath("setup");
+const verifyFadeFooter = async (state) => {
+  const evidence = await page.locator(".live-side-panel").evaluate((panel) => {
+    const dock = panel.querySelector(".youtube-dock");
+    const controls = dock.querySelector(".live-music-controls");
+    const bottomInset = (element) => {
+      const style = getComputedStyle(element);
+      return parseFloat(style.borderBottomWidth) + parseFloat(style.paddingBottom);
+    };
+    const panelBounds = panel.getBoundingClientRect();
+    const dockBounds = dock.getBoundingClientRect();
+    const controlsBounds = controls.getBoundingClientRect();
+    return {
+      panel: panelBounds.toJSON(),
+      dock: dockBounds.toJSON(),
+      controls: controlsBounds.toJSON(),
+      panelPadding: getComputedStyle(panel).paddingBottom,
+      controlPadding: getComputedStyle(controls).paddingBottom,
+      gaps: [
+        panelBounds.bottom - bottomInset(panel) - dockBounds.bottom,
+        dockBounds.bottom - bottomInset(dock) - controlsBounds.bottom,
+        ...[...controls.querySelectorAll("button")].map(
+          (button) =>
+            controlsBounds.bottom - bottomInset(controls) - button.getBoundingClientRect().bottom,
+        ),
+      ],
+      buttons: [...controls.querySelectorAll("button")].map((button) =>
+        button.getBoundingClientRect().toJSON(),
+      ),
+      dockRows: getComputedStyle(dock).gridTemplateRows,
+    };
+  });
+  await page.screenshot({ path: screenshotPath.replace(/\.png$/i, `-fade-${state}.png`) });
+  if (
+    evidence.gaps.some((gap) => Math.abs(gap) > 1) ||
+    parseFloat(evidence.controlPadding) <= 0 ||
+    evidence.buttons.length !== 3 ||
+    evidence.buttons.some((button) => button.width < 48 || button.height < 48)
+  ) {
+    throw new Error(
+      `Fade controls must stay at the padded card bottom (${state}): ${JSON.stringify(evidence)}`,
+    );
+  }
+  console.log(`Fade footer ${state}: ${JSON.stringify(evidence)}`);
+};
 const verifyUtilityToggle = async () => {
   const rail = page.locator(".live-side-panel.has-live-utilities");
   const toggle = rail.locator(".utility-panels-toggle");
@@ -260,6 +304,7 @@ const verifyUtilityToggle = async () => {
         `Utility toggle must flow flush inside parent clipping (${state}): ${JSON.stringify({ ...evidence, cornerClipped })}`,
       );
     console.log(`Utility toggle ${state}: ${JSON.stringify({ ...evidence, cornerClipped })}`);
+    await verifyFadeFooter(state);
   };
   await toggle.hover();
   await measure("expanded-hover");
@@ -294,6 +339,16 @@ const verifyUtilityToggle = async () => {
   );
   await toggle.press("Enter");
   await page.getByRole("button", { name: "Pause timer", exact: true }).click();
+  const handle = music.locator(".music-panel-handle");
+  await handle.click();
+  await music.locator(".youtube-session-queue").waitFor();
+  await verifyFadeFooter("player-expanded");
+  await toggle.click();
+  await verifyFadeFooter("player-expanded-utilities-hidden");
+  await handle.click();
+  await verifyFadeFooter("player-collapsed-utilities-hidden");
+  await toggle.click();
+  await verifyFadeFooter("player-collapsed");
 };
 const tableScreenshotPath = process.env.UI_TABLE_SCREENSHOT ?? evidencePath("table");
 const sidePanelScreenshotPath = process.env.UI_SIDE_PANEL_SCREENSHOT ?? evidencePath("side-panel");
@@ -1110,6 +1165,103 @@ try {
   await restoreLegacySetup();
   if (process.env.UI_SIDE_PANEL_ONLY === "1") {
     await verifyUtilityToggle();
+    await page.getByRole("button", { name: "Select available players" }).click();
+    const available = page.getByRole("button", { name: /^Mark UI Player \d+ available$/ });
+    for (let index = 0; index < 11; index += 1) await available.first().click();
+    await page.getByRole("button", { name: "Close available players" }).click();
+    await page.getByRole("combobox", { name: "Host player" }).click();
+    await page.getByRole("option", { name: "UI Player 11", exact: true }).click();
+    await page.getByRole("button", { name: "Assign players" }).click();
+    await page.locator(".player-setup-card").evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+    });
+    await page.getByRole("button", { name: "Start game", exact: true }).click();
+    await page.getByRole("heading", { name: "Role giveaway" }).waitFor();
+    await verifyFadeFooter("live-collapsed");
+    await verifyUtilityToggle();
+    const fullscreen = page.getByRole("button", { name: "Enter fullscreen" });
+    if (await fullscreen.isVisible()) {
+      await fullscreen.click();
+      await page.getByRole("button", { name: "Exit fullscreen" }).waitFor();
+      await verifyFadeFooter("fullscreen");
+      await page.getByRole("button", { name: "Exit fullscreen" }).click();
+    }
+    for (let index = 0; index < 10; index += 1) {
+      await page
+        .getByRole("button", { name: /^Draw role for / })
+        .first()
+        .click();
+    }
+    await page.getByRole("button", { name: "Begin Mafia planning stage" }).click();
+    await page.getByRole("button", { name: "Continue night zero to Sheriff wake-up" }).click();
+    await page.getByRole("button", { name: "Begin day one" }).click();
+    for (let index = 0; index < 3; index += 1) {
+      const current = await page.locator(".player-seat.is-current .seat-name").innerText();
+      await page.getByRole("button", { name: `Nominate ${current}`, exact: true }).click();
+      await verifyFadeFooter(`nominees-${index + 1}`);
+      await page.getByRole("button", { name: "Next player", exact: true }).click();
+    }
+    const utilities = page.locator("#game-utility-panels");
+    const scroll = await utilities.evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+      const bounds = element.getBoundingClientRect();
+      const last = element.querySelector(".nomination-panel li:last-child").getBoundingClientRect();
+      return {
+        top: element.scrollTop,
+        height: element.clientHeight,
+        content: element.scrollHeight,
+        lastVisible: last.top >= bounds.top && last.bottom <= bounds.bottom + 1,
+      };
+    });
+    if (!scroll.lastVisible || (scroll.content > scroll.height + 1 && scroll.top <= 0)) {
+      throw new Error(
+        `Last nominee is not reachable above the fade footer: ${JSON.stringify(scroll)}`,
+      );
+    }
+    await verifyFadeFooter("utilities-scrolled");
+    await page.getByRole("button", { name: "Open Manage menu" }).click();
+    await page.locator("#manage-menu-drawer select").selectOption("ru");
+    await page.locator('html[lang="ru"]').waitFor();
+    await page.locator(".manage-toolbar-button").click();
+    await page.getByRole("button", { name: "Быстрое затухание музыки" }).waitFor();
+    await verifyFadeFooter("russian-nominees");
+    await page.locator(".music-panel-handle").click();
+    await page.locator(".youtube-session-queue").waitFor();
+    await verifyFadeFooter("russian-nominees-expanded");
+    await page.locator(".music-panel-handle").click();
+    if (browserName === "chromium") {
+      const cdp = await context.newCDPSession(page);
+      await cdp.send("Emulation.setSafeAreaInsetsOverride", {
+        insets: { top: 0, right: 0, bottom: 34, left: 0 },
+      });
+      // Reload so existing padding is recomputed under the new native environment.
+      await page.reload({ waitUntil: "networkidle" });
+      await page.locator(".game-shell.phase-day").waitFor();
+      const safeArea = await page.evaluate(() => {
+        const probe = document.createElement("div");
+        probe.style.paddingBottom = "env(safe-area-inset-bottom)";
+        document.body.append(probe);
+        const inset = parseFloat(getComputedStyle(probe).paddingBottom);
+        probe.remove();
+        return {
+          inset,
+          clearance:
+            innerHeight -
+            document.querySelector(".live-music-controls button").getBoundingClientRect().bottom,
+        };
+      });
+      if (safeArea.inset !== 34 || safeArea.clearance < safeArea.inset) {
+        throw new Error(`Fade footer lost safe-area protection: ${JSON.stringify(safeArea)}`);
+      }
+      await verifyFadeFooter("safe-area-34px");
+      await cdp.send("Emulation.setSafeAreaInsetsOverride", {
+        insets: { top: 0, right: 0, bottom: 0, left: 0 },
+      });
+      await page.reload({ waitUntil: "networkidle" });
+      await page.locator(".game-shell.phase-day").waitFor();
+      await verifyFadeFooter("safe-area-cleared");
+      await cdp.detach();
+    }
     assertNoPageErrors();
     console.log("Utility toggle verification: PASS");
     await browser.close();
