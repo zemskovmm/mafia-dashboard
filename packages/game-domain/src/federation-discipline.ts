@@ -13,6 +13,7 @@ export const removalOccurrenceStages: readonly RemovalOccurrenceStage[] = [
   "agreement",
   "before-shooting-count",
   "shooting-count",
+  "after-shooting-result",
   "don-check",
   "sheriff-check",
   "day-discussion",
@@ -30,6 +31,7 @@ const stagePhases: Readonly<Record<RemovalOccurrenceStage, readonly GamePhase[]>
   ],
   "before-shooting-count": ["night-mafia"],
   "shooting-count": ["night-mafia"],
+  "after-shooting-result": ["night-mafia-result"],
   "don-check": ["night-don", "night-don-result"],
   "sheriff-check": ["night-sheriff", "night-sheriff-result"],
   "day-discussion": ["day"],
@@ -88,6 +90,9 @@ export const observeDisciplinaryRemoval = (
   assertRemovalObservation(observation);
   if (!stagePhases[observation.stage].includes(game.phase))
     throw new Error("Occurrence stage does not match the current phase");
+  const afterShooting = observation.stage === "after-shooting-result";
+  if (afterShooting && game.nightResult === undefined)
+    throw new Error("A retained shooting result is required for a post-result removal");
   const player = game.players.find((p) => p.seat === observation.seat);
   if (
     !player ||
@@ -101,6 +106,9 @@ export const observeDisciplinaryRemoval = (
     game.carCrashResult.seats.includes(player.seat);
   const departingVictim =
     acceptedVoteVictim ||
+    (afterShooting &&
+      game.nightResult?.kind === "kill" &&
+      game.nightResult.targetSeat === player.seat) ||
     (player.status === "eliminated" &&
       (game.goodbyeSeats?.includes(player.seat) ||
         (game.nightResult?.kind === "kill" && game.nightResult.targetSeat === player.seat)));
@@ -119,6 +127,7 @@ export const observeDisciplinaryRemoval = (
     "agreement",
     "before-shooting-count",
     "shooting-count",
+    "after-shooting-result",
     "don-check",
     "sheriff-check",
   ].includes(observation.stage);
@@ -161,7 +170,7 @@ export const observeDisciplinaryRemoval = (
       .filter((n) => changed.players.find((p) => p.seat === n.candidateSeat)?.status === "active")
       .map((nomination, index) => ({ ...nomination, order: index + 1 })),
     goodbyeSeats: game.goodbyeSeats?.filter((seat) => seat !== player.seat),
-    ...(player.team === "black"
+    ...(player.team === "black" && !afterShooting
       ? {
           shotAssignments: Object.fromEntries(
             Object.entries(game.shotAssignments).filter(([seat]) => Number(seat) !== player.seat),

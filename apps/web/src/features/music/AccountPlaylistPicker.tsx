@@ -58,6 +58,10 @@ export const AccountPlaylistPicker = ({
     };
   }, [playlistReload, status?.accountLabel, status?.connected, statusError, view]);
 
+  const mafiaPlaylists = playlists?.filter(({ title }) =>
+    title.trim().toLowerCase().startsWith("mafia"),
+  );
+
   if (view === "playlist" && (statusError || !status?.configured || !status.connected)) return null;
 
   if (statusError) {
@@ -163,17 +167,17 @@ export const AccountPlaylistPicker = ({
         <>
           <select
             aria-label={t("Music playlist")}
-            value={playlistId}
+            value={mafiaPlaylists?.some(({ id }) => id === playlistId) ? playlistId : ""}
             onChange={(event) => onPlaylistIdChange(event.target.value)}
           >
             <option value="">{t("Choose a playlist")}</option>
-            {playlists.map((playlist) => (
+            {mafiaPlaylists?.map((playlist) => (
               <option key={playlist.id} value={playlist.id}>
                 {playlist.title} · {t("Playlist tracks", { count: playlist.itemCount })}
               </option>
             ))}
           </select>
-          {playlists.length === 0 ? <p className="muted">{t("No account playlists")}</p> : null}
+          {mafiaPlaylists?.length === 0 ? <p className="muted">{t("No Mafia playlists")}</p> : null}
         </>
       )}
     </section>

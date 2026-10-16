@@ -8,12 +8,18 @@ export const FederationJudgeDialog = ({
   onDismiss,
   children,
   active = true,
+  suspended = false,
+  returnFocus,
+  className = "",
 }: {
   readonly title: string;
   readonly closeLabel: string;
   readonly onDismiss: () => void;
   readonly children: ReactNode;
   readonly active?: boolean;
+  readonly suspended?: boolean;
+  readonly returnFocus?: HTMLElement | null;
+  readonly className?: string;
 }) => {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
@@ -21,7 +27,9 @@ export const FederationJudgeDialog = ({
     const dialog = ref.current;
     if (!dialog || !active) return;
     const previousFocus =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      returnFocus ??
+      (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+
     if (typeof dialog.showModal === "function") dialog.showModal();
     else {
       dialog.setAttribute("open", "");
@@ -32,13 +40,16 @@ export const FederationJudgeDialog = ({
       else dialog.removeAttribute("open");
       if (previousFocus?.isConnected) previousFocus.focus();
     };
-  }, [active]);
+  }, [active, returnFocus]);
   return createPortal(
     <dialog
       ref={ref}
-      className="federation-judge-dialog"
+      className={`federation-judge-dialog ${className}`}
       aria-labelledby={titleId}
+      inert={suspended}
+      aria-hidden={suspended || undefined}
       onKeyDown={(event) => {
+        if (suspended) return;
         if (event.key === "Escape") {
           event.preventDefault();
           onDismiss();
@@ -62,7 +73,7 @@ export const FederationJudgeDialog = ({
       }}
       onCancel={(event) => {
         event.preventDefault();
-        onDismiss();
+        if (!suspended) onDismiss();
       }}
     >
       <header>

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import {
   advanceOpeningPhase,
   completeBestMove,
@@ -21,8 +21,10 @@ import {
   FederationDisciplineControls,
   type DisciplineRequest,
 } from "./FederationDisciplineControls.js";
-import { hasImmediateRemovalAnnouncement, removalStagesForPhase } from "./federation-ui-state.js";
+import { hasImmediateRemovalAnnouncement } from "./federation-ui-state.js";
 import { FederationBestMoveStage } from "./FederationBestMoveStage.js";
+import { RulesBookHost } from "../rules/RulesBookHost.js";
+import type { RuleReferenceId } from "../rules/rule-references.js";
 import { NightStage } from "../night/NightStage.js";
 import { usePlayerDisplayName } from "../players/player-display.js";
 import { GameTable } from "../table/GameTable.js";
@@ -36,19 +38,21 @@ import {
 } from "../effects/player-exit-preferences.js";
 
 interface GameScreenProps {
-  readonly playerExitSettings?: PlayerExitSettings;
   readonly game: GameState;
+  readonly playerExitSettings?: PlayerExitSettings;
   readonly gameName?: string;
   readonly hostName: string;
   readonly onGameChange: (game: GameState) => void;
   readonly onEvent: (type: string, payload: Record<string, unknown>) => void;
-  readonly onAcceptedEvent?: (event: CanonicalGameEventDraft) => void;
+  readonly onAcceptedEvent?: (event: CanonicalGameEventDraft) => GameState | void;
   readonly mode?: "live" | "preview";
   readonly previewSequence?: number;
   readonly onExitPreview?: () => void;
   readonly onResetPreview?: () => void;
   readonly canResetPreview?: boolean;
   readonly privacyHidden: boolean;
+  readonly rulesOpen?: boolean;
+  readonly onRulesClose?: () => void;
   readonly onFinishGame?: () => void;
   readonly finishGameState?: "ready" | "saving" | "saved" | "queued" | "blocked";
   readonly clubLogo?: string | null;
@@ -132,8 +136,8 @@ const phaseTitle = (game: GameState, t: GameTranslator): string => {
 };
 
 export const GameScreen = ({
-  playerExitSettings = DEFAULT_PLAYER_EXIT_SETTINGS,
   game,
+  playerExitSettings = DEFAULT_PLAYER_EXIT_SETTINGS,
   gameName,
   hostName,
   onGameChange,
@@ -145,6 +149,8 @@ export const GameScreen = ({
   onResetPreview = () => undefined,
   canResetPreview = true,
   privacyHidden,
+  rulesOpen = false,
+  onRulesClose = () => undefined,
   onFinishGame = () => undefined,
   finishGameState = "ready",
   clubLogo = null,
@@ -164,7 +170,12 @@ export const GameScreen = ({
     ].includes(game.phase);
   const displayGameName = gameName ?? t("game.table");
   const [swipedSeat, setSwipedSeat] = useState<number | null>(null);
+  const disciplineInvoker = useRef<HTMLElement | null>(null);
   const [disciplineRequest, setDisciplineRequest] = useState<DisciplineRequest | null>(null);
+  const [ruleRequest, setRuleRequest] = useState<{ game: GameState; rule: RuleReferenceId } | null>(
+    null,
+  );
+  const ruleInvoker = useRef<HTMLButtonElement | null>(null);
   const gameplayBlocked =
     federation &&
     (hasImmediateRemovalAnnouncement(game) ||
@@ -211,36 +222,46 @@ export const GameScreen = ({
     game.phase !== "finished" &&
     game.phase !== "draw" &&
     game.phase !== "cancelled";
-  const openPenalty =
+  const penaltiesAvailable =
     federation &&
-    disciplineAvailable &&
-    !gameplayBlocked &&
+    mode === "live" &&
     finishGameState !== "blocked" &&
-    removalStagesForPhase(game.phase).length > 0
-      ? (seat: number) => {
-          const player = game.players.find((candidate) => candidate.seat === seat);
-          if (
-            !player ||
-            (player.status !== "active" &&
-              !(
-                player.status === "eliminated" &&
-                (game.goodbyeSeats?.includes(seat) ||
-                  (game.nightResult?.kind === "kill" && game.nightResult.targetSeat === seat) ||
-                  (game.carCrashResult?.eliminate && game.carCrashResult.seats.includes(seat)))
-              ))
-          )
-            return;
-          setSwipedSeat(null);
-          setDisciplineRequest((previous) => ({
-            seat,
-            action: "removal",
-            id: (previous?.id ?? 0) + 1,
-            game,
-          }));
-        }
-      : undefined;
+    !["finished", "draw", "cancelled"].includes(game.phase);
+  const requestedRule =
+    penaltiesAvailable && ruleRequest?.game === game ? ruleRequest.rule : undefined;
+  const readerOpen = penaltiesAvailable && (rulesOpen || requestedRule !== undefined);
+  useLayoutEffect(() => {
+    if (readerOpen || !ruleInvoker.current) return;
+    const invoker = ruleInvoker.current;
+    // Inerting the lower native dialog can clear activeElement before the
+    // reader mounts. Restore the explicitly captured button after unsuspension.
+    const frame = requestAnimationFrame(() => {
+      if (invoker.isConnected && invoker.closest("dialog")?.open && !invoker.closest("[inert]"))
+        invoker.focus({ preventScroll: true });
+      ruleInvoker.current = null;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [readerOpen]);
+  const openPenalty = penaltiesAvailable
+    ? (seat: number) => {
+        if (!game.players.some((p) => p.seat === seat)) return;
+        setSwipedSeat(null);
+        setRuleRequest(null);
+        onRulesClose();
+        setDisciplineRequest((previous) => ({
+          seat,
+          action: "removal",
+          id: (previous?.id ?? 0) + 1,
+          game,
+          shortcut: true,
+        }));
+      }
+    : undefined;
   const revealDisciplineAction = (seat: number) => {
     const player = game.players.find((candidate) => candidate.seat === seat);
+    // Capture the card before the transient context action takes focus and disappears.
+    disciplineInvoker.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setSwipedSeat((current) =>
       disciplineAvailable && player?.status === "active" && current !== seat ? seat : null,
     );
@@ -257,7 +278,9 @@ export const GameScreen = ({
             setDisciplineRequest((previous) => ({
               seat: swipedPlayer.seat,
               action: "removal",
+              game,
               id: (previous?.id ?? 0) + 1,
+              invoker: disciplineInvoker.current,
             }));
             return;
           }
@@ -313,7 +336,12 @@ export const GameScreen = ({
     )
       return;
     if (federation && game.players.find((p) => p.seat === seat)?.fouls === 3) {
-      setDisciplineRequest((previous) => ({ seat, action: "foul", id: (previous?.id ?? 0) + 1 }));
+      setDisciplineRequest((previous) => ({
+        seat,
+        action: "foul",
+        id: (previous?.id ?? 0) + 1,
+        game,
+      }));
       setSwipedSeat(null);
       return;
     }
@@ -645,6 +673,14 @@ export const GameScreen = ({
       privacyHidden={effectivePrivacyHidden}
       settings={playerExitSettings}
     >
+      <RulesBookHost
+        open={readerOpen}
+        rule={requestedRule}
+        onClose={() => {
+          setRuleRequest(null);
+          onRulesClose();
+        }}
+      />
       <main
         className={`game-shell phase-${game.phase}${mode === "preview" ? " is-history-preview" : ""} is-table-cycle-${tableCycle}`}
       >
@@ -669,13 +705,48 @@ export const GameScreen = ({
           <section className="table-workspace">
             {federation && mode !== "preview" ? (
               <FederationDisciplineControls
-                key={`${game.phase}:${disciplineRequest?.id ?? 0}`}
+                key={game.phase}
                 game={game}
-                request={disciplineRequest}
-                onComplete={() => setDisciplineRequest(null)}
-                onGameChange={onGameChange}
+                request={
+                  penaltiesAvailable && disciplineRequest?.game === game ? disciplineRequest : null
+                }
+                readerOpen={readerOpen}
+                onOpenRule={(rule, invoker) => {
+                  if (!penaltiesAvailable) return;
+                  ruleInvoker.current = invoker;
+                  setRuleRequest({ game, rule });
+                }}
+                privacyHidden={effectivePrivacyHidden}
+                onComplete={() => {
+                  setDisciplineRequest(null);
+                }}
+                onGameChange={(next) => {
+                  onGameChange(next);
+                  if (game.phase === "voting" && next.phase === "voting") {
+                    setDisciplineRequest((current) =>
+                      current?.game === game ? { ...current, game: next } : current,
+                    );
+                  }
+                }}
                 onEvent={onEvent}
-                onAcceptedEvent={onAcceptedEvent}
+                onAcceptedEvent={
+                  onAcceptedEvent &&
+                  ((draft) => {
+                    const next = onAcceptedEvent(draft);
+                    // Only an acknowledged, locally submitted ballot command may
+                    // advance the open review's captured context. External changes close it.
+                    if (
+                      next &&
+                      (draft.type === "voting.count-disputed" ||
+                        draft.type === "voting.count-ruled" ||
+                        draft.type === "vote.corrected")
+                    ) {
+                      setDisciplineRequest((current) =>
+                        current?.game === game ? { ...current, game: next } : current,
+                      );
+                    }
+                  })
+                }
               />
             ) : null}
             <div

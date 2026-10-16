@@ -1,0 +1,739 @@
+@font-face {
+  font-family: RulesCormorant;
+  src: url("./assets/cormorant.ttf") format("truetype");
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: RulesCormorant;
+  src: url("./assets/cormorant-semibold.ttf") format("truetype");
+  font-weight: 600;
+  font-display: swap;
+}
+@font-face {
+  font-family: RulesCormorant;
+  src: url("./assets/cormorant-italic.ttf") format("truetype");
+  font-weight: 400;
+  font-style: italic;
+  font-display: swap;
+}
+/* Filter the actual underlays. WebKit backdrop-filter alone can paint sharply. */
+body.rules-sketchbook-open #root,
+body.rules-sketchbook-open .federation-judge-dialog[open] {
+  filter: blur(14px);
+  pointer-events: none;
+}
+body.rules-sketchbook-open {
+  overflow: hidden;
+}
+.rules-sketchbook {
+  --rs-ink: #3e3b32;
+  --rs-muted: #827b6d;
+  --rs-red: #824f43;
+  --rs-paper: #f5f0e5;
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100dvh;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: hidden;
+  color: var(--rs-ink);
+  font:
+    400 20px/1.3 RulesCormorant,
+    Georgia,
+    serif;
+  color-scheme: light;
+  -webkit-font-smoothing: antialiased;
+}
+.rules-sketchbook::backdrop {
+  background: #17130e26;
+}
+.rules-sketchbook * {
+  box-sizing: border-box;
+}
+.rules-sketchbook button {
+  font: inherit;
+  color: inherit;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  box-shadow: none;
+  min-width: 0;
+  letter-spacing: normal;
+  text-transform: none;
+}
+.rules-sketchbook button:disabled {
+  opacity: 0.24;
+  cursor: default;
+}
+.rules-sketchbook button:focus-visible,
+.rules-sketchbook [tabindex]:focus-visible {
+  outline: 2px solid var(--rs-red);
+  outline-offset: -5px;
+}
+.rules-sketchbook svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.25;
+}
+.rs-viewport {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  outline: none;
+  padding: 0;
+  overflow: hidden;
+}
+.rs-dock {
+  position: relative;
+  width: var(--rs-width);
+  height: var(--rs-height);
+}
+.rs-book {
+  position: relative;
+  width: var(--rs-width);
+  height: var(--rs-height);
+  isolation: isolate;
+  perspective: 2400px;
+  touch-action: pan-y pinch-zoom;
+}
+.rs-binding {
+  position: absolute;
+  inset: -2px -4px -8px;
+  border-radius: 5px 12px 12px 5px;
+  background: #c9bda5;
+  box-shadow:
+    0 2px 0 #e8e0cf,
+    0 4px 0 #ad9d81,
+    0 6px 0 #eee7d8,
+    0 7px 0 #b4a386,
+    0 9px 0 #d6cbb6,
+    0 24px 50px -12px #0008,
+    0 45px 90px -25px #000a;
+  transform: rotate(0.12deg);
+}
+.rs-spread {
+  display: flex;
+  position: absolute;
+  inset: 0;
+  width: var(--rs-width);
+  height: var(--rs-height);
+  border-radius: 4px 10px 10px 4px;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.rs-leaf {
+  position: relative;
+  flex: none;
+  width: var(--rs-page);
+  height: var(--rs-height);
+  overflow: hidden;
+  background-color: var(--rs-paper);
+  background-image: linear-gradient(110deg, #fff9ed33, #c7b79007 80%);
+  color: var(--rs-ink);
+}
+.rs-leaf::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  box-shadow: inset 0 0 28px #aa956411;
+  background: repeating-linear-gradient(0deg, transparent, transparent 3px, #96815303 4px);
+}
+.rs-leaf[data-side="art"] {
+  border-radius: 5px 0 0 5px;
+  background-image: linear-gradient(90deg, #fff9ed11 87%, #b6a78f1a 96%, #70614b22);
+}
+.rs-leaf[data-side="text"] {
+  border-radius: 0 10px 10px 0;
+  background-image: linear-gradient(
+    90deg,
+    #76674d22,
+    #a99a7f07 4%,
+    #fff9ed22 18%,
+    #fff9ed00 98%,
+    #bdae9520
+  );
+}
+.rs-spine {
+  position: absolute;
+  left: calc(var(--rs-page) - 3px);
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  background: linear-gradient(90deg, #9f8e7222, #5e4c3438, #fff8df77, #b4a07e11);
+  z-index: 2;
+  pointer-events: none;
+}
+.rs-folio {
+  position: absolute;
+  bottom: 22px;
+  left: 38px;
+  right: 38px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-top: 1px solid #bcae8b55;
+  padding-top: 12px;
+  font:
+    9px/1.5 ui-sans-serif,
+    system-ui,
+    sans-serif;
+  letter-spacing: 1.8px;
+  color: #8c816c;
+  pointer-events: none;
+}
+.rs-plate-tag {
+  position: absolute;
+  top: 34px;
+  left: 42px;
+  right: 30px;
+  font:
+    9px/1.5 ui-sans-serif,
+    system-ui,
+    sans-serif;
+  letter-spacing: 2.3px;
+  color: #8a7a60;
+}
+.rs-plate-art {
+  position: absolute;
+  left: 25px;
+  right: 18px;
+  top: 73px;
+  height: calc(var(--rs-height) - 235px);
+  mix-blend-mode: multiply;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+}
+.rs-plate-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  mask-image: radial-gradient(ellipse at center, #000 52%, #000c 69%, transparent 85%);
+}
+.rs-plate-art svg {
+  width: 100%;
+  height: 100%;
+}
+.rs-plate-note {
+  position: absolute;
+  bottom: 87px;
+  left: 45px;
+  right: 38px;
+  font-size: 23px;
+  line-height: 1.15;
+  font-style: italic;
+  text-align: center;
+  color: #8d7757;
+  transform: rotate(-3deg);
+  margin: 0;
+}
+.rs-body {
+  position: absolute;
+  inset: 0 0 64px;
+  padding: 36px 38px 24px 40px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #bcae8b77 transparent;
+  touch-action: pan-y pinch-zoom;
+}
+.rs-body h2 {
+  font:
+    400 50px/0.94 RulesCormorant,
+    Georgia,
+    serif;
+  letter-spacing: -1.5px;
+  margin: 0 0 14px;
+  color: var(--rs-ink);
+  overflow-wrap: anywhere;
+}
+.rs-body h2 em {
+  font-weight: 400;
+  color: var(--rs-red);
+}
+.rs-body h3 {
+  font:
+    600 21px/1.1 RulesCormorant,
+    Georgia,
+    serif;
+  margin: 0 0 5px;
+  color: var(--rs-ink);
+}
+.rs-eyebrow {
+  font:
+    9px/1.5 ui-sans-serif,
+    system-ui,
+    sans-serif;
+  letter-spacing: 2px;
+  color: #8a7a60;
+  margin: 0 0 12px;
+}
+.rs-reference {
+  font:
+    400 26px/1.1 RulesCormorant,
+    Georgia,
+    serif;
+  color: var(--rs-red);
+  margin: 0 0 12px;
+}
+.rs-lede {
+  font-size: 22px;
+  line-height: 1.2;
+  margin: 0 0 18px;
+  color: #8a7452;
+  font-style: italic;
+}
+.rs-cover-title {
+  font-size: 70px !important;
+  letter-spacing: -2.5px !important;
+}
+.rs-cover-summary {
+  font-size: 23px;
+  line-height: 1.3;
+  margin: 0 0 18px;
+}
+.rs-rule-item {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.rs-rule-number {
+  font-size: 16px;
+  color: #ac8b5c;
+  font-style: italic;
+  padding-top: 2px;
+}
+.rs-rule-item p,
+.rs-paragraph {
+  font-size: 20px;
+  line-height: 1.3;
+  margin: 0 0 15px;
+}
+.rs-margin-note {
+  font-size: 18px;
+  line-height: 1.25;
+  color: var(--rs-red);
+  font-style: italic;
+  border-top: 1px solid #bcae8b55;
+  margin: 16px 0 0;
+  padding-top: 12px;
+}
+.rs-page-source {
+  font-size: 16px;
+  line-height: 1.3;
+  color: #8d8069;
+  margin: 18px 0 0;
+}
+.rs-signature {
+  font-size: 34px;
+  color: #8f7756;
+  font-style: italic;
+  transform: rotate(-5deg);
+  margin: 25px 0 5px;
+  text-align: right;
+}
+.rules-sketchbook .rs-close {
+  position: absolute;
+  right: 0;
+  top: -57px;
+  width: 48px;
+  height: 48px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #ede2cf;
+  background: #ffffff0c;
+  border: 1px solid #e3d1b52f;
+  z-index: 12;
+}
+.rs-close svg {
+  width: 20px;
+  height: 20px;
+  stroke-width: 1.2;
+}
+.rules-sketchbook .rs-close:hover {
+  color: #fff6e9;
+  background: #ffffff20;
+}
+.rules-sketchbook .rs-close:focus-visible {
+  outline-color: #e9c17c;
+  outline-offset: 3px;
+}
+.rules-sketchbook .rs-bookmark {
+  position: absolute;
+  right: 44px;
+  top: -13px;
+  width: 48px;
+  height: 94px;
+  padding: 13px 0 24px;
+  background: linear-gradient(90deg, #622f2a, #8f4c42 22%, #854137 65%, #622b26);
+  color: #ead5aa;
+  z-index: 11;
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 84%, 0 100%);
+  filter: drop-shadow(2px 4px 2px #1f110a66);
+  border-top: 1px solid #daa88588;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  transition: height 0.18s ease;
+  touch-action: manipulation;
+  border-radius: 0;
+}
+.rs-bookmark::after {
+  content: "";
+  position: absolute;
+  inset: 3px 4px 22px;
+  border-left: 1px dashed #ddaa7d33;
+  border-right: 1px dashed #ddaa7d33;
+  pointer-events: none;
+}
+.rs-bookmark svg {
+  width: 19px;
+  height: 19px;
+  stroke-width: 1;
+}
+.rs-bookmark span {
+  font:
+    6px/1.4 ui-sans-serif,
+    system-ui,
+    sans-serif;
+  letter-spacing: 1px;
+}
+.rules-sketchbook .rs-bookmark:hover,
+.rules-sketchbook .rs-bookmark[aria-current="page"] {
+  height: 102px;
+  color: #fff1ce;
+}
+.rules-sketchbook .rs-bookmark:focus-visible {
+  outline-color: #e9c17c;
+  outline-offset: -4px;
+}
+.rs-frontispiece-heading {
+  position: absolute;
+  top: 43px;
+  left: 35px;
+  right: 35px;
+  text-align: center;
+}
+.rs-frontispiece-heading h2 {
+  font-size: 82px;
+  font-weight: 400;
+  line-height: 0.85;
+  margin: 0 0 12px;
+  letter-spacing: -3px;
+}
+.rs-frontispiece-heading p {
+  font-size: 24px;
+  font-style: italic;
+  margin: 0;
+  color: #8f7756;
+}
+.rs-frontispiece .rs-plate-art {
+  top: 155px;
+  height: calc(var(--rs-height) - 310px);
+}
+.rs-frontispiece .rs-plate-note {
+  bottom: 80px;
+  font-size: 20px;
+  transform: none;
+}
+.rs-contents-body {
+  padding-top: 42px;
+  cursor: default;
+}
+.rs-contents-body h2 {
+  font-size: 61px;
+  line-height: 1;
+  margin-bottom: 12px;
+}
+.rs-contents-intro {
+  font-size: 21px;
+  color: #8a7452;
+  font-style: italic;
+  margin: 0 0 25px;
+}
+.rs-contents-list h3 {
+  font:
+    9px/1.5 ui-sans-serif,
+    system-ui,
+    sans-serif;
+  letter-spacing: 1.5px;
+  color: #8a7a60;
+  margin: 24px 0 6px;
+  text-transform: uppercase;
+}
+.rules-sketchbook .rs-contents-list button {
+  width: 100%;
+  min-height: 52px;
+  padding: 11px 0;
+  display: grid;
+  grid-template-columns: 45px 1fr 24px;
+  align-items: center;
+  gap: 9px;
+  border-bottom: 1px solid #ac976333;
+  border-radius: 0;
+  text-align: left;
+  background: transparent;
+  color: #514936;
+  touch-action: manipulation;
+}
+.rules-sketchbook .rs-contents-list button:hover {
+  color: #824f43;
+  background: #9c744a0a;
+}
+.rs-contents-list button > span:first-child {
+  font-size: 16px;
+  font-style: italic;
+  color: #967442;
+}
+.rs-contents-list button strong {
+  font-size: 24px;
+  font-weight: 400;
+  line-height: 1.1;
+}
+.rs-contents-list button > span:last-child {
+  font-size: 15px;
+  text-align: right;
+  color: #9b8158;
+}
+.rs-contents-note {
+  font-size: 18px;
+  font-style: italic;
+  line-height: 1.3;
+  color: #8d8069;
+  margin: 21px 0 0;
+}
+.rs-source-note {
+  font-size: 17px;
+  line-height: 1.35;
+  color: #7f735c;
+  margin: 20px 0 0;
+}
+.rs-single .rs-spine {
+  display: none;
+}
+.rs-single .rs-leaf {
+  border-radius: 5px 10px 10px 5px;
+}
+.rs-single .rs-body {
+  padding: 36px 32px 24px;
+}
+.rs-single .rs-cover-title {
+  font-size: 62px !important;
+}
+.rs-single .rs-folio {
+  left: 38px;
+  right: 38px;
+}
+.rs-role-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 22px 0 25px;
+  flex-wrap: wrap;
+}
+.rs-role-row i {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #a16151;
+  box-shadow: inset 0 0 0 1px #7d453733;
+}
+.rs-role-row i.rs-dark {
+  background: #4a4b41;
+}
+.rs-role-row i.rs-marked {
+  outline: 1px solid #ad8d59;
+  outline-offset: 2px;
+}
+.rs-role-row span {
+  font:
+    8px/1.5 ui-sans-serif,
+    system-ui,
+    sans-serif;
+  letter-spacing: 1px;
+  margin-left: 8px;
+  color: #917a56;
+}
+.rs-curl {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+  transform-style: preserve-3d;
+}
+.rs-curl.rs-reverse {
+  transform: scaleX(-1);
+}
+.rs-curl-strip {
+  position: absolute;
+  top: 0;
+  height: var(--rs-height);
+  transform-style: preserve-3d;
+  transform-origin: left center;
+}
+.rs-curl-face {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  backface-visibility: visible;
+  background: var(--rs-paper);
+}
+.rs-curl-face.rs-back {
+  transform: rotateY(180deg);
+}
+.rs-curl-content {
+  position: absolute;
+  top: 0;
+  width: var(--rs-page);
+  height: var(--rs-height);
+}
+.rs-curl-face::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: #302314;
+  opacity: var(--rs-shade, 0);
+  pointer-events: none;
+}
+.rs-turning .rs-spread {
+  pointer-events: none;
+}
+.rs-turning .rs-leaf {
+  border-radius: 0;
+}
+.rs-turning {
+  cursor: grabbing;
+}
+.rules-sketchbook .rs-edge {
+  position: absolute;
+  bottom: 7px;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  font-size: 30px;
+  line-height: 1;
+  color: #8d7757;
+  opacity: 0.65;
+  z-index: 8;
+  border-radius: 0;
+  touch-action: manipulation;
+}
+.rs-edge.rs-back {
+  left: 0;
+}
+.rs-edge.rs-next {
+  right: 0;
+}
+.rules-sketchbook .rs-edge:hover {
+  opacity: 1;
+  background: #9c744a0a;
+}
+.rules-sketchbook .rs-edge:disabled {
+  opacity: 0.2;
+}
+.rs-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+@media (max-width: 420px) {
+  .rs-single .rs-body {
+    padding-left: 25px;
+    padding-right: 25px;
+  }
+  .rs-single .rs-body h2 {
+    font-size: 43px;
+  }
+  .rs-single .rs-cover-title {
+    font-size: 55px !important;
+  }
+  .rs-single .rs-folio {
+    font-size: 8px;
+  }
+  .rules-sketchbook .rs-bookmark {
+    right: 36px;
+  }
+  .rs-contents-list button strong {
+    font-size: 23px;
+  }
+}
+@media (max-width: 360px) {
+  .rs-single .rs-body h2 {
+    font-size: 38px;
+  }
+  .rs-body .rs-eyebrow {
+    padding-right: 48px;
+  }
+}
+/* Short landscape retains full-size prose. Move the decorative lede and tag
+   after the rule instead of consuming the entire first reading viewport. */
+@media (max-height: 500px) {
+  .rs-body.rs-reference-body {
+    display: flex;
+    flex-direction: column;
+    padding-top: 20px;
+  }
+  .rs-reference-body > * {
+    flex-shrink: 0;
+  }
+  .rs-reference-body .rs-reference {
+    order: 0;
+    font-size: 24px;
+    margin-bottom: 8px;
+  }
+  .rs-body.rs-reference-body h2 {
+    order: 1;
+    font-size: 28px;
+    line-height: 1;
+    letter-spacing: -0.5px;
+    margin-bottom: 12px;
+  }
+  .rs-reference-body :is(.rs-paragraph, .rs-rule-item, .rs-cover-summary) {
+    order: 2;
+  }
+  .rs-reference-body .rs-lede {
+    order: 3;
+  }
+  .rs-reference-body :is(.rs-eyebrow, .rs-margin-note, .rs-signature, .rs-page-source) {
+    order: 4;
+  }
+  .rs-plate-art {
+    top: 62px;
+    height: calc(var(--rs-height) - 200px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rules-sketchbook *,
+  .rules-sketchbook *::before,
+  .rules-sketchbook *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}

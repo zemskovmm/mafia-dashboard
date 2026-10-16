@@ -1,4 +1,4 @@
-/* global URL, document, innerWidth, innerHeight, localStorage, getComputedStyle, requestAnimationFrame, performance */
+/* global URL, document, navigator, innerWidth, innerHeight, localStorage, getComputedStyle, requestAnimationFrame, performance */
 /*
  * Scenario module imported by verify-ui.mjs; reuses its page and API fixtures.
  * Browser save/reload evidence is NOT database/backend qualification.
@@ -85,6 +85,14 @@ const sources = [
   "apps/web/src/features/game/FederationDisciplineControls.tsx",
   "apps/web/src/features/game/FederationJudgeDialog.tsx",
   "apps/web/src/i18n/messages/federation-discipline.ts",
+  "apps/web/src/features/game/AdjudicationControls.tsx",
+  "apps/web/src/features/game/federation-ui-state.ts",
+  "apps/web/src/features/voting/VotingStage.tsx",
+  "apps/web/src/features/voting/FederationCollectiveBallot.tsx",
+  "apps/web/src/features/timer/TimerControls.tsx",
+  "apps/web/src/features/music/AccountPlaylistPicker.tsx",
+  "packages/game-domain/src/night-actions.ts",
+  "scripts/verify-ui.mjs",
 ];
 const sourceHashes = async () =>
   Object.fromEntries(
@@ -152,6 +160,97 @@ export function checkpoint(game, template, gameId) {
   replay(state);
   return state;
 }
+/** Actual table input: upward penalty, horizontal menu, or supported keyboard alternate. */
+export async function openPlayerPenalty(
+  page,
+  seat,
+  { locale = "en", input = "pointer", shortcut = true } = {},
+) {
+  const card = page.locator(`.seat-anchor[data-seat="${seat}"] .player-seat`);
+  await expect(card).toBeVisible();
+  await card.scrollIntoViewIfNeeded();
+  const inputTrace = [];
+  const traceBinding = `penaltyInput${randomUUID().replaceAll("-", "")}`;
+  await page.exposeFunction(traceBinding, (event) => inputTrace.push(event));
+  await card.evaluate((el, binding) => {
+    for (const type of [
+      "pointerdown",
+      "pointerup",
+      "pointercancel",
+      "lostpointercapture",
+      "touchstart",
+      "touchend",
+      "touchcancel",
+    ])
+      el.addEventListener(type, (event) =>
+        globalThis[binding]({
+          type,
+          trusted: event.isTrusted,
+          pointerType: event.pointerType,
+          touches: event.touches?.length,
+          x: event.changedTouches?.[0]?.clientX ?? event.clientX,
+          y: event.changedTouches?.[0]?.clientY ?? event.clientY,
+        }),
+      );
+  }, traceBinding);
+  if (input === "keyboard") {
+    assert.equal(shortcut, false, "Shift+F10 opens the full player menu, not the upward shortcut");
+    await card.focus();
+    await page.keyboard.press("Shift+F10");
+  } else {
+    const box = await card.boundingBox();
+    assert.ok(box, "Penalty target must be painted");
+    const x = box.x + box.width / 2;
+    const y = shortcut ? box.y + box.height - 8 : box.y + box.height / 2;
+    const to = shortcut ? { x, y: y - 72 } : { x: x + 72, y };
+    if (input === "touch") {
+      assert.equal(page.context().browser().browserType().name(), "chromium");
+      const cdp = await page.context().newCDPSession(page);
+      try {
+        await cdp.send("Input.dispatchTouchEvent", {
+          type: "touchStart",
+          touchPoints: [{ x, y, id: 1 }],
+        });
+        for (let step = 1; step <= 8; step++)
+          await cdp.send("Input.dispatchTouchEvent", {
+            type: "touchMove",
+            touchPoints: [
+              { x: x + ((to.x - x) * step) / 8, y: y + ((to.y - y) * step) / 8, id: 1 },
+            ],
+          });
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      } finally {
+        await cdp.detach();
+      }
+    } else {
+      assert.equal(input, "pointer");
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+      await page.mouse.move(to.x, to.y, { steps: 8 });
+      await page.mouse.up();
+    }
+  }
+  if (!shortcut) {
+    await expect(page.locator(".table-swipe-menu")).toBeVisible();
+    // The captured card remains the native modal's connected return target.
+    await page.locator(".table-swipe-menu button").click();
+  }
+  const dialog = page.locator("dialog.federation-judge-dialog.is-discipline[open]");
+  try {
+    await expect(dialog).toBeVisible();
+  } catch (error) {
+    console.error(`Penalty input ${input} seat ${seat} trace: ${JSON.stringify(inputTrace)}`);
+    throw error;
+  }
+  await expect(
+    dialog.getByRole("combobox", {
+      name: locale === "en" ? "Discipline action" : "Дисциплинарное действие",
+      exact: true,
+    }),
+  ).toHaveValue("removal");
+  return { dialog, card };
+}
+
 export async function runFederationScenarios({ page, baseUrl, club, players, api, evidenceDir }) {
   const origin = new URL(baseUrl).origin;
   assert.match(new URL(baseUrl).hostname, /^(localhost|127\.0\.0\.1|\[::1\])$/, "Local Vite only");
@@ -170,10 +269,18 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     width,
     height,
     geometryFailures: [],
+    focusFailures: [],
     scenarios: [],
     screenshots: [],
   };
   const row = report;
+  async function expectReturn(card, label) {
+    try {
+      await expect(card).toBeFocused();
+    } catch (error) {
+      row.focusFailures.push(`${label}: ${error.message}`);
+    }
+  }
   const activeTransitions = [];
   report.activeTransitions = activeTransitions;
   const checkActiveTransition = async (trigger, { reverse = false, reduced = false } = {}) => {
@@ -282,8 +389,8 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
   }
   async function freshSetup(page) {
     await enter(page);
-    await expect(page.locator(".players-shell, .player-setup-card h1").first()).toBeVisible();
     const heading = page.getByRole("heading", { name: "Select 10 players + host" });
+    await expect(heading.or(page.locator(".players-shell"))).toBeVisible();
     if (!(await heading.isVisible())) {
       await expect(page.locator(".players-shell")).toBeVisible();
       await page.locator(".players-screen-header button").click();
@@ -505,6 +612,28 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     const confirm = page.getByRole("button", { name: "Undo", exact: true });
     if (await confirm.isVisible()) await confirm.click();
   }
+  async function swipeUp(seat) {
+    const { dialog } = await openPlayerPenalty(page, seat, {
+      input:
+        process.env.UI_FEDERATION_GESTURE_INPUT ??
+        (page.context().browser().browserType().name() === "chromium" ? "touch" : "pointer"),
+    });
+    await expect(
+      dialog.getByRole("combobox", { name: "Occurrence timing", exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      dialog.getByRole("button", { name: "Choose a rule to read", exact: true }),
+    ).toBeDisabled();
+    const geometry = await dialog.boundingBox();
+    assert.ok(
+      geometry.x >= 0 &&
+        geometry.y >= 0 &&
+        geometry.x + geometry.width <= width + 1 &&
+        geometry.y + geometry.height <= height + 1,
+      "Penalty dialog bounded by viewport",
+    );
+    return dialog;
+  }
   async function finishOutcome(gameId, label) {
     await page.getByRole("button", { name: "Finish the game", exact: true }).click();
     await expect.poll(() => api.sessions.get(gameId)?.status).toBe("completed");
@@ -596,6 +725,124 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     await checkActiveTransition(page.getByRole("button", { name: "Next player", exact: true }));
     const template = fresh.env.current.state,
       day = clone(template.game);
+
+    const beforeControls = (await settled(page, api)).current.state.headEventId;
+    const timer = page.locator(".timer-display");
+    await page.getByRole("button", { name: "Start 60 second timer", exact: true }).tap();
+    await timer.tap();
+    await expect(timer).toHaveAttribute("aria-label", "Resume timer");
+    await page.getByRole("button", { name: "Start 30 second timer", exact: true }).tap();
+    await timer.tap();
+    await timer.tap();
+    await expect(timer.locator("strong")).toHaveText("00");
+    await expect(timer).toBeDisabled();
+    await page.getByRole("button", { name: "Start 20 second timer", exact: true }).tap();
+    await expect(timer).toHaveAttribute("aria-label", "Pause timer");
+    await timer.tap();
+    const handle = page.locator(".music-panel-handle");
+    await handle.click();
+    const playlists = page.getByRole("combobox", { name: "YouTube Music playlist", exact: true });
+    await expect(playlists.locator("option")).toHaveCount(5);
+    const names = await playlists.locator("option").allTextContents();
+    assert.ok(names.slice(1).every((name) => name.trim().toLowerCase().startsWith("mafia")));
+    await playlists.selectOption("test-playlist");
+    await handle.click();
+    assert.equal((await settled(page, api)).current.state.headEventId, beforeControls);
+    await page.addInitScript(() =>
+      Object.defineProperty(navigator, "standalone", {
+        configurable: true,
+        get: () => window.sessionStorage.getItem("ui-standalone") === "1",
+      }),
+    );
+    await page.evaluate(() => window.sessionStorage.setItem("ui-standalone", "1"));
+    await page.reload({ waitUntil: "networkidle" });
+    await expect(page.getByRole("button", { name: /fullscreen/i })).toHaveCount(0);
+    await page.evaluate(() => window.sessionStorage.removeItem("ui-standalone"));
+    await page.reload({ waitUntil: "networkidle" });
+    await settled(page, api);
+    row.scenarios.push({
+      name: "timer-touch-reset-mafia-playlists-standalone-simulation",
+      names,
+      physicalIPad: false,
+    });
+
+    const penaltySeat = day.players.find((p) => p.role === "citizen").seat;
+    for (const game of [greeting.current.state.game, day]) {
+      const id = randomUUID();
+      await seed(page, api, checkpoint(game, template, id), id);
+      const before = await settled(page, api);
+      const dialog = await swipeUp(penaltySeat);
+      assert.equal(
+        (await read(page)).current.state.headEventId,
+        before.current.state.headEventId,
+        "Swipe emits no incidental action",
+      );
+      await dialog.getByRole("button", { name: "Close", exact: true }).click();
+      assert.equal(
+        (await read(page)).current.state.headEventId,
+        before.current.state.headEventId,
+        "Dismiss emits no event",
+      );
+    }
+    row.scenarios.push({
+      name: "opening-and-day-swipe-without-incidental-action",
+      input:
+        (process.env.UI_FEDERATION_GESTURE_INPUT ??
+          (page.context().browser().browserType().name() === "chromium" ? "touch" : "pointer")) ===
+        "touch"
+          ? "trusted CDP touch"
+          : "trusted Playwright pointer drag",
+    });
+
+    for (const subject of ["victim", "shooter"]) {
+      const id = randomUUID();
+      await seed(page, api, checkpoint(beginNight(day), template, id), id);
+      await page
+        .getByRole("button", {
+          name: `Assign all Mafia shots to ${display(day, penaltySeat)}`,
+          exact: true,
+        })
+        .click();
+      await page.getByRole("button", { name: "Evaluate Mafia shots", exact: true }).click();
+      const resolved = await settled(page, api);
+      const seat =
+        subject === "victim" ? penaltySeat : day.players.find((p) => p.role === "don").seat;
+      const dialog = await swipeUp(seat);
+      await dialog
+        .getByRole("combobox", { name: "Removal rule", exact: true })
+        .selectOption("6.2.3");
+      await dialog.screenshot({
+        path: path.join(evidence, `${width}x${height}-penalty-${subject}.png`),
+      });
+      await dialog.getByRole("button", { name: "Confirm discipline", exact: true }).click();
+      const removed = await saveReplay(page, api, `post-result-${subject}`, width, height);
+      assert.deepEqual(
+        removed.env.current.state.game.nightResult,
+        resolved.current.state.game.nightResult,
+      );
+      assert.deepEqual(
+        removed.env.current.state.game.shotAssignments,
+        resolved.current.state.game.shotAssignments,
+      );
+      assert.equal(
+        removed.env.current.state.game.disciplinaryRemovals.at(-1).stage,
+        "after-shooting-result",
+      );
+      await expect(
+        page.getByRole("button", { name: "Continue night", exact: true }),
+      ).toBeDisabled();
+      await page.reload({ waitUntil: "networkidle" });
+      assert.equal(
+        (await settled(page, api)).current.state.headEventId,
+        removed.env.current.state.headEventId,
+      );
+      await page
+        .getByRole("button", { name: `Announce removal of ${display(day, seat)}`, exact: true })
+        .click();
+      await page.getByRole("button", { name: "Continue night", exact: true }).click();
+      replay((await settled(page, api)).current.state);
+    }
+    row.scenarios.push({ name: "post-result-victim-shooter-swipe-save-reload-replay" });
 
     // Resume an explicitly legacy saved setup; never override fresh app policy.
     await seed(page, api, legacySetupState());
@@ -719,7 +966,9 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
       for (let tap = 0; tap < 5; tap++) await privacy.dispatchEvent("click");
     }
     await developerMenu.click();
-    await page.locator(".dev-glass-controls summary").click();
+    await page.locator(".dev-glass-controls:not(.player-exit-controls) > summary").click();
+    const disableGlass = page.getByRole("button", { name: "Disable enhanced glass", exact: true });
+    if (await disableGlass.isVisible()) await disableGlass.click();
     await page.getByRole("button", { name: "Enable enhanced glass", exact: true }).click();
     await expect(page.locator(".app-shell")).toHaveAttribute("data-glass-status", "ready");
     await page.getByRole("button", { name: "Close developer menu", exact: true }).click();
@@ -731,13 +980,16 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     await checkActiveTransition(firstRow);
     await checkActiveTransition(lastRow);
     await developerMenu.click();
-    await page.locator(".dev-glass-controls summary").click();
+    await page.locator(".dev-glass-controls:not(.player-exit-controls) > summary").click();
     await page.getByRole("button", { name: "Disable enhanced glass", exact: true }).click();
     await page.getByRole("button", { name: "Close developer menu", exact: true }).click();
     assert.deepEqual((await settled(page, api)).current.state.game.voteAssignments, beforeMasking);
-    await page
-      .getByRole("button", { name: `${display(day, 10)} voted for seat 5`, exact: true })
-      .tap();
+    const clearVote = page.getByRole("button", {
+      name: `${display(day, 10)} voted for seat 5`,
+      exact: true,
+    });
+    if (process.env.UI_FEDERATION_GESTURE_INPUT === "pointer") await clearVote.click();
+    else await clearVote.tap();
     const corrected = await settled(page, api);
     assert.equal(corrected.current.state.game.voteAssignments[10], undefined);
     await expect(page.locator('.seat-anchor[data-seat="10"] .player-seat')).not.toHaveClass(
@@ -769,13 +1021,10 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     const stopBeforeTools = await page
       .getByRole("button", { name: "Next candidate", exact: true })
       .boundingBox();
-    const toolsToggle = page.getByRole("button", { name: "Rules", exact: true });
-    await toolsToggle.focus();
-    await page.keyboard.press("Enter");
-    await expect(toolsToggle).toHaveAttribute("aria-expanded", "true");
-    await expect(page.getByRole("button", { name: "Judge discipline", exact: true })).toHaveCount(
-      0,
-    );
+    const reviewSeat = day.players[0].seat;
+    const { card: toolsToggle } = await openPlayerPenalty(page, reviewSeat, { shortcut: false });
+    await page.keyboard.press("Escape");
+    await openPlayerPenalty(page, reviewSeat, { shortcut: false, input: "keyboard" });
     await page.getByText("Dispute count", { exact: true }).click();
     await page
       .getByLabel("Dispute reason", { exact: true })
@@ -788,14 +1037,14 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     ).toBeDisabled();
     row.screenshots.push(await capture(page, "ballot-dispute", width, height));
     const disputed = await settled(page, api);
-    const sheet = page.getByRole("dialog", { name: "Rules", exact: true });
+    const sheet = page.locator("dialog.federation-judge-dialog.is-discipline[open]");
     const sheetBox = await sheet.boundingBox();
     assert.ok(
       sheetBox.x >= 0 && sheetBox.y >= 0 && sheetBox.y + sheetBox.height <= height + 1,
       "Review sheet bounded by viewport",
     );
     await sheet.getByRole("button", { name: "Close", exact: true }).click();
-    await expect(toolsToggle).toBeFocused();
+    await expectReturn(toolsToggle, "Disputed ballot full-menu dismissal");
     await expect(page.getByRole("button", { name: "Next candidate", exact: true })).toBeDisabled();
     assert.deepEqual(
       await page.getByRole("button", { name: "Next candidate", exact: true }).boundingBox(),
@@ -803,19 +1052,37 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
       "Opening/scrolling review never moves the table controls",
     );
     row.screenshots.push(await capture(page, "ballot-dispute-table", width, height));
-    await page.keyboard.press("Enter");
+    await openPlayerPenalty(page, reviewSeat);
     await page
       .getByLabel("Final ruling reason", { exact: true })
       .fill("External recording confirms three accepted hands");
     await page
       .getByRole("checkbox", { name: "I reviewed the external recording", exact: true })
       .check();
+    await page.keyboard.press("Escape");
+    await expect(sheet).toBeHidden();
+    await expectReturn(toolsToggle, "Disputed ballot upward-menu dismissal");
+    await openPlayerPenalty(page, reviewSeat);
+    await expect(page.getByLabel("Final ruling reason", { exact: true })).toHaveValue(
+      "External recording confirms three accepted hands",
+    );
+    await expect(
+      page.getByRole("checkbox", { name: "I reviewed the external recording", exact: true }),
+    ).toBeChecked();
+    assert.equal(
+      (await settled(page, api)).current.state.headEventId,
+      disputed.current.state.headEventId,
+    );
     await page.getByRole("button", { name: "Accept final reviewed count", exact: true }).click();
+    await expect(
+      page.getByRole("button", { name: "Accept final reviewed count", exact: true }),
+    ).toHaveCount(0);
     await sheet.getByRole("button", { name: "Close", exact: true }).focus();
     await page.keyboard.press("Escape");
     await expect(sheet).toBeHidden();
     await expect(toolsToggle).toBeFocused();
     await page.getByRole("button", { name: "Next candidate", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Next candidate", exact: true })).toHaveCount(0);
     const accepted = await settled(page, api);
     replay(accepted.current.state);
     assert.deepEqual(
@@ -847,18 +1114,15 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     try {
       club.language = "ru";
       await seed(page, api, disputed.current.state, disputed.gameId);
-      const russianTools = page.getByRole("button", {
-        name: "Правила",
-        exact: true,
+      const { card: russianTools } = await openPlayerPenalty(page, reviewSeat, {
+        locale: "ru",
       });
-      await russianTools.click();
-      await expect(russianTools).toHaveAttribute("aria-expanded", "true");
       await expect(
         page.getByRole("checkbox", { name: "Я просмотрел внешнюю запись", exact: true }),
       ).toBeVisible();
       row.screenshots.push(await capture(page, "ballot-dispute-ru", width, height));
       await page.getByRole("button", { name: "Закрыть", exact: true }).click();
-      await expect(russianTools).toBeFocused();
+      await expectReturn(russianTools, "Russian disputed ballot dismissal");
       row.screenshots.push(await capture(page, "ballot-dispute-table-ru", width, height));
     } finally {
       club.language = previousLanguage;
@@ -868,12 +1132,9 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
         club.language = locale;
         const id = randomUUID();
         await seed(page, api, checkpoint(day, template, id), id);
-        await page
-          .getByRole("button", { name: locale === "en" ? "Rules" : "Правила", exact: true })
-          .click();
-        const dialog = page.getByRole("dialog", {
-          name: locale === "en" ? "Rules" : "Правила",
-          exact: true,
+        const { dialog } = await openPlayerPenalty(page, penaltySeat, {
+          locale,
+          shortcut: false,
         });
         await dialog
           .getByRole("combobox", {
@@ -1142,9 +1403,10 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
 
     const adjudicatedId = randomUUID();
     await seed(page, api, checkpoint(day, template, adjudicatedId), adjudicatedId);
-    await page.getByRole("button", { name: "Open Manage menu", exact: true }).click();
-    await page.getByText("Referee-awarded victory", { exact: true }).click();
-    await page.getByRole("combobox", { name: /^Losing team/ }).selectOption("black");
+    await swipeUp(day.players.find((p) => p.team === "black").seat);
+    await page
+      .getByRole("combobox", { name: "Discipline action", exact: true })
+      .selectOption("opponent-victory");
     await page.getByRole("combobox", { name: /^Applicable rule/ }).selectOption("6.3.5");
     await page
       .getByLabel("Judge's reason", { exact: true })
@@ -1274,8 +1536,9 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     }
 
     api.clean();
-    assert.equal(row.scenarios.length, 12);
+    assert.equal(row.scenarios.length, 12 + 3);
     assert.deepEqual(row.geometryFailures, [], "No primary-control overflow");
+    assert.deepEqual(row.focusFailures, [], "All gesture-menu dismissal focus returns");
     console.log(
       `Federation integrated UI ${width}x${height}: PASS (${row.scenarios.length} scenarios)`,
     );

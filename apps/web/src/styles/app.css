@@ -2058,6 +2058,7 @@ button.player-seat.is-voting-highlight::after,
   min-height: 0;
 }
 .role-badge,
+.foul-badge,
 .state-badge {
   padding: 2px 5px;
   border-radius: 99px;
@@ -2072,6 +2073,10 @@ button.player-seat.is-voting-highlight::after,
 .role-don {
   color: #ffccd0;
   background: rgb(239 93 104 / 18%);
+}
+.foul-badge {
+  color: #ffe0ad;
+  background: rgb(229 169 77 / 16%);
 }
 .state-badge {
   color: #f4d3ff;
@@ -2316,6 +2321,7 @@ button.player-seat.is-voting-highlight::after,
   align-items: stretch;
 }
 .timer-display {
+  touch-action: manipulation;
   display: grid;
   justify-items: center;
   align-content: center;
@@ -4069,6 +4075,7 @@ html:-webkit-full-screen #root {
     font-size: 0.62rem;
   }
   .role-badge,
+  .foul-badge,
   .state-badge {
     padding: 1px 4px;
     font-size: 0.43rem;
@@ -4821,6 +4828,7 @@ html:-webkit-full-screen #root {
     font-size: 0.62rem;
   }
   .role-badge,
+  .foul-badge,
   .state-badge {
     padding: 1px 4px;
     font-size: 0.43rem;

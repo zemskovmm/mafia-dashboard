@@ -16,6 +16,8 @@ import {
   replayGameLog,
 } from "./index.js";
 import type { CanonicalGameEventDraft, GameLogEntry, GameState } from "./index.js";
+import { completeMafiaShots, isNightCheckEligible } from "./night-actions.js";
+import * as domain from "./index.js";
 const opening = (): GameState => {
   let setup = beginRoleDraw(
     createSetup(
@@ -58,6 +60,224 @@ const day = () =>
   ).game;
 
 describe("strict federation canonical replay", () => {
+  it.each([
+    { subject: "victim", multiple: false },
+    { subject: "don", multiple: false },
+    { subject: "other", multiple: false },
+    { subject: "don", multiple: true },
+    { subject: "don", multiple: true, marker: true },
+  ])(
+    "replays a post-shooting-result sanction: $subject, multiple=$multiple, marker=$marker",
+    ({ subject, multiple, marker }) => {
+      const initial = day();
+      const victim = initial.players.find((p) => p.role === "sheriff")!.seat;
+      const don = initial.players.find((p) => p.role === "don")!.seat;
+      const seat =
+        subject === "victim"
+          ? victim
+          : subject === "don"
+            ? don
+            : initial.players.find((p) => p.role === "citizen")!.seat;
+      const shots = initial.players
+        .filter((p) => p.team === "black")
+        .map((p) => ({ shooterSeat: p.seat, targetSeat: victim, secret: true as const }));
+      const result = multiple
+        ? { kind: "miss" as const }
+        : { kind: "kill" as const, targetSeat: victim };
+      const prefix: CanonicalGameEventDraft[] = [
+        { type: "phase.changed", payload: { to: "night-mafia" } },
+        ...(multiple
+          ? marker
+            ? [{ type: "mafia.multiple-shot-observed" as const, payload: { shooterSeat: don } }]
+            : [
+                {
+                  type: "mafia.shots-observed" as const,
+                  payload: {
+                    shotAssignments: Object.fromEntries(
+                      shots.map((s) => [s.shooterSeat, s.targetSeat]),
+                    ),
+                    observations: [{ shooterSeat: don, targetSeat: victim }],
+                  },
+                },
+              ]
+          : []),
+        { type: "mafia.shots-resolved", payload: { shots, result } },
+      ];
+      const resolved = chain(initial, prefix).game;
+      const removal: CanonicalGameEventDraft = {
+        type: "discipline.removal-observed",
+        payload: {
+          seat,
+          stage: "after-shooting-result",
+          rule: "6.2.3",
+          reason: "",
+          checkInProgress: false,
+        },
+      };
+      expect(() => assertCanonicalGameEventDraft(removal, 1)).toThrow();
+      expect(() => applyGameEvent(initial, removal)).toThrow();
+      expect(() => applyGameEvent({ ...resolved, nightResult: undefined }, removal)).toThrow();
+      expect(() =>
+        assertCanonicalGameEventDraft(
+          { ...removal, payload: { ...removal.payload, checkInProgress: true } },
+          2,
+        ),
+      ).toThrow();
+      const removed = chain(initial, [...prefix, removal]).game;
+      expect(removed.nightResult).toEqual(resolved.nightResult);
+      expect(removed.shotAssignments).toEqual(resolved.shotAssignments);
+      expect(removed.shotObservations).toEqual(resolved.shotObservations);
+      expect(removed.actualMultipleShotSeats).toEqual(resolved.actualMultipleShotSeats);
+      if (marker) expect(removed.actualMultipleShotSeats).toEqual([don]);
+      for (const corruption of [
+        { departure: "pending" },
+        { occurredPhase: "day" },
+        { checkCompletionPending: true },
+        { shotDeath: !removed.disciplinaryRemovals![0]!.shotDeath },
+      ]) {
+        const malformed = {
+          ...removed,
+          disciplinaryRemovals: [{ ...removed.disciplinaryRemovals![0], ...corruption }],
+        } as GameState;
+        expect(() => chain(malformed, [])).toThrow();
+      }
+      expect(() => chain({ ...removed, nightResult: undefined }, [])).toThrow();
+      expect(removed.disciplinaryRemovals?.[0]).toMatchObject({
+        shotDeath: subject === "victim",
+        departure: "departed",
+        checkCompletionPending: false,
+        announcement: "pending",
+      });
+      expect(removed.ballotCancellationDay).toBe(
+        subject === "victim" ? undefined : initial.day + 1,
+      );
+      expect(() => completeMafiaShots(removed)).toThrow(/announcement/);
+      expect(() => applyGameEvent(removed, removal)).toThrow();
+      const announcement: CanonicalGameEventDraft = {
+        type: "discipline.removals-announced",
+        payload: { seats: [seat] },
+      };
+      const announced = chain(initial, [...prefix, removal, announcement]).game;
+      expect(announced.phase).toBe("night-mafia-result");
+      const nextPhase = completeMafiaShots(announced).phase;
+      const completed = chain(initial, [
+        ...prefix,
+        removal,
+        announcement,
+        { type: "phase.changed", payload: { to: nextPhase } },
+      ]).game;
+      expect(completed.players.filter((p) => p.status !== "active")).toHaveLength(
+        subject === "victim" || multiple ? 1 : 2,
+      );
+      expect(isNightCheckEligible(completed, "sheriff")).toBe(subject !== "victim");
+      expect(isNightCheckEligible(completed, "don")).toBe(subject !== "don");
+    },
+  );
+
+  it.each(["victim", "two-offenders", "deciding"])(
+    "preserves post-result consequences through later boundaries: %s",
+    (scenario) => {
+      let initial = day();
+      const reds = initial.players.filter((p) => p.role === "citizen").map((p) => p.seat);
+      if (scenario === "deciding")
+        for (const seat of reds.slice(2, 5))
+          initial = domain.markPlayerInactive(initial, seat, "eliminated");
+      const victim = reds[0]!;
+      const offenders =
+        scenario === "victim"
+          ? [victim]
+          : scenario === "deciding"
+            ? [reds[1]!]
+            : initial.players
+                .filter((p) => p.team === "black")
+                .slice(0, 2)
+                .map((p) => p.seat);
+      const drafts: CanonicalGameEventDraft[] = [];
+      let game = initial;
+      const accept = (draft: CanonicalGameEventDraft) => {
+        drafts.push(draft);
+        game = chain(initial, drafts).game;
+      };
+      accept({ type: "phase.changed", payload: { to: "night-mafia" } });
+      accept({
+        type: "mafia.shots-resolved",
+        payload: {
+          shots: initial.players
+            .filter((p) => p.team === "black")
+            .map((p) => ({ shooterSeat: p.seat, targetSeat: victim, secret: true })),
+          result: { kind: "kill", targetSeat: victim },
+        },
+      });
+      for (const seat of offenders)
+        accept({
+          type: "discipline.removal-observed",
+          payload: {
+            seat,
+            stage: "after-shooting-result",
+            rule: "6.2.3",
+            reason: "",
+            checkInProgress: false,
+          },
+        });
+      expect(game).toMatchObject({ phase: "night-mafia-result", winner: null });
+      accept({ type: "discipline.removals-announced", payload: { seats: offenders } });
+      expect(game.phase).toBe("night-mafia-result");
+      accept({ type: "phase.changed", payload: { to: completeMafiaShots(game).phase } });
+      if (scenario === "deciding") {
+        expect(game).toMatchObject({ phase: "finished", winner: "black" });
+        expect(game.players.find((p) => p.seat === victim)?.status).toBe("eliminated");
+        expect(game.players.find((p) => p.seat === offenders[0])?.status).toBe("red-carded");
+        return;
+      }
+      if (game.phase === "night-don") accept({ type: "don.check-skipped", payload: {} });
+      if (game.phase === "night-sheriff") accept({ type: "sheriff.check-skipped", payload: {} });
+      accept({ type: "phase.changed", payload: { to: domain.completeNight(game).phase } });
+      if (scenario === "victim") {
+        expect(game.phase).toBe("day");
+        expect(game.bestMove).toBeUndefined();
+        expect(game.goodbyeSeats).toBeUndefined();
+        expect(game.ballotCancellationDay).toBeUndefined();
+        expect(game.players.filter((p) => p.status !== "active")).toHaveLength(1);
+      } else {
+        if (game.phase === "best-move") {
+          accept({
+            type: "best-move.finalized",
+            payload: { reason: "declined", readbackAcknowledged: true },
+          });
+          accept({ type: "phase.changed", payload: { to: domain.completeNight(game).phase } });
+        }
+        expect(game.phase).toBe("goodbye-speech");
+        accept({ type: "phase.changed", payload: { to: "day" } });
+        expect(game.ballotCancellationDay).toBe(2);
+        for (let turns = 0; game.phase === "day" && turns < 10; turns++)
+          accept({
+            type: "turn.completed",
+            payload: { seat: game.turnOrder[game.currentTurnIndex]! },
+          });
+        expect(game.phase).toBe("voting-cancelled");
+        accept({ type: "phase.changed", payload: { to: "night-mafia" } });
+        expect(game.ballotCancellationDay).toBeUndefined();
+        expect(game.nightResult).toBeUndefined();
+        const miss = domain.resolveMafiaShots(game);
+        accept({
+          type: "mafia.shots-resolved",
+          payload: { shots: miss.secretShots, result: miss.result },
+        });
+        accept({ type: "phase.changed", payload: { to: completeMafiaShots(game).phase } });
+        if (game.phase === "night-don") accept({ type: "don.check-skipped", payload: {} });
+        if (game.phase === "night-sheriff") accept({ type: "sheriff.check-skipped", payload: {} });
+        accept({ type: "phase.changed", payload: { to: domain.completeNight(game).phase } });
+        for (let turns = 0; game.phase === "day" && turns < 10; turns++)
+          accept({
+            type: "turn.completed",
+            payload: { seat: game.turnOrder[game.currentTurnIndex]! },
+          });
+        expect(game.phase).toBe("night-mafia");
+        expect(game.ballotCancellationDay).toBeUndefined();
+      }
+    },
+  );
+
   it("preserves recorded five-step opening hashes", () => {
     const { entries } = chain(
       opening(),

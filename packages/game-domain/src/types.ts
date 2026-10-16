@@ -200,6 +200,7 @@ export type RemovalOccurrenceStage =
   | "agreement"
   | "before-shooting-count"
   | "shooting-count"
+  | "after-shooting-result"
   | "don-check"
   | "sheriff-check"
   | "day-discussion"

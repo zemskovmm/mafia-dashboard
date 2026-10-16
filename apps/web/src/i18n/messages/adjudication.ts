@@ -12,6 +12,7 @@ const en = {
   reason: "Judge's reason",
   committee: "Required committee agreement obtained",
   winner: "Result: {team} wins. Player statuses will not be changed.",
+  hiddenWinner: "The offender's opposing team wins. Player statuses will not be changed.",
   accept: "Award victory to opposing team",
   invalid:
     "This ruling cannot be accepted in the current game state. Check the rule, reason and required acknowledgements.",
@@ -33,6 +34,7 @@ const ru = {
   reason: "Обоснование судьи",
   committee: "Необходимое согласование с СК получено",
   winner: "Результат: победа команды «{team}». Статусы игроков не изменятся.",
+  hiddenWinner: "Побеждает противоположная нарушителю команда. Статусы игроков не изменятся.",
   accept: "Присудить победу противоположной команде",
   invalid:
     "Решение нельзя принять в текущем состоянии игры. Проверьте пункт правил, обоснование и необходимые подтверждения.",

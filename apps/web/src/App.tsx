@@ -15,7 +15,6 @@ import {
   FEDERATION_RULES_EDITION,
   createGameLogEntry,
   isFederationGame,
-  isSecretGameEventType,
   createInitialGameBaseline,
   hashGameState,
   isCasperPlayer,
@@ -30,6 +29,7 @@ import {
 } from "@mafia/game-domain";
 import {
   Bird,
+  BookOpen,
   DoorOpen,
   Eye,
   EyeOff,
@@ -128,7 +128,7 @@ import "./features/theme/GlassScene.css";
 import { GlassScene } from "./features/theme/GlassScene.js";
 import { SharedGlassContext } from "./features/theme/SharedGlassContext.js";
 import { PlayerCardAppearanceContext } from "./features/theme/PlayerCardAppearanceContext.js";
-import { AdjudicationControls } from "./features/game/AdjudicationControls.js";
+
 import { isCriticalState } from "./features/game/critical-state.js";
 import { LiveSidePanel } from "./features/game/LiveSidePanel.js";
 import {
@@ -345,6 +345,7 @@ interface PersistedState extends CurrentGameSessionState {
 }
 
 interface WebkitFullscreenDocument extends Document {
+  readonly webkitFullscreenEnabled?: boolean;
   readonly webkitFullscreenElement?: Element | null;
   readonly webkitExitFullscreen?: () => Promise<void> | void;
 }
@@ -523,6 +524,7 @@ export const ClubWorkspace = ({
   })();
   const initialDerivedGame = initialState.game ?? initialCanonicalGame;
   const [game, setGame] = useState<GameState | null>(initialDerivedGame);
+  const [rulesGame, setRulesGame] = useState<GameState | null>(null);
   const [initialGame, setInitialGame] = useState<InitialGameBaseline | null>(
     initialState.initialGame,
   );
@@ -768,9 +770,15 @@ export const ClubWorkspace = ({
   const finalizingCompletionRef = useRef(false);
   const fullscreenTarget = document.documentElement as WebkitFullscreenElement;
   const fullscreenDocument = document as WebkitFullscreenDocument;
+  const standalone =
+    (navigator as Navigator & { readonly standalone?: boolean }).standalone === true ||
+    window.matchMedia?.("(display-mode: standalone)").matches === true;
   const fullscreenAvailable =
-    typeof fullscreenTarget.requestFullscreen === "function" ||
-    typeof fullscreenTarget.webkitRequestFullscreen === "function";
+    !standalone &&
+    ((typeof fullscreenTarget.requestFullscreen === "function" &&
+      document.fullscreenEnabled !== false) ||
+      (typeof fullscreenTarget.webkitRequestFullscreen === "function" &&
+        fullscreenDocument.webkitFullscreenEnabled !== false));
 
   useEffect(() => {
     const previousDrawer = previousDrawerRef.current;
@@ -825,12 +833,9 @@ export const ClubWorkspace = ({
   // Collapse only the display; canonical events and the persisted log stay untouched.
   const nominationLogView = (() => {
     if (activeDrawer !== "log" || !currentTimelineHistory) return null;
-    const frames = privacyHidden
-      ? currentTimelineHistory.frames.filter(({ entry }) => !isSecretGameEventType(entry.type))
-      : currentTimelineHistory.frames;
-    const projection = projectNominationHistory(frames);
+    const projection = projectNominationHistory(currentTimelineHistory.frames);
     const summaryIds = new Set([...projection.summaryFrames].map(({ entry }) => entry.id));
-    const timeline = buildTimeline(frames, {
+    const timeline = buildTimeline(currentTimelineHistory.frames, {
       ...timelineI18n,
       playerName: (id) =>
         id === CASPER_PLAYER_ID
@@ -1127,6 +1132,7 @@ export const ClubWorkspace = ({
         setFinalResults(null);
         setFinishGameState("ready");
       }
+      return displayedAfter;
     },
     [game, sessionSync],
   );
@@ -2121,22 +2127,40 @@ export const ClubWorkspace = ({
           >
             <Save aria-hidden="true" />
           </button>
-          <button
-            type="button"
-            className="fullscreen-button icon-toolbar-button"
-            aria-label={
-              fullscreenAvailable
-                ? isFullscreen
-                  ? t("exitFullscreen")
-                  : t("enterFullscreen")
-                : t("fullscreenUnavailable")
-            }
-            aria-pressed={isFullscreen}
-            disabled={!fullscreenAvailable}
-            onClick={() => void toggleFullscreen()}
-          >
-            {isFullscreen ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
-          </button>
+          {view === "game" &&
+          game !== null &&
+          isFederationGame(game) &&
+          !isTerminalGamePhase(game.phase) &&
+          finalResults === null &&
+          finishGameState !== "blocked" &&
+          canApplyGameScreenMutation() ? (
+            <button
+              type="button"
+              className="icon-toolbar-button"
+              aria-label={t("rules")}
+              title={t("rules")}
+              aria-haspopup="dialog"
+              aria-expanded={rulesGame === game}
+              onClick={(event) => {
+                event.currentTarget.focus();
+                setActiveDrawer(null);
+                setRulesGame((current) => (current === game ? null : game));
+              }}
+            >
+              <BookOpen aria-hidden="true" />
+            </button>
+          ) : null}
+          {fullscreenAvailable || isFullscreen ? (
+            <button
+              type="button"
+              className="fullscreen-button icon-toolbar-button"
+              aria-label={isFullscreen ? t("exitFullscreen") : t("enterFullscreen")}
+              aria-pressed={isFullscreen}
+              onClick={() => void toggleFullscreen()}
+            >
+              {isFullscreen ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
+            </button>
+          ) : null}
           <button
             type="button"
             className="undo-button icon-toolbar-button"
@@ -2356,23 +2380,6 @@ export const ClubWorkspace = ({
             ) : null}
           </div>
           {isManager ? musicSetupPanel : null}
-          {game !== null &&
-          isFederationGame(game) &&
-          !["finished", "draw", "cancelled"].includes(game.phase) &&
-          finalResults === null &&
-          previewGame === null &&
-          !privacyHidden &&
-          finishGameState !== "blocked" &&
-          canApplyGameScreenMutation() ? (
-            <AdjudicationControls
-              game={game}
-              onAcceptedEvent={(draft) => {
-                if (!canApplyGameScreenMutation()) return;
-                acceptGameEvent(draft);
-                setActiveDrawer(null);
-              }}
-            />
-          ) : null}
           {game !== null && sessionSync.gameId !== null ? (
             <section className="manage-game-metadata" aria-label={t("changeTournament")}>
               <h3>{t("changeTournament")}</h3>
@@ -2765,9 +2772,11 @@ export const ClubWorkspace = ({
         </>
       ) : (
         <GameScreen
-          playerExitSettings={playerExit}
           key={`${previewGame === null ? "live" : "preview"}-${renderedGameScreenMutationGeneration}`}
           game={previewGame ?? game}
+          playerExitSettings={playerExit}
+          rulesOpen={rulesGame === game && previewGame === null && canApplyGameScreenMutation()}
+          onRulesClose={() => setRulesGame(null)}
           gameName={sessionName}
           hostName={
             hostPlayerId === null
@@ -2781,7 +2790,7 @@ export const ClubWorkspace = ({
             if (canApplyGameScreenMutation()) logEvent(type, payload);
           }}
           onAcceptedEvent={(draft) => {
-            if (canApplyGameScreenMutation()) acceptGameEvent(draft);
+            if (canApplyGameScreenMutation()) return acceptGameEvent(draft);
           }}
           mode={previewGame === null ? "live" : "preview"}
           previewSequence={previewEntry?.sequence}

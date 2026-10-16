@@ -64,6 +64,7 @@ const removalStages = {
   agreement: "Removal stage agreement",
   "before-shooting-count": "Removal stage before shooting count",
   "shooting-count": "Removal stage shooting count",
+  "after-shooting-result": "Removal stage after shooting result",
   "don-check": "Removal stage don check",
   "sheriff-check": "Removal stage sheriff check",
   "day-discussion": "Removal stage day discussion",

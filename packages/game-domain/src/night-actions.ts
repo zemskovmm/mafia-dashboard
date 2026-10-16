@@ -201,7 +201,9 @@ export const completeMafiaShots = (game: GameState): GameState => {
   if (
     isFederationGame(game) &&
     game.disciplinaryRemovals?.some(
-      (r) => r.stage === "shooting-count" && r.announcement === "pending",
+      (r) =>
+        ["shooting-count", "after-shooting-result"].includes(r.stage) &&
+        r.announcement === "pending",
     )
   )
     throw new Error("Count-stage removal announcement is required before private checks");

@@ -243,7 +243,9 @@ export const NightStage = ({
             disabled={
               isFederationGame(game) &&
               !!game.disciplinaryRemovals?.some(
-                (r) => r.stage === "shooting-count" && r.announcement === "pending",
+                (r) =>
+                  ["shooting-count", "after-shooting-result"].includes(r.stage) &&
+                  r.announcement === "pending",
               )
             }
             onClick={() => {

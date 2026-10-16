@@ -18,7 +18,8 @@ import {
   startVoting,
 } from "@mafia/game-domain";
 import type { CanonicalGameEventDraft, GameState, PlayerInput } from "@mafia/game-domain";
-import { I18nProvider } from "../../i18n/I18nProvider.js";
+import { I18nProvider, useMessages } from "../../i18n/I18nProvider.js";
+import { votingMessages } from "../../i18n/messages/voting.js";
 import { VotingStage } from "./VotingStage.js";
 import { GameUtilityPanels } from "../game/GameUtilityPanels.js";
 import { FederationDisciplineControls } from "../game/FederationDisciplineControls.js";
@@ -130,12 +131,24 @@ const FederationHarness = ({
   onAccepted?: (event: CanonicalGameEventDraft) => void;
 }) => {
   const [game, setGame] = useState(initial);
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const { t } = useMessages(votingMessages);
   return (
     <>
       <output data-testid="federation-state">{JSON.stringify(game)}</output>
+      <button
+        type="button"
+        aria-haspopup="dialog"
+        aria-expanded={rulesOpen}
+        onClick={() => setRulesOpen(true)}
+      >
+        {t("ballotRulesLabel")}
+      </button>
       <FederationDisciplineControls
         game={game}
         request={null}
+        rulesOpen={rulesOpen}
+        onComplete={() => setRulesOpen(false)}
         onGameChange={setGame}
         onEvent={() => undefined}
         onAcceptedEvent={(event) => {

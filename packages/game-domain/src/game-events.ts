@@ -1170,6 +1170,26 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
           (removal.announcement === "announced" && removal.departure !== "departed")
         )
           throw new Error("Disciplinary exclusion/departure/announcement disagree");
+        if (removal.stage === "after-shooting-result") {
+          if (
+            removal.occurredPhase !== "night-mafia-result" ||
+            removal.departure !== "departed" ||
+            removal.checkCompletionPending
+          )
+            throw new Error(
+              "Post-result removal requires a completed shooting boundary and departure",
+            );
+          if (game.phase === "night-mafia-result" && removal.day === game.day) {
+            const result = game.nightResult as GameState["nightResult"];
+            if (
+              !result ||
+              removal.shotDeath !== (result.kind === "kill" && result.targetSeat === removal.seat)
+            )
+              throw new Error(
+                "Post-result removal must retain its accepted shooting result and victim",
+              );
+          }
+        }
       }
     }
     if (game.actualMultipleShotSeats !== undefined) {

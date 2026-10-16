@@ -13,9 +13,7 @@
   max-width: 32rem;
   font-size: 0.8rem;
 }
-.federation-discipline > .federation-announcements {
-  margin-top: 52px;
-}
+
 .federation-announcements {
   display: flex;
   gap: 0.35rem;
@@ -89,7 +87,21 @@
 .federation-judge-dialog::backdrop {
   background: #0009;
 }
+.federation-judge-dialog.is-discipline {
+  width: min(36rem, calc(100vw - 2rem));
+}
+.discipline-rule-picker {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 48px;
+  align-items: end;
+  gap: 0.5rem;
+}
+.discipline-rule-picker select {
+  min-width: 0;
+  width: 100%;
+}
 .federation-judge-dialog[open],
+.federation-judge-dialog .federation-discipline-form,
 .federation-judge-dialog form,
 .federation-judge-dialog label {
   display: grid;

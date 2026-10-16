@@ -1,5 +1,7 @@
+/* global URL, structuredClone */
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { readFile } from "node:fs/promises";
 import { tsImport } from "tsx/esm/api";
 
 const { checkpoint, legacySetupState } = await tsImport(
@@ -88,4 +90,94 @@ test("corrupted browser root hashes and unsupported v2 fields fail closed", () =
   );
   const invalid = { ...state.game, sheriffChecksPerformed: -1 };
   assert.throws(() => checkpoint(invalid, state, id));
+});
+
+test("rules browser mode is opt-in and leaves existing runner modes reachable", async () => {
+  const runner = await readFile(new URL("./verify-ui.mjs", import.meta.url), "utf8");
+  assert.match(
+    runner,
+    /const rulesSketchbookOnly = process\.env\.UI_RULES_SKETCHBOOK_ONLY === "1"/,
+  );
+  assert.match(
+    runner,
+    /if \(rulesSketchbookOnly\) \{[\s\S]*?tsImport\([\s\S]*?verify-rules-sketchbook-ui\.mjs/,
+  );
+  for (const mode of ["federationOnly", "headerOnly", "hardeningOnly", "musicOnly", "layoutOnly"]) {
+    assert.ok(runner.includes(`if (${mode})`), `${mode} remains reachable`);
+  }
+  assert.match(runner, /api: federationApi/);
+  assert.match(
+    runner,
+    /assertNoPageErrors\(\);[\s\S]*?Rules sketchbook integrated verification: PASS/,
+  );
+});
+
+test("rules coverage gate rejects missing, duplicate or mislabeled real destinations", async () => {
+  const { assertRulesCoverage } = await tsImport(
+    "./verify-rules-sketchbook-ui.mjs",
+    import.meta.url,
+  );
+  const { rulesChapters } = await tsImport(
+    "../apps/web/src/features/rules/rules-content.ts",
+    import.meta.url,
+  );
+  const { ruleReferenceIds } = await tsImport(
+    "../apps/web/src/features/rules/rule-references.ts",
+    import.meta.url,
+  );
+  const report = { destinations: [], references: [] };
+  for (const locale of ["en", "ru"]) {
+    report.destinations.push(...rulesChapters.map(({ id }) => ({ locale, id })));
+    report.references.push(...ruleReferenceIds.map((id) => ({ locale, id, forced: false })), {
+      locale,
+      id: "6.2.1",
+      forced: true,
+    });
+  }
+  assert.doesNotThrow(() => assertRulesCoverage(report));
+  const missing = structuredClone(report);
+  missing.destinations.pop();
+  assert.throws(() => assertRulesCoverage(missing));
+  const duplicate = structuredClone(report);
+  duplicate.destinations[0].id = duplicate.destinations[1].id;
+  assert.throws(() => assertRulesCoverage(duplicate));
+  const wrongReference = structuredClone(report);
+  wrongReference.references.find((r) => r.id === "6.2.12").id = "6.2.11";
+  assert.throws(() => assertRulesCoverage(wrongReference));
+  const missingForced = structuredClone(report);
+  missingForced.references = missingForced.references.filter((r) => !r.forced);
+  assert.throws(() => assertRulesCoverage(missingForced));
+  const narrow = { ...structuredClone(report), viewport: { width: 390, height: 844 } };
+  assert.throws(
+    () => assertRulesCoverage(narrow),
+    "Narrow coverage cannot silently skip keyboard traversal",
+  );
+  narrow.keyboardTraversal = ["en", "ru"].map((locale) => ({
+    locale,
+    rows: [
+      ...Array.from({ length: 28 }, (_, i) => i),
+      ...Array.from({ length: 28 }, (_, i) => 27 - i),
+    ].map((index) => ({ index, inside: true })),
+  }));
+  assert.doesNotThrow(() => assertRulesCoverage(narrow));
+  narrow.keyboardTraversal[1].rows[20].inside = false;
+  assert.throws(
+    () => assertRulesCoverage(narrow),
+    "Focus containment alone does not prove a clipped entry is visible",
+  );
+});
+
+test("federation gameplay scenarios route penalties through real player input, not header Rules", async () => {
+  const source = await readFile(new URL("./verify-federation-ui.mjs", import.meta.url), "utf8");
+  assert.ok(!source.includes('name: "Rules", exact: true'), "No old header penalty opener");
+  assert.ok(!source.includes("Rule help (unavailable)"));
+  assert.match(source, /page\.mouse\.down\(\)/);
+  assert.match(source, /Input\.dispatchTouchEvent/);
+  assert.match(source, /Shift\+F10/);
+  assert.match(source, /openPlayerPenalty\(page, reviewSeat, \{ shortcut: false/);
+  assert.match(source, /Final ruling reason[\s\S]*?toHaveValue/);
+  assert.match(source, /I reviewed the external recording[\s\S]*?toBeChecked/);
+  assert.match(source, /rule-only-removal-\$\{locale\}/);
+  assert.match(source, /post-result-victim-shooter-swipe-save-reload-replay/);
+  assert.match(source, /assert\.equal\(row\.scenarios\.length, 12 \+ 3\)/);
 });

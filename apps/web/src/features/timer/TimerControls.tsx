@@ -29,6 +29,7 @@ export const TimerControls = forwardRef<TimerControlsHandle>((_, ref) => {
   const [remaining, setRemaining] = useState(0);
   const audioContextRef = useRef<AudioContext | null>(null);
   const warningOscillatorRef = useRef<OscillatorNode | null>(null);
+  const lastPointerTapRef = useRef<number | null>(null);
 
   const cancelScheduledWarning = useCallback(() => {
     const oscillator = warningOscillatorRef.current;
@@ -66,6 +67,7 @@ export const TimerControls = forwardRef<TimerControlsHandle>((_, ref) => {
   };
 
   const start = (seconds: 10 | 20 | 30 | 60) => {
+    lastPointerTapRef.current = null;
     cancelScheduledWarning();
     const now = Date.now();
     const reading = readCountdown(startCountdown(seconds, now), now);
@@ -134,7 +136,24 @@ export const TimerControls = forwardRef<TimerControlsHandle>((_, ref) => {
               : t("timer.pause")
         }
         disabled={timer === null || timer.status === "expired"}
-        onClick={toggle}
+        onClick={(event) => {
+          const now = Date.now();
+          const previous = lastPointerTapRef.current;
+          lastPointerTapRef.current = event.detail === 0 ? null : now;
+          if (
+            event.detail > 0 &&
+            previous !== null &&
+            now - previous >= 0 &&
+            now - previous <= 350
+          ) {
+            lastPointerTapRef.current = null;
+            cancelScheduledWarning();
+            setTimer(null);
+            setRemaining(0);
+          } else {
+            toggle();
+          }
+        }}
       >
         <span className="timer-label">{t("timer.label")}</span>
         <strong>{remaining.toString().padStart(2, "0")}</strong>

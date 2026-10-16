@@ -34,6 +34,79 @@ beforeEach(() => {
 });
 
 describe("AccountPlaylistPicker", () => {
+  it("offers only Mafia-prefixed titles without changing an excluded active playlist", async () => {
+    const titles = [
+      "Mafia Chill",
+      "Mafia Drum and Bass",
+      "Mafia Rock",
+      "Mafia Classy",
+      "  mAfIa New  ",
+      "Dinner mix",
+      "Evening Mafia",
+    ];
+    vi.mocked(listMusicPlaylists).mockResolvedValue(
+      titles.map((title, index) => ({
+        id: `PL-${index}`,
+        title,
+        itemCount: 2,
+        thumbnailUrl: null,
+      })),
+    );
+    const onPlaylistIdChange = vi.fn();
+    render(
+      <Picker
+        view="playlist"
+        playlistId="PL-5"
+        onPlaylistIdChange={onPlaylistIdChange}
+        onAccountDisconnected={vi.fn()}
+        status={{ configured: true, connected: true, accountLabel: "Host" }}
+        statusError={false}
+        onRetry={vi.fn()}
+        onStatusChange={vi.fn()}
+      />,
+    );
+    const picker = await screen.findByRole("combobox");
+    expect(
+      within(picker)
+        .getAllByRole("option")
+        .map((option) => (option as HTMLOptionElement).value),
+    ).toEqual(["", "PL-0", "PL-1", "PL-2", "PL-3", "PL-4"]);
+    expect(picker).toHaveValue("");
+    expect(onPlaylistIdChange).not.toHaveBeenCalled();
+    await userEvent.setup().selectOptions(picker, "PL-3");
+    expect(onPlaylistIdChange).toHaveBeenCalledExactlyOnceWith("PL-3");
+  });
+
+  it.each(["en", "ru"] as const)("explains an empty Mafia filter in %s", async (locale) => {
+    vi.mocked(listMusicPlaylists).mockResolvedValue([
+      { id: "other", title: "Evening Mafia", itemCount: 1, thumbnailUrl: null },
+    ]);
+    const onPlaylistIdChange = vi.fn();
+    render(
+      <I18nProvider locale={locale}>
+        <Picker
+          view="playlist"
+          playlistId="other"
+          onPlaylistIdChange={onPlaylistIdChange}
+          onAccountDisconnected={vi.fn()}
+          status={{ configured: true, connected: true, accountLabel: "Host" }}
+          statusError={false}
+          onRetry={vi.fn()}
+          onStatusChange={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+    expect(
+      await screen.findByText(
+        locale === "en"
+          ? "No playlists starting with Mafia were found."
+          : "Плейлисты, начинающиеся с Mafia, не найдены.",
+      ),
+    ).toBeVisible();
+    expect(screen.getAllByRole("option")).toHaveLength(1);
+    expect(onPlaylistIdChange).not.toHaveBeenCalled();
+  });
+
   it("offers Google authorization when no account is connected", async () => {
     render(
       <AccountPlaylistPicker
@@ -78,8 +151,8 @@ describe("AccountPlaylistPicker", () => {
   it("lists account playlists and selects one for playback", async () => {
     const onPlaylistIdChange = vi.fn();
     vi.mocked(listMusicPlaylists).mockResolvedValue([
-      { id: "PL-dinner", title: "Dinner mix", itemCount: 12, thumbnailUrl: null },
-      { id: "PL-late", title: "Late night", itemCount: 8, thumbnailUrl: null },
+      { id: "PL-dinner", title: "Mafia Chill", itemCount: 12, thumbnailUrl: null },
+      { id: "PL-late", title: "Mafia Rock", itemCount: 8, thumbnailUrl: null },
     ]);
     const user = userEvent.setup();
 
@@ -109,7 +182,7 @@ describe("AccountPlaylistPicker", () => {
     expect(listMusicPlaylists).toHaveBeenCalledOnce();
     expect(screen.getByText("Connected as Mafia Host")).toBeInTheDocument();
     expect(
-      within(picker).getByRole("option", { name: "Dinner mix · 12 tracks" }),
+      within(picker).getByRole("option", { name: "Mafia Chill · 12 tracks" }),
     ).toBeInTheDocument();
 
     await user.selectOptions(picker, "PL-late");
@@ -120,7 +193,7 @@ describe("AccountPlaylistPicker", () => {
     vi.mocked(listMusicPlaylists)
       .mockRejectedValueOnce(new Error("playlist provider unavailable"))
       .mockResolvedValueOnce([
-        { id: "PL-remembered", title: "Remembered mix", itemCount: 12, thumbnailUrl: null },
+        { id: "PL-remembered", title: "Mafia Remembered mix", itemCount: 12, thumbnailUrl: null },
       ]);
     const user = userEvent.setup();
 
@@ -188,7 +261,7 @@ describe("AccountPlaylistPicker", () => {
     vi.mocked(listMusicPlaylists)
       .mockReturnValueOnce(stalePlaylists)
       .mockResolvedValueOnce([
-        { id: "PL-current", title: "Current mix", itemCount: 8, thumbnailUrl: null },
+        { id: "PL-current", title: "Mafia Current mix", itemCount: 8, thumbnailUrl: null },
       ]);
 
     const { rerender } = render(
@@ -217,14 +290,18 @@ describe("AccountPlaylistPicker", () => {
     );
 
     expect(
-      await screen.findByRole("option", { name: "Current mix · 8 tracks" }),
+      await screen.findByRole("option", { name: "Mafia Current mix · 8 tracks" }),
     ).toBeInTheDocument();
     await act(async () => {
-      resolveStale([{ id: "PL-stale", title: "Stale mix", itemCount: 3, thumbnailUrl: null }]);
+      resolveStale([
+        { id: "PL-stale", title: "Mafia Stale mix", itemCount: 3, thumbnailUrl: null },
+      ]);
     });
 
-    expect(screen.getByRole("option", { name: "Current mix · 8 tracks" })).toBeInTheDocument();
-    expect(screen.queryByRole("option", { name: "Stale mix · 3 tracks" })).toBeNull();
+    expect(
+      screen.getByRole("option", { name: "Mafia Current mix · 8 tracks" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "Mafia Stale mix · 3 tracks" })).toBeNull();
   });
 
   it("renders only one remembered playlist selector even when obsolete stage props are present", async () => {

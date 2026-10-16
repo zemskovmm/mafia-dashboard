@@ -1,6 +1,6 @@
 import type { GamePhase, GameState, RemovalOccurrenceStage } from "@mafia/game-domain";
 
-// The judge chooses the observed physical boundary, never an inferred timestamp.
+// Permitted observed boundaries; the shortcut supplies a current-screen default for confirmation.
 export const removalStagesForPhase = (phase: GamePhase): readonly RemovalOccurrenceStage[] => {
   switch (phase) {
     case "mafia-planning":
@@ -11,6 +11,8 @@ export const removalStagesForPhase = (phase: GamePhase): readonly RemovalOccurre
       return ["agreement"];
     case "night-mafia":
       return ["before-shooting-count", "shooting-count", "after-voting-result"];
+    case "night-mafia-result":
+      return ["after-shooting-result"];
     case "night-don":
     case "night-don-result":
       return ["don-check"];
@@ -36,6 +38,13 @@ export const removalStagesForPhase = (phase: GamePhase): readonly RemovalOccurre
       return [];
   }
 };
+export const defaultRemovalStage = (phase: GamePhase): RemovalOccurrenceStage | "" =>
+  phase === "night-mafia"
+    ? "shooting-count"
+    : phase === "goodbye-speech"
+      ? "farewell"
+      : (removalStagesForPhase(phase)[0] ?? "");
+
 export const hasImmediateRemovalAnnouncement = (game: GameState): boolean =>
   game.disciplinaryRemovals?.some(
     (removal) =>

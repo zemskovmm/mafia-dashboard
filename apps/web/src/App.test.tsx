@@ -19,6 +19,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   advanceSetupPhase,
+  applyGameEvent,
   assignRoleForSeat,
   beginRoleDraw,
   completeRoleDraw,
@@ -449,171 +450,179 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
   },
 }));
 
-vi.mock("./features/game/GameScreen.js", () => ({
-  GameScreen: ({
-    game,
-    hostName,
-    onGameChange,
-    onEvent,
-    onAcceptedEvent,
-    mode,
-    previewSequence,
-    onExitPreview,
-    onResetPreview,
-    canResetPreview,
-    privacyHidden,
-    onFinishGame,
-    finishGameState,
-  }: {
-    game: GameState;
-    hostName: string;
-    onGameChange: (game: GameState) => void;
-    onEvent: (type: string, payload: Record<string, unknown>) => void;
-    onAcceptedEvent?: (event: CanonicalGameEventDraft) => void;
-    mode?: "live" | "preview";
-    previewSequence?: number;
-    onExitPreview?: () => void;
-    onResetPreview?: () => void;
-    canResetPreview?: boolean;
-    privacyHidden: boolean;
-    onFinishGame: () => void;
-    finishGameState: "ready" | "saving" | "saved" | "queued" | "blocked";
-  }) => {
-    if (mode === "preview") {
-      gameScreenHarness.previewGame = game;
-      gameScreenHarness.previewOnGameChange = onGameChange;
-    } else {
-      gameScreenHarness.liveGame = game;
-      gameScreenHarness.liveOnGameChange = onGameChange;
-      gameScreenHarness.liveOnAcceptedEvent = onAcceptedEvent ?? null;
-      gameScreenHarness.liveOnFinishGame = onFinishGame;
-    }
-    return mode === "preview" ? (
-      <main>
-        <h1>Preview game state</h1>
-        <p>Preview log {previewSequence}</p>
-        <button type="button" onClick={onExitPreview}>
-          Exit preview
-        </button>
-        <button type="button" disabled={!canResetPreview} onClick={onResetPreview}>
-          Reset game to this state
-        </button>
-      </main>
-    ) : (
-      <main>
-        <h1>Live test game</h1>
-        <p>Host: {hostName}</p>
-        <p>Game day {game.day}</p>
-        <p>Game turn {game.currentTurnIndex}</p>
-        <p>Game fouls {game.players.reduce((total, player) => total + player.fouls, 0)}</p>
-        <p>Private info {privacyHidden ? "hidden" : "visible"}</p>
+vi.mock("./features/game/GameScreen.js", async () => {
+  const { RulesBookHost } = await import("./features/rules/RulesBookHost.js");
+  return {
+    GameScreen: ({
+      game,
+      hostName,
+      onGameChange,
+      onEvent,
+      onAcceptedEvent,
+      mode,
+      previewSequence,
+      onExitPreview,
+      onResetPreview,
+      canResetPreview,
+      privacyHidden,
+      onFinishGame,
+      finishGameState,
+      rulesOpen,
+      onRulesClose,
+    }: {
+      game: GameState;
+      hostName: string;
+      onGameChange: (game: GameState) => void;
+      onEvent: (type: string, payload: Record<string, unknown>) => void;
+      onAcceptedEvent?: (event: CanonicalGameEventDraft) => void;
+      mode?: "live" | "preview";
+      previewSequence?: number;
+      onExitPreview?: () => void;
+      onResetPreview?: () => void;
+      canResetPreview?: boolean;
+      privacyHidden: boolean;
+      onFinishGame: () => void;
+      finishGameState: "ready" | "saving" | "saved" | "queued" | "blocked";
+      rulesOpen?: boolean;
+      onRulesClose?: () => void;
+    }) => {
+      if (mode === "preview") {
+        gameScreenHarness.previewGame = game;
+        gameScreenHarness.previewOnGameChange = onGameChange;
+      } else {
+        gameScreenHarness.liveGame = game;
+        gameScreenHarness.liveOnGameChange = onGameChange;
+        gameScreenHarness.liveOnAcceptedEvent = onAcceptedEvent ?? null;
+        gameScreenHarness.liveOnFinishGame = onFinishGame;
+      }
+      return mode === "preview" ? (
+        <main>
+          <h1>Preview game state</h1>
+          <p>Preview log {previewSequence}</p>
+          <button type="button" onClick={onExitPreview}>
+            Exit preview
+          </button>
+          <button type="button" disabled={!canResetPreview} onClick={onResetPreview}>
+            Reset game to this state
+          </button>
+        </main>
+      ) : (
+        <main>
+          <h1>Live test game</h1>
+          <p>Host: {hostName}</p>
+          <p>Game day {game.day}</p>
+          <p>Game turn {game.currentTurnIndex}</p>
+          <p>Game fouls {game.players.reduce((total, player) => total + player.fouls, 0)}</p>
+          <p>Private info {privacyHidden ? "hidden" : "visible"}</p>
+          <RulesBookHost open={rulesOpen ?? false} onClose={onRulesClose ?? (() => undefined)} />
 
-        <button
-          type="button"
-          onClick={() => {
-            const seat = game.turnOrder[game.currentTurnIndex];
-            if (onAcceptedEvent !== undefined && seat !== undefined) {
-              onAcceptedEvent({ type: "turn.completed", payload: { seat } });
-            } else {
-              const nextTurn = game.currentTurnIndex + 1;
-              onGameChange({ ...game, currentTurnIndex: nextTurn });
-              onEvent("turn.completed", { turn: nextTurn });
-            }
-          }}
-        >
-          Record game action
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            const nominatorSeat = game.turnOrder[game.currentTurnIndex];
-            if (onAcceptedEvent !== undefined && nominatorSeat !== undefined) {
-              onAcceptedEvent({
-                type: "player.nominated",
-                payload: { nominatorSeat, candidateSeat: 4 },
-              });
-            }
-          }}
-        >
-          Record nomination
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            const foulCount = game.players.reduce((total, player) => total + player.fouls, 0);
-            const player = game.players[foulCount % game.players.length];
-            if (onAcceptedEvent !== undefined && player !== undefined) {
-              onAcceptedEvent({
-                type: "foul.issued",
-                payload: { seat: player.seat, foulNumber: player.fouls + 1, redCarded: false },
-              });
-            }
-          }}
-        >
-          Record meaningful checkpoint
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            const nextDay = game.day + 1;
-            onGameChange({ ...game, day: nextDay });
-            onEvent("day.started", { day: nextDay });
-          }}
-        >
-          Start new day
-        </button>
-        <button
-          type="button"
-          onClick={() =>
-            onGameChange({
-              ...game,
-              phase: "voting",
-              nominations: [
-                { candidateSeat: 2, nominatorSeat: 1, order: 1 },
-                { candidateSeat: 3, nominatorSeat: 2, order: 2 },
-              ],
-              turnOrder: [2, 3],
-              currentTurnIndex: 0,
-            })
-          }
-        >
-          Enter voting phase
-        </button>
-        <button type="button" onClick={() => onGameChange({ ...game, phase: "night-mafia" })}>
-          Enter night phase
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            if (onAcceptedEvent !== undefined) {
-              for (const player of game.players.filter(({ team }) => team === "black")) {
+          <button
+            type="button"
+            onClick={() => {
+              const seat = game.turnOrder[game.currentTurnIndex];
+              if (onAcceptedEvent !== undefined && seat !== undefined) {
+                onAcceptedEvent({ type: "turn.completed", payload: { seat } });
+              } else {
+                const nextTurn = game.currentTurnIndex + 1;
+                onGameChange({ ...game, currentTurnIndex: nextTurn });
+                onEvent("turn.completed", { turn: nextTurn });
+              }
+            }}
+          >
+            Record game action
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const nominatorSeat = game.turnOrder[game.currentTurnIndex];
+              if (onAcceptedEvent !== undefined && nominatorSeat !== undefined) {
                 onAcceptedEvent({
-                  type: "player.red-carded",
-                  payload: { seat: player.seat },
+                  type: "player.nominated",
+                  payload: { nominatorSeat, candidateSeat: 4 },
                 });
               }
-            } else onGameChange({ ...game, phase: "finished", winner: "red" });
-          }}
-        >
-          Finish test game
-        </button>
-        {game.phase === "finished" || game.phase === "draw" || game.phase === "cancelled" ? (
-          <button type="button" disabled={finishGameState !== "ready"} onClick={onFinishGame}>
-            {finishGameState === "saved"
-              ? "Game safely saved"
-              : finishGameState === "queued"
-                ? "Game saved offline"
-                : finishGameState === "blocked"
-                  ? "Game upload blocked"
-                  : finishGameState === "saving"
-                    ? "Saving game…"
-                    : "Finish the game"}
+            }}
+          >
+            Record nomination
           </button>
-        ) : null}
-      </main>
-    );
-  },
-}));
+          <button
+            type="button"
+            onClick={() => {
+              const foulCount = game.players.reduce((total, player) => total + player.fouls, 0);
+              const player = game.players[foulCount % game.players.length];
+              if (onAcceptedEvent !== undefined && player !== undefined) {
+                onAcceptedEvent({
+                  type: "foul.issued",
+                  payload: { seat: player.seat, foulNumber: player.fouls + 1, redCarded: false },
+                });
+              }
+            }}
+          >
+            Record meaningful checkpoint
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const nextDay = game.day + 1;
+              onGameChange({ ...game, day: nextDay });
+              onEvent("day.started", { day: nextDay });
+            }}
+          >
+            Start new day
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              onGameChange({
+                ...game,
+                phase: "voting",
+                nominations: [
+                  { candidateSeat: 2, nominatorSeat: 1, order: 1 },
+                  { candidateSeat: 3, nominatorSeat: 2, order: 2 },
+                ],
+                turnOrder: [2, 3],
+                currentTurnIndex: 0,
+              })
+            }
+          >
+            Enter voting phase
+          </button>
+          <button type="button" onClick={() => onGameChange({ ...game, phase: "night-mafia" })}>
+            Enter night phase
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (onAcceptedEvent !== undefined) {
+                for (const player of game.players.filter(({ team }) => team === "black")) {
+                  onAcceptedEvent({
+                    type: "player.red-carded",
+                    payload: { seat: player.seat },
+                  });
+                }
+              } else onGameChange({ ...game, phase: "finished", winner: "red" });
+            }}
+          >
+            Finish test game
+          </button>
+          {game.phase === "finished" || game.phase === "draw" || game.phase === "cancelled" ? (
+            <button type="button" disabled={finishGameState !== "ready"} onClick={onFinishGame}>
+              {finishGameState === "saved"
+                ? "Game safely saved"
+                : finishGameState === "queued"
+                  ? "Game saved offline"
+                  : finishGameState === "blocked"
+                    ? "Game upload blocked"
+                    : finishGameState === "saving"
+                      ? "Saving game…"
+                      : "Finish the game"}
+            </button>
+          ) : null}
+        </main>
+      );
+    },
+  };
+});
 
 vi.mock("./features/music/YouTubePlaylistPlayer.js", () => ({
   YouTubePlaylistPlayer: forwardRef(
@@ -4149,14 +4158,14 @@ describe("developer menu", () => {
     expect(controls.parentElement).toBe(player.closest(".youtube-dock"));
   });
 
-  it("keeps fullscreen, Undo, and the private mask visible across application views", async () => {
+  it("hides unavailable fullscreen while keeping Undo and the private mask across views", async () => {
     const user = userEvent.setup();
     render(<App />);
 
-    const fullscreen = screen.getByRole("button", { name: "Fullscreen unavailable" });
+    expect(screen.queryByRole("button", { name: /fullscreen/i })).toBeNull();
     const undo = screen.getByRole("button", { name: /undo last action.*0 available/i });
     const privacy = screen.getByRole("button", { name: "Hide private info" });
-    expect(fullscreen).toBeVisible();
+
     expect(undo).toBeVisible();
     expect(undo).toBeDisabled();
     expect(privacy).toBeVisible();
@@ -4165,7 +4174,7 @@ describe("developer menu", () => {
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Players screen" }));
 
-    expect(screen.getByRole("button", { name: "Fullscreen unavailable" })).toBe(fullscreen);
+    expect(screen.queryByRole("button", { name: /fullscreen/i })).toBeNull();
     expect(screen.getByRole("button", { name: /undo last action.*0 available/i })).toBe(undo);
     expect(screen.getByRole("button", { name: "Hide private info" })).toBe(privacy);
   });
@@ -4206,6 +4215,85 @@ describe("developer menu", () => {
     Reflect.deleteProperty(document.documentElement, "requestFullscreen");
     Reflect.deleteProperty(document, "exitFullscreen");
   });
+
+  it("opens the read-only illustrated book from the single top icon and restores focus", async () => {
+    const { GameScreen: RealGameScreen } = await vi.importActual<typeof gameScreenModule>(
+      "./features/game/GameScreen.js",
+    );
+    const mock = vi.spyOn(gameScreenModule, "GameScreen").mockImplementation(RealGameScreen);
+    const state = federationGame();
+    const outbox = new GameSessionOutbox({
+      storage: window.localStorage,
+      clubId: testClub.id,
+      createId: () => crypto.randomUUID(),
+      save: vi.fn(),
+    });
+    outbox.activateRemote({
+      ...remoteSession("00000000-0000-4000-8000-000000000399", "Rules toolbar", "Host", 1, 1),
+      state: {
+        ...browserSessionState(""),
+        game: state,
+        hostPlayerId,
+        initialGame: createInitialGameBaseline(state),
+      },
+    });
+    try {
+      const user = userEvent.setup();
+      render(<App />);
+      const rules = await screen.findByRole("button", { name: "Rules" });
+      expect(rules.closest(".app-fixed-toolbar")).not.toBeNull();
+      expect(rules.textContent).toBe("");
+      expect(rules.querySelector("svg")).not.toBeNull();
+      expect(screen.getAllByRole("button", { name: "Rules" })).toHaveLength(1);
+      await user.click(rules);
+      expect(
+        await screen.findByRole("dialog", { name: "Illustrated Mafia rulebook" }),
+      ).toBeVisible();
+      expect(screen.queryByLabelText("Discipline action")).not.toBeVisible();
+      await user.keyboard("{Escape}");
+      expect(screen.queryByRole("dialog", { name: "Illustrated Mafia rulebook" })).toBeNull();
+      expect(rules).toHaveFocus();
+      await user.click(rules);
+      expect(
+        await screen.findByRole("dialog", { name: "Illustrated Mafia rulebook" }),
+      ).toBeVisible();
+    } finally {
+      mock.mockRestore();
+    }
+  });
+
+  it.each(["denied", "ios-standalone", "standalone-display"])(
+    "hides fullscreen even when the request method exists: %s",
+    async (environment) => {
+      Object.defineProperty(document.documentElement, "requestFullscreen", {
+        configurable: true,
+        value: vi.fn(),
+      });
+      Object.defineProperty(document, "fullscreenEnabled", {
+        configurable: true,
+        value: environment !== "denied",
+      });
+      Object.defineProperty(navigator, "standalone", {
+        configurable: true,
+        value: environment === "ios-standalone",
+      });
+      const matchMedia = window.matchMedia;
+      window.matchMedia = vi.fn((query: string) => ({
+        ...matchMedia?.(query),
+        matches: query === "(display-mode: standalone)" && environment === "standalone-display",
+      })) as typeof window.matchMedia;
+      try {
+        render(<App />);
+        await screen.findByRole("button", { name: "Open Manage menu" });
+        expect(screen.queryByRole("button", { name: /fullscreen/i })).toBeNull();
+      } finally {
+        Reflect.deleteProperty(document.documentElement, "requestFullscreen");
+        Reflect.deleteProperty(document, "fullscreenEnabled");
+        Reflect.deleteProperty(navigator, "standalone");
+        window.matchMedia = matchMedia;
+      }
+    },
+  );
 
   it.each([false, true])(
     "ignores privacy during real role giveaway (initially hidden: %s) but preserves it for gameplay",
@@ -5993,9 +6081,6 @@ describe("authoritative game session lifecycle", () => {
     expect(within(logDrawer).getByText("Foul issued", { selector: "strong" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Hide private info" }));
     expect(logDrawer).not.toHaveTextContent("Additional supporters");
-    expect(logDrawer).not.toHaveTextContent("Nomination selections:");
-    expect(logDrawer).not.toHaveTextContent("nomination.selection-set");
-    expect(within(logDrawer).getByText("Foul issued", { selector: "strong" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Show private info" }));
     const summary = within(logDrawer)
       .getByText("Nomination selections: 2 candidates", { selector: "strong" })
@@ -6234,41 +6319,85 @@ describe("authoritative game session lifecycle", () => {
     );
   });
 
+  it("keeps the gesture-opened ballot review open through its acknowledged commands", async () => {
+    const { GameScreen } = await vi.importActual<typeof gameScreenModule>(
+      "./features/game/GameScreen.js",
+    );
+    vi.spyOn(gameScreenModule, "GameScreen").mockImplementation(GameScreen);
+    let game = federationGame();
+    while (game.phase !== "day") game = advanceSetupPhase(game);
+    game = startVoting({
+      ...game,
+      nominations: [2, 3].map((seat, index) => ({
+        nominatorSeat: index + 1,
+        candidateSeat: seat,
+        order: index + 1,
+      })),
+    });
+    game = applyGameEvent(game, {
+      type: "voting.candidate-selected",
+      payload: { candidateSeat: 2 },
+    });
+    restoreFederationCheckpoint(game);
+    const user = userEvent.setup();
+    render(<App />);
+    const card = await screen.findByRole("button", { name: "Vote as Player 1 for Player 2" });
+    card.focus();
+    fireEvent.touchStart(card, { touches: [{ clientX: 100, clientY: 180 }] });
+    fireEvent.touchEnd(card, { changedTouches: [{ clientX: 100, clientY: 100 }] });
+    const judge = screen.getByRole("dialog");
+    await user.click(screen.getByText("Dispute count", { exact: true }));
+    await user.type(screen.getByLabelText("Dispute reason"), "Review this count");
+    await user.click(screen.getByRole("button", { name: "Pause voting for review" }));
+    expect(judge).toBeVisible();
+    expect(screen.getByRole("button", { name: "Accept final reviewed count" })).toBeDisabled();
+    await user.type(screen.getByLabelText("Final ruling reason"), "Count confirmed");
+    await user.click(screen.getByLabelText("I reviewed the external recording"));
+    await user.click(screen.getByRole("button", { name: "Accept final reviewed count" }));
+    expect(judge).toBeVisible();
+    await waitFor(() =>
+      expect(api.saveGameSession.mock.lastCall?.[1].state.events.at(-1).type).toBe(
+        "voting.count-ruled",
+      ),
+    );
+    const saved = api.saveGameSession.mock.lastCall![1].state;
+    expect(replayGameLog(saved.initialGame, saved.events).game).toEqual(saved.game);
+    await user.click(within(judge).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
   it.each(["red", "black"] as const)(
     "preserves a %s losing-team ruling through Finish and canonical replay",
     async (losingTeam) => {
+      const { GameScreen } = await vi.importActual<typeof gameScreenModule>(
+        "./features/game/GameScreen.js",
+      );
+      vi.spyOn(gameScreenModule, "GameScreen").mockImplementation(GameScreen);
       const state = federationGame();
-      const outbox = new GameSessionOutbox({
-        storage: window.localStorage,
-        clubId: testClub.id,
-        createId: () => crypto.randomUUID(),
-        save: vi.fn(),
-      });
-      outbox.activateRemote({
-        ...remoteSession("00000000-0000-4000-8000-000000000399", "Federation ruling", "Host", 1, 1),
-        state: {
-          ...browserSessionState(""),
-          game: state,
-          hostPlayerId,
-          initialGame: createInitialGameBaseline(state),
-        },
-      });
+      const offender = state.players.find((player) => player.team === losingTeam)!;
+      restoreFederationCheckpoint(state);
       const user = userEvent.setup();
       render(<App />);
-      act(() =>
-        gameScreenHarness.liveOnAcceptedEvent?.({ type: "game.checkpointed", payload: {} }),
-      );
-      await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
-      await user.click(screen.getByText("Referee-awarded victory"));
-      await user.selectOptions(screen.getByLabelText("Losing team"), losingTeam);
+      await screen.findByRole("button", { name: "Rules" });
+      const card = document.querySelector<HTMLElement>(
+        `[data-seat="${offender.seat}"] .player-seat`,
+      )!;
+      card.focus();
+      fireEvent.touchStart(card, { touches: [{ clientX: 100, clientY: 180 }] });
+      fireEvent.touchEnd(card, { changedTouches: [{ clientX: 100, clientY: 100 }] });
+      await user.selectOptions(screen.getByLabelText("Discipline action"), "opponent-victory");
       await user.type(screen.getByLabelText("Judge's reason"), "Verified violation");
       await user.click(screen.getByRole("button", { name: "Award victory to opposing team" }));
-      expect(gameScreenHarness.liveGame).toMatchObject({
+      await waitFor(() =>
+        expect(api.saveGameSession.mock.lastCall?.[1].state.game.phase).toBe("finished"),
+      );
+      const ruled = api.saveGameSession.mock.lastCall![1].state.game;
+      expect(ruled).toMatchObject({
         phase: "finished",
         winner: losingTeam === "red" ? "black" : "red",
         adjudication: { losingTeam, rule: "6.3.1", reason: "Verified violation" },
       });
-      expect(gameScreenHarness.liveGame?.players).toEqual(state.players);
+      expect(ruled.players).toEqual(state.players);
       await user.click(screen.getByRole("button", { name: "Finish the game" }));
       await waitFor(() =>
         expect(

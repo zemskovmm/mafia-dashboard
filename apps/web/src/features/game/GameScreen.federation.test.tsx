@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { act, fireEvent, screen, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -21,7 +21,9 @@ import {
   toggleAllMafiaShotsForTarget,
 } from "@mafia/game-domain";
 import type { CanonicalGameEventDraft, GameState } from "@mafia/game-domain";
-import { I18nProvider } from "../../i18n/I18nProvider.js";
+import * as domain from "@mafia/game-domain";
+import { I18nProvider, useMessages } from "../../i18n/I18nProvider.js";
+import { votingMessages } from "../../i18n/messages/voting.js";
 import { namedProfiles, renderWithProfiles } from "../../test-player-directory.js";
 import { TimerControls } from "../timer/TimerControls.js";
 import { GameScreen } from "./GameScreen.js";
@@ -67,63 +69,366 @@ const Harness = ({
   changed?: (game: GameState) => void;
 }) => {
   const [game, setGame] = useState(initial);
+  const [rulesFor, setRulesFor] = useState<GameState | null>(null);
+  const { t } = useMessages(votingMessages);
   return (
-    <GameScreen
-      game={game}
-      hostName="Host"
-      privacyHidden
-      onEvent={() => undefined}
-      onGameChange={(next) => {
-        setGame(next);
-        changed(next);
-      }}
-      onAcceptedEvent={(event) => {
-        const next = applyGameEvent(game, event);
-        accepted(event);
-        changed(next);
-        setGame(next);
-      }}
-    />
+    <>
+      <button type="button" onClick={() => setRulesFor(game)}>
+        {t("ballotRulesLabel")}
+      </button>
+      <GameScreen
+        game={game}
+        rulesOpen={rulesFor === game}
+        onRulesClose={() => setRulesFor(null)}
+        hostName="Host"
+        privacyHidden
+        onEvent={() => undefined}
+        onGameChange={(next) => {
+          setGame(next);
+          changed(next);
+        }}
+        onAcceptedEvent={(event) => {
+          const next = applyGameEvent(game, event);
+          accepted(event);
+          changed(next);
+          setGame(next);
+          return next;
+        }}
+      />
+    </>
   );
 };
 
+const openPenalty = (seat = 2) => {
+  const card = document.querySelector<HTMLElement>(`[data-seat="${seat}"] .player-seat`)!;
+  if (card.matches(":disabled")) screen.getByRole("button", { name: "Rules" }).focus();
+  else card.focus();
+  const invoking = document.activeElement;
+  fireEvent.touchStart(card, { touches: [{ identifier: 1, clientX: 100, clientY: 180 }] });
+  fireEvent.touchEnd(card, { changedTouches: [{ identifier: 1, clientX: 100, clientY: 100 }] });
+  return invoking;
+};
+const openGeneralRemoval = () => {
+  const card = document.querySelector('[data-seat="1"] .player-seat')!;
+  fireEvent.touchStart(card, { touches: [{ identifier: 1, clientX: 100, clientY: 100 }] });
+  fireEvent.touchEnd(card, { changedTouches: [{ identifier: 1, clientX: 180, clientY: 100 }] });
+  fireEvent.click(document.querySelector(".table-swipe-red-card")!);
+};
+
 describe("federation GameScreen", () => {
-  it.each([
-    ["day", day],
-    ["night-mafia", () => beginNight(day())],
-    ["best-move", bestMove],
-  ] as const)(
-    "opens the existing discipline form by upward card swipe in %s without applying an action",
-    (_phase, createInitial) => {
-      const initial = createInitial();
+  it.each(["en", "ru"] as const)(
+    "returns from the real reference reader to the exact unchanged form in %s",
+    async (locale) => {
+      const user = userEvent.setup();
       const accepted = vi.fn();
       const changed = vi.fn();
-      render(<Harness initial={initial} accepted={accepted} changed={changed} />);
-      const seat = initial.players.find((player) => player.status === "active")!.seat;
-      const card = document.querySelector(`[data-seat="${seat}"] .player-seat`)!;
-      fireEvent.touchStart(card, { touches: [{ identifier: 1, clientX: 100, clientY: 180 }] });
-      fireEvent.touchEnd(card, { changedTouches: [{ identifier: 1, clientX: 100, clientY: 100 }] });
-      fireEvent.click(card);
-      expect(screen.getByRole("dialog", { name: "Rules" })).toBeVisible();
-      expect(screen.getByLabelText("Discipline player")).toHaveValue(String(seat));
-      expect(screen.getByLabelText("Discipline action")).toHaveValue("removal");
-      expect(screen.getByLabelText("Occurrence timing")).toHaveValue("");
-      expect(screen.getByRole("button", { name: "Confirm discipline" })).toBeDisabled();
+      render(
+        <I18nProvider locale={locale}>
+          <Harness initial={day()} accepted={accepted} changed={changed} />
+        </I18nProvider>,
+      );
+      openPenalty();
+      const judge = screen.getByRole("dialog");
+      const action = within(judge).getByLabelText(
+        locale === "en" ? "Discipline action" : "Дисциплинарное действие",
+      );
+      const draft = () =>
+        [
+          ...judge.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(
+            "input, select, textarea",
+          ),
+        ].map((field) => [field.value, "checked" in field ? field.checked : undefined]);
+      for (const [selection, rule] of [
+        ["removal", "6.2.11"],
+        ["opponent-victory", "6.3.5"],
+      ]) {
+        await user.selectOptions(action, selection!);
+        const selector = judge.querySelector<HTMLSelectElement>(".discipline-rule-picker select")!;
+        await user.selectOptions(selector, rule!);
+        await user.type(within(judge).getByRole("textbox"), "Unfinished / Незавершённый текст");
+        if (selection === "opponent-victory") await user.click(within(judge).getByRole("checkbox"));
+        const before = draft();
+        const invoke = within(judge).getByRole("button", { name: new RegExp(rule!) });
+        await user.click(invoke);
+        const book = await screen.findByRole("dialog", {
+          name: locale === "en" ? "Illustrated Mafia rulebook" : "Иллюстрированные правила Мафии",
+        });
+        expect(within(book).getByText(rule!, { selector: ".rs-reference" })).toBeVisible();
+        expect(judge).toHaveAttribute("open");
+        expect(judge).toHaveAttribute("inert");
+        expect(judge).toHaveAttribute("aria-hidden", "true");
+        await user.keyboard("{Escape}");
+        expect(book).not.toHaveAttribute("open");
+        expect(judge).toHaveAttribute("open");
+        expect(judge).not.toHaveAttribute("inert");
+        await waitFor(() => expect(invoke).toHaveFocus());
+        expect(draft()).toEqual(before);
+      }
       expect(accepted).not.toHaveBeenCalled();
       expect(changed).not.toHaveBeenCalled();
     },
   );
 
-  it("confirms an upward-card removal only through the baseline explicit timing and rule controls", async () => {
-    const user = userEvent.setup();
+  it("keeps ballot review open for its own accepted commands without reauthorizing a stale penalty", async () => {
+    let game = domain.startVoting({
+      ...day(),
+      nominations: [2, 3].map((seat, index) => ({
+        nominatorSeat: index + 1,
+        candidateSeat: seat,
+        order: index + 1,
+      })),
+    });
+    game = applyGameEvent(game, {
+      type: "voting.candidate-selected",
+      payload: { candidateSeat: 2 },
+    });
     const accepted = vi.fn();
-    render(<Harness initial={day()} accepted={accepted} />);
+    const user = userEvent.setup();
+    render(<Harness initial={game} accepted={accepted} />);
+    const card = document.querySelector<HTMLElement>('[data-seat="1"] .player-seat')!;
+    fireEvent.touchStart(card, { touches: [{ identifier: 1, clientX: 100, clientY: 100 }] });
+    fireEvent.touchEnd(card, { changedTouches: [{ identifier: 1, clientX: 180, clientY: 100 }] });
+    // A real click focuses the context action, which is removed before the modal opens.
+    await user.click(document.querySelector<HTMLButtonElement>(".table-swipe-red-card")!);
+    await user.click(screen.getByText("Dispute count", { exact: true }));
+    await user.type(screen.getByLabelText("Dispute reason"), "Review this count");
+    await user.click(screen.getByRole("button", { name: "Pause voting for review" }));
+    expect(screen.getByRole("dialog")).toBeVisible();
+    await user.type(screen.getByLabelText("Final ruling reason"), "Count confirmed");
+    await user.click(screen.getByLabelText("I reviewed the external recording"));
+    await user.click(screen.getByRole("button", { name: "Accept final reviewed count" }));
+    expect(screen.getByRole("dialog")).toBeVisible();
+    expect(accepted).toHaveBeenCalledTimes(2);
+    within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }).focus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(card).toHaveFocus();
+  });
+
+  it("preserves ballot-wide review edits across dismissal and different player shortcuts", async () => {
+    let game = domain.startVoting({
+      ...day(),
+      nominations: [2, 3].map((seat, index) => ({
+        nominatorSeat: index + 1,
+        candidateSeat: seat,
+        order: index + 1,
+      })),
+    });
+    const drafts: CanonicalGameEventDraft[] = [
+      { type: "voting.candidate-selected", payload: { candidateSeat: 2 } },
+      { type: "vote.recorded", payload: { voterSeat: 1, candidateSeat: 2 } },
+      { type: "voting.count-disputed", payload: { candidateSeat: 2, reason: "Review count" } },
+    ];
+    for (const draft of drafts) game = applyGameEvent(game, draft);
+    const accepted = vi.fn();
+    const user = userEvent.setup();
+    await act(async () => {
+      render(<Harness initial={game} accepted={accepted} />);
+    });
+    let invokingCard = openPenalty();
+    expect(
+      screen.getByRole("region", { name: "Ballot review · applies to the whole ballot" }),
+    ).toBeVisible();
+    await user.selectOptions(screen.getByLabelText("Reviewed vote for #1 · Player 1"), "3");
+    await user.click(screen.getByLabelText("I reviewed the external recording"));
+    await user.type(screen.getByLabelText("Final ruling reason"), "Recording confirms seat three");
+    for (const dismissal of ["Escape", "Close"]) {
+      if (dismissal === "Escape") await user.keyboard("{Escape}");
+      else
+        await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }));
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(invokingCard).toHaveFocus();
+      invokingCard = openPenalty(dismissal === "Escape" ? 3 : 2);
+      expect(screen.getByLabelText("Reviewed vote for #1 · Player 1")).toHaveValue("3");
+      expect(screen.getByLabelText("I reviewed the external recording")).toBeChecked();
+      expect(screen.getByLabelText("Final ruling reason")).toHaveValue(
+        "Recording confirms seat three",
+      );
+      expect(accepted).not.toHaveBeenCalled();
+    }
+    await user.click(screen.getByRole("button", { name: "Accept final reviewed count" }));
+    expect(accepted).toHaveBeenCalledExactlyOnceWith({
+      type: "voting.count-ruled",
+      payload: {
+        voteAssignments: { 1: 3 },
+        externalReviewAcknowledged: true,
+        reason: "Recording confirms seat three",
+      },
+    });
+  });
+
+  const stages = () => {
+    const states: GameState[] = [];
+    let opening = planning();
+    while (opening.phase !== "day") {
+      states.push(opening);
+      opening = advanceSetupPhase(opening);
+    }
+    states.push(opening);
+    const ballot = domain.startVoting({
+      ...opening,
+      nominations: [1, 2].map((seat) => ({
+        nominatorSeat: seat,
+        candidateSeat: seat,
+        order: seat,
+      })),
+    });
+    const tie = domain.beginCarCrash(ballot, [1, 2]);
+    const repeated = domain.completeCurrentTurn(domain.completeCurrentTurn(tie));
+    const collective = domain.beginCarCrashDecision(repeated, [1, 2]);
+    const result = domain.acceptCompletedCarCrashCount(collective);
+    const allSeats = opening.players.map((p) => p.seat);
+    let allTie = domain.beginCarCrash(
+      domain.startVoting({
+        ...opening,
+        nominations: allSeats.map((seat) => ({
+          nominatorSeat: seat,
+          candidateSeat: seat,
+          order: seat,
+        })),
+      }),
+      allSeats,
+    );
+    for (let i = 0; i < allSeats.length; i++) allTie = domain.completeCurrentTurn(allTie);
+    const removed = applyGameEvent(opening, {
+      type: "discipline.removal-observed",
+      payload: {
+        seat: 1,
+        stage: "day-discussion",
+        rule: "6.2.3",
+        reason: "",
+        checkInProgress: false,
+      },
+    });
+    states.push(
+      ballot,
+      tie,
+      collective,
+      result,
+      domain.beginSkippedCarCrashDecision(allTie, allSeats),
+      domain.skipFederationVoting(
+        applyGameEvent(removed, {
+          type: "discipline.removals-announced",
+          payload: { seats: [1] },
+        }),
+        "disciplinary-cancellation",
+      ),
+    );
+    const shooting = beginNight(opening);
+    const shootingResult = resolveMafiaShots(shooting).game;
+    const don = completeMafiaShots(shootingResult);
+    const sheriff = skipDonCheck(don);
+    states.push(
+      shooting,
+      shootingResult,
+      don,
+      domain.performDonCheck(don, 1).game,
+      sheriff,
+      domain.performSheriffCheck(sheriff, 1).game,
+      skipSheriffCheck(sheriff),
+    );
+    const best = bestMove();
+    states.push(best, completeNight(domain.finalizeBestMove(best, "declined", true)));
+    return states;
+  };
+
+  it.each(stages().map((game) => [game.phase, game] as const))(
+    "opens and confirms the player shortcut at %s",
+    (_phase, initial) => {
+      // Validate real editioned preconditions, not merely a phase string.
+      domain.createGameLogEntry({
+        gameId: "penalty-matrix",
+        id: "root",
+        sequence: 1,
+        parentEventId: null,
+        createdAt: "2026-10-15T12:00:00.000Z",
+        before: initial,
+        draft: { type: "game.checkpointed", payload: {} },
+      });
+      const accepted = vi.fn();
+      const changed = vi.fn();
+      render(<Harness initial={initial} accepted={accepted} changed={changed} />);
+      const seat = initial.players.find((p) => p.status === "active" && p.role === "citizen")!.seat;
+      const card = document.querySelector(`[data-seat="${seat}"] .player-seat`)!;
+      const swipe = () => {
+        fireEvent.touchStart(card, { touches: [{ identifier: 1, clientX: 100, clientY: 180 }] });
+        fireEvent.touchEnd(card, {
+          changedTouches: [{ identifier: 1, clientX: 100, clientY: 100 }],
+        });
+      };
+      swipe();
+      expect(screen.getByRole("dialog")).toHaveAccessibleName(
+        `Discipline penalty for #${seat} · Player ${seat}`,
+      );
+      expect(screen.getByLabelText("Discipline action")).toHaveValue("removal");
+      expect(screen.queryByRole("option", { name: "Foul" })).toBeNull();
+      expect(accepted).not.toHaveBeenCalled();
+      expect(changed).not.toHaveBeenCalled();
+      fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+      expect(screen.queryByRole("dialog")).toBeNull();
+      swipe();
+      fireEvent.change(screen.getByLabelText("Removal rule"), { target: { value: "6.2.3" } });
+      const confirm = screen.getByRole("button", { name: "Confirm discipline" });
+      expect(confirm).toBeEnabled();
+      fireEvent.click(confirm);
+      expect(accepted).toHaveBeenCalledOnce();
+      expect(accepted.mock.lastCall?.[0]).toMatchObject({
+        type: "discipline.removal-observed",
+        payload: { seat, checkInProgress: false },
+      });
+      expect(screen.queryByRole("dialog")).toBeNull();
+    },
+  );
+
+  it("dismisses a penalty when state or authority changes and leaves preview non-interactive", () => {
+    const accepted = vi.fn();
+    const initial = day();
+    const props = {
+      game: initial,
+      hostName: "Host",
+      privacyHidden: true,
+      onGameChange: vi.fn(),
+      onEvent: vi.fn(),
+      onAcceptedEvent: accepted,
+    };
+    const { rerender } = render(<GameScreen {...props} />);
+    const swipe = () => {
+      const card = document.querySelector('[data-seat="2"] .player-seat')!;
+      fireEvent.touchStart(card, { touches: [{ identifier: 1, clientX: 100, clientY: 180 }] });
+      fireEvent.touchEnd(card, { changedTouches: [{ identifier: 1, clientX: 100, clientY: 100 }] });
+    };
+    swipe();
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    rerender(<GameScreen {...props} game={{ ...initial }} />);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    swipe();
+    rerender(<GameScreen {...props} finishGameState="blocked" />);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    swipe();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    rerender(<GameScreen {...props} mode="preview" />);
+    swipe();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(accepted).not.toHaveBeenCalled();
+  });
+  it("opens a player penalty without a nomination and pre-fills removal timing", () => {
+    const accepted = vi.fn();
+    const changed = vi.fn();
+    render(<Harness initial={day()} accepted={accepted} changed={changed} />);
     const card = document.querySelector('[data-seat="2"] .player-seat')!;
     fireEvent.touchStart(card, { touches: [{ identifier: 1, clientX: 100, clientY: 180 }] });
     fireEvent.touchEnd(card, { changedTouches: [{ identifier: 1, clientX: 100, clientY: 100 }] });
-    await user.selectOptions(screen.getByLabelText("Occurrence timing"), "day-discussion");
-    await user.selectOptions(screen.getByLabelText("Removal rule"), "6.2.3");
-    await user.click(screen.getByRole("button", { name: "Confirm discipline" }));
+    expect(
+      screen.getByRole("dialog", { name: "Discipline penalty for #2 · Player 2" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText("Player")).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "Occurrence timing" })).toBeNull();
+    expect(screen.getByText("Day discussion")).toBeInTheDocument();
+    expect(screen.getByLabelText("Discipline action")).toHaveValue("removal");
+    expect(accepted).not.toHaveBeenCalled();
+    expect(changed).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Removal rule"), { target: { value: "6.2.3" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirm discipline" }));
     expect(accepted).toHaveBeenCalledExactlyOnceWith({
       type: "discipline.removal-observed",
       payload: {
@@ -134,38 +439,48 @@ describe("federation GameScreen", () => {
         checkInProgress: false,
       },
     });
-    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it.each([
-    ["agreement", planning, "live"],
-    ["shooting result", () => resolveMafiaShots(beginNight(day())).game, "live"],
-    ["preview", day, "preview"],
-  ] as const)(
-    "does not widen baseline upward-penalty eligibility in %s",
-    (_label, createInitial, mode) => {
-      const accepted = vi.fn();
-      const changed = vi.fn();
-      render(
-        <GameScreen
-          game={createInitial()}
-          mode={mode}
-          hostName="Host"
-          privacyHidden
-          onGameChange={changed}
-          onEvent={vi.fn()}
-          onAcceptedEvent={accepted}
-        />,
-      );
-      const card = document.querySelector('[data-seat="2"] .table-card')!;
-      fireEvent.touchStart(card, { touches: [{ identifier: 1, clientX: 100, clientY: 180 }] });
-      fireEvent.touchEnd(card, { changedTouches: [{ identifier: 1, clientX: 100, clientY: 100 }] });
-      expect(screen.queryByRole("dialog")).toBeNull();
-      expect(accepted).not.toHaveBeenCalled();
-      expect(changed).not.toHaveBeenCalled();
-    },
-  );
-
+  it("awards the opponent from the same penalty menu without revealing teams or changing players", () => {
+    const initial = day();
+    const offender = initial.players.find((p) => p.team === "black")!;
+    const accepted = vi.fn();
+    const changed = vi.fn();
+    render(<Harness initial={initial} accepted={accepted} changed={changed} />);
+    const card = document.querySelector(`[data-seat="${offender.seat}"] .player-seat`)!;
+    fireEvent.touchStart(card, { touches: [{ identifier: 1, clientX: 100, clientY: 180 }] });
+    fireEvent.touchEnd(card, { changedTouches: [{ identifier: 1, clientX: 100, clientY: 100 }] });
+    fireEvent.change(screen.getByLabelText("Discipline action"), {
+      target: { value: "opponent-victory" },
+    });
+    expect(screen.queryByLabelText("Losing team")).toBeNull();
+    expect(screen.queryByText(/Result: (Red|Black) wins/)).toBeNull();
+    fireEvent.change(screen.getByLabelText("Applicable rule"), { target: { value: "6.3.5" } });
+    const award = screen.getByRole("button", { name: "Award victory to opposing team" });
+    expect(award).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Judge's reason"), {
+      target: { value: "Confirmed misconduct" },
+    });
+    expect(award).toBeDisabled();
+    fireEvent.click(screen.getByLabelText("Required committee agreement obtained"));
+    fireEvent.click(award);
+    expect(accepted).toHaveBeenCalledExactlyOnceWith({
+      type: "game.adjudicated",
+      payload: {
+        losingTeam: "black",
+        offenderSeat: offender.seat,
+        rule: "6.3.5",
+        reason: "Confirmed misconduct",
+        committeeApproved: true,
+      },
+    });
+    expect(changed.mock.lastCall?.[0]).toMatchObject({
+      phase: "finished",
+      winner: "red",
+      players: initial.players,
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
   it.each(["en", "ru"] as const)(
     "shows short removal rules and accepts no extra reason in %s",
     async (locale) => {
@@ -176,9 +491,17 @@ describe("federation GameScreen", () => {
           <Harness initial={day()} accepted={accepted} />
         </I18nProvider>,
       );
-      await user.click(screen.getByRole("button", { name: locale === "en" ? "Rules" : "Правила" }));
+      openGeneralRemoval();
       expect(screen.queryByRole("button", { name: /Judge discipline|Дисциплина/ })).toBeNull();
       const rule = screen.getByLabelText(locale === "en" ? "Removal rule" : "Пункт удаления");
+      expect(screen.queryByText(locale === "en" ? "Rule reference" : "Справка правил")).toBeNull();
+      const help = screen.getByRole("button", {
+        name: locale === "en" ? "Choose a rule to read" : "Сначала выберите пункт правил",
+      });
+      expect(help).toBeDisabled();
+      expect(help).toHaveAttribute("type", "button");
+      expect(help.closest(".discipline-rule-picker")).toContainElement(rule);
+      expect(screen.getByRole("dialog")).toHaveClass("is-discipline");
       const options = within(rule).getAllByRole("option").slice(1);
       expect(options).toHaveLength(13);
       for (const option of options) {
@@ -615,7 +938,7 @@ describe("federation GameScreen", () => {
       const changed = vi.fn();
       const accepted = vi.fn();
       render(<Harness initial={initial} changed={changed} accepted={accepted} />);
-      await user.click(screen.getByRole("button", { name: "Rules" }));
+      openGeneralRemoval();
       await user.selectOptions(screen.getByLabelText("Discipline player"), "1");
       expect(screen.getByRole("button", { name: "Confirm discipline" })).toBeDisabled();
       await user.selectOptions(screen.getByLabelText("Occurrence timing"), stage);
@@ -718,7 +1041,7 @@ describe("federation GameScreen", () => {
     const owner = initial.players.find((p) => p.role === "don")!;
     const changed = vi.fn();
     render(<Harness initial={initial} changed={changed} />);
-    await user.click(screen.getByRole("button", { name: "Rules" }));
+    openGeneralRemoval();
     await user.selectOptions(screen.getByLabelText("Discipline player"), String(owner.seat));
     await user.selectOptions(screen.getByLabelText("Occurrence timing"), "don-check");
     await user.selectOptions(screen.getByLabelText("Removal rule"), "6.2.2");
@@ -761,9 +1084,8 @@ describe("federation GameScreen", () => {
     const victim = initial.goodbyeSeats![0]!;
     const changed = vi.fn();
     render(<Harness initial={initial} changed={changed} />);
-    await user.click(screen.getByRole("button", { name: "Rules" }));
-    await user.selectOptions(screen.getByLabelText("Discipline player"), String(victim));
-    await user.selectOptions(screen.getByLabelText("Occurrence timing"), "farewell");
+    openPenalty(victim);
+    expect(screen.getByText("Farewell / night resolution")).toBeInTheDocument();
     await user.selectOptions(screen.getByLabelText("Removal rule"), "6.2.2");
     await user.type(
       screen.getByLabelText("Discipline reason (optional)"),

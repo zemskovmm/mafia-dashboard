@@ -67,6 +67,63 @@ afterEach(() => {
 });
 
 describe("TimerControls", () => {
+  it.each([false, true])(
+    "double tap resets to stopped zero from paused=%s and cancels audio",
+    (paused) => {
+      vi.useFakeTimers();
+      render(<TimerControls />);
+      fireEvent.click(screen.getByRole("button", { name: "Start 30 second timer" }));
+      act(() => vi.advanceTimersByTime(5_000));
+      const face = screen.getByRole("button", { name: "Pause timer" });
+      if (paused) fireEvent.click(face);
+      fireEvent.click(face, { detail: 1 });
+      act(() => vi.advanceTimersByTime(150));
+      // iPad compatibility clicks may each have detail=1 rather than emitting dblclick.
+      fireEvent.click(face, { detail: 1 });
+      expect(face).toHaveTextContent("00");
+      expect(face).toBeDisabled();
+      expect(face).not.toHaveClass("is-warning");
+      const context = FakeAudioContext.instances[0]!;
+      const count = context.oscillators.length;
+      for (const oscillator of context.oscillators)
+        expect(oscillator.disconnect).toHaveBeenCalled();
+      act(() => vi.advanceTimersByTime(120_000));
+      fireEvent.click(face);
+      expect(face).toHaveTextContent("00");
+      expect(context.oscillators).toHaveLength(count);
+      fireEvent.click(screen.getByRole("button", { name: "Start 20 second timer" }));
+      act(() => vi.advanceTimersByTime(1_000));
+      expect(face).toHaveTextContent("19");
+    },
+  );
+
+  it("keeps separated pointer clicks and rapid keyboard activations as pause/resume", () => {
+    vi.useFakeTimers();
+    render(<TimerControls />);
+    fireEvent.click(screen.getByRole("button", { name: "Start 60 second timer" }));
+    const face = screen.getByRole("button", { name: "Pause timer" });
+    fireEvent.click(face, { detail: 1 });
+    act(() => vi.advanceTimersByTime(600));
+    fireEvent.click(face, { detail: 1 });
+    expect(face).toHaveAccessibleName("Pause timer");
+    fireEvent.click(face, { detail: 0 });
+    fireEvent.click(face, { detail: 0 });
+    expect(face).toHaveAccessibleName("Pause timer");
+    expect(face).toHaveTextContent("60");
+  });
+
+  it("a fresh preset clears the preceding tap sequence", () => {
+    vi.useFakeTimers();
+    render(<TimerControls />);
+    fireEvent.click(screen.getByRole("button", { name: "Start 60 second timer" }));
+    const face = screen.getByRole("button", { name: "Pause timer" });
+    fireEvent.click(face, { detail: 1 });
+    fireEvent.click(screen.getByRole("button", { name: "Start 30 second timer" }));
+    fireEvent.click(face, { detail: 1 });
+    expect(face).toHaveAccessibleName("Resume timer");
+    expect(face).toHaveTextContent("30");
+  });
+
   it("explicitly replaces the countdown with twenty seconds and preserves pause/resume through expiry", () => {
     vi.useFakeTimers();
     render(<TimerControls />);

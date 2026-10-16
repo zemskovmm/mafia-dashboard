@@ -462,6 +462,7 @@ const viewportWidth = Number(process.env.UI_VIEWPORT_WIDTH ?? "");
 const viewportHeight = Number(process.env.UI_VIEWPORT_HEIGHT ?? "");
 const headerOnly = process.env.UI_HEADER_ONLY === "1";
 const federationOnly = process.env.UI_FEDERATION_ONLY === "1";
+const rulesSketchbookOnly = process.env.UI_RULES_SKETCHBOOK_ONLY === "1";
 const privacyOnly = process.env.UI_PRIVACY_ONLY === "1";
 const layoutOnly = process.env.UI_LAYOUT_ONLY === "1";
 const musicOnly = process.env.UI_MUSIC_ONLY === "1";
@@ -472,7 +473,7 @@ const browser =
     ? await webkit.launch({ headless: true })
     : await chromium.launch({ channel: "chrome", headless: true });
 const context = await browser.newContext({
-  hasTouch: headerOnly || layoutOnly || federationOnly,
+  hasTouch: headerOnly || layoutOnly || federationOnly || rulesSketchbookOnly,
   isMobile: layoutOnly && browserName === "webkit",
   viewport:
     Number.isFinite(viewportWidth) &&
@@ -495,7 +496,7 @@ page.on("console", (message) =>
 );
 page.on("pageerror", (error) => {
   pageErrors.push(error.message);
-  console.error(`browser page error: ${error.message}`);
+  console.error(`browser page error: ${error.stack ?? error.message}`);
 });
 const assertNoPageErrors = () => {
   if (pageErrors.length > 0) {
@@ -940,11 +941,16 @@ await page.route("**/api/music/playlists", async (route) => {
     contentType: "application/json",
     body: JSON.stringify({
       playlists: [
-        { id: "test-playlist", title: "UI Verification", itemCount: 12 },
+        { id: "test-playlist", title: "Mafia Chill", itemCount: 12 },
+        { id: "test-mafia-rock", title: "Mafia Rock", itemCount: 4 },
+        { id: "test-mafia-classy", title: "  mafia Classy", itemCount: 4 },
+        { id: "test-mafia-dnb", title: "Mafia Drum and Bass", itemCount: 4 },
+        { id: "test-other", title: "Road trip", itemCount: 4 },
+        { id: "test-nonprefix", title: "Best of Mafia", itemCount: 4 },
         ...(musicOnly
           ? [0, 4, 40].map((count) => ({
               id: `test-queue-${count}`,
-              title: `Geometry queue ${count}`,
+              title: `Mafia Geometry queue ${count}`,
               itemCount: count,
             }))
           : []),
@@ -1187,6 +1193,26 @@ const restoreLegacySetup = async () => {
 };
 
 try {
+  if (rulesSketchbookOnly) {
+    const { runRulesSketchbookScenarios } = await tsImport(
+      "./verify-rules-sketchbook-ui.mjs",
+      import.meta.url,
+    );
+    await runRulesSketchbookScenarios({
+      page,
+      baseUrl,
+      club: testClub,
+      players: testPlayers,
+      api: federationApi,
+      evidenceDir:
+        process.env.RULES_SKETCHBOOK_UI_EVIDENCE_DIR ??
+        `.AI/reports/rules-sketchbook/integration-browser/${browserName}-${page.viewportSize().width}x${page.viewportSize().height}`,
+    });
+    assertNoPageErrors();
+    console.log("Rules sketchbook integrated verification: PASS");
+    await browser.close();
+    process.exit(0);
+  }
   if (federationOnly) {
     await verifyFederationJourney();
     assertNoPageErrors();
