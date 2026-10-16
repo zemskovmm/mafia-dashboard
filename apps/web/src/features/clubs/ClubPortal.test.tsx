@@ -16,6 +16,58 @@ const creator = {
 };
 
 describe("ClubPortal", () => {
+  it("captures the whole real card outline for mouse and keyboard ignition", async () => {
+    const user = userEvent.setup();
+    const onOpenClub = vi.fn();
+    const club: Club = {
+      id: "00000000-0000-4000-8000-000000000101",
+      name: "La Verdad",
+      city: "Málaga",
+      headerLogo: null,
+      cardLogo: null,
+      language: "en",
+      bestMoveEnabled: true,
+      role: "manager",
+      createdAt: "2026-10-15T00:00:00.000Z",
+      updatedAt: "2026-10-15T00:00:00.000Z",
+    };
+    render(
+      <ClubPortal
+        user={creator}
+        authConfigured
+        authUnavailable={false}
+        clubs={[club]}
+        loading={false}
+        error={null}
+        editing={null}
+        onSignOut={vi.fn()}
+        onEditingChange={vi.fn()}
+        onSaveClub={vi.fn()}
+        onOpenClub={onOpenClub}
+      />,
+    );
+    const button = screen.getByRole("button", { name: /La Verdad.*Málaga/i });
+    const card = button.closest<HTMLElement>(".club-playing-card")!;
+    card.style.borderRadius = "16px";
+    Object.defineProperties(card, {
+      offsetWidth: { value: 240 },
+      offsetHeight: { value: 340 },
+    });
+    vi.spyOn(card, "getBoundingClientRect").mockReturnValue(new DOMRect(100, 200, 240, 340));
+    await user.click(button);
+    const origin = onOpenClub.mock.calls[0]![1];
+    expect(origin).toMatchObject({ x: 220, y: 370 });
+    expect(origin.card).toBe(card);
+    expect(origin.cardTransform).toBe(getComputedStyle(card).transform);
+    expect(origin.front).toHaveLength(52);
+    expect(origin.front[0]).toEqual([340, 524]);
+    expect(origin.front).toContainEqual([324, 540]);
+    expect(origin.front).toContainEqual([100, 216]);
+    await user.keyboard("{Enter}");
+    expect(onOpenClub).toHaveBeenCalledTimes(2);
+    expect(onOpenClub).toHaveBeenLastCalledWith(club, origin);
+  });
+
   it.each([
     [
       "en",

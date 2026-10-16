@@ -5,6 +5,8 @@ import { useMessages } from "../../i18n/I18nProvider.js";
 import { LanguageSelector } from "../../i18n/LanguageSelector.js";
 import { shellMessages } from "../../i18n/messages/shell.js";
 import { reportError } from "../console/error-console.js";
+import type { ClubEntryOrigin } from "./ClubEntryTransition.js";
+import { computeCardFront } from "./club-fire-renderer.js";
 
 interface ClubPortalProps {
   readonly user: AppUser | null;
@@ -17,7 +19,7 @@ interface ClubPortalProps {
   readonly onSignOut: () => Promise<void>;
   readonly onEditingChange: (editing: Club | "new" | null) => void;
   readonly onSaveClub: (clubId: string | null, input: ClubInput | ClubUpdateInput) => Promise<void>;
-  readonly onOpenClub: (club: Club) => void;
+  readonly onOpenClub: (club: Club, origin: ClubEntryOrigin) => void;
 }
 
 const readImage = (file: File): Promise<string> =>
@@ -293,7 +295,18 @@ export const ClubPortal = ({
                   type="button"
                   className="club-card-open"
                   aria-label={t("openClub", { name: club.name, city: club.city })}
-                  onClick={() => onOpenClub(club)}
+                  onClick={(event) => {
+                    const card = event.currentTarget.closest<HTMLElement>(".club-playing-card")!;
+                    const bounds = card.getBoundingClientRect();
+                    const style = getComputedStyle(card);
+                    onOpenClub(club, {
+                      x: bounds.left + bounds.width / 2,
+                      y: bounds.top + bounds.height / 2,
+                      front: computeCardFront(card, bounds, style),
+                      card,
+                      cardTransform: style.transform,
+                    });
+                  }}
                 >
                   <span className="club-card-corner" aria-hidden="true">
                     {index % 2 === 0 ? "K" : "Q"}

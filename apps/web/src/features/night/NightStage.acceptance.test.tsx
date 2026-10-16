@@ -19,6 +19,7 @@ import {
   type GameState,
 } from "@mafia/game-domain";
 import { ClubWorkspace } from "../../App.js";
+import { DEFAULT_FANCY_STUFF_SETTINGS } from "../effects/fancy-stuff-preferences.js";
 import type {
   Club,
   GameSessionOperation,
@@ -136,6 +137,8 @@ const renderWorkspace = (locale: "en" | "ru" = "en") =>
     <I18nProvider locale={locale}>
       <ClubWorkspace
         club={{ ...club, language: locale }}
+        fancyStuff={DEFAULT_FANCY_STUFF_SETTINGS}
+        onFancyStuffChange={() => undefined}
         onExit={() => undefined}
         onEditClub={() => undefined}
         onDeleteClub={async () => undefined}

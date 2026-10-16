@@ -78,6 +78,14 @@ import type {
   AppUser,
 } from "./api/client.js";
 import { ClubPortal } from "./features/clubs/ClubPortal.js";
+import { ClubFire } from "./features/clubs/ClubFire.js";
+import { ClubEntryTransition, type ClubEntryOrigin } from "./features/clubs/ClubEntryTransition.js";
+import {
+  readFancyStuffSettings,
+  validateFancyStuffSettings,
+  writeFancyStuffSettings,
+  type FancyStuffSettings,
+} from "./features/effects/fancy-stuff-preferences.js";
 import { ErrorConsoleScreen } from "./features/console/ErrorConsoleScreen.js";
 import { clearErrorConsole, reportError } from "./features/console/error-console.js";
 import { CanaryFirework } from "./features/effects/CanaryFirework.js";
@@ -102,6 +110,7 @@ import { VgpuLightingProvider } from "./features/effects/vgpu/VgpuLightingProvid
 import { GameScreen } from "./features/game/GameScreen.js";
 import { GlassControls, type GlassStatus } from "./features/developer/GlassControls.js";
 import { PlayerExitControls } from "./features/developer/PlayerExitControls.js";
+import { FancyStuffControls } from "./features/developer/FancyStuffControls.js";
 import {
   readPlayerExitSettings,
   validatePlayerExitSettings,
@@ -148,7 +157,7 @@ import { GameTimelineScreen } from "./features/timeline/GameTimelineScreen.js";
 import { buildTimeline } from "./features/timeline/timeline-model.js";
 import { projectNominationHistory } from "./features/timeline/nomination-history.js";
 import { PlayerDirectoryProvider } from "./features/players/player-display.js";
-import { useMessages, type FeatureI18n, type Locale } from "./i18n/I18nProvider.js";
+import { I18nProvider, useMessages, type FeatureI18n, type Locale } from "./i18n/I18nProvider.js";
 import { LanguageSelector } from "./i18n/LanguageSelector.js";
 import { shellMessages, type ShellMessageKey } from "./i18n/messages/shell.js";
 import { timelineConsoleMessages } from "./i18n/messages/timeline-console.js";
@@ -432,6 +441,8 @@ export const ClubWorkspace = ({
   onLanguageChange = () => Promise.resolve(),
   themeColor = DEFAULT_THEME_COLOR,
   onThemeColorChange = () => undefined,
+  fancyStuff,
+  onFancyStuffChange,
 }: {
   readonly club: Club;
   readonly storageGuard?: BrowserGameStorageGuard;
@@ -441,6 +452,8 @@ export const ClubWorkspace = ({
   readonly onLanguageChange?: (language: Locale) => Promise<void>;
   readonly themeColor?: string;
   readonly onThemeColorChange?: (color: string) => void;
+  readonly fancyStuff: FancyStuffSettings;
+  readonly onFancyStuffChange: (settings: FancyStuffSettings) => void;
 }) => {
   const { t, formatTime } = useMessages(shellMessages);
   const timelineI18n = useMessages(timelineConsoleMessages);
@@ -2342,6 +2355,7 @@ export const ClubWorkspace = ({
           <div className="dev-menu-actions">
             <GlassControls settings={glass} status={effectiveGlassStatus} onChange={changeGlass} />
             <PlayerExitControls settings={playerExit} onChange={changePlayerExit} />
+            <FancyStuffControls settings={fancyStuff} onChange={onFancyStuffChange} />
             <button
               type="button"
               className="dev-setting-toggle"
@@ -2730,6 +2744,7 @@ type LockedClubWorkspaceProps = Omit<
   readonly onStorageMismatch: (attachment: BrowserGameAttachment) => void;
   readonly onStorageInvalid: (rawSnapshot: string) => void;
   readonly onStorageError: (message: "browserGameLockBusy" | "browserGameLockUnavailable") => void;
+  readonly onReady?: () => void;
 };
 
 const LockedClubWorkspace = ({
@@ -2737,6 +2752,7 @@ const LockedClubWorkspace = ({
   onStorageMismatch,
   onStorageInvalid,
   onStorageError,
+  onReady,
   ...workspaceProps
 }: LockedClubWorkspaceProps) => {
   const { t } = useMessages(shellMessages);
@@ -2747,6 +2763,12 @@ const LockedClubWorkspace = ({
   mismatchRef.current = onStorageMismatch;
   const invalidRef = useRef(onStorageInvalid);
   invalidRef.current = onStorageInvalid;
+  const readyRef = useRef(onReady);
+  readyRef.current = onReady;
+
+  useEffect(() => {
+    if (storageGuard !== null) readyRef.current?.();
+  }, [storageGuard]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2813,6 +2835,12 @@ const LockedClubWorkspace = ({
 export const App = () => {
   const { locale, setLocale, t } = useMessages(shellMessages);
   const portalLocale = useRef(locale).current;
+  const [fancyStuff, setFancyStuff] = useState(readFancyStuffSettings);
+  const changeFancyStuff = (settings: FancyStuffSettings) => {
+    const next = validateFancyStuffSettings(settings);
+    setFancyStuff(next);
+    writeFancyStuffSettings(next);
+  };
   const [themeColor, setThemeColor] = useState(() => readThemeColor(window.localStorage));
   const [user, setUser] = useState<AppUser | null>(null);
   const [authConfigured, setAuthConfigured] = useState<boolean | null>(null);
@@ -2824,13 +2852,44 @@ export const App = () => {
     kind: "empty",
   });
   const [editingClub, setEditingClub] = useState<Club | "new" | null>(null);
-  const [openingCurtains, setOpeningCurtains] = useState(false);
+  const [opening, setOpening] = useState<(ClubEntryOrigin & { locale: Locale }) | null>(null);
+  const [workspaceReady, setWorkspaceReady] = useState(false);
+  const portalRef = useRef<HTMLDivElement>(null);
+  const entryInFlight = useRef(false);
+  const focusAfterEntry = useRef(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<ShellMessageKey | null>(null);
   const [storageError, setStorageError] = useState<ShellMessageKey | null>(null);
   const [browserGameRecoveryPending, setBrowserGameRecoveryPending] = useState(false);
   const [browserGameRecoveryError, setBrowserGameRecoveryError] = useState(false);
   const [browserGameReleaseError, setBrowserGameReleaseError] = useState(false);
+
+  const cancelEntry = useCallback(() => {
+    entryInFlight.current = false;
+    focusAfterEntry.current = false;
+    setOpening(null);
+    setWorkspaceReady(false);
+  }, []);
+
+  const completeEntry = useCallback(() => {
+    if (!entryInFlight.current) return;
+    entryInFlight.current = false;
+    focusAfterEntry.current = true;
+    setOpening(null);
+  }, []);
+
+  useEffect(() => {
+    if (opening !== null || selectedClub === null || !workspaceReady || !focusAfterEntry.current)
+      return;
+    const destination = document.querySelector<HTMLElement>(".club-entry-destination");
+    const target =
+      destination?.querySelector<HTMLButtonElement>(".club-exit-button") ?? destination;
+    if (target !== null) {
+      target.focus({ preventScroll: true });
+      focusAfterEntry.current = false;
+      entryInFlight.current = false;
+    }
+  }, [opening, selectedClub, workspaceReady]);
 
   useEffect(() => {
     setLocale(selectedClub?.language ?? portalLocale);
@@ -2910,6 +2969,7 @@ export const App = () => {
   }, []);
 
   const endSession = async () => {
+    cancelEntry();
     setLoading(true);
     try {
       await signOut();
@@ -2969,6 +3029,7 @@ export const App = () => {
         clearBrowserGameStorageForClubLocked(cleanup, storageGuard);
       }
       window.localStorage.removeItem(availablePlayerStorageKey(club.id));
+      cancelEntry();
       setClubs((current) => current.filter(({ id }) => id !== club.id));
       setSelectedClub(null);
       setBlockedClub(null);
@@ -2981,8 +3042,9 @@ export const App = () => {
     }
   };
 
-  const openClub = (club: Club) => {
-    if (browserGameState.kind === "invalid") return;
+  const openClub = (club: Club, origin: ClubEntryOrigin) => {
+    if (entryInFlight.current || selectedClub !== null || browserGameState.kind === "invalid")
+      return;
     setEditingClub(null);
     const attachment = readBrowserGameAttachment(window.localStorage);
     if (attachment !== null && attachment.clubId !== club.id) {
@@ -2991,9 +3053,11 @@ export const App = () => {
       return;
     }
     setBlockedClub(null);
+    entryInFlight.current = true;
+    focusAfterEntry.current = !fancyStuff.clubEntryEffects;
+    setWorkspaceReady(false);
+    setOpening(fancyStuff.clubEntryEffects ? { ...origin, locale } : null);
     setSelectedClub(club);
-    setOpeningCurtains(true);
-    window.setTimeout(() => setOpeningCurtains(false), 900);
   };
 
   const changeSelectedClubLanguage = async (language: Locale) => {
@@ -3093,6 +3157,42 @@ export const App = () => {
     }
   };
 
+  const portal = (
+    <div
+      key="club-portal"
+      ref={portalRef}
+      className="club-entry-source"
+      data-burning={opening !== null ? "true" : undefined}
+      inert={opening !== null}
+      aria-hidden={opening !== null ? true : undefined}
+      lang={opening?.locale ?? portalLocale}
+    >
+      <I18nProvider locale={opening?.locale ?? portalLocale} manageDocumentLanguage={false}>
+        <ClubPortal
+          user={user}
+          authConfigured={authConfigured}
+          authUnavailable={authUnavailable}
+          clubs={clubs}
+          loading={loading}
+          error={error === null ? null : t(error)}
+          editing={editingClub}
+          onSignOut={endSession}
+          onEditingChange={setEditingClub}
+          onSaveClub={saveClub}
+          onOpenClub={openClub}
+        />
+      </I18nProvider>
+      {fancyStuff.clubEntryEffects ? (
+        <ClubFire
+          rootRef={portalRef}
+          enabled={
+            user !== null && editingClub === null && opening === null && selectedClub === null
+          }
+        />
+      ) : null}
+    </div>
+  );
+
   if (storageError !== null) {
     return (
       <main className="club-portal">
@@ -3106,39 +3206,60 @@ export const App = () => {
   if (selectedClub !== null) {
     return (
       <>
-        <LockedClubWorkspace
-          key={selectedClub.id}
-          club={selectedClub}
-          onExit={() => {
-            setSelectedClub(null);
-            setEditingClub(null);
-            setBrowserGameState(readBrowserGameStorageState(window.localStorage));
-          }}
-          onEditClub={() => {
-            setSelectedClub(null);
-            setEditingClub(selectedClub);
-          }}
-          onDeleteClub={(storageGuard) => removeClub(selectedClub, storageGuard)}
-          onStorageMismatch={(attachment) => {
-            setSelectedClub(null);
-            setBrowserGameState({ kind: "ready", attachment });
-            setBlockedClub(selectedClub);
-          }}
-          onStorageInvalid={(rawSnapshot) => {
-            setSelectedClub(null);
-            setBrowserGameState({ kind: "invalid", rawSnapshot });
-            setBlockedClub(null);
-          }}
-          onLanguageChange={changeSelectedClubLanguage}
-          onStorageError={setStorageError}
-          themeColor={themeColor}
-          onThemeColorChange={setThemeColor}
-        />
-        {openingCurtains ? (
-          <div className="club-curtain-opening" aria-hidden="true">
-            <div className="curtain curtain-left" />
-            <div className="curtain curtain-right" />
-          </div>
+        <div
+          key="club-workspace"
+          className="club-entry-destination"
+          tabIndex={-1}
+          inert={opening !== null}
+          aria-hidden={opening !== null ? true : undefined}
+        >
+          <LockedClubWorkspace
+            key={selectedClub.id}
+            club={selectedClub}
+            onExit={() => {
+              cancelEntry();
+              setSelectedClub(null);
+              setEditingClub(null);
+              setBrowserGameState(readBrowserGameStorageState(window.localStorage));
+            }}
+            onEditClub={() => {
+              cancelEntry();
+              setSelectedClub(null);
+              setEditingClub(selectedClub);
+            }}
+            onDeleteClub={(storageGuard) => removeClub(selectedClub, storageGuard)}
+            onStorageMismatch={(attachment) => {
+              cancelEntry();
+              setSelectedClub(null);
+              setBrowserGameState({ kind: "ready", attachment });
+              setBlockedClub(selectedClub);
+            }}
+            onStorageInvalid={(rawSnapshot) => {
+              cancelEntry();
+              setSelectedClub(null);
+              setBrowserGameState({ kind: "invalid", rawSnapshot });
+              setBlockedClub(null);
+            }}
+            onLanguageChange={changeSelectedClubLanguage}
+            onStorageError={(message) => {
+              cancelEntry();
+              setStorageError(message);
+            }}
+            onReady={() => setWorkspaceReady(true)}
+            themeColor={themeColor}
+            onThemeColorChange={setThemeColor}
+            fancyStuff={fancyStuff}
+            onFancyStuffChange={changeFancyStuff}
+          />
+        </div>
+        {opening !== null ? portal : null}
+        {opening !== null ? (
+          <ClubEntryTransition
+            sourceRef={portalRef}
+            origin={opening}
+            ready={workspaceReady}
+            onComplete={completeEntry}
+          />
         ) : null}
       </>
     );
@@ -3150,19 +3271,7 @@ export const App = () => {
 
   return (
     <>
-      <ClubPortal
-        user={user}
-        authConfigured={authConfigured}
-        authUnavailable={authUnavailable}
-        clubs={clubs}
-        loading={loading}
-        error={error === null ? null : t(error)}
-        editing={editingClub}
-        onSignOut={endSession}
-        onEditingChange={setEditingClub}
-        onSaveClub={saveClub}
-        onOpenClub={openClub}
-      />
+      {portal}
       {browserGameState.kind === "invalid" ? (
         <div className="browser-game-backdrop">
           <section

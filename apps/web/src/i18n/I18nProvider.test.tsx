@@ -87,4 +87,23 @@ describe("I18nProvider", () => {
 
     expect(screen.getByText("Добро пожаловать, Анна")).toBeInTheDocument();
   });
+
+  it("keeps the outgoing locale without resetting the destination document language", () => {
+    const { rerender } = render(
+      <I18nProvider locale="ru">
+        <I18nProvider locale="en" manageDocumentLanguage={false}>
+          <Probe />
+        </I18nProvider>
+      </I18nProvider>,
+    );
+    expect(screen.getByText("Day 2")).toBeInTheDocument();
+    expect(document.documentElement).toHaveAttribute("lang", "ru");
+    rerender(
+      <I18nProvider locale="ru">
+        <Probe />
+      </I18nProvider>,
+    );
+    expect(screen.getByText("День 2")).toBeInTheDocument();
+    expect(document.documentElement).toHaveAttribute("lang", "ru");
+  });
 });

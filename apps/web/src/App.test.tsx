@@ -46,6 +46,7 @@ import {
 } from "@mafia/game-domain";
 import { ApiError, type Club, type PlayerProfile, type RemoteGameSession } from "./api/client.js";
 import { App as WelcomeApp, ClubWorkspace } from "./App.js";
+import { DEFAULT_FANCY_STUFF_SETTINGS } from "./features/effects/fancy-stuff-preferences.js";
 
 import { GameSessionOutbox } from "./session-outbox.js";
 import { withBrowserGameStorageGuard } from "./browser-game-storage-lock.js";
@@ -176,6 +177,8 @@ const seedBrowserGame = (club: Club, gameId: string, name: string, pending = fal
 const App = () => (
   <ClubWorkspace
     club={testClub}
+    fancyStuff={DEFAULT_FANCY_STUFF_SETTINGS}
+    onFancyStuffChange={() => undefined}
     onExit={() => undefined}
     onEditClub={() => undefined}
     onDeleteClub={() => Promise.resolve()}
@@ -1302,7 +1305,7 @@ describe("club welcome", () => {
     expect(window.localStorage.getItem(THEME_COLOR_STORAGE_KEY)).toBe("#7170ff");
   });
 
-  it("creates a club, returns to its card list, and opens the workspace through curtains", async () => {
+  it("creates a club, returns to its card list, and retains the real picker during entry", async () => {
     const user = userEvent.setup();
     api.getAuthSession.mockResolvedValue({
       configured: true,
@@ -1339,12 +1342,134 @@ describe("club welcome", () => {
     expect(
       await screen.findByRole("button", { name: /Mafia Sevilla.*Sevilla/i }),
     ).toBeInTheDocument();
+    const portal = document.querySelector(".club-portal");
     await user.click(screen.getByRole("button", { name: /Mafia Sevilla.*Sevilla/i }));
-    expect(document.querySelector(".club-curtain-opening")).toBeInTheDocument();
+    expect(document.querySelector(".club-curtain-opening")).toBeNull();
+    expect(document.querySelector(".club-entry-source")).toContainElement(portal as HTMLElement);
+    expect(document.querySelector(".club-entry-destination")).toHaveAttribute("inert");
     expect((await screen.findAllByRole("heading", { name: "Game setup" })).length).toBeGreaterThan(
       0,
     );
+    await waitFor(() => expect(document.querySelector(".club-entry-source")).toBeNull());
   });
+
+  it.each([false, true])(
+    "switches Fancy stuff off for real entry without changing other settings (storage denied: %s)",
+    async (storageDenied) => {
+      const user = userEvent.setup();
+      api.getAuthSession.mockResolvedValue(authenticatedUser);
+      api.listClubs.mockResolvedValue([testClub]);
+      render(<WelcomeApp />);
+      await user.click(await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i }));
+      const privacy = await screen.findByRole("button", { name: /private info/i });
+      for (let tap = 0; tap < 6; tap += 1) await user.click(privacy);
+      await user.click(await screen.findByRole("button", { name: "Open developer menu" }));
+      const section = screen.getByText("Fancy stuff", { selector: "summary" });
+      expect(section.closest("details")).not.toHaveAttribute("open");
+      await user.click(section);
+      const toggle = screen.getByRole("button", { name: "Disable club entry effects" });
+      expect(toggle).toHaveAttribute("aria-pressed", "true");
+      const otherKeys = [
+        THEME_COLOR_STORAGE_KEY,
+        "mafia-dashboard.glass.v1",
+        "mafia-dashboard.player-exit.v1",
+      ];
+      const otherSettings = otherKeys.map((key) => window.localStorage.getItem(key));
+      const originalSet = Storage.prototype.setItem;
+      if (storageDenied)
+        vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
+          this: Storage,
+          key,
+          value,
+        ) {
+          if (key === "mafia-dashboard.fancy-stuff.v1")
+            throw new DOMException("Denied", "SecurityError");
+          originalSet.call(this, key, value);
+        });
+      await user.click(toggle);
+      expect(screen.getByRole("button", { name: "Enable club entry effects" })).toHaveAttribute(
+        "aria-pressed",
+        "false",
+      );
+      expect(otherKeys.map((key) => window.localStorage.getItem(key))).toEqual(otherSettings);
+      if (!storageDenied)
+        expect(JSON.parse(window.localStorage.getItem("mafia-dashboard.fancy-stuff.v1")!)).toEqual({
+          version: 1,
+          clubEntryEffects: false,
+        });
+      await user.click(screen.getByRole("button", { name: /^Choose another club/ }));
+      const clubButton = await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i });
+      expect(document.querySelector(".club-fire-canvas")).toBeNull();
+      await user.click(clubButton);
+      expect(document.querySelector(".club-entry-effect")).toBeNull();
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: /^Choose another club/ })).toHaveFocus(),
+      );
+      expect(api.createGameSession).not.toHaveBeenCalled();
+    },
+  );
+
+  it("enters directly with readiness-based focus when club entry effects are saved off", async () => {
+    api.getAuthSession.mockResolvedValue(authenticatedUser);
+    api.listClubs.mockResolvedValue([testClub]);
+    window.localStorage.setItem(
+      "mafia-dashboard.fancy-stuff.v1",
+      JSON.stringify({ version: 1, clubEntryEffects: false }),
+    );
+    render(<WelcomeApp />);
+    const button = await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i });
+    expect(document.querySelector(".club-fire-canvas")).toBeNull();
+    await userEvent.setup().click(button);
+    expect(document.querySelector(".club-entry-source")).toBeNull();
+    expect(document.querySelector(".club-entry-effect")).toBeNull();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /^Choose another club/ })).toHaveFocus(),
+    );
+    expect(document.querySelector(".club-entry-destination")).not.toHaveAttribute("inert");
+    expect(api.createGameSession).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])(
+    "focuses the real workspace when ownership arrives after the entry timeout (effects: %s)",
+    async (clubEntryEffects) => {
+      window.localStorage.setItem(
+        "mafia-dashboard.fancy-stuff.v1",
+        JSON.stringify({ version: 1, clubEntryEffects }),
+      );
+      api.getAuthSession.mockResolvedValue(authenticatedUser);
+      api.listClubs.mockResolvedValue([testClub]);
+      const view = render(<WelcomeApp />);
+      const button = await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i });
+      const descriptor = Object.getOwnPropertyDescriptor(navigator, "locks");
+      const ready = deferred<void>();
+      Object.defineProperty(navigator, "locks", {
+        configurable: true,
+        value: {
+          request: (_name: string, _options: unknown, run: (lock: object) => unknown) =>
+            ready.promise.then(() => run({})),
+        },
+      });
+      vi.useFakeTimers();
+      try {
+        fireEvent.click(button);
+        if (!clubEntryEffects) expect(document.querySelector(".club-entry-effect")).toBeNull();
+        await act(async () => vi.advanceTimersByTimeAsync(3200));
+        expect(document.querySelector(".club-entry-source")).toBeNull();
+        expect(api.listPlayers).not.toHaveBeenCalled();
+        await act(async () => {
+          ready.resolve();
+          await vi.advanceTimersByTimeAsync(32);
+        });
+        expect(screen.getByRole("button", { name: /^Choose another club/ })).toHaveFocus();
+        expect(document.querySelector(".club-entry-destination")).not.toHaveAttribute("inert");
+      } finally {
+        view.unmount();
+        vi.useRealTimers();
+        if (descriptor) Object.defineProperty(navigator, "locks", descriptor);
+        else Reflect.deleteProperty(navigator, "locks");
+      }
+    },
+  );
 
   it("moves club editing from the welcome card into the workspace Manage menu", async () => {
     const user = userEvent.setup();
@@ -1524,6 +1649,8 @@ describe("workspace role authorization", () => {
       <ClubWorkspace
         club={{ ...testClub, role: "user" }}
         onExit={vi.fn()}
+        fancyStuff={DEFAULT_FANCY_STUFF_SETTINGS}
+        onFancyStuffChange={() => undefined}
         onEditClub={vi.fn()}
         onDeleteClub={vi.fn().mockResolvedValue(undefined)}
       />,
@@ -1569,6 +1696,8 @@ describe("workspace localization", () => {
       <I18nProvider locale="ru">
         <ClubWorkspace
           club={{ ...testClub, language: "ru" }}
+          fancyStuff={DEFAULT_FANCY_STUFF_SETTINGS}
+          onFancyStuffChange={() => undefined}
           onExit={() => undefined}
           onEditClub={() => undefined}
           onDeleteClub={() => Promise.resolve()}
@@ -1653,6 +1782,8 @@ describe("club player gate", () => {
       <ClubWorkspace
         club={testClub}
         onExit={onExit}
+        fancyStuff={DEFAULT_FANCY_STUFF_SETTINGS}
+        onFancyStuffChange={() => undefined}
         onEditClub={() => undefined}
         onDeleteClub={() => Promise.resolve()}
       />,
@@ -1678,6 +1809,8 @@ describe("club player gate", () => {
     rerender(
       <ClubWorkspace
         club={{ ...testClub, name: "La Verdad" }}
+        fancyStuff={DEFAULT_FANCY_STUFF_SETTINGS}
+        onFancyStuffChange={() => undefined}
         onExit={onExit}
         onEditClub={() => undefined}
         onDeleteClub={() => Promise.resolve()}
@@ -1694,6 +1827,8 @@ describe("club player gate", () => {
     render(
       <ClubWorkspace
         club={testClub}
+        fancyStuff={DEFAULT_FANCY_STUFF_SETTINGS}
+        onFancyStuffChange={() => undefined}
         onExit={() => undefined}
         onEditClub={() => undefined}
         onDeleteClub={() => Promise.resolve()}
@@ -2116,6 +2251,8 @@ describe("developer menu", () => {
       <ClubWorkspace
         club={{ ...testClub, role: "user" }}
         onExit={() => undefined}
+        fancyStuff={DEFAULT_FANCY_STUFF_SETTINGS}
+        onFancyStuffChange={() => undefined}
         onEditClub={() => undefined}
         onDeleteClub={() => Promise.resolve()}
       />,
@@ -2970,6 +3107,8 @@ describe("developer menu", () => {
     render(
       <ClubWorkspace
         club={testClub}
+        fancyStuff={DEFAULT_FANCY_STUFF_SETTINGS}
+        onFancyStuffChange={() => undefined}
         onExit={() => undefined}
         onEditClub={() => undefined}
         onDeleteClub={() => Promise.resolve()}
@@ -3946,6 +4085,8 @@ describe("authoritative game session lifecycle", () => {
         const first = renderView(
           <ClubWorkspace
             club={{ ...testClub, bestMoveEnabled: false }}
+            fancyStuff={DEFAULT_FANCY_STUFF_SETTINGS}
+            onFancyStuffChange={() => undefined}
             onExit={() => undefined}
             onEditClub={() => undefined}
             onDeleteClub={() => Promise.resolve()}

@@ -99,10 +99,12 @@ export const I18nProvider = ({
   children,
   locale: controlledLocale,
   onLocaleChange,
+  manageDocumentLanguage = true,
 }: {
   readonly children: ReactNode;
   readonly locale?: Locale;
   readonly onLocaleChange?: (locale: Locale) => void;
+  readonly manageDocumentLanguage?: boolean;
 }) => {
   const [uncontrolledLocale, setUncontrolledLocale] = useState(resolveBrowserLocale);
   const locale = controlledLocale ?? uncontrolledLocale;
@@ -116,12 +118,13 @@ export const I18nProvider = ({
   const value = useMemo(() => createI18n(locale, setLocale), [locale, setLocale]);
 
   useEffect(() => {
+    if (!manageDocumentLanguage) return;
     const previous = document.documentElement.lang;
     document.documentElement.lang = locale;
     return () => {
       document.documentElement.lang = previous;
     };
-  }, [locale]);
+  }, [locale, manageDocumentLanguage]);
 
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 };

@@ -1,0 +1,90 @@
+/* Club-entry decoration adds no card layout or transforms. */
+.club-fire-canvas {
+  position: fixed;
+  z-index: 101; /* the untouched .club-portal is fixed at 100 */
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  user-select: none;
+  contain: strict;
+}
+
+.club-fire-canvas[hidden],
+.club-fire-canvas[data-paused="true"],
+.club-fire-canvas[data-renderer^="static-"] {
+  visibility: hidden;
+}
+
+/* Discontinuous, still coals when motion or graphics is unavailable. Never a
+   replacement border, never a hit target, never applied to the new-club card. */
+.club-playing-card:not(.new-club-card)[data-club-fire-static="true"]::after {
+  position: absolute;
+  z-index: 5;
+  inset: 0;
+  pointer-events: none;
+  content: "";
+  background:
+    radial-gradient(ellipse 24px 3px at 23% 0%, rgb(239 104 30 / 45%), transparent),
+    radial-gradient(ellipse 3px 27px at 100% 61%, rgb(216 73 15 / 38%), transparent),
+    radial-gradient(ellipse 18px 3px at 68% 100%, rgb(255 136 40 / 42%), transparent),
+    radial-gradient(ellipse 3px 16px at 0% 29%, rgb(205 58 11 / 32%), transparent);
+  border-radius: inherit;
+}
+
+.club-playing-card:not(.new-club-card)[data-club-fire-static="true"]:is(
+    :hover,
+    :focus-within
+  )::after {
+  opacity: 1;
+  filter: brightness(1.4);
+}
+
+/* Parent supplies the retained, inert REAL portal in this layer. The outgoing
+   DOM stays mounted; only its even-odd clip changes during entry. */
+.club-entry-source[data-burning="true"] {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  pointer-events: none;
+}
+
+.club-entry-effect {
+  position: fixed;
+  z-index: 1001; /* runtime puts this one above the actual source z-index */
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  contain: strict;
+}
+
+.club-entry-defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+.club-entry-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.club-entry-effect[data-phase="waiting"] .club-entry-canvas,
+.club-entry-effect[data-phase="ordinary"] .club-entry-canvas,
+.club-entry-effect[data-phase="complete"] .club-entry-canvas {
+  visibility: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .club-fire-canvas,
+  .club-entry-canvas {
+    visibility: hidden;
+  }
+}
