@@ -230,9 +230,6 @@ const englishShellMessages = {
   edgeHighlightsValue: "Edge highlights: {value}%",
   causticLight: "Caustic light",
   causticLightValue: "Caustic light: {value}%",
-  noirContrast: "Noir contrast · Available players only",
-  noirContrastValue: "Noir contrast · Available players only: {value}%",
-  glassNoirDescription: "Only the Available players background; other screens stay unchanged.",
   glassMaterialDescription:
     "Material decoration only; content, focus and player/status lighting stay unchanged.",
   glassMaterialReducedReason:
@@ -591,9 +588,6 @@ const russianShellMessages = {
   edgeHighlightsValue: "Блики на краях: {value}%",
   causticLight: "Каустический свет",
   causticLightValue: "Каустический свет: {value}%",
-  noirContrast: "Контраст Noir · только Доступные игроки",
-  noirContrastValue: "Контраст Noir · только Доступные игроки: {value}%",
-  glassNoirDescription: "Только фон экрана «Доступные игроки»; остальные экраны не меняются.",
   glassMaterialDescription:
     "Только декор материала; содержимое, фокус и подсветка игроков и состояний не меняются.",
   glassMaterialReducedReason:

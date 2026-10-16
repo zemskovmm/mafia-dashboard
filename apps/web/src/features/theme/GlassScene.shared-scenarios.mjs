@@ -17,7 +17,6 @@ const defaults = {
   tint: 13,
   edgeHighlights: 100,
   caustics: 100,
-  noirContrast: 100,
   nominationTint: 18,
   nominationColor: "#e6bc7e",
   nominationTreatment: "hybrid",
@@ -32,7 +31,6 @@ const controls = [
   ["edgeHighlights", "Edge highlights", 100],
   ["caustics", "Caustic light", 100],
   ["goldLight", "Gold background light", 100],
-  ["noirContrast", "Noir contrast · Available players only", 100],
 ];
 const families = ["setup", "availability", "profile", "table", "nomination", "deceased", "roles"];
 function screenshotDelta(first, second) {
@@ -593,6 +591,105 @@ async function verifyInteractions(page, family) {
   return "real setup → role-giveaway navigation";
 }
 
+async function cardMaterial(card, selected) {
+  return card.evaluate((node, selected) => {
+    const style = getComputedStyle(node);
+    const backdrop = getComputedStyle(node.querySelector(".liquid-card-glass__backdrop"));
+    const rim = getComputedStyle(node.querySelector(".liquid-card-glass__rim"));
+    return {
+      corners: ["TopLeft", "TopRight", "BottomLeft", "BottomRight"].map(
+        (corner) => style[`border${corner}Radius`],
+      ),
+      border: style.borderTopColor,
+      color: style.color,
+      background: style.background,
+      // The table's current speaker has a separate animated light layer;
+      // availability keeps a static selected glow, not speaker animation.
+      shadow: selected ? undefined : style.boxShadow,
+      tint: style.getPropertyValue("--liquid-state-rgb").trim(),
+      backdrop: backdrop.background,
+      // React gives each fallback SVG lens a unique id; compare the material
+      // pipeline, not the identity of two separately mounted instances.
+      blur: (backdrop.backdropFilter || backdrop.webkitBackdropFilter).replace(
+        /url\("#liquid-card-lens-[^"]+"\)/g,
+        'url("#liquid-card-lens")',
+      ),
+      rim: rim.background,
+      edge: rim.opacity,
+      caustics: getComputedStyle(node.querySelector(".liquid-card-glass__caustics")).opacity,
+    };
+  }, selected);
+}
+
+async function tableMaterialReference(browser, config, url) {
+  const page = await browser.newPage({
+    viewport: config.viewport,
+    deviceScaleFactor: 2,
+    reducedMotion: "reduce",
+  });
+  try {
+    await page.route("**/*", (route) =>
+      route.request().url().startsWith(url) ? route.continue() : route.abort(),
+    );
+    await page.addInitScript(() =>
+      localStorage.setItem("mafia-dashboard.developer-unlocked.v1", "unlocked"),
+    );
+    await visitFamily(page, url, "table");
+    await page.waitForFunction(
+      () => document.querySelector(".app-shell")?.dataset.glassStatus === "ready",
+    );
+    const reference = {};
+    for (const mode of ["enhanced", "fallback"]) {
+      if (mode === "fallback") {
+        await openControls(page);
+        await page.getByRole("button", { name: "Disable enhanced glass", exact: true }).click();
+        await page.getByRole("button", { name: "Close developer menu", exact: true }).click();
+      }
+      await page.mouse.move(0, 0);
+      await settle(page);
+      reference[mode] = {
+        neutral: await cardMaterial(
+          page.locator(".round-table .player-seat:not(.is-current, .is-nominated)").first(),
+          false,
+        ),
+        selected: await cardMaterial(page.locator(".round-table .player-seat.is-current"), true),
+      };
+    }
+    return reference;
+  } finally {
+    await page.close();
+  }
+}
+
+async function assertAvailabilityMaterial(page, reference) {
+  const card = page.locator(".availability-player-grid .player-seat").first();
+  const pressed = await card.getAttribute("aria-pressed");
+  const actual = {};
+  for (const selected of [false, true]) {
+    if ((await card.getAttribute("aria-pressed")) !== String(selected)) await card.click();
+    await page.mouse.move(0, 0);
+    await settle(page);
+    actual[selected ? "selected" : "neutral"] = await cardMaterial(card, selected);
+    await card.hover();
+    await settle(page);
+    assert.deepEqual(
+      await cardMaterial(card, selected),
+      actual[selected ? "selected" : "neutral"],
+      "Hover must not introduce a different availability material",
+    );
+  }
+  await card.focus();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Shift+Tab");
+  assert.equal(await card.evaluate((node) => node.matches(":focus-visible")), true);
+  assert.ok(
+    Number.parseFloat(await card.evaluate((node) => getComputedStyle(node).outlineWidth)) > 0,
+  );
+  if ((await card.getAttribute("aria-pressed")) !== pressed) await card.click();
+  assert.deepEqual(actual, reference, "Availability must use the main-table card material");
+  return actual;
+}
+
 // Default remains the full existing browser/viewport matrix. These opt-in
 // selectors are for RED/iteration; unknown values fail rather than silently skip.
 export async function verifySharedPlayerGlass({ browser, config, url, evidence, results }) {
@@ -601,6 +698,9 @@ export async function verifySharedPlayerGlass({ browser, config, url, evidence, 
     selected.length && selected.every((family) => families.includes(family)),
     "Unknown GLASS_FAMILY",
   );
+  const tableMaterial = selected.includes("availability")
+    ? await tableMaterialReference(browser, config, url)
+    : null;
   for (const scenario of selected) {
     const family = scenario === "roles" ? "table" : scenario;
     const page = await browser.newPage({
@@ -645,6 +745,10 @@ export async function verifySharedPlayerGlass({ browser, config, url, evidence, 
           ),
         );
       assert.equal(await page.locator(".glass-scene-canvas").count(), 1);
+      if (scenario === "availability")
+        receipt.material = {
+          enhanced: await assertAvailabilityMaterial(page, tableMaterial.enhanced),
+        };
       // Keep a paint/fallback contract failure while collecting independent
       // material evidence during integration; it still fails this scenario.
       let hostContractError = null;
@@ -669,6 +773,7 @@ export async function verifySharedPlayerGlass({ browser, config, url, evidence, 
         () => document.querySelector(".app-shell")?.dataset.glassStatus === "ready",
       );
       await openControls(page);
+      assert.equal(await page.getByRole("slider", { name: /Noir contrast/ }).count(), 0);
       assert.deepEqual(
         (await saved(page)) ?? defaults,
         defaults,
@@ -711,7 +816,6 @@ export async function verifySharedPlayerGlass({ browser, config, url, evidence, 
       receipt.source = { original: source, moved };
       receipt.controls = {};
       // Isolate every endpoint: each starts and ends at the full defaults.
-      // Noir is intentionally a negative control on every other family.
       for (const [field, label, maximum] of controls) {
         await setRange(page, label, 0);
         await snapshot(page, "endpointZero");
@@ -746,21 +850,16 @@ export async function verifySharedPlayerGlass({ browser, config, url, evidence, 
             delta.outside > 8 && delta.allChanged > 8,
             `${scenario}: gold must change its actual source background`,
           );
-        } else if (field === "noirContrast" && family !== "availability")
-          assert.equal(delta.allChanged, 0, `${scenario}: Noir must be scoped to availability`);
-        else {
+        } else {
           assert.ok(
             delta.surfaces.length > 0 && delta.surfaces.every((s) => s.changed > 8),
             JSON.stringify({ scenario, field, delta }),
           );
-          if (field === "goldLight" || field === "noirContrast")
-            assert.ok(delta.outside > 8, `${field} must change its visible source background`);
-          else
-            assert.equal(
-              delta.outside,
-              0,
-              `${scenario}/${field}: material escaped the rounded/clipped card masks`,
-            );
+          assert.equal(
+            delta.outside,
+            0,
+            `${scenario}/${field}: material escaped the rounded/clipped card masks`,
+          );
         }
         if (field === "refraction")
           assert.ok(
@@ -867,6 +966,8 @@ export async function verifySharedPlayerGlass({ browser, config, url, evidence, 
       await page.screenshot({
         path: join(evidence, `${config.name}-shared-${scenario}-fallback.png`),
       });
+      if (scenario === "availability")
+        receipt.material.fallback = await assertAvailabilityMaterial(page, tableMaterial.fallback);
       receipt.controls.enabled = {
         screenshotPixels: screenshotDelta(
           enhancedHostImage,

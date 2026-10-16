@@ -19,7 +19,6 @@ export interface GlassSceneGeometry {
   readonly workspace: SceneRect;
   readonly workspaceRadius: number;
   readonly noir: boolean;
-  readonly noirContrast: number;
   readonly background: readonly number[];
   readonly top: readonly number[];
   readonly theme: readonly number[];
@@ -48,7 +47,6 @@ uniform vec4 u_nomination;
 uniform vec4 u_workspace;
 uniform float u_workspaceRadius;
 uniform float u_noir;
-uniform float u_noirContrast;
 uniform vec4 u_clips[4];
 uniform vec4 u_clipRadii;
 uniform vec4 u_rect;
@@ -114,7 +112,7 @@ vec3 scene(vec2 p){
    float t=mod(local.x*.829+local.y*.559+390.0,195.0);
    float band=smoothstep(78.0,95.0,t)*(1.0-smoothstep(119.0,144.0,t));
    float mask=mix(.08,.8,smoothstep(0.0,.38,uv.y))*(1.0-.60*smoothstep(.82,1.0,uv.y));
-   col+=vec3(.125,.120,.091)*band*mask*u_noirContrast;
+   col+=vec3(.125,.120,.091)*band*mask;
    col+=sin(local.x*1.73+local.y*2.31)*sin(local.y*1.17-local.x*.83)*.002;
   }
  }
@@ -247,7 +245,6 @@ export const createGlassRenderer = (canvas: HTMLCanvasElement): GlassRenderer =>
         rect("u_workspace", scene.workspace);
         scalar("u_workspaceRadius", scene.workspaceRadius);
         scalar("u_noir", scene.noir ? 1 : 0);
-        scalar("u_noirContrast", scene.noirContrast);
         rgb("u_bg", scene.background);
         rgb("u_top", scene.top);
         rgb("u_theme", scene.theme);

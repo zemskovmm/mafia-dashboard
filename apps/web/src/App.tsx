@@ -2050,7 +2050,6 @@ export const ClubWorkspace = ({
           "--glass-tint": glass.tint / 100,
           "--glass-edge-highlights": glass.edgeHighlights / 100,
           "--glass-caustics": glass.caustics / 100,
-          "--glass-noir-contrast": glass.noirContrast / 100,
           "--card-nomination-color": glass.nominationColor,
           "--card-nomination-rgb": [1, 3, 5]
             .map((i) => parseInt(glass.nominationColor.slice(i, i + 2), 16))

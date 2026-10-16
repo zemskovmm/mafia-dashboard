@@ -29,6 +29,28 @@ const Harness = ({
 };
 
 describe("Glass controls", () => {
+  it.each([
+    ["en", "Glass", "Fine tuning"],
+    ["ru", "Стекло", "Тонкая настройка"],
+  ] as const)(
+    "does not expose availability-only Noir tuning in %s",
+    async (locale, title, tuning) => {
+      const user = userEvent.setup();
+      render(
+        <I18nProvider locale={locale}>
+          <Harness status="ready" />
+        </I18nProvider>,
+      );
+      await user.click(screen.getByText(title, { selector: "summary" }));
+      await user.click(screen.getByText(tuning, { selector: "summary" }));
+      expect(screen.queryByRole("slider", { name: /Noir/i })).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(
+          /Only the Available players background; other screens stay unchanged|Только фон экрана «Доступные игроки»; остальные экраны не меняются/,
+        ),
+      ).not.toBeInTheDocument();
+    },
+  );
   it("changes player-card appearance independently, retains essential indicators, and resets defaults", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
@@ -157,7 +179,7 @@ describe("Glass controls", () => {
     expect(screen.getByLabelText("Glass tint")).toHaveValue("13");
     expect(screen.getByLabelText("Edge highlights")).toHaveValue("100");
     expect(screen.getByLabelText("Caustic light")).toHaveValue("100");
-    expect(screen.getByLabelText("Noir contrast · Available players only")).toHaveValue("100");
+    expect(screen.queryByLabelText(/Noir/i)).not.toBeInTheDocument();
   });
   it("groups fine tuning and updates each bounded control independently", async () => {
     const user = userEvent.setup();
@@ -187,7 +209,6 @@ describe("Glass controls", () => {
       ["tint", "Glass tint", 30, 13, true],
       ["edgeHighlights", "Edge highlights", 100, 100, true],
       ["caustics", "Caustic light", 100, 100, true],
-      ["noirContrast", "Noir contrast · Available players only", 100, 100, true],
     ] as const;
     for (const [field, name, maximum, initial, isAdvanced] of ranges) {
       const slider = screen.getByRole("slider", { name });
@@ -206,11 +227,6 @@ describe("Glass controls", () => {
         );
       }
     }
-    expect(
-      screen.getByLabelText("Noir contrast · Available players only"),
-    ).toHaveAccessibleDescription(
-      "Only the Available players background; other screens stay unchanged.",
-    );
     await user.click(screen.getByRole("button", { name: "Reset glass settings" }));
     expect(onChange).toHaveBeenLastCalledWith(DEFAULT_GLASS_SETTINGS);
     for (const [, name, , initial] of ranges) {
@@ -264,7 +280,7 @@ describe("Glass controls", () => {
       "aria-describedby",
       "glass-renderer-reason",
     );
-    expect(screen.getByLabelText("Noir contrast · Available players only")).not.toBeDisabled();
+    expect(screen.queryByLabelText(/Noir/i)).not.toBeInTheDocument();
     for (const name of ["Frosting amount", "Glass tint", "Edge highlights", "Caustic light"]) {
       const control = screen.getByLabelText(name);
       expect(control.hasAttribute("disabled")).toBe(status === "reduced-transparency");
@@ -345,12 +361,7 @@ describe("Glass controls", () => {
     expect(screen.getByLabelText("Тонировка стекла")).toHaveValue("13");
     expect(screen.getByLabelText("Блики на краях")).toHaveValue("100");
     expect(screen.getByLabelText("Каустический свет")).toHaveValue("100");
-    expect(screen.getByLabelText("Контраст Noir · только Доступные игроки")).toHaveValue("100");
-    expect(
-      screen.getByLabelText("Контраст Noir · только Доступные игроки"),
-    ).toHaveAccessibleDescription(
-      "Только фон экрана «Доступные игроки»; остальные экраны не меняются.",
-    );
+    expect(screen.queryByLabelText(/Noir/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Выключить матовое стекло" })).toHaveAttribute(
       "aria-pressed",
       "true",

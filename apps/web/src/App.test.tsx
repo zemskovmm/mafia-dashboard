@@ -2890,7 +2890,6 @@ describe("developer menu", () => {
       tint: 13,
       edgeHighlights: 100,
       caustics: 100,
-      noirContrast: 100,
       nominationTint: 18,
       nominationColor: "#e6bc7e",
       nominationTreatment: "hybrid",

@@ -20,7 +20,7 @@ const evidence = resolve(
   root,
   process.env.GLASS_SCENARIO === "player-cards"
     ? `.AI/qa/player-card-production/${new Date().toISOString().replaceAll(":", "-")}`
-    : ".AI/reports/app-glass",
+    : `.AI/qa/app-glass/${new Date().toISOString().replaceAll(":", "-")}`,
 );
 assert.ok(
   !process.env.GLASS_SCENARIO ||
@@ -48,7 +48,8 @@ const temp = await mkdtemp(join(evidence, "fixture-"));
 const entry = `
 import React from "react";
 import {createRoot} from "react-dom/client";
-import {ClubWorkspace} from "./apps/web/src/App.tsx";
+import { ClubWorkspace } from "./apps/web/src/App.tsx";
+import { DEFAULT_FANCY_STUFF_SETTINGS } from "./apps/web/src/features/effects/fancy-stuff-preferences.ts";
 import {I18nProvider} from "./apps/web/src/i18n/I18nProvider.tsx";
 import {GameSessionOutbox} from "./apps/web/src/session-outbox.ts";
 import {withBrowserGameStorageGuard} from "./apps/web/src/browser-game-storage-lock.ts";
@@ -113,7 +114,7 @@ if(!localStorage.getItem("mafia-dashboard.glass-fixture-seeded")){
  else if(!new URLSearchParams(location.search).has("fresh"))localStorage.setItem("mafia-dashboard.glass.v1",JSON.stringify({version:1,enabled:false,refraction:10,goldLight:25,profile:"simple"}));
 }
 const app=createRoot(document.getElementById("root"));
-app.render(<React.StrictMode><I18nProvider locale={locale}><ClubWorkspace storageGuard={storageGuard} club={club} onExit={()=>app.unmount()} onEditClub={()=>{}} onDeleteClub={()=>Promise.resolve()}/></I18nProvider></React.StrictMode>);
+app.render(<React.StrictMode><I18nProvider locale={locale}><ClubWorkspace storageGuard={storageGuard} club={club} onExit={()=>app.unmount()} onEditClub={()=>{}} onDeleteClub={()=>Promise.resolve()} fancyStuff={DEFAULT_FANCY_STUFF_SETTINGS} onFancyStuffChange={()=>{}}/></I18nProvider></React.StrictMode>);
 await new Promise(()=>{});
 });
 `;

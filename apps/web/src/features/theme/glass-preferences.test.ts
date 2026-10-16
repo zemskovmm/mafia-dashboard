@@ -18,7 +18,6 @@ const approvedDefaults = {
   tint: 13,
   edgeHighlights: 100,
   caustics: 100,
-  noirContrast: 100,
   nominationTint: 18,
   nominationColor: "#e6bc7e",
   nominationTreatment: "hybrid",
@@ -38,7 +37,6 @@ const customizedSettings = {
   tint: 20,
   edgeHighlights: 80,
   caustics: 60,
-  noirContrast: 40,
   nominationTint: 35,
   nominationColor: "#39a9db",
   nominationTreatment: "tint",
@@ -54,7 +52,6 @@ const numericFields = [
   ["tint", 30],
   ["edgeHighlights", 100],
   ["caustics", 100],
-  ["noirContrast", 100],
   ["nominationTint", 50],
 ] as const;
 
@@ -74,6 +71,22 @@ describe("device-local glass preferences", () => {
       refraction: 10,
     });
   });
+  it.each([0, 40, 100, "invalid", null])(
+    "discards retired Noir contrast %s while preserving and persisting every retained v1 choice",
+    (noirContrast) => {
+      const legacySettings = { ...customizedSettings, noirContrast };
+      const settings = readGlassSettings(() => ({ getItem: () => JSON.stringify(legacySettings) }));
+      expect(settings).toEqual(customizedSettings);
+      expect(settings).not.toHaveProperty("noirContrast");
+      expect(validateGlassSettings(legacySettings)).toEqual(customizedSettings);
+      const setItem = vi.fn();
+      writeGlassSettings(legacySettings, () => ({ setItem }));
+      expect(setItem).toHaveBeenCalledExactlyOnceWith(
+        GLASS_STORAGE_KEY,
+        JSON.stringify(customizedSettings),
+      );
+    },
+  );
   it.each(numericFields)("validates %s independently within 0..%s", (field, maximum) => {
     for (const value of [0, maximum / 2, maximum]) {
       expect(validateGlassSettings({ ...customizedSettings, [field]: value })).toEqual({

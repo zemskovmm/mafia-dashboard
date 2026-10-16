@@ -211,7 +211,6 @@
     #20201a 95px 119px,
     transparent 144px 195px
   );
-  opacity: var(--glass-noir-contrast, 1);
 }
 .availability-selection-card::after {
   background: radial-gradient(
@@ -242,8 +241,8 @@
 }
 @media (prefers-reduced-motion: reduce) {
   /* Override higher-specificity legacy state pulses, but retain static glow. */
-  .app-shell[data-glass-settings] .table-stage .player-seat,
-  .app-shell[data-glass-settings] .table-stage .player-seat::after {
+  .app-shell[data-glass-settings] :is(.table-stage, .availability-player-grid) .player-seat,
+  .app-shell[data-glass-settings] :is(.table-stage, .availability-player-grid) .player-seat::after {
     animation: none !important;
   }
 }

@@ -11,7 +11,6 @@ export interface GlassSettings {
   readonly tint: number;
   readonly edgeHighlights: number;
   readonly caustics: number;
-  readonly noirContrast: number;
   readonly nominationTint: number;
   readonly nominationColor: string;
   readonly nominationTreatment: "icons" | "tint" | "hybrid";
@@ -31,7 +30,6 @@ export const DEFAULT_GLASS_SETTINGS: GlassSettings = Object.freeze({
   tint: 13,
   edgeHighlights: 100,
   caustics: 100,
-  noirContrast: 100,
   nominationTint: 18,
   nominationColor: "#e6bc7e",
   nominationTreatment: "hybrid",
@@ -63,7 +61,6 @@ export const validateGlassSettings = (value: unknown): GlassSettings => {
     tint: validNumber(record.tint, 30, DEFAULT_GLASS_SETTINGS.tint),
     edgeHighlights: validNumber(record.edgeHighlights, 100, DEFAULT_GLASS_SETTINGS.edgeHighlights),
     caustics: validNumber(record.caustics, 100, DEFAULT_GLASS_SETTINGS.caustics),
-    noirContrast: validNumber(record.noirContrast, 100, DEFAULT_GLASS_SETTINGS.noirContrast),
     nominationTint: validNumber(record.nominationTint, 50, DEFAULT_GLASS_SETTINGS.nominationTint),
     nominationColor:
       typeof record.nominationColor === "string" &&

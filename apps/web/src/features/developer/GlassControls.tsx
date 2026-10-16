@@ -174,24 +174,6 @@ export const GlassControls = ({
                 />
               </label>
             ))}
-            <label className="dev-renderer-field">
-              <span>{t("noirContrastValue", { value: settings.noirContrast })}</span>
-              <input
-                type="range"
-                min="0"
-                max="100"
-                step="1"
-                aria-label={t("noirContrast")}
-                aria-describedby="glass-noir-description"
-                value={settings.noirContrast}
-                onChange={(event) =>
-                  onChange({ ...settings, noirContrast: Number(event.currentTarget.value) })
-                }
-              />
-            </label>
-            <p id="glass-noir-description" className="dev-renderer-status">
-              {t("glassNoirDescription")}
-            </p>
           </div>
         </details>
         <details className="dev-player-card-appearance">

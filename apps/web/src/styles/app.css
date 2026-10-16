@@ -967,15 +967,6 @@ h2 {
   overflow-y: auto;
   overscroll-behavior: contain;
 }
-.player-seat.availability-player-card {
-  /* Binary gold selection remains visible independently of graphics readiness. */
-  transition: none;
-  animation: none !important;
-}
-.app-shell .player-seat.availability-player-card::after {
-  content: none !important;
-  animation: none !important;
-}
 .player-seat.availability-player-card .availability-player-icon {
   transition: none;
 }
@@ -1007,19 +998,6 @@ h2 {
   /* The enclosing card owns the rounded light boundary and scrolling. */
   isolation: isolate;
   overflow: visible;
-}
-.availability-player-grid .player-seat.availability-player-card {
-  z-index: auto;
-}
-.app-shell[data-lighting-renderer]
-  .availability-player-grid
-  .player-seat.availability-player-card[data-availability-state="selected"] {
-  border-color: #ebc779;
-  box-shadow:
-    0 0 0 1px rgb(235 199 121 / 30%),
-    0 8px 22px rgb(0 0 0 / 30%);
-  --liquid-state-rgb: 220 177 87;
-  --liquid-card-rim: conic-gradient(from 135deg, #ffe9a3, #d6ae5c99, #fff6cd, #d6ae5c99, #ffe9a3);
 }
 .availability-player-card {
   height: 108px;
@@ -1137,8 +1115,11 @@ h2 {
   font-size: 0.78rem;
 }
 
-.table-stage {
+.table-stage,
+.availability-player-grid {
   --table-control-radius: 14px;
+}
+.table-stage {
   display: grid;
   place-items: center;
   width: 100%;
@@ -1556,16 +1537,18 @@ h2 {
   scale: 0.88;
   opacity: 0.55;
 }
+.player-seat.is-current,
+.player-seat.is-availability-selected {
+  border-color: var(--accent-hover);
+}
 .player-seat.is-current {
   background: linear-gradient(145deg, rgb(113 112 255 / 24%), rgb(22 24 25 / 94%)), #161819;
-  border-color: var(--accent-hover);
   box-shadow:
     0 0 0 4px rgb(113 112 255 / 22%),
     0 8px 28px rgb(0 0 0 / 55%);
   animation: active-player-pulse 1.8s ease-in-out infinite;
 }
-.player-seat.is-mafia-shooter,
-.player-seat.is-availability-selected {
+.player-seat.is-mafia-shooter {
   z-index: 1;
   isolation: isolate;
   border-color: #ff5f4f;
@@ -1575,8 +1558,7 @@ h2 {
     0 0 24px rgb(255 67 55 / 48%),
     0 9px 25px rgb(0 0 0 / 48%);
 }
-.player-seat.is-mafia-shooter::after,
-.player-seat.is-availability-selected::after {
+.player-seat.is-mafia-shooter::after {
   position: absolute;
   z-index: 0;
   inset: 1px;
@@ -1682,8 +1664,6 @@ h2 {
   .player-seat.is-current,
   .player-seat.is-mafia-shooter,
   .player-seat.is-mafia-shooter::after,
-  .player-seat.is-availability-selected,
-  .player-seat.is-availability-selected::after,
   .player-seat.is-sheriff-highlight,
   .player-seat.is-sheriff-highlight::after,
   .player-seat.is-goodbye-highlight,
@@ -1780,22 +1760,12 @@ button.player-seat.is-voting-highlight::after,
 }
 .app-shell:not([data-lighting-renderer="legacy"]) .player-seat.is-current,
 .app-shell:not([data-lighting-renderer="legacy"])
-  .player-seat:is(
-    .is-mafia-shooter,
-    .is-availability-selected,
-    .is-sheriff-highlight,
-    .is-goodbye-highlight
-  ) {
+  .player-seat:is(.is-mafia-shooter, .is-sheriff-highlight, .is-goodbye-highlight) {
   box-shadow: 0 9px 25px rgb(0 0 0 / 40%);
   animation: none;
 }
 .app-shell:not([data-lighting-renderer="legacy"])
-  .player-seat:is(
-    .is-mafia-shooter,
-    .is-availability-selected,
-    .is-sheriff-highlight,
-    .is-goodbye-highlight
-  )::after,
+  .player-seat:is(.is-mafia-shooter, .is-sheriff-highlight, .is-goodbye-highlight)::after,
 .app-shell:not([data-lighting-renderer="legacy"]) button.player-seat.is-voting-highlight::after,
 .app-shell:not([data-lighting-renderer="legacy"]) .nomination-panel li.is-voting-highlight::after {
   content: none;
@@ -1814,16 +1784,18 @@ button.player-seat.is-voting-highlight::after,
 }
 .app-shell[data-lighting-renderer="vgpu"] .player-seat.is-current,
 .app-shell[data-lighting-renderer="vgpu"] .player-seat.is-voting-highlight,
+.app-shell[data-lighting-renderer="vgpu"] .player-seat.is-availability-selected,
 .app-shell[data-lighting-renderer="vgpu"] .nomination-panel li.is-voting-highlight {
   border-color: #ffe9ac;
   background: linear-gradient(145deg, #34312a, #191c23 65%);
 }
-/* One translucent material for idle and highlighted table cards. Lighting and
+/* One translucent material for idle and highlighted player cards. Lighting and
    crisp content remain siblings of the edge-only refractive surface. */
-.app-shell .table-stage .table-card.player-seat {
+.app-shell :is(.table-stage, .availability-player-grid) .table-card.player-seat {
   background: transparent;
 }
-.table-stage .player-seat:is(.is-current, .is-voting-highlight, .is-goodbye-highlight) {
+.table-stage .player-seat:is(.is-current, .is-voting-highlight, .is-goodbye-highlight),
+.availability-player-grid .player-seat.is-availability-selected {
   --liquid-card-rim: conic-gradient(from 135deg, #ffe9a3, #d6ae5c99, #fff6cd, #d6ae5c99, #ffe9a3);
   --liquid-state-rgb: 246 191 96;
 }
@@ -1845,8 +1817,19 @@ button.player-seat.is-voting-highlight::after,
     .is-sheriff-highlight,
     .is-mafia-shooter
   ) {
-  /* Soft glow only: no spread shadow that would form a second hard rim. */
   animation: liquid-state-pulse 1.8s ease-in-out infinite alternate;
+}
+.availability-player-grid .player-seat.is-availability-selected,
+.app-shell[data-lighting-renderer="legacy"]
+  .table-stage
+  .player-seat:is(
+    .is-current,
+    .is-voting-highlight,
+    .is-goodbye-highlight,
+    .is-sheriff-highlight,
+    .is-mafia-shooter
+  ) {
+  /* Soft glow only: no spread shadow that would form a second hard rim. */
   box-shadow: 0 0 15px rgb(var(--liquid-state-rgb) / 45%);
 }
 @keyframes liquid-state-pulse {
@@ -4055,7 +4038,8 @@ html:-webkit-full-screen #root {
     top: 50%;
     width: 96px;
   }
-  .table-stage {
+  .table-stage,
+  .availability-player-grid {
     --table-control-radius: 10px;
   }
   .table-card {
@@ -4808,7 +4792,8 @@ html:-webkit-full-screen #root {
     transform: translate(-50%, -50%) rotate(var(--seat-angle))
       translateY(calc(-1 * var(--table-radius))) rotate(calc(-1 * var(--seat-angle)));
   }
-  .table-stage {
+  .table-stage,
+  .availability-player-grid {
     --table-control-radius: 10px;
   }
   .table-card {
