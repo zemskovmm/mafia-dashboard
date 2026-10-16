@@ -36,3 +36,4 @@ opened.
 | IDD-0004 | Spec | Game records and continuity         | Snapshot authority, recovery, history, correction and deletion           |          |
 | IDD-0005 | Spec | Data compatibility and preservation | Supported storage boundaries and safe rejection                          |          |
 | IDD-0006 | ADR  | Azure Table and Blob persistence    | Durable publication, small-partition tradeoffs and transition boundaries |          |
+| IDD-0007 | Spec | Club statistics and rating          | Player comparison, experimental lifetime Elo and named tournament scope  |          |

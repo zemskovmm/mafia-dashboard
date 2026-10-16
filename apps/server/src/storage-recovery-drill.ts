@@ -52,6 +52,8 @@ export interface StorageRecoveryDrillSummary {
     readonly deletedGame: true;
     readonly subsequentSave: true;
     readonly sourceUnchanged: true;
+    readonly tournamentMetadata: true;
+    readonly statisticsSource: true;
   };
 }
 
@@ -368,10 +370,19 @@ export const runStorageRecoveryDrill = async (): Promise<StorageRecoveryDrillSum
     const deletedId = deleted.gameId as string;
     await sourceRequest("DELETE", `/api/game-sessions/${deletedId}`, 204);
 
+    const tournament = await source.stores.tournaments.create(
+      "Retained recovery tournament",
+      clubId,
+    );
+    await source.stores.tournaments.assign(completedId, tournament.id, clubId);
+    await source.stores.tournaments.assign(partialId, tournament.id, clubId);
+    const statisticsSource = await source.stores.games.readStatisticsInputs(clubId);
     // Record precise API projections and complete source authority before freezing.
     const readbacks = [
       "/api/clubs",
       "/api/players",
+      "/api/tournaments",
+      "/api/statistics",
       "/api/game-sessions",
       "/api/game-sessions?status=completed",
       `/api/game-sessions/${partialId}`,
@@ -545,6 +556,21 @@ export const runStorageRecoveryDrill = async (): Promise<StorageRecoveryDrillSum
     check((await targetApp.inject("/health/ready")).statusCode === 200, "restored readiness");
     for (const [url, data] of expected)
       equal(await targetRequest("GET", url, 200), data, "exact authenticated API readback");
+    equal(
+      await target.stores.tournaments.list(clubId),
+      [tournament],
+      "restored tournament metadata through real application reader",
+    );
+    equal(
+      await target.stores.games.readStatisticsInputs(clubId),
+      statisticsSource,
+      "restored coherent statistics input including retired participants",
+    );
+    equal(
+      (await target.stores.games.get(completedId, clubId))?.tournamentId,
+      tournament.id,
+      "restored completed-game assignment",
+    );
     const canonical = (await targetRequest("GET", `/api/game-sessions/${completedId}`, 200))
       .session as { state: typeof state; results: typeof results };
     equal(
@@ -686,6 +712,11 @@ export const runStorageRecoveryDrill = async (): Promise<StorageRecoveryDrillSum
     );
     equal(creationRetry.state, savedState, "creation retry cannot revert new save");
     equal(
+      creationRetry.tournamentId,
+      tournament.id,
+      "restored initial retry and ordinary save retain tournament metadata",
+    );
+    equal(
       await rows(sourceFixture.storage),
       afterCaptureRows,
       "restore and all target APIs leave source entities untouched",
@@ -730,6 +761,8 @@ export const runStorageRecoveryDrill = async (): Promise<StorageRecoveryDrillSum
         deletedGame: true,
         subsequentSave: true,
         sourceUnchanged: true,
+        tournamentMetadata: true,
+        statisticsSource: true,
       },
     };
   } finally {

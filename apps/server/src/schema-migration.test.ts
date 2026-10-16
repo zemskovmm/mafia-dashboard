@@ -3,6 +3,8 @@ import { afterAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
 import { DEFAULT_CLUB_ID } from "./club-store.js";
 import { initializeSchema } from "./initialize-schema.js";
+import { GameSessionStore } from "./game-session-store.js";
+import { TournamentStore } from "./tournament-store.js";
 
 const databaseUrl =
   process.env.TEST_DATABASE_URL ?? "postgresql://mafia@127.0.0.1:54329/mafia_test";
@@ -33,6 +35,95 @@ const sessionColumns = async (pool: Pool) =>
   ).rows.map(({ column_name }) => column_name);
 
 describe("current-only game-record schema initialization", () => {
+  it("upgrades only the exact immediately preceding catalog without touching accepted rows or retry/deletion metadata", async () => {
+    await withSchema("tournament_preceding", async (pool) => {
+      await initializeSchema(pool);
+      const games = new GameSessionStore(pool);
+      const created = await games.create({
+        creationId: randomUUID(),
+        name: "Raw retained",
+        state: { opaque: [1, { hash: "Unchanged-CASE" }] },
+        results: null,
+      });
+      const deletedCreation = randomUUID();
+      const deleted = await games.create({
+        creationId: deletedCreation,
+        name: "Deleted",
+        state: {},
+        results: null,
+      });
+      await games.clear({ gameId: deleted.gameId });
+      await pool.query("DROP TABLE game_tournaments; DROP TABLE tournaments");
+      const before = await pool.query(
+        "SELECT row_to_json(g)::text AS raw FROM game_sessions g ORDER BY id",
+      );
+      const tombstones = await pool.query(
+        "SELECT row_to_json(g)::text AS raw FROM deleted_games g ORDER BY game_id",
+      );
+      const mappings = await pool.query(
+        "SELECT row_to_json(g)::text AS raw FROM game_session_creations g ORDER BY creation_id",
+      );
+      await initializeSchema(pool);
+      expect(
+        (await pool.query("SELECT row_to_json(g)::text AS raw FROM game_sessions g ORDER BY id"))
+          .rows,
+      ).toEqual(before.rows);
+      expect(
+        (
+          await pool.query(
+            "SELECT row_to_json(g)::text AS raw FROM deleted_games g ORDER BY game_id",
+          )
+        ).rows,
+      ).toEqual(tombstones.rows);
+      expect(
+        (
+          await pool.query(
+            "SELECT row_to_json(g)::text AS raw FROM game_session_creations g ORDER BY creation_id",
+          )
+        ).rows,
+      ).toEqual(mappings.rows);
+      expect((await games.get(created.gameId))?.tournamentId).toBeNull();
+      const tournament = await new TournamentStore(pool).create("Retained event", DEFAULT_CLUB_ID);
+      await new TournamentStore(pool).assign(created.gameId, tournament.id, DEFAULT_CLUB_ID);
+      await initializeSchema(pool);
+      expect((await games.get(created.gameId))?.tournamentId).toBe(tournament.id);
+      await expect(
+        games.create({
+          creationId: deletedCreation,
+          name: "Do not revive",
+          state: {},
+          results: null,
+        }),
+      ).rejects.toMatchObject({ code: "game_deleted" });
+    });
+  });
+  it.each([
+    "DROP TABLE game_tournaments",
+    "ALTER TABLE tournaments DROP CONSTRAINT tournaments_name_key_unique; ALTER TABLE tournaments ADD CONSTRAINT tournaments_name_key_unique UNIQUE (club_id,name)",
+    "DROP TABLE game_tournaments; DROP TABLE tournaments; ALTER TABLE game_sessions ADD COLUMN old_claim UUID",
+    "DROP TABLE game_tournaments; DROP TABLE tournaments; ALTER TABLE players ALTER COLUMN club_access SET DEFAULT 'user'",
+    "DROP TABLE game_tournaments; DROP TABLE tournaments; ALTER TABLE players ENABLE ROW LEVEL SECURITY",
+    "ALTER TABLE tournaments ADD COLUMN extra TEXT GENERATED ALWAYS AS (name) STORED",
+    "DROP TABLE game_tournaments; DROP TABLE tournaments; DROP INDEX players_club_nickname_unique_idx; CREATE UNIQUE INDEX players_club_nickname_unique_idx ON players(id) WHERE retired_at IS NULL",
+  ])("rejects partial or drifted tournament boundary before mutation: %s", async (ddl) => {
+    await withSchema("tournament_drift", async (pool) => {
+      await initializeSchema(pool);
+      await pool.query(ddl);
+      const before = (
+        await pool.query(
+          "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=current_schema() ORDER BY c.relname",
+        )
+      ).rows;
+      await expect(initializeSchema(pool)).rejects.toThrow("Unsupported existing database schema");
+      expect(
+        (
+          await pool.query(
+            "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=current_schema() ORDER BY c.relname",
+          )
+        ).rows,
+      ).toEqual(before);
+    });
+  });
   it("creates a claim-free catalog that permits multiple active records and retains creation mappings", async () => {
     await withSchema("game_record_target", async (pool) => {
       await initializeSchema(pool);

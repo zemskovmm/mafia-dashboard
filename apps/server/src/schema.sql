@@ -220,6 +220,30 @@ CREATE INDEX IF NOT EXISTS game_sessions_club_head_idx
   ON game_sessions (club_id, head_event_id)
   WHERE head_event_id IS NOT NULL;
 
+-- Tournament metadata is intentionally separate from accepted gameplay JSON.
+CREATE TABLE IF NOT EXISTS tournaments (
+  club_id UUID NOT NULL,
+  id UUID NOT NULL,
+  name TEXT NOT NULL,
+  name_key TEXT NOT NULL,
+  CONSTRAINT tournaments_pkey PRIMARY KEY (club_id, id),
+  CONSTRAINT tournaments_club_fk FOREIGN KEY (club_id) REFERENCES clubs (id) ON DELETE CASCADE,
+  CONSTRAINT tournaments_name_key_unique UNIQUE (club_id, name_key),
+  CONSTRAINT tournaments_name_check CHECK (BTRIM(name) <> '' AND LENGTH(name) <= 100),
+  CONSTRAINT tournaments_name_key_check CHECK (BTRIM(name_key) <> '')
+);
+
+CREATE TABLE IF NOT EXISTS game_tournaments (
+  club_id UUID NOT NULL,
+  game_id UUID NOT NULL,
+  tournament_id UUID NOT NULL,
+  CONSTRAINT game_tournaments_pkey PRIMARY KEY (club_id, game_id),
+  CONSTRAINT game_tournaments_game_fk FOREIGN KEY (club_id, game_id)
+    REFERENCES game_sessions (club_id, id) ON DELETE CASCADE,
+  CONSTRAINT game_tournaments_tournament_fk FOREIGN KEY (club_id, tournament_id)
+    REFERENCES tournaments (club_id, id) ON DELETE RESTRICT
+);
+
 CREATE TABLE IF NOT EXISTS game_session_mutations (
   club_id UUID NOT NULL DEFAULT '00000000-0000-4000-8000-000000000101',
   game_id UUID NOT NULL,

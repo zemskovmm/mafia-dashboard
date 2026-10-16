@@ -27,6 +27,14 @@ import type { ApplicationStores } from "./storage-contracts.js";
 import { createPostgresStores } from "./storage-contracts.js";
 import { StorageAccessError } from "./azure-storage.js";
 import { createFixedWindowLimiter, hasExactOrigin, isUnsafeMethod } from "./http-security.js";
+import {
+  getClubStatistics,
+  getPlayerStatistics,
+  StatisticsQueryError,
+  statisticsFiltersSchema,
+  statisticsHistoryQuerySchema,
+} from "./club-statistics.js";
+import { InvalidTournamentNameError, TournamentNotFoundError } from "./tournament-metadata.js";
 
 const gameIdParams = z.object({ gameId: z.uuid() });
 const gameSessionListQuery = z
@@ -64,6 +72,8 @@ const oauthCallbackQuery = z.object({
   state: z.string().min(1),
 });
 
+const tournamentBody = z.object({ name: z.string().trim().min(1).max(100) }).strict();
+const tournamentAssignmentBody = z.object({ tournamentId: z.uuid().nullable() }).strict();
 const nickname = z.string().trim().min(1).max(80);
 const clubBody = z.object({
   name: z.string().trim().min(1).max(100),
@@ -119,6 +129,9 @@ const validationFailure = (issues: readonly z.core.$ZodIssue[]) => ({
 });
 
 const sendGameSessionMutationError = (reply: FastifyReply, error: unknown): FastifyReply => {
+  if (error instanceof TournamentNotFoundError) {
+    return reply.code(404).send({ error: error.code });
+  }
   if (error instanceof UnsupportedGameFormatError || error instanceof InvalidGameIdentityError) {
     return reply.code(409).send({ error: error.code });
   }
@@ -723,6 +736,110 @@ export const buildApp = async ({
     if (result === "active_game") return reply.code(409).send({ error: "active_game" });
     if (result === "manager_locked") return reply.code(409).send({ error: "manager_locked" });
     return reply.code(204).send();
+  });
+
+  app.get("/api/tournaments", async (request, reply) => {
+    const clubId = await selectedClub(request, reply);
+    if (clubId === null) return;
+    return {
+      tournaments: await authorizedRequest(request, clubId, false, () =>
+        selectedStores.tournaments.list(clubId),
+      ),
+    };
+  });
+
+  app.post("/api/tournaments", async (request, reply) => {
+    const clubId = await selectedClub(request, reply);
+    if (clubId === null) return;
+    const body = tournamentBody.safeParse(request.body);
+    if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
+    try {
+      const tournament = await authorizedRequest(request, clubId, false, async () => {
+        const created = await selectedStores.tournaments.create(body.data.name, clubId);
+        const confirmed = (await selectedStores.tournaments.list(clubId)).find(
+          ({ id }) => id === created.id,
+        );
+        if (confirmed === undefined) throw new Error("Tournament creation could not be confirmed");
+        return confirmed;
+      });
+      return reply.code(201).send({ tournament });
+    } catch (error) {
+      if (error instanceof InvalidTournamentNameError)
+        return reply.code(400).send({ error: error.code });
+      throw error;
+    }
+  });
+
+  app.put("/api/game-sessions/:gameId/tournament", async (request, reply) => {
+    const clubId = await selectedClub(request, reply);
+    if (clubId === null) return;
+    const params = gameIdParams.safeParse(request.params);
+    const body = tournamentAssignmentBody.safeParse(request.body);
+    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
+    if (!body.success) return reply.code(400).send(validationFailure(body.error.issues));
+    try {
+      const tournamentId = await authorizedRequest(request, clubId, false, async () => {
+        const current = await gameSessionStore.get(params.data.gameId, clubId);
+        if (current === null) throw new GameSessionNotFoundError();
+        await selectedStores.tournaments.assign(params.data.gameId, body.data.tournamentId, clubId);
+        const confirmed = await gameSessionStore.get(params.data.gameId, clubId);
+        if (confirmed === null) throw new GameSessionNotFoundError();
+        return confirmed.tournamentId ?? null;
+      });
+      return { tournamentId };
+    } catch (error) {
+      return sendGameSessionMutationError(reply, error);
+    }
+  });
+
+  app.get("/api/statistics", async (request, reply) => {
+    const clubId = await selectedClub(request, reply);
+    if (clubId === null) return;
+    const query = statisticsFiltersSchema.safeParse(request.query);
+    if (!query.success) return reply.code(400).send(validationFailure(query.error.issues));
+    try {
+      const source = await authorizedRequest(request, clubId, false, () =>
+        gameSessionStore.readStatisticsInputs(clubId),
+      );
+      if (
+        query.data.tournamentId !== undefined &&
+        query.data.tournamentId !== "none" &&
+        !source.tournaments.some(({ id }) => id === query.data.tournamentId)
+      ) {
+        return reply.code(404).send({ error: "tournament_not_found" });
+      }
+      return getClubStatistics(source, query.data);
+    } catch (error) {
+      if (error instanceof StatisticsQueryError) return reply.code(400).send({ error: error.code });
+      return sendGameSessionMutationError(reply, error);
+    }
+  });
+
+  app.get("/api/statistics/players/:playerId", async (request, reply) => {
+    const clubId = await selectedClub(request, reply);
+    if (clubId === null) return;
+    const params = playerIdParams.safeParse(request.params);
+    const query = statisticsHistoryQuerySchema.safeParse(request.query);
+    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
+    if (!query.success) return reply.code(400).send(validationFailure(query.error.issues));
+    const { cursor, limit, ...filters } = query.data;
+    try {
+      const source = await authorizedRequest(request, clubId, false, () =>
+        gameSessionStore.readStatisticsInputs(clubId),
+      );
+      if (
+        filters.tournamentId !== undefined &&
+        filters.tournamentId !== "none" &&
+        !source.tournaments.some(({ id }) => id === filters.tournamentId)
+      ) {
+        return reply.code(404).send({ error: "tournament_not_found" });
+      }
+      const result = getPlayerStatistics(source, params.data.playerId, filters, { cursor, limit });
+      return result.player === null ? reply.code(404).send({ error: "player_not_found" }) : result;
+    } catch (error) {
+      if (error instanceof StatisticsQueryError) return reply.code(400).send({ error: error.code });
+      return sendGameSessionMutationError(reply, error);
+    }
   });
 
   app.get("/api/game-sessions", async (request, reply) => {

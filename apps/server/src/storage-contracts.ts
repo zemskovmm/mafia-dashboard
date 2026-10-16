@@ -3,13 +3,15 @@ import { EventStore } from "./event-store.js";
 import { GameSessionStore } from "./game-session-store.js";
 import { PlayerStore } from "./player-store.js";
 import { ClubStore } from "./club-store.js";
+import { TournamentStore } from "./tournament-store.js";
 
 export interface ApplicationStores {
   readonly events: Pick<EventStore, "read">;
   readonly games: Pick<
     GameSessionStore,
-    "create" | "save" | "clear" | "get" | "listActive" | "listCompleted"
+    "create" | "save" | "clear" | "get" | "listActive" | "listCompleted" | "readStatisticsInputs"
   >;
+  readonly tournaments: Pick<TournamentStore, "list" | "create" | "assign">;
   readonly players: Pick<PlayerStore, "list" | "get" | "create" | "update" | "delete">;
   readonly clubs: Pick<
     ClubStore,
@@ -27,6 +29,7 @@ export interface ApplicationStores {
 export const createPostgresStores = (pool: Pool): ApplicationStores => ({
   events: new EventStore(pool),
   games: new GameSessionStore(pool),
+  tournaments: new TournamentStore(pool),
   players: new PlayerStore(pool),
   clubs: new ClubStore(pool),
   async ready() {

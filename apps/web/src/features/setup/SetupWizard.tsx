@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
+import type {
+  KeyboardEvent as ReactKeyboardEvent,
+  PointerEvent as ReactPointerEvent,
+  ReactNode,
+} from "react";
 import {
   assignRoleForSeat,
   beginRoleDraw,
@@ -42,6 +46,10 @@ interface SetupWizardProps {
   /** Creation is in flight; role changes must not outrun the server GUID. */
   readonly persistencePending?: boolean;
   readonly playersLoading?: boolean;
+  /** Separate game metadata; never part of the canonical setup/game snapshot. */
+  readonly tournamentControl?: ReactNode;
+  readonly tournamentValid?: boolean;
+  readonly tournamentSelected?: boolean;
 }
 
 type WizardStep = "players" | "roles";
@@ -286,6 +294,9 @@ export const SetupWizard = ({
   onRoleDrawBackActionChange,
   persistencePending = false,
   playersLoading = false,
+  tournamentControl,
+  tournamentValid = true,
+  tournamentSelected = false,
 }: SetupWizardProps) => {
   const { t } = useMessages(gameMessages);
   const { t: setupT } = useMessages(setupMessages);
@@ -307,6 +318,9 @@ export const SetupWizard = ({
       current.captured ? current : { captured: true, edition: rulesEdition },
     );
   }, [rulesEdition]);
+  useEffect(() => {
+    if (tournamentSelected) captureEdition();
+  }, [captureEdition, tournamentSelected]);
   const [step, setStep] = useState<WizardStep>(
     initialSessionState?.step === "roles" && initialSessionState.setup?.step !== "role-draw"
       ? "players"
@@ -568,7 +582,7 @@ export const SetupWizard = ({
   }, [captureEdition, discardDeal, hostPlayerId, humanSeatCount, includeCasper, selectablePlayers]);
 
   const startRoleDraw = () => {
-    if (!playersReady || hostPlayer === undefined) return;
+    if (!playersReady || hostPlayer === undefined || !tournamentValid || persistencePending) return;
     captureEdition();
     const resumeRoleDraw = setup !== null && roleDrawMatchesPlayers(setup, players);
     const nextSetup = resumeRoleDraw
@@ -839,6 +853,7 @@ export const SetupWizard = ({
             </label>
           </header>
           {editionLabel}
+          {tournamentControl}
           {selectablePlayers.length < humanSeatCount + 1 ? (
             <p className="player-guidance">
               {t("setup.playerGuidance", { count: humanSeatCount + 1 })}
@@ -982,7 +997,7 @@ export const SetupWizard = ({
             <button
               className="primary-action"
               type="button"
-              disabled={!playersReady}
+              disabled={!playersReady || !tournamentValid || persistencePending}
               onClick={startRoleDraw}
             >
               {t("setup.startGame")}

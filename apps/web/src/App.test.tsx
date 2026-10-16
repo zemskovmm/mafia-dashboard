@@ -43,12 +43,14 @@ import {
   type GameState,
   type InitialGameBaseline,
   type GameLogEntry,
+  type PlayerStatisticsRow,
+  type StatisticsHistoryGame,
 } from "@mafia/game-domain";
 import { ApiError, type Club, type PlayerProfile, type RemoteGameSession } from "./api/client.js";
 import { App as WelcomeApp, ClubWorkspace } from "./App.js";
 import { DEFAULT_FANCY_STUFF_SETTINGS } from "./features/effects/fancy-stuff-preferences.js";
 
-import { GameSessionOutbox } from "./session-outbox.js";
+import { gameSessionStorageKey, GameSessionOutbox } from "./session-outbox.js";
 import { withBrowserGameStorageGuard } from "./browser-game-storage-lock.js";
 import {
   clearErrorConsole,
@@ -83,6 +85,11 @@ const api = vi.hoisted(() => {
     getAppVersion: vi.fn(),
     listActiveGameSessions: vi.fn(),
     listCompletedGameSessions: vi.fn(),
+    listTournaments: vi.fn(),
+    createTournament: vi.fn(),
+    assignGameTournament: vi.fn(),
+    getClubStatistics: vi.fn(),
+    getPlayerStatistics: vi.fn(),
     listPlayers: vi.fn(),
     createGameSession: vi.fn(),
     saveGameSession,
@@ -284,6 +291,7 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
     onOpenAvailablePlayers,
     showDevelopmentTools = false,
     persistencePending = false,
+    tournamentControl,
   }: {
     players: readonly PlayerProfile[];
     onComplete: (game: GameState, hostPlayerId: string, hostName: string) => void;
@@ -296,6 +304,7 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
     onOpenAvailablePlayers?: () => void;
     showDevelopmentTools?: boolean;
     persistencePending?: boolean;
+    tournamentControl?: ReactNode;
   }) => {
     const [session, setSession] = useState<SetupWizardSessionState | null>(
       initialSessionState ?? null,
@@ -341,6 +350,7 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
         <h1>
           {step === "roles" ? "Role giveaway" : step === "music" ? "Restored setup" : "Game setup"}
         </h1>
+        {tournamentControl}
         <output data-testid="setup-player-pool">
           {players.map(({ nickname }) => nickname).join(",")}
         </output>
@@ -834,6 +844,11 @@ beforeEach(() => {
   api.getAppVersion.mockReset().mockResolvedValue("1.0.0");
   api.listActiveGameSessions.mockReset().mockResolvedValue([]);
   api.listCompletedGameSessions.mockReset().mockResolvedValue([]);
+  api.listTournaments.mockReset().mockResolvedValue([]);
+  api.createTournament.mockReset();
+  api.assignGameTournament.mockReset().mockImplementation(async (_gameId, value) => value);
+  api.getClubStatistics.mockReset();
+  api.getPlayerStatistics.mockReset();
   api.listPlayers
     .mockReset()
     .mockResolvedValue([
@@ -892,6 +907,777 @@ afterEach(() => {
   window.sessionStorage.clear();
   vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+describe("statistics navigation and separate tournament setup", () => {
+  it("gates the real wizard after first tournament selection until creation and latest metadata are acknowledged", async () => {
+    const { SetupWizard: RealSetupWizard } = await vi.importActual<typeof setupWizardModule>(
+      "./features/setup/SetupWizard.js",
+    );
+    vi.spyOn(setupWizardModule, "SetupWizard").mockImplementation(RealSetupWizard);
+    window.localStorage.setItem(
+      `mafia-dashboard.available-player-ids.${testClub.id}`,
+      JSON.stringify([...assignedGame.players.map(({ id }) => id), hostPlayerId]),
+    );
+    api.listTournaments.mockResolvedValue(tournaments);
+    const creation = deferred<RemoteGameSession>();
+    const assignment = deferred<string | null>();
+    api.createGameSession.mockReturnValue(creation.promise);
+    api.assignGameTournament.mockReturnValue(assignment.promise);
+    render(<App />);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Include in tournament" }));
+    await screen.findByRole("option", { name: "Autumn cup" });
+    expect(api.createGameSession).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByRole("combobox", { name: "Tournament" }), {
+      target: { value: first },
+    });
+    await waitFor(() => expect(api.createGameSession).toHaveBeenCalledTimes(1));
+    const input = api.createGameSession.mock.calls[0]![0];
+    expect(input.state.setup.rulesEdition).toBe(FEDERATION_RULES_EDITION);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("combobox", { name: "Host player" }));
+    await user.type(screen.getByRole("combobox", { name: "Host player" }), "Host");
+    await user.click(screen.getByRole("option", { name: "Host Player" }));
+    fireEvent.click(screen.getByRole("button", { name: "Assign players" }));
+    expect(screen.getByRole("button", { name: "Start game" })).toBeDisabled();
+    fireEvent.change(screen.getByRole("combobox", { name: "Tournament" }), {
+      target: { value: second },
+    });
+    await act(async () =>
+      creation.resolve({
+        ...remoteSession(serverId, input.name, "Host", 1, 1),
+        state: input.state,
+        tournamentId: first,
+      }),
+    );
+    await waitFor(() =>
+      expect(api.assignGameTournament).toHaveBeenCalledWith(serverId, second, testClub.id),
+    );
+    expect(screen.getByRole("button", { name: "Start game" })).toBeDisabled();
+    await act(async () => assignment.resolve(second));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Start game" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Start game" }));
+    expect(await screen.findByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
+    const envelope = JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!);
+    expect(envelope.tournamentAssociation.confirmedTournamentId).toBe(second);
+    expect(envelope.current.state.setup.selectedPlayerIds.filter(Boolean)).toHaveLength(10);
+    expect(JSON.stringify(envelope.current.state)).not.toContain("tournamentId");
+  });
+  const first = "00000000-0000-4000-8000-000000000701";
+  const second = "00000000-0000-4000-8000-000000000702";
+  const serverId = "00000000-0000-4000-8000-000000000090";
+  const tournaments = [
+    { id: first, name: "Autumn cup" },
+    { id: second, name: "Winter cup" },
+  ];
+  it("recovers a lost creation acknowledgment through the real browser storage startup boundary", async () => {
+    const creationId = "00000000-0000-4000-8000-000000000800";
+    const outbox = new GameSessionOutbox({
+      storage: window.localStorage,
+      clubId: testClub.id,
+      createId: () => creationId,
+      save: vi.fn(),
+      create: vi.fn().mockRejectedValue(new Error("lost POST response")),
+    });
+    outbox.beginCreation(
+      "Lost acknowledgment",
+      {
+        ...browserSessionState(""),
+        setup: {
+          step: "players",
+          hostPlayerId: "",
+          selectedPlayerIds: Array.from({ length: 10 }, () => ""),
+          setup: null,
+          rulesEdition: FEDERATION_RULES_EDITION,
+        },
+      },
+      null,
+      first,
+    );
+    await expect(outbox.flush()).rejects.toThrow("lost POST response");
+    api.getAuthSession.mockResolvedValue(authenticatedUser);
+    api.listClubs.mockResolvedValue([testClub]);
+    api.listTournaments.mockResolvedValue(tournaments);
+    api.createGameSession.mockImplementation(async (input) => ({
+      ...remoteSession(serverId, input.name, "Host", 1, 1),
+      state: input.state,
+      tournamentId: first,
+    }));
+    render(<WelcomeApp />);
+    await waitFor(() =>
+      expect(api.createGameSession).toHaveBeenCalledWith(
+        expect.objectContaining({ creationId, tournamentId: first }),
+        testClub.id,
+      ),
+    );
+    expect(screen.queryByRole("heading", { name: "Browser game data needs attention" })).toBeNull();
+    expect(screen.getByRole("checkbox", { name: "Include in tournament" })).toBeChecked();
+    await waitFor(() =>
+      expect(JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).gameId).toBe(serverId),
+    );
+  });
+  const totals = { games: 1, wins: 1, draws: 0, losses: 0, winRate: 100 };
+  const statisticsPlayer: PlayerStatisticsRow = {
+    playerId: assignedGame.players[0]!.id,
+    nickname: "Player One",
+    totals,
+    teams: { red: totals, black: totals },
+    roles: { citizen: totals, sheriff: totals, mafia: totals, don: totals },
+    fouls: 0,
+    foulsPerGame: 0,
+    redCards: 0,
+    eliminations: 0,
+    bestMoveResults: 0,
+    bestMoveHits: 0,
+    bestMoveMean: null,
+    hostedGames: 0,
+    lastHostedAt: null,
+    lastPlayedAt: "2026-10-14T12:00:00Z",
+    recentForm: ["win"],
+    rating: {
+      algorithm: "club-team-elo-v1",
+      value: null,
+      ratedGames: 0,
+      status: "unranked",
+      rank: null,
+      lastChange: null,
+    },
+    scopedRatingChange: null,
+    scopedRatedGames: 0,
+  };
+  const historyGame = (gameId: string): StatisticsHistoryGame => ({
+    gameId,
+    name: "Inspected table",
+    playedAt: "2026-10-14T12:00:00Z",
+    rulesEdition: FEDERATION_RULES_EDITION,
+    hasCasper: false,
+    outcome: "red",
+    reason: null,
+    tournamentId: null,
+    hostPlayerId,
+    isHost: false,
+    statisticsAvailable: true,
+    participant: {
+      playerId: statisticsPlayer.playerId,
+      seat: 1,
+      role: "sheriff",
+      team: "red",
+      status: "active",
+      fouls: 0,
+      bestMoveHits: null,
+    },
+    unratedReason: "incomplete-results",
+    ratingChange: null,
+  });
+
+  it("returns from manager history with statistics scope, player, search and focus intact", async () => {
+    api.listTournaments.mockResolvedValue(tournaments);
+    const live = federationGame();
+    restoreFederationCheckpoint(live);
+    const historicalId = "00000000-0000-4000-8000-000000000808";
+    const root = createGameLogEntry({
+      gameId: historicalId,
+      id: crypto.randomUUID(),
+      sequence: 1,
+      parentEventId: null,
+      createdAt: "2026-10-14T12:00:00Z",
+      before: live,
+      draft: { type: "game.checkpointed", payload: {} },
+    });
+    api.getGameSession.mockResolvedValue({
+      ...remoteSession(historicalId, "Inspected table", "Host", 1, 1),
+      status: "completed",
+      state: {
+        ...browserSessionState(""),
+        game: root.after,
+        initialGame: createInitialGameBaseline(live),
+        events: [root.entry],
+        headEventId: root.entry.id,
+      },
+    });
+    api.getClubStatistics.mockResolvedValue({
+      players: [statisticsPlayer],
+      tournaments,
+      coverage: { completedGames: 1, unavailableGames: 0, pendingGames: 1 },
+      algorithm: "club-team-elo-v1",
+    });
+    api.getPlayerStatistics.mockResolvedValue({
+      player: statisticsPlayer,
+      history: [historyGame(historicalId)],
+      total: 1,
+      nextCursor: null,
+    });
+    render(<App />);
+    await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
+    const original = JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).current;
+    fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    fireEvent.click(screen.getByRole("button", { name: "Statistics" }));
+    await screen.findByRole("option", { name: "Autumn cup" });
+    fireEvent.change(screen.getByRole("combobox", { name: "Tournament scope" }), {
+      target: { value: first },
+    });
+    fireEvent.change(await screen.findByRole("searchbox", { name: "Search nickname" }), {
+      target: { value: "One" },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Player One" }));
+    const timelineOpener = await screen.findByRole("button", { name: "Open timeline" });
+    timelineOpener.focus();
+    fireEvent.click(timelineOpener);
+    await waitFor(() => expect(api.getGameSession).toHaveBeenCalledWith(historicalId, testClub.id));
+    await screen.findByRole("button", { name: "Back to statistics" });
+    expect(screen.getByRole("combobox", { name: "Completed game" })).toHaveValue(historicalId);
+    expect(JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).current).toEqual(
+      original,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Back to statistics" }));
+    expect(await screen.findByRole("heading", { name: "Club statistics" })).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Tournament scope" })).toHaveValue(first);
+    expect(screen.getByRole("searchbox", { name: "Search nickname" })).toHaveValue("One");
+    expect(screen.getByRole("region", { name: "Player details: Player One" })).toBeVisible();
+    expect(timelineOpener).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "Back to game" }));
+    expect(gameScreenHarness.liveGame).toEqual(live);
+  });
+
+  it("reconciles a statistics correction for the current record without changing gameplay or uploading a snapshot", async () => {
+    const live = federationGame();
+    restoreFederationCheckpoint(live);
+    const original = JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!);
+    const gameId = original.gameId;
+    api.listTournaments.mockResolvedValue(tournaments);
+    api.getClubStatistics.mockResolvedValue({
+      players: [statisticsPlayer],
+      tournaments,
+      coverage: { completedGames: 1, unavailableGames: 0, pendingGames: 0 },
+      algorithm: "club-team-elo-v1",
+    });
+    api.getPlayerStatistics.mockResolvedValue({
+      player: statisticsPlayer,
+      history: [historyGame(gameId)],
+      total: 1,
+      nextCursor: null,
+    });
+    render(<App />);
+    await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
+    const settledCurrent = JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).current;
+    api.saveGameSession.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    fireEvent.click(screen.getByRole("button", { name: "Statistics" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Player One" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Change tournament" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Include in tournament" }));
+    await screen.findByRole("option", { name: "Autumn cup" });
+    fireEvent.change(screen.getByRole("combobox", { name: "Tournament" }), {
+      target: { value: first },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save tournament" }));
+    await waitFor(() =>
+      expect(api.assignGameTournament).toHaveBeenCalledWith(gameId, first, testClub.id),
+    );
+    await waitFor(() =>
+      expect(
+        JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).tournamentAssociation
+          ?.confirmedTournamentId,
+      ).toBe(first),
+    );
+    expect(JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).current).toEqual(
+      settledCurrent,
+    );
+    expect(api.saveGameSession).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Back to game" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    expect(screen.getByRole("combobox", { name: "Tournament" })).toHaveValue(first);
+  });
+
+  it.each(["cancel", "player", "filter", "refresh", "back"])(
+    "durably recovers a historical-only lost response after editor %s and reload",
+    async (navigation) => {
+      const historicalId = "00000000-0000-4000-8000-000000000080";
+      const other = {
+        ...statisticsPlayer,
+        playerId: "00000000-0000-4000-8000-000000000081",
+        nickname: "Player Two",
+      };
+      api.listTournaments.mockResolvedValue(tournaments);
+      api.getClubStatistics.mockResolvedValue({
+        players: [statisticsPlayer, other],
+        tournaments,
+        coverage: { completedGames: 1, unavailableGames: 0, pendingGames: 0 },
+        algorithm: "club-team-elo-v1",
+      });
+      api.getPlayerStatistics.mockImplementation(async (playerId) => ({
+        player: playerId === other.playerId ? other : statisticsPlayer,
+        history: [historyGame(historicalId)],
+        total: 1,
+        nextCursor: null,
+      }));
+      const held = deferred<string | null>();
+      api.assignGameTournament.mockReturnValueOnce(held.promise);
+      const view = render(<App />);
+      fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+      fireEvent.click(screen.getByRole("button", { name: "Statistics" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Player One" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Change tournament" }));
+      fireEvent.click(screen.getByRole("checkbox", { name: "Include in tournament" }));
+      await screen.findByRole("option", { name: "Autumn cup" });
+      fireEvent.change(screen.getByRole("combobox", { name: "Tournament" }), {
+        target: { value: first },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Save tournament" }));
+      await waitFor(() =>
+        expect(api.assignGameTournament).toHaveBeenCalledWith(historicalId, first, testClub.id),
+      );
+      const pending = () => JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!);
+      expect(pending().current).toBeNull();
+      expect(pending().historicalTournaments).toEqual([
+        expect.objectContaining({ gameId: historicalId, tournamentId: first }),
+      ]);
+      if (navigation === "cancel")
+        fireEvent.click(screen.getByRole("button", { name: "Cancel tournament edit" }));
+      if (navigation === "player")
+        fireEvent.click(screen.getByRole("button", { name: "Player Two" }));
+      if (navigation === "filter")
+        fireEvent.change(screen.getByRole("combobox", { name: "Team" }), {
+          target: { value: "black" },
+        });
+      if (navigation === "refresh")
+        fireEvent.click(screen.getByRole("button", { name: "Refresh statistics" }));
+      if (navigation === "back")
+        fireEvent.click(screen.getByRole("button", { name: "Back to game" }));
+      expect(screen.getByRole("button", { name: /Saving.*1 change pending/ })).toBeInTheDocument();
+      view.unmount();
+      await act(async () => held.reject(new Error("reply lost after server commit")));
+      expect(pending().historicalTournaments).toHaveLength(1);
+      render(<App />);
+      await waitFor(() => expect(window.localStorage.getItem(gameSessionStorageKey)).toBeNull());
+      expect(api.assignGameTournament.mock.calls).toEqual([
+        [historicalId, first, testClub.id],
+        [historicalId, first, testClub.id],
+      ]);
+      expect(api.createGameSession).not.toHaveBeenCalled();
+      expect(api.saveGameSession).not.toHaveBeenCalled();
+      expect(
+        await screen.findByRole("button", { name: "Saved to server · tap to check connection" }),
+      ).toBeInTheDocument();
+    },
+  );
+
+  it("serializes a held current choice A with historical correction B even when the editor is cancelled", async () => {
+    restoreFederationCheckpoint(federationGame());
+    const gameId = JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).gameId;
+    api.listTournaments.mockResolvedValue(tournaments);
+    api.getClubStatistics.mockResolvedValue({
+      players: [statisticsPlayer],
+      tournaments,
+      coverage: { completedGames: 1, unavailableGames: 0, pendingGames: 0 },
+      algorithm: "club-team-elo-v1",
+    });
+    api.getPlayerStatistics.mockResolvedValue({
+      player: statisticsPlayer,
+      history: [historyGame(gameId)],
+      total: 1,
+      nextCursor: null,
+    });
+    const held = deferred<string | null>();
+    api.assignGameTournament.mockReturnValueOnce(held.promise);
+    render(<App />);
+    await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
+    fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Include in tournament" }));
+    await screen.findByRole("option", { name: "Autumn cup" });
+    fireEvent.change(screen.getByRole("combobox", { name: "Tournament" }), {
+      target: { value: first },
+    });
+    await waitFor(() =>
+      expect(api.assignGameTournament).toHaveBeenCalledWith(gameId, first, testClub.id),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Statistics" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Player One" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Change tournament" }));
+    expect(screen.getByRole("combobox", { name: "Tournament" })).toHaveValue(first);
+    await screen.findByRole("option", { name: "Winter cup" });
+    fireEvent.change(screen.getByRole("combobox", { name: "Tournament" }), {
+      target: { value: second },
+    });
+    expect(screen.getByRole("button", { name: "Save tournament" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Save tournament" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel tournament edit" }));
+    expect(
+      JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).tournamentAssociation.pending
+        .tournamentId,
+    ).toBe(second);
+    await act(async () => held.resolve(first));
+    await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
+    expect(api.assignGameTournament.mock.calls).toEqual([
+      [gameId, first, testClub.id],
+      [gameId, second, testClub.id],
+    ]);
+    expect(
+      JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).tournamentAssociation,
+    ).toMatchObject({ confirmedTournamentId: second, pending: null });
+    fireEvent.click(screen.getByRole("button", { name: "Back to game" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    expect(screen.getByRole("combobox", { name: "Tournament" })).toHaveValue(second);
+  });
+
+  it.each(["new", "resume"])(
+    "keeps missing-tournament work recoverable when attempting %s game switching and accepts a correction",
+    async (switching) => {
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      vi.spyOn(window, "alert").mockImplementation(() => undefined);
+      restoreFederationCheckpoint(federationGame());
+      const gameId = JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).gameId;
+      const replacementId = "00000000-0000-4000-8000-000000000088";
+      api.listTournaments.mockResolvedValue(tournaments);
+      api.listActiveGameSessions.mockResolvedValue([
+        { gameId: replacementId, name: "Other table", hostPlayerId, phase: "day", day: 1 },
+      ]);
+      api.assignGameTournament.mockImplementation(async (_id, value) => {
+        if (value === first) throw new ApiError("Tournament removed", 404, "tournament_not_found");
+        return value;
+      });
+      render(<App />);
+      await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
+      const original = JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).current;
+      fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+      fireEvent.click(screen.getByRole("checkbox", { name: "Include in tournament" }));
+      await screen.findByRole("option", { name: "Autumn cup" });
+      fireEvent.change(screen.getByRole("combobox", { name: "Tournament" }), {
+        target: { value: first },
+      });
+      await screen.findByRole("button", { name: /Save blocked.*1 change safe/ });
+      if (switching === "new") {
+        fireEvent.click(screen.getByRole("button", { name: "Start new game" }));
+        await waitFor(() =>
+          expect(window.alert).toHaveBeenCalledWith(
+            expect.stringContaining("switching is blocked"),
+          ),
+        );
+      } else {
+        fireEvent.click(await screen.findByRole("button", { name: "Resume Other table" }));
+        await waitFor(() =>
+          expect(window.alert).toHaveBeenCalledWith(
+            expect.stringContaining("switching is blocked"),
+          ),
+        );
+      }
+      fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+      await screen.findByRole("option", { name: "Winter cup" });
+      const retained = JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!);
+      expect(retained.current).toEqual(original);
+      expect(retained.gameId).toBe(gameId);
+      expect(retained.removed).toBe(false);
+      expect(retained.tournamentAssociation.pending.tournamentId).toBe(first);
+      expect(window.localStorage.getItem(`${gameSessionStorageKey}.parked.${gameId}`)).toBeNull();
+      expect(api.getGameSession).not.toHaveBeenCalledWith(replacementId, testClub.id);
+      fireEvent.change(screen.getByRole("combobox", { name: "Tournament" }), {
+        target: { value: second },
+      });
+      await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
+      expect(
+        JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).tournamentAssociation,
+      ).toMatchObject({ confirmedTournamentId: second, pending: null });
+    },
+  );
+
+  it("does not park completed gameplay while its held metadata response is uncertain", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.spyOn(window, "alert").mockImplementation(() => undefined);
+    restoreFederationCheckpoint({ ...federationGame(), phase: "finished", winner: "red" });
+    const gameId = JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).gameId;
+    api.listTournaments.mockResolvedValue(tournaments);
+    const held = deferred<string | null>();
+    api.assignGameTournament
+      .mockReturnValueOnce(held.promise)
+      .mockRejectedValue(new ApiError("Tournament removed", 404, "tournament_not_found"));
+    render(<App />);
+    await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
+    fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Include in tournament" }));
+    await screen.findByRole("option", { name: "Autumn cup" });
+    fireEvent.change(screen.getByRole("combobox", { name: "Tournament" }), {
+      target: { value: first },
+    });
+    await waitFor(() =>
+      expect(api.assignGameTournament).toHaveBeenCalledWith(gameId, first, testClub.id),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Close Manage menu" }));
+    fireEvent.click(screen.getByRole("button", { name: "Finish the game" }));
+    await waitFor(() =>
+      expect(
+        JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).current.results,
+      ).not.toBeNull(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start new game" }));
+    expect(JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).gameId).toBe(gameId);
+    expect(window.localStorage.getItem(`${gameSessionStorageKey}.parked.${gameId}`)).toBeNull();
+    await act(async () =>
+      held.reject(new ApiError("Tournament removed", 404, "tournament_not_found")),
+    );
+    await waitFor(() =>
+      expect(window.alert).toHaveBeenCalledWith(expect.stringContaining("switching is blocked")),
+    );
+    expect(
+      JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).current.results,
+    ).not.toBeNull();
+    expect(
+      JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).tournamentAssociation.pending
+        .tournamentId,
+    ).toBe(first);
+  });
+
+  it.each(["exit", "edit", "delete"])(
+    "retains the owner workspace during %s until held tournament A and correction B settle",
+    async (navigation) => {
+      vi.spyOn(window, "alert").mockImplementation(() => undefined);
+      const historicalId = "00000000-0000-4000-8000-000000000080";
+      new GameSessionOutbox({
+        storage: window.localStorage,
+        clubId: testClub.id,
+        createId: () => crypto.randomUUID(),
+        save: vi.fn(),
+      }).setGameTournament(historicalId, first);
+      api.getAuthSession.mockResolvedValue(authenticatedUser);
+      api.listClubs.mockResolvedValue([testClub, otherClub]);
+      api.listTournaments.mockResolvedValue(tournaments);
+      api.getClubStatistics.mockResolvedValue({
+        players: [statisticsPlayer],
+        tournaments,
+        coverage: { completedGames: 1, unavailableGames: 0, pendingGames: 0 },
+        algorithm: "club-team-elo-v1",
+      });
+      let remoteTournament: string | null = null;
+      api.getPlayerStatistics.mockImplementation(async () => ({
+        player: statisticsPlayer,
+        history: [{ ...historyGame(historicalId), tournamentId: remoteTournament }],
+        total: 1,
+        nextCursor: null,
+      }));
+      const held = deferred<string | null>();
+      api.assignGameTournament
+        .mockImplementation(async (_gameId: string, value: string | null) => {
+          remoteTournament = value;
+          return value;
+        })
+        .mockImplementationOnce(async () => {
+          remoteTournament = await held.promise;
+          return remoteTournament;
+        });
+      render(<WelcomeApp />);
+      await waitFor(() => expect(api.assignGameTournament).toHaveBeenCalledTimes(1));
+      if (navigation === "exit") {
+        fireEvent.click(
+          screen.getByRole("button", { name: "Choose another club · current club Mafia Malaga" }),
+        );
+      } else {
+        fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+        fireEvent.click(
+          screen.getByRole("button", { name: navigation === "edit" ? "Edit club" : "Delete club" }),
+        );
+      }
+      expect(window.alert).toHaveBeenCalledWith(expect.stringContaining("leaving this club"));
+      expect(
+        screen.getByRole("button", { name: "Choose another club · current club Mafia Malaga" }),
+      ).toBeInTheDocument();
+      if (navigation === "exit")
+        fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+      fireEvent.click(screen.getByRole("button", { name: "Statistics" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Player One" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Change tournament" }));
+      await screen.findByRole("option", { name: "Autumn cup" });
+      expect(screen.getByRole("combobox", { name: "Tournament" })).toHaveValue(first);
+      fireEvent.change(screen.getByRole("combobox", { name: "Tournament" }), {
+        target: { value: second },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Save tournament" }));
+      expect(api.assignGameTournament).toHaveBeenCalledTimes(1);
+      await act(async () => held.resolve(first));
+      await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
+      expect(remoteTournament).toBe(second);
+      expect(api.assignGameTournament.mock.calls).toEqual([
+        [historicalId, first, testClub.id],
+        [historicalId, second, testClub.id],
+      ]);
+      fireEvent.click(screen.getByRole("button", { name: "Back to game" }));
+      fireEvent.click(
+        screen.getByRole("button", { name: "Choose another club · current club Mafia Malaga" }),
+      );
+      fireEvent.click(await screen.findByRole("button", { name: "Open Mafia Malaga in Málaga" }));
+      await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
+      expect(remoteTournament).toBe(second);
+      expect(api.assignGameTournament).toHaveBeenCalledTimes(2);
+      expect(window.localStorage.getItem(gameSessionStorageKey)).toBeNull();
+    },
+  );
+
+  it("restores historical-only work to its owner club and blocks leaving until retry settles", async () => {
+    vi.spyOn(window, "alert").mockImplementation(() => undefined);
+    const historicalId = "00000000-0000-4000-8000-000000000080";
+    new GameSessionOutbox({
+      storage: window.localStorage,
+      clubId: testClub.id,
+      createId: () => crypto.randomUUID(),
+      save: vi.fn(),
+    }).setGameTournament(historicalId, first);
+    api.getAuthSession.mockResolvedValue(authenticatedUser);
+    api.listClubs.mockResolvedValue([testClub, otherClub]);
+    api.assignGameTournament.mockRejectedValueOnce(
+      new ApiError("Tournament removed", 404, "tournament_not_found"),
+    );
+    render(<WelcomeApp />);
+    await screen.findByRole("button", { name: /Save blocked.*1 change safe/ });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Choose another club · current club Mafia Malaga" }),
+    );
+    expect(window.alert).toHaveBeenCalledWith(expect.stringContaining("leaving this club"));
+    expect(JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).current).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Save blocked.*1 change safe/ }));
+    await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
+    expect(window.localStorage.getItem(gameSessionStorageKey)).toBeNull();
+    expect(api.assignGameTournament.mock.calls).toEqual([
+      [historicalId, first, testClub.id],
+      [historicalId, first, testClub.id],
+    ]);
+    expect(api.createGameSession).not.toHaveBeenCalled();
+  });
+
+  it("refuses cross-club release when historical work appears while the portal is open", async () => {
+    const historicalId = "00000000-0000-4000-8000-000000000080";
+    api.getAuthSession.mockResolvedValue(authenticatedUser);
+    api.listClubs.mockResolvedValue([testClub, otherClub]);
+    render(<WelcomeApp />);
+    await screen.findByRole("button", { name: /Mafia Sevilla.*Sevilla/i });
+    new GameSessionOutbox({
+      storage: window.localStorage,
+      clubId: testClub.id,
+      createId: () => crypto.randomUUID(),
+      save: vi.fn(),
+    }).setGameTournament(historicalId, first);
+    fireEvent.click(await screen.findByRole("button", { name: /Mafia Sevilla.*Sevilla/i }));
+    const dialog = await screen.findByRole("dialog", { name: "Game attached to another club" });
+    expect(dialog).toHaveTextContent("Pending tournament changes");
+    expect(
+      within(dialog).getByRole("button", { name: "Release and open Mafia Sevilla" }),
+    ).toBeDisabled();
+    expect(JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).current).toBeNull();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Open Mafia Malaga" }));
+    await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
+    expect(window.localStorage.getItem(gameSessionStorageKey)).toBeNull();
+    expect(api.assignGameTournament).toHaveBeenCalledExactlyOnceWith(
+      historicalId,
+      first,
+      testClub.id,
+    );
+    expect(api.createGameSession).not.toHaveBeenCalled();
+  });
+
+  it("does not create on empty toggle; first selection creates and latest choice survives held creation/assignment", async () => {
+    api.listTournaments.mockResolvedValue(tournaments);
+    const creation = deferred<RemoteGameSession>();
+    api.createGameSession.mockReturnValue(creation.promise);
+    const assignment = deferred<string | null>();
+    api.assignGameTournament.mockReturnValueOnce(assignment.promise).mockResolvedValueOnce(null);
+    render(<App />);
+    const toggle = screen.getByRole("checkbox", { name: "Include in tournament" });
+    expect(toggle).not.toBeChecked();
+    fireEvent.click(toggle);
+    await screen.findByRole("option", { name: "Autumn cup" });
+    expect(api.createGameSession).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Start test game" })).toBeDisabled();
+    fireEvent.change(screen.getByRole("combobox", { name: "Tournament" }), {
+      target: { value: first },
+    });
+    await waitFor(() => expect(api.createGameSession).toHaveBeenCalledTimes(1));
+    const input = api.createGameSession.mock.calls[0]![0];
+    expect(input.tournamentId).toBe(first);
+    expect(input.state.setup.rulesEdition).toBe(FEDERATION_RULES_EDITION);
+    expect(JSON.stringify(input.state)).not.toContain("tournament");
+    fireEvent.change(screen.getByRole("combobox", { name: "Tournament" }), {
+      target: { value: second },
+    });
+    await act(async () =>
+      creation.resolve({
+        ...remoteSession(serverId, input.name, "Host", 1, 1),
+        state: input.state,
+        tournamentId: first,
+      }),
+    );
+    await waitFor(() =>
+      expect(api.assignGameTournament).toHaveBeenCalledWith(serverId, second, testClub.id),
+    );
+    expect(screen.getByRole("combobox", { name: "Tournament" })).toHaveValue(second);
+    expect(screen.getByRole("button", { name: "Start test game" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Include in tournament" }));
+    await act(async () => assignment.resolve(second));
+    await waitFor(() =>
+      expect(api.assignGameTournament).toHaveBeenLastCalledWith(serverId, null, testClub.id),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Start test game" })).toBeEnabled(),
+    );
+    expect(screen.getByRole("checkbox", { name: "Include in tournament" })).not.toBeChecked();
+    expect(api.createGameSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("reloads metadata-only pending work, retries it, and starts a fresh game outside tournaments", async () => {
+    api.listTournaments.mockResolvedValue(tournaments);
+    const stored = seedBrowserGame(testClub, serverId, "Pending event");
+    stored.setTournament(first);
+    const held = deferred<string | null>();
+    api.assignGameTournament.mockReturnValueOnce(held.promise);
+    const view = render(<App />);
+    await waitFor(() =>
+      expect(api.assignGameTournament).toHaveBeenCalledWith(serverId, first, testClub.id),
+    );
+    expect(screen.getByRole("checkbox", { name: "Include in tournament" })).toBeChecked();
+    expect(screen.getByRole("button", { name: "Start test game" })).toBeDisabled();
+    await act(async () => held.resolve(first));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Start test game" })).toBeEnabled(),
+    );
+    expect(api.createGameSession).not.toHaveBeenCalled();
+    view.unmount();
+    render(<App />);
+    expect(screen.getByRole("checkbox", { name: "Include in tournament" })).toBeChecked();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start new game" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Close available players" }));
+    await waitFor(() =>
+      expect(screen.getByRole("checkbox", { name: "Include in tournament" })).not.toBeChecked(),
+    );
+  });
+
+  it("keeps member statistics separate from manager profile administration", async () => {
+    api.getClubStatistics.mockResolvedValue({
+      players: [],
+      tournaments: [],
+      algorithm: "club-team-elo-v1",
+      coverage: { completedGames: 0, unavailableGames: 0, pendingGames: 0 },
+    });
+    render(
+      <ClubWorkspace
+        club={{ ...testClub, role: "user" }}
+        onExit={() => undefined}
+        onEditClub={() => undefined}
+        onDeleteClub={async () => undefined}
+        onLanguageChange={async () => undefined}
+        themeColor="#aa7733"
+        onThemeColorChange={() => undefined}
+        fancyStuff={DEFAULT_FANCY_STUFF_SETTINGS}
+        onFancyStuffChange={() => undefined}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    expect(screen.queryByRole("button", { name: "Players screen" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Statistics" }));
+    expect(await screen.findByText("No recorded players in this scope.")).toBeInTheDocument();
+    expect(api.getClubStatistics).toHaveBeenCalledWith(testClub.id, {});
+    expect(screen.queryByRole("button", { name: /timeline/i })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Back to game" }));
+    expect(screen.getByRole("button", { name: "Start test game" })).toBeInTheDocument();
+  });
 });
 
 describe("club welcome", () => {

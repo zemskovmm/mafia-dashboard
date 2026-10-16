@@ -1,0 +1,236 @@
+.statistics-screen {
+  position: relative;
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  width: 100%;
+  max-width: 100%;
+  height: 100dvh;
+  min-width: 0;
+  padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+    max(24px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  overflow-y: auto;
+  color: var(--text);
+}
+.statistics-header,
+.statistics-detail-header,
+.statistics-table-tools,
+.statistics-history-game header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+}
+.statistics-header {
+  justify-content: start;
+}
+.statistics-header h1,
+.statistics-detail-header h2,
+.statistics-history-game h4 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.statistics-screen button,
+.statistics-screen input:not([type="checkbox"]),
+.statistics-screen select {
+  min-height: 48px;
+}
+.statistics-screen button {
+  padding: 8px 14px;
+}
+.statistics-panel {
+  min-width: 0;
+  padding: 16px;
+}
+.statistics-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 165px), 1fr));
+  gap: 12px;
+  align-items: end;
+}
+.statistics-filters label,
+.statistics-table-tools label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.statistics-filters input,
+.statistics-filters select {
+  min-width: 0;
+  max-width: 100%;
+}
+.statistics-filter-note {
+  grid-column: 1 / -1;
+}
+.statistics-note,
+.statistics-filter-note,
+.statistics-coverage,
+.statistics-explanation,
+.statistics-history-game > p,
+.statistics-game-rating {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.statistics-explanation summary,
+.statistics-history summary {
+  min-height: 48px;
+  padding-block: 12px;
+  cursor: pointer;
+}
+.statistics-explanation p {
+  max-width: 100ch;
+  margin: 8px 0;
+}
+.statistics-table-tools {
+  margin-bottom: 12px;
+}
+.statistics-table-tools label {
+  flex: 1 1 240px;
+  max-width: 420px;
+}
+.statistics-coverage {
+  margin-block: 10px;
+}
+.statistics-coverage p {
+  margin: 4px 0;
+}
+.statistics-table-scroll {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.statistics-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+}
+.statistics-table caption {
+  padding: 10px;
+  color: var(--text);
+  font-weight: 600;
+  text-align: start;
+}
+.statistics-table th,
+.statistics-table td {
+  padding: 8px 10px;
+  text-align: start;
+  vertical-align: top;
+  border-top: 1px solid var(--border);
+}
+.statistics-table thead th {
+  vertical-align: bottom;
+}
+.statistics-table th button {
+  width: 100%;
+  padding: 6px 8px;
+  text-align: start;
+}
+.statistics-table [aria-sort="ascending"] button::after {
+  content: " ↑";
+}
+.statistics-table [aria-sort="descending"] button::after {
+  content: " ↓";
+}
+.statistics-table small,
+.statistics-rating-summary > span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.statistics-table td {
+  min-width: 74px;
+}
+.statistics-table td:nth-child(3) {
+  min-width: 145px;
+}
+.statistics-group th {
+  color: var(--accent-hover, var(--accent));
+  background: rgb(255 255 255 / 3%);
+}
+.statistics-form {
+  display: flex;
+  gap: 5px;
+  min-width: 150px;
+  flex-wrap: wrap;
+}
+.statistics-form > span {
+  padding: 2px 5px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.statistics-player {
+  display: grid;
+  gap: 16px;
+}
+.statistics-breakdowns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.statistics-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+  gap: 12px;
+  margin: 0;
+}
+.statistics-metrics dt {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+.statistics-metrics dd {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+.statistics-player h3 {
+  margin: 0;
+}
+.statistics-history {
+  display: grid;
+  gap: 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.statistics-history-game {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.statistics-history-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.statistics-tournament-editor {
+  display: grid;
+  gap: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.statistics-screen [role="alert"] {
+  color: var(--danger, var(--red));
+}
+@media (max-width: 760px) {
+  .statistics-breakdowns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .statistics-panel,
+  .statistics-history-game {
+    padding: 12px;
+  }
+}

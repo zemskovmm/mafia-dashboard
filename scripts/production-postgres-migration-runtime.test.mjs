@@ -16,9 +16,11 @@ import { initializeSchema } from "../apps/server/src/initialize-schema.ts";
 import { DEFAULT_CLUB_ID } from "../apps/server/src/club-store.ts";
 import { PlayerStore } from "../apps/server/src/player-store.ts";
 import { GameSessionStore } from "../apps/server/src/game-session-store.ts";
+import { TournamentStore } from "../apps/server/src/tournament-store.ts";
 import { AzureStorage } from "../apps/server/src/azure-storage.ts";
 import { AzurePlayerStore } from "../apps/server/src/azure-club-player-store.ts";
 import { AzureGameSessionStore } from "../apps/server/src/azure-game-session-store.ts";
+import { AzureTournamentStore } from "../apps/server/src/azure-tournament-store.ts";
 import { runMigrationRuntime } from "./production-postgres-migration-runtime.mjs";
 
 const root = resolve(fileURLToPath(new URL("../", import.meta.url)));
@@ -79,7 +81,8 @@ test(
     try {
       emulator = await startAzurite({ mode: "test" });
       const url = new URL(pg.url);
-      pool = new Pool({ connectionString: pg.url });
+      // Compare raw source rows using the same timestamp rendering as the exporter.
+      pool = new Pool({ connectionString: pg.url, options: "-c timezone=UTC" });
       await initializeSchema(pool);
       const players = new PlayerStore(pool);
       const player = await players.create({
@@ -90,8 +93,10 @@ test(
         email: null,
       });
       const games = new GameSessionStore(pool);
+      const tournament = await new TournamentStore(pool).create("Runtime event", DEFAULT_CLUB_ID);
       const game = await games.create({
         creationId: randomUUID(),
+        tournamentId: tournament.id,
         name: "Runtime fixture",
         state: {
           setup: { hostPlayerId: player.id, selectedPlayerIds: [], step: "players" },
@@ -197,13 +202,19 @@ test(
       }
       const archiveName = freshArchive();
       const exported = await runMigrationRuntime({ ...options, mode: "export", archiveName });
-      assert.equal(exported.status, "archived");
+      assert.equal(
+        exported.status,
+        "archived",
+        JSON.stringify({ stage: exported.stage, code: exported.code }),
+      );
       assert.match(exported.sha256, /^[a-f0-9]{64}$/);
       assert.equal(
         exported.sourceRelationCounts.players,
         (await pool.query("SELECT COUNT(*)::int AS count FROM players")).rows[0].count,
       );
       assert.equal(exported.sourceRelationCounts.game_sessions, 1);
+      assert.equal(exported.sourceRelationCounts.tournaments, 1);
+      assert.equal(exported.sourceRelationCounts.game_tournaments, 1);
       assert.deepEqual(Object.keys(exported.sourceRelationCounts).sort(), relations.sort());
       const archive = service.getContainerClient(archiveName);
       assert.deepEqual(await names(archive), [
@@ -443,6 +454,13 @@ test(
           await new AzureGameSessionStore(storage).get(game.gameId),
           await games.get(game.gameId),
         );
+        assert.deepEqual(await new AzureTournamentStore(storage).list(DEFAULT_CLUB_ID), [
+          tournament,
+        ]);
+        assert.deepEqual(
+          await new AzureGameSessionStore(storage).readStatisticsInputs(),
+          await games.readStatisticsInputs(),
+        );
       } finally {
         await storage.end();
       }
@@ -453,6 +471,16 @@ test(
         sha256: exported.sha256,
       });
       assert.equal(repeated.status, "already-imported");
+      for (const relation of relations)
+        assert.deepEqual(
+          (
+            await pool.query(
+              `SELECT row_to_json(t)::text AS row FROM public.${relation} t ORDER BY row_to_json(t)::text`,
+            )
+          ).rows.map((row) => row.row),
+          source.relations[relation],
+          `Source relation changed: ${relation}`,
+        );
       assert.deepEqual(
         (await pool.query("SELECT row_to_json(t)::text AS row FROM game_sessions t ORDER BY id"))
           .rows,
@@ -484,6 +512,93 @@ test(
         for (const config of (await readdir(path)).filter((name) => name.endsWith("config.json")))
           assert.equal((await stat(join(path, config))).mode & 0o777, 0o600);
       }
+      await t.test("compiled CLI also roundtrips the exact pre-tournament catalog", async () => {
+        const schema = `runtime_preceding_${randomUUID().replaceAll("-", "")}`;
+        await pool.query(`CREATE SCHEMA ${schema}`);
+        const precedingPool = new Pool({
+          connectionString: pg.url,
+          options: `-c search_path=${schema}`,
+        });
+        try {
+          await initializeSchema(precedingPool);
+          const original = await new GameSessionStore(precedingPool).create({
+            creationId: randomUUID(),
+            name: "Pre-tournament fixture",
+            state: { opaque: "Unchanged pre-tournament canonical material" },
+            results: null,
+          });
+          // Reconstruct only the approved predecessor in this owned fixture.
+          await precedingPool.query("DROP TABLE game_tournaments; DROP TABLE tournaments");
+          const before = (
+            await precedingPool.query("SELECT row_to_json(g)::text AS row FROM game_sessions g")
+          ).rows;
+          await pool.query(`GRANT USAGE ON SCHEMA ${schema} TO ${role}`);
+          for (const relation of relations.filter(
+            (name) => !["tournaments", "game_tournaments"].includes(name),
+          ))
+            await pool.query(`GRANT SELECT ON ${schema}.${relation} TO ${role}`);
+          const suffix = randomUUID().replaceAll("-", "");
+          const precedingTarget = {
+            ...target,
+            tableName: `Preceding${suffix}`,
+            containerName: `preceding-${suffix}`,
+            partitionKey: `preceding-${suffix}`,
+          };
+          const precedingOptions = {
+            ...options,
+            fixture: { ...fixture, schema, target: precedingTarget },
+          };
+          const archiveName = freshArchive();
+          const exported = await runMigrationRuntime({
+            ...precedingOptions,
+            mode: "export",
+            archiveName,
+          });
+          assert.equal(
+            exported.status,
+            "archived",
+            JSON.stringify({ stage: exported.stage, code: exported.code }),
+          );
+          assert.deepEqual(
+            Object.keys(exported.sourceRelationCounts).sort(),
+            relations.filter((name) => !["tournaments", "game_tournaments"].includes(name)).sort(),
+          );
+          const applied = await runMigrationRuntime({
+            ...precedingOptions,
+            mode: "apply",
+            archiveName,
+            sha256: exported.sha256,
+          });
+          assert.equal(applied.status, "imported");
+          assert.equal(applied.readback.repeatStatus, "already-imported");
+          const storage = new AzureStorage(precedingTarget);
+          try {
+            assert.deepEqual(
+              await new AzureGameSessionStore(storage).get(original.gameId),
+              original,
+            );
+            assert.deepEqual(await new AzureTournamentStore(storage).list(DEFAULT_CLUB_ID), []);
+          } finally {
+            await storage.end();
+          }
+          assert.deepEqual(
+            (await precedingPool.query("SELECT row_to_json(g)::text AS row FROM game_sessions g"))
+              .rows,
+            before,
+          );
+          assert.deepEqual(
+            (
+              await precedingPool.query(
+                "SELECT tablename FROM pg_tables WHERE schemaname=current_schema() AND tablename IN ('tournaments','game_tournaments')",
+              )
+            ).rows,
+            [],
+          );
+        } finally {
+          await precedingPool.end();
+          await pool.query(`DROP SCHEMA ${schema} CASCADE`);
+        }
+      });
       t.diagnostic(
         `Verified ${applied.entityCount} imported entities plus one control row and ${applied.blobCount} private blobs; existing server readers matched SQL originals.`,
       );

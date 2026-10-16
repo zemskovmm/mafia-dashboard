@@ -21,6 +21,8 @@ import { DEFAULT_CLUB_ID, ClubStore } from "./club-store.js";
 import { initializeSchema } from "./initialize-schema.js";
 import { GameSessionStore } from "./game-session-store.js";
 import { PlayerStore } from "./player-store.js";
+import { TournamentStore } from "./tournament-store.js";
+import { AzureTournamentStore } from "./azure-tournament-store.js";
 import { EventStore } from "./event-store.js";
 import { AzureGameSessionStore, AzureEventStore } from "./azure-game-session-store.js";
 import { AzureAccountStore } from "./azure-account-store.js";
@@ -95,6 +97,7 @@ describe("one-time PostgreSQL migration (real disposable stores)", () => {
   it("exports read-only and imports identities, snapshots, projections, exclusions and exact completion", async () => {
     const target = destination();
     const sqlGames = new GameSessionStore(pool);
+    const tournament = await new TournamentStore(pool).create("Imported event", DEFAULT_CLUB_ID);
     const players = new PlayerStore(pool);
     const host = await players.create({
       nickname: "Host",
@@ -137,6 +140,7 @@ describe("one-time PostgreSQL migration (real disposable stores)", () => {
     );
     const partial = await sqlGames.create({
       creationId: randomUUID(),
+      tournamentId: tournament.id,
       name: "Partial",
       state: {
         setup: { hostPlayerId: host.id, selectedPlayerIds: [member.id], step: "players" },
@@ -217,6 +221,8 @@ describe("one-time PostgreSQL migration (real disposable stores)", () => {
     const games = new AzureGameSessionStore(target);
     for (const game of [partial, done])
       expect(await games.get(game.gameId)).toEqual(await sqlGames.get(game.gameId));
+    expect(await new AzureTournamentStore(target).list(DEFAULT_CLUB_ID)).toEqual([tournament]);
+    expect(await games.readStatisticsInputs()).toEqual(await sqlGames.readStatisticsInputs());
     expect(
       await games.listCompleted(DEFAULT_CLUB_ID, {
         from: "2026-01-02",

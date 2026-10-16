@@ -261,6 +261,7 @@ export class ClubStore {
                     game_session_players, players IN SHARE ROW EXCLUSIVE MODE`,
       );
       await client.query("DELETE FROM game_sessions WHERE club_id = $1", [clubId]);
+      await client.query("DELETE FROM tournaments WHERE club_id = $1", [clubId]);
       await client.query("DELETE FROM game_events WHERE club_id = $1", [clubId]);
       await client.query("DELETE FROM game_results WHERE club_id = $1", [clubId]);
       await client.query("DELETE FROM deleted_games WHERE club_id = $1", [clubId]);

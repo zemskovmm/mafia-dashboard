@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
+  assignGameTournament,
+  listTournaments,
+  createTournament,
+  getClubStatistics,
+  getPlayerStatistics,
   sanitizeApiValidationIssues,
   checkServerReady,
   clearGameSession,
@@ -797,6 +802,73 @@ const remote = {
   state,
   results: null,
 };
+
+describe("statistics and tournament API client", () => {
+  it("scopes reads, creation and paginated statistics to the selected club", async () => {
+    const tournament = { id: creationId, name: "Autumn" };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ tournaments: [tournament] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ tournament })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ players: [] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ history: [] })));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(listTournaments(clubId)).resolves.toEqual([tournament]);
+    await expect(createTournament("Autumn", clubId)).resolves.toEqual(tournament);
+    await getClubStatistics(clubId, { tournamentId: "none", edition: "legacy" });
+    await getPlayerStatistics(gameId, clubId, { role: "don" }, { cursor: "a+b/", limit: 25 });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/tournaments",
+      "/api/tournaments",
+      "/api/statistics?edition=legacy&tournamentId=none",
+      `/api/statistics/players/${gameId}?role=don&cursor=a%2Bb%2F&limit=25`,
+    ]);
+    for (const [, init] of fetchMock.mock.calls) {
+      expect(init.headers).toMatchObject({ "x-club-id": clubId });
+    }
+  });
+
+  it.each([creationId, null])(
+    "confirms explicit assignment %s only after exact game readback",
+    async (tournamentId) => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ tournamentId })))
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ session: { ...remote, tournamentId } })),
+        );
+      vi.stubGlobal("fetch", fetchMock);
+      await expect(assignGameTournament(gameId, tournamentId, clubId)).resolves.toBe(tournamentId);
+      expect(fetchMock.mock.calls[0]).toEqual([
+        `/api/game-sessions/${gameId}/tournament`,
+        expect.objectContaining({
+          method: "PUT",
+          body: JSON.stringify({ tournamentId }),
+          headers: { "content-type": "application/json", "x-club-id": clubId },
+        }),
+      ]);
+      expect(fetchMock.mock.calls[1]).toEqual([
+        `/api/game-sessions/${gameId}`,
+        expect.objectContaining({ cache: "no-store", headers: { "x-club-id": clubId } }),
+      ]);
+    },
+  );
+
+  it.each([
+    { ...remote, tournamentId: null },
+    { ...remote, gameId: creationId, tournamentId: creationId },
+    remote,
+  ])("does not confirm mismatched, absent or wrong-target metadata", async (session) => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ tournamentId: creationId })))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ session }))),
+    );
+    await expect(assignGameTournament(gameId, creationId, clubId)).rejects.toThrow();
+  });
+});
 
 describe("game-session record client", () => {
   it("creates with a stable creation ID and no client game GUID", async () => {

@@ -1,5 +1,7 @@
 import { readFile } from "node:fs/promises";
 import type { Pool, PoolClient } from "pg";
+import { catalogDefinitions } from "./postgres-catalog-definitions.js";
+import { columnDefaults } from "./postgres-column-defaults.js";
 
 const schemaUrl = new URL("./schema.sql", import.meta.url);
 
@@ -17,7 +19,9 @@ const targetTables = [
   "game_session_mutations",
   "game_session_players",
   "game_sessions",
+  "game_tournaments",
   "players",
+  "tournaments",
   "user_sessions",
   "users",
   "youtube_oauth_credentials",
@@ -39,55 +43,13 @@ const expectedColumns: Readonly<Record<string, string>> = {
   game_session_mutations: `club_id:uuid:NO game_id:uuid:NO mutation_id:uuid:NO revision:int4:NO request:jsonb:YES`,
   game_session_players: `club_id:uuid:NO game_id:uuid:NO player_id:uuid:NO seat:int4:YES is_host:bool:NO role:text:YES`,
   game_sessions: `id:uuid:NO club_id:uuid:NO ruleset_id:text:NO ruleset_version:int4:NO name:text:NO revision:int4:NO last_mutation_id:uuid:NO state:jsonb:NO results:jsonb:YES status:text:NO initial_game:jsonb:YES replay_base_event_id:uuid:YES head_event_id:uuid:YES reset_return_event_id:uuid:YES reset_return_was_completed:bool:NO replay_version:int4:NO created_at:timestamptz:NO updated_at:timestamptz:NO`,
+  game_tournaments: `club_id:uuid:NO game_id:uuid:NO tournament_id:uuid:NO`,
+  tournaments: `club_id:uuid:NO id:uuid:NO name:text:NO name_key:text:NO`,
   players: `id:uuid:NO club_id:uuid:NO nickname:text:YES first_name:text:YES last_name:text:YES email:text:YES data_processing_consent:bool:NO consent_at:timestamptz:YES club_access:text:NO user_id:uuid:YES created_at:timestamptz:NO updated_at:timestamptz:NO last_played_at:timestamptz:YES retired_at:timestamptz:YES`,
   user_sessions: `id:uuid:NO token_hash:bytea:NO user_id:uuid:NO expires_at:timestamptz:NO created_at:timestamptz:NO`,
   users: `id:uuid:NO google_subject:text:YES email:text:NO display_name:text:NO picture:text:YES created_at:timestamptz:NO updated_at:timestamptz:NO`,
   youtube_oauth_credentials: `user_id:uuid:NO singleton:bool:NO access_token_encrypted:bytea:NO refresh_token_encrypted:bytea:NO expires_at:timestamptz:NO account_label:text:NO scope:text:NO updated_at:timestamptz:NO`,
 };
-
-const expectedConstraintNames = `
-  club_memberships_access_player_fk club_memberships_club_id_fkey club_memberships_pkey club_memberships_role_ck club_memberships_user_id_fkey
-  clubs_city_check clubs_created_by_fkey clubs_language_code_ck clubs_name_check clubs_pkey
-  deleted_clubs_pkey deleted_games_club_fk deleted_games_pkey
-  game_daily_counters_club_fk game_daily_counters_last_number_check game_daily_counters_pkey
-  game_events_club_fk game_events_club_game_event_unique game_events_club_game_idempotency_unique game_events_club_game_sequence_unique
-  game_events_day_after_nonnegative_ck game_events_day_before_nonnegative_ck game_events_pkey game_events_replay_metadata_ck
-  game_events_replay_sequence_positive_ck game_events_seat_check game_events_sequence_check
-  game_player_results_best_move_hits_check game_player_results_final_status_check game_player_results_fouls_check
-  game_player_results_game_fk game_player_results_game_seat_unique game_player_results_pkey game_player_results_player_fk
-  game_player_results_role_check game_player_results_seat_check game_player_results_team_check
-  game_results_club_fk game_results_host_player_fk game_results_outcome_ck game_results_pkey game_results_shape_ck
-  game_rulesets_citizen_count_check game_rulesets_don_count_check game_rulesets_id_check game_rulesets_mafia_count_check
-  game_rulesets_player_count_check game_rulesets_pkey game_rulesets_role_count_ck game_rulesets_sheriff_count_check game_rulesets_version_check
-  game_session_creations_pkey game_session_creations_club_fk
-  game_session_mutations_game_fk game_session_mutations_game_revision_unique game_session_mutations_pkey game_session_mutations_revision_check
-  game_session_players_game_fk game_session_players_game_seat_unique game_session_players_pkey game_session_players_player_fk
-  game_session_players_role_ck game_session_players_seat_check game_session_players_shape_ck
-  game_sessions_club_fk game_sessions_name_check game_sessions_pkey game_sessions_revision_check game_sessions_ruleset_fk game_sessions_status_check
-  players_access_provenance_unique players_access_requires_consent_ck players_check players_club_access_ck players_club_fk
-  players_club_id_id_unique players_nickname_check players_pkey players_user_fk
-  user_sessions_pkey user_sessions_token_hash_key user_sessions_user_id_fkey
-  users_display_name_check users_email_check users_email_key users_pkey
-  youtube_oauth_credentials_account_label_check youtube_oauth_credentials_pkey youtube_oauth_credentials_singleton_check youtube_oauth_credentials_user_id_fkey
-`
-  .trim()
-  .split(/\s+/);
-
-const expectedIndexNames = `
-  club_memberships_access_player_unique_idx club_memberships_pkey clubs_pkey deleted_clubs_pkey deleted_games_pkey game_daily_counters_pkey
-  game_events_club_game_event_unique game_events_club_game_idempotency_unique game_events_club_game_parent_idx
-  game_events_club_game_replay_sequence_idx game_events_club_game_sequence_unique game_events_game_parent_idx game_events_pkey
-  game_player_results_game_seat_unique game_player_results_pkey game_player_results_player_idx
-  game_results_club_outcome_played_idx game_results_club_played_idx game_results_host_idx game_results_pkey game_rulesets_pkey
-  game_session_creations_pkey game_session_mutations_game_revision_unique game_session_mutations_pkey
-  game_session_players_club_history_player_idx game_session_players_game_seat_unique game_session_players_player_idx game_session_players_pkey
-  game_sessions_club_active_updated_idx game_sessions_club_head_idx game_sessions_pkey
-  players_access_provenance_unique players_club_access_email_unique_idx players_club_id_id_unique
-  players_club_last_played_nickname_idx players_club_linked_user_unique_idx players_club_nickname_unique_idx players_pkey
-  user_sessions_expiry_idx user_sessions_pkey user_sessions_token_hash_key users_email_key users_google_subject_unique_idx users_pkey youtube_oauth_credentials_pkey
-`
-  .trim()
-  .split(/\s+/);
 
 const equal = (actual: readonly string[], expected: readonly string[]): boolean =>
   actual.length === expected.length && actual.every((item, index) => item === expected[index]);
@@ -98,12 +60,18 @@ const unsupportedSchema = (reason: string): Error =>
   );
 
 interface Catalog {
+  readonly safe: boolean;
   readonly tables: readonly string[];
   readonly columns: ReadonlyMap<string, readonly string[]>;
   readonly constraints: ReadonlyMap<string, string>;
+  readonly constraintTables: ReadonlyMap<string, string>;
   readonly indexes: ReadonlyMap<
     string,
     {
+      readonly table_name: string;
+      readonly is_valid: boolean;
+      readonly access_method: string;
+      readonly has_includes: boolean;
       readonly is_unique: boolean;
       readonly predicate: string | null;
       readonly columns: readonly string[];
@@ -113,24 +81,39 @@ interface Catalog {
 
 const catalog = async (client: PoolClient): Promise<Catalog> => {
   const tables = await client.query<{ table_name: string }>(`
-      SELECT table_name
-        FROM information_schema.tables
-       WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'
-       ORDER BY table_name
+      SELECT c.relname AS table_name FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = current_schema() AND c.relkind IN ('r','p','v','m','f','S')
+       ORDER BY c.relname
     `);
   const columns = await client.query<{
     table_name: string;
     column_name: string;
     udt_name: string;
     is_nullable: "YES" | "NO";
+    generated: string;
+    identity: string;
+    type_modifier: number;
+    custom_collation: boolean;
+    default_expression: string | null;
   }>(`
-      SELECT table_name, column_name, udt_name, is_nullable
-        FROM information_schema.columns
-       WHERE table_schema = current_schema()
-       ORDER BY table_name, ordinal_position
+      SELECT c.relname AS table_name, a.attname AS column_name, t.typname AS udt_name,
+             CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END AS is_nullable,
+             a.attgenerated AS generated, a.attidentity AS identity, a.atttypmod AS type_modifier,
+             (a.attcollation <> t.typcollation) AS custom_collation, pg_get_expr(d.adbin,d.adrelid) AS default_expression
+        FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+        JOIN pg_attribute a ON a.attrelid=c.oid JOIN pg_type t ON t.oid=a.atttypid
+        LEFT JOIN pg_attrdef d ON d.adrelid=a.attrelid AND d.adnum=a.attnum
+       WHERE n.nspname=current_schema() AND c.relkind='r'
+         AND a.attnum>0 AND NOT a.attisdropped
+       ORDER BY c.relname,a.attnum
     `);
-  const constraints = await client.query<{ conname: string; definition: string }>(`
-      SELECT constraint_row.conname, pg_get_constraintdef(constraint_row.oid) AS definition
+  const constraints = await client.query<{
+    conname: string;
+    definition: string;
+    table_name: string;
+  }>(`
+      SELECT constraint_row.conname, pg_get_constraintdef(constraint_row.oid) AS definition, relation.relname AS table_name
         FROM pg_constraint AS constraint_row
         JOIN pg_class AS relation ON relation.oid = constraint_row.conrelid
         JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
@@ -138,11 +121,17 @@ const catalog = async (client: PoolClient): Promise<Catalog> => {
     `);
   const indexes = await client.query<{
     index_name: string;
+    table_name: string;
+    is_valid: boolean;
+    access_method: string;
+    has_includes: boolean;
     is_unique: boolean;
     predicate: string | null;
     columns: string[];
   }>(`
       SELECT index_relation.relname AS index_name,
+             table_relation.relname AS table_name, index_row.indisvalid AS is_valid,
+             method.amname AS access_method, (index_row.indnatts <> index_row.indnkeyatts) AS has_includes,
              index_row.indisunique AS is_unique,
              pg_get_expr(index_row.indpred, index_row.indrelid) AS predicate,
              ARRAY(
@@ -153,10 +142,36 @@ const catalog = async (client: PoolClient): Promise<Catalog> => {
         FROM pg_index AS index_row
         JOIN pg_class AS index_relation ON index_relation.oid = index_row.indexrelid
         JOIN pg_class AS table_relation ON table_relation.oid = index_row.indrelid
+        JOIN pg_am method ON method.oid = index_relation.relam
         JOIN pg_namespace AS namespace ON namespace.oid = table_relation.relnamespace
        WHERE namespace.nspname = current_schema()
     `);
+  const unsafe = (
+    await client.query<{ count: number }>(`
+    SELECT (
+      (SELECT COUNT(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname=current_schema() AND (c.relrowsecurity OR c.relforcerowsecurity OR c.relispartition)) +
+      (SELECT COUNT(*) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname=current_schema() AND NOT t.tgisinternal) +
+      (SELECT COUNT(*) FROM pg_rewrite r JOIN pg_class c ON c.oid=r.ev_class JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname=current_schema() AND r.rulename <> '_RETURN') +
+      (SELECT COUNT(*) FROM pg_policy p JOIN pg_class c ON c.oid=p.polrelid JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname=current_schema())
+    )::int AS count
+  `)
+  ).rows[0]?.count;
   return {
+    safe:
+      unsafe === 0 &&
+      constraints.rows.length === new Set(constraints.rows.map((c) => c.conname)).size &&
+      columns.rows.every(
+        (c) =>
+          c.generated === "" &&
+          c.identity === "" &&
+          c.type_modifier === -1 &&
+          !c.custom_collation &&
+          c.default_expression === (columnDefaults[`${c.table_name}.${c.column_name}`] ?? null),
+      ),
     tables: tables.rows.map(({ table_name }) => table_name),
     columns: new Map(
       tables.rows.map(({ table_name }) => [
@@ -169,6 +184,7 @@ const catalog = async (client: PoolClient): Promise<Catalog> => {
       ]),
     ),
     constraints: new Map(constraints.rows.map(({ conname, definition }) => [conname, definition])),
+    constraintTables: new Map(constraints.rows.map((row) => [row.conname, row.table_name])),
     indexes: new Map(indexes.rows.map((index) => [index.index_name, index])),
   };
 };
@@ -194,22 +210,54 @@ const expectedDefinitions: Readonly<Record<string, readonly string[]>> = {
   players_nickname_check: ["retired_at", "nickname is null", "user_id is null"],
 };
 
-const matchesCatalog = (value: Catalog): boolean => {
-  if (!equal(value.tables, targetTables)) return false;
-  for (const table of targetTables) {
+const tournamentRelation = (name: string): boolean =>
+  name.startsWith("tournaments") || name.startsWith("game_tournaments");
+const matchesCatalog = (value: Catalog, preceding = false): boolean => {
+  if (!value.safe) return false;
+  const tables = targetTables.filter((table) => !preceding || !tournamentRelation(table));
+  if (!equal(value.tables, tables)) return false;
+  for (const table of tables) {
     const signatures = expectedColumns[table]?.split(/\s+/);
     if (signatures === undefined) return false;
     if (!equal(value.columns.get(table) ?? [], signatures)) return false;
   }
-  if (!equal([...value.constraints.keys()].sort(), [...expectedConstraintNames].sort()))
+  const constraints = catalogDefinitions.constraints.filter(
+    (c) => !preceding || !tournamentRelation(c.conname),
+  );
+  const indexes = catalogDefinitions.indexes.filter(
+    (i) => !preceding || !tournamentRelation(i.name),
+  );
+  if (!equal([...value.constraints.keys()].sort(), constraints.map((c) => c.conname).sort()))
     return false;
+  for (const c of constraints) {
+    if (
+      value.constraints.get(c.conname) !== c.definition ||
+      value.constraintTables.get(c.conname) !==
+        tables.find((table) => c.conname.startsWith(`${table}_`))
+    )
+      return false;
+  }
+  for (const i of indexes) {
+    const actual = value.indexes.get(i.name);
+    if (
+      !actual ||
+      actual.table_name !== i.table_name ||
+      !actual.is_valid ||
+      actual.access_method !== "btree" ||
+      actual.has_includes ||
+      actual.is_unique !== i.is_unique ||
+      actual.predicate !== i.predicate ||
+      !equal(actual.columns, i.columns)
+    )
+      return false;
+  }
   for (const [name, fragments] of Object.entries(expectedDefinitions)) {
     const definition = value.constraints.get(name)?.toLowerCase() ?? "";
     if (fragments.some((fragment) => !definition.includes(fragment.toLowerCase()))) return false;
   }
   if (value.constraints.get("game_events_replay_metadata_ck")?.includes("[0-9a-f]{8}"))
     return false;
-  if (!equal([...value.indexes.keys()].sort(), [...expectedIndexNames].sort())) return false;
+  if (!equal([...value.indexes.keys()].sort(), indexes.map((i) => i.name).sort())) return false;
   const replayIndex = value.indexes.get("game_events_club_game_replay_sequence_idx");
   if (
     replayIndex?.is_unique !== true ||
@@ -221,6 +269,16 @@ const matchesCatalog = (value: Catalog): boolean => {
   if (nicknameIndex?.is_unique !== true || nicknameIndex.predicate !== "(retired_at IS NULL)")
     return false;
   return true;
+};
+
+/** Read-only admission for the importer; never execute initialization DDL. */
+export const recognizeStorageSourceCatalog = async (
+  client: PoolClient,
+): Promise<"current" | "preceding"> => {
+  const value = await catalog(client);
+  if (matchesCatalog(value)) return "current";
+  if (matchesCatalog(value, true)) return "preceding";
+  throw unsupportedSchema("source catalog does not match an exact supported boundary");
 };
 
 const hasApplicationRelations = async (client: PoolClient): Promise<boolean> => {
@@ -243,7 +301,9 @@ export const initializeSchema = async (pool: Pool): Promise<void> => {
     );
     const before = await catalog(client);
     const empty = !(await hasApplicationRelations(client));
-    if (!empty && !matchesCatalog(before)) {
+    // Exactly one known predecessor: the full prior catalog with both new
+    // metadata tables absent. Partial metadata DDL and historical shapes fail.
+    if (!empty && !matchesCatalog(before) && !matchesCatalog(before, true)) {
       throw unsupportedSchema("catalog does not match a supported schema boundary");
     }
     await client.query(schema);

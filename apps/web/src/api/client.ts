@@ -3,6 +3,11 @@ import {
   type GameLogEntry,
   type HistoryDiagnostic,
   type InitialGameBaseline,
+  type ClubTournament,
+  type ClubStatisticsResponse,
+  type PlayerStatisticsResponse,
+  type StatisticsFilters,
+  type StatisticsHistoryPage,
 } from "@mafia/game-domain";
 
 interface PlayerStatistics {
@@ -155,6 +160,7 @@ export interface GameSessionOperation {
 
 export interface GameSessionCreation {
   readonly creationId: string;
+  readonly tournamentId?: string | null;
   readonly name: string;
   readonly state: CurrentGameSessionState;
   readonly results: FinalGameResults | null;
@@ -162,6 +168,7 @@ export interface GameSessionCreation {
 
 export interface ActiveGameSessionSummary {
   readonly gameId: string;
+  readonly tournamentId?: string | null;
   readonly name: string;
   readonly revision: number;
   readonly hostPlayerId: string | null;
@@ -172,6 +179,7 @@ export interface ActiveGameSessionSummary {
 
 export interface RemoteGameSession {
   readonly gameId: string;
+  readonly tournamentId?: string | null;
   readonly name: string;
   readonly revision: number;
   readonly duplicate: boolean;
@@ -185,6 +193,7 @@ export interface RemoteGameSession {
 
 export interface CompletedGameSessionSummary {
   readonly gameId: string;
+  readonly tournamentId?: string | null;
   readonly name: string;
   readonly revision: number;
   readonly hostPlayerId: string | null;
@@ -630,6 +639,90 @@ export const getGameSession = async (
   if (!response.ok) return throwApiError(response, "Unable to restore the game session");
   const body = (await response.json()) as { session: RemoteGameSession };
   return body.session;
+};
+
+export const listTournaments = async (clubId: string): Promise<readonly ClubTournament[]> => {
+  const response = await fetch("/api/tournaments", { headers: clubHeaders(clubId) });
+  if (!response.ok) return throwApiError(response, "Unable to load tournaments");
+  return ((await response.json()) as { tournaments: readonly ClubTournament[] }).tournaments;
+};
+
+export const createTournament = async (name: string, clubId: string): Promise<ClubTournament> => {
+  const response = await fetchPersistenceRequest("/api/tournaments", {
+    method: "POST",
+    headers: clubHeaders(clubId, true),
+    body: JSON.stringify({ name }),
+  });
+  if (!response.ok) return throwApiError(response, "Unable to create tournament");
+  return ((await response.json()) as { tournament: ClubTournament }).tournament;
+};
+
+/** An acknowledgment alone is not confirmation: inspect this exact game's metadata. */
+export const assignGameTournament = async (
+  gameId: string,
+  tournamentId: string | null,
+  clubId: string,
+): Promise<string | null> => {
+  const response = await fetchPersistenceRequest(
+    `/api/game-sessions/${encodeURIComponent(gameId)}/tournament`,
+    {
+      method: "PUT",
+      headers: clubHeaders(clubId, true),
+      body: JSON.stringify({ tournamentId }),
+    },
+  );
+  if (!response.ok) return throwApiError(response, "Unable to assign tournament");
+  const readback = await fetchPersistenceRequest(
+    `/api/game-sessions/${encodeURIComponent(gameId)}`,
+    {
+      headers: clubHeaders(clubId),
+      cache: "no-store",
+    },
+  );
+  if (!readback.ok) return throwApiError(readback, "Unable to confirm tournament assignment");
+  const { session } = (await readback.json()) as { session: RemoteGameSession };
+  if (session?.gameId !== gameId || session.tournamentId !== tournamentId) {
+    throw new Error("Tournament assignment has not been confirmed");
+  }
+  return tournamentId;
+};
+
+const statisticsQuery = (filters: StatisticsFilters, page: StatisticsHistoryPage = {}): string => {
+  const query = new URLSearchParams();
+  for (const key of ["from", "to", "edition", "team", "role", "tournamentId"] as const) {
+    const value = filters[key];
+    if (value !== undefined) query.set(key, value);
+  }
+  if (page.cursor !== undefined) query.set("cursor", page.cursor);
+  if (page.limit !== undefined) query.set("limit", String(page.limit));
+  return query.size === 0 ? "" : `?${query}`;
+};
+
+export const getClubStatistics = async (
+  clubId: string,
+  filters: StatisticsFilters = {},
+): Promise<ClubStatisticsResponse> => {
+  const response = await fetch(`/api/statistics${statisticsQuery(filters)}`, {
+    headers: clubHeaders(clubId),
+  });
+  if (!response.ok) return throwApiError(response, "Unable to load statistics");
+  return (await response.json()) as ClubStatisticsResponse;
+};
+
+export const getPlayerStatistics = async (
+  playerId: string,
+  clubId: string,
+  filters: StatisticsFilters = {},
+  page: StatisticsHistoryPage = {},
+): Promise<PlayerStatisticsResponse> => {
+  const response = await fetch(
+    `/api/statistics/players/${encodeURIComponent(playerId)}${statisticsQuery(filters, page)}`,
+    {
+      headers: clubHeaders(clubId),
+    },
+  );
+  if (!response.ok) return throwApiError(response, "Unable to load player statistics");
+  return (await response.json()) as PlayerStatisticsResponse;
 };
 
 export const clearGameSession = async (gameId: string, clubId?: string): Promise<void> => {

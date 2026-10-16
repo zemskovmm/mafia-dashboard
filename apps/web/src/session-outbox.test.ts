@@ -154,6 +154,442 @@ const currentEnvelope = (state: unknown, ownerGameId = gameId) =>
     clearingGameId: null,
   });
 
+describe("separate durable tournament intent", () => {
+  const first = "00000000-0000-4000-8000-000000000701";
+  const second = "00000000-0000-4000-8000-000000000702";
+
+  it("keeps the latest choice through held creation and serializes metadata after snapshots", async () => {
+    const storage = memoryStorage();
+    const held = deferred<RemoteGameSession>();
+    const assignTournament = vi.fn(async (_id: string, value: string | null) => value);
+    const save = vi.fn(async () => ({ revision: 2, tournamentId: first }));
+    const outbox = new GameSessionOutbox({
+      storage,
+      clubId,
+      createId: ids(),
+      create: () => held.promise,
+      save,
+      assignTournament,
+    });
+    outbox.beginCreation("Table", completeState(), null, first);
+    const flushing = outbox.flush();
+    outbox.setTournament(second);
+    outbox.enqueue("Latest", completeState("latest"), null);
+    held.resolve({ ...remoteSession("Table", completeState()), tournamentId: first });
+    await flushing;
+    expect(assignTournament).toHaveBeenCalledExactlyOnceWith(gameId, second);
+    expect(outbox.tournamentId).toBe(second);
+    expect(outbox.pendingCount).toBe(0);
+    expect(outbox.current?.state.playlistId).toBe("latest");
+    expect(JSON.stringify(outbox.current)).not.toContain("tournament");
+  });
+
+  it("retains newest selection during held assignment, including clearing the last choice", async () => {
+    const storage = memoryStorage();
+    const held = deferred<string | null>();
+    const assignTournament = vi.fn().mockReturnValueOnce(held.promise).mockResolvedValueOnce(null);
+    const outbox = new GameSessionOutbox({
+      storage,
+      clubId,
+      createId: ids(),
+      save: vi.fn(),
+      assignTournament,
+    });
+    outbox.activateRemote({ ...remoteSession(), tournamentId: null });
+    outbox.setTournament(first);
+    const flushing = outbox.flush();
+    outbox.setTournament(null);
+    expect(outbox.tournamentId).toBeNull();
+    held.resolve(first);
+    await flushing;
+    expect(assignTournament.mock.calls).toEqual([
+      [gameId, first],
+      [gameId, null],
+    ]);
+    expect(outbox.tournamentId).toBeNull();
+    expect(outbox.pendingCount).toBe(0);
+  });
+
+  it("retries a lost assignment response after reload without uploading gameplay", async () => {
+    const storage = memoryStorage();
+    let saved: string | null = null;
+    const assignTournament = vi.fn(async (_id: string, value: string | null) => {
+      saved = value;
+      throw new Error("lost response");
+    });
+    const outbox = new GameSessionOutbox({
+      storage,
+      clubId,
+      createId: ids(),
+      save: vi.fn(),
+      assignTournament,
+    });
+    outbox.activateRemote(remoteSession());
+    const canonical = JSON.stringify(outbox.current);
+    outbox.setTournament(first);
+    await expect(outbox.flush()).rejects.toThrow("lost response");
+    expect(saved).toBe(first);
+    const retry = vi.fn(async (_id: string, value: string | null) => value);
+    const save = vi.fn();
+    const restored = new GameSessionOutbox({
+      storage,
+      clubId,
+      createId: ids(),
+      save,
+      assignTournament: retry,
+    });
+    expect(restored.pendingCount).toBe(1);
+    expect(restored.tournamentId).toBe(first);
+    restored.activateRemote({ ...remoteSession(), tournamentId: null });
+    await restored.flush();
+    expect(retry).toHaveBeenCalledExactlyOnceWith(gameId, first);
+    expect(save).not.toHaveBeenCalled();
+    expect(JSON.stringify(restored.current)).toBe(canonical);
+  });
+
+  it("recovers a lost creation response with stable identity and latest intent", async () => {
+    const storage = memoryStorage();
+    const create = vi.fn().mockRejectedValueOnce(new Error("lost POST"));
+    const outbox = new GameSessionOutbox({
+      storage,
+      clubId,
+      createId: ids(),
+      create,
+      save: vi.fn(),
+    });
+    outbox.beginCreation("Table", completeState(), null, first);
+    await expect(outbox.flush()).rejects.toThrow();
+    outbox.setTournament(second);
+    const assignTournament = vi.fn(async (_id: string, value: string | null) => value);
+    const retryCreate = vi.fn().mockResolvedValue({
+      ...remoteSession("Table", completeState()),
+      tournamentId: first,
+    });
+    const restored = new GameSessionOutbox({
+      storage,
+      clubId,
+      createId: ids(),
+      create: retryCreate,
+      save: vi.fn(),
+      assignTournament,
+    });
+    await restored.flush();
+    expect(retryCreate.mock.calls[0]?.[0]).toMatchObject({
+      creationId: create.mock.calls[0]?.[0].creationId,
+      tournamentId: second,
+    });
+    expect(assignTournament).toHaveBeenCalledExactlyOnceWith(gameId, second);
+    expect(restored.tournamentId).toBe(second);
+  });
+
+  it("blocks switching a completed current record until uncertain tournament work settles", async () => {
+    const storage = memoryStorage();
+    const held = deferred<string | null>();
+    const outbox = new GameSessionOutbox({
+      storage,
+      clubId,
+      createId: ids(),
+      save: vi.fn(),
+      assignTournament: () => held.promise,
+    });
+    outbox.activateRemote(remoteSession());
+    outbox.setTournament(first);
+    const flushing = outbox.flush();
+    expect(() => outbox.park()).toThrow(/tournament/i);
+    expect(() =>
+      outbox.activateRemote(remoteSession("Replacement", completeState(), 1, second)),
+    ).toThrow(/tournament/i);
+    expect(outbox.gameId).toBe(gameId);
+    held.resolve(first);
+    await flushing;
+    expect(outbox.tournamentId).toBe(first);
+    expect(outbox.pendingCount).toBe(0);
+    outbox.activateRemote(remoteSession("Replacement", completeState(), 1, second));
+    expect(outbox.gameId).toBe(second);
+  });
+
+  it("keeps a missing tournament editable and pending rather than tombstoning its game", async () => {
+    const storage = memoryStorage();
+    const assignTournament = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiError("Missing tournament", 404, "tournament_not_found"))
+      .mockImplementation(async (_gameId: string, value: string | null) => value);
+    const outbox = new GameSessionOutbox({
+      storage,
+      clubId,
+      createId: () => crypto.randomUUID(),
+      save: vi.fn(),
+      assignTournament,
+    });
+    outbox.activateRemote(remoteSession());
+    const original = outbox.current;
+    outbox.setTournament(first);
+    await expect(outbox.flush()).rejects.toThrow();
+    expect(outbox.isRemoved).toBe(false);
+    expect(outbox.current).toEqual(original);
+    expect(outbox.pendingCount).toBe(1);
+    expect(outbox.tournamentId).toBe(first);
+    outbox.setTournament(second);
+    await outbox.flush();
+    expect(outbox.tournamentId).toBe(second);
+    expect(outbox.pendingCount).toBe(0);
+  });
+
+  it("durably coalesces historical targets without a gameplay snapshot and recovers a lost reply", async () => {
+    const storage = memoryStorage();
+    const held = deferred<string | null>();
+    const assignTournament = vi
+      .fn()
+      .mockReturnValueOnce(held.promise)
+      .mockRejectedValue(new Error("reply lost after commit"));
+    const options = {
+      storage,
+      clubId,
+      createId: () => crypto.randomUUID(),
+      save: vi.fn(),
+      assignTournament,
+    };
+    const outbox = new GameSessionOutbox(options);
+    outbox.setGameTournament(gameId, first);
+    const flushing = outbox.flush();
+    outbox.setGameTournament(gameId, second);
+    outbox.setGameTournament(first, null);
+    expect(outbox.current).toBeNull();
+    expect(outbox.pendingCount).toBe(2);
+    expect(
+      parseCurrentGameSessionEnvelope(storage.getItem(gameSessionStorageKey)!)?.current,
+    ).toBeNull();
+    held.reject(new Error("reply lost after commit"));
+    await expect(flushing).rejects.toThrow("reply lost");
+    const retry = vi.fn(async (_id: string, value: string | null) => value);
+    const restored = new GameSessionOutbox({ ...options, assignTournament: retry });
+    expect(restored.pendingCount).toBe(2);
+    await restored.flush();
+    expect(retry.mock.calls).toEqual([
+      [gameId, second],
+      [first, null],
+    ]);
+    expect(options.save).not.toHaveBeenCalled();
+    expect(restored.pendingCount).toBe(0);
+    expect(storage.getItem(gameSessionStorageKey)).toBeNull();
+  });
+
+  it("routes historical edits of the current record through the same latest-intent lane", async () => {
+    const storage = memoryStorage();
+    const held = deferred<string | null>();
+    const assignTournament = vi
+      .fn()
+      .mockReturnValueOnce(held.promise)
+      .mockImplementation(async (_id: string, value: string | null) => value);
+    const outbox = new GameSessionOutbox({
+      storage,
+      clubId,
+      createId: () => crypto.randomUUID(),
+      save: vi.fn(),
+      assignTournament,
+    });
+    outbox.activateRemote(remoteSession());
+    outbox.setTournament(first);
+    const flushing = outbox.flush();
+    outbox.setGameTournament(gameId, second);
+    expect(outbox.tournamentId).toBe(second);
+    held.resolve(first);
+    await flushing;
+    expect(assignTournament.mock.calls).toEqual([
+      [gameId, first],
+      [gameId, second],
+    ]);
+    expect(outbox.tournamentId).toBe(second);
+    expect(outbox.pendingCount).toBe(0);
+  });
+
+  it.each(["tournament_not_found", "game_session_not_found"])(
+    "never tombstones current gameplay for a historical %s",
+    async (code) => {
+      const storage = memoryStorage();
+      const outbox = new GameSessionOutbox({
+        storage,
+        clubId,
+        createId: () => crypto.randomUUID(),
+        save: vi.fn(),
+        assignTournament: vi.fn().mockRejectedValue(new ApiError("Missing target", 404, code)),
+      });
+      outbox.activateRemote(remoteSession());
+      const original = outbox.current;
+      outbox.setGameTournament(second, first);
+      await expect(outbox.flush()).rejects.toThrow();
+      expect(outbox.isRemoved).toBe(false);
+      expect(outbox.current).toEqual(original);
+      expect(outbox.pendingCount).toBe(code === "game_session_not_found" ? 0 : 1);
+    },
+  );
+
+  it("preserves historical intent through clearing the current record and refuses another club", async () => {
+    const storage = memoryStorage();
+    const options = { storage, clubId, createId: () => crypto.randomUUID(), save: vi.fn() };
+    const outbox = new GameSessionOutbox(options);
+    outbox.activateRemote(remoteSession());
+    outbox.setGameTournament(second, first);
+    await outbox.clear(async () => undefined);
+    expect(outbox.current).toBeNull();
+    expect(outbox.pendingCount).toBe(1);
+    expect(() => new GameSessionOutbox({ ...options, clubId: first })).toThrow(/club/i);
+  });
+
+  it("keeps historical PUTs serialized through clearing current gameplay", async () => {
+    const storage = memoryStorage();
+    const held = deferred<string | null>();
+    const assignTournament = vi
+      .fn()
+      .mockReturnValueOnce(held.promise)
+      .mockImplementation(async (_id: string, value: string | null) => value);
+    const outbox = new GameSessionOutbox({
+      storage,
+      clubId,
+      createId: () => crypto.randomUUID(),
+      save: vi.fn(),
+      assignTournament,
+    });
+    outbox.activateRemote(remoteSession());
+    outbox.setGameTournament(second, first);
+    const flushing = outbox.flush();
+    await outbox.clear(async () => undefined);
+    outbox.setGameTournament(second, null);
+    const retrying = outbox.flush();
+    expect(retrying).toBe(flushing);
+    expect(assignTournament).toHaveBeenCalledTimes(1);
+    expect(outbox.current).toBeNull();
+    held.resolve(first);
+    await retrying;
+    expect(assignTournament.mock.calls).toEqual([
+      [second, first],
+      [second, null],
+    ]);
+    expect(outbox.pendingCount).toBe(0);
+    expect(storage.getItem(gameSessionStorageKey)).toBeNull();
+  });
+
+  it("keeps a newer historical choice when an older assignment succeeds and keeps unrelated snapshots parked", async () => {
+    const storage = memoryStorage();
+    const held = deferred<string | null>();
+    const assignTournament = vi
+      .fn()
+      .mockReturnValueOnce(held.promise)
+      .mockImplementation(async (_id: string, value: string | null) => value);
+    const outbox = new GameSessionOutbox({
+      storage,
+      clubId,
+      createId: () => crypto.randomUUID(),
+      save: vi.fn(),
+      assignTournament,
+    });
+    outbox.activateRemote({ ...remoteSession(), tournamentId: first });
+    outbox.enqueue("Unsent gameplay", completeState("unsent"), null);
+    outbox.park();
+    outbox.activateRemote(remoteSession("Current", completeState(), 1, second));
+    outbox.setGameTournament(gameId, first);
+    const flushing = outbox.flush();
+    outbox.setGameTournament(gameId, second);
+    held.resolve(first);
+    await flushing;
+    expect(assignTournament.mock.calls).toEqual([
+      [gameId, first],
+      [gameId, second],
+    ]);
+    outbox.activateRemote({ ...remoteSession(), tournamentId: second });
+    expect(outbox.current?.state.playlistId).toBe("unsent");
+    expect(outbox.tournamentId).toBe(second);
+  });
+
+  it.each([
+    [{ gameId: "bad", tournamentId: first, intentId: second }],
+    [{ gameId, tournamentId: "bad", intentId: second }],
+    [{ gameId, tournamentId: first, intentId: "bad" }],
+    [
+      { gameId, tournamentId: first, intentId: second },
+      { gameId, tournamentId: null, intentId: first },
+    ],
+  ])(
+    "preserves malformed historical metadata rather than silently dropping it: %j",
+    (...historicalTournaments) => {
+      const storage = memoryStorage();
+      const outbox = new GameSessionOutbox({
+        storage,
+        clubId,
+        createId: () => crypto.randomUUID(),
+        save: vi.fn(),
+      });
+      outbox.setGameTournament(gameId, first);
+      const raw = JSON.stringify({ ...readPersisted(storage), historicalTournaments });
+      storage.setItem(gameSessionStorageKey, raw);
+      expect(parseCurrentGameSessionEnvelope(raw)).toBeNull();
+      expect(
+        () => new GameSessionOutbox({ storage, clubId, createId: ids(), save: vi.fn() }),
+      ).toThrow();
+      expect(storage.getItem(gameSessionStorageKey)).toBe(raw);
+    },
+  );
+
+  it("prevents new creation while historical recovery is unresolved", () => {
+    const outbox = new GameSessionOutbox({
+      storage: memoryStorage(),
+      clubId,
+      createId: () => crypto.randomUUID(),
+      save: vi.fn(),
+    });
+    outbox.setGameTournament(gameId, first);
+    expect(() => outbox.beginCreation("New table", completeState(), null)).toThrow(/tournament/i);
+    expect(outbox.current).toBeNull();
+    expect(outbox.pendingCount).toBe(1);
+  });
+
+  it("rejects malformed remote and initial metadata without changing a valid local record", () => {
+    const storage = memoryStorage();
+    const outbox = new GameSessionOutbox({ storage, clubId, createId: ids(), save: vi.fn() });
+    expect(() => outbox.beginCreation("Bad", completeState(), null, "not-an-id")).toThrow();
+    expect(storage.getItem(gameSessionStorageKey)).toBeNull();
+    outbox.activateRemote(remoteSession());
+    const original = storage.getItem(gameSessionStorageKey);
+    expect(() =>
+      outbox.activateRemote({ ...remoteSession(), tournamentId: "not-an-id" }),
+    ).toThrow();
+    expect(storage.getItem(gameSessionStorageKey)).toBe(original);
+  });
+
+  it("rejects ambiguous metadata bound to both a server game and a creation identity", () => {
+    const storage = memoryStorage();
+    const outbox = new GameSessionOutbox({ storage, clubId, createId: ids(), save: vi.fn() });
+    outbox.activateRemote(remoteSession());
+    outbox.setTournament(first);
+    const envelope = readPersisted(storage);
+    const raw = JSON.stringify({
+      ...envelope,
+      creationId: second,
+      tournamentAssociation: { ...(envelope.tournamentAssociation as object), creationId: second },
+    });
+    expect(parseCurrentGameSessionEnvelope(raw)).toBeNull();
+  });
+
+  it.each([
+    { clubId: first },
+    { gameId: second },
+    { pending: { tournamentId: "bad", intentId: first } },
+  ])("fails safely for malformed or cross-target association metadata", (changes) => {
+    const storage = memoryStorage();
+    const outbox = new GameSessionOutbox({ storage, clubId, createId: ids(), save: vi.fn() });
+    outbox.activateRemote(remoteSession());
+    outbox.setTournament(first);
+    const envelope = readPersisted(storage);
+    const raw = JSON.stringify({
+      ...envelope,
+      tournamentAssociation: { ...(envelope.tournamentAssociation as object), ...changes },
+    });
+    storage.setItem(gameSessionStorageKey, raw);
+    expect(parseCurrentGameSessionEnvelope(raw)).toBeNull();
+    expect(storage.getItem(gameSessionStorageKey)).toBe(raw);
+  });
+});
+
 describe("GameSessionOutbox current-v5 persistence", () => {
   it.each([undefined, FEDERATION_RULES_EDITION])(
     "recovers nomination selections, supports and append-only corrections through browser reload and retry (%s)",
@@ -1283,7 +1719,7 @@ describe("GameSessionOutbox", () => {
       clubId,
       createId: () => mutationId,
       create,
-      save: vi.fn().mockRejectedValue(new ApiError("missing", 404, "not_found")),
+      save: vi.fn().mockRejectedValue(new ApiError("missing", 404, "game_session_not_found")),
     });
     outbox.activateRemote(remote());
     outbox.enqueue("Table A", { ...state, playlistId: "deleted" }, null);

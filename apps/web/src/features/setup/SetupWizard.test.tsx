@@ -154,6 +154,42 @@ const requestReroll = async (user: ReturnType<typeof userEvent.setup>) => {
 };
 
 describe("SetupWizard federation setup", () => {
+  it("keeps the ordinary setup layout and captured edition, gating roles until tournament metadata is valid and acknowledged", async () => {
+    const user = userEvent.setup();
+    const onSessionStateChange = vi.fn();
+    const onStartGame = vi.fn();
+    const session: SetupWizardSessionState = {
+      step: "players",
+      rulesEdition: FEDERATION_RULES_EDITION,
+      hostPlayerId: availablePlayers[10]!.id,
+      selectedPlayerIds: availablePlayers.slice(0, 10).map(({ id }) => id),
+      setup: null,
+    };
+    const props = {
+      players: availablePlayers,
+      onComplete: vi.fn(),
+      initialSessionState: session,
+      rulesEdition: FEDERATION_RULES_EDITION,
+      onSessionStateChange,
+      onStartGame,
+      tournamentControl: <div data-testid="tournament-controls">Tournament metadata</div>,
+    };
+    const view = render(<SetupWizard {...props} tournamentValid={false} />);
+    expect(screen.getByTestId("tournament-controls").closest(".player-setup-card")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Start game" })).toBeDisabled();
+    view.rerender(<SetupWizard {...props} tournamentSelected tournamentValid persistencePending />);
+    expect(screen.getByRole("button", { name: "Start game" })).toBeDisabled();
+    await waitFor(() =>
+      expect(onSessionStateChange).toHaveBeenLastCalledWith(
+        expect.objectContaining({ rulesEdition: FEDERATION_RULES_EDITION }),
+      ),
+    );
+    expect(JSON.stringify(onSessionStateChange.mock.calls)).not.toContain("tournamentId");
+    view.rerender(<SetupWizard {...props} tournamentSelected tournamentValid />);
+    await user.click(screen.getByRole("button", { name: "Start game" }));
+    expect(onStartGame).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
+  });
   it.each(["en", "ru"] as const)(
     "keeps role progress in the table with a clean giveaway header in %s",
     async (locale) => {

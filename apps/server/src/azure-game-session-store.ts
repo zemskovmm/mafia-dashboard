@@ -1,11 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { odata } from "@azure/data-tables";
-import { CASPER_PLAYER_ID, CASPER_SEAT, isSecretGameEventType } from "@mafia/game-domain";
+import {
+  CASPER_PLAYER_ID,
+  CASPER_SEAT,
+  isSecretGameEventType,
+  type ClubStatisticsSource,
+} from "@mafia/game-domain";
 import { DEFAULT_CLUB_ID } from "./club-store.js";
 import type { GameEvent } from "./event-store.js";
 import {
   completionMetadata,
   assertValidResultAdjudication,
+  statisticsGame,
   GameSessionNotFoundError,
   projectableResults,
   type CompletedGameSessionFilters,
@@ -23,6 +29,12 @@ import {
   InvalidGameIdentityError,
 } from "./game-session-identity.js";
 import { DeletedGameError } from "./game-lifecycle.js";
+import {
+  azureGameTournament,
+  azureListTournaments,
+  azureTournament,
+  gameTournamentKey,
+} from "./tournament-metadata.js";
 import {
   blobFields,
   blobReference,
@@ -117,13 +129,23 @@ const stored = (snapshot: Snapshot, duplicate = false): StoredGameSession => ({
   updatedAt: new Date(snapshot.session.updatedAt),
   duplicate,
 });
-const summary = (snapshot: Snapshot): GameSessionSummary => {
+const storedWithTournament = async (
+  tx: AzureTransaction,
+  clubId: string,
+  snapshot: Snapshot,
+  duplicate = false,
+): Promise<StoredGameSession> => ({
+  ...stored(snapshot, duplicate),
+  tournamentId: await azureGameTournament(tx, clubId, snapshot.session.gameId),
+});
+const summary = (snapshot: Snapshot, tournamentId: string | null): GameSessionSummary => {
   const { session } = snapshot;
   const state = session.state;
   const game = record(state.game) ? state.game : null;
   const setup = record(state.setup) ? state.setup : null;
   return {
     gameId: session.gameId,
+    tournamentId,
     name: session.name,
     revision: session.revision,
     hostPlayerId:
@@ -344,11 +366,15 @@ export class AzureGameSessionStore {
       if (mapped) {
         const row = await tx.get<GameRow>(gameKey(clubId, mapped.gameId));
         if (!row) throw new DeletedGameError(mapped.gameId);
-        return stored(await readSnapshot(tx, row), true);
+        return storedWithTournament(tx, clubId, await readSnapshot(tx, row), true);
       }
       if (!(await tx.get(`${clubPrefix(clubId)}meta`))) throw new Error("Club does not exist");
       await eligiblePlayers(tx, clubId, input.state, input.results, true);
       const gameId = randomUUID();
+      const tournamentId =
+        input.tournamentId == null
+          ? null
+          : (await azureTournament(tx, clubId, input.tournamentId)).id;
       const updatedAt = new Date();
       const snapshot: Snapshot = {
         formatVersion: 1,
@@ -377,8 +403,10 @@ export class AzureGameSessionStore {
         ...blobFields(blob),
       });
       await tx.set(creationKey(clubId, input.creationId), { gameId });
+      if (tournamentId !== null)
+        await tx.set(gameTournamentKey(clubId, gameId), { gameId, tournamentId });
       await synchronize(tx, clubId, gameId, input.state, input.results);
-      return stored(snapshot);
+      return storedWithTournament(tx, clubId, snapshot);
     });
   }
 
@@ -443,7 +471,7 @@ export class AzureGameSessionStore {
       });
       await synchronize(tx, clubId, row.gameId, input.state, input.results);
       await tx.retireBlob(blobReference(row));
-      return stored(snapshot);
+      return storedWithTournament(tx, clubId, snapshot);
     });
   }
 
@@ -460,6 +488,7 @@ export class AzureGameSessionStore {
       const row = await tx.get<GameRow>(key);
       if (row) {
         await tx.delete(key);
+        await tx.delete(gameTournamentKey(clubId, gameId));
         await removeProjection(tx, clubId, gameId);
         await tx.retireBlob(blobReference(row));
       }
@@ -516,11 +545,34 @@ export class AzureGameSessionStore {
     });
   }
 
+  public async readStatisticsInputs(clubId = DEFAULT_CLUB_ID): Promise<ClubStatisticsSource> {
+    return this.storage.read(async (tx) => {
+      if (await tx.get(clubDeletedKey(clubId))) return { players: [], games: [], tournaments: [] };
+      const profiles = await tx.list<{ id: string; nickname: string; retiredAt?: Date | null }>(
+        `${clubPrefix(clubId)}player:`,
+      );
+      const rows = await tx.list<GameRow>(`${clubPrefix(clubId)}game:`);
+      const games = [];
+      for (const row of rows)
+        games.push(
+          statisticsGame(await storedWithTournament(tx, clubId, await readSnapshot(tx, row))),
+        );
+      return {
+        players: profiles
+          .filter((p) => !p.retiredAt)
+          .map((p) => ({ id: p.id, nickname: p.nickname }))
+          .sort((a, b) => a.id.localeCompare(b.id)),
+        games,
+        tournaments: await azureListTournaments(tx, clubId),
+      };
+    });
+  }
+
   public async get(gameId: string, clubId = DEFAULT_CLUB_ID): Promise<StoredGameSession | null> {
     return this.storage.read(async (tx) => {
       if (await tx.get(clubDeletedKey(clubId))) return null;
       const row = await tx.get<GameRow>(gameKey(clubId, gameId));
-      return row ? stored(await readSnapshot(tx, row)) : null;
+      return row ? storedWithTournament(tx, clubId, await readSnapshot(tx, row)) : null;
     });
   }
 
@@ -530,7 +582,10 @@ export class AzureGameSessionStore {
       const rows = await tx.list<GameRow>(`${clubPrefix(clubId)}game:`);
       const summaries: GameSessionSummary[] = [];
       for (const row of rows) {
-        if (row.status === "active") summaries.push(summary(await readSnapshot(tx, row)));
+        if (row.status === "active")
+          summaries.push(
+            summary(await readSnapshot(tx, row), await azureGameTournament(tx, clubId, row.gameId)),
+          );
       }
       return summaries.sort(
         (a, b) => b.updatedAt.getTime() - a.updatedAt.getTime() || a.gameId.localeCompare(b.gameId),
@@ -570,7 +625,7 @@ export class AzureGameSessionStore {
         )
           continue;
         completed.push({
-          ...summary(snapshot),
+          ...summary(snapshot, await azureGameTournament(tx, clubId, row.gameId)),
           ...metadata,
           rulesetId: row.rulesetId,
           rulesetVersion: row.rulesetVersion,

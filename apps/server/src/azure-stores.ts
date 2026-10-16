@@ -3,6 +3,7 @@ import { AzureAccountStore } from "./azure-account-store.js";
 import { AzureClubStore, AzurePlayerStore } from "./azure-club-player-store.js";
 import { AzureEventStore, AzureGameSessionStore } from "./azure-game-session-store.js";
 import type { ApplicationStores } from "./storage-contracts.js";
+import { AzureTournamentStore } from "./azure-tournament-store.js";
 
 /** Explicit Azure-only composition: no SQL connection, fallback or dual write. */
 export const createAzureStores = (options: AzureStorageOptions) => {
@@ -12,6 +13,7 @@ export const createAzureStores = (options: AzureStorageOptions) => {
     clubs: new AzureClubStore(storage),
     players: new AzurePlayerStore(storage),
     games: new AzureGameSessionStore(storage),
+    tournaments: new AzureTournamentStore(storage),
     events: new AzureEventStore(storage),
     ready: () => storage.ready(),
     runAuthorized: (userId, clubId, manager, work) =>

@@ -7,7 +7,8 @@ import {
 
 export interface BrowserGameAttachment {
   readonly clubId: string;
-  readonly gameId: string;
+  readonly gameId: string | null;
+  readonly creationId?: string;
   readonly name: string;
   readonly revision: number;
   readonly pendingCount: number;
@@ -26,14 +27,29 @@ export interface BrowserGameStorageOptions {
 
 const attachmentFromRaw = (raw: string): BrowserGameAttachment | null => {
   const envelope = parseCurrentGameSessionEnvelope(raw);
-  if (envelope === null || envelope.gameId === null || envelope.current === null) return null;
+  if (
+    envelope === null ||
+    ((envelope.historicalTournaments?.length ?? 0) === 0 &&
+      ((envelope.gameId === null && envelope.creationId === null) || envelope.current === null))
+  )
+    return null;
   return {
     clubId: envelope.clubId,
     gameId: envelope.gameId,
-    name: envelope.current.name,
+    ...(envelope.gameId === null && envelope.creationId !== null
+      ? { creationId: envelope.creationId }
+      : {}),
+    name: envelope.current?.name ?? "",
     revision: envelope.revision,
-    pendingCount: envelope.outbox.length,
+    pendingCount:
+      envelope.outbox.length +
+      (envelope.historicalTournaments?.length ?? 0) +
+      (envelope.creationId === null ? 0 : 1) +
+      (envelope.tournamentAssociation?.pending == null ? 0 : 1),
     unresolved:
+      envelope.creationId !== null ||
+      (envelope.historicalTournaments?.length ?? 0) > 0 ||
+      envelope.tournamentAssociation?.pending != null ||
       envelope.outbox.length > 0 ||
       envelope.failed ||
       envelope.clearFailed ||
@@ -94,7 +110,8 @@ export const releaseBrowserGameStorage = async (
       current === null ||
       current.clubId !== attachment.clubId ||
       current.gameId !== attachment.gameId ||
-      current.unresolved
+      current.unresolved ||
+      current.creationId !== attachment.creationId
     ) {
       return false;
     }
@@ -113,7 +130,8 @@ export const discardBrowserGameStorage = async (
       current === null ||
       current.storageSnapshot !== attachment.storageSnapshot ||
       current.clubId !== attachment.clubId ||
-      current.gameId !== attachment.gameId
+      current.gameId !== attachment.gameId ||
+      current.creationId !== attachment.creationId
     ) {
       throw new Error("Browser game storage changed in another browser context");
     }

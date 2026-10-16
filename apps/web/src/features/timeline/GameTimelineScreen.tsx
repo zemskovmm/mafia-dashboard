@@ -54,6 +54,8 @@ interface TimelineLoaders {
 interface GameTimelineScreenProps {
   readonly clubId: string;
   readonly onBack: () => void;
+  readonly initialGameId?: string;
+  readonly backLabel?: string;
   readonly players?: readonly { readonly id: string; readonly nickname: string }[];
   readonly loaders?: TimelineLoaders;
   readonly showDevelopmentTools?: boolean;
@@ -113,12 +115,14 @@ const replaySession = (session: RemoteGameSession): readonly ReplayFrame[] => {
 };
 
 export const GameTimelineScreen = (props: GameTimelineScreenProps) => (
-  <TenantGameTimelineScreen key={props.clubId} {...props} />
+  <TenantGameTimelineScreen key={`${props.clubId}:${props.initialGameId ?? ""}`} {...props} />
 );
 
 const TenantGameTimelineScreen = ({
   clubId,
   onBack,
+  initialGameId,
+  backLabel,
   players = [],
   loaders = defaultLoaders,
   showDevelopmentTools = false,
@@ -159,9 +163,11 @@ const TenantGameTimelineScreen = ({
   };
   const [summaries, setSummaries] = useState<readonly CompletedGameSessionSummary[] | null>(null);
   const [selectedGameId, setSelectedGameId] = useState(
-    currentHistory === undefined ? "" : "current",
+    initialGameId ?? (currentHistory === undefined ? "" : "current"),
   );
-  const [history, setHistory] = useState<LoadedHistory | null>(loadCurrentHistory);
+  const [history, setHistory] = useState<LoadedHistory | null>(() =>
+    initialGameId === undefined ? loadCurrentHistory() : null,
+  );
   const [selectedMarkerId, setSelectedMarkerId] = useState<string | null>(null);
   const [loadingGameName, setLoadingGameName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -260,8 +266,8 @@ const TenantGameTimelineScreen = ({
     }
     if (gameId === "") return;
     const summary = summaries?.find((candidate) => candidate.gameId === gameId);
-    if (summary === undefined) return;
-    setLoadingGameName(summary.name);
+    if (summary === undefined && gameId !== initialGameId) return;
+    setLoadingGameName(summary?.name ?? gameId);
     void loaders
       .getSession(gameId, clubId)
       .then((session) => {
@@ -271,9 +277,9 @@ const TenantGameTimelineScreen = ({
         }
         const replayed = replaySession(session);
         setHistory({
-          label: summary.name,
+          label: session.name,
           frames: replayed,
-          summary,
+          summary: summary ?? null,
           sample: false,
           current: false,
           headEventId: null,
@@ -284,10 +290,18 @@ const TenantGameTimelineScreen = ({
         reportError(error, { source: "api", context: "timeline.completed-game.load" });
         if (sessionRequestRef.current === request) {
           setLoadingGameName(null);
-          setError(i18n.t("Unable to load {name}.", { name: summary.name }));
+          setError(i18n.t("Unable to load {name}.", { name: summary?.name ?? gameId }));
         }
       });
   };
+
+  useEffect(() => {
+    if (initialGameId !== undefined) selectCompletedGame(initialGameId);
+    return () => {
+      sessionRequestRef.current += 1;
+    };
+    // The tenant/target key resets requests; locale changes only reproject labels.
+  }, [clubId, initialGameId]);
 
   const columnCount = Math.max(1, timeline?.markers.length ?? 1);
   const gridStyle = {
@@ -300,7 +314,7 @@ const TenantGameTimelineScreen = ({
     <main className="timeline-screen" aria-label={i18n.t("Game timeline")}>
       <header className="timeline-header">
         <button type="button" className="timeline-back" onClick={onBack}>
-          <ArrowLeft aria-hidden="true" /> {i18n.t("Back")}
+          <ArrowLeft aria-hidden="true" /> {backLabel ?? i18n.t("Back")}
         </button>
         <div>
           <p className="eyebrow">
@@ -321,6 +335,10 @@ const TenantGameTimelineScreen = ({
               <option value="current">{i18n.t("Current game")}</option>
             )}
             <option value="">{i18n.t("Choose a completed game")}</option>
+            {initialGameId !== undefined &&
+            !summaries?.some(({ gameId }) => gameId === initialGameId) ? (
+              <option value={initialGameId}>{history?.label ?? initialGameId}</option>
+            ) : null}
             {(summaries ?? []).map((summary) => (
               <option key={summary.gameId} value={summary.gameId}>
                 {summary.name} ·{" "}

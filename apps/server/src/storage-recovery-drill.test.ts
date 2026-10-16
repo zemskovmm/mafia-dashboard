@@ -19,6 +19,8 @@ it("recovers an authenticated application from its retained private Azure backup
       deletedGame: true,
       subsequentSave: true,
       sourceUnchanged: true,
+      tournamentMetadata: true,
+      statisticsSource: true,
     },
   });
   expect(summary.entityCount).toBeGreaterThan(30);

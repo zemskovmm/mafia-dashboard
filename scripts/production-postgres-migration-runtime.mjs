@@ -50,6 +50,8 @@ const relations = [
   "players",
   "users",
 ];
+// Match the CLI's two exact supported catalogs, never arbitrary optional tables.
+const tournamentRelations = [...relations, "game_tournaments", "tournaments"].sort();
 const hashPattern = /^[a-f0-9]{64}$/;
 const maxFile = 67108864;
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -293,13 +295,15 @@ const checkedPackage = async (directory, validation, expectedTarget, expectedSou
   if (sourceBytes.length !== manifest.sourceLength || digest(sourceBytes) !== manifest.sourceSha256)
     fail("PACKAGE_PROOF_INVALID");
   const source = JSON.parse(sourceBytes.toString("utf8"));
+  const sourceRelations = Object.keys(source.relations).sort();
   if (
-    !isDeepStrictEqual(Object.keys(source.relations).sort(), relations) ||
+    (!isDeepStrictEqual(sourceRelations, relations) &&
+      !isDeepStrictEqual(sourceRelations, tournamentRelations)) ||
     !isDeepStrictEqual(source.source, manifest.source)
   )
     fail("PACKAGE_PROOF_INVALID");
   const sourceRelationCounts = {};
-  for (const relation of relations) {
+  for (const relation of sourceRelations) {
     if (!Array.isArray(source.relations[relation])) fail("PACKAGE_PROOF_INVALID");
     sourceRelationCounts[relation] = source.relations[relation].length;
   }

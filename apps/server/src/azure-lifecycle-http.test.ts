@@ -5,6 +5,7 @@ import { AzureAccountStore } from "./azure-account-store.js";
 import { createAzureStores } from "./azure-stores.js";
 import { AzureClubStore, AzurePlayerStore } from "./azure-club-player-store.js";
 import { AzureEventStore, AzureGameSessionStore } from "./azure-game-session-store.js";
+import { AzureTournamentStore } from "./azure-tournament-store.js";
 import type { AppUser } from "./google-auth.js";
 import type { ApplicationStores } from "./storage-contracts.js";
 import { createStorageFixture } from "./test-helpers/storage-fixture.js";
@@ -40,6 +41,7 @@ const setup = async () => {
     clubs,
     players: new AzurePlayerStore(storage),
     games: new AzureGameSessionStore(storage),
+    tournaments: new AzureTournamentStore(storage),
     events: new AzureEventStore(storage),
     ready: () => storage.ready(),
     runAuthorized: (userId, clubId, manager, work) =>

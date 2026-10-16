@@ -17,6 +17,9 @@ import {
   type BackupProperty,
 } from "./storage-backup-codec.js";
 import { assertSupportedGame, inspectGameIdentities } from "./game-session-identity.js";
+import { recognizeStorageSourceCatalog } from "./initialize-schema.js";
+import { catalogDefinitions } from "./postgres-catalog-definitions.js";
+import { tournamentName } from "./tournament-metadata.js";
 
 // This is an importer, never an initializer. Exact current source columns are
 // admitted; unrecognized relations/columns are not silently dropped.
@@ -95,9 +98,29 @@ const expectedIndexNames = `
 `
   .trim()
   .split(/\s+/);
-type Relation = keyof typeof columns;
+const currentColumns = {
+  ...columns,
+  tournaments: "club_id:uuid:NO id:uuid:NO name:text:NO name_key:text:NO",
+  game_tournaments: "club_id:uuid:NO game_id:uuid:NO tournament_id:uuid:NO",
+} as const;
+const sourceSchemaHash = (current: boolean): string =>
+  digest(
+    stable(
+      current
+        ? {
+            columns: currentColumns,
+            constraints: catalogDefinitions.constraints.map((c) => c.conname),
+            indexes: catalogDefinitions.indexes.map((i) => i.name),
+          }
+        : { columns, constraints: expectedConstraintNames, indexes: expectedIndexNames },
+    ),
+  );
+type Relation = keyof typeof currentColumns;
 const excluded = new Set<Relation>(["user_sessions", "youtube_oauth_credentials"]);
 const relations = (Object.keys(columns) as Relation[]).filter((name) => !excluded.has(name));
+const currentRelations = (Object.keys(currentColumns) as Relation[]).filter(
+  (name) => !excluded.has(name),
+);
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 export const migrationSourceSchema = z
   .object({
@@ -412,17 +435,23 @@ const sourceData = (input: unknown, source: MigrationSource): SourceData => {
   )
     return fail("Source package identity mismatch");
   const encoded = record(payload.relations);
-  if (Object.keys(encoded).sort().join(",") !== [...relations].sort().join(","))
+  const names = Object.keys(encoded).sort().join(",");
+  const current = names === [...currentRelations].sort().join(",");
+  if (!current && names !== [...relations].sort().join(","))
     return fail("Unknown or excluded source relations in package");
   const result = {} as SourceData;
-  for (const relation of relations) {
+  for (const relation of currentRelations) {
+    if (!current && (relation === "tournaments" || relation === "game_tournaments")) {
+      result[relation] = [];
+      continue;
+    }
     const strings = encoded[relation];
     if (!Array.isArray(strings)) return fail("Source relation is malformed");
     result[relation] = strings.map((encodedRow: unknown) => {
       const encodedText = text(encodedRow);
       exactJsonNumbers(encodedText);
       const row = record(json(Buffer.from(encodedText)));
-      const fields = columns[relation].split(" ");
+      const fields = currentColumns[relation].split(" ");
       if (
         Object.keys(row).sort().join(",") !==
         fields
@@ -741,6 +770,33 @@ const convert = (
       { gameId: row.game_id, deletedAt: row.deleted_at },
       ["deletedAt"],
     );
+  }
+  const tournaments = new Set<string>();
+  for (const row of data.tournaments) {
+    requireClub(row);
+    const normalized = tournamentName(text(row.name));
+    if (row.name !== normalized.name || row.name_key !== normalized.nameKey)
+      return fail("Unsupported tournament name normalization");
+    const key = cp(row.club_id) + id(row.id);
+    if (tournaments.has(key)) return fail("Duplicate source tournament");
+    tournaments.add(key);
+    put(`${cp(row.club_id)}tournament:${id(row.id)}`, {
+      id: row.id,
+      name: row.name,
+      nameKey: row.name_key,
+    });
+    put(`${cp(row.club_id)}tournament-name:${digest(normalized.nameKey)}`, {
+      tournamentId: row.id,
+    });
+  }
+  for (const row of data.game_tournaments) {
+    requireGame(row);
+    if (!tournaments.has(cp(row.club_id) + id(row.tournament_id)))
+      return fail("Missing or cross-club source tournament");
+    put(`${cp(row.club_id)}game-tournament:${id(row.game_id)}`, {
+      gameId: row.game_id,
+      tournamentId: row.tournament_id,
+    });
   }
   const apiEvents = new Map<string, SourceRow[]>();
   const eventIds = new Set<string>();
@@ -1081,6 +1137,7 @@ export const preparePostgresMigration = async (
     await packagePath(directory, options.projectRoot, false);
     const client = await pool.connect();
     let raw: Buffer;
+    let currentSource: boolean;
     try {
       // No initializeSchema, DDL, seed, or source mutation on this code path.
       await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
@@ -1098,13 +1155,18 @@ export const preparePostgresMigration = async (
       ).rows[0];
       if (!same(identity, source))
         return fail("Explicit source identity does not match connected database");
+      currentSource =
+        (await recognizeStorageSourceCatalog(client).catch(() =>
+          fail("Unsupported source schema catalog"),
+        )) === "current";
+      const sourceColumns = currentSource ? currentColumns : columns;
       const tables = (
         await client.query<{ table_name: string }>(
           "SELECT c.relname AS table_name FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relkind IN ('r','p','v','m','f') ORDER BY c.relname",
           [source.schema],
         )
       ).rows.map((row) => row.table_name);
-      if (!same(tables, Object.keys(columns).sort()))
+      if (!same(tables, Object.keys(sourceColumns).sort()))
         return fail("Unsupported source schema relations");
       const catalog = (
         await client.query<{
@@ -1117,12 +1179,12 @@ export const preparePostgresMigration = async (
           [source.schema],
         )
       ).rows;
-      for (const relation of Object.keys(columns) as Relation[])
+      for (const relation of Object.keys(sourceColumns) as Relation[])
         if (
           catalog
             .filter((row) => row.table_name === relation)
             .map((row) => `${row.column_name}:${row.udt_name}:${row.is_nullable}`)
-            .join(" ") !== columns[relation]
+            .join(" ") !== currentColumns[relation]
         )
           return fail("Unsupported source schema columns");
       const constraints = (
@@ -1138,8 +1200,18 @@ export const preparePostgresMigration = async (
         )
       ).rows.map((row) => row.name);
       if (
-        !same(constraints, [...expectedConstraintNames].sort()) ||
-        !same(indexes, [...expectedIndexNames].sort())
+        !same(
+          constraints,
+          currentSource
+            ? catalogDefinitions.constraints.map((c) => c.conname).sort()
+            : [...expectedConstraintNames].sort(),
+        ) ||
+        !same(
+          indexes,
+          currentSource
+            ? catalogDefinitions.indexes.map((i) => i.name).sort()
+            : [...expectedIndexNames].sort(),
+        )
       )
         return fail("Unsupported source schema constraints/indexes");
       // Exact shape admission plus explicit value and relationship checks do
@@ -1166,7 +1238,7 @@ export const preparePostgresMigration = async (
       if (unsafe !== 0)
         return fail("Unsupported source schema policies, triggers, rules or partitions");
       const encoded: Record<string, string[]> = {};
-      for (const relation of relations) {
+      for (const relation of currentSource ? currentRelations : relations) {
         // Identifiers are fixed relation names and an admitted identifier regex,
         // never operator SQL. Excluded relations are never SELECTed.
         encoded[relation] = (
@@ -1197,9 +1269,7 @@ export const preparePostgresMigration = async (
       sourceFile: "source.json",
       sourceSha256: digest(raw),
       sourceLength: raw.length,
-      schemaSha256: digest(
-        stable({ columns, constraints: expectedConstraintNames, indexes: expectedIndexNames }),
-      ),
+      schemaSha256: sourceSchemaHash(currentSource),
       entityCount: converted.rows.length,
       blobCount: converted.blobs.size,
       convertedSha256: convertedHash(converted),
@@ -1233,14 +1303,14 @@ const loadPackage = async (
     (!hash.safeParse(options.sha256).success || options.sha256 !== sha256)
   )
     return fail("Migration manifest checksum mismatch");
-  if (
-    manifest.schemaSha256 !==
-    digest(stable({ columns, constraints: expectedConstraintNames, indexes: expectedIndexNames }))
-  )
+  if (![sourceSchemaHash(false), sourceSchemaHash(true)].includes(manifest.schemaSha256))
     return fail("Unsupported migration source schema");
   const raw = await readProtectedMigrationFile(join(directory, "source.json"));
   if (raw.length !== manifest.sourceLength || digest(raw) !== manifest.sourceSha256)
     return fail("Migration source hash/length mismatch");
+  const relationNames = Object.keys(record(record(json(raw)).relations));
+  if (manifest.schemaSha256 !== sourceSchemaHash(relationNames.includes("tournaments")))
+    return fail("Migration package catalog boundary mismatch");
   const converted = convert(raw, manifest);
   if (
     converted.rows.length !== manifest.entityCount ||

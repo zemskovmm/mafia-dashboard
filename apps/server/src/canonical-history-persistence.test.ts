@@ -6,6 +6,7 @@ import { buildApp } from "./app.js";
 import { AzureAccountStore } from "./azure-account-store.js";
 import { AzureClubStore, AzurePlayerStore } from "./azure-club-player-store.js";
 import { AzureEventStore, AzureGameSessionStore } from "./azure-game-session-store.js";
+import { AzureTournamentStore } from "./azure-tournament-store.js";
 import { AzureStorage, blobReference } from "./azure-storage.js";
 import { DEFAULT_CLUB_ID } from "./club-store.js";
 import { initializeSchema } from "./initialize-schema.js";
@@ -60,6 +61,7 @@ const openAzure = async (): Promise<Context> => {
       clubs: new AzureClubStore(storage),
       players: new AzurePlayerStore(storage),
       games: new AzureGameSessionStore(storage),
+      tournaments: new AzureTournamentStore(storage),
       events: new AzureEventStore(storage),
       ready: () => storage.ready(),
       runAuthorized: (userId, clubId, manager, work) =>

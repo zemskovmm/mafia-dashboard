@@ -1,12 +1,20 @@
 import { randomUUID } from "node:crypto";
 
-import { CASPER_PLAYER_ID, CASPER_SEAT } from "@mafia/game-domain";
+import {
+  CASPER_PLAYER_ID,
+  CASPER_SEAT,
+  FEDERATION_RULES_EDITION,
+  type ClubStatisticsSource,
+  type StatisticsGame,
+} from "@mafia/game-domain";
 import type { Pool, PoolClient } from "pg";
 import { DEFAULT_CLUB_ID } from "./club-store.js";
 import { DeletedGameError, lockAggregateProjectionTables, lockClubGame } from "./game-lifecycle.js";
 import { initializeSchema } from "./initialize-schema.js";
 import { assertSupportedGame, validateGameIdentities } from "./game-session-identity.js";
 import { adjudicationMetadataSchema } from "./game-session-validation.js";
+import { postgresAssignTournament } from "./tournament-store.js";
+import { sortTournaments } from "./tournament-metadata.js";
 
 export type GameSessionState = Readonly<Record<string, unknown>>;
 export type FinalGameResults = Readonly<Record<string, unknown>>;
@@ -14,6 +22,7 @@ export type FinalGameResults = Readonly<Record<string, unknown>>;
 export interface CreateGameSessionInput {
   readonly clubId?: string;
   readonly creationId: string;
+  readonly tournamentId?: string | null;
   readonly name: string;
   readonly state: GameSessionState;
   readonly results: FinalGameResults | null;
@@ -30,6 +39,7 @@ export interface SaveGameSessionInput {
 
 export interface StoredGameSession {
   readonly gameId: string;
+  readonly tournamentId?: string | null;
   readonly name: string;
   readonly revision: number;
   readonly duplicate: boolean;
@@ -43,6 +53,7 @@ export interface StoredGameSession {
 
 export interface GameSessionSummary {
   readonly gameId: string;
+  readonly tournamentId?: string | null;
   readonly name: string;
   readonly revision: number;
   readonly hostPlayerId: string | null;
@@ -60,6 +71,7 @@ export interface CompletedGameSessionFilters {
 
 export interface CompletedGameSessionSummary {
   readonly gameId: string;
+  readonly tournamentId?: string | null;
   readonly name: string;
   readonly revision: number;
   readonly hostPlayerId: string | null;
@@ -94,6 +106,83 @@ export class GameSessionNotFoundError extends GameSessionOperationError {
 }
 
 /** Bound new result metadata without interpreting rules or altering saved JSON. */
+/** Narrow accepted-result view; never return live roles, private events or copied profiles. */
+export const statisticsGame = (
+  session: Pick<
+    StoredGameSession,
+    "gameId" | "name" | "revision" | "status" | "state" | "results" | "tournamentId"
+  >,
+): StatisticsGame => {
+  const { state, results } = session;
+  assertSupportedGame(state, results);
+  const game = isRecord(state.game) ? state.game : null;
+  const setup = isRecord(state.setup) ? state.setup : null;
+  const baseline = isRecord(state.initialGame) ? state.initialGame : null;
+  for (const value of [game, setup, baseline, isRecord(baseline?.game) ? baseline.game : null]) {
+    if (value?.rulesEdition !== undefined && value.rulesEdition !== FEDERATION_RULES_EDITION)
+      throw new Error("Unsupported statistics source rules edition");
+  }
+  if (
+    baseline?.replayVersion !== undefined &&
+    baseline.replayVersion !== 1 &&
+    baseline.replayVersion !== 2
+  )
+    throw new Error("Unsupported statistics source replay version");
+  const completion = session.status === "completed" ? completionMetadata(results) : null;
+  const projection = completion ? projectableResults(results) : null;
+  const rawPlayers = Array.isArray(game?.players) ? game.players : [];
+  const participants = projection
+    ? projection.players.filter((p) => p.playerId !== CASPER_PLAYER_ID)
+    : null;
+  // A usable subset is not complete coverage of an authoritative saved roster.
+  // Compare human identities/seats only; do not invent a roster for older records.
+  const humanRoster = Array.isArray(game?.players)
+    ? rawPlayers.filter((p) => !isRecord(p) || p.id !== CASPER_PLAYER_ID)
+    : null;
+  const completeRoster =
+    humanRoster === null ||
+    (participants !== null &&
+      humanRoster.length === participants.length &&
+      new Set(humanRoster.map((p) => (isRecord(p) ? p.id : null))).size === humanRoster.length &&
+      humanRoster.every(
+        (p) =>
+          isRecord(p) &&
+          participants.some((result) => result.playerId === p.id && result.seat === p.seat),
+      ));
+  const resultPlayers = Array.isArray(results?.players) ? results.players : [];
+  const hasCasper =
+    setup?.casperEnabled === true ||
+    [...rawPlayers, ...resultPlayers].some(
+      (p) => isRecord(p) && (p.id === CASPER_PLAYER_ID || p.playerId === CASPER_PLAYER_ID),
+    );
+  if (session.status === "completed") assertValidResultAdjudication(results);
+  const adjudication =
+    completion && results?.adjudication !== undefined
+      ? adjudicationMetadataSchema.parse(results.adjudication)
+      : undefined;
+  return {
+    gameId: session.gameId,
+    name: session.name,
+    revision: session.revision,
+    status: session.status,
+    rulesEdition:
+      asString(game?.rulesEdition) ??
+      asString(setup?.rulesEdition) ??
+      asString(baseline?.rulesEdition),
+    hasCasper,
+    playedAt: completion?.playedAt ?? null,
+    hostPlayerId:
+      asString(results?.hostPlayerId) ??
+      asString(state.hostPlayerId) ??
+      asString(setup?.hostPlayerId),
+    outcome: completion?.outcome ?? null,
+    reason: completion?.reason ?? null,
+    ...(adjudication ? { adjudication } : {}),
+    tournamentId: session.tournamentId ?? null,
+    participants: completeRoster ? participants : null,
+  };
+};
+
 export const assertValidResultAdjudication = (results: FinalGameResults | null): void => {
   if (
     results !== null &&
@@ -109,6 +198,7 @@ export const assertValidResultAdjudication = (results: FinalGameResults | null):
 
 interface SessionRow {
   readonly id: string;
+  readonly tournament_id: string | null;
   readonly name: string;
   readonly revision: number;
   readonly state: GameSessionState;
@@ -124,7 +214,9 @@ interface CompletedSessionRow extends SessionRow {
 }
 
 const sessionColumns = `id, name, revision, state, results, status,
-                        ruleset_id, ruleset_version, updated_at`;
+                        ruleset_id, ruleset_version, updated_at,
+                        (SELECT tournament_id FROM game_tournaments
+                          WHERE club_id = game_sessions.club_id AND game_id = game_sessions.id) AS tournament_id`;
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isUuid = (value: unknown): value is string =>
   typeof value === "string" && uuidPattern.test(value);
@@ -136,6 +228,7 @@ const asInteger = (value: unknown): number | null =>
 
 const mapSession = (row: SessionRow, duplicate: boolean): StoredGameSession => ({
   gameId: row.id,
+  tournamentId: row.tournament_id,
   name: row.name,
   revision: row.revision,
   duplicate,
@@ -154,6 +247,7 @@ const sessionSummary = (row: SessionRow): GameSessionSummary => {
   const setup = isRecord(state.setup) ? state.setup : null;
   return {
     gameId: row.id,
+    tournamentId: row.tournament_id,
     name: row.name,
     revision: row.revision,
     hostPlayerId:
@@ -616,9 +710,15 @@ export class GameSessionStore {
       );
       const row = created.rows[0];
       if (row === undefined) throw new Error("The created game session was not returned");
+      const tournamentId = await postgresAssignTournament(
+        client,
+        gameId,
+        input.tournamentId ?? null,
+        clubId,
+      );
       await synchronizeProjections(client, clubId, gameId, input.state, input.results);
       await client.query("COMMIT");
-      return mapSession(row, false);
+      return { ...mapSession(row, false), tournamentId };
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -730,6 +830,44 @@ export class GameSessionStore {
         [clubId, gameId],
       );
       await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  public async readStatisticsInputs(clubId = DEFAULT_CLUB_ID): Promise<ClubStatisticsSource> {
+    const client = await this.pool.connect();
+    try {
+      // One MVCC snapshot covers directory presentation, accepted aggregates,
+      // supported event admission and independent tournament metadata.
+      await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      const players = await client.query<{ id: string; nickname: string }>(
+        "SELECT id, nickname FROM players WHERE club_id = $1 AND retired_at IS NULL ORDER BY id",
+        [clubId],
+      );
+      const games = await client.query<SessionRow>(
+        `SELECT ${sessionColumns} FROM game_sessions WHERE club_id = $1 ORDER BY id`,
+        [clubId],
+      );
+      await assertSupportedEvents(
+        client,
+        clubId,
+        games.rows.map((row) => row.id),
+      );
+      const tournaments = await client.query<{ id: string; name: string }>(
+        "SELECT id, name FROM tournaments WHERE club_id = $1",
+        [clubId],
+      );
+      const source: ClubStatisticsSource = {
+        players: players.rows,
+        games: games.rows.map((row) => statisticsGame(mapSession(row, false))),
+        tournaments: sortTournaments(tournaments.rows),
+      };
+      await client.query("COMMIT");
+      return source;
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;

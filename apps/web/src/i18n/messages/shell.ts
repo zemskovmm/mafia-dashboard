@@ -2,6 +2,11 @@ import type { FeatureMessages } from "../I18nProvider.js";
 import type { Message } from "./types.js";
 
 const englishShellMessages = {
+  pendingTournamentChanges: "Pending tournament changes",
+  tournamentSwitchBlocked:
+    "Game switching is blocked until pending changes are saved. They are safe on this device; use the save indicator to retry or correct the tournament selection.",
+  tournamentExitBlocked:
+    "Save or correct pending tournament changes before leaving this club. Use the save indicator to retry.",
   applicationName: "La Verdad",
   backgroundBlack: "black",
   backgroundGrey33: "33% grey",
@@ -197,6 +202,9 @@ const englishShellMessages = {
   startNewGame: "Start new game",
   backToPlayerSelection: "Back to player selection",
   playersScreen: "Players screen",
+  statisticsScreen: "Statistics",
+  backToStatistics: "Back to statistics",
+  changeTournament: "Change tournament",
   hideMusicPlayerSetup: "Hide music player setup",
   editClub: "Edit club",
   glassColor: "Glass color",
@@ -346,6 +354,11 @@ const englishShellMessages = {
 export type ShellMessageKey = keyof typeof englishShellMessages;
 
 const russianShellMessages = {
+  pendingTournamentChanges: "Несохранённые изменения турниров",
+  tournamentSwitchBlocked:
+    "Переключение игр заблокировано, пока изменения не сохранены. Они остаются на этом устройстве; повторите сохранение через индикатор или исправьте выбор турнира.",
+  tournamentExitBlocked:
+    "Перед выходом из клуба сохраните изменения турниров или исправьте их. Для повторной попытки используйте индикатор сохранения.",
   applicationName: "La Verdad",
   backgroundBlack: "чёрный",
   backgroundGrey33: "серый 33%",
@@ -549,6 +562,9 @@ const russianShellMessages = {
   startNewGame: "Начать новую игру",
   backToPlayerSelection: "Вернуться к выбору игроков",
   playersScreen: "Экран игроков",
+  statisticsScreen: "Статистика",
+  backToStatistics: "Вернуться к статистике",
+  changeTournament: "Изменить турнир",
   hideMusicPlayerSetup: "Скрыть настройку музыкального плеера",
   editClub: "Изменить клуб",
   glassColor: "Цвет стекла",

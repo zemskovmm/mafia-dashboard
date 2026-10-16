@@ -51,6 +51,7 @@ const identityOnly = (
 export const gameSessionCreationSchema = z
   .object({
     creationId: z.uuid(),
+    tournamentId: z.uuid().nullable().optional(),
     name: z.string().trim().min(1).max(100),
     state: snapshotObject,
     results: resultsObject.nullable(),

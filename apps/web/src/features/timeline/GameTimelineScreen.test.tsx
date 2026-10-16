@@ -72,6 +72,60 @@ const canonicalSession = (
 };
 
 describe("GameTimelineScreen", () => {
+  it("ignores a held initial target after a different statistics target is opened", async () => {
+    const first = completedSummary("00000000-0000-4000-8000-000000000701", "Old target");
+    const second = completedSummary("00000000-0000-4000-8000-000000000702", "Latest target");
+    const held = deferred<RemoteGameSession>();
+    const getSession = vi
+      .fn()
+      .mockReturnValueOnce(held.promise)
+      .mockResolvedValueOnce(canonicalSession(second));
+    const loaders = { listCompleted: async () => [first, second], getSession };
+    const props = { clubId: "club", onBack: vi.fn(), loaders };
+    const { rerender } = render(<GameTimelineScreen {...props} initialGameId={first.gameId} />);
+    rerender(<GameTimelineScreen {...props} initialGameId={second.gameId} />);
+    await screen.findByRole("button", { name: "Don checked Player 1: Sheriff" });
+    await act(async () => held.resolve(canonicalSession(first)));
+    expect(screen.getByRole("combobox", { name: "Completed game" })).toHaveValue(second.gameId);
+    expect(screen.getByText("Latest target")).toBeInTheDocument();
+  });
+  it("opens an exact statistics target outside the first list and keeps it through locale rerenders", async () => {
+    const summary = completedSummary("00000000-0000-4000-8000-000000000701", "Statistics target");
+    const getSession = vi.fn(async () => canonicalSession(summary));
+    const loaders = { listCompleted: vi.fn(async () => []), getSession };
+    const onBack = vi.fn();
+    const { rerender } = render(
+      <I18nProvider locale="en">
+        <GameTimelineScreen
+          clubId="club"
+          initialGameId={summary.gameId}
+          loaders={loaders}
+          onBack={onBack}
+          backLabel="Back to statistics"
+        />
+      </I18nProvider>,
+    );
+    expect(
+      await screen.findByRole("button", { name: "Don checked Player 1: Sheriff" }),
+    ).toBeInTheDocument();
+    expect(getSession).toHaveBeenCalledExactlyOnceWith(summary.gameId, "club");
+    expect(screen.getByRole("combobox", { name: "Completed game" })).toHaveValue(summary.gameId);
+    rerender(
+      <I18nProvider locale="ru">
+        <GameTimelineScreen
+          clubId="club"
+          initialGameId={summary.gameId}
+          loaders={loaders}
+          onBack={onBack}
+          backLabel="Вернуться к статистике"
+        />
+      </I18nProvider>,
+    );
+    expect(screen.getByRole("combobox", { name: "Завершённая игра" })).toHaveValue(summary.gameId);
+    expect(getSession).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Вернуться к статистике" }));
+    expect(onBack).toHaveBeenCalledTimes(1);
+  });
   it("refreshes replay labels after rename and retirement without refetching or changing canonical history", async () => {
     const user = userEvent.setup();
     const summary = {

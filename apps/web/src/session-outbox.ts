@@ -26,6 +26,14 @@ interface CurrentSession {
   readonly results: FinalGameResults | null;
 }
 
+export interface TournamentAssociation {
+  readonly clubId: string;
+  readonly gameId: string | null;
+  readonly creationId: string | null;
+  readonly confirmedTournamentId: string | null;
+  readonly pending: { readonly intentId: string; readonly tournamentId: string | null } | null;
+}
+
 export interface CurrentGameSessionEnvelope {
   readonly version: 5;
   readonly clubId: string;
@@ -40,6 +48,15 @@ export interface CurrentGameSessionEnvelope {
   readonly removed: boolean;
   /** A v5 client-generated ID must be checked before it can be adopted. */
   readonly legacyGameId: string | null;
+  readonly tournamentAssociation?: TournamentAssociation;
+  /** Club-bound metadata only: never a historical gameplay snapshot. */
+  readonly historicalTournaments?: readonly HistoricalTournamentIntent[];
+}
+
+interface HistoricalTournamentIntent {
+  readonly gameId: string;
+  readonly tournamentId: string | null;
+  readonly intentId: string;
 }
 
 interface OutboxOptions {
@@ -49,6 +66,11 @@ interface OutboxOptions {
   readonly storageKey?: string;
   readonly createId: () => string;
   readonly create?: (input: GameSessionCreation) => Promise<RemoteGameSession>;
+  /** Return only after exact-target server readback. */
+  readonly assignTournament?: (
+    gameId: string,
+    tournamentId: string | null,
+  ) => Promise<string | null>;
   readonly save: (
     gameId: string,
     operation: GameSessionOperation,
@@ -178,10 +200,45 @@ const emptyEnvelope = (clubId: string): CurrentGameSessionEnvelope => ({
   legacyGameId: null,
 });
 
+const isTournamentAssociation = (value: unknown, envelope: Record<string, unknown>): boolean =>
+  isRecord(value) &&
+  value.clubId === envelope.clubId &&
+  value.gameId === envelope.gameId &&
+  value.creationId === envelope.creationId &&
+  (value.gameId === null
+    ? isUuid(value.creationId)
+    : isUuid(value.gameId) && value.creationId === null) &&
+  isNullableUuid(value.confirmedTournamentId) &&
+  (value.pending === null ||
+    (isRecord(value.pending) &&
+      isUuid(value.pending.intentId) &&
+      isNullableUuid(value.pending.tournamentId)));
+
 const normalizeEnvelope = (value: unknown): CurrentGameSessionEnvelope | null => {
   if (!isRecord(value) || !isUuid(value.clubId)) return null;
 
   if (value.version === 5 && Object.hasOwn(value, "creationId")) {
+    if (Object.hasOwn(value, "historicalTournaments")) {
+      const queue = value.historicalTournaments;
+      if (
+        !Array.isArray(queue) ||
+        !queue.every(
+          (entry) =>
+            isRecord(entry) &&
+            isUuid(entry.gameId) &&
+            entry.gameId !== value.gameId &&
+            isNullableUuid(entry.tournamentId) &&
+            isUuid(entry.intentId),
+        ) ||
+        new Set(queue.map((entry) => entry.gameId)).size !== queue.length
+      )
+        return null;
+    }
+    if (
+      Object.hasOwn(value, "tournamentAssociation") &&
+      !isTournamentAssociation(value.tournamentAssociation, value)
+    )
+      return null;
     if (
       !isNullableUuid(value.gameId) ||
       !isNullableUuid(value.creationId) ||
@@ -207,6 +264,8 @@ const normalizeEnvelope = (value: unknown): CurrentGameSessionEnvelope | null =>
   // verbatim, but force the App to GET the GUID before treating it as server-owned.
   if (
     value.version !== 5 ||
+    Object.hasOwn(value, "historicalTournaments") ||
+    Object.hasOwn(value, "tournamentAssociation") ||
     !isNullableUuid(value.gameId) ||
     !isNonNegativeInteger(value.revision) ||
     !(value.current === null || isCurrent(value.current)) ||
@@ -282,7 +341,7 @@ export class GameSessionOutbox {
     this.storageKey = options.storageKey ?? gameSessionStorageKey;
     this.storageSnapshot = options.storage.getItem(this.storageKey);
     this.envelope = this.readEnvelope(this.storageSnapshot);
-    if (this.envelope.clubId !== clubId && this.envelope.current !== null) {
+    if (this.envelope.clubId !== clubId) {
       throw new Error("The durable game belongs to another club");
     }
   }
@@ -293,6 +352,7 @@ export class GameSessionOutbox {
     if (this.envelope.failed || this.envelope.clearFailed) return "offline";
     if (
       this.envelope.creationId !== null ||
+      this.hasPendingMetadata ||
       this.envelope.outbox.length > 0 ||
       this.flushPromise !== null
     ) {
@@ -302,13 +362,103 @@ export class GameSessionOutbox {
   }
 
   public get pendingCount(): number {
-    return this.envelope.removed
-      ? 0
-      : this.envelope.outbox.length + (this.envelope.creationId === null ? 0 : 1);
+    return (
+      this.historicalTournaments.length +
+      (this.envelope.removed
+        ? 0
+        : this.envelope.outbox.length +
+          (this.envelope.creationId === null ? 0 : 1) +
+          (this.hasPendingTournament ? 1 : 0))
+    );
   }
 
   public get gameId(): string | null {
     return this.envelope.gameId;
+  }
+
+  public get tournamentId(): string | null {
+    const association = this.envelope.tournamentAssociation;
+    return association?.pending != null
+      ? association.pending.tournamentId
+      : (association?.confirmedTournamentId ?? null);
+  }
+
+  public get hasPendingTournament(): boolean {
+    return this.envelope.tournamentAssociation?.pending != null;
+  }
+
+  private get historicalTournaments(): readonly HistoricalTournamentIntent[] {
+    return this.envelope.historicalTournaments ?? [];
+  }
+
+  public get hasPendingMetadata(): boolean {
+    return this.hasPendingTournament || this.historicalTournaments.length > 0;
+  }
+
+  public pendingTournamentId(gameId: string): string | null | undefined {
+    return this.envelope.gameId === gameId
+      ? this.envelope.tournamentAssociation?.pending?.tournamentId
+      : this.historicalTournaments.find((intent) => intent.gameId === gameId)?.tournamentId;
+  }
+
+  /** All editors share one serialized durable lane; current-game edits coalesce. */
+  public setGameTournament(gameId: string, tournamentId: string | null): void {
+    this.synchronizeDurableState();
+    if (!isUuid(gameId) || !isNullableUuid(tournamentId))
+      throw new Error("Invalid tournament target");
+    if (gameId === this.envelope.gameId) {
+      if (this.envelope.removed) throw new Error("Game session was removed");
+      this.setTournament(tournamentId);
+      return;
+    }
+    const next = { gameId, tournamentId, intentId: this.options.createId() };
+    const queue = this.historicalTournaments;
+    this.envelope = {
+      ...this.envelope,
+      failed: false,
+      historicalTournaments: queue.some((intent) => intent.gameId === gameId)
+        ? queue.map((intent) => (intent.gameId === gameId ? next : intent))
+        : [...queue, next],
+    };
+    this.persist();
+  }
+
+  public setTournament(tournamentId: string | null): void {
+    this.synchronizeDurableState();
+    if (!isNullableUuid(tournamentId)) throw new Error("Invalid tournament identity");
+    if (this.envelope.removed || this.envelope.current === null) return;
+    if (this.tournamentId === tournamentId && this.envelope.tournamentAssociation !== undefined)
+      return;
+    this.envelope = {
+      ...this.envelope,
+      failed: false,
+      tournamentAssociation: {
+        clubId: this.envelope.clubId,
+        gameId: this.envelope.gameId,
+        creationId: this.envelope.creationId,
+        confirmedTournamentId: this.envelope.tournamentAssociation?.confirmedTournamentId ?? null,
+        pending: { intentId: this.options.createId(), tournamentId },
+      },
+    };
+    this.persist();
+  }
+
+  /** Historical correction changes metadata, never the active gameplay snapshot. */
+  public reconcileTournament(gameId: string, tournamentId: string | null): void {
+    this.synchronizeDurableState();
+    if (this.envelope.gameId !== gameId || this.hasPendingTournament) return;
+    if (!isNullableUuid(tournamentId)) throw new Error("Invalid tournament identity");
+    this.envelope = {
+      ...this.envelope,
+      tournamentAssociation: {
+        clubId: this.envelope.clubId,
+        gameId,
+        creationId: this.envelope.creationId,
+        confirmedTournamentId: tournamentId,
+        pending: null,
+      },
+    };
+    this.persist();
   }
 
   public get revision(): number {
@@ -341,10 +491,15 @@ export class GameSessionOutbox {
     name: string,
     state: CurrentGameSessionState,
     results: FinalGameResults | null,
+    tournamentId?: string | null,
   ): void {
     this.synchronizeDurableState();
     if (!isCurrentGameSessionState(state)) throw new Error("Invalid current game session state");
+    if (tournamentId !== undefined && !isNullableUuid(tournamentId))
+      throw new Error("Invalid tournament identity");
     if (this.envelope.gameId !== null || this.envelope.creationId !== null) return;
+    if (this.hasPendingMetadata)
+      throw new Error("Tournament changes must finish before starting a game");
     this.envelope = {
       ...this.envelope,
       current: { name, state, results },
@@ -354,6 +509,18 @@ export class GameSessionOutbox {
       removed: false,
       legacyGameId: null,
     };
+    if (tournamentId !== undefined) {
+      this.envelope = {
+        ...this.envelope,
+        tournamentAssociation: {
+          clubId: this.envelope.clubId,
+          gameId: null,
+          creationId: this.envelope.creationId,
+          confirmedTournamentId: null,
+          pending: { intentId: this.options.createId(), tournamentId },
+        },
+      };
+    }
     this.persist();
   }
 
@@ -441,6 +608,8 @@ export class GameSessionOutbox {
     this.synchronizeDurableState();
     this.assertStorageGuard();
     if (this.isCreating) throw new Error("Game creation must finish before switching games");
+    if (this.hasPendingMetadata)
+      throw new Error("Tournament changes must finish before switching games");
     const identity = this.envelope.gameId ?? this.envelope.creationId;
     if (identity === null || this.envelope.current === null) return;
     const serialized = JSON.stringify(this.envelope);
@@ -458,14 +627,23 @@ export class GameSessionOutbox {
   /** Load a server snapshot, preferring a parked copy only with unsent work. */
   public activateRemote(session: RemoteGameSession): void {
     this.synchronizeDurableState();
-    if (!isUuid(session.gameId) || !isCurrentGameSessionState(session.state)) {
+    if (
+      !isUuid(session.gameId) ||
+      !isCurrentGameSessionState(session.state) ||
+      (session.tournamentId !== undefined && !isNullableUuid(session.tournamentId))
+    ) {
       throw new Error("Invalid server game session");
     }
-    if (this.envelope.gameId === session.gameId && this.envelope.outbox.length > 0) return;
+    if (this.envelope.gameId === session.gameId && this.pendingCount > 0) return;
+    if (this.hasPendingMetadata)
+      throw new Error("Tournament changes must finish before switching games");
     const parkedKey = this.parkedStorageKey(session.gameId);
     const parkedRaw = this.options.storage.getItem(parkedKey);
     const parked = parkedRaw === null ? null : parseCurrentGameSessionEnvelope(parkedRaw);
-    if (parkedRaw !== null && (parked === null || parked.gameId !== session.gameId)) {
+    if (
+      parkedRaw !== null &&
+      (parked === null || parked.gameId !== session.gameId || parked.clubId !== this.options.clubId)
+    ) {
       throw new Error("Unsupported parked game session; original data was preserved");
     }
     if (
@@ -477,10 +655,24 @@ export class GameSessionOutbox {
     if (
       parked?.gameId === session.gameId &&
       parked.current !== null &&
-      (parked.outbox.length > 0 || parked.creationId !== null)
+      (parked.outbox.length > 0 ||
+        parked.creationId !== null ||
+        parked.tournamentAssociation?.pending != null)
     ) {
       this.options.storage.removeItem(parkedKey);
-      this.envelope = parked;
+      this.envelope =
+        session.tournamentId === undefined
+          ? parked
+          : {
+              ...parked,
+              tournamentAssociation: {
+                clubId: this.options.clubId,
+                gameId: session.gameId,
+                creationId: null,
+                confirmedTournamentId: session.tournamentId,
+                pending: parked.tournamentAssociation?.pending ?? null,
+              },
+            };
       this.storageSnapshot = this.options.storage.getItem(this.storageKey);
       this.persist();
       return;
@@ -493,6 +685,17 @@ export class GameSessionOutbox {
       clubId: this.options.clubId,
       gameId: session.gameId,
       creationId: null,
+      ...(session.tournamentId === undefined
+        ? {}
+        : {
+            tournamentAssociation: {
+              clubId: this.options.clubId,
+              gameId: session.gameId,
+              creationId: null,
+              confirmedTournamentId: session.tournamentId,
+              pending: null,
+            },
+          }),
       revision: session.revision,
       current: { name: session.name, state: session.state, results: session.results },
       outbox: [],
@@ -511,8 +714,10 @@ export class GameSessionOutbox {
     const gameId = this.envelope.gameId;
     if (gameId === null) {
       this.generation += 1;
-      this.flushPromise = null;
-      this.envelope = emptyEnvelope(this.options.clubId);
+      this.envelope = {
+        ...emptyEnvelope(this.options.clubId),
+        historicalTournaments: this.historicalTournaments,
+      };
       this.persist();
       return;
     }
@@ -522,8 +727,10 @@ export class GameSessionOutbox {
       await clearRemote(gameId);
       if (this.envelope.gameId !== gameId) return;
       this.generation += 1;
-      this.flushPromise = null;
-      this.envelope = emptyEnvelope(this.options.clubId);
+      this.envelope = {
+        ...emptyEnvelope(this.options.clubId),
+        historicalTournaments: this.historicalTournaments,
+      };
       this.persist();
     } catch (error) {
       if (this.envelope.gameId === gameId) {
@@ -538,8 +745,20 @@ export class GameSessionOutbox {
     if (this.flushPromise !== null) return this.flushPromise;
     this.synchronizeDurableState();
     if (this.pendingCount === 0) return Promise.resolve();
-    const generation = this.generation;
-    const operation = this.flushAll(generation);
+    // Clearing current gameplay must not detach an in-flight historical PUT.
+    // Keep its lane occupied, then drain retained/new intent after it settles.
+    const drain = async (): Promise<void> => {
+      do {
+        const generation = this.generation;
+        try {
+          await this.flushAll(generation);
+        } catch (error) {
+          if (generation === this.generation) throw error;
+        }
+        if (this.flushPromise !== operation) return;
+      } while (this.pendingCount > 0);
+    };
+    const operation = drain();
     this.flushPromise = operation;
     this.notify();
     operation.then(
@@ -556,6 +775,7 @@ export class GameSessionOutbox {
   }
 
   private async flushAll(generation: number): Promise<void> {
+    let targetGameId: string | null = null;
     try {
       if (this.envelope.gameId === null && this.envelope.creationId !== null) {
         const current = this.envelope.current;
@@ -569,9 +789,16 @@ export class GameSessionOutbox {
           name: current.name,
           state: current.state,
           results: current.results,
+          ...(this.envelope.tournamentAssociation === undefined
+            ? {}
+            : { tournamentId: this.tournamentId }),
         });
         if (generation !== this.generation) return;
-        if (!isUuid(remote.gameId) || !isCurrentGameSessionState(remote.state)) {
+        if (
+          !isUuid(remote.gameId) ||
+          !isCurrentGameSessionState(remote.state) ||
+          (remote.tournamentId !== undefined && !isNullableUuid(remote.tournamentId))
+        ) {
           throw new Error("Invalid game creation response");
         }
         const latest = this.envelope.current;
@@ -603,10 +830,121 @@ export class GameSessionOutbox {
           failed: false,
           legacyGameId: null,
         };
+        const association = this.envelope.tournamentAssociation;
+        if (association !== undefined || remote.tournamentId !== undefined) {
+          this.envelope = {
+            ...this.envelope,
+            tournamentAssociation: {
+              clubId: this.envelope.clubId,
+              gameId: remote.gameId,
+              creationId: null,
+              confirmedTournamentId: remote.tournamentId ?? null,
+              pending:
+                association?.pending != null &&
+                association.pending.tournamentId !== remote.tournamentId
+                  ? association.pending
+                  : null,
+            },
+          };
+        }
         this.persist();
       }
 
-      while (this.envelope.outbox.length > 0 && generation === this.generation) {
+      while (
+        (this.envelope.outbox.length > 0 || this.hasPendingMetadata) &&
+        generation === this.generation
+      ) {
+        targetGameId = this.envelope.gameId;
+        if (this.envelope.outbox.length === 0 && !this.hasPendingTournament) {
+          const pending = this.historicalTournaments[0];
+          if (pending === undefined || this.options.assignTournament === undefined)
+            throw new Error("Tournament assignment is not configured");
+          targetGameId = pending.gameId;
+          let confirmed: string | null;
+          try {
+            confirmed = await this.options.assignTournament(pending.gameId, pending.tournamentId);
+          } catch (error) {
+            if (generation !== this.generation) return;
+            if (
+              error instanceof ApiError &&
+              error.status === 404 &&
+              error.code === "game_session_not_found"
+            ) {
+              this.envelope = {
+                ...this.envelope,
+                historicalTournaments: this.historicalTournaments.filter(
+                  (intent) => intent.gameId !== pending.gameId,
+                ),
+              };
+              this.persist();
+            } else if (
+              this.historicalTournaments.find((intent) => intent.gameId === pending.gameId)
+                ?.intentId !== pending.intentId
+            ) {
+              continue;
+            }
+            throw error;
+          }
+          if (generation !== this.generation) return;
+          if (confirmed !== pending.tournamentId)
+            throw new Error("Tournament assignment has not been confirmed");
+          this.envelope = {
+            ...this.envelope,
+            failed: false,
+            historicalTournaments: this.historicalTournaments.filter(
+              (intent) => intent.gameId !== pending.gameId || intent.intentId !== pending.intentId,
+            ),
+          };
+          this.persist();
+          continue;
+        }
+        if (this.envelope.outbox.length === 0) {
+          const association = this.envelope.tournamentAssociation;
+          const pending = association?.pending;
+          const gameId = this.envelope.gameId;
+          if (
+            association === undefined ||
+            pending == null ||
+            gameId === null ||
+            this.options.assignTournament === undefined
+          ) {
+            throw new Error("Tournament assignment is not configured");
+          }
+          let confirmed: string | null;
+          try {
+            confirmed = await this.options.assignTournament(gameId, pending.tournamentId);
+          } catch (error) {
+            if (generation !== this.generation) return;
+            if (
+              !(
+                error instanceof ApiError &&
+                error.status === 404 &&
+                error.code === "game_session_not_found"
+              ) &&
+              this.envelope.tournamentAssociation?.pending?.intentId !== pending.intentId
+            )
+              continue;
+            throw error;
+          }
+          if (generation !== this.generation) return;
+          if (confirmed !== pending.tournamentId)
+            throw new Error("Tournament assignment has not been confirmed");
+          this.envelope = {
+            ...this.envelope,
+            failed: false,
+            tournamentAssociation: {
+              ...association,
+              confirmedTournamentId: confirmed,
+              pending:
+                this.envelope.tournamentAssociation?.pending?.intentId === pending.intentId &&
+                this.envelope.tournamentAssociation.pending.tournamentId === pending.tournamentId
+                  ? null
+                  : (this.envelope.tournamentAssociation?.pending ?? null),
+            },
+          };
+          this.persist();
+          continue;
+        }
         const gameId = this.envelope.gameId;
         const mutation = this.envelope.outbox[0];
         if (gameId === null || mutation === undefined)
@@ -623,8 +961,24 @@ export class GameSessionOutbox {
       }
     } catch (error) {
       if (generation === this.generation) {
-        if (error instanceof ApiError && error.status === 404 && this.envelope.gameId !== null) {
-          this.envelope = { ...this.envelope, outbox: [], failed: false, removed: true };
+        if (
+          error instanceof ApiError &&
+          error.status === 404 &&
+          error.code === "game_session_not_found" &&
+          targetGameId !== null &&
+          targetGameId === this.envelope.gameId
+        ) {
+          this.envelope = {
+            ...this.envelope,
+            outbox: [],
+            failed: false,
+            removed: true,
+            ...(this.envelope.tournamentAssociation === undefined
+              ? {}
+              : {
+                  tournamentAssociation: { ...this.envelope.tournamentAssociation, pending: null },
+                }),
+          };
         } else {
           this.envelope = { ...this.envelope, failed: true };
         }
@@ -646,6 +1000,8 @@ export class GameSessionOutbox {
     if (raw === null) return emptyEnvelope(this.options.clubId);
     const parsed = parseCurrentGameSessionEnvelope(raw);
     if (parsed === null) throw new Error("Browser game storage is invalid");
+    if (parsed.clubId !== this.options.clubId)
+      throw new Error("The durable game belongs to another club");
     return parsed;
   }
 
@@ -654,6 +1010,7 @@ export class GameSessionOutbox {
     const serialized =
       this.envelope.current === null &&
       this.envelope.outbox.length === 0 &&
+      this.historicalTournaments.length === 0 &&
       this.envelope.creationId === null
         ? null
         : JSON.stringify(this.envelope);

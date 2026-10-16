@@ -86,6 +86,80 @@ const seed = (
 };
 
 describe("browser current-v5 game storage", () => {
+  it("recognizes a retry-stable creation with tournament intent on reload and blocks release", async () => {
+    const localStorage = memoryStorage();
+    const outbox = new GameSessionOutbox({
+      storage: localStorage,
+      clubId,
+      createId: ids(gameId),
+      save: vi.fn(),
+    });
+    outbox.beginCreation("Unacknowledged table", state(), null, otherClubId);
+    const restored = await prepareBrowserGameStorage({ localStorage });
+    expect(restored.kind).toBe("ready");
+    if (restored.kind !== "ready") throw new Error("Missing creation recovery attachment");
+    expect(restored.attachment).toMatchObject({
+      clubId,
+      gameId: null,
+      creationId: gameId,
+      pendingCount: 2,
+      unresolved: true,
+    });
+    await expect(releaseBrowserGameStorage(localStorage, restored.attachment)).resolves.toBe(false);
+  });
+  it("blocks release of metadata-only pending work until exact assignment confirmation", async () => {
+    const localStorage = memoryStorage();
+    const outbox = new GameSessionOutbox({
+      storage: localStorage,
+      clubId,
+      createId: ids(),
+      save: vi.fn(),
+      assignTournament: async (_gameId, tournamentId) => tournamentId,
+    });
+    outbox.activateRemote({
+      gameId,
+      name: "Table",
+      revision: 1,
+      duplicate: false,
+      status: "active",
+      rulesetId: "classic",
+      rulesetVersion: 1,
+      updatedAt: "2026-09-26T20:00:00.000Z",
+      state: state(),
+      results: null,
+    });
+    outbox.setTournament(otherClubId);
+    const pending = readBrowserGameAttachment(localStorage)!;
+    expect(pending.pendingCount).toBe(1);
+    expect(pending.unresolved).toBe(true);
+    await expect(releaseBrowserGameStorage(localStorage, pending)).resolves.toBe(false);
+    expect(outbox.pendingCount).toBe(1);
+    await outbox.flush();
+    expect(outbox.pendingCount).toBe(0);
+    await expect(releaseBrowserGameStorage(localStorage, pending)).resolves.toBe(false);
+    await expect(
+      releaseBrowserGameStorage(localStorage, readBrowserGameAttachment(localStorage)!),
+    ).resolves.toBe(true);
+  });
+  it("attaches historical-only recovery to its club without inventing a current game", async () => {
+    const localStorage = memoryStorage();
+    const outbox = new GameSessionOutbox({
+      storage: localStorage,
+      clubId,
+      createId: () => crypto.randomUUID(),
+      save: vi.fn(),
+    });
+    outbox.setGameTournament(gameId, otherClubId);
+    const raw = localStorage.getItem(gameSessionStorageKey)!;
+    const prepared = await prepareBrowserGameStorage({ localStorage });
+    expect(prepared.kind).toBe("ready");
+    const attachment = readBrowserGameAttachment(localStorage)!;
+    expect(attachment).toMatchObject({ clubId, gameId: null, pendingCount: 1, unresolved: true });
+    expect(outbox.current).toBeNull();
+    await expect(releaseBrowserGameStorage(localStorage, attachment)).resolves.toBe(false);
+    expect(localStorage.getItem(gameSessionStorageKey)).toBe(raw);
+  });
+
   it("preserves and rejects a named old game without silently converting or clearing it", async () => {
     const localStorage = memoryStorage();
     seed(localStorage);

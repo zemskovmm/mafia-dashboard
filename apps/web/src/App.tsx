@@ -47,6 +47,7 @@ import {
   checkServerReady,
   clearGameSession,
   createGameSession,
+  assignGameTournament,
   createPlayer,
   deletePlayer,
   getAuthSession,
@@ -156,6 +157,8 @@ import { AvailablePlayersScreen } from "./features/setup/AvailablePlayersScreen.
 import { GameTimelineScreen } from "./features/timeline/GameTimelineScreen.js";
 import { buildTimeline } from "./features/timeline/timeline-model.js";
 import { projectNominationHistory } from "./features/timeline/nomination-history.js";
+import { StatisticsScreen } from "./features/statistics/StatisticsScreen.js";
+import { TournamentPicker } from "./features/tournaments/TournamentPicker.js";
 import { PlayerDirectoryProvider } from "./features/players/player-display.js";
 import { I18nProvider, useMessages, type FeatureI18n, type Locale } from "./i18n/I18nProvider.js";
 import { LanguageSelector } from "./i18n/LanguageSelector.js";
@@ -201,7 +204,7 @@ interface LocalLogEntry {
 }
 
 type BackgroundShade = "black" | "grey-33" | "grey-66" | "white";
-type WorkspaceView = "game" | "players" | "timeline" | "console";
+type WorkspaceView = "game" | "players" | "statistics" | "timeline" | "console";
 type PlayerGateError = Readonly<{
   readonly key: "addRegisteredPlayers" | "markAvailablePlayers";
   readonly count: number;
@@ -467,6 +470,8 @@ export const ClubWorkspace = ({
       createId: createRandomId,
       create: (input) => createGameSession(input, club.id),
       save: (gameId, operation) => saveGameSessionOperation(gameId, operation, club.id),
+      assignTournament: (gameId, tournamentId) =>
+        assignGameTournament(gameId, tournamentId, club.id),
     });
   }
   const sessionSync = sessionSyncRef.current;
@@ -494,6 +499,9 @@ export const ClubWorkspace = ({
       : initialMusicPreferences.lastPlaylistId || initialState.playlistId;
 
   const [view, setView] = useState<WorkspaceView>("game");
+  const [statisticsTimelineGameId, setStatisticsTimelineGameId] = useState<string | undefined>();
+  const [tournamentId, setTournamentId] = useState<string | null>(() => sessionSync.tournamentId);
+  const [tournamentValid, setTournamentValid] = useState(true);
   const [availabilityScreenOpen, setAvailabilityScreenOpen] = useState(false);
   const [sessionName, setSessionName] = useState(
     () => initialCurrent?.name ?? nextGameName(window.localStorage, new Date()),
@@ -713,6 +721,7 @@ export const ClubWorkspace = ({
   const [clearingAllData, setClearingAllData] = useState(false);
   const [clearAllDataError, setClearAllDataError] = useState(false);
   const [syncRender, setSyncRender] = useState(0);
+  const [statisticsAssignmentRevision, setStatisticsAssignmentRevision] = useState(0);
 
   const appShellRef = useRef<HTMLDivElement>(null);
   const drawerRef = useRef<HTMLElement>(null);
@@ -742,6 +751,12 @@ export const ClubWorkspace = ({
       hashGameState(initialDerivedGame) !== hashGameState(initialCanonicalGame),
   );
   const viewBeforeTimelineRef = useRef<Exclude<WorkspaceView, "timeline">>("game");
+  const statisticsTimelineOpenerRef = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    if (view === "statistics" && statisticsTimelineOpenerRef.current?.isConnected) {
+      statisticsTimelineOpenerRef.current.focus();
+    }
+  }, [view]);
   const viewBeforeConsoleRef = useRef<"game" | "players">("game");
   const phaseRef = useRef(initialState.game?.phase ?? setupPhase(initialState.setup?.step));
   const playerRequestRef = useRef(0);
@@ -906,16 +921,19 @@ export const ClubWorkspace = ({
     [],
   );
 
-  useEffect(
-    () =>
-      sessionSync.subscribe(() => {
-        setSyncRender((revision) => revision + 1);
-        const current = sessionSync.current;
-        const canonicalName = current?.name;
-        if (canonicalName !== undefined) setSessionName(canonicalName);
-      }),
-    [sessionSync],
-  );
+  useEffect(() => {
+    let previousPending = sessionSync.pendingCount;
+    return sessionSync.subscribe(() => {
+      setSyncRender((revision) => revision + 1);
+      if (sessionSync.pendingCount < previousPending)
+        setStatisticsAssignmentRevision((revision) => revision + 1);
+      previousPending = sessionSync.pendingCount;
+      setTournamentId(sessionSync.tournamentId);
+      const current = sessionSync.current;
+      const canonicalName = current?.name;
+      if (canonicalName !== undefined) setSessionName(canonicalName);
+    });
+  }, [sessionSync]);
 
   useEffect(() => {
     sessionRetry.activate();
@@ -959,6 +977,7 @@ export const ClubWorkspace = ({
     return () => window.removeEventListener("online", recover);
   }, [sessionRetry]);
 
+  const metadataBlocksCreation = sessionSync.current === null && sessionSync.hasPendingMetadata;
   useEffect(() => {
     const snapshot = {
       setup: setupSession,
@@ -978,10 +997,11 @@ export const ClubWorkspace = ({
       if (
         !sessionSync.needsRemoteVerification &&
         !sessionSync.isRemoved &&
+        !metadataBlocksCreation &&
         setupSession !== null &&
-        hasSetupProgress(setupSession)
+        (hasSetupProgress(setupSession) || tournamentId !== null)
       ) {
-        sessionSync.beginCreation(sessionName, snapshot, finalResults);
+        sessionSync.beginCreation(sessionName, snapshot, finalResults, tournamentId ?? undefined);
         sessionRetry.requestAutoSync();
       }
       return;
@@ -997,12 +1017,14 @@ export const ClubWorkspace = ({
     initialGame,
     legacyLog,
     log,
+    metadataBlocksCreation,
     playlistId,
     resetReturnEventId,
     sessionRetry,
     sessionName,
     sessionSync,
     setupSession,
+    tournamentId,
     undoBudget,
   ]);
 
@@ -1387,7 +1409,7 @@ export const ClubWorkspace = ({
       resumeRequestRef.current += 1;
       phaseRef.current = setupPhase(next.step);
       setSetupSession((current) =>
-        hasSetupProgress(next) || current !== null
+        hasSetupProgress(next) || tournamentId !== null || current !== null
           ? {
               ...next,
               bestMoveEnabled:
@@ -1402,7 +1424,7 @@ export const ClubWorkspace = ({
       }
       setHostPlayerId(nextHostId);
     },
-    [club.bestMoveEnabled, sessionSync],
+    [club.bestMoveEnabled, sessionSync, tournamentId],
   );
 
   const applyRemoteSession = useCallback(
@@ -1413,6 +1435,8 @@ export const ClubWorkspace = ({
       const restored = asPersistedState(current.state);
       gameScreenMutationGenerationRef.current += 1;
       setSessionName(current.name);
+      setTournamentId(sessionSync.tournamentId);
+      setTournamentValid(true);
       let canonicalRestoredGame: GameState | null = restored.game;
       if (restored.initialGame !== null) {
         try {
@@ -1474,7 +1498,7 @@ export const ClubWorkspace = ({
     try {
       // An unacknowledged draft cannot be parked under its eventual server ID.
       // Finish creation first; failures leave the latest editable setup active.
-      if (sessionSync.isCreating) await sessionSync.flush();
+      if (sessionSync.isCreating || sessionSync.hasPendingMetadata) await sessionSync.flush();
       if (resumeRequestRef.current !== request || unavailableGameIdsRef.current.has(gameId)) return;
       const session = await getGameSession(gameId, club.id);
       if (resumeRequestRef.current !== request || unavailableGameIdsRef.current.has(gameId)) return;
@@ -1482,18 +1506,28 @@ export const ClubWorkspace = ({
       sessionRetry.requestAutoSync();
     } catch (error) {
       reportError(error, { source: "api", context: "game-session.resume" });
+      if (sessionSync.hasPendingMetadata) window.alert(t("tournamentSwitchBlocked"));
       if (resumeRequestRef.current === request) setActiveSessionsError(true);
     } finally {
       if (resumeRequestRef.current === request) setResumeGameId(null);
     }
   };
 
-  const exitWorkspace = () => onExit();
+  const canLeaveWorkspace = () => {
+    if (!sessionSync.hasPendingMetadata) return true;
+    window.alert(t("tournamentExitBlocked"));
+    return false;
+  };
+  const exitWorkspace = () => {
+    if (canLeaveWorkspace()) onExit();
+  };
 
   const resetLocalState = useCallback(() => {
     setSessionName(nextGameName(window.localStorage, new Date()));
     setGame(null);
     setSetupSession(null);
+    setTournamentId(null);
+    setTournamentValid(true);
     setHostPlayerId(null);
     setFinalResults(null);
     finishRequestedRef.current = false;
@@ -1560,11 +1594,12 @@ export const ClubWorkspace = ({
     if (!window.confirm(t("startNewGameConfirmation"))) return;
     const request = ++resumeRequestRef.current;
     try {
-      if (sessionSync.isCreating) await sessionSync.flush();
+      if (sessionSync.isCreating || sessionSync.hasPendingMetadata) await sessionSync.flush();
       if (resumeRequestRef.current !== request) return;
       sessionSync.park();
     } catch (error) {
       reportError(error, { source: "persistence", context: "game-session.park" });
+      window.alert(t("tournamentSwitchBlocked"));
       return;
     }
     resetLocalState();
@@ -1679,21 +1714,22 @@ export const ClubWorkspace = ({
       : persistenceSnapshot.phase;
   const pendingChanges = sessionSync.pendingCount;
   const pendingLabel = t("pendingChanges", { count: pendingChanges });
-  const saveStatusLabel = sessionSync.isRemoved
-    ? t("gameRemoved")
-    : persistenceState === "saved"
-      ? t("savedToServer")
-      : persistenceState === "offline"
-        ? persistenceSnapshot.terminalReason === "rejected"
-          ? t("saveBlocked", { pendingLabel })
-          : t("offline", { pendingLabel })
-        : persistenceState === "retrying"
-          ? t("saveFailed", {
-              attempt: persistenceSnapshot.attempt,
-              maxAttempts: persistenceSnapshot.maxAttempts,
-              pendingLabel,
-            })
-          : t("saving", { pendingLabel });
+  const saveStatusLabel =
+    sessionSync.isRemoved && !sessionSync.hasPendingMetadata
+      ? t("gameRemoved")
+      : persistenceState === "saved"
+        ? t("savedToServer")
+        : persistenceState === "offline"
+          ? persistenceSnapshot.terminalReason === "rejected"
+            ? t("saveBlocked", { pendingLabel })
+            : t("offline", { pendingLabel })
+          : persistenceState === "retrying"
+            ? t("saveFailed", {
+                attempt: persistenceSnapshot.attempt,
+                maxAttempts: persistenceSnapshot.maxAttempts,
+                pendingLabel,
+              })
+            : t("saving", { pendingLabel });
   const setupStep = setupSession?.step ?? "players";
   const roleGiveawayActive = view === "game" && game === null && setupStep === "roles";
   const tableLayoutActive = view === "game" && (game !== null || roleGiveawayActive);
@@ -1703,7 +1739,9 @@ export const ClubWorkspace = ({
     appShellRef.current.scrollLeft = 0;
   }, [tableLayoutActive]);
   const showApplicationStatus =
-    view !== "timeline" && (view === "players" || (game === null && !roleGiveawayActive));
+    view !== "timeline" &&
+    view !== "statistics" &&
+    (view === "players" || (game === null && !roleGiveawayActive));
   const applicationStatusTitle =
     view === "players"
       ? t("playersStatistics")
@@ -1870,6 +1908,41 @@ export const ClubWorkspace = ({
       <AccountPlaylistPicker {...musicPickerProps} view="account" />
     </section>
   ) : null;
+  const changeTournament = (next: string | null) => {
+    if (sessionSync.isRemoved) return;
+    resumeRequestRef.current += 1;
+    try {
+      if (sessionSync.current !== null) sessionSync.setTournament(next);
+      setTournamentId(next);
+      if (next !== null && game === null) {
+        setSetupSession(
+          (current) =>
+            current ?? {
+              step: "players",
+              hostPlayerId: "",
+              selectedPlayerIds: Array.from({ length: 10 }, () => ""),
+              setup: null,
+              rulesEdition: FEDERATION_RULES_EDITION,
+              bestMoveEnabled: club.bestMoveEnabled,
+            },
+        );
+      }
+      if (sessionSync.current !== null) sessionRetry.retryNow();
+      else sessionRetry.requestAutoSync();
+    } catch (error) {
+      reportError(error, { source: "persistence", context: "game-session.tournament" });
+    }
+  };
+  const tournamentPicker = (
+    <TournamentPicker
+      key={`${club.id}:${sessionSync.gameId ?? setupInstanceKey}`}
+      clubId={club.id}
+      value={tournamentId}
+      onChange={changeTournament}
+      onValidityChange={setTournamentValid}
+      disabled={sessionSync.isRemoved || metadataBlocksCreation}
+    />
+  );
   const activeSessionsPanel = (
     <section className="manage-active-sessions" aria-label={t("activeGames")}>
       <h3>{t("activeGames")}</h3>
@@ -1988,6 +2061,22 @@ export const ClubWorkspace = ({
       data-player-pulse-strength={lighting.playerPulse.strength}
     >
       {glassSceneMounted ? <GlassScene settings={glass} onStatus={setGlassStatus} /> : null}
+      {view === "statistics" ? (
+        <div className="app-fixed-toolbar" aria-label={t("applicationTools")}>
+          <button
+            type="button"
+            className="save-indicator icon-toolbar-button"
+            data-status={persistenceState}
+            aria-label={saveStatusLabel}
+            aria-live="polite"
+            aria-busy={persistenceState === "saving" || persistenceState === "retrying"}
+            title={saveStatusLabel}
+            onClick={() => sessionRetry.retryNow()}
+          >
+            <Save aria-hidden="true" />
+          </button>
+        </div>
+      ) : null}
       {showApplicationStatus ? (
         <header
           className="app-status-bar game-header"
@@ -2185,6 +2274,16 @@ export const ClubWorkspace = ({
             <button
               type="button"
               onClick={() => {
+                setActiveDrawer(null);
+                setStatisticsTimelineGameId(undefined);
+                setView("statistics");
+              }}
+            >
+              {t("statisticsScreen")}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
                 if (view === "players" && humanPlayers.length < 10) {
                   setPlayerGateError({
                     key: "addRegisteredPlayers",
@@ -2274,12 +2373,19 @@ export const ClubWorkspace = ({
               }}
             />
           ) : null}
+          {game !== null && sessionSync.gameId !== null ? (
+            <section className="manage-game-metadata" aria-label={t("changeTournament")}>
+              <h3>{t("changeTournament")}</h3>
+              {tournamentPicker}
+            </section>
+          ) : null}
           {activeSessionsPanel}
           {isManager ? (
             <div className="manage-menu-actions manage-club-actions">
               <button
                 type="button"
                 onClick={() => {
+                  if (!canLeaveWorkspace()) return;
                   setActiveDrawer(null);
                   onEditClub();
                 }}
@@ -2314,6 +2420,7 @@ export const ClubWorkspace = ({
                 type="button"
                 className="danger-action"
                 onClick={() => {
+                  if (!canLeaveWorkspace()) return;
                   setActiveDrawer(null);
                   void onDeleteClub();
                 }}
@@ -2450,6 +2557,7 @@ export const ClubWorkspace = ({
               type="button"
               onClick={() => {
                 viewBeforeTimelineRef.current = view === "players" ? "players" : "game";
+                setStatisticsTimelineGameId(undefined);
                 setActiveDrawer(null);
                 setView("timeline");
               }}
@@ -2498,15 +2606,50 @@ export const ClubWorkspace = ({
         </aside>
       ) : null}
 
-      {isManager && view === "console" ? (
+      {view === "statistics" ||
+      (view === "timeline" && viewBeforeTimelineRef.current === "statistics") ? (
+        <div hidden={view !== "statistics"}>
+          <StatisticsScreen
+            clubId={club.id}
+            isManager={isManager}
+            assignmentRevision={statisticsAssignmentRevision}
+            pendingTournamentId={(gameId) => sessionSync.pendingTournamentId(gameId)}
+            onAssignTournament={async (gameId, next) => {
+              sessionSync.setGameTournament(gameId, next);
+              sessionRetry.retryNow();
+              await sessionSync.flush();
+              return next;
+            }}
+            onBack={() => setView("game")}
+            {...(isManager
+              ? {
+                  onOpenTimeline: (gameId: string) => {
+                    statisticsTimelineOpenerRef.current =
+                      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+                    viewBeforeTimelineRef.current = "statistics";
+                    setStatisticsTimelineGameId(gameId);
+                    setView("timeline");
+                  },
+                }
+              : {})}
+          />
+        </div>
+      ) : null}
+      {view === "statistics" ? null : isManager && view === "console" ? (
         <ErrorConsoleScreen onBack={() => setView(viewBeforeConsoleRef.current)} />
       ) : isManager && view === "timeline" ? (
         <GameTimelineScreen
           clubId={club.id}
           players={players}
+          {...(statisticsTimelineGameId === undefined
+            ? {}
+            : { initialGameId: statisticsTimelineGameId })}
+          backLabel={statisticsTimelineGameId === undefined ? undefined : t("backToStatistics")}
           onBack={() => setView(viewBeforeTimelineRef.current)}
           showDevelopmentTools={isManager && devUnlocked && devModeEnabled}
-          currentHistory={currentTimelineHistory}
+          currentHistory={
+            statisticsTimelineGameId === undefined ? currentTimelineHistory : undefined
+          }
           onPreviewCurrentEvent={(eventId) => {
             previewEventState(eventId);
             setView("game");
@@ -2563,7 +2706,15 @@ export const ClubWorkspace = ({
             onPopulateDevelopmentPlayers={populateDevelopmentPlayers}
             onOpenAvailablePlayers={() => setAvailabilityScreenOpen(true)}
             onRoleDrawBackActionChange={updateRoleDrawBackAction}
-            persistencePending={sessionSync.isCreating || sessionSync.isRemoved}
+            persistencePending={
+              sessionSync.isCreating ||
+              sessionSync.isRemoved ||
+              sessionSync.hasPendingMetadata ||
+              !tournamentValid
+            }
+            tournamentControl={tournamentPicker}
+            tournamentValid={tournamentValid}
+            tournamentSelected={tournamentId !== null}
             initialSessionState={setupSession}
             onSessionStateChange={handleSetupSessionChange}
             onEvent={logEvent}
@@ -2572,7 +2723,14 @@ export const ClubWorkspace = ({
             }}
             onComplete={(next, selectedHostPlayerId) => {
               const gameId = sessionSync.gameId;
-              if (gameId === null || sessionSync.isCreating || sessionSync.isRemoved) return;
+              if (
+                gameId === null ||
+                sessionSync.isCreating ||
+                sessionSync.isRemoved ||
+                sessionSync.hasPendingMetadata ||
+                !tournamentValid
+              )
+                return;
               const baseline = createInitialGameBaseline(next);
               const sequence =
                 Math.max(0, ...legacyLogRef.current.map((entry) => entry.sequence)) + 1;
@@ -3303,10 +3461,16 @@ export const App = () => {
             <p>
               {missingOwner
                 ? t("browserGameMissingOwnerBody", {
-                    game: browserGameState.attachment.name ?? browserGameState.attachment.gameId,
+                    game:
+                      browserGameState.attachment.name ||
+                      browserGameState.attachment.gameId ||
+                      t("pendingTournamentChanges"),
                   })
                 : t("browserGameAttachedBody", {
-                    game: browserGameState.attachment.name ?? browserGameState.attachment.gameId,
+                    game:
+                      browserGameState.attachment.name ||
+                      browserGameState.attachment.gameId ||
+                      t("pendingTournamentChanges"),
                     club:
                       clubs.find(({ id }) => id === browserGameState.attachment.clubId)?.name ??
                       browserGameState.attachment.clubId,
