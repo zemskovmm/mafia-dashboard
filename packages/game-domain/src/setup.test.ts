@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CASPER_PLAYER_ID, CASPER_SEAT, FEDERATION_RULES_EDITION } from "./index.js";
+import { CASPER_PLAYER_ID, CASPER_SEAT } from "./index.js";
 import {
   assignRoleForSeat,
   beginRoleDraw,
@@ -12,19 +12,15 @@ import {
   roleCounts,
 } from "./setup.js";
 import type { PlayerInput, Role } from "./types.js";
-
 const players = (): PlayerInput[] =>
   Array.from({ length: 10 }, (_, index) => ({
     id: `player-${index + 1}`,
-
     seat: index + 1,
   }));
-
 const withCasper = (): PlayerInput[] =>
   players().map((player) =>
     player.seat === CASPER_SEAT ? { id: CASPER_PLAYER_ID, seat: CASPER_SEAT } : player,
   );
-
 describe("setup", () => {
   it("keeps canonical setup identity-only and refuses copied profile names", () => {
     const roster = players().map(({ id, seat }) => ({ id, seat }));
@@ -35,29 +31,23 @@ describe("setup", () => {
   });
   it("requires exactly ten distinct players and seats", () => {
     expect(() => createSetup(players().slice(0, 9))).toThrow(/exactly ten/i);
-
     const duplicatePlayer = players();
     duplicatePlayer[9] = { ...duplicatePlayer[9]!, id: duplicatePlayer[0]!.id };
     expect(() => createSetup(duplicatePlayer)).toThrow(/distinct players/i);
-
     const duplicateSeat = players();
     duplicateSeat[9] = { ...duplicateSeat[9]!, seat: duplicateSeat[0]!.seat };
     expect(() => createSetup(duplicateSeat)).toThrow(/distinct seats/i);
   });
-
   it("reserves the synthetic Casper identity for seat ten", () => {
     const misplaced = players();
     misplaced[0] = { id: "casper", seat: 1 };
     expect(() => createSetup(misplaced)).toThrow(/Casper.*seat 10/i);
-
     const named = players().map((player) => ({ ...player, name: "Not Casper" }));
     named[9] = { id: "casper", name: "Not Casper", seat: 10 };
     expect(() => createSetup(named)).toThrow(/identity-only/i);
   });
-
   it("uses the canonical ten-card role deck", () => {
     const setup = createSetup(players());
-
     expect(roleCounts(setup.remainingRoles)).toEqual({
       sheriff: 1,
       citizen: 6,
@@ -66,7 +56,6 @@ describe("setup", () => {
     });
     expect(setup.step).toBe("music");
   });
-
   it("preassigns Casper a citizen while leaving nine drawable canonical cards", () => {
     const initial = createSetup(withCasper());
     expect(initial.assignments).toEqual({});
@@ -82,7 +71,6 @@ describe("setup", () => {
     expect(() => rerollRoleForSeat(first, CASPER_SEAT, () => 0)).toThrow(/Casper.*reroll/i);
     expect(() => assignRoleForSeat(first, CASPER_SEAT, "mafia")).toThrow(/Casper.*role/i);
     expect(() => assignRoleForSeat(first, CASPER_SEAT, "citizen")).toThrow(/Casper.*role/i);
-
     let drawing = first;
     for (let seat = 1; seat < CASPER_SEAT; seat += 1) drawing = drawRoleForSeat(drawing, seat);
     expect(
@@ -97,7 +85,6 @@ describe("setup", () => {
     });
     expect(completeRoleDraw(drawing).step).toBe("mafia-planning");
   });
-
   it("does not reserve a citizen for a real nonvirtual identity at seat ten", () => {
     const humans = players();
     const drawing = beginRoleDraw(createSetup(humans), createSeededRandom(42));
@@ -105,7 +92,6 @@ describe("setup", () => {
     expect(drawing.remainingRoles).toHaveLength(10);
     expect(assignRoleForSeat(drawing, 10, "mafia").assignments[10]).toBe("mafia");
   });
-
   it("rejects forged Casper draw completions even when every role card is accounted for", () => {
     let drawing = beginRoleDraw(createSetup(withCasper()), createSeededRandom(42));
     for (let seat = 1; seat < CASPER_SEAT; seat += 1) drawing = drawRoleForSeat(drawing, seat);
@@ -124,30 +110,24 @@ describe("setup", () => {
     };
     expect(() => completeRoleDraw(forged)).toThrow(/Casper.*citizen/i);
   });
-
   it("keeps music playback state out of the durable setup", () => {
     const setup = createSetup(players());
     expect(setup).not.toHaveProperty("musicState");
   });
-
   it("draws one deterministic remaining role per tapped seat", () => {
     const setup = createSetup(players());
     const first = beginRoleDraw(setup, createSeededRandom(42));
     const second = beginRoleDraw(setup, createSeededRandom(42));
-
     expect(first.roleDeck).toEqual(second.roleDeck);
-
     const afterSeatOne = drawRoleForSeat(first, 1);
     expect(afterSeatOne.assignments[1]).toBe(first.roleDeck[0]);
     expect(afterSeatOne.remainingRoles).toHaveLength(9);
     expect(() => drawRoleForSeat(afterSeatOne, 1)).toThrow(/already has a role/i);
   });
-
   it("rerolls an assigned seat only from roles that are still available", () => {
     let drawing = beginRoleDraw(createSetup(players()), createSeededRandom(42));
     drawing = drawRoleForSeat(drawing, 1);
     const previousRole = drawing.assignments[1];
-
     const rerolled = rerollRoleForSeat(drawing, 1, () => 0);
     expect(rerolled.remainingRoles).toHaveLength(9);
     expect(rerolled.remainingRoles).toContain(previousRole);
@@ -157,42 +137,34 @@ describe("setup", () => {
         ...Object.values(rerolled.assignments).filter((role): role is Role => role !== undefined),
       ]),
     ).toEqual({ sheriff: 1, citizen: 6, mafia: 2, don: 1 });
-
     for (let seat = 2; seat <= 10; seat += 1) drawing = drawRoleForSeat(drawing, seat);
     expect(rerollRoleForSeat(drawing, 1, () => 0)).toBe(drawing);
   });
-
   it("manually assigns only a role card that remains in the deck", () => {
     const drawing = beginRoleDraw(createSetup(players()), createSeededRandom(42));
     const assigned = assignRoleForSeat(drawing, 1, "sheriff");
-
     expect(assigned.assignments[1]).toBe("sheriff");
     expect(assigned.remainingRoles).toHaveLength(9);
     expect(() => assignRoleForSeat(assigned, 2, "sheriff")).toThrow(/not available/i);
   });
-
-  it.each([undefined, FEDERATION_RULES_EDITION])(
-    "clears and reassigns a full %s deal without changing its deck",
-    (rulesEdition) => {
-      let drawing = beginRoleDraw(createSetup(players(), { rulesEdition }), createSeededRandom(19));
-      for (let seat = 1; seat <= 10; seat += 1) drawing = drawRoleForSeat(drawing, seat);
-      const before = structuredClone(drawing);
-      const role = drawing.assignments[3]!;
-      const cleared = clearRoleForSeat(drawing, 3);
-      expect(drawing).toEqual(before);
-      expect(cleared.assignments[3]).toBeUndefined();
-      expect(cleared.remainingRoles).toEqual([role]);
-      expect(cleared.roleDeck).toEqual(drawing.roleDeck);
-      expect(cleared.rulesEdition).toBe(rulesEdition);
-      expect(clearRoleForSeat(cleared, 3)).toBe(cleared);
-      expect(() => completeRoleDraw(cleared)).toThrow(/all ten seats/i);
-      expect(assignRoleForSeat(cleared, 3, role)).toEqual(drawing);
-      expect(() => assignRoleForSeat(cleared, 3, role === "don" ? "sheriff" : "don")).toThrow(
-        /not available/i,
-      );
-    },
-  );
-
+  it("clears and reassigns a full current deal without changing its deck", () => {
+    let drawing = beginRoleDraw(createSetup(players()), createSeededRandom(19));
+    for (let seat = 1; seat <= 10; seat += 1) drawing = drawRoleForSeat(drawing, seat);
+    const before = structuredClone(drawing);
+    const role = drawing.assignments[3]!;
+    const cleared = clearRoleForSeat(drawing, 3);
+    expect(drawing).toEqual(before);
+    expect(cleared.assignments[3]).toBeUndefined();
+    expect(cleared.remainingRoles).toEqual([role]);
+    expect(cleared.roleDeck).toEqual(drawing.roleDeck);
+    expect(cleared).not.toHaveProperty("rulesEdition");
+    expect(clearRoleForSeat(cleared, 3)).toBe(cleared);
+    expect(() => completeRoleDraw(cleared)).toThrow(/all ten seats/i);
+    expect(assignRoleForSeat(cleared, 3, role)).toEqual(drawing);
+    expect(() => assignRoleForSeat(cleared, 3, role === "don" ? "sheriff" : "don")).toThrow(
+      /not available/i,
+    );
+  });
   it("only clears real human seats during role draw", () => {
     const initial = createSetup(withCasper());
     const drawing = beginRoleDraw(initial, createSeededRandom(19));
@@ -209,17 +181,13 @@ describe("setup", () => {
     ]);
     expect(clearRoleForSeat(partial, 1).assignments).toEqual({ [CASPER_SEAT]: "citizen" });
   });
-
   it("cannot finish role drawing until all ten seats are assigned", () => {
     let drawing = beginRoleDraw(createSetup(players()), createSeededRandom(19));
-
     drawing = drawRoleForSeat(drawing, 1);
     expect(() => completeRoleDraw(drawing)).toThrow(/all ten seats/i);
-
     for (let seat = 2; seat <= 10; seat += 1) {
       drawing = drawRoleForSeat(drawing, seat);
     }
-
     const complete = completeRoleDraw(drawing);
     expect(complete.step).toBe("mafia-planning");
     const assignedRoles = Object.values(complete.assignments).filter(

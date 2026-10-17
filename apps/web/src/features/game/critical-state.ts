@@ -6,7 +6,6 @@ const nonPlayingPhases = new Set<GamePhase>([
   "don-identification",
   "sheriff-identification",
   "free-seating",
-  "sheriff-wake",
   "finished",
   "draw",
   "cancelled",

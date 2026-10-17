@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { swipeCard } from "../../test-card-gestures.js";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { GameTable, type TableSeatView } from "./GameTable.js";
 import { PlayerCardAppearanceContext } from "../theme/PlayerCardAppearanceContext.js";
@@ -10,25 +10,44 @@ const seats: TableSeatView[] = Array.from({ length: 10 }, (_, index) => ({
   name: `Player ${index + 1}`,
 }));
 
-const ContextActionHarness = () => {
-  const [swipedSeat, setSwipedSeat] = useState<number | null>(null);
-  return (
-    <GameTable
-      seats={seats}
-      onSeatSwipe={(seat) => setSwipedSeat((current) => (current === seat ? null : seat))}
-      onDismissSwipeAction={() => setSwipedSeat(null)}
-      swipeAction={
-        swipedSeat === null ? undefined : (
-          <button type="button" className="table-swipe-red-card">
-            Red card Player {swipedSeat}
-          </button>
-        )
-      }
-    />
-  );
-};
-
 describe("GameTable", () => {
+  it("uses one capability-based native touch policy", () => {
+    const horizontal = vi.fn();
+    const penalty = vi.fn();
+    const { rerender } = render(<GameTable seats={seats} onSeatSwipe={horizontal} />);
+    const card = () => screen.getByRole("button", { name: "Seat 1: Player 1" });
+    expect(card()).toHaveStyle({ touchAction: "pan-y pinch-zoom" });
+    rerender(<GameTable seats={seats} onSeatSwipe={horizontal} onSeatPenalty={penalty} />);
+    expect(card()).toHaveStyle({ touchAction: "none" });
+    rerender(<GameTable seats={seats} onSeatFoul={penalty} />);
+    expect(card()).toHaveStyle({ touchAction: "none" });
+    rerender(<GameTable seats={seats} onSeatSwipe={horizontal} seatActionDisabled={() => true} />);
+    expect(card().style.touchAction).toBe("");
+    rerender(<GameTable seats={[{ ...seats[0]!, inactive: true }]} onSeatSwipe={horizontal} />);
+    expect(card().style.touchAction).toBe("");
+    rerender(<GameTable seats={seats} onSeatSwipe={horizontal} readOnly />);
+    expect(screen.getByRole("group", { name: "Seat 1: Player 1" }).style.touchAction).toBe("");
+  });
+  it("leaves keys native without foul or context shortcuts and retains native button activation", async () => {
+    const user = (await import("@testing-library/user-event")).default.setup();
+    const foul = vi.fn();
+    const swipe = vi.fn();
+    const click = vi.fn();
+    render(<GameTable seats={seats} onSeatFoul={foul} onSeatSwipe={swipe} onSeatClick={click} />);
+    const card = screen.getByRole("button", { name: "Seat 1: Player 1" });
+    card.focus();
+    for (const init of [{ key: "f" }, { key: "ContextMenu" }, { key: "F10", shiftKey: true }]) {
+      const event = new KeyboardEvent("keydown", { ...init, bubbles: true, cancelable: true });
+      fireEvent(card, event);
+      expect(event.defaultPrevented).toBe(false);
+    }
+    expect(foul).not.toHaveBeenCalled();
+    expect(swipe).not.toHaveBeenCalled();
+    expect(card).not.toHaveAttribute("aria-keyshortcuts");
+    expect(card).toHaveAttribute("title", "Swipe down to issue a foul");
+    await user.keyboard("{Enter} ");
+    expect(click).toHaveBeenCalledTimes(2);
+  });
   it("separates round nominations, additional supporters and the current speaker selection with live icons", () => {
     const nominatedSeats = [
       { ...seats[0]!, nominated: true, supportCount: 9, nominationSelected: true },
@@ -171,7 +190,7 @@ describe("GameTable", () => {
     },
   );
 
-  it("keeps mouse and keyboard fouls independent of disabled taps and rejects cancelled gestures", () => {
+  it("keeps mouse and touch fouls independent of disabled taps and rejects cancelled gestures", () => {
     const foul = vi.fn();
     const click = vi.fn();
     const { rerender } = render(
@@ -186,7 +205,7 @@ describe("GameTable", () => {
     expect(card).not.toBeDisabled();
     expect(card).toHaveAttribute("aria-disabled", "true");
     card.focus();
-    fireEvent.keyDown(card, { key: "f" });
+    swipeCard(card, 0, 70);
     expect(foul).toHaveBeenCalledExactlyOnceWith(1);
     fireEvent.keyDown(card, { key: "f", repeat: true });
     fireEvent.keyDown(card, { key: "f", ctrlKey: true });
@@ -433,9 +452,7 @@ describe("GameTable", () => {
     render(<GameTable seats={seats} onSeatClick={onSeatClick} onSeatSwipe={onSeatSwipe} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Seat 7: Player 7" }));
-    fireEvent.keyDown(screen.getByRole("button", { name: "Seat 9: Player 9" }), {
-      key: "ContextMenu",
-    });
+    swipeCard(screen.getByRole("button", { name: "Seat 9: Player 9" }));
 
     expect(onSeatClick).toHaveBeenCalledOnce();
     expect(onSeatClick).toHaveBeenCalledWith(7);
@@ -574,41 +591,22 @@ describe("GameTable", () => {
     expect(screen.getByRole("button", { name: "Continue" })).toBeDisabled();
   });
 
-  it.each([-60, 60])("opens an action menu after a %ipx swipe without also clicking", (deltaX) => {
-    const onSeatClick = vi.fn();
-    const Harness = () => {
-      const [swipedSeat, setSwipedSeat] = useState<number | null>(null);
-      return (
-        <GameTable
-          seats={seats}
-          onSeatSwipe={setSwipedSeat}
-          onSeatClick={onSeatClick}
-          swipeAction={
-            swipedSeat === null ? undefined : (
-              <button type="button" className="table-swipe-red-card">
-                Red card Player {swipedSeat}
-              </button>
-            )
-          }
-        />
-      );
-    };
-    render(<Harness />);
-    const player = screen.getByRole("button", { name: "Seat 1: Player 1" });
-    expect(screen.queryByRole("button", { name: "Red card Player 1" })).toBeNull();
-
-    fireEvent.touchStart(player, { touches: [{ clientX: 100, clientY: 40 }] });
-    fireEvent.touchEnd(player, { changedTouches: [{ clientX: 100 + deltaX, clientY: 42 }] });
-    fireEvent.click(player);
-    expect(onSeatClick).not.toHaveBeenCalled();
-
-    expect(screen.getByRole("button", { name: "Red card Player 1" })).toHaveClass(
-      "table-swipe-red-card",
-    );
-    expect(screen.getByRole("button", { name: "Red card Player 1" }).parentElement).toHaveClass(
-      "table-swipe-menu",
-    );
-  });
+  it.each([-60, 60])(
+    "retains the generic setup role gesture for %ipx without a click",
+    (deltaX) => {
+      const onSeatClick = vi.fn(),
+        onSeatSwipe = vi.fn();
+      render(<GameTable seats={seats} onSeatSwipe={onSeatSwipe} onSeatClick={onSeatClick} />);
+      const player = screen.getByRole("button", { name: "Seat 1: Player 1" });
+      player.focus();
+      swipeCard(player, deltaX);
+      fireEvent.click(player);
+      expect(onSeatSwipe).toHaveBeenCalledExactlyOnceWith(1);
+      expect(onSeatClick).not.toHaveBeenCalled();
+      expect(player).toHaveFocus();
+      expect(document.querySelector(".table-swipe-menu, .table-swipe-backdrop")).toBeNull();
+    },
+  );
 
   it("does not open an action menu for vertical, short or cancelled gestures", () => {
     const onSeatSwipe = vi.fn();
@@ -625,65 +623,6 @@ describe("GameTable", () => {
     fireEvent.touchCancel(player);
     fireEvent.touchEnd(player, { changedTouches: [{ clientX: 170, clientY: 42 }] });
     expect(onSeatSwipe).not.toHaveBeenCalled();
-  });
-
-  it("intercepts outside interaction without activating a seat and allows reopening", () => {
-    const onSeatClick = vi.fn();
-    const Harness = () => {
-      const [seat, setSeat] = useState<number | null>(null);
-      return (
-        <GameTable
-          seats={seats}
-          onSeatSwipe={setSeat}
-          onSeatClick={onSeatClick}
-          onDismissSwipeAction={() => setSeat(null)}
-          swipeAction={seat === null ? undefined : <button>Red card Player {seat}</button>}
-        />
-      );
-    };
-    render(<Harness />);
-    const first = screen.getByRole("button", { name: "Seat 1: Player 1" });
-    fireEvent.keyDown(first, { key: "ContextMenu" });
-    expect(screen.getByRole("button", { name: "Red card Player 1" })).toBeInTheDocument();
-    const backdrop = document.querySelector(".table-swipe-backdrop");
-    expect(backdrop).not.toBeNull();
-    expect(backdrop?.parentElement).toBe(document.body);
-    expect(first.closest(".table-stage")).toHaveClass("is-context-action-open");
-    fireEvent.click(backdrop!);
-    expect(screen.queryByRole("button", { name: "Red card Player 1" })).toBeNull();
-    expect(onSeatClick).not.toHaveBeenCalled();
-    expect(document.querySelector(".table-swipe-backdrop")).toBeNull();
-    fireEvent.keyDown(screen.getByRole("button", { name: "Seat 2: Player 2" }), {
-      key: "ContextMenu",
-    });
-    expect(screen.getByRole("button", { name: "Red card Player 2" })).toBeInTheDocument();
-  });
-
-  it("opens a seat context action with Shift+F10 and focuses its first control", async () => {
-    render(<ContextActionHarness />);
-    const player = screen.getByRole("button", { name: "Seat 1: Player 1" });
-    player.focus();
-
-    fireEvent.keyDown(player, { key: "F10", shiftKey: true });
-
-    const action = screen.getByRole("button", { name: "Red card Player 1" });
-    await waitFor(() => expect(action).toHaveFocus());
-    expect(screen.getByRole("dialog", { name: "Player actions" })).toContainElement(action);
-    expect(player).toHaveAttribute("aria-haspopup", "dialog");
-  });
-
-  it("closes a keyboard-opened seat context action with Escape and restores seat focus", async () => {
-    render(<ContextActionHarness />);
-    const player = screen.getByRole("button", { name: "Seat 1: Player 1" });
-    player.focus();
-    fireEvent.keyDown(player, { key: "ContextMenu" });
-    const action = screen.getByRole("button", { name: "Red card Player 1" });
-    await waitFor(() => expect(action).toHaveFocus());
-
-    fireEvent.keyDown(action, { key: "Escape" });
-
-    await waitFor(() => expect(player).toHaveFocus());
-    expect(screen.queryByRole("button", { name: "Red card Player 1" })).toBeNull();
   });
 
   it.each([

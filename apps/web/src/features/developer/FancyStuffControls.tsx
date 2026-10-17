@@ -1,4 +1,5 @@
 import { useMessages } from "../../i18n/I18nProvider.js";
+import { DeveloperSettingToggle } from "./DeveloperSettingToggle.js";
 import { fancyStuffMessages } from "../../i18n/messages/fancy-stuff.js";
 import type { FancyStuffSettings } from "../effects/fancy-stuff-preferences.js";
 import "./FancyStuffControls.css";
@@ -12,21 +13,18 @@ export const FancyStuffControls = ({
 }>) => {
   const { t } = useMessages(fancyStuffMessages);
   return (
-    <details className="fancy-stuff-controls">
+    <details className="dev-disclosure fancy-stuff-controls">
       <summary>{t("section")}</summary>
-      <div className="fancy-stuff-fields">
-        <button
-          type="button"
-          className="dev-setting-toggle"
-          aria-label={t(settings.clubEntryEffects ? "disable" : "enable")}
-          aria-pressed={settings.clubEntryEffects}
+      <div className="dev-disclosure-fields fancy-stuff-fields">
+        <DeveloperSettingToggle
+          title={t("clubEntryEffects")}
+          ariaLabel={t(settings.clubEntryEffects ? "disable" : "enable")}
+          pressed={settings.clubEntryEffects}
+          stateLabel={t(settings.clubEntryEffects ? "on" : "off")}
           onClick={() => onChange({ ...settings, clubEntryEffects: !settings.clubEntryEffects })}
-        >
-          <strong>{t("clubEntryEffects")}</strong>
-          <span className="dev-setting-state">{t(settings.clubEntryEffects ? "on" : "off")}</span>
-        </button>
-        <p>{t("help")}</p>
-        <p>{t("local")}</p>
+        />
+        <p className="dev-disclosure-help">{t("help")}</p>
+        <p className="dev-disclosure-help">{t("local")}</p>
       </div>
     </details>
   );

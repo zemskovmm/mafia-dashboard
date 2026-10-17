@@ -37,9 +37,6 @@ const ClubTournamentPicker = ({
   const [busy, setBusy] = useState(false);
   const [createError, setCreateError] = useState(false);
   const createRequest = useRef(0);
-  const restoreCreateFocus = useRef(false);
-  const nameRef = useRef<HTMLInputElement>(null);
-  const newButtonRef = useRef<HTMLButtonElement>(null);
   const included = enabled || value !== null;
   const valid = !included || value !== null;
 
@@ -78,17 +75,9 @@ const ClubTournamentPicker = ({
       createRequest.current += 1;
     };
   }, [disabled, value]);
-  useEffect(() => {
-    if (creating) nameRef.current?.focus();
-    else if (restoreCreateFocus.current && !busy) {
-      newButtonRef.current?.focus();
-      restoreCreateFocus.current = false;
-    }
-  }, [creating, busy]);
 
   const cancelCreation = () => {
     createRequest.current += 1;
-    restoreCreateFocus.current = true;
     setBusy(false);
     setCreating(false);
     setCreateError(false);
@@ -103,7 +92,6 @@ const ClubTournamentPicker = ({
     try {
       const tournament = await createTournament(trimmed, clubId);
       if (createRequest.current !== request) return;
-      restoreCreateFocus.current = true;
       setTournaments((current) => [
         ...(current ?? []).filter(({ id }) => id !== tournament.id),
         tournament,
@@ -181,7 +169,6 @@ const ClubTournamentPicker = ({
           )}
           {!valid && <p id={`${id}-help`}>{t("chooseHelp")}</p>}
           <button
-            ref={newButtonRef}
             type="button"
             disabled={disabled || busy || creating}
             onClick={() => {
@@ -192,33 +179,16 @@ const ClubTournamentPicker = ({
             {t("new")}
           </button>
           {creating && (
-            <div
-              className="tournament-picker-create"
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  cancelCreation();
-                }
-              }}
-            >
+            <div className="tournament-picker-create">
               <label htmlFor={`${id}-name`}>
                 {t("name")}
                 <input
-                  ref={nameRef}
                   id={`${id}-name`}
                   value={name}
                   maxLength={100}
                   disabled={disabled || busy}
                   aria-describedby={`${id}-name-help`}
                   onChange={(event) => setName(event.currentTarget.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      void create();
-                    }
-                  }}
                 />
               </label>
               <p id={`${id}-name-help`}>{t("nameHelp")}</p>

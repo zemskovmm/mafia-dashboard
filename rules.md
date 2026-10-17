@@ -20,7 +20,7 @@ The product standardizes on **Club Mafia**, whose common format uses:
 - moderator-tracked nominations, votes, night shots, checks, and fouls;
 - music or masking sound during the night.[S3][S4]
 
-Therefore, La Verdad implements a versioned Club Mafia rules baseline only. Alternate player counts, role sets, and party-game ruleset modules are outside the product scope.
+La Verdad implements one current Club Mafia baseline, owned by [IDD-0002](.idd/intent/IDD-0002.spec-club-mafia-gameplay.md), based on the MAFGAME 1 July 2026 source [S10] with documented club options. The date identifies source material, not a stored game engine. Alternate engines, per-game ruleset/edition selectors and party-game modules are outside scope; optional Casper is the documented nine-human/one-virtual-Citizen roster, not another engine.
 
 ## 2. Product scope
 
@@ -36,7 +36,7 @@ The product is a **moderator’s control surface for a physical table**. Players
 6. record nominations, votes, fouls, checks, shots, and eliminations;
 7. detect legal next actions and win conditions;
 8. correct moderator mistakes through an audited undo;
-9. retain completed-game history in SQL.
+9. retain known completed-game facts and available history in Azure Table/private Blob Storage.
 
 The product does **not** provide player accounts, automatic role delivery to phones, video chat, remote voting, or a public/spectator display. Those modes are outside its moderator-operated physical-table scope.
 
@@ -44,7 +44,7 @@ The product does **not** provide player accounts, automatic role delivery to pho
 
 - **Assist, do not distract.** The moderator must be able to operate the core flow with large controls and minimal typing.
 - **Rules are fixed.** The application implements the Club Mafia rules in this document rather than exposing alternate-ruleset selectors.
-- **The event log is authoritative.** Live state is replayed from an immutable baseline through the active branch of parent-linked semantic events so actions can be audited and safely undone.
+- **The browser snapshot is live authority.** Parent-linked canonical events validate Log/Timeline/Preview and permitted Undo without replacing the current snapshot. Completed facts remain valid independently of optional replay detail.
 - **Secrets stay private.** Private roles and checks must not leak to non-host UI, player-visible logs, browser notifications, or URLs.
 - **A moderator remains the arbiter.** The app validates normal flow; exceptional draw and cancellation rulings require an explanation, while ordinary corrections use Undo or Timeline Reset rather than an arbitrary state override.
 - **No silent data loss.** Every accepted action is persisted and visibly acknowledged.
@@ -52,9 +52,9 @@ The product does **not** provide player accounts, automatic role delivery to pho
 
 Existing moderator tools repeatedly emphasize role/vote tracking, guided night actions, timers, game history, autosave, and automatic end-game detection. Those are useful benchmark capabilities, not code or designs to copy.[S8][S9]
 
-## 3. Canonical ruleset: Club Mafia v1
+## 3. Current Club Mafia rules
 
-This section defines the application’s executable Club Mafia baseline. It is a product decision derived from the compared sources, not a claim that every club uses identical rules.
+This section summarizes the current Club Mafia contract in IDD-0002, not a claim that every club uses identical rules. Historical comparisons in section 12 are source context, not runtime alternatives. No persisted business record labels an engine with `rulesEdition`, `rulesetId`, `rulesetVersion` or an equivalent selector.
 
 ### 3.1 Participants and teams
 
@@ -67,14 +67,16 @@ A game has:
 
 Roles are assigned randomly unless the moderator explicitly records a manual deal. Seat numbers remain stable for the entire game.
 
+Optional Casper fixes a virtual Citizen at seat ten with nine human players. The virtual seat cannot host or draw a role and is never rated as a human; a real person named Casper remains an ordinary player. Casper, Best Move-off and direct role corrections require no deviation acknowledgement.
+
 ### 3.2 Role abilities
 
 | Role              |    Team | Count | Knowledge and ability                                                                                          |
 | ----------------- | ------: | ----: | -------------------------------------------------------------------------------------------------------------- |
 | Citizen           |     Red |     6 | No private night action. Speaks, nominates, and votes while active.                                            |
-| Sheriff           |     Red |     1 | Once per regular night, checks one active player and privately learns whether that player is red or black.     |
+| Sheriff           |     Red |     1 | When eligible for the night, checks one seated player and privately learns red / black alignment.              |
 | Mafia             |   Black |     2 | Learns the black team on night zero and participates in the coordinated nightly shot while active.             |
-| Don               |   Black |     1 | Has Mafia abilities and, once per regular night, checks whether one active player is the Sheriff.              |
+| Don               |   Black |     1 | Has Mafia abilities and, when eligible for the night, checks whether one seated player is the Sheriff.         |
 | Moderator / Judge | Neutral |     1 | Runs phases, time, rulings, secret information, votes, fouls, eliminations, and victory checks. Does not play. |
 
 The Sheriff learns **team alignment**, not an exact role. The Don learns only **Sheriff / not Sheriff**.[S3][S4]
@@ -99,9 +101,9 @@ The dashboard MUST evaluate victory immediately after each elimination, disquali
 
 - **Red wins** when no active black players remain.
 - **Black wins** when active black players are equal to or greater than active red players.
-- **Draw** is available as a moderator ruling. In Club Mafia v1 it is automatically suggested if three consecutive complete night/day cycles produce no elimination, but the moderator must confirm it because club rules differ on this edge case.[S4]
+- **Rules draw** follows three completed game nights with no participant-count change during that period. Initial Mafia planning counts as game night one; an intervening day/night departure resets the streak. No host reason is required to acknowledge that rule basis. A separate discretionary draw or cancellation requires a reason.
 
-No further phase starts after a win, confirmed draw, or cancellation.
+No ordinary phase starts after a win, draw or cancellation. Permitted correction remains distinct from explicit Finish. A reasoned referee-awarded opposing-team victory retains its rule, losing side and required committee acknowledgement without fabricating departures.
 
 ## 4. Game state machine
 
@@ -125,7 +127,7 @@ DRAFT
 
 Exceptional terminal states are `CANCELLED` and `DRAW`. A game may be paused from any live state without changing its logical phase.
 
-The implemented domain projection records consecutive complete cycles without an elimination and whether the current cycle has already produced an elimination. The draw suggestion becomes active at three consecutive quiet cycles, but only an explicit `game.drawn` event with a non-empty moderator reason enters `DRAW`. `game.cancelled` likewise requires a reason. Both events are public semantic checkpoints and may appear only once at the active replay head.
+Current state records completed game nights, intervening departures and actual Sheriff checks as distinct facts. Rules-draw basis and discretionary draw/cancellation reasons remain distinct; accepted terminal events obey the current canonical lifecycle and cannot be duplicated at the replay head. There is no older cycle-based draw engine.
 
 ### 4.2 Preconditions
 
@@ -146,12 +148,11 @@ Night zero establishes secret information and does not eliminate anyone.
 1. The moderator announces night and all players put on masks / close their eyes.
 2. Black players wake, identify one another, identify the Don, and agree on a future target order. The default timer is **60 seconds**.[S3][S4]
 3. Black players sleep.
-4. The Don identifies themself to the moderator if needed.
-5. The Sheriff identifies themself to the moderator if needed.
-6. The moderator may run the Club Mafia **40-second free-seating / sound-masking period**.[S4]
-7. Day one begins with seat 1.
+4. The host confirms **Mafia asleep**.
+5. A separate reminder wakes Sheriff for ten seconds to look around and greet the host.
+6. **Begin round zero** leads directly to the first discussion, with seat 1 opening; no initial check, kill, separate identification confirmation or free-seating stop occurs.
 
-The target plan is a moderator note; it is not enforced as a mandatory sequence because players can miss, become eliminated, or use a different club convention.
+This streamlined club opening is not exact rulebook opening-procedure compliance. Initial planning is official game night one; the first shooting night is game night two. The first discussion is the zero round, although the internal first daytime index may be one.
 
 ### 4.4 Day speeches
 
@@ -161,7 +162,7 @@ The target plan is a moderator note; it is not enforced as a mandatory sequence 
 - Day one starts with seat 1.
 - Each later day starts with the next active seat after the previous day’s starting speaker.
 - A player MAY end early by passing; the timer stops and the next speaker begins.
-- A player with a third foul loses their next normal speech. Their next turn becomes a **10-second nomination-only window** in which they may make one legal nomination.
+- A player with a third foul loses the next ordinary speech while retaining nomination; with three or four players remaining at that turn, they receive 30 seconds instead. The pending restriction survives night, does not shorten a speech already underway, and is not consumed by a tie speech.
 - The moderator MAY stop or restart the auxiliary timer. Timer actions remain local UI state and are not added to durable game history.
 
 The UI MUST show the current speaker, upcoming speaker, remaining time, fouls, and whether the player has already nominated someone that day.
@@ -179,7 +180,7 @@ A valid nomination records:
 - timestamp;
 - moderator who accepted it.
 
-Duplicate nominations of the same candidate do not create a second voting slot. In Club Mafia v1, an accepted nomination cannot be withdrawn.[S3][S4]
+Each speaker may create one new nomination, including self, and support already nominated candidates once per target without duplicating voting slots or adding votes. Retapping corrects only that speaker's own selection; earlier speakers' contributions survive. A rejected second new nomination does not disable supports or penalties. Counts describe surviving relationships, not toggle activity.
 
 ### 4.6 Whether a vote occurs
 
@@ -193,11 +194,10 @@ Duplicate nominations of the same candidate do not create a second voting slot. 
 The moderator opens each candidate’s voting window in nomination order.
 
 - Each active player has one vote per voting round.
-- The physical vote is cast within approximately **1.5–2 seconds** after the moderator calls the candidate.[S3][S4]
-- The moderator records the number of votes for the candidate.
-- A vote already cast cannot be moved.
-- Any uncast votes are assigned to the last candidate under the canonical Club Mafia rule.
-- The recorded total MUST equal the number of active players eligible to vote unless a rules event explicitly changes eligibility.
+- Candidate calls follow the announced nomination order; physical acceptance is the judge's decision from the second mention until STOP, not an app-timer measurement.
+- The host records individual assignments and may correct transcription without treating it as a participant's second vote. Each voter has at most one assignment per round.
+- Last-candidate remainder applies when that candidate is actually called, not merely inspected; no unobserved votes are invented.
+- Explicit Finish requires a complete or mathematically conclusive ballot, not a merely leading candidate. Disputed counts suspend progression until acknowledged external review and a final ruling.
 - The candidate with the sole highest total is eliminated.
 
 The app records each eligible player’s vote by seat while keeping candidate totals and unassigned voters visible.
@@ -215,6 +215,8 @@ If two or more candidates share the highest total:
 
 After simultaneous eliminations, all affected players are marked inactive before victory is evaluated.
 
+Collective lift is prohibited for all remaining players and for a zero-round five-way tie. Three tied at nine also require both completed official game night three and at least two actual Sheriff checks; skips are not checks. A permitted observed hand count may explicitly finish at zero, minority, half or majority without fabricating untouched individual no votes.
+
 ### 4.9 Final speech
 
 A player eliminated by the day vote or a successful night shot receives one final speech of up to **60 seconds** unless a disqualifying rule explicitly removes that right. Their role remains hidden.[S3][S4]
@@ -227,8 +229,8 @@ After the day result and any final speech:
 
 1. all players sleep / put on masks;
 2. the moderator runs the black-team shot;
-3. the Don checks one active player, if the Don is active;
-4. the Sheriff checks one active player, if the Sheriff is active;
+3. the Don checks one seated player if eligible for this night;
+4. the Sheriff checks one seated player if eligible for this night;
 5. the moderator resolves the night;
 6. any special “best move” is recorded;
 7. morning and any final speech occur;
@@ -236,23 +238,25 @@ After the day result and any final speech:
 
 The application follows this fixed Club Mafia night-action order.
 
+An owner who departed before the night cannot check. A non-decisively shot same-night owner may complete the captured night's check before departure unless disqualification prevents it; inactive targets remain checkable. A deciding result stops further checks, Best Move and farewell.
+
 ### 4.11 Black-team shot
 
 - The moderator calls seat numbers 1 through 10 in order.
 - Every active black player keeps their eyes closed.
 - Each active black player may make one shooting gesture when the intended seat is called.
 - The shot succeeds only if **every active black player shoots the same active target exactly once**.
-- A mismatch, missing shot, extra shot, or invalid target is a miss; nobody is eliminated by the Mafia that night.
+- A mismatch, missing shot or actual multiple shot is a miss. A unanimous shot at an inactive seated target has no effect; unseated targets are rejected. Clerical correction is distinct from observed multiple firing. Accepted ordered private shooter/target observations survive history and Undo without changing public projections.
 - The app records each black player’s observed shot privately and derives success or miss.
 
 This closed-eye coordinated shot is a defining Club Mafia mechanic and differs from party variants where the Mafia awaken and select a victim together every night.[S2][S3][S4]
 
 ### 4.12 Don check
 
-If the Don is active:
+If the Don is eligible for this night:
 
 - the moderator starts a default **10-second** check timer;
-- the Don selects one active target;
+- the Don selects one seated target, including an inactive player, or skips;
 - the moderator privately returns `SHERIFF` or `NOT_SHERIFF`;
 - the result is stored as secret game data.
 
@@ -260,10 +264,10 @@ No player is eliminated by this check.
 
 ### 4.13 Sheriff check
 
-If the Sheriff is active:
+If the Sheriff is eligible for this night:
 
 - the moderator starts a default **10-second** check timer;
-- the Sheriff selects one active target;
+- the Sheriff selects one seated target, including an inactive player, or skips;
 - the moderator privately returns `RED` or `BLACK`;
 - the result is stored as secret game data.
 
@@ -271,14 +275,14 @@ No player is eliminated by this check.
 
 ### 4.14 First-night “best move”
 
-Current implemented behavior runs Best Move when there is an eligible victim on the first regular night:
+Best Move runs for an eligible first shooting-night victim unless two or more first-day departures suppress it:
 
 - while still masked, the victim receives **20 seconds**;
-- the victim names exactly three seat numbers they believe are black;
-- the moderator records the ordered trio;
+- the victim may provide zero through three accepted seat numbers in spoken order;
+- the moderator preserves the accepted prefix if time, interruption, decline or early completion ends the attempt; no active-only target restriction or invented numbers applies;
 - the victim still receives their normal final speech after morning.
 
-Best Move is a per-club setting enabled by default. Its resolved value is copied into `GameState` when the game starts, so later club-setting changes cannot alter an active or completed game.[S4]
+Best Move is a per-club setting enabled by default and captured during meaningful setup, so later preferences cannot alter existing games. Skip records an empty decline without changing that setting; Finish early retains accepted numbers. The judge reads back and accepts before morning; timer expiry never advances automatically. Post-acceptance edits require explicit obvious-slip correction. A virtual Casper victim skips Best Move; previously known Best Move observations remain facts, not alternate gameplay.
 
 ## 5. Fouls and discipline
 
@@ -297,10 +301,10 @@ Consequences:
 
 - foul 1: warning;
 - foul 2: warning;
-- foul 3: the player’s next normal 60-second speech that day becomes a 10-second nomination-only turn; if the player is eliminated by that day’s vote before consuming it, they receive no final speech;
-- foul 4: immediate disqualification with no final speech.[S3][S4]
+- foul 3: restrict the next ordinary discussion turn as in section 4.4, surviving night until consumed; do not use it as a blanket farewell prohibition;
+- foul 4: disqualification without farewell at the applicable disciplinary boundary.
 
-The app MUST track whether the third-foul speech penalty has been consumed; the count alone is insufficient. Any unconsumed penalty expires when the next day begins, before Best Move, morning final speeches, or ordinary day speeches, so it cannot suppress an overnight victim’s new-day final speech.
+The app MUST track whether the third-foul restriction has been consumed; the count alone is insufficient. Fourth foul and direct removal preserve day/night occurrence, announcement timing, required shooting/check completion and legitimate combined shot/removal facts. Exclude a disqualified shooter's shot and count departure once. Cancel the current or nearest affected ballot, including the next day after a result, with victim exceptions; several removals do not cancel several consecutive days.
 
 ### 5.2 Immediate disqualification
 
@@ -321,9 +325,9 @@ The product SHOULD use neutral UI wording such as “eliminated” and “night 
 
 ## 6. Club Mafia configuration boundary
 
-La Verdad supports the ten-seat Club Mafia rules in this document. Player count, role distribution, role reveal, speech order, nominations, voting, tie resolution, night actions, checks, draw suggestion, and foul policy are not alternate-ruleset selectors.
+La Verdad supports the current ten-seat Club Mafia rules and documented Casper option in this document. Role reveal, speech order, nominations, voting, ties, night actions/checks, rules draw and fouls are not alternate-ruleset selectors.
 
-Canonical events carry a replay-format version, but the UI does not expose a ruleset selector. Best Move is the one settled club-level rules control: it is enabled by default, configurable per club, and snapshotted into each new game before play begins.
+Data-shape/operational versions may describe serialization, storage, recovery or the Elo calculation, never dispatch older rules. Games contain no engine identity; there are no edition labels, filters, unrated reasons or old/current game-bank categories. Best Move settings, Casper and role corrections are game facts/options under the one current engine, not version selectors.
 
 The club language is presentation configuration rather than a rules selector. Every host-facing surface supports English and Russian; existing clubs migrate to English, new clubs default from the creator's browser language, and owners or managers/editors can change the club language immediately without changing an active game's canonical state.
 
@@ -342,7 +346,9 @@ The setup screen SHOULD provide:
 - readiness checklist;
 - start confirmation that summarizes secret-data handling.
 
-The canonical setup wizard is ordered and gated: select exactly ten players, start the configured YouTube playlist, draw one random remaining role by tapping each seat, run Mafia negotiation, run the Sheriff wake-up step, and begin day one. The music step may advance only after the browser player reports that playback is actually running. The application loads playlist entries—including repeated occurrences—into its own browser-local session queue. The host can drag to reorder entries and use **Play next** or **Play now** without changing the owner’s real YouTube playlist. The chosen playlist ID belongs to the restorable game session; queue order and track tags are best-effort per-club browser-local preferences.
+The canonical setup wizard is ordered and gated: select ten participants (or nine humans plus fixed Casper), optionally start the configured YouTube playlist, assign roles by tapping seats or the separate role chooser, run Mafia agreement, confirm Mafia asleep, wake Sheriff for the greeting and begin the zero round. Unavailable music is nonblocking. The application loads playlist entries—including repeated occurrences—into its own browser-local session queue. The host can drag to reorder entries and use **Play next** or **Play now** without changing the owner’s real YouTube playlist. The chosen playlist ID belongs to the restorable game session; queue order and track tags are best-effort per-club browser-local preferences.
+
+During role giveaway, either horizontal swipe opens the selected seat's Clear/available-role chooser, including after the complete deal; triple-tap reroll remains separate. Trusted touch must work initially and after Clear. Browser gesture policy follows available actions: horizontal-only role cards retain native vertical pan and pinch zoom, while cards needing vertical foul/penalty gestures retain their existing application policy. Cancelled/capture-lost, multi-pointer and disabled/read-only gestures cannot trigger stale actions or trailing clicks. Native typing, selection and controls remain unchanged; no global cancellation workaround is introduced.
 
 ### 7.2 Live dashboard
 
@@ -362,6 +368,8 @@ The main live view SHOULD keep these visible without scrolling on a tablet or la
 
 Dangerous actions such as eliminating a player, ending the game, revealing roles, or undoing across a phase boundary require confirmation or a short undo window.
 
+Left/right gameplay swipes open no Red-card shortcut and apply no penalty, vote or accidental tap; its dedicated quick-menu is absent. Downward fouls and the upward penalty menu remain, including confirmed disqualification, fourth-foul handling, voting cancellation, no dismissed-player farewell, canonical history and permitted Undo. Setup's horizontal role chooser is not removed.
+
 ### 7.3 Night screen
 
 The night screen MUST minimize accidental leaks:
@@ -378,22 +386,22 @@ The night screen MUST minimize accidental leaks:
 
 The moderator MUST be able to correct recent actions from the authoritative browser snapshot. The browser persists the complete current `GameState` after every domain change and keeps semantic events as the structured Log/Timeline history. Ordinary Undo permanently removes the latest undoable event and every later event; Timeline Reset permanently retains only the selected root-to-checkpoint prefix. Undo and Reset do not create their own game events and there is no Reset Return or administrative correction event.
 
-Undo is limited to the latest three ordinary actions and cannot cross an event that advances the game day. Reset consumes the current Undo allowance. Both actions remain available after a winning state is reached, but become unavailable immediately after the moderator clicks **Finish game**. A confirmed draw or cancellation is terminal immediately because its ruling already includes the required reason. After any completion is persisted, normal snapshot, event, head-move, normalization, start, completion, and delete/clear requests cannot edit, reopen, or remove it; only an exact idempotent retry of the accepted terminal request succeeds. The auxiliary timer resets locally rather than being reconstructed from game history.
+Undo is limited to the latest three ordinary actions and cannot cross an event that advances the game day. Reset consumes the current Undo allowance. Wins, draws and cancellations stop ordinary play but retain permitted correction until explicit **Finish game**, which disables client Undo/Reset. Finish is not an API immutability promise or a new authorization boundary; authorized snapshot persistence remains last-write-wins under IDD-0004. The auxiliary timer resets locally rather than being reconstructed from game history.
 
-The browser snapshot is persisted before network activity. PostgreSQL mirrors the last uploaded valid snapshot even when its client revision is older than the server revision. The server still validates snapshot shape, game invariants, club-owned participants, semantic-history integrity, and secret-data boundaries, then rebuilds active-player or completion projections atomically.
+The browser snapshot is persisted before network activity. Azure stores the last accepted snapshot without a client revision fence. The server validates identity-only shape, club-owned identities and authorization/secret-data boundaries, then publishes related projections atomically. Gameplay rules and semantic replay validation remain in the browser.
 
 ## 8. Persistence model
 
-A relational database fits the domain because games have strongly related, auditable records and integrity constraints.
+Azure Table Storage holds typed records and synchronized projections; private Blob Storage holds complete immutable game revision envelopes and large values. These logical record groups are not SQL tables, and canonical events are stored inside their game envelope rather than one Table entity per event. IDD-0004/0005/0006 own the current persistence and preservation contracts.
 
 Current persisted entities:
 
 - `users` and hashed-token `user_sessions`;
 - `clubs` and `club_memberships` for manager/user access;
 - `players`, including explicit pending/effective club access and optional membership provenance;
-- `game_sessions`, containing the authoritative full browser snapshot, revision metadata, and session status;
-- `game_events`, mirroring the snapshot's exact semantic Log/Timeline prefix;
-- `game_session_mutations` for revisioned idempotent request handling;
+- game heads and private immutable envelopes containing full active snapshots or independently known completed facts, revision metadata and status;
+- retained canonical events inside the envelope, preserving exact semantic Log/Timeline linkage and privacy, not separate Table rows;
+- creation mappings, deletion markers and atomic commit receipts for idempotent publication and non-resurrection;
 - `game_session_players` as the durable host/participant projection used by active games and history filters;
 - `game_results` and `game_player_results` as durable terminal and statistics projections;
 - encrypted `youtube_oauth_credentials` for the separate read-only account grant.
@@ -406,38 +414,31 @@ Important invariants:
 - event replay sequence is monotonic within the retained prefix; Undo and Reset permanently remove the discarded tail;
 - replay validates event envelopes, parent links, phase/day transitions, and state hashes;
 - canonical illegal actions expose a stable `GameRuleError` code and safe context without mutating the supplied projection;
-- red wins, black wins, reasoned draws, and reasoned cancellations become durable completed-game records with their snapshotted ruleset identity;
+- red wins, black wins, rules/discretionary draws and cancellations retain accepted factual bases without engine identity; partial completed records preserve unknowns rather than fabricated outcomes;
 - completed history can be filtered by inclusive UTC calendar dates, participating player, and terminal result;
 - secret fields are never returned by public APIs;
-- completion projections mirror the accepted terminal browser snapshot and cannot be rewritten, reopened, or deleted through normal routes;
+- result projections mirror known accepted facts; available completed timelines are read-only and unavailable detail does not invalidate the factual record;
 - application-level authorization is enforced on every game route, not only in the UI.
 
-## 9. Self-hosted deployment baseline
+Every game and known label/time, host, tournament, participant identity/seat, role/team, status, fouls, Best Move and actual Casper/roster fact remains preserved. Metrics use their own observed denominators; unknown is not zero, false, loss or a made-up played time, and unrelated missing fields do not poison other facts. Win rate includes observed draws; missing outcomes do not become losses. Incomplete records remain in unfiltered history with deterministic undated placement. Elo eligibility is independent: retain the entire `club-team-elo-v1` algorithm, ordering, precision/rounding, ranking, correction rebuilds and tournament-delta accounting in [IDD-0007](.idd/intent/IDD-0007.spec-club-statistics-and-rating.md), removing only edition-based exclusion. Missing actual rating inputs leaves the record unrated, not invalid; missing unrelated foul/status/timeline data does not block a determined rating.
 
-A small single-server deployment SHOULD use Docker Compose with:
+## 9. Deployment baseline
 
-1. one web application container;
-2. one PostgreSQL container or an external managed PostgreSQL service;
-3. a persistent PostgreSQL volume;
-4. a reverse proxy / TLS endpoint, either in Compose or already present on the server;
-5. monitoring and a production backup approach chosen by the owner.
+The application runs locally with its owned Azurite/API/Vite workflow and deploys as an immutable Docker image to Azure Container Apps. Azure Table/private Blob Storage is the sole supported backend. PostgreSQL runtime, Compose deployment and SQL import tooling are not maintained; existing databases, archives and infrastructure are not erased by retiring that support.
 
 Operational requirements:
 
-- pin major application and PostgreSQL image versions;
-- wait for PostgreSQL’s health check, not merely container startup, before starting migrations/application traffic; Docker documents `service_healthy` for this purpose.[S10]
-- run schema migrations as a controlled one-shot step;
-- keep secrets outside the image and repository;
-- do not publish the PostgreSQL port to the public internet;
-- provide `/health/live` and `/health/ready` endpoints;
-- persist database data outside the disposable container layer;
-- choose, document, and test a PostgreSQL backup and restore approach before production; PostgreSQL documents SQL dumps, file-system backups, and continuous archiving as distinct options.[S11]
-- document upgrades and rollback;
+- pin application image identity and verify it after deployment;
+- validate recognized storage readiness before application traffic; explicitly initialize only an approved empty namespace;
+- keep secrets outside the image and repository, using scoped managed identity for production storage;
+- retain private Blob content and provide `/health/live` and `/health/ready` endpoints;
+- confirm remote persistence before acknowledging saves;
+- preserve compatible data through upgrades and rollback without automatic reset or runtime conversion;
 - use secure cookies, CSRF protection, rate limiting on authentication, and TLS.
 
-The implemented Docker Compose and Azure baselines run the schema bundle as a one-shot migration before application traffic. The self-hosted TLS, logging, upgrade, shutdown, and rollback procedures are documented in [`docs/self-hosted-deployment.md`](docs/self-hosted-deployment.md). Scheduled PostgreSQL custom archives, off-server retention, semantic restore verification, and disaster recovery are documented in [`docs/postgresql-backup-and-recovery.md`](docs/postgresql-backup-and-recovery.md).
+See [`docs/azure-deployment.md`](docs/azure-deployment.md) for deployment and rollback. Consistent recovery packages contain typed Table records and all referenced Blob bytes; replication alone is not an application backup. [`docs/azure-storage-backup-and-recovery.md`](docs/azure-storage-backup-and-recovery.md) describes the isolated local qualification. Production backup scheduling, retention and live recovery objectives remain separately scoped work.
 
-A Docker volume provides persistence but is **not** a backup. The production baseline uses daily PostgreSQL custom archives, configurable 14-day local and 30-day off-server retention defaults, weekly isolated semantic restore tests, encrypted/restricted storage, and non-zero failure alerts. This logical backup does not include cluster-global roles or point-in-time recovery.
+Historical normalization is a separately gated one-time operation, not runtime compatibility. Preserve every game/known fact and valid relationship; retain faithful usable completed timelines or a private statistics-only disposition for incompatible optional detail. Incompatible active or unsent state stops the operation. Any predecessor decoder remains private local operational material. Verified representation conversion alone may replace bytes/corresponding hashes; ordinary saves and metadata edits never do. Production execution requires exact-target inventory/dry-run, separately authorized writes, a proven private Table/Blob backup and isolated restore/readback, and an explicitly authorized compatible app/data maintenance sequence with protected pending work, interruption/repeat safety and exact readbacks. Local preparation does not establish completion, access-grant or deployment authority; image-only rollback does not prove data compatibility, and pre-conversion restore after new writes requires a new recovery decision.
 
 ## 10. Non-functional acceptance criteria
 
@@ -446,7 +447,7 @@ A Docker volume provides persistence but is **not** a backup. The production bas
 - A browser refresh restores the active game; the auxiliary timer resets locally.
 - A container restart does not lose accepted game events.
 - Duplicate requests do not create duplicate nominations, votes, fouls, or eliminations.
-- An interrupted migration fails safely and visibly.
+- Interrupted storage initialization or recovery fails safely and visibly without resetting existing data.
 
 ### Performance
 
@@ -456,7 +457,7 @@ A Docker volume provides persistence but is **not** a backup. The production bas
 
 ### Accessibility and ergonomics
 
-- Core controls are keyboard operable.
+- Native control behavior follows [IDD-0003's Native interaction contract](.idd/intent/IDD-0003.spec-host-controls-and-presentation.md#native-interaction); no complete keyboard-only workflow is promised. [Interaction and landscape verification](docs/keyboard-and-landscape-ergonomics.md) records retained coverage and pending local qualification.
 - Color is never the only indicator of team, state, or error.
 - Touch targets are suitable for a tablet.
 - The live dashboard works at common laptop and tablet landscape widths.
@@ -480,7 +481,7 @@ A Docker volume provides persistence but is **not** a backup. The production bas
 - Rules-engine tests cover every normal transition and win condition.
 - Table-driven tests cover the accepted vote/tie flow and foul thresholds.
 - Permission tests prove public APIs cannot reveal secret data.
-- Integration tests run against PostgreSQL.
+- Persistence integration tests run against owned, isolated Azurite fixtures.
 - End-to-end tests cover setup through both red and black victories, refresh recovery, and undo.
 
 ## 11. Product decisions
@@ -493,13 +494,15 @@ A Docker volume provides persistence but is **not** a backup. The production bas
 - **Rules:** no final speech after a red card, and the tie-vote conventions in section 4.8 are accepted.
 - **Localization:** every host-facing surface supports English and Russian. The pre-club portal follows the browser language; each club then supplies the active language, which owners and managers/editors can change immediately without changing game state. Existing clubs migrate to English, while new clubs default from the creator's browser language.
 
-### Decided requirements not yet implemented
+### Current data and interaction decisions
 
-- **Best Move:** a per-club setting enabled by default is required. Current behavior is fixed and has no club-level setting.
+- **One current engine:** business records have no engine metadata; partial completed facts are valid independently of optional history, with observed metric coverage and unchanged Elo apart from edition exclusion.
+- **Player cards:** no horizontal gameplay Red-card quick-menu; upward penalties, downward fouls, fourth-foul discipline and setup's trusted horizontal role chooser remain.
+- **Best Move:** enabled by default, configurable per club and captured during meaningful setup; per-attempt Skip does not change the setting.
 
 ### Unresolved
 
-- **Point-in-time recovery:** the single-server production baseline uses daily logical archives; base backups plus WAL archiving remain a separate decision if a 24-hour recovery-point window is unacceptable.
+- **Production recovery:** local Azure package/restore qualification does not establish production scheduling, retention, recovery objectives or point-in-time recovery.
 
 ## 12. Source comparison and references
 
@@ -523,10 +526,8 @@ The rules above are paraphrased and normalized; they do not reproduce a commerci
   <https://github.com/kligarski/mafia-the-party-game>
 - **[S9] `samanrashidii/mafiabuzz`.** Existing moderator dashboard illustrating role configuration, team balance, night resolution, end-game detection, history, autosave, localization, and custom roles.
   <https://github.com/samanrashidii/mafiabuzz>
-- **[S10] Docker Compose startup-order documentation.** Defines health-check-based dependency readiness with `service_healthy`.
-  <https://docs.docker.com/compose/how-tos/startup-order/>
-- **[S11] PostgreSQL Backup and Restore documentation.** Defines SQL dumps, file-system backups, and continuous archiving as separate backup strategies.
-  <https://www.postgresql.org/docs/current/backup.html>
+- **[S10] MAFGAME rules, 1 July 2026 source.** Dated source for the current contract in IDD-0002; the app's club options and streamlined opening do not claim exact tournament compliance.
+  <https://mafgame.org/pages/rules>
 
 ## 13. Glossary
 

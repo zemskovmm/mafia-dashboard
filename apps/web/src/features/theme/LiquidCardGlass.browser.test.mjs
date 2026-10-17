@@ -1,4 +1,4 @@
-/* global document, window, getComputedStyle, CSS, matchMedia, requestAnimationFrame */
+/* global document, window, getComputedStyle, CSS, matchMedia, requestAnimationFrame, console */
 // Standalone component optics checks. Run with node --test <this file>.
 // This mounts the real component, not a second implementation of the lens.
 import assert from "node:assert/strict";
@@ -375,6 +375,24 @@ for (const [engine, launch] of [
       // Focus routing is asserted by the application's integrated matrix;
       // this optics fixture proves no decoration is a keyboard target.
       assert.equal(await page.locator(".liquid-card-glass [tabindex]").count(), 0);
+      await card.focus();
+      assert.equal(
+        await card.locator(".liquid-card-glass__light").evaluate((el) => el.getAnimations().length),
+        0,
+        "Focus alone does not start the retired keyboard glass pulse",
+      );
+      await page.keyboard.press("Enter");
+      await page.keyboard.press("Space");
+      assert.equal(
+        await page.evaluate(() => window.cardClicks),
+        3,
+        "Native Enter and Space each activate the existing semantic button once",
+      );
+      assert.equal(
+        await card.locator(".liquid-card-glass__light").evaluate((el) => el.getAnimations().length),
+        0,
+        "Native keyboard activation does not start a decorative pointer pulse",
+      );
       await card.evaluate((host) => host.classList.add("is-voted"));
       await page.waitForFunction(() => {
         const style = getComputedStyle(document.querySelector(".player-seat"));
@@ -871,8 +889,63 @@ for (const [engine, launch] of [
         "Profile glyph pixels must be visible above the opaque decorative material",
       );
       const input = card.getByLabel("Alpha nickname", { exact: true });
+      const consent = card.getByRole("checkbox");
+      await consent.focus();
+      assert.equal(await consent.isChecked(), false);
+      await page.keyboard.press("Space");
+      assert.equal(
+        await consent.isChecked(),
+        true,
+        "Native Space toggles the real profile checkbox",
+      );
+      const access = card.getByRole("combobox");
+      await access.selectOption({ index: 0 });
+      await access.focus();
+      await access.evaluate((node) => {
+        window.nativeSelectEvents = [];
+        for (const type of ["keydown", "keyup", "input", "change"])
+          node.addEventListener(type, (event) =>
+            Promise.resolve().then(() =>
+              window.nativeSelectEvents.push({
+                type,
+                key: event.key,
+                value: node.value,
+                prevented: event.defaultPrevented,
+                focused: document.activeElement === node,
+              }),
+            ),
+          );
+      });
+      await page.keyboard.type(await access.locator("option").nth(1).innerText(), { delay: 30 });
+      await page.screenshot({
+        path: join(outputRoot, `${engine}-profile-native-select-after-keys.png`),
+      });
+      console.log(
+        "NATIVE SELECT",
+        JSON.stringify(
+          await access.evaluate((node) => ({
+            value: node.value,
+            disabled: node.disabled,
+            html: node.outerHTML,
+            events: window.nativeSelectEvents,
+          })),
+        ),
+      );
+      assert.equal(
+        await access.inputValue(),
+        await access.locator("option").nth(1).getAttribute("value"),
+      );
       await input.fill("Updated Alpha");
-      await card.getByRole("button", { name: "Save Alpha", exact: true }).click();
+      await card.locator('input[id$="-first-name"]').fill("Alpha");
+      await card.locator('input[id$="-last-name"]').fill("Browser");
+      await card.locator('input[id$="-email"]').fill("alpha@example.test");
+      const save = card.getByRole("button", { name: "Save Alpha", exact: true });
+      await save.focus();
+      assert.equal(await save.evaluate((node) => getComputedStyle(node).outlineStyle), "none");
+      await page.screenshot({
+        path: join(outputRoot, `${engine}-profile-native-focused-form.png`),
+      });
+      await page.keyboard.press("Enter");
       await page.waitForFunction(() => window.profileSaved?.input.nickname === "Updated Alpha");
     } finally {
       await browser.close();

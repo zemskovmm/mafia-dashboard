@@ -24,7 +24,9 @@ const createDayGame = (): GameState => {
   }));
   let setup = beginRoleDraw(createSetup(players), createSeededRandom(13));
   for (let seat = 1; seat <= 10; seat += 1) setup = drawRoleForSeat(setup, seat);
-  return nominate(advanceSetupPhase(advanceSetupPhase(createGame(completeRoleDraw(setup)))), 1, 2);
+  let game = createGame(completeRoleDraw(setup));
+  while (game.phase !== "day") game = advanceSetupPhase(game);
+  return nominate(game, 1, 2);
 };
 
 describe("LiveSidePanel", () => {

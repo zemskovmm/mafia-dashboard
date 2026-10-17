@@ -10,7 +10,6 @@ import {
   createSeededRandom,
   createSetup,
   drawRoleForSeat,
-  FEDERATION_RULES_EDITION,
   type GameState,
 } from "@mafia/game-domain";
 import { I18nProvider } from "../../i18n/I18nProvider.js";
@@ -29,7 +28,7 @@ const day = (): GameState => {
     createSeededRandom(13),
   );
   for (let seat = 1; seat <= 10; seat++) setup = drawRoleForSeat(setup, seat);
-  let game = createGame(completeRoleDraw(setup), { rulesEdition: FEDERATION_RULES_EDITION });
+  let game = createGame(completeRoleDraw(setup));
   while (game.phase !== "day") game = advanceSetupPhase(game);
   return game;
 };
@@ -69,7 +68,7 @@ describe("disciplinary rule references", () => {
         expect(help).toHaveAttribute("type", "button");
         expect(help).toHaveAccessibleName(new RegExp(rule.replaceAll(".", "\\.")));
         await user.click(help);
-        expect(onOpenRule).toHaveBeenLastCalledWith(rule, help);
+        expect(onOpenRule).toHaveBeenLastCalledWith(rule);
         expect(selector).toHaveValue(rule);
       }
       await user.selectOptions(
@@ -81,7 +80,7 @@ describe("disciplinary rule references", () => {
       for (const rule of adjudicationRules) {
         await user.selectOptions(opposing, rule);
         await user.click(opposingHelp);
-        expect(onOpenRule).toHaveBeenLastCalledWith(rule, opposingHelp);
+        expect(onOpenRule).toHaveBeenLastCalledWith(rule);
       }
       expect(onOpenRule).toHaveBeenCalledTimes(removalRules.length + adjudicationRules.length);
       expect(accepted).not.toHaveBeenCalled();
@@ -111,7 +110,7 @@ describe("disciplinary rule references", () => {
     expect(selector).toHaveValue("6.2.1");
     const help = within(selector.closest(".discipline-rule-picker")!).getByRole("button");
     await userEvent.click(help);
-    expect(onOpenRule).toHaveBeenCalledExactlyOnceWith("6.2.1", help);
+    expect(onOpenRule).toHaveBeenCalledExactlyOnceWith("6.2.1");
     expect(accepted).not.toHaveBeenCalled();
   });
 

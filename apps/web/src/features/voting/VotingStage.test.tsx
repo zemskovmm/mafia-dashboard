@@ -1,5 +1,6 @@
+import { cancelDialog, swipeCard } from "../../test-card-gestures.js";
 import { useState } from "react";
-import { fireEvent, screen, within } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -36,7 +37,8 @@ const votingGame = (): GameState => {
   }));
   let setup = beginRoleDraw(createSetup(players), createSeededRandom(9));
   for (let seat = 1; seat <= 10; seat += 1) setup = drawRoleForSeat(setup, seat);
-  let game = advanceSetupPhase(advanceSetupPhase(createGame(completeRoleDraw(setup))));
+  let game = createGame(completeRoleDraw(setup));
+  while (game.phase !== "day") game = advanceSetupPhase(game);
   game = nominate(game, 1, 4);
   game = completeCurrentTurn(game);
   game = nominate(game, 2, 6);
@@ -76,10 +78,7 @@ const federationVotingGame = (nominees = [4, 6]): GameState => {
     id: `p-${index + 1}`,
     seat: index + 1,
   }));
-  let setup = beginRoleDraw(
-    createSetup(players, { rulesEdition: "mafgame-2026-07-01" }),
-    createSeededRandom(9),
-  );
+  let setup = beginRoleDraw(createSetup(players), createSeededRandom(9));
   for (let seat = 1; seat <= 10; seat += 1) setup = drawRoleForSeat(setup, seat);
   let game = createGame(completeRoleDraw(setup));
   while (game.phase !== "day") game = advanceSetupPhase(game);
@@ -217,7 +216,7 @@ describe("Federation voting", () => {
     ["en", "Rules", "Dispute count", "Dispute reason"],
     ["ru", "Правила", "Оспорить подсчёт", "Причина спора"],
   ] as const)(
-    "keeps %s review drafts accessible across keyboard dismissal",
+    "keeps %s review drafts accessible across native cancel dismissal",
     async (locale, label, dispute, reason) => {
       const user = userEvent.setup();
       render(
@@ -230,17 +229,15 @@ describe("Federation voting", () => {
       toggle.focus();
       await user.keyboard("{Enter}");
       expect(toggle).toHaveAttribute("aria-expanded", "true");
-      await user.keyboard("{Escape}");
+      cancelDialog(screen.getByRole("dialog"));
       expect(toggle).toHaveAttribute("aria-expanded", "false");
-      expect(toggle).toHaveFocus();
-      await user.keyboard("{Enter}");
+      await user.click(toggle);
       const sheet = screen.getByRole("dialog", { name: label });
       await user.click(within(sheet).getByText(dispute));
       await user.type(within(sheet).getByLabelText(reason), "Recorded draft");
-      await user.keyboard("{Escape}");
-      expect(toggle).toHaveFocus();
+      cancelDialog(screen.getByRole("dialog"));
       expect(sheet).not.toBeVisible();
-      await user.keyboard("{Enter}");
+      await user.click(toggle);
       expect(sheet).toBeVisible();
       expect(within(sheet).getByLabelText(reason)).toHaveValue("Recorded draft");
     },
@@ -412,10 +409,9 @@ describe("Federation voting", () => {
     ).toBeNull();
     expect(screen.queryByRole("button", { name: "Resolve car crash" })).toBeNull();
     expect(screen.getByRole("button", { name: "Begin night" })).toBeEnabled();
-    expect(screen.getByRole("region", { name: "Rule-specific skip explanation" })).toHaveAttribute(
-      "tabindex",
-      "0",
-    );
+    expect(
+      screen.getByRole("region", { name: "Rule-specific skip explanation" }),
+    ).not.toHaveAttribute("tabindex");
   });
 
   it.each([
@@ -608,7 +604,7 @@ describe("Federation voting", () => {
     expect(screen.getByRole("button", { name: "Finish voting" })).toBeDisabled();
     const pausedCard = screen.getByRole("button", { name: "Vote as Player 2 for Player 4" });
     expect(pausedCard).toHaveAttribute("aria-disabled", "true");
-    expect(pausedCard).toHaveAttribute("aria-keyshortcuts", "F");
+    expect(pausedCard).not.toHaveAttribute("aria-keyshortcuts");
     const beforeTap = federationState();
     await user.click(pausedCard);
     expect(federationState()).toEqual(beforeTap);
@@ -732,224 +728,6 @@ describe("VotingStage", () => {
     expect(screen.getByRole("button", { name: "Finish voting" })).toBeDisabled();
   });
 
-  it("submits an explicit completed ballot only once even if Finish is clicked twice", async () => {
-    const user = userEvent.setup();
-    const game = votingGame();
-    const complete = {
-      ...game,
-      voteAssignments: Object.fromEntries(game.players.map(({ seat }) => [seat, 4])),
-    };
-    const onAcceptedEvent = vi.fn();
-    render(
-      <VotingStage
-        game={complete}
-        onGameChange={() => undefined}
-        onResolved={() => undefined}
-        onEvent={() => undefined}
-        onAcceptedEvent={onAcceptedEvent}
-      />,
-    );
-    const finish = screen.getByRole("button", { name: "Finish voting" });
-    await user.click(finish);
-    await user.click(finish);
-    expect(onAcceptedEvent).toHaveBeenCalledTimes(1);
-    expect(onAcceptedEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: "voting.resolved",
-        payload: expect.objectContaining({ voteAssignments: complete.voteAssignments }),
-      }),
-    );
-  });
-
-  it("highlights the candidate only in voting order while board highlights track votes", async () => {
-    const user = userEvent.setup();
-    render(<Harness onResolved={() => undefined} showUtilities />);
-    const table = screen.getByRole("region", { name: "Mafia table" });
-    const order = screen.getByRole("region", { name: "Voting order" });
-    const rows = within(order).getAllByRole("listitem");
-    const candidate = screen.getByRole("button", { name: /vote as player 4 for player 4/i });
-
-    expect(table.querySelector(".is-current")).toBeNull();
-    expect(table.querySelector("[aria-current]")).toBeNull();
-    expect(candidate).not.toHaveClass("is-current");
-    expect(rows[0]).toHaveClass("is-voting-highlight");
-    expect(rows[0]).toHaveAttribute("aria-current", "step");
-    expect(rows[1]).not.toHaveClass("is-voting-highlight");
-
-    await user.click(candidate);
-    expect(candidate).toHaveClass("is-current");
-    expect(candidate).not.toHaveAttribute("aria-current");
-    await user.click(candidate);
-    expect(candidate).not.toHaveClass("is-current");
-    expect(rows[0]).toHaveClass("is-voting-highlight");
-
-    await user.click(screen.getByRole("button", { name: /vote as player 1 for player 4/i }));
-    const voter = screen.getByRole("button", { name: /player 1 voted for seat 4/i });
-    expect(voter).toHaveClass("is-current");
-    await user.click(screen.getByRole("button", { name: "Next candidate" }));
-    expect(rows[0]).not.toHaveClass("is-voting-highlight");
-    expect(rows[0]).not.toHaveAttribute("aria-current");
-    expect(rows[1]).toHaveClass("is-voting-highlight");
-    expect(rows[1]).toHaveAttribute("aria-current", "step");
-    expect(voter).not.toHaveClass("is-current");
-    expect(voter).toHaveClass("is-voted");
-    expect(table.querySelector("[aria-current]")).toBeNull();
-    expect(table.querySelectorAll(".is-current")).toHaveLength(9);
-
-    await user.click(screen.getByRole("button", { name: "Skip voting" }));
-    expect(order.querySelector(".is-voting-highlight")).toBeNull();
-    expect(order.querySelector("[aria-current]")).toBeNull();
-  });
-
-  it("emits a car-crash ballot that the server accepts unchanged", async () => {
-    const user = userEvent.setup();
-    const game: GameState = {
-      ...votingGame(),
-      phase: "car-crash-decision",
-      carCrashSeats: [4, 6],
-      carCrashVotes: {},
-    };
-    const onAcceptedEvent = vi.fn<(event: CanonicalGameEventDraft) => void>();
-    render(
-      <VotingStage
-        game={game}
-        onGameChange={() => undefined}
-        onResolved={() => undefined}
-        onEvent={() => undefined}
-        onAcceptedEvent={onAcceptedEvent}
-      />,
-    );
-    await user.click(screen.getByRole("button", { name: "Resolve car crash" }));
-    expect(onAcceptedEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ type: "car-crash.ballot-resolved" }),
-    );
-    await expectServerAcceptsEvent(game, onAcceptedEvent.mock.calls[0]![0]);
-  });
-
-  it("renders voting controls, labels, and plural status in Russian", () => {
-    render(
-      <I18nProvider locale="ru">
-        <VotingStage
-          game={votingGame()}
-          onGameChange={() => undefined}
-          onResolved={() => undefined}
-          onEvent={() => undefined}
-          onFoul={() => undefined}
-        />
-      </I18nProvider>,
-    );
-
-    expect(screen.getByRole("group", { name: "Кандидат голосования" })).toHaveTextContent(
-      "Кандидат 1 из 2",
-    );
-    expect(screen.getByText("#4 Player 4")).toBeInTheDocument();
-    expect(screen.getByText("0 голосов")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Следующий кандидат" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Завершить голосование" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Пропустить голосование" })).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Проголосовать игроком Player 1 за Player 4" }),
-    ).toBeInTheDocument();
-    expect(screen.getAllByTitle("Смахните вниз или нажмите F, чтобы выдать фол")).toHaveLength(10);
-  });
-
-  it("shows a cancellation step when the host skips voting", async () => {
-    const user = userEvent.setup();
-    const onGameChange = vi.fn<(game: GameState) => void>();
-    const onEvent = vi.fn<(type: string, payload: Record<string, unknown>) => void>();
-    render(
-      <VotingStage
-        game={votingGame()}
-        onGameChange={onGameChange}
-        onResolved={() => undefined}
-        onEvent={onEvent}
-      />,
-    );
-
-    await user.click(screen.getByRole("button", { name: "Skip voting" }));
-
-    expect(onGameChange).toHaveBeenCalledWith(
-      expect.objectContaining({
-        phase: "voting-cancelled",
-        votingCancellation: { reason: "host-skipped" },
-      }),
-    );
-    expect(onEvent).toHaveBeenCalledWith("voting.skipped", {
-      day: 1,
-      reason: "host-skipped",
-    });
-  });
-
-  it.each([
-    ["voting", () => votingGame()],
-    [
-      "car-crash-decision",
-      () => ({
-        ...votingGame(),
-        phase: "car-crash-decision" as const,
-        carCrashSeats: [4, 6],
-        carCrashVotes: {},
-      }),
-    ],
-  ])("emits a replayable voting skip from %s", async (_phase, createState) => {
-    const user = userEvent.setup();
-    const game = createState();
-    const onAcceptedEvent = vi.fn<(event: CanonicalGameEventDraft) => void>();
-    render(
-      <VotingStage
-        game={game}
-        onGameChange={() => undefined}
-        onResolved={() => undefined}
-        onEvent={() => undefined}
-        onAcceptedEvent={onAcceptedEvent}
-      />,
-    );
-
-    await user.click(screen.getByRole("button", { name: "Skip voting" }));
-
-    expect(onAcceptedEvent).toHaveBeenCalledWith({
-      type: "voting.skipped",
-      payload: { reason: "host-skipped" },
-    });
-    const event = onAcceptedEvent.mock.calls[0]?.[0];
-    expect(event).toBeDefined();
-    if (event === undefined) throw new Error("Expected an accepted voting event");
-    expect(applyGameEvent(game, event)).toMatchObject({
-      phase: "voting-cancelled",
-      votingCancellation: { reason: "host-skipped" },
-    });
-  });
-
-  it("explains why voting was cancelled before night begins", async () => {
-    const user = userEvent.setup();
-    const onGameChange = vi.fn<(game: GameState) => void>();
-    render(
-      <VotingStage
-        game={{
-          ...votingGame(),
-          phase: "voting-cancelled",
-          voteAssignments: {},
-          votingCancellation: { reason: "red-card" },
-        }}
-        onGameChange={onGameChange}
-        onResolved={() => undefined}
-        onEvent={() => undefined}
-      />,
-    );
-
-    expect(screen.getByRole("status", { name: "Voting cancelled" })).toHaveTextContent(
-      "A player received a red card, so voting is cancelled for this day.",
-    );
-    await user.click(screen.getByRole("button", { name: "Begin night" }));
-    expect(onGameChange).toHaveBeenCalledWith(
-      expect.objectContaining({
-        phase: "night-mafia",
-        nominations: [],
-        votingCancellation: undefined,
-      }),
-    );
-  });
-
   it("presents the same simple-majority ballot after a two-player repeated tie", () => {
     const game: GameState = {
       ...votingGame(),
@@ -1008,10 +786,8 @@ describe("VotingStage", () => {
     );
 
     expect(screen.queryByRole("button", { name: /^Foul Player/i })).toBeNull();
-    expect(screen.getAllByTitle("Swipe down or press F to issue a foul")).toHaveLength(10);
-    fireEvent.keyDown(document.querySelector('.seat-anchor[data-seat="1"] > .player-seat')!, {
-      key: "f",
-    });
+    expect(screen.getAllByTitle("Swipe down to issue a foul")).toHaveLength(10);
+    swipeCard(document.querySelector('.seat-anchor[data-seat="1"] > .player-seat')!, 0, 70);
     expect(onFoul).toHaveBeenCalledWith(1);
   });
 
@@ -1053,42 +829,6 @@ describe("VotingStage", () => {
     expect(screen.getByTestId("decision-phase")).toHaveTextContent("night-mafia");
   });
 
-  it("keeps Resolve and Skip voting enabled with zero eliminate-all votes", async () => {
-    const user = userEvent.setup();
-    const game: GameState = {
-      ...votingGame(),
-      phase: "car-crash-decision",
-      carCrashSeats: [4, 6, 8],
-      carCrashVotes: {},
-    };
-    const onGameChange = vi.fn<(game: GameState) => void>();
-    const onEvent = vi.fn<(type: string, payload: Record<string, unknown>) => void>();
-    render(
-      <VotingStage
-        game={game}
-        onGameChange={onGameChange}
-        onResolved={() => undefined}
-        onEvent={onEvent}
-      />,
-    );
-
-    expect(screen.getByRole("button", { name: "Resolve car crash" })).toBeEnabled();
-    const skip = screen.getByRole("button", { name: "Skip voting" });
-    expect(skip).toBeEnabled();
-    await user.click(skip);
-
-    expect(onGameChange).toHaveBeenCalledWith(
-      expect.objectContaining({
-        phase: "voting-cancelled",
-        votingCancellation: { reason: "host-skipped" },
-      }),
-    );
-    expect(onEvent).toHaveBeenCalledWith("voting.skipped", {
-      day: 1,
-      reason: "host-skipped",
-    });
-  });
-
   it("keeps every active player available for the eliminate-all ballot", () => {
     const game: GameState = {
       ...votingGame(),
@@ -1110,71 +850,6 @@ describe("VotingStage", () => {
     );
     expect(screen.getByRole("button", { name: /^vote as player 4 /i })).not.toHaveClass(
       "is-inactive",
-    );
-  });
-
-  it("moves a tied vote into canonical car-crash speeches", async () => {
-    const user = userEvent.setup();
-    const base = votingGame();
-    const tied: GameState = {
-      ...base,
-      currentTurnIndex: base.nominations.length - 1,
-      voteAssignments: Object.fromEntries(
-        Array.from({ length: 10 }, (_, index) => [index + 1, index < 5 ? 4 : 6]),
-      ),
-    };
-    const onGameChange = vi.fn<(game: GameState) => void>();
-    const props = {
-      onGameChange,
-      onResolved: () => undefined,
-      onEvent: () => undefined,
-    };
-    render(<VotingStage {...props} game={tied} />);
-
-    await user.click(screen.getByRole("button", { name: /finish voting/i }));
-    expect(onGameChange).toHaveBeenCalledWith(
-      expect.objectContaining({
-        phase: "car-crash",
-        turnOrder: [4, 6],
-        currentTurnIndex: 0,
-        voteAssignments: {},
-      }),
-    );
-  });
-
-  it("moves an all-player repeated tie to the skipped-ballot message", async () => {
-    const user = userEvent.setup();
-    const base = votingGame();
-    const activeSeats = base.players
-      .filter(({ status }) => status === "active")
-      .map(({ seat }) => seat);
-    const game: GameState = {
-      ...base,
-      nominations: activeSeats.map((seat, index) => ({
-        nominatorSeat: seat,
-        candidateSeat: seat,
-        order: index + 1,
-      })),
-      turnOrder: activeSeats,
-      currentTurnIndex: activeSeats.length - 1,
-      votingRound: "repeat",
-      carCrashSeats: activeSeats,
-      voteAssignments: Object.fromEntries(activeSeats.map((seat) => [seat, seat])),
-    };
-    const onGameChange = vi.fn<(game: GameState) => void>();
-
-    render(
-      <VotingStage
-        game={game}
-        onGameChange={onGameChange}
-        onResolved={() => undefined}
-        onEvent={() => undefined}
-      />,
-    );
-    await user.click(screen.getByRole("button", { name: "Finish voting" }));
-
-    expect(onGameChange).toHaveBeenCalledWith(
-      expect.objectContaining({ phase: "car-crash-skipped", carCrashSeats: activeSeats }),
     );
   });
 
@@ -1228,34 +903,6 @@ describe("VotingStage", () => {
     });
   });
 
-  it("does not bypass an unresolved all-player car-crash decision", () => {
-    const base = votingGame();
-    const activeSeats = base.players
-      .filter(({ status }) => status === "active")
-      .map(({ seat }) => seat);
-    const game: GameState = {
-      ...base,
-      phase: "car-crash-decision",
-      carCrashSeats: activeSeats,
-      carCrashVotes: {},
-      voteAssignments: {},
-    };
-
-    render(
-      <VotingStage
-        game={game}
-        onGameChange={() => undefined}
-        onResolved={() => undefined}
-        onEvent={() => undefined}
-      />,
-    );
-
-    expect(screen.getByRole("group", { name: "Car-crash decision" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Resolve car crash" })).toBeInTheDocument();
-    expect(screen.queryByText("Eliminate-all vote skipped")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Begin night" })).not.toBeInTheDocument();
-  });
-
   it("toggles a player's vote by tapping the same card again", async () => {
     const user = userEvent.setup();
     render(<Harness onResolved={() => undefined} />);
@@ -1273,56 +920,59 @@ describe("VotingStage", () => {
     expect(screen.getByText("0 votes")).toBeInTheDocument();
   });
 
-  it("corrects automatic votes and finishes a complete ballot from an earlier nominee", async () => {
+  it("submits a completed current ballot exactly once through the accepted event boundary", async () => {
     const user = userEvent.setup();
-    const onResolved = vi.fn<(game: GameState, seats: readonly number[]) => void>();
-    render(<Harness onResolved={onResolved} showUtilities />);
-
-    expect(screen.getByRole("region", { name: "Mafia table" })).toBeInTheDocument();
-    expect(screen.getByRole("group", { name: "Voting candidate" })).toHaveTextContent(
-      "#4 Player 4",
+    const game = stoppedFederationBallot(federationVotingGame(), {
+      1: 4,
+      2: 4,
+      3: 4,
+      4: 4,
+      5: 4,
+      6: 4,
+      7: 6,
+      8: 6,
+      9: 6,
+      10: 6,
+    });
+    const onAcceptedEvent = vi.fn();
+    render(
+      <VotingStage
+        game={game}
+        onAcceptedEvent={onAcceptedEvent}
+        onGameChange={vi.fn()}
+        onResolved={vi.fn()}
+        onEvent={vi.fn()}
+      />,
     );
     const finish = screen.getByRole("button", { name: "Finish voting" });
-    expect(finish).toBeDisabled();
-    await user.click(screen.getByRole("button", { name: /vote as player 4 for player 4/i }));
-    const firstSelected = screen.getByRole("button", { name: /player 4 voted for seat 4/i });
-    expect(firstSelected).toHaveClass("is-voted", "is-current");
-    expect(firstSelected).not.toHaveClass("is-inactive");
-    await user.click(screen.getByRole("button", { name: /vote as player 1 for player 4/i }));
-    expect(screen.getByRole("button", { name: /player 1 voted for seat 4/i })).toHaveClass(
-      "is-current",
-    );
-    expect(firstSelected).toHaveClass("is-current");
-    for (const seat of [2, 3, 5, 6, 7]) {
-      await user.click(
-        screen.getByRole("button", {
-          name: new RegExp(`vote as player ${seat} for player 4`, "i"),
-        }),
-      );
-    }
-    await user.click(screen.getByRole("button", { name: /next candidate/i }));
-
-    const firstCandidateVoters = screen.getAllByRole("button", { name: /voted for seat 4/i });
-    const autoAssignedVoters = screen.getAllByRole("button", { name: /voted for seat 6/i });
-    expect(firstCandidateVoters).toHaveLength(7);
-    expect(firstCandidateVoters.every((card) => !card.classList.contains("is-current"))).toBe(true);
-    expect(autoAssignedVoters).toHaveLength(3);
-    expect(autoAssignedVoters.every((card) => card.classList.contains("is-current"))).toBe(true);
-    expect(screen.getByText("3 votes")).toBeInTheDocument();
-    await user.click(autoAssignedVoters[0]!);
-    expect(screen.getAllByRole("button", { name: /voted for seat 6/i })).toHaveLength(2);
-    expect(finish).toBeDisabled();
-    const order = screen.getByRole("region", { name: "Voting order" });
-    await user.click(within(order).getByRole("button", { name: /player 4/i }));
-    expect(finish).toBeDisabled();
-    await user.click(screen.getByRole("button", { name: /vote as player 8 for player 4/i }));
-    expect(finish).toBeEnabled();
     await user.click(finish);
-
-    expect(onResolved).toHaveBeenCalledWith(
-      expect.objectContaining({ voteAssignments: expect.objectContaining({ 8: 4 }) }),
-      [4],
-    );
-    expect(onResolved).toHaveBeenCalledTimes(1);
+    await user.click(finish);
+    expect(onAcceptedEvent).toHaveBeenCalledTimes(1);
+    expect(onAcceptedEvent.mock.calls[0]![0].type).toBe("voting.resolved");
+    await expectServerAcceptsEvent(game, onAcceptedEvent.mock.calls[0]![0]);
   });
+
+  it.each(["en", "ru"] as const)(
+    "uses current ballot controls without arbitrary host skip in %s",
+    (locale) => {
+      render(
+        <I18nProvider locale={locale}>
+          <FederationHarness />
+        </I18nProvider>,
+      );
+      expect(
+        screen.getByRole("button", {
+          name: locale === "en" ? "Finish voting" : "Завершить голосование",
+        }),
+      ).toBeDisabled();
+      expect(
+        screen.queryByRole("button", { name: /Skip voting|Пропустить голосование/ }),
+      ).toBeNull();
+      expect(
+        screen.getByRole("button", {
+          name: locale === "en" ? "Next candidate" : "Следующий кандидат",
+        }),
+      ).toBeEnabled();
+    },
+  );
 });

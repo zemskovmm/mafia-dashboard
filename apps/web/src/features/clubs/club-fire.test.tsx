@@ -1,4 +1,4 @@
-import { act, cleanup, render } from "@testing-library/react";
+import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import { createRef, StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClubEntryTransition } from "./ClubEntryTransition.js";
@@ -416,7 +416,7 @@ describe("real outgoing DOM transition lifecycle", () => {
 });
 
 describe("shared ambient fire lifecycle", () => {
-  it("draws the transformed visible perimeter, clips to scroll viewport, and increases focused heat", () => {
+  it("draws the transformed visible perimeter, clips to scroll viewport, and increases pointer heat without focus heat", () => {
     const rootRef = createRef<HTMLDivElement>();
     const view = render(
       <div ref={rootRef}>
@@ -463,6 +463,9 @@ describe("shared ambient fire lifecycle", () => {
     const restingEnergy = first[0].energy;
     act(() => cards[0]!.querySelector("button")!.focus());
     frameAt(100);
+    expect(fake.instances[0]!.draw.mock.calls.at(-1)![3][0].energy).toBe(restingEnergy);
+    fireEvent.pointerDown(cards[0]!.querySelector("button")!);
+    frameAt(200);
     expect(fake.instances[0]!.draw.mock.calls.at(-1)![3][0].energy).toBeGreaterThan(restingEnergy);
     expect(view.container.querySelector("canvas")).toHaveAttribute("data-club-fire-active", "1");
   });

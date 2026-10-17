@@ -501,10 +501,33 @@ async function visitFamily(page, url, family, fresh = true) {
 }
 async function verifyInteractions(page, family) {
   if (family === "setup") {
-    await page.locator("#seat-1-player").click();
+    const picker = page.locator("#seat-1-player");
+    const before = await gameState(page);
+    await picker.click();
     await page.getByRole("listbox").waitFor();
+    await picker.fill("Player");
+    await page.keyboard.press("ArrowDown");
+    assert.equal(await picker.getAttribute("aria-activedescendant"), null);
     await page.keyboard.press("Escape");
-    assert.equal(await page.locator("#seat-1-player").inputValue(), "Player 1");
+    assert.equal(await page.getByRole("listbox").isVisible(), true);
+    assert.deepEqual(await gameState(page), before, "Native editing/keys do not select a player");
+    // Escape on type=search is browser-owned; ordinary blur restores the selection.
+    await page.getByRole("heading", { name: "Select 10 players + host", exact: true }).click();
+    assert.equal(await page.getByRole("listbox").count(), 0);
+    assert.equal(await picker.inputValue(), "Player 1");
+    await picker.click();
+    const option = page.locator("#seat-1-player-suggestions").getByRole("option", {
+      name: "Player 1",
+      exact: true,
+    });
+    await option.focus();
+    await page.keyboard.press("Enter");
+    assert.equal(await page.getByRole("listbox").count(), 0);
+    assert.deepEqual(
+      await gameState(page),
+      before,
+      "Native option activation retains selected identity",
+    );
     const handle = page.locator('[data-setup-seat="1"] .setup-seat-drag-handle');
     const source = await handle.boundingBox(),
       target = await page.locator('[data-setup-seat="2"]').boundingBox();
@@ -520,7 +543,7 @@ async function verifyInteractions(page, family) {
     const state = await gameState(page);
     assert.ok(state.setup.selectedPlayerIds[0].endsWith("000000000002"));
     assert.ok(state.setup.selectedPlayerIds[1].endsWith("000000000001"));
-    return "actual picker Escape and pointer drag swap, canonical setup readback";
+    return "native picker edit/option Enter, no authored arrows/Escape, ordinary blur and pointer drag swap; canonical setup readback";
   }
   if (family === "availability") {
     const search = page.getByRole("searchbox", { name: "Search available players" });
@@ -678,13 +701,32 @@ async function assertAvailabilityMaterial(page, reference) {
       "Hover must not introduce a different availability material",
     );
   }
+  await page.getByRole("searchbox", { name: "Search available players" }).focus();
+  const outline = () =>
+    card.evaluate((node) => {
+      const style = getComputedStyle(node);
+      return {
+        style: style.outlineStyle,
+        width: style.outlineWidth,
+        color: style.outlineColor,
+        offset: style.outlineOffset,
+        border: style.borderColor,
+        shadow: style.boxShadow,
+      };
+    });
+  const unfocused = await outline();
+  const selected = (await card.getAttribute("aria-pressed")) === "true";
   await card.focus();
-  await page.keyboard.press("Tab");
-  await page.keyboard.press("Shift+Tab");
-  assert.equal(await card.evaluate((node) => node.matches(":focus-visible")), true);
-  assert.ok(
-    Number.parseFloat(await card.evaluate((node) => getComputedStyle(node).outlineWidth)) > 0,
+  const webkit = page.context().browser().browserType().name() === "webkit";
+  await page.keyboard.press(webkit ? "Alt+Tab" : "Tab");
+  await page.keyboard.press(webkit ? "Alt+Shift+Tab" : "Shift+Tab");
+  assert.equal(await card.evaluate((node) => node === document.activeElement), true);
+  assert.deepEqual(
+    await outline(),
+    unfocused,
+    "Native focus adds no decoration to selected material",
   );
+  assert.deepEqual(await cardMaterial(card, selected), actual[selected ? "selected" : "neutral"]);
   if ((await card.getAttribute("aria-pressed")) !== pressed) await card.click();
   assert.deepEqual(actual, reference, "Availability must use the main-table card material");
   return actual;

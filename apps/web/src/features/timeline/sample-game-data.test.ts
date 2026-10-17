@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import {
+  createGameLogEntry,
   isCanonicalGameEventType,
   isProvisionalInteractionType,
   replayGameLog,
-  type GameLogEntry,
+  type CanonicalGameEventDraft,
 } from "@mafia/game-domain";
 import { getActiveBranch } from "../game/game-history.js";
 import {
@@ -13,43 +14,57 @@ import {
   SAMPLE_GAME_LABEL,
 } from "./sample-game-data.js";
 
-type EntryOfType<Type extends GameLogEntry["type"]> = Extract<
-  GameLogEntry,
-  { readonly type: Type }
->;
+describe("deterministic current sample game history", () => {
+  it.each([
+    [
+      "completed",
+      createSampleGameHistory,
+      "7b7960d1a728db3169153277b71b578e6f28bf345a846f246b5ed97a0ad57f07",
+    ],
+    [
+      "adjudicated",
+      createFederationSampleGameHistory,
+      "9c84cce26c7765e55dba710e606609a09b7d0ddec59aea795fcde7e8bff1184a",
+    ],
+    [
+      "automatic draw",
+      () => createFederationSampleGameHistory("rules-draw"),
+      "b4f0997ba7131e2e6b2c2118baee41ea30c889cadb49b94a65992bf89daef71c",
+    ],
+  ] as const)(
+    "pins current %s bytes and exactly regenerates canonical v3 actions and hashes",
+    (_, create, expected) => {
+      const history = create();
+      const bytes = JSON.stringify(history);
+      expect(createHash("sha256").update(bytes).digest("hex")).toBe(expected);
+      expect(history.baseline.replayVersion).toBe(3);
+      expect(history.entries.every(({ replayVersion }) => replayVersion === 3)).toBe(true);
+      expect(bytes).not.toMatch(/rulesEdition|rulesetId|rulesetVersion|skipCasperBestMove/);
+      const replayed = replayGameLog(
+        JSON.parse(JSON.stringify(history.baseline)),
+        JSON.parse(JSON.stringify(history.activeEntries)),
+      );
+      expect(replayed.game).toEqual(history.game);
+      expect(replayed.frames).toEqual(history.frames);
+      for (const { before, entry } of history.frames) {
+        const regenerated = createGameLogEntry({
+          before,
+          gameId: entry.gameId,
+          id: entry.id,
+          sequence: entry.sequence,
+          parentEventId: entry.parentEventId,
+          createdAt: entry.createdAt,
+          draft: { type: entry.type, payload: entry.payload } as CanonicalGameEventDraft,
+        });
+        expect(JSON.stringify(regenerated.entry)).toBe(JSON.stringify(entry));
+      }
+      expect(JSON.stringify(create())).toBe(bytes);
+    },
+  );
 
-const isEntryOfType =
-  <Type extends GameLogEntry["type"]>(type: Type) =>
-  (entry: GameLogEntry): entry is EntryOfType<Type> =>
-    entry.type === type;
-
-describe("deterministic sample game history", () => {
-  it("preserves the pre-federation sample's edition and canonical hashes", () => {
-    const history = createSampleGameHistory();
-    // Captured from the unmodified HEAD sample, not regenerated expectations from this implementation.
-    expect(createHash("sha256").update(JSON.stringify(history)).digest("hex")).toBe(
-      "45b62c8c4c07741a9d2771afc49dc6c8d7d011b7fba9d5bc693e5f693114600e",
-    );
-    expect(history.baseline.replayVersion).toBe(1);
-    expect(history.baseline.game).not.toHaveProperty("rulesEdition");
-    expect(history.entries.every((entry) => entry.replayVersion === 1)).toBe(true);
-    expect(history.entries[0]?.stateHashAfter).toBe(
-      "sha256:4f07185020c14b02ab7a667d36a7779c4a7a388d9e9c5703c5eafee4114204af",
-    );
-    expect(history.entries.at(-1)?.stateHashAfter).toBe(
-      "sha256:b3ca218d25db5a85fddc67ef0cd36eddadaff696d531fddd0bb04a73cccce6da",
-    );
-  });
-
-  it("offers a separate v2 sample with accepted judge decisions and an adjudicated outcome", () => {
+  it("retains accepted judge decisions and a distinct adjudicated result", () => {
     const history = createFederationSampleGameHistory();
-    expect(history.label).toBe("Federation sample game · not saved");
-    expect(history.baseline).toMatchObject({
-      replayVersion: 2,
-      rulesEdition: "mafgame-2026-07-01",
-      game: { phase: "mafia-planning", rulesEdition: "mafgame-2026-07-01" },
-    });
-    expect(history.entries.every((entry) => entry.replayVersion === 2)).toBe(true);
+    expect(history.label).toBe(SAMPLE_GAME_LABEL);
     expect(history.entries.map(({ type }) => type)).toEqual(
       expect.arrayContaining([
         "voting.order-announced",
@@ -86,16 +101,9 @@ describe("deterministic sample game history", () => {
       },
     });
     expect(history.game.players.find(({ seat }) => seat === 10)?.status).toBe("active");
-    expect(
-      replayGameLog(
-        JSON.parse(JSON.stringify(history.baseline)),
-        JSON.parse(JSON.stringify(history.activeEntries)),
-      ).game,
-    ).toEqual(history.game);
-    expect(JSON.stringify(createFederationSampleGameHistory())).toBe(JSON.stringify(history));
-    expect(Object.isFrozen(history.baseline.game.players)).toBe(true);
   });
-  it("provides a separately requested automatic rule-6.5.6 draw without a synthetic host-draw event", () => {
+
+  it("reaches a rule-6.5.6 automatic draw without a synthetic host-draw event", () => {
     const history = createFederationSampleGameHistory("rules-draw");
     expect(history.game).toMatchObject({
       phase: "draw",
@@ -106,116 +114,101 @@ describe("deterministic sample game history", () => {
     expect(history.entries.at(-1)).toMatchObject({
       type: "phase.changed",
       payload: { to: "draw" },
-      replayVersion: 2,
+      replayVersion: 3,
     });
     expect(
       history.entries.some(({ type }) => type === "game.drawn" || type === "game.adjudicated"),
     ).toBe(false);
-    expect(replayGameLog(history.baseline, history.activeEntries).game).toEqual(history.game);
-    expect(JSON.stringify(createFederationSampleGameHistory("rules-draw"))).toBe(
-      JSON.stringify(history),
-    );
   });
 
-  it("starts from one deterministic baseline and reaches day one through canonical replay", () => {
-    const first = createSampleGameHistory();
-    const second = createSampleGameHistory();
-
-    expect(SAMPLE_GAME_LABEL).toBe("Sample game · not saved");
-    expect(first.baseline.game).toMatchObject({ phase: "mafia-planning", day: 0 });
-    expect(first.activeEntries.slice(0, 2).map(({ type }) => type)).toEqual([
-      "game.started",
-      "phase.changed",
-    ]);
-    expect(first.frames[1]?.after).toMatchObject({ phase: "day", day: 1 });
-    expect(first.activeEntries.some(({ type }) => type === "turn.completed")).toBe(false);
-    expect(
-      first.activeEntries.some(
-        ({ type, payload }) =>
-          type === "phase.changed" &&
-          "to" in payload &&
-          ["sheriff-wake", "night-don", "night-sheriff", "best-move"].includes(String(payload.to)),
-      ),
-    ).toBe(false);
-    expect(replayGameLog(first.baseline, first.activeEntries).frames).toEqual(first.frames);
-    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
-  });
-
-  it("replays the first day, vote, Mafia kill, private checks, and transition to day two", () => {
+  it("starts from one real deterministic baseline and retains every current opening phase", () => {
     const history = createSampleGameHistory();
-    const entry = (type: (typeof history.activeEntries)[number]["type"]) =>
-      history.activeEntries.find((candidate) => candidate.type === type);
+    expect(SAMPLE_GAME_LABEL).toBe("Sample game · not saved");
+    expect(history.baseline.game).toMatchObject({ phase: "mafia-planning", day: 0 });
+    expect(history.frames.slice(0, 6).map(({ after }) => after.phase)).toEqual([
+      "mafia-planning",
+      "mafia-sleep",
+      "don-identification",
+      "sheriff-identification",
+      "free-seating",
+      "day",
+    ]);
+    expect(history.frames[5]?.after).toMatchObject({ phase: "day", day: 1 });
+    expect(history.activeEntries.some(({ type }) => type === "turn.completed")).toBe(false);
+  });
 
+  it("replays nominations, accepted voting, Mafia kill, private checks and morning", () => {
+    const history = createSampleGameHistory();
     expect(
-      history.activeEntries
-        .filter(isEntryOfType("player.nominated"))
-        .slice(0, 2)
+      history.entries
+        .filter(({ type }) => type === "player.nominated")
         .map(({ payload }) => payload),
     ).toEqual([
       { nominatorSeat: 1, candidateSeat: 7 },
       { nominatorSeat: 2, candidateSeat: 6 },
     ]);
-    expect(entry("voting.resolved")?.payload).toMatchObject({
-      result: { kind: "winner", seats: [7], totals: { 7: 10, 6: 0 } },
+    expect(history.entries.find(({ type }) => type === "voting.resolved")?.payload).toMatchObject({
+      result: { kind: "winner", seats: [7], totals: { 7: 6, 6: 4 } },
     });
-    expect(entry("mafia.shots-resolved")?.payload).toMatchObject({
-      shots: expect.arrayContaining([expect.objectContaining({ secret: true })]),
-      result: { kind: "kill", targetSeat: 2 },
+    expect(
+      history.entries.find(({ type }) => type === "mafia.shots-resolved")?.payload,
+    ).toMatchObject({ result: { kind: "kill", targetSeat: 2 } });
+    expect(history.entries.find(({ type }) => type === "don.checked")?.payload).toEqual({
+      targetSeat: 1,
+      match: true,
     });
-    expect(entry("don.checked")?.payload).toEqual({ targetSeat: 1, match: true });
-    expect(entry("sheriff.checked")?.payload).toEqual({ targetSeat: 10, match: true });
+    expect(history.entries.find(({ type }) => type === "sheriff.checked")?.payload).toEqual({
+      targetSeat: 10,
+      match: true,
+    });
     expect(history.frames.some(({ after }) => after.day === 2 && after.phase === "day")).toBe(true);
   });
 
-  it("continues through a fourth Foul, a Mafia miss, red cards, and completion", () => {
+  it("retains a reasoned fourth foul, announcement, legal skip, miss and current removals before ordinary completion", () => {
     const history = createSampleGameHistory();
-    const fouls = history.activeEntries.filter(isEntryOfType("foul.issued"));
-    const shotResults = history.activeEntries
-      .filter(isEntryOfType("mafia.shots-resolved"))
-      .map(({ payload }) => payload.result.kind);
-
-    expect(fouls.map(({ payload }) => payload)).toEqual([
-      { seat: 9, foulNumber: 1, redCarded: false },
-      { seat: 9, foulNumber: 2, redCarded: false },
-      { seat: 9, foulNumber: 3, redCarded: false },
-      { seat: 9, foulNumber: 4, redCarded: true },
-    ]);
-    expect(history.frames.some(({ entry }) => entry.type === "turn.completed")).toBe(false);
-    expect(shotResults).toEqual(["kill", "miss"]);
     expect(
-      history.activeEntries
-        .filter(isEntryOfType("player.red-carded"))
-        .map(({ payload }) => payload.seat),
+      history.entries.filter(({ type }) => type === "foul.issued").map(({ payload }) => payload),
+    ).toEqual([1, 2, 3].map((foulNumber) => ({ seat: 9, foulNumber, redCarded: false })));
+    expect(
+      history.entries.find(({ type }) => type === "discipline.foul-issued")?.payload,
+    ).toMatchObject({
+      seat: 9,
+      foulNumber: 4,
+      redCarded: true,
+      removal: { rule: "6.2.1", reason: "Fourth observed speech violation" },
+    });
+    expect(
+      history.entries.flatMap((entry) =>
+        entry.type === "mafia.shots-resolved" ? [entry.payload.result.kind] : [],
+      ),
+    ).toEqual(["kill", "miss"]);
+    expect(
+      history.entries
+        .filter(({ type }) => type === "discipline.removal-observed")
+        .map(({ payload }) => "seat" in payload && payload.seat),
     ).toEqual([8, 10]);
-    expect(history.activeEntries.at(-1)?.type).toBe("game.completed");
-    expect(history.game).toMatchObject({ phase: "finished", winner: "red", day: 2 });
+    expect(history.entries.find(({ type }) => type === "voting.legally-skipped")?.payload).toEqual({
+      reason: "disciplinary-cancellation",
+    });
+    expect(history.game).toMatchObject({ phase: "finished", winner: "red", day: 3 });
+    expect(history.game.adjudication).toBeUndefined();
   });
 
-  it("freezes the single baseline deeply", () => {
-    const { baseline } = createSampleGameHistory();
-
-    expect(Object.isFrozen(baseline)).toBe(true);
-    expect(Object.isFrozen(baseline.game)).toBe(true);
-    expect(Object.isFrozen(baseline.game.players)).toBe(true);
-    expect(Object.isFrozen(baseline.game.players[0])).toBe(true);
-  });
-
-  it("preserves a reset branch while exposing only canonical snapshot-free active entries", () => {
+  it("freezes its baseline deeply and exposes a single snapshot-free canonical chain", () => {
     const history = createSampleGameHistory();
-    const activeIds = new Set(history.activeEntries.map(({ id }) => id));
-    const inactiveEntries = history.entries.filter(({ id }) => !activeIds.has(id));
-
+    for (const value of [
+      history.baseline,
+      history.baseline.game,
+      history.baseline.game.players,
+      history.baseline.game.players[0],
+    ])
+      expect(Object.isFrozen(value)).toBe(true);
     expect(getActiveBranch(history.entries, history.headEventId)).toEqual(history.activeEntries);
-    expect(inactiveEntries).toHaveLength(1);
-    expect(history.entries.length).toBeGreaterThan(history.activeEntries.length);
-    expect(Object.isFrozen(history.baseline)).toBe(true);
+    expect(history.entries).toEqual(history.activeEntries);
     for (const entry of history.entries) {
       expect(isCanonicalGameEventType(entry.type)).toBe(true);
       expect(isProvisionalInteractionType(entry.type)).toBe(false);
-      expect(entry).not.toHaveProperty("game");
-      expect(entry).not.toHaveProperty("state");
-      expect(entry).not.toHaveProperty("before");
-      expect(entry).not.toHaveProperty("after");
+      for (const key of ["game", "state", "before", "after"]) expect(entry).not.toHaveProperty(key);
     }
   });
 });

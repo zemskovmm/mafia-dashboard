@@ -14,10 +14,45 @@ const fulfillMock = async (route, response) => {
 const unlockDeveloperMenu = async (page) => {
   const menuButton = page.getByRole("button", { name: "Open developer menu" });
   if (!(await menuButton.isVisible())) {
+    await page.keyboard.press("Control+Alt+d");
+    await page.keyboard.press("Meta+Alt+d");
+    if (await menuButton.isVisible()) throw new Error("Retired developer shortcut unlocked Dev");
     const privacy = page.getByRole("button", { name: /^(Hide|Show) private info$/ });
-    for (let tap = 0; tap < 5; tap += 1) await privacy.dispatchEvent("click");
+    for (let tap = 0; tap < 5; tap += 1) await privacy.click();
   }
   await menuButton.waitFor();
+};
+// Use existing card gesture routes, not removed authored key handlers.
+const swipeCard = async (card, direction) => {
+  await card.scrollIntoViewIfNeeded();
+  const box = await card.boundingBox();
+  if (box === null) throw new Error("Gesture card is not painted");
+  const x = box.x + box.width / 2;
+  const y = direction === "down" ? box.y + 8 : box.y + box.height / 2;
+  await page.mouse.move(x, y);
+  await page.mouse.down();
+  await page.mouse.move(
+    direction === "horizontal" ? x + 72 : direction === "left" ? x - 72 : x,
+    direction === "down" ? y + 72 : y,
+    { steps: 8 },
+  );
+  await page.mouse.up();
+};
+const assertRetiredHorizontalGesture = async (card, label) => {
+  const canonical = () =>
+    page.evaluate(() => {
+      const state = JSON.parse(localStorage.getItem("mafia-dashboard.game-session.v5")).current
+        .state;
+      return JSON.stringify({ game: state.game, head: state.headEventId, events: state.events });
+    });
+  const before = await canonical();
+  for (const direction of ["left", "horizontal"]) {
+    await swipeCard(card, direction);
+    if (await page.locator(".table-swipe-menu, .table-swipe-backdrop").count())
+      throw new Error(`${label}: retired horizontal menu mounted`);
+    if ((await canonical()) !== before)
+      throw new Error(`${label}: horizontal drag changed canonical gameplay`);
+  }
 };
 const assertSupportedTableLighting = async (page, label) => {
   const read = () =>
@@ -89,12 +124,10 @@ const assertVoteCountTypography = async (page) => {
     const originalSize = root.style.fontSize;
     const originalZoom = root.style.zoom;
     const total = panel.querySelector(".nomination-total");
-    const summary = panel.querySelector(".vote-count-summary");
     const copy = panel.querySelector(".nomination-copy span");
-    const candidate = panel.querySelector(".nomination-copy button");
+    const candidate = panel.querySelector(".nomination-copy strong");
     if (
       !(total instanceof HTMLElement) ||
-      !(summary instanceof HTMLElement) ||
       !(copy instanceof HTMLElement) ||
       !(candidate instanceof HTMLElement)
     ) {
@@ -103,15 +136,14 @@ const assertVoteCountTypography = async (page) => {
     const read = () => ({
       root: parseFloat(getComputedStyle(root).fontSize),
       total: parseFloat(getComputedStyle(total).fontSize),
-      summary: parseFloat(getComputedStyle(summary).fontSize),
+
       copy: parseFloat(getComputedStyle(copy).fontSize),
       candidate: parseFloat(getComputedStyle(candidate).fontSize),
       zoom: getComputedStyle(root).zoom,
       totalBox: total.getBoundingClientRect().width,
       countFits:
         total.getBoundingClientRect().right <= total.closest("li").getBoundingClientRect().right &&
-        candidate.getBoundingClientRect().right <= total.getBoundingClientRect().left &&
-        summary.scrollWidth <= summary.clientWidth + 1,
+        candidate.getBoundingClientRect().right <= total.getBoundingClientRect().left,
     });
     try {
       const normal = read();
@@ -133,17 +165,14 @@ const assertVoteCountTypography = async (page) => {
   for (const sample of Object.values(evidence)) {
     if (
       !near(sample.total, sample.root * 1.44) ||
-      !near(sample.summary, sample.root * 1.44) ||
+      !near(sample.candidate, sample.root * 0.78) ||
       !near(sample.copy, sample.root * 0.72) ||
       !sample.countFits
     ) {
       throw new Error(`Panel vote count sizing differs from 1.44rem: ${JSON.stringify(evidence)}`);
     }
   }
-  if (
-    !near(evidence.normal.candidate, evidence.scaled.candidate) ||
-    evidence.zoomed.totalBox <= evidence.scaled.totalBox
-  ) {
+  if (evidence.zoomed.totalBox <= evidence.scaled.totalBox) {
     throw new Error(
       `Unrelated candidate text or zoom behavior changed: ${JSON.stringify(evidence)}`,
     );
@@ -331,6 +360,7 @@ const verifyUtilityToggle = async () => {
         height: rect.height,
         focusVisible: button.matches(":focus-visible"),
         outlineWidth: inner.outlineWidth,
+        outlineStyle: inner.outlineStyle,
         outlineOffset: inner.outlineOffset,
       };
     });
@@ -348,9 +378,8 @@ const verifyUtilityToggle = async () => {
       !cornerClipped ||
       evidence.height < 48 ||
       (state === "focus" &&
-        (!evidence.focusVisible ||
-          parseFloat(evidence.outlineWidth) < 2 ||
-          parseFloat(evidence.outlineOffset) >= 0))
+        evidence.outlineStyle !== "none" &&
+        parseFloat(evidence.outlineWidth) > 0)
     )
       throw new Error(
         `Utility toggle must flow flush inside parent clipping (${state}): ${JSON.stringify({ ...evidence, cornerClipped })}`,
@@ -488,6 +517,12 @@ const context = await browser.newContext({
 const page = await context.newPage();
 const pageErrors = [];
 const routeErrors = [];
+page.on("response", (response) => {
+  if (response.status() >= 400)
+    console.warn(
+      `browser HTTP ${response.status()} ${response.request().method()} ${response.url()}`,
+    );
+});
 
 page.on("console", (message) =>
   console.log(
@@ -750,7 +785,7 @@ const assertCoreLayout = async (label, selectors = coreTargetSelectors) => {
       `${label} has clipped or overlapping core controls: ${JSON.stringify(findings)}`,
     );
 };
-const assertVisibleFocus = async (locator, label) => {
+const assertNativeControl = async (locator, label) => {
   const nextMarker = `focus-${Date.now()}-${Math.random()}`;
   await locator.focus();
   const hasExpectedNext = await locator.evaluate((element, marker) => {
@@ -798,8 +833,12 @@ const assertVisibleFocus = async (locator, label) => {
     const style = getComputedStyle(element);
     return { outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth };
   });
-  if (focus.outlineStyle === "none" || Number.parseFloat(focus.outlineWidth) < 2)
-    throw new Error(`${label} has no visible keyboard focus: ${JSON.stringify(focus)}`);
+  // Plan 12 removes focus-only decoration, not native control operation.
+  if (focus.outlineStyle !== "none" && Number.parseFloat(focus.outlineWidth) > 0)
+    throw new Error(`${label} retains a focus-only outline: ${JSON.stringify(focus)}`);
+  console.log(
+    `Native control PASS: ${label}; forward/reverse Tab, no focus-only outline ${JSON.stringify(focus)}`,
+  );
 };
 
 await page.addInitScript(() => {
@@ -865,7 +904,7 @@ await page.addInitScript(() => {
       ).join("")}`,
     });
     envelope.current.state.game = game;
-    envelope.current.state.initialGame = { replayVersion: 1, game };
+    envelope.current.state.initialGame = { replayVersion: 3, game };
     envelope.current.state.events = [root];
     envelope.current.state.headEventId = root.id;
   };
@@ -874,6 +913,12 @@ await page.addInitScript(() => {
 // Same-origin inert document for storage fixture changes; the dev proxy need not run an API.
 await page.route("**/health/ready", (route) =>
   fulfillMock(route, { contentType: "text/html", body: "<!doctype html><title>Fixture</title>" }),
+);
+await page.route("**/health/version", (route) =>
+  fulfillMock(route, {
+    contentType: "application/json",
+    body: JSON.stringify({ version: "1.0.0" }),
+  }),
 );
 await page.route("**/api/**", async (route) => {
   const request = route.request();
@@ -1132,7 +1177,7 @@ await page.route("**/api/game-sessions/**", async (route) => {
 });
 
 const { tsImport } = await import("tsx/esm/api");
-const { runFederationScenarios, legacySetupState } = await tsImport(
+const { runFederationScenarios, currentSetupState, openPlayerPenalty } = await tsImport(
   "./verify-federation-ui.mjs",
   import.meta.url,
 );
@@ -1159,9 +1204,9 @@ const verifyFederationJourney = async () => {
       `.AI/federation-ui/${browserName}-${size.width}x${size.height}`,
   });
 };
-const restoreLegacySetup = async () => {
-  // An actual edition-less unfinished setup, not a fresh-policy override.
-  const state = legacySetupState();
+const restoreCurrentSetup = async () => {
+  // A selector-free current unfinished setup with the same fresh policy.
+  const state = currentSetupState();
   const gameId = crypto.randomUUID();
   federationApi.seed(gameId, state);
   await page.goto(new URL("/health/ready", expectedOrigin).href);
@@ -1175,7 +1220,7 @@ const restoreLegacySetup = async () => {
           gameId,
           creationId: null,
           revision: 1,
-          current: { name: "Restored legacy regression setup", state, results: null },
+          current: { name: "Restored current regression setup", state, results: null },
           outbox: [],
           failed: false,
           clearFailed: false,
@@ -1240,7 +1285,7 @@ try {
     await page.getByRole("button", { name: "Game screen" }).click();
   }
   await setupHeading.waitFor();
-  await restoreLegacySetup();
+  await restoreCurrentSetup();
   if (process.env.UI_SIDE_PANEL_ONLY === "1") {
     await verifyUtilityToggle();
     await page.getByRole("button", { name: "Select available players" }).click();
@@ -1271,8 +1316,8 @@ try {
         .click();
     }
     await page.getByRole("button", { name: "Begin Mafia planning stage" }).click();
-    await page.getByRole("button", { name: "Continue night zero to Sheriff wake-up" }).click();
-    await page.getByRole("button", { name: "Begin day one" }).click();
+    await page.getByRole("button", { name: "Mafia asleep" }).click();
+    await page.getByRole("button", { name: "Begin round zero" }).click();
     await verifyFadeFooter("day-one-no-nominees");
     await verifyFadeSafeAreas("day-one-no-nominees");
     for (let index = 0; index < 3; index += 1) {
@@ -1317,7 +1362,7 @@ try {
   }
   if (layoutOnly) {
     const { verifyIpadLayout } = await import("./verify-ipad-layout.mjs");
-    await verifyIpadLayout(page, { assertVisibleFocus, assertCoreLayout, assertCoreTargets });
+    await verifyIpadLayout(page, { assertNativeControl, assertCoreLayout, assertCoreTargets });
     assertNoPageErrors();
     console.log("iPad layout verification: PASS");
     await browser.close();
@@ -1325,18 +1370,15 @@ try {
   }
   await assertAccessibleControls("Player setup");
   const manageButton = page.getByRole("button", { name: "Open Manage menu" });
-  await assertVisibleFocus(manageButton, "Manage trigger");
+  await assertNativeControl(manageButton, "Manage trigger");
   await page.keyboard.press("Enter");
   const manageHeading = page.getByRole("heading", { name: "Manage", exact: true });
   await manageHeading.waitFor();
-  if (!(await manageHeading.evaluate((heading) => document.activeElement === heading))) {
-    throw new Error("Manage drawer did not receive focus");
-  }
   await assertAccessibleControls("Manage drawer");
   await page.keyboard.press("Escape");
-  if (!(await manageButton.evaluate((button) => document.activeElement === button))) {
-    throw new Error("Manage trigger did not regain focus");
-  }
+  if (!(await manageHeading.isVisible())) throw new Error("Custom drawer Escape is retired");
+  await page.getByRole("button", { name: "Close Manage menu" }).click();
+  if (await manageHeading.isVisible()) throw new Error("Manage Close did not dismiss the drawer");
   const saveButton = page.getByRole("button", {
     name: "Saved to server · tap to check connection",
   });
@@ -1543,6 +1585,17 @@ try {
     if ((await page.getByRole("button", { name: "Reload music player" }).count()) !== 0) {
       throw new Error("Reload music player must stay inside the music setup submenu");
     }
+    const nativeRange = page.getByLabel("Player glow pulse speed", { exact: true });
+    const rangeBefore = await nativeRange.inputValue();
+    await assertNativeControl(nativeRange, "Developer native range");
+    await nativeRange.press("Home");
+    await nativeRange.press("ArrowRight");
+    const expectedNativeRange = await nativeRange.evaluate((input) =>
+      String(Number(input.min) + Number(input.step)),
+    );
+    if ((await nativeRange.inputValue()) !== expectedNativeRange)
+      throw new Error("Native range ArrowRight did not change its value by one step");
+    await nativeRange.fill(rangeBefore);
     await page.getByRole("button", { name: "Close developer menu" }).click();
     await page.getByRole("button", { name: "Open Manage menu" }).click();
     await page.getByRole("button", { name: "Music player setup" }).click();
@@ -1602,8 +1655,8 @@ try {
     const nightCycleStyle = await assertSupportedTableLighting(page, "Night table lighting");
     const nightCycleScreenshotPath = tableScreenshotPath.replace(/\.png$/i, "-night-cycle.png");
     await page.screenshot({ path: nightCycleScreenshotPath, fullPage: true });
-    await page.getByRole("button", { name: "Continue night zero to Sheriff wake-up" }).click();
-    await page.getByRole("button", { name: "Begin day one" }).click();
+    await page.getByRole("button", { name: "Mafia asleep" }).click();
+    await page.getByRole("button", { name: "Begin round zero" }).click();
     await page.locator(".game-shell.is-table-cycle-day").waitFor();
     await page.waitForTimeout(620);
     await page.locator('.save-indicator[data-status="saved"]').waitFor();
@@ -1672,28 +1725,37 @@ try {
     }
     await assertAccessibleControls("live day");
     const keyboardSeat = page.getByRole("button", {
-      name: `Seat 1: ${firstSeatName}`,
+      name: `Nominate ${firstSeatName}`,
       exact: true,
     });
-    await keyboardSeat.focus();
+    await assertNativeControl(keyboardSeat, "Live player card");
+    const beforeRetiredShortcut = await page.evaluate(
+      () =>
+        JSON.parse(localStorage.getItem("mafia-dashboard.game-session.v5")).current.state
+          .headEventId,
+    );
+    await page.keyboard.press("f");
     await page.keyboard.press("Shift+F10");
-    const keyboardRedCard = page.getByRole("button", {
-      name: `Red card ${firstSeatName}`,
-      exact: true,
-    });
-    await keyboardRedCard.waitFor();
-    if (!(await keyboardRedCard.evaluate((button) => document.activeElement === button))) {
-      throw new Error("Keyboard seat actions did not move focus to the first action");
-    }
-    await assertCoreTargets("open player actions");
-    await assertCoreLayout("open player actions");
-    await page.keyboard.press("Escape");
-    if (!(await keyboardSeat.evaluate((button) => document.activeElement === button))) {
-      throw new Error("Closing keyboard seat actions did not restore seat focus");
-    }
+    if ((await page.locator(".table-swipe-menu").count()) !== 0)
+      throw new Error("Retired player shortcut opened the custom menu");
+    if (
+      (await page.evaluate(
+        () =>
+          JSON.parse(localStorage.getItem("mafia-dashboard.game-session.v5")).current.state
+            .headEventId,
+      )) !== beforeRetiredShortcut
+    )
+      throw new Error("Retired F/Shift+F10 mutated canonical state");
+    await assertRetiredHorizontalGesture(keyboardSeat, "Live player card");
     await assertCoreTargets("live day");
     await assertCoreLayout("live day");
 
+    // GameUtilityPanels intentionally renders Voting order only after a nomination.
+    if (await page.locator(".nomination-panel").count())
+      throw new Error("Empty Day must not render Voting order");
+    const geometryNominee = page.locator('.seat-anchor[data-seat="1"] .player-seat');
+    await geometryNominee.click();
+    await page.getByRole("region", { name: "Voting order", exact: true }).waitFor();
     const sidePanelGeometry = await page.evaluate(() => {
       const box = (selector) => {
         const element = document.querySelector(selector);
@@ -1852,6 +1914,9 @@ try {
       return player.dataset.verifierNode;
     });
     await page.screenshot({ path: sidePanelScreenshotPath, fullPage: true });
+    await geometryNominee.click();
+    if (await page.locator(".nomination-panel").count())
+      throw new Error("Removing the sole nomination must remove Voting order");
     if (hardeningOnly) {
       // The matrix must reach live ballot controls; the rail geometry alone is insufficient.
       const currentName = await page.locator(".player-seat.is-current .seat-name").innerText();
@@ -1961,7 +2026,7 @@ try {
           () => JSON.parse(localStorage.getItem("mafia-dashboard.game-session.v5")).current.state,
         );
       const beforeNavigation = await snapshot();
-      await assertVisibleFocus(candidates.nth(0), "First nominee");
+      await assertNativeControl(candidates.nth(0), "First nominee");
       await page.keyboard.press("Enter");
       if ((await candidates.nth(0).getAttribute("aria-pressed")) !== "true") {
         throw new Error("Keyboard nominee selection did not set a non-color pressed state");
@@ -1980,7 +2045,7 @@ try {
         throw new Error("No eligible matrix voter");
       const voter = page.locator(`.seat-anchor[data-seat="${voterSeat}"] .player-seat`);
       const voterName = await voter.locator(".seat-name").innerText();
-      await assertVisibleFocus(voter, "Ballot voter");
+      await assertNativeControl(voter, "Ballot voter");
       await page.keyboard.press("Enter");
       await page
         .getByRole("button", { name: new RegExp(`^${voterName} voted for seat `) })
@@ -2063,7 +2128,7 @@ try {
         );
       }
       await page.emulateMedia({ reducedMotion: "no-preference" });
-      await assertVisibleFocus(finish, "Finish voting");
+      await assertNativeControl(finish, "Finish voting");
       await page.keyboard.press("Enter");
       if ((await snapshot()).game.phase === "voting")
         throw new Error("Finish voting did not resolve the corrected ballot");
@@ -2258,7 +2323,7 @@ try {
       await assertCoreLayout("Matrix pending outcome");
       const undo = page.getByRole("button", { name: /^Undo last action/ });
       if (!(await undo.isEnabled())) throw new Error("Winning action prematurely locked Undo");
-      await assertVisibleFocus(undo, "Pending outcome Undo");
+      await assertNativeControl(undo, "Pending outcome Undo");
       await page.keyboard.press("Enter");
       await page.locator(".game-shell.phase-night-mafia-result").waitFor();
       if ((await snapshot()).game.winner !== null)
@@ -2273,7 +2338,7 @@ try {
         JSON.stringify(await page.locator(".save-indicator").getAttribute("data-status")),
       );
       const finishGame = page.getByRole("button", { name: "Finish the game" });
-      await assertVisibleFocus(finishGame, "Finish game");
+      await assertNativeControl(finishGame, "Finish game");
       const completionAttempts = [];
       let completedGameId = null;
       await page.route("**/api/game-sessions/**", async (route) => {
@@ -2446,7 +2511,9 @@ try {
       (event) =>
         event?.type === "turn.completed" ||
         (event?.type === "phase.changed" &&
-          ["sheriff-wake", "night-don", "night-sheriff", "best-move"].includes(event?.payload?.to)),
+          ["sheriff-identification", "night-don", "night-sheriff", "best-move"].includes(
+            event?.payload?.to,
+          )),
     );
     if (persistedEvents.length !== 2 || intermediateEvents.length !== 0) {
       throw new Error(
@@ -2470,7 +2537,7 @@ try {
     await page.getByRole("button", { name: "Open game log" }).click();
     await page.getByRole("button", { name: "Preview state after log #1" }).click();
     await page.getByRole("heading", { name: /preview/i }).waitFor();
-    await page.getByRole("heading", { name: "Night zero · Mafia free seating" }).waitFor();
+    await page.getByRole("heading", { name: "Night one · Mafia agreement" }).waitFor();
     const previewActions = await page
       .locator("main button:not([disabled]):visible")
       .allTextContents();
@@ -2489,7 +2556,7 @@ try {
     }
     await page.screenshot({ path: previewScreenshotPath, fullPage: true });
     await page.getByRole("button", { name: "Exit preview" }).click();
-    await page.getByRole("heading", { name: "Day 1" }).waitFor();
+    await page.getByRole("heading", { name: "Zero round" }).waitFor();
     const durableAfterPreview = await page.evaluate(() =>
       localStorage.getItem("mafia-dashboard.game-session.v5"),
     );
@@ -2513,9 +2580,9 @@ try {
     await page.getByRole("button", { name: "Phase: day" }).click();
     await page.getByRole("button", { name: "Preview timeline checkpoint" }).click();
     await page.getByRole("heading", { name: /preview/i }).waitFor();
-    await page.getByRole("heading", { name: "Day 1" }).waitFor();
+    await page.getByRole("heading", { name: "Zero round" }).waitFor();
     await page.getByRole("button", { name: "Exit preview" }).click();
-    await page.getByRole("heading", { name: "Day 1" }).waitFor();
+    await page.getByRole("heading", { name: "Zero round" }).waitFor();
 
     await page.getByRole("button", { name: "Open developer menu" }).click();
     await page.getByRole("button", { name: "Past game timeline" }).click();
@@ -2538,7 +2605,7 @@ try {
     });
     page.once("dialog", (dialog) => dialog.accept());
     await page.getByRole("button", { name: "Reset game to timeline checkpoint" }).click();
-    await page.getByRole("heading", { name: "Night zero · Mafia free seating" }).waitFor();
+    await page.getByRole("heading", { name: "Night one · Mafia agreement" }).waitFor();
     if (!(await resetSave).ok()) throw new Error("Destructive snapshot Reset failed");
 
     await page.getByRole("button", { name: "Open developer menu" }).click();
@@ -2561,10 +2628,10 @@ try {
     }
     for (const label of [
       "Initial night",
-      "Day 1",
+      "Zero round",
       "Voting 1",
       "Night 1",
-      "Day 2",
+      "Day 1",
       "Voting 2",
       "Night 2",
     ]) {
@@ -2591,10 +2658,10 @@ try {
     });
     await page.screenshot({ path: timelineRightScreenshotPath, fullPage: true });
     await page.getByRole("button", { name: /back/i }).click();
-    await page.getByRole("heading", { name: "Night zero · Mafia free seating" }).waitFor();
-    await page.getByRole("button", { name: "Continue night zero to Sheriff wake-up" }).click();
-    await page.getByRole("button", { name: "Begin day one" }).click();
-    await page.getByRole("heading", { name: "Day 1" }).waitFor();
+    await page.getByRole("heading", { name: "Night one · Mafia agreement" }).waitFor();
+    await page.getByRole("button", { name: "Mafia asleep" }).click();
+    await page.getByRole("button", { name: "Begin round zero" }).click();
+    await page.getByRole("heading", { name: "Zero round" }).waitFor();
 
     for (const seconds of [60, 30, 10]) {
       await page.getByRole("button", { name: `Start ${seconds} second timer` }).click();
@@ -2614,100 +2681,37 @@ try {
     if ((await page.locator(".table-center button").count()) !== 0) {
       throw new Error("Day table center must not contain a Start player turn button");
     }
-    const actionGeometry = await page
-      .locator(".seat-anchor")
-      .first()
-      .evaluate((anchor) => {
-        const card = anchor.querySelector(".player-seat")?.getBoundingClientRect();
-        const actions = anchor.querySelector(".seat-actions")?.getBoundingClientRect();
-        const buttons = [...anchor.querySelectorAll(".seat-actions button")].map((button) =>
-          button.getBoundingClientRect(),
-        );
-        return {
-          cardWidth: card?.width ?? 0,
-          actionsWidth: actions?.width ?? 0,
-          buttonWidths: buttons.map(({ width }) => width),
-          buttonHeights: buttons.map(({ height }) => height),
-          column:
-            getComputedStyle(anchor.querySelector(".seat-actions")).flexDirection === "column",
-          stacked: buttons.length === 2 && buttons[0].bottom <= buttons[1].top + 1,
-          bottom: actions?.bottom ?? 0,
-          workspaceBottom: document.querySelector(".table-workspace").getBoundingClientRect()
-            .bottom,
-        };
-      });
-    if (
-      actionGeometry.buttonWidths.length !== 2 ||
-      actionGeometry.buttonHeights.some((height) => height < 47.99) ||
-      actionGeometry.bottom > actionGeometry.workspaceBottom + 1 ||
-      (actionGeometry.column
-        ? !actionGeometry.stacked || actionGeometry.buttonWidths.some((width) => width < 47.99)
-        : Math.abs(actionGeometry.actionsWidth - actionGeometry.cardWidth) > 1 ||
-          actionGeometry.buttonWidths.some(
-            (width) => Math.abs(width - actionGeometry.actionsWidth / 2) > 1,
-          ))
-    ) {
-      throw new Error(
-        `Foul and Vote must fit as a split row or touch-size compact column: ${JSON.stringify(actionGeometry)}`,
-      );
-    }
+    // Current Day surface is the native nomination card with a downward foul gesture,
+    // not the retired pair of duplicate Foul/Nominate buttons.
+    await assertCoreTargets("Day nomination and foul gesture cards", [".player-seat"]);
+    if ((await page.locator('.player-seat[title="Swipe down to issue a foul"]').count()) !== 10)
+      throw new Error("Every active Day card must expose its downward-foul hint");
 
     const firstPlayerCard = page.locator(".player-seat.is-current");
     const firstPlayerLabel = await firstPlayerCard.getAttribute("aria-label");
-    const firstPlayerMatch = firstPlayerLabel?.match(/^Seat (\d+): (.+)$/);
+    const firstPlayerMatch = [
+      null,
+      await firstPlayerCard.evaluate((card) => card.closest(".seat-anchor").dataset.seat),
+      await firstPlayerCard.locator(".seat-name").innerText(),
+    ];
     if (firstPlayerMatch === undefined || firstPlayerMatch === null) {
       throw new Error(`Could not identify the first speaker: ${firstPlayerLabel ?? "missing"}`);
     }
-    const firstPlayerName = firstPlayerMatch[2];
-    await firstPlayerCard.dispatchEvent("touchstart", {
-      touches: [{ identifier: 1, clientX: 20, clientY: 50 }],
-    });
-    await firstPlayerCard.dispatchEvent("touchend", {
-      changedTouches: [{ identifier: 1, clientX: 82, clientY: 52 }],
-    });
-    await page.getByRole("button", { name: `Red card ${firstPlayerName}`, exact: true }).waitFor();
-    const swipeMenuGeometry = await page.locator(".table-swipe-menu").evaluate((menu) => {
-      const style = getComputedStyle(menu);
-      const redCard = menu.querySelector(".table-swipe-red-card");
-      if (!(redCard instanceof HTMLElement) || menu.children.length !== 1) {
-        throw new Error("Expected only the red-card button in the swipe action");
-      }
-      const redCardStyle = getComputedStyle(redCard);
-      return {
-        background: style.backgroundColor,
-        borderWidth: style.borderTopWidth,
-        paddingLeft: style.paddingLeft,
-        backdrop: document.querySelector("body > .table-swipe-backdrop") !== null,
-        redCardBorderRadius: redCardStyle.borderRadius,
-      };
-    });
-    if (
-      swipeMenuGeometry.background !== "rgba(0, 0, 0, 0)" ||
-      swipeMenuGeometry.borderWidth !== "0px" ||
-      swipeMenuGeometry.paddingLeft !== "0px" ||
-      !swipeMenuGeometry.backdrop ||
-      swipeMenuGeometry.redCardBorderRadius !== "10px"
-    ) {
-      throw new Error(
-        `Swipe action must be just the red button above a viewport backdrop: ${JSON.stringify(swipeMenuGeometry)}`,
-      );
-    }
-    const swipeMenuScreenshotPath = tableScreenshotPath.replace(/\.png$/i, "-swipe-menu.png");
-    await page.screenshot({ path: swipeMenuScreenshotPath, fullPage: true });
-    await page.locator(".table-swipe-backdrop").click({ position: { x: 5, y: 5 } });
-    if ((await page.locator(".table-swipe-menu").count()) !== 0) {
-      throw new Error("Outside click did not dismiss the red-card action");
-    }
+    await assertRetiredHorizontalGesture(firstPlayerCard, "Day speaker");
 
     const nominatorCard = page.locator(".player-seat.is-current");
     const nominatorLabel = await nominatorCard.getAttribute("aria-label");
-    const nominatorMatch = nominatorLabel?.match(/^Seat (\d+): (.+)$/);
+    const nominatorMatch = [
+      null,
+      await nominatorCard.evaluate((card) => card.closest(".seat-anchor").dataset.seat),
+      await nominatorCard.locator(".seat-name").innerText(),
+    ];
     if (nominatorMatch === undefined || nominatorMatch === null) {
       throw new Error(`Could not identify the next speaker: ${nominatorLabel ?? "missing"}`);
     }
     const nominatorSeat = Number(nominatorMatch[1]);
     const nominatorName = nominatorMatch[2];
-    await page.getByRole("button", { name: `Foul ${nominatorName}`, exact: true }).click();
+    await swipeCard(nominatorCard, "down");
     await page.getByRole("button", { name: `Nominate ${nominatorName}`, exact: true }).click();
     await page
       .getByText(`Initiated by #${nominatorSeat} ${nominatorName}`, { exact: true })
@@ -2750,7 +2754,11 @@ try {
     await nextPlayer.click();
     const secondNominatorCard = page.locator(".player-seat.is-current");
     const secondNominatorLabel = await secondNominatorCard.getAttribute("aria-label");
-    const secondNominatorMatch = secondNominatorLabel?.match(/^Seat (\d+): (.+)$/);
+    const secondNominatorMatch = [
+      null,
+      await secondNominatorCard.evaluate((card) => card.closest(".seat-anchor").dataset.seat),
+      await secondNominatorCard.locator(".seat-name").innerText(),
+    ];
     if (secondNominatorMatch === undefined || secondNominatorMatch === null) {
       throw new Error(
         `Could not identify the second speaker: ${secondNominatorLabel ?? "missing"}`,
@@ -2768,8 +2776,8 @@ try {
     if (!votingText.includes(`#${nominatorSeat} ${nominatorName}`)) {
       throw new Error(`Voting candidate must include seat and name: ${votingText}`);
     }
-    if ((await page.getByRole("button", { name: /^Foul / }).count()) !== 10) {
-      throw new Error("Voting must show a Foul button above every active player card");
+    if ((await page.locator('.player-seat[title="Swipe down to issue a foul"]').count()) !== 10) {
+      throw new Error("Voting must retain a downward-foul route for every active player");
     }
     const toggleVoterIndex = await page
       .locator(".player-seat")
@@ -2908,11 +2916,11 @@ try {
     const redCardTarget = page.locator(
       `.seat-anchor[data-seat="${redCardTargetSeat}"] .player-seat.is-current`,
     );
-    const redCardTargetName = await redCardTarget.locator(".seat-name").innerText();
+
     // Auto-assigned voters are inactive for swipe actions; a fourth foul still red-cards
     // an active player and must cancel voting.
     for (let foul = 0; foul < 4; foul += 1) {
-      await page.getByRole("button", { name: `Foul ${redCardTargetName}`, exact: true }).click();
+      await swipeCard(redCardTarget, "down");
     }
     const cancellation = page.getByRole("status", { name: "Voting cancelled" });
     await cancellation.waitFor();
@@ -3065,7 +3073,7 @@ try {
     await evaluateShots.click();
     const acceptedShotEvent = (await acceptedShotRequest).postDataJSON().state.events.at(-1);
     if (
-      acceptedShotEvent?.replayVersion !== 1 ||
+      acceptedShotEvent?.replayVersion !== 3 ||
       acceptedShotEvent?.type !== "mafia.shots-resolved" ||
       typeof acceptedShotEvent?.parentEventId !== "string" ||
       !Number.isInteger(acceptedShotEvent?.sequence) ||
@@ -3209,11 +3217,12 @@ try {
       .waitFor();
     const keptResultActivePlayers = await page.locator(".player-seat.status-active").count();
     if (
-      (await page.getByRole("button", { name: /^Foul / }).count()) !== keptResultActivePlayers ||
+      (await page.locator('.player-seat[title="Swipe down to issue a foul"]').count()) !==
+        keptResultActivePlayers ||
       (await page.locator(".player-seat.is-provisional-deceased").count()) !== 0
     ) {
       throw new Error(
-        "A kept car-crash result must retain every active player's Foul control without provisional deaths",
+        "A kept car-crash result must retain every active player's downward-foul route without provisional deaths",
       );
     }
     await page.getByRole("button", { name: "Continue" }).click();
@@ -3253,18 +3262,22 @@ try {
     });
     for (let index = 0; index < 6; index += 1) await eliminateVotes.first().click();
     const decisionActivePlayers = await page.locator(".player-seat.status-active").count();
-    if ((await page.getByRole("button", { name: /^Foul / }).count()) !== decisionActivePlayers) {
-      throw new Error("Car-crash voting must retain every active player's Foul control");
+    if (
+      (await page.locator('.player-seat[title="Swipe down to issue a foul"]').count()) !==
+      decisionActivePlayers
+    ) {
+      throw new Error("Car-crash voting must retain every active player's downward-foul route");
     }
     await page.getByRole("button", { name: "Resolve car crash" }).click();
     await page.getByRole("heading", { name: "Car crash result" }).waitFor();
     await page.getByRole("status", { name: "Car-crash result" }).getByText("Eliminated").waitFor();
     if (
       (await page.locator(".player-seat.is-provisional-deceased").count()) !== 3 ||
-      (await page.getByRole("button", { name: /^Foul / }).count()) !== decisionActivePlayers
+      (await page.locator('.player-seat[title="Swipe down to issue a foul"]').count()) !==
+        decisionActivePlayers
     ) {
       throw new Error(
-        "Every car-crash participant must be provisional while every active Foul control remains available",
+        "Every car-crash participant must be provisional while every active downward-foul route remains available",
       );
     }
     const carCrashResultScreenshotPath = carCrashScreenshotPath.replace(
@@ -3454,7 +3467,7 @@ try {
     await page.screenshot({ path: finishScreenshotPath, fullPage: true });
     assertNoPageErrors();
     console.log(
-      `Focused iPad gameplay verification: PASS ${JSON.stringify({ consoleGeometry, actionRowGeometry, wrappedActionGeometry, timerAudioStarts, centerShadowStyle, sidePanelGeometry, glassEvidence, playerControlGeometry, actionGeometry, swipeMenuGeometry, statusLayout, voteToggleState, votingHighlightStyle, postNightHighlightStyle, staleGoodbyeHighlightState, goodbyeTransitionStyle, nightCycleStyle, dayCycleStyle, resultGeometry, playerControlsScreenshotPath, sidePanelScreenshotPath, glassScreenshotPath, nightCycleScreenshotPath, dayCycleScreenshotPath, swipeMenuScreenshotPath, tableScreenshotPath, votingScreenshotPath, autoVotingScreenshotPath, cancellationScreenshotPath, shotToggleScreenshotPath, mafiaResultScreenshotPath, nightCompleteScreenshotPath, bestMoveScreenshotPath, goodbyeScreenshotPath, staleGoodbyeScreenshotPath, finishScreenshotPath, previewScreenshotPath, timelineScreenshotPath, timelineRightScreenshotPath, carCrashScreenshotPath, carCrashResultScreenshotPath, deadDonScreenshotPath, deadSheriffScreenshotPath })}`,
+      `Focused iPad gameplay verification: PASS ${JSON.stringify({ consoleGeometry, actionRowGeometry, wrappedActionGeometry, timerAudioStarts, centerShadowStyle, sidePanelGeometry, glassEvidence, playerControlGeometry, statusLayout, voteToggleState, votingHighlightStyle, postNightHighlightStyle, staleGoodbyeHighlightState, goodbyeTransitionStyle, nightCycleStyle, dayCycleStyle, resultGeometry, playerControlsScreenshotPath, sidePanelScreenshotPath, glassScreenshotPath, nightCycleScreenshotPath, dayCycleScreenshotPath, tableScreenshotPath, votingScreenshotPath, autoVotingScreenshotPath, cancellationScreenshotPath, shotToggleScreenshotPath, mafiaResultScreenshotPath, nightCompleteScreenshotPath, bestMoveScreenshotPath, goodbyeScreenshotPath, staleGoodbyeScreenshotPath, finishScreenshotPath, previewScreenshotPath, timelineScreenshotPath, timelineRightScreenshotPath, carCrashScreenshotPath, carCrashResultScreenshotPath, deadDonScreenshotPath, deadSheriffScreenshotPath })}`,
     );
     await browser.close();
     process.exit(0);
@@ -3647,6 +3660,14 @@ try {
   const initialAction = finaleRow.getByRole("button", {
     name: "Unmark UI verification finale for Role giveaway",
   });
+  await initialAction.evaluate(async (button) => {
+    await Promise.all(
+      button
+        .getAnimations()
+        .filter((animation) => animation.effect?.getTiming().iterations !== Infinity)
+        .map((animation) => animation.finished.catch(() => {})),
+    );
+  });
   const initialActionStyle = await initialAction.evaluate((button) => {
     const style = getComputedStyle(button);
     return {
@@ -3674,6 +3695,14 @@ try {
   await page.waitForTimeout(180);
   const endgameAction = finaleRow.getByRole("button", {
     name: "Unmark UI verification finale for Critical endgame",
+  });
+  await endgameAction.evaluate(async (button) => {
+    await Promise.all(
+      button
+        .getAnimations()
+        .filter((animation) => animation.effect?.getTiming().iterations !== Infinity)
+        .map((animation) => animation.finished.catch(() => {})),
+    );
   });
   const endgameActionStyle = await endgameAction.evaluate((button) => {
     const style = getComputedStyle(button);
@@ -3727,18 +3756,18 @@ try {
   await page.getByRole("heading", { name: "Role giveaway" }).waitFor();
   await assertAccessibleControls("Role giveaway");
   const keyboardRoleCard = page.getByRole("button", { name: /^Draw role for / }).first();
-  await assertVisibleFocus(keyboardRoleCard, "Role card");
+  await assertNativeControl(keyboardRoleCard, "Role card");
   await page.keyboard.press("Shift+F10");
+  if (await page.getByRole("dialog", { name: "Choose role" }).count())
+    throw new Error("Retired role shortcut opened the role chooser");
+  await swipeCard(keyboardRoleCard, "horizontal");
   const manualRoleDialog = page.getByRole("dialog", { name: "Choose role" });
   await manualRoleDialog.waitFor();
-  const manualRoleButton = manualRoleDialog.getByRole("button").first();
-  if (!(await manualRoleButton.evaluate((button) => document.activeElement === button))) {
-    throw new Error("Manual role dialog did not focus its first action");
-  }
   await page.keyboard.press("Escape");
-  if (!(await keyboardRoleCard.evaluate((button) => document.activeElement === button))) {
-    throw new Error("Role card did not regain focus after closing manual assignment");
-  }
+  if (!(await manualRoleDialog.isVisible()))
+    throw new Error("Custom role-chooser Escape is retired");
+  await manualRoleDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  if (await manualRoleDialog.isVisible()) throw new Error("Role chooser Cancel did not dismiss");
   await queueHandle.click();
   const openingRows = await queue.getByRole("listitem").evaluateAll((rows) =>
     rows.map((row) => ({
@@ -3799,10 +3828,11 @@ try {
     await page.getByRole("button", { name: `Draw role for ${nickname}`, exact: true }).click();
   }
   await page.getByRole("button", { name: "Begin Mafia planning stage" }).click();
-  await page.getByRole("heading", { name: "Night zero · Mafia free seating" }).waitFor();
+  await page.getByRole("heading", { name: "Night one · Mafia agreement" }).waitFor();
+  // Later live controls require Day 1, not the planning table. Advance through real controls.
+  await page.getByRole("button", { name: "Mafia asleep" }).click();
+  await page.getByRole("button", { name: "Begin round zero" }).click();
   if (headerOnly) {
-    await page.getByRole("button", { name: "Continue night zero to Sheriff wake-up" }).click();
-    await page.getByRole("button", { name: "Begin day one" }).click();
     const firstPlayer = selectedPlayers[0]?.nickname;
     const secondPlayer = selectedPlayers[1]?.nickname;
     if (firstPlayer === undefined || secondPlayer === undefined) {
@@ -3814,28 +3844,20 @@ try {
     ) {
       throw new Error("Day player cards must not expose a direct red-card button");
     }
-    const firstPlayerCard = page.getByRole("button", {
-      name: `Seat 1: ${firstPlayer}`,
-      exact: true,
-    });
-    await assertVisibleFocus(firstPlayerCard, "Live player card");
+    const firstPlayerCard = page.locator('.seat-anchor[data-seat="1"] .player-seat');
+    await assertNativeControl(firstPlayerCard, "Live player card");
     await page.keyboard.press("Shift+F10");
-    const redCardButton = page.getByRole("button", {
-      name: `Red card ${firstPlayer}`,
-      exact: true,
-    });
-    await redCardButton.waitFor();
-    if (!(await redCardButton.evaluate((button) => document.activeElement === button))) {
-      throw new Error("Keyboard-opened player actions did not focus the red-card action");
-    }
-    await page.keyboard.press("Escape");
-    if (!(await firstPlayerCard.evaluate((button) => document.activeElement === button))) {
-      throw new Error("Player card did not regain focus after closing its actions");
-    }
-    await page.keyboard.press("Shift+F10");
-    await page.keyboard.press("Enter");
+    if (await page.locator(".table-swipe-menu").count())
+      throw new Error("Retired player shortcut opened context menu");
+    await assertRetiredHorizontalGesture(firstPlayerCard, "Phone player card");
+    await openPlayerPenalty(page, 1);
+    await page.getByLabel("Removal rule", { exact: true }).selectOption("6.2.2");
+    await page.getByRole("button", { name: "Confirm discipline", exact: true }).click();
+    await page
+      .getByRole("button", { name: `Announce removal of ${firstPlayer}`, exact: true })
+      .click();
     await page.getByText(`Current turn: ${secondPlayer}`).waitFor();
-    await page.getByRole("button", { name: `Foul ${secondPlayer}`, exact: true }).click();
+    await swipeCard(page.locator('.seat-anchor[data-seat="2"] .player-seat'), "down");
     await page.getByText("Foul ×1").waitFor();
     const phoneGeometry = await page.evaluate(() => {
       const rect = (element) => {
@@ -3853,7 +3875,9 @@ try {
       const header = document.querySelector(".game-header");
       if (!(header instanceof HTMLElement)) throw new Error("Game header missing");
       const cards = [...document.querySelectorAll(".table-card")].map(rect);
-      const seatActionButtons = [...document.querySelectorAll(".seat-actions button")].map(rect);
+      const seatActionButtons = [
+        ...document.querySelectorAll('.player-seat[title="Swipe down to issue a foul"]'),
+      ].map(rect);
       const headerChildren = [...header.children].map(rect);
       const auxiliaryPanels = [
         document.querySelector(".youtube-dock.is-compact"),
@@ -3878,8 +3902,10 @@ try {
         throw new Error(`Phone element is outside the viewport: ${JSON.stringify(element)}`);
       }
     }
-    if (phoneGeometry.seatActionButtons.length < 18) {
-      throw new Error("Phone fallback must expose foul and nomination controls");
+    if (phoneGeometry.seatActionButtons.length !== 9) {
+      throw new Error(
+        "Phone fallback must retain nomination and downward-foul routes on all nine active cards",
+      );
     }
     for (const action of phoneGeometry.seatActionButtons) {
       if (action.width < 38 || action.height < 38) {
@@ -3931,6 +3957,11 @@ try {
   if ((await page.locator(".host-seat").count()) !== 0) {
     throw new Error("The live table must not render a Host tile");
   }
+  // Measure both conditional states; create the populated panel through its real card action.
+  if (await page.locator(".nomination-panel").count())
+    throw new Error("Empty Day must not render Voting order");
+  await page.locator('.seat-anchor[data-seat="1"] .player-seat').click();
+  await page.getByRole("region", { name: "Voting order", exact: true }).waitFor();
   const geometry = await page.evaluate(() => {
     const box = (selector) => {
       const element = document.querySelector(selector);
@@ -4133,8 +4164,8 @@ try {
       "YouTube playlist order must not expose an application-level next-track override",
     );
   }
-  await page.getByRole("button", { name: "Continue night zero to Sheriff wake-up" }).click();
-  await page.getByRole("button", { name: "Begin day one" }).click();
+  await page.getByRole("button", { name: "Mafia asleep" }).click();
+  await page.getByRole("button", { name: "Begin round zero" }).click();
   const dayTitleGeometry = await page.evaluate(() => {
     const title = document.querySelector(".game-shell .game-header h1");
     if (!(title instanceof HTMLElement)) throw new Error("Missing day phase title");
@@ -4382,7 +4413,7 @@ try {
   await page.getByRole("button", { name: "Exit fullscreen" }).click();
   await page.waitForFunction(() => document.fullscreenElement === null);
   assertNoPageErrors();
-  // Retain every legacy regression first, then qualify the real fresh v2 default.
+  // Retain ordinary UI regressions, then qualify the single current canonical path.
   console.log("Legacy UI regression journey: PASS (federation journey still required)");
   await page.goto(new URL("/health/ready", expectedOrigin).href);
   await page.evaluate(() => localStorage.clear());

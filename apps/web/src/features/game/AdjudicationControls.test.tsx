@@ -8,7 +8,6 @@ import {
   createGame,
   createSetup,
   createSeededRandom,
-  FEDERATION_RULES_EDITION,
   type CanonicalGameEventDraft,
 } from "@mafia/game-domain";
 import { I18nProvider } from "../../i18n/I18nProvider.js";
@@ -18,7 +17,6 @@ const game = () => {
   let setup = beginRoleDraw(
     createSetup(
       Array.from({ length: 10 }, (_, index) => ({ id: `p${index + 1}`, seat: index + 1 })),
-      { rulesEdition: FEDERATION_RULES_EDITION },
     ),
     createSeededRandom(13),
   );

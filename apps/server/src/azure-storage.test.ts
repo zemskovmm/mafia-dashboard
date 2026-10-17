@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { DefaultAzureCredential } from "@azure/identity";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AzureStorage, blobReference, validateTableEntity, uuidKey } from "./azure-storage.js";
 import { createStorageFixture } from "./test-helpers/storage-fixture.js";
@@ -15,6 +16,36 @@ const fixture = async () => {
 };
 
 describe("Azure authoritative persistence", () => {
+  it("uses the explicit credential for both services without falling back", async () => {
+    const fallback = vi
+      .spyOn(DefaultAzureCredential.prototype, "getToken")
+      .mockRejectedValue(new Error("Default credential must not be used"));
+    const denied = new Error("Explicit credential denied access");
+    const credential = { getToken: vi.fn().mockRejectedValue(denied) };
+    const storage = new AzureStorage(
+      {
+        accountName: "credentialtestonly",
+        tableName: "CredentialProof",
+        containerName: "credential-proof",
+        partitionKey: "credential-proof",
+      },
+      credential,
+    );
+    // Denial occurs in the real SDK authentication pipeline, before network I/O.
+    await expect(storage.getControl()).rejects.toBe(denied);
+    await expect(storage.blobs.getProperties()).rejects.toBe(denied);
+    expect(credential.getToken).toHaveBeenCalledTimes(2);
+    expect(fallback).not.toHaveBeenCalled();
+    expect(AzureStorage.explicitCredentialSupported).toBe(true);
+  });
+
+  it("rejects an explicit credential combined with a connection string", async () => {
+    const { options } = await fixture();
+    expect(() => new AzureStorage(options, { getToken: vi.fn() })).toThrow(
+      "Explicit credentials cannot be combined with a connection string",
+    );
+  });
+
   it("preserves explicit EDM DateTime precision and rejects malformed wrappers", async () => {
     const { storage } = await fixture();
     const exact = "2026-09-30T12:34:56.1234567Z";
@@ -106,6 +137,7 @@ describe("Azure authoritative persistence", () => {
     expect(() => validateTableEntity({ value: Buffer.alloc(65_537) })).toThrow(/property/i);
     expect(() => validateTableEntity({ value: { nested: true } })).toThrow(/scalar/i);
     expect(() => validateTableEntity({ value: Number.NaN })).toThrow(/finite/i);
+    expect(() => validateTableEntity({ "invalid.property": true })).toThrow(/property name/i);
     expect(() =>
       validateTableEntity(
         Object.fromEntries(Array.from({ length: 253 }, (_, i) => [`v${i}`, true])),
@@ -144,6 +176,20 @@ describe("Azure authoritative persistence", () => {
     });
     expect(rows[0]).not.toHaveProperty("optional");
     expect(rows[0]).not.toHaveProperty("etag");
+    await reopened.mutate(async (tx) => {
+      await tx.set("sample:a", { ...(await tx.get("sample:a")), count: 3 });
+      const listed = await tx.list("sample:b");
+      await tx.set("sample:b", { ...listed[0], name: "Updated" });
+    });
+    expect(await reopened.read((tx) => tx.get("sample:a"))).toEqual({
+      createdAt,
+      active: true,
+      count: 3,
+      binary: Buffer.from([1, 2]),
+    });
+    expect(await reopened.read((tx) => tx.list("sample:b"))).toEqual([
+      { rowKey: "sample:b", name: "Updated" },
+    ]);
     await reopened.end();
   });
 

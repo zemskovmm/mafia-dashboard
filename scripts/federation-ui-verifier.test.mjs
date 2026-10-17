@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { readFile } from "node:fs/promises";
 import { tsImport } from "tsx/esm/api";
 
-const { checkpoint, legacySetupState } = await tsImport(
+const { checkpoint, currentSetupState } = await tsImport(
   "./verify-federation-ui.mjs",
   import.meta.url,
 );
@@ -16,18 +16,15 @@ const { isCurrentGameSessionState } = await tsImport(
 const id = "00000000-0000-4000-8000-000000000301";
 function opening() {
   let setup = domain.beginRoleDraw(
-    domain.createSetup(
-      Array.from({ length: 10 }, (_, i) => ({ id: `p${i + 1}`, seat: i + 1 })),
-      { rulesEdition: domain.FEDERATION_RULES_EDITION },
-    ),
+    domain.createSetup(Array.from({ length: 10 }, (_, i) => ({ id: `p${i + 1}`, seat: i + 1 }))),
     domain.createSeededRandom(71),
   );
   for (let seat = 1; seat <= 10; seat++) setup = domain.drawRoleForSeat(setup, seat);
   return domain.createGame(domain.completeRoleDraw(setup));
 }
 
-test("restored legacy draft is admitted without changing the fresh rules policy", () => {
-  const state = legacySetupState();
+test("current setup draft is admitted without selecting a gameplay engine", () => {
+  const state = currentSetupState();
   assert.equal(state.playlistId, "");
   assert.equal(state.setup.rulesEdition, undefined);
   assert.equal(state.initialGame, null);
@@ -41,11 +38,11 @@ test("restored legacy draft is admitted without changing the fresh rules policy"
   );
 });
 
-test("browser preconditions are v2 canonical roots with actual domain hashes", () => {
+test("browser preconditions are v3 canonical roots with actual domain hashes", () => {
   const game = opening();
-  const state = checkpoint(game, { ...legacySetupState(), setup: null }, id);
-  assert.equal(state.initialGame.replayVersion, 2);
-  assert.equal(state.initialGame.rulesEdition, domain.FEDERATION_RULES_EDITION);
+  const state = checkpoint(game, { ...currentSetupState(), setup: null }, id);
+  assert.equal(state.initialGame.replayVersion, 3);
+  assert.equal(Object.hasOwn(state.initialGame, "rulesEdition"), false);
   assert.equal(state.events.length, 1);
   assert.equal(state.events[0].type, "game.checkpointed");
   assert.equal(state.events[0].parentEventId, null);
@@ -63,10 +60,9 @@ test("night checkpoint establishes only a precondition, never a Best Move outcom
   while (game.phase !== "day") game = domain.advanceSetupPhase(game);
   game = domain.beginNight(game);
   const template = {
-    ...legacySetupState(),
+    ...currentSetupState(),
     setup: {
       step: "roles",
-      rulesEdition: domain.FEDERATION_RULES_EDITION,
       selectedPlayerIds: game.players.map((p) => p.id),
       setup: null,
     },
@@ -79,8 +75,8 @@ test("night checkpoint establishes only a precondition, never a Best Move outcom
   assert.equal(isCurrentGameSessionState(state), true);
 });
 
-test("corrupted browser root hashes and unsupported v2 fields fail closed", () => {
-  const state = checkpoint(opening(), { ...legacySetupState(), setup: null }, id);
+test("corrupted browser root hashes and foreign fields fail closed", () => {
+  const state = checkpoint(opening(), { ...currentSetupState(), setup: null }, id);
   assert.throws(() =>
     domain.replayGameLog(
       state.initialGame,
@@ -174,7 +170,15 @@ test("federation gameplay scenarios route penalties through real player input, n
   assert.match(source, /page\.mouse\.down\(\)/);
   assert.match(source, /Input\.dispatchTouchEvent/);
   assert.match(source, /Shift\+F10/);
-  assert.match(source, /openPlayerPenalty\(page, reviewSeat, \{ shortcut: false/);
+  assert.ok(
+    !source.includes('input: "keyboard"'),
+    "Removed authored keyboard menu route must not be used",
+  );
+  assert.ok(!source.includes("toBeFocused()"), "No app-owned modal return-focus requirement");
+  assert.match(source, /Retired keys emit no event/);
+  assert.match(source, /Native dialog Escape cancellation/);
+  assert.match(source, /openPlayerPenalty\(page, reviewSeat/);
+  assert.doesNotMatch(source, /shortcut: false|table-swipe-menu button/);
   assert.match(source, /Final ruling reason[\s\S]*?toHaveValue/);
   assert.match(source, /I reviewed the external recording[\s\S]*?toBeChecked/);
   assert.match(source, /rule-only-removal-\$\{locale\}/);

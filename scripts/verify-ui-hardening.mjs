@@ -11,6 +11,7 @@ const cases = [
   { name: "compact-tablet-1000x600", browser: "chromium", width: 1000, height: 600 },
 ];
 
+const failures = [];
 for (const testCase of cases) {
   console.log(`UI hardening: ${testCase.name}`);
   const result = spawnSync(process.execPath, ["scripts/verify-ui.mjs"], {
@@ -26,11 +27,17 @@ for (const testCase of cases) {
       UI_SCREENSHOT: resolve(evidenceDir, `${testCase.name}-setup.png`),
       UI_TABLE_SCREENSHOT: resolve(evidenceDir, `${testCase.name}-table.png`),
       UI_SIDE_PANEL_SCREENSHOT: resolve(evidenceDir, `${testCase.name}-rail.png`),
+      UI_FAILURE_SCREENSHOT: resolve(evidenceDir, `${testCase.name}-failure.png`),
     },
     stdio: "inherit",
   });
   if (result.error !== undefined) throw result.error;
-  if (result.status !== 0) process.exit(result.status ?? 1);
+  // A deferred geometry failure in one viewport must not erase independent rows.
+  if (result.status !== 0) failures.push({ name: testCase.name, status: result.status });
 }
 
+if (failures.length > 0) {
+  console.error(`UI hardening matrix: FAIL ${JSON.stringify(failures)}`);
+  process.exit(1);
+}
 console.log("UI hardening matrix: PASS");

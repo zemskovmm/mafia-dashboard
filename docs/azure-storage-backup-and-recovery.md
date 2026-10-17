@@ -2,7 +2,7 @@
 
 ## Scope
 
-These tools qualify the Table/private Blob adapter **locally**, using owned Azurite services. They neither back up production nor replace the separate PostgreSQL archive procedure. The Azure deployment configuration does not schedule production backups. Live scheduling, a separate backup storage account and retention remain separately scoped work.
+These tools qualify the Table/private Blob adapter **locally**, using owned Azurite services. They do not back up production. PostgreSQL support and its archive tools are retired; existing archives remain untouched. The Azure deployment configuration does not schedule production backups. Live scheduling, a separate backup storage account and retention remain separately scoped work.
 
 A backup is a completed package of typed Table entities and all referenced immutable Blob bytes. Blob replication, versioning or a copy of only the game snapshots is not an application backup: accounts, permissions, permanent player identities, creation mappings, deletion markers and result projections also matter.
 
@@ -57,6 +57,22 @@ Wrong-owner release is refused. This is not a force/reset command and is not per
 
 A restore package describes a captured point in time, not unsent browser work or writes accepted after the capture. Ordinary acknowledged commits remain remotely durable through application restarts; disaster-recovery loss depends on separately approved backup frequency and retention.
 
+## One-time game-data normalization boundary
+
+The current target is one engine-independent business-data contract: no `rulesEdition`, `rulesetId`, `rulesetVersion` or equivalent gameplay selector. Storage/serialization versions, dataset identity, revisions, blob checksums and recovery metadata remain operational. [IDD-0005](../.idd/intent/IDD-0005.spec-data-compatibility-and-preservation.md) governs explicit one-time historical normalization; ordinary backup, restore, startup, reads and saves do not decode old rules or convert game representations.
+
+Preserve every game identity/club owner, known result and independently known observation, valid tournament/participant relationships, creation mappings and deletion markers. Do not invent absent fields or recompute historical winners. Retain completed timelines that can be converted faithfully; otherwise preserve the completed facts with a private statistics-only disposition and visible unavailable detail. An active game or unsent draft that cannot be preserved truthfully stops the operation. Only this explicit, verified conversion may replace representation bytes and corresponding hashes; an ordinary recovery package remains an exact capture of its source.
+
+Local preparation and Azurite rehearsal are not production migration completion. Before any production change, require all of:
+
+- Exact target/dataset/control/revision inventory and source-bound dry-run dispositions, including unknown meaningful fields and optional-history omissions; a conforming source receives a verified no-op disposition.
+- Separately authorized target-bound write access and an explicitly authorized compatible application release/maintenance sequence. Read access, local implementation approval and cloud configuration access do not authorize writes, permission grants, commits, publication or deployment.
+- A complete private checksummed package of typed Table entities and all referenced blob bytes, with isolated restore/readback proof. Preserve encrypted credentials as opaque bytes and retain protected keys separately; no secrets enter commands, logs or manifests intended for publication.
+- Quiesced incompatible writers, protected pending-client work, an owned freeze and the existing conditional atomic blob/projection publication protocol. Bind every change to source identities/revisions/digests; stop on changed source, corrupt authority or unknown meaningful data. Read back replacements before retiring references, preserve archives/active roots/receipts, and qualify interruption plus repeated execution as a no-op.
+- Real compatible-application/storage readbacks of inventory, partial/full facts, retained timelines, active resume and an authorized save/retry, with original/final private manifests and a retained recoverable source package.
+
+Any temporary predecessor decoder/operator remains private local operational material, not supported runtime compatibility or a new permanent migration component. The local-only commands above remain local-only; no undocumented remote flag or safety-check bypass is implied. Service returns only with matching code and data. Image-only rollback does not prove data compatibility, and restoring a pre-conversion package after subsequent writes would lose them and requires a new recovery decision. These gates describe required live qualification, not an assertion that it has happened.
+
 ## Explicit bounded cleanup
 
 There is no automatic Blob lifecycle deletion. Run maintenance only deliberately:
@@ -73,6 +89,6 @@ Maintenance freezes the store, treats committed references and explicit protecte
 
 ## Verification and production boundaries
 
-`npm run check:local` runs the canonical checks with isolated Azure and PostgreSQL reference fixtures. The Azure suite exercises freeze/write races, typed package integrity, wrong targets, interrupted restore, ownership-safe cleanup, fresh cookie authentication and a subsequent save against restored data. `verify:storage-backup` is one bounded recovery drill, not a replacement for those checks.
+`npm run check:local` runs the canonical checks with isolated Azure fixtures and no PostgreSQL dependency. The Azure suite exercises freeze/write races, typed package integrity, wrong targets, interrupted restore, ownership-safe cleanup, fresh cookie authentication and a subsequent save against restored data. `verify:storage-backup` is one bounded recovery drill, not a replacement for those checks.
 
-Observed timings, manifest hashes, counts and limitations belong in ignored project metadata, not in a claim that production recovery is proven. Local Azurite cannot qualify managed identity permissions, private networking, regional durability, a separate backup account or production recovery time. The original PostgreSQL archive and restore drill remain separate until production-cutover approval.
+Observed timings, manifest hashes, counts and limitations belong in ignored project metadata, not in a claim that production recovery is proven. Local Azurite cannot qualify managed identity permissions, private networking, regional durability, a separate backup account or production recovery time. Software-support retirement does not authorize deleting original PostgreSQL archives or other independent backups.

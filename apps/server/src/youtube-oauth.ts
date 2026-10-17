@@ -1,5 +1,4 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import type { Pool } from "pg";
 import { z } from "zod";
 
 const YOUTUBE_READONLY_SCOPE = "https://www.googleapis.com/auth/youtube.readonly";
@@ -127,83 +126,12 @@ export type YouTubeOAuthPort = Pick<
   | "disconnect"
 >;
 
-export class PostgresYouTubeCredentialStore implements YouTubeCredentialStore {
-  public constructor(private readonly pool: Pool) {}
-  public async putCredential(userId: string, credential: MusicCredential): Promise<void> {
-    await this.pool.query(
-      `INSERT INTO youtube_oauth_credentials
-         (user_id, singleton, access_token_encrypted, refresh_token_encrypted, expires_at, account_label, scope)
-       VALUES ($1, TRUE, $2, $3, $4, $5, $6)
-       ON CONFLICT (user_id) DO UPDATE
-         SET access_token_encrypted = EXCLUDED.access_token_encrypted,
-             refresh_token_encrypted = EXCLUDED.refresh_token_encrypted,
-             expires_at = EXCLUDED.expires_at,
-             account_label = EXCLUDED.account_label,
-             scope = EXCLUDED.scope,
-             updated_at = NOW()`,
-      [
-        userId,
-        credential.accessTokenEncrypted,
-        credential.refreshTokenEncrypted,
-        credential.expiresAt,
-        credential.accountLabel,
-        credential.scope,
-      ],
-    );
-  }
-  public async getCredential(userId: string): Promise<MusicCredential | null> {
-    const result = await this.pool.query<{
-      access_token_encrypted: Buffer;
-      refresh_token_encrypted: Buffer;
-      expires_at: Date;
-      account_label: string;
-      scope: string | null;
-    }>(
-      "SELECT access_token_encrypted, refresh_token_encrypted, expires_at, account_label, scope FROM youtube_oauth_credentials WHERE user_id = $1",
-      [userId],
-    );
-    const row = result.rows[0];
-    return row === undefined
-      ? null
-      : {
-          accessTokenEncrypted: row.access_token_encrypted,
-          refreshTokenEncrypted: row.refresh_token_encrypted,
-          expiresAt: row.expires_at,
-          accountLabel: row.account_label,
-          scope: row.scope,
-        };
-  }
-  public async refreshCredential(
-    userId: string,
-    update: Pick<MusicCredential, "accessTokenEncrypted" | "expiresAt"> & {
-      readonly scope?: string;
-    },
-  ): Promise<void> {
-    await this.pool.query(
-      `UPDATE youtube_oauth_credentials
-          SET access_token_encrypted = $1,
-              expires_at = $2,
-              scope = COALESCE($3, scope),
-              updated_at = NOW()
-        WHERE user_id = $4`,
-      [update.accessTokenEncrypted, update.expiresAt, update.scope ?? null, userId],
-    );
-  }
-  public async deleteCredential(userId: string): Promise<void> {
-    await this.pool.query("DELETE FROM youtube_oauth_credentials WHERE user_id = $1", [userId]);
-  }
-}
-
 export class YouTubeOAuthService {
   public constructor(
-    poolOrStore: Pool | YouTubeCredentialStore,
+    private readonly credentials: YouTubeCredentialStore,
     private readonly config: YouTubeOAuthConfig,
     private readonly fetcher: typeof fetch = fetch,
-  ) {
-    this.credentials =
-      "query" in poolOrStore ? new PostgresYouTubeCredentialStore(poolOrStore) : poolOrStore;
-  }
-  private readonly credentials: YouTubeCredentialStore;
+  ) {}
 
   public createAuthorizationUrl(state: string): string {
     const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");

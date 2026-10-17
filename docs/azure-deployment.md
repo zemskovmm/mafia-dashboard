@@ -1,6 +1,6 @@
 # Azure deployment
 
-La Verdad releases use `.github/workflows/deploy-azure.yml`, GitHub OIDC and immutable GHCR image digests. The approved Azure transition selects a **new empty Azure Table/private Blob store**, with no SQL connection, SQL migration init container, fallback or dual write. Historical business-data import is a separate later operation; it is not run during deployment. Users sign in again and reconnect music. Browser epoch rejection is not a deployment requirement.
+La Verdad releases use `.github/workflows/deploy-azure.yml`, GitHub OIDC and immutable GHCR image digests. Azure Table/private Blob Storage is the sole supported backend, with no SQL connection, SQL migration init container, fallback or dual write. The PostgreSQL backend, its Compose deployment and SQL-to-Azure importer are retired; existing SQL data and resources remain untouched. Browser epoch rejection is not a deployment requirement.
 
 ## Target and resource ownership
 
@@ -55,7 +55,7 @@ The published server build must contain `apps/server/dist/initialize-storage.js`
 
 - `initialize_storage=false` is the workflow-dispatch default, and every automatic push uses false. The init container validates `ready()` only. Missing/unknown authority fails the revision instead of selecting PostgreSQL or silently creating another dataset.
 - Set `initialize_storage=true` **only for the approved, independently verified empty target**. The init container invokes the existing `initialize(true)` path: create the recognized control/schema authority if absent, refuse unrecognized Table rows, then verify readiness. Infrastructure creates only an empty table and private container. A control row/dataset UUID is operational metadata, not business seed.
-- Existing recognized state is never reset, even when initialization is explicitly requested again. Routine release with false leaves business rows, canonical blobs and dataset identity untouched. Do not clear or reconcile a populated target to enable later migration.
+- Existing recognized state is never reset, even when initialization is explicitly requested again. Routine release with false leaves business rows, canonical blobs and dataset identity untouched. There is no importer or authority to clear a populated target.
 - Readiness verifies authority and private-container access; it is not proof of a full write/read/delete roundtrip or an empty business dataset. An operator must verify initial emptiness and a bounded disposable-namespace data probe separately. Current initialization does not inspect arbitrary orphan blobs; the never-used dedicated-account precondition remains important.
 
 ## Release flow and safety gates
@@ -82,7 +82,7 @@ The workflow checks the existing subscription/app/environment, refuses unknown a
 3. Select/read back all four new Storage variables. Verify the exact never-used account name is globally available, inspect compiled resource identities/namespace and what-if, then provision the foundation. No table rows/blobs or business seed are created by Bicep. Read back account/namespace, identity, role scopes and unchanged PostgreSQL/network resources.
 4. Publish and record the exact verified commit/image digest. Dispatch that qualified ref with `deploy=true`, `initialize_storage=true`. Do not infer artifact identity from the commit tag or a later rebuild. Require bounded initialization, readiness and matching commit/version.
 5. Verify the serving revision uses Azure and managed identity, the business dataset is empty, old SQL-serving revisions cannot serve traffic, and an explicitly disposable namespace can write/read/delete a small Table/Blob probe. Never use a real account/game as the probe and never clear business data to restore emptiness. Fresh-login/new-club behavior is covered by local retained HTTP tests; no broad live-browser audit is added by this deployment.
-6. Run a routine release with `initialize_storage=false` and confirm no dataset reset. Read back remote SHA/workflow/digest/active traffic, unchanged SQL resources and the restored automatic-release flag. Report live gaps distinctly from local qualification. Do not execute the deferred production migration.
+6. Run a routine release with `initialize_storage=false` and confirm no dataset reset. Read back remote SHA/workflow/digest/active traffic, unchanged SQL resources and the restored automatic-release flag. Report live gaps distinctly from local qualification. There is no deferred production import workflow.
 
 ## Local compiled verification
 
@@ -99,7 +99,7 @@ actionlint .github/workflows/deploy-azure.yml
 npm run check:local
 ```
 
-Both compiled-template assertion groups must execute with these actual paths; skipped optional assertions are not release evidence. `check:local` owns disposable local PostgreSQL/Azurite qualification for both retained backends. Compilation and local fixtures do **not** prove live Azure RBAC/readiness or production empty-store acceptance. Never commit `.AI`, local deployment parameter files with secrets, or captured backup data. Use the [v1.0.0 release checklist](releases/v1.0.0.md) for remaining exact-candidate gates; its older PostgreSQL-only operational assumptions are not claims that Azure backup automation exists.
+Both compiled-template assertion groups must execute with these actual paths; skipped optional assertions are not release evidence. `check:local` owns disposable Azurite qualification with no PostgreSQL service or tool prerequisite. Compilation and local fixtures do **not** prove live Azure RBAC/readiness or production empty-store acceptance. Never commit `.AI`, local deployment parameter files with secrets, or captured backup data. Use the [v1.0.0 release checklist](releases/v1.0.0.md) for remaining exact-candidate gates; local Azure recovery qualification does not prove production backup automation exists.
 
 ## Ingress, callbacks and workflow limits
 
@@ -118,6 +118,6 @@ The deployment workflow intentionally does not repeat local formatting/lint/type
 
 No historical data is imported and no new production backup scheduler is configured. Existing backups and private SQL source/resources remain untouched. Local Azure backup/restore tooling and recovery hooks are preserved; see [Azure Storage backup and recovery](azure-storage-backup-and-recovery.md). Passing local recovery drills does not mean a production backup job is operating. Standard LRS is not an application-consistent backup or regional HA.
 
-Before the new store accepts writes, an operator can restore the saved SQL image/config at the unchanged app. After Azure writes begin, switching back to SQL is **not lossless**: preserve new data and stop for an explicit recovery/reconciliation decision. For a routine Azure application rollback, redeploy the recorded known-good compatible image digest through `infra/app.bicep` with `initializeStorage=false` and the identical namespace. Neither rollback nor forced foundation reconciliation may restore, rename, reset or delete data automatically. Do not delete manifests still needed by serving or rollback-eligible revisions.
+The historical SQL image/config is not a supported rollback target for this application. Switching back to SQL after Azure writes is **not lossless**: preserve all data and stop for an explicit recovery decision. For a routine Azure application rollback, redeploy the recorded known-good compatible Azure image digest through `infra/app.bicep` with `initializeStorage=false` and the identical namespace. Neither rollback nor forced foundation reconciliation may restore, rename, reset or delete data automatically. Do not delete manifests still needed by serving or rollback-eligible revisions.
 
-Costs include the warm Container App, Storage requests/capacity/egress and the retained PostgreSQL/network estate. This pilot remains single-region/non-HA. Resource retirement, historical migration execution, production backup scheduling and any private-endpoint redesign require separate authorized work.
+Costs include the warm Container App, Storage requests/capacity/egress and any retained PostgreSQL/network estate. This pilot remains single-region/non-HA. Infrastructure decommissioning, production backup scheduling and any private-endpoint redesign require separate authorized work; removing SQL support does not remove its external resources or costs.

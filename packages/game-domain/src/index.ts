@@ -7,7 +7,7 @@ export * from "./federation-actions.js";
 export * from "./federation-discipline.js";
 export * from "./night-actions.js";
 export * from "./rule-error.js";
-export * from "./rules-edition.js";
+
 export * from "./setup.js";
 export * from "./types.js";
 export * from "./statistics-types.js";

@@ -9,16 +9,14 @@ const en = {
   filters: "Statistics scope",
   from: "From (UTC)",
   to: "To (UTC)",
-  edition: "Rules edition",
+
   team: "Team",
   role: "Role",
   tournament: "Tournament scope",
   all: "All",
   allGames: "All games",
   none: "No tournament",
-  federation: "Federation · 2026-07-01",
-  legacy: "Legacy edition",
-  unknownEdition: "Edition unavailable",
+
   casper: "Casper format",
   red: "Red",
   black: "Black",
@@ -30,7 +28,8 @@ const en = {
   eliminated: "Eliminated",
   "red-carded": "Red-carded",
   scope: "Selected scope: {scope}",
-  dates: "Inclusive UTC dates. Empty bounds include all dates.",
+  dates:
+    "Inclusive UTC dates. Without date bounds, undated games are also included; a date filter excludes them.",
   invalidDates: "Start date must not follow end date.",
   reset: "Reset filters",
   loading: "Loading statistics…",
@@ -54,7 +53,7 @@ const en = {
   redRate: "Red win rate",
   blackRate: "Black win rate",
   form: "Recent form",
-  lastPlayed: "Last played",
+  lastPlayed: "Last recorded play date",
   established: "Established",
   provisional: "Provisional",
   unranked: "Unranked",
@@ -63,7 +62,10 @@ const en = {
   lifetimeHelp:
     "Current rating uses all eligible club games, not just this scope. Club ranks are not renumbered by search or filters.",
   denominator:
-    "Wins divided by played games; draws are included in the denominator. — means no observations, not zero ability.",
+    "Wins divided by games with a recorded player result; draws are included. Other known appearances still count as games. — means no observations, not zero ability.",
+  observedResults: "Results recorded for {count} of {total} games",
+  observedDiscipline:
+    "Games with recorded fouls: {count}; with recorded final status: {statusCount}.",
   eventChange: "Tournament Elo change",
   scopeChange: "Selected-scope Elo change",
   eligibleCount: "{count} eligible games",
@@ -71,6 +73,11 @@ const en = {
   eventHelp:
     "Sum of eligible game changes in this selection, using the lifetime ledger; other active filters narrow the event. Not an official tournament score or independent event rating.",
   coverage: "{count} completed games in scope",
+  partial: {
+    one: "{count} completed game has partial facts. Available observations remain included; missing dates and other facts are not inferred.",
+    other:
+      "{count} completed games have partial facts. Available observations remain included; missing dates and other facts are not inferred.",
+  },
   unavailable: {
     one: "{count} completed game has unavailable statistics; omitted from affected totals.",
     other: "{count} completed games have unavailable statistics; omitted from affected totals.",
@@ -84,7 +91,7 @@ const en = {
   ratingCaution:
     "A team-result estimate, not measured individual skill. 1–9 rated games is provisional; 10 is only a display threshold. Ratings from different clubs are not comparable.",
   ratingExplanation:
-    "Team Elo starts internally at 1,500 and uses pre-game team averages, K = 32 and the saved win/draw/loss (1 / 0.5 / 0). Only complete ten-human federation games with the standard roles are eligible. Legacy, Casper, cancelled and incomplete games are not rated; hosting is separate.",
+    "Team Elo starts internally at 1,500 and uses pre-game team averages, K = 32 and the saved win/draw/loss (1 / 0.5 / 0). Eligibility requires a known result and played time, a complete ten-human standard-role roster, known absence of Casper and a separate host. Missing unrelated statistics or timeline detail does not prevent rating; hosting is separate.",
   ratingLimits:
     "1–9 rated games is provisional; 10 is a display threshold, not validated confidence. Team results cannot isolate individual skill, do not prove red/black balance, and equal changes on unequal teams are not club-wide zero-sum. Ratings are not comparable across clubs or model versions.",
   win: "Win",
@@ -105,7 +112,7 @@ const en = {
   discipline: "Discipline and recorded results",
   totals: "Totals",
   fouls: "Fouls",
-  foulsPerGame: "Fouls per played game",
+  foulsPerGame: "Fouls per game with recorded fouls",
   redCards: "Final red cards",
   eliminations: "Final eliminations",
   bestResults: "Recorded Best Move results",
@@ -114,7 +121,7 @@ const en = {
   bestHelp:
     "Saved hit counts are not opportunities or guess accuracy; missing Best Move results are not zero hits.",
   hosted: "Hosted games",
-  lastHosted: "Last hosted",
+  lastHosted: "Last recorded hosting date",
   hosting: "Hosting in selected scope",
   hostingHelp: "Hosting does not enter played-game win rate or Elo.",
   never: "—",
@@ -143,7 +150,7 @@ const en = {
   ratingLine: "Before {before} · change {change} · after {after}",
   averages: "Pre-game team averages: red {red}, black {black}",
   expectation: "Expected score {expected}; saved score {score}",
-  "legacy-edition": "Legacy-edition games are not rated.",
+
   casperReason: "Casper-format games are not rated.",
   cancelledReason: "Cancelled games are not rated.",
   "incomplete-results": "Incomplete saved results: no rating change is available.",
@@ -151,6 +158,13 @@ const en = {
   hostReason: "Hosting is not rated.",
   unknownUnrated: "No eligible rating observation for this game.",
   timeline: "Open timeline",
+  timelineUnavailable: "Timeline not recorded",
+  unknownDate: "Date not recorded",
+  unknownOutcome: "Outcome not recorded",
+  unknownSeat: "Seat not recorded",
+  unknownRole: "Role not recorded",
+  unknownTeam: "Team not recorded",
+  unknownStatus: "Final status not recorded",
   changeTournament: "Change tournament",
   saveTournament: "Save tournament",
   savingTournament: "Saving tournament…",
@@ -169,16 +183,14 @@ const ru = {
   filters: "Область статистики",
   from: "С (UTC)",
   to: "По (UTC)",
-  edition: "Редакция правил",
+
   team: "Команда",
   role: "Роль",
   tournament: "Выбор турнира",
   all: "Все",
   allGames: "Все игры",
   none: "Без турнира",
-  federation: "Федерация · 01.07.2026",
-  legacy: "Старая редакция",
-  unknownEdition: "Редакция недоступна",
+
   casper: "Формат с Каспером",
   red: "Красные",
   black: "Чёрные",
@@ -190,7 +202,8 @@ const ru = {
   eliminated: "Выбыл",
   "red-carded": "Красная карточка",
   scope: "Выбрано: {scope}",
-  dates: "Даты включительно, UTC. Пустая граница означает отсутствие ограничения.",
+  dates:
+    "Даты включительно, UTC. Без границ учитываются и игры без даты; фильтр по датам их исключает.",
   invalidDates: "Начальная дата не может быть позже конечной.",
   reset: "Сбросить фильтры",
   loading: "Загрузка статистики…",
@@ -214,7 +227,7 @@ const ru = {
   redRate: "Победы за красных",
   blackRate: "Победы за чёрных",
   form: "Последние результаты",
-  lastPlayed: "Последняя игра",
+  lastPlayed: "Последняя записанная дата игры",
   established: "Основной рейтинг",
   provisional: "Предварительный",
   unranked: "Без рейтинга",
@@ -223,7 +236,10 @@ const ru = {
   lifetimeHelp:
     "Текущий рейтинг учитывает все подходящие игры клуба, а не только выбранную область. Поиск и фильтры не меняют места в клубе.",
   denominator:
-    "Победы делятся на число сыгранных игр; ничьи входят в знаменатель. — означает отсутствие наблюдений, а не нулевое мастерство.",
+    "Победы делятся на число игр с записанным результатом игрока; ничьи учитываются. Другие известные участия тоже входят в число игр. — означает отсутствие наблюдений, а не нулевое мастерство.",
+  observedResults: "Исход записан для {count} из {total} игр",
+  observedDiscipline:
+    "Игр с записанными фолами: {count}; с записанным итоговым статусом: {statusCount}.",
   eventChange: "Изменение Эло в турнире",
   scopeChange: "Изменение Эло в выбранной области",
   eligibleCount: "Подходящих игр: {count}",
@@ -231,6 +247,8 @@ const ru = {
   eventHelp:
     "Сумма изменений в подходящих играх выборки из общей истории рейтинга; дополнительные фильтры сужают турнир. Это не официальные турнирные очки и не отдельный рейтинг турнира.",
   coverage: "Завершённых игр в выборке: {count}",
+  partial:
+    "Игр с неполными данными: {count}. Известные наблюдения учитываются; отсутствующие даты и другие сведения не восстанавливаются предположениями.",
   unavailable: {
     one: "В {count} завершённой игре статистика недоступна; она исключена из соответствующих итогов.",
     few: "В {count} завершённых играх статистика недоступна; они исключены из соответствующих итогов.",
@@ -249,7 +267,7 @@ const ru = {
   ratingCaution:
     "Оценка по командным результатам, а не измеренное личное мастерство. 1–9 рейтинговых игр — предварительный рейтинг; 10 — только порог отображения. Рейтинги разных клубов несопоставимы.",
   ratingExplanation:
-    "Командный Эло внутренне начинается с 1500 и использует средние рейтинги команд до игры, K = 32 и сохранённый исход (победа / ничья / поражение: 1 / 0,5 / 0). Подходят только полные игры десяти человек по правилам Федерации со стандартными ролями. Старые редакции, Каспер, отменённые и неполные игры не учитываются; ведение игры считается отдельно.",
+    "Командный Эло внутренне начинается с 1500 и использует средние рейтинги команд до игры, K = 32 и сохранённый исход (победа / ничья / поражение: 1 / 0,5 / 0). Нужны известные исход и время игры, полный состав из десяти человек со стандартными ролями, подтверждённое отсутствие Каспера и отдельный ведущий. Отсутствие других показателей или хронологии не мешает расчёту; ведение игры считается отдельно.",
   ratingLimits:
     "1–9 рейтинговых игр дают предварительный рейтинг; 10 — порог отображения, а не подтверждённая достоверность. Командный исход не выделяет личный вклад и не доказывает баланс красных и чёрных. Одинаковые изменения у команд разного размера не дают нулевую сумму по клубу. Рейтинги разных клубов и версий модели несопоставимы.",
   win: "Победа",
@@ -270,7 +288,7 @@ const ru = {
   discipline: "Дисциплина и записанные результаты",
   totals: "Итого",
   fouls: "Фолы",
-  foulsPerGame: "Фолов на сыгранную игру",
+  foulsPerGame: "Фолов на игру с записанными фолами",
   redCards: "Итоговые красные карточки",
   eliminations: "Итоговые удаления",
   bestResults: "Записанные результаты «Лучшего хода»",
@@ -279,7 +297,7 @@ const ru = {
   bestHelp:
     "Сохранённые попадания не показывают число возможностей или точность угадывания; отсутствие записи «Лучшего хода» не означает ноль попаданий.",
   hosted: "Проведено игр",
-  lastHosted: "Последнее ведение игры",
+  lastHosted: "Последняя записанная дата ведения",
   hosting: "Ведение игр в выбранной области",
   hostingHelp: "Ведение игры не входит в долю побед и Эло игрока.",
   never: "—",
@@ -308,7 +326,7 @@ const ru = {
   ratingLine: "До {before} · изменение {change} · после {after}",
   averages: "Средние рейтинги до игры: красные {red}, чёрные {black}",
   expectation: "Ожидаемый результат {expected}; сохранённый результат {score}",
-  "legacy-edition": "В старой редакции рейтинг не начисляется.",
+
   casperReason: "В формате с Каспером рейтинг не начисляется.",
   cancelledReason: "Отменённые игры не влияют на рейтинг.",
   "incomplete-results": "Сохранённые результаты неполны: изменение рейтинга недоступно.",
@@ -316,6 +334,13 @@ const ru = {
   hostReason: "Ведущему рейтинг не начисляется.",
   unknownUnrated: "В этой игре нет подходящего наблюдения для рейтинга.",
   timeline: "Открыть хронологию",
+  timelineUnavailable: "Хронология не записана",
+  unknownDate: "Дата не записана",
+  unknownOutcome: "Исход не записан",
+  unknownSeat: "Место не записано",
+  unknownRole: "Роль не записана",
+  unknownTeam: "Команда не записана",
+  unknownStatus: "Итоговый статус не записан",
   changeTournament: "Изменить турнир",
   saveTournament: "Сохранить турнир",
   savingTournament: "Сохранение турнира…",

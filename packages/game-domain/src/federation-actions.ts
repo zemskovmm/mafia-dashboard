@@ -1,6 +1,5 @@
 import { isCasperPlayer } from "./casper.js";
 import { evaluateVictory, isTerminalGamePhase } from "./game.js";
-import { isFederationGame } from "./rules-edition.js";
 import type {
   BestMoveCompletionReason,
   CollectiveLiftSkipReason,
@@ -9,9 +8,7 @@ import type {
   OpponentVictoryAdjudication,
   ShotObservation,
 } from "./types.js";
-
 export const assertFederationAction = (game: GameState): void => {
-  if (!isFederationGame(game)) throw new Error("This action requires federation rules");
   if (isTerminalGamePhase(game.phase))
     throw new Error("A terminal game cannot accept more actions");
 };
@@ -244,23 +241,24 @@ export const getCollectiveLiftEligibility = (
   game: GameState,
   seats: readonly number[],
 ):
-  | { readonly permitted: true }
-  | { readonly permitted: false; readonly reason: CollectiveLiftSkipReason } => {
+  | {
+      readonly permitted: true;
+    }
+  | {
+      readonly permitted: false;
+      readonly reason: CollectiveLiftSkipReason;
+    } => {
   const active = game.players.filter((p) => p.status === "active").length;
   if (seats.length === active) return { permitted: false, reason: "all-active" };
-  if (isFederationGame(game)) {
-    if (game.day === 1 && seats.length === 5)
-      return { permitted: false, reason: "zero-round-five" };
-    if (
-      active === 9 &&
-      seats.length === 3 &&
-      !((game.completedGameNights ?? 0) >= 3 && (game.sheriffChecksPerformed ?? 0) >= 2)
-    )
-      return { permitted: false, reason: "nine-three-restricted" };
-  }
+  if (game.day === 1 && seats.length === 5) return { permitted: false, reason: "zero-round-five" };
+  if (
+    active === 9 &&
+    seats.length === 3 &&
+    !(game.completedGameNights >= 3 && game.sheriffChecksPerformed >= 2)
+  )
+    return { permitted: false, reason: "nine-three-restricted" };
   return { permitted: true };
 };
-
 export const recordActualMultipleShot = (game: GameState, shooterSeat: number): GameState => {
   assertFederationAction(game);
   const shooter = requireSeat(game, shooterSeat);
@@ -273,7 +271,6 @@ export const recordActualMultipleShot = (game: GameState, shooterSeat: number): 
     actualMultipleShotSeats: [...(game.actualMultipleShotSeats ?? []), shooterSeat],
   };
 };
-
 export const recordShotObservations = (
   game: GameState,
   observations: readonly Pick<ShotObservation, "shooterSeat" | "targetSeat">[],
@@ -306,14 +303,14 @@ export const prepareBestMove = (game: GameState): GameState => {
   if (
     game.day !== 1 ||
     game.bestMoveEnabled === false ||
-    (game.firstDayDepartureSeats?.length ?? 0) >= 2 ||
+    game.firstDayDepartureSeats.length >= 2 ||
     game.nightResult?.kind !== "kill"
   )
     return game;
   const victim = requireSeat(game, game.nightResult.targetSeat);
   if (
     victim.status === "red-carded" ||
-    (game.skipCasperBestMove !== false && isCasperPlayer(victim)) ||
+    isCasperPlayer(victim) ||
     evaluateVictory(game.players) !== null
   )
     return game;

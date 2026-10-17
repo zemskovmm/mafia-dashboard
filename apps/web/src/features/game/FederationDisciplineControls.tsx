@@ -32,7 +32,6 @@ export interface DisciplineRequest {
   readonly id: number;
   readonly game: GameState;
   readonly shortcut?: boolean;
-  readonly invoker?: HTMLElement | null;
 }
 interface DisciplineControlsProps {
   readonly game: GameState;
@@ -43,7 +42,7 @@ interface DisciplineControlsProps {
   readonly onEvent: (type: string, payload: Record<string, unknown>) => void;
   readonly onAcceptedEvent?: (event: CanonicalGameEventDraft) => void;
   readonly onComplete?: () => void;
-  readonly onOpenRule?: (rule: RuleReferenceId, invoker: HTMLButtonElement) => void;
+  readonly onOpenRule?: (rule: RuleReferenceId) => void;
   readonly readerOpen?: boolean;
 }
 
@@ -100,7 +99,6 @@ export const FederationDisciplineControls = (props: DisciplineControlsProps) => 
         <FederationJudgeDialog
           active={open}
           suspended={readerOpen}
-          returnFocus={request?.invoker}
           className="is-discipline"
           title={
             request?.shortcut && player

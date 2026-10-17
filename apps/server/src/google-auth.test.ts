@@ -1,30 +1,29 @@
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { Pool } from "pg";
-import { EventStore } from "./event-store.js";
+import { AzureAccountStore } from "./azure-account-store.js";
 import { APPLICATION_SESSION_TTL_MS, GoogleAuthService } from "./google-auth.js";
+import { createStorageFixture } from "./test-helpers/storage-fixture.js";
 
 const config = {
   clientId: "client-id.apps.googleusercontent.com",
   clientSecret: "client-secret",
   redirectUri: "https://mafia.example.test/api/auth/google/callback",
 };
-const integrationPool = new Pool({
-  connectionString:
-    process.env.TEST_DATABASE_URL ?? "postgresql://mafia:mafia@127.0.0.1:54329/mafia_test",
-});
+let fixture: Awaited<ReturnType<typeof createStorageFixture>>;
+let accounts: AzureAccountStore;
 
 beforeAll(async () => {
-  await new EventStore(integrationPool).initialize();
+  fixture = await createStorageFixture();
+  accounts = new AzureAccountStore(fixture.storage);
 });
 
 afterAll(async () => {
-  await integrationPool.end();
+  await fixture?.close();
 });
 
 describe("GoogleAuthService", () => {
   it("builds an OpenID Connect authorization request protected by state", () => {
-    const service = new GoogleAuthService({} as Pool, config, vi.fn());
+    const service = new GoogleAuthService(accounts, config, vi.fn());
 
     const authorization = new URL(service.createAuthorizationUrl("unguessable-state"));
 
@@ -41,31 +40,14 @@ describe("GoogleAuthService", () => {
   });
 
   it("exchanges the code, upserts the stable Google subject, and stores only a session hash", async () => {
-    let storedSessionHash: Buffer | null = null;
-    let storedExpiresAt: Date | null = null;
     const now = new Date("2026-08-30T12:00:00.000Z");
     const userRow = {
       id: "00000000-0000-4000-8000-000000000099",
       email: "owner@example.test",
-      display_name: "Club owner",
+      name: "Club owner",
       picture: "https://example.test/avatar.png",
     };
-    const pool = {
-      query: vi.fn(async (sql: string, values?: readonly unknown[]) => {
-        if (sql.startsWith("DELETE FROM user_sessions")) return { rows: [], rowCount: 0 };
-        if (sql.includes("INSERT INTO users")) return { rows: [userRow], rowCount: 1 };
-        if (sql.includes("INSERT INTO user_sessions")) {
-          storedSessionHash = values?.[1] as Buffer;
-          storedExpiresAt = values?.[3] as Date;
-          return { rows: [], rowCount: 1 };
-        }
-        if (sql.includes("FROM user_sessions AS session")) {
-          expect(values?.[0]).toEqual(storedSessionHash);
-          return { rows: [userRow], rowCount: 1 };
-        }
-        throw new Error(`Unexpected query: ${sql}`);
-      }),
-    } as unknown as Pool;
+    await accounts.upsertUser({ ...userRow, subject: "google-subject-123" });
     const fetcher = vi
       .fn()
       .mockResolvedValueOnce(
@@ -80,16 +62,29 @@ describe("GoogleAuthService", () => {
             sub: "google-subject-123",
             email: userRow.email,
             email_verified: true,
-            name: userRow.display_name,
+            name: userRow.name,
             picture: userRow.picture,
           }),
           { status: 200, headers: { "content-type": "application/json" } },
         ),
       );
-    const service = new GoogleAuthService(pool, config, fetcher, () => now);
+    const service = new GoogleAuthService(accounts, config, fetcher, () => now);
 
     const signedIn = await service.completeAuthorization("authorization-code");
-    const restored = await service.getUserForSession(signedIn.sessionToken);
+    const restoredService = new GoogleAuthService(
+      new AzureAccountStore(fixture.storage),
+      config,
+      vi.fn(),
+      () => now,
+    );
+    const restored = await restoredService.getUserForSession(signedIn.sessionToken);
+    const hash = createHash("sha256").update(signedIn.sessionToken).digest();
+    const storedSessions = await fixture.storage.read((ctx) =>
+      ctx.list<{ userId: string; expiresAt: Date }>("session:"),
+    );
+    const stored = storedSessions.find(
+      ({ rowKey }) => rowKey === `session:${hash.toString("hex")}`,
+    );
 
     expect(fetcher).toHaveBeenNthCalledWith(
       1,
@@ -104,18 +99,19 @@ describe("GoogleAuthService", () => {
     expect(signedIn.user).toEqual({
       id: userRow.id,
       email: userRow.email,
-      name: userRow.display_name,
+      name: userRow.name,
       picture: userRow.picture,
     });
     expect(restored).toEqual(signedIn.user);
-    expect(storedSessionHash).toBeInstanceOf(Buffer);
-    expect(storedSessionHash).toHaveLength(32);
-    expect(storedSessionHash).toEqual(createHash("sha256").update(signedIn.sessionToken).digest());
-    expect((storedSessionHash as Buffer | null)?.toString("base64url")).not.toBe(
-      signedIn.sessionToken,
-    );
+    expect(stored).toEqual({
+      rowKey: `session:${hash.toString("hex")}`,
+      userId: signedIn.user.id,
+      expiresAt: signedIn.expiresAt,
+    });
+    expect(JSON.stringify(storedSessions)).not.toContain(signedIn.sessionToken);
     expect(signedIn.expiresAt).toEqual(new Date(now.getTime() + APPLICATION_SESSION_TTL_MS));
-    expect(storedExpiresAt).toEqual(signedIn.expiresAt);
+    const expired = new GoogleAuthService(accounts, config, vi.fn(), () => signedIn.expiresAt);
+    await expect(expired.getUserForSession(signedIn.sessionToken)).resolves.toBeNull();
   });
 
   it("rejects identities whose email is not verified", async () => {
@@ -135,11 +131,13 @@ describe("GoogleAuthService", () => {
           { status: 200 },
         ),
       );
-    const service = new GoogleAuthService({} as Pool, config, fetcher);
+    const before = await fixture.storage.read((ctx) => ctx.list("user:"));
+    const service = new GoogleAuthService(accounts, config, fetcher);
 
     await expect(service.completeAuthorization("authorization-code")).rejects.toThrow(
       /verified Google email/i,
     );
+    expect(await fixture.storage.read((ctx) => ctx.list("user:"))).toEqual(before);
   });
 
   it("updates an existing Google subject without creating a duplicate user", async () => {
@@ -161,19 +159,20 @@ describe("GoogleAuthService", () => {
       .mockResolvedValueOnce(jsonResponse(profile))
       .mockResolvedValueOnce(jsonResponse({ access_token: "provider-token-2" }))
       .mockResolvedValueOnce(jsonResponse({ ...profile, name: "Updated owner" }));
-    const service = new GoogleAuthService(integrationPool, config, fetcher);
+    const service = new GoogleAuthService(accounts, config, fetcher);
 
     const first = await service.completeAuthorization("first-code");
     const second = await service.completeAuthorization("second-code");
 
     expect(second.user.id).toBe(first.user.id);
     expect(second.user.name).toBe("Updated owner");
-    const stored = await integrationPool.query<{ count: number }>(
-      "SELECT COUNT(*)::int AS count FROM users WHERE google_subject = $1",
-      [profile.sub],
+    const stored = await fixture.storage.read((ctx) =>
+      ctx.list<{ id: string; email: string; name: string }>("user:"),
     );
-    expect(stored.rows[0]?.count).toBe(1);
-    await integrationPool.query("DELETE FROM users WHERE google_subject = $1", [profile.sub]);
+    expect(stored.filter(({ email }) => email === profile.email)).toEqual([
+      expect.objectContaining({ id: first.user.id, email: profile.email, name: "Updated owner" }),
+    ]);
+    await expect(service.getUserForSession(first.sessionToken)).resolves.toEqual(second.user);
   });
 
   it("revokes only the presented application session", async () => {
@@ -182,24 +181,12 @@ describe("GoogleAuthService", () => {
     const email = `sessions-${randomUUID()}@example.test`;
     const firstToken = randomUUID();
     const secondToken = randomUUID();
-    await integrationPool.query(
-      `INSERT INTO users (id, google_subject, email, display_name)
-       VALUES ($1, $2, $3, 'Session owner')`,
-      [userId, subject, email],
-    );
-    await integrationPool.query(
-      `INSERT INTO user_sessions (id, token_hash, user_id, expires_at)
-       VALUES ($1, $2, $3, NOW() + INTERVAL '1 day'),
-              ($4, $5, $3, NOW() + INTERVAL '1 day')`,
-      [
-        randomUUID(),
-        createHash("sha256").update(firstToken).digest(),
-        userId,
-        randomUUID(),
-        createHash("sha256").update(secondToken).digest(),
-      ],
-    );
-    const service = new GoogleAuthService(integrationPool, config, vi.fn());
+    await accounts.upsertUser({ id: userId, subject, email, name: "Session owner", picture: null });
+    const expiresAt = new Date(Date.now() + APPLICATION_SESSION_TTL_MS);
+    for (const token of [firstToken, secondToken]) {
+      await accounts.saveSession(userId, createHash("sha256").update(token).digest(), expiresAt);
+    }
+    const service = new GoogleAuthService(accounts, config, vi.fn());
 
     await service.endSession(firstToken);
 
@@ -208,6 +195,5 @@ describe("GoogleAuthService", () => {
       id: userId,
       email,
     });
-    await integrationPool.query("DELETE FROM users WHERE id = $1", [userId]);
   });
 });

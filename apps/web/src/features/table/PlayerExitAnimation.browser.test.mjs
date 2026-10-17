@@ -28,11 +28,10 @@ const built = await build({
       import { DEFAULT_GLASS_SETTINGS } from ${JSON.stringify(join(directory, "../theme/glass-preferences.ts"))};
       import ${JSON.stringify(join(directory, "../theme/GlassScene.css"))};
       const profiles = Array.from({length:10},(_,i)=>({id:'player-'+(i+1),nickname:'Player '+(i+1)}));
-      function day(federation = false) {
-        const rulesEdition = federation ? domain.FEDERATION_RULES_EDITION : undefined;
-        let setup = domain.beginRoleDraw(domain.createSetup(profiles.map((p,i)=>({id:p.id,seat:i+1})), {rulesEdition}),domain.createSeededRandom(13));
+      function day() {
+        let setup = domain.beginRoleDraw(domain.createSetup(profiles.map((p,i)=>({id:p.id,seat:i+1}))),domain.createSeededRandom(13));
         for(let seat=1;seat<=10;seat++) setup=domain.drawRoleForSeat(setup,seat);
-        let game=domain.createGame(domain.completeRoleDraw(setup),{rulesEdition,bestMoveEnabled:false});
+        let game=domain.createGame(domain.completeRoleDraw(setup),{bestMoveEnabled:false});
         for(let i=0;i<8 && game.phase!=='day';i++) game=domain.advanceSetupPhase(game);
         return game;
       }
@@ -46,13 +45,13 @@ const built = await build({
         const [glassStatus,setGlassStatus]=useState('off');
         const victim=game.players.find(p=>p.role==='citizen').seat;
         window.exitFixture={game,settings,victim,setSettings,setPrivacy,setMode,setGlass,
-          load(kind='goodbye',federation=false) {
-            const initial=day(federation);
+          load(kind='goodbye') {
+            const initial=day();
             const seats=initial.players.filter(p=>p.role==='citizen').map(p=>p.seat);
             const next=kind==='goodbye' ? domain.completeEliminations(initial,seats.slice(0,2)) : kind==='finished' ? domain.completeEliminations(initial,seats.slice(0,4)) : initial;
             setGeneration(g=>g+1);setGame(next);setMode('live');
           },
-          exclude(){setGame(g=>domain.redCard(g,victim,domain.isFederationGame(g)?{seat:victim,stage:'day-discussion',rule:'6.2.3',reason:'Fixture violation',checkInProgress:false}:undefined));},
+          exclude(){setGame(g=>domain.applyGameEvent(domain.applyGameEvent(g,{type:'discipline.removal-observed',payload:{seat:victim,stage:'day-discussion',rule:'6.2.3',reason:'Fixture violation',checkInProgress:false}}),{type:'discipline.removals-announced',payload:{seats:[victim]}}));},
           advance(){setGame(g=>domain.completeGoodbyeSpeech(g));},
           terminal(){setGame(g=>domain.completeEliminations(g,g.players.filter(p=>p.role==='citizen'&&p.status==='active').slice(0,4).map(p=>p.seat)));},
           correction(){setGeneration(g=>g+1);setGame(day());},
@@ -61,7 +60,7 @@ const built = await build({
           <div className='app-shell exit-fixture-layout' data-glass-settings='local' data-glass-status={glass?glassStatus:'off'} data-lighting-renderer='legacy' style={{'--glass-gold-light':.25,'--glass-matte-blur':'2px','--glass-matte-lens-blur':'.6px','--glass-tint':.13,'--glass-edge-highlights':1,'--glass-caustics':1}}>
             {glass?<GlassScene settings={{...DEFAULT_GLASS_SETTINGS,enabled:true}} onStatus={setGlassStatus}/>:null}
             <PlayerDirectoryProvider profiles={profiles}>
-              <GameScreen key={generation+':'+mode} game={game} playerExitSettings={settings} mode={mode} hostName='Host' privacyHidden={privacy} onGameChange={setGame} onEvent={()=>{}} onAcceptedEvent={domain.isFederationGame(game)?draft=>setGame(g=>domain.applyGameEvent(g,draft)):undefined}/>
+              <GameScreen key={generation+':'+mode} game={game} playerExitSettings={settings} mode={mode} hostName='Host' privacyHidden={privacy} onGameChange={setGame} onEvent={()=>{}} onAcceptedEvent={draft=>setGame(g=>domain.applyGameEvent(g,draft))}/>
             </PlayerDirectoryProvider>
             <aside className='dev-menu-actions'><PlayerExitControls settings={settings} onChange={setSettings}/></aside>
           </div>
@@ -121,8 +120,8 @@ const sample = async (page, fraction) => {
     }
   }, fraction);
 };
-const begin = async (page, federation = false) => {
-  await page.evaluate((fed) => window.exitFixture.load("goodbye", fed), federation);
+const begin = async (page) => {
+  await page.evaluate(() => window.exitFixture.load("goodbye"));
   await page.getByRole("button", { name: "Begin night", exact: true }).waitFor();
   const victim = await page.evaluate(() => window.exitFixture.victim);
   assert.equal(
@@ -202,7 +201,7 @@ for (const [name, engine, launch] of [
         await page.getByLabel("Lift duration", { exact: true }).press("End");
         await page.getByLabel("Landing duration", { exact: true }).press("End");
         for (const fraction of [0.08, 0.7]) {
-          victim = await begin(page, true);
+          victim = await begin(page);
           await sample(page, fraction);
           const card = page.locator(cardSelector(victim));
           const pose = await card.evaluate((element) => ({
@@ -260,7 +259,7 @@ for (const [name, engine, launch] of [
             "The visible identity must really paint, not disappear behind flattened glass",
           );
         }
-        victim = await begin(page, true);
+        victim = await begin(page);
         const target = page.locator(cardSelector(victim));
         const finalSize = await target.evaluate((element) => ({
           width: element.offsetWidth,
@@ -357,7 +356,7 @@ for (const [name, engine, launch] of [
           .getByRole("button", { name: "Enable player exit animation", exact: true })
           .click();
         await page.evaluate(() => {
-          window.exitFixture.load("day", true);
+          window.exitFixture.load("day");
           window.exitFixture.setPrivacy(false);
         });
         await page.waitForFunction(() => window.exitFixture.game.phase === "day");

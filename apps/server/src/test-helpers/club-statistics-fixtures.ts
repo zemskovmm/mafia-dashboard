@@ -1,12 +1,11 @@
-import { FEDERATION_RULES_EDITION } from "@mafia/game-domain";
 import type { ClubStatisticsSource, Role, StatisticsGame } from "@mafia/game-domain";
 
 export const playerIds = Array.from(
   { length: 11 },
-  (_, index) => `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+  (_, index) => `abcdef00-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
 );
-export const tournamentA = "10000000-0000-4000-8000-000000000001";
-export const tournamentB = "10000000-0000-4000-8000-000000000002";
+export const tournamentA = "abcdef01-0000-4000-8000-000000000001";
+export const tournamentB = "abcdef01-0000-4000-8000-000000000002";
 const roles: readonly Role[] = [
   "citizen",
   "citizen",
@@ -23,12 +22,13 @@ export const statisticsGame = (
   index: number,
   overrides: Partial<StatisticsGame> = {},
 ): StatisticsGame => ({
-  gameId: `20000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+  gameId: `abcdef02-0000-4000-8000-${String(index).padStart(12, "0")}`,
   name: `Game ${index}`,
   revision: 1,
   status: "completed",
-  rulesEdition: FEDERATION_RULES_EDITION,
   hasCasper: false,
+  rosterComplete: true,
+  timelineAvailable: true,
   playedAt: new Date(Date.UTC(2026, 0, index)).toISOString(),
   hostPlayerId: playerIds[10]!,
   outcome: "red",

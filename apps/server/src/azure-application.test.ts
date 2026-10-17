@@ -13,10 +13,16 @@ const user = {
 const clubId = "00000000-0000-4000-8000-000000000101";
 
 const storesFixture = () => {
-  const runAuthorized = vi.fn(
-    async (_userId: string, _clubId: string, _manager: boolean, work: () => Promise<unknown>) =>
-      work(),
-  );
+  const runAuthorized = vi
+    .fn<
+      (
+        userId: string,
+        clubId: string,
+        manager: boolean,
+        work: () => Promise<unknown>,
+      ) => Promise<void>
+    >()
+    .mockResolvedValue(undefined);
   const getRole = vi.fn(async () => "manager" as const);
   const list = vi.fn(async () => []);
   const stores = {
@@ -28,7 +34,9 @@ const storesFixture = () => {
       get: vi.fn(async () => null),
       listActive: vi.fn(async () => []),
       listCompleted: vi.fn(async () => []),
+      readStatisticsInputs: vi.fn(async () => ({ players: [], games: [], tournaments: [] })),
     },
+    tournaments: { list: vi.fn(async () => []), create: vi.fn(), assign: vi.fn() },
     players: { list, get: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
     clubs: {
       listForUser: vi.fn(async () => []),
@@ -40,13 +48,21 @@ const storesFixture = () => {
       delete: vi.fn(),
     },
     ready: vi.fn(async () => undefined),
-    runAuthorized,
-  };
-  return { stores: stores as unknown as ApplicationStores, runAuthorized, getRole, list };
+    async runAuthorized<T>(
+      userId: string,
+      clubId: string,
+      manager: boolean,
+      work: () => Promise<T>,
+    ) {
+      await runAuthorized(userId, clubId, manager, work);
+      return work();
+    },
+  } satisfies ApplicationStores;
+  return { stores, runAuthorized, getRole, list };
 };
 
 describe("Azure application injection", () => {
-  it("requires exactly one backend and reads readiness from the selected adapter", async () => {
+  it("reads readiness from the injected Azure application stores", async () => {
     const { stores } = storesFixture();
     const app = await buildApp({ stores, authenticateRequest: async () => user });
     try {
@@ -55,7 +71,21 @@ describe("Azure application injection", () => {
     } finally {
       await app.close();
     }
-    await expect(buildApp({ stores, pool: {} as never })).rejects.toThrow(/exactly one|exclusive/i);
+  });
+
+  it("fails readiness closed without exposing storage errors or failing liveness", async () => {
+    const { stores } = storesFixture();
+    stores.ready.mockRejectedValueOnce(new Error("private-storage-detail"));
+    const app = await buildApp({ stores });
+    try {
+      const response = await app.inject("/health/ready");
+      expect(response.statusCode).toBe(503);
+      expect(response.json()).toEqual({ status: "not-ready" });
+      expect((await app.inject("/health/live")).json()).toEqual({ status: "live" });
+      expect(stores.ready).toHaveBeenCalledOnce();
+    } finally {
+      await app.close();
+    }
   });
 
   it("revalidates membership inside the protected read, not merely before it", async () => {
@@ -86,11 +116,19 @@ describe("Azure provider configuration", () => {
     AZURE_STORAGE_PARTITION_KEY: "mafia-test",
     AZURE_STORAGE_ACCOUNT_NAME: "mafialive01",
   };
-  it("keeps PostgreSQL as the explicit transition default", () => {
-    expect(loadConfig({}).STORAGE_PROVIDER).toBe("postgres");
-    expect(loadConfig({}).azureStorage).toBeUndefined();
+  it("defaults only to Azure and refuses PostgreSQL even with valid Azure configuration", () => {
+    const implicitAzure = {
+      AZURE_STORAGE_PARTITION_KEY: base.AZURE_STORAGE_PARTITION_KEY,
+      AZURE_STORAGE_ACCOUNT_NAME: base.AZURE_STORAGE_ACCOUNT_NAME,
+    };
+    expect(loadConfig(implicitAzure).STORAGE_PROVIDER).toBe("azure");
+    expect(loadConfig(implicitAzure).azureStorage).toEqual(loadConfig(base).azureStorage);
+    expect(() => loadConfig({ ...base, STORAGE_PROVIDER: "postgres" })).toThrow(/azure/i);
+    expect(loadConfig(base)).not.toHaveProperty("DATABASE_URL");
+    expect(loadConfig(base)).not.toHaveProperty("databaseUrl");
   });
   it("requires stable partition and an account or loopback fixture connection", () => {
+    expect(() => loadConfig({})).toThrow(/Azure storage/i);
     expect(() => loadConfig({ STORAGE_PROVIDER: "azure" })).toThrow();
     expect(loadConfig(base).azureStorage).toMatchObject({
       partitionKey: "mafia-test",

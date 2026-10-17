@@ -10,9 +10,7 @@ import {
   type CanonicalGameEventDraft,
   createSetup,
   drawRoleForSeat,
-  FEDERATION_RULES_EDITION,
   type GameLogEntry,
-  type RulesEdition,
 } from "@mafia/game-domain";
 import { ApiError, type GameSessionState, type RemoteGameSession } from "./api/client.js";
 import { withBrowserGameStorageGuard } from "./browser-game-storage-lock.js";
@@ -69,8 +67,8 @@ const roleDrawSetup = () => ({
   setup: beginRoleDraw(createSetup(setupPlayers), () => 0),
 });
 
-const playedGame = (rulesEdition?: RulesEdition) => {
-  let setup = beginRoleDraw(createSetup(setupPlayers, { rulesEdition }), () => 0);
+const playedGame = () => {
+  let setup = beginRoleDraw(createSetup(setupPlayers), () => 0);
   for (let seat = 1; seat <= 10; seat += 1) setup = drawRoleForSeat(setup, seat);
   return createGame(completeRoleDraw(setup));
 };
@@ -91,28 +89,26 @@ const completeState = (playlistId = "PL-current"): GameSessionState => ({
   legacyLog: [{ type: "activity", value: playlistId }],
 });
 
-const eventState = (sequence = 1, game = gameId): GameSessionState => ({
-  ...completeState(`PL-event-${sequence}`),
-  initialGame: null,
-  events: [
-    {
-      replayVersion: 1,
-      id: `00000000-0000-4000-8000-0000000004${String(sequence).padStart(2, "0")}`,
-      gameId: game,
-      sequence,
-      parentEventId: null,
-      type: "game.checkpointed",
-      payload: {},
-      phaseBefore: "day",
-      phaseAfter: "day",
-      dayBefore: 1,
-      dayAfter: 1,
-      stateHashAfter: `sha256:${sequence.toString(16).padStart(64, "0")}`,
-      createdAt: "2026-09-05T12:00:00.000Z",
-    } as unknown as GameLogEntry,
-  ],
-  headEventId: `00000000-0000-4000-8000-0000000004${String(sequence).padStart(2, "0")}`,
-});
+const eventState = (sequence = 2, eventGameId = gameId): GameSessionState => {
+  const game = playedGame();
+  const initialGame = createInitialGameBaseline(game);
+  const created = createGameLogEntry({
+    gameId: eventGameId,
+    id: "00000000-0000-4000-8000-000000000401",
+    sequence,
+    parentEventId: null,
+    createdAt: "2026-09-26T20:00:00.000Z",
+    before: game,
+    draft: { type: "game.checkpointed", payload: {} },
+  });
+  return {
+    ...completeState(),
+    game: created.after,
+    initialGame,
+    events: [created.entry],
+    headEventId: created.entry.id,
+  };
+};
 
 const remoteSession = (
   name = "Baseline",
@@ -126,8 +122,6 @@ const remoteSession = (
   state,
   results: null,
   status: "active" as const,
-  rulesetId: "classic",
-  rulesetVersion: 1,
   duplicate: false,
   updatedAt: "2026-09-26T20:00:00.000Z",
 });
@@ -591,152 +585,205 @@ describe("separate durable tournament intent", () => {
 });
 
 describe("GameSessionOutbox current-v5 persistence", () => {
-  it.each([undefined, FEDERATION_RULES_EDITION])(
-    "recovers nomination selections, supports and append-only corrections through browser reload and retry (%s)",
-    async (rulesEdition) => {
+  it.each(["remote", "creation", "snapshot"] as const)(
+    "refuses removed engine fields in %s results before writing",
+    (mode) => {
       const storage = memoryStorage();
-      let game = playedGame(rulesEdition);
-      const baseline = createInitialGameBaseline(game);
-      const entries: GameLogEntry[] = [];
-      const append = (draft: CanonicalGameEventDraft) => {
-        const accepted = createGameLogEntry({
-          gameId,
-          id: crypto.randomUUID(),
-          sequence: entries.length + 1,
-          parentEventId: entries.at(-1)?.id ?? null,
-          createdAt: "2026-10-15T16:00:00.000Z",
-          before: game,
-          draft,
-        });
-        entries.push(accepted.entry);
-        game = accepted.after;
-      };
-      append({ type: "game.started", payload: {} });
-      for (const to of rulesEdition
-        ? ([
-            "mafia-sleep",
-            "don-identification",
-            "sheriff-identification",
-            "free-seating",
-            "day",
-          ] as const)
-        : (["sheriff-wake", "day"] as const))
-        append({ type: "phase.changed", payload: { to } });
-      // Keep a real old-style nomination in the same accepted chain.
-      append({
-        type: "player.nominated",
-        payload: { nominatorSeat: 1, candidateSeat: 7 },
-      });
-      expect(game.nominations[0]).not.toHaveProperty("supporterSeats");
-      append({ type: "turn.completed", payload: { seat: 1 } });
-      const select = (nominatorSeat: number, candidateSeat: number, selected = true) =>
-        append({
-          type: "nomination.selection-set",
-          payload: { nominatorSeat, candidateSeat, selected },
-        });
-      select(2, 7);
-      select(2, 8);
-      append({ type: "turn.completed", payload: { seat: 2 } });
-      select(3, 7);
-      select(3, 8);
-      select(3, 9);
-      append({
-        type: "foul.issued",
-        payload: { seat: 10, foulNumber: 1, redCarded: false },
-      });
-      const retained = JSON.stringify(entries);
-      select(3, 7, false);
-      select(3, 9, false);
-      append({
-        type: "foul.issued",
-        payload: { seat: 6, foulNumber: 1, redCarded: false },
-      });
-      select(3, 9);
-      select(3, 7);
-      expect(JSON.stringify(entries.slice(0, JSON.parse(retained).length))).toBe(retained);
-      expect(game.nominations).toEqual([
-        {
-          nominatorSeat: 1,
-          candidateSeat: 7,
-          order: 1,
-          supporterSeats: [2, 3],
-        },
-        { nominatorSeat: 2, candidateSeat: 8, order: 2, supporterSeats: [3] },
-        { nominatorSeat: 3, candidateSeat: 9, order: 3 },
-      ]);
-      expect(game.voteAssignments).toEqual({});
-      const state = {
-        ...completeState(),
-        setup: null,
-        game,
-        initialGame: baseline,
-        events: entries,
-        headEventId: entries.at(-1)!.id,
-      };
-      const failedSave = vi.fn().mockRejectedValue(new Error("offline nomination save"));
-      const outbox = new GameSessionOutbox({
-        storage,
-        clubId,
-        createId: () => crypto.randomUUID(),
-        save: failedSave,
-      });
-      outbox.activateRemote(remoteSession());
-      outbox.enqueue("Selections", state, null);
-      await expect(outbox.flush()).rejects.toThrow("offline nomination save");
-      const raw = storage.getItem(gameSessionStorageKey)!;
-      const persisted = parseCurrentGameSessionEnvelope(raw)!;
-      expect(persisted.current?.state).toEqual(state);
-      expect(persisted.outbox[0]?.state).toEqual(state);
-      expect(await prepareBrowserGameStorage({ localStorage: storage })).toMatchObject({
-        kind: "ready",
-        attachment: { clubId, gameId, pendingCount: 1, unresolved: true },
-      });
+      const outbox = new GameSessionOutbox({ storage, clubId, createId: ids(), save: vi.fn() });
+      if (mode === "snapshot") outbox.activateRemote(remoteSession());
+      const raw = storage.getItem(gameSessionStorageKey);
+      const results = { winner: null, rulesetVersion: 1 };
+      expect(() => {
+        if (mode === "remote") outbox.activateRemote({ ...remoteSession(), results });
+        else if (mode === "creation") outbox.beginCreation("Table", completeState(), results);
+        else outbox.enqueue("Table", completeState(), results);
+      }).toThrow();
       expect(storage.getItem(gameSessionStorageKey)).toBe(raw);
-      const save = vi.fn().mockResolvedValue({ revision: 2 });
-      const restored = new GameSessionOutbox({
-        storage,
-        clubId,
-        createId: () => crypto.randomUUID(),
-        save,
-      });
-      restored.activateRemote(remoteSession());
-      expect(restored.current?.state).toEqual(state);
-      await restored.flush();
-      expect(save).toHaveBeenCalledExactlyOnceWith(gameId, persisted.outbox[0]);
-      const loaded = new GameSessionOutbox({
-        storage,
-        clubId,
-        createId: () => crypto.randomUUID(),
-        save,
-      });
-      expect(loaded.pendingCount).toBe(0);
-      expect(loaded.current?.state).toEqual(state);
-      const actual = loaded.current!.state;
-      const replay = replayGameLog(actual.initialGame!, actual.events, gameId);
-      expect(replay.game).toEqual(game);
-      expect(hashGameState(replay.game)).toBe(entries.at(-1)!.stateHashAfter);
-      expect(replay.frames.map(({ after }) => hashGameState(after))).toEqual(
-        entries.map(({ stateHashAfter }) => stateHashAfter),
-      );
-      expect(actual.headEventId).toBe(entries.at(-1)!.id);
-      expect(
-        replay.frames.find(({ entry }) => entry.type === "player.nominated")!.after.nominations[0],
-      ).not.toHaveProperty("supporterSeats");
-      expect(replay.game.nominations[2]).not.toHaveProperty("supporterSeats");
-      expect(
-        replay.game.players.filter(({ fouls }) => fouls === 1).map(({ seat }) => seat),
-      ).toEqual([6, 10]);
-      expect(
-        actual.events.every(
-          ({ replayVersion, rulesEdition }) =>
-            replayVersion === baseline.replayVersion && rulesEdition === baseline.rulesEdition,
-        ),
-      ).toBe(true);
     },
   );
+  it("refuses a disconnected foreign-game root without replacing recovery bytes", () => {
+    const storage = memoryStorage();
+    const state = eventState();
+    const first = state.events[0] as GameLogEntry;
+    const foreign = {
+      ...first,
+      id: "00000000-0000-4000-8000-000000000402",
+      gameId: "00000000-0000-4000-8000-000000000299",
+      sequence: first.sequence + 1,
+    };
+    const raw = currentEnvelope({ ...state, events: [first, foreign] });
+    storage.setItem(gameSessionStorageKey, raw);
+    expect(parseCurrentGameSessionEnvelope(raw)).toBeNull();
+    expect(storage.getItem(gameSessionStorageKey)).toBe(raw);
+  });
+  it("refuses a current hash mismatch without resealing or replacing the original bytes", () => {
+    const storage = memoryStorage();
+    const state = eventState();
+    const raw = currentEnvelope({
+      ...state,
+      events: [{ ...state.events[0]!, stateHashAfter: `sha256:${"0".repeat(64)}` }],
+    });
+    storage.setItem(gameSessionStorageKey, raw);
+    expect(parseCurrentGameSessionEnvelope(raw)).toBeNull();
+    expect(
+      () => new GameSessionOutbox({ storage, clubId, createId: ids(), save: vi.fn() }),
+    ).toThrow();
+    expect(storage.getItem(gameSessionStorageKey)).toBe(raw);
+  });
+  it.each([
+    { game: { ...playedGame(), rulesetId: "classic" } },
+    { setup: { ...emptyPlayerSetup(), rulesetVersion: 1 } },
+    { legacyLog: [{ payload: { rulesEdition: "mafgame-2026-07-01" } }] },
+  ])("refuses removed engine fields without overwriting recovery bytes (%j)", (changes) => {
+    const storage = memoryStorage();
+    const raw = currentEnvelope({ ...completeState(), ...changes });
+    storage.setItem(gameSessionStorageKey, raw);
+    expect(parseCurrentGameSessionEnvelope(raw)).toBeNull();
+    expect(
+      () => new GameSessionOutbox({ storage, clubId, createId: ids(), save: vi.fn() }),
+    ).toThrow();
+    expect(storage.getItem(gameSessionStorageKey)).toBe(raw);
+  });
+  it("recovers current nomination selections, supports and append-only corrections through browser reload and retry", async () => {
+    const storage = memoryStorage();
+    let game = playedGame();
+    const baseline = createInitialGameBaseline(game);
+    const entries: GameLogEntry[] = [];
+    const append = (draft: CanonicalGameEventDraft) => {
+      const accepted = createGameLogEntry({
+        gameId,
+        id: crypto.randomUUID(),
+        sequence: entries.length + 1,
+        parentEventId: entries.at(-1)?.id ?? null,
+        createdAt: "2026-10-15T16:00:00.000Z",
+        before: game,
+        draft,
+      });
+      entries.push(accepted.entry);
+      game = accepted.after;
+    };
+    append({ type: "game.started", payload: {} });
+    for (const to of [
+      "mafia-sleep",
+      "don-identification",
+      "sheriff-identification",
+      "free-seating",
+      "day",
+    ] as const)
+      append({ type: "phase.changed", payload: { to } });
+    // Keep the retained public nomination event in the same accepted chain.
+    append({
+      type: "player.nominated",
+      payload: { nominatorSeat: 1, candidateSeat: 7 },
+    });
+    expect(game.nominations[0]).not.toHaveProperty("supporterSeats");
+    append({ type: "turn.completed", payload: { seat: 1 } });
+    const select = (nominatorSeat: number, candidateSeat: number, selected = true) =>
+      append({
+        type: "nomination.selection-set",
+        payload: { nominatorSeat, candidateSeat, selected },
+      });
+    select(2, 7);
+    select(2, 8);
+    append({ type: "turn.completed", payload: { seat: 2 } });
+    select(3, 7);
+    select(3, 8);
+    select(3, 9);
+    append({
+      type: "foul.issued",
+      payload: { seat: 10, foulNumber: 1, redCarded: false },
+    });
+    const retained = JSON.stringify(entries);
+    select(3, 7, false);
+    select(3, 9, false);
+    append({
+      type: "foul.issued",
+      payload: { seat: 6, foulNumber: 1, redCarded: false },
+    });
+    select(3, 9);
+    select(3, 7);
+    expect(JSON.stringify(entries.slice(0, JSON.parse(retained).length))).toBe(retained);
+    expect(game.nominations).toEqual([
+      {
+        nominatorSeat: 1,
+        candidateSeat: 7,
+        order: 1,
+        supporterSeats: [2, 3],
+      },
+      { nominatorSeat: 2, candidateSeat: 8, order: 2, supporterSeats: [3] },
+      { nominatorSeat: 3, candidateSeat: 9, order: 3 },
+    ]);
+    expect(game.voteAssignments).toEqual({});
+    const state = {
+      ...completeState(),
+      setup: null,
+      game,
+      initialGame: baseline,
+      events: entries,
+      headEventId: entries.at(-1)!.id,
+    };
+    const failedSave = vi.fn().mockRejectedValue(new Error("offline nomination save"));
+    const outbox = new GameSessionOutbox({
+      storage,
+      clubId,
+      createId: () => crypto.randomUUID(),
+      save: failedSave,
+    });
+    outbox.activateRemote(remoteSession());
+    outbox.enqueue("Selections", state, null);
+    await expect(outbox.flush()).rejects.toThrow("offline nomination save");
+    const raw = storage.getItem(gameSessionStorageKey)!;
+    const persisted = parseCurrentGameSessionEnvelope(raw)!;
+    expect(persisted.current?.state).toEqual(state);
+    expect(persisted.outbox[0]?.state).toEqual(state);
+    expect(await prepareBrowserGameStorage({ localStorage: storage })).toMatchObject({
+      kind: "ready",
+      attachment: { clubId, gameId, pendingCount: 1, unresolved: true },
+    });
+    expect(storage.getItem(gameSessionStorageKey)).toBe(raw);
+    const save = vi.fn().mockResolvedValue({ revision: 2 });
+    const restored = new GameSessionOutbox({
+      storage,
+      clubId,
+      createId: () => crypto.randomUUID(),
+      save,
+    });
+    restored.activateRemote(remoteSession());
+    expect(restored.current?.state).toEqual(state);
+    await restored.flush();
+    expect(save).toHaveBeenCalledExactlyOnceWith(gameId, persisted.outbox[0]);
+    const loaded = new GameSessionOutbox({
+      storage,
+      clubId,
+      createId: () => crypto.randomUUID(),
+      save,
+    });
+    expect(loaded.pendingCount).toBe(0);
+    expect(loaded.current?.state).toEqual(state);
+    const actual = loaded.current!.state;
+    const replay = replayGameLog(actual.initialGame!, actual.events, gameId);
+    expect(replay.game).toEqual(game);
+    expect(hashGameState(replay.game)).toBe(entries.at(-1)!.stateHashAfter);
+    expect(replay.frames.map(({ after }) => hashGameState(after))).toEqual(
+      entries.map(({ stateHashAfter }) => stateHashAfter),
+    );
+    expect(actual.headEventId).toBe(entries.at(-1)!.id);
+    expect(
+      replay.frames.find(({ entry }) => entry.type === "player.nominated")!.after.nominations[0],
+    ).not.toHaveProperty("supporterSeats");
+    expect(replay.game.nominations[2]).not.toHaveProperty("supporterSeats");
+    expect(replay.game.players.filter(({ fouls }) => fouls === 1).map(({ seat }) => seat)).toEqual([
+      6, 10,
+    ]);
+    expect(
+      actual.events.every(
+        ({ replayVersion }) => replayVersion === 3 && replayVersion === baseline.replayVersion,
+      ),
+    ).toBe(true);
+  });
 
-  it("round-trips a supported federation edition without rewriting its draft", () => {
-    const game = playedGame(FEDERATION_RULES_EDITION);
+  it("round-trips the selector-free current representation without rewriting its draft", () => {
+    const game = playedGame();
     const state = {
       ...completeState(),
       setup: null,
@@ -752,11 +799,11 @@ describe("GameSessionOutbox current-v5 persistence", () => {
     { initialGame: { replayVersion: 99, game: playedGame() } },
     { initialGame: { game: playedGame() } },
     {
-      game: { ...playedGame(), rulesEdition: FEDERATION_RULES_EDITION },
+      game: { ...playedGame(), rulesEdition: "mafgame-2026-07-01" },
       initialGame: { replayVersion: 1, game: playedGame() },
     },
     { setup: { ...emptyPlayerSetup(), rulesEdition: "unknown-future-rules" } },
-    { events: [{ replayVersion: 2, rulesEdition: FEDERATION_RULES_EDITION }] },
+    { events: [{ replayVersion: 2, rulesEdition: "mafgame-2026-07-01" }] },
   ])("rejects unsupported or crossed editions without clearing the original", (changes) => {
     const storage = memoryStorage();
     const raw = currentEnvelope({ ...completeState(), ...changes });
@@ -818,8 +865,10 @@ describe("GameSessionOutbox current-v5 persistence", () => {
       create: vi.fn(),
       save: vi.fn(),
     });
-    const game = playedGame();
-    const state = { ...completeState(), setup: roleDrawSetup(), game };
+    const state = {
+      ...eventState(),
+      setup: { ...emptyPlayerSetup(), step: "roles", setup: roleDrawSetup() },
+    };
     outbox.beginCreation("Named table title", state, null);
     const saved = JSON.parse(storage.getItem(gameSessionStorageKey)!) as {
       current: { name: string; state: Record<string, unknown> };
@@ -981,8 +1030,6 @@ describe("GameSessionOutbox current-v5 persistence", () => {
       state: completeState("PL-new"),
       results: null,
       status: "active",
-      rulesetId: "classic",
-      rulesetVersion: 1,
       duplicate: false,
       updatedAt: "2026-09-26T20:00:00.000Z",
     });
@@ -1057,7 +1104,7 @@ describe("GameSessionOutbox current-v5 persistence", () => {
     expect(storage.getItem(gameSessionStorageKey)).toBe(raw);
   });
 
-  it("retains a historical eight-hex event hash without rewriting its stored bytes", () => {
+  it("rejects a historical eight-hex event hash without rewriting its stored bytes", () => {
     const storage = memoryStorage();
     const state = eventState();
     const raw = currentEnvelope({
@@ -1068,7 +1115,7 @@ describe("GameSessionOutbox current-v5 persistence", () => {
 
     expect(
       () => new GameSessionOutbox({ storage, clubId, createId: vi.fn(), save: vi.fn() }),
-    ).not.toThrow();
+    ).toThrow("Browser game storage is invalid");
     expect(storage.getItem(gameSessionStorageKey)).toBe(raw);
   });
 
@@ -1076,7 +1123,7 @@ describe("GameSessionOutbox current-v5 persistence", () => {
     ["a retired event type", { type: "speech.started" }],
     ["a retired checkpoint payload", { payload: { sequence: 1 } }],
     ["an unsupported event field", { idempotencyKey: "old-key" }],
-  ])("retains historical %s without rewriting the current record", (_label, patch) => {
+  ])("rejects noncurrent %s without rewriting the current record", (_label, patch) => {
     const storage = memoryStorage();
     const state = eventState();
     const raw = currentEnvelope({
@@ -1087,7 +1134,7 @@ describe("GameSessionOutbox current-v5 persistence", () => {
 
     expect(
       () => new GameSessionOutbox({ storage, clubId, createId: vi.fn(), save: vi.fn() }),
-    ).not.toThrow();
+    ).toThrow("Browser game storage is invalid");
     expect(storage.getItem(gameSessionStorageKey)).toBe(raw);
   });
 
@@ -1105,14 +1152,14 @@ describe("GameSessionOutbox current-v5 persistence", () => {
   it.each([
     ["an empty game object", { ...completeState(), game: {} }],
     ["an empty setup object", { ...completeState(), setup: {} }],
-  ])("retains opaque historical %s without mutating stored bytes", (_label, state) => {
+  ])("rejects unsupported %s without mutating stored bytes", (_label, state) => {
     const storage = memoryStorage();
     const raw = currentEnvelope(state);
     storage.setItem(gameSessionStorageKey, raw);
 
     expect(
       () => new GameSessionOutbox({ storage, clubId, createId: vi.fn(), save: vi.fn() }),
-    ).not.toThrow();
+    ).toThrow("Browser game storage is invalid");
     expect(storage.getItem(gameSessionStorageKey)).toBe(raw);
   });
 
@@ -1124,7 +1171,10 @@ describe("GameSessionOutbox current-v5 persistence", () => {
       createId: ids(gameId),
       save: vi.fn(),
     });
-    const state = { ...completeState(), setup: roleDrawSetup(), game: playedGame() };
+    const state = {
+      ...eventState(),
+      setup: { ...emptyPlayerSetup(), step: "roles", setup: roleDrawSetup() },
+    };
 
     outbox.activateRemote(remoteSession());
     outbox.enqueue("Usable snapshot", state, null);
@@ -1156,7 +1206,7 @@ describe("GameSessionOutbox current-v5 persistence", () => {
     const state = {
       ...eventState(),
       undoBudget: 3,
-      resetReturnEventId: "00000000-0000-4000-8000-000000000499",
+      resetReturnEventId: eventState().headEventId,
       legacyLog: [{ type: "activity", value: "live" }],
     };
     const outbox = new GameSessionOutbox({
@@ -1318,8 +1368,6 @@ const remote = (gameId = serverGameId): RemoteGameSession => ({
   gameId,
   name: "Table A",
   status: "active",
-  rulesetId: "classic",
-  rulesetVersion: 1,
   revision: 1,
   duplicate: false,
   updatedAt: "2026-09-26T20:00:00.000Z",

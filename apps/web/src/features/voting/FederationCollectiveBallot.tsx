@@ -19,10 +19,7 @@ export const FederationCollectiveBallot = ({
   onFoul,
   hostName,
   privacyHidden,
-  onSeatSwipe,
   onSeatPenalty,
-  swipeAction,
-  onDismissSwipeAction,
 }: VotingStageProps) => {
   const { t } = useMessages(votingMessages);
   const displayName = usePlayerDisplayName();
@@ -69,10 +66,7 @@ export const FederationCollectiveBallot = ({
       <GameTable
         hostName={hostName}
         privacyHidden={privacyHidden}
-        onSeatSwipe={onSeatSwipe}
         onSeatPenalty={onSeatPenalty}
-        swipeAction={swipeAction}
-        onDismissSwipeAction={onDismissSwipeAction}
         seats={game.players.map((p) => ({
           ...p,
           name: displayName(p),

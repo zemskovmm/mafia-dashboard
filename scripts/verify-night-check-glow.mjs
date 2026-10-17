@@ -1,9 +1,31 @@
-/* global getComputedStyle */
+/* global document, getComputedStyle */
 import assert from "node:assert/strict";
+import { mkdir, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { chromium, expect } from "@playwright/test";
 import { createServer } from "vite";
 import react from "@vitejs/plugin-react";
+
+const evidenceDirectory = process.env.NIGHT_CHECK_GLOW_EVIDENCE_DIR;
+if (evidenceDirectory) await mkdir(evidenceDirectory, { recursive: true });
+const receipt = {
+  status: "running",
+  expectedCases: 20,
+  viewport: { width: 1440, height: 1000 },
+  evidence: [],
+  pageErrors: [],
+  screenshots: [],
+  cleanup: { browserClosed: false, serverClosed: false },
+};
+let page;
+let activeCase;
+const screenshot = async (label) => {
+  if (!evidenceDirectory) return;
+  const path = resolve(evidenceDirectory, `${label}.png`);
+  await page.screenshot({ path, fullPage: true });
+  receipt.screenshots.push(path);
+};
 
 // Isolated real-component browser fixture: no API, user session, or database writes.
 const server = await createServer({
@@ -33,17 +55,23 @@ let browser;
 try {
   await server.listen();
   browser = await chromium.launch({ channel: "chrome", headless: true });
-  const evidence = [];
+  receipt.origin = server.resolvedUrls.local[0];
+  receipt.browser = { channel: "chrome", version: browser.version(), headless: true };
+  const evidence = receipt.evidence;
   for (const renderer of ["legacy", "vgpu"]) {
     const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
     await context.addInitScript((value) => {
       window.localStorage.setItem("mafia-dashboard.lighting-renderer.v1", value);
     }, renderer);
-    const page = await context.newPage();
+    page = await context.newPage();
     const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", (error) => {
+      errors.push(error.message);
+      receipt.pageErrors.push({ ...activeCase, message: error.message });
+    });
     for (const role of ["don", "sheriff"]) {
       for (const mode of ["check", "prior", "privacy", "prior-privacy", "retired-disabled"]) {
+        activeCase = { renderer, role, mode };
         const query = mode === "prior-privacy" ? "prior=1&privacy=1" : `${mode}=1`;
         await page.goto(`${server.resolvedUrls.local[0]}?role=${role}&${query}`);
         if (mode === "retired-disabled") {
@@ -53,10 +81,17 @@ try {
           await page.reload();
         }
         const shell = page.locator(".app-shell");
-        await expect(shell).toHaveAttribute("data-phase", `night-${role}`);
+        const prior = mode.startsWith("prior");
+        const expectedPhase = prior
+          ? role === "don"
+            ? "night-sheriff"
+            : "night-resolution"
+          : `night-${role}`;
+        await expect(shell).toHaveAttribute("data-phase", expectedPhase);
         if (renderer === "vgpu") {
-          await expect(shell).toHaveAttribute("data-vgpu-status", /^(ready|fallback)$/);
+          await expect(shell).toHaveAttribute("data-vgpu-status", "ready", { timeout: 15_000 });
         }
+        await expect(shell).toHaveAttribute("data-lighting-renderer", renderer);
         const ownerSeat = await shell.getAttribute("data-owner");
         const otherSeat = await shell.getAttribute("data-other");
         const owner = page.locator(".player-seat").filter({
@@ -68,6 +103,21 @@ try {
         await expect(owner).toHaveClass(/status-eliminated/);
         await expect(owner.locator(".deceased-cross")).toHaveCount(1);
         await expect(other).toHaveCSS("opacity", "0.48");
+        // Night is exempt from the daytime masking toggle (IDD-0003).
+        if (mode.endsWith("privacy")) {
+          await expect(page.locator(".role-badge:visible")).toHaveCount(10);
+          await expect(owner.locator(".role-badge")).toBeVisible();
+        }
+        if (prior) {
+          // A role eliminated before this night has no check or active-owner glow.
+          await expect(owner).toHaveCSS("opacity", "0.48");
+          await expect(owner).toHaveCSS("filter", "grayscale(0.9)");
+          await expect(owner).not.toHaveClass(/is-mafia-shooter|is-sheriff-highlight/);
+          evidence.push({ renderer, role, mode, phase: expectedPhase, checkUnavailable: true });
+          if (mode === "prior") await screenshot(`${renderer}-${role}-${mode}`);
+          assert.deepEqual(errors, []);
+          continue;
+        }
         await expect(owner).toHaveCSS("opacity", "1");
         await expect(owner).toHaveCSS("filter", "none");
         await expect(owner).toBeEnabled();
@@ -95,10 +145,9 @@ try {
           assert.equal(fallback.inset, "1px");
           assert.equal(fallback.content, '""');
         } else {
-          await expect(owner).toHaveCSS("animation-name", "mafia-flame-pulse");
+          await expect(owner).toHaveCSS("animation-name", "liquid-state-pulse");
         }
-        if (mode.endsWith("privacy")) await expect(owner.locator(".role-badge")).toHaveCount(0);
-        evidence.push({
+        const checkState = {
           renderer,
           effective,
           role,
@@ -107,12 +156,20 @@ try {
             opacity: getComputedStyle(element).opacity,
             filter: getComputedStyle(element).filter,
           }))),
-        });
+          vgpuStatus: await shell.getAttribute("data-vgpu-status"),
+          daytimeMaskingEnabled: mode.endsWith("privacy"),
+          visibleRoleBadges: await page.locator(".role-badge:visible").count(),
+          compatMode: await page.evaluate(() => document.compatMode),
+        };
+        if (mode === "check") await screenshot(`${renderer}-${role}-${mode}`);
         // Deceased targets remain checkable; the result stage keeps its existing dimming.
         await other.click();
         await expect(shell).toHaveAttribute("data-phase", `night-${role}-result`);
         await expect(owner).toHaveCSS("opacity", "0.48");
         await expect(owner).toHaveCSS("filter", "grayscale(0.9)");
+        if (mode === "check") await screenshot(`${renderer}-${role}-${mode}-result`);
+        assert.deepEqual(errors, []);
+        evidence.push({ ...checkState, resultPhase: `night-${role}-result`, resultDimmed: true });
         await page.evaluate(() =>
           window.localStorage.removeItem("mafia-dashboard.player-lighting.v1"),
         );
@@ -121,8 +178,30 @@ try {
     assert.deepEqual(errors, []);
     await context.close();
   }
-  console.log(JSON.stringify({ status: "passed", evidence }, null, 2));
+  assert.equal(evidence.length, receipt.expectedCases);
+  receipt.status = "passed";
+} catch (error) {
+  receipt.status = "failed";
+  receipt.failure = { ...activeCase, message: error.message };
+  if (page && !page.isClosed()) {
+    await screenshot(`${activeCase.renderer}-${activeCase.role}-${activeCase.mode}-failure`);
+    receipt.failure.observed = await page.locator(".app-shell").evaluate((element) => ({
+      phase: element.getAttribute("data-phase"),
+      effectiveRenderer: element.getAttribute("data-lighting-renderer"),
+      vgpuStatus: element.getAttribute("data-vgpu-status"),
+      roleBadges: element.querySelectorAll(".role-badge").length,
+      compatMode: document.compatMode,
+    }));
+  }
+  throw error;
 } finally {
   await browser?.close();
+  receipt.cleanup.browserClosed = true;
   await server.close();
+  receipt.cleanup.serverClosed = true;
+  receipt.completedCases = receipt.evidence.length;
+  if (evidenceDirectory) {
+    await writeFile(resolve(evidenceDirectory, "receipt.json"), JSON.stringify(receipt, null, 2));
+  }
+  console.log(JSON.stringify(receipt, null, 2));
 }

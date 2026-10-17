@@ -56,14 +56,25 @@ const loadApi = (): Promise<void> => {
   if (apiPromise !== null) return apiPromise;
   apiPromise = new Promise((resolve, reject) => {
     const previous = window.onYouTubeIframeAPIReady;
-    window.onYouTubeIframeAPIReady = () => {
+    const script = document.createElement("script");
+    const cleanup = () => {
+      script.onerror = null;
+      if (window.onYouTubeIframeAPIReady === ready) window.onYouTubeIframeAPIReady = previous;
+    };
+    const ready = () => {
+      cleanup();
       previous?.();
       resolve();
     };
-    const script = document.createElement("script");
+    window.onYouTubeIframeAPIReady = ready;
     script.src = "https://www.youtube.com/iframe_api";
     script.async = true;
-    script.onerror = () => reject(new Error("Unable to load the YouTube IFrame API"));
+    script.onerror = () => {
+      cleanup();
+      script.remove();
+      apiPromise = null;
+      reject(new Error("Unable to load the YouTube IFrame API"));
+    };
     document.head.append(script);
   });
   return apiPromise;
@@ -405,6 +416,7 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
           });
         })
         .catch((error: unknown) => {
+          if (cancelled) return;
           reportError(error, { source: "api", context: "music-playlist-items.list" });
           onStateChangeRef.current("error");
         });

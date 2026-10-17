@@ -3,7 +3,6 @@ import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
-  FEDERATION_RULES_EDITION,
   advanceSetupPhase,
   applyGameEvent,
   beginNight,
@@ -32,7 +31,7 @@ const night = () => {
     createSeededRandom(17),
   );
   for (let seat = 1; seat <= 10; seat += 1) setup = drawRoleForSeat(setup, seat);
-  let game = createGame(completeRoleDraw(setup), { rulesEdition: FEDERATION_RULES_EDITION });
+  let game = createGame(completeRoleDraw(setup));
   for (let i = 0; i < 5; i += 1) game = advanceSetupPhase(game);
   return beginNight(game);
 };

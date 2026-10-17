@@ -1,31 +1,32 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { Pool } from "pg";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { buildApp } from "./app.js";
 import { DEFAULT_CLUB_ID } from "./club-store.js";
 
 import type { AppUser, GoogleAuthService } from "./google-auth.js";
-import { initializeSchema } from "./initialize-schema.js";
-import { PlayerStore, type PlayerProfile } from "./player-store.js";
+import type { PlayerProfile } from "./player-store.js";
+import { AzurePlayerStore } from "./azure-club-player-store.js";
+import { blobFields, blobReference } from "./azure-storage.js";
+import type { GameEvent } from "./event-store.js";
+import { createApplicationStorageFixture } from "./test-helpers/storage-fixture.js";
 import type { YouTubeOAuthService } from "./youtube-oauth.js";
 
-const pool = new Pool({
-  connectionString:
-    process.env.TEST_DATABASE_URL ?? "postgresql://mafia:mafia@127.0.0.1:54329/mafia_test",
-});
 const authenticatedUser: AppUser = {
   id: "00000000-0000-4000-8000-000000000001",
   email: "owner@mafiamalaga.es",
   name: "Mafia Malaga owner",
   picture: null,
 };
-await initializeSchema(pool);
+const fixture = await createApplicationStorageFixture(authenticatedUser);
+const { storage, stores, accounts } = fixture;
+const seedUser = (user: Omit<AppUser, "picture"> & { picture?: string | null }) =>
+  accounts.upsertUser({ ...user, picture: user.picture ?? null, subject: user.id });
 const app = await buildApp({
-  pool,
+  stores,
   authenticateRequest: async () => authenticatedUser,
   defaultClubId: DEFAULT_CLUB_ID,
 });
-const playerStore = new PlayerStore(pool);
+const playerStore = new AzurePlayerStore(storage);
 const roleDeck = [
   "sheriff",
   "citizen",
@@ -38,10 +39,11 @@ const roleDeck = [
   "mafia",
   "don",
 ] as const;
-const createSessionPlayers = (clubId = DEFAULT_CLUB_ID) =>
-  Promise.all(
-    Array.from({ length: 11 }, (_, index) =>
-      playerStore.create(
+const createSessionPlayers = async (clubId = DEFAULT_CLUB_ID) => {
+  const players: PlayerProfile[] = [];
+  for (let index = 0; index < 11; index++) {
+    players.push(
+      await playerStore.create(
         {
           nickname: `Session ${index + 1} ${randomUUID().slice(0, 8)}`,
           consent: false,
@@ -51,8 +53,10 @@ const createSessionPlayers = (clubId = DEFAULT_CLUB_ID) =>
         },
         clubId,
       ),
-    ),
-  );
+    );
+  }
+  return players;
+};
 const roleGiveawayState = (
   selectedPlayers: readonly Pick<PlayerProfile, "id" | "nickname">[],
   host: Pick<PlayerProfile, "id" | "nickname">,
@@ -87,43 +91,12 @@ const roleGiveawayState = (
   legacyLog: [],
 });
 
-type ActiveSessionKey = { readonly club_id: string; readonly id: string };
-const activeSessionKey = ({ club_id, id }: ActiveSessionKey): string => `${club_id}:${id}`;
-let activeSessionsBeforeTest = new Set<string>();
-
-beforeEach(async () => {
-  const active = await pool.query<ActiveSessionKey>(
-    "SELECT club_id, id FROM game_sessions WHERE status = 'active'",
-  );
-  activeSessionsBeforeTest = new Set(active.rows.map(activeSessionKey));
-});
-
 afterEach(async () => {
-  const active = await pool.query<ActiveSessionKey>(
-    "SELECT club_id, id FROM game_sessions WHERE status = 'active'",
-  );
-  const created = active.rows.filter((row) => !activeSessionsBeforeTest.has(activeSessionKey(row)));
-  if (created.length === 0) return;
-  const clubIds = created.map(({ club_id }) => club_id);
-  const gameIds = created.map(({ id }) => id);
-  await pool.query(
-    `WITH targets AS (
-       SELECT * FROM UNNEST($1::uuid[], $2::uuid[]) AS target(club_id, game_id)
-     )
-     DELETE FROM game_events AS event
-      USING targets AS target
-      WHERE event.club_id = target.club_id AND event.game_id = target.game_id`,
-    [clubIds, gameIds],
-  );
-  await pool.query(
-    `WITH targets AS (
-       SELECT * FROM UNNEST($1::uuid[], $2::uuid[]) AS target(club_id, game_id)
-     )
-     DELETE FROM game_sessions AS session
-      USING targets AS target
-      WHERE session.club_id = target.club_id AND session.id = target.game_id`,
-    [clubIds, gameIds],
-  );
+  const rows = await storage.read((tx) => tx.list<{ gameId?: string; status?: string }>("club:"));
+  for (const row of rows) {
+    if (row.rowKey.includes(":game:") && row.status === "active" && row.gameId)
+      await stores.games.clear({ clubId: row.rowKey.split(":")[1]!, gameId: row.gameId });
+  }
 });
 
 beforeAll(async () => {
@@ -132,7 +105,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await app.close();
-  await pool.end();
+  await fixture.close();
 });
 
 describe("server API", () => {
@@ -152,14 +125,7 @@ describe("server API", () => {
       const response = await app.inject(route);
       expect(response.statusCode, `${route.method} ${route.url}`).toBe(404);
     }
-    await expect(
-      pool.query(
-        `SELECT COUNT(*)::int AS count
-           FROM game_sessions
-          WHERE club_id = $1 AND id = $2`,
-        [DEFAULT_CLUB_ID, gameId],
-      ),
-    ).resolves.toMatchObject({ rows: [{ count: 0 }] });
+    expect(await storage.getEntity(`club:${DEFAULT_CLUB_ID}:game:${gameId}`)).toBeUndefined();
   });
 
   it.each([
@@ -231,7 +197,7 @@ describe("server API", () => {
     const authHeaders = {};
 
     const anonymousApp = await buildApp({
-      pool,
+      stores,
       authenticateRequest: async () => null,
       defaultClubId: DEFAULT_CLUB_ID,
     });
@@ -392,20 +358,12 @@ describe("server API", () => {
     expect(afterDelete.json().clubs.map((club: { id: string }) => club.id)).not.toContain(
       secondClubId,
     );
-    expect(
-      await pool.query(
-        `SELECT
-           (SELECT COUNT(*) FROM players WHERE club_id = $1)::int AS players,
-           (SELECT COUNT(*) FROM game_sessions WHERE club_id = $1)::int AS sessions,
-           (SELECT COUNT(*) FROM game_events WHERE club_id = $1)::int AS events`,
-        [secondClubId],
-      ),
-    ).toMatchObject({ rows: [{ players: 0, sessions: 0, events: 0 }] });
+    expect(await storage.read((tx) => tx.list(`club:${secondClubId}:`))).toEqual([]);
   });
 
   it("redirects browser pages from a direct host to the configured secure app origin", async () => {
     const secureApp = await buildApp({
-      pool,
+      stores,
       publicAppUrl: "https://mbp16.tail102fab.ts.net",
     });
     await secureApp.ready();
@@ -437,7 +395,7 @@ describe("server API", () => {
 
   it("reports an exact immutable release identity without caching", async () => {
     const versioned = await buildApp({
-      pool,
+      stores,
       releaseIdentity: { version: "1.0.0", commit: "a".repeat(40) },
     });
     await versioned.ready();
@@ -451,21 +409,44 @@ describe("server API", () => {
   });
 
   it("redacts private event payloads and integrity hashes from public log requests", async () => {
-    const gameId = randomUUID();
+    const created = await stores.games.create({
+      creationId: randomUUID(),
+      name: "Private log",
+      state: {},
+      results: null,
+    });
+    const gameId = created.gameId;
     const stateHashAfter = `sha256:${"a".repeat(64)}`;
-    await pool.query(
-      `INSERT INTO game_events
-         (id, club_id, game_id, sequence, idempotency_key, event_type, phase, seat, payload,
-          state_hash_after)
-       VALUES ($1, $2, $3, 1, 'check-1', 'sheriff.checked', 'night-sheriff', 5, $4::jsonb, $5)`,
-      [
-        randomUUID(),
-        DEFAULT_CLUB_ID,
-        gameId,
-        JSON.stringify({ targetSeat: 8, match: true }),
-        stateHashAfter,
-      ],
-    );
+    await storage.mutate(async (tx) => {
+      const key = `club:${DEFAULT_CLUB_ID}:game:${gameId}`;
+      const row = (await tx.get(key))!;
+      const snapshot = await tx.readBlob<{
+        events: Array<Omit<GameEvent, "createdAt"> & { createdAt: string }>;
+      }>(blobReference(row));
+      snapshot.events = [
+        {
+          id: randomUUID(),
+          gameId,
+          sequence: 1,
+          idempotencyKey: "check-1",
+          type: "sheriff.checked",
+          phase: "night-sheriff",
+          seat: 5,
+          payload: { targetSeat: 8, match: true },
+          stateHashAfter,
+          parentEventId: null,
+          replayVersion: 1,
+          createdAt: new Date().toISOString(),
+          duplicate: false,
+        },
+      ];
+      const ref = await tx.writeBlob(snapshot, `club/${DEFAULT_CLUB_ID}/game/${gameId}`);
+      const fields = Object.fromEntries(
+        Object.entries(row).filter(([name]) => name !== "odata.metadata"),
+      );
+      await tx.set(key, { ...fields, ...blobFields(ref) });
+      await tx.retireBlob(blobReference(row));
+    });
 
     const host = await app.inject({ method: "GET", url: `/api/games/${gameId}/events` });
     const publicLog = await app.inject({
@@ -473,6 +454,8 @@ describe("server API", () => {
       url: `/api/games/${gameId}/events?visibility=public`,
     });
 
+    expect(host.statusCode).toBe(200);
+    expect(publicLog.statusCode).toBe(200);
     expect(host.json().events[0]).toMatchObject({
       payload: { targetSeat: 8, match: true },
       stateHashAfter,
@@ -563,11 +546,7 @@ describe("server API", () => {
       email: `api-manager-${randomUUID()}@example.test`,
       name: "API Manager",
     };
-    await pool.query("INSERT INTO users (id, email, display_name) VALUES ($1, $2, $3)", [
-      manager.id,
-      manager.email,
-      manager.name,
-    ]);
+    await seedUser(manager);
     const created = await app.inject({
       method: "POST",
       url: "/api/players",
@@ -674,10 +653,7 @@ describe("server API", () => {
     const linkedUserId = randomUUID();
     const previousEmail = `linked-manager-${randomUUID()}@example.test`;
     const currentEmail = `renamed-manager-${randomUUID()}@example.test`;
-    await pool.query(
-      "INSERT INTO users (id, email, display_name) VALUES ($1, $2, 'Renamed Manager')",
-      [linkedUserId, previousEmail],
-    );
+    await seedUser({ id: linkedUserId, email: previousEmail, name: "Renamed Manager" });
     const linkedManager = await app.inject({
       method: "POST",
       url: "/api/players",
@@ -688,7 +664,7 @@ describe("server API", () => {
       },
     });
     expect(linkedManager.statusCode).toBe(201);
-    await pool.query("UPDATE users SET email = $1 WHERE id = $2", [currentEmail, linkedUserId]);
+    await seedUser({ id: linkedUserId, email: currentEmail, name: "Renamed Manager" });
 
     const linkedUserConflict = await app.inject({
       method: "POST",
@@ -780,15 +756,18 @@ describe("server API", () => {
     )
       .json()
       .players.find((player: { managerLocked: boolean }) => player.managerLocked);
-    await pool.query(
-      `UPDATE players
-          SET first_name = NULL,
-              last_name = NULL,
-              email = NULL,
-              data_processing_consent = FALSE,
-              consent_at = NULL
-        WHERE id = $1 AND club_id = $2`,
-      [owner.id, clubId],
+    await playerStore.update(
+      owner.id,
+      {
+        nickname: owner.nickname,
+        consent: false,
+        firstName: null,
+        lastName: null,
+        email: null,
+        clubAccess: "manager",
+      },
+      clubId,
+      authenticatedUser.id,
     );
     const withdrawn = (
       await app.inject({
@@ -806,16 +785,15 @@ describe("server API", () => {
       name: "Owner Editor",
       picture: null,
     };
-    await pool.query(
-      "INSERT INTO users (id, email, display_name, picture) VALUES ($1, $2, $3, $4)",
-      [editor.id, editor.email, editor.name, editor.picture],
-    );
-    await pool.query(
-      "INSERT INTO club_memberships (club_id, user_id, role) VALUES ($1, $2, 'manager')",
-      [clubId, editor.id],
+    await seedUser(editor);
+    await storage.mutate((tx) =>
+      tx.set(`club:${clubId}:member:${editor.id}`, {
+        userId: editor.id,
+        role: "manager",
+      }),
     );
     const editorApp = await buildApp({
-      pool,
+      stores,
       authenticateRequest: async () => editor,
       defaultClubId: DEFAULT_CLUB_ID,
     });
@@ -997,7 +975,7 @@ describe("server API", () => {
     } as unknown as YouTubeOAuthService;
     let oauthUser = authenticatedUser;
     const oauthApp = await buildApp({
-      pool,
+      stores,
       youtubeOAuth: oauth,
       authenticateRequest: async () => oauthUser,
     });
@@ -1077,10 +1055,7 @@ describe("server API", () => {
       },
     });
     expect(invitation.statusCode).toBe(201);
-    await pool.query(
-      "INSERT INTO users (id, email, display_name, picture) VALUES ($1, $2, $3, $4)",
-      [invitee.id, invitee.email, invitee.name, invitee.picture],
-    );
+    await seedUser(invitee);
 
     const googleAuth = {
       createAuthorizationUrl: vi.fn(
@@ -1097,7 +1072,7 @@ describe("server API", () => {
       endSession: vi.fn(async () => undefined),
     } as unknown as GoogleAuthService;
     const authApp = await buildApp({
-      pool,
+      stores,
       googleAuth,
       publicAppUrl: "https://mafia.example.test",
       authRateLimit: { limit: 2, windowMs: 10_000 },
@@ -1192,7 +1167,7 @@ describe("server API", () => {
       disconnect: vi.fn().mockResolvedValue(undefined),
     } as unknown as YouTubeOAuthService;
     const oauthApp = await buildApp({
-      pool,
+      stores,
       youtubeOAuth: oauth,
       authenticateRequest: async () => authenticatedUser,
     });
@@ -1233,7 +1208,7 @@ describe("server API", () => {
       endSession,
     } as unknown as GoogleAuthService;
     const protectedApp = await buildApp({
-      pool,
+      stores,
       googleAuth,
       publicAppUrl: "https://mafia.example.test",
     });
@@ -1279,7 +1254,7 @@ describe("server API", () => {
       ),
     } as unknown as GoogleAuthService;
     const throttledApp = await buildApp({
-      pool,
+      stores,
       googleAuth,
       publicAppUrl: "https://mafia.example.test",
       authRateLimit: { limit: 2, windowMs: 10_000 },
@@ -1307,7 +1282,7 @@ describe("server API", () => {
         throw new Error(secretMarker);
       }),
     } as unknown as GoogleAuthService;
-    const errorApp = await buildApp({ pool, googleAuth });
+    const errorApp = await buildApp({ stores, googleAuth });
     await errorApp.ready();
 
     const response = await errorApp.inject({
@@ -1356,7 +1331,7 @@ describe("server API", () => {
       { method: "GET", url: `/api/games/${id}/events` },
     ] as const;
     const anonymousApp = await buildApp({
-      pool,
+      stores,
       authenticateRequest: async () => null,
       defaultClubId: DEFAULT_CLUB_ID,
     });
@@ -1389,23 +1364,20 @@ describe("server API", () => {
       name: "Outsider",
       picture: null,
     };
-    for (const user of [regularUser, outsider]) {
-      await pool.query(
-        "INSERT INTO users (id, email, display_name, picture) VALUES ($1, $2, $3, $4)",
-        [user.id, user.email, user.name, user.picture],
-      );
-    }
-    await pool.query(
-      "INSERT INTO club_memberships (club_id, user_id, role) VALUES ($1, $2, 'user')",
-      [DEFAULT_CLUB_ID, regularUser.id],
+    for (const user of [regularUser, outsider]) await seedUser(user);
+    await storage.mutate((tx) =>
+      tx.set(`club:${DEFAULT_CLUB_ID}:member:${regularUser.id}`, {
+        userId: regularUser.id,
+        role: "user",
+      }),
     );
     const regularApp = await buildApp({
-      pool,
+      stores,
       authenticateRequest: async () => regularUser,
       defaultClubId: DEFAULT_CLUB_ID,
     });
     const outsiderApp = await buildApp({
-      pool,
+      stores,
       authenticateRequest: async () => outsider,
       defaultClubId: DEFAULT_CLUB_ID,
     });
@@ -1468,8 +1440,5 @@ describe("server API", () => {
     );
 
     await Promise.all([regularApp.close(), outsiderApp.close()]);
-    await pool.query("DELETE FROM users WHERE id = ANY($1::uuid[])", [
-      [regularUser.id, outsider.id],
-    ]);
   });
 });

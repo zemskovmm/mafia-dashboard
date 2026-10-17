@@ -29,8 +29,6 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
     if (process.argv.length !== 2) throw new Error("Unexpected arguments");
     const config = loadConfig();
-    if (config.STORAGE_PROVIDER !== "azure" || config.azureStorage === undefined)
-      throw new Error("Explicit Azure provider required");
     const storage = new AzureStorage(config.azureStorage);
     try {
       await initializeStorage(storage, config.AZURE_STORAGE_INITIALIZE);

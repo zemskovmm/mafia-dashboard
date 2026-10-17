@@ -5,7 +5,7 @@ import { mkdir } from "node:fs/promises";
 // Run through verify-ui.mjs with UI_LAYOUT_ONLY=1 to reuse its isolated API fixtures.
 export async function verifyIpadLayout(
   page,
-  { assertVisibleFocus, assertCoreLayout, assertCoreTargets },
+  { assertNativeControl, assertCoreLayout, assertCoreTargets },
 ) {
   const output = process.env.UI_LAYOUT_OUTPUT ?? ".AI/ipad-layout";
   await mkdir(output, { recursive: true });
@@ -13,7 +13,7 @@ export async function verifyIpadLayout(
   for (const input of ["touch", "keyboard"]) {
     if (input === "touch") await trigger.tap();
     else {
-      await assertVisibleFocus(trigger, "Manage trigger");
+      await assertNativeControl(trigger, "Manage trigger");
       await page.keyboard.press("Enter");
     }
     const heading = page.getByRole("heading", { name: "Manage", exact: true });
@@ -23,11 +23,15 @@ export async function verifyIpadLayout(
       outline: getComputedStyle(element).outlineStyle,
     }));
     await page.screenshot({ path: `${output}/manage-${input}.png` });
-    assert.equal(focus.focused, true, "Manage must retain accessible heading focus");
+    assert.equal(focus.focused, false, "Manage must not force focus onto its heading");
     assert.equal(focus.outline, "none", "Static Manage title must not have an input-like outline");
-    await assertVisibleFocus(page.getByRole("button", { name: "Start new game" }), "Manage action");
+    await assertNativeControl(
+      page.getByRole("button", { name: "Start new game" }),
+      "Manage action",
+    );
     await page.keyboard.press("Escape");
-    assert.equal(await trigger.evaluate((element) => document.activeElement === element), true);
+    assert.equal(await heading.isVisible(), true, "Custom drawer Escape is retired");
+    await page.getByRole("button", { name: "Close Manage menu" }).click();
   }
 
   await page.getByRole("button", { name: "Select available players" }).click();

@@ -211,15 +211,15 @@ describe("LiquidCardGlass", () => {
     fireEvent.focusIn(card);
     fireEvent.keyDown(card, { key: " " });
     expect(onKeyDown).toHaveBeenCalledOnce();
-    expect(animations).toHaveLength(4);
+    expect(animations).toHaveLength(2);
 
     await act(async () => card.classList.add("is-voted"));
-    expect(animations).toHaveLength(5);
+    expect(animations).toHaveLength(3);
     await act(async () => card.classList.add("is-current"));
-    expect(animations).toHaveLength(5);
+    expect(animations).toHaveLength(3);
     await act(async () => card.classList.remove("is-voted"));
-    expect(animations).toHaveLength(6);
-    const lastSweep = animations[5];
+    expect(animations).toHaveLength(4);
+    const lastSweep = animations[3];
     const observer = TestResizeObserver.instances[0];
     act(() => observer?.resize(140, 108));
     unmount();
@@ -229,7 +229,7 @@ describe("LiquidCardGlass", () => {
       fireEvent.pointerEnter(card);
     });
     await act(async () => card.classList.add("is-voted"));
-    expect(animations).toHaveLength(6);
+    expect(animations).toHaveLength(4);
   });
 
   it("recovers from zero geometry through the resize fallback without retaining window listeners", () => {

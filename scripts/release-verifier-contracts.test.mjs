@@ -26,7 +26,7 @@ const environment = {
 test("release matrix is complete, fixed, and ordered", () => {
   assert.deepEqual(
     RELEASE_GATES.map(({ name }) => name),
-    ["check", "compose", "backup", "ui", "ui-hardening", "session", "oauth"],
+    ["check", "local", "storage-backup", "ui", "ui-hardening", "session", "oauth"],
   );
   assert.deepEqual(
     RELEASE_GATES.map(({ command, args }) => [command, ...args]),
@@ -232,7 +232,12 @@ test("root scripts expose release contracts without nesting operational drills i
   );
   assert.equal(packageJson.scripts["verify:release"], "node scripts/verify-release.mjs");
   assert.match(packageJson.scripts.test, /test:release-contracts/);
-  assert.doesNotMatch(packageJson.scripts.check, /verify:release|verify:compose|verify:oauth/);
+  assert.doesNotMatch(packageJson.scripts.check, /verify:release|verify:local|verify:oauth/);
+  for (const gate of RELEASE_GATES) {
+    assert.equal(typeof packageJson.scripts[gate.args[1]], "string", gate.name);
+  }
+  assert.equal(packageJson.scripts["verify:compose"], undefined);
+  assert.equal(packageJson.scripts["verify:backup"], undefined);
   assert.match(
     verifier,
     /await verifyDeploymentIdentity\(\);[\s\S]*spawnSync\(gate\.command[\s\S]*await verifyDeploymentIdentity\(\);/,
@@ -264,9 +269,8 @@ test("v1 checklist publishes the complete release contract without a false PASS"
     assert.match(checklist, new RegExp(command));
   }
   for (const link of [
-    "../self-hosted-deployment.md",
     "../azure-deployment.md",
-    "../postgresql-backup-and-recovery.md",
+    "../azure-storage-backup-and-recovery.md",
     "../security-and-privacy.md",
     "https://github.com/zemskovmm/mafia-dashboard/issues/23",
     "https://github.com/zemskovmm/mafia-dashboard/issues/48",

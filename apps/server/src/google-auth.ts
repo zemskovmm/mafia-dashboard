@@ -1,5 +1,4 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import type { Pool } from "pg";
 import { z } from "zod";
 
 export interface AppUser {
@@ -35,13 +34,6 @@ const userInfoResponse = z.object({
   picture: z.url().optional(),
 });
 
-interface UserRow {
-  readonly id: string;
-  readonly email: string;
-  readonly display_name: string;
-  readonly picture: string | null;
-}
-
 export interface GoogleAccountStore {
   upsertUser(identity: {
     readonly id: string;
@@ -63,57 +55,6 @@ export type GoogleAuthPort = Pick<
   | "endSession"
 >;
 
-const mapUser = (row: UserRow): AppUser => ({
-  id: row.id,
-  email: row.email,
-  name: row.display_name,
-  picture: row.picture,
-});
-
-export class PostgresGoogleAccountStore implements GoogleAccountStore {
-  public constructor(private readonly pool: Pool) {}
-  public async upsertUser(
-    identity: Parameters<GoogleAccountStore["upsertUser"]>[0],
-  ): Promise<AppUser> {
-    const result = await this.pool.query<UserRow>(
-      `INSERT INTO users (id, google_subject, email, display_name, picture)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (google_subject) DO UPDATE
-         SET email = EXCLUDED.email,
-             display_name = EXCLUDED.display_name,
-             picture = EXCLUDED.picture,
-             updated_at = NOW()
-       RETURNING id, email, display_name, picture`,
-      [identity.id, identity.subject, identity.email, identity.name, identity.picture],
-    );
-    const user = result.rows[0];
-    if (user === undefined) throw new Error("Google user could not be persisted");
-    return mapUser(user);
-  }
-  public async saveSession(userId: string, hash: Buffer, expiresAt: Date): Promise<void> {
-    await this.pool.query("DELETE FROM user_sessions WHERE expires_at <= NOW()");
-    await this.pool.query(
-      `INSERT INTO user_sessions (id, token_hash, user_id, expires_at)
-       VALUES ($1, $2, $3, $4)`,
-      [randomUUID(), hash, userId, expiresAt],
-    );
-  }
-  public async findSession(hash: Buffer, now: Date): Promise<AppUser | null> {
-    void now; // PostgreSQL uses its own database clock for expiry, preserving legacy behavior.
-    const result = await this.pool.query<UserRow>(
-      `SELECT app_user.id, app_user.email, app_user.display_name, app_user.picture
-         FROM user_sessions AS session
-         JOIN users AS app_user ON app_user.id = session.user_id
-        WHERE session.token_hash = $1 AND session.expires_at > NOW()`,
-      [hash],
-    );
-    return result.rows[0] === undefined ? null : mapUser(result.rows[0]);
-  }
-  public async removeSession(hash: Buffer): Promise<void> {
-    await this.pool.query("DELETE FROM user_sessions WHERE token_hash = $1", [hash]);
-  }
-}
-
 const sessionHash = (token: string): Buffer => createHash("sha256").update(token).digest();
 
 const parseProviderResponse = async <Value>(
@@ -131,15 +72,11 @@ export class GoogleAuthService {
   public readonly configured = true;
 
   public constructor(
-    poolOrStore: Pool | GoogleAccountStore,
+    private readonly accounts: GoogleAccountStore,
     private readonly config: GoogleAuthConfig,
     private readonly fetcher: typeof fetch = fetch,
     private readonly now: () => Date = () => new Date(),
-  ) {
-    this.accounts =
-      "query" in poolOrStore ? new PostgresGoogleAccountStore(poolOrStore) : poolOrStore;
-  }
-  private readonly accounts: GoogleAccountStore;
+  ) {}
 
   public createAuthorizationUrl(state: string): string {
     const url = new URL("https://accounts.google.com/o/oauth2/v2/auth");

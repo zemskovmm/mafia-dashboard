@@ -42,19 +42,8 @@
 .player-exit-preview .person-icon {
   pointer-events: none;
 }
-.player-exit-controls {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-}
-.player-exit-controls summary {
-  min-height: 48px;
-  padding: 14px;
-  cursor: pointer;
-}
 .player-exit-fields {
-  display: grid;
   gap: 14px;
-  padding: 0 12px 12px;
 }
 .player-exit-fields fieldset {
   min-width: 0;
@@ -76,14 +65,6 @@
 .player-exit-fields output {
   font-variant-numeric: tabular-nums;
 }
-.player-exit-fields :is(button, input, select) {
-  min-height: 48px;
-}
 .player-exit-fields input[type="range"] {
   accent-color: var(--theme-base, #c89b43);
-}
-.player-exit-fields p {
-  margin: 0;
-  font-size: 0.85rem;
-  color: var(--muted);
 }

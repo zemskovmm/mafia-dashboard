@@ -251,12 +251,12 @@ describe("federation timeline projections", () => {
           isSecretGameEventType(eventType),
         ),
       ).toBe(true);
-      if (history.baseline.replayVersion === 2) {
-        expect(
-          publicTimeline.markers.find(
-            ({ eventType }) => eventType === "discipline.removals-announced",
-          )?.ariaLabel,
-        ).toBe("Removal announced: Player 9");
+      expect(
+        publicTimeline.markers.find(
+          ({ eventType }) => eventType === "discipline.removals-announced",
+        )?.ariaLabel,
+      ).toBe("Removal announced: Player 9");
+      if (history.game.adjudication !== undefined) {
         expect(
           publicTimeline.markers.find(({ eventType }) => eventType === "game.adjudicated")?.label,
         ).toBe("Adjudicated win: red team");

@@ -9,11 +9,11 @@ export interface ClubTournament {
 export type StatisticsOutcome = Team | "draw" | "cancelled";
 export interface StatisticsParticipant {
   readonly playerId: string;
-  readonly seat: number;
-  readonly role: Role;
-  readonly team: Team;
-  readonly status: PlayerStatus;
-  readonly fouls: number;
+  readonly seat: number | null;
+  readonly role: Role | null;
+  readonly team: Team | null;
+  readonly status: PlayerStatus | null;
+  readonly fouls: number | null;
   readonly bestMoveHits: number | null;
 }
 
@@ -31,8 +31,9 @@ export interface StatisticsGame {
   readonly name: string;
   readonly revision: number;
   readonly status: "active" | "completed";
-  readonly rulesEdition: string | null;
-  readonly hasCasper: boolean;
+  readonly hasCasper: boolean | null;
+  readonly rosterComplete: boolean | null;
+  readonly timelineAvailable: boolean;
   readonly playedAt: string | null;
   readonly hostPlayerId: string | null;
   readonly outcome: StatisticsOutcome | null;
@@ -51,7 +52,7 @@ export interface ClubStatisticsSource {
 export interface StatisticsFilters {
   readonly from?: string;
   readonly to?: string;
-  readonly edition?: "federation" | "legacy";
+
   readonly team?: Team;
   readonly role?: Role;
   /** Omitted = all games, "none" = unassigned, otherwise a club tournament UUID. */
@@ -59,7 +60,9 @@ export interface StatisticsFilters {
 }
 
 export interface StatisticsTotals {
+  /** Known non-cancelled appearances, including those without an observed result. */
   readonly games: number;
+  readonly outcomeGames: number;
   readonly wins: number;
   readonly draws: number;
   readonly losses: number;
@@ -87,7 +90,7 @@ export interface ClubRatingChange {
 }
 
 export type UnratedReason =
-  "legacy-edition" | "casper" | "cancelled" | "incomplete-results" | "ineligible-roster" | "host";
+  "casper" | "cancelled" | "incomplete-results" | "ineligible-roster" | "host";
 
 export interface PlayerStatisticsRow {
   readonly playerId: string;
@@ -96,7 +99,9 @@ export interface PlayerStatisticsRow {
   readonly teams: Readonly<Record<Team, StatisticsTotals>>;
   readonly roles: Readonly<Record<Role, StatisticsTotals>>;
   readonly fouls: number;
+  readonly foulGames: number;
   readonly foulsPerGame: number | null;
+  readonly statusGames: number;
   readonly redCards: number;
   readonly eliminations: number;
   readonly bestMoveResults: number;
@@ -114,10 +119,9 @@ export interface PlayerStatisticsRow {
 export interface StatisticsHistoryGame {
   readonly gameId: string;
   readonly name: string;
-  readonly playedAt: string;
-  readonly rulesEdition: string | null;
-  readonly hasCasper: boolean;
-  readonly outcome: StatisticsOutcome;
+  readonly playedAt: string | null;
+  readonly hasCasper: boolean | null;
+  readonly outcome: StatisticsOutcome | null;
   readonly reason: string | null;
   readonly adjudication?: StatisticsAdjudication;
   readonly tournamentId: string | null;
@@ -125,6 +129,7 @@ export interface StatisticsHistoryGame {
   readonly participant: StatisticsParticipant | null;
   readonly isHost: boolean;
   readonly statisticsAvailable: boolean;
+  readonly timelineAvailable: boolean;
   readonly unratedReason: UnratedReason | null;
   readonly ratingChange: ClubRatingChange | null;
 }
@@ -134,6 +139,7 @@ export interface ClubStatisticsResponse {
   readonly tournaments: readonly ClubTournament[];
   readonly coverage: {
     readonly completedGames: number;
+    readonly partialGames: number;
     readonly unavailableGames: number;
     readonly pendingGames: number;
   };

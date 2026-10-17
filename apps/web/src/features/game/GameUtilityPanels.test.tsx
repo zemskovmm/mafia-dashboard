@@ -23,15 +23,12 @@ import { namedProfiles, renderWithProfiles } from "../../test-player-directory.j
 const render = (ui: Parameters<typeof renderWithProfiles>[0]) =>
   renderWithProfiles(ui, namedProfiles("player-"));
 
-const createDayGame = (federation = false): GameState => {
+const createDayGame = (): GameState => {
   const players: PlayerInput[] = Array.from({ length: 10 }, (_, index) => ({
     id: `player-${index + 1}`,
     seat: index + 1,
   }));
-  let setup = beginRoleDraw(
-    createSetup(players, federation ? { rulesEdition: "mafgame-2026-07-01" } : {}),
-    createSeededRandom(13),
-  );
+  let setup = beginRoleDraw(createSetup(players), createSeededRandom(13));
   for (let seat = 1; seat <= 10; seat += 1) setup = drawRoleForSeat(setup, seat);
   let game = createGame(completeRoleDraw(setup));
   while (game.phase !== "day") game = advanceSetupPhase(game);
@@ -39,42 +36,39 @@ const createDayGame = (federation = false): GameState => {
 };
 
 describe("GameUtilityPanels", () => {
-  it.each([false, true])(
-    "shows surviving additional supporters separately from actual ballot totals (federation=%s)",
-    (federation) => {
-      let game = setNominationSelection(createDayGame(federation), 1, 7, true);
-      game = completeCurrentTurn(game);
-      game = setNominationSelection(game, 2, 7, true);
-      game = setNominationSelection(game, 2, 8, true);
-      game = completeCurrentTurn(game);
-      game = setNominationSelection(game, 3, 7, true);
-      game = setNominationSelection(game, 3, 7, false);
-      game = setNominationSelection(game, 3, 7, true);
-      game = setNominationSelection(game, 3, 7, false);
-      game = setNominationSelection(game, 3, 8, true);
-      const view = (locale: "en" | "ru", state = game) => (
-        <I18nProvider locale={locale}>
-          <GameUtilityPanels game={state} />
-        </I18nProvider>
-      );
-      const { rerender } = render(view("en"));
-      const rows = screen.getAllByRole("listitem");
-      expect(rows[0]).toHaveTextContent("Initiated by #1 Player 1");
-      expect(rows[0]).toHaveTextContent("Additional supporters (+1): #2 Player 2");
-      expect(rows[0]).not.toHaveTextContent("#3 Player 3");
-      expect(rows[1]).toHaveTextContent("Additional supporters (+1): #3 Player 3");
-      expect(rows[0]!.querySelector(".nomination-total")).toBeNull();
-      rerender(view("ru"));
-      expect(screen.getAllByRole("listitem")[0]).toHaveTextContent(
-        "Дополнительно поддержали (+1): #2 Player 2",
-      );
-      rerender(view("en", { ...startVoting(game), voteAssignments: { 1: 7 } }));
-      const votingRows = screen.getAllByRole("listitem");
-      expect(votingRows[0]!.querySelector(".nomination-total")).toHaveTextContent("1");
-      expect(votingRows[1]!.querySelector(".nomination-total")).toHaveTextContent("0");
-      expect(votingRows[0]).toHaveTextContent("Additional supporters (+1): #2 Player 2");
-    },
-  );
+  it("shows surviving additional supporters separately from actual ballot totals", () => {
+    let game = setNominationSelection(createDayGame(), 1, 7, true);
+    game = completeCurrentTurn(game);
+    game = setNominationSelection(game, 2, 7, true);
+    game = setNominationSelection(game, 2, 8, true);
+    game = completeCurrentTurn(game);
+    game = setNominationSelection(game, 3, 7, true);
+    game = setNominationSelection(game, 3, 7, false);
+    game = setNominationSelection(game, 3, 7, true);
+    game = setNominationSelection(game, 3, 7, false);
+    game = setNominationSelection(game, 3, 8, true);
+    const view = (locale: "en" | "ru", state = game) => (
+      <I18nProvider locale={locale}>
+        <GameUtilityPanels game={state} />
+      </I18nProvider>
+    );
+    const { rerender } = render(view("en"));
+    const rows = screen.getAllByRole("listitem");
+    expect(rows[0]).toHaveTextContent("Initiated by #1 Player 1");
+    expect(rows[0]).toHaveTextContent("Additional supporters (+1): #2 Player 2");
+    expect(rows[0]).not.toHaveTextContent("#3 Player 3");
+    expect(rows[1]).toHaveTextContent("Additional supporters (+1): #3 Player 3");
+    expect(rows[0]!.querySelector(".nomination-total")).toBeNull();
+    rerender(view("ru"));
+    expect(screen.getAllByRole("listitem")[0]).toHaveTextContent(
+      "Дополнительно поддержали (+1): #2 Player 2",
+    );
+    rerender(view("en", { ...startVoting(game), voteAssignments: { 1: 7 } }));
+    const votingRows = screen.getAllByRole("listitem");
+    expect(votingRows[0]!.querySelector(".nomination-total")).toHaveTextContent("1");
+    expect(votingRows[1]!.querySelector(".nomination-total")).toHaveTextContent("0");
+    expect(votingRows[0]).toHaveTextContent("Additional supporters (+1): #2 Player 2");
+  });
 
   it("does not invent supporter observations for older nominations", () => {
     const game = nominate(createDayGame(), 1, 7);
@@ -87,7 +81,7 @@ describe("GameUtilityPanels", () => {
     "registers nomination row hosts with shared glass without decorating names or hit targets in %s",
     async (phase) => {
       const user = userEvent.setup();
-      let day = nominate(createDayGame(true), 1, 2);
+      let day = nominate(createDayGame(), 1, 2);
       day = nominate(completeCurrentTurn(day), 2, 3);
       const game = phase === "voting" ? selectVotingCandidate(startVoting(day), 3) : day;
       const onSelectVotingCandidate = vi.fn();
@@ -123,7 +117,7 @@ describe("GameUtilityPanels", () => {
 
   it("highlights the selected nominee without disclosure or live-cursor reminders", async () => {
     const user = userEvent.setup();
-    let day = nominate(createDayGame(true), 1, 2);
+    let day = nominate(createDayGame(), 1, 2);
     day = nominate(completeCurrentTurn(day), 2, 3);
     const game = selectVotingCandidate(startVoting(day), 3);
     const onSelect = vi.fn();
@@ -152,16 +146,9 @@ describe("GameUtilityPanels", () => {
   it("offers the nominee names as pressed-state buttons only for an open live ballot", async () => {
     const user = userEvent.setup();
     const onSelectVotingCandidate = vi.fn();
-    const game: GameState = {
-      ...createDayGame(),
-      phase: "voting",
-      nominations: [
-        { candidateSeat: 2, nominatorSeat: 1, order: 1 },
-        { candidateSeat: 3, nominatorSeat: 2, order: 2 },
-      ],
-      turnOrder: [2, 3],
-      currentTurnIndex: 0,
-    };
+    let day = nominate(createDayGame(), 1, 2);
+    day = nominate(completeCurrentTurn(day), 2, 3);
+    const game = startVoting(day);
     const { rerender } = render(
       <GameUtilityPanels game={game} onSelectVotingCandidate={onSelectVotingCandidate} />,
     );
@@ -252,20 +239,17 @@ describe("GameUtilityPanels", () => {
     "car-crash-result",
     "goodbye-speech",
   ] as const)("does not retain the candidate highlight in %s", (phase) => {
-    const game: GameState = {
-      ...createDayGame(),
-      phase: "voting",
-      nominations: [{ candidateSeat: 2, nominatorSeat: 1, order: 1 }],
-      turnOrder: [2],
-      currentTurnIndex: 0,
-    };
+    const game = selectVotingCandidate(
+      startVoting(nominate(completeCurrentTurn(nominate(createDayGame(), 1, 2)), 2, 3)),
+      2,
+    );
     const { rerender } = render(<GameUtilityPanels game={game} />);
-    expect(screen.getByRole("listitem")).toHaveAttribute("aria-current", "step");
-    expect(screen.getByRole("listitem")).toHaveClass("is-voting-highlight");
+    expect(screen.getAllByRole("listitem")[0]).toHaveAttribute("aria-current", "step");
+    expect(screen.getAllByRole("listitem")[0]).toHaveClass("is-voting-highlight");
 
     rerender(<GameUtilityPanels game={{ ...game, phase, goodbyeNext: "night" }} />);
-    expect(screen.getByRole("listitem")).not.toHaveAttribute("aria-current");
-    expect(screen.getByRole("listitem")).not.toHaveClass("is-voting-highlight");
+    expect(screen.getAllByRole("listitem")[0]).not.toHaveAttribute("aria-current");
+    expect(screen.getAllByRole("listitem")[0]).not.toHaveClass("is-voting-highlight");
   });
   it.each([
     "night-mafia",

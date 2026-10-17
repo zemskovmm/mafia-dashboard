@@ -9,7 +9,6 @@ import {
   createSeededRandom,
   createSetup,
   drawRoleForSeat,
-  FEDERATION_RULES_EDITION,
   resolveVote,
   type CanonicalGameEventDraft,
   type GameLogEntry,
@@ -21,8 +20,7 @@ import type { FinalGameResults } from "../game-session-store.js";
 
 export const jsonRoundTrip = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
-// PostgreSQL JSONB changes object-key order, not the accepted JSON values. Hash
-// deterministic JSON values, while retaining array/transcript/event order exactly.
+// Compare deterministic JSON values while retaining array/transcript/event order exactly.
 const sortedJson = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(sortedJson);
   if (value !== null && typeof value === "object")
@@ -39,9 +37,16 @@ export const jsonHash = (value: unknown): string =>
     .digest("hex")}`;
 
 export type CanonicalSnapshot = {
-  setup: SetupState;
+  setup: {
+    step: "roles";
+    hostPlayerId: string;
+    selectedPlayerIds: readonly string[];
+    setup: SetupState;
+    bestMoveEnabled: boolean;
+  };
   game: GameState;
   hostPlayerId: string;
+  playlistId: string;
   initialGame: InitialGameBaseline;
   events: GameLogEntry[];
   headEventId: string | null;
@@ -53,24 +58,24 @@ export type CanonicalSnapshot = {
 };
 
 /** Real unfinished deal and completed setup; no replay chain exists yet. */
-export const generateRoleDeal = (
-  hostPlayerId: string,
-  playerIds: readonly string[],
-  federation = true,
-) => {
+export const generateRoleDeal = (hostPlayerId: string, playerIds: readonly string[]) => {
   let setup = beginRoleDraw(
-    createSetup(
-      playerIds.map((id, index) => ({ id, seat: index + 1 })),
-      federation ? { rulesEdition: FEDERATION_RULES_EDITION } : {},
-    ),
+    createSetup(playerIds.map((id, index) => ({ id, seat: index + 1 }))),
     createSeededRandom(71),
   );
   // Capture a real unfinished deal separately: it is not a canonical baseline.
   setup = drawRoleForSeat(setup, 1);
   const draftState = jsonRoundTrip({
-    setup,
+    setup: {
+      step: "roles",
+      hostPlayerId,
+      selectedPlayerIds: playerIds,
+      setup,
+      bestMoveEnabled: true,
+    },
     game: null,
     hostPlayerId,
+    playlistId: "",
     initialGame: null,
     events: [],
     headEventId: null,
@@ -90,9 +95,8 @@ export const createCanonicalHistory = (
   gameId: string,
   hostPlayerId: string,
   playerIds: readonly string[],
-  federation = true,
 ) => {
-  const { draftState, setup } = generateRoleDeal(hostPlayerId, playerIds, federation);
+  const { draftState, setup } = generateRoleDeal(hostPlayerId, playerIds);
   let game = createGame(setup);
   const baseline = createInitialGameBaseline(game);
   const entries: GameLogEntry[] = [];
@@ -112,9 +116,16 @@ export const createCanonicalHistory = (
   };
   const snapshot = (): CanonicalSnapshot =>
     jsonRoundTrip({
-      setup,
+      setup: {
+        step: "roles",
+        hostPlayerId,
+        selectedPlayerIds: playerIds,
+        setup,
+        bestMoveEnabled: true,
+      },
       game,
       hostPlayerId,
+      playlistId: "",
       initialGame: baseline,
       events: entries,
       headEventId: entries.at(-1)?.id ?? null,
@@ -125,15 +136,13 @@ export const createCanonicalHistory = (
       legacyLog: [],
     });
   append({ type: "game.started", payload: {} });
-  for (const to of federation
-    ? ([
-        "mafia-sleep",
-        "don-identification",
-        "sheriff-identification",
-        "free-seating",
-        "day",
-      ] as const)
-    : (["sheriff-wake", "day"] as const))
+  for (const to of [
+    "mafia-sleep",
+    "don-identification",
+    "sheriff-identification",
+    "free-seating",
+    "day",
+  ] as const)
     append({ type: "phase.changed", payload: { to } });
   return { draftState, append, snapshot, current: () => game };
 };

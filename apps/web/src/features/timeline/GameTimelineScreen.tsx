@@ -21,6 +21,7 @@ import {
 import {
   CASPER_NAME,
   CASPER_PLAYER_ID,
+  assertGameLogEntry,
   replayGameLog,
   type GameLogEntry,
   type InitialGameBaseline,
@@ -42,6 +43,8 @@ import { reportError } from "../console/error-console.js";
 import { getActiveBranch } from "../game/game-history.js";
 import { createSampleGameHistory } from "./sample-game-data.js";
 import { buildTimeline, type TimelineMarker, type TimelineText } from "./timeline-model.js";
+import { completedRecordFacts, type CompletedRecordFacts } from "./completed-record.js";
+import { CompletedRecordDetails } from "./CompletedRecordDetails.js";
 
 interface TimelineLoaders {
   readonly listCompleted: (
@@ -70,8 +73,9 @@ interface GameTimelineScreenProps {
 
 interface LoadedHistory {
   readonly label: string;
-  readonly frames: readonly ReplayFrame[];
-  readonly summary: CompletedGameSessionSummary | null;
+  readonly frames: readonly ReplayFrame[] | null;
+
+  readonly facts: CompletedRecordFacts | null;
   readonly sample: boolean;
   readonly current: boolean;
   readonly headEventId: string | null;
@@ -101,10 +105,20 @@ const iconByName: Readonly<Record<string, ComponentType<LucideProps>>> = {
   circle: Circle,
 };
 
-const replaySession = (session: RemoteGameSession): readonly ReplayFrame[] => {
+const replaySession = (session: RemoteGameSession): readonly ReplayFrame[] | null => {
   const baseline = session.state.initialGame as InitialGameBaseline | null | undefined;
   const entries = session.state.events as readonly GameLogEntry[] | undefined;
   const headEventId = session.state.headEventId;
+  if (
+    baseline == null &&
+    headEventId == null &&
+    (entries == null || (Array.isArray(entries) && entries.length === 0))
+  )
+    return null;
+  if (!Array.isArray(entries) || entries.length === 0 || typeof headEventId !== "string") {
+    throw new Error("Loaded timeline has incomplete canonical replay data");
+  }
+  for (const entry of entries) assertGameLogEntry(entry);
   if (entries?.some(({ gameId }) => gameId !== session.gameId) === true) {
     throw new Error("Loaded timeline contains events from another game");
   }
@@ -155,8 +169,8 @@ const TenantGameTimelineScreen = ({
         sequence: semanticHead?.sequence ?? headSequence ?? "—",
       }),
       frames: currentHistory.frames,
-      summary: null,
       sample: false,
+      facts: null,
       current: true,
       headEventId: semanticHead?.eventId ?? currentHistory.headEventId,
     };
@@ -228,7 +242,7 @@ const TenantGameTimelineScreen = ({
   }, [currentHistory?.headEventId, currentHistory?.label, i18n, selectedGameId]);
 
   // Reproject resolved profile names on every directory refresh; replay frames remain canonical.
-  const timeline = history === null ? null : buildTimeline(history.frames, timelineText);
+  const timeline = history?.frames == null ? null : buildTimeline(history.frames, timelineText);
   const selectedMarker =
     timeline?.markers.find(({ id }) => id === selectedMarkerId) ??
     timeline?.markers.find(({ eventId }) => eventId === history?.headEventId) ??
@@ -244,8 +258,8 @@ const TenantGameTimelineScreen = ({
     setHistory({
       label: sample.label,
       frames: sample.frames,
-      summary: null,
       sample: true,
+      facts: null,
       current: false,
       headEventId: null,
     });
@@ -279,7 +293,8 @@ const TenantGameTimelineScreen = ({
         setHistory({
           label: session.name,
           frames: replayed,
-          summary: summary ?? null,
+
+          facts: completedRecordFacts(session, summary ?? null),
           sample: false,
           current: false,
           headEventId: null,
@@ -311,7 +326,22 @@ const TenantGameTimelineScreen = ({
   const trackStyle = { minWidth: `${columnCount * 68 + 24}px` } satisfies CSSProperties;
 
   return (
-    <main className="timeline-screen" aria-label={i18n.t("Game timeline")}>
+    <main
+      className="timeline-screen"
+      aria-label={i18n.t("Game timeline")}
+      style={
+        history?.facts == null
+          ? undefined
+          : {
+              gridTemplateRows:
+                timeline === null
+                  ? "auto auto auto auto"
+                  : "auto auto auto minmax(300px, 1fr) minmax(220px, max-content)",
+              overflowY: "auto",
+              alignContent: "start",
+            }
+      }
+    >
       <header className="timeline-header">
         <button type="button" className="timeline-back" onClick={onBack}>
           <ArrowLeft aria-hidden="true" /> {backLabel ?? i18n.t("Back")}
@@ -346,7 +376,13 @@ const TenantGameTimelineScreen = ({
                   ? i18n.t("Citizens")
                   : summary.outcome === "black"
                     ? i18n.t("Mafia")
-                    : i18n.t(summary.outcome === "draw" ? "Game drawn" : "Game cancelled")}
+                    : i18n.t(
+                        summary.outcome === "draw"
+                          ? "Game drawn"
+                          : summary.outcome === "cancelled"
+                            ? "Game cancelled"
+                            : "Unknown outcome",
+                      )}
               </option>
             ))}
           </select>
@@ -440,6 +476,9 @@ const TenantGameTimelineScreen = ({
             {i18n.t("From date must not be after To date.")}
           </p>
         ) : null}
+        <p style={{ gridColumn: "1 / -1", margin: 0, color: "var(--muted)", fontSize: ".75rem" }}>
+          {i18n.t("Date filters include only games with a known played date.")}
+        </p>
       </section>
 
       {error === null ? null : (
@@ -457,76 +496,100 @@ const TenantGameTimelineScreen = ({
         <p className="timeline-empty">{i18n.t("No completed games yet.")}</p>
       ) : null}
 
-      {history === null || timeline === null ? null : (
+      {history?.facts == null ? null : (
+        <CompletedRecordDetails
+          facts={history.facts}
+          text={timelineText}
+          playerName={(id) => timelineText.playerName?.(id) ?? i18n.t("Anonymous player")}
+          formatDateTime={i18n.formatDateTime}
+        />
+      )}
+      {history === null ? null : (
         <>
-          <section className="timeline-editor" aria-label={i18n.t("Game event sequence")}>
+          <section
+            className="timeline-editor"
+            aria-label={i18n.t("Game event sequence")}
+            style={
+              timeline === null
+                ? { display: "block", overflow: "visible", paddingBottom: 18 }
+                : undefined
+            }
+          >
             <div className="timeline-meta">
               <strong>{history.label}</strong>
               {history.sample ? (
                 <span className="timeline-sample-badge">{i18n.t("Sample · not saved")}</span>
               ) : null}
-              {history.summary === null ? null : (
+              {history.facts === null ? null : (
                 <span>
-                  {history.summary.hostPlayerId === null
+                  {history.facts.hostPlayerId === null
                     ? i18n.t("Unknown host")
-                    : (players?.find(({ id }) => id === history.summary?.hostPlayerId)?.nickname ??
+                    : (players?.find(({ id }) => id === history.facts?.hostPlayerId)?.nickname ??
                       i18n.t("Anonymous player"))}{" "}
-                  · {i18n.formatDateTime(history.summary.playedAt)} · {history.summary.rulesetId} v
-                  {history.summary.rulesetVersion}
+                  ·{" "}
+                  {history.facts.playedAt === null
+                    ? i18n.t("Unknown date")
+                    : i18n.formatDateTime(history.facts.playedAt)}
                 </span>
               )}
             </div>
-            <div className="timeline-track-scroll">
-              <div className="timeline-track" style={trackStyle}>
-                <div className="timeline-region-lane" style={gridStyle}>
-                  {timeline.regions.map((region) => (
-                    <div
-                      key={region.id}
-                      className={`timeline-region is-${region.kind}`}
-                      style={
-                        {
-                          gridColumn: `${region.startFrameIndex + 1} / ${region.endFrameIndex + 2}`,
-                          "--timeline-region-color": region.color,
-                        } as CSSProperties
-                      }
-                    >
-                      <strong>{region.label}</strong>
-                      <small>{i18n.t("accepted events", { count: region.frameCount })}</small>
-                    </div>
-                  ))}
-                </div>
-                <div className="timeline-marker-lane" style={gridStyle}>
-                  {timeline.markers.map((marker) => {
-                    const Icon = iconByName[marker.icon] ?? Circle;
-                    return (
-                      <button
-                        key={marker.id}
-                        type="button"
-                        className={`timeline-marker is-${marker.kind}${selectedMarker?.id === marker.id ? " is-selected" : ""}`}
-                        style={{ gridColumn: marker.frameIndex + 1 }}
-                        aria-label={marker.ariaLabel}
-                        aria-pressed={selectedMarker?.id === marker.id}
-                        title={marker.label}
-                        onClick={() => setSelectedMarkerId(marker.id)}
+            {timeline === null ? (
+              <p>{i18n.t("Timeline detail is unavailable for this game.")}</p>
+            ) : (
+              <div className="timeline-track-scroll">
+                <div className="timeline-track" style={trackStyle}>
+                  <div className="timeline-region-lane" style={gridStyle}>
+                    {timeline.regions.map((region) => (
+                      <div
+                        key={region.id}
+                        className={`timeline-region is-${region.kind}`}
+                        style={
+                          {
+                            gridColumn: `${region.startFrameIndex + 1} / ${region.endFrameIndex + 2}`,
+                            "--timeline-region-color": region.color,
+                          } as CSSProperties
+                        }
                       >
-                        <Icon aria-hidden="true" />
-                        <span>#{marker.sequence}</span>
-                      </button>
-                    );
-                  })}
+                        <strong>{region.label}</strong>
+                        <small>{i18n.t("accepted events", { count: region.frameCount })}</small>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="timeline-marker-lane" style={gridStyle}>
+                    {timeline.markers.map((marker) => {
+                      const Icon = iconByName[marker.icon] ?? Circle;
+                      return (
+                        <button
+                          key={marker.id}
+                          type="button"
+                          className={`timeline-marker is-${marker.kind}${selectedMarker?.id === marker.id ? " is-selected" : ""}`}
+                          style={{ gridColumn: marker.frameIndex + 1 }}
+                          aria-label={marker.ariaLabel}
+                          aria-pressed={selectedMarker?.id === marker.id}
+                          title={marker.label}
+                          onClick={() => setSelectedMarkerId(marker.id)}
+                        >
+                          <Icon aria-hidden="true" />
+                          <span>#{marker.sequence}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
-            </div>
+            )}
           </section>
 
-          <TimelineInspector
-            marker={selectedMarker}
-            current={history.current}
-            currentHeadEventId={history.headEventId}
-            text={i18n}
-            onPreview={onPreviewCurrentEvent}
-            onReset={onResetCurrentEvent}
-          />
+          {timeline === null ? null : (
+            <TimelineInspector
+              marker={selectedMarker}
+              current={history.current}
+              currentHeadEventId={history.headEventId}
+              text={i18n}
+              onPreview={onPreviewCurrentEvent}
+              onReset={onResetCurrentEvent}
+            />
+          )}
         </>
       )}
     </main>

@@ -1,21 +1,21 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`physical counts and observations > pins old shooter-only observations and conclusive collective closure bytes/hashes 1`] = `
+exports[`physical counts and observations > pins current shooter-only observations and conclusive collective closure bytes/hashes 1`] = `
 [
   {
-    "bytes": "11ddcfd98759cb395385395a564014955aaf9fb1a03347fedca905d59b06430d",
+    "bytes": "aa4e92da9f69599a9bf821944139ed9d16d3e462f94fc7c0a0602e51d0711d89",
     "hasObservations": false,
     "hashes": [
-      "sha256:e1a1a3b8ea82bb1b4427e46c326e123d64242ce3c528d85bdcf4cfb821d16eeb",
-      "sha256:302b8dd01781209ccf9db20c84bbc1bb827550992f68360ea1bd7c7242f1ec3c",
+      "sha256:dc15c336107da999c3da400085979e6a44ddf024850919c4003b7ce9144888af",
+      "sha256:2e182a2c12b1be8bea8ee58dfc43b26314ef7da1e2da81894e78516c50f32129",
     ],
   },
   {
-    "bytes": "8787318b5a30086bb376cb03dbc4eaa004856b5771411b0e1792fd3f801d0277",
+    "bytes": "54f1b04a52f228923b953aa64d19a7eea4b3454edf52082b9298908991103b7e",
     "hasObservations": false,
     "hashes": [
-      "sha256:778f8ea8dc8974a03dfaf481032a5103bc598d97f2583fe5ce377815d809cda2",
-      "sha256:efa4b8bc8a86530459f888edb62857f8265e801eeeb7e4a0078aa9567f778fcd",
+      "sha256:ac929b9677abe18a3c784f1e409092a4ebe0a3b001ecfd4e408bf086b3ca98cc",
+      "sha256:2ae6676f788017af3d4c2fa58297a08e0fae10c1368b64928d774c3e9ce76648",
     ],
   },
 ]

@@ -2,7 +2,7 @@
 import { parseVerifierAuthCookie, parseVerifierClubId } from "./session-verifier-contracts.mjs";
 
 export const RELEASE_GATES = Object.freeze(
-  ["check", "compose", "backup", "ui", "ui-hardening", "session", "oauth"].map((name) =>
+  ["check", "local", "storage-backup", "ui", "ui-hardening", "session", "oauth"].map((name) =>
     Object.freeze({
       name,
       command: "npm",

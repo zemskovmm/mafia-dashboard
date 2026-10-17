@@ -16,7 +16,6 @@ import {
   createSeededRandom,
   createSetup,
   drawRoleForSeat,
-  FEDERATION_RULES_EDITION,
   hashGameState,
   issueFoul,
 } from "../packages/game-domain/src/index.ts";
@@ -26,7 +25,7 @@ import {
   ruleReferenceIds,
 } from "../apps/web/src/features/rules/rule-references.ts";
 import { removalRules } from "../apps/web/src/i18n/messages/federation-discipline.ts";
-import { checkpoint, legacySetupState, openPlayerPenalty } from "./verify-federation-ui.mjs";
+import { checkpoint, currentSetupState, openPlayerPenalty } from "./verify-federation-ui.mjs";
 import { assertExactOrigin } from "./session-verifier-contracts.mjs";
 
 const key = "mafia-dashboard.game-session.v5";
@@ -100,13 +99,20 @@ export async function rulesSourceManifest() {
     }
   }
   await walk("apps/web/src");
+  await walk("apps/web/public");
   await walk("packages/game-domain/src");
+  await walk("packages/game-domain/dist");
   files.push(
+    "package.json",
+    "package-lock.json",
+    "apps/web/package.json",
+    "packages/game-domain/package.json",
     "apps/web/index.html",
     "apps/web/vite.config.ts",
     "scripts/verify-ui.mjs",
     "scripts/verify-federation-ui.mjs",
     "scripts/verify-rules-sketchbook-ui.mjs",
+    "scripts/session-verifier-contracts.mjs",
   );
   return Object.fromEntries(
     await Promise.all(
@@ -171,15 +177,17 @@ export async function runRulesSketchbookScenarios({
     report.screenshots.push(file);
     return file;
   };
-  async function checkFocus(locator, label) {
-    try {
-      await expect(locator).toBeFocused();
-      return true;
-    } catch (error) {
-      const active = await page.evaluate(() => document.activeElement?.outerHTML.slice(0, 500));
-      report.failures.push(`${label}: ${error.message}; active=${active}`);
-      return false;
-    }
+  async function nativeFocus(label) {
+    const active = await page.evaluate(() => ({
+      tag: document.activeElement?.tagName,
+      label: document.activeElement?.getAttribute("aria-label"),
+      connected: document.activeElement?.isConnected,
+      inert: Boolean(document.activeElement?.closest("[inert]")),
+    }));
+    assert.ok(active.connected && !active.inert, "Native focus never remains in a suspended layer");
+    report.nativeFocus ??= [];
+    report.nativeFocus.push({ label, ...active });
+    return active;
   }
   async function saved() {
     await expect(page.locator('.save-indicator[data-status="saved"]')).toBeVisible();
@@ -200,10 +208,7 @@ export async function runRulesSketchbookScenarios({
     assert.equal(hashGameState(after.current.state.game), hashGameState(before.current.state.game));
   }
   let draw = beginRoleDraw(
-    createSetup(
-      players.slice(0, 10).map((p, i) => ({ id: p.id, seat: i + 1 })),
-      { rulesEdition: FEDERATION_RULES_EDITION },
-    ),
+    createSetup(players.slice(0, 10).map((p, i) => ({ id: p.id, seat: i + 1 }))),
     createSeededRandom(71),
   );
   for (let seat = 1; seat <= 10; seat++) draw = drawRoleForSeat(draw, seat);
@@ -211,7 +216,7 @@ export async function runRulesSketchbookScenarios({
   while (day.phase !== "day") day = advanceSetupPhase(day);
   const seat = day.players.find((p) => p.role === "citizen").seat;
   const template = {
-    ...legacySetupState(),
+    ...currentSetupState(),
     setup: null,
     hostPlayerId: players[10].id,
     playlistId: "test-playlist",
@@ -443,18 +448,21 @@ export async function runRulesSketchbookScenarios({
       .locator("button[type=submit]")
       .first()
       .evaluate((el) => el.focus());
-    assert.ok(await book.evaluate((d) => d.contains(document.activeElement)));
+    assert.ok(await dialog.evaluate((d) => !d.contains(document.activeElement)));
     for (let n = 0; n < 8; n++) {
       await page.keyboard.press(n % 2 ? "Shift+Tab" : "Tab");
       assert.ok(
-        await book.evaluate((d) => d.contains(document.activeElement)),
-        "Tab stays in reader",
+        await page.evaluate(() => {
+          const active = document.activeElement;
+          return active === document.body || Boolean(active?.closest("dialog.rules-sketchbook"));
+        }),
+        "Native modal Tab does not enter the lower dialog or background controls",
       );
     }
     if (id === "6.2.12" || id === "6.3.5") await screenshot(`${locale}-reference-${id}`);
     await closeBook(id === "6.3.5" ? "button" : "escape");
     await expect(dialog).not.toHaveAttribute("inert", "");
-    const exactFocusReturn = await checkFocus(opener, `${locale} ${id} contextual return`);
+    const focusAfterClose = await nativeFocus(`${locale} ${id} native close`);
     assert.deepEqual(
       await dialog.locator("input,select,textarea").evaluateAll((els) =>
         els.map((e) => ({
@@ -473,7 +481,7 @@ export async function runRulesSketchbookScenarios({
       id,
       forced,
       geometry,
-      exactFocusReturn,
+      focusAfterClose,
       unchanged: true,
     });
   }
@@ -482,18 +490,18 @@ export async function runRulesSketchbookScenarios({
       club.language = locale;
       await page.emulateMedia({ reducedMotion: "reduce" });
       const before = await seed();
-      const header = await openHeader(locale);
+      await openHeader(locale);
       assert.ok(
         await book.evaluate((d) => d.contains(document.activeElement)),
         "First lazy-open focus stays in foreground reader",
       );
       await closeBook();
-      await checkFocus(header, `${locale} immediate first-load Escape return`);
+      await nativeFocus(`${locale} immediate first-load native Escape`);
       await unchanged(before);
       await openHeader(locale);
       report.scenarios.push({
         locale,
-        name: "first-lazy-load-native-focus-Escape-exact-header-return",
+        name: "first-lazy-load-native-modal-Escape-cleanup-no-authored-return",
       });
       await screenshot(`${locale}-spread`);
       await contents();
@@ -510,7 +518,7 @@ export async function runRulesSketchbookScenarios({
         });
       }
       await closeBook("outside");
-      await checkFocus(header, `${locale} header outside-close return`);
+      await nativeFocus(`${locale} header outside close`);
       await unchanged(before);
       const { dialog } = await openPlayerPenalty(page, seat, {
         locale,
@@ -557,7 +565,16 @@ export async function runRulesSketchbookScenarios({
       const forcedBefore = await seed(fouled);
       const card = page.locator(`.seat-anchor[data-seat="${seat}"] .player-seat`);
       await card.focus();
-      await page.keyboard.press("f");
+      for (const retired of ["f", "Shift+F10", "ContextMenu"]) await page.keyboard.press(retired);
+      await expect(page.locator("dialog.is-discipline[open]")).toHaveCount(0);
+      await unchanged(forcedBefore);
+      const bounds = await card.boundingBox();
+      const x = bounds.x + bounds.width / 2;
+      const y = Math.min(bounds.y + bounds.height / 3, viewport.height - 85);
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+      await page.mouse.move(x, y + 64, { steps: 8 });
+      await page.mouse.up();
       const forcedDialog = page.locator("dialog.is-discipline[open]");
       await expect(forcedDialog).toBeVisible();
       await expect(
@@ -666,14 +683,15 @@ export async function runRulesSketchbookScenarios({
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     });
     await idle();
-    // Escape while animation is in flight must cancel RAF and restore the real header.
+    // Former reader arrow shortcuts are inert; the real page control starts the turn.
+    const retainedChapter = await paper.getAttribute("data-chapter");
     await page.keyboard.press("ArrowRight");
+    await expect(paper).toHaveAttribute("data-chapter", retainedChapter);
+    await expect(book.locator(".rs-curl")).toHaveCount(0);
+    await book.locator(".rs-next").click();
     await expect(book.locator(".rs-curl")).toBeVisible();
     await closeBook();
-    await checkFocus(
-      page.getByRole("button", { name: "Rules", exact: true }),
-      "Header Escape-interrupted return",
-    );
+    await nativeFocus("Native Escape interrupts turn without authored return");
     await screenshot("blur-before");
     assert.equal(await page.locator("#root").evaluate((el) => getComputedStyle(el).filter), "none");
     assert.ok(

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { Pool } from "pg";
+
 import {
   advanceSetupPhase,
   beginRoleDraw,
@@ -19,37 +19,55 @@ import {
 } from "@mafia/game-domain";
 import { buildApp } from "./app.js";
 import { DEFAULT_CLUB_ID } from "./club-store.js";
-import { initializeSchema } from "./initialize-schema.js";
+import { blobReference } from "./azure-storage.js";
+import { createApplicationStorageFixture } from "./test-helpers/storage-fixture.js";
 import { verifyAdjudicationHttp } from "./test-helpers/adjudication-http.js";
 
-const databaseUrl =
-  process.env.TEST_DATABASE_URL ?? "postgresql://mafia@127.0.0.1:54329/mafia_test";
-const schemaName = `whole_snapshot_save_${randomUUID().replaceAll("-", "")}`;
-const schemaPool = new Pool({ connectionString: databaseUrl });
-const pool = new Pool({ connectionString: databaseUrl, options: `-c search_path=${schemaName}` });
+let fixture: Awaited<ReturnType<typeof createApplicationStorageFixture>>;
 let app: Awaited<ReturnType<typeof buildApp>>;
 
+const rawGame = async (gameId: string) => {
+  const row = await fixture.storage.getEntity(`club:${DEFAULT_CLUB_ID}:game:${gameId}`);
+  const ref = blobReference(row!);
+  const { session } = await fixture.storage.read((tx) =>
+    tx.readBlob<{ session: { state: unknown; results: unknown } }>(ref),
+  );
+  const bytes = (
+    await fixture.storage.blobs.getBlockBlobClient(ref.name).downloadToBuffer()
+  ).toString("utf8");
+  return { bytes, state: JSON.stringify(session.state), results: JSON.stringify(session.results) };
+};
+const resultProjection = async (gameId: string) =>
+  (
+    await fixture.storage.read((tx) =>
+      tx.list<{ playerId: string; seat: number; isHost: boolean; won: boolean | null }>(
+        `club:${DEFAULT_CLUB_ID}:result:${gameId}:`,
+      ),
+    )
+  )
+    .filter((row) => !row.isHost)
+    .sort((a, b) => a.seat - b.seat)
+    .map(({ playerId, won }) => ({ player_id: playerId, won }));
+
 beforeAll(async () => {
-  await schemaPool.query(`CREATE SCHEMA ${schemaName}`);
-  await initializeSchema(pool);
+  const owner = {
+    id: "00000000-0000-4000-8000-000000000001",
+    email: "owner@mafiamalaga.es",
+    name: "Owner",
+    picture: null,
+  };
+  fixture = await createApplicationStorageFixture(owner);
   app = await buildApp({
-    pool,
+    stores: fixture.stores,
     defaultClubId: DEFAULT_CLUB_ID,
-    authenticateRequest: async () => ({
-      id: "00000000-0000-4000-8000-000000000001",
-      email: "owner@mafiamalaga.es",
-      name: "Owner",
-      picture: null,
-    }),
+    authenticateRequest: async () => owner,
   });
   await app.ready();
 });
 
 afterAll(async () => {
-  await app.close();
-  await pool.end();
-  await schemaPool.query(`DROP SCHEMA IF EXISTS ${schemaName} CASCADE`);
-  await schemaPool.end();
+  await app?.close();
+  await fixture?.close();
 });
 
 describe("whole snapshot save", () => {
@@ -86,9 +104,8 @@ describe("whole snapshot save", () => {
     });
   });
 
-  it("round-trips a rendered UI action and anonymous completed timeline through real API and database", async () => {
-    // Keep Vitest's Node environment: jsdom's Vite import.meta.url rewrite breaks
-    // initializeSchema's file URL. Install a DOM only around rendered UI work.
+  it("round-trips a rendered UI action and anonymous completed timeline through real API and Azure", async () => {
+    // Keep Vitest's Node environment; install a DOM only around rendered UI work.
     const jsdomSource = pathToFileURL(
       resolve(process.cwd(), "../../node_modules/jsdom/lib/api.js"),
     ).href;
@@ -157,19 +174,18 @@ describe("whole snapshot save", () => {
         return response.json().player as { id: string; nickname: string };
       };
       const host = await profile(`UI host ${randomUUID()}`);
-      const seats = await Promise.all(
-        Array.from({ length: 10 }, (_, index) => profile(`UI seat ${index + 1} ${randomUUID()}`)),
-      );
+      const seats: Awaited<ReturnType<typeof profile>>[] = [];
+      for (let index = 0; index < 10; index += 1)
+        seats.push(await profile(`UI seat ${index + 1} ${randomUUID()}`));
       let setup = beginRoleDraw(
         createSetup(seats.map(({ id }, index) => ({ id, seat: index + 1 }))),
         createSeededRandom(41),
       );
       for (let seat = 1; seat <= 10; seat += 1) setup = drawRoleForSeat(setup, seat);
       setup = completeRoleDraw(setup);
-      const baseline = {
-        replayVersion: 1 as const,
-        game: advanceSetupPhase(advanceSetupPhase(createGame(setup))),
-      };
+      let opening = createGame(setup);
+      while (opening.phase !== "day") opening = advanceSetupPhase(opening);
+      const baseline = { replayVersion: 3 as const, game: opening };
       const created = await app.inject({
         method: "POST",
         url: "/api/game-sessions",
@@ -264,11 +280,7 @@ describe("whole snapshot save", () => {
         url: "/api/game-sessions?status=completed",
       });
       expect(pendingCompleted.json().sessions).toEqual([]);
-      const pendingProjections = await pool.query(
-        "SELECT player_id FROM game_player_results WHERE game_id = $1",
-        [gameId],
-      );
-      expect(pendingProjections.rows).toEqual([]);
+      expect(await resultProjection(gameId)).toEqual([]);
       const saved = await app.inject({
         method: "PUT",
         url: `/api/game-sessions/${gameId}`,
@@ -287,21 +299,11 @@ describe("whole snapshot save", () => {
       expect(completedActive.json().sessions).not.toContainEqual(
         expect.objectContaining({ gameId }),
       );
-      const before = (
-        await pool.query<{ state: string; results: string }>(
-          "SELECT state::text, results::text FROM game_sessions WHERE id = $1",
-          [gameId],
-        )
-      ).rows[0]!;
+      const before = await rawGame(gameId);
       expect(before.state).not.toContain(seats[0]!.nickname);
       expect(before.state).not.toContain(host.nickname);
       const hash = hashGameState(drawn.after);
-      const projections = (
-        await pool.query<{ player_id: string; won: boolean | null }>(
-          "SELECT player_id, won FROM game_player_results WHERE game_id = $1 ORDER BY seat",
-          [gameId],
-        )
-      ).rows;
+      const projections = await resultProjection(gameId);
       expect(projections).toHaveLength(10);
       expect(projections[1]?.player_id).toBe(seats[1]!.id);
       const directory = async () => {
@@ -368,28 +370,15 @@ describe("whole snapshot save", () => {
         loaded.state.game,
       );
       expect(loaded.state.events[2].stateHashAfter).toBe(hash);
-      expect(
-        (
-          await pool.query("SELECT state::text, results::text FROM game_sessions WHERE id = $1", [
-            gameId,
-          ])
-        ).rows[0],
-      ).toEqual(before);
-      expect(
-        (
-          await pool.query(
-            "SELECT player_id, won FROM game_player_results WHERE game_id = $1 ORDER BY seat",
-            [gameId],
-          )
-        ).rows,
-      ).toEqual(projections);
+      expect(await rawGame(gameId)).toEqual(before);
+      expect(await resultProjection(gameId)).toEqual(projections);
     } finally {
       vi.unstubAllGlobals();
       dom.window.close();
     }
   });
 
-  it("preserves a pending and completed adjudication through PostgreSQL HTTP reads", async () => {
+  it("preserves a pending and completed adjudication through Azure HTTP reads", async () => {
     await verifyAdjudicationHttp(app, DEFAULT_CLUB_ID);
   });
 });

@@ -1,4 +1,5 @@
 import { MessageCircleOff } from "lucide-react";
+import { DeveloperSettingToggle } from "./DeveloperSettingToggle.js";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { shellMessages } from "../../i18n/messages/shell.js";
 import {
@@ -40,33 +41,29 @@ export const GlassControls = ({
             ? t("glassLostReason")
             : t("glassUnavailableReason");
   return (
-    <details className="dev-glass-controls">
+    <details className="dev-disclosure dev-glass-controls">
       <summary>{t("glassSection")}</summary>
-      <div className="dev-glass-fields">
-        <button
-          type="button"
-          className="dev-setting-toggle"
-          aria-label={t(settings.enabled ? "disableEnhancedGlass" : "enableEnhancedGlass")}
-          aria-pressed={settings.enabled}
+      <div className="dev-disclosure-fields dev-glass-fields">
+        <DeveloperSettingToggle
+          title={t("enhancedGlass")}
+          ariaLabel={t(settings.enabled ? "disableEnhancedGlass" : "enableEnhancedGlass")}
+          pressed={settings.enabled}
+          stateLabel={t(settings.enabled ? "settingOn" : "settingOff")}
+          stateBadge={false}
           onClick={() => onChange({ ...settings, enabled: !settings.enabled })}
-        >
-          <strong>{t("enhancedGlass")}</strong>
-          <span>{t(settings.enabled ? "settingOn" : "settingOff")}</span>
-        </button>
+        />
         <p id="glass-renderer-reason" role="status" className="dev-renderer-status">
           {active ? t("glassActive") : reason}
         </p>
-        <button
-          type="button"
-          className="dev-setting-toggle"
-          aria-label={t(settings.matte ? "disableMatteGlass" : "enableMatteGlass")}
-          aria-describedby="glass-material-reason"
-          aria-pressed={settings.matte}
+        <DeveloperSettingToggle
+          title={t("matteGlass")}
+          ariaLabel={t(settings.matte ? "disableMatteGlass" : "enableMatteGlass")}
+          ariaDescribedBy="glass-material-reason"
+          pressed={settings.matte}
+          stateLabel={t(settings.matte ? "settingOn" : "settingOff")}
+          stateBadge={false}
           onClick={() => onChange({ ...settings, matte: !settings.matte })}
-        >
-          <strong>{t("matteGlass")}</strong>
-          <span>{t(settings.matte ? "settingOn" : "settingOff")}</span>
-        </button>
+        />
         <p id="glass-material-reason" className="dev-renderer-status">
           {t(reducedTransparency ? "glassMaterialReducedReason" : "glassMaterialDescription")}
         </p>
@@ -106,7 +103,7 @@ export const GlassControls = ({
         </p>
         <details className="dev-glass-advanced">
           <summary>{t("glassFineTuning")}</summary>
-          <div className="dev-glass-fields">
+          <div className="dev-disclosure-fields dev-glass-fields">
             <label className="dev-renderer-field">
               <span>{t("refractionProfile")}</span>
               <select
@@ -178,7 +175,7 @@ export const GlassControls = ({
         </details>
         <details className="dev-player-card-appearance">
           <summary>{t("playerCardAppearance")}</summary>
-          <div className="dev-glass-fields">
+          <div className="dev-disclosure-fields dev-glass-fields">
             <p id="player-card-appearance-description" className="dev-renderer-status">
               {t("playerCardAppearanceDescription")}
             </p>

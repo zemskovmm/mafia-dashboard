@@ -7,7 +7,7 @@
  */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, appendFile } from "node:fs/promises";
 import path from "node:path";
 import { chromium, webkit, expect } from "@playwright/test";
 import { assertExactOrigin } from "./session-verifier-contracts.mjs";
@@ -19,7 +19,9 @@ assert.match(
   /^(localhost|127\.0\.0\.1|\[::1\])$/,
   "Use a local Vite origin",
 );
-const evidence = path.resolve(".AI/setup-seats");
+const evidence = path.resolve(process.env.UI_SETUP_EVIDENCE_DIR ?? ".AI/setup-seats");
+const requestedCase = process.env.UI_SETUP_CASE;
+const executedCases = [];
 const uuid = (number) => `00000000-0000-4000-8000-${String(number).padStart(12, "0")}`;
 const players = Array.from({ length: 11 }, (_, index) => ({
   id: uuid(index + 1),
@@ -449,9 +451,49 @@ const noDeviationUI = async (page) => {
 };
 
 async function swipeRole(page, cdp, seat, dx, dy = 0, cancel = false) {
+  await expect(roleCard(page, seat)).toBeEnabled();
   const start = await center(roleCard(page, seat));
+  const policy = await roleCard(page, seat).evaluate((card) => getComputedStyle(card).touchAction);
+  assert.equal(policy, "pan-y pinch-zoom", "Role touch must reserve horizontal motion only");
+  await roleCard(page, seat).evaluate((card) => {
+    const trace = [];
+    const collect = (event) => {
+      trace.push({
+        type: event.type,
+        trusted: event.isTrusted,
+        pointerType: event.pointerType,
+        x: event.changedTouches?.[0]?.clientX ?? event.clientX,
+        y: event.changedTouches?.[0]?.clientY ?? event.clientY,
+        disabled: card.disabled,
+      });
+      card.dataset.verifierRoleTrace = JSON.stringify(trace);
+    };
+    for (const type of [
+      "pointerdown",
+      "pointerup",
+      "pointercancel",
+      "lostpointercapture",
+      "touchstart",
+      "touchend",
+      "touchcancel",
+      "click",
+    ])
+      card.addEventListener(type, collect);
+  });
   onscreen(page, { x: start.x + dx, y: start.y + dy }, "Role swipe destination");
   const points = (fraction) => [{ x: start.x + dx * fraction, y: start.y + dy * fraction, id: 1 }];
+  if (cdp === null) {
+    assert.equal(
+      cancel,
+      false,
+      "Pointer role cancellation is tested separately from CDP touchCancel",
+    );
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down();
+    await page.mouse.move(start.x + dx, start.y + dy, { steps: 8 });
+    await page.mouse.up();
+    return;
+  }
   await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: points(0) });
   for (let step = 1; step <= 6; step += 1) {
     await cdp.send("Input.dispatchTouchEvent", {
@@ -463,9 +505,41 @@ async function swipeRole(page, cdp, seat, dx, dy = 0, cancel = false) {
     type: cancel ? "touchCancel" : "touchEnd",
     touchPoints: [],
   });
+  const trace = JSON.parse(await roleCard(page, seat).getAttribute("data-verifier-role-trace"));
+  assert.ok(
+    trace.some((e) => e.type === "touchstart" && e.trusted),
+    "Expected trusted Chromium touch start",
+  );
+  if (Math.abs(dx) > 44 && Math.abs(dy) < 8 && !cancel) {
+    assert.ok(
+      trace.some((e) => e.type === "pointerup" && e.trusted),
+      "Horizontal role gesture must complete its pointer",
+    );
+    assert.ok(
+      !trace.some((e) => e.type === "pointercancel"),
+      "Native horizontal takeover cancelled role gesture",
+    );
+  }
+  const input = {
+    seat,
+    dx,
+    dy,
+    cancel,
+    policy,
+    start,
+    end: { x: start.x + dx, y: start.y + dy },
+    trace,
+  };
+  await appendFile(path.join(evidence, "trusted-role-input.jsonl"), JSON.stringify(input) + "\n");
+  console.log(`Role input: ${JSON.stringify(input)}`);
 }
 
 async function roleCorrections(page, state, language, tag, cdp) {
+  assert.ok(
+    [undefined, "pointer", "touch"].includes(process.env.UI_SETUP_ROLE_INPUT),
+    "Unknown UI_SETUP_ROLE_INPUT",
+  );
+  const roleCdp = process.env.UI_SETUP_ROLE_INPUT === "pointer" ? null : cdp;
   const menu = page.getByRole("dialog", {
     name: language === "en" ? "Choose role" : "Выберите роль",
     exact: true,
@@ -486,9 +560,10 @@ async function roleCorrections(page, state, language, tag, cdp) {
     });
   const activate = (locator) => (cdp ? locator.tap() : locator.click());
   const open = async (direction) => {
-    if (cdp) await swipeRole(page, cdp, 1, direction * 70);
-    else await roleCard(page, 1).press("Shift+F10");
+    const before = checkpoint(state);
+    await swipeRole(page, roleCdp, 1, direction * 70);
     await expect(menu).toBeVisible();
+    unchanged(state, before, `${tag}: opening chooser accidentally dealt a role`);
     const targets = await menu.locator("button").evaluateAll((buttons) =>
       buttons.map((button) => {
         const { x, y, width, height } = button.getBoundingClientRect();
@@ -544,11 +619,15 @@ async function roleCorrections(page, state, language, tag, cdp) {
     unchanged(state, cleared, `${tag}: vertical/cancelled swipe mutated roles`);
   }
   await roleCard(page, 1).press("Shift+F10");
-  await expect(menu).toBeVisible();
-  await expect(menu.locator("button").first()).toBeFocused();
-  await page.keyboard.press("Escape");
+  await roleCard(page, 1).press("ContextMenu");
   await expect(menu).toHaveCount(0);
-  await expect(roleCard(page, 1)).toBeFocused();
+  unchanged(state, cleared, `${tag}: retired role-menu keys mutated roles`);
+  await open(1);
+  await page.keyboard.press("Escape");
+  await expect(menu).toBeVisible();
+  await cancel.press("Space");
+  await expect(menu).toHaveCount(0);
+  unchanged(state, cleared, `${tag}: native Cancel Space mutated roles`);
   await open(-1);
   await activate(cancel);
   unchanged(state, cleared, `${tag}: cancelled chooser mutated roles`);
@@ -592,6 +671,8 @@ async function roleCorrections(page, state, language, tag, cdp) {
 
 async function scenario(browser, browserName, viewport, language) {
   const tag = `${browserName}-${viewport.width}x${viewport.height}-${language}`;
+  if (requestedCase && requestedCase !== tag) return;
+  executedCases.push(tag);
   const context = await browser.newContext({ viewport, hasTouch: browserName === "chromium" });
   const page = await context.newPage();
   page.setDefaultTimeout(15000);
@@ -639,17 +720,28 @@ async function scenario(browser, browserName, viewport, language) {
       `${tag}: fixture/player UI disagree`,
     );
 
-    // Search/blur/Escape and same-identity choice are provisional, not edits.
+    // Native typing is provisional; custom Escape reset is retired. Blur still cancels.
     const picker = input(page, 1);
     const oldName = initial[0];
     await picker.fill("UI Player 999");
     await picker.press("Escape");
-    await expect(picker).toHaveValue(oldName);
+    // Chromium clears type=search natively; WebKit may retain the query. Neither
+    // engine should invoke the removed app-owned reset to the selected nickname.
+    await expect(picker).not.toHaveValue(oldName);
+    await expect(picker).toHaveAttribute("aria-expanded", "true");
+    unchanged(state, initialSnapshot, `${tag}: retired picker Escape`);
     await picker.fill("UI Player 999");
     await page.locator(".player-setup-card h1").click();
     await expect(picker).toHaveValue(oldName);
     await picker.click();
-    await page.getByRole("option", { name: oldName, exact: true }).click();
+    await picker.press("ArrowDown");
+    assert.equal(
+      await picker.getAttribute("aria-activedescendant"),
+      null,
+      `${tag}: no authored option navigation`,
+    );
+    const sameIdentityOption = page.getByRole("option", { name: oldName, exact: true });
+    await sameIdentityOption.press("Enter");
     unchanged(state, initialSnapshot, `${tag}: cancelled/same picker`);
     await dragMouse(page, 1, 1, "same");
     unchanged(state, initialSnapshot, `${tag}: same-seat drop`);
@@ -710,13 +802,15 @@ async function scenario(browser, browserName, viewport, language) {
     assert.equal(drawn.gameId, initialSnapshot.gameId, `${tag}: draw changed game ID`);
     assert.ok(drawn.state.setup.setup.remainingRoles.length < 10, `${tag}: role not drawn`);
     await page.locator(".role-draw-back").click();
-    await expect(page.locator(".player-setup-card h1")).toBeFocused();
+    await expect(page.locator(".player-setup-card h1")).not.toHaveAttribute("tabindex");
     await expect(page.locator(".player-setup-card h1")).toHaveText(labels[language].setup);
     await expect.poll(() => state.latest()?.state.setup?.step).toBe("players");
     const beforeDealNoop = checkpoint(state);
     const seatName = await input(page, 1).inputValue();
     await input(page, 1).fill("UI Player 999");
     await input(page, 1).press("Escape");
+    await expect(input(page, 1)).not.toHaveValue(seatName);
+    await page.locator(".player-setup-card h1").click();
     await expect(input(page, 1)).toHaveValue(seatName);
     await dragMouse(page, 1, 1, "same");
     unchanged(state, beforeDealNoop, `${tag}: cancelled picker / no-op retained roles`);
@@ -815,7 +909,7 @@ async function scenario(browser, browserName, viewport, language) {
     state.ensureClean();
     same(errors, [], `${tag}: browser exceptions`);
     console.log(
-      `PASS ${tag}: seat corrections, triple-tap reroll, ${cdp ? "trusted left/right swipes" : "keyboard role menu"}, clear/select, full-deal reload/readback, Casper/live without deviation prompts; ${JSON.stringify({ gameId: drawn.gameId, screenshots: 5, viewport: layout.viewport })}`,
+      `PASS ${tag}: seat corrections, triple-tap reroll, ${cdp && process.env.UI_SETUP_ROLE_INPUT !== "pointer" ? "trusted touch left/right swipes" : "trusted pointer left/right swipes"}, clear/select, native Enter/Space, retired keys inert, full-deal reload/readback, Casper/live without deviation prompts; ${JSON.stringify({ gameId: drawn.gameId, screenshots: 5, viewport: layout.viewport })}`,
     );
   } catch (error) {
     await page.screenshot({ path: path.join(evidence, `${tag}-failure.png`), fullPage: true });
@@ -833,6 +927,8 @@ async function scenario(browser, browserName, viewport, language) {
 
 async function touchScenario(browser, language) {
   const tag = `chromium-touch-1000x600-${language}`;
+  if (requestedCase && requestedCase !== tag) return;
+  executedCases.push(tag);
   const context = await browser.newContext({
     viewport: { width: 1000, height: 600 },
     hasTouch: true,
@@ -952,4 +1048,6 @@ try {
 } finally {
   await chrome.close();
 }
+assert.ok(executedCases.length > 0, `Unknown UI_SETUP_CASE: ${requestedCase}`);
+console.log(`Setup cases executed: ${JSON.stringify(executedCases)}`);
 console.log(`Setup seat verifier PASS; screenshots: ${evidence}`);

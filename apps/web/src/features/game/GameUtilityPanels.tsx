@@ -1,4 +1,4 @@
-import { countVotes, getCurrentVotingCandidateSeat, isFederationGame } from "@mafia/game-domain";
+import { countVotes } from "@mafia/game-domain";
 import type { GameState } from "@mafia/game-domain";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { gameMessages } from "../../i18n/messages/game.js";
@@ -18,15 +18,9 @@ export const GameUtilityPanels = ({ game, onSelectVotingCandidate }: GameUtility
   const { t } = useMessages(gameMessages);
   const nominationText = useMessages(federationHistoryMessages);
 
-  const federation = game !== null && isFederationGame(game);
   const displayName = usePlayerDisplayName();
   const nominationTotals = game === null ? {} : countVotes(game);
-  const currentCandidate =
-    game?.phase === "voting"
-      ? federation
-        ? game.ballot?.selectedCandidateSeat
-        : getCurrentVotingCandidateSeat(game)
-      : null;
+  const currentCandidate = game?.phase === "voting" ? game.ballot?.selectedCandidateSeat : null;
   const daytime =
     game !== null &&
     ([

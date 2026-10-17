@@ -1,18 +1,14 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useState } from "react";
 import {
   advanceOpeningPhase,
-  completeBestMove,
   completeEliminations,
   completeGoodbyeSpeech,
   completeCurrentTurn,
   getActiveNominations,
   getCurrentTurnDuration,
-  isFederationGame,
   isVotingRequired,
   issueFoul,
   setNominationSelection,
-  redCard,
-  toggleBestMoveSeat,
 } from "@mafia/game-domain";
 import type { CanonicalGameEventDraft, GameState } from "@mafia/game-domain";
 import { useMessages, type FeatureI18n } from "../../i18n/I18nProvider.js";
@@ -93,13 +89,9 @@ const phaseTitle = (game: GameState, t: GameTranslator): string => {
     case "free-seating":
       return t("game.freeSeating");
     case "mafia-planning":
-      return t(isFederationGame(game) ? "game.agreement" : "game.mafiaPlanningStage");
-    case "sheriff-wake":
-      return t("game.sheriffWake");
+      return t("game.agreement");
     case "day":
-      return isFederationGame(game) && game.day === 1
-        ? t("game.zeroRound")
-        : t("game.day", { day: isFederationGame(game) ? game.day - 1 : game.day });
+      return game.day === 1 ? t("game.zeroRound") : t("game.day", { day: game.day - 1 });
     case "voting":
     case "voting-cancelled":
       return t("voting.voting");
@@ -158,29 +150,22 @@ export const GameScreen = ({
 }: GameScreenProps) => {
   const { t, formatList } = useMessages(gameMessages);
   const displayName = usePlayerDisplayName();
-  const federation = isFederationGame(game);
-  const opening =
-    federation &&
-    [
-      "mafia-planning",
-      "mafia-sleep",
-      "don-identification",
-      "sheriff-identification",
-      "free-seating",
-    ].includes(game.phase);
+  const opening = [
+    "mafia-planning",
+    "mafia-sleep",
+    "don-identification",
+    "sheriff-identification",
+    "free-seating",
+  ].includes(game.phase);
   const displayGameName = gameName ?? t("game.table");
-  const [swipedSeat, setSwipedSeat] = useState<number | null>(null);
-  const disciplineInvoker = useRef<HTMLElement | null>(null);
   const [disciplineRequest, setDisciplineRequest] = useState<DisciplineRequest | null>(null);
   const [ruleRequest, setRuleRequest] = useState<{ game: GameState; rule: RuleReferenceId } | null>(
     null,
   );
-  const ruleInvoker = useRef<HTMLButtonElement | null>(null);
   const gameplayBlocked =
-    federation &&
-    (hasImmediateRemovalAnnouncement(game) ||
-      (game.phase === "finished" &&
-        !!game.disciplinaryRemovals?.some((r) => r.announcement === "pending")));
+    hasImmediateRemovalAnnouncement(game) ||
+    (game.phase === "finished" &&
+      !!game.disciplinaryRemovals?.some((r) => r.announcement === "pending"));
   const currentSeat = game.turnOrder[game.currentTurnIndex];
   const currentPlayer = game.players.find(
     ({ seat, status }) => seat === currentSeat && status === "active",
@@ -207,45 +192,18 @@ export const GameScreen = ({
   const activeMafia = game.players.filter(
     ({ team, status }) => team === "black" && status === "active",
   ).length;
-  const swipedPlayer = game.players.find(
-    ({ seat, status }) => seat === swipedSeat && status === "active",
-  );
   const foulAvailable =
     mode === "live" && !gameplayBlocked && game.day >= 1 && foulPhases.has(game.phase);
-  const disciplineAvailable =
-    mode === "live" &&
-    game.day >= 1 &&
-    game.phase !== "mafia-planning" &&
-    game.phase !== "sheriff-wake" &&
-    game.phase !== "car-crash-result" &&
-    game.phase !== "night-resolution" &&
-    game.phase !== "finished" &&
-    game.phase !== "draw" &&
-    game.phase !== "cancelled";
   const penaltiesAvailable =
-    federation &&
     mode === "live" &&
     finishGameState !== "blocked" &&
     !["finished", "draw", "cancelled"].includes(game.phase);
   const requestedRule =
     penaltiesAvailable && ruleRequest?.game === game ? ruleRequest.rule : undefined;
   const readerOpen = penaltiesAvailable && (rulesOpen || requestedRule !== undefined);
-  useLayoutEffect(() => {
-    if (readerOpen || !ruleInvoker.current) return;
-    const invoker = ruleInvoker.current;
-    // Inerting the lower native dialog can clear activeElement before the
-    // reader mounts. Restore the explicitly captured button after unsuspension.
-    const frame = requestAnimationFrame(() => {
-      if (invoker.isConnected && invoker.closest("dialog")?.open && !invoker.closest("[inert]"))
-        invoker.focus({ preventScroll: true });
-      ruleInvoker.current = null;
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [readerOpen]);
   const openPenalty = penaltiesAvailable
     ? (seat: number) => {
         if (!game.players.some((p) => p.seat === seat)) return;
-        setSwipedSeat(null);
         setRuleRequest(null);
         onRulesClose();
         setDisciplineRequest((previous) => ({
@@ -257,57 +215,6 @@ export const GameScreen = ({
         }));
       }
     : undefined;
-  const revealDisciplineAction = (seat: number) => {
-    const player = game.players.find((candidate) => candidate.seat === seat);
-    // Capture the card before the transient context action takes focus and disappears.
-    disciplineInvoker.current =
-      document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setSwipedSeat((current) =>
-      disciplineAvailable && player?.status === "active" && current !== seat ? seat : null,
-    );
-  };
-  const swipeAction =
-    disciplineAvailable && swipedPlayer !== undefined ? (
-      <button
-        type="button"
-        className="table-swipe-red-card"
-        aria-label={t("game.redCard", { name: displayName(swipedPlayer) })}
-        onClick={() => {
-          setSwipedSeat(null);
-          if (federation) {
-            setDisciplineRequest((previous) => ({
-              seat: swipedPlayer.seat,
-              action: "removal",
-              game,
-              id: (previous?.id ?? 0) + 1,
-              invoker: disciplineInvoker.current,
-            }));
-            return;
-          }
-          if (onAcceptedEvent !== undefined) {
-            onAcceptedEvent({
-              type: "player.red-carded",
-              payload: {
-                seat: swipedPlayer.seat,
-                phase: game.phase,
-                currentTurnIndex: game.currentTurnIndex,
-              },
-            });
-          } else {
-            const next = redCard(game, swipedPlayer.seat);
-            onGameChange(next);
-            onEvent("player.red-carded", {
-              seat: swipedPlayer.seat,
-              source: "swipe",
-              phase: game.phase,
-            });
-          }
-        }}
-      >
-        {t("game.redCard", { name: displayName(swipedPlayer) })}
-      </button>
-    ) : undefined;
-
   const continueSetup = () => {
     const next = advanceOpeningPhase(game);
     if (onAcceptedEvent !== undefined) {
@@ -335,14 +242,13 @@ export const GameScreen = ({
       !game.players.some((player) => player.seat === seat && player.status === "active")
     )
       return;
-    if (federation && game.players.find((p) => p.seat === seat)?.fouls === 3) {
+    if (game.players.find((p) => p.seat === seat)?.fouls === 3) {
       setDisciplineRequest((previous) => ({
         seat,
         action: "foul",
         id: (previous?.id ?? 0) + 1,
         game,
       }));
-      setSwipedSeat(null);
       return;
     }
     const next = issueFoul(game, seat);
@@ -361,9 +267,6 @@ export const GameScreen = ({
     } else {
       onGameChange(next);
       onEvent("foul.issued", { seat });
-      if (player?.status === "red-carded") {
-        onEvent("player.red-carded", { seat, source: "fourth-foul" });
-      }
     }
   };
 
@@ -441,13 +344,6 @@ export const GameScreen = ({
         </div>
       );
     }
-    if (game.phase === "best-move" && game.bestMove !== undefined) {
-      return (
-        <div className="best-move-center">
-          <strong>{t("bestMove.selected", { count: game.bestMove.selectedSeats.length })}</strong>
-        </div>
-      );
-    }
     if (game.phase === "goodbye-speech") {
       const names = formatList(
         (game.goodbyeSeats ?? []).map((seat) => {
@@ -476,20 +372,6 @@ export const GameScreen = ({
         </div>
       );
     }
-    if (game.phase === "mafia-planning") {
-      return (
-        <div className="table-check-center">
-          <strong>{t("game.reviewTargetOrder")}</strong>
-        </div>
-      );
-    }
-    if (game.phase === "sheriff-wake") {
-      return (
-        <div className="table-check-center">
-          <strong>{t("game.wakeSheriff")}</strong>
-        </div>
-      );
-    }
     if (game.phase === "day") {
       return (
         <div className="day-center-stack">
@@ -499,7 +381,7 @@ export const GameScreen = ({
               ? t("game.waitingForActivePlayer")
               : displayName(currentPlayer)}
           </strong>
-          {federation && currentPlayer ? (
+          {currentPlayer ? (
             <small>
               {t(
                 getCurrentTurnDuration(game) === 0
@@ -543,36 +425,6 @@ export const GameScreen = ({
         </button>
       );
     }
-    if (game.phase === "best-move" && game.bestMove !== undefined) {
-      return (
-        <button
-          type="button"
-          disabled={game.bestMove.selectedSeats.length !== 3}
-          onClick={() => {
-            const next = completeBestMove(game);
-            if (onAcceptedEvent !== undefined && game.bestMove !== undefined) {
-              onAcceptedEvent({
-                type: "best-move.completed",
-                payload: {
-                  playerSeat: game.bestMove.playerSeat,
-                  selectedSeats: game.bestMove.selectedSeats,
-                  mafiaHits: next.bestMove?.mafiaHits ?? 0,
-                },
-              });
-            } else {
-              onGameChange(next);
-              onEvent("best-move.completed", {
-                playerSeat: game.bestMove?.playerSeat,
-                selectedSeats: game.bestMove?.selectedSeats,
-                mafiaHits: next.bestMove?.mafiaHits,
-              });
-            }
-          }}
-        >
-          {t("bestMove.save")}
-        </button>
-      );
-    }
     if (game.phase === "goodbye-speech") {
       return (
         <button
@@ -591,7 +443,7 @@ export const GameScreen = ({
           }}
         >
           {game.goodbyeNext === "day"
-            ? t("game.beginDay", { day: federation ? game.day - 1 : game.day })
+            ? t("game.beginDay", { day: game.day - 1 })
             : t("game.beginNight")}
         </button>
       );
@@ -610,27 +462,13 @@ export const GameScreen = ({
         </button>
       );
     }
-    if (game.phase === "mafia-planning") {
-      return (
-        <button type="button" onClick={continueSetup}>
-          {t("game.continueSheriffWake")}
-        </button>
-      );
-    }
-    if (game.phase === "sheriff-wake") {
-      return (
-        <button type="button" onClick={continueSetup}>
-          {t("game.beginDayOne")}
-        </button>
-      );
-    }
     if (game.phase === "day") {
       return (
         <button type="button" disabled={currentPlayer === undefined} onClick={finishTurn}>
           {isLastDayTurn
             ? votingRequired
               ? t(
-                  federation && getActiveNominations(game).length === 1
+                  getActiveNominations(game).length === 1
                     ? "game.laterSoleNominee"
                     : "game.beginVoting",
                 )
@@ -657,13 +495,7 @@ export const GameScreen = ({
 
   const endgameLabel = isGuessingState(game) ? t("game.guessingGame") : t("game.critical");
   const tableCycle =
-    game.phase === "mafia-planning" ||
-    game.phase === "sheriff-wake" ||
-    opening ||
-    (federation && game.phase === "best-move") ||
-    game.phase.startsWith("night-")
-      ? "night"
-      : "day";
+    opening || game.phase === "best-move" || game.phase.startsWith("night-") ? "night" : "day";
   const effectivePrivacyHidden = privacyHidden && tableCycle === "day";
 
   return (
@@ -703,7 +535,7 @@ export const GameScreen = ({
 
         <div className="live-layout">
           <section className="table-workspace">
-            {federation && mode !== "preview" ? (
+            {mode !== "preview" ? (
               <FederationDisciplineControls
                 key={game.phase}
                 game={game}
@@ -711,9 +543,8 @@ export const GameScreen = ({
                   penaltiesAvailable && disciplineRequest?.game === game ? disciplineRequest : null
                 }
                 readerOpen={readerOpen}
-                onOpenRule={(rule, invoker) => {
+                onOpenRule={(rule) => {
                   if (!penaltiesAvailable) return;
-                  ruleInvoker.current = invoker;
                   setRuleRequest({ game, rule });
                 }}
                 privacyHidden={effectivePrivacyHidden}
@@ -803,9 +634,6 @@ export const GameScreen = ({
                   game={game}
                   hostName={hostName}
                   privacyHidden={effectivePrivacyHidden}
-                  onSeatSwipe={disciplineAvailable ? revealDisciplineAction : undefined}
-                  swipeAction={swipeAction}
-                  onDismissSwipeAction={() => setSwipedSeat(null)}
                   onFoul={foulAvailable ? foulPlayer : undefined}
                   onGameChange={onGameChange}
                   onEvent={onEvent}
@@ -817,7 +645,7 @@ export const GameScreen = ({
                     }
                   }}
                 />
-              ) : federation && game.phase === "best-move" ? (
+              ) : game.phase === "best-move" ? (
                 <FederationBestMoveStage
                   onSeatPenalty={openPenalty}
                   game={game}
@@ -832,9 +660,6 @@ export const GameScreen = ({
                   game={game}
                   hostName={hostName}
                   privacyHidden={effectivePrivacyHidden}
-                  onSeatSwipe={disciplineAvailable ? revealDisciplineAction : undefined}
-                  swipeAction={swipeAction}
-                  onDismissSwipeAction={() => setSwipedSeat(null)}
                   onGameChange={onGameChange}
                   onEvent={onEvent}
                   onAcceptedEvent={onAcceptedEvent}
@@ -846,9 +671,6 @@ export const GameScreen = ({
                   animateActive={game.phase === "day" || game.phase === "car-crash"}
                   hostName={hostName}
                   privacyHidden={effectivePrivacyHidden}
-                  onSeatSwipe={disciplineAvailable ? revealDisciplineAction : undefined}
-                  swipeAction={swipeAction}
-                  onDismissSwipeAction={() => setSwipedSeat(null)}
                   seats={game.players.map((player) => ({
                     seat: player.seat,
                     name: displayName(player),
@@ -859,23 +681,18 @@ export const GameScreen = ({
                       player.status === "active" &&
                       player.team === "black",
                     sheriffHighlight:
-                      (game.phase === "sheriff-wake" || game.phase === "sheriff-identification") &&
+                      game.phase === "sheriff-identification" &&
                       player.status === "active" &&
                       player.role === "sheriff",
-                    dimmed:
-                      (game.phase === "mafia-planning" && player.team !== "black") ||
-                      (game.phase === "sheriff-wake" && player.role !== "sheriff"),
+                    dimmed: game.phase === "mafia-planning" && player.team !== "black",
                     inactive:
                       game.phase === "car-crash" && !game.carCrashSeats?.includes(player.seat),
                     votingHighlight:
-                      (game.phase === "best-move" && game.bestMove?.playerSeat === player.seat) ||
-                      (game.phase === "goodbye-speech" && game.goodbyeSeats?.[0] === player.seat),
+                      game.phase === "goodbye-speech" && game.goodbyeSeats?.[0] === player.seat,
                     current:
-                      (player.seat === currentPlayer?.seat &&
-                        player.status === "active" &&
-                        (game.phase === "day" || game.phase === "car-crash")) ||
-                      (game.phase === "best-move" &&
-                        game.bestMove?.selectedSeats.includes(player.seat)),
+                      player.seat === currentPlayer?.seat &&
+                      player.status === "active" &&
+                      (game.phase === "day" || game.phase === "car-crash"),
                     fouls: player.fouls,
                     muted: player.mutePending,
                     ...nominationView(player.seat),
@@ -890,25 +707,10 @@ export const GameScreen = ({
                               : "game.nominate",
                           { name: seat.name },
                         )
-                      : game.phase === "best-move"
-                        ? seat.status !== "active" || seat.seat === game.bestMove?.playerSeat
-                          ? t("table.seat", { seat: seat.seat, name: seat.name })
-                          : game.bestMove?.selectedSeats.includes(seat.seat)
-                            ? t("bestMove.remove", { name: seat.name })
-                            : t("bestMove.add", { name: seat.name })
-                        : t("table.seat", { seat: seat.seat, name: seat.name })
-                  }
-                  seatActionDisabled={(seat) =>
-                    game.phase === "best-move" &&
-                    (seat.status !== "active" || seat.seat === game.bestMove?.playerSeat)
+                      : t("table.seat", { seat: seat.seat, name: seat.name })
                   }
                   onSeatClick={(seat) => {
                     if (game.phase === "day") toggleNomination(seat);
-                    if (game.phase === "best-move") {
-                      const player = game.players.find((candidate) => candidate.seat === seat);
-                      if (player?.status !== "active" || seat === game.bestMove?.playerSeat) return;
-                      onGameChange(toggleBestMoveSeat(game, seat));
-                    }
                   }}
                   center={tableCenter}
                   advance={tableAdvance}

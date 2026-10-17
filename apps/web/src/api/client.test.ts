@@ -29,7 +29,12 @@ import {
   updateClub,
   updatePlayer,
 } from "./client.js";
-import type { PlayerProfile, PlayerProfileInput } from "./client.js";
+import type {
+  CompletedGameSessionSummary,
+  PlayerProfile,
+  PlayerProfileInput,
+  RemoteGameSession,
+} from "./client.js";
 
 const emptyStatistics = {
   hostedGames: 0,
@@ -342,6 +347,54 @@ describe("player API client", () => {
 });
 
 describe("game session aggregate API client", () => {
+  it("retains partial completed factual detail without inventing a current game or timeline", async () => {
+    const gameId = "00000000-0000-4000-8000-000000000002";
+    const clubId = "00000000-0000-4000-8000-000000000101";
+    const detail: RemoteGameSession = {
+      gameId,
+      name: "Factual record",
+      revision: 1,
+      duplicate: false,
+      status: "completed",
+      updatedAt: "2026-10-16T12:00:00.000Z",
+      state: {
+        game: { players: [{ id: gameId, seat: 1, status: "eliminated" }] },
+        initialGame: null,
+        events: [],
+        headEventId: null,
+        resetReturnEventId: null,
+        undoHistory: [],
+        undoBudget: 0,
+      },
+      results: {},
+    };
+    const summary: CompletedGameSessionSummary = {
+      gameId,
+      name: detail.name,
+      revision: 1,
+      hostPlayerId: null,
+      outcome: null,
+      winner: null,
+      reason: null,
+      playedAt: null,
+      day: null,
+      eventCount: 0,
+      timelineAvailable: false,
+      updatedAt: detail.updatedAt,
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ session: detail }), { status: 200 }))
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ sessions: [summary] }), { status: 200 }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(getGameSession(gameId, clubId)).resolves.toEqual(detail);
+    await expect(listCompletedGameSessions(clubId)).resolves.toEqual([summary]);
+    expect(detail.state.game).not.toHaveProperty("completedGameNights");
+    expect(summary.timelineAvailable).toBe(false);
+  });
+
   it("retains only allowlisted history codes and bounded positions", () => {
     const diagnostic = { code: "history.hash_mismatch", eventIndex: 4, replayIndex: 2 };
     expect(
@@ -793,8 +846,6 @@ const remote = {
   gameId,
   name: "Table A",
   status: "active" as const,
-  rulesetId: "classic",
-  rulesetVersion: 1,
   revision: 1,
   duplicate: false,
   createdAt: "2026-09-26T20:00:00.000Z",
@@ -815,12 +866,12 @@ describe("statistics and tournament API client", () => {
     vi.stubGlobal("fetch", fetchMock);
     await expect(listTournaments(clubId)).resolves.toEqual([tournament]);
     await expect(createTournament("Autumn", clubId)).resolves.toEqual(tournament);
-    await getClubStatistics(clubId, { tournamentId: "none", edition: "legacy" });
+    await getClubStatistics(clubId, { tournamentId: "none", team: "black" });
     await getPlayerStatistics(gameId, clubId, { role: "don" }, { cursor: "a+b/", limit: 25 });
     expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
       "/api/tournaments",
       "/api/tournaments",
-      "/api/statistics?edition=legacy&tournamentId=none",
+      "/api/statistics?team=black&tournamentId=none",
       `/api/statistics/players/${gameId}?role=don&cursor=a%2Bb%2F&limit=25`,
     ]);
     for (const [, init] of fetchMock.mock.calls) {

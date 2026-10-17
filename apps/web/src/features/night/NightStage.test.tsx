@@ -27,16 +27,19 @@ const render = (ui: Parameters<typeof renderWithProfiles>[0]) =>
 
 afterEach(() => vi.useRealTimers());
 
-const createNightGame = (): GameState => {
+const createDayGame = (): GameState => {
   const players: PlayerInput[] = Array.from({ length: 10 }, (_, index) => ({
     id: `p-${index + 1}`,
     seat: index + 1,
   }));
   let setup = beginRoleDraw(createSetup(players), createSeededRandom(17));
   for (let seat = 1; seat <= 10; seat += 1) setup = drawRoleForSeat(setup, seat);
-  const day = advanceSetupPhase(advanceSetupPhase(createGame(completeRoleDraw(setup))));
-  return beginNight(day);
+  let day = createGame(completeRoleDraw(setup));
+  while (day.phase !== "day") day = advanceSetupPhase(day);
+  return day;
 };
+
+const createNightGame = (): GameState => beginNight(createDayGame());
 
 const Harness = ({
   initial,
@@ -312,10 +315,10 @@ describe("NightStage", () => {
   it("uses the table with one sorted shooter button per target", async () => {
     const user = userEvent.setup();
     const initial = createNightGame();
+    const target = initial.players.find(({ role, seat }) => role === "citizen" && seat !== 2)!;
     const shooters = initial.players
       .filter(({ team }) => team === "black")
       .sort((left, right) => left.seat - right.seat);
-    const target = initial.players.find(({ role, seat }) => role === "citizen" && seat !== 2)!;
     const otherTarget = initial.players.find(
       ({ status, seat }) => status === "active" && seat !== target.seat,
     )!;
@@ -482,7 +485,7 @@ describe("NightStage", () => {
     );
 
     expect(screen.getByRole("group", { name: "Mafia missed" })).toHaveTextContent("No player died");
-    expect(screen.getByRole("button", { name: /begin day 2/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /announce morning/i })).toBeInTheDocument();
 
     rerender(
       <Harness
@@ -530,64 +533,20 @@ describe("NightStage", () => {
     await user.click(screen.getByRole("button", { name: "Continue night" }));
     expect(screen.getByRole("region", { name: "Mafia table" })).toBeInTheDocument();
     expect(screen.getByText("Night complete")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /begin day 2/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /announce morning/i })).toBeInTheDocument();
   });
 
-  it("offers both checks after Mafia shots when both owners died before this night", async () => {
-    const user = userEvent.setup();
-    const base = createNightGame();
-    const don = base.players.find(({ role }) => role === "don")!;
-    const sheriff = base.players.find(({ role }) => role === "sheriff")!;
-    const initial = beginNight({
-      ...markPlayerInactive(
-        markPlayerInactive(base, don.seat, "eliminated"),
-        sheriff.seat,
-        "eliminated",
-      ),
-      phase: "day",
-      day: 3,
-    });
-    const onEvent = vi.fn();
-    const { unmount } = render(<Harness initial={initial} onEvent={onEvent} />);
-
-    await user.click(screen.getByRole("button", { name: /evaluate mafia shots/i }));
-    await user.click(screen.getByRole("button", { name: "Continue night" }));
-    expect(screen.getByRole("button", { name: `Don check ${playerLabel(don)}` })).toHaveClass(
-      "status-eliminated",
-    );
-    await user.click(screen.getByRole("button", { name: `Don check ${playerLabel(sheriff)}` }));
-    expect(screen.getByRole("status", { name: "Don check result" })).toHaveTextContent(
-      "Sheriff found",
-    );
-    expect(onEvent).toHaveBeenLastCalledWith(
-      "don.checked",
-      expect.objectContaining({ targetSeat: sheriff.seat, match: true, secret: true }),
-    );
-    await user.click(screen.getByRole("button", { name: "Proceed to Sheriff check" }));
-    expect(screen.queryByText("Sheriff found")).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: `Sheriff check ${playerLabel(sheriff)}` }),
-    ).toHaveClass("status-eliminated");
-    await user.click(screen.getByRole("button", { name: `Sheriff check ${playerLabel(don)}` }));
-    expect(screen.getByRole("status", { name: "Sheriff check result" })).toHaveTextContent(
-      "Mafia found",
-    );
-    expect(onEvent).toHaveBeenLastCalledWith(
-      "sheriff.checked",
-      expect.objectContaining({ targetSeat: don.seat, match: true, secret: true }),
-    );
-    await user.click(screen.getByRole("button", { name: "Continue night" }));
-    expect(screen.getByRole("button", { name: "Begin day 4" })).toBeEnabled();
-    unmount();
-
-    render(<Harness initial={initial} onEvent={onEvent} />);
-    await user.click(screen.getByRole("button", { name: /evaluate mafia shots/i }));
-    await user.click(screen.getByRole("button", { name: "Continue night" }));
-    await user.click(screen.getByRole("button", { name: "Skip Don check" }));
-    expect(onEvent).toHaveBeenLastCalledWith("don.check-skipped", { day: 3 });
-    await user.click(screen.getByRole("button", { name: "Skip Sheriff check" }));
-    expect(onEvent).toHaveBeenLastCalledWith("sheriff.check-skipped", { day: 3 });
-    expect(screen.getByRole("button", { name: "Begin day 4" })).toBeEnabled();
+  it("skips checks whose owners were already inactive before the shooting night", () => {
+    let game = createDayGame();
+    for (const player of game.players.filter((p) => p.role === "don" || p.role === "sheriff"))
+      game = markPlayerInactive(game, player.seat, "eliminated");
+    game = beginNight(game);
+    const victim = game.players.find((p) => p.role === "citizen")!;
+    const result = resolveMafiaShots(toggleAllMafiaShotsForTarget(game, victim.seat));
+    render(<Harness initial={result.game} />);
+    fireEvent.click(screen.getByRole("button", { name: /Continue night/i }));
+    expect(screen.queryByRole("button", { name: /^Don check/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Sheriff check/ })).toBeNull();
   });
 
   it("keeps both same-night deceased owners' checks interactive", async () => {
@@ -639,10 +598,10 @@ describe("NightStage", () => {
   it("logs Mafia moves only when shots are evaluated", async () => {
     const user = userEvent.setup();
     const initial = createNightGame();
+    const target = initial.players.find(({ role, seat }) => role === "citizen" && seat !== 2)!;
     const shooters = initial.players
       .filter(({ team }) => team === "black")
       .sort((left, right) => left.seat - right.seat);
-    const target = initial.players.find(({ role, seat }) => role === "citizen" && seat !== 2)!;
     const onEvent = vi.fn();
     render(<Harness initial={initial} onEvent={onEvent} />);
 
@@ -690,15 +649,14 @@ describe("NightStage", () => {
     const user = userEvent.setup();
     const initial = createNightGame();
     const shooters = initial.players.filter(({ team }) => team === "black");
-    const target = initial.players.find(({ role, seat }) => role === "citizen" && seat !== 2)!;
     const sheriff = initial.players.find(({ role }) => role === "sheriff")!;
     const mafia = initial.players.find(({ role }) => role === "mafia")!;
     render(<Harness initial={initial} />);
 
-    for (const shooter of shooters) {
+    for (const [index, shooter] of shooters.entries()) {
       await user.click(
         screen.getByRole("button", {
-          name: `Assign shooter ${shooter.seat} to target ${playerLabel(target)}`,
+          name: `Assign shooter ${shooter.seat} to target ${playerLabel(initial.players[index]!)}`,
         }),
       );
     }
@@ -721,7 +679,7 @@ describe("NightStage", () => {
     expect(screen.getByRole("region", { name: "Mafia table" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /red card/i })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /begin day 2/i }));
+    await user.click(screen.getByRole("button", { name: /announce morning/i }));
     expect(screen.getByRole("heading", { name: /night complete/i })).toBeInTheDocument();
   });
 });

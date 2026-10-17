@@ -1,7 +1,6 @@
 import type { PlayerStatus, Role } from "@mafia/game-domain";
 import type { CSSProperties, ReactNode } from "react";
-import { useContext, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useContext, useRef } from "react";
 import { Check, Flag, Hand, MessageCircleOff, ThumbsUp, Vote } from "lucide-react";
 import { resolvePlayerLightingKind } from "../effects/PlayerCardLighting.js";
 import {
@@ -52,9 +51,6 @@ interface GameTableProps {
   readonly onSeatPenalty?: (seat: number) => void;
   readonly onSeatFoul?: (seat: number) => void;
   readonly renderSeatActions?: (seat: TableSeatView) => ReactNode;
-  readonly swipeAction?: ReactNode;
-  readonly onDismissSwipeAction?: () => void;
-  readonly contextActionOpen?: boolean;
   readonly center?: ReactNode;
   readonly advance?: ReactNode;
   readonly readOnly?: boolean;
@@ -87,9 +83,6 @@ export const GameTable = ({
   onSeatPenalty,
   onSeatFoul,
   renderSeatActions,
-  swipeAction,
-  onDismissSwipeAction,
-  contextActionOpen,
   center,
   advance,
   readOnly = false,
@@ -99,10 +92,7 @@ export const GameTable = ({
   const NominationIcon = appearance.nominationIcon === "flag" ? Flag : Vote;
   const SupportIcon = appearance.supportIcon === "thumbs-up" ? ThumbsUp : Hand;
   const exits = usePlayerExits();
-  const tableRef = useRef<HTMLElement | null>(null);
   const seatButtonsRef = useRef(new Map<number, HTMLButtonElement>());
-  const [keyboardContextSeat, setKeyboardContextSeat] = useState<number | null>(null);
-  const actionOpen = contextActionOpen ?? swipeAction !== undefined;
   const swipeStart = useRef<{
     readonly seat: number;
     readonly identifier: number;
@@ -112,42 +102,14 @@ export const GameTable = ({
   } | null>(null);
   const suppressClick = useRef<{ seat: number; until: number } | null>(null);
 
-  useEffect(() => {
-    if (keyboardContextSeat === null) return;
-    if (actionOpen) {
-      tableRef.current
-        ?.querySelector<HTMLButtonElement>("[data-context-action] button:not(:disabled)")
-        ?.focus();
-      return;
-    }
-    seatButtonsRef.current.get(keyboardContextSeat)?.focus();
-    setKeyboardContextSeat(null);
-  }, [actionOpen, keyboardContextSeat]);
-
   const table = (
     <section
-      ref={tableRef}
-      className={`table-stage${animateActive ? " has-active-emphasis" : ""}${swipeAction !== undefined && onDismissSwipeAction !== undefined ? " is-context-action-open" : ""}`}
+      className={`table-stage${animateActive ? " has-active-emphasis" : ""}`}
       aria-label={t("game.table")}
-      onKeyDown={(event) => {
-        if (event.key !== "Escape" || keyboardContextSeat === null || !actionOpen) return;
-        event.preventDefault();
-        onSeatSwipe?.(keyboardContextSeat);
-      }}
     >
       <div className="round-table">
         <VgpuTableLightingCanvas />
         <div className="table-center">{center}</div>
-        {swipeAction === undefined ? null : (
-          <div
-            className="table-swipe-menu"
-            role="dialog"
-            aria-label={t("table.playerActions")}
-            data-context-action
-          >
-            {swipeAction}
-          </div>
-        )}
         {readOnly ? null : (
           <div className="table-advance">
             {advance ?? (
@@ -163,13 +125,24 @@ export const GameTable = ({
             seatActionLabel?.(seat) ?? t("table.seat", { seat: seat.seat, name: seat.name });
           const disabled = seatActionDisabled?.(seat) ?? false;
           const foulAvailable = onSeatFoul !== undefined && (seat.status ?? "active") === "active";
-          const contextActionAvailable =
+          const horizontalActionAvailable =
             onSeatSwipe !== undefined &&
             !disabled &&
             !seat.inactive &&
             (seat.status ?? "active") === "active";
           const gestureAvailable =
-            !readOnly && (contextActionAvailable || !!onSeatPenalty || foulAvailable);
+            !readOnly &&
+            (horizontalActionAvailable ||
+              !!onSeatPenalty ||
+              foulAvailable ||
+              onSeatClick !== undefined);
+          // Native horizontal panning cancels role-touch completion. Reserve only enabled axes.
+          const touchAction =
+            onSeatPenalty || foulAvailable
+              ? "none"
+              : horizontalActionAvailable
+                ? "pan-y pinch-zoom"
+                : undefined;
           const cancelGesture = () => {
             const start = swipeStart.current;
             if (start) {
@@ -191,11 +164,12 @@ export const GameTable = ({
                 ? onSeatFoul
                 : onSeatPenalty && dy < -44 && -dy > Math.abs(dx) * 1.2
                   ? onSeatPenalty
-                  : contextActionAvailable && Math.abs(dx) > 44 && Math.abs(dx) > Math.abs(dy) * 1.2
+                  : horizontalActionAvailable &&
+                      Math.abs(dx) > 44 &&
+                      Math.abs(dx) > Math.abs(dy) * 1.2
                     ? onSeatSwipe
                     : undefined;
             if (action) {
-              seatButtonsRef.current.get(seat.seat)?.focus();
               action(seat.seat);
             }
             return moved;
@@ -419,38 +393,14 @@ export const GameTable = ({
                   aria-disabled={disabled || undefined}
                   className={className + nominationClass}
                   aria-pressed={seat.nominationSelected}
-                  style={onSeatPenalty || foulAvailable ? { touchAction: "none" } : undefined}
+                  style={touchAction === undefined ? undefined : { touchAction }}
                   data-player-glass="table"
                   aria-label={label}
                   data-player-exit={exit?.id}
                   aria-current={seat.current ? "step" : undefined}
-                  aria-haspopup={contextActionAvailable ? "dialog" : undefined}
-                  aria-keyshortcuts={foulAvailable ? "F" : undefined}
+                  aria-haspopup={horizontalActionAvailable ? "dialog" : undefined}
                   title={foulAvailable ? t("table.foulHint") : undefined}
 
-                  onKeyDown={(event) => {
-                    if (
-                      foulAvailable &&
-                      event.key.toLowerCase() === "f" &&
-                      !event.repeat &&
-                      !event.metaKey &&
-                      !event.ctrlKey &&
-                      !event.altKey &&
-                      !event.currentTarget.closest("fieldset:disabled")
-                    ) {
-                      event.preventDefault();
-                      onSeatFoul(seat.seat);
-                      return;
-                    }
-                    if (
-                      !contextActionAvailable ||
-                      (event.key !== "ContextMenu" && !(event.key === "F10" && event.shiftKey))
-                    )
-                      return;
-                    event.preventDefault();
-                    setKeyboardContextSeat(seat.seat);
-                    onSeatSwipe(seat.seat);
-                  }}
                   onClick={() => {
                     if (!disabled) onSeatClick?.(seat.seat);
                   }}
@@ -467,19 +417,5 @@ export const GameTable = ({
       </div>
     </section>
   );
-  return (
-    <>
-      {swipeAction !== undefined && onDismissSwipeAction !== undefined
-        ? createPortal(
-            <div
-              className="table-swipe-backdrop"
-              aria-hidden="true"
-              onClick={onDismissSwipeAction}
-            />,
-            document.body,
-          )
-        : null}
-      {table}
-    </>
-  );
+  return table;
 };

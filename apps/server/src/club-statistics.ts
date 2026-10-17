@@ -1,4 +1,4 @@
-import { CASPER_PLAYER_ID, FEDERATION_RULES_EDITION } from "@mafia/game-domain";
+import { CASPER_PLAYER_ID } from "@mafia/game-domain";
 import type {
   ClubRatingSummary,
   ClubStatisticsResponse,
@@ -13,6 +13,7 @@ import type {
   StatisticsTotals,
 } from "@mafia/game-domain";
 import { z } from "zod";
+import { statisticsIdentityKey as identityKey } from "./statistics-identity.js";
 import {
   buildClubRatingLedger,
   CLUB_RATING_ALGORITHM,
@@ -27,7 +28,6 @@ export class StatisticsQueryError extends Error {
 const filterShape = {
   from: z.iso.date().optional(),
   to: z.iso.date().optional(),
-  edition: z.enum(["federation", "legacy"]).optional(),
   team: z.enum(["red", "black"]).optional(),
   role: z.enum(["citizen", "sheriff", "mafia", "don"]).optional(),
   tournamentId: z.union([z.uuid(), z.literal("none")]).optional(),
@@ -55,32 +55,49 @@ export const statisticsHistoryQuerySchema = z
 const roundChange = (value: number) => Math.round(value * 10) / 10 || 0;
 const emptyTotals = (): StatisticsTotals => ({
   games: 0,
+  outcomeGames: 0,
   wins: 0,
   draws: 0,
   losses: 0,
   winRate: null,
 });
-const addOutcome = (
+const addAppearance = (
   totals: StatisticsTotals,
-  outcome: "win" | "draw" | "loss",
+  outcome: "win" | "draw" | "loss" | null,
 ): StatisticsTotals => {
   const wins = totals.wins + Number(outcome === "win");
   const games = totals.games + 1;
+  const outcomeGames = totals.outcomeGames + Number(outcome !== null);
   return {
     games,
+    outcomeGames,
     wins,
     draws: totals.draws + Number(outcome === "draw"),
     losses: totals.losses + Number(outcome === "loss"),
-    winRate: (wins / games) * 100,
+    winRate: outcomeGames === 0 ? null : (wins / outcomeGames) * 100,
   };
 };
-const available = (game: StatisticsGame): boolean =>
-  game.participants !== null && game.participants.length > 0;
-const completed = (game: StatisticsGame): boolean =>
-  game.status === "completed" &&
-  game.outcome !== null &&
-  game.playedAt !== null &&
-  Number.isFinite(Date.parse(game.playedAt));
+const playedTime = (game: StatisticsGame): string | null =>
+  game.playedAt !== null && Number.isFinite(Date.parse(game.playedAt)) ? game.playedAt : null;
+const humanParticipants = (game: StatisticsGame) =>
+  (game.participants ?? []).filter(
+    ({ playerId }) =>
+      playerId !== CASPER_PLAYER_ID &&
+      (game.hostPlayerId === null || identityKey(playerId) !== identityKey(game.hostPlayerId)),
+  );
+// Identity alone is a usable appearance. Host-only records have no participant coverage.
+const available = (game: StatisticsGame): boolean => humanParticipants(game).length > 0;
+// Optional timeline and Best Move observations do not establish missing factual opportunities.
+const partial = (game: StatisticsGame): boolean =>
+  playedTime(game) === null ||
+  game.outcome === null ||
+  game.hostPlayerId === null ||
+  game.hasCasper === null ||
+  game.rosterComplete !== true ||
+  humanParticipants(game).some(
+    ({ seat, role, team, fouls, status }) =>
+      seat === null || role === null || team === null || fouls === null || status === null,
+  );
 const participantMatches = (participant: StatisticsParticipant, filters: StatisticsFilters) =>
   (filters.team === undefined || participant.team === filters.team) &&
   (filters.role === undefined || participant.role === filters.role);
@@ -92,14 +109,11 @@ const gameMatches = (game: StatisticsGame, filters: StatisticsFilters): boolean 
   return (
     (filters.from === undefined || (date !== null && date >= filters.from)) &&
     (filters.to === undefined || (date !== null && date <= filters.to)) &&
-    (filters.edition === undefined ||
-      (filters.edition === "federation"
-        ? game.rulesEdition === FEDERATION_RULES_EDITION
-        : game.rulesEdition === null)) &&
     (filters.tournamentId === undefined ||
       (filters.tournamentId === "none"
         ? game.tournamentId === null
-        : game.tournamentId === filters.tournamentId))
+        : game.tournamentId !== null &&
+          identityKey(game.tournamentId) === identityKey(filters.tournamentId)))
   );
 };
 const summary = (
@@ -129,7 +143,9 @@ const emptyPlayer = (
     don: emptyTotals(),
   },
   fouls: 0,
+  foulGames: 0,
   foulsPerGame: null,
+  statusGames: 0,
   redCards: 0,
   eliminations: 0,
   bestMoveResults: 0,
@@ -151,13 +167,15 @@ const aggregate = (source: ClubStatisticsSource, inputFilters: StatisticsFilters
   if (
     filters.tournamentId !== undefined &&
     filters.tournamentId !== "none" &&
-    !source.tournaments.some(({ id }) => id === filters.tournamentId)
+    !source.tournaments.some(({ id }) => identityKey(id) === identityKey(filters.tournamentId!))
   ) {
     throw new StatisticsQueryError("Tournament not found in selected club");
   }
   const games = latestStatisticsGames(source.games);
   const ledger = buildClubRatingLedger(games);
-  const ratings = new Map(source.players.map(({ id }) => [id, summary(ledger.players.get(id))]));
+  const ratings = new Map(
+    source.players.map(({ id }) => [identityKey(id), summary(ledger.players.get(identityKey(id)))]),
+  );
   const establishedValues = [
     ...new Set(
       [...ratings.values()]
@@ -171,14 +189,18 @@ const aggregate = (source: ClubStatisticsSource, inputFilters: StatisticsFilters
   const players = new Map(
     source.players
       .filter(({ id }) => id !== CASPER_PLAYER_ID)
-      .map(({ id, nickname }) => [id, emptyPlayer(id, nickname, ratings.get(id)!)]),
+      .map(({ id, nickname }) => [
+        identityKey(id),
+        emptyPlayer(id, nickname, ratings.get(identityKey(id))!),
+      ]),
   );
   const ensurePlayer = (id: string): PlayerStatisticsRow => {
-    let player = players.get(id);
+    const key = identityKey(id);
+    let player = players.get(key);
     if (player === undefined) {
       // Empty display name deliberately delegates the anonymous label to localization.
-      player = emptyPlayer(id, "", summary(ledger.players.get(id)));
-      players.set(id, player);
+      player = emptyPlayer(id, "", summary(ledger.players.get(key)));
+      players.set(key, player);
     }
     return player;
   };
@@ -193,6 +215,7 @@ const aggregate = (source: ClubStatisticsSource, inputFilters: StatisticsFilters
   const appearances = new Set<string>();
   const scopedChanges = new Map<string, number>();
   let completedGames = 0;
+  let partialGames = 0;
   let unavailableGames = 0;
   let pendingGames = 0;
   for (const game of games
@@ -202,50 +225,47 @@ const aggregate = (source: ClubStatisticsSource, inputFilters: StatisticsFilters
       pendingGames++;
       continue;
     }
-    // Missing completion metadata cannot become a fabricated history/result row.
     completedGames++;
-    if (!completed(game) || !available(game)) unavailableGames++;
-    if (!completed(game)) continue;
+    const statisticsAvailable = available(game);
+    if (!statisticsAvailable) unavailableGames++;
+    else if (partial(game)) partialGames++;
+    const playedAt = playedTime(game);
+    const hostId = game.hostPlayerId === null ? null : identityKey(game.hostPlayerId);
+    const eligibility = ratingEligibility(game);
     const participants = new Map(
-      (game.participants ?? [])
-        .filter(
-          (participant) =>
-            participant.playerId !== CASPER_PLAYER_ID &&
-            participant.playerId !== game.hostPlayerId &&
-            participantMatches(participant, filters),
-        )
-        .map((participant) => [participant.playerId, participant]),
+      humanParticipants(game)
+        .filter((participant) => participantMatches(participant, filters))
+        .map((participant) => [identityKey(participant.playerId), participant]),
     );
     const ids = new Set(participants.keys());
     if (
-      game.hostPlayerId !== null &&
-      game.hostPlayerId !== CASPER_PLAYER_ID &&
+      hostId !== null &&
+      hostId !== CASPER_PLAYER_ID &&
       filters.team === undefined &&
       filters.role === undefined
     )
-      ids.add(game.hostPlayerId);
+      ids.add(hostId);
     for (const id of ids) {
       const previous = ensurePlayer(id);
       appearances.add(id);
       const participant = participants.get(id) ?? null;
-      const isHost = game.hostPlayerId === id;
+      const isHost = hostId === id;
       const ratingChange =
-        participant === null ? null : (ledger.games.get(game.gameId)?.get(id) ?? null);
-      const eligibility = ratingEligibility(game);
+        participant === null ? null : (ledger.games.get(identityKey(game.gameId))?.get(id) ?? null);
       const history: StatisticsHistoryGame = {
         gameId: game.gameId,
         name: game.name,
-        playedAt: game.playedAt!,
-        rulesEdition: game.rulesEdition,
+        playedAt,
         hasCasper: game.hasCasper,
-        outcome: game.outcome!,
+        outcome: game.outcome,
         reason: game.reason,
         ...(game.adjudication === undefined ? {} : { adjudication: game.adjudication }),
         tournamentId: game.tournamentId,
         hostPlayerId: game.hostPlayerId,
         participant,
         isHost,
-        statisticsAvailable: available(game),
+        statisticsAvailable,
+        timelineAvailable: game.timelineAvailable,
         unratedReason: eligibility ?? (isHost ? "host" : null),
         ratingChange,
       };
@@ -257,13 +277,20 @@ const aggregate = (source: ClubStatisticsSource, inputFilters: StatisticsFilters
         players.set(id, {
           ...previous,
           hostedGames: previous.hostedGames + 1,
-          lastHostedAt: previous.lastHostedAt ?? game.playedAt,
+          lastHostedAt: previous.lastHostedAt ?? playedAt,
         });
-      } else if (participant !== null && available(game)) {
-        const outcome: "win" | "draw" | "loss" =
-          game.outcome === "draw" ? "draw" : game.outcome === participant.team ? "win" : "loss";
-        const totals = addOutcome(previous.totals, outcome);
-        const fouls = previous.fouls + participant.fouls;
+      } else if (participant !== null) {
+        const outcome: "win" | "draw" | "loss" | null =
+          game.outcome === "draw"
+            ? "draw"
+            : game.outcome === null || participant.team === null
+              ? null
+              : game.outcome === participant.team
+                ? "win"
+                : "loss";
+        const totals = addAppearance(previous.totals, outcome);
+        const fouls = previous.fouls + (participant.fouls ?? 0);
+        const foulGames = previous.foulGames + Number(participant.fouls !== null);
         const bestMoveResults =
           previous.bestMoveResults + Number(participant.bestMoveHits !== null);
         const bestMoveHits = previous.bestMoveHits + (participant.bestMoveHits ?? 0);
@@ -274,21 +301,34 @@ const aggregate = (source: ClubStatisticsSource, inputFilters: StatisticsFilters
           totals,
           teams: {
             ...previous.teams,
-            [participant.team]: addOutcome(previous.teams[participant.team], outcome),
+            ...(participant.team === null
+              ? {}
+              : {
+                  [participant.team]: addAppearance(previous.teams[participant.team], outcome),
+                }),
           },
           roles: {
             ...previous.roles,
-            [participant.role]: addOutcome(previous.roles[participant.role], outcome),
+            ...(participant.role === null
+              ? {}
+              : {
+                  [participant.role]: addAppearance(previous.roles[participant.role], outcome),
+                }),
           },
           fouls,
-          foulsPerGame: fouls / totals.games,
+          foulGames,
+          foulsPerGame: foulGames === 0 ? null : fouls / foulGames,
+          statusGames: previous.statusGames + Number(participant.status !== null),
           redCards: previous.redCards + Number(participant.status === "red-carded"),
           eliminations: previous.eliminations + Number(participant.status === "eliminated"),
           bestMoveResults,
           bestMoveHits,
           bestMoveMean: bestMoveResults === 0 ? null : bestMoveHits / bestMoveResults,
-          lastPlayedAt: previous.lastPlayedAt ?? game.playedAt,
-          recentForm: [...previous.recentForm, outcome].slice(0, 5),
+          lastPlayedAt: previous.lastPlayedAt ?? playedAt,
+          recentForm:
+            outcome === null || playedAt === null
+              ? previous.recentForm
+              : [...previous.recentForm, outcome].slice(0, 5),
           scopedRatedGames: previous.scopedRatedGames + Number(ratingChange !== null),
         });
       }
@@ -300,9 +340,9 @@ const aggregate = (source: ClubStatisticsSource, inputFilters: StatisticsFilters
     (key) => filters[key as keyof StatisticsFilters] !== undefined,
   );
   const order = { established: 0, provisional: 1, unranked: 2 };
-  const leaderboard = source.players
-    .filter(({ id }) => id !== CASPER_PLAYER_ID && (!isScoped || appearances.has(id)))
-    .map(({ id }) => players.get(id)!)
+  const leaderboard = [...new Set(source.players.map(({ id }) => identityKey(id)))]
+    .filter((id) => id !== CASPER_PLAYER_ID && (!isScoped || appearances.has(id)))
+    .map((id) => players.get(id)!)
     .sort(
       (a, b) =>
         order[a.rating.status] - order[b.rating.status] ||
@@ -316,7 +356,7 @@ const aggregate = (source: ClubStatisticsSource, inputFilters: StatisticsFilters
     response: {
       players: leaderboard,
       tournaments: source.tournaments,
-      coverage: { completedGames, unavailableGames, pendingGames },
+      coverage: { completedGames, partialGames, unavailableGames, pendingGames },
       algorithm: CLUB_RATING_ALGORITHM,
     } satisfies ClubStatisticsResponse,
   };
@@ -327,7 +367,11 @@ export const getClubStatistics = (
   filters: StatisticsFilters = {},
 ): ClubStatisticsResponse => aggregate(source, filters).response;
 
-const cursorSchema = z.tuple([z.iso.datetime({ offset: true }), z.uuid()]);
+// Null has its own stable identity-ordered tail; no invented timestamp sentinel.
+const cursorSchema = z.tuple([
+  z.iso.datetime({ offset: true }).nullable(),
+  z.string().min(1).max(256),
+]);
 const encodeCursor = (row: StatisticsHistoryGame) =>
   Buffer.from(JSON.stringify([row.playedAt, row.gameId])).toString("base64url");
 export const getPlayerStatistics = (
@@ -340,8 +384,9 @@ export const getPlayerStatistics = (
   if (!Number.isInteger(limit) || limit < 1 || limit > 100)
     throw new StatisticsQueryError("Invalid history limit");
   const data = aggregate(source, filters);
-  const player = data.players.get(playerId) ?? null;
-  const rows = data.histories.get(playerId) ?? [];
+  const key = identityKey(playerId);
+  const player = data.players.get(key) ?? null;
+  const rows = data.histories.get(key) ?? [];
   let start = 0;
   if (page.cursor !== undefined) {
     try {
@@ -349,7 +394,9 @@ export const getPlayerStatistics = (
       const decoded = Buffer.from(page.cursor, "base64url");
       if (decoded.toString("base64url") !== page.cursor) throw new Error("Noncanonical cursor");
       const [playedAt, gameId] = cursorSchema.parse(JSON.parse(decoded.toString("utf8")));
-      const index = rows.findIndex((row) => row.playedAt === playedAt && row.gameId === gameId);
+      const index = rows.findIndex(
+        (row) => row.playedAt === playedAt && identityKey(row.gameId) === identityKey(gameId),
+      );
       if (index < 0) throw new Error("Cursor not found in selected history");
       start = index + 1;
     } catch {

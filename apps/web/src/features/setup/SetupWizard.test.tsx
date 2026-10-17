@@ -1,3 +1,4 @@
+import { swipeCard } from "../../test-card-gestures.js";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
@@ -10,7 +11,6 @@ import {
   createSeededRandom,
   createSetup,
   drawRoleForSeat,
-  FEDERATION_RULES_EDITION,
   type GameState,
 } from "@mafia/game-domain";
 
@@ -108,6 +108,7 @@ const partialRoleSession = () => {
     1,
   );
   return {
+    bestMoveEnabled: true,
     step: "roles" as const,
     hostPlayerId: availablePlayers[10]!.id,
     selectedPlayerIds,
@@ -134,8 +135,7 @@ const federationRoleSession = (): SetupWizardSessionState => {
   const session = partialRoleSession();
   return {
     ...session,
-    rulesEdition: FEDERATION_RULES_EDITION,
-    setup: { ...session.setup, rulesEdition: FEDERATION_RULES_EDITION },
+    setup: session.setup,
   };
 };
 
@@ -160,7 +160,6 @@ describe("SetupWizard federation setup", () => {
     const onStartGame = vi.fn();
     const session: SetupWizardSessionState = {
       step: "players",
-      rulesEdition: FEDERATION_RULES_EDITION,
       hostPlayerId: availablePlayers[10]!.id,
       selectedPlayerIds: availablePlayers.slice(0, 10).map(({ id }) => id),
       setup: null,
@@ -169,7 +168,6 @@ describe("SetupWizard federation setup", () => {
       players: availablePlayers,
       onComplete: vi.fn(),
       initialSessionState: session,
-      rulesEdition: FEDERATION_RULES_EDITION,
       onSessionStateChange,
       onStartGame,
       tournamentControl: <div data-testid="tournament-controls">Tournament metadata</div>,
@@ -181,7 +179,7 @@ describe("SetupWizard federation setup", () => {
     expect(screen.getByRole("button", { name: "Start game" })).toBeDisabled();
     await waitFor(() =>
       expect(onSessionStateChange).toHaveBeenLastCalledWith(
-        expect.objectContaining({ rulesEdition: FEDERATION_RULES_EDITION }),
+        expect.not.objectContaining({ rulesEdition: expect.anything() }),
       ),
     );
     expect(JSON.stringify(onSessionStateChange.mock.calls)).not.toContain("tournamentId");
@@ -253,15 +251,15 @@ describe("SetupWizard federation setup", () => {
       expect(center).not.toHaveTextContent(remaining(0));
       expect(screen.getByRole("button", { name: planning })).toBeEnabled();
       const completedSetup = onSessionStateChange.mock.lastCall?.[0].setup;
-      expect(completedSetup.rulesEdition).toBe(FEDERATION_RULES_EDITION);
+      expect(completedSetup).not.toHaveProperty("rulesEdition");
       expect(Object.keys(completedSetup.assignments)).toHaveLength(10);
       await user.click(screen.getByRole("button", { name: backLabel }));
       expect(
         screen.getByRole("heading", {
           name: locale === "en" ? "Select 10 players + host" : "Выберите 10 игроков и ведущего",
         }),
-      ).toHaveFocus();
-      expect(container.querySelector(".setup-edition-label")).toHaveTextContent(/MAFGAME/);
+      ).not.toHaveAttribute("tabindex");
+      expect(container.querySelector(".setup-edition-label")).toBeNull();
       expect(onSessionStateChange.mock.lastCall?.[0].setup).toEqual(completedSetup);
       await user.click(
         screen.getByRole("button", { name: locale === "en" ? "Start game" : "Начать игру" }),
@@ -274,72 +272,6 @@ describe("SetupWizard federation setup", () => {
     },
   );
 
-  it("captures the edition on the first real selection, retaining it through prop changes and redraw", async () => {
-    const user = userEvent.setup();
-    const onSessionStateChange = vi.fn();
-    const onComplete = vi.fn();
-    const props = { players: playersWithReplacement, onComplete, onSessionStateChange };
-    const { rerender } = render(<SetupWizard {...props} rulesEdition={FEDERATION_RULES_EDITION} />);
-    expect(onSessionStateChange.mock.lastCall?.[0]).not.toHaveProperty("rulesEdition");
-    await choosePlayer(user, "Host player", availablePlayers[10]!);
-    expect(onSessionStateChange.mock.lastCall?.[0].rulesEdition).toBe(FEDERATION_RULES_EDITION);
-    rerender(<SetupWizard {...props} />);
-    for (let index = 0; index < 10; index += 1) {
-      await choosePlayer(user, `Seat ${index + 1} player`, availablePlayers[index]!);
-    }
-    await user.click(screen.getByRole("button", { name: "Start game" }));
-    expect(onSessionStateChange.mock.lastCall?.[0].setup.rulesEdition).toBe(
-      FEDERATION_RULES_EDITION,
-    );
-    await user.click(screen.getByRole("button", { name: "Draw role for Player 1" }));
-    await user.click(screen.getByRole("button", { name: "Player setup" }));
-    await choosePlayer(user, "Seat 1 player", replacementPlayer);
-    expect(onSessionStateChange.mock.lastCall?.[0].setup).toBeNull();
-    expect(onSessionStateChange.mock.lastCall?.[0].rulesEdition).toBe(FEDERATION_RULES_EDITION);
-    await user.click(screen.getByRole("button", { name: "Start game" }));
-    await finishAllRoles(user);
-    expect(onComplete.mock.lastCall?.[0]).toMatchObject({
-      rulesEdition: FEDERATION_RULES_EDITION,
-      bestMoveEnabled: true,
-      phase: "mafia-planning",
-    });
-    expect(onComplete.mock.lastCall?.[0].players).toHaveLength(10);
-  });
-
-  it("keeps a fresh legacy selection legacy when the application policy later changes", async () => {
-    const user = userEvent.setup();
-    const onSessionStateChange = vi.fn();
-    const props = { players: availablePlayers, onComplete: vi.fn(), onSessionStateChange };
-    const { rerender } = render(<SetupWizard {...props} />);
-    await choosePlayer(user, "Host player", availablePlayers[10]!);
-    rerender(<SetupWizard {...props} rulesEdition={FEDERATION_RULES_EDITION} />);
-    expect(screen.getByText("Legacy club rules")).toBeInTheDocument();
-    for (let index = 0; index < 10; index += 1) {
-      await choosePlayer(user, `Seat ${index + 1} player`, availablePlayers[index]!);
-    }
-    await user.click(screen.getByRole("button", { name: "Start game" }));
-    expect(onSessionStateChange.mock.lastCall?.[0].setup).not.toHaveProperty("rulesEdition");
-  });
-
-  it("uses a restored domain setup edition even when the session discriminator is missing", async () => {
-    const user = userEvent.setup();
-    const { setup, selectedPlayerIds, hostPlayerId, step } = federationRoleSession();
-    const session = { setup, selectedPlayerIds, hostPlayerId, step };
-    const onSessionStateChange = vi.fn();
-    render(
-      <SetupWizard
-        players={availablePlayers}
-        onComplete={vi.fn()}
-        initialSessionState={session}
-        onSessionStateChange={onSessionStateChange}
-      />,
-    );
-    expect(screen.queryByText("MAFGAME · 1 July 2026")).toBeNull();
-    await user.click(screen.getByRole("button", { name: "Player setup" }));
-    expect(screen.getByText("MAFGAME · 1 July 2026")).toBeInTheDocument();
-    expect(onSessionStateChange.mock.lastCall?.[0].rulesEdition).toBe(FEDERATION_RULES_EDITION);
-  });
-
   it("does not capture an edition from provisional search text", async () => {
     const user = userEvent.setup();
     const onSessionStateChange = vi.fn();
@@ -347,62 +279,12 @@ describe("SetupWizard federation setup", () => {
       <SetupWizard
         players={availablePlayers}
         onComplete={vi.fn()}
-        rulesEdition={FEDERATION_RULES_EDITION}
         onSessionStateChange={onSessionStateChange}
       />,
     );
     await user.type(screen.getByRole("combobox", { name: "Host player" }), "Player");
-    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("heading", { level: 1 }));
     expect(onSessionStateChange.mock.lastCall?.[0]).not.toHaveProperty("rulesEdition");
-  });
-
-  it.each(["partial-selection", "role-draw"])(
-    "never stamps a restored legacy %s with the fresh-game edition",
-    async (stage) => {
-      const user = userEvent.setup();
-      const onComplete = vi.fn();
-      const onSessionStateChange = vi.fn();
-      const session = partialRoleSession();
-      render(
-        <SetupWizard
-          players={playersWithReplacement}
-          onComplete={onComplete}
-          rulesEdition={FEDERATION_RULES_EDITION}
-          onSessionStateChange={onSessionStateChange}
-          initialSessionState={
-            stage === "role-draw" ? session : { ...session, step: "players", setup: null }
-          }
-        />,
-      );
-      if (stage === "role-draw")
-        await user.click(screen.getByRole("button", { name: "Player setup" }));
-      expect(screen.getByText("Legacy club rules")).toBeInTheDocument();
-      await choosePlayer(user, "Seat 1 player", replacementPlayer);
-      await user.click(screen.getByRole("button", { name: "Start game" }));
-      expect(onSessionStateChange.mock.lastCall?.[0]).not.toHaveProperty("rulesEdition");
-      expect(onSessionStateChange.mock.lastCall?.[0].setup).not.toHaveProperty("rulesEdition");
-      await finishAllRoles(user);
-      expect(onComplete.mock.lastCall?.[0]).not.toHaveProperty("rulesEdition");
-    },
-  );
-
-  it("restores the captured edition before there is a domain setup", async () => {
-    const user = userEvent.setup();
-    const session = federationRoleSession();
-    const onSessionStateChange = vi.fn();
-    render(
-      <SetupWizard
-        players={availablePlayers}
-        onComplete={vi.fn()}
-        initialSessionState={{ ...session, step: "players", setup: null }}
-        onSessionStateChange={onSessionStateChange}
-      />,
-    );
-    expect(screen.getByText("MAFGAME · 1 July 2026")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Start game" }));
-    expect(onSessionStateChange.mock.lastCall?.[0].setup.rulesEdition).toBe(
-      FEDERATION_RULES_EDITION,
-    );
   });
 
   it("allows Casper without deviation prompts, including after toggling it off and on", async () => {
@@ -412,7 +294,6 @@ describe("SetupWizard federation setup", () => {
       <SetupWizard
         players={availablePlayers}
         onComplete={vi.fn()}
-        rulesEdition={FEDERATION_RULES_EDITION}
         onSessionStateChange={onSessionStateChange}
       />,
     );
@@ -436,9 +317,7 @@ describe("SetupWizard federation setup", () => {
     const user = userEvent.setup();
     const onSessionStateChange = vi.fn();
     const props = { players: availablePlayers, onComplete: vi.fn(), onSessionStateChange };
-    const { unmount } = render(
-      <SetupWizard {...props} rulesEdition={FEDERATION_RULES_EDITION} bestMoveEnabled={false} />,
-    );
+    const { unmount } = render(<SetupWizard {...props} bestMoveEnabled={false} />);
     await fillPlayerSelection(user);
     expect(screen.queryByText("Best Move is disabled.")).toBeNull();
     expect(screen.getByRole("button", { name: "Start game" })).toBeEnabled();
@@ -514,7 +393,7 @@ describe("SetupWizard federation setup", () => {
     expect(screen.queryByText("Nonstandard club deviations")).toBeNull();
     await choosePlayer(user, "Seat 1 player", replacementPlayer);
     expect(screen.queryByText("A discretionary role reroll was used.")).not.toBeInTheDocument();
-    expect(onSessionStateChange.mock.lastCall?.[0].rulesEdition).toBe(FEDERATION_RULES_EDITION);
+    expect(onSessionStateChange.mock.lastCall?.[0]).not.toHaveProperty("rulesEdition");
     expect(onSessionStateChange.mock.lastCall?.[0].clubDeviationsAcknowledged).toEqual(
       session.clubDeviationsAcknowledged,
     );
@@ -566,7 +445,6 @@ describe("SetupWizard federation setup", () => {
         session.setup!.players.map((player) =>
           player.seat === 10 ? { id: "casper", seat: 10 } : player,
         ),
-        { rulesEdition: FEDERATION_RULES_EDITION },
       ),
       () => 0,
     );
@@ -586,7 +464,7 @@ describe("SetupWizard federation setup", () => {
     expect(screen.getByRole("button", { name: "Begin Mafia planning stage" })).toBeEnabled();
     expect(screen.queryByRole("checkbox")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Begin Mafia planning stage" }));
-    expect(onComplete.mock.lastCall?.[0].rulesEdition).toBe(FEDERATION_RULES_EDITION);
+    expect(onComplete.mock.lastCall?.[0]).not.toHaveProperty("rulesEdition");
   });
 
   it("allows manual assignment without a physical-deal admonition or acknowledgement", async () => {
@@ -602,7 +480,7 @@ describe("SetupWizard federation setup", () => {
         initialSessionState={federationRoleSession()}
       />,
     );
-    fireEvent.keyDown(screen.getByRole("button", { name: /^Player 1:/ }), { key: "ContextMenu" });
+    swipeCard(screen.getByRole("button", { name: /^Player 1:/ }));
     expect(
       screen.queryByText(
         "Record or correct the physically dealt card; do not choose a new deal for convenience.",
@@ -617,34 +495,12 @@ describe("SetupWizard federation setup", () => {
     expect(screen.queryByText("Nonstandard club deviations")).not.toBeInTheDocument();
   });
 
-  it("keeps the Russian edition label without deviation prompts", async () => {
-    const user = userEvent.setup();
-    render(
-      <I18nProvider locale="ru">
-        <SetupWizard
-          players={availablePlayers}
-          onComplete={vi.fn()}
-          rulesEdition={FEDERATION_RULES_EDITION}
-        />
-      </I18nProvider>,
-    );
-    expect(screen.getByText("MAFGAME · 1 июля 2026")).toBeInTheDocument();
-    await user.click(screen.getByRole("switch", { name: "Добавить Каспера" }));
-    expect(screen.queryByText("Нестандартные клубные отклонения")).toBeNull();
-    expect(screen.queryByRole("checkbox")).toBeNull();
-  });
-
   it.each([-70, 70])(
     "clears and restores a fully dealt role after a %ipx swipe",
     async (deltaX) => {
       const user = userEvent.setup();
       const session = federationRoleSession();
-      let setup = beginRoleDraw(
-        createSetup(session.setup!.players, {
-          rulesEdition: FEDERATION_RULES_EDITION,
-        }),
-        createSeededRandom(7),
-      );
+      let setup = beginRoleDraw(createSetup(session.setup!.players), createSeededRandom(7));
       setup = assignRoleForSeat(setup, 1, "sheriff");
       for (let seat = 2; seat <= 10; seat += 1) setup = drawRoleForSeat(setup, seat);
       const onSessionStateChange = vi.fn();
@@ -681,9 +537,9 @@ describe("SetupWizard federation setup", () => {
       render(<SetupWizard {...props} initialSessionState={saved} />);
       const empty = screen.getByRole("button", { name: "Draw role for Player 1" });
       empty.focus();
-      await user.keyboard("{Shift>}{F10}{/Shift}");
+      swipeCard(empty);
       const assign = screen.getByRole("button", { name: "Assign sheriff to seat 1" });
-      expect(assign).toHaveFocus();
+      expect(assign).toBeEnabled();
       expect(screen.queryByRole("button", { name: "Clear role for seat 1" })).toBeNull();
       await user.click(assign);
       expect(onSessionStateChange.mock.lastCall![0].setup).toEqual(setup);
@@ -691,7 +547,7 @@ describe("SetupWizard federation setup", () => {
     },
   );
 
-  it("dismisses the role menu with Escape, resets partial reroll taps and blocks pending corrections", async () => {
+  it("dismisses the role menu visibly, resets partial reroll taps and blocks pending corrections", async () => {
     const user = userEvent.setup();
     const onEvent = vi.fn();
     const onSessionStateChange = vi.fn();
@@ -706,15 +562,15 @@ describe("SetupWizard federation setup", () => {
     const card = screen.getByRole("button", { name: /^Player 1:/ });
     await user.click(card);
     await user.click(card);
-    fireEvent.keyDown(card, { key: "ContextMenu" });
+    swipeCard(card);
     const clear = screen.getByRole("button", { name: "Clear role for seat 1" });
-    expect(clear).toHaveFocus();
-    await user.keyboard("{Escape}");
+    expect(clear).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(card).toHaveFocus();
+    expect(card).not.toHaveFocus();
     await user.click(card);
     expect(onEvent).not.toHaveBeenCalled();
-    fireEvent.keyDown(card, { key: "ContextMenu" });
+    swipeCard(card);
     const before = onSessionStateChange.mock.lastCall![0].setup;
     rerender(<SetupWizard {...props} persistencePending />);
     expect(screen.getByRole("button", { name: "Clear role for seat 1" })).toBeDisabled();
@@ -728,6 +584,35 @@ describe("SetupWizard federation setup", () => {
 });
 
 describe("SetupWizard", () => {
+  it("keeps search typing and Tab native while ignoring removed picker navigation", async () => {
+    const user = userEvent.setup();
+    const changed = vi.fn();
+    render(
+      <SetupWizard
+        players={availablePlayers}
+        onComplete={vi.fn()}
+        onSessionStateChange={changed}
+      />,
+    );
+    const input = screen.getByRole("combobox", { name: "Host player" });
+    await user.type(input, "Player 11");
+    const before = changed.mock.lastCall?.[0];
+    expect(screen.getByRole("option", { name: "Player 11" })).toBeVisible();
+    expect(input).not.toHaveAttribute("aria-activedescendant");
+    for (const key of ["ArrowDown", "ArrowUp", "Enter", "Escape"]) {
+      const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+      fireEvent(input, event);
+      expect(event.defaultPrevented).toBe(false);
+      expect(input).toHaveValue("Player 11");
+      expect(changed.mock.lastCall?.[0]).toEqual(before);
+    }
+    await user.tab();
+    const option = screen.getByRole("option", { name: "Player 11" });
+    expect(option).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(changed.mock.lastCall?.[0].hostPlayerId).toBe(availablePlayers[10]!.id);
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
   it("gives every empty, assigned and Casper seat a shared glass host without decorating picker options", async () => {
     const user = userEvent.setup();
     const session = { ...partialRoleSession(), step: "players" as const, setup: null };
@@ -760,7 +645,7 @@ describe("SetupWizard", () => {
     const option = screen.getByRole("option", { name: "Player 7" });
     expect(option).not.toHaveAttribute("data-player-glass");
     expect(option.querySelector(".liquid-card-glass")).toBeNull();
-    await user.keyboard("{Enter}");
+    await user.click(option);
     expect(emptySeat).toHaveValue("Player 7");
     await user.click(screen.getByRole("button", { name: "Clear Seat 7" }));
     expect(emptySeat).toHaveValue("");
@@ -1081,7 +966,7 @@ describe("SetupWizard", () => {
     );
   });
 
-  it("opens and closes manual role assignment from the keyboard", () => {
+  it("opens and cancels manual role assignment by gesture and visible control", () => {
     const players = availablePlayers.slice(0, 10);
     const setup = beginRoleDraw(
       createSetup(players.map(({ id }, index) => ({ id, seat: index + 1 }))),
@@ -1103,17 +988,19 @@ describe("SetupWizard", () => {
     const card = screen.getByRole("button", { name: "Draw role for Player 1" });
     card.focus();
 
-    fireEvent.keyDown(card, { key: "ContextMenu" });
+    swipeCard(card);
 
     const assign = screen.getAllByRole("button", { name: /Assign .* to seat 1/ })[0]!;
-    expect(assign).toHaveFocus();
+    expect(assign).toBeEnabled();
     fireEvent.keyDown(assign, { key: "Escape" });
+    expect(assign).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
     expect(screen.queryByRole("dialog", { name: "Choose role" })).toBeNull();
     expect(card).toHaveFocus();
   });
 
-  it("returns from role giveaway with the selection intact and focus restored", async () => {
+  it("returns from role giveaway with the selection intact without forced focus", async () => {
     const user = userEvent.setup();
     const session = partialRoleSession();
     const onSessionStateChange = vi.fn();
@@ -1131,7 +1018,9 @@ describe("SetupWizard", () => {
     expect(onRoleDrawBackActionChange).toHaveBeenCalledWith(expect.any(Function));
     await user.click(screen.getByRole("button", { name: "Player setup" }));
 
-    expect(screen.getByRole("heading", { name: "Select 10 players + host" })).toHaveFocus();
+    expect(screen.getByRole("heading", { name: "Select 10 players + host" })).not.toHaveAttribute(
+      "tabindex",
+    );
     expect(screen.getByRole("combobox", { name: "Host player" })).toHaveValue("Player 11");
     expect(
       screen
@@ -1348,7 +1237,7 @@ describe("SetupWizard", () => {
       await user.clear(field);
       await user.type(field, "Player 12");
       expect(onSessionStateChange).not.toHaveBeenCalled();
-      await user.keyboard("{Escape}");
+      await user.click(screen.getByRole("heading", { level: 1 }));
       expect(field).toHaveValue(original);
       await user.clear(field);
       await user.type(field, "not a player");

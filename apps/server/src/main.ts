@@ -1,5 +1,4 @@
 import { readFileSync } from "node:fs";
-import { Pool } from "pg";
 import { buildApp } from "./app.js";
 import { composeAppVersion } from "./app-version.js";
 import { loadConfig } from "./config.js";
@@ -13,23 +12,19 @@ const version = composeAppVersion(
   JSON.parse(readFileSync(new URL("../../../package.json", import.meta.url), "utf8")).version,
   config.APP_BUILD_INDEX,
 );
-const azure =
-  config.STORAGE_PROVIDER === "azure" ? createAzureStores(config.azureStorage!) : undefined;
-const pool = azure === undefined ? new Pool({ connectionString: config.DATABASE_URL }) : undefined;
-if (azure !== undefined) {
-  if (config.AZURE_STORAGE_INITIALIZE) await azure.initialize();
-  else await azure.ready();
-}
+const azure = createAzureStores(config.azureStorage);
+if (config.AZURE_STORAGE_INITIALIZE) await azure.initialize();
+else await azure.ready();
 const youtubeOAuth =
   config.youtubeOAuth === undefined
     ? undefined
-    : new YouTubeOAuthService(azure?.music ?? pool!, config.youtubeOAuth);
+    : new YouTubeOAuthService(azure.music, config.youtubeOAuth);
 const googleAuth =
   config.googleAuth === undefined
     ? undefined
-    : new GoogleAuthService(azure?.auth ?? pool!, config.googleAuth);
+    : new GoogleAuthService(azure.auth, config.googleAuth);
 const app = await buildApp({
-  ...(azure === undefined ? { pool: pool! } : { stores: azure.stores }),
+  stores: azure.stores,
   staticDir: config.STATIC_DIR,
   googleAuth,
   youtubeOAuth,
@@ -38,7 +33,7 @@ const app = await buildApp({
   trustedProxyHops: config.TRUST_PROXY_HOPS,
 });
 
-const shutdown = createShutdown(app, azure ?? pool!);
+const shutdown = createShutdown(app, azure);
 let shutdownFailureReported = false;
 const handleSignal = () => {
   void shutdown().catch((error: unknown) => {

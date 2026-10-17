@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { FEDERATION_RULES_EDITION } from "@mafia/game-domain";
 import type {
   ClubStatisticsResponse,
   PlayerStatisticsResponse,
@@ -11,17 +10,22 @@ import { buildClubRatingLedger } from "./club-rating.js";
 import { statisticsGame } from "./test-helpers/club-statistics-fixtures.js";
 import { createStatisticsApiFixture } from "./test-helpers/statistics-api-fixture.js";
 
-for (const provider of ["postgres", "azure"] as const)
-  describe(`${provider} statistics HTTP`, () => {
-    let fixture: Awaited<ReturnType<typeof createStatisticsApiFixture>>;
-    beforeAll(async () => {
-      fixture = await createStatisticsApiFixture(provider);
-    }, 30_000);
-    afterAll(async () => {
-      await fixture?.close();
-    });
+describe("Azure statistics HTTP", () => {
+  let fixture: Awaited<ReturnType<typeof createStatisticsApiFixture>>;
+  beforeAll(async () => {
+    fixture = await createStatisticsApiFixture();
+  }, 30_000);
+  afterAll(async () => {
+    await fixture?.close();
+  });
 
-    it("reads complete authoritative history, interleaved event deltas, corrections, deletion and retirement", async () => {
+  it.each([
+    { mixedCase: false, independentRosterCase: false },
+    { mixedCase: true, independentRosterCase: false },
+    { mixedCase: true, independentRosterCase: true },
+  ])(
+    "reads complete history and event deltas with mixed-case UUIDs=$mixedCase, independent roster=$independentRosterCase without rewriting records",
+    async ({ mixedCase, independentRosterCase }) => {
       const { app, stores } = fixture;
       const clubId = await fixture.createClub();
       const headers = { "x-club-id": clubId };
@@ -60,19 +64,26 @@ for (const provider of ["postgres", "azure"] as const)
         });
         const participants = template.participants!.map((player, index) => ({
           ...player,
-          playerId: ids[index]!,
+          playerId: mixedCase && i % 2 === 1 ? ids[index]!.toUpperCase() : ids[index]!,
         }));
+        const hostPlayerId = mixedCase ? ids[10]!.toUpperCase() : ids[10]!;
         const state = {
-          hostPlayerId: ids[10],
+          hostPlayerId,
           game: {
-            rulesEdition: FEDERATION_RULES_EDITION,
-            players: participants.map(({ playerId, ...player }) => ({ ...player, id: playerId })),
+            players: participants.map(({ playerId, ...player }) => ({
+              ...player,
+              id: independentRosterCase
+                ? i % 2 === 1
+                  ? playerId.toLowerCase()
+                  : playerId.toUpperCase()
+                : playerId,
+            })),
           },
           events: [],
           opaque: "canonical fixture unchanged",
         };
         const results = {
-          hostPlayerId: ids[10],
+          hostPlayerId,
           outcome: template.outcome,
           winner: template.outcome === "draw" ? null : template.outcome,
           reason: template.outcome === "draw" ? "agreement" : null,
@@ -91,7 +102,7 @@ for (const provider of ["postgres", "azure"] as const)
           ...template,
           gameId: response.json().gameId,
           participants,
-          hostPlayerId: ids[10]!,
+          hostPlayerId,
         });
         payloads.push(payload);
       }
@@ -104,7 +115,35 @@ for (const provider of ["postgres", "azure"] as const)
       const player = (data: ClubStatisticsResponse, id = ids[0]!) =>
         data.players.find(({ playerId }) => playerId === id)!;
       const all = await stats();
-      expect(all.coverage).toEqual({ completedGames: 4, unavailableGames: 0, pendingGames: 0 });
+      if (mixedCase) {
+        expect(await stats(`?tournamentId=${events[0]!.toUpperCase()}`)).toEqual(
+          await stats(`?tournamentId=${events[0]}`),
+        );
+        const upper = await app.inject({
+          url: `/api/statistics/players/${ids[0]!.toUpperCase()}`,
+          headers,
+        });
+        const lower = await app.inject({ url: `/api/statistics/players/${ids[0]}`, headers });
+        expect(upper.statusCode, upper.body).toBe(200);
+        expect(upper.json()).toEqual(lower.json());
+        const scopedUpper = await app.inject({
+          url: `/api/statistics/players/${ids[0]!.toUpperCase()}?tournamentId=${events[0]!.toUpperCase()}`,
+          headers,
+        });
+        expect(scopedUpper.statusCode, scopedUpper.body).toBe(200);
+        expect(scopedUpper.json().player.totals.games).toBe(2);
+        for (const [index, model] of models.entries()) {
+          const stored = await stores.games.get(model.gameId, clubId);
+          expect(JSON.stringify(stored?.state)).toBe(JSON.stringify(payloads[index]!.state));
+          expect(JSON.stringify(stored?.results)).toBe(JSON.stringify(payloads[index]!.results));
+        }
+      }
+      expect(all.coverage).toEqual({
+        completedGames: 4,
+        partialGames: 0,
+        unavailableGames: 0,
+        pendingGames: 0,
+      });
       expect(player(all)).toMatchObject({
         totals: { games: 4, wins: 2, draws: 1, losses: 1, winRate: 50 },
         rating: { ratedGames: 4, status: "provisional" },
@@ -200,340 +239,248 @@ for (const provider of ["postgres", "azure"] as const)
       expect(deletion.statusCode, deletion.body).toBe(204);
       expect(player(await stats(), ids[1]!).totals.games).toBe(3);
       expect(player(await stats(), ids[1]!).rating).not.toEqual(peerBeforeRetirement);
-    }, 30_000);
+    },
+    30_000,
+  );
 
-    it("keeps legacy/Casper facts but excludes them from Elo, exposes incomplete coverage and hides active roles", async () => {
-      const { app } = fixture;
+  it.each([
+    "truncated",
+    "unknown-fields",
+    "without-roster",
+    "mismatched-roster",
+    "casper",
+    "host-only",
+    "empty",
+    "unknown-time",
+    "active",
+  ] as const)(
+    "retains independent observations and truthful coverage for %s records",
+    async (kind) => {
+      const { app, stores } = fixture;
       const clubId = await fixture.createClub();
       const headers = { "x-club-id": clubId };
       const ids: string[] = [];
-      for (let i = 0; i < 11; i++) {
+      for (let i = 0; i < 12; i++) {
         const response = await app.inject({
           method: "POST",
           url: "/api/players",
           headers,
-          payload: { nickname: `Format ${i}`, consent: false },
+          payload: { nickname: `Observation ${i}`, consent: false },
         });
         expect(response.statusCode, response.body).toBe(201);
         ids.push(response.json().player.id);
       }
-      for (const kind of [
-        "federation",
-        "legacy",
-        "casper",
-        "cancelled",
-        "incomplete",
-        "active",
-      ] as const) {
-        const template = statisticsGame(1);
-        const participants = template.participants!.map((player, i) => ({
-          ...player,
-          playerId: kind === "casper" && i === 9 ? "casper" : ids[i]!,
-          ...(kind === "casper" && i === 9
-            ? { role: "citizen", team: "red" }
-            : kind === "casper" && i === 0
-              ? { role: "don", team: "black" }
-              : {}),
-        }));
-        const state = {
-          hostPlayerId: ids[10],
-          game: {
-            ...(kind === "legacy" ? {} : { rulesEdition: FEDERATION_RULES_EDITION }),
-            players: participants.map(({ playerId, ...player }) => ({ ...player, id: playerId })),
-          },
-        };
-        const results =
-          kind === "active"
-            ? null
+      const template = statisticsGame(1);
+      const participants = template.participants!.map((p, i) => ({
+        ...p,
+        playerId: kind === "casper" && i === 9 ? "casper" : ids[i]!,
+        ...(kind === "casper" && i === 9 ? { role: "citizen" as const, team: "red" as const } : {}),
+      }));
+      const roster = participants.map(({ playerId, ...p }) => ({ ...p, id: playerId }));
+      if (kind === "mismatched-roster") roster[9] = { ...roster[9]!, id: ids[11]! };
+      const unknown = kind === "unknown-fields";
+      const finalPlayers =
+        kind === "truncated"
+          ? participants.slice(0, 9)
+          : participants.map((p, i) =>
+              unknown && i === 0
+                ? { ...p, role: null, fouls: null, status: null, bestMoveHits: null }
+                : p,
+            );
+      const state =
+        kind === "without-roster" || kind === "empty" || kind === "host-only"
+          ? {}
+          : {
+              hostPlayerId: ids[10],
+              game: { players: roster },
+              opaque: { stateHash: "retained marker" },
+            };
+      const results =
+        kind === "active"
+          ? null
+          : kind === "empty"
+            ? {}
             : {
                 hostPlayerId: ids[10],
-                outcome: kind === "cancelled" ? "cancelled" : "red",
-                winner: kind === "cancelled" ? null : "red",
-                reason: kind === "cancelled" ? "Host cancelled" : null,
-                playedAt: template.playedAt,
-                ...(kind === "incomplete" ? {} : { players: participants }),
+                outcome: "red",
+                winner: "red",
+                reason: null,
+                playedAt: kind === "unknown-time" ? undefined : template.playedAt,
+                ...(kind === "host-only" ? {} : { players: finalPlayers }),
               };
-        const response = await app.inject({
-          method: "POST",
-          url: "/api/game-sessions",
-          headers,
-          payload: { creationId: randomUUID(), name: kind, state, results },
-        });
-        expect(response.statusCode, response.body).toBe(201);
-      }
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/game-sessions",
+        headers,
+        payload: { creationId: randomUUID(), name: kind, state, results },
+      });
+      expect(created.statusCode, created.body).toBe(201);
+      const gameId = created.json().gameId as string;
+      const before = await stores.games.get(gameId, clubId);
+      expect(before?.state).toEqual(state);
+      expect(before?.results).toEqual(JSON.parse(JSON.stringify(results)));
       const response = await app.inject({ url: "/api/statistics", headers });
       expect(response.statusCode, response.body).toBe(200);
       const data = response.json<ClubStatisticsResponse>();
-      expect(data.coverage).toEqual({ completedGames: 5, unavailableGames: 1, pendingGames: 1 });
-      expect(data.players.find(({ playerId }) => playerId === ids[0])).toMatchObject({
-        totals: { games: 3 },
-        rating: { ratedGames: 1, value: 1516 },
+      const unavailable = kind === "empty" || kind === "host-only";
+      const partial = ["truncated", "unknown-fields", "mismatched-roster", "unknown-time"].includes(
+        kind,
+      );
+      expect(data.coverage).toEqual({
+        completedGames: kind === "active" ? 0 : 1,
+        pendingGames: kind === "active" ? 1 : 0,
+        partialGames: partial ? 1 : 0,
+        unavailableGames: unavailable ? 1 : 0,
       });
-      expect(response.body).not.toContain('"role":');
-      expect(response.body).not.toContain('"participant":');
+      const source = (await stores.games.readStatisticsInputs(clubId)).games[0]!;
+      expect(source).not.toHaveProperty("rulesEdition");
+      expect(source).toMatchObject({
+        gameId,
+        timelineAvailable: false,
+        participants:
+          kind === "active" || unavailable
+            ? null
+            : finalPlayers.filter((p) => p.playerId !== "casper"),
+      });
+      expect(data.players.find((p) => p.playerId === ids[0])?.totals.games).toBe(
+        kind === "active" || unavailable ? 0 : 1,
+      );
+      if (kind === "active") expect(JSON.stringify(source)).not.toMatch(/"role"|stateHash|"fouls"/);
       const detail = await app.inject({ url: `/api/statistics/players/${ids[0]}`, headers });
       expect(detail.statusCode, detail.body).toBe(200);
       const history = detail.json<PlayerStatisticsResponse>().history;
-      expect(history).toHaveLength(4);
-      expect(history.map(({ unratedReason }) => unratedReason)).toEqual(
-        expect.arrayContaining([null, "legacy-edition", "casper", "cancelled"]),
-      );
-      expect(history.some(({ name }) => name === "active")).toBe(false);
-    }, 30_000);
+      expect(history).toHaveLength(kind === "active" || unavailable ? 0 : 1);
+      if (history[0])
+        expect(history[0]).toMatchObject({
+          timelineAvailable: false,
+          statisticsAvailable: true,
+          playedAt: kind === "unknown-time" ? null : template.playedAt,
+        });
+      const host = await app.inject({ url: `/api/statistics/players/${ids[10]}`, headers });
+      expect(host.statusCode, host.body).toBe(200);
+      expect(host.json().player.hostedGames).toBe(kind === "active" || kind === "empty" ? 0 : 1);
+      expect(await stores.games.get(gameId, clubId)).toEqual(before);
+    },
+    30_000,
+  );
 
-    it.each([
-      { kind: "truncated", incomplete: true },
-      { kind: "legacy-truncated", incomplete: true },
-      { kind: "duplicate-result-identity", incomplete: true },
-      { kind: "duplicate-result-seat", incomplete: true },
-      { kind: "different-result-identity", incomplete: true },
-      { kind: "swapped-result-seats", incomplete: true },
-      { kind: "duplicate-state-identity", incomplete: true },
-      { kind: "casper", incomplete: false },
-      { kind: "casper-human-results", incomplete: false },
-      { kind: "legacy-without-roster", incomplete: false },
-      { kind: "without-roster", incomplete: false },
-    ] as const)(
-      "discloses $kind final-roster coverage without changing accepted canonical data",
-      async ({ kind, incomplete }) => {
-        const { app, stores } = fixture;
-        const clubId = await fixture.createClub();
-        const headers = { "x-club-id": clubId };
-        const ids: string[] = [];
-        for (let i = 0; i < 12; i++) {
-          const response = await app.inject({
-            method: "POST",
-            url: "/api/players",
-            headers,
-            payload: { nickname: `Coverage ${i}`, consent: false },
-          });
-          expect(response.statusCode, response.body).toBe(201);
-          ids.push(response.json().player.id);
-        }
-        const casper = kind === "casper" || kind === "casper-human-results";
-        const legacy = kind.startsWith("legacy-");
-        const withoutRoster = kind.endsWith("without-roster");
-        const template = statisticsGame(1);
-        const participants = template.participants!.map((player, i) => ({
-          ...player,
-          playerId: casper && i === 9 ? "casper" : ids[i]!,
-          ...(casper && i === 9 ? { role: "citizen", team: "red" } : {}),
-        }));
-        const roster = participants.map(({ playerId, ...player }) => ({ ...player, id: playerId }));
-        if (kind === "duplicate-state-identity") roster[9] = { ...roster[9]!, id: ids[0]! };
-        const finalPlayers =
-          kind === "truncated" || kind === "legacy-truncated" || withoutRoster
-            ? participants.slice(0, 9)
-            : kind === "casper-human-results"
-              ? participants.filter(({ playerId }) => playerId !== "casper")
-              : participants.map((player, i) => ({
-                  ...player,
-                  ...(i === 9 && kind === "duplicate-result-identity"
-                    ? { playerId: ids[0]! }
-                    : i === 9 && kind === "duplicate-result-seat"
-                      ? { seat: 1 }
-                      : i === 9 && kind === "different-result-identity"
-                        ? { playerId: ids[11]! }
-                        : kind === "swapped-result-seats" && (i === 0 || i === 9)
-                          ? { seat: i === 0 ? 10 : 1 }
-                          : {}),
-                }));
-        const payload = {
-          creationId: randomUUID(),
-          name: kind,
-          state: {
-            hostPlayerId: ids[10],
-            game: {
-              ...(legacy ? {} : { rulesEdition: FEDERATION_RULES_EDITION }),
-              ...(withoutRoster ? {} : { players: roster }),
-            },
-            opaque: { stateHash: "retained opaque canonical marker", events: [] },
-          },
-          results: {
-            hostPlayerId: ids[10],
-            outcome: "red",
-            winner: "red",
-            reason: null,
-            playedAt: template.playedAt,
-            players: finalPlayers,
-          },
-        };
-        const created = await app.inject({
-          method: "POST",
-          url: "/api/game-sessions",
-          headers,
-          payload,
-        });
-        expect(created.statusCode, created.body).toBe(201);
-        const gameId = created.json().gameId as string;
-        const before = await stores.games.get(gameId, clubId);
-        expect(before?.state).toEqual(payload.state);
-        expect(before?.results).toEqual(payload.results);
-        const response = await app.inject({ url: "/api/statistics", headers });
-        expect(response.statusCode, response.body).toBe(200);
-        const data = response.json<ClubStatisticsResponse>();
-        expect(data.coverage).toEqual({
-          completedGames: 1,
-          unavailableGames: incomplete ? 1 : 0,
-          pendingGames: 0,
-        });
-        const source = await stores.games.readStatisticsInputs(clubId);
-        expect(source.games).toHaveLength(1);
-        expect(source.games[0]).toMatchObject({
-          gameId,
-          hostPlayerId: ids[10],
-          outcome: "red",
-          hasCasper: casper,
-          rulesEdition: legacy ? null : FEDERATION_RULES_EDITION,
-          participants: incomplete
-            ? null
-            : finalPlayers.filter(({ playerId }) => playerId !== "casper"),
-        });
-        expect(data.players.find(({ playerId }) => playerId === ids[0])).toMatchObject({
-          totals: { games: incomplete ? 0 : 1, winRate: incomplete ? null : 100 },
-          rating: { ratedGames: 0, value: null },
-        });
-        expect(data.players.find(({ playerId }) => playerId === ids[9])).toMatchObject({
-          totals: { games: 0, winRate: null },
-        });
-        const detail = await app.inject({ url: `/api/statistics/players/${ids[0]}`, headers });
-        expect(detail.statusCode, detail.body).toBe(200);
-        const playerData = detail.json<PlayerStatisticsResponse>();
-        expect(playerData.total).toBe(incomplete ? 0 : 1);
-        expect(playerData.history).toHaveLength(incomplete ? 0 : 1);
-        const host = await app.inject({ url: `/api/statistics/players/${ids[10]}`, headers });
-        expect(host.statusCode, host.body).toBe(200);
-        const hostData = host.json<PlayerStatisticsResponse>();
-        expect(hostData.player).toMatchObject({ totals: { games: 0 }, hostedGames: 1 });
-        expect(hostData.history).toHaveLength(1);
-        expect(hostData.history[0]).toMatchObject({
-          gameId,
-          isHost: true,
-          participant: null,
-          statisticsAvailable: !incomplete,
-        });
-        expect(await stores.games.get(gameId, clubId)).toEqual(before);
+  it("authenticates all reads, keeps member access, rejects malformed/foreign inputs and never hides failed reads", async () => {
+    const { app, stores, owner, member } = fixture;
+    const clubId = await fixture.createClub();
+    const headers = { "x-club-id": clubId };
+    const profile = await app.inject({
+      method: "POST",
+      url: "/api/players",
+      headers,
+      payload: {
+        nickname: "Visible member",
+        consent: true,
+        clubAccess: "user",
+        firstName: "Private",
+        lastName: "Family",
+        email: member.email,
       },
-      30_000,
+    });
+    expect(profile.statusCode, profile.body).toBe(201);
+    await stores.clubs.claimClubAccess(member.id, member.email);
+    fixture.setActor(member);
+    const regular = await app.inject({ url: "/api/statistics", headers });
+    expect(regular.statusCode, regular.body).toBe(200);
+    expect(regular.body).not.toContain(member.email);
+    expect(regular.body).not.toContain("Private");
+    fixture.setActor(null);
+    for (const url of [
+      "/api/statistics",
+      `/api/statistics/players/${profile.json().player.id}`,
+      "/api/tournaments",
+    ]) {
+      expect((await app.inject({ url, headers })).statusCode).toBe(401);
+    }
+    fixture.setActor({ ...member, id: randomUUID() });
+    expect((await app.inject({ url: "/api/statistics", headers })).statusCode).toBe(403);
+    fixture.setActor(owner);
+    expect((await app.inject({ url: "/api/statistics" })).statusCode).toBe(400);
+    const otherClub = await fixture.createClub();
+    const foreign = await app.inject({
+      method: "POST",
+      url: "/api/tournaments",
+      headers: { "x-club-id": otherClub },
+      payload: { name: "Foreign" },
+    });
+    expect(foreign.statusCode, foreign.body).toBe(201);
+    const foreignPlayer = await app.inject({
+      method: "POST",
+      url: "/api/players",
+      headers: { "x-club-id": otherClub },
+      payload: { nickname: "Foreign profile", consent: false },
+    });
+    expect(foreignPlayer.statusCode, foreignPlayer.body).toBe(201);
+    expect(
+      (
+        await app.inject({
+          url: `/api/statistics/players/${foreignPlayer.json().player.id}`,
+          headers,
+        })
+      ).statusCode,
+    ).toBe(404);
+    expect(
+      (
+        await app.inject({
+          url: `/api/statistics?tournamentId=${foreign.json().tournament.id}`,
+          headers,
+        })
+      ).statusCode,
+    ).toBe(404);
+    expect(
+      (await app.inject({ url: `/api/statistics/players/${randomUUID()}`, headers })).statusCode,
+    ).toBe(404);
+    for (const query of [
+      "from=2026-02-30",
+      "from=2026-02-02&to=2026-02-01",
+      "to=not-date",
+      "edition=unknown",
+      "team=green",
+      "role=host",
+      "tournamentId=bad",
+      "from=2026-01-01&from=2026-02-01",
+      "unexpected=1",
+    ]) {
+      expect(
+        (await app.inject({ url: `/api/statistics?${query}`, headers })).statusCode,
+        query,
+      ).toBe(400);
+    }
+    for (const query of [
+      "limit=101",
+      "limit=0",
+      "limit=1.2",
+      "cursor=garbage",
+      "cursor=%%%",
+      "limit=abc",
+    ]) {
+      expect(
+        (
+          await app.inject({
+            url: `/api/statistics/players/${profile.json().player.id}?${query}`,
+            headers,
+          })
+        ).statusCode,
+        query,
+      ).toBe(400);
+    }
+    expect((await app.inject({ url: "/api/statistics/players/bad", headers })).statusCode).toBe(
+      400,
     );
-
-    it("authenticates all reads, keeps member access, rejects malformed/foreign inputs and never hides failed reads", async () => {
-      const { app, stores, owner, member } = fixture;
-      const clubId = await fixture.createClub();
-      const headers = { "x-club-id": clubId };
-      const profile = await app.inject({
-        method: "POST",
-        url: "/api/players",
-        headers,
-        payload: {
-          nickname: "Visible member",
-          consent: true,
-          clubAccess: "user",
-          firstName: "Private",
-          lastName: "Family",
-          email: member.email,
-        },
-      });
-      expect(profile.statusCode, profile.body).toBe(201);
-      await stores.clubs.claimClubAccess(member.id, member.email);
-      fixture.setActor(member);
-      const regular = await app.inject({ url: "/api/statistics", headers });
-      expect(regular.statusCode, regular.body).toBe(200);
-      expect(regular.body).not.toContain(member.email);
-      expect(regular.body).not.toContain("Private");
-      fixture.setActor(null);
-      for (const url of [
-        "/api/statistics",
-        `/api/statistics/players/${profile.json().player.id}`,
-        "/api/tournaments",
-      ]) {
-        expect((await app.inject({ url, headers })).statusCode).toBe(401);
-      }
-      fixture.setActor({ ...member, id: randomUUID() });
-      expect((await app.inject({ url: "/api/statistics", headers })).statusCode).toBe(403);
-      fixture.setActor(owner);
-      expect((await app.inject({ url: "/api/statistics" })).statusCode).toBe(400);
-      const otherClub = await fixture.createClub();
-      const foreign = await app.inject({
-        method: "POST",
-        url: "/api/tournaments",
-        headers: { "x-club-id": otherClub },
-        payload: { name: "Foreign" },
-      });
-      expect(foreign.statusCode, foreign.body).toBe(201);
-      const foreignPlayer = await app.inject({
-        method: "POST",
-        url: "/api/players",
-        headers: { "x-club-id": otherClub },
-        payload: { nickname: "Foreign profile", consent: false },
-      });
-      expect(foreignPlayer.statusCode, foreignPlayer.body).toBe(201);
-      expect(
-        (
-          await app.inject({
-            url: `/api/statistics/players/${foreignPlayer.json().player.id}`,
-            headers,
-          })
-        ).statusCode,
-      ).toBe(404);
-      expect(
-        (
-          await app.inject({
-            url: `/api/statistics?tournamentId=${foreign.json().tournament.id}`,
-            headers,
-          })
-        ).statusCode,
-      ).toBe(404);
-      expect(
-        (await app.inject({ url: `/api/statistics/players/${randomUUID()}`, headers })).statusCode,
-      ).toBe(404);
-      for (const query of [
-        "from=2026-02-30",
-        "from=2026-02-02&to=2026-02-01",
-        "to=not-date",
-        "edition=unknown",
-        "team=green",
-        "role=host",
-        "tournamentId=bad",
-        "from=2026-01-01&from=2026-02-01",
-        "unexpected=1",
-      ]) {
-        expect(
-          (await app.inject({ url: `/api/statistics?${query}`, headers })).statusCode,
-          query,
-        ).toBe(400);
-      }
-      for (const query of [
-        "limit=101",
-        "limit=0",
-        "limit=1.2",
-        "cursor=garbage",
-        "cursor=%%%",
-        "limit=abc",
-      ]) {
-        expect(
-          (
-            await app.inject({
-              url: `/api/statistics/players/${profile.json().player.id}?${query}`,
-              headers,
-            })
-          ).statusCode,
-          query,
-        ).toBe(400);
-      }
-      expect((await app.inject({ url: "/api/statistics/players/bad", headers })).statusCode).toBe(
-        400,
-      );
-      const failure = vi
-        .spyOn(stores.games, "readStatisticsInputs")
-        .mockRejectedValueOnce(new Error("private fixture storage error"));
-      const failed = await app.inject({ url: "/api/statistics", headers });
-      expect(failed.statusCode).toBe(500);
-      expect(failed.json()).toEqual({ error: "internal_server_error" });
-      failure.mockRejectedValueOnce(new UnsupportedGameFormatError());
-      const unsupported = await app.inject({ url: "/api/statistics", headers });
-      expect(unsupported.statusCode).toBe(409);
-      expect(unsupported.json()).toEqual({ error: "unsupported_game_format" });
-      failure.mockRestore();
-    }, 30_000);
-  });
+    const failure = vi
+      .spyOn(stores.games, "readStatisticsInputs")
+      .mockRejectedValueOnce(new Error("private fixture storage error"));
+    const failed = await app.inject({ url: "/api/statistics", headers });
+    expect(failed.statusCode).toBe(500);
+    expect(failed.json()).toEqual({ error: "internal_server_error" });
+    failure.mockRejectedValueOnce(new UnsupportedGameFormatError());
+    const unsupported = await app.inject({ url: "/api/statistics", headers });
+    expect(unsupported.statusCode).toBe(409);
+    expect(unsupported.json()).toEqual({ error: "unsupported_game_format" });
+    failure.mockRestore();
+  }, 30_000);
+});

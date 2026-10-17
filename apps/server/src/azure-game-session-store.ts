@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { odata } from "@azure/data-tables";
 import {
   CASPER_PLAYER_ID,
-  CASPER_SEAT,
   isSecretGameEventType,
   type ClubStatisticsSource,
 } from "@mafia/game-domain";
@@ -14,6 +13,7 @@ import {
   statisticsGame,
   GameSessionNotFoundError,
   projectableResults,
+  timelineAvailable,
   type CompletedGameSessionFilters,
   type CompletedGameSessionSummary,
   type CreateGameSessionInput,
@@ -29,6 +29,7 @@ import {
   InvalidGameIdentityError,
 } from "./game-session-identity.js";
 import { DeletedGameError } from "./game-lifecycle.js";
+import { statisticsIdentityKey } from "./statistics-identity.js";
 import {
   azureGameTournament,
   azureListTournaments,
@@ -49,7 +50,7 @@ const record = (value: unknown): value is Record<string, unknown> =>
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const text = (value: unknown): string | null => (typeof value === "string" ? value : null);
 const integer = (value: unknown): number | null =>
-  typeof value === "number" && Number.isInteger(value) ? value : null;
+  typeof value === "number" && Number.isSafeInteger(value) ? value : null;
 const clubPrefix = (clubId: string) => `club:${uuidKey(clubId)}:`;
 const clubDeletedKey = (clubId: string) => `deleted-club:${uuidKey(clubId)}`;
 const gameKey = (clubId: string, gameId: string) => `${clubPrefix(clubId)}game:${uuidKey(gameId)}`;
@@ -72,8 +73,6 @@ interface GameRow {
   readonly name: string;
   readonly revision: number;
   readonly status: "active" | "completed";
-  readonly rulesetId: string;
-  readonly rulesetVersion: number;
   readonly createdAt?: Date;
   readonly lastMutationId?: string;
   readonly updatedAt: Date;
@@ -88,15 +87,13 @@ interface Snapshot {
     readonly name: string;
     readonly revision: number;
     readonly status: "active" | "completed";
-    readonly rulesetId: string;
-    readonly rulesetVersion: number;
     readonly updatedAt: string;
     readonly state: GameSessionState;
     readonly results: FinalGameResults | null;
   };
   readonly events: readonly (Omit<GameEvent, "createdAt"> & { readonly createdAt: string })[];
   // Retained source-only fields are provenance, not public/canonical game state.
-  readonly postgres?: Readonly<Record<string, unknown>>;
+  readonly [key: string]: unknown;
 }
 interface PlayerRow {
   readonly id: string;
@@ -105,27 +102,47 @@ interface PlayerRow {
 
 // Keep aggregate, events and derived rows in the same fenced transaction. No
 // event-per-row Table writes: history is part of the digest-checked snapshot.
-const readSnapshot = async (tx: AzureTransaction, row: GameRow): Promise<Snapshot> => {
+const readSnapshot = async (
+  tx: AzureTransaction,
+  row: GameRow,
+  clubId: string,
+): Promise<Snapshot> => {
   const snapshot = await tx.readBlob<Snapshot>(blobReference(row));
+  if (record(snapshot) && record(snapshot.session)) assertSupportedGame(row, snapshot.session);
   if (
+    !record(snapshot) ||
+    !record(snapshot.session) ||
+    !record(snapshot.session.state) ||
+    (snapshot.session.results !== null && !record(snapshot.session.results)) ||
+    !Array.isArray(snapshot.events) ||
     snapshot.formatVersion !== 1 ||
     snapshot.session.gameId !== row.gameId ||
+    !uuid.test(snapshot.session.gameId) ||
+    !Number.isSafeInteger(snapshot.session.revision) ||
+    snapshot.session.revision < 1 ||
+    !["active", "completed"].includes(snapshot.session.status) ||
+    (snapshot.session.results === null) !== (snapshot.session.status === "active") ||
     snapshot.session.revision !== row.revision ||
     snapshot.session.status !== row.status ||
     snapshot.session.name !== row.name ||
-    snapshot.session.rulesetId !== row.rulesetId ||
-    snapshot.session.rulesetVersion !== row.rulesetVersion ||
-    snapshot.session.updatedAt !== new Date(row.updatedAt).toISOString() ||
-    !Array.isArray(snapshot.events)
+    snapshot.session.updatedAt !== new Date(row.updatedAt).toISOString()
   ) {
     throw new Error("Incompatible game snapshot metadata");
   }
-  assertSupportedGame(snapshot.session.state, snapshot.session.results);
+  const refs = inspectGameIdentities(snapshot.session.state, snapshot.session.results);
+  if (refs.invalid || !(await available(tx, clubId, [...refs.all])))
+    throw new InvalidGameIdentityError();
+  assertValidResultAdjudication(snapshot.session.results);
   assertSupportedGame({ events: snapshot.events.map(({ payload }) => ({ payload })) }, null);
   return snapshot;
 };
 const stored = (snapshot: Snapshot, duplicate = false): StoredGameSession => ({
-  ...snapshot.session,
+  gameId: snapshot.session.gameId,
+  name: snapshot.session.name,
+  revision: snapshot.session.revision,
+  status: snapshot.session.status,
+  state: snapshot.session.state,
+  results: snapshot.session.results,
   updatedAt: new Date(snapshot.session.updatedAt),
   duplicate,
 });
@@ -170,7 +187,7 @@ const projectedEvents = async (
   // Inspect existing immutable views without adding per-event Table writes.
   for (const row of await tx.list<GameRow>(`${clubPrefix(clubId)}game:`)) {
     if (uuidKey(row.gameId) === uuidKey(gameId)) continue;
-    for (const event of (await readSnapshot(tx, row)).events) ids.add(uuidKey(event.id));
+    for (const event of (await readSnapshot(tx, row, clubId)).events) ids.add(uuidKey(event.id));
   }
   const createdAt = new Date().toISOString();
   const candidates = Array.isArray(state.events) ? state.events : [];
@@ -258,98 +275,69 @@ const synchronize = async (
   results: FinalGameResults | null,
 ): Promise<void> => {
   await removeProjection(tx, clubId, gameId);
-  if (state.hostPlayerId !== CASPER_PLAYER_ID) {
-    const hostPlayerId =
-      typeof state.hostPlayerId === "string" && uuid.test(state.hostPlayerId)
-        ? state.hostPlayerId
-        : null;
-    const game = record(state.game) ? state.game : null;
-    const rawPlayers = Array.isArray(game?.players) ? game.players : [];
-    const players = rawPlayers.flatMap((candidate) => {
-      if (
-        !record(candidate) ||
-        typeof candidate.id !== "string" ||
-        (!uuid.test(candidate.id) && candidate.id !== CASPER_PLAYER_ID)
-      )
-        return [];
-      const seat = integer(candidate.seat);
-      const role = text(candidate.role);
-      if (
-        seat === null ||
-        seat < 1 ||
-        seat > 10 ||
-        !["sheriff", "citizen", "mafia", "don"].includes(role ?? "") ||
-        (candidate.id === CASPER_PLAYER_ID &&
-          (seat !== CASPER_SEAT || role !== "citizen" || candidate.team !== "red"))
-      )
-        return [];
-      return [{ id: candidate.id, seat, role }];
+  const game = record(state.game) ? state.game : null;
+  const setup = record(state.setup) ? state.setup : null;
+  const projection = projectableResults(results, state);
+  const hostPlayerId =
+    projection !== null
+      ? projection.hostPlayerId
+      : text(state.hostPlayerId) || text(setup?.hostPlayerId);
+  if (hostPlayerId && hostPlayerId !== CASPER_PLAYER_ID)
+    await tx.set(`${participantPrefix(clubId, gameId)}${uuidKey(hostPlayerId)}`, {
+      gameId,
+      playerId: hostPlayerId,
+      isHost: true,
     });
-    if (
-      players.length === rawPlayers.length &&
-      (!players.some(({ id }) => id === CASPER_PLAYER_ID) || players.length === 10) &&
-      new Set(players.map(({ id }) => id)).size === players.length &&
-      new Set(players.map(({ seat }) => seat)).size === players.length
-    ) {
-      const real = players.filter(({ id }) => id !== CASPER_PLAYER_ID);
-      if (
-        await available(tx, clubId, [
-          ...(hostPlayerId ? [hostPlayerId] : []),
-          ...real.map(({ id }) => id),
-        ])
-      ) {
-        if (hostPlayerId)
-          await tx.set(`${participantPrefix(clubId, gameId)}${uuidKey(hostPlayerId)}`, {
-            gameId,
-            playerId: hostPlayerId,
-            isHost: true,
-          });
-        for (const player of real)
-          await tx.set(`${participantPrefix(clubId, gameId)}${uuidKey(player.id)}`, {
-            gameId,
-            playerId: player.id,
-            seat: player.seat,
-            role: player.role,
-            isHost: false,
-          });
-      }
-    }
+  for (const player of Array.isArray(game?.players) ? game.players : []) {
+    if (!record(player) || typeof player.id !== "string" || player.id === CASPER_PLAYER_ID)
+      continue;
+    await tx.set(`${participantPrefix(clubId, gameId)}${uuidKey(player.id)}`, {
+      gameId,
+      playerId: player.id,
+      isHost: false,
+      ...(typeof player.seat === "number" &&
+      Number.isSafeInteger(player.seat) &&
+      player.seat >= 1 &&
+      player.seat <= 10
+        ? { seat: player.seat }
+        : {}),
+      ...(["citizen", "sheriff", "mafia", "don"].includes(player.role as string)
+        ? { role: player.role }
+        : {}),
+    });
   }
-  const projection = projectableResults(results);
-  if (!projection) return;
-  const real = projection.players.filter(({ playerId }) => playerId !== CASPER_PLAYER_ID);
-  if (
-    !(await available(tx, clubId, [
-      projection.hostPlayerId,
-      ...real.map(({ playerId }) => playerId),
-    ]))
-  )
-    return;
-  if (projection.outcome === "cancelled") return;
+  if (!projection || projection.outcome === "cancelled") return;
   const common = {
     gameId,
-    playedAt: new Date(projection.playedAt),
-    outcome: projection.outcome,
-    ...(projection.winner ? { winner: projection.winner } : {}),
+    ...(projection.playedAt !== null ? { playedAt: new Date(projection.playedAt) } : {}),
+    ...(projection.outcome !== null ? { outcome: projection.outcome } : {}),
+    ...(projection.winner !== null ? { winner: projection.winner } : {}),
   };
-  await tx.set(`${resultPrefix(clubId, gameId)}${uuidKey(projection.hostPlayerId)}`, {
-    ...common,
-    playerId: projection.hostPlayerId,
-    isHost: true,
-  });
-  for (const player of real)
+  if (hostPlayerId && hostPlayerId !== CASPER_PLAYER_ID)
+    await tx.set(`${resultPrefix(clubId, gameId)}${uuidKey(hostPlayerId)}`, {
+      ...common,
+      playerId: hostPlayerId,
+      isHost: true,
+    });
+  for (const player of projection.players ?? []) {
+    if (
+      player.playerId === CASPER_PLAYER_ID ||
+      (hostPlayerId &&
+        statisticsIdentityKey(hostPlayerId) === statisticsIdentityKey(player.playerId))
+    )
+      continue;
+    const observations = Object.fromEntries(
+      Object.entries(player).filter(([, value]) => value !== null),
+    );
     await tx.set(`${resultPrefix(clubId, gameId)}${uuidKey(player.playerId)}`, {
       ...common,
-      playerId: player.playerId,
+      ...observations,
       isHost: false,
-      seat: player.seat,
-      role: player.role,
-      team: player.team,
-      status: player.status,
-      fouls: player.fouls,
-      ...(player.bestMoveHits !== null ? { bestMoveHits: player.bestMoveHits } : {}),
-      ...(projection.outcome !== "draw" ? { won: player.team === projection.winner } : {}),
+      ...((projection.outcome === "red" || projection.outcome === "black") && player.team !== null
+        ? { won: player.team === projection.outcome }
+        : {}),
     });
+  }
 };
 
 export class AzureGameSessionStore {
@@ -366,7 +354,7 @@ export class AzureGameSessionStore {
       if (mapped) {
         const row = await tx.get<GameRow>(gameKey(clubId, mapped.gameId));
         if (!row) throw new DeletedGameError(mapped.gameId);
-        return storedWithTournament(tx, clubId, await readSnapshot(tx, row), true);
+        return storedWithTournament(tx, clubId, await readSnapshot(tx, row, clubId), true);
       }
       if (!(await tx.get(`${clubPrefix(clubId)}meta`))) throw new Error("Club does not exist");
       await eligiblePlayers(tx, clubId, input.state, input.results, true);
@@ -383,8 +371,6 @@ export class AzureGameSessionStore {
           name: input.name.trim(),
           revision: 1,
           status: input.results === null ? "active" : "completed",
-          rulesetId: "club-mafia",
-          rulesetVersion: 1,
           updatedAt: updatedAt.toISOString(),
           state: input.state,
           results: input.results,
@@ -397,8 +383,6 @@ export class AzureGameSessionStore {
         name: snapshot.session.name,
         revision: 1,
         status: snapshot.session.status,
-        rulesetId: "club-mafia",
-        rulesetVersion: 1,
         updatedAt,
         ...blobFields(blob),
       });
@@ -417,54 +401,35 @@ export class AzureGameSessionStore {
       const key = gameKey(clubId, input.gameId);
       const row = await tx.get<GameRow>(key);
       if (!row) throw new GameSessionNotFoundError();
-      const previous = await readSnapshot(tx, row);
-      // SDK Date conversion loses PostgreSQL's fractional microseconds. The
-      // validated imported source spelling remains in envelope provenance, so
-      // republish it as an EDM DateTime rather than round-trip through Date.
-      const createdAt =
-        row.createdAt === undefined
-          ? undefined
-          : typeof previous.postgres?.createdAt === "string"
-            ? { type: "DateTime", value: previous.postgres.createdAt.replace(/\+00:00$/, "Z") }
-            : row.createdAt;
+      const previous = await readSnapshot(tx, row, clubId);
       await eligiblePlayers(tx, clubId, input.state, input.results, false);
       const updatedAt = new Date();
       const snapshot: Snapshot = {
+        ...previous,
         formatVersion: 1,
         session: {
+          ...previous.session,
           gameId: row.gameId,
           name: input.name.trim(),
           revision: row.revision + 1,
           status: input.results === null ? "active" : "completed",
-          rulesetId: row.rulesetId,
-          rulesetVersion: row.rulesetVersion,
           updatedAt: updatedAt.toISOString(),
           state: input.state,
           results: input.results,
         },
         events: await projectedEvents(tx, clubId, row.gameId, input.state),
-        ...(previous.postgres === undefined
-          ? {}
-          : {
-              postgres: {
-                ...previous.postgres,
-                lastMutationId: input.mutationId,
-                updatedAt: updatedAt.toISOString(),
-              },
-            }),
       };
       const blob = await tx.writeBlob(
         snapshot,
         `club/${uuidKey(clubId)}/game/${uuidKey(row.gameId)}`,
       );
       await tx.set(key, {
+        ...row,
         gameId: row.gameId,
         name: snapshot.session.name,
         revision: snapshot.session.revision,
         status: snapshot.session.status,
-        rulesetId: row.rulesetId,
-        rulesetVersion: row.rulesetVersion,
-        ...(createdAt === undefined ? {} : { createdAt }),
+
         lastMutationId: input.mutationId,
         updatedAt,
         ...blobFields(blob),
@@ -555,7 +520,9 @@ export class AzureGameSessionStore {
       const games = [];
       for (const row of rows)
         games.push(
-          statisticsGame(await storedWithTournament(tx, clubId, await readSnapshot(tx, row))),
+          statisticsGame(
+            await storedWithTournament(tx, clubId, await readSnapshot(tx, row, clubId)),
+          ),
         );
       return {
         players: profiles
@@ -572,7 +539,7 @@ export class AzureGameSessionStore {
     return this.storage.read(async (tx) => {
       if (await tx.get(clubDeletedKey(clubId))) return null;
       const row = await tx.get<GameRow>(gameKey(clubId, gameId));
-      return row ? storedWithTournament(tx, clubId, await readSnapshot(tx, row)) : null;
+      return row ? storedWithTournament(tx, clubId, await readSnapshot(tx, row, clubId)) : null;
     });
   }
 
@@ -584,7 +551,10 @@ export class AzureGameSessionStore {
       for (const row of rows) {
         if (row.status === "active")
           summaries.push(
-            summary(await readSnapshot(tx, row), await azureGameTournament(tx, clubId, row.gameId)),
+            summary(
+              await readSnapshot(tx, row, clubId),
+              await azureGameTournament(tx, clubId, row.gameId),
+            ),
           );
       }
       return summaries.sort(
@@ -597,6 +567,7 @@ export class AzureGameSessionStore {
     clubId = DEFAULT_CLUB_ID,
     filters: CompletedGameSessionFilters = {},
   ): Promise<readonly CompletedGameSessionSummary[]> {
+    const playerId = filters.playerId ? statisticsIdentityKey(filters.playerId) : null;
     return this.storage.read(async (tx) => {
       if (await tx.get(clubDeletedKey(clubId))) return [];
       if (
@@ -608,32 +579,49 @@ export class AzureGameSessionStore {
       const completed: CompletedGameSessionSummary[] = [];
       for (const row of rows) {
         if (row.status !== "completed") continue;
-        const snapshot = await readSnapshot(tx, row);
+        const snapshot = await readSnapshot(tx, row, clubId);
         const metadata = completionMetadata(snapshot.session.results);
-        if (!metadata) continue;
-        const day = metadata.playedAt.slice(0, 10);
+        const facts = projectableResults(snapshot.session.results, snapshot.session.state);
+        const day =
+          metadata.playedAt === null
+            ? null
+            : new Date(metadata.playedAt).toISOString().slice(0, 10);
         if (
-          (filters.from && day < filters.from) ||
-          (filters.to && day > filters.to) ||
+          (filters.from && (day === null || day < filters.from)) ||
+          (filters.to && (day === null || day > filters.to)) ||
           (filters.outcome && metadata.outcome !== filters.outcome) ||
-          (filters.playerId &&
-            (!record(snapshot.session.results) ||
-              !Array.isArray(snapshot.session.results.players) ||
-              !snapshot.session.results.players.some(
-                (player: unknown) => record(player) && player.playerId === filters.playerId,
-              )))
+          (playerId &&
+            !facts?.players?.some((player) => statisticsIdentityKey(player.playerId) === playerId))
         )
           continue;
         completed.push({
-          ...summary(snapshot, await azureGameTournament(tx, clubId, row.gameId)),
+          gameId: snapshot.session.gameId,
+          name: snapshot.session.name,
+          revision: snapshot.session.revision,
+          tournamentId: await azureGameTournament(tx, clubId, row.gameId),
+          updatedAt: new Date(snapshot.session.updatedAt),
           ...metadata,
-          rulesetId: row.rulesetId,
-          rulesetVersion: row.rulesetVersion,
-          eventCount: snapshot.events.length,
+          hostPlayerId: facts?.hostPlayerId ?? null,
+          day:
+            record(snapshot.session.state.game) &&
+            typeof snapshot.session.state.game.day === "number" &&
+            snapshot.session.state.game.day >= 0
+              ? integer(snapshot.session.state.game.day)
+              : null,
+          timelineAvailable: timelineAvailable(snapshot.session.state),
+          eventCount: Array.isArray(snapshot.session.state.events)
+            ? snapshot.session.state.events.length
+            : 0,
         });
       }
-      return completed.sort(
-        (a, b) => b.updatedAt.getTime() - a.updatedAt.getTime() || a.gameId.localeCompare(b.gameId),
+      return completed.sort((a, b) =>
+        a.playedAt === null
+          ? b.playedAt === null
+            ? a.gameId.localeCompare(b.gameId)
+            : 1
+          : b.playedAt === null
+            ? -1
+            : Date.parse(b.playedAt) - Date.parse(a.playedAt) || a.gameId.localeCompare(b.gameId),
       );
     });
   }
@@ -653,7 +641,7 @@ export class AzureEventStore {
       if (await tx.get(clubDeletedKey(clubId))) return [];
       const row = await tx.get<GameRow>(gameKey(clubId, gameId));
       if (!row) return [];
-      const snapshot = await readSnapshot(tx, row);
+      const snapshot = await readSnapshot(tx, row, clubId);
       return snapshot.events
         .map((entry) => {
           const event: GameEvent = { ...entry, createdAt: new Date(entry.createdAt) };

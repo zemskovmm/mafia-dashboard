@@ -5,7 +5,6 @@ import { expect } from "vitest";
 /** Exercise unchanged transport/read routes against each real storage provider. */
 export const verifyAdjudicationHttp = async (app: FastifyInstance, clubId: string) => {
   const headers = { "x-club-id": clubId };
-  const rulesEdition = "mafgame-2026-07-01";
   const adjudication = {
     losingTeam: "red",
     rule: "6.3.1",
@@ -13,8 +12,7 @@ export const verifyAdjudicationHttp = async (app: FastifyInstance, clubId: strin
     committeeApproved: false,
   };
   const initial = {
-    game: { rulesEdition, phase: "day", completedGameNights: 2 },
-    initialGame: { replayVersion: 2, rulesEdition, game: { rulesEdition, phase: "day" } },
+    game: { phase: "day", completedGameNights: 2 },
     events: [],
   };
   const terminal = {

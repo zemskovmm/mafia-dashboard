@@ -28,6 +28,7 @@ vi.mock("../../api/client.js", async (importOriginal) => ({
 }));
 const totals = (changes: Partial<StatisticsTotals> = {}): StatisticsTotals => ({
   games: 3,
+  outcomeGames: changes.games ?? 3,
   wins: 1,
   draws: 1,
   losses: 1,
@@ -44,7 +45,9 @@ const row = (changes: Partial<PlayerStatisticsRow> = {}): PlayerStatisticsRow =>
   },
   roles: { citizen: totals(), sheriff: totals(), mafia: totals(), don: totals() },
   fouls: 4,
+  foulGames: 3,
   foulsPerGame: 4 / 3,
+  statusGames: 3,
   redCards: 1,
   eliminations: 2,
   bestMoveResults: 2,
@@ -70,7 +73,7 @@ const game = (changes: Partial<StatisticsHistoryGame> = {}): StatisticsHistoryGa
   gameId: "game-a",
   name: "Evening game",
   playedAt: "2026-10-14T12:00:00Z",
-  rulesEdition: "mafgame-2026-07-01",
+
   hasCasper: false,
   outcome: "red",
   reason: "Saved outcome",
@@ -78,6 +81,7 @@ const game = (changes: Partial<StatisticsHistoryGame> = {}): StatisticsHistoryGa
   hostPlayerId: "host",
   isHost: false,
   statisticsAvailable: true,
+  timelineAvailable: true,
   participant: {
     playerId: "alpha",
     seat: 1,
@@ -102,7 +106,7 @@ const game = (changes: Partial<StatisticsHistoryGame> = {}): StatisticsHistoryGa
 const club = (players = [row()]): ClubStatisticsResponse => ({
   players,
   tournaments: [{ id: "event-a", name: "Autumn cup" }],
-  coverage: { completedGames: 3, unavailableGames: 1, pendingGames: 2 },
+  coverage: { completedGames: 3, partialGames: 1, unavailableGames: 1, pendingGames: 2 },
   algorithm: "club-team-elo-v1",
 });
 const detail = (changes: Partial<PlayerStatisticsResponse> = {}): PlayerStatisticsResponse => ({
@@ -141,10 +145,138 @@ beforeEach(() => {
 });
 
 describe("StatisticsScreen", () => {
+  it("uses one current record view without edition controls or historical engine labels", async () => {
+    const user = userEvent.setup();
+    renderScreen();
+    await screen.findByRole("button", { name: "Alpha" });
+    expect(screen.queryByRole("combobox", { name: "Rules edition" })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Alpha" }));
+    const history = await screen.findByRole("article", { name: "Evening game" });
+    expect(within(history).queryByText(/Federation|Legacy|Rules edition/)).not.toBeInTheDocument();
+    expect(history).not.toHaveTextContent("mafgame-2026-07-01");
+  });
+
+  it.each(["en", "ru"] as const)(
+    "renders partial observations and unavailable timelines honestly in %s",
+    async (locale) => {
+      const user = userEvent.setup();
+      const partial = row({
+        totals: totals({ outcomeGames: 1, wins: 1, draws: 0, losses: 0, winRate: 100 }),
+        fouls: 0,
+        foulGames: 0,
+        foulsPerGame: null,
+        statusGames: 0,
+        redCards: 0,
+        eliminations: 0,
+        bestMoveResults: 0,
+        bestMoveHits: 0,
+        bestMoveMean: null,
+      });
+      vi.mocked(getClubStatistics).mockResolvedValue(club([partial]));
+      vi.mocked(getPlayerStatistics).mockResolvedValue(
+        detail({
+          player: partial,
+          history: [
+            game({
+              playedAt: null,
+              outcome: null,
+              hasCasper: null,
+              timelineAvailable: false,
+              ratingChange: null,
+              unratedReason: "incomplete-results",
+              participant: {
+                playerId: "alpha",
+                seat: null,
+                role: null,
+                team: null,
+                status: null,
+                fouls: null,
+                bestMoveHits: null,
+              },
+            }),
+          ],
+        }),
+      );
+      render(
+        <I18nProvider locale={locale}>
+          <StatisticsScreen clubId="club-a" isManager onBack={vi.fn()} onOpenTimeline={vi.fn()} />
+        </I18nProvider>,
+      );
+      await user.click(await screen.findByRole("button", { name: "Alpha" }));
+      const details = await screen.findByRole("region", {
+        name: locale === "en" ? "Player details: Alpha" : "Данные игрока: Alpha",
+      });
+      const history = within(details).getByRole("article", { name: "Evening game" });
+      const labels =
+        locale === "en"
+          ? ["Fouls", "Final red cards", "Final eliminations", "Best Move hits"]
+          : ["Фолы", "Итоговые красные карточки", "Итоговые удаления", "Попадания в «Лучшем ходе»"];
+      for (const label of labels) {
+        expect(
+          within(details).getAllByText(label, { selector: "dt" })[0]!.nextElementSibling,
+        ).toHaveTextContent("—");
+      }
+      expect(
+        within(history).getByText(locale === "en" ? "Date not recorded" : "Дата не записана"),
+      ).toBeInTheDocument();
+      expect(
+        within(history).getByText(locale === "en" ? "Outcome not recorded" : "Исход не записан"),
+      ).toBeInTheDocument();
+      expect(
+        within(history).getByText(
+          locale === "en" ? "Timeline not recorded" : "Хронология не записана",
+        ),
+      ).toBeInTheDocument();
+      expect(
+        within(history).queryByRole("button", {
+          name: locale === "en" ? "Open timeline" : "Открыть хронологию",
+        }),
+      ).not.toBeInTheDocument();
+      expect(history.querySelector("time")).toBeNull();
+      expect(history).not.toHaveTextContent(/null|undefined|Invalid Date/);
+      expect(
+        screen.getAllByText(
+          locale === "en" ? "Results recorded for 1 of 3 games" : "Исход записан для 1 из 3 игр",
+        ).length,
+      ).toBeGreaterThan(0);
+      expect(
+        screen.getByText(
+          locale === "en" ? /1 completed game has partial facts/ : /Игр с неполными данными: 1/,
+        ),
+      ).toBeInTheDocument();
+    },
+  );
+
+  it("keeps observed zero distinct from unknown discipline and Best Move totals", async () => {
+    const user = userEvent.setup();
+    const observedZero = row({
+      fouls: 0,
+      foulGames: 1,
+      foulsPerGame: 0,
+      statusGames: 1,
+      redCards: 0,
+      eliminations: 0,
+      bestMoveResults: 1,
+      bestMoveHits: 0,
+      bestMoveMean: 0,
+    });
+    vi.mocked(getPlayerStatistics).mockResolvedValue(detail({ player: observedZero, history: [] }));
+    renderScreen();
+    await user.click(await screen.findByRole("button", { name: "Alpha" }));
+    const details = await screen.findByRole("region", { name: "Player details: Alpha" });
+    for (const label of ["Fouls", "Final red cards", "Final eliminations", "Best Move hits"]) {
+      expect(
+        within(details).getByText(label, { selector: "dt" }).nextElementSibling,
+      ).toHaveTextContent(/^0$/);
+    }
+    expect(
+      within(details).getByText("Games with recorded fouls: 1; with recorded final status: 1."),
+    ).toBeInTheDocument();
+  });
+
   it("explains every excluded rating reason and preserves adjudication/discipline summaries", async () => {
     const user = userEvent.setup();
     const reasons = [
-      "legacy-edition",
       "casper",
       "cancelled",
       "incomplete-results",
@@ -184,7 +316,6 @@ describe("StatisticsScreen", () => {
     await user.click(await screen.findByRole("button", { name: "Alpha" }));
     const details = await screen.findByRole("region", { name: "Player details: Alpha" });
     for (const explanation of [
-      "Legacy-edition games are not rated.",
       "Casper-format games are not rated.",
       "Cancelled games are not rated.",
       "Incomplete saved results: no rating change is available.",
@@ -194,7 +325,7 @@ describe("StatisticsScreen", () => {
     ])
       expect(await within(details).findByText(explanation)).toBeInTheDocument();
     expect(within(details).getAllByText(/Red-carded/).length).toBeGreaterThan(0);
-    const firstGame = within(details).getByRole("article", { name: "Excluded legacy-edition" });
+    const firstGame = within(details).getByRole("article", { name: "Excluded casper" });
     await user.click(within(firstGame).getByText("Saved result summary"));
     expect(within(firstGame).getByText("Saved judge explanation")).toBeVisible();
     expect(within(firstGame).getByText("Committee approved")).toBeVisible();
@@ -389,7 +520,7 @@ describe("StatisticsScreen", () => {
     expect(await screen.findByRole("button", { name: "Filtered" })).toBeInTheDocument();
     await act(async () => old.resolve(club([row({ nickname: "Obsolete" })])));
     expect(screen.queryByRole("button", { name: "Obsolete" })).not.toBeInTheDocument();
-    await user.selectOptions(screen.getByRole("combobox", { name: "Rules edition" }), "federation");
+
     await user.selectOptions(screen.getByRole("combobox", { name: "Tournament scope" }), "event-a");
     // Native date inputs are set through a change event; user-event date typing varies across engines.
     const { fireEvent } = await import("@testing-library/react");
@@ -399,7 +530,7 @@ describe("StatisticsScreen", () => {
       expect(getClubStatistics).toHaveBeenLastCalledWith("club-a", {
         team: "black",
         role: "don",
-        edition: "federation",
+
         tournamentId: "event-a",
         from: "2026-10-01",
         to: "2026-10-15",
@@ -438,7 +569,7 @@ describe("StatisticsScreen", () => {
     expect(screen.getByText(/1 completed game has unavailable statistics/)).toBeInTheDocument();
     expect(screen.getByText(/2 unfinished games/)).toBeInTheDocument();
     expect(
-      screen.getByText(/Wins divided by played games; draws are included/),
+      screen.getByText(/Wins divided by games with a recorded player result; draws are included/),
     ).toBeInTheDocument();
     await user.type(screen.getByRole("searchbox"), "nobody");
     expect(screen.getByText("No nicknames match your search.")).toBeInTheDocument();
@@ -482,7 +613,7 @@ describe("StatisticsScreen", () => {
               name: "Legacy hosted game",
               isHost: true,
               participant: null,
-              rulesEdition: null,
+
               hasCasper: true,
               outcome: "cancelled",
               ratingChange: null,
@@ -499,15 +630,15 @@ describe("StatisticsScreen", () => {
       "Team breakdown",
       "Role breakdown",
       "Fouls",
-      "Fouls per played game",
+      "Fouls per game with recorded fouls",
       "Final red cards",
       "Final eliminations",
       "Recorded Best Move results",
       "Best Move hits",
       "Mean hits per recorded result",
       "Hosted games",
-      "Last hosted",
-      "Last played",
+      "Last recorded hosting date",
+      "Last recorded play date",
     ])
       expect(within(details).getAllByText(label).length).toBeGreaterThan(0);
     expect(
@@ -600,9 +731,7 @@ describe("StatisticsScreen", () => {
     const user = userEvent.setup();
     vi.mocked(getPlayerStatistics).mockResolvedValue(
       detail({
-        history: [
-          game({ ratingChange: null, unratedReason: "legacy-edition", rulesEdition: null }),
-        ],
+        history: [game({ ratingChange: null, unratedReason: "casper", hasCasper: true })],
       }),
     );
     render(
@@ -614,7 +743,7 @@ describe("StatisticsScreen", () => {
     const details = await screen.findByRole("region", { name: "Данные игрока: Alpha" });
     expect(screen.getByRole("heading", { name: "Статистика клуба" })).toBeInTheDocument();
     expect(
-      within(details).getByText("В старой редакции рейтинг не начисляется."),
+      within(details).getByText("В формате с Каспером рейтинг не начисляется."),
     ).toBeInTheDocument();
     expect(within(details).getByText("1,3")).toBeInTheDocument();
     expect(within(details).getByText("1,5")).toBeInTheDocument();

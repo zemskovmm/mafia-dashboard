@@ -1,3 +1,4 @@
+import { cancelDialog, swipeCard } from "./test-card-gestures.js";
 import {
   act,
   cleanup,
@@ -27,17 +28,16 @@ import {
   createGameLogEntry,
   createInitialGameBaseline,
   createSeededRandom,
+  assertCanonicalGameEventDraft,
   createSetup,
-  FEDERATION_RULES_EDITION,
   beginNight,
   completeMafiaShots,
   completeNight,
+  completeGoodbyeSpeech,
   skipDonCheck,
   skipSheriffCheck,
   startVoting,
   replayGameLog,
-  selectVotingCandidate,
-  toggleVote,
   resolveMafiaShots,
   toggleAllMafiaShotsForTarget,
   type CanonicalGameEventDraft,
@@ -47,6 +47,7 @@ import {
   type PlayerStatisticsRow,
   type StatisticsHistoryGame,
 } from "@mafia/game-domain";
+import { createFederationSampleGameHistory } from "./features/timeline/sample-game-data.js";
 import { ApiError, type Club, type PlayerProfile, type RemoteGameSession } from "./api/client.js";
 import { App as WelcomeApp, ClubWorkspace } from "./App.js";
 import { DEFAULT_FANCY_STUFF_SETTINGS } from "./features/effects/fancy-stuff-preferences.js";
@@ -217,7 +218,9 @@ const assignedGame: GameState = (() => {
             : "citizen";
     setup = assignRoleForSeat(setup, player.seat, role);
   }
-  return advanceSetupPhase(advanceSetupPhase(createGame(completeRoleDraw(setup))));
+  let game = createGame(completeRoleDraw(setup));
+  while (game.phase !== "day") game = advanceSetupPhase(game);
+  return game;
 })();
 
 const deferred = <T,>() => {
@@ -232,12 +235,7 @@ const deferred = <T,>() => {
 
 const federationGame = () => {
   let setup = beginRoleDraw(
-    createSetup(
-      assignedGame.players.map(({ id, seat }) => ({ id, seat })),
-      {
-        rulesEdition: FEDERATION_RULES_EDITION,
-      },
-    ),
+    createSetup(assignedGame.players.map(({ id, seat }) => ({ id, seat }))),
     createSeededRandom(13),
   );
   for (const player of assignedGame.players)
@@ -572,18 +570,17 @@ vi.mock("./features/game/GameScreen.js", async () => {
           </button>
           <button
             type="button"
-            onClick={() =>
-              onGameChange({
-                ...game,
-                phase: "voting",
-                nominations: [
-                  { candidateSeat: 2, nominatorSeat: 1, order: 1 },
-                  { candidateSeat: 3, nominatorSeat: 2, order: 2 },
-                ],
-                turnOrder: [2, 3],
-                currentTurnIndex: 0,
-              })
-            }
+            onClick={() => {
+              if (onAcceptedEvent === undefined) return;
+              for (const [index, seat] of game.turnOrder.entries()) {
+                if (index < 2)
+                  onAcceptedEvent({
+                    type: "player.nominated",
+                    payload: { nominatorSeat: seat, candidateSeat: index + 2 },
+                  });
+                onAcceptedEvent({ type: "turn.completed", payload: { seat } });
+              }
+            }}
           >
             Enter voting phase
           </button>
@@ -596,8 +593,18 @@ vi.mock("./features/game/GameScreen.js", async () => {
               if (onAcceptedEvent !== undefined) {
                 for (const player of game.players.filter(({ team }) => team === "black")) {
                   onAcceptedEvent({
-                    type: "player.red-carded",
-                    payload: { seat: player.seat },
+                    type: "discipline.removal-observed",
+                    payload: {
+                      seat: player.seat,
+                      stage: "day-discussion",
+                      rule: "6.2.1",
+                      reason: "Recorded removal",
+                      checkInProgress: false,
+                    },
+                  });
+                  onAcceptedEvent({
+                    type: "discipline.removals-announced",
+                    payload: { seats: [player.seat] },
                   });
                 }
               } else onGameChange({ ...game, phase: "finished", winner: "red" });
@@ -942,7 +949,7 @@ describe("statistics navigation and separate tournament setup", () => {
     });
     await waitFor(() => expect(api.createGameSession).toHaveBeenCalledTimes(1));
     const input = api.createGameSession.mock.calls[0]![0];
-    expect(input.state.setup.rulesEdition).toBe(FEDERATION_RULES_EDITION);
+    expect(input.state.setup).not.toHaveProperty("rulesEdition");
     const user = userEvent.setup();
     await user.click(screen.getByRole("combobox", { name: "Host player" }));
     await user.type(screen.getByRole("combobox", { name: "Host player" }), "Host");
@@ -997,7 +1004,6 @@ describe("statistics navigation and separate tournament setup", () => {
           hostPlayerId: "",
           selectedPlayerIds: Array.from({ length: 10 }, () => ""),
           setup: null,
-          rulesEdition: FEDERATION_RULES_EDITION,
         },
       },
       null,
@@ -1025,7 +1031,7 @@ describe("statistics navigation and separate tournament setup", () => {
       expect(JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).gameId).toBe(serverId),
     );
   });
-  const totals = { games: 1, wins: 1, draws: 0, losses: 0, winRate: 100 };
+  const totals = { games: 1, outcomeGames: 1, wins: 1, draws: 0, losses: 0, winRate: 100 };
   const statisticsPlayer: PlayerStatisticsRow = {
     playerId: assignedGame.players[0]!.id,
     nickname: "Player One",
@@ -1033,6 +1039,8 @@ describe("statistics navigation and separate tournament setup", () => {
     teams: { red: totals, black: totals },
     roles: { citizen: totals, sheriff: totals, mafia: totals, don: totals },
     fouls: 0,
+    foulGames: 1,
+    statusGames: 1,
     foulsPerGame: 0,
     redCards: 0,
     eliminations: 0,
@@ -1058,7 +1066,6 @@ describe("statistics navigation and separate tournament setup", () => {
     gameId,
     name: "Inspected table",
     playedAt: "2026-10-14T12:00:00Z",
-    rulesEdition: FEDERATION_RULES_EDITION,
     hasCasper: false,
     outcome: "red",
     reason: null,
@@ -1066,6 +1073,7 @@ describe("statistics navigation and separate tournament setup", () => {
     hostPlayerId,
     isHost: false,
     statisticsAvailable: true,
+    timelineAvailable: true,
     participant: {
       playerId: statisticsPlayer.playerId,
       seat: 1,
@@ -1079,7 +1087,7 @@ describe("statistics navigation and separate tournament setup", () => {
     ratingChange: null,
   });
 
-  it("returns from manager history with statistics scope, player, search and focus intact", async () => {
+  it("returns from manager history with statistics scope, player and search intact", async () => {
     api.listTournaments.mockResolvedValue(tournaments);
     const live = federationGame();
     restoreFederationCheckpoint(live);
@@ -1143,7 +1151,7 @@ describe("statistics navigation and separate tournament setup", () => {
     expect(screen.getByRole("combobox", { name: "Tournament scope" })).toHaveValue(first);
     expect(screen.getByRole("searchbox", { name: "Search nickname" })).toHaveValue("One");
     expect(screen.getByRole("region", { name: "Player details: Player One" })).toBeVisible();
-    expect(timelineOpener).toHaveFocus();
+    expect(timelineOpener).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Back to game" }));
     expect(gameScreenHarness.liveGame).toEqual(live);
   });
@@ -1600,7 +1608,7 @@ describe("statistics navigation and separate tournament setup", () => {
     await waitFor(() => expect(api.createGameSession).toHaveBeenCalledTimes(1));
     const input = api.createGameSession.mock.calls[0]![0];
     expect(input.tournamentId).toBe(first);
-    expect(input.state.setup.rulesEdition).toBe(FEDERATION_RULES_EDITION);
+    expect(input.state.setup).not.toHaveProperty("rulesEdition");
     expect(JSON.stringify(input.state)).not.toContain("tournament");
     fireEvent.change(screen.getByRole("combobox", { name: "Tournament" }), {
       target: { value: second },
@@ -2198,13 +2206,13 @@ describe("club welcome", () => {
       await user.click(clubButton);
       expect(document.querySelector(".club-entry-effect")).toBeNull();
       await waitFor(() =>
-        expect(screen.getByRole("button", { name: /^Choose another club/ })).toHaveFocus(),
+        expect(screen.getByRole("button", { name: /^Choose another club/ })).toBeVisible(),
       );
       expect(api.createGameSession).not.toHaveBeenCalled();
     },
   );
 
-  it("enters directly with readiness-based focus when club entry effects are saved off", async () => {
+  it("enters directly when club entry effects are saved off without forcing focus", async () => {
     api.getAuthSession.mockResolvedValue(authenticatedUser);
     api.listClubs.mockResolvedValue([testClub]);
     window.localStorage.setItem(
@@ -2218,14 +2226,22 @@ describe("club welcome", () => {
     expect(document.querySelector(".club-entry-source")).toBeNull();
     expect(document.querySelector(".club-entry-effect")).toBeNull();
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: /^Choose another club/ })).toHaveFocus(),
+      expect(screen.getByRole("button", { name: /^Choose another club/ })).toBeVisible(),
     );
+    const exit = screen.getByRole("button", { name: /^Choose another club/ });
+    expect(exit).not.toHaveFocus();
+    expect(document.querySelector(".club-entry-destination")).not.toHaveAttribute("tabindex");
     expect(document.querySelector(".club-entry-destination")).not.toHaveAttribute("inert");
+    // Completion still releases entryInFlight even though focus restoration is gone.
+    const user = userEvent.setup();
+    await user.click(exit);
+    await user.click(await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i }));
+    expect(await screen.findByRole("button", { name: /^Choose another club/ })).toBeVisible();
     expect(api.createGameSession).not.toHaveBeenCalled();
   });
 
   it.each([true, false])(
-    "focuses the real workspace when ownership arrives after the entry timeout (effects: %s)",
+    "opens the real workspace when ownership arrives after the entry timeout (effects: %s)",
     async (clubEntryEffects) => {
       window.localStorage.setItem(
         "mafia-dashboard.fancy-stuff.v1",
@@ -2255,7 +2271,7 @@ describe("club welcome", () => {
           ready.resolve();
           await vi.advanceTimersByTimeAsync(32);
         });
-        expect(screen.getByRole("button", { name: /^Choose another club/ })).toHaveFocus();
+        expect(screen.getByRole("button", { name: /^Choose another club/ })).toBeVisible();
         expect(document.querySelector(".club-entry-destination")).not.toHaveAttribute("inert");
       } finally {
         view.unmount();
@@ -2291,7 +2307,7 @@ describe("club welcome", () => {
     expect(screen.getByLabelText("Club name")).toHaveValue("Mafia Malaga");
   });
 
-  it("moves focus into a toolbar drawer and restores it when Escape closes the drawer", async () => {
+  it("keeps drawer focus native, ignores Escape and closes with the existing toolbar toggle", async () => {
     const user = userEvent.setup();
     render(<App />);
     const trigger = await screen.findByRole("button", { name: "Open Manage menu" });
@@ -2299,8 +2315,11 @@ describe("club welcome", () => {
     await user.click(trigger);
 
     const drawer = screen.getByRole("dialog", { name: "Manage" });
-    expect(within(drawer).getByRole("heading", { name: "Manage" })).toHaveFocus();
+    expect(within(drawer).getByRole("heading", { name: "Manage" })).not.toHaveAttribute("tabindex");
+    expect(trigger).toHaveFocus();
     await user.keyboard("{Escape}");
+    expect(drawer).toBeVisible();
+    await user.click(trigger);
 
     expect(screen.queryByRole("dialog", { name: "Manage" })).toBeNull();
     expect(trigger).toHaveFocus();
@@ -3080,7 +3099,7 @@ describe("developer menu", () => {
       speed: 2,
       strength: 0.25,
     });
-    await waitFor(() => expect(privacy).toHaveFocus());
+    expect(privacy).toBeVisible();
   });
 
   it("resets the hidden Dev tap sequence after a slow privacy tap", () => {
@@ -4052,17 +4071,28 @@ describe("developer menu", () => {
 
   it("owns voting-order selection in the live draft and never edits a preview", async () => {
     const user = userEvent.setup();
+    restoreFederationCheckpoint(
+      startVoting({
+        ...assignedGame,
+        nominations: [
+          { candidateSeat: 2, nominatorSeat: 1, order: 1 },
+          { candidateSeat: 3, nominatorSeat: 2, order: 2 },
+        ],
+      }),
+    );
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Start test game" }));
-    await user.click(await screen.findByRole("button", { name: "Enter voting phase" }));
     const order = screen.getByRole("region", { name: "Voting order" });
     await user.click(within(order).getByRole("button", { name: /#3/i }));
-    expect(screen.getByText("Game turn 1")).toBeInTheDocument();
+    expect(screen.getByText("Game turn 0")).toBeInTheDocument();
+    expect(gameScreenHarness.liveGame?.ballot?.selectedCandidateSeat).toBe(3);
     expect(gameScreenHarness.liveGame?.voteAssignments).toMatchObject({ 1: 3, 10: 3 });
     const current = JSON.parse(
       window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null",
     );
     expect(current.current.state.game.voteAssignments).toMatchObject({ 1: 3, 10: 3 });
+    expect(
+      replayGameLog(current.current.state.initialGame, current.current.state.events).game,
+    ).toEqual(current.current.state.game);
     await user.click(within(order).getByRole("button", { name: /#2/i }));
     expect(screen.getByText("Game turn 0")).toBeInTheDocument();
     expect(gameScreenHarness.liveGame?.voteAssignments).toMatchObject({ 1: 3, 10: 3 });
@@ -4215,7 +4245,7 @@ describe("developer menu", () => {
     Reflect.deleteProperty(document, "exitFullscreen");
   });
 
-  it("opens the read-only illustrated book from the single top icon and restores focus", async () => {
+  it("opens the read-only illustrated book from the single top icon and synchronizes native cancel", async () => {
     const { GameScreen: RealGameScreen } = await vi.importActual<typeof gameScreenModule>(
       "./features/game/GameScreen.js",
     );
@@ -4249,9 +4279,9 @@ describe("developer menu", () => {
         await screen.findByRole("dialog", { name: "Illustrated Mafia rulebook" }),
       ).toBeVisible();
       expect(screen.queryByLabelText("Discipline action")).not.toBeVisible();
-      await user.keyboard("{Escape}");
+      cancelDialog(screen.getByRole("dialog", { name: "Illustrated Mafia rulebook" }));
       expect(screen.queryByRole("dialog", { name: "Illustrated Mafia rulebook" })).toBeNull();
-      expect(rules).toHaveFocus();
+      expect(rules).toBeVisible();
       await user.click(rules);
       expect(
         await screen.findByRole("dialog", { name: "Illustrated Mafia rulebook" }),
@@ -4320,8 +4350,8 @@ describe("developer menu", () => {
         await waitFor(() =>
           expect(
             JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5")!).current
-              .state.setup.rulesEdition,
-          ).toBe(FEDERATION_RULES_EDITION),
+              .state.setup,
+          ).not.toHaveProperty("rulesEdition"),
         );
         for (const seat of assignedGame.players) {
           await user.click(screen.getByRole("combobox", { name: `Seat ${seat.seat} player` }));
@@ -4369,11 +4399,10 @@ describe("developer menu", () => {
         await user.click(screen.getByRole("button", { name: "Show private info" }));
         expect(gameTable.querySelectorAll(".role-badge")).toHaveLength(10);
         await waitFor(() =>
-          expect(api.saveGameSession.mock.lastCall?.[1].state.initialGame?.replayVersion).toBe(2),
+          expect(api.saveGameSession.mock.lastCall?.[1].state.initialGame?.replayVersion).toBe(3),
         );
         const saved = api.saveGameSession.mock.lastCall![1].state;
         expect(saved.game).toMatchObject({
-          rulesEdition: FEDERATION_RULES_EDITION,
           bestMoveEnabled: true,
         });
         expect(replayGameLog(saved.initialGame, saved.events).game).toEqual(saved.game);
@@ -4679,6 +4708,39 @@ describe("authoritative game session lifecycle", () => {
       }
     },
   );
+  it.each(["canonical", "statistics-only"] as const)(
+    "never resumes a completed %s detail as active or overwrites browser work",
+    async (shape) => {
+      const user = userEvent.setup();
+      const gameId = "00000000-0000-4000-8000-000000000081";
+      const active = remoteSession(gameId, "Completed race", "Host", 1, 1);
+      seedBrowserGame(testClub, gameId, "Local work");
+      const completed: RemoteGameSession = {
+        ...active,
+        status: "completed",
+        state: shape === "statistics-only" ? {} : active.state,
+        results: shape === "statistics-only" ? {} : { outcome: "red", players: [] },
+      };
+      api.getGameSession.mockResolvedValue(completed);
+      api.listActiveGameSessions.mockResolvedValue([active]);
+      render(<App />);
+      await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+      const resume = await screen.findByRole("button", { name: "Resume Completed race" });
+      const raw = window.localStorage.getItem(gameSessionStorageKey);
+      await user.click(resume);
+      await waitFor(() => expect(api.getGameSession).toHaveBeenCalledWith(gameId, testClub.id));
+      await waitFor(() =>
+        expect(
+          getErrorConsoleSnapshot().some(({ message }) =>
+            message.includes("Completed games cannot be resumed"),
+          ),
+        ).toBe(true),
+      );
+      expect(window.localStorage.getItem(gameSessionStorageKey)).toBe(raw);
+      expect(screen.queryByRole("heading", { name: "Live test game" })).not.toBeInTheDocument();
+    },
+  );
+
   it("ignores a pending resume response after that game is deleted", async () => {
     const user = userEvent.setup();
     const gameId = "00000000-0000-4000-8000-000000000081";
@@ -4997,10 +5059,8 @@ describe("authoritative game session lifecycle", () => {
         );
         const savedState = api.saveGameSession.mock.lastCall?.[1].state;
         if (savedBestMove === undefined) {
-          // Model an unfinished legacy deal, before any canonical baseline/hash exists.
+          // Model an unfinished current deal with an omitted optional Best Move preference.
           delete savedState.setup.bestMoveEnabled;
-          delete savedState.setup.rulesEdition;
-          delete savedState.setup.setup.rulesEdition;
           delete savedState.setup.clubDeviationsAcknowledged;
         }
         first.unmount();
@@ -5051,7 +5111,7 @@ describe("authoritative game session lifecycle", () => {
           new Set([gameId]),
         );
         const state = api.saveGameSession.mock.lastCall?.[1].state;
-        expect(state.initialGame.replayVersion).toBe(savedBestMove === undefined ? 1 : 2);
+        expect(state.initialGame.replayVersion).toBe(3);
         expect(replayGameLog(state.initialGame, state.events).game.players[9]).toMatchObject({
           id: "casper",
           role: "citizen",
@@ -5321,7 +5381,7 @@ describe("authoritative game session lifecycle", () => {
     );
   });
 
-  it("persists the complete browser state after an intermediate turn without adding a semantic event", async () => {
+  it("persists the complete browser state after an intermediate turn with an exact canonical turn but no semantic Log row", async () => {
     const user = userEvent.setup();
     const firstRender = render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
@@ -5349,19 +5409,26 @@ describe("authoritative game session lifecycle", () => {
       current: {
         state: {
           game: expect.objectContaining({ currentTurnIndex: 1 }),
-          events: [expect.objectContaining({ type: "game.checkpointed" })],
+          events: [
+            expect.objectContaining({ type: "game.checkpointed" }),
+            expect.objectContaining({ type: "turn.completed" }),
+          ],
         },
       },
     });
     await user.click(screen.getByRole("button", { name: "Open game log" }));
     expect(screen.queryByText("turn.completed")).toBeNull();
 
+    const saved = JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).current.state;
+    expect(replayGameLog(saved.initialGame, saved.events).game).toEqual(saved.game);
+    expect(saved.initialGame.replayVersion).toBe(3);
+    expect(JSON.stringify(saved)).not.toMatch(/rulesEdition|rulesetId|rulesetVersion/);
     firstRender.unmount();
     render(<App />);
     expect(screen.getByText("Game turn 1")).toBeInTheDocument();
   });
 
-  it("persists a day-one nominee and folds omitted turns into the Mafia shot checkpoint", async () => {
+  it("persists a day-one nominee and retains current turns through the Mafia shot checkpoint", async () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
@@ -5438,53 +5505,58 @@ describe("authoritative game session lifecycle", () => {
       };
     };
     const { state } = persisted.current;
-    expect(state.events).toHaveLength(3);
+    expect(state.events).toHaveLength(13);
+    expect(state.events.filter(({ type }) => type === "turn.completed")).toHaveLength(10);
+    for (let i = 1; i < state.events.length; i += 1)
+      expect(state.events[i]!.parentEventId).toBe(state.events[i - 1]!.id);
     expect(state.events[1]).toMatchObject({
       type: "player.nominated",
       parentEventId: state.events[0]!.id,
     });
-    expect(state.events[2]).toMatchObject({
+    expect(state.events.at(-1)).toMatchObject({
       type: "mafia.shots-resolved",
-      parentEventId: state.events[1]!.id,
+      parentEventId: state.events.at(-2)!.id,
     });
-    expect(state.headEventId).toBe(state.events[2]!.id);
+    expect(state.headEventId).toBe(state.events.at(-1)!.id);
     expect(replayGameLog(state.initialGame, state.events).game).toEqual(gameScreenHarness.liveGame);
   });
 
-  it("preserves a provisional ballot when a meaningful event is accepted", async () => {
+  it("preserves the current host ballot transcription when a meaningful event is accepted", async () => {
+    const state = startVoting({
+      ...assignedGame,
+      nominations: [
+        { nominatorSeat: 1, candidateSeat: 1, order: 1 },
+        { nominatorSeat: 2, candidateSeat: 2, order: 2 },
+      ],
+    });
+    restoreFederationCheckpoint(state);
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: "Start test game" }));
-    await screen.findByRole("heading", { name: "Live test game" });
-    const liveGame = gameScreenHarness.liveGame;
-    const changeLiveGame = gameScreenHarness.liveOnGameChange;
-    if (liveGame === null || changeLiveGame === null) {
-      throw new Error("Live game mutation callback was not captured");
-    }
-
     act(() =>
-      changeLiveGame({
-        ...liveGame,
-        day: 2,
-        phase: "voting",
-        nominations: [{ nominatorSeat: 1, candidateSeat: 4, order: 1 }],
-        turnOrder: [4],
-        currentTurnIndex: 0,
-        voteAssignments: { 1: 4 },
+      gameScreenHarness.liveOnAcceptedEvent?.({
+        type: "vote.recorded",
+        payload: { voterSeat: 1, candidateSeat: 1 },
       }),
     );
-    await waitFor(() => expect(gameScreenHarness.liveGame?.voteAssignments).toEqual({ 1: 4 }));
-
+    expect(gameScreenHarness.liveGame?.voteAssignments).toEqual({ 1: 1 });
     await user.click(screen.getByRole("button", { name: "Record meaningful checkpoint" }));
-
     expect(screen.getByText("Game fouls 1")).toBeInTheDocument();
-    expect(gameScreenHarness.liveGame?.voteAssignments).toEqual({ 1: 4 });
+    expect(gameScreenHarness.liveGame?.voteAssignments).toEqual({ 1: 1 });
+    const saved = JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).current.state;
+    expect(replayGameLog(saved.initialGame, saved.events).game).toEqual(saved.game);
   });
 
   it("replays a corrected ballot after reload, four fouls and red-card cancellation", async () => {
-    const user = userEvent.setup();
+    restoreFederationCheckpoint(
+      startVoting({
+        ...assignedGame,
+        nominations: [
+          { nominatorSeat: 1, candidateSeat: 1, order: 1 },
+          { nominatorSeat: 2, candidateSeat: 2, order: 2 },
+        ],
+      }),
+    );
     const firstRender = render(<App />);
-    await user.click(screen.getByRole("button", { name: "Start test game" }));
     await screen.findByRole("heading", { name: "Live test game" });
     const accept = (draft: CanonicalGameEventDraft) => {
       const callback = gameScreenHarness.liveOnAcceptedEvent;
@@ -5497,22 +5569,19 @@ describe("authoritative game session lifecycle", () => {
       return game;
     };
 
-    accept({ type: "player.nominated", payload: { nominatorSeat: 1, candidateSeat: 1 } });
-    for (let seat = 1; seat <= assignedGame.turnOrder.length; seat += 1) {
-      accept({ type: "turn.completed", payload: { seat } });
-      if (seat === 1) {
-        accept({ type: "player.nominated", payload: { nominatorSeat: 2, candidateSeat: 2 } });
-      }
-    }
     expect(live().phase).toBe("voting");
-    const change = gameScreenHarness.liveOnGameChange;
-    if (change === null) throw new Error("Live game mutation callback not captured");
-    act(() => change(selectVotingCandidate(live(), 2)));
-    act(() => change(toggleVote(live(), 1, 2)));
-    act(() => change(selectVotingCandidate(live(), 1)));
-    act(() => change(toggleVote(live(), 1, 1)));
-    act(() => change(selectVotingCandidate(live(), 2)));
-    expect(live().voteAssignments[1]).toBe(1);
+    accept({ type: "voting.order-announced", payload: {} });
+    accept({ type: "voting.order-announced", payload: {} });
+    accept({ type: "voting.candidate-mentioned", payload: { candidateSeat: 1 } });
+    accept({ type: "voting.candidate-mentioned", payload: { candidateSeat: 1 } });
+    accept({ type: "vote.accepted", payload: { voterSeat: 1, candidateSeat: 1 } });
+    accept({ type: "voting.candidate-stopped", payload: { candidateSeat: 1 } });
+    accept({
+      type: "vote.corrected",
+      payload: { voterSeat: 1, candidateSeat: 2, reason: "Corrected transcription" },
+    });
+    accept({ type: "voting.candidate-selected", payload: { candidateSeat: 1 } });
+    expect(live().voteAssignments[1]).toBe(2);
     const ballot = live().voteAssignments;
     await waitFor(() =>
       expect(
@@ -5526,29 +5595,26 @@ describe("authoritative game session lifecycle", () => {
     expect(live().phase).toBe("voting");
     expect(live().voteAssignments).toEqual(ballot);
 
-    for (let foulNumber = 1; foulNumber <= 4; foulNumber += 1) {
-      if (foulNumber === 2) {
-        const update = gameScreenHarness.liveOnGameChange;
-        if (update === null) throw new Error("Live game mutation callback not captured");
-        act(() => update(selectVotingCandidate(live(), 1)));
-        expect(live().currentTurnIndex).toBe(0);
-      }
-      if (foulNumber === 3) {
-        const update = gameScreenHarness.liveOnGameChange;
-        if (update === null) throw new Error("Live game mutation callback not captured");
-        act(() => update(selectVotingCandidate(live(), 2)));
-      }
-      accept({
-        type: "foul.issued",
-        payload: {
-          seat: 4,
-          foulNumber,
-          redCarded: foulNumber === 4,
-          phase: "voting",
-          currentTurnIndex: live().currentTurnIndex,
-        },
-      });
+    for (let foulNumber = 1; foulNumber <= 3; foulNumber += 1) {
+      accept({ type: "foul.issued", payload: { seat: 4, foulNumber, redCarded: false } });
+      expect(live().voteAssignments).toEqual(ballot);
     }
+    accept({
+      type: "discipline.foul-issued",
+      payload: {
+        seat: 4,
+        foulNumber: 4,
+        redCarded: true,
+        removal: {
+          seat: 4,
+          stage: "open-voting",
+          rule: "6.2.1",
+          reason: "Fourth foul",
+          checkInProgress: false,
+        },
+      },
+    });
+    accept({ type: "discipline.removals-announced", payload: { seats: [4] } });
     expect(live().phase).toBe("voting-cancelled");
     expect(live().voteAssignments).toEqual({});
     accept({ type: "phase.changed", payload: { to: "night-mafia" } });
@@ -5568,7 +5634,9 @@ describe("authoritative game session lifecycle", () => {
       state.events
         .filter(({ type }) => type === "foul.issued")
         .map(({ phaseBefore }) => phaseBefore),
-    ).toEqual(["day", "voting", "voting", "voting"]);
+    ).toEqual(["voting", "voting", "voting"]);
+    expect(state.events.some(({ type }) => type === "vote.corrected")).toBe(true);
+    expect(state.events.some(({ type }) => type === "discipline.foul-issued")).toBe(true);
   });
 
   it("persists a full game snapshot alongside semantic Log and Timeline events", async () => {
@@ -5607,7 +5675,7 @@ describe("authoritative game session lifecycle", () => {
             players: expect.arrayContaining([expect.objectContaining({ seat: 1, fouls: 1 })]),
           }),
           initialGame: expect.objectContaining({
-            replayVersion: 1,
+            replayVersion: 3,
             game: expect.objectContaining({ currentTurnIndex: 0, day: 1 }),
           }),
           events: [
@@ -5834,8 +5902,20 @@ describe("authoritative game session lifecycle", () => {
     for (const victim of red.slice(0, 3)) {
       act(() =>
         gameScreenHarness.liveOnAcceptedEvent?.({
-          type: "player.red-carded",
-          payload: { seat: victim.seat },
+          type: "discipline.removal-observed",
+          payload: {
+            seat: victim.seat,
+            stage: "day-discussion",
+            rule: "6.2.1",
+            reason: "Recorded removal",
+            checkInProgress: false,
+          },
+        }),
+      );
+      act(() =>
+        gameScreenHarness.liveOnAcceptedEvent?.({
+          type: "discipline.removals-announced",
+          payload: { seats: [victim.seat] },
         }),
       );
     }
@@ -5954,10 +6034,7 @@ describe("authoritative game session lifecycle", () => {
       .spyOn(setupWizardModule, "SetupWizard")
       .mockImplementation(RealSetupWizard);
     let setup = beginRoleDraw(
-      createSetup(
-        assignedGame.players.map(({ id, seat }) => ({ id, seat })),
-        { rulesEdition: FEDERATION_RULES_EDITION },
-      ),
+      createSetup(assignedGame.players.map(({ id, seat }) => ({ id, seat }))),
       createSeededRandom(13),
     );
     for (const player of assignedGame.players)
@@ -5967,7 +6044,6 @@ describe("authoritative game session lifecycle", () => {
       hostPlayerId,
       selectedPlayerIds: assignedGame.players.map(({ id }) => id),
       setup,
-      rulesEdition: FEDERATION_RULES_EDITION,
       bestMoveEnabled: true,
       clubDeviationsAcknowledged: ["role-reroll"],
     };
@@ -5986,13 +6062,11 @@ describe("authoritative game session lifecycle", () => {
       const first = render(<App />);
       await user.click(await screen.findByRole("button", { name: "Begin Mafia planning stage" }));
       await waitFor(() =>
-        expect(api.saveGameSession.mock.lastCall?.[1].state.game?.rulesEdition).toBe(
-          FEDERATION_RULES_EDITION,
-        ),
+        expect(api.saveGameSession.mock.lastCall?.[1].state.game?.phase).toBe("mafia-planning"),
       );
       const state = api.saveGameSession.mock.lastCall![1].state;
       expect(state.setup).toEqual(savedSetup);
-      expect(state.initialGame.replayVersion).toBe(2);
+      expect(state.initialGame.replayVersion).toBe(3);
       expect(replayGameLog(state.initialGame, state.events).game).toEqual(state.game);
       first.unmount();
       render(<App />);
@@ -6000,7 +6074,7 @@ describe("authoritative game session lifecycle", () => {
         JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5")!).current.state
           .setup,
       ).toEqual(savedSetup);
-      expect(gameScreenHarness.liveGame?.rulesEdition).toBe(FEDERATION_RULES_EDITION);
+      expect(gameScreenHarness.liveGame).not.toHaveProperty("rulesEdition");
       expect(gameScreenSpy.mock.lastCall?.[0]).not.toHaveProperty("clubDeviationsAcknowledged");
     } finally {
       cleanup();
@@ -6031,7 +6105,7 @@ describe("authoritative game session lifecycle", () => {
     const countBeforeIgnoredTap = saved().events.length;
     await user.click(card(9));
     expect(saved().events).toHaveLength(countBeforeIgnoredTap);
-    fireEvent.keyDown(card(7), { key: "f" });
+    swipeCard(card(7), 0, 70);
     await user.click(card(7));
     await user.click(card(7));
     await waitFor(() =>
@@ -6108,9 +6182,7 @@ describe("authoritative game session lifecycle", () => {
     await waitFor(() =>
       expect(api.saveGameSession.mock.lastCall?.[1].state.game.currentTurnIndex).toBe(1),
     );
-    fireEvent.keyDown(document.querySelector('.seat-anchor[data-seat="2"] > .player-seat')!, {
-      key: "f",
-    });
+    swipeCard(document.querySelector('.seat-anchor[data-seat="2"] > .player-seat')!, 0, 70);
     await user.click(screen.getByRole("button", { name: "Nominate Player 5" }));
     for (let step = 0; step < 8; step += 1)
       await user.click(screen.getByRole("button", { name: "Next player" }));
@@ -6435,7 +6507,7 @@ describe("authoritative game session lifecycle", () => {
       state: expect.objectContaining({
         game: expect.objectContaining({ phase: "finished" }),
         events: expect.arrayContaining([
-          expect.objectContaining({ phaseAfter: "finished", type: "player.red-carded" }),
+          expect.objectContaining({ phaseAfter: "finished", type: "discipline.removal-observed" }),
         ]),
       }),
     });
@@ -6450,6 +6522,8 @@ describe("authoritative game session lifecycle", () => {
     expect(gameScreenHarness.liveGame).toMatchObject({ phase: "finished", winner: "red" });
     expect(screen.getByRole("button", { name: /undo last action.*3 available/i })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: /undo last action/i }));
+    expect(gameScreenHarness.liveGame).toMatchObject({ phase: "finished", winner: "red" });
+    await user.click(screen.getByRole("button", { name: /undo last action/i }));
     expect(gameScreenHarness.liveGame).toMatchObject({ phase: "day", winner: null });
     const remainingMafia = gameScreenHarness.liveGame?.players.find(
       ({ team, status }) => team === "black" && status === "active",
@@ -6457,8 +6531,20 @@ describe("authoritative game session lifecycle", () => {
     if (remainingMafia === undefined) throw new Error("Undo did not restore a Mafia player");
     act(() =>
       gameScreenHarness.liveOnAcceptedEvent?.({
-        type: "player.red-carded",
-        payload: { seat: remainingMafia.seat },
+        type: "discipline.removal-observed",
+        payload: {
+          seat: remainingMafia.seat,
+          stage: "day-discussion",
+          rule: "6.2.1",
+          reason: "Recorded removal",
+          checkInProgress: false,
+        },
+      }),
+    );
+    act(() =>
+      gameScreenHarness.liveOnAcceptedEvent?.({
+        type: "discipline.removals-announced",
+        payload: { seats: [remainingMafia.seat] },
       }),
     );
     expect(gameScreenHarness.liveGame).toMatchObject({ phase: "finished", winner: "red" });
@@ -6997,6 +7083,52 @@ describe("authoritative game session lifecycle", () => {
   });
 });
 
+const gameAtDay = (day: number): GameState => {
+  let game = assignedGame;
+  while (game.day < day) {
+    let night = beginNight(game);
+    if ((game.cyclesWithoutElimination ?? 0) >= 2) {
+      const target = game.players.find(
+        ({ team, status }) => team === "red" && status === "active",
+      )!;
+      night = toggleAllMafiaShotsForTarget(night, target.seat);
+    }
+    game = completeNight(
+      skipSheriffCheck(skipDonCheck(completeMafiaShots(resolveMafiaShots(night).game))),
+    );
+    if (game.phase === "goodbye-speech") game = completeGoodbyeSpeech(game);
+  }
+  return game;
+};
+
+const canonicalSnapshot = (game: GameState, gameId: string) => {
+  const initialGame = createInitialGameBaseline(game);
+  const created = createGameLogEntry({
+    gameId,
+    id: crypto.randomUUID(),
+    sequence: 1,
+    parentEventId: null,
+    createdAt: "2026-10-16T12:00:00.000Z",
+    before: game,
+    draft: { type: "game.checkpointed", payload: {} },
+  });
+  return {
+    initialGame,
+    events: [created.entry],
+    headEventId: created.entry.id,
+    log: [
+      {
+        id: created.entry.id,
+        sequence: created.entry.sequence,
+        type: created.entry.type,
+        phase: created.entry.phaseBefore,
+        payload: created.entry.payload,
+        createdAt: created.entry.createdAt,
+      },
+    ],
+  };
+};
+
 const remoteSession = (
   gameId: string,
   name: string,
@@ -7009,20 +7141,15 @@ const remoteSession = (
   revision,
   duplicate: false,
   status: "active",
-  rulesetId: "club-mafia",
-  rulesetVersion: 1,
   updatedAt: "2026-08-18T09:00:00.000Z",
   state: {
     setup: null,
-    game: { ...assignedGame, day },
+    game: gameAtDay(day),
     hostPlayerId,
     playlistId: `PL-${name}`,
-    log: [],
     undoHistory: [],
     undoBudget: 0,
-    initialGame: null,
-    events: [],
-    headEventId: null,
+    ...canonicalSnapshot(gameAtDay(day), gameId),
     resetReturnEventId: null,
     legacyLog: [],
   },
@@ -7030,6 +7157,35 @@ const remoteSession = (
 });
 
 describe("undo checkpoints", () => {
+  it("dispatches the retained current drill into exact canonical save bytes and recovery", async () => {
+    const sample = createFederationSampleGameHistory();
+    restoreFederationCheckpoint(sample.baseline.game);
+    const first = render(<App />);
+    for (const entry of sample.activeEntries.slice(1)) {
+      const draft: unknown = { type: entry.type, payload: entry.payload };
+      assertCanonicalGameEventDraft(draft);
+      act(() => gameScreenHarness.liveOnAcceptedEvent?.(draft));
+      const raw = window.localStorage.getItem(gameSessionStorageKey)!;
+      const state = JSON.parse(raw).current.state;
+      const replay = replayGameLog(state.initialGame, state.events).game;
+      expect(state.game).toEqual(replay);
+      expect(gameScreenHarness.liveGame).toEqual(replay);
+      expect(state.events.at(-1).stateHashAfter).toBe(entry.stateHashAfter);
+    }
+    const raw = window.localStorage.getItem(gameSessionStorageKey)!;
+    const saved = JSON.parse(raw).current.state;
+    expect(saved.initialGame.replayVersion).toBe(3);
+    expect(JSON.stringify(saved)).not.toMatch(/rulesEdition|rulesetId|rulesetVersion/);
+    expect(saved.game).toEqual(sample.game);
+    await waitFor(() => expect(api.saveGameSession.mock.lastCall?.[1].state).toEqual(saved));
+    first.unmount();
+    render(<App />);
+    expect(gameScreenHarness.liveGame).toEqual(saved.game);
+    expect(JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).current.state).toEqual(
+      saved,
+    );
+  }, 30_000);
+
   const acceptLiveEvent = (draft: CanonicalGameEventDraft) => {
     const accept = gameScreenHarness.liveOnAcceptedEvent;
     if (accept === null) throw new Error("Live accepted-event callback was not captured");
@@ -7101,6 +7257,8 @@ describe("undo checkpoints", () => {
             expect.objectContaining({ type: "foul.issued" }),
             expect.objectContaining({ type: "foul.issued" }),
             expect.objectContaining({ type: "foul.issued" }),
+            expect.objectContaining({ type: "turn.completed" }),
+            expect.objectContaining({ type: "turn.completed" }),
           ],
         }),
       }),
@@ -7108,11 +7266,26 @@ describe("undo checkpoints", () => {
 
     api.saveGameSession.mockClear();
     await user.click(screen.getByRole("button", { name: /undo last action/i }));
+    expect(gameScreenHarness.liveGame).toMatchObject({
+      phase: "day",
+      currentTurnIndex: 1,
+      currentSpeechRestricted: true,
+    });
+    expect(
+      gameScreenHarness.liveGame?.players.find(({ seat }) => seat === targetSeat),
+    ).toMatchObject({ fouls: 3, mutePending: true });
+    expect(screen.getByRole("button", { name: /undo last action.*2 available/i })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: /undo last action/i }));
+    expect(
+      gameScreenHarness.liveGame?.players.find(({ seat }) => seat === targetSeat),
+    ).toMatchObject({ fouls: 3, mutePending: true });
+    expect(screen.getByRole("button", { name: /undo last action.*1 available/i })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: /undo last action/i }));
     expect(gameScreenHarness.liveGame).toMatchObject({ phase: "day", currentTurnIndex: 0 });
     expect(
       gameScreenHarness.liveGame?.players.find(({ seat }) => seat === targetSeat),
     ).toMatchObject({ fouls: 2, mutePending: false, status: "active" });
-    expect(screen.getByRole("button", { name: /undo last action.*2 available/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /undo last action.*0 available/i })).toBeDisabled();
     await waitFor(() =>
       expect(api.saveGameSession.mock.calls.at(-1)?.[1]).toMatchObject({
         kind: "snapshot",
@@ -7141,7 +7314,16 @@ describe("undo checkpoints", () => {
     }
 
     for (const seat of blackSeats) {
-      acceptLiveEvent({ type: "player.red-carded", payload: { seat } });
+      acceptLiveEvent({
+        type: "discipline.removal-observed",
+        payload: {
+          seat,
+          stage: "day-discussion",
+          rule: "6.2.1",
+          reason: "Recorded removal",
+          checkInProgress: false,
+        },
+      });
       await waitFor(() =>
         expect(
           gameScreenHarness.liveGame?.players.find((player) => player.seat === seat)?.status,
@@ -7166,7 +7348,7 @@ describe("undo checkpoints", () => {
           expect.objectContaining({ type: "game.checkpointed" }),
           ...blackSeats
             .slice(0, -1)
-            .map(() => expect.objectContaining({ type: "player.red-carded" })),
+            .map(() => expect.objectContaining({ type: "discipline.removal-observed" })),
         ],
       }),
     });

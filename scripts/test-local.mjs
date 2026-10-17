@@ -9,12 +9,7 @@ export function testCommand(args) {
   throw new Error("Usage: npm run test:local [-- -- command args...] or npm run check:local");
 }
 
-export function runnerMode(args) {
-  if (args[0] === "--postgres") return { mode: "postgres", args: args.slice(1) };
-  return { mode: "azure", args };
-}
-
-const safeAzureTestEnvironment = (fixture) => {
+export const ownedAzuriteEnvironment = (fixture) => {
   const connection = fixture?.AZURE_STORAGE_CONNECTION_STRING;
   const segments =
     typeof connection === "string"
@@ -42,6 +37,8 @@ const safeAzureTestEnvironment = (fixture) => {
           endpoint.protocol === "http:" &&
           endpoint.hostname === "127.0.0.1" &&
           endpoint.port !== "" &&
+          endpoint.username === "" &&
+          endpoint.password === "" &&
           endpoint.pathname === "/mafiatest" &&
           endpoint.search === "" &&
           endpoint.hash === ""
@@ -54,50 +51,38 @@ const safeAzureTestEnvironment = (fixture) => {
     throw new Error("Expected an owned loopback Azurite test fixture");
   return Object.fromEntries(
     [
+      "STORAGE_PROVIDER",
       "AZURE_STORAGE_CONNECTION_STRING",
       "AZURE_STORAGE_TABLE_NAME",
       "AZURE_STORAGE_CONTAINER_NAME",
       "AZURE_STORAGE_PARTITION_KEY",
-    ].map((key) => [`TEST_${key}`, fixture[key]]),
+      "AZURE_STORAGE_INITIALIZE",
+    ].map((key) => [key, fixture[key]]),
   );
 };
-export function testEnvironment(url, source = process.env, referenceUrl) {
-  const azure = typeof url === "object" ? safeAzureTestEnvironment(url) : undefined;
-  if (azure) {
-    const environment = {};
-    for (const key of ["PATH", "HOME", "TMPDIR", "TMP", "TEMP", "SystemRoot", "TERM", "CI", "TZ"]) {
-      if (source[key] !== undefined) environment[key] = source[key];
-    }
-    const reference =
-      referenceUrl === undefined
-        ? {}
-        : {
-            TEST_DATABASE_URL: testEnvironment(referenceUrl, {}).TEST_DATABASE_URL,
-          };
-    return { ...environment, LC_ALL: "C", ...azure, ...reference };
-  }
-  const target = new URL(url);
-  if (
-    target.protocol !== "postgresql:" ||
-    target.hostname !== "127.0.0.1" ||
-    target.pathname !== "/mafia_test" ||
-    !target.port ||
-    target.search ||
-    target.hash
-  )
-    throw new Error("Expected an owned loopback test database");
+export function testEnvironment(fixture, source = process.env) {
+  const azure = ownedAzuriteEnvironment(fixture);
   const environment = {};
   for (const key of ["PATH", "HOME", "TMPDIR", "TMP", "TEMP", "SystemRoot", "TERM", "CI", "TZ"]) {
     if (source[key] !== undefined) environment[key] = source[key];
   }
-  return { ...environment, LC_ALL: "C", TEST_DATABASE_URL: url };
+  return {
+    ...environment,
+    LC_ALL: "C",
+    ...Object.fromEntries(
+      [
+        "AZURE_STORAGE_CONNECTION_STRING",
+        "AZURE_STORAGE_TABLE_NAME",
+        "AZURE_STORAGE_CONTAINER_NAME",
+        "AZURE_STORAGE_PARTITION_KEY",
+      ].map((key) => [`TEST_${key}`, azure[key]]),
+    ),
+  };
 }
 
 export async function runTests(args = process.argv.slice(2)) {
-  const { mode, args: commandOptions } = runnerMode(args);
-  const [command, ...commandArgs] = testCommand(commandOptions);
+  const [command, ...commandArgs] = testCommand(args);
   let fixture;
-  let referenceFixture;
   let child;
   let interrupted = 0;
   let killTimer;
@@ -122,26 +107,13 @@ export async function runTests(args = process.argv.slice(2)) {
   process.on("SIGINT", onInt);
   process.on("SIGTERM", onTerm);
   try {
-    if (mode === "postgres") {
-      const { startPostgres } = await import("./local-postgres.mjs");
-      fixture = await startPostgres({ disposable: true });
-    } else {
-      const { startAzurite } = await import("./local-azurite.mjs");
-      fixture = await startAzurite({ mode: "test" });
-      // Existing SQL suites are retained as reference coverage during transition.
-      // Normal Azure development stays SQL-free, but checks must execute them.
-      const { startPostgres } = await import("./local-postgres.mjs");
-      referenceFixture = await startPostgres({ disposable: true });
-    }
+    const { startAzurite } = await import("./local-azurite.mjs");
+    fixture = await startAzurite({ mode: "test" });
     if (interrupted) return interrupted;
     // Explicit argv, no shell; only the requested child receives the owned fixture.
     child = spawn(command, commandArgs, {
       cwd: fileURLToPath(new URL("../", import.meta.url)),
-      env: testEnvironment(
-        mode === "postgres" ? fixture.url : fixture.environment,
-        process.env,
-        referenceFixture?.url,
-      ),
+      env: testEnvironment(fixture.environment),
       stdio: "inherit",
       detached: true,
     });
@@ -154,11 +126,7 @@ export async function runTests(args = process.argv.slice(2)) {
     clearTimeout(killTimer);
     killGroup("SIGKILL");
     try {
-      try {
-        await fixture?.stop();
-      } finally {
-        await referenceFixture?.stop();
-      }
+      await fixture?.stop();
     } finally {
       process.off("SIGINT", onInt);
       process.off("SIGTERM", onTerm);

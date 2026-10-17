@@ -1,19 +1,5 @@
-.dev-glass-controls {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-}
-.dev-glass-controls summary {
-  min-height: 48px;
-  padding: 14px;
-  cursor: pointer;
-}
 .dev-glass-fields {
-  display: grid;
   gap: 8px;
-  padding: 0 12px 12px;
-}
-.dev-glass-fields :is(button, input, select) {
-  min-height: 48px;
 }
 :is(.dev-glass-advanced, .dev-player-card-appearance) {
   min-width: 0;

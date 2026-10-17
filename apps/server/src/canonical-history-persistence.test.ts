@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+
 import { hashGameState, isSecretGameEventType, replayGameLog } from "@mafia/game-domain";
 import { buildApp } from "./app.js";
 import { AzureAccountStore } from "./azure-account-store.js";
@@ -8,11 +8,9 @@ import { AzureClubStore, AzurePlayerStore } from "./azure-club-player-store.js";
 import { AzureEventStore, AzureGameSessionStore } from "./azure-game-session-store.js";
 import { AzureTournamentStore } from "./azure-tournament-store.js";
 import { AzureStorage, blobReference } from "./azure-storage.js";
-import { DEFAULT_CLUB_ID } from "./club-store.js";
-import { initializeSchema } from "./initialize-schema.js";
-import { createPostgresStores, type ApplicationStores } from "./storage-contracts.js";
+import type { ApplicationStores } from "./storage-contracts.js";
 import type { FinalGameResults, GameSessionState } from "./game-session-store.js";
-import type { AppUser } from "./google-auth.js";
+
 import { createStorageFixture } from "./test-helpers/storage-fixture.js";
 import {
   buildAcceptedResults,
@@ -145,100 +143,7 @@ const openAzure = async (): Promise<Context> => {
   }
 };
 
-const openPostgres = async (): Promise<Context> => {
-  // No personal/configured fallback. The protected runner supplies a disposable
-  // database; an unwrapped invocation fails before connecting or issuing DDL.
-  const databaseUrl = process.env.TEST_DATABASE_URL;
-  if (!databaseUrl) throw new Error("Run canonical persistence via npm run test:local");
-  const target = new URL(databaseUrl);
-  if (
-    target.protocol !== "postgresql:" ||
-    target.hostname !== "127.0.0.1" ||
-    target.pathname !== "/mafia_test" ||
-    !target.port ||
-    target.search ||
-    target.hash
-  )
-    throw new Error("Expected the owned loopback PostgreSQL fixture");
-  const schemaName = `canonical_history_${randomUUID().replaceAll("-", "")}`;
-  const schemaPool = new Pool({ connectionString: databaseUrl });
-  let pool = new Pool({ connectionString: databaseUrl, options: `-c search_path=${schemaName}` });
-  try {
-    await schemaPool.query(`CREATE SCHEMA ${schemaName}`);
-    await initializeSchema(pool);
-    const actor: AppUser = {
-      id: "00000000-0000-4000-8000-000000000001",
-      email: "owner@mafiamalaga.es",
-      name: "Owner",
-      picture: null,
-    };
-    const stores = () => createPostgresStores(pool);
-    const makeApp = () =>
-      buildApp({
-        stores: stores(),
-        defaultClubId: DEFAULT_CLUB_ID,
-        authenticateRequest: async () => actor,
-      });
-    const context: Context = {
-      app: await makeApp(),
-      clubId: DEFAULT_CLUB_ID,
-      stores,
-      raw: async (gameId) => {
-        const row = (
-          await pool.query<RawRecord>(
-            "SELECT state, results FROM game_sessions WHERE id = $1 AND club_id = $2",
-            [gameId, DEFAULT_CLUB_ID],
-          )
-        ).rows[0];
-        if (!row) throw new Error("Missing accepted PostgreSQL game");
-        return row;
-      },
-      projections: async (gameId) => {
-        const summary = (
-          await pool.query("SELECT outcome, winner, reason FROM game_results WHERE game_id = $1", [
-            gameId,
-          ])
-        ).rows[0];
-        if (!summary) throw new Error("Missing PostgreSQL completed projection");
-        const players = (
-          await pool.query<{
-            playerId: string;
-            status: string;
-            won: boolean | null;
-            bestMoveHits: number | null;
-          }>(
-            'SELECT player_id AS "playerId", final_status AS status, won, best_move_hits AS "bestMoveHits" FROM game_player_results WHERE game_id = $1',
-            [gameId],
-          )
-        ).rows;
-        return { ...summary, players };
-      },
-      reopen: async () => {
-        await context.app.close();
-        await pool.end();
-        pool = new Pool({ connectionString: databaseUrl, options: `-c search_path=${schemaName}` });
-        context.app = await makeApp();
-      },
-      close: async () => {
-        try {
-          await context.app.close();
-        } finally {
-          await pool.end();
-          await schemaPool.query(`DROP SCHEMA IF EXISTS ${schemaName} CASCADE`);
-          await schemaPool.end();
-        }
-      },
-    };
-    return context;
-  } catch (error) {
-    await pool.end();
-    await schemaPool.query(`DROP SCHEMA IF EXISTS ${schemaName} CASCADE`);
-    await schemaPool.end();
-    throw error;
-  }
-};
-
-const createRecord = async (context: Context, federation = true, viaHttp = true) => {
+const createRecord = async (context: Context, viaHttp = true) => {
   const headers = { "x-club-id": context.clubId };
   const ids: string[] = [];
   for (let index = 0; index < 11; index += 1) {
@@ -253,7 +158,7 @@ const createRecord = async (context: Context, federation = true, viaHttp = true)
   }
   const host = ids[0]!;
   const players = ids.slice(1);
-  const draft = generateRoleDeal(host, players, federation).draftState;
+  const draft = generateRoleDeal(host, players).draftState;
   const creationId = randomUUID();
   const creation = { creationId, name: "Canonical draft", state: draft, results: null };
   let created: { gameId: string };
@@ -277,15 +182,16 @@ const createRecord = async (context: Context, federation = true, viaHttp = true)
   expect(draft.initialGame).toBeNull();
   expect(draft.events).toEqual([]);
   expect(draft.game).toBeNull();
-  expect(draft.setup.step).toBe("role-draw");
-  expect(Object.keys(draft.setup.assignments)).toHaveLength(1);
+  expect(draft.setup.step).toBe("roles");
+  expect(draft.setup.setup.step).toBe("role-draw");
+  expect(Object.keys(draft.setup.setup.assignments)).toHaveLength(1);
   // Gameplay starts only after the server-issued identity and completed deal.
   return {
     gameId: created.gameId,
     creationId,
     headers,
     url,
-    history: createCanonicalHistory(created.gameId, host, players, federation),
+    history: createCanonicalHistory(created.gameId, host, players),
   };
 };
 
@@ -303,11 +209,7 @@ const verifyCanonical = (actual: unknown, expected: CanonicalSnapshot, gameId: s
   );
   expect(state.headEventId).toBe(state.events.at(-1)?.id);
   expect(
-    state.events.every(
-      ({ replayVersion, rulesEdition }) =>
-        replayVersion === state.initialGame.replayVersion &&
-        rulesEdition === state.initialGame.rulesEdition,
-    ),
+    state.events.every(({ replayVersion }) => replayVersion === state.initialGame.replayVersion),
   ).toBe(true);
   // Negative control: the replay proof actually rejects a changed retained hash.
   const corrupt = state.events.map((entry, index) =>
@@ -433,7 +335,7 @@ const verifyEventViews = async (context: Context, gameId: string, state: Canonic
   expect(hostEvents.map(({ payload }) => payload)).toEqual(
     state.events.map(({ payload }) => payload),
   );
-  // /events remains a lossy version-1 projection, NOT canonical v2 authority.
+  // /events remains a lossy transport projection, NOT canonical replay authority.
   expect(
     hostEvents.every(
       ({ replayVersion, parentEventId, stateHashAfter }) =>
@@ -494,338 +396,302 @@ const verifyViews = async (
     });
 };
 
-for (const [provider, open] of [
-  ["Azure Table/Blob", openAzure],
-  ["PostgreSQL", openPostgres],
-] as const) {
-  describe(`${provider} canonical-history persistence`, () => {
-    let context: Context;
-    beforeAll(async () => {
-      context = await open();
-    });
-    afterAll(async () => {
-      await context?.close();
-    });
+describe("Azure Table/Blob canonical-history persistence", () => {
+  let context: Context;
+  beforeAll(async () => {
+    context = await openAzure();
+  });
+  afterAll(async () => {
+    await context?.close();
+  });
 
-    it.each([false, true])(
-      "round-trips multi-speaker selections through the browser outbox, lost HTTP reply and reopened stores (federation=%s)",
-      async (federation) => {
-        const { history, gameId, headers, url } = await createRecord(context, federation);
+  it.each([false, true])(
+    "round-trips multi-speaker selections through the browser outbox, lost HTTP reply and reopened stores (HTTP creation=%s)",
+    async (viaHttp) => {
+      const { history, gameId, headers, url } = await createRecord(context, viaHttp);
+      history.append({
+        type: "player.nominated",
+        payload: { nominatorSeat: 1, candidateSeat: 7 },
+      });
+      const oldNomination = history.snapshot();
+      expect(oldNomination.game.nominations[0]).not.toHaveProperty("supporterSeats");
+      await saveAndRead(context, gameId, oldNomination);
+      history.append({ type: "turn.completed", payload: { seat: 1 } });
+      const select = (nominatorSeat: number, candidateSeat: number, selected = true) =>
         history.append({
-          type: "player.nominated",
-          payload: { nominatorSeat: 1, candidateSeat: 7 },
+          type: "nomination.selection-set",
+          payload: { nominatorSeat, candidateSeat, selected },
         });
-        const oldNomination = history.snapshot();
-        expect(oldNomination.game.nominations[0]).not.toHaveProperty("supporterSeats");
-        await saveAndRead(context, gameId, oldNomination);
-        history.append({ type: "turn.completed", payload: { seat: 1 } });
-        const select = (nominatorSeat: number, candidateSeat: number, selected = true) =>
-          history.append({
-            type: "nomination.selection-set",
-            payload: { nominatorSeat, candidateSeat, selected },
+      select(2, 7);
+      select(2, 8);
+      history.append({ type: "turn.completed", payload: { seat: 2 } });
+      select(3, 7);
+      select(3, 8);
+      select(3, 9);
+      history.append({
+        type: "foul.issued",
+        payload: { seat: 10, foulNumber: 1, redCarded: false },
+      });
+      const supported = history.snapshot();
+      await saveAndRead(context, gameId, supported, null, false);
+      select(3, 7, false);
+      select(3, 9, false);
+      history.append({
+        type: "foul.issued",
+        payload: { seat: 6, foulNumber: 1, redCarded: false },
+      });
+      const removed = history.snapshot();
+      expect(removed.game.nominations).toEqual([
+        { nominatorSeat: 1, candidateSeat: 7, order: 1, supporterSeats: [2] },
+        { nominatorSeat: 2, candidateSeat: 8, order: 2, supporterSeats: [3] },
+      ]);
+      // The shared server-only fixture omits playlistId; the real browser
+      // envelope requires it even when no playlist is selected.
+      const browserRemoved = { ...removed, playlistId: "" };
+      await saveAndRead(context, gameId, browserRemoved);
+      select(3, 9);
+      select(3, 7);
+      const accepted = history.snapshot();
+      expect(accepted.events.slice(0, supported.events.length)).toEqual(supported.events);
+      expect(accepted.game.nominations).toEqual([
+        {
+          nominatorSeat: 1,
+          candidateSeat: 7,
+          order: 1,
+          supporterSeats: [2, 3],
+        },
+        { nominatorSeat: 2, candidateSeat: 8, order: 2, supporterSeats: [3] },
+        { nominatorSeat: 3, candidateSeat: 9, order: 3 },
+      ]);
+      expect(accepted.game.voteAssignments).toEqual({});
+      expect(
+        accepted.game.players.filter(({ fouls }) => fouls === 1).map(({ seat }) => seat),
+      ).toEqual([6, 10]);
+      const state = { ...accepted, playlistId: "" };
+      type BrowserState = typeof state;
+      type BrowserOperation = {
+        kind: "snapshot";
+        mutationId: string;
+        name: string;
+        state: BrowserState;
+        results: null;
+      };
+      type BrowserOutbox = {
+        activateRemote: (session: unknown) => void;
+        enqueue: (name: string, state: BrowserState, results: null) => void;
+        flush: () => Promise<void>;
+        readonly current: { state: BrowserState } | null;
+        readonly pendingCount: number;
+      };
+      const source = new URL("../../web/src/session-outbox.ts", import.meta.url).href;
+      // eslint-disable-next-line no-unsanitized/method -- Fixed local production browser module; no custom transport implementation.
+      const { GameSessionOutbox } = (await import(/* @vite-ignore */ source)) as {
+        GameSessionOutbox: new (options: {
+          storage: Storage;
+          clubId: string;
+          createId: () => string;
+          save: (id: string, operation: BrowserOperation) => Promise<{ revision: number }>;
+        }) => BrowserOutbox;
+      };
+      const storageSource = new URL("../../web/src/browser-game-storage.ts", import.meta.url).href;
+      // eslint-disable-next-line no-unsanitized/method -- Fixed local production browser admission module.
+      const { prepareBrowserGameStorage } = (await import(/* @vite-ignore */ storageSource)) as {
+        prepareBrowserGameStorage: (options: { localStorage: Storage }) => Promise<unknown>;
+      };
+      const values = new Map<string, string>();
+      const storage: Storage = {
+        get length() {
+          return values.size;
+        },
+        clear: () => values.clear(),
+        getItem: (key) => values.get(key) ?? null,
+        key: (index) => [...values.keys()][index] ?? null,
+        removeItem: (key) => void values.delete(key),
+        setItem: (key, value) => void values.set(key, value),
+      };
+      const writes: BrowserOperation[] = [];
+      const options = {
+        storage,
+        clubId: context.clubId,
+        createId: randomUUID,
+        save: async (id: string, operation: BrowserOperation) => {
+          expect(id).toBe(gameId);
+          writes.push(jsonRoundTrip(operation));
+          const response = await context.app.inject({
+            method: "PUT",
+            url,
+            headers,
+            payload: operation,
           });
-        select(2, 7);
-        select(2, 8);
-        history.append({ type: "turn.completed", payload: { seat: 2 } });
-        select(3, 7);
-        select(3, 8);
-        select(3, 9);
-        history.append({
-          type: "foul.issued",
-          payload: { seat: 10, foulNumber: 1, redCarded: false },
-        });
-        const supported = history.snapshot();
-        await saveAndRead(context, gameId, supported, null, false);
-        select(3, 7, false);
-        select(3, 9, false);
-        history.append({
-          type: "foul.issued",
-          payload: { seat: 6, foulNumber: 1, redCarded: false },
-        });
-        const removed = history.snapshot();
-        expect(removed.game.nominations).toEqual([
-          { nominatorSeat: 1, candidateSeat: 7, order: 1, supporterSeats: [2] },
-          { nominatorSeat: 2, candidateSeat: 8, order: 2, supporterSeats: [3] },
-        ]);
-        // The shared server-only fixture omits playlistId; the real browser
-        // envelope requires it even when no playlist is selected.
-        const browserRemoved = { ...removed, playlistId: "" };
-        await saveAndRead(context, gameId, browserRemoved);
-        select(3, 9);
-        select(3, 7);
-        const accepted = history.snapshot();
-        expect(accepted.events.slice(0, supported.events.length)).toEqual(supported.events);
-        expect(accepted.game.nominations).toEqual([
-          {
-            nominatorSeat: 1,
-            candidateSeat: 7,
-            order: 1,
-            supporterSeats: [2, 3],
-          },
-          { nominatorSeat: 2, candidateSeat: 8, order: 2, supporterSeats: [3] },
-          { nominatorSeat: 3, candidateSeat: 9, order: 3 },
-        ]);
-        expect(accepted.game.voteAssignments).toEqual({});
-        expect(
-          accepted.game.players.filter(({ fouls }) => fouls === 1).map(({ seat }) => seat),
-        ).toEqual([6, 10]);
-        const state = { ...accepted, playlistId: "" };
-        type BrowserState = typeof state;
-        type BrowserOperation = {
-          kind: "snapshot";
-          mutationId: string;
-          name: string;
-          state: BrowserState;
-          results: null;
-        };
-        type BrowserOutbox = {
-          activateRemote: (session: unknown) => void;
-          enqueue: (name: string, state: BrowserState, results: null) => void;
-          flush: () => Promise<void>;
-          readonly current: { state: BrowserState } | null;
-          readonly pendingCount: number;
-        };
-        const source = new URL("../../web/src/session-outbox.ts", import.meta.url).href;
-        // eslint-disable-next-line no-unsanitized/method -- Fixed local production browser module; no custom transport implementation.
-        const { GameSessionOutbox } = (await import(/* @vite-ignore */ source)) as {
-          GameSessionOutbox: new (options: {
-            storage: Storage;
-            clubId: string;
-            createId: () => string;
-            save: (id: string, operation: BrowserOperation) => Promise<{ revision: number }>;
-          }) => BrowserOutbox;
-        };
-        const storageSource = new URL("../../web/src/browser-game-storage.ts", import.meta.url)
-          .href;
-        // eslint-disable-next-line no-unsanitized/method -- Fixed local production browser admission module.
-        const { prepareBrowserGameStorage } = (await import(/* @vite-ignore */ storageSource)) as {
-          prepareBrowserGameStorage: (options: { localStorage: Storage }) => Promise<unknown>;
-        };
-        const values = new Map<string, string>();
-        const storage: Storage = {
-          get length() {
-            return values.size;
-          },
-          clear: () => values.clear(),
-          getItem: (key) => values.get(key) ?? null,
-          key: (index) => [...values.keys()][index] ?? null,
-          removeItem: (key) => void values.delete(key),
-          setItem: (key, value) => void values.set(key, value),
-        };
-        const writes: BrowserOperation[] = [];
-        const options = {
-          storage,
+          expect(response.statusCode, response.body).toBe(200);
+          await readAndVerify(context, gameId, state);
+          if (writes.length === 1) throw new Error("Nomination reply lost after actual commit");
+          return response.json() as { revision: number };
+        },
+      };
+      const initialRead = await context.app.inject({ url, headers });
+      expect(initialRead.statusCode, initialRead.body).toBe(200);
+      const outbox = new GameSessionOutbox(options);
+      outbox.activateRemote(initialRead.json().session);
+      outbox.enqueue("Durable card selections", state, null);
+      await expect(outbox.flush()).rejects.toThrow("Nomination reply lost after actual commit");
+      expect(outbox.pendingCount).toBe(1);
+      const raw = storage.getItem("mafia-dashboard.game-session.v5");
+      await context.reopen();
+      expect(await prepareBrowserGameStorage({ localStorage: storage })).toMatchObject({
+        kind: "ready",
+        attachment: {
           clubId: context.clubId,
-          createId: randomUUID,
-          save: async (id: string, operation: BrowserOperation) => {
-            expect(id).toBe(gameId);
-            writes.push(jsonRoundTrip(operation));
-            const response = await context.app.inject({
-              method: "PUT",
-              url,
-              headers,
-              payload: operation,
-            });
-            expect(response.statusCode, response.body).toBe(200);
-            await readAndVerify(context, gameId, state);
-            if (writes.length === 1) throw new Error("Nomination reply lost after actual commit");
-            return response.json() as { revision: number };
-          },
-        };
-        const initialRead = await context.app.inject({ url, headers });
-        expect(initialRead.statusCode, initialRead.body).toBe(200);
-        const outbox = new GameSessionOutbox(options);
-        outbox.activateRemote(initialRead.json().session);
-        outbox.enqueue("Durable card selections", state, null);
-        await expect(outbox.flush()).rejects.toThrow("Nomination reply lost after actual commit");
-        expect(outbox.pendingCount).toBe(1);
-        const raw = storage.getItem("mafia-dashboard.game-session.v5");
-        await context.reopen();
-        expect(await prepareBrowserGameStorage({ localStorage: storage })).toMatchObject({
-          kind: "ready",
-          attachment: {
-            clubId: context.clubId,
-            gameId,
-            pendingCount: 1,
-            unresolved: true,
-          },
-        });
-        expect(storage.getItem("mafia-dashboard.game-session.v5")).toBe(raw);
-        const restored = new GameSessionOutbox(options);
-        const remote = await context.app.inject({ url, headers });
-        expect(remote.statusCode, remote.body).toBe(200);
-        restored.activateRemote(remote.json().session);
-        expect(restored.current?.state).toEqual(state);
-        await restored.flush();
-        expect(writes).toHaveLength(2);
-        expect(writes[1]).toEqual(writes[0]);
-        expect(restored.pendingCount).toBe(0);
-        const reloaded = new GameSessionOutbox(options);
-        expect(reloaded.current?.state).toEqual(state);
-        verifyCanonical(reloaded.current!.state, state, gameId);
-        await readAndVerify(context, gameId, state);
-        await verifyEventViews(context, gameId, state);
-        const replay = replayGameLog(state.initialGame, state.events, gameId);
-        expect(
-          replay.frames.find(({ entry }) => entry.type === "player.nominated")!.after
-            .nominations[0],
-        ).not.toHaveProperty("supporterSeats");
-        expect(replay.game.nominations[2]).not.toHaveProperty("supporterSeats");
-        history.append({ type: "phase.changed", payload: { to: "voting" } });
-        const ballot = { ...history.snapshot(), playlistId: "" };
-        expect(ballot.game.nominations.map(({ candidateSeat }) => candidateSeat)).toEqual([
-          7, 8, 9,
-        ]);
-        expect(ballot.game.voteAssignments).toEqual({});
-        await saveAndRead(context, gameId, ballot);
-        await context.reopen();
-        await readAndVerify(context, gameId, ballot);
-        await verifyEventViews(context, gameId, ballot);
-      },
-    );
-
-    it.each([
-      { losingTeam: "black", completion: "finished-early" },
-      { losingTeam: "red", completion: "declined" },
-    ] as const)(
-      "replays $completion Best Move, disputed/ruled ballot and $losingTeam losing-team adjudication after actual save/reload",
-      async ({ losingTeam, completion }) => {
-        const record = await createRecord(context);
-        const { history, gameId, creationId, headers, url } = record;
-        await saveAndRead(context, gameId, history.snapshot());
-        const stages = generateBestMoveAndBallot(history, completion);
-        expect(stages.partialBestMove.game.bestMove?.selectedSeats).toEqual(
-          completion === "declined" ? [] : [stages.victim, stages.blackSeat],
-        );
-        expect(stages.partialBestMove.game.bestMove).not.toHaveProperty("completionReason");
-        expect(stages.finalizedBestMove.game.bestMove).toMatchObject({
-          completionReason: completion,
-          readbackAcknowledged: true,
-          mafiaHits: completion === "declined" ? 0 : 1,
-        });
-        expect(stages.dispute.game.ballot?.dispute).toBeDefined();
-        expect(stages.ruling.game.ballot).toMatchObject({
-          reviewedCandidateSeats: [stages.dispute.game.ballot!.dispute!.candidateSeat],
-          finalRuling: { externalReviewAcknowledged: true },
-        });
-        expect(stages.ruling.game.ballot?.dispute).toBeUndefined();
-        for (const [index, state] of [
-          stages.partialBestMove,
-          stages.finalizedBestMove,
-          stages.dispute,
-          stages.ruling,
-          stages.closedBallot,
-        ].entries())
-          await saveAndRead(context, gameId, state, null, index % 2 === 0);
-        const beforeRuling = history.snapshot();
-        const offenderSeat = history
-          .current()
-          .players.find(({ team, status }) => team === losingTeam && status === "active")!.seat;
-        history.append({
-          type: "game.adjudicated",
-          payload: {
-            losingTeam,
-            offenderSeat,
-            rule: "6.3.5",
-            reason: "ППК — reasoned opponent victory, committee agreement recorded",
-            committeeApproved: true,
-          },
-        });
-        const pendingFinish = history.snapshot();
-        expect(pendingFinish.game.players).toEqual(beforeRuling.game.players);
-        await saveAndRead(context, gameId, pendingFinish);
-        history.append({
-          type: "game.completed",
-          payload: { winner: losingTeam === "black" ? "red" : "black" },
-        });
-        const completed = history.snapshot();
-        const results = await buildAcceptedResults(completed);
-        expect(results).toMatchObject({
-          outcome: completed.game.winner,
-          winner: completed.game.winner,
-          reason: null,
-          adjudication: completed.game.adjudication,
-        });
-        await saveAndRead(context, gameId, completed, results, false);
-        await context.reopen();
-        await readAndVerify(context, gameId, completed, results);
-        await verifyViews(context, gameId, completed, results);
-        const retry = await context.app.inject({
-          method: "POST",
-          url: "/api/game-sessions",
-          headers,
-          payload: {
-            creationId,
-            name: "Stale draft creation retry",
-            state: history.draftState,
-            results: null,
-          },
-        });
-        expect(retry.statusCode, retry.body).toBe(200);
-        expect(retry.json()).toMatchObject({ gameId, duplicate: true });
-        verifyCanonical(retry.json().state, completed, gameId);
-        expect(retry.json().results).toEqual(results);
-        verifyCanonical(
-          (await context.app.inject({ url, headers })).json().session.state,
-          completed,
           gameId,
-        );
-        expect(completed.initialGame.replayVersion).toBe(2);
-        expect(completed.events.every(({ replayVersion }) => replayVersion === 2)).toBe(true);
-      },
-    );
+          pendingCount: 1,
+          unresolved: true,
+        },
+      });
+      expect(storage.getItem("mafia-dashboard.game-session.v5")).toBe(raw);
+      const restored = new GameSessionOutbox(options);
+      const remote = await context.app.inject({ url, headers });
+      expect(remote.statusCode, remote.body).toBe(200);
+      restored.activateRemote(remote.json().session);
+      expect(restored.current?.state).toEqual(state);
+      await restored.flush();
+      expect(writes).toHaveLength(2);
+      expect(writes[1]).toEqual(writes[0]);
+      expect(restored.pendingCount).toBe(0);
+      const reloaded = new GameSessionOutbox(options);
+      expect(reloaded.current?.state).toEqual(state);
+      verifyCanonical(reloaded.current!.state, state, gameId);
+      await readAndVerify(context, gameId, state);
+      await verifyEventViews(context, gameId, state);
+      const replay = replayGameLog(state.initialGame, state.events, gameId);
+      expect(
+        replay.frames.find(({ entry }) => entry.type === "player.nominated")!.after.nominations[0],
+      ).not.toHaveProperty("supporterSeats");
+      expect(replay.game.nominations[2]).not.toHaveProperty("supporterSeats");
+      history.append({ type: "phase.changed", payload: { to: "voting" } });
+      const ballot = { ...history.snapshot(), playlistId: "" };
+      expect(ballot.game.nominations.map(({ candidateSeat }) => candidateSeat)).toEqual([7, 8, 9]);
+      expect(ballot.game.voteAssignments).toEqual({});
+      await saveAndRead(context, gameId, ballot);
+      await context.reopen();
+      await readAndVerify(context, gameId, ballot);
+      await verifyEventViews(context, gameId, ballot);
+    },
+  );
 
-    it("replays the automatic planning-plus-two-miss draw and real Finish result without a fabricated manual draw event", async () => {
-      const { history, gameId } = await createRecord(context);
-      const completed = generateAutomaticDraw(history);
-      expect(completed.game).toMatchObject({
-        phase: "draw",
-        completedGameNights: 3,
-        rulesDrawReason: { rule: "6.5.6", completedGameNights: 3, consecutiveUnchangedNights: 3 },
+  it.each([
+    { losingTeam: "black", completion: "finished-early" },
+    { losingTeam: "red", completion: "declined" },
+  ] as const)(
+    "replays $completion Best Move, disputed/ruled ballot and $losingTeam losing-team adjudication after actual save/reload",
+    async ({ losingTeam, completion }) => {
+      const record = await createRecord(context);
+      const { history, gameId, creationId, headers, url } = record;
+      await saveAndRead(context, gameId, history.snapshot());
+      const stages = generateBestMoveAndBallot(history, completion);
+      expect(stages.partialBestMove.game.bestMove?.selectedSeats).toEqual(
+        completion === "declined" ? [] : [stages.victim, stages.blackSeat],
+      );
+      expect(stages.partialBestMove.game.bestMove).not.toHaveProperty("completionReason");
+      expect(stages.finalizedBestMove.game.bestMove).toMatchObject({
+        completionReason: completion,
+        readbackAcknowledged: true,
+        mafiaHits: completion === "declined" ? 0 : 1,
       });
-      expect(completed.events.some(({ type }) => type === "game.drawn")).toBe(false);
-      expect(completed.events.at(-1)).toMatchObject({
-        type: "phase.changed",
-        payload: { to: "draw" },
+      expect(stages.dispute.game.ballot?.dispute).toBeDefined();
+      expect(stages.ruling.game.ballot).toMatchObject({
+        reviewedCandidateSeats: [stages.dispute.game.ballot!.dispute!.candidateSeat],
+        finalRuling: { externalReviewAcknowledged: true },
       });
-      await saveAndRead(context, gameId, completed);
+      expect(stages.ruling.game.ballot?.dispute).toBeUndefined();
+      for (const [index, state] of [
+        stages.partialBestMove,
+        stages.finalizedBestMove,
+        stages.dispute,
+        stages.ruling,
+        stages.closedBallot,
+      ].entries())
+        await saveAndRead(context, gameId, state, null, index % 2 === 0);
+      const beforeRuling = history.snapshot();
+      const offenderSeat = history
+        .current()
+        .players.find(({ team, status }) => team === losingTeam && status === "active")!.seat;
+      history.append({
+        type: "game.adjudicated",
+        payload: {
+          losingTeam,
+          offenderSeat,
+          rule: "6.3.5",
+          reason: "ППК — reasoned opponent victory, committee agreement recorded",
+          committeeApproved: true,
+        },
+      });
+      const pendingFinish = history.snapshot();
+      expect(pendingFinish.game.players).toEqual(beforeRuling.game.players);
+      await saveAndRead(context, gameId, pendingFinish);
+      history.append({
+        type: "game.completed",
+        payload: { winner: losingTeam === "black" ? "red" : "black" },
+      });
+      const completed = history.snapshot();
       const results = await buildAcceptedResults(completed);
       expect(results).toMatchObject({
-        outcome: "draw",
-        winner: null,
-        reason: "MAFGAME 6.5.6: three consecutive game nights without a departure",
+        outcome: completed.game.winner,
+        winner: completed.game.winner,
+        reason: null,
+        adjudication: completed.game.adjudication,
       });
       await saveAndRead(context, gameId, completed, results, false);
       await context.reopen();
       await readAndVerify(context, gameId, completed, results);
       await verifyViews(context, gameId, completed, results);
-    });
+      const retry = await context.app.inject({
+        method: "POST",
+        url: "/api/game-sessions",
+        headers,
+        payload: {
+          creationId,
+          name: "Stale draft creation retry",
+          state: history.draftState,
+          results: null,
+        },
+      });
+      expect(retry.statusCode, retry.body).toBe(200);
+      expect(retry.json()).toMatchObject({ gameId, duplicate: true });
+      verifyCanonical(retry.json().state, completed, gameId);
+      expect(retry.json().results).toEqual(results);
+      verifyCanonical(
+        (await context.app.inject({ url, headers })).json().session.state,
+        completed,
+        gameId,
+      );
+      expect(completed.initialGame.replayVersion).toBe(3);
+      expect(completed.events.every(({ replayVersion }) => replayVersion === 3)).toBe(true);
+    },
+  );
 
-    it("preserves a generated valid v1 open-ballot/finished chain and every original hash without injecting v2 defaults", async () => {
-      const { history, gameId } = await createRecord(context, false, false);
-      history.append({ type: "player.nominated", payload: { nominatorSeat: 1, candidateSeat: 1 } });
-      history.append({ type: "player.nominated", payload: { nominatorSeat: 2, candidateSeat: 2 } });
-      history.append({ type: "phase.changed", payload: { to: "voting" } });
-      const ballot = history.snapshot();
-      await saveAndRead(context, gameId, ballot);
-      history.append({ type: "game.drawn", payload: { reason: "Legacy moderator draw" } });
-      const completed = history.snapshot();
-      const results = await buildAcceptedResults(completed, "Legacy moderator draw");
-      await saveAndRead(context, gameId, completed, results, false);
-      await context.reopen();
-      await readAndVerify(context, gameId, completed, results);
-      await verifyViews(context, gameId, completed, results);
-      expect(completed.initialGame.replayVersion).toBe(1);
-      for (const value of [
-        completed.setup,
-        completed.initialGame,
-        completed.initialGame.game,
-        completed.game,
-        ...completed.events,
-      ])
-        expect(value).not.toHaveProperty("rulesEdition");
-      expect(completed.game).not.toHaveProperty("completedGameNights");
-      expect(completed.game).not.toHaveProperty("currentSpeechRestricted");
+  it("replays the automatic planning-plus-two-miss draw and real Finish result without a fabricated manual draw event", async () => {
+    const { history, gameId } = await createRecord(context);
+    const completed = generateAutomaticDraw(history);
+    expect(completed.game).toMatchObject({
+      phase: "draw",
+      completedGameNights: 3,
+      rulesDrawReason: { rule: "6.5.6", completedGameNights: 3, consecutiveUnchangedNights: 3 },
     });
+    expect(completed.events.some(({ type }) => type === "game.drawn")).toBe(false);
+    expect(completed.events.at(-1)).toMatchObject({
+      type: "phase.changed",
+      payload: { to: "draw" },
+    });
+    await saveAndRead(context, gameId, completed);
+    const results = await buildAcceptedResults(completed);
+    expect(results).toMatchObject({
+      outcome: "draw",
+      winner: null,
+      reason: "MAFGAME 6.5.6: three consecutive game nights without a departure",
+    });
+    await saveAndRead(context, gameId, completed, results, false);
+    await context.reopen();
+    await readAndVerify(context, gameId, completed, results);
+    await verifyViews(context, gameId, completed, results);
   });
-}
+});

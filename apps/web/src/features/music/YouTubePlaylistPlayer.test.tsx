@@ -94,6 +94,63 @@ afterEach(() => {
 });
 
 describe("YouTubePlaylistPlayer", () => {
+  it("retries a failed shared API load through reload and ignores an unmounted consumer", async () => {
+    api.listMusicPlaylistItems.mockResolvedValue([
+      { videoId: "video-a", title: "Playlist A", position: 0, thumbnailUrl: null },
+    ]);
+    const previous = vi.fn();
+    const originalCallback = window.onYouTubeIframeAPIReady;
+    window.onYouTubeIframeAPIReady = previous;
+    const selector = 'script[src="https://www.youtube.com/iframe_api"]';
+    const onStateChange = vi.fn();
+    const abandonedState = vi.fn();
+    try {
+      const active = render(
+        <YouTubePlaylistPlayer playlistId="PL-A" onStateChange={onStateChange} />,
+      );
+      const abandoned = render(
+        <YouTubePlaylistPlayer playlistId="PL-A" onStateChange={abandonedState} />,
+      );
+      await vi.waitFor(() => expect(document.querySelectorAll(selector)).toHaveLength(1));
+      const failedScript = document.querySelector(selector)!;
+      abandoned.unmount();
+      abandonedState.mockClear();
+      await act(async () => {
+        fireEvent.error(failedScript);
+      });
+      expect(onStateChange).toHaveBeenLastCalledWith("error");
+
+      // The real Manage → Reload music player action increments this public prop.
+      active.rerender(
+        <YouTubePlaylistPlayer playlistId="PL-A" reloadRequest={1} onStateChange={onStateChange} />,
+      );
+      await vi.waitFor(() => {
+        expect(document.querySelectorAll(selector)).toHaveLength(1);
+        expect(document.querySelector(selector)).not.toBe(failedScript);
+      });
+      expect(abandonedState).not.toHaveBeenCalled();
+      expect(failedScript.isConnected).toBe(false);
+      const player = installQueuePlayer();
+      await act(async () => {
+        window.onYouTubeIframeAPIReady?.();
+      });
+      await player.ready();
+      expect(onStateChange).toHaveBeenLastCalledWith("paused");
+      expect(player.constructorSpy).toHaveBeenCalledOnce();
+      expect(previous).toHaveBeenCalledOnce();
+      expect(window.onYouTubeIframeAPIReady).toBe(previous);
+      const reusable = render(<YouTubePlaylistPlayer playlistId="PL-A" onStateChange={vi.fn()} />);
+      await vi.waitFor(() => expect(player.constructorSpy).toHaveBeenCalledTimes(2));
+      expect(document.querySelectorAll(selector)).toHaveLength(1);
+      reusable.unmount();
+      active.unmount();
+      expect(player.player.destroy).toHaveBeenCalledTimes(2);
+    } finally {
+      window.onYouTubeIframeAPIReady = originalCallback;
+      document.querySelectorAll(selector).forEach((script) => script.remove());
+    }
+  });
+
   it("renders the playlist picker beside the expanded queue heading even with no playlist selected", () => {
     const playlistPicker = (
       <select aria-label="YouTube Music playlist">

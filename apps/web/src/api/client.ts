@@ -131,7 +131,7 @@ export interface FinalGameResults {
   }[];
 }
 
-export interface GameSessionState {
+export interface GameSessionState extends Readonly<Record<string, unknown>> {
   readonly setup: unknown | null;
   readonly game: unknown | null;
   readonly hostPlayerId: string | null;
@@ -155,7 +155,7 @@ export interface GameSessionOperation {
   readonly name: string;
   readonly mutationId: string;
   readonly state: GameSessionState;
-  readonly results: FinalGameResults | null;
+  readonly results: Readonly<Partial<FinalGameResults>> | null;
 }
 
 export interface GameSessionCreation {
@@ -163,7 +163,7 @@ export interface GameSessionCreation {
   readonly tournamentId?: string | null;
   readonly name: string;
   readonly state: CurrentGameSessionState;
-  readonly results: FinalGameResults | null;
+  readonly results: Readonly<Partial<FinalGameResults>> | null;
 }
 
 export interface ActiveGameSessionSummary {
@@ -184,11 +184,10 @@ export interface RemoteGameSession {
   readonly revision: number;
   readonly duplicate: boolean;
   readonly status: "active" | "completed";
-  readonly rulesetId: string;
-  readonly rulesetVersion: number;
   readonly updatedAt: string;
-  readonly state: GameSessionState;
-  readonly results: FinalGameResults | null;
+  /** Completed statistics-only records need not contain current gameplay. */
+  readonly state: Readonly<Record<string, unknown>>;
+  readonly results: Readonly<Partial<FinalGameResults>> | null;
 }
 
 export interface CompletedGameSessionSummary {
@@ -197,13 +196,12 @@ export interface CompletedGameSessionSummary {
   readonly name: string;
   readonly revision: number;
   readonly hostPlayerId: string | null;
-  readonly outcome: "red" | "black" | "draw" | "cancelled";
+  readonly outcome: "red" | "black" | "draw" | "cancelled" | null;
   readonly winner: "red" | "black" | null;
   readonly reason: string | null;
-  readonly rulesetId: string;
-  readonly rulesetVersion: number;
-  readonly playedAt: string;
-  readonly day: number;
+  readonly playedAt: string | null;
+  readonly day: number | null;
+  readonly timelineAvailable: boolean;
   readonly eventCount: number;
   readonly updatedAt: string;
 }
@@ -689,7 +687,7 @@ export const assignGameTournament = async (
 
 const statisticsQuery = (filters: StatisticsFilters, page: StatisticsHistoryPage = {}): string => {
   const query = new URLSearchParams();
-  for (const key of ["from", "to", "edition", "team", "role", "tournamentId"] as const) {
+  for (const key of ["from", "to", "team", "role", "tournamentId"] as const) {
     const value = filters[key];
     if (value !== undefined) query.set(key, value);
   }

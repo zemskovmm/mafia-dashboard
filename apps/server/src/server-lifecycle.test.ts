@@ -2,36 +2,36 @@ import { describe, expect, it, vi } from "vitest";
 import { createShutdown, registerShutdownSignals } from "./server-lifecycle.js";
 
 describe("createShutdown", () => {
-  it("closes Fastify before PostgreSQL", async () => {
+  it("closes Fastify before Azure storage", async () => {
     const order: string[] = [];
     const shutdown = createShutdown(
       { close: async () => void order.push("app") },
-      { end: async () => void order.push("pool") },
+      { end: async () => void order.push("storage") },
     );
 
     await shutdown();
 
-    expect(order).toEqual(["app", "pool"]);
+    expect(order).toEqual(["app", "storage"]);
   });
 
   it("shares one shutdown across repeated signals", async () => {
     const app = { close: vi.fn().mockResolvedValue(undefined) };
-    const pool = { end: vi.fn().mockResolvedValue(undefined) };
-    const shutdown = createShutdown(app, pool);
+    const storage = { end: vi.fn().mockResolvedValue(undefined) };
+    const shutdown = createShutdown(app, storage);
 
     await Promise.all([shutdown(), shutdown()]);
 
     expect(app.close).toHaveBeenCalledOnce();
-    expect(pool.end).toHaveBeenCalledOnce();
+    expect(storage.end).toHaveBeenCalledOnce();
   });
 
-  it("closes PostgreSQL and preserves a Fastify close failure", async () => {
+  it("closes Azure storage and preserves a Fastify close failure", async () => {
     const app = { close: vi.fn().mockRejectedValue(new Error("app close failed")) };
-    const pool = { end: vi.fn().mockResolvedValue(undefined) };
-    const shutdown = createShutdown(app, pool);
+    const storage = { end: vi.fn().mockResolvedValue(undefined) };
+    const shutdown = createShutdown(app, storage);
 
     await expect(shutdown()).rejects.toThrow("app close failed");
-    expect(pool.end).toHaveBeenCalledOnce();
+    expect(storage.end).toHaveBeenCalledOnce();
   });
 
   it("routes repeated process signals through the same shutdown", async () => {
@@ -40,8 +40,8 @@ describe("createShutdown", () => {
       on: vi.fn((signal: string, listener: () => void) => void listeners.set(signal, listener)),
     };
     const app = { close: vi.fn().mockResolvedValue(undefined) };
-    const pool = { end: vi.fn().mockResolvedValue(undefined) };
-    const shutdown = createShutdown(app, pool);
+    const storage = { end: vi.fn().mockResolvedValue(undefined) };
+    const shutdown = createShutdown(app, storage);
 
     registerShutdownSignals(registrar, () => void shutdown());
     listeners.get("SIGTERM")?.();
@@ -50,6 +50,6 @@ describe("createShutdown", () => {
 
     expect(registrar.on).toHaveBeenCalledTimes(2);
     expect(app.close).toHaveBeenCalledOnce();
-    expect(pool.end).toHaveBeenCalledOnce();
+    expect(storage.end).toHaveBeenCalledOnce();
   });
 });

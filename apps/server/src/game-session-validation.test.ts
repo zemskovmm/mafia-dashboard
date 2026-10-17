@@ -37,9 +37,9 @@ describe("game record transport validation", () => {
       creationId: randomUUID(),
       name: "Federation",
       state: {
-        game: { phase: "not-a-server-rule", rulesEdition: "mafgame-2026-07-01" },
-        initialGame: { replayVersion: 2, rulesEdition: "mafgame-2026-07-01" },
-        events: [{ replayVersion: 2, malformed: true }],
+        game: { phase: "not-a-server-rule" },
+        initialGame: { replayVersion: 3 },
+        events: [{ replayVersion: 3, malformed: true }],
       },
       results: { winner: "red", reason: null, adjudication },
     };

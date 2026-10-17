@@ -48,11 +48,6 @@
   background: #211e19;
 }
 
-.federation-ballot-sheet:focus-visible {
-  outline: 2px solid var(--accent, #e8b766);
-  outline-offset: -3px;
-}
-
 .federation-skip-center {
   transform: translateY(-16px);
 }
@@ -63,11 +58,6 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
-}
-
-.federation-skip-explanation:focus-visible {
-  outline: 2px solid var(--accent, #e8b766);
-  outline-offset: 3px;
 }
 
 .federation-stage-actions {

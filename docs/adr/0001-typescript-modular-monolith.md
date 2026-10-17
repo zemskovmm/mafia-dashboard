@@ -4,6 +4,8 @@
 - **Decision owners:** Project owner and implementation agent
 - **Scope:** Initial touch SPA, local API, game domain, and PostgreSQL persistence
 
+This is the historical initial architecture decision. Current product contracts are owned by `.idd/intent/`; [IDD-0006](../../.idd/intent/IDD-0006.adr-azure-table-and-blob-persistence.md) replaces its PostgreSQL/Compose decision with Azure-only persistence. The SQL runbook links below are pinned historical references, not supported operating instructions.
+
 ## Context
 
 At the time of this decision, Mafia Dashboard needed a touch-friendly SPA for tablets and laptops, a Docker-started local server, durable game actions, browser-hosted YouTube playback, and active-game recovery after refresh or restart. The repository then contained product documentation but no application stack; the resulting stack is now implemented and also deployed through Azure Container Apps.
@@ -60,7 +62,7 @@ These decisions preserve the contracts from [#48](https://github.com/zemskovmm/m
 ### Current-only support is not an automatic migration
 
 - Browser/API/session/replay writers and readers support current shapes and SHA-256 replay metadata only. Historical envelope parsing, hash adapters, fallback hydration, raw aggregate mutation routes, and database repair/backfill are intentionally unsupported.
-- PostgreSQL initialization supports only an empty database or the current schema. The preceding claim-based, unknown and incomplete schemas fail without mutation, reset or backfill. Schema qualification does not authorize deployment. See [self-hosted deployment](../self-hosted-deployment.md) and [backup and recovery](../postgresql-backup-and-recovery.md).
+- PostgreSQL initialization supports only an empty database or the current schema. The preceding claim-based, unknown and incomplete schemas fail without mutation, reset or backfill. Schema qualification does not authorize deployment. See [self-hosted deployment](https://github.com/zemskovmm/mafia-dashboard/blob/0b3fe655ae52fb44d2fc2264972184f1f48b250b/docs/self-hosted-deployment.md) and [backup and recovery](https://github.com/zemskovmm/mafia-dashboard/blob/0b3fe655ae52fb44d2fc2264972184f1f48b250b/docs/postgresql-backup-and-recovery.md).
 - Removing compatibility does not remove current features whose names contain `legacy`: the `legacyLog` field still carries current setup/activity entries, and the selectable `legacy` lighting renderer remains supported. Current theme/music preference keys, defaults, queue behavior, and lighting choices remain intact.
 
 ## Considered alternatives

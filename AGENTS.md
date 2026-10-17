@@ -3,7 +3,7 @@
 ## Current architecture
 
 - `apps/web/`: React/Vite host application.
-- `apps/server/`: Fastify API, authentication, club isolation, PostgreSQL persistence, and production static hosting.
+- `apps/server/`: Fastify API, authentication, club isolation, Azure Table/private Blob persistence, and production static hosting.
 - `packages/game-domain/`: framework-independent Club Mafia rules, canonical events, and replay logic.
 - `docs/`: current product, architecture, and deployment documentation.
 

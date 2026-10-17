@@ -10,7 +10,6 @@ import {
   completeRoleDraw,
   drawRoleForSeat,
   createSeededRandom,
-  FEDERATION_RULES_EDITION,
   hashGameState,
   isSecretGameEventType,
   replayGameLog,
@@ -20,10 +19,7 @@ import { completeMafiaShots, isNightCheckEligible } from "./night-actions.js";
 import * as domain from "./index.js";
 const opening = (): GameState => {
   let setup = beginRoleDraw(
-    createSetup(
-      Array.from({ length: 10 }, (_, i) => ({ id: `p${i + 1}`, seat: i + 1 })),
-      { rulesEdition: FEDERATION_RULES_EDITION },
-    ),
+    createSetup(Array.from({ length: 10 }, (_, i) => ({ id: `p${i + 1}`, seat: i + 1 }))),
     createSeededRandom(71),
   );
   for (let seat = 1; seat <= 10; seat++) setup = drawRoleForSeat(setup, seat);
@@ -58,7 +54,6 @@ const day = () =>
       (to) => ({ type: "phase.changed", payload: { to } }) as CanonicalGameEventDraft,
     ),
   ).game;
-
 describe("strict federation canonical replay", () => {
   it.each([
     { subject: "victim", multiple: false },
@@ -114,14 +109,14 @@ describe("strict federation canonical replay", () => {
           checkInProgress: false,
         },
       };
-      expect(() => assertCanonicalGameEventDraft(removal, 1)).toThrow();
+      expect(() => assertCanonicalGameEventDraft(removal)).not.toThrow();
       expect(() => applyGameEvent(initial, removal)).toThrow();
       expect(() => applyGameEvent({ ...resolved, nightResult: undefined }, removal)).toThrow();
       expect(() =>
-        assertCanonicalGameEventDraft(
-          { ...removal, payload: { ...removal.payload, checkInProgress: true } },
-          2,
-        ),
+        assertCanonicalGameEventDraft({
+          ...removal,
+          payload: { ...removal.payload, checkInProgress: true },
+        }),
       ).toThrow();
       const removed = chain(initial, [...prefix, removal]).game;
       expect(removed.nightResult).toEqual(resolved.nightResult);
@@ -173,7 +168,6 @@ describe("strict federation canonical replay", () => {
       expect(isNightCheckEligible(completed, "don")).toBe(subject !== "don");
     },
   );
-
   it.each(["victim", "two-offenders", "deciding"])(
     "preserves post-result consequences through later boundaries: %s",
     (scenario) => {
@@ -277,8 +271,7 @@ describe("strict federation canonical replay", () => {
       }
     },
   );
-
-  it("preserves recorded five-step opening hashes", () => {
+  it("pins current five-step opening hashes", () => {
     const { entries } = chain(
       opening(),
       ["mafia-sleep", "don-identification", "sheriff-identification", "free-seating", "day"].map(
@@ -286,15 +279,14 @@ describe("strict federation canonical replay", () => {
       ),
     );
     expect(entries.map((entry) => entry.stateHashAfter)).toEqual([
-      "sha256:ed40401e8d1e8c408896a044d63813486438a45b5ac5462ac1c12b9557de3b42",
-      "sha256:38e0718280246f37fba559c75919b1f45b30daeaa12a466873c0191eae207dc4",
-      "sha256:ab3eb1e7089429d4e2ffc05d3c4f9b958259b9a035a33fa16e01421bfdb69182",
-      "sha256:cdece188732628980966714a38af401b566e750ff2234bb598a6f37a9995c6d2",
-      "sha256:2380cd5102dc05c82519ec9c734baf49ca20018acdac0cad7b8ca5162344ea24",
-      "sha256:0b151152689982107b6096699f72fd6e957e2974ede71377ddd55dc1febba436",
+      "sha256:5ff8f6d50d4998dc5e49d11e32b5b9b7408775ccf592f2972d714f5c175f4a18",
+      "sha256:f2460596aac7f9173d34abab2c114a50809dbd7a808b0d37f214f921896e06c8",
+      "sha256:02f3b7aa87bfe1ef1222b2e9072182260a1efd083e3ac753e29b411200b738ef",
+      "sha256:bb7646f4fc85f58bc4c34e8fbe78d9b1f8593a0e4e70e652bfb22453acc208c2",
+      "sha256:2076138a4c98d55125abbad9d6df73edefef22977ea904dc7c55d62b3e47113d",
+      "sha256:e696022642d3d84c84ae2284bd445d5aeb69a7bde47017a2015ddb57acc2cbbb",
     ]);
   });
-
   it.each(["mafia-sleep", "don-identification"] as const)(
     "continues a restored %s explicitly without rewriting its recorded prefix",
     (phase) => {
@@ -310,12 +302,11 @@ describe("strict federation canonical replay", () => {
         { type: "phase.changed", payload: { to: "day" } },
       ]);
       expect(entries[1]?.stateHashAfter).toBe(
-        "sha256:38e0718280246f37fba559c75919b1f45b30daeaa12a466873c0191eae207dc4",
+        "sha256:f2460596aac7f9173d34abab2c114a50809dbd7a808b0d37f214f921896e06c8",
       );
       expect(game).toEqual(day());
     },
   );
-
   it("replays a separate Sheriff greeting followed directly by round zero", () => {
     const initial = opening();
     const { game, entries } = chain(initial, [
@@ -327,10 +318,14 @@ describe("strict federation canonical replay", () => {
     expect(game).toMatchObject({ completedGameNights: 1, sheriffChecksPerformed: 0 });
     expect(game.players).toEqual(initial.players);
     for (const to of ["day", "free-seating", "night-mafia", "sheriff-wake"] as const) {
-      expect(() => applyGameEvent(initial, { type: "phase.changed", payload: { to } })).toThrow();
+      expect(() =>
+        applyGameEvent(initial, {
+          type: "phase.changed",
+          payload: { to },
+        } as unknown as CanonicalGameEventDraft),
+      ).toThrow();
     }
   });
-
   it("round-trips every accepted ordered call, clerical correction and reviewed count", () => {
     let game = day();
     game = applyGameEvent(game, {
@@ -368,15 +363,17 @@ describe("strict federation canonical replay", () => {
     expect(result.game.voteAssignments).toEqual({ 1: 2 });
     expect(result.game.ballot?.reviewedCandidateSeats).toEqual([1]);
   });
-  it("v2-only events and phases never expand the accepted v1 contract", () => {
+  it("accepts current events and phases without engine metadata", () => {
     const event = { type: "best-move.number-accepted", payload: { seat: 1 } };
-    expect(() => assertCanonicalGameEventDraft(event, 1)).toThrow();
-    expect(() => assertCanonicalGameEventDraft(event, 2)).not.toThrow();
+    expect(() => assertCanonicalGameEventDraft(event)).not.toThrow();
+    expect(() => assertCanonicalGameEventDraft(event)).not.toThrow();
     expect(isSecretGameEventType(event.type)).toBe(true);
     expect(() =>
-      assertCanonicalGameEventDraft({ type: "phase.changed", payload: { to: "free-seating" } }, 1),
+      assertCanonicalGameEventDraft({ type: "phase.changed", payload: { to: "free-seating" } }),
+    ).not.toThrow();
+    expect(() =>
+      createInitialGameBaseline({ ...opening(), rulesEdition: undefined } as GameState),
     ).toThrow();
-    expect(() => createInitialGameBaseline({ ...opening(), rulesEdition: undefined })).toThrow();
   });
   it("rejects invalid federation state instead of silently accepting defaults or profile fields", () => {
     const state = day();
@@ -397,9 +394,8 @@ describe("strict federation canonical replay", () => {
       },
     ])
       expect(() => createInitialGameBaseline(invalid as GameState)).toThrow();
-    const legacy = { ...state } as { rulesEdition?: string } & GameState;
-    delete legacy.rulesEdition;
-    expect(() => createInitialGameBaseline(legacy)).toThrow();
+    const incomplete = { ...state, completedGameNights: undefined };
+    expect(() => createInitialGameBaseline(incomplete as unknown as GameState)).toThrow();
   });
   it("retains reasoned adjudication through completion without changing player statuses", () => {
     const initial = day();
@@ -574,23 +570,20 @@ describe("strict federation canonical replay", () => {
       } as unknown as GameState),
     ).toThrow();
     expect(() =>
-      assertCanonicalGameEventDraft(
-        {
-          type: "discipline.removal-observed",
-          payload: {
-            seat: 1,
-            stage: "shooting-count",
-            rule: "6.2.3",
-            reason: "Night violation",
-            checkInProgress: false,
-            profile: "Copied name",
-          },
+      assertCanonicalGameEventDraft({
+        type: "discipline.removal-observed",
+        payload: {
+          seat: 1,
+          stage: "shooting-count",
+          rule: "6.2.3",
+          reason: "Night violation",
+          checkInProgress: false,
+          profile: "Copied name",
         },
-        2,
-      ),
+      }),
     ).toThrow();
   });
-  it("replays a fourth foul with a reasoned occurrence observation and rejects v1 expansion", () => {
+  it("replays a fourth foul with a reasoned occurrence observation without engine dispatch", () => {
     const initial = day();
     const { game } = chain(initial, [
       { type: "foul.issued", payload: { seat: 1, foulNumber: 1, redCarded: false } },
@@ -632,7 +625,7 @@ describe("strict federation canonical replay", () => {
         },
       },
     };
-    expect(() => assertCanonicalGameEventDraft(event, 1)).toThrow();
+    expect(() => assertCanonicalGameEventDraft(event)).not.toThrow();
   });
   it("does not advance a paused live ballot by synthetic discipline context or phase change", () => {
     let game = day();

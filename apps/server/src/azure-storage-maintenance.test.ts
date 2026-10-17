@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { AzureStorage, blobFields, type BlobReference } from "./azure-storage.js";
+import {
+  AzureStorage,
+  blobFields,
+  blobReference,
+  digest,
+  type BlobReference,
+} from "./azure-storage.js";
 import { AzureClubStore } from "./azure-club-player-store.js";
+import { AzureGameSessionStore } from "./azure-game-session-store.js";
 import { collectStorageGarbage } from "./azure-storage-maintenance.js";
 import { createStorageFixture } from "./test-helpers/storage-fixture.js";
 
@@ -15,6 +22,146 @@ afterAll(async () => {
 
 // Real emulator roots/deletions; shared fixture is collected after each scenario.
 describe("frozen bounded storage garbage collection", () => {
+  it("resumes tombstoned cleanup of retained mutation history without deleting a sibling's shared Blob", async () => {
+    const { storage } = fixture;
+    const clubId = randomUUID();
+    await storage.mutate((tx) =>
+      tx.set(`club:${clubId}:meta`, { id: clubId, name: "Retained history" }),
+    );
+    const games = new AzureGameSessionStore(storage);
+    const creationId = randomUUID();
+    const game = await games.create({
+      clubId,
+      creationId,
+      name: "Many retries",
+      state: {},
+      results: null,
+    });
+    const sibling = await games.create({
+      clubId,
+      creationId: randomUUID(),
+      name: "Sibling",
+      state: {},
+      results: null,
+    });
+    const prefix = `club:${clubId}:mutation:${game.gameId}:`;
+    const tombstoneKey = `club:${clubId}:deleted-game:${game.gameId}`;
+    const siblingKey = `club:${clubId}:mutation:${sibling.gameId}:${randomUUID()}`;
+    const sharedRef = await storage.mutate(async (tx) => {
+      const ref = await tx.writeBlob(
+        { name: "Shared request", state: {}, results: null },
+        "requests",
+      );
+      await tx.set(siblingKey, { revision: 1, ...blobFields(ref) });
+      return ref;
+    });
+    // Retained Azure datasets may already contain history from an older writer;
+    // qualify cleanup directly, without retaining a SQL import implementation.
+    for (let start = 0; start < 125; start += 50)
+      await storage.mutate(async (tx) => {
+        for (let index = start; index < Math.min(start + 50, 125); index += 1) {
+          const ref =
+            index === 0
+              ? sharedRef
+              : index === 124
+                ? null
+                : await tx.writeBlob(
+                    { name: "Retained request", state: { index }, results: null },
+                    "requests",
+                  );
+          await tx.set(`${prefix}${randomUUID()}`, {
+            revision: index + 1,
+            ...(ref ? blobFields(ref) : {}),
+          });
+        }
+      });
+    const rows = await storage.read((tx) => tx.list<Record<string, unknown>>(prefix));
+    expect(rows).toHaveLength(125);
+    const refs = rows.filter((row) => row.blobName !== undefined).map(blobReference);
+    expect(refs).toHaveLength(124);
+    const snapshotRef = blobReference(
+      (await storage.getEntity(`club:${clubId}:game:${game.gameId}`))!,
+    );
+    const submit = storage.table.submitTransaction.bind(storage.table);
+    let cleanupChunks = 0;
+    const publication = vi
+      .spyOn(storage.table, "submitTransaction")
+      .mockImplementation(async (actions, options) => {
+        if (
+          actions.some(
+            ([operation, entity]) => operation === "delete" && entity.rowKey.startsWith(prefix),
+          )
+        ) {
+          cleanupChunks += 1;
+          expect(await games.get(game.gameId, clubId)).toBeNull();
+          expect(await storage.getEntity(tombstoneKey)).toBeDefined();
+          if (cleanupChunks === 2) throw new Error("synthetic SDK cleanup interruption");
+        }
+        return submit(actions, options);
+      });
+    try {
+      await expect(games.clear({ clubId, gameId: game.gameId })).rejects.toThrow(
+        "Storage publication failed",
+      );
+      expect(publication.mock.calls.every(([actions]) => actions.length <= 100)).toBe(true);
+    } finally {
+      publication.mockRestore();
+    }
+    expect(cleanupChunks).toBe(2);
+    expect(await games.get(game.gameId, clubId)).toBeNull();
+    const remaining = await storage.read((tx) => tx.list(prefix));
+    expect(remaining.length).toBeGreaterThan(0);
+    expect(remaining.length).toBeLessThan(125);
+    const tombstone = (await storage.getEntity(tombstoneKey))!;
+    for (const ref of [snapshotRef, ...refs])
+      expect(await storage.blobs.getBlockBlobClient(ref.name).exists()).toBe(true);
+    const batches = vi.spyOn(storage.table, "submitTransaction");
+    try {
+      await games.clear({ clubId, gameId: game.gameId });
+      expect(
+        batches.mock.calls.filter(([actions]) =>
+          actions.some(
+            ([operation, entity]) => operation === "delete" && entity.rowKey.startsWith(prefix),
+          ),
+        ).length,
+      ).toBeGreaterThan(1);
+      expect(batches.mock.calls.every(([actions]) => actions.length <= 100)).toBe(true);
+    } finally {
+      batches.mockRestore();
+    }
+    expect(await storage.read((tx) => tx.list(prefix))).toEqual([]);
+    expect((await storage.getEntity(tombstoneKey))!.deletedAt).toEqual(tombstone.deletedAt);
+    for (const ref of [snapshotRef, ...refs])
+      expect(await storage.getEntity(`cleanup:${digest(ref.name)}`)).toMatchObject({
+        kind: "retired-blob",
+        blobName: ref.name,
+      });
+    expect(await storage.getEntity(siblingKey)).toBeDefined();
+    expect(await games.get(sibling.gameId, clubId)).not.toBeNull();
+    await expect(
+      games.save({
+        clubId,
+        gameId: game.gameId,
+        mutationId: randomUUID(),
+        name: "Stale",
+        state: {},
+        results: null,
+      }),
+    ).rejects.toMatchObject({ code: "game_session_not_found" });
+    await expect(
+      games.create({ clubId, creationId, name: "Stale", state: {}, results: null }),
+    ).rejects.toMatchObject({ code: "game_deleted" });
+    await collectStorageGarbage(storage);
+    for (const ref of [snapshotRef, ...refs])
+      expect(await storage.blobs.getBlockBlobClient(ref.name).exists()).toBe(
+        ref.name === sharedRef.name,
+      );
+    expect(await games.get(sibling.gameId, clubId)).not.toBeNull();
+    await games.clear({ clubId, gameId: sibling.gameId });
+    await collectStorageGarbage(storage);
+    expect(await storage.blobs.getBlockBlobClient(sharedRef.name).exists()).toBe(false);
+  }, 60_000);
+
   it("deletes orphans and retired objects but preserves game/logo/music/protected roots and foreign namespaces", async () => {
     const { storage, options } = fixture;
     let orphan!: BlobReference;

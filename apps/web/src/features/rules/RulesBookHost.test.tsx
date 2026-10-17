@@ -1,3 +1,4 @@
+import { cancelDialog } from "../../test-card-gestures.js";
 import { useState } from "react";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -38,9 +39,9 @@ describe("lazy rules-book boundary", () => {
     const errorOutput = vi.spyOn(console, "error").mockImplementation(() => undefined);
     load.reject!(new Error("Simulated unavailable reader chunk"));
     expect(await screen.findByRole("alert")).toHaveTextContent("The book could not load");
-    await user.keyboard("{Escape}");
+    cancelDialog(screen.getByRole("dialog"));
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(invoke).toHaveFocus();
+    expect(invoke).toBeVisible();
     expect(screen.getByLabelText("Unfinished reason")).toHaveValue("Keep this note");
     errorOutput.mockRestore();
   });

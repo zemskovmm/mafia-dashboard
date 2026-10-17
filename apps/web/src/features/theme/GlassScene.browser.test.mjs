@@ -1,4 +1,4 @@
-/* global console, window, document, localStorage, getComputedStyle, Event, PageTransitionEvent, HTMLInputElement, HTMLCanvasElement, innerWidth, innerHeight, Storage, DOMException */
+/* global console, window, document, localStorage, getComputedStyle, Event, PageTransitionEvent, HTMLInputElement, HTMLCanvasElement, innerWidth, innerHeight, Storage, DOMException, URL */
 import assert from "node:assert/strict";
 import { build } from "esbuild";
 import { chromium, webkit } from "@playwright/test";
@@ -16,19 +16,30 @@ import {
 // Bundle the actual workspace, drawer, game and shared scene. Only API transport
 // and canonical synthetic input are fixtures; no demo code or product mutation.
 const root = resolve(import.meta.dirname, "../../../../..");
-const evidence = resolve(
-  root,
-  process.env.GLASS_SCENARIO === "player-cards"
-    ? `.AI/qa/player-card-production/${new Date().toISOString().replaceAll(":", "-")}`
-    : `.AI/qa/app-glass/${new Date().toISOString().replaceAll(":", "-")}`,
+const followupPhase = process.env.UI_FOLLOWUP_PHASE;
+assert.ok(
+  followupPhase === undefined || ["04", "05", "06", "07", "08", "12", "13"].includes(followupPhase),
+  "Unknown or empty UI_FOLLOWUP_PHASE",
 );
 assert.ok(
-  !process.env.GLASS_SCENARIO ||
+  process.env.UI_FOLLOWUP_ENGINE === undefined ||
+    ["chromium", "webkit"].includes(process.env.UI_FOLLOWUP_ENGINE),
+);
+const evidence = resolve(
+  root,
+  followupPhase
+    ? `.AI/reports/review-followup-2026-10-16/${process.env.UI_FOLLOWUP_RUN ?? `ui-${followupPhase}-${Date.now()}`}`
+    : process.env.GLASS_SCENARIO === "player-cards"
+      ? `.AI/qa/player-card-production/${new Date().toISOString().replaceAll(":", "-")}`
+      : `.AI/qa/app-glass/${new Date().toISOString().replaceAll(":", "-")}`,
+);
+assert.ok(
+  process.env.GLASS_SCENARIO === undefined ||
     ["shared", "legacy", "player-cards"].includes(process.env.GLASS_SCENARIO),
   "Unknown GLASS_SCENARIO",
 );
 assert.ok(
-  !process.env.GLASS_BROWSER ||
+  process.env.GLASS_BROWSER === undefined ||
     [
       "chrome-ipad",
       "webkit-ipad",
@@ -36,13 +47,26 @@ assert.ok(
       "webkit-compact",
       "chrome-landscape",
       "chrome-compact",
+      "chrome-phone",
+      "chrome-tablet",
+      "webkit-phone",
+      "webkit-tablet",
     ].includes(process.env.GLASS_BROWSER),
   "Unknown GLASS_BROWSER",
 );
 assert.ok(
-  process.env.GLASS_BROWSER !== "webkit-landscape" || process.env.GLASS_SCENARIO === "player-cards",
-  "webkit-landscape is supported by GLASS_SCENARIO=player-cards only",
+  process.env.GLASS_BROWSER !== "webkit-landscape" ||
+    process.env.GLASS_SCENARIO === "player-cards" ||
+    followupPhase,
+  "webkit-landscape requires player-cards or UI_FOLLOWUP_PHASE",
 );
+if (["12", "13"].includes(followupPhase)) {
+  assert.ok(
+    process.env.GLASS_BROWSER === undefined ||
+      ["chrome-landscape", "chrome-compact", "webkit-ipad"].includes(process.env.GLASS_BROWSER),
+    "Native interaction requires a supported layout, not an empty matrix",
+  );
+}
 await mkdir(evidence, { recursive: true });
 const temp = await mkdtemp(join(evidence, "fixture-"));
 const entry = `
@@ -61,7 +85,7 @@ const query=new URLSearchParams(location.search);
 const locale=query.get("locale")==="ru"?"ru":"en";
 const club={id:"00000000-0000-4000-8000-000000000101",name:"Glass regression",city:"Test",headerLogo:null,cardLogo:null,language:locale,bestMoveEnabled:true,role:"manager",createdAt:"2026-10-15T00:00:00.000Z",updatedAt:"2026-10-15T00:00:00.000Z"};
 const players=Array.from({length:10},(_,i)=>({id:"00000000-0000-4000-8000-"+String(i+1).padStart(12,"0"),seat:i+1}));
-let setup=beginRoleDraw(createSetup(players,query.get("edition")==="legacy"?{}:{rulesEdition:"mafgame-2026-07-01"}),createSeededRandom(13));
+let setup=beginRoleDraw(createSetup(players),createSeededRandom(13));
 for(let seat=1;seat<=10;seat++)setup=drawRoleForSeat(setup,seat);
 let day=createGame(completeRoleDraw(setup));
 while(day.phase!=="day")day=advanceSetupPhase(day);
@@ -77,10 +101,15 @@ const statistics=Object.fromEntries(["hostedGames","gamesPlayed","wins","losses"
 const profiles=players.map(p=>({...p,nickname:"Player "+p.seat,consent:false,clubAccess:"none",managerLocked:false,firstName:null,lastName:null,email:null,consentAt:null,lastPlayedAt:null,statistics:{...statistics},createdAt:club.createdAt,updatedAt:club.createdAt}));
 const host={...profiles[0],id:"00000000-0000-4000-8000-000000000011",nickname:"Host"};
 if(phase==="setup")profiles.push(host);
-const playerSetup=phase==="setup"?{step:"players",hostPlayerId:emptySetup?"":host.id,selectedPlayerIds:players.map(p=>emptySetup?"":p.id),rulesEdition:"mafgame-2026-07-01",setup:null}:null;
-window.fixtureRequests=[];
+const playerSetup=phase==="setup"?{step:"players",hostPlayerId:emptySetup?"":host.id,selectedPlayerIds:players.map(p=>emptySetup?"":p.id),setup:null}:null;
+window.fixtureRequests=[];window.fixtureUnexpected=[];
 window.fetch=async(url,options={})=>{const path=new URL(url,location.origin).pathname;let body={};
 window.fixtureRequests.push({path,method:options.method??"GET",body:options.body?JSON.parse(options.body):null});
+if(${followupPhase === "13"}){
+ const method=options.method??"GET";
+ const known=method==="GET"&&["/api/players","/health/version","/api/ready","/api/music/oauth/status","/api/music/playlists","/api/game-sessions","/api/tournaments","/api/statistics"].includes(path)||["GET","PUT"].includes(method)&&path==="/api/game-sessions/"+gameId;
+ if(!known){window.fixtureUnexpected.push({path,method});throw new Error("Unexpected selection fixture request "+method+" "+path);}
+}
 if(path.startsWith("/api/players/")&&options.method==="PUT"){
  const index=profiles.findIndex(p=>p.id===path.split("/").at(-1));
  if(index<0)throw new Error("Unknown fixture player "+path);
@@ -88,10 +117,15 @@ if(path.startsWith("/api/players/")&&options.method==="PUT"){
 }
 else if(path==="/api/players")body={players:profiles};
 else if(path.includes("/version"))body={version:"glass-regression"};
+else if(${followupPhase === "13"}&&path==="/api/tournaments")body={tournaments:[]};
+else if(${followupPhase === "13"}&&path==="/api/statistics")body={players:[],tournaments:[],coverage:{completedGames:0,unavailableGames:0,pendingGames:0},algorithm:"club-team-elo-v1"};
+else if(${followupPhase === "13"}&&path==="/api/music/oauth/status")body={configured:false,connected:false,accountLabel:null};
+else if(${followupPhase === "13"}&&path==="/api/music/playlists")body={playlists:[]};
 else if(phase==="setup"&&path==="/api/music/oauth/status")body={configured:true,connected:true,accountLabel:"Layout fixture"};
-else if(phase==="setup"&&path==="/api/music/playlists")body={playlists:[]};
+else if(phase==="setup"&&path==="/api/music/playlists")body={playlists:${followupPhase ? '[{id:"fixture-playlist",title:"Mafia local recovery",itemCount:1}]' : "[]"}};
+else if(${Boolean(followupPhase)}&&path.includes("/api/music/playlists/"))body={items:[{entryId:"local-entry",videoId:"local-video",title:"Local recovery track",position:0}]};
 else if(path.includes("/ready"))body={ready:true};
-else if(path==="/api/game-sessions")body={sessions:[]};
+else if(path==="/api/game-sessions")body={sessions:${followupPhase ? 'new URL(url,location.origin).searchParams.get("status")==="completed"?[{gameId:"00000000-0000-4000-8000-000000000499",name:(locale==="ru"?"Очень длинное название завершённой игры ":"An exceptionally long completed game title ").repeat(5),outcome:"red"}]:[]' : "[]"}};
 else if(path.includes("/game-sessions/")){
  const stored=JSON.parse(localStorage.getItem("mafia-dashboard.game-session.v5")||"null");
  const request=options.body?JSON.parse(options.body):null;
@@ -119,10 +153,13 @@ await new Promise(()=>{});
 });
 `;
 let server;
+const bundleBinding = {};
 const results = [];
 const runId = new Date().toISOString();
 const sourceBefore =
-  process.env.GLASS_SCENARIO === "player-cards" ? await capturePlayerCardSources(root) : null;
+  process.env.GLASS_SCENARIO === "player-cards" || followupPhase
+    ? await capturePlayerCardSources(root)
+    : null;
 if (sourceBefore)
   await writeFile(join(evidence, "source-before.json"), JSON.stringify(sourceBefore, null, 2));
 async function previousResults(path) {
@@ -133,8 +170,1109 @@ async function previousResults(path) {
     return [];
   }
 }
+async function verifyFollowup(page, url, config) {
+  const { engine, enhanced, locale } = config;
+  const prefix = `${engine}-${locale}-${enhanced ? "enhanced" : "normal"}`;
+  const receipt = {
+    plan: followupPhase,
+    ...config,
+    viewport: page.viewportSize(),
+    browserVersion: page.context().browser().version(),
+    origin: new URL(url).origin,
+    ...(followupPhase === "13"
+      ? { sourceDigest: sourceBefore.digest, compiledOutputs: bundleBinding.production.outputs }
+      : {}),
+    screenshots: [],
+    errors: [],
+    requests: [],
+  };
+  const ru = locale === "ru";
+  page.on("pageerror", (error) => receipt.errors.push(error.message));
+  if (followupPhase === "13") {
+    receipt.resourceFailures = [];
+    receipt.blockedRequests = [];
+    page.on("requestfailed", (request) =>
+      receipt.resourceFailures.push({ url: request.url(), failure: request.failure()?.errorText }),
+    );
+  }
+  const screenshot = async (name) => {
+    const path = join(evidence, `${prefix}-${name}.png`);
+    await page.screenshot({ path, fullPage: true });
+    receipt.screenshots.push(path);
+  };
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    const target = request.url();
+    if (target === "https://www.youtube.com/iframe_api") {
+      receipt.requests.push({
+        url: target,
+        action: receipt.requests.length === 0 ? "abort" : "local-fixture",
+      });
+      if (receipt.requests.length === 1) return route.abort("failed");
+      return route.fulfill({
+        contentType: "text/javascript",
+        body: `
+        window.localPlayerConstructions = (window.localPlayerConstructions || 0);
+        class LocalPlayer {
+          constructor(id, options) {
+            this.options=options; this.volume=65; this.state=5; this.videoIds=[];
+            this.iframe=document.createElement('iframe'); this.iframe.title='Local YouTube fixture';
+            document.getElementById(id).replaceChildren(this.iframe);
+            window.localPlayer=this; window.localPlayerConstructions++;
+            setTimeout(()=>options.events.onReady({target:this}),0);
+          }
+          playVideo(){this.state=1;this.options.events.onStateChange({target:this,data:1});}
+          pauseVideo(){this.state=2;this.options.events.onStateChange({target:this,data:2});}
+          cuePlaylist(ids,index=0){this.videoIds=[...ids];this.index=index;this.state=5;setTimeout(()=>this.options.events.onStateChange({target:this,data:5}),0);}
+          loadPlaylist(ids,index=0){this.cuePlaylist(ids,index);this.playVideo();}
+          cueVideoById(value){this.videoIds=[value.videoId??value];this.state=5;setTimeout(()=>this.options.events.onStateChange({target:this,data:5}),0);}
+          loadVideoById(value){this.cueVideoById(value);this.playVideo();}
+          playVideoAt(index){this.index=index;this.playVideo();}
+          setVolume(volume){this.volume=volume;} getVolume(){return this.volume;}
+          getIframe(){return this.iframe;} getPlaylistIndex(){return this.index??0;}
+          getPlaylist(){return this.videoIds;} getCurrentTime(){return 0;}
+          getPlayerState(){return this.state;} getVideoData(){return {title:'Local recovery track'};}
+          destroy(){this.iframe.remove();}
+        }
+        window.YT={Player:LocalPlayer,PlayerState:{PLAYING:1,PAUSED:2,ENDED:0,BUFFERING:3,CUED:5}};
+        window.onYouTubeIframeAPIReady();
+      `,
+      });
+    }
+    if (target.startsWith(url + "/")) return route.continue();
+    if (followupPhase === "13") receipt.blockedRequests.push(target);
+    return route.abort();
+  });
+  try {
+    await page.goto(
+      `${url}/?phase=${followupPhase === "04" ? "setup" : "day"}&locale=${locale}${enhanced ? "&glass" : ""}`,
+    );
+    await page.locator(".app-shell").waitFor();
+    if (enhanced)
+      await page.waitForFunction(
+        () => document.querySelector(".app-shell")?.dataset.glassStatus === "ready",
+      );
+    receipt.glassStatus = await page.locator(".app-shell").getAttribute("data-glass-status");
+    if (followupPhase === "04") {
+      await page.locator(".music-panel-handle").click();
+      await page.locator(".youtube-session-queue select").selectOption("fixture-playlist");
+      await page
+        .getByRole("button", {
+          name: ru ? "Открыть меню управления" : "Open Manage menu",
+          exact: true,
+        })
+        .click();
+      await page
+        .getByRole("button", {
+          name: ru ? "Настройка музыкального плеера" : "Music player setup",
+          exact: true,
+        })
+        .click();
+      await page
+        .locator(".music-status")
+        .filter({ hasText: ru ? "недоступ" : "unavailable" })
+        .waitFor();
+      assert.equal(receipt.requests.length, 1);
+      assert.equal(
+        await page.locator('script[src="https://www.youtube.com/iframe_api"]').count(),
+        0,
+      );
+      await screenshot("api-failed");
+      await page
+        .getByRole("button", {
+          name: ru ? "Перезагрузить музыкальный плеер" : "Reload music player",
+          exact: true,
+        })
+        .click();
+      await page.waitForFunction(
+        () =>
+          window.localPlayerConstructions === 1 &&
+          document.querySelector('iframe[title="Local YouTube fixture"]'),
+      );
+      assert.equal(receipt.requests.length, 2);
+      await page
+        .locator(".music-status")
+        .filter({ hasText: ru ? "Готово · пауза" : "Ready · paused" })
+        .waitFor();
+      receipt.recoveryLabel = await page.locator(".music-status").innerText();
+      await screenshot("manage-recovered");
+      await page
+        .getByRole("button", {
+          name: ru ? "Закрыть меню управления" : "Close Manage menu",
+          exact: true,
+        })
+        .click();
+      await screenshot("api-recovered");
+      receipt.recovery = await page.evaluate(() => ({
+        constructions: window.localPlayerConstructions,
+        scripts: document.querySelectorAll('script[src="https://www.youtube.com/iframe_api"]')
+          .length,
+        queue: window.localPlayer.videoIds,
+        state: window.localPlayer.getPlayerState(),
+      }));
+      assert.equal(receipt.recovery.scripts, 1);
+      assert.ok(receipt.recovery.queue.length > 0);
+    }
+    if (followupPhase === "05") {
+      await page
+        .getByRole("button", {
+          name: ru ? "Открыть меню разработчика" : "Open developer menu",
+          exact: true,
+        })
+        .click();
+      receipt.title = await page
+        .locator(".dev-setting-toggle strong")
+        .first()
+        .evaluate((node) => ({
+          actual: getComputedStyle(node).color,
+          expected: getComputedStyle(node).getPropertyValue("--text").trim(),
+          undefinedToken: getComputedStyle(node).getPropertyValue("--foreground"),
+        }));
+      await screenshot("developer-title");
+      await page
+        .getByRole("button", {
+          name: ru ? "Хронология прошлых игр" : "Past game timeline",
+          exact: true,
+        })
+        .click();
+      await page
+        .locator(".timeline-header select option[value='00000000-0000-4000-8000-000000000499']")
+        .waitFor({ state: "attached" });
+      await page
+        .locator(".timeline-header select")
+        .selectOption("00000000-0000-4000-8000-000000000499");
+      await page.locator(".timeline-error").waitFor();
+      receipt.error = await page.locator(".timeline-error").evaluate((node) => ({
+        actual: getComputedStyle(node).color,
+        expected: getComputedStyle(node).getPropertyValue("--red").trim(),
+        text: node.textContent,
+      }));
+      await screenshot("long-error");
+      const dates = page.locator('.timeline-filters input[type="date"]');
+      await dates.nth(0).fill("2026-10-16");
+      await dates.nth(1).fill("2026-10-15");
+      receipt.filterError = await page.locator(".timeline-filter-error").evaluate((node) => ({
+        actual: getComputedStyle(node).color,
+        expected: getComputedStyle(node).getPropertyValue("--red").trim(),
+      }));
+      await screenshot("filter-error");
+      const normalize = (value) =>
+        value.startsWith("#")
+          ? `rgb(${value
+              .slice(1)
+              .match(/../g)
+              .map((part) => parseInt(part, 16))
+              .join(", ")})`
+          : value;
+      assert.equal(
+        receipt.title.actual,
+        normalize(receipt.title.expected),
+        "Developer title uses existing --text",
+      );
+      assert.equal(
+        receipt.error.actual,
+        normalize(receipt.error.expected),
+        "Timeline load error uses existing --red",
+      );
+      assert.equal(
+        receipt.filterError.actual,
+        normalize(receipt.filterError.expected),
+        "Timeline filter error uses existing --red",
+      );
+    }
+    if (followupPhase === "06") {
+      await page
+        .getByRole("button", {
+          name: ru ? "Открыть меню разработчика" : "Open developer menu",
+          exact: true,
+        })
+        .click();
+      const canonicalBefore = await page.evaluate(
+        () => JSON.parse(localStorage.getItem("mafia-dashboard.game-session.v5")).current.state,
+      );
+      await page
+        .getByRole("button", {
+          name: ru ? "Хронология прошлых игр" : "Past game timeline",
+          exact: true,
+        })
+        .click();
+      await page.locator(".timeline-marker").first().click();
+      receipt.currentActions = [];
+      for (const button of await page.locator(".timeline-state-actions button").all()) {
+        await button.scrollIntoViewIfNeeded();
+        const box = await button.boundingBox();
+        assert.ok(box.x >= -1 && box.x + box.width <= page.viewportSize().width + 1);
+        assert.ok(box.height >= 44);
+        receipt.currentActions.push({
+          text: await button.innerText(),
+          disabled: await button.isDisabled(),
+          box,
+        });
+      }
+      assert.equal(receipt.currentActions.length, 2);
+      assert.equal(receipt.currentActions[0].disabled, false);
+      assert.equal(receipt.currentActions[1].disabled, true);
+      await screenshot("current-actions");
+      const geometry = () =>
+        page.evaluate(() => {
+          const read = (node) => {
+            const box = node.getBoundingClientRect();
+            return {
+              x: box.x,
+              y: box.y,
+              right: box.right,
+              bottom: box.bottom,
+              width: box.width,
+              height: box.height,
+              clientWidth: node.clientWidth,
+              scrollWidth: node.scrollWidth,
+            };
+          };
+          return {
+            viewport: { width: innerWidth, height: innerHeight },
+            documentWidth: document.documentElement.scrollWidth,
+            header: read(document.querySelector(".timeline-header")),
+            filters: read(document.querySelector(".timeline-filters")),
+            controls: [
+              ...document.querySelectorAll(".timeline-header > *, .timeline-filters > *"),
+            ].map(read),
+            inspector: document.querySelector(".timeline-inspector")
+              ? read(document.querySelector(".timeline-inspector"))
+              : null,
+          };
+        });
+      await page
+        .locator(".timeline-header select option[value='00000000-0000-4000-8000-000000000499']")
+        .waitFor({ state: "attached" });
+      await page
+        .locator(".timeline-header select")
+        .selectOption("00000000-0000-4000-8000-000000000499");
+      await page.locator(".timeline-error").waitFor();
+      receipt.longError = await geometry();
+      await screenshot("long-error");
+      await page
+        .getByRole("button", {
+          name: ru ? "Создать демонстрационную игру" : "Generate sample game data",
+          exact: true,
+        })
+        .click();
+      assert.equal(await page.locator(".timeline-marker").count(), 23);
+      assert.equal(await page.locator(".timeline-region").count(), 7);
+      await page.locator(".timeline-marker").nth(9).click();
+      receipt.populated = await geometry();
+      receipt.detail = await page.locator(".timeline-inspector").innerText();
+      await page.locator(".timeline-inspector").scrollIntoViewIfNeeded();
+      await screenshot("populated-detail");
+      receipt.lane = await page.locator(".timeline-track-scroll").evaluate((node) => {
+        const width = node.clientWidth,
+          scrollWidth = node.scrollWidth;
+        node.scrollLeft = scrollWidth;
+        return {
+          width,
+          scrollWidth,
+          scrollLeft: node.scrollLeft,
+          overflowX: getComputedStyle(node).overflowX,
+        };
+      });
+      await screenshot("lane-right");
+      assert.ok(receipt.lane.scrollWidth > receipt.lane.width && receipt.lane.scrollLeft > 0);
+      assert.equal(receipt.lane.overflowX, "auto");
+      assert.deepEqual(
+        await page.evaluate(
+          () => JSON.parse(localStorage.getItem("mafia-dashboard.game-session.v5")).current.state,
+        ),
+        canonicalBefore,
+      );
+      for (const state of [receipt.longError, receipt.populated]) {
+        assert.ok(
+          state.documentWidth <= state.viewport.width + 1,
+          "No document horizontal overflow",
+        );
+        for (const control of state.controls)
+          assert.ok(
+            control.x >= -1 && control.right <= state.viewport.width + 1,
+            `Timeline control clips: ${JSON.stringify(control)}`,
+          );
+        if (state.inspector)
+          assert.ok(
+            state.inspector.scrollWidth <= state.inspector.clientWidth + 1,
+            `Inspector horizontal overflow: ${JSON.stringify(state.inspector)}`,
+          );
+      }
+    }
+    if (followupPhase === "13") {
+      receipt.selection = [];
+      receipt.editing = [];
+      const canonical = () =>
+        page.evaluate(
+          () => JSON.parse(localStorage.getItem("mafia-dashboard.game-session.v5")).current.state,
+        );
+      const dragBetween = async (from, to) => {
+        await page.mouse.move(from.x, from.y);
+        await page.mouse.down();
+        await page.mouse.move(to.x, to.y, { steps: 8 });
+        await page.mouse.up();
+      };
+      const blocked = async (target, label) => {
+        await target.scrollIntoViewIfNeeded();
+        receipt.selectionTarget = await target.evaluate((node) => {
+          const ancestors = [];
+          for (let el = node; el; el = el.parentElement)
+            ancestors.push({
+              tag: el.tagName,
+              userSelect: getComputedStyle(el).userSelect,
+              webkitUserSelect: getComputedStyle(el).webkitUserSelect,
+            });
+          return ancestors;
+        });
+        const bounds = await target.evaluate((node) => {
+          const walker = document.createTreeWalker(node, 4);
+          let text;
+          while ((text = walker.nextNode())) {
+            if (!text.textContent.trim()) continue;
+            const range = document.createRange();
+            range.selectNodeContents(text);
+            const box = range.getClientRects()[0];
+            if (box?.width > 10)
+              return { x: box.x, y: box.y, width: box.width, height: box.height };
+          }
+          return null;
+        });
+        assert.ok(bounds?.width > 10, `${label}: real visible text target`);
+        await page.evaluate(() => window.getSelection().removeAllRanges());
+        await dragBetween(
+          { x: bounds.x + 2, y: bounds.y + bounds.height / 2 },
+          { x: bounds.x + bounds.width - 2, y: bounds.y + bounds.height / 2 },
+        );
+        const drag = await page.evaluate(() => window.getSelection().toString());
+        assert.equal(drag, "", `${label}: native drag must not select ordinary UI text`);
+        await page.mouse.dblclick(bounds.x + 6, bounds.y + bounds.height / 2);
+        const doubleClick = await page.evaluate(() => window.getSelection().toString());
+        assert.equal(doubleClick, "", `${label}: native double-click must not select UI text`);
+        const computed = await target.evaluate((node) => ({
+          unprefixedSupported: window.CSS.supports("user-select", "none"),
+          userSelect: getComputedStyle(node).getPropertyValue("user-select") || null,
+          webkitUserSelect: getComputedStyle(node).webkitUserSelect,
+        }));
+        assert.equal(
+          computed.userSelect,
+          computed.unprefixedSupported ? "none" : null,
+          `${label}: computed selection policy`,
+        );
+        assert.equal(computed.webkitUserSelect, "none", `${label}: WebKit selection policy`);
+        receipt.selection.push({ label, drag, doubleClick, ...computed });
+      };
+      const editable = async (field, label) => {
+        const original = await field.inputValue();
+        await field.fill("Native selection sample");
+        await field.click();
+        const read = () =>
+          field.evaluate((node) => ({
+            start: node.selectionStart,
+            end: node.selectionEnd,
+            value: node.value,
+            unprefixedSupported: window.CSS.supports("user-select", "text"),
+            userSelect: getComputedStyle(node).getPropertyValue("user-select") || null,
+            webkitUserSelect: getComputedStyle(node).webkitUserSelect,
+            readWrite: node.matches(":read-write"),
+            portaled: !node.closest("#root"),
+          }));
+        await page.keyboard.press("Meta+A");
+        const all = await read();
+        assert.equal(all.start, 0, label);
+        assert.equal(all.end, all.value.length, label);
+        assert.equal(all.userSelect, all.unprefixedSupported ? "text" : null, label);
+        assert.equal(all.webkitUserSelect, "text", label);
+        assert.equal(all.readWrite, true, label);
+        await page.keyboard.press("ArrowLeft");
+        await page.keyboard.press("ArrowRight");
+        await page.keyboard.press("ArrowRight");
+        for (let i = 0; i < 3; i++) await page.keyboard.press("Shift+ArrowRight");
+        const part = await read();
+        assert.deepEqual([part.start, part.end], [2, 5], `${label}: native substring selection`);
+        if (label === "body-portaled opposing-victory textarea")
+          await screenshot("native-textarea-substring");
+        // Intercept the trusted native copy command BEFORE its default action.
+        // Never read or write the operator clipboard; this proves command dispatch only.
+        await field.evaluate((node) => {
+          node.dataset.copyEvents = "0";
+          node.addEventListener(
+            "copy",
+            (event) => {
+              event.preventDefault();
+              node.dataset.copyEvents = String(Number(node.dataset.copyEvents) + 1);
+              node.dataset.copyTrusted = String(event.isTrusted);
+            },
+            { once: true },
+          );
+        });
+        await page.keyboard.press("Meta+C");
+        assert.equal(await field.getAttribute("data-copy-events"), "1", label);
+        assert.equal(await field.getAttribute("data-copy-trusted"), "true", label);
+        await page.keyboard.type("XYZ");
+        assert.equal(
+          await field.inputValue(),
+          "NaXYZe selection sample",
+          `${label}: replace substring`,
+        );
+        await page.keyboard.press("Meta+A");
+        await page.keyboard.type("Selection 13");
+        assert.equal(await field.inputValue(), "Selection 13", `${label}: replace all`);
+        await page.keyboard.press("ArrowLeft");
+        const caret = await read();
+        assert.deepEqual([caret.start, caret.end], [11, 11], `${label}: native caret`);
+        receipt.editing.push({
+          label,
+          all,
+          part,
+          caret,
+          copy: "trusted native command; default prevented; no clipboard roundtrip",
+        });
+        await field.fill(original);
+      };
+      await blocked(page.locator(".game-header h1"), "workspace title");
+      const before = await canonical();
+      const selected = page.locator('.game-shell .seat-anchor[data-seat="3"] > .player-seat');
+      assert.equal(await selected.getAttribute("aria-pressed"), "true");
+      assert.equal(await selected.locator(".card-selection svg").count(), 1);
+      const glow = await page
+        .locator(".game-shell .player-seat.is-current")
+        .first()
+        .evaluate((node) => ({
+          shadow: getComputedStyle(node).boxShadow,
+          animation: getComputedStyle(node).animationName,
+        }));
+      assert.notEqual(glow.shadow, "none");
+      receipt.semanticStatus = { selected: true, marker: true, glow };
+      const utility = page.locator(".utility-panels-toggle");
+      await utility.click();
+      assert.equal(await page.locator("#game-utility-panels").isVisible(), false);
+      await utility.click();
+      assert.equal(await page.locator("#game-utility-panels").isVisible(), true);
+      receipt.panelGesture = {
+        nativeToggle: true,
+        nativeSwipe: "WebKit swipe unavailable; component handler covered separately",
+      };
+      if (engine.startsWith("chrome")) {
+        const cdp = await page.context().newCDPSession(page);
+        await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true });
+        const grip = await utility.boundingBox();
+        const x = grip.x + grip.width / 2,
+          y = grip.y + grip.height / 2;
+        await cdp.send("Input.dispatchTouchEvent", {
+          type: "touchStart",
+          touchPoints: [{ x, y, id: 1 }],
+        });
+        for (let i = 1; i <= 6; i++)
+          await cdp.send("Input.dispatchTouchEvent", {
+            type: "touchMove",
+            touchPoints: [{ x, y: y + i * 10, id: 1 }],
+          });
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        assert.equal(
+          await page.locator("#game-utility-panels").isVisible(),
+          true,
+          "Panel swipe does not toggle on its trailing click",
+        );
+        await utility.click();
+        assert.equal(
+          await page.locator("#game-utility-panels").isVisible(),
+          true,
+          "Existing post-swipe click suppression consumes the next click",
+        );
+        await utility.click();
+        assert.equal(
+          await page.locator("#game-utility-panels").isVisible(),
+          false,
+          "Subsequent native panel activation after the suppressed click",
+        );
+        await utility.click();
+        await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+        await cdp.detach();
+        receipt.panelGesture.nativeSwipe =
+          "trusted CDP touch start/move/end and subsequent real click";
+      }
+      const card = page.locator('.game-shell .seat-anchor[data-seat="1"] > .player-seat');
+      const box = await card.boundingBox();
+      await dragBetween(
+        { x: box.x + box.width / 2, y: box.y + box.height / 2 },
+        { x: box.x + box.width / 2, y: box.y + box.height / 2 - 75 },
+      );
+      const dialog = page.locator("dialog.federation-judge-dialog[open]");
+      await dialog.waitFor();
+      assert.equal(await dialog.evaluate((node) => node.parentElement === document.body), true);
+      await blocked(dialog.locator("header strong"), "body-portaled penalty title");
+      await editable(dialog.locator("input[maxlength='500']"), "body-portaled optional notes");
+      await dialog
+        .locator(".federation-discipline-form > label select")
+        .selectOption("opponent-victory");
+      await editable(dialog.locator("textarea"), "body-portaled opposing-victory textarea");
+      await screenshot("native-portal-editing");
+      await page.keyboard.press("Escape");
+      await dialog.waitFor({ state: "detached" });
+      assert.deepEqual(
+        await canonical(),
+        before,
+        "Reading/editing an unsubmitted penalty does not change game state",
+      );
+      const rules = page.getByRole("button", { name: ru ? "Правила" : "Rules", exact: true });
+      await rules.click();
+      const reader = page.locator("dialog.rules-sketchbook[open]");
+      await reader.waitFor();
+      assert.equal(await reader.evaluate((node) => node.parentElement === document.body), true);
+      const book = reader.locator(".rs-book");
+      const idle = () =>
+        page.waitForFunction(() => {
+          const paper = document.querySelector(".rs-book");
+          return (
+            paper &&
+            paper.getAttribute("aria-busy") !== "true" &&
+            !document.querySelector(".rs-curl")
+          );
+        });
+      const openTableChapter = async () => {
+        await idle();
+        await reader.locator(".rs-bookmark").click();
+        await idle();
+        await reader.locator('.rs-spread [data-chapter-target="table"]').click();
+        await idle();
+        assert.equal(await book.getAttribute("data-chapter"), "table");
+      };
+      await openTableChapter();
+      await blocked(reader.locator(".rs-spread .rs-lede"), "body-portaled real Rules text");
+      // Selection attempts can themselves turn pages. Settle and re-establish
+      // an exact starting chapter before attributing the next native gesture.
+      await openTableChapter();
+      const paper = await book.boundingBox();
+      await dragBetween(
+        { x: paper.x + paper.width * 0.2, y: paper.y + paper.height * 0.5 },
+        { x: paper.x + paper.width * 0.8, y: paper.y + paper.height * 0.5 },
+      );
+      await page.waitForFunction(
+        () => document.querySelector(".rs-book")?.dataset.chapter === "contents",
+      );
+      await idle();
+      const reading = reader.locator(".rs-spread .rs-body");
+      const scroll = await reading.evaluate((node) => ({
+        height: node.clientHeight,
+        scrollHeight: node.scrollHeight,
+      }));
+      if (scroll.scrollHeight > scroll.height) {
+        await reading.hover();
+        await page.mouse.wheel(0, 250);
+        await page.waitForFunction(() =>
+          [...document.querySelectorAll(".rs-body")].some((node) => node.scrollTop > 0),
+        );
+      }
+      const scrollTop = await reading.evaluate((node) => node.scrollTop);
+      assert.ok(scrollTop > 0, "Actual Rules contents body scrolled after native wheel");
+      receipt.rules = {
+        pageGesture: "settled native mouse drag: table -> contents",
+        nativeWheelScroll: scroll.scrollHeight > scroll.height,
+        scrollTop,
+        scroll,
+      };
+      await screenshot("rules-selection-and-gesture");
+      await page.keyboard.press("Escape");
+      await reader.waitFor({ state: "detached" });
+      assert.deepEqual(await canonical(), before);
+      await page.locator(".manage-toolbar-button").click();
+      await page
+        .getByRole("button", { name: ru ? "Экран игроков" : "Players screen", exact: true })
+        .click();
+      await blocked(
+        page.locator('[data-player-glass="profile"] h2').first(),
+        "player profile card name",
+      );
+      await editable(page.locator('input[id$="-nickname"]').first(), "player nickname");
+      await editable(page.locator("#player-search"), "player nickname search");
+      await screenshot("native-profile-fields");
+      await page.locator(".manage-toolbar-button").click();
+      await page
+        .getByRole("button", { name: ru ? "Статистика" : "Statistics", exact: true })
+        .click();
+      await page.locator(".statistics-coverage").waitFor();
+      await blocked(page.locator(".statistics-header h1"), "statistics heading");
+      await blocked(page.locator(".statistics-filter-note").first(), "statistics label");
+      await blocked(
+        page.locator(".statistics-table-tools button"),
+        "native statistics refresh button",
+      );
+      await editable(page.locator('.statistics-screen input[type="search"]'), "statistics search");
+      await page.locator(".statistics-header button").click();
+      await page.locator(".dev-toolbar-button").click();
+      await page
+        .getByRole("button", {
+          name: ru ? "Хронология прошлых игр" : "Past game timeline",
+          exact: true,
+        })
+        .click();
+      await blocked(page.locator(".timeline-header h1"), "Timeline heading");
+      await page.locator(".timeline-marker").first().click();
+      await blocked(page.locator(".timeline-inspector h2"), "Timeline detail label");
+      await screenshot("timeline-text");
+      assert.deepEqual(await canonical(), before);
+      receipt.fixtureRequests = await page.evaluate(() => window.fixtureRequests);
+      assert.deepEqual(await page.evaluate(() => window.fixtureUnexpected), []);
+      await page.evaluate(() => localStorage.clear());
+      await page.goto(`${url}/?phase=setup&locale=${locale}${enhanced ? "&glass" : ""}`);
+      await page.locator("#seat-1-player").waitFor();
+      await page.waitForFunction(
+        () => document.querySelector("#seat-1-player")?.value === "Player 1",
+      );
+      await editable(page.locator("#host-player"), "host picker search");
+      await page.locator(".player-setup-card h1").click();
+      const picker = page.locator("#seat-1-player");
+      await editable(picker, "seat picker search");
+      await page.locator(".player-setup-card h1").click();
+      await picker.click();
+      await page
+        .locator("#seat-1-player-suggestions")
+        .getByRole("option", { name: "Player 1", exact: true })
+        .click();
+      assert.equal(await page.getByRole("listbox").count(), 0);
+      await page
+        .getByRole("button", {
+          name: ru ? "Выбрать доступных игроков" : "Select available players",
+          exact: true,
+        })
+        .click();
+      await editable(
+        page.getByRole("searchbox", {
+          name: ru ? "Поиск доступных игроков" : "Search available players",
+          exact: true,
+        }),
+        "available-player search",
+      );
+      await page
+        .getByRole("button", {
+          name: ru ? "Закрыть список доступных игроков" : "Close available players",
+          exact: true,
+        })
+        .click();
+      await page.locator('.tournament-picker input[type="checkbox"]').check();
+      await page
+        .getByRole("button", { name: ru ? "Новый турнир…" : "New tournament…", exact: true })
+        .click();
+      await editable(page.locator(".tournament-picker-create input"), "tournament name");
+      await screenshot("native-setup-fields");
+      await page.locator('.tournament-picker input[type="checkbox"]').uncheck();
+      const handle = page.locator('[data-setup-seat="1"] .setup-seat-drag-handle');
+      await handle.scrollIntoViewIfNeeded();
+      const source = await handle.boundingBox(),
+        target = await page.locator('[data-setup-seat="2"]').boundingBox();
+      await dragBetween(
+        { x: source.x + source.width / 2, y: source.y + source.height / 2 },
+        { x: target.x + target.width / 2, y: target.y + target.height / 2 },
+      );
+      await page.waitForFunction(
+        () =>
+          document.querySelector("#seat-1-player")?.value === "Player 2" &&
+          document.querySelector("#seat-2-player")?.value === "Player 1",
+      );
+      await page
+        .getByRole("button", { name: ru ? "Начать игру" : "Start game", exact: true })
+        .click();
+      const role = page.locator('.seat-anchor[data-seat="1"] .player-seat');
+      await role.click();
+      const roleBox = await role.boundingBox();
+      await dragBetween(
+        { x: roleBox.x + roleBox.width / 2, y: roleBox.y + roleBox.height / 2 },
+        { x: roleBox.x + roleBox.width / 2 + 70, y: roleBox.y + roleBox.height / 2 },
+      );
+      const chooser = page.getByRole("dialog", {
+        name: ru ? "Выберите роль" : "Choose role",
+        exact: true,
+      });
+      await chooser.waitFor();
+      await blocked(chooser.locator(".table-prompt"), "role chooser title");
+      await chooser.getByRole("button", { name: ru ? "Отмена" : "Cancel", exact: true }).click();
+      await chooser.waitFor({ state: "detached" });
+      receipt.pointerPreservation = {
+        penaltyGesture: true,
+        pickerOption: true,
+        seatSwap: true,
+        roleChooser: "trusted mouse horizontal swipe and visible cancel",
+      };
+      receipt.fixtureRequests.push(...(await page.evaluate(() => window.fixtureRequests)));
+      assert.deepEqual(await page.evaluate(() => window.fixtureUnexpected), []);
+      const font =
+        "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500&family=Ubuntu:wght@400;500;600;700&display=swap";
+      assert.ok(
+        receipt.blockedRequests.every((request) => request === font),
+        "Only the existing external font import may be blocked",
+      );
+      assert.ok(
+        receipt.resourceFailures.every((request) => receipt.blockedRequests.includes(request.url)),
+        "No unclassified/local resource failures",
+      );
+      await screenshot("ordinary-text");
+    }
+    if (followupPhase === "12") {
+      const canonical = () =>
+        page.evaluate(
+          () => JSON.parse(localStorage.getItem("mafia-dashboard.game-session.v5")).current.state,
+        );
+      const focused = async (control, label) => {
+        const baseline = await control.evaluate((node) => ({
+          outlineStyle: getComputedStyle(node).outlineStyle,
+          outlineWidth: getComputedStyle(node).outlineWidth,
+          outlineColor: getComputedStyle(node).outlineColor,
+          outlineOffset: getComputedStyle(node).outlineOffset,
+        }));
+        await control.focus();
+        const style = await control.evaluate((node) => ({
+          focused: node === document.activeElement,
+          outlineStyle: getComputedStyle(node).outlineStyle,
+          outlineWidth: getComputedStyle(node).outlineWidth,
+          outlineColor: getComputedStyle(node).outlineColor,
+          outlineOffset: getComputedStyle(node).outlineOffset,
+        }));
+        assert.equal(style.focused, true);
+        const { focused: active, ...outline } = style;
+        assert.equal(active, true);
+        assert.deepEqual(
+          outline,
+          baseline,
+          `${label}: focus adds no outline while preserving semantic selected/game outlines`,
+        );
+        receipt.focusedControls ??= [];
+        receipt.focusedControls.push({ label, baseline, ...style });
+      };
+      const toggle = page.locator(".dev-toolbar-button");
+      if (enhanced) {
+        await toggle.click();
+        await page.locator(".dev-menu-actions > .dev-setting-toggle").nth(0).focus();
+        await page.keyboard.press("Enter");
+        await toggle.click();
+        await page.waitForFunction(() =>
+          ["ready", "fallback"].includes(document.querySelector(".app-shell")?.dataset.vgpuStatus),
+        );
+      }
+      const selected = page.locator('.game-shell .seat-anchor[data-seat="3"] > .player-seat');
+      await selected.waitFor();
+      assert.equal(await selected.getAttribute("aria-pressed"), "true");
+      assert.equal(await selected.locator(".card-selection svg").count(), 1);
+      const gameBefore = await canonical();
+      await focused(selected, "selected native player button");
+      await screenshot("focused-selected-player");
+      for (const key of ["f", "Shift+F10", "ContextMenu"]) await page.keyboard.press(key);
+      assert.deepEqual(
+        await canonical(),
+        gameBefore,
+        "Retired player keys cannot mutate canonical state",
+      );
+      assert.equal(await page.locator("dialog[open]").count(), 0);
+      await page.keyboard.press("Enter");
+      await page.waitForFunction(
+        () =>
+          document
+            .querySelector('.seat-anchor[data-seat="3"] > .player-seat')
+            ?.getAttribute("aria-pressed") === "false",
+      );
+      await page.keyboard.press("Space");
+      await page.waitForFunction(
+        () =>
+          document
+            .querySelector('.seat-anchor[data-seat="3"] > .player-seat')
+            ?.getAttribute("aria-pressed") === "true",
+      );
+      assert.equal(
+        (await canonical()).events.length,
+        gameBefore.events.length + 2,
+        "Native Enter/Space each perform one canonical nomination action",
+      );
+      assert.equal(await selected.locator(".card-selection svg").count(), 1);
+      receipt.semanticSelection = {
+        before: "true",
+        after: await selected.getAttribute("aria-pressed"),
+        acceptedEvents: 2,
+        markerRetained: true,
+      };
+      if (enhanced) {
+        const current = page.locator(".game-shell .player-seat.is-current").first();
+        await focused(current, "current speaker with retained game-state glow");
+        receipt.gameLighting = await current.evaluate((node) => {
+          const shell = node.closest(".app-shell");
+          const canvas = node.querySelector(".vgpu-player-lighting");
+          return {
+            requested: shell.dataset.lightingRendererRequested,
+            effective: shell.dataset.lightingRenderer,
+            status: shell.dataset.vgpuStatus,
+            ready: canvas?.dataset.vgpuReady,
+            visibility: canvas ? getComputedStyle(canvas).visibility : null,
+            cssAnimation: getComputedStyle(node).animationName,
+            cssShadow: getComputedStyle(node).boxShadow,
+          };
+        });
+        assert.equal(receipt.gameLighting.requested, "vgpu");
+        assert.ok(
+          (receipt.gameLighting.effective === "vgpu" &&
+            receipt.gameLighting.ready === "true" &&
+            receipt.gameLighting.visibility === "visible") ||
+            (receipt.gameLighting.effective === "legacy" &&
+              receipt.gameLighting.status === "fallback" &&
+              receipt.gameLighting.cssAnimation !== "none" &&
+              receipt.gameLighting.cssShadow !== "none"),
+          "Focused speaker retains a real supported GPU or explicit CSS fallback game glow",
+        );
+        await screenshot("focused-current-game-glow");
+      }
+      await toggle.click();
+      await page.keyboard.press("Escape");
+      assert.equal(
+        await page.locator("#dev-menu-drawer").count(),
+        1,
+        "Retired drawer Escape does not close a non-native drawer",
+      );
+      const detail = page.locator(".player-exit-controls");
+      await detail.locator("summary").focus();
+      await page.keyboard.press("Enter");
+      assert.equal(await detail.getAttribute("open"), "");
+      await focused(detail.locator("summary"), "native details summary");
+      await page.keyboard.press("Space");
+      assert.equal(await detail.getAttribute("open"), null);
+      await page.keyboard.press("Enter");
+      const range = detail.locator("input[type=range]").first();
+      await focused(range, "native range");
+      const minimum = Number(await range.getAttribute("min"));
+      const step = Number(await range.getAttribute("step"));
+      await page.keyboard.press("Home");
+      assert.equal(await range.inputValue(), String(minimum));
+      await page.keyboard.press("ArrowRight");
+      assert.equal(await range.inputValue(), String(minimum + step));
+      const select = detail.locator("select").first();
+      await select.selectOption({ index: 0 });
+      await focused(select, "native select");
+      if (ru) {
+        // Playwright's insertText path for Cyrillic does not exercise native
+        // select type-ahead; OS popup keyboard delivery remains unqualified.
+        await select.selectOption({ index: 1 });
+        receipt.nativeSelectActivation =
+          "native DOM selectOption; Russian OS-popup keyboard not qualified";
+        receipt.gaps = [
+          "Russian native select popup keyboard delivery on this macOS headless host",
+        ];
+      } else {
+        await page.keyboard.type(await select.locator("option").nth(1).innerText(), { delay: 30 });
+        receipt.nativeSelectActivation = "native type-ahead";
+      }
+      assert.equal(
+        await select.inputValue(),
+        await select.locator("option").nth(1).getAttribute("value"),
+      );
+      await screenshot("focused-native-range-drawer-stays-open");
+      await toggle.click();
+      await page.locator("#dev-menu-drawer").waitFor({ state: "detached" });
+      const rules = page.getByRole("button", { name: ru ? "Правила" : "Rules", exact: true });
+      await focused(rules, "native Rules opener");
+      await page.keyboard.press("Enter");
+      const reader = page.locator("dialog.rules-sketchbook[open]");
+      await reader.waitFor();
+      assert.equal(await reader.evaluate((node) => node.matches(":modal")), true);
+      const bookBefore = await canonical();
+      await rules.evaluate((node) => node.focus());
+      assert.equal(
+        await rules.evaluate((node) => node === document.activeElement),
+        false,
+        "Native modal inertness rejects background focus",
+      );
+      const paper = reader.locator(".rs-book");
+      await paper.waitFor();
+      const chapter = await paper.getAttribute("data-chapter");
+      assert.notEqual(chapter, "unavailable", "Real bundled Rule content is available");
+      for (const key of ["ArrowRight", "ArrowLeft"]) await page.keyboard.press(key);
+      assert.equal(
+        await paper.getAttribute("data-chapter"),
+        chapter,
+        "Retired Rules arrow navigation cannot change the real reader chapter",
+      );
+      assert.equal(await reader.locator(".rs-curl").count(), 0);
+      receipt.readerContent = { chapter, source: "real bundled RulesBookContent/rulesChapters" };
+      await focused(reader.locator(".rs-close"), "native modal Close");
+      await screenshot("focused-native-modal-close");
+      await page.keyboard.press("Escape");
+      await reader.waitFor({ state: "detached" });
+      assert.equal(await page.locator("[inert]").count(), 0);
+      assert.deepEqual(await canonical(), bookBefore);
+      receipt.nativeModal =
+        "real bundled Rules reader: native showModal inertness; retired arrows inert; native Escape and Close Space cleanup; no authored focus return asserted";
+      await rules.click();
+      await page.locator("dialog.rules-sketchbook[open] .rs-close").focus();
+      await page.keyboard.press("Space");
+      await page.locator("dialog.rules-sketchbook[open]").waitFor({ state: "detached" });
+      receipt.nativeControls = `player Enter/Space; details Enter/Space; range Home/ArrowRight; select ${receipt.nativeSelectActivation}; Rules Enter; Close Space; native modal Escape`;
+      receipt.geometry = await page.evaluate(() => ({
+        documentWidth: document.documentElement.scrollWidth,
+        viewportWidth: innerWidth,
+        scrollY: window.scrollY,
+      }));
+      assert.ok(receipt.geometry.documentWidth <= receipt.geometry.viewportWidth + 1);
+      receipt.nativeAssertions = {
+        playerActivations: 2,
+        retiredPlayerKeysIgnored: 3,
+        drawerEscapeIgnored: 1,
+        detailsActivations: 3,
+        rangeKeyChanges: 2,
+        nativeSelectTypeAhead: ru ? 0 : 1,
+        nativeSelectDomChanges: ru ? 1 : 0,
+        nativeModalOpens: 2,
+        nativeEscapeCloses: 1,
+        nativeCloseSpace: 1,
+        backgroundFocusRejected: 1,
+        focusedControls: receipt.focusedControls.length,
+      };
+    }
+    if (["07", "08"].includes(followupPhase)) {
+      await page
+        .getByRole("button", {
+          name: ru ? "Открыть меню разработчика" : "Open developer menu",
+          exact: true,
+        })
+        .click();
+      receipt.disclosures = [];
+      for (const selector of [
+        ".dev-glass-controls",
+        ".player-exit-controls",
+        ".fancy-stuff-controls",
+      ]) {
+        const disclosure = page.locator(selector);
+        const read = () =>
+          disclosure.evaluate((node) => {
+            const style = (el) => {
+              const css = getComputedStyle(el);
+              const box = el.getBoundingClientRect();
+              return {
+                width: box.width,
+                height: box.height,
+                padding: css.padding,
+                border: css.border,
+                radius: css.borderRadius,
+                display: css.display,
+                gap: css.gap,
+                color: css.color,
+                fontSize: css.fontSize,
+                minHeight: css.minHeight,
+              };
+            };
+            return {
+              open: node.open,
+              host: style(node),
+              summary: style(node.querySelector(":scope > summary")),
+              fields: style(node.querySelector(":scope > div")),
+              controls: [...node.querySelectorAll("button,input,select")]
+                .filter((el) => el.getClientRects().length > 0)
+                .map((el) => ({
+                  tag: el.tagName,
+                  type: el.type,
+                  disabled: el.disabled,
+                  label: el.getAttribute("aria-label"),
+                  pressed: el.getAttribute("aria-pressed"),
+                  style: style(el),
+                })),
+            };
+          });
+        const before = await read();
+        assert.equal(before.open, false);
+        await disclosure.locator(":scope > summary").click();
+        const open = await read();
+        assert.equal(open.open, true);
+        if (selector === ".dev-glass-controls") {
+          for (const nested of [".dev-glass-advanced", ".dev-player-card-appearance"]) {
+            await disclosure.locator(`${nested} > summary`).click();
+            await screenshot(`${selector.slice(1)}-${nested.slice(1)}`);
+            await disclosure.locator(`${nested} > summary`).click();
+          }
+        }
+        await disclosure.locator(":scope > summary").scrollIntoViewIfNeeded();
+        await screenshot(`${selector.slice(1)}-open`);
+        await disclosure.locator(":scope > summary").click();
+        const closed = await read();
+        assert.equal(closed.open, false);
+        receipt.disclosures.push({ selector, before, open, closed });
+      }
+      if (process.env.UI_FOLLOWUP_BASELINE) {
+        const baseline = JSON.parse(
+          await readFile(
+            join(
+              root,
+              ".AI/reports/review-followup-2026-10-16",
+              process.env.UI_FOLLOWUP_BASELINE,
+              `${prefix}-receipt.json`,
+            ),
+            "utf8",
+          ),
+        );
+        assert.deepEqual(
+          receipt.disclosures,
+          baseline.disclosures,
+          "Disclosure geometry, controls and computed styles remain identical",
+        );
+      }
+      await screenshot("disclosures-closed");
+      if (followupPhase === "08") {
+        receipt.nativeToggles = [];
+        for (const selector of [".dev-glass-controls", ".player-exit-controls"]) {
+          const disclosure = page.locator(selector);
+          await disclosure.locator(":scope > summary").click();
+          for (const button of await disclosure.locator(".dev-setting-toggle").all()) {
+            const label = await button.getAttribute("aria-label"),
+              before = await button.getAttribute("aria-pressed");
+            await button.focus();
+            await page.keyboard.press("Enter");
+            assert.notEqual(await button.getAttribute("aria-pressed"), before);
+            await page.keyboard.press("Space");
+            assert.equal(await button.getAttribute("aria-pressed"), before);
+            receipt.nativeToggles.push({ label, before, activation: "Enter then Space restored" });
+          }
+          await disclosure.locator(":scope > summary").click();
+        }
+        const ray = page.locator(".dev-menu-actions > .dev-setting-toggle").nth(0);
+        const pulse = page.locator(".dev-menu-actions > .dev-setting-toggle").nth(1);
+        assert.equal(await pulse.isDisabled(), true);
+        const pulseBefore = await pulse.getAttribute("aria-pressed");
+        await ray.focus();
+        await page.keyboard.press("Enter");
+        assert.equal(await pulse.isDisabled(), false);
+        assert.equal(
+          await page.evaluate(() => localStorage.getItem("mafia-dashboard.lighting-renderer.v1")),
+          "vgpu",
+        );
+        await pulse.focus();
+        await page.keyboard.press("Enter");
+        assert.notEqual(await pulse.getAttribute("aria-pressed"), pulseBefore);
+        await page.keyboard.press("Space");
+        assert.equal(await pulse.getAttribute("aria-pressed"), pulseBefore);
+        await ray.focus();
+        await page.keyboard.press("Space");
+        assert.equal(await pulse.isDisabled(), true);
+        assert.equal(
+          await page.evaluate(() => localStorage.getItem("mafia-dashboard.lighting-renderer.v1")),
+          "legacy",
+        );
+        receipt.preferences = await page.evaluate(() =>
+          Object.fromEntries(
+            Object.entries(localStorage).filter(([key]) =>
+              /glass\.v1|player-exit|player-pulse|lighting-renderer/.test(key),
+            ),
+          ),
+        );
+        await screenshot("native-toggles-restored");
+      }
+    }
+    assert.deepEqual(receipt.errors, []);
+    receipt.status = "passed";
+  } catch (error) {
+    receipt.status = "failed";
+    receipt.failure = error.stack;
+    await screenshot("failure");
+    throw error;
+  } finally {
+    results.push(receipt);
+    await writeFile(join(evidence, `${prefix}-receipt.json`), JSON.stringify(receipt, null, 2));
+  }
+}
 try {
-  const bundleBinding = {};
   for (const mode of ["production", "development"]) {
     const built = await build({
       stdin: {
@@ -145,7 +1283,7 @@ try {
       },
       outfile: join(temp, mode === "production" ? "fixture.js" : "strict.js"),
       bundle: true,
-      metafile: process.env.GLASS_SCENARIO === "player-cards",
+      metafile: process.env.GLASS_SCENARIO === "player-cards" || Boolean(followupPhase),
       format: "esm",
       jsx: "automatic",
       define: { "process.env.NODE_ENV": JSON.stringify(mode), "import.meta.env": "{}" },
@@ -187,6 +1325,15 @@ try {
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
   const url = `http://127.0.0.1:${server.address().port}`;
   for (const config of [
+    ...(followupPhase
+      ? [
+          { name: "chrome-phone", engine: chromium, viewport: { width: 390, height: 844 } },
+          { name: "chrome-tablet", engine: chromium, viewport: { width: 768, height: 1024 } },
+          { name: "webkit-phone", engine: webkit, viewport: { width: 390, height: 844 } },
+          { name: "webkit-tablet", engine: webkit, viewport: { width: 768, height: 1024 } },
+          { name: "webkit-landscape", engine: webkit, viewport: { width: 1366, height: 768 } },
+        ]
+      : []),
     { name: "chrome-ipad", engine: chromium, viewport: { width: 1366, height: 1024 } },
     { name: "webkit-ipad", engine: webkit, viewport: { width: 1366, height: 1024 } },
     ...(process.env.GLASS_SCENARIO === "player-cards"
@@ -195,14 +1342,39 @@ try {
     { name: "webkit-compact", engine: webkit, viewport: { width: 1000, height: 600 } },
     { name: "chrome-landscape", engine: chromium, viewport: { width: 1366, height: 768 } },
     { name: "chrome-compact", engine: chromium, viewport: { width: 1000, height: 600 } },
-  ].filter((config) => !process.env.GLASS_BROWSER || config.name === process.env.GLASS_BROWSER)) {
+  ].filter(
+    (config) =>
+      (!followupPhase ||
+        (["12", "13"].includes(followupPhase)
+          ? ["chrome-landscape", "chrome-compact", "webkit-ipad"].includes(config.name)
+          : (process.env.UI_FOLLOWUP_ENGINE === "webkit"
+              ? ["webkit-phone", "webkit-tablet", "webkit-landscape"]
+              : ["chrome-phone", "chrome-tablet", "chrome-landscape"]
+            ).includes(config.name))) &&
+      (!process.env.GLASS_BROWSER || config.name === process.env.GLASS_BROWSER),
+  )) {
     const browser = await config.engine.launch({
       headless: true,
-      ...(config.engine === chromium ? { channel: "chrome" } : {}),
+      ...(config.engine === chromium && (!followupPhase || ["12", "13"].includes(followupPhase))
+        ? { channel: "chrome" }
+        : {}),
     });
     try {
       if (process.env.GLASS_SCENARIO === "player-cards") {
+        assert.ok(!followupPhase, "Select only one focused scenario");
         await verifyPlayerCards({ browser, config, url, evidence, results });
+        continue;
+      }
+      if (followupPhase) {
+        for (const enhanced of [false, true])
+          for (const locale of ["en", "ru"]) {
+            const page = await browser.newPage({ viewport: config.viewport });
+            try {
+              await verifyFollowup(page, url, { engine: config.name, enhanced, locale });
+            } finally {
+              await page.close();
+            }
+          }
         continue;
       }
       if (!process.env.GLASS_SCENARIO || process.env.GLASS_SCENARIO === "shared")
@@ -1342,6 +2514,12 @@ try {
     }
   }
 
+  if (["12", "13"].includes(followupPhase))
+    assert.equal(
+      results.length,
+      (process.env.GLASS_BROWSER ? 1 : 3) * 4,
+      "Native interaction matrix must complete every selected engine/layout, locale and mode",
+    );
   console.log(JSON.stringify(results, null, 2));
   if (process.env.GLASS_SCENARIO === "player-cards")
     assert.equal(

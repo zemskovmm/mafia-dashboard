@@ -4,7 +4,6 @@ import helmet from "@fastify/helmet";
 import staticFiles from "@fastify/static";
 import Fastify from "fastify";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import type { Pool } from "pg";
 import { z } from "zod";
 
 import { InvalidGameIdentityError, UnsupportedGameFormatError } from "./game-session-identity.js";
@@ -24,7 +23,6 @@ import { YouTubePlaylistAccessError, YouTubeReconnectRequiredError } from "./you
 import type { YouTubeOAuthPort } from "./youtube-oauth.js";
 import type { AppUser, GoogleAuthPort } from "./google-auth.js";
 import type { ApplicationStores } from "./storage-contracts.js";
-import { createPostgresStores } from "./storage-contracts.js";
 import { StorageAccessError } from "./azure-storage.js";
 import { createFixedWindowLimiter, hasExactOrigin, isUnsafeMethod } from "./http-security.js";
 import {
@@ -35,6 +33,7 @@ import {
   statisticsHistoryQuerySchema,
 } from "./club-statistics.js";
 import { InvalidTournamentNameError, TournamentNotFoundError } from "./tournament-metadata.js";
+import { statisticsIdentityKey as identityKey } from "./statistics-identity.js";
 
 const gameIdParams = z.object({ gameId: z.uuid() });
 const gameSessionListQuery = z
@@ -198,8 +197,7 @@ const cookie = ({
   }`;
 
 export const buildApp = async ({
-  pool,
-  stores,
+  stores: selectedStores,
   staticDir,
   googleAuth,
   authenticateRequest,
@@ -210,8 +208,7 @@ export const buildApp = async ({
   trustedProxyHops = 0,
   authRateLimit,
 }: {
-  readonly pool?: Pool;
-  readonly stores?: ApplicationStores;
+  readonly stores: ApplicationStores;
   readonly staticDir?: string;
   readonly googleAuth?: GoogleAuthPort;
   readonly authenticateRequest?: (request: FastifyRequest) => Promise<AppUser | null>;
@@ -228,10 +225,9 @@ export const buildApp = async ({
     readonly now?: () => number;
   };
 }) => {
-  if ((pool === undefined) === (stores === undefined)) {
-    throw new Error("Exactly one exclusive application storage backend must be supplied");
+  if (selectedStores === undefined) {
+    throw new Error("Application stores must be supplied");
   }
-  const selectedStores = stores ?? createPostgresStores(pool!);
   const app = Fastify({
     logger: false,
     bodyLimit: 4 * 1024 * 1024,
@@ -804,7 +800,9 @@ export const buildApp = async ({
       if (
         query.data.tournamentId !== undefined &&
         query.data.tournamentId !== "none" &&
-        !source.tournaments.some(({ id }) => id === query.data.tournamentId)
+        !source.tournaments.some(
+          ({ id }) => identityKey(id) === identityKey(query.data.tournamentId!),
+        )
       ) {
         return reply.code(404).send({ error: "tournament_not_found" });
       }
@@ -830,7 +828,7 @@ export const buildApp = async ({
       if (
         filters.tournamentId !== undefined &&
         filters.tournamentId !== "none" &&
-        !source.tournaments.some(({ id }) => id === filters.tournamentId)
+        !source.tournaments.some(({ id }) => identityKey(id) === identityKey(filters.tournamentId!))
       ) {
         return reply.code(404).send({ error: "tournament_not_found" });
       }

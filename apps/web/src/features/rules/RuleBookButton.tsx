@@ -8,7 +8,7 @@ export const RuleBookButton = ({
   onOpen,
 }: {
   readonly rule: string;
-  readonly onOpen?: (rule: RuleReferenceId, invoker: HTMLButtonElement) => void;
+  readonly onOpen?: (rule: RuleReferenceId) => void;
 }) => {
   const { t } = useMessages(rulesReaderMessages);
   const valid = isRuleReferenceId(rule);
@@ -20,9 +20,8 @@ export const RuleBookButton = ({
       aria-label={label}
       title={label}
       aria-haspopup="dialog"
-      onClick={(event) => {
-        event.currentTarget.focus();
-        if (isRuleReferenceId(rule)) onOpen?.(rule, event.currentTarget);
+      onClick={() => {
+        if (isRuleReferenceId(rule)) onOpen?.(rule);
       }}
     >
       <BookOpen aria-hidden="true" />

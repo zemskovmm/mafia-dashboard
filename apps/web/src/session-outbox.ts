@@ -6,7 +6,16 @@ import type {
   RemoteGameSession,
 } from "./api/client.js";
 import { ApiError } from "./api/client.js";
-import { FEDERATION_RULES_EDITION } from "@mafia/game-domain";
+import {
+  assertGameLogEntry,
+  createInitialGameBaseline,
+  CURRENT_REPLAY_VERSION,
+  replayGameLog,
+  type GameLogEntry,
+  type GameState,
+  type InitialGameBaseline,
+} from "@mafia/game-domain";
+import { getActiveBranch } from "./features/game/game-history.js";
 import {
   assertBrowserGameStorageGuard,
   type BrowserGameStorageGuard,
@@ -17,13 +26,13 @@ export interface GameSessionOperation {
   readonly name: string;
   readonly mutationId: string;
   readonly state: CurrentGameSessionState;
-  readonly results: FinalGameResults | null;
+  readonly results: Readonly<Partial<FinalGameResults>> | null;
 }
 
 interface CurrentSession {
   readonly name: string;
   readonly state: CurrentGameSessionState;
-  readonly results: FinalGameResults | null;
+  readonly results: Readonly<Partial<FinalGameResults>> | null;
 }
 
 export interface TournamentAssociation {
@@ -107,47 +116,76 @@ const containsCopiedPlayerName = (value: unknown): boolean => {
   return Object.values(value).some(containsCopiedPlayerName);
 };
 
-/** Edition admission does not validate gameplay or rewrite provisional drafts. */
-const hasSupportedEdition = (state: Record<string, unknown>): boolean => {
-  const editionVersion = (value: Record<string, unknown>) =>
-    value.rulesEdition === undefined ? 1 : value.rulesEdition === FEDERATION_RULES_EDITION ? 2 : 0;
-  const baseline = isRecord(state.initialGame) ? state.initialGame : null;
-  const game = isRecord(state.game) ? state.game : null;
-  const setup = isRecord(state.setup) ? state.setup : null;
-  const roleSetup = setup !== null && isRecord(setup.setup) ? setup.setup : null;
-  const baselineGame = baseline !== null && isRecord(baseline.game) ? baseline.game : null;
-  const version =
-    baseline?.replayVersion ??
-    (game !== null
-      ? editionVersion(game)
-      : roleSetup !== null
-        ? editionVersion(roleSetup)
-        : setup !== null
-          ? editionVersion(setup)
-          : 1);
-  if (version !== 1 && version !== 2) return false;
-  const declaredStates = [game, roleSetup, baselineGame];
-  if (setup !== null && Object.hasOwn(setup, "rulesEdition")) declaredStates.push(setup);
-  if (declaredStates.some((value) => value !== null && editionVersion(value) !== version))
-    return false;
-  if (
-    baseline !== null &&
-    (baseline.replayVersion !== version ||
-      baselineGame === null ||
-      editionVersion(baseline) !== version)
-  )
-    return false;
-  if (game !== null && version === 2 && baseline === null) return false;
-  return (
-    Array.isArray(state.events) &&
-    state.events.every(
-      (entry) =>
-        isRecord(entry) && entry.replayVersion === version && editionVersion(entry) === version,
-    )
+/** Transport-shape refusal, never engine routing, stripping or resealing. */
+const hasEngineSelector = (value: unknown): boolean => {
+  if (Array.isArray(value)) return value.some(hasEngineSelector);
+  if (!isRecord(value)) return false;
+  return Object.entries(value).some(
+    ([key, child]) =>
+      key === "rulesEdition" ||
+      key === "rulesetId" ||
+      key === "rulesetVersion" ||
+      hasEngineSelector(child),
   );
 };
+const hasCurrentCanonicalShape = (state: Record<string, unknown>): boolean => {
+  if (hasEngineSelector(state)) return false;
+  if (
+    state.initialGame !== null &&
+    (!isRecord(state.initialGame) ||
+      state.initialGame.replayVersion !== CURRENT_REPLAY_VERSION ||
+      !isRecord(state.initialGame.game))
+  )
+    return false;
+  if (!(
+    Array.isArray(state.events) &&
+    state.events.every(
+      (entry: unknown) => isRecord(entry) && entry.replayVersion === CURRENT_REPLAY_VERSION,
+    )
+  ))
+    return false;
+  try {
+    if (state.game !== null) {
+      if (state.initialGame === null) return false;
+      createInitialGameBaseline(state.game as GameState);
+    }
+    const entries: GameLogEntry[] = [];
+    for (const entry of state.events) {
+      assertGameLogEntry(entry);
+      entries.push(entry);
+    }
+    if (state.initialGame === null)
+      return (
+        entries.length === 0 && state.headEventId === null && state.resetReturnEventId === null
+      );
+    const baseline = state.initialGame as InitialGameBaseline;
+    replayGameLog(baseline, []);
+    const ids = new Set(entries.map(({ id }) => id));
+    if (new Set(entries.map(({ gameId }) => gameId)).size > 1) return false;
+    if (
+      (state.headEventId !== null &&
+        (typeof state.headEventId !== "string" || !ids.has(state.headEventId))) ||
+      (state.resetReturnEventId !== null &&
+        (typeof state.resetReturnEventId !== "string" || !ids.has(state.resetReturnEventId)))
+    )
+      return false;
+    const parents = new Set(entries.map(({ parentEventId }) => parentEventId));
+    const validated = new Set<string>();
+    // Validate abandoned branches too; never repair or rehash stored histories.
+    for (const entry of entries) {
+      if (!parents.has(entry.id)) {
+        const branch = getActiveBranch(entries, entry.id);
+        replayGameLog(baseline, branch);
+        branch.forEach(({ id }) => validated.add(id));
+      }
+    }
+    return ids.size === entries.length && validated.size === entries.length;
+  } catch {
+    return false;
+  }
+};
 
-/** Structural/edition admission only; the client domain owns gameplay integrity. */
+/** Current transport admission delegates canonical integrity to the domain. */
 export const isCurrentGameSessionState = (value: unknown): value is CurrentGameSessionState =>
   isRecord(value) &&
   [
@@ -164,12 +202,29 @@ export const isCurrentGameSessionState = (value: unknown): value is CurrentGameS
     "resetReturnEventId",
     "legacyLog",
   ].every((field) => Object.hasOwn(value, field)) &&
+  (value.setup === null ||
+    (isRecord(value.setup) &&
+      (value.setup.step === "players" ||
+        value.setup.step === "roles" ||
+        value.setup.step === "music") &&
+      (value.setup.hostPlayerId === undefined || typeof value.setup.hostPlayerId === "string") &&
+      Array.isArray(value.setup.selectedPlayerIds) &&
+      value.setup.selectedPlayerIds.every((id: unknown) => typeof id === "string") &&
+      (value.setup.setup === null || isRecord(value.setup.setup)))) &&
+  isNullableUuid(value.hostPlayerId) &&
+  typeof value.playlistId === "string" &&
+  Array.isArray(value.log) &&
+  Array.isArray(value.legacyLog) &&
+  Array.isArray(value.undoHistory) &&
+  isNonNegativeInteger(value.undoBudget) &&
+  value.undoBudget <= 3 &&
   Array.isArray(value.events) &&
-  hasSupportedEdition(value) &&
+  hasCurrentCanonicalShape(value) &&
   !containsCopiedPlayerName(value);
 
-const isResults = (value: unknown): value is FinalGameResults | null =>
-  value === null || (isRecord(value) && !containsCopiedPlayerName(value));
+const isResults = (value: unknown): value is Readonly<Partial<FinalGameResults>> | null =>
+  value === null ||
+  (isRecord(value) && !containsCopiedPlayerName(value) && !hasEngineSelector(value));
 
 const isCurrent = (value: unknown): value is CurrentSession =>
   isRecord(value) &&
@@ -490,11 +545,12 @@ export class GameSessionOutbox {
   public beginCreation(
     name: string,
     state: CurrentGameSessionState,
-    results: FinalGameResults | null,
+    results: Readonly<Partial<FinalGameResults>> | null,
     tournamentId?: string | null,
   ): void {
     this.synchronizeDurableState();
     if (!isCurrentGameSessionState(state)) throw new Error("Invalid current game session state");
+    if (!isResults(results)) throw new Error("Invalid current game session results");
     if (tournamentId !== undefined && !isNullableUuid(tournamentId))
       throw new Error("Invalid tournament identity");
     if (this.envelope.gameId !== null || this.envelope.creationId !== null) return;
@@ -564,7 +620,11 @@ export class GameSessionOutbox {
     this.persist();
   }
 
-  public enqueue(name: string, state: GameSessionState, results: FinalGameResults | null): void {
+  public enqueue(
+    name: string,
+    state: GameSessionState,
+    results: Readonly<Partial<FinalGameResults>> | null,
+  ): void {
     this.synchronizeDurableState();
     if (
       this.envelope.removed ||
@@ -572,6 +632,7 @@ export class GameSessionOutbox {
     )
       return;
     if (!isCurrentGameSessionState(state)) throw new Error("Invalid current game session state");
+    if (!isResults(results)) throw new Error("Invalid current game session results");
     const normalizedState =
       this.envelope.gameId === null ? state : remapEventGameIds(state, this.envelope.gameId);
     const current = { name, state: normalizedState, results };
@@ -630,6 +691,7 @@ export class GameSessionOutbox {
     if (
       !isUuid(session.gameId) ||
       !isCurrentGameSessionState(session.state) ||
+      !isResults(session.results) ||
       (session.tournamentId !== undefined && !isNullableUuid(session.tournamentId))
     ) {
       throw new Error("Invalid server game session");

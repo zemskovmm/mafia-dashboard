@@ -94,7 +94,7 @@ describe("RulesSketchbook", () => {
     expect(screen.getByRole("navigation", { name: "Contents" })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: /6.2.2 rule-6.2.2/ }));
     expect(screen.getByText("Exact English text for rule-6.2.2.")).toBeVisible();
-    fireEvent.keyDown(screen.getByRole("dialog"), { key: "ArrowLeft" });
+    fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
     // On narrow screens previous is the illustration of this same chapter.
     expect(screen.getByLabelText("An evening at the club")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Next page" }));
@@ -121,7 +121,7 @@ describe("RulesSketchbook", () => {
     );
     expect(screen.getByRole("alert")).toHaveTextContent("rule-missing");
     expect(screen.queryByText("Exact English text for table.")).not.toBeInTheDocument();
-    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    fireEvent(screen.getByRole("dialog"), new Event("cancel", { cancelable: true }));
     expect(onClose).toHaveBeenCalledTimes(1);
     rerender(
       <RulesSketchbook
@@ -136,7 +136,7 @@ describe("RulesSketchbook", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("does not reopen or move focus when callback identity changes and restores the exact invoker", () => {
+  it("does not reopen or author focus movement when callback identity or open state changes", () => {
     const invoker = document.createElement("button");
     document.body.append(invoker);
     invoker.focus();
@@ -151,7 +151,7 @@ describe("RulesSketchbook", () => {
     expect(showModal).toHaveBeenCalledTimes(1);
     expect(entry).toHaveFocus();
     rerender(<RulesSketchbook open={false} locale="en" chapters={chapters} onClose={vi.fn()} />);
-    expect(invoker).toHaveFocus();
+    expect(entry).toHaveFocus();
     invoker.remove();
   });
 
@@ -204,35 +204,35 @@ describe("RulesSketchbook", () => {
     expect(document.querySelector(".rs-book")).toHaveAttribute("data-chapter", "rule-6.2.1");
     act(() => vi.advanceTimersByTime(400));
     expect(screen.getByText("Exact English text for rule-6.2.2.")).toBeVisible();
-    fireEvent.keyDown(screen.getByRole("dialog"), { key: "ArrowLeft" });
+    fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
     rerender(<RulesSketchbook {...props} open={false} />);
     act(() => vi.advanceTimersByTime(1000));
     expect(document.querySelector(".rs-curl")).toBeNull();
     expect(document.querySelector(".rs-book")).toHaveAttribute("data-side", "text");
     expect(cancel).toHaveBeenCalled();
     rerender(<RulesSketchbook {...props} />);
-    fireEvent.keyDown(screen.getByRole("dialog"), { key: "ArrowLeft" });
+    fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
     act(() => window.dispatchEvent(new Event("resize")));
     expect(document.querySelector(".rs-curl")).toBeNull();
-    fireEvent.keyDown(screen.getByRole("dialog"), { key: "ArrowLeft" });
+    fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
     unmount();
     expect(cancel).toHaveBeenLastCalledWith(request.mock.results.at(-1)?.value);
   });
 
-  it("wraps Tab and Shift+Tab within the foreground controls", () => {
-    render(<RulesSketchbook open locale="en" chapters={chapters} onClose={vi.fn()} />);
+  it("leaves Tab, arrows and Escape to native handling without authored navigation", () => {
+    const onClose = vi.fn();
+    render(<RulesSketchbook open locale="en" chapters={chapters} onClose={onClose} />);
     const dialog = screen.getByRole("dialog");
     const close = screen.getByRole("button", { name: "Close book" });
-    const next = screen.getByRole("button", { name: "Next page" });
     close.focus();
-    fireEvent.keyDown(dialog, { key: "Tab", shiftKey: true });
-    expect(next).toHaveFocus();
-    fireEvent.keyDown(dialog, { key: "Tab" });
-    expect(close).toHaveFocus();
-    for (let i = 0; i < 12; i++) {
-      fireEvent.keyDown(dialog, { key: "Tab" });
-      expect(dialog.contains(document.activeElement)).toBe(true);
+    for (const key of ["Tab", "ArrowLeft", "ArrowRight", "Escape"]) {
+      const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+      fireEvent(dialog, event);
+      expect(event.defaultPrevented).toBe(false);
+      expect(close).toHaveFocus();
     }
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByText("Exact English text for table.")).toBeVisible();
   });
 
   it("retains an ordinary reading scroll, but direct requests reopen at the number and text", () => {

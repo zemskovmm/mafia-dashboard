@@ -9,14 +9,12 @@ import {
   createSeededRandom,
   createSetup,
   drawRoleForSeat,
-  FEDERATION_RULES_EDITION,
   replayGameLog,
   resolveVote,
   tryApplyGameEvent,
   isSecretGameEventType,
 } from "./index.js";
 import type { CanonicalGameEventDraft, GameLogEntry } from "./index.js";
-
 const ballot = () => {
   let setup = beginRoleDraw(
     createSetup(
@@ -24,7 +22,6 @@ const ballot = () => {
         id: `host-player-${i + 1}`,
         seat: i + 1,
       })),
-      { rulesEdition: FEDERATION_RULES_EDITION },
     ),
     createSeededRandom(71),
   );
@@ -59,7 +56,6 @@ const history = (drafts: readonly CanonicalGameEventDraft[]) => {
   }
   return { baseline, entries, game };
 };
-
 describe("host recording", () => {
   it("pins the original ceremonial ballot bytes and hashes", () => {
     const result = history([

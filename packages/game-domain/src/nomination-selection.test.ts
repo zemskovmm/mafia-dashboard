@@ -12,7 +12,6 @@ import {
   createSeededRandom,
   createSetup,
   drawRoleForSeat,
-  FEDERATION_RULES_EDITION,
   hashGameState,
   isMeaningfulGameEventDraft,
   isSecretGameEventType,
@@ -21,12 +20,10 @@ import {
   setNominationSelection,
 } from "./index.js";
 import type { CanonicalGameEventDraft, GameLogEntry, GameState } from "./index.js";
-
-const day = (federation: boolean): GameState => {
+const day = (): GameState => {
   let setup = beginRoleDraw(
     createSetup(
       Array.from({ length: 10 }, (_, index) => ({ id: `p${index + 1}`, seat: index + 1 })),
-      federation ? { rulesEdition: FEDERATION_RULES_EDITION } : {},
     ),
     createSeededRandom(71),
   );
@@ -35,7 +32,6 @@ const day = (federation: boolean): GameState => {
   while (game.phase !== "day") game = advanceSetupPhase(game);
   return game;
 };
-
 const selection = (
   nominatorSeat: number,
   candidateSeat: number,
@@ -44,7 +40,6 @@ const selection = (
   type: "nomination.selection-set",
   payload: { nominatorSeat, candidateSeat, selected },
 });
-
 const chain = (initial: GameState, drafts: readonly CanonicalGameEventDraft[]) => {
   const baseline = createInitialGameBaseline(initial);
   const entries: GameLogEntry[] = [];
@@ -67,10 +62,9 @@ const chain = (initial: GameState, drafts: readonly CanonicalGameEventDraft[]) =
   }
   return { game, baseline, entries };
 };
-
-describe.each([false, true])("reversible nomination selections (federation=%s)", (federation) => {
+describe("reversible current nomination selections", () => {
   it("ignores a second new nominee, restores the allowance on removal, and excludes own support", () => {
-    const initial = day(federation);
+    const initial = day();
     let game = setNominationSelection(initial, 1, 1, true);
     expect(game.nominations).toEqual([{ nominatorSeat: 1, candidateSeat: 1, order: 1 }]);
     expect(setNominationSelection(game, 1, 1, true)).toBe(game);
@@ -88,9 +82,8 @@ describe.each([false, true])("reversible nomination selections (federation=%s)",
       { nominatorSeat: 1, candidateSeat: 8, order: 1 },
     ]);
   });
-
   it("supports every existing target independently of the speaker's one new nomination", () => {
-    let game = day(federation);
+    let game = day();
     for (let actor = 1; actor <= 8; actor += 1) {
       game = setNominationSelection(game, actor, actor, true);
       game = completeCurrentTurn(game);
@@ -112,9 +105,8 @@ describe.each([false, true])("reversible nomination selections (federation=%s)",
     expect(game.nominations.every((entry) => !Object.hasOwn(entry, "supporterSeats"))).toBe(true);
     expect(game.voteAssignments).toEqual({});
   });
-
   it("removes only the actor's relation and leaves previous speakers' surviving supports intact", () => {
-    const { game: supported } = chain(day(federation), [
+    const { game: supported } = chain(day(), [
       selection(1, 7, true),
       selection(2, 7, true),
       selection(2, 8, true),
@@ -139,9 +131,8 @@ describe.each([false, true])("reversible nomination selections (federation=%s)",
     expect(() => applyGameEvent(fourth, selection(3, 7, false))).toThrow(/upcoming day speaker/i);
     expect(removed.nominations[0]?.supporterSeats).toEqual([2]);
   });
-
   it("returns to the original hash when the last observed support is removed", () => {
-    const nominated = completeCurrentTurn(nominate(day(federation), 1, 7));
+    const nominated = completeCurrentTurn(nominate(day(), 1, 7));
     const supported = setNominationSelection(nominated, 2, 7, true);
     expect(hashGameState(supported)).not.toBe(hashGameState(nominated));
     const removed = setNominationSelection(supported, 2, 7, false);
@@ -150,9 +141,8 @@ describe.each([false, true])("reversible nomination selections (federation=%s)",
     const selfSupport = applyGameEvent(nominated, selection(7, 7, true));
     expect(selfSupport.nominations[0]?.supporterSeats).toEqual([7]);
   });
-
   it("normalizes provisional turns exactly like the original canonical nomination", () => {
-    const initial = day(federation);
+    const initial = day();
     const old = applyGameEvent(initial, {
       type: "player.nominated",
       payload: { nominatorSeat: 3, candidateSeat: 7 },
@@ -163,9 +153,8 @@ describe.each([false, true])("reversible nomination selections (federation=%s)",
     expect(isMeaningfulGameEventDraft(selection(3, 7, true))).toBe(true);
     expect(isSecretGameEventType("nomination.selection-set")).toBe(true);
   });
-
   it("clears current-round relations on rollover without rewriting earlier replay frames", () => {
-    const { baseline, entries, game } = chain(day(federation), [
+    const { baseline, entries, game } = chain(day(), [
       selection(1, 7, true),
       selection(2, 7, true),
       { type: "phase.changed", payload: { to: "night-mafia" } },
@@ -183,25 +172,21 @@ describe.each([false, true])("reversible nomination selections (federation=%s)",
     const next = applyGameEvent(game, selection(2, 8, true));
     expect(next.nominations).toEqual([{ nominatorSeat: 2, candidateSeat: 8, order: 1 }]);
   });
-
   it("prunes a removed candidate, renumbers survivors, and retains inactive contributors' attribution", () => {
-    const removal = (seat: number): CanonicalGameEventDraft[] =>
-      federation
-        ? [
-            {
-              type: "discipline.removal-observed",
-              payload: {
-                seat,
-                stage: "day-discussion",
-                rule: "6.2.4",
-                reason: "",
-                checkInProgress: false,
-              },
-            },
-            { type: "discipline.removals-announced", payload: { seats: [seat] } },
-          ]
-        : [{ type: "player.red-carded", payload: { seat } }];
-    const { game } = chain(day(federation), [
+    const removal = (seat: number): CanonicalGameEventDraft[] => [
+      {
+        type: "discipline.removal-observed",
+        payload: {
+          seat,
+          stage: "day-discussion",
+          rule: "6.2.4",
+          reason: "",
+          checkInProgress: false,
+        },
+      },
+      { type: "discipline.removals-announced", payload: { seats: [seat] } },
+    ];
+    const { game } = chain(day(), [
       selection(1, 7, true),
       selection(2, 7, true),
       selection(2, 8, true),
@@ -219,22 +204,19 @@ describe.each([false, true])("reversible nomination selections (federation=%s)",
     expect(setNominationSelection(game, 4, 8, false)).toBe(game);
     expect(game.voteAssignments).toEqual({});
   });
-
   it("preserves support through tie rounds and the existing late-result removal boundary", () => {
     const assignments = Object.fromEntries(
       Array.from({ length: 10 }, (_, index) => [index + 1, index < 5 ? 7 : 8]),
     );
     const round = (repeat: boolean): CanonicalGameEventDraft[] => [
-      ...(federation
-        ? [
-            { type: "voting.candidate-selected" as const, payload: { candidateSeat: 7 } },
-            ...Array.from({ length: 5 }, (_, index) => ({
-              type: "vote.recorded" as const,
-              payload: { voterSeat: index + 1, candidateSeat: 7 },
-            })),
-            { type: "voting.candidate-selected" as const, payload: { candidateSeat: 8 } },
-          ]
-        : []),
+      ...[
+        { type: "voting.candidate-selected" as const, payload: { candidateSeat: 7 } },
+        ...Array.from({ length: 5 }, (_, index) => ({
+          type: "vote.recorded" as const,
+          payload: { voterSeat: index + 1, candidateSeat: 7 },
+        })),
+        { type: "voting.candidate-selected" as const, payload: { candidateSeat: 8 } },
+      ],
       {
         type: "voting.resolved",
         payload: {
@@ -247,7 +229,7 @@ describe.each([false, true])("reversible nomination selections (federation=%s)",
         },
       },
     ];
-    const { game: result } = chain(day(federation), [
+    const { game: result } = chain(day(), [
       selection(1, 7, true),
       selection(2, 7, true),
       selection(2, 8, true),
@@ -267,32 +249,24 @@ describe.each([false, true])("reversible nomination selections (federation=%s)",
     ]);
     expect(result.phase).toBe("car-crash-result");
     expect(result.nominations[1]?.supporterSeats).toEqual([3]);
-    const removal: CanonicalGameEventDraft = federation
-      ? {
-          type: "discipline.removal-observed",
-          payload: {
-            seat: 7,
-            stage: "after-voting-result",
-            rule: "6.2.4",
-            reason: "",
-            checkInProgress: false,
-          },
-        }
-      : { type: "player.red-carded", payload: { seat: 7 } };
+    const removal: CanonicalGameEventDraft = {
+      type: "discipline.removal-observed",
+      payload: {
+        seat: 7,
+        stage: "after-voting-result",
+        rule: "6.2.4",
+        reason: "",
+        checkInProgress: false,
+      },
+    };
     const { game } = chain(result, [removal]);
     expect(game.nominations).toEqual([
       { nominatorSeat: 2, candidateSeat: 8, order: 1, supporterSeats: [3] },
     ]);
-    if (federation) {
-      expect(game.phase).toBe("car-crash-result");
-      expect(game.carCrashResult).toEqual(result.carCrashResult);
-      expect(game.ballotCancellationDay).toBe(2);
-    } else {
-      expect(game.phase).toBe("voting-cancelled");
-      expect(game.carCrashResult).toBeUndefined();
-    }
+    expect(game.phase).toBe("car-crash-result");
+    expect(game.carCrashResult).toEqual(result.carCrashResult);
+    expect(game.ballotCancellationDay).toBe(2);
   });
-
   it.each([
     { nominatorSeat: 0, candidateSeat: 7, selected: true },
     { nominatorSeat: 11, candidateSeat: 7, selected: true },
@@ -308,12 +282,11 @@ describe.each([false, true])("reversible nomination selections (federation=%s)",
     { nominatorSeat: 1, candidateSeat: 7, selected: true, supporterSeats: [2] },
   ])("rejects malformed/forged selection payload %j", (payload) => {
     const draft = { type: "nomination.selection-set", payload };
-    expect(() => assertCanonicalGameEventDraft(draft, federation ? 2 : 1)).toThrow();
-    expect(() => applyGameEvent(day(federation), draft as CanonicalGameEventDraft)).toThrow();
+    expect(() => assertCanonicalGameEventDraft(draft)).toThrow();
+    expect(() => applyGameEvent(day(), draft as CanonicalGameEventDraft)).toThrow();
   });
-
   it("rejects inactive targets and actors without changing prior attribution", () => {
-    const initial = day(federation);
+    const initial = day();
     const inactiveTarget: GameState = {
       ...initial,
       players: initial.players.map((player) =>
@@ -335,7 +308,6 @@ describe.each([false, true])("reversible nomination selections (federation=%s)",
     expect(() => setNominationSelection(initial, 2, 7, true)).toThrow(/current speaker/i);
     expect(initial.nominations).toEqual([]);
   });
-
   it.each([
     "voting",
     "car-crash",
@@ -345,17 +317,16 @@ describe.each([false, true])("reversible nomination selections (federation=%s)",
     "draw",
     "cancelled",
   ] as const)("does not reinterpret %s card actions as nominations", (phase) => {
-    const initial = { ...day(federation), phase };
+    const initial = { ...day(), phase };
     expect(() => setNominationSelection(initial, 1, 7, true)).toThrow(/during the day/i);
     expect(() => applyGameEvent(initial, selection(1, 7, true))).toThrow();
   });
-
   it.each(
     [[2, 2], [1], [0], [11], [2.5], ["2"], null, undefined, { seat: 2 }].map((supporterSeats) => ({
       supporterSeats,
     })),
   )("strictly rejects malformed snapshot supporters %j", ({ supporterSeats }) => {
-    const initial = day(federation);
+    const initial = day();
     const malformed = {
       ...initial,
       nominations: [{ nominatorSeat: 1, candidateSeat: 7, order: 1, supporterSeats }],
@@ -365,26 +336,17 @@ describe.each([false, true])("reversible nomination selections (federation=%s)",
       replayGameLog({ ...createInitialGameBaseline(initial), game: malformed }, []),
     ).toThrow();
   });
-
-  it("preserves old player.nominated meaning, shapes and captured hashes", () => {
-    const { game, entries } = chain(day(federation), [
+  it("preserves current player.nominated meaning, shapes and pinned hashes", () => {
+    const { game, entries } = chain(day(), [
       { type: "player.nominated", payload: { nominatorSeat: 1, candidateSeat: 7 } },
       { type: "player.nominated", payload: { nominatorSeat: 2, candidateSeat: 8 } },
       { type: "foul.issued", payload: { seat: 4, foulNumber: 1, redCarded: false } },
     ]);
-    expect(entries.slice(1).map((entry) => entry.stateHashAfter)).toEqual(
-      federation
-        ? [
-            "sha256:cee22a2f78221fc8699f15fe6ac766b7c8522734a557660d64dc7296eb290a75",
-            "sha256:0ee5ca43d3d2720414d031c27981f8699a56b69ebe05ae5b573f52410f1e72da",
-            "sha256:6cba0ebf2b14fe988772abb4b36ac44ed9eebc8e46b7dbe516ce356bd9280b5e",
-          ]
-        : [
-            "sha256:24dc0814d83b61a59a7123ac63441b32b93478ee46cf28af686898229f787a50",
-            "sha256:79c0d66d20246a52018756c1a0684e274d827902f5d5569c89ce6770936473c7",
-            "sha256:e1a1eccc76694ab212ed7a959fe6715271317408fc34edccf1c7c3bb6c48274b",
-          ],
-    );
+    expect(entries.slice(1).map((entry) => entry.stateHashAfter)).toEqual([
+      "sha256:0286104cf8b62e91c761bc4acc5ab8dff5812d2e0ed80471a3f7878d3d6e47b4",
+      "sha256:688bc5892bcf02cbe83ddf29f022a43153ace5d2801ce4c4172c843c59b3e3eb",
+      "sha256:8dc10b9d3e2407f965333458d56009ce65f78757b328df98697277404eade460",
+    ]);
     expect(game.nominations.every((entry) => !Object.hasOwn(entry, "supporterSeats"))).toBe(true);
     expect(() =>
       applyGameEvent(game, {
@@ -393,12 +355,8 @@ describe.each([false, true])("reversible nomination selections (federation=%s)",
       }),
     ).toThrow(/already nominated/i);
   });
-
-  it("rejects forged replay attribution, duplicate accepted events, and edition relabeling", () => {
-    const { baseline, entries } = chain(day(federation), [
-      selection(1, 7, true),
-      selection(2, 7, true),
-    ]);
+  it("rejects forged replay attribution, duplicate accepted events, and serialization version relabeling", () => {
+    const { baseline, entries } = chain(day(), [selection(1, 7, true), selection(2, 7, true)]);
     const forged = structuredClone(entries);
     forged[2] = {
       ...forged[2]!,
@@ -409,13 +367,12 @@ describe.each([false, true])("reversible nomination selections (federation=%s)",
     expect(() => replayGameLog(baseline, [...entries, entries[2]!])).toThrow(/duplicate event/i);
     const relabeled = entries.map((entry) => ({
       ...entry,
-      replayVersion: federation ? 1 : 2,
-    })) as GameLogEntry[];
+      replayVersion: 1,
+    })) as unknown as GameLogEntry[];
     expect(() => replayGameLog(baseline, relabeled)).toThrow();
   });
-
   it("retains independent support and correction through canonical JSON replay without losing fouls", () => {
-    const initial = day(federation);
+    const initial = day();
     const { game, entries } = chain(initial, [
       { type: "player.nominated", payload: { nominatorSeat: 1, candidateSeat: 7 } },
       selection(2, 7, true),
@@ -436,7 +393,7 @@ describe.each([false, true])("reversible nomination selections (federation=%s)",
     expect(game.voteAssignments).toEqual({});
     expect(entries).toHaveLength(10);
     expect(entries[3]?.type).toBe("foul.issued");
-    expect(entries.every((entry) => entry.replayVersion === (federation ? 2 : 1))).toBe(true);
+    expect(entries.every((entry) => entry.replayVersion === 3)).toBe(true);
     expect(
       applyGameEvent(game, { type: "turn.completed", payload: { seat: 3 } }).nominations,
     ).toEqual(game.nominations);

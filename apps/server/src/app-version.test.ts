@@ -1,12 +1,17 @@
-import { Pool } from "pg";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { buildApp } from "./app.js";
 import { composeAppVersion } from "./app-version.js";
 import { loadConfig } from "./config.js";
+import type { ApplicationStores } from "./storage-contracts.js";
+
+const azureConfig = {
+  AZURE_STORAGE_ACCOUNT_NAME: "mafiatest01",
+  AZURE_STORAGE_PARTITION_KEY: "version-test",
+};
 
 describe("application version", () => {
   it("allows zero components and uses the local default build index", () => {
-    expect(composeAppVersion("2.7.9", loadConfig({}).APP_BUILD_INDEX)).toBe("2.7.0");
+    expect(composeAppVersion("2.7.9", loadConfig(azureConfig).APP_BUILD_INDEX)).toBe("2.7.0");
     expect(composeAppVersion("0.0.0", 0)).toBe("0.0.0");
   });
 
@@ -28,10 +33,42 @@ describe("application version", () => {
   );
 
   it("exposes the configured base and CI index without authentication or caching", async () => {
-    const config = loadConfig({ APP_BUILD_INDEX: "123" });
-    const pool = new Pool();
+    const config = loadConfig({ ...azureConfig, APP_BUILD_INDEX: "123" });
+    const unexpectedAccess = vi.fn(async () => {
+      throw new Error("Version endpoint must not access persistence");
+    });
+    const stores: ApplicationStores = {
+      events: { read: unexpectedAccess },
+      games: {
+        create: unexpectedAccess,
+        save: unexpectedAccess,
+        clear: unexpectedAccess,
+        get: unexpectedAccess,
+        listActive: unexpectedAccess,
+        listCompleted: unexpectedAccess,
+        readStatisticsInputs: unexpectedAccess,
+      },
+      tournaments: { list: unexpectedAccess, create: unexpectedAccess, assign: unexpectedAccess },
+      players: {
+        list: unexpectedAccess,
+        get: unexpectedAccess,
+        create: unexpectedAccess,
+        update: unexpectedAccess,
+        delete: unexpectedAccess,
+      },
+      clubs: {
+        listForUser: unexpectedAccess,
+        getRole: unexpectedAccess,
+        isMember: unexpectedAccess,
+        create: unexpectedAccess,
+        claimClubAccess: unexpectedAccess,
+        update: unexpectedAccess,
+        delete: unexpectedAccess,
+      },
+      ready: unexpectedAccess,
+    };
     const app = await buildApp({
-      pool,
+      stores,
       releaseIdentity: {
         version: composeAppVersion("2.7.9", config.APP_BUILD_INDEX),
         commit: "a".repeat(40),
@@ -42,9 +79,9 @@ describe("application version", () => {
       expect(response.statusCode).toBe(200);
       expect(response.json()).toEqual({ version: "2.7.123", commit: "a".repeat(40) });
       expect(response.headers["cache-control"]).toBe("no-store");
+      expect(unexpectedAccess).not.toHaveBeenCalled();
     } finally {
       await app.close();
-      await pool.end();
     }
   });
 });

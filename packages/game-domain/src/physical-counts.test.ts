@@ -1,12 +1,10 @@
 import { describe, expect, it } from "vitest";
 import * as domain from "./index.js";
 import type { CanonicalGameEventDraft, GameLogEntry, GameState } from "./index.js";
-
 const day = (): GameState => {
   let setup = domain.beginRoleDraw(
     domain.createSetup(
       Array.from({ length: 10 }, (_, i) => ({ id: `physical-${i + 1}`, seat: i + 1 })),
-      { rulesEdition: domain.FEDERATION_RULES_EDITION },
     ),
     domain.createSeededRandom(71),
   );
@@ -49,9 +47,8 @@ const roundTrip = (initial: GameState, drafts: readonly CanonicalGameEventDraft[
   }
   return { game, entries, baseline };
 };
-
 describe("physical counts and observations", () => {
-  it("pins old shooter-only observations and conclusive collective closure bytes/hashes", async () => {
+  it("pins current shooter-only observations and conclusive collective closure bytes/hashes", async () => {
     const night = domain.beginNight(day());
     const shooterSeat = night.players.find((p) => p.team === "black")!.seat;
     const oldShot = roundTrip(night, [
@@ -86,7 +83,6 @@ describe("physical counts and observations", () => {
       ),
     ).toMatchSnapshot();
   });
-
   it.each([0, 2, 5, 6])(
     "explicitly completes %i supporting hands without invented no votes",
     (yesVotes) => {
@@ -116,7 +112,6 @@ describe("physical counts and observations", () => {
       );
     },
   );
-
   it("retains eligibility, phase, exact payload and voter validation on explicit completion", () => {
     const initial = decision();
     const event = {
@@ -166,9 +161,8 @@ describe("physical counts and observations", () => {
         },
       }).ok,
     ).toBe(false);
-    expect(() => domain.assertCanonicalGameEventDraft(event, 1)).toThrow();
+    expect(() => domain.assertCanonicalGameEventDraft(event)).not.toThrow();
   });
-
   it.each([1, 2, 3])(
     "retains unlimited ordered shots for %i shooters across correction/replay/Undo",
     (count) => {
@@ -212,7 +206,6 @@ describe("physical counts and observations", () => {
       expect(restored.shotObservations).toEqual(game.shotObservations);
     },
   );
-
   it("a first observed shot fills the assignment, only a further shot misses, and next night resets", () => {
     const initial = domain.beginNight(day());
     const shooters = initial.players.filter((p) => p.team === "black");
@@ -238,7 +231,6 @@ describe("physical counts and observations", () => {
     expect(next.shotObservations).toEqual([]);
     expect(domain.beginNight(day())).not.toHaveProperty("shotObservations");
   });
-
   it("validates physical shooters, seated targets, assignments and nonempty batches; permits inactive targets", () => {
     const initial = domain.beginNight(day());
     const shooterSeat = initial.players.find((p) => p.team === "black")!.seat;
@@ -272,6 +264,6 @@ describe("physical counts and observations", () => {
       ),
     };
     expect(domain.tryApplyGameEvent(inactive, event).ok).toBe(true);
-    expect(() => domain.assertCanonicalGameEventDraft(event, 1)).toThrow();
+    expect(() => domain.assertCanonicalGameEventDraft(event)).not.toThrow();
   });
 });

@@ -2,7 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
-import { replayGameLog } from "@mafia/game-domain";
+import { CURRENT_REPLAY_VERSION, replayGameLog } from "@mafia/game-domain";
 import { chromium, request as playwrightRequest } from "@playwright/test";
 import {
   assertBrowserGameEnvelopeOwner,
@@ -105,11 +105,13 @@ const apiHeaders = { "x-club-id": clubId };
 const browserHeaders = {
   ...apiHeaders,
 };
+const hasEngineMetadata = (value) =>
+  /"(?:rulesEdition|rulesetId|rulesetVersion)":/u.test(JSON.stringify(value));
 const parsedAuthCookie = parseVerifierAuthCookie(process.env.SESSION_AUTH_COOKIE);
 
 const playlist = {
   id: "session-verification-playlist",
-  title: "Session verification",
+  title: "Mafia session verification",
   itemCount: 2,
   thumbnailUrl: null,
 };
@@ -469,16 +471,69 @@ try {
   await firstPage.getByRole("button", { name: "Assign players" }).click();
   const startGame = firstPage.getByRole("button", { name: "Start game" });
   await startGame.waitFor();
-  await firstPage.getByRole("button", { name: "Open Manage menu" }).click();
-  await firstPage.getByRole("button", { name: "Music player setup" }).click();
-  await firstPage.getByLabel("YouTube Music playlist").selectOption(playlist.id);
-  await firstPage.getByRole("button", { name: "Close Manage menu" }).click();
+  const musicPanelHandle = firstPage.getByRole("button", { name: "Music player panel handle" });
+  await musicPanelHandle.click();
+  const playlistPicker = firstPage.getByRole("combobox", {
+    name: "YouTube Music playlist",
+    exact: true,
+  });
+  await playlistPicker.selectOption(playlist.id);
+  if ((await playlistPicker.inputValue()) !== playlist.id) {
+    throw new Error("The expanded session queue did not select the verification playlist");
+  }
+  await musicPanelHandle.click();
   await startGame.click();
+  const roleGiveawaySave = firstPage.waitForResponse((response) => {
+    const request = response.request();
+    const url = new URL(response.url());
+    if (
+      request.method() !== "PUT" ||
+      url.origin !== targetUrl.origin ||
+      ![...createdGameIds].some((id) => url.pathname === `/api/game-sessions/${id}`)
+    ) {
+      return false;
+    }
+    const body = request.postDataJSON();
+    return (
+      typeof body?.mutationId === "string" &&
+      body.results === null &&
+      body.state?.game === null &&
+      body.state?.setup?.step === "roles" &&
+      Object.keys(body.state?.setup?.setup?.assignments ?? {}).length === 10
+    );
+  });
   for (let roleIndex = 0; roleIndex < 10; roleIndex += 1) {
     await firstPage
       .getByRole("button", { name: /^Draw role for / })
       .first()
       .click();
+  }
+  await waitForSaved(roleGiveawaySave);
+  if (createdGameIds.size !== 1) {
+    throw new Error("Expected exactly one run-owned game session after role giveaway");
+  }
+  const [setupGameId] = createdGameIds;
+  // Creation now happens during player selection; resume roles from the actual later UI save.
+  const { state: roleGiveawayState } = await readAuthoritativeSession(
+    setupGameId,
+    "Role-giveaway snapshot readback failed",
+  );
+  if (
+    roleGiveawayState.game !== null ||
+    roleGiveawayState.setup?.step !== "roles" ||
+    hasEngineMetadata(roleGiveawayState) ||
+    roleGiveawayState.setup?.setup?.remainingRoles.length !== 0 ||
+    Object.keys(roleGiveawayState.setup?.setup?.assignments ?? {}).length !== 10
+  ) {
+    throw new Error(
+      `The UI did not durably save the completed role-giveaway setup: ${JSON.stringify({
+        gameIsNull: roleGiveawayState.game === null,
+        step: roleGiveawayState.setup?.step,
+        hasEngineMetadata: hasEngineMetadata(roleGiveawayState),
+        remainingRoles: roleGiveawayState.setup?.setup?.remainingRoles.length,
+        assignments: Object.keys(roleGiveawayState.setup?.setup?.assignments ?? {}).length,
+      })}`,
+    );
   }
   const waitForSnapshot = (expectedPhase) =>
     firstPage.waitForResponse((response) => {
@@ -500,8 +555,10 @@ try {
   const startSave = waitForSnapshot("mafia-planning");
   await firstPage.getByRole("button", { name: "Begin Mafia planning stage" }).click();
   await waitForSaved(startSave);
-  await firstPage.getByRole("button", { name: "Continue night zero to Sheriff wake-up" }).click();
-  const beginDay = firstPage.getByRole("button", { name: "Begin day one" });
+  const sheriffSave = waitForSnapshot("sheriff-identification");
+  await firstPage.getByRole("button", { name: "Mafia asleep", exact: true }).click();
+  await waitForSaved(sheriffSave);
+  const beginDay = firstPage.getByRole("button", { name: "Begin round zero", exact: true });
   await beginDay.waitFor();
   const daySave = waitForSnapshot("day");
   await beginDay.click();
@@ -554,12 +611,13 @@ try {
   const replayed = replayGameLog(storedSession.state.initialGame, activeEvents);
   if (
     storedSession.state.hostPlayerId !== players[10].id ||
-    storedSession.state.hostName !== players[10].nickname ||
+    Object.hasOwn(storedSession.state, "hostName") ||
     storedSession.state.playlistId !== playlist.id ||
     storedSession.state.game?.phase !== "day" ||
     storedSession.state.game?.currentTurnIndex !== 0 ||
     storedSession.state.undoHistory.length !== 0 ||
-    storedSession.state.initialGame?.replayVersion !== 1 ||
+    storedSession.state.initialGame?.replayVersion !== CURRENT_REPLAY_VERSION ||
+    hasEngineMetadata(storedSession) ||
     activeEvents.length === 0 ||
     !activeEvents.some(({ type }) => type === "game.started" || type === "game.checkpointed") ||
     !activeEvents.some(({ type }) => type === "phase.changed") ||
@@ -579,6 +637,10 @@ try {
       })}`,
     );
   }
+  const storedCanonicalState = JSON.stringify(storedSession.state);
+  if (playerNames.some((nickname) => storedCanonicalState.includes(nickname))) {
+    throw new Error("The authoritative canonical snapshot contains copied player names");
+  }
   const secondName = `Session ${runId} second game`;
   const initialState = createdSetupStates.get(gameId);
   if (initialState === undefined) throw new Error("Missing run-owned creation snapshot");
@@ -587,7 +649,7 @@ try {
     data: {
       creationId: randomUUID(),
       name: secondName,
-      state: { ...initialState, log: [], legacyLog: [], events: [] },
+      state: { ...roleGiveawayState, log: [], legacyLog: [], events: [] },
       results: null,
     },
   });
@@ -665,7 +727,10 @@ try {
     gameId,
     "Authoritative post-restart readback failed",
   );
-  if (!isDeepStrictEqual(restartedSession, storedSession)) {
+  if (
+    !isDeepStrictEqual(restartedSession, storedSession) ||
+    JSON.stringify(restartedSession.state) !== storedCanonicalState
+  ) {
     throw new Error("Authoritative session changed across the application restart");
   }
   authoritativeSession = restartedSession;
@@ -732,7 +797,7 @@ try {
   await restartedPage.getByRole("button", { name: `Resume ${gameName}` }).click();
 
   const restoredPhaseAction = restartedPage.getByRole("button", {
-    name: "Continue night zero to Sheriff wake-up",
+    name: "Begin round zero",
     exact: true,
   });
   await restoredPhaseAction.waitFor();
@@ -742,6 +807,11 @@ try {
   }, storageKey);
   assertBrowserGameEnvelopeOwner(restoredEnvelope, clubId);
   assertEnvelopeMatchesSession(restoredEnvelope, authoritativeSession, replayGameLog);
+  if (
+    JSON.stringify(restoredEnvelope.current.state) !== JSON.stringify(authoritativeSession.state)
+  ) {
+    throw new Error("The restored browser canonical snapshot differs from authoritative readback");
+  }
   await restartedPage.locator(".club-curtain-opening").waitFor({ state: "detached" });
   await restartedPage.screenshot({ path: screenshotPath, fullPage: true });
 

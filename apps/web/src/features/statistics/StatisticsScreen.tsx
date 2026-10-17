@@ -1,13 +1,12 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import {
-  FEDERATION_RULES_EDITION,
-  type ClubStatisticsResponse,
-  type ClubTournament,
-  type PlayerStatisticsResponse,
-  type PlayerStatisticsRow,
-  type StatisticsFilters,
-  type StatisticsHistoryGame,
-  type StatisticsTotals,
+import type {
+  ClubStatisticsResponse,
+  ClubTournament,
+  PlayerStatisticsResponse,
+  PlayerStatisticsRow,
+  StatisticsFilters,
+  StatisticsHistoryGame,
+  StatisticsTotals,
 } from "@mafia/game-domain";
 import { getClubStatistics, getPlayerStatistics, listTournaments } from "../../api/client.js";
 import { useMessages, type FeatureI18n } from "../../i18n/I18nProvider.js";
@@ -102,7 +101,7 @@ const ClubStatisticsScreen = (props: StatisticsScreenProps) => {
           t("unnamedTournament", { id: filters.tournamentId })),
     filters.from === undefined ? null : `${t("from")}: ${filters.from}`,
     filters.to === undefined ? null : `${t("to")}: ${filters.to}`,
-    filters.edition === undefined ? null : t(filters.edition),
+
     filters.team === undefined ? null : t(filters.team),
     filters.role === undefined ? null : t(filters.role),
   ]
@@ -142,17 +141,7 @@ const ClubStatisticsScreen = (props: StatisticsScreenProps) => {
             onChange={(event) => update("to", event.currentTarget.value)}
           />
         </label>
-        <label>
-          {t("edition")}
-          <select
-            value={filters.edition ?? ""}
-            onChange={(event) => update("edition", event.currentTarget.value)}
-          >
-            <option value="">{t("all")}</option>
-            <option value="federation">{t("federation")}</option>
-            <option value="legacy">{t("legacy")}</option>
-          </select>
-        </label>
+
         <label>
           {t("team")}
           <select
@@ -272,8 +261,34 @@ const sortValue = (row: PlayerStatisticsRow, key: SortKey): string | number | nu
     case "lastPlayed":
       return row.lastPlayedAt;
     default:
-      return row.totals[key];
+      return key === "games" || row.totals.outcomeGames > 0 ? row.totals[key] : null;
   }
+};
+
+const RateCell = ({ totals, text }: { readonly totals: StatisticsTotals; readonly text: Text }) => (
+  <td>
+    {formatters(text.locale).percent(totals.winRate)}
+    <small>{text.t("observedResults", { count: totals.outcomeGames, total: totals.games })}</small>
+  </td>
+);
+
+const PerformanceCells = ({
+  totals,
+  text,
+}: {
+  readonly totals: StatisticsTotals;
+  readonly text: Text;
+}) => {
+  const f = formatters(text.locale);
+  return (
+    <>
+      <td>{f.integer(totals.games)}</td>
+      {(["wins", "draws", "losses"] as const).map((key) => (
+        <td key={key}>{f.integer(totals.outcomeGames === 0 ? null : totals[key])}</td>
+      ))}
+      <RateCell totals={totals} text={text} />
+    </>
+  );
 };
 
 const ScopedStatistics = ({
@@ -298,7 +313,6 @@ const ScopedStatistics = ({
     readonly nickname: string;
   } | null>(null);
   const [saved, setSaved] = useState(false);
-  const selectedButton = useRef<HTMLButtonElement | null>(null);
   const detailId = useId();
   useEffect(() => {
     let active = true;
@@ -370,8 +384,7 @@ const ScopedStatistics = ({
           type="button"
           aria-expanded={selected?.id === player.playerId}
           aria-controls={detailId}
-          onClick={(event) => {
-            selectedButton.current = event.currentTarget;
+          onClick={() => {
             setSelected(
               selected?.id === player.playerId
                 ? null
@@ -406,13 +419,9 @@ const ScopedStatistics = ({
           )}
         </td>
       )}
-      <td>{f.integer(player.totals.games)}</td>
-      <td>{f.integer(player.totals.wins)}</td>
-      <td>{f.integer(player.totals.draws)}</td>
-      <td>{f.integer(player.totals.losses)}</td>
-      <td>{f.percent(player.totals.winRate)}</td>
-      <td>{f.percent(player.teams.red.winRate)}</td>
-      <td>{f.percent(player.teams.black.winRate)}</td>
+      <PerformanceCells totals={player.totals} text={text} />
+      <RateCell totals={player.teams.red} text={text} />
+      <RateCell totals={player.teams.black} text={text} />
       <td>{f.date(player.lastPlayedAt)}</td>
       <td>
         <span className="statistics-form">
@@ -450,6 +459,9 @@ const ScopedStatistics = ({
         {response !== null && (
           <div className="statistics-coverage">
             <p>{t("coverage", { count: response.coverage.completedGames })}</p>
+            {response.coverage.partialGames > 0 && (
+              <p>{t("partial", { count: response.coverage.partialGames })}</p>
+            )}
             {response.coverage.unavailableGames > 0 && (
               <p>{t("unavailable", { count: response.coverage.unavailableGames })}</p>
             )}
@@ -472,12 +484,7 @@ const ScopedStatistics = ({
         ) : (
           <>
             <p className="statistics-note">{t("tableHint")}</p>
-            <div
-              className="statistics-table-scroll"
-              role="region"
-              aria-label={t("table")}
-              tabIndex={0}
-            >
+            <div className="statistics-table-scroll" role="region" aria-label={t("table")}>
               <table className="statistics-table">
                 <caption>{t("table")}</caption>
                 <thead>
@@ -554,7 +561,6 @@ const ScopedStatistics = ({
           }}
           onClose={() => {
             setSelected(null);
-            selectedButton.current?.focus();
           }}
         />
       )}
@@ -571,9 +577,8 @@ const BreakdownTable = ({
   readonly rows: readonly { readonly label: string; readonly totals: StatisticsTotals }[];
   readonly text: Text;
 }) => {
-  const f = formatters(text.locale);
   return (
-    <div className="statistics-table-scroll" role="region" aria-label={caption} tabIndex={0}>
+    <div className="statistics-table-scroll" role="region" aria-label={caption}>
       <table className="statistics-table statistics-breakdown">
         <caption>{caption}</caption>
         <thead>
@@ -590,11 +595,7 @@ const BreakdownTable = ({
           {rows.map(({ label, totals }) => (
             <tr key={label}>
               <th scope="row">{label}</th>
-              <td>{f.integer(totals.games)}</td>
-              <td>{f.integer(totals.wins)}</td>
-              <td>{f.integer(totals.draws)}</td>
-              <td>{f.integer(totals.losses)}</td>
-              <td>{f.percent(totals.winRate)}</td>
+              <PerformanceCells totals={totals} text={text} />
             </tr>
           ))}
         </tbody>
@@ -632,7 +633,6 @@ const PlayerDetail = (props: PlayerDetailProps) => {
   const [pageBusy, setPageBusy] = useState(false);
   const [pageError, setPageError] = useState(false);
   const request = useRef(0);
-  const headingRef = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
     const generation = ++request.current;
     setResponse(null);
@@ -651,9 +651,6 @@ const PlayerDetail = (props: PlayerDetailProps) => {
       request.current += 1;
     };
   }, [props.playerId, props.clubId, props.filters, retry]);
-  useEffect(() => {
-    headingRef.current?.focus();
-  }, []);
   const loadMore = async () => {
     if (response?.nextCursor == null || pageBusy) return;
     const generation = ++request.current;
@@ -689,12 +686,12 @@ const PlayerDetail = (props: PlayerDetailProps) => {
     player == null
       ? []
       : [
-          [t("fouls"), f.integer(player.fouls)],
+          [t("fouls"), f.integer(player.foulGames === 0 ? null : player.fouls)],
           [t("foulsPerGame"), f.number(player.foulsPerGame)],
-          [t("redCards"), f.integer(player.redCards)],
-          [t("eliminations"), f.integer(player.eliminations)],
+          [t("redCards"), f.integer(player.statusGames === 0 ? null : player.redCards)],
+          [t("eliminations"), f.integer(player.statusGames === 0 ? null : player.eliminations)],
           [t("bestResults"), f.integer(player.bestMoveResults)],
-          [t("bestHits"), f.integer(player.bestMoveHits)],
+          [t("bestHits"), f.integer(player.bestMoveResults === 0 ? null : player.bestMoveHits)],
           [t("bestMean"), f.number(player.bestMoveMean)],
         ];
   return (
@@ -706,9 +703,7 @@ const PlayerDetail = (props: PlayerDetailProps) => {
       aria-label={t("details", { nickname })}
     >
       <header className="statistics-detail-header">
-        <h2 ref={headingRef} tabIndex={-1}>
-          {t("details", { nickname })}
-        </h2>
+        <h2>{t("details", { nickname })}</h2>
         <button type="button" onClick={props.onClose}>
           {t("close")}
         </button>
@@ -781,6 +776,9 @@ const PlayerDetail = (props: PlayerDetailProps) => {
             ))}
           </dl>
           <p className="statistics-note">{t("bestHelp")}</p>
+          <p className="statistics-note">
+            {t("observedDiscipline", { count: player.foulGames, statusCount: player.statusGames })}
+          </p>
           <h3>{t("hosting")}</h3>
           <dl className="statistics-metrics">
             <div>
@@ -834,7 +832,7 @@ const HistoryGame = ({
   const { t } = text;
   const f = formatters(text.locale);
   const [editing, setEditing] = useState(false);
-  const edition = game.rulesEdition === FEDERATION_RULES_EDITION ? t("federation") : t("legacy");
+
   const tournamentName =
     game.tournamentId === null
       ? t("none")
@@ -853,19 +851,28 @@ const HistoryGame = ({
       <article className="statistics-history-game" aria-label={game.name}>
         <header>
           <h4>{game.name}</h4>
-          <time dateTime={game.playedAt}>{f.date(game.playedAt)}</time>
+          {game.playedAt === null ? (
+            <span>{t("unknownDate")}</span>
+          ) : (
+            <time dateTime={game.playedAt}>{f.date(game.playedAt)}</time>
+          )}
         </header>
         <p>
-          {edition}
-          {game.hasCasper ? ` · ${t("casper")}` : ""} · {tournamentName}
+          {game.hasCasper ? `${t("casper")} · ` : ""}
+          {tournamentName}
         </p>
         <p>
           {game.isHost ? t("host") : t("participant")}
           {game.participant !== null && (
             <>
               {" "}
-              · {t("seat", { seat: game.participant.seat })} · {t(game.participant.role)} ·{" "}
-              {t(game.participant.team)} · {t(game.participant.status)}
+              ·{" "}
+              {game.participant.seat === null
+                ? t("unknownSeat")
+                : t("seat", { seat: game.participant.seat })}{" "}
+              · {t(game.participant.role ?? "unknownRole")} ·{" "}
+              {t(game.participant.team ?? "unknownTeam")} ·{" "}
+              {t(game.participant.status ?? "unknownStatus")}
             </>
           )}{" "}
           ·{" "}
@@ -875,11 +882,12 @@ const HistoryGame = ({
                 ? "redWins"
                 : game.outcome === "black"
                   ? "blackWins"
-                  : game.outcome,
+                  : (game.outcome ?? "unknownOutcome"),
             )}
           </strong>
         </p>
         {!game.statisticsAvailable && <p>{t("unavailableGame")}</p>}
+        {!game.timelineAvailable && <p>{t("timelineUnavailable")}</p>}
         {game.participant !== null && (
           <dl className="statistics-metrics">
             <div>
@@ -905,10 +913,7 @@ const HistoryGame = ({
                 <code>{game.gameId}</code>
               </dd>
             </div>
-            <div>
-              <dt>{t("edition")}</dt>
-              <dd>{game.rulesEdition ?? t("unknownEdition")}</dd>
-            </div>
+
             {game.reason !== null && (
               <div>
                 <dt>{t("reason")}</dt>
@@ -957,7 +962,7 @@ const HistoryGame = ({
           </div>
         )}
         <div className="statistics-history-actions">
-          {props.isManager && props.onOpenTimeline !== undefined && (
+          {props.isManager && game.timelineAvailable && props.onOpenTimeline !== undefined && (
             <button type="button" onClick={() => props.onOpenTimeline?.(game.gameId)}>
               {t("timeline")}
             </button>

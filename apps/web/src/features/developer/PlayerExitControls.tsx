@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { DeveloperSettingToggle } from "./DeveloperSettingToggle.js";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { playerExitMessages } from "../../i18n/messages/player-exit.js";
 import {
@@ -27,20 +28,17 @@ export const PlayerExitControls = ({
   }, [settings.enabled]);
   const overlapMs = (settings.liftMs * settings.overlap) / 100;
   return (
-    <details className="player-exit-controls">
+    <details className="dev-disclosure player-exit-controls">
       <summary>{t("section")}</summary>
-      <div className="player-exit-fields">
-        <button
-          type="button"
-          className="dev-setting-toggle"
-          aria-label={t(settings.enabled ? "disable" : "enable")}
-          aria-pressed={settings.enabled}
+      <div className="dev-disclosure-fields player-exit-fields">
+        <DeveloperSettingToggle
+          title={t("section")}
+          ariaLabel={t(settings.enabled ? "disable" : "enable")}
+          pressed={settings.enabled}
+          stateLabel={t(settings.enabled ? "on" : "off")}
           onClick={() => onChange({ ...settings, enabled: !settings.enabled })}
-        >
-          <strong>{t("section")}</strong>
-          <span className="dev-setting-state">{t(settings.enabled ? "on" : "off")}</span>
-        </button>
-        <p>{t("local")}</p>
+        />
+        <p className="dev-disclosure-help">{t("local")}</p>
         {(
           [
             ["liftMs", 80, 700, 10],
@@ -71,14 +69,14 @@ export const PlayerExitControls = ({
             />
           </label>
         ))}
-        <p data-exit-timing>
+        <p className="dev-disclosure-help" data-exit-timing>
           {t("timing", {
             start: Math.round(settings.liftMs - overlapMs),
             apex: settings.liftMs,
             end: settings.liftMs + settings.landingMs,
           })}
         </p>
-        <p>{t("help")}</p>
+        <p className="dev-disclosure-help">{t("help")}</p>
         {(["lift", "flip", "drop"] as const).map((phase) => (
           <fieldset key={phase} disabled={!settings.enabled}>
             <legend>{t(phase)}</legend>
@@ -123,7 +121,7 @@ export const PlayerExitControls = ({
             </label>
           </fieldset>
         ))}
-        <p>{t("easeHelp")}</p>
+        <p className="dev-disclosure-help">{t("easeHelp")}</p>
         <div className="player-exit-preview">
           <div
             className={`table-card player-seat status-${previewed ? "eliminated" : "active"}${preview ? " is-exiting" : ""}`}

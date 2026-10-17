@@ -295,7 +295,7 @@ export const runStorageRecoveryDrill = async (): Promise<StorageRecoveryDrillSum
     );
     for (let seat = 1; seat <= 10; seat++) setup = drawRoleForSeat(setup, seat);
     setup = completeRoleDraw(setup);
-    const baseline: InitialGameBaseline = { replayVersion: 1, game: createGame(setup) };
+    const baseline: InitialGameBaseline = { replayVersion: 3, game: createGame(setup) };
     const initialState = {
       hostPlayerId: hostId,
       setup: { hostPlayerId: hostId, selectedPlayerIds: roster, setup },
@@ -327,20 +327,34 @@ export const runStorageRecoveryDrill = async (): Promise<StorageRecoveryDrillSum
       game = next.after;
     };
     append({ type: "game.started", payload: {} });
-    append({ type: "phase.changed", payload: { to: "day" } });
-    append({ type: "voting.skipped", payload: { reason: "host-skipped" } });
+    for (const to of [
+      "mafia-sleep",
+      "don-identification",
+      "sheriff-identification",
+      "free-seating",
+      "day",
+    ] as const)
+      append({ type: "phase.changed", payload: { to } });
     append({ type: "phase.changed", payload: { to: "night-mafia" } });
     append({ type: "mafia.shots-resolved", payload: { shots: [], result: { kind: "miss" } } });
+    append({ type: "phase.changed", payload: { to: "night-don" } });
     append({ type: "don.check-skipped", payload: {} });
     const blackSeat = game.players.find(({ team }) => team === "black")!.seat;
     append({ type: "sheriff.checked", payload: { targetSeat: blackSeat, match: true } });
-    append({ type: "game.drawn", payload: { reason: "Synthetic recovery ruling" } });
+    append({ type: "phase.changed", payload: { to: "night-resolution" } });
+    append({ type: "phase.changed", payload: { to: "day" } });
+    append({ type: "phase.changed", payload: { to: "night-mafia" } });
+    append({ type: "mafia.shots-resolved", payload: { shots: [], result: { kind: "miss" } } });
+    append({ type: "phase.changed", payload: { to: "night-don" } });
+    append({ type: "don.check-skipped", payload: {} });
+    append({ type: "sheriff.check-skipped", payload: {} });
+    append({ type: "phase.changed", payload: { to: "draw" } });
     const state = { ...initialState, game, events, headEventId: events.at(-1)!.id };
     const results = {
       hostPlayerId: hostId,
       outcome: "draw",
       winner: null,
-      reason: "Synthetic recovery ruling",
+      reason: "MAFGAME 6.5.6: three consecutive game nights without a departure",
       playedAt: "2026-09-26T12:00:00.000Z",
       players: game.players.map(({ id, seat, role, team, status, fouls }) => ({
         playerId: id,

@@ -43,34 +43,30 @@ describe("replay-frame timeline model", () => {
     const timeline = buildTimeline(frames);
 
     expect(timeline.regions.map(({ label }) => label)).toEqual([
-      "Initial night",
+      "Night 1 · Mafia planning",
+      "Zero round",
+      "Voting · zero round",
+      "Night 2",
       "Day 1",
       "Voting 1",
-      "Night 1",
+      "Night 3",
       "Day 2",
-      "Voting 2",
-      "Night 2",
     ]);
     expect(timeline.regions.every(({ color }) => /^#[0-9a-f]{6}$/i.test(color))).toBe(true);
     expect(timeline.regions.every(({ frameCount }) => frameCount > 0)).toBe(true);
   });
 
-  it("keeps a later-night Best move completion in that night's numbered region", () => {
+  it("keeps an accepted Best Move finalized prefix in its actual shooting-night region", () => {
     const bestMove = createSampleGameHistory().frames.find(
-      ({ entry }) => entry.type === "best-move.completed",
+      ({ entry }) => entry.type === "best-move.finalized",
     )!;
-    const nightTwoBestMove: ReplayFrame = {
-      ...bestMove,
-      before: { ...bestMove.before, day: 2 },
-      after: { ...bestMove.after, day: 3 },
-    };
 
-    const timeline = buildTimeline([nightTwoBestMove]);
+    const timeline = buildTimeline([bestMove]);
 
-    expect(timeline.regions[0]).toMatchObject({ id: "night-2", label: "Night 2", day: 2 });
+    expect(timeline.regions[0]).toMatchObject({ id: "night-1", label: "Night 2", day: 1 });
     expect(timeline.markers[0]).toMatchObject({
-      eventType: "best-move.completed",
-      regionId: "night-2",
+      eventType: "best-move.finalized",
+      regionId: "night-1",
     });
   });
 
@@ -91,19 +87,15 @@ describe("replay-frame timeline model", () => {
       timeline.markers
         .filter(({ eventType }) => eventType === "foul.issued")
         .map(({ kind }) => kind),
-    ).toEqual(["foul", "foul", "foul", "red-card"]);
-    expect(markerFor("player.red-carded")?.kind).toBe("red-card");
+    ).toEqual(["foul", "foul", "foul"]);
+    expect(markerFor("discipline.foul-issued")?.kind).toBe("discipline");
+    expect(markerFor("discipline.removals-announced")?.kind).toBe("red-card");
     expect(timeline.markers.some(({ eventType }) => eventType === "turn.completed")).toBe(false);
     expect(
       timeline.markers.some(
         ({ eventType, label }) =>
           eventType === "phase.changed" &&
-          [
-            "Phase: sheriff wake",
-            "Phase: night don",
-            "Phase: night sheriff",
-            "Phase: best move",
-          ].includes(label),
+          ["Phase: night don", "Phase: night sheriff", "Phase: best move"].includes(label),
       ),
     ).toBe(false);
     expect(
@@ -111,7 +103,7 @@ describe("replay-frame timeline model", () => {
         ({ eventType, label }) => eventType === "phase.changed" && label === "Night",
       ),
     ).toBeDefined();
-    expect(markerFor("best-move.completed")?.regionId).toBe("night-1");
+    expect(markerFor("best-move.finalized")?.regionId).toBe("night-1");
     expect(markerFor("game.completed")).toMatchObject({
       kind: "completion",
       icon: "trophy",
@@ -177,15 +169,20 @@ describe("replay-frame timeline model", () => {
     expect(shotMarkers[1]?.shots).toHaveLength(2);
   });
 
-  it("cannot include inactive branches because its input is the active replay-frame list", () => {
+  it("cannot include later checkpoints outside the supplied retained prefix", () => {
     const history = createSampleGameHistory();
-    const activeIds = new Set(history.frames.map(({ entry }) => entry.id));
-    const inactiveEntry = history.entries.find(({ id }) => !activeIds.has(id));
-    const timeline = buildTimeline(history.frames);
+    const cutoff = history.frames.findIndex(({ entry }) => entry.type === "don.checked") + 1;
+    const laterEntries = history.frames.slice(cutoff);
+    const prefix = history.frames.slice(0, cutoff);
+    const timeline = buildTimeline(prefix);
 
-    expect(inactiveEntry).toBeDefined();
-    expect(timeline.markers).toHaveLength(history.frames.length);
-    expect(timeline.markers.some(({ eventId }) => eventId === inactiveEntry?.id)).toBe(false);
+    expect(laterEntries.length).toBeGreaterThan(0);
+    expect(timeline.markers.length).toBeLessThanOrEqual(prefix.length);
+    expect(
+      timeline.markers.some(({ eventId }) =>
+        laterEntries.some(({ entry }) => entry.id === eventId),
+      ),
+    ).toBe(false);
   });
 
   it("falls back to an anonymous label when a profile is unavailable, without changing replay frames", () => {
@@ -228,9 +225,9 @@ describe("replay-frame timeline model", () => {
       return buildTimeline([frame]).markers[0];
     };
 
-    expect(marker("voting.skipped", { reason: "host-skipped" })).toMatchObject({
+    expect(marker("voting.legally-skipped", { reason: "no-nominees" })).toMatchObject({
       kind: "voting-cancelled",
-      label: "Voting skipped",
+      label: "Voting skipped: no nominees",
     });
     expect(
       marker("car-crash.resolved", {
@@ -250,14 +247,12 @@ describe("replay-frame timeline model", () => {
       ariaLabel: "Sheriff check skipped",
     });
     expect(
-      marker("best-move.completed", {
-        playerSeat: 2,
-        selectedSeats: [8, 9, 3],
-        mafiaHits: 2,
-      }),
+      buildTimeline(createSampleGameHistory().frames).markers.find(
+        ({ eventType }) => eventType === "best-move.finalized",
+      ),
     ).toMatchObject({
       kind: "best-move",
-      ariaLabel: "Best move by Player 2: Player 8, Player 9, Player 3; 2 Mafia hits",
+      ariaLabel: expect.stringContaining("Best Move by Player 2: Player 8 and Player 9"),
     });
   });
 
@@ -274,13 +269,14 @@ describe("replay-frame timeline model", () => {
       ).markers[0]!;
 
     expect(timeline.regions.map(({ label }) => label)).toEqual([
-      "Нулевая ночь",
+      "Ночь 1 · договорка мафии",
+      "Нулевой круг",
+      "Голосование · нулевой круг",
+      "Ночь 2",
       "День 1",
       "Голосование 1",
-      "Ночь 1",
+      "Ночь 3",
       "День 2",
-      "Голосование 2",
-      "Ночь 2",
     ]);
     expect(markerFor("player.nominated")).toMatchObject({
       label: "Player 7 выставлен на голосование",
@@ -289,21 +285,16 @@ describe("replay-frame timeline model", () => {
     expect(markerFor("voting.resolved")?.ariaLabel).toContain(
       "Результат голосования: Player 7 выбывает из игры",
     );
-    expect(markerFor("voting.skipped")).toMatchObject({
-      label: "Голосование пропущено",
-      ariaLabel: "Ведущий пропустил голосование",
-    });
+    expect(markerFor("voting.legally-skipped")?.label).toContain("дисциплинарное удаление");
     expect(markerFor("mafia.shots-resolved")).toMatchObject({
       label: "Мафия убивает: Player 2",
       ariaLabel: expect.stringContaining("Выстрелы мафии:"),
     });
     expect(markerFor("don.checked")?.ariaLabel).toBe("Дон проверил Player 1: Шериф");
     expect(markerFor("sheriff.checked")?.ariaLabel).toBe("Шериф проверил Player 10: Мафия");
-    expect(
-      timeline.markers.filter(({ eventType }) => eventType === "foul.issued").at(-1)?.label,
-    ).toContain("получил красную карточку");
-    expect(markerFor("player.red-carded")?.ariaLabel).toBe("Красная карточка: Player 8");
-    expect(markerFor("best-move.completed")?.ariaLabel).toContain("Лучший ход");
+    expect(markerFor("discipline.foul-issued")?.ariaLabel).toContain("Четвёртый фол");
+    expect(markerFor("discipline.removals-announced")?.ariaLabel).toContain("Объявлено удаление");
+    expect(markerFor("best-move.finalized")?.ariaLabel).toContain("Лучший ход");
     expect(markerFor("game.completed")).toMatchObject({
       label: "Красные победили",
       ariaLabel: "Игра завершена: Красные победили",
@@ -319,12 +310,6 @@ describe("replay-frame timeline model", () => {
     expect(marker("sheriff.check-skipped", {})).toMatchObject({
       label: "Проверка Шерифа пропущена",
     });
-    expect(
-      marker("best-move.completed", {
-        playerSeat: 2,
-        selectedSeats: [8, 9, 3],
-        mafiaHits: 2,
-      }).ariaLabel,
-    ).toBe("Лучший ход Player 2: Player 8, Player 9 и Player 3; 2 попадания в мафию");
+    expect(markerFor("best-move.finalized")?.ariaLabel).toContain("Player 8 и Player 9");
   });
 });

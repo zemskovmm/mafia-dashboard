@@ -137,16 +137,18 @@ test("pull requests run CI while main pushes and manual dispatch run deployment"
     read(".github/workflows/deploy-azure.yml"),
   ]);
 
-  assert.deepEqual(workflows, ["ci.yml", "deploy-azure.yml", "migrate-postgres-to-azure.yml"]);
+  assert.deepEqual(workflows, ["ci.yml", "deploy-azure.yml"]);
   assert.match(ci, /^on:\n\s{2}pull_request:\n\npermissions:/m);
-  assert.match(ci, /npm run ci:install[\s\S]*npm run check/);
+  assert.match(ci, /npm run ci:install[\s\S]*npm run check:local/);
+  assert.doesNotMatch(ci, /postgres|TEST_DATABASE_URL|\bservices:/i);
+  assert.match(ci, /^permissions:\n\s{2}contents: read$/m);
   assert.match(deploy, /^on:\n\s{2}push:\n\s{4}branches: \[main\]\n\s{2}workflow_dispatch:/m);
 });
 
 test("every external workflow action is pinned to an immutable commit", async () => {
   const directory = new URL(".github/workflows/", root);
   const workflows = (await readdir(directory)).filter((name) => name.endsWith(".yml"));
-  assert.equal(workflows.length, 3);
+  assert.equal(workflows.length, 2);
 
   for (const workflow of workflows) {
     const source = await read(`.github/workflows/${workflow}`);
@@ -740,20 +742,28 @@ test("runtime image refreshes OS fixes and omits package managers", async () => 
   assert.doesNotMatch(source, /version\.json/);
 });
 
-test("Compose passes source identity into immutable application builds", async () => {
-  const [compose, verifier] = await Promise.all([
-    read("compose.yaml"),
-    read("scripts/verify-production-compose.mjs"),
-  ]);
-
-  assert.match(compose, /APP_COMMIT: \$\{APP_COMMIT:-unknown\}/);
-  assert.match(compose, /APP_BUILD_INDEX: \$\{APP_BUILD_INDEX:-0\}/);
-  assert.doesNotMatch(compose, /^\s{6}APP_BUILD_INDEX: /m);
-  assert.match(verifier, /status.*--porcelain.*--untracked-files=no/s);
-  assert.match(verifier, /trackedStatus.*\? appCommitResult\.stdout\.trim\(\) : "unknown"/s);
-  assert.match(verifier, /APP_COMMIT: appCommit/);
-  assert.match(verifier, /APP_BUILD_INDEX: buildIndex/);
-  assert.match(verifier, /composeAppVersion\(packageVersion, buildIndex\)/);
-  assert.doesNotMatch(verifier, /version\.json/);
-  assert.match(verifier, /\/health\/version/);
+test("SQL-only Compose and operational entrypoints are retired without replacing the runtime image", async () => {
+  for (const path of [
+    "compose.yaml",
+    "compose.external-db.yaml",
+    "compose.postgres-tools.yaml",
+    ".github/workflows/migrate-postgres-to-azure.yml",
+    "scripts/local-postgres.mjs",
+    "scripts/verify-production-compose.mjs",
+    "scripts/verify-postgres-backup.mjs",
+    "scripts/postgres-backup-common.sh",
+    "scripts/postgres-backup.sh",
+    "scripts/postgres-restore.sh",
+    "scripts/postgres-restore-test.sh",
+    "scripts/postgres-backup-contracts.test.mjs",
+    "scripts/production-postgres-migration.mjs",
+    "scripts/production-postgres-migration-runtime.mjs",
+    "scripts/production-postgres-migration.test.mjs",
+    "scripts/production-postgres-migration-runtime.test.mjs",
+  ]) {
+    await assert.rejects(read(path), { code: "ENOENT" }, path);
+  }
+  const dockerfile = await read("Dockerfile");
+  assert.match(dockerfile, /CMD \["node", "apps\/server\/dist\/main\.js"\]/);
+  assert.doesNotMatch(dockerfile, /postgres|pg_dump|pg_restore/i);
 });

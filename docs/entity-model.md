@@ -1,14 +1,12 @@
 # Entity model
 
-This document describes the transition persistence models and the core game-domain model. The unchanged production/reference adapter uses PostgreSQL; the new local adapter uses Azure Tables and private blobs. It is derived from:
+This document describes the supported Azure persistence model and the core game-domain model. It is derived from:
 
-- [`apps/server/src/schema.sql`](../apps/server/src/schema.sql) for physical tables, keys, and foreign keys;
 - [`packages/game-domain/src/types.ts`](../packages/game-domain/src/types.ts) for game state;
 - [`packages/game-domain/src/game-events.ts`](../packages/game-domain/src/game-events.ts) for canonical events and replay metadata;
-- [`apps/server/src/game-session-store.ts`](../apps/server/src/game-session-store.ts) and [`apps/server/src/event-store.ts`](../apps/server/src/event-store.ts) for PostgreSQL persistence mappings;
-- [`apps/server/src/azure-storage.ts`](../apps/server/src/azure-storage.ts), [`azure-game-session-store.ts`](../apps/server/src/azure-game-session-store.ts), [`azure-club-player-store.ts`](../apps/server/src/azure-club-player-store.ts) and [`azure-account-store.ts`](../apps/server/src/azure-account-store.ts) for the Azure adapter.
+- [`apps/server/src/azure-storage.ts`](../apps/server/src/azure-storage.ts), [`azure-game-session-store.ts`](../apps/server/src/azure-game-session-store.ts), [`azure-club-player-store.ts`](../apps/server/src/azure-club-player-store.ts) and [`azure-account-store.ts`](../apps/server/src/azure-account-store.ts) for persistence.
 
-The first diagram is physical: `PK` and `FK` reflect PostgreSQL constraints. The later diagrams are conceptual TypeScript models; their relationships describe containment, extension, or event payloads rather than database foreign keys. `o|`, `||`, and `o{` mean zero-or-one, exactly one, and zero-or-many respectively.
+The diagrams are conceptual excerpts, not exhaustive TypeScript declarations; their relationships describe containment, extension, or event payloads rather than database foreign keys. `o|`, `||`, and `o{` mean zero-or-one, exactly one, and zero-or-many respectively. The obsolete PostgreSQL physical diagram is removed with that backend. Its retirement does not convert or erase existing data; the separately gated one-time Azure normalization is described below.
 
 ## Azure logical entities
 
@@ -23,247 +21,20 @@ These are logical RowKey families in one physical table and application partitio
 | `music:<userId>`                                               | Existing encrypted music token material, expiry, scope and account label.                                                                               |
 | `club:<clubId>:meta`, `member:<userId>`                        | Settings/owner and club-local membership/access-player link; oversized logo values use private blob references.                                         |
 | `club:<clubId>:player:<id>`, `nickname:<digest>`               | Permanent club-scoped identity, erasable consenting profile and normalized nickname reservation. Retired profiles retain only their anonymous identity. |
-| `club:<clubId>:game:<gameId>`                                  | Bounded catalog head, revision/status/ruleset and the selected immutable snapshot blob's name, length and transport checksum.                           |
+| `club:<clubId>:game:<gameId>`                                  | Bounded catalog head, revision/status and the selected immutable envelope blob's name, length and transport checksum; no rules-engine identity.         |
 | `club:<clubId>:creation:<creationId>`                          | Original creation request to server-issued game identity; retained after game deletion.                                                                 |
 | `club:<clubId>:participant:<gameId>:<playerId>`                | Bounded selected host/seat projection; not a reconstruction of the authoritative setup.                                                                 |
 | `club:<clubId>:result:<gameId>:<playerId>`                     | Bounded noncancelled player/host result projection; statistics scan result families once.                                                               |
 | `club:<clubId>:deleted-game:<gameId>`, `deleted-club:<clubId>` | Non-resurrection and resumable purge markers.                                                                                                           |
 | `cleanup:<digest>`                                             | Retired immutable blob reference awaiting separately scoped cleanup.                                                                                    |
 
-The complete versioned game envelope is a private, create-only JSON blob. It preserves the accepted state/results and the current projected event view, including partial setup, empty seats, role draw, playlist, canonical baseline/history and Undo fields. There is no Table entity per canonical event. Free-text reasons and variable passthrough fields stay in the envelope; bounded summaries may fall back to the authoritative blob rather than truncate or reject a previously accepted value.
+The game envelope is a private, create-only JSON blob. For active games it preserves the full accepted setup/state, including empty seats, role draw, playlist, canonical baseline/history and Undo fields. For completed games it preserves independently known results/observations and any faithful optional timeline detail; a full snapshot or playable replay is not a prerequisite for factual validity. There is no Table entity per canonical event. Free-text reasons and variable meaningful fields stay in the envelope; bounded summaries may read the authoritative blob rather than truncate or reject an accepted value.
+
+Every game retains club/game identity, ownership, active/completed status, revision and publication relationships. Known label, played time, host, tournament, outcome/reason/adjudication, participant identity and independently known seat, role/team, final status, fouls, Best Move and actual Casper/roster facts survive without invented defaults. Absence is unknown, not zero, false, loss or a synthetic timestamp. Derived statistics use only inputs relevant to each metric; Elo requires its actual complete inputs but not unrelated foul/status/timeline observations. Unfiltered history keeps partial records; filters requiring an unknown value cannot match it.
+
+No persisted business object contains `rulesEdition`, `rulesetId`, `rulesetVersion` or an equivalent engine selector. Schema/replay serialization versions, revisions, dataset identity, checksums, recovery metadata and the Elo algorithm identifier do not select alternative rules. Names in views are resolved from club-scoped opaque player references; persisted game/player/event identities and their established UUID comparison behavior are preserved.
 
 Blob bytes are verified before the conditional transaction publishes the head and synchronized projections. The stored SHA-256 is a transport-integrity checksum, not a new canonical replay hash. A selected missing/corrupt blob is an error; no older revision or empty snapshot is substituted. Typed Table scalars/dates/binary values omit SQL-style nulls via full replacement. Relationships, uniqueness, consent and active-identity admission are enforced under the same conditional control boundary, not through Azure foreign keys.
-
-The PostgreSQL diagram below remains the physical model of the production/reference adapter during transition. No live data import or resource migration is performed by adding the Azure adapter.
-
-## PostgreSQL entities
-
-```mermaid
-erDiagram
-    USERS {
-        uuid id PK
-        string google_subject UK "nullable"
-        string email UK
-        string display_name
-        string picture "nullable"
-        timestamp created_at
-        timestamp updated_at
-    }
-
-    USER_SESSIONS {
-        uuid id PK
-        binary token_hash UK
-        uuid user_id FK
-        timestamp expires_at
-        timestamp created_at
-    }
-
-    CLUBS {
-        uuid id PK
-        string name
-        string city
-        string header_logo "nullable"
-        string card_logo "nullable"
-        string language_code
-        boolean best_move_enabled
-        uuid created_by FK
-        timestamp created_at
-        timestamp updated_at
-    }
-
-    CLUB_MEMBERSHIPS {
-        uuid club_id PK, FK
-        uuid user_id PK, FK
-        string role
-        uuid access_player_id FK "nullable; composite access identity"
-        timestamp created_at
-    }
-
-    DELETED_CLUBS {
-        uuid club_id PK
-        timestamp deleted_at
-    }
-
-    GAME_EVENTS {
-        uuid club_id PK, FK
-        uuid id PK
-        uuid game_id "logical aggregate id"
-        int sequence
-        string idempotency_key
-        string event_type
-        string phase
-        int seat "nullable"
-        json payload
-        uuid parent_event_id "nullable; logical event link"
-        int replay_version
-        int replay_sequence "nullable"
-        string phase_after "nullable"
-        int day_before "nullable"
-        int day_after "nullable"
-        string state_hash_after "nullable"
-        timestamp created_at
-    }
-
-    DELETED_GAMES {
-        uuid club_id PK, FK
-        uuid game_id PK
-        timestamp deleted_at
-    }
-
-    GAME_DAILY_COUNTERS {
-        uuid club_id PK, FK
-        date game_date PK
-        int last_number
-    }
-
-    GAME_RULESETS {
-        string id PK
-        int version PK
-        int player_count
-        int sheriff_count
-        int citizen_count
-        int mafia_count
-        int don_count
-    }
-
-    GAME_SESSIONS {
-        uuid club_id PK, FK
-        uuid id PK
-        string ruleset_id FK
-        int ruleset_version FK
-        string name
-        int revision
-        uuid last_mutation_id
-        json state
-        json results "nullable"
-        string status
-        json initial_game "nullable"
-        uuid replay_base_event_id "nullable; logical event link"
-        uuid head_event_id "nullable; logical event link"
-        uuid reset_return_event_id "nullable; logical event link"
-        boolean reset_return_was_completed
-        int replay_version
-        timestamp created_at
-        timestamp updated_at
-    }
-
-    GAME_SESSION_CREATIONS {
-        uuid club_id PK, FK
-        uuid creation_id PK
-        uuid game_id "logical aggregate id; survives game deletion"
-        timestamp created_at
-    }
-
-    GAME_SESSION_MUTATIONS {
-        uuid club_id PK, FK
-        uuid game_id PK, FK
-        uuid mutation_id PK
-        int revision
-        json request "nullable"
-    }
-
-    PLAYERS {
-        uuid id PK
-        uuid club_id FK
-        string nickname "null only when retired"
-        string first_name "nullable"
-        string last_name "nullable"
-        string email "nullable"
-        boolean data_processing_consent
-        timestamp consent_at "nullable"
-        string club_access "none, user, or manager"
-        uuid user_id FK "nullable"
-        timestamp created_at
-        timestamp updated_at
-        timestamp last_played_at "nullable"
-        timestamp retired_at "nullable"
-    }
-
-    GAME_SESSION_PLAYERS {
-        uuid club_id PK, FK
-        uuid game_id PK, FK
-        uuid player_id PK, FK
-        int seat "nullable for host"
-        boolean is_host
-        string role "nullable before assignment and for host"
-    }
-
-    GAME_RESULTS {
-        uuid club_id PK, FK
-        uuid game_id PK
-        string outcome "red, black, draw, or cancelled"
-        string winner "nullable for draw or cancellation"
-        string reason "required for draw or cancellation; otherwise null"
-        timestamp played_at
-        uuid host_player_id FK "nullable"
-    }
-
-    GAME_PLAYER_RESULTS {
-        uuid club_id PK, FK
-        uuid game_id PK, FK
-        uuid player_id PK, FK
-        int seat
-        string role
-        string team
-        string final_status
-        int fouls
-        boolean won "nullable"
-        int best_move_hits "nullable"
-    }
-
-    YOUTUBE_OAUTH_CREDENTIALS {
-        uuid user_id PK, FK
-        boolean singleton
-        binary access_token_encrypted
-        binary refresh_token_encrypted
-        timestamp expires_at
-        string account_label
-        string scope
-        timestamp updated_at
-    }
-
-    USERS ||..o{ USER_SESSIONS : authenticates
-    USERS ||..o{ CLUBS : creates
-    USERS ||--o{ CLUB_MEMBERSHIPS : joins
-    CLUBS ||--o{ CLUB_MEMBERSHIPS : grants
-    USERS o|..o{ PLAYERS : links_identity
-    CLUBS ||..o{ PLAYERS : owns
-    PLAYERS o|..o| CLUB_MEMBERSHIPS : access_identity
-    USERS ||--o| YOUTUBE_OAUTH_CREDENTIALS : authorizes
-
-    CLUBS ||--o{ GAME_EVENTS : isolates
-    CLUBS ||--o{ DELETED_GAMES : tombstones
-    CLUBS ||--o{ GAME_DAILY_COUNTERS : numbers
-    CLUBS ||--o{ GAME_SESSIONS : owns
-    GAME_RULESETS ||..o{ GAME_SESSIONS : governs
-    CLUBS ||--o{ GAME_SESSION_CREATIONS : deduplicates_creation
-    GAME_SESSIONS ||--o{ GAME_SESSION_MUTATIONS : deduplicates
-    GAME_SESSIONS ||--o{ GAME_SESSION_PLAYERS : selects
-    PLAYERS ||--o{ GAME_SESSION_PLAYERS : participates
-
-    CLUBS ||--o{ GAME_RESULTS : records
-    PLAYERS o|..o{ GAME_RESULTS : hosts
-    GAME_RESULTS ||--o{ GAME_PLAYER_RESULTS : contains
-    PLAYERS ||--o{ GAME_PLAYER_RESULTS : earns
-```
-
-### Physical-key notes
-
-- Uppercase entity labels correspond directly to the lowercase SQL table names. All current tables and columns are shown. Solid relationships have their entire child-side foreign key inside the child's primary key; dashed relationships do not. Both represent declared SQL foreign keys, not inferred relationships.
-- Club isolation is part of the composite keys and composite foreign keys for sessions, mutations, selected players, results, and player results. A matching `club_id` is therefore required across those relationships.
-- `game_rulesets` contains the immutable fixed-ruleset identity used by current sessions. Each session has a required composite reference to the canonical `club-mafia` version `1` row; custom rulesets and historical ruleset snapshot behavior remain outside the current model.
-- `game_session_players` is an internal relational projection of the authoritative session snapshot. Its composite keys enforce one row per player and one seated row per seat in each club/game. Database checks require hosts to have neither a seat nor a role, require non-hosts to have a seat, and restrict assigned roles to the canonical role vocabulary. A role may remain null before that seat draws a card.
-- The full `game_sessions.state` snapshot remains the restorable authority. Event, player and result projections are rebuilt atomically from accepted snapshots; player projection rows are not automatically removed on completion. Virtual Casper has no physical player profile and is omitted from the player projection. These rows never form a separate public or sanitized session representation. Authenticated `manager` and `user` members receive the same complete session data; membership and club isolation control access.
-- `club_memberships.access_player_id`, `club_id`, and `user_id` form a composite foreign key to the access player's `(id, club_id, user_id)` identity. `access_player_id` is nullable, making this relationship optional; its partial unique index limits a player to at most one linked membership. Membership roles are `manager` or `user`; a player's `club_access` may also be `none`.
-- `players.id` is a permanent, globally unique identity belonging to one club, with `retired_at` marking profile retirement. Retired rows retain the ID but must have null nickname, personal fields, consent timestamp and user link, no consent, and `club_access = 'none'`. Active rows require a nonblank nickname. Historical participation and results reference these retained IDs, not copied profile names.
-- Player uniqueness is club-scoped: normalized nickname among non-retired profiles, normalized email among profiles with club access, and linked user ID where present. These composite/partial indexes do not make individual columns globally unique. Personal fields and consent timestamps are required when consent is true and must be null otherwise.
-- `game_session_creations` maps `(club_id, creation_id)` to a server-issued `game_id`. Only its club is a foreign key: the mapping intentionally survives game deletion so a retried creation cannot resurrect that game. It is deleted with the club.
-- `game_results.outcome` is `red`, `black`, `draw`, or `cancelled`. Team outcomes require the matching winner and a null reason; draw/cancellation require a null winner and a nonblank trimmed reason. `game_player_results.won` is nullable. Host references are optional and club-scoped.
-- `game_events` is an event store for both session and non-session game aggregates. `game_events.game_id` deliberately has no foreign key to `game_sessions`.
-- `game_events.parent_event_id` and the three event IDs on `game_sessions` are logical replay links without SQL foreign keys, allowing retained branches and non-session aggregates. `game_sessions.last_mutation_id` is also a logical identifier, not a foreign key.
-- `deleted_games.game_id` and `game_results.game_id` also identify game aggregates without foreign keys to `game_sessions`; only their club and downstream result relationships are physically enforced.
-- `deleted_clubs` is an independent deletion marker, not a child of `clubs`; it must survive after the club row is gone. `deleted_games` remains physically scoped to an existing club.
-- Important composite uniqueness rules not expressible as single-column `UK` markers include event sequence and idempotency per club/game, replay sequence per club/game, session mutation revision per club/game, and seat per club/game.
 
 ## Core game-domain entities
 
@@ -273,7 +44,6 @@ These entities are framework-independent TypeScript values. They are not additio
 erDiagram
     PLAYER_INPUT {
         string id "logical player id"
-        string name
         int seat
     }
 
@@ -287,7 +57,6 @@ erDiagram
 
     PLAYER_STATE {
         string id "from PlayerInput"
-        string name
         int seat
         string role "Role"
         string team "Team"
@@ -360,7 +129,7 @@ erDiagram
     }
 
     INITIAL_GAME_BASELINE {
-        int replayVersion "currently 1"
+        int replayVersion "serialization shape only"
         object game "GameState"
     }
 
@@ -370,7 +139,7 @@ erDiagram
     }
 
     GAME_LOG_ENTRY {
-        int replayVersion "currently 1"
+        int replayVersion "serialization shape only"
         string id "logical event id"
         string gameId "logical aggregate id"
         int sequence
@@ -410,7 +179,7 @@ erDiagram
 
 ## Canonical game events
 
-A `CanonicalGameEventDraft` has exactly one of the following 18 variants. Mermaid ER has no XOR connector, so the optional variant edges below collectively mean “exactly one,” not 18 independent optional children.
+A `CanonicalGameEventDraft` has exactly one variant. The diagram below illustrates core event families, not the exhaustive current union: accepted ballot reviews, support corrections, Best Move prefixes, physical-shot observations, discipline/adjudication and draw/cancellation facts also follow current domain declarations. Mermaid ER has no XOR connector, so optional variant edges mean alternatives, not independently optional children. No event carries an engine selector.
 
 ```mermaid
 erDiagram
@@ -609,21 +378,18 @@ erDiagram
 | `best-move.completed`       | Player seat, selected seats, and Mafia hit count                  | Secret     |
 | `game.completed`            | Winning team                                                      | Public     |
 
-Provisional interactions such as individual vote assignment/removal, voting candidate advancement, car-crash vote assignment, Mafia shot recording, and `setup.*`, `timer.*`, or `music.*` events are not canonical durable game events.
+Provisional individual vote assignment/removal, candidate selection, collective-lift votes and shot assignments live in the authoritative active snapshot until accepted. Accepted host decisions and physical-shot observations retain their canonical facts and privacy; timer/music activity remains local auxiliary state. Setup activity is distinct from canonical gameplay, not an older-format reconstruction path.
 
 ## Persistence-to-domain mapping
 
-| Persistence field(s)                                                                      | Domain meaning                                                                                                                                                                         |
-| ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `game_sessions.state`                                                                     | Revisioned current-format `StoredGameSessionState`; contains setup metadata, the current `GameState`, selected host/playlist data, current activity log, and explicit replay metadata. |
-| `game_sessions.initial_game`                                                              | The immutable `InitialGameBaseline` used as the replay starting state.                                                                                                                 |
-| `game_sessions.results`                                                                   | Completed-game projection used to materialize `game_results` and `game_player_results`.                                                                                                |
-| `game_events.event_type` + `game_events.payload`                                          | Current canonical event discriminator and variant payload with complete replay metadata. Historical raw-event mutation endpoints are not supported.                                    |
-| `game_events.parent_event_id`                                                             | Logical parent link for retained replay branches.                                                                                                                                      |
-| `game_events.replay_sequence`, phase/day fields, `replay_version`, and `state_hash_after` | Canonical ordering and deterministic replay-integrity metadata.                                                                                                                        |
-| `game_sessions.state`                                                                     | Authoritative full browser snapshot, including current `GameState`, semantic event prefix, and Undo allowance.                                                                         |
-| `game_sessions.replay_base_event_id`                                                      | Compatibility mirror of the snapshot's semantic-history root.                                                                                                                          |
-| `game_sessions.head_event_id`                                                             | Compatibility mirror of the snapshot's retained semantic-history head; it does not override `state.game`.                                                                              |
-| `game_sessions.reset_return_event_id`                                                     | Retired compatibility column; browser-authoritative snapshots keep it null and expose no Reset Return.                                                                                 |
+| Persisted material                              | Domain meaning                                                                                                                                                                                               |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Game head plus private envelope `session.state` | Authoritative full active browser snapshot, including setup/current game, canonical baseline/history and Undo allowance. Completed detail may be absent. The selected immutable Blob is verified before use. |
+| Envelope `session.results`                      | Independently known accepted terminal facts, including partial observations, with synchronized club-local projections for queries/statistics; no replay-based winner recomputation.                          |
+| Envelope `events`                               | Optional retained completed timeline or active canonical prefix, preserving type/payload, linkage and hashes. Secret event projection remains server-side and authenticated.                                 |
+| Creation mappings and deletion markers          | Original creation retries remain bound to the same server-issued identity; deleted games cannot be recreated by stale saves/retries.                                                                         |
+| Optional envelope provenance                    | Existing source-only metadata remains preserved outside public/canonical state; it does not restore SQL support or an import path.                                                                           |
 
-PostgreSQL mirrors the last uploaded valid current-format browser snapshot and its exact semantic event prefix. Domain replay follows the retained parent chain to validate phase/day transitions and SHA-256 hashes for Log/Timeline integrity, but the snapshot's `state.game` remains the current gameplay authority. Historical hashes, event-shape adapters, snapshot normalization, and fallback hydration are unsupported. The field named `legacyLog` still carries current setup/activity entries; it is not an importer for old histories.
+Azure preserves the last accepted current active snapshot and exact semantic event prefix. Domain replay follows the retained parent chain to validate phase/day transitions, lifecycle and canonical hashes for Log/Timeline integrity, but the snapshot's `state.game` remains live authority. Completed facts remain usable independently of optional replay; absent detail is unavailable, not an invalid game, while corrupt retained canonical authority cannot enable fallback play. The field named `legacyLog` still carries current setup/activity entries; its name alone is neither an engine selector nor deletion authority.
+
+[IDD-0005](../.idd/intent/IDD-0005.spec-data-compatibility-and-preservation.md) permits only an explicitly invoked one-time Azure representation conversion outside normal runtime. Preserve every game, known fact and valid relationship; retain faithfully convertible timelines or record a completed statistics-only disposition, never discard incompatible active/unsent state. Corresponding hashes may change only for verified explicit representation conversion, not ordinary saves, profile resolution or tournament edits. Any predecessor decoder stays in private local operational material. Exact-target inventory, separately authorized writes, proven backup/recovery, interruption/repeat safety and a compatible authorized app/data cutover remain production gates, not a claim of completed migration.

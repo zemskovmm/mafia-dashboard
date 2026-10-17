@@ -126,7 +126,7 @@ export function ClubFire({
           r.top > clip[1] + clip[3]
         )
           return;
-        const hovered = card.matches(":hover,:focus-within");
+        const hovered = card.matches(":hover");
         const pulse = Math.max(0, ((pulses.get(card) ?? 0) - now) / 650);
         const target = pulse > 0 ? 1 : hovered ? 0.82 : 0.065;
         const energy = (energies.get(card) ?? target) * 0.79 + target * 0.21;
@@ -209,7 +209,6 @@ export function ClubFire({
       else schedule();
     };
     const pulse = (event: Event) => {
-      if (event instanceof KeyboardEvent && event.key !== "Enter" && event.key !== " ") return;
       const card =
         event.target instanceof Element ? event.target.closest<HTMLElement>(CARD_SELECTOR) : null;
       if (card && root.contains(card)) pulses.set(card, performance.now() + 650);
@@ -227,9 +226,7 @@ export function ClubFire({
     root.querySelectorAll(".club-portal-content").forEach((element) => resize?.observe(element));
     root.addEventListener("scroll", schedule, true);
     root.addEventListener("pointerover", schedule);
-    root.addEventListener("focusin", schedule);
     root.addEventListener("pointerdown", pulse);
-    root.addEventListener("keydown", pulse);
     window.addEventListener("resize", schedule);
     document.addEventListener("visibilitychange", visibility);
     motion.addEventListener("change", start);
@@ -245,9 +242,7 @@ export function ClubFire({
       resize?.disconnect();
       root.removeEventListener("scroll", schedule, true);
       root.removeEventListener("pointerover", schedule);
-      root.removeEventListener("focusin", schedule);
       root.removeEventListener("pointerdown", pulse);
-      root.removeEventListener("keydown", pulse);
       window.removeEventListener("resize", schedule);
       document.removeEventListener("visibilitychange", visibility);
       motion.removeEventListener("change", start);

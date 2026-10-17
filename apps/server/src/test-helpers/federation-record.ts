@@ -1,105 +1,30 @@
 import { randomUUID } from "node:crypto";
+import { createCanonicalHistory } from "./canonical-history.js";
 
-/** Browser-supplied JSON fixture; storage must not replay or rewrite its history. */
+/** Generated with the one current engine; transport preserves every canonical byte. */
 export const federationRecord = (losingTeam: "red" | "black") => {
-  const rulesEdition = "mafgame-2026-07-01";
   const hostPlayerId = randomUUID();
-  const players = Array.from({ length: 10 }, (_, index) => ({
-    id: randomUUID(),
-    seat: index + 1,
-    role: index === 0 ? "don" : index < 3 ? "mafia" : index === 3 ? "sheriff" : "citizen",
-    team: index < 3 ? "black" : "red",
-    status: "active",
-    fouls: index === 4 ? 2 : 0,
-    mutePending: index === 4,
-  }));
-  const game = {
-    rulesEdition,
-    phase: "voting",
-    day: 4,
-    winner: null,
-    players,
-    turnOrder: [4, 5],
-    currentTurnIndex: 0,
-    nominations: [{ nominatorSeat: 6, candidateSeat: 4, order: 1 }],
-    voteAssignments: { 1: 4, 2: 4 },
-    shotAssignments: {},
-    completedGameNights: 3,
-    sheriffChecksPerformed: 2,
-    firstDayDepartureSeats: [],
-    actualMultipleShotSeats: [1],
-    currentSpeechRestricted: true,
-    ballot: {
-      orderAnnouncements: 2,
-      mention: 2,
-      stopped: true,
-      selectedCandidateSeat: 5,
-      acceptedCandidateSeats: [4],
-      reviewedCandidateSeats: [],
-      dispute: { candidateSeat: 4, reason: "Recording review pending" },
-    },
-    bestMove: {
-      playerSeat: 7,
-      selectedSeats: [1, 1],
-      completionReason: "finished-early",
-      readbackAcknowledged: true,
-      mafiaHits: 1,
-    },
-  };
-  const rootId = randomUUID();
-  const event = {
-    id: rootId,
-    sequence: 1,
-    replayVersion: 2,
-    rulesEdition,
-    type: "game.checkpointed",
-    phaseBefore: "voting",
-    payload: {},
-    parentEventId: null,
-    stateHashAfter: "browser-supplied-root-hash",
-    createdAt: "2026-10-14T08:00:00.000Z",
-  };
-  const state = {
-    setup: { rulesEdition, step: "mafia-planning", selectedPlayerIds: players.map(({ id }) => id) },
-    game,
+  const history = createCanonicalHistory(
+    randomUUID(),
     hostPlayerId,
-    playlistId: "playlist-ref",
-    initialGame: { replayVersion: 2, rulesEdition, game },
-    events: [event],
-    headEventId: rootId,
-    resetReturnEventId: null,
-    undoHistory: [game],
-    undoBudget: 2,
-    log: [],
-    legacyLog: [],
-  };
+    Array.from({ length: 10 }, () => randomUUID()),
+  );
+  history.append({ type: "player.nominated", payload: { nominatorSeat: 1, candidateSeat: 1 } });
+  history.append({ type: "player.nominated", payload: { nominatorSeat: 2, candidateSeat: 2 } });
+  history.append({ type: "phase.changed", payload: { to: "voting" } });
+  const state = history.snapshot();
+  const players = state.game.players;
   const adjudication = {
     losingTeam,
-    offenderSeat: losingTeam === "black" ? 1 : 5,
+    offenderSeat: players.find((player) => player.team === losingTeam)!.seat,
     rule: "6.3.5",
     reason: "Referee ruling: ППК — committee agreement recorded",
     committeeApproved: true,
   };
+  history.append({ type: "game.adjudicated", payload: adjudication });
   const winner = losingTeam === "red" ? "black" : "red";
-  const completedGame = { ...game, phase: "finished", winner, adjudication };
-  const finalEvent = {
-    ...event,
-    id: randomUUID(),
-    sequence: 2,
-    type: "game.adjudicated",
-    payload: adjudication,
-    parentEventId: rootId,
-    stateHashAfter: "browser-supplied-terminal-hash",
-    createdAt: "2026-10-14T08:01:00.000Z",
-  };
-  const completedState = {
-    ...state,
-    game: completedGame,
-    events: [event, finalEvent],
-    headEventId: finalEvent.id,
-    resetReturnEventId: rootId,
-    undoHistory: [game, completedGame],
-  };
+  history.append({ type: "game.completed", payload: { winner } });
+  const completedState = history.snapshot();
   const results = {
     hostPlayerId,
     outcome: winner,
@@ -114,7 +39,7 @@ export const federationRecord = (losingTeam: "red" | "black") => {
       team,
       status,
       fouls,
-      bestMoveHits: seat === 7 ? 1 : null,
+      bestMoveHits: null,
     })),
   };
   return { state, completedState, results, hostPlayerId, players, winner };

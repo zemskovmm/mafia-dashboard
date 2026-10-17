@@ -60,8 +60,8 @@ interface ResultRow {
   gameId: string;
   playerId: string;
   isHost: boolean;
-  playedAt: Date;
-  outcome: string;
+  playedAt?: Date;
+  outcome?: string;
   winner?: string;
   role?: string;
   team?: string;
@@ -491,7 +491,7 @@ export class AzurePlayerStore {
       .map((row) => {
         const own = byPlayer.get(uuidKey(row.id)) ?? [];
         const played = own.reduce<Date | null>(
-          (latest, r) => (!latest || r.playedAt > latest ? r.playedAt : latest),
+          (latest, r) => (r.playedAt && (!latest || r.playedAt > latest) ? r.playedAt : latest),
           null,
         );
         return {
@@ -640,7 +640,7 @@ export class AzurePlayerStore {
         )
           return "active_game" as const;
       }
-      if (row.userId) await updateLinkedMember(tx, clubId, id, row.userId, undefined, "none");
+      if (row.userId) await updateLinkedMember(tx, clubId, row.id, row.userId, undefined, "none");
       await tx.delete(nicknameKey(clubId, row.nickname!));
       await tx.set(playerKey(clubId, id), {
         id: row.id,

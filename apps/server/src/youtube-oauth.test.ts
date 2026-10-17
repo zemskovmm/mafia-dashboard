@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { Pool } from "pg";
-import { EventStore } from "./event-store.js";
+import { AzureAccountStore } from "./azure-account-store.js";
+import { createStorageFixture } from "./test-helpers/storage-fixture.js";
 import { YouTubeOAuthService } from "./youtube-oauth.js";
 
 const config = {
@@ -10,22 +10,21 @@ const config = {
   encryptionKey: Buffer.alloc(32, 7),
 };
 const userId = "00000000-0000-4000-8000-000000000001";
-const pool = new Pool({
-  connectionString:
-    process.env.TEST_DATABASE_URL ?? "postgresql://mafia:mafia@127.0.0.1:54329/mafia_test",
-});
+let fixture: Awaited<ReturnType<typeof createStorageFixture>>;
+let credentials: AzureAccountStore;
 
 beforeAll(async () => {
-  await new EventStore(pool).initialize();
+  fixture = await createStorageFixture();
+  credentials = new AzureAccountStore(fixture.storage);
 });
 
 afterAll(async () => {
-  await pool.end();
+  await fixture?.close();
 });
 
 describe("YouTubeOAuthService", () => {
   it("builds the least-privilege offline authorization URL", () => {
-    const service = new YouTubeOAuthService(pool, config);
+    const service = new YouTubeOAuthService(credentials, config);
 
     const url = new URL(service.createAuthorizationUrl("state-value"));
 
@@ -61,8 +60,8 @@ describe("YouTubeOAuthService", () => {
           headers: { "content-type": "application/json" },
         }),
       );
-    const service = new YouTubeOAuthService(pool, config, fetcher as unknown as typeof fetch);
-    await pool.query("DELETE FROM youtube_oauth_credentials");
+    const service = new YouTubeOAuthService(credentials, config, fetcher);
+    await credentials.deleteCredential(userId);
 
     await service.exchangeCode(userId, "authorization-code");
 
@@ -87,18 +86,12 @@ describe("YouTubeOAuthService", () => {
       accountLabel: null,
     });
 
-    const stored = await pool.query<{
-      access_token_encrypted: Buffer;
-      refresh_token_encrypted: Buffer;
-    }>(
-      "SELECT access_token_encrypted, refresh_token_encrypted FROM youtube_oauth_credentials WHERE user_id = $1",
-      [userId],
-    );
-    expect(stored.rows).toHaveLength(1);
-    expect(stored.rows[0]!.access_token_encrypted.toString()).not.toContain("access-token-secret");
-    expect(stored.rows[0]!.refresh_token_encrypted.toString()).not.toContain(
-      "refresh-token-secret",
-    );
+    const stored = await new AzureAccountStore(fixture.storage).getCredential(userId);
+    expect(stored).not.toBeNull();
+    expect(stored!.accessTokenEncrypted).toBeInstanceOf(Buffer);
+    expect(stored!.refreshTokenEncrypted).toBeInstanceOf(Buffer);
+    expect(stored!.accessTokenEncrypted.toString()).not.toContain("access-token-secret");
+    expect(stored!.refreshTokenEncrypted.toString()).not.toContain("refresh-token-secret");
   });
 
   it("refreshes an expired token and returns every owned playlist page", async () => {
@@ -153,13 +146,11 @@ describe("YouTubeOAuthService", () => {
           ],
         }),
       );
-    const service = new YouTubeOAuthService(pool, config, fetcher as unknown as typeof fetch);
-    await pool.query("DELETE FROM youtube_oauth_credentials");
+    const service = new YouTubeOAuthService(credentials, config, fetcher);
+    await credentials.deleteCredential(userId);
     await service.exchangeCode(userId, "authorization-code");
-    await pool.query(
-      "UPDATE youtube_oauth_credentials SET expires_at = '2000-01-01T00:00:00.000Z' WHERE user_id = $1",
-      [userId],
-    );
+    const before = (await credentials.getCredential(userId))!;
+    await credentials.putCredential(userId, { ...before, expiresAt: new Date("2000-01-01") });
 
     await expect(service.listPlaylists(userId)).resolves.toEqual([
       {
@@ -180,6 +171,10 @@ describe("YouTubeOAuthService", () => {
       headers: { authorization: "Bearer fresh-access-token" },
     });
     expect(String(fetcher.mock.calls[4]![0])).toContain("pageToken=next-page");
+    const refreshed = (await credentials.getCredential(userId))!;
+    expect(refreshed.refreshTokenEncrypted).toEqual(before.refreshTokenEncrypted);
+    expect(refreshed.accessTokenEncrypted).not.toEqual(before.accessTokenEncrypted);
+    expect(refreshed.expiresAt.getTime()).toBeGreaterThan(Date.now());
   });
 
   it("returns every item in the supplied playlist order", async () => {
@@ -240,8 +235,8 @@ describe("YouTubeOAuthService", () => {
           ],
         }),
       );
-    const service = new YouTubeOAuthService(pool, config, fetcher as unknown as typeof fetch);
-    await pool.query("DELETE FROM youtube_oauth_credentials");
+    const service = new YouTubeOAuthService(credentials, config, fetcher);
+    await credentials.deleteCredential(userId);
     await service.exchangeCode(userId, "authorization-code");
 
     await expect(service.listPlaylistItems(userId, "PL-queue")).resolves.toEqual([
@@ -288,8 +283,8 @@ describe("YouTubeOAuthService", () => {
           ],
         }),
       );
-    const service = new YouTubeOAuthService(pool, config, fetcher as unknown as typeof fetch);
-    await pool.query("DELETE FROM youtube_oauth_credentials");
+    const service = new YouTubeOAuthService(credentials, config, fetcher);
+    await credentials.deleteCredential(userId);
     await service.exchangeCode(userId, "authorization-code");
 
     await expect(service.listPlaylistItems(userId, "PL-other")).rejects.toMatchObject({
@@ -336,8 +331,8 @@ describe("YouTubeOAuthService", () => {
         items: [],
       });
     });
-    const service = new YouTubeOAuthService(pool, config, fetcher as unknown as typeof fetch);
-    await pool.query("DELETE FROM youtube_oauth_credentials");
+    const service = new YouTubeOAuthService(credentials, config, fetcher);
+    await credentials.deleteCredential(userId);
     await service.exchangeCode(userId, "authorization-code");
 
     await expect(service.listPlaylistItems(userId, "PL-owned")).rejects.toThrow(
@@ -365,8 +360,8 @@ describe("YouTubeOAuthService", () => {
       )
       .mockResolvedValueOnce(jsonResponse({ items: [{ snippet: { title: "Mafia Host" } }] }))
       .mockResolvedValueOnce(new Response(null, { status: 200 }));
-    const service = new YouTubeOAuthService(pool, config, fetcher as unknown as typeof fetch);
-    await pool.query("DELETE FROM youtube_oauth_credentials");
+    const service = new YouTubeOAuthService(credentials, config, fetcher);
+    await credentials.deleteCredential(userId);
     await service.exchangeCode(userId, "authorization-code");
 
     await service.disconnect(userId);

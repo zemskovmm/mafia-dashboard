@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { advanceSetupPhase, createGame } from "@mafia/game-domain";
 import {
   createGameLogEntry,
+  createInitialGameBaseline,
   type CanonicalGameEventDraft,
   type GameLogEntry,
   type InitialGameBaseline,
@@ -34,7 +35,11 @@ const completedSetup = (): SetupState => {
   return completeRoleDraw(setup);
 };
 
-const dayOne = (): GameState => advanceSetupPhase(advanceSetupPhase(createGame(completedSetup())));
+const dayOne = (): GameState => {
+  let game = createGame(completedSetup());
+  while (game.phase !== "day") game = advanceSetupPhase(game);
+  return game;
+};
 const gameId = "00000000-0000-4000-8000-000000000991";
 const eventId = (sequence: number) =>
   `00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`;
@@ -56,7 +61,7 @@ const append = (
   });
 
 const fixture = () => {
-  const baseline: InitialGameBaseline = { replayVersion: 1, game: dayOne() };
+  const baseline: InitialGameBaseline = createInitialGameBaseline(dayOne());
   const root = append(baseline.game, 1, null, {
     type: "game.checkpointed",
     payload: {},
@@ -81,19 +86,16 @@ const fixture = () => {
 };
 
 describe("active game history", () => {
-  it("rejects a branch that crosses rules edition or replay version before projecting it", () => {
-    const old = fixture().root.entry;
-    const federation = createFederationSampleGameHistory();
-    const last = federation.activeEntries.at(-1)!;
-    const crossed = { ...last, parentEventId: old.id, id: "crossed", gameId: old.gameId };
-    expect(() => getActiveBranch([old, crossed], crossed.id)).toThrow(/edition|version/i);
-    const mismatchedEdition = {
-      ...federation.activeEntries[0]!,
-      rulesEdition: undefined,
-      id: "edition-mismatch",
-    } as unknown as GameLogEntry;
-    const head = { ...last, id: "edition-head", parentEventId: mismatchedEdition.id };
-    expect(() => getActiveBranch([mismatchedEdition, head], head.id)).toThrow(/edition|version/i);
+  it("refuses noncurrent shape and removed engine metadata even on a one-entry branch", () => {
+    const entry = fixture().root.entry;
+    for (const changes of [
+      { replayVersion: 1 },
+      { replayVersion: 2 },
+      { rulesEdition: "mafgame-2026-07-01" },
+    ]) {
+      const invalid = { ...entry, ...changes } as unknown as GameLogEntry;
+      expect(() => getActiveBranch([invalid], invalid.id)).toThrow();
+    }
   });
 
   it("restores accepted federation prefixes and reviewed counts rather than the final screen", () => {

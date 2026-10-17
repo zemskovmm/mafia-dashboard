@@ -14,6 +14,7 @@ import {
   CASPER_SEAT,
   CASPER_NAME,
   advanceSetupPhase,
+  adjudicateOpponentVictory,
   beginNight,
   completeMafiaShots,
   resolveMafiaShots,
@@ -23,17 +24,12 @@ import {
 } from "@mafia/game-domain";
 import type { GameState, PlayerInput } from "@mafia/game-domain";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+
 import { buildApp } from "./app.js";
 import { DEFAULT_CLUB_ID } from "./club-store.js";
-import { initializeSchema } from "./initialize-schema.js";
-import { PlayerStore } from "./player-store.js";
+import { AzurePlayerStore } from "./azure-club-player-store.js";
 
-const databaseUrl =
-  process.env.TEST_DATABASE_URL ?? "postgresql://mafia@127.0.0.1:54329/mafia_test";
-const schemaName = `casper_persistence_${randomUUID().replaceAll("-", "")}`;
-const schemaPool = new Pool({ connectionString: databaseUrl });
-const pool = new Pool({ connectionString: databaseUrl, options: `-c search_path=${schemaName}` });
+import { createApplicationStorageFixture } from "./test-helpers/storage-fixture.js";
 const owner = {
   id: "00000000-0000-4000-8000-000000000001",
   email: "owner@mafiamalaga.es",
@@ -41,7 +37,8 @@ const owner = {
   picture: null,
 };
 let app: Awaited<ReturnType<typeof buildApp>>;
-const playerStore = new PlayerStore(pool);
+let fixture: Awaited<ReturnType<typeof createApplicationStorageFixture>>;
+let playerStore: AzurePlayerStore;
 
 const headers = (clubId = DEFAULT_CLUB_ID) => ({ "x-club-id": clubId });
 const read = async (gameId: string, clubId = DEFAULT_CLUB_ID) =>
@@ -59,13 +56,27 @@ const save = async (
     headers: headers(clubId),
     payload: { kind: "snapshot", name: "Casper game", mutationId, state, results },
   });
+const projectionRows = (kind: "participant" | "result", gameId: string) =>
+  fixture.storage.read((tx) =>
+    tx.list<{ playerId: string; seat?: number; isHost: boolean }>(
+      `club:${DEFAULT_CLUB_ID}:${kind}:${gameId}:`,
+    ),
+  );
 const rows = async (table: "game_session_players" | "game_player_results", gameId: string) =>
-  (
-    await pool.query<{ player_id: string; seat: number | null; is_host?: boolean }>(
-      `SELECT player_id, seat${table === "game_session_players" ? ", is_host" : ""} FROM ${table} WHERE club_id = $1 AND game_id = $2 ORDER BY seat NULLS FIRST`,
-      [DEFAULT_CLUB_ID, gameId],
-    )
-  ).rows;
+  (await projectionRows(table === "game_session_players" ? "participant" : "result", gameId))
+    .filter((row) => table === "game_session_players" || !row.isHost)
+    .sort((a, b) => (a.seat ?? 0) - (b.seat ?? 0))
+    .map((row) => ({
+      player_id: row.playerId,
+      seat: row.seat ?? null,
+      ...(table === "game_session_players" ? { is_host: row.isHost } : {}),
+    }));
+
+const openDay = (baseline: GameState): GameState => {
+  let game = baseline;
+  while (game.phase !== "day") game = advanceSetupPhase(game);
+  return game;
+};
 
 const createRoster = async (firstHumanName?: string) => {
   const host = await playerStore.create({
@@ -75,9 +86,12 @@ const createRoster = async (firstHumanName?: string) => {
     lastName: null,
     email: null,
   });
-  const humans = await Promise.all(
-    Array.from({ length: 9 }, (_, index) =>
-      playerStore.create({
+  const humans: Awaited<ReturnType<AzurePlayerStore["create"]>>[] = [];
+  // Roster preparation is not the concurrent-publication test. Do not exhaust
+  // the bounded shared-partition CAS retries with nine simultaneous seeds.
+  for (let index = 0; index < 9; index += 1)
+    humans.push(
+      await playerStore.create({
         nickname:
           index === 0 && firstHumanName ? firstHumanName : `Human ${index + 1} ${randomUUID()}`,
         consent: false,
@@ -85,8 +99,7 @@ const createRoster = async (firstHumanName?: string) => {
         lastName: null,
         email: null,
       }),
-    ),
-  );
+    );
   const inputs: PlayerInput[] = [
     ...humans.map(({ id }, index) => ({ id, seat: index + 1 })),
     { id: CASPER_PLAYER_ID, seat: CASPER_SEAT },
@@ -98,10 +111,10 @@ const createRoster = async (firstHumanName?: string) => {
 };
 
 beforeAll(async () => {
-  await schemaPool.query(`CREATE SCHEMA ${schemaName}`);
-  await initializeSchema(pool);
+  fixture = await createApplicationStorageFixture(owner);
+  playerStore = new AzurePlayerStore(fixture.storage);
   app = await buildApp({
-    pool,
+    stores: fixture.stores,
     defaultClubId: DEFAULT_CLUB_ID,
     authenticateRequest: async () => owner,
   });
@@ -109,9 +122,7 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await app?.close();
-  await pool.end();
-  await schemaPool.query(`DROP SCHEMA IF EXISTS ${schemaName} CASCADE`);
-  await schemaPool.end();
+  await fixture?.close();
 });
 
 // Fixed dynamic import avoids pulling a web source file into the server TypeScript rootDir.
@@ -144,11 +155,11 @@ describe("Casper browser snapshot persistence", () => {
     });
     expect(created.statusCode, created.body).toBe(201);
     const gameId = created.json().gameId as string;
-    expect(baseline.skipCasperBestMove).toBe(true);
-    let game = beginNight(advanceSetupPhase(advanceSetupPhase(baseline)));
+    expect(baseline.phase).toBe("mafia-planning");
+    let game = beginNight(openDay(baseline));
     game = toggleAllMafiaShotsForTarget(game, CASPER_SEAT);
     game = skipSheriffCheck(skipDonCheck(completeMafiaShots(resolveMafiaShots(game).game)));
-    const initialGame = { replayVersion: 1 as const, game };
+    const initialGame = { replayVersion: 3 as const, game };
     const root = createGameLogEntry({
       gameId,
       id: randomUUID(),
@@ -170,7 +181,6 @@ describe("Casper browser snapshot persistence", () => {
     expect(speech.after).toMatchObject({
       phase: "goodbye-speech",
       goodbyeSeats: [CASPER_SEAT],
-      skipCasperBestMove: true,
     });
     expect(speech.after.bestMove).toBeUndefined();
     const state = {
@@ -216,21 +226,30 @@ describe("Casper browser snapshot persistence", () => {
       hostPlayerId: host.id,
       setup: { players: baseline.players.map(({ id, seat }) => ({ id, seat })) },
       game: baseline,
-      initialGame: { replayVersion: 1, game: baseline },
+      initialGame: { replayVersion: 3, game: baseline },
       events: [entry],
     };
     const active = await save(gameId, state);
     expect(active.statusCode, active.body).toBe(200);
     expect((await read(gameId)).json().session.state).toEqual(state);
     expect(
-      replayGameLog(state.initialGame as { replayVersion: 1; game: GameState }, [entry], gameId)
+      replayGameLog(state.initialGame as { replayVersion: 3; game: GameState }, [entry], gameId)
         .game,
     ).toEqual(baseline);
     expect(await rows("game_session_players", gameId)).toEqual([
       { player_id: host.id, seat: null, is_host: true },
       ...humans.map(({ id }, index) => ({ player_id: id, seat: index + 1, is_host: false })),
     ]);
-    const finished: GameState = { ...baseline, day: 1, phase: "finished", winner: "red" };
+    const finished: GameState = JSON.parse(
+      JSON.stringify(
+        adjudicateOpponentVictory(openDay(baseline), {
+          losingTeam: "black",
+          rule: "6.3.1",
+          reason: "Recorded current referee ruling",
+          committeeApproved: false,
+        }),
+      ),
+    );
     const results = (await getResultsBuilder())(
       finished,
       new Date("2026-09-26T12:00:00.000Z"),
@@ -258,7 +277,7 @@ describe("Casper browser snapshot persistence", () => {
     const completedState = {
       ...state,
       game: finished,
-      initialGame: { replayVersion: 1 as const, game: finished },
+      initialGame: { replayVersion: 3 as const, game: finished },
       events: [checkpoint, completion],
       headEventId: completion.id,
     };
@@ -277,24 +296,20 @@ describe("Casper browser snapshot persistence", () => {
       finished,
     );
     expect(
-      (
-        await pool.query(
-          "SELECT event_type, payload FROM game_events WHERE game_id = $1 ORDER BY sequence",
-          [gameId],
-        )
-      ).rows,
+      (await fixture.stores.events.read(gameId, { includeSecrets: true }, DEFAULT_CLUB_ID)).map(
+        ({ type, payload }) => ({ type, payload }),
+      ),
     ).toEqual([
-      { event_type: "game.checkpointed", payload: {} },
-      { event_type: "game.completed", payload: { winner: "red" } },
+      { type: "game.checkpointed", payload: {} },
+      { type: "game.completed", payload: { winner: "red" } },
     ]);
     expect(persisted.results.players).toHaveLength(10);
     const projected = await rows("game_player_results", gameId);
     expect(projected).toEqual(humans.map(({ id }, index) => ({ player_id: id, seat: index + 1 })));
     expect((await playerStore.get(humans[0]!.id))?.nickname).toBe(CASPER_NAME);
-    expect(
-      (await pool.query("SELECT host_player_id FROM game_results WHERE game_id = $1", [gameId]))
-        .rows,
-    ).toEqual([{ host_player_id: host.id }]);
+    expect((await projectionRows("result", gameId)).filter((row) => row.isHost)).toMatchObject([
+      { playerId: host.id },
+    ]);
     const history = await app.inject({
       method: "GET",
       url: `/api/game-sessions?status=completed&playerId=${humans[0]!.id}&outcome=red`,
@@ -328,10 +343,10 @@ describe("Casper browser snapshot persistence", () => {
     expect((await read(gameId)).json().session.results).toEqual(results);
     // The aggregate retains authoritative results/replay even if a historical
     // derived result row is missing. Empty filters must not hide that game.
-    await pool.query("DELETE FROM game_results WHERE club_id = $1 AND game_id = $2", [
-      DEFAULT_CLUB_ID,
-      gameId,
-    ]);
+    await fixture.storage.mutate(async (tx) => {
+      for (const row of await tx.list(`club:${DEFAULT_CLUB_ID}:result:${gameId}:`))
+        await tx.delete(row.rowKey);
+    });
     const afterProjectionLoss = (await read(gameId)).json().session;
     expect(afterProjectionLoss.status).toBe("completed");
     expect(afterProjectionLoss.results).toEqual(results);
@@ -406,33 +421,52 @@ describe("Casper browser snapshot persistence", () => {
         players.map((p) => (p.seat === 1 ? { ...p, playerId: CASPER_PLAYER_ID } : p)),
     ],
     ["incomplete roster", (players: Record<string, unknown>[]) => players.slice(1)],
-  ])("does not project results for Casper with %s", async (label, alter) => {
-    const { host, baseline } = await createRoster();
-    const created = await app.inject({
-      method: "POST",
-      url: "/api/game-sessions",
-      headers: headers(),
-      payload: { creationId: randomUUID(), name: "Invalid results", state: {}, results: null },
-    });
-    expect(created.statusCode, created.body).toBe(201);
-    const gameId = created.json().gameId as string;
-    const finished: GameState = { ...baseline, day: 1, phase: "finished", winner: "red" };
-    const valid = (await getResultsBuilder())(
-      finished,
-      new Date("2026-09-26T12:00:00.000Z"),
-      host.id,
-    )!;
-    const results = { ...valid, players: alter(valid.players as Record<string, unknown>[]) };
-    const saved = await save(gameId, { hostPlayerId: host.id, game: finished }, results);
-    const invalidIdentity = label === "wrong seat" || label === "duplicate synthetic ID";
-    expect(saved.statusCode, saved.body).toBe(invalidIdentity ? 400 : 200);
-    expect((await read(gameId)).json().session.results).toEqual(invalidIdentity ? null : results);
-    expect(await rows("game_player_results", gameId)).toEqual([]);
-    expect(
-      (await pool.query("SELECT * FROM game_results WHERE game_id = $1", [gameId])).rows,
-    ).toEqual([]);
-    expect((await playerStore.get(host.id))?.statistics.hostedGames).toBe(0);
-  });
+  ])(
+    "rejects malformed Casper identity but retains independent human results for %s",
+    async (label, alter) => {
+      const { host, baseline } = await createRoster();
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/game-sessions",
+        headers: headers(),
+        payload: { creationId: randomUUID(), name: "Invalid results", state: {}, results: null },
+      });
+      expect(created.statusCode, created.body).toBe(201);
+      const gameId = created.json().gameId as string;
+      const finished: GameState = JSON.parse(
+        JSON.stringify(
+          adjudicateOpponentVictory(openDay(baseline), {
+            losingTeam: "black",
+            rule: "6.3.1",
+            reason: "Recorded current referee ruling",
+            committeeApproved: false,
+          }),
+        ),
+      );
+      const valid = (await getResultsBuilder())(
+        finished,
+        new Date("2026-09-26T12:00:00.000Z"),
+        host.id,
+      )!;
+      const results = { ...valid, players: alter(valid.players as Record<string, unknown>[]) };
+      const saved = await save(gameId, { hostPlayerId: host.id, game: finished }, results);
+      const invalidIdentity = label === "wrong seat" || label === "duplicate synthetic ID";
+      expect(saved.statusCode, saved.body).toBe(invalidIdentity ? 400 : 200);
+      expect((await read(gameId)).json().session.results).toEqual(invalidIdentity ? null : results);
+      const humanCount = (results.players as Record<string, unknown>[]).filter(
+        (p) => p.playerId !== CASPER_PLAYER_ID,
+      ).length;
+      expect(await rows("game_player_results", gameId)).toHaveLength(
+        invalidIdentity ? 0 : humanCount,
+      );
+      expect(await projectionRows("result", gameId)).toHaveLength(
+        invalidIdentity ? 0 : humanCount + 1,
+      );
+      expect((await playerStore.get(host.id))?.statistics.hostedGames).toBe(
+        invalidIdentity ? 0 : 1,
+      );
+    },
+  );
 
   it.each([
     [
@@ -456,33 +490,44 @@ describe("Casper browser snapshot persistence", () => {
         players.map((p) => (p.seat === 1 ? { ...p, id: CASPER_PLAYER_ID } : p)),
     ],
     ["incomplete roster", (players: GameState["players"]) => players.slice(1)],
-  ])("does not project active seats for Casper with %s", async (label, alter) => {
-    const { host, baseline } = await createRoster();
-    const created = await app.inject({
-      method: "POST",
-      url: "/api/game-sessions",
-      headers: headers(),
-      payload: { creationId: randomUUID(), name: "Invalid state", state: {}, results: null },
-    });
-    expect(created.statusCode, created.body).toBe(201);
-    const gameId = created.json().gameId as string;
-    const state = {
-      hostPlayerId: host.id,
-      game: { ...baseline, players: alter(baseline.players) },
-    };
-    const saved = await save(gameId, state);
-    const invalidIdentity = label === "wrong seat" || label === "duplicate synthetic ID";
-    expect(saved.statusCode, saved.body).toBe(invalidIdentity ? 400 : 200);
-    expect((await read(gameId)).json().session.state).toEqual(invalidIdentity ? {} : state);
-    expect(await rows("game_session_players", gameId)).toEqual([]);
-  });
+  ])(
+    "rejects malformed Casper identity but retains known human active pointers for %s",
+    async (label, alter) => {
+      const { host, baseline } = await createRoster();
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/game-sessions",
+        headers: headers(),
+        payload: { creationId: randomUUID(), name: "Invalid state", state: {}, results: null },
+      });
+      expect(created.statusCode, created.body).toBe(201);
+      const gameId = created.json().gameId as string;
+      const state = {
+        hostPlayerId: host.id,
+        game: { ...baseline, players: alter(baseline.players) },
+      };
+      const saved = await save(gameId, state);
+      const invalidIdentity = label === "wrong seat" || label === "duplicate synthetic ID";
+      expect(saved.statusCode, saved.body).toBe(invalidIdentity ? 400 : 200);
+      expect((await read(gameId)).json().session.state).toEqual(invalidIdentity ? {} : state);
+      expect(await rows("game_session_players", gameId)).toHaveLength(
+        invalidIdentity
+          ? 0
+          : state.game.players.filter((p) => p.id !== CASPER_PLAYER_ID).length + 1,
+      );
+    },
+  );
 
   it("does not let a synthetic host, unknown human or foreign-club human enter either projection", async () => {
     const { host, baseline } = await createRoster();
     const foreignClub = randomUUID();
-    await pool.query(
-      "INSERT INTO clubs (id, name, city, created_by) VALUES ($1, 'Other', 'Málaga', $2)",
-      [foreignClub, owner.id],
+    await fixture.storage.mutate((tx) =>
+      tx.set(`club:${foreignClub}:meta`, {
+        id: foreignClub,
+        name: "Other",
+        city: "Málaga",
+        createdBy: owner.id,
+      }),
     );
     const foreign = await playerStore.create(
       {
@@ -494,7 +539,16 @@ describe("Casper browser snapshot persistence", () => {
       },
       foreignClub,
     );
-    const finished: GameState = { ...baseline, day: 1, phase: "finished", winner: "red" };
+    const finished: GameState = JSON.parse(
+      JSON.stringify(
+        adjudicateOpponentVictory(openDay(baseline), {
+          losingTeam: "black",
+          rule: "6.3.1",
+          reason: "Recorded current referee ruling",
+          committeeApproved: false,
+        }),
+      ),
+    );
     const valid = (await getResultsBuilder())(
       finished,
       new Date("2026-09-26T12:00:00.000Z"),
@@ -534,9 +588,7 @@ describe("Casper browser snapshot persistence", () => {
       });
       expect(await rows("game_session_players", gameId)).toEqual([]);
       expect(await rows("game_player_results", gameId)).toEqual([]);
-      expect(
-        (await pool.query("SELECT * FROM game_results WHERE game_id = $1", [gameId])).rows,
-      ).toEqual([]);
+      expect(await projectionRows("result", gameId)).toEqual([]);
       expect((await read(gameId, foreignClub)).statusCode).toBe(403);
     }
   });

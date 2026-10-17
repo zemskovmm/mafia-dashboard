@@ -1,5 +1,4 @@
 import {
-  isFederationGame,
   isSecretGameEventType,
   isTerminalGamePhase,
   type GameState,
@@ -148,7 +147,7 @@ const regionForState = (game: GameState, text: TimelineText): RegionIdentity | n
     return {
       id: "initial-night",
       kind: "initial-night",
-      label: text.t(isFederationGame(game) ? "Night 1 · Mafia planning" : "Initial night"),
+      label: text.t("Night 1 · Mafia planning"),
       color: TIMELINE_REGION_COLORS.initialNight,
       day: 0,
     };
@@ -159,7 +158,7 @@ const regionForState = (game: GameState, text: TimelineText): RegionIdentity | n
     return {
       id: `night-${game.day}`,
       kind: "night",
-      label: text.t("Night {day}", { day: game.day + (isFederationGame(game) ? 1 : 0) }),
+      label: text.t("Night {day}", { day: game.day + 1 }),
       color: TIMELINE_REGION_COLORS.night,
       day: game.day,
     };
@@ -176,9 +175,9 @@ const regionForState = (game: GameState, text: TimelineText): RegionIdentity | n
       id: `voting-${game.day}`,
       kind: "voting",
       label:
-        isFederationGame(game) && game.day === 1
+        game.day === 1
           ? text.t("Voting · zero round")
-          : text.t("Voting {day}", { day: game.day - (isFederationGame(game) ? 1 : 0) }),
+          : text.t("Voting {day}", { day: game.day - 1 }),
       color: TIMELINE_REGION_COLORS.voting,
       day: game.day,
     };
@@ -186,10 +185,7 @@ const regionForState = (game: GameState, text: TimelineText): RegionIdentity | n
   return {
     id: `day-${game.day}`,
     kind: "day",
-    label:
-      isFederationGame(game) && game.day === 1
-        ? text.t("Zero round")
-        : text.t("Day {day}", { day: game.day - (isFederationGame(game) ? 1 : 0) }),
+    label: game.day === 1 ? text.t("Zero round") : text.t("Day {day}", { day: game.day - 1 }),
     color: TIMELINE_REGION_COLORS.day,
     day: game.day,
   };
@@ -210,7 +206,7 @@ const regionForFrame = (frame: ReplayFrame, text: TimelineText): RegionIdentity 
     return {
       id: `night-${day}`,
       kind: "night",
-      label: text.t("Night {day}", { day: day + (isFederationGame(frame.before) ? 1 : 0) }),
+      label: text.t("Night {day}", { day: day + 1 }),
       color: TIMELINE_REGION_COLORS.night,
       day,
     };
@@ -223,7 +219,7 @@ const asRecord = (value: unknown): Readonly<Record<string, unknown>> | null =>
     ? (value as Readonly<Record<string, unknown>>)
     : null;
 
-const hiddenPhaseTargets = new Set(["sheriff-wake", "night-don", "night-sheriff", "best-move"]);
+const hiddenPhaseTargets = new Set(["night-don", "night-sheriff", "best-move"]);
 
 const phaseMessageKeys = {
   "mafia-planning": "Phase mafia planning",
@@ -231,7 +227,7 @@ const phaseMessageKeys = {
   "don-identification": "Phase don identification",
   "sheriff-identification": "Phase sheriff identification",
   "free-seating": "Phase free seating",
-  "sheriff-wake": "Phase sheriff wake",
+
   day: "Phase day",
   voting: "Phase voting",
   "voting-cancelled": "Phase voting cancelled",
@@ -404,14 +400,7 @@ const describeMarker = (frame: ReplayFrame, text: TimelineText): MarkerDescripti
         result: typeof result.kind === "string" ? result.kind : "unknown",
       };
     }
-    case "voting.skipped":
-      return {
-        kind: "voting-cancelled",
-        icon: "ban",
-        label: text.t("Voting skipped"),
-        ariaLabel: text.t("Voting skipped by the host"),
-        result: "host-skipped",
-      };
+
     case "car-crash.resolved":
     case "car-crash.ballot-resolved":
     case "car-crash.count-completed": {
@@ -560,46 +549,7 @@ const describeMarker = (frame: ReplayFrame, text: TimelineText): MarkerDescripti
             ariaLabel: text.t("Foul {number}: {player}", { number: foulNumber, player }),
           };
     }
-    case "player.red-carded": {
-      if (integer(payload.seat) === null) return genericDescription(eventType, text);
-      const player = playerLabel(frame, payload.seat, text);
-      return {
-        kind: "red-card",
-        icon: "badge-x",
-        label: text.t("{player} red-carded", { player }),
-        ariaLabel: text.t("Red card: {player}", { player }),
-      };
-    }
-    case "best-move.completed": {
-      const playerSeat = integer(payload.playerSeat);
-      const selectedSeats = Array.isArray(payload.selectedSeats) ? payload.selectedSeats : null;
-      const mafiaHits = integer(payload.mafiaHits);
-      if (
-        playerSeat === null ||
-        selectedSeats === null ||
-        selectedSeats.some((seat) => integer(seat) === null) ||
-        mafiaHits === null
-      ) {
-        return genericDescription(eventType, text);
-      }
-      const owner = playerLabel(frame, playerSeat, text);
-      const selections = text.formatList(
-        selectedSeats.map((seat) => playerLabel(frame, seat, text)),
-      );
-      const hits = text.t("Mafia hits", { count: mafiaHits });
-      const label = text.t("Best move: {hits}", { hits });
-      return {
-        kind: "best-move",
-        icon: "lightbulb",
-        label,
-        ariaLabel: text.t("Best move by {owner}: {selections}; {hits}", {
-          owner,
-          selections,
-          hits,
-        }),
-        result: String(mafiaHits),
-      };
-    }
+
     case "game.completed": {
       const team =
         payload.winner === "red" ? "Red team" : payload.winner === "black" ? "Black team" : null;

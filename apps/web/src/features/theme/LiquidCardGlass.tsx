@@ -140,9 +140,6 @@ export const LiquidCardGlass = () => {
         if (animation === nextAnimation) animation = null;
       };
     };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (!event.repeat && (event.key === "Enter" || event.key === " ")) sweep();
-    };
     let voted = host.classList.contains("is-voted");
     const stateObserver = new view.MutationObserver(() => {
       const nextVoted = host.classList.contains("is-voted");
@@ -154,8 +151,6 @@ export const LiquidCardGlass = () => {
     stateObserver.observe(host, { attributes: true, attributeFilter: ["class"] });
     host.addEventListener("pointerenter", sweep, { passive: true });
     host.addEventListener("pointerdown", sweep, { passive: true });
-    host.addEventListener("focusin", sweep);
-    host.addEventListener("keydown", onKeyDown);
     motion?.addEventListener?.("change", cancelSweep);
     transparency?.addEventListener?.("change", cancelSweep);
     return () => {
@@ -163,8 +158,6 @@ export const LiquidCardGlass = () => {
       stateObserver.disconnect();
       host.removeEventListener("pointerenter", sweep);
       host.removeEventListener("pointerdown", sweep);
-      host.removeEventListener("focusin", sweep);
-      host.removeEventListener("keydown", onKeyDown);
       motion?.removeEventListener?.("change", cancelSweep);
       transparency?.removeEventListener?.("change", cancelSweep);
     };

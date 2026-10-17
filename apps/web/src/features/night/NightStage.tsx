@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import {
   completeMafiaShots,
   completeNight,
@@ -6,7 +6,6 @@ import {
   continueSheriffCheck,
   getMafiaShotResult,
   isNightCheckEligible,
-  isFederationGame,
   prepareBestMove,
   performDonCheck,
   performSheriffCheck,
@@ -34,10 +33,7 @@ interface NightStageProps {
   readonly hostName?: string;
   // The parent may supply the daytime toggle, but every NightStage phase is exempt.
   readonly privacyHidden?: boolean;
-  readonly onSeatSwipe?: (seat: number) => void;
   readonly onSeatPenalty?: (seat: number) => void;
-  readonly swipeAction?: ReactNode;
-  readonly onDismissSwipeAction?: () => void;
 }
 
 export const NightStage = ({
@@ -46,17 +42,14 @@ export const NightStage = ({
   onEvent,
   onAcceptedEvent,
   hostName,
-  onSeatSwipe,
   onSeatPenalty,
-  swipeAction,
-  onDismissSwipeAction,
 }: NightStageProps) => {
   const { t } = useMessages(nightMessages);
   const displayName = usePlayerDisplayName();
   const tableHostName = hostName ?? t("night.host");
   // Scope the transient mode to this shooting night; retained facts live in the domain.
   const [observationNight, setObservationNight] = useState<number | null>(null);
-  const observingShots = isFederationGame(game) && observationNight === game.day;
+  const observingShots = observationNight === game.day;
   const activePlayers = game.players.filter(({ status }) => status === "active");
   const donEligible = isNightCheckEligible(game, "don");
   const sheriffEligible = isNightCheckEligible(game, "sheriff");
@@ -103,10 +96,7 @@ export const NightStage = ({
       <GameTable
         hostName={tableHostName}
         privacyHidden={false}
-        onSeatSwipe={onSeatSwipe}
         onSeatPenalty={onSeatPenalty}
-        swipeAction={swipeAction}
-        onDismissSwipeAction={onDismissSwipeAction}
         seats={game.players.map((player) => ({
           ...player,
           name: displayName(player),
@@ -181,12 +171,12 @@ export const NightStage = ({
                 shooters: shooters.length,
               })}
             </strong>
-            {isFederationGame(game) ? (
+            {
               <NightShootingObservation
                 active={observingShots}
                 onToggle={() => setObservationNight(observingShots ? null : game.day)}
               />
-            ) : null}
+            }
           </div>
         }
         advance={
@@ -223,9 +213,6 @@ export const NightStage = ({
         onSeatPenalty={onSeatPenalty}
         hostName={tableHostName}
         privacyHidden={false}
-        onSeatSwipe={onSeatSwipe}
-        swipeAction={swipeAction}
-        onDismissSwipeAction={onDismissSwipeAction}
         seats={game.players.map((player) => ({
           ...player,
           name: displayName(player),
@@ -241,7 +228,6 @@ export const NightStage = ({
           <button
             type="button"
             disabled={
-              isFederationGame(game) &&
               !!game.disciplinaryRemovals?.some(
                 (r) =>
                   ["shooting-count", "after-shooting-result"].includes(r.stage) &&
@@ -273,8 +259,6 @@ export const NightStage = ({
         onSeatPenalty={onSeatPenalty}
         hostName={tableHostName}
         privacyHidden={false}
-        onSeatSwipe={donEligible ? onSeatSwipe : undefined}
-        swipeAction={donEligible ? swipeAction : undefined}
         seats={game.players.map((player) => ({
           ...player,
           name: displayName(player),
@@ -317,7 +301,6 @@ export const NightStage = ({
                 type="button"
                 className="table-advance-secondary"
                 disabled={
-                  isFederationGame(game) &&
                   !!game.disciplinaryRemovals?.some(
                     (r) => r.stage === "don-check" && r.checkCompletionPending,
                   )
@@ -332,7 +315,6 @@ export const NightStage = ({
               type="button"
               className="table-advance-secondary"
               disabled={
-                isFederationGame(game) &&
                 !!game.disciplinaryRemovals?.some(
                   (r) => r.stage === "don-check" && r.checkCompletionPending,
                 )
@@ -354,9 +336,6 @@ export const NightStage = ({
         onSeatPenalty={onSeatPenalty}
         hostName={tableHostName}
         privacyHidden={false}
-        onSeatSwipe={onSeatSwipe}
-        swipeAction={swipeAction}
-        onDismissSwipeAction={onDismissSwipeAction}
         seats={game.players.map((player) => ({
           ...player,
           name: displayName(player),
@@ -403,8 +382,6 @@ export const NightStage = ({
         onSeatPenalty={onSeatPenalty}
         hostName={tableHostName}
         privacyHidden={false}
-        onSeatSwipe={sheriffEligible ? onSeatSwipe : undefined}
-        swipeAction={sheriffEligible ? swipeAction : undefined}
         seats={game.players.map((player) => ({
           ...player,
           name: displayName(player),
@@ -447,7 +424,6 @@ export const NightStage = ({
                 type="button"
                 className="table-advance-secondary"
                 disabled={
-                  isFederationGame(game) &&
                   !!game.disciplinaryRemovals?.some(
                     (r) => r.stage === "sheriff-check" && r.checkCompletionPending,
                   )
@@ -462,7 +438,6 @@ export const NightStage = ({
               type="button"
               className="table-advance-secondary"
               disabled={
-                isFederationGame(game) &&
                 !!game.disciplinaryRemovals?.some(
                   (r) => r.stage === "sheriff-check" && r.checkCompletionPending,
                 )
@@ -484,9 +459,6 @@ export const NightStage = ({
         onSeatPenalty={onSeatPenalty}
         hostName={tableHostName}
         privacyHidden={false}
-        onSeatSwipe={onSeatSwipe}
-        swipeAction={swipeAction}
-        onDismissSwipeAction={onDismissSwipeAction}
         seats={game.players.map((player) => ({
           ...player,
           name: displayName(player),
@@ -544,14 +516,11 @@ export const NightStage = ({
         onSeatPenalty={onSeatPenalty}
         hostName={tableHostName}
         privacyHidden={false}
-        onSeatSwipe={onSeatSwipe}
-        swipeAction={swipeAction}
-        onDismissSwipeAction={onDismissSwipeAction}
         seats={game.players.map((player) => ({ ...player, name: displayName(player) }))}
         center={
           <div className="table-check-center">
             <span className="table-prompt">{t("night.stageComplete")}</span>
-            {isFederationGame(game) && game.bestMove?.completionReason ? (
+            {game.bestMove?.completionReason ? (
               <FederationBestMoveTranscript
                 game={game}
                 onGameChange={onGameChange}
@@ -567,10 +536,7 @@ export const NightStage = ({
         advance={
           <button
             type="button"
-            disabled={
-              isFederationGame(game) &&
-              !!game.disciplinaryRemovals?.some((r) => r.announcement === "pending")
-            }
+            disabled={!!game.disciplinaryRemovals?.some((r) => r.announcement === "pending")}
             onClick={() => {
               const next = completeNight(game);
               if (onAcceptedEvent !== undefined) {
@@ -588,13 +554,11 @@ export const NightStage = ({
               }
             }}
           >
-            {isFederationGame(game)
-              ? t(
-                  prepareBestMove(game).phase === "best-move"
-                    ? "night.recordBestMove"
-                    : "night.announceMorning",
-                )
-              : t("night.beginDay", { day: game.day + 1 })}
+            {t(
+              prepareBestMove(game).phase === "best-move"
+                ? "night.recordBestMove"
+                : "night.announceMorning",
+            )}
           </button>
         }
       />

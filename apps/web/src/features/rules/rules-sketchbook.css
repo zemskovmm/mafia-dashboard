@@ -74,11 +74,6 @@ body.rules-sketchbook-open {
   opacity: 0.24;
   cursor: default;
 }
-.rules-sketchbook button:focus-visible,
-.rules-sketchbook [tabindex]:focus-visible {
-  outline: 2px solid var(--rs-red);
-  outline-offset: -5px;
-}
 .rules-sketchbook svg {
   fill: none;
   stroke: currentColor;
@@ -131,8 +126,6 @@ body.rules-sketchbook-open {
   height: var(--rs-height);
   border-radius: 4px 10px 10px 4px;
   cursor: grab;
-  user-select: none;
-  -webkit-user-select: none;
 }
 .rs-leaf {
   position: relative;
@@ -371,10 +364,6 @@ body.rules-sketchbook-open {
   color: #fff6e9;
   background: #ffffff20;
 }
-.rules-sketchbook .rs-close:focus-visible {
-  outline-color: #e9c17c;
-  outline-offset: 3px;
-}
 .rules-sketchbook .rs-bookmark {
   position: absolute;
   right: 44px;
@@ -420,10 +409,6 @@ body.rules-sketchbook-open {
 .rules-sketchbook .rs-bookmark[aria-current="page"] {
   height: 102px;
   color: #fff1ce;
-}
-.rules-sketchbook .rs-bookmark:focus-visible {
-  outline-color: #e9c17c;
-  outline-offset: -4px;
 }
 .rs-frontispiece-heading {
   position: absolute;

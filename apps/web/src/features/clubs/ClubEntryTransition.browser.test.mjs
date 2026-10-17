@@ -18,7 +18,9 @@ import { createServer } from "vite";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const repository = join(directory, "../../../../..");
-const evidenceRoot = join(repository, ".AI/reports/club-entry-integration/browser");
+const evidenceRoot =
+  process.env.CLUB_ENTRY_OUTPUT_ROOT ??
+  join(repository, ".AI/reports/club-entry-integration/browser");
 await mkdir(evidenceRoot, { recursive: true });
 const output = await mkdtemp(join(evidenceRoot, "run-"));
 const fancyStuffKey = "mafia-dashboard.fancy-stuff.v1";
@@ -398,15 +400,21 @@ async function burning(page) {
   await page.locator('.club-entry-effect[data-phase="burning"]').waitFor();
   assert.equal(await page.locator(".club-entry-destination .app-shell").count(), 1);
 }
-async function settled(page, focus = true) {
+async function settled(page) {
   await page.locator(".club-entry-source").waitFor({ state: "detached" });
   await page.locator(".club-exit-button").waitFor();
   assert.equal(await page.locator(".club-entry-effect").count(), 0);
   assert.equal(await page.locator(".club-entry-destination").evaluate((node) => node.inert), false);
-  if (focus)
-    await page.waitForFunction(
-      () => document.activeElement === document.querySelector(".club-exit-button"),
-    );
+  assert.equal(
+    await page.locator(".club-entry-destination [tabindex='-1']").count(),
+    0,
+    "Entry does not add an authored heading/workspace focus target",
+  );
+  assert.equal(
+    await page.locator(".club-exit-button").evaluate((node) => node === document.activeElement),
+    false,
+    "Entry does not force focus onto Exit",
+  );
 }
 async function portalGeometry(page) {
   return page
@@ -694,7 +702,7 @@ for (const [engine, width, height] of [
         await page.getByRole("heading", { name: englishSlogan, exact: true }).waitFor();
         await observed.dispose();
         row.checks.push(
-          `${activation}: original DOM; full contour; independent outer growth/inner shrink; stable card; decoded-pixel controls;352/384ms consumption;1792/2000ms completion; inert/focus/return`,
+          `${activation}: original DOM; full contour; independent outer growth/inner shrink; stable card; decoded-pixel controls;352/384ms consumption;1792/2000ms completion; inertness cleanup and usable return without forced focus`,
         );
       }
       await page.clock.resume();
@@ -804,7 +812,7 @@ scenario(
     await settled(page);
     await capture("workspace");
     row.checks.push(
-      "native Tab/Enter; reduced-motion ordinary navigation; no retained overlay; destination receives focus",
+      "native Tab/Enter; reduced-motion ordinary navigation; no retained overlay or forced destination focus",
     );
   },
 );
@@ -831,7 +839,7 @@ scenario("locale-source-freeze-destination-and-return", {}, async ({ page, row, 
   assert.equal(await page.locator("html").getAttribute("lang"), "en");
   await capture("english-portal-and-document-restored");
   row.checks.push(
-    "outgoing English source frozen; real Russian destination; focus; English portal restored",
+    "outgoing English source frozen; real Russian destination without forced focus; English portal restored",
   );
 });
 
@@ -868,7 +876,9 @@ scenario("real-webgl-context-loss", {}, async ({ page, row, capture }) => {
   assert(row.actualContextLoss, "must actually lose an acquired GPU context");
   await settled(page);
   await capture("ordinary-workspace");
-  row.checks.push("actual WEBGL_lose_context loss; bounded fallback; inert and focus restored");
+  row.checks.push(
+    "actual WEBGL_lose_context loss; bounded fallback; inertness cleaned without forced focus",
+  );
 });
 
 scenario("webgl-unavailable-static-fallback", {}, async ({ page, row, capture }) => {
@@ -1024,7 +1034,7 @@ scenario("missing-web-locks-refused", {}, async ({ page, row, capture }) => {
   row.checks.push("missing native locking API fails closed before any handoff or workspace");
 });
 
-scenario("late-native-lock-readiness-and-eventual-focus", {}, async ({ page, row, capture }) => {
+scenario("late-native-lock-readiness-without-forced-focus", {}, async ({ page, row, capture }) => {
   await picker(page);
   // Hold delivery of the NEXT real lock callback, not app state or a readiness prop.
   // Native locking still owns the transaction until the deferred callback completes.
@@ -1070,9 +1080,9 @@ scenario("late-native-lock-readiness-and-eventual-focus", {}, async ({ page, row
     await gate.evaluate((state) => state.release());
     await page.clock.runFor(32);
     await settled(page);
-    await capture("late-ready-focused-workspace");
+    await capture("late-ready-workspace");
     row.checks.push(
-      "actual native-lock callback held past3000ms; bounded source removal; late workspace readiness receives eventual focus",
+      "actual native-lock callback held past3000ms; bounded source removal; late workspace becomes interactive without forced focus",
     );
   } finally {
     await gate.evaluate((state) => state.release()).catch(() => {});
@@ -1204,16 +1214,23 @@ async function toggleFancyStuff(page, locale, enabled, activation = "mouse") {
     exact: true,
   });
   assert.equal(await changed.getAttribute("aria-pressed"), String(!enabled));
-  assert(await changed.evaluate((node) => node === document.activeElement), "Toggle retains focus");
+  if (activation === "keyboard")
+    assert(
+      await changed.evaluate((node) => node === document.activeElement),
+      "A genuinely keyboard-focused toggle retains native focus",
+    );
   await assertOtherPreferences(page);
   return geometry;
 }
 async function closeFancyStuff(page) {
   await page.keyboard.press("Escape");
-  await page.locator("#dev-menu-drawer").waitFor({ state: "detached" });
-  assert(
-    await page.locator(".dev-toolbar-button").evaluate((node) => node === document.activeElement),
+  assert.equal(
+    await page.locator("#dev-menu-drawer").count(),
+    1,
+    "Non-native drawer ignores the retired Escape shortcut",
   );
+  await page.locator(".dev-toolbar-button").click();
+  await page.locator("#dev-menu-drawer").waitFor({ state: "detached" });
 }
 async function offPortal(page, slogan = englishSlogan) {
   await page.getByRole("heading", { name: slogan, exact: true }).waitFor();
@@ -1317,7 +1334,7 @@ async function directEntry(page, activation, target = openButton(page)) {
     } else if (activation === "touch") await target.tap();
     else await target.click();
     // The animation clock is frozen: readiness may resolve, but no decorative
-    // frame or watchdog may be necessary for OFF entry and focus to complete.
+    // frame or watchdog may be necessary for OFF entry to complete.
     await settled(page);
     const state = await page.locator(".club-entry-destination").evaluate((node) => ({
       clip: getComputedStyle(node).clipPath,
@@ -1353,7 +1370,10 @@ async function pauseEntryClock(page) {
 
 for (const [engine, width, height, locale] of [
   ["chromium", 1366, 768, "en"],
+  ["chromium", 1366, 768, "ru"],
+  ["chromium", 1000, 600, "en"],
   ["chromium", 1000, 600, "ru"],
+  ["webkit", 1366, 1024, "en"],
   ["webkit", 1366, 1024, "ru"],
 ]) {
   scenario(
@@ -1379,6 +1399,33 @@ for (const [engine, width, height, locale] of [
         "Fresh browser defaults ON without a saved preference",
       );
       await page.locator('.club-fire-canvas[data-renderer="webgl"]').waitFor();
+      await page.mouse.move(0, 0);
+      const entry = openButton(page);
+      row.portalFocusBaseline = await entry.evaluate((node) => ({
+        outlineStyle: getComputedStyle(node).outlineStyle,
+        outlineWidth: getComputedStyle(node).outlineWidth,
+      }));
+      await capture("unfocused-entry-no-ring-or-heat");
+      await entry.focus();
+      await page.waitForFunction(
+        () => document.querySelector(".club-fire-canvas")?.dataset.clubFireActive === "0",
+      );
+      row.portalFocus = await entry.evaluate((node) => {
+        const css = getComputedStyle(node);
+        return {
+          outlineStyle: css.outlineStyle,
+          outlineWidth: css.outlineWidth,
+          fireActive: document.querySelector(".club-fire-canvas").dataset.clubFireActive,
+        };
+      });
+      assert.equal(row.portalFocus.outlineStyle, "none");
+      assert.deepEqual(
+        { outlineStyle: row.portalFocus.outlineStyle, outlineWidth: row.portalFocus.outlineWidth },
+        row.portalFocusBaseline,
+        "Native focus adds no painted outline; computed width alone is not decoration",
+      );
+      assert.equal(row.portalFocus.fireActive, "0", "Focus adds no decorative fire heat");
+      await capture("native-focused-entry-no-ring-or-heat");
       await capture("default-on-picker");
       await pauseEntryClock(page);
       const initial = await observeClick(page);
@@ -1413,7 +1460,7 @@ for (const [engine, width, height, locale] of [
         row.offPortal = await offPortal(page, slogan);
         await capture(`${activation}-off-picker`);
         row.directEntries.push(await directEntry(page, activation));
-        await capture(`${activation}-direct-focused-workspace`);
+        await capture(`${activation}-direct-workspace`);
       }
       // Reduced-motion fallback must not resurrect still ember cues while OFF.
       await page.locator(".club-exit-button").click();
@@ -1468,10 +1515,10 @@ for (const [engine, width, height, locale] of [
       await settled(page);
       await assertOtherPreferences(page);
       await restored.dispose();
-      await capture("reenabled-focused-workspace");
+      await capture("reenabled-workspace");
       await page.clock.resume();
       row.checks.push(
-        "OFF removes ambient canvas/static cues/clip/decorative delay; frozen-clock trusted mouse, Tab/Shift+Tab/Enter and touch entry; destination focus; reload persists OFF; real re-enable restores ambient WebGL and actual-DOM 360ms inward/1800ms outward burn; unrelated preferences unchanged",
+        "OFF removes ambient canvas/static cues/clip/decorative delay; frozen-clock trusted mouse, Tab/Shift+Tab/Enter and touch entry without forced destination focus; reload persists OFF; real re-enable restores ambient WebGL and actual-DOM 360ms inward/1800ms outward burn; unrelated preferences unchanged",
       );
     },
   );
@@ -1523,7 +1570,7 @@ scenario("fancy-stuff-preference-only-denied-setitem", {}, async ({ page, row, c
     await offPortal(page);
     row.directEntry = await directEntry(page, "keyboard");
     await assertOtherPreferences(page);
-    await capture("denied-write-direct-focused-workspace");
+    await capture("denied-write-direct-workspace");
     await page.locator(".club-exit-button").click();
     await offPortal(page);
   } finally {
@@ -1538,7 +1585,7 @@ scenario("fancy-stuff-preference-only-denied-setitem", {}, async ({ page, row, c
   await assertOtherPreferences(page);
   await capture("denied-write-reload-defaults-on");
   row.checks.push(
-    "Only dedicated preference setItem denied; unrelated native writes work; real toggle stays OFF in memory; direct keyboard entry/focus safe; reload honestly returns unsaved default ON; other preferences unchanged",
+    "Only dedicated preference setItem denied; unrelated native writes work; real toggle stays OFF in memory; direct native keyboard entry remains usable without forced focus; reload honestly returns unsaved default ON; other preferences unchanged",
   );
 });
 
@@ -1572,7 +1619,7 @@ scenario(
     const path = join(output, "fancy-stuff-off-native-web-locks-contention-blocked.png");
     await other.screenshot({ path });
     row.screenshots.push(path);
-    await capture("off-owning-focused-workspace");
+    await capture("off-owning-workspace");
     await other.close();
     await page.clock.resume();
     row.checks.push(
@@ -1644,33 +1691,37 @@ async function assertOffPendingReadiness(page, gate) {
   );
   return locks;
 }
-scenario("fancy-stuff-off-late-native-readiness-and-focus", {}, async ({ page, row, capture }) => {
-  await seedOtherPreferences(page, false);
-  await picker(page);
-  await offPortal(page);
-  await pauseEntryClock(page);
-  const gate = await deferNextNativeLock(page);
-  try {
-    await openButton(page).click();
-    row.locksWhileDeferred = await assertOffPendingReadiness(page, gate);
-    await capture("off-real-readiness-status-not-burn");
-    await page.clock.runFor(3200);
-    await assertOffPendingReadiness(page, gate);
-    await capture("off-still-waits-for-storage-after-3200ms");
-    await gate.evaluate((state) => state.release());
-    // No clock advancement after real readiness: OFF needs no decorative delay.
-    await settled(page);
-    await assertOtherPreferences(page);
-    await capture("off-late-ready-focused-workspace");
-    row.checks.push(
-      "OFF renders genuine readiness status without burn/clip/source; no workspace access while native callback held past3200ms; release gives eventual focus without advancing decorative clock",
-    );
-  } finally {
-    await gate.evaluate((state) => state.release()).catch(() => {});
-    await gate.dispose();
-    await page.clock.resume();
-  }
-});
+scenario(
+  "fancy-stuff-off-late-native-readiness-without-forced-focus",
+  {},
+  async ({ page, row, capture }) => {
+    await seedOtherPreferences(page, false);
+    await picker(page);
+    await offPortal(page);
+    await pauseEntryClock(page);
+    const gate = await deferNextNativeLock(page);
+    try {
+      await openButton(page).click();
+      row.locksWhileDeferred = await assertOffPendingReadiness(page, gate);
+      await capture("off-real-readiness-status-not-burn");
+      await page.clock.runFor(3200);
+      await assertOffPendingReadiness(page, gate);
+      await capture("off-still-waits-for-storage-after-3200ms");
+      await gate.evaluate((state) => state.release());
+      // No clock advancement after real readiness: OFF needs no decorative delay.
+      await settled(page);
+      await assertOtherPreferences(page);
+      await capture("off-late-ready-workspace");
+      row.checks.push(
+        "OFF renders genuine readiness status without burn/clip/source; no workspace access while native callback held past3200ms; release restores interaction without forced focus or advancing decorative clock",
+      );
+    } finally {
+      await gate.evaluate((state) => state.release()).catch(() => {});
+      await gate.dispose();
+      await page.clock.resume();
+    }
+  },
+);
 
 scenario(
   "fancy-stuff-off-pending-readiness-document-cancel",
@@ -1698,10 +1749,10 @@ scenario(
       await pauseEntryClock(page);
       row.freshEntry = await directEntry(page, "keyboard");
       await assertOtherPreferences(page);
-      await capture("off-cancel-fresh-focused-entry");
+      await capture("off-cancel-fresh-entry");
       await page.clock.resume();
       row.checks.push(
-        "Real document teardown cancels deferred OFF entry, releases native ownership, returns to undecorated portal and permits fresh keyboard entry/focus without stale callbacks",
+        "Real document teardown cancels deferred OFF entry, releases native ownership, returns to undecorated portal and permits fresh native keyboard entry without forced focus or stale callbacks",
       );
     } finally {
       await gate.evaluate((state) => state.release()).catch(() => {});

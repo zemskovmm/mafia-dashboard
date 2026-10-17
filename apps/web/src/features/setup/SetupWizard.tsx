@@ -1,9 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type {
-  KeyboardEvent as ReactKeyboardEvent,
-  PointerEvent as ReactPointerEvent,
-  ReactNode,
-} from "react";
+import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import {
   assignRoleForSeat,
   beginRoleDraw,
@@ -15,11 +11,10 @@ import {
   createGame,
   createSetup,
   drawRoleForSeat,
-  FEDERATION_RULES_EDITION,
   isCasperPlayer,
   rerollRoleForSeat,
 } from "@mafia/game-domain";
-import type { GameState, PlayerInput, Role, RulesEdition, SetupState } from "@mafia/game-domain";
+import type { GameState, PlayerInput, Role, SetupState } from "@mafia/game-domain";
 import type { PlayerProfile } from "../../api/client.js";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { gameMessages, type GameMessageKey } from "../../i18n/messages/game.js";
@@ -32,8 +27,6 @@ import { LiquidCardGlass } from "../theme/LiquidCardGlass.js";
 interface SetupWizardProps {
   readonly players: readonly PlayerProfile[];
   readonly bestMoveEnabled?: boolean;
-  /** Fresh-game policy only; a restored session owns its captured edition. */
-  readonly rulesEdition?: RulesEdition;
   readonly onComplete: (game: GameState, hostPlayerId: string, hostName: string) => void;
   readonly onStartGame?: () => void;
   readonly onEvent?: (type: string, payload: Record<string, unknown>) => void;
@@ -69,8 +62,6 @@ export interface SetupWizardSessionState {
   readonly hostPlayerId?: string;
   readonly selectedPlayerIds: readonly string[];
   readonly bestMoveEnabled?: boolean;
-  /** Captured before meaningful selection is persisted, even without a domain setup. */
-  readonly rulesEdition?: RulesEdition;
   readonly clubDeviationsAcknowledged?: readonly SetupClubDeviation[];
   readonly setup: SetupState | null;
 }
@@ -144,7 +135,6 @@ const PlayerCombobox = ({
   const selectedPlayer = players.find((player) => player.id === value);
   const [query, setQuery] = useState(selectedPlayer?.nickname ?? "");
   const [open, setOpen] = useState(false);
-  const [highlightedIndex, setHighlightedIndex] = useState(0);
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const unavailable = new Set(unavailablePlayerIds);
   const matchingPlayers = players.filter(
@@ -163,24 +153,6 @@ const PlayerCombobox = ({
     onChange(player.id);
     setQuery(player.nickname);
     setOpen(false);
-  };
-
-  const handleKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-      event.preventDefault();
-      setOpen(true);
-      setHighlightedIndex((current) => {
-        const offset = event.key === "ArrowDown" ? 1 : -1;
-        return (current + offset + matchingPlayers.length) % Math.max(matchingPlayers.length, 1);
-      });
-    } else if (event.key === "Enter" && open && matchingPlayers[highlightedIndex] !== undefined) {
-      event.preventDefault();
-      choosePlayer(matchingPlayers[highlightedIndex]!);
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      setOpen(false);
-      setQuery(selectedPlayer?.nickname ?? "");
-    }
   };
 
   return (
@@ -202,25 +174,14 @@ const PlayerCombobox = ({
           aria-autocomplete="list"
           aria-controls={listboxId}
           aria-expanded={open}
-          aria-activedescendant={
-            open && matchingPlayers[highlightedIndex] !== undefined
-              ? `${id}-option-${matchingPlayers[highlightedIndex]!.id}`
-              : undefined
-          }
           autoComplete="off"
           value={query}
           placeholder={placeholder}
-          onFocus={(event) => {
-            event.currentTarget.select();
-            setHighlightedIndex(0);
-            setOpen(true);
-          }}
+          onFocus={() => setOpen(true)}
           onChange={(event) => {
             setQuery(event.currentTarget.value);
-            setHighlightedIndex(0);
             setOpen(true);
           }}
-          onKeyDown={handleKeyDown}
         />
         {value === "" ? null : (
           <button
@@ -263,9 +224,6 @@ const PlayerCombobox = ({
                 type="button"
                 role="option"
                 aria-selected={player.id === value}
-                className={
-                  player.id === matchingPlayers[highlightedIndex]?.id ? "is-highlighted" : ""
-                }
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => choosePlayer(player)}
               >
@@ -282,7 +240,6 @@ const PlayerCombobox = ({
 export const SetupWizard = ({
   players: availablePlayers,
   bestMoveEnabled = true,
-  rulesEdition,
   onComplete,
   onStartGame = () => undefined,
   onEvent = () => undefined,
@@ -296,31 +253,13 @@ export const SetupWizard = ({
   playersLoading = false,
   tournamentControl,
   tournamentValid = true,
-  tournamentSelected = false,
 }: SetupWizardProps) => {
   const { t } = useMessages(gameMessages);
   const { t: setupT } = useMessages(setupMessages);
-  const [editionCapture, setEditionCapture] = useState(() => ({
-    captured: initialSessionState !== null,
-    // The restored domain setup is authoritative, including an absent legacy discriminator.
-    edition: initialSessionState?.setup
-      ? initialSessionState.setup.rulesEdition
-      : initialSessionState?.rulesEdition,
-  }));
-  const capturedEdition = editionCapture.captured ? editionCapture.edition : rulesEdition;
-  const federationSetup = capturedEdition === FEDERATION_RULES_EDITION;
   const gameBestMoveEnabled = initialSessionState?.bestMoveEnabled ?? bestMoveEnabled;
   // Retain historical metadata without creating or requiring acknowledgements.
   const acknowledgedDeviations = initialSessionState?.clubDeviationsAcknowledged;
 
-  const captureEdition = useCallback(() => {
-    setEditionCapture((current) =>
-      current.captured ? current : { captured: true, edition: rulesEdition },
-    );
-  }, [rulesEdition]);
-  useEffect(() => {
-    if (tournamentSelected) captureEdition();
-  }, [captureEdition, tournamentSelected]);
   const [step, setStep] = useState<WizardStep>(
     initialSessionState?.step === "roles" && initialSessionState.setup?.step !== "role-draw"
       ? "players"
@@ -338,26 +277,12 @@ export const SetupWizard = ({
 
   const sessionOptions = useMemo(
     () => ({
-      ...(editionCapture.captured && capturedEdition !== undefined
-        ? { rulesEdition: capturedEdition }
-        : {}),
-      ...(federationSetup ||
-      initialSessionState?.bestMoveEnabled !== undefined ||
-      !gameBestMoveEnabled
-        ? { bestMoveEnabled: gameBestMoveEnabled }
-        : {}),
+      bestMoveEnabled: gameBestMoveEnabled,
       ...(acknowledgedDeviations !== undefined
         ? { clubDeviationsAcknowledged: acknowledgedDeviations }
         : {}),
     }),
-    [
-      acknowledgedDeviations,
-      capturedEdition,
-      editionCapture.captured,
-      federationSetup,
-      gameBestMoveEnabled,
-      initialSessionState?.bestMoveEnabled,
-    ],
+    [acknowledgedDeviations, gameBestMoveEnabled],
   );
 
   const [hostPlayerId, setHostPlayerId] = useState(initialSessionState?.hostPlayerId ?? "");
@@ -367,8 +292,6 @@ export const SetupWizard = ({
   const [developmentError, setDevelopmentError] = useState(false);
   const [manualRoleSeat, setManualRoleSeat] = useState<number | null>(null);
   const roleTapState = useRef<{ seat: number; count: number; at: number } | null>(null);
-  const playerHeadingRef = useRef<HTMLHeadingElement>(null);
-  const focusPlayerHeading = useRef(false);
   const seatGridRef = useRef<HTMLDivElement>(null);
   const seatDragRef = useRef<{
     pointerId: number;
@@ -418,7 +341,6 @@ export const SetupWizard = ({
     )
       return;
     event.preventDefault();
-    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     seatDragRef.current = {
       pointerId: event.pointerId,
       source,
@@ -482,12 +404,6 @@ export const SetupWizard = ({
   }, [hostPlayerId, onSessionStateChange, selectedPlayerIds, setup, step, sessionOptions]);
 
   useEffect(() => {
-    if (step !== "players" || !focusPlayerHeading.current) return;
-    focusPlayerHeading.current = false;
-    playerHeadingRef.current?.focus();
-  }, [step]);
-
-  useEffect(() => {
     if (playersLoading) return;
     const availableIds = new Set(selectablePlayers.map(({ id }) => id));
     const nextHostPlayerId =
@@ -548,14 +464,12 @@ export const SetupWizard = ({
 
   const changeHostPlayer = (nextPlayerId: string) => {
     if (nextPlayerId === hostPlayerId) return;
-    captureEdition();
     setHostPlayerId(nextPlayerId);
     discardDeal();
   };
 
   const changeSeatPlayer = (index: number, nextPlayerId: string) => {
     if (nextPlayerId === selectedPlayerIds[index]) return;
-    captureEdition();
     const next = [...selectedPlayerIds];
     next[index] = nextPlayerId;
     setSelectedPlayerIds(next);
@@ -573,27 +487,24 @@ export const SetupWizard = ({
       0,
       humanSeatCount,
     );
-    captureEdition();
     setSelectedPlayerIds([
       ...shuffled(selectedPlayers).map(({ id }) => id),
       ...(includeCasper ? [CASPER_PLAYER_ID] : []),
     ]);
     discardDeal();
-  }, [captureEdition, discardDeal, hostPlayerId, humanSeatCount, includeCasper, selectablePlayers]);
+  }, [discardDeal, hostPlayerId, humanSeatCount, includeCasper, selectablePlayers]);
 
   const startRoleDraw = () => {
     if (!playersReady || hostPlayer === undefined || !tournamentValid || persistencePending) return;
-    captureEdition();
     const resumeRoleDraw = setup !== null && roleDrawMatchesPlayers(setup, players);
     const nextSetup = resumeRoleDraw
       ? { ...setup, players }
-      : beginRoleDraw(createSetup(players, { rulesEdition: capturedEdition }), Math.random);
+      : beginRoleDraw(createSetup(players), Math.random);
     if (!resumeRoleDraw) {
       onStartGame();
       onEvent("setup.players-selected", {
         hostPlayerId,
         players: players.map(({ id, seat }) => ({ id, seat })),
-        ...(capturedEdition === undefined ? {} : { rulesEdition: capturedEdition }),
       });
       onEvent("setup.role-draw-started", {});
     }
@@ -682,7 +593,6 @@ export const SetupWizard = ({
   const returnToPlayerSelection = useCallback(() => {
     setManualRoleSeat(null);
     roleTapState.current = null;
-    focusPlayerHeading.current = true;
     setStep("players");
     publishSessionState("players", setup);
   }, [publishSessionState, setup]);
@@ -695,12 +605,6 @@ export const SetupWizard = ({
     onRoleDrawBackActionChange?.(returnToPlayerSelection);
     return () => onRoleDrawBackActionChange?.(null);
   }, [onRoleDrawBackActionChange, returnToPlayerSelection, setup, step]);
-
-  const editionLabel = (
-    <span className="setup-edition-label">
-      {setupT(federationSetup ? "setup.edition.federation" : "setup.edition.legacy")}
-    </span>
-  );
 
   if (step === "roles" && setup !== null) {
     return (
@@ -749,7 +653,6 @@ export const SetupWizard = ({
                 roleTapState.current = null;
                 setManualRoleSeat((current) => (current === seat ? null : seat));
               }}
-              contextActionOpen={manualRoleSeat !== null}
               center={
                 manualRoleSeat !== null ? (
                   <div
@@ -833,9 +736,7 @@ export const SetupWizard = ({
         <section className="wizard-card player-setup-card">
           <p className="eyebrow">{t("setup.gameSetup")}</p>
           <header className="player-setup-heading">
-            <h1 ref={playerHeadingRef} tabIndex={-1}>
-              {t("setup.selectPlayers")}
-            </h1>
+            <h1>{t("setup.selectPlayers")}</h1>
             <label className="casper-toggle">
               <span>{t("setup.includeCasper")}</span>
               <input
@@ -852,7 +753,6 @@ export const SetupWizard = ({
               <span className="casper-switch-track" aria-hidden="true" />
             </label>
           </header>
-          {editionLabel}
           {tournamentControl}
           {selectablePlayers.length < humanSeatCount + 1 ? (
             <p className="player-guidance">
@@ -873,7 +773,6 @@ export const SetupWizard = ({
                       if (generated.length < 11)
                         throw new Error("A host and ten players were not generated");
                       const selected = generated.slice(0, 11);
-                      captureEdition();
                       setDevelopmentPlayers(selected);
                       setHostPlayerId(selected[0]!.id);
                       setSelectedPlayerIds((current) =>

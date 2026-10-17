@@ -23,7 +23,7 @@ export const AdjudicationControls = ({
   readonly offenderSeat?: number;
   readonly privacyHidden?: boolean;
   readonly embedded?: boolean;
-  readonly onOpenRule?: (rule: RuleReferenceId, invoker: HTMLButtonElement) => void;
+  readonly onOpenRule?: (rule: RuleReferenceId) => void;
 }) => {
   const { t } = useMessages(adjudicationMessages);
   const [team, setLosingTeam] = useState<Team>("red");

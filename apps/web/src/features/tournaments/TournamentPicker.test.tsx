@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../../i18n/I18nProvider.js";
@@ -44,7 +44,7 @@ describe("TournamentPicker", () => {
     expect(screen.getByRole("option", { name: "Autumn cup" })).toBeInTheDocument();
   });
 
-  it("cancels name entry with Escape without submitting a containing setup form and restores keyboard focus", async () => {
+  it("leaves typing and Escape native and cancels using the visible control without submitting a containing form", async () => {
     const user = userEvent.setup();
     const submit = vi.fn((event: React.FormEvent) => event.preventDefault());
     const onChange = vi.fn();
@@ -55,9 +55,16 @@ describe("TournamentPicker", () => {
     );
     await user.click(screen.getByRole("checkbox"));
     await user.click(screen.getByRole("button", { name: "New tournament…" }));
-    expect(screen.getByRole("textbox")).toHaveFocus();
+    expect(screen.getByRole("textbox")).not.toHaveFocus();
+    await user.type(screen.getByRole("textbox"), "Keep name");
     await user.keyboard("{Escape}");
-    expect(screen.getByRole("button", { name: "New tournament…" })).toHaveFocus();
+    expect(screen.getByRole("textbox")).toHaveValue("Keep name");
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    fireEvent(screen.getByRole("textbox"), enter);
+    expect(enter.defaultPrevented).toBe(false);
+    expect(createTournament).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("textbox")).toBeNull();
     expect(onChange).not.toHaveBeenCalled();
     expect(submit).not.toHaveBeenCalled();
   });
@@ -125,7 +132,7 @@ describe("TournamentPicker", () => {
     await user.click(screen.getByRole("checkbox"));
     await user.click(screen.getByRole("button", { name: "New tournament…" }));
     await user.type(screen.getByRole("textbox", { name: "Tournament name" }), "  Autumn cup  ");
-    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("button", { name: "Create tournament" }));
     expect(createTournament).toHaveBeenCalledWith("Autumn cup", "club-a");
     expect(onChange).not.toHaveBeenCalled();
     expect(screen.getByRole("button", { name: "Creating…" })).toBeDisabled();

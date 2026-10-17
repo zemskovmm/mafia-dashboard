@@ -370,10 +370,7 @@ export async function verifyPlayerCards({ browser, config, url, evidence, result
         );
         await check("cross-card red-carded second contact also cancels shared swipe", async () => {
           for (let foul = 1; foul <= 4; foul++)
-            await changed(page, async () => {
-              await card(page, 2).focus();
-              await page.keyboard.press("f");
-            });
+            await changed(page, () => mouseDrag(page, 2, 0, 60));
           assert.equal(
             (await state(page)).game.players.find((p) => p.seat === 2).status,
             "red-carded",
@@ -399,12 +396,10 @@ export async function verifyPlayerCards({ browser, config, url, evidence, result
               .count(),
             1,
           );
-          assert.equal(await card(page, 4).getAttribute("aria-keyshortcuts"), "F");
+          assert.equal(await card(page, 4).getAttribute("aria-keyshortcuts"), null);
           assert.match(await card(page, 4).getAttribute("title"), /Смахните вниз/);
-          await changed(page, async () => {
-            await card(page, 4).focus();
-            await page.keyboard.press("f");
-          });
+          assert.doesNotMatch(await card(page, 4).getAttribute("title"), /\bF\b/);
+          await changed(page, () => mouseDrag(page, 4, 0, 60));
           assert.equal(
             await card(page, 4).getByRole("img", { name: "Фол ×1", exact: true }).count(),
             1,
@@ -423,22 +418,16 @@ export async function verifyPlayerCards({ browser, config, url, evidence, result
           assert.equal(last.game.voteAssignments[1], undefined);
         });
       } else if (kind === "legacy") {
-        await check("legacy edition real tap and F shortcut", async () => {
+        await check("legacy edition real tap and downward foul gestures", async () => {
           await changed(page, () => card(page, 2).click());
           for (let n = 1; n <= 3; n++) {
-            await changed(page, async () => {
-              await card(page, 7).focus();
-              await page.keyboard.press("f");
-            });
+            await changed(page, () => mouseDrag(page, 7, 0, 60));
             assert.equal(await card(page, 7).locator(".foul-dot").count(), n);
           }
           assert.equal(await card(page, 7).locator(".lucide-message-circle-off").count(), 1);
         });
         await check("legacy fourth foul follows existing removal", async () => {
-          const next = await changed(page, async () => {
-            await card(page, 7).focus();
-            await page.keyboard.press("f");
-          });
+          const next = await changed(page, () => mouseDrag(page, 7, 0, 60));
           assert.equal(next.game.players.find((p) => p.seat === 7).fouls, 4);
           assert.equal(next.game.players.find((p) => p.seat === 7).status, "red-carded");
           assert.equal(await card(page, 7).locator(".foul-dot").count(), 3);
@@ -540,13 +529,10 @@ export async function verifyPlayerCards({ browser, config, url, evidence, result
           }
           assert.deepEqual(now.game.voteAssignments, {});
         });
-        await check("mouse down and keyboard F yield three dots and fixed mute", async () => {
+        await check("downward mouse gestures yield three dots and fixed mute", async () => {
           await changed(page, () => mouseDrag(page, 6, 0, 60));
           for (let n = 2; n <= 3; n++) {
-            await changed(page, async () => {
-              await card(page, 6).focus();
-              await page.keyboard.press("f");
-            });
+            await changed(page, () => mouseDrag(page, 6, 0, 60));
             assert.equal(await card(page, 6).locator(".foul-dot").count(), n);
           }
           assert.equal(
@@ -556,33 +542,38 @@ export async function verifyPlayerCards({ browser, config, url, evidence, result
           assert.equal(await card(page, 6).locator(".lucide-message-circle-off").count(), 1);
           assert.equal(await card(page, 6).locator(".lucide-mic-off").count(), 0);
         });
-        await check("short, diagonal and modified F cancel without selection", async () => {
-          await unchanged(page, () => mouseDrag(page, 7, 0, 20));
-          await unchanged(page, () => mouseDrag(page, 7, 50, 50));
-          await unchanged(page, async () => {
-            await card(page, 7).focus();
-            await page.keyboard.press("Control+f");
-          });
-          await unchanged(page, async () => {
-            const b = await card(page, 7).boundingBox();
-            await page.mouse.move(b.x + 30, b.y + 15);
-            await page.mouse.down();
-            await card(page, 7).evaluate((el) =>
-              el.dispatchEvent(
-                new PointerEvent("pointercancel", {
-                  bubbles: true,
-                  pointerId: 1,
-                  pointerType: "mouse",
-                }),
-              ),
-            );
-            await page.mouse.move(b.x + 30, b.y + 75);
-            await page.mouse.up();
-          });
+        await check(
+          "short, diagonal and cancelled gestures preserve selection; retired keys are inert",
+          async () => {
+            await unchanged(page, () => mouseDrag(page, 7, 0, 20));
+            await unchanged(page, () => mouseDrag(page, 7, 50, 50));
+            await unchanged(page, async () => {
+              await card(page, 7).focus();
+              for (const key of ["f", "Shift+F10", "ContextMenu", "Control+f"])
+                await page.keyboard.press(key);
+              assert.equal(await page.getByRole("dialog").count(), 0);
+            });
+            await unchanged(page, async () => {
+              const b = await card(page, 7).boundingBox();
+              await page.mouse.move(b.x + 30, b.y + 15);
+              await page.mouse.down();
+              await card(page, 7).evaluate((el) =>
+                el.dispatchEvent(
+                  new PointerEvent("pointercancel", {
+                    bubbles: true,
+                    pointerId: 1,
+                    pointerType: "mouse",
+                  }),
+                ),
+              );
+              await page.mouse.move(b.x + 30, b.y + 75);
+              await page.mouse.up();
+            });
 
-          await changed(page, () => card(page, 3).click());
-          await changed(page, () => card(page, 3).click());
-        });
+            await changed(page, () => card(page, 3).click());
+            await changed(page, () => card(page, 3).click());
+          },
+        );
         if (cdp)
           await check("trusted Chrome pen downward gesture", async () => {
             const b = await card(page, 7).boundingBox();
@@ -614,8 +605,7 @@ export async function verifyPlayerCards({ browser, config, url, evidence, result
           "fourth foul requests existing discipline; cancellation preserves state",
           async () => {
             await unchanged(page, async () => {
-              await card(page, 6).focus();
-              await page.keyboard.press("f");
+              await mouseDrag(page, 6, 0, 60);
               await page.getByRole("dialog").waitFor();
               assert.equal(
                 await page
@@ -627,16 +617,23 @@ export async function verifyPlayerCards({ browser, config, url, evidence, result
             });
           },
         );
-        await check("upward penalty and sideways context retain their actions", async () => {
-          await unchanged(page, async () => {
-            await mouseDrag(page, 7, 0, -60);
-            await page.getByRole("dialog").waitFor();
-            await page.getByRole("button", { name: "Close", exact: true }).click();
-            await mouseDrag(page, 7, 60, 0);
-            await page.getByRole("dialog", { name: "Player actions", exact: true }).waitFor();
-            await page.locator(".table-swipe-backdrop").click({ position: { x: 4, y: 4 } });
-          });
-        });
+        await check(
+          "upward penalty remains available and horizontal gameplay gestures do nothing",
+          async () => {
+            await unchanged(page, async () => {
+              await mouseDrag(page, 7, 0, -60);
+              await page.getByRole("dialog").waitFor();
+              await page.getByRole("button", { name: "Close", exact: true }).click();
+              await mouseDrag(page, 7, 60, 0);
+              assert.equal(
+                await page.locator(".table-swipe-menu, .table-swipe-backdrop").count(),
+                0,
+              );
+              await mouseDrag(page, 7, -60, 0);
+              assert.equal(await page.getByRole("dialog").count(), 0);
+            });
+          },
+        );
 
         const canonicalBeforeAppearance = await state(page);
         await check(

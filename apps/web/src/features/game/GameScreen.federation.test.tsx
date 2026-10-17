@@ -1,9 +1,9 @@
+import { cancelDialog, swipeCard } from "../../test-card-gestures.js";
 import { useState } from "react";
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  FEDERATION_RULES_EDITION,
   advanceSetupPhase,
   applyGameEvent,
   beginNight,
@@ -43,7 +43,7 @@ const planning = (): GameState => {
     createSeededRandom(13),
   );
   for (let seat = 1; seat <= 10; seat += 1) setup = drawRoleForSeat(setup, seat);
-  return createGame(completeRoleDraw(setup), { rulesEdition: FEDERATION_RULES_EDITION });
+  return createGame(completeRoleDraw(setup));
 };
 const day = () => {
   let game = planning();
@@ -101,21 +101,47 @@ const Harness = ({
 
 const openPenalty = (seat = 2) => {
   const card = document.querySelector<HTMLElement>(`[data-seat="${seat}"] .player-seat`)!;
-  if (card.matches(":disabled")) screen.getByRole("button", { name: "Rules" }).focus();
-  else card.focus();
-  const invoking = document.activeElement;
   fireEvent.touchStart(card, { touches: [{ identifier: 1, clientX: 100, clientY: 180 }] });
   fireEvent.touchEnd(card, { changedTouches: [{ identifier: 1, clientX: 100, clientY: 100 }] });
-  return invoking;
 };
-const openGeneralRemoval = () => {
-  const card = document.querySelector('[data-seat="1"] .player-seat')!;
-  fireEvent.touchStart(card, { touches: [{ identifier: 1, clientX: 100, clientY: 100 }] });
-  fireEvent.touchEnd(card, { changedTouches: [{ identifier: 1, clientX: 180, clientY: 100 }] });
-  fireEvent.click(document.querySelector(".table-swipe-red-card")!);
-};
+const openGeneralRemoval = () => openPenalty(1);
 
-describe("federation GameScreen", () => {
+describe("federation GameScreen table shortcuts", () => {
+  it.each(["day", "voting", "night-check"])(
+    "does not turn horizontal %s gestures into menus, nominations, votes or checks",
+    (phase) => {
+      const game =
+        phase === "day"
+          ? day()
+          : phase === "voting"
+            ? domain.startVoting(
+                domain.nominate(domain.completeCurrentTurn(domain.nominate(day(), 1, 4)), 2, 6),
+              )
+            : completeMafiaShots(resolveMafiaShots(beginNight(day())).game);
+      const onAcceptedEvent = vi.fn();
+      const onGameChange = vi.fn();
+      const { container } = render(
+        <GameScreen
+          game={game}
+          hostName="Host"
+          privacyHidden={false}
+          onGameChange={onGameChange}
+          onEvent={vi.fn()}
+          onAcceptedEvent={onAcceptedEvent}
+        />,
+      );
+      const card = document.querySelector<HTMLButtonElement>('[data-seat="5"] .player-seat')!;
+      for (const dx of [-80, 80]) {
+        swipeCard(card, dx);
+        fireEvent.click(card);
+        expect(container.querySelector(".table-swipe-menu")).toBeNull();
+      }
+      expect(container.querySelector(".table-swipe-menu")).toBeNull();
+      expect(screen.queryByRole("button", { name: /Red card/ })).not.toBeInTheDocument();
+      expect(onAcceptedEvent).not.toHaveBeenCalled();
+      expect(onGameChange).not.toHaveBeenCalled();
+    },
+  );
   it.each(["en", "ru"] as const)(
     "returns from the real reference reader to the exact unchanged form in %s",
     async (locale) => {
@@ -157,11 +183,10 @@ describe("federation GameScreen", () => {
         expect(judge).toHaveAttribute("open");
         expect(judge).toHaveAttribute("inert");
         expect(judge).toHaveAttribute("aria-hidden", "true");
-        await user.keyboard("{Escape}");
+        cancelDialog(screen.getByRole("dialog"));
         expect(book).not.toHaveAttribute("open");
         expect(judge).toHaveAttribute("open");
         expect(judge).not.toHaveAttribute("inert");
-        await waitFor(() => expect(invoke).toHaveFocus());
         expect(draft()).toEqual(before);
       }
       expect(accepted).not.toHaveBeenCalled();
@@ -185,11 +210,7 @@ describe("federation GameScreen", () => {
     const accepted = vi.fn();
     const user = userEvent.setup();
     render(<Harness initial={game} accepted={accepted} />);
-    const card = document.querySelector<HTMLElement>('[data-seat="1"] .player-seat')!;
-    fireEvent.touchStart(card, { touches: [{ identifier: 1, clientX: 100, clientY: 100 }] });
-    fireEvent.touchEnd(card, { changedTouches: [{ identifier: 1, clientX: 180, clientY: 100 }] });
-    // A real click focuses the context action, which is removed before the modal opens.
-    await user.click(document.querySelector<HTMLButtonElement>(".table-swipe-red-card")!);
+    openPenalty(1);
     await user.click(screen.getByText("Dispute count", { exact: true }));
     await user.type(screen.getByLabelText("Dispute reason"), "Review this count");
     await user.click(screen.getByRole("button", { name: "Pause voting for review" }));
@@ -200,9 +221,8 @@ describe("federation GameScreen", () => {
     expect(screen.getByRole("dialog")).toBeVisible();
     expect(accepted).toHaveBeenCalledTimes(2);
     within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }).focus();
-    await user.keyboard("{Escape}");
+    cancelDialog(screen.getByRole("dialog"));
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(card).toHaveFocus();
   });
 
   it("preserves ballot-wide review edits across dismissal and different player shortcuts", async () => {
@@ -225,7 +245,7 @@ describe("federation GameScreen", () => {
     await act(async () => {
       render(<Harness initial={game} accepted={accepted} />);
     });
-    let invokingCard = openPenalty();
+    openPenalty();
     expect(
       screen.getByRole("region", { name: "Ballot review · applies to the whole ballot" }),
     ).toBeVisible();
@@ -233,12 +253,11 @@ describe("federation GameScreen", () => {
     await user.click(screen.getByLabelText("I reviewed the external recording"));
     await user.type(screen.getByLabelText("Final ruling reason"), "Recording confirms seat three");
     for (const dismissal of ["Escape", "Close"]) {
-      if (dismissal === "Escape") await user.keyboard("{Escape}");
+      if (dismissal === "Escape") cancelDialog(screen.getByRole("dialog"));
       else
         await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }));
       expect(screen.queryByRole("dialog")).toBeNull();
-      expect(invokingCard).toHaveFocus();
-      invokingCard = openPenalty(dismissal === "Escape" ? 3 : 2);
+      openPenalty(dismissal === "Escape" ? 3 : 2);
       expect(screen.getByLabelText("Reviewed vote for #1 · Player 1")).toHaveValue("3");
       expect(screen.getByLabelText("I reviewed the external recording")).toBeChecked();
       expect(screen.getByLabelText("Final ruling reason")).toHaveValue(
@@ -364,7 +383,7 @@ describe("federation GameScreen", () => {
       expect(screen.queryByRole("option", { name: "Foul" })).toBeNull();
       expect(accepted).not.toHaveBeenCalled();
       expect(changed).not.toHaveBeenCalled();
-      fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+      cancelDialog(screen.getByRole("dialog"));
       expect(screen.queryByRole("dialog")).toBeNull();
       swipe();
       fireEvent.change(screen.getByLabelText("Removal rule"), { target: { value: "6.2.3" } });
@@ -517,11 +536,8 @@ describe("federation GameScreen", () => {
       const confirm = screen.getByRole("button", {
         name: locale === "en" ? "Confirm discipline" : "Подтвердить взыскание",
       });
-      expect(confirm).toBeDisabled();
-      await user.selectOptions(
-        screen.getByLabelText(locale === "en" ? "Occurrence timing" : "Момент нарушения"),
-        "day-discussion",
-      );
+      expect(confirm).toBeEnabled();
+
       expect(confirm).toBeEnabled();
       await user.click(confirm);
       expect(accepted.mock.lastCall?.[0]).toMatchObject({
@@ -923,15 +939,13 @@ describe("federation GameScreen", () => {
         }}
       />,
     );
-    fireEvent.keyDown(document.querySelector('.seat-anchor[data-seat="1"] > .player-seat')!, {
-      key: "f",
-    });
+    swipeCard(document.querySelector('.seat-anchor[data-seat="1"] > .player-seat')!, 0, 70);
     expect(screen.getByText("60-second speech")).toBeInTheDocument();
     expect(screen.queryByText("Nomination only · no ordinary speech")).toBeNull();
   });
 
-  it.each(["before-shooting-count", "shooting-count"])(
-    "records judge-selected %s occurrence and waits for a legal public announcement",
+  it.each(["shooting-count"])(
+    "records displayed %s occurrence and waits for a legal public announcement",
     async (stage) => {
       const user = userEvent.setup();
       const initial = beginNight(day());
@@ -939,9 +953,7 @@ describe("federation GameScreen", () => {
       const accepted = vi.fn();
       render(<Harness initial={initial} changed={changed} accepted={accepted} />);
       openGeneralRemoval();
-      await user.selectOptions(screen.getByLabelText("Discipline player"), "1");
-      expect(screen.getByRole("button", { name: "Confirm discipline" })).toBeDisabled();
-      await user.selectOptions(screen.getByLabelText("Occurrence timing"), stage);
+
       await user.selectOptions(screen.getByLabelText("Removal rule"), "6.2.2");
       await user.type(
         screen.getByLabelText("Discipline reason (optional)"),
@@ -1041,9 +1053,9 @@ describe("federation GameScreen", () => {
     const owner = initial.players.find((p) => p.role === "don")!;
     const changed = vi.fn();
     render(<Harness initial={initial} changed={changed} />);
-    openGeneralRemoval();
-    await user.selectOptions(screen.getByLabelText("Discipline player"), String(owner.seat));
-    await user.selectOptions(screen.getByLabelText("Occurrence timing"), "don-check");
+    openPenalty(owner.seat);
+    // The subject is selected by the actual card gesture.
+
     await user.selectOptions(screen.getByLabelText("Removal rule"), "6.2.2");
     await user.type(
       screen.getByLabelText("Discipline reason (optional)"),

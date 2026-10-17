@@ -30,8 +30,8 @@ const completedSummary = (gameId: string, name: string): CompletedGameSessionSum
   outcome: "red",
   winner: "red",
   reason: null,
-  rulesetId: "club-mafia",
-  rulesetVersion: 1,
+  timelineAvailable: true,
+
   playedAt: "2026-08-24T18:00:00.000Z",
   day: 2,
   eventCount: 1,
@@ -49,8 +49,7 @@ const canonicalSession = (
     revision: summary.revision,
     duplicate: false,
     status: "completed",
-    rulesetId: summary.rulesetId,
-    rulesetVersion: summary.rulesetVersion,
+
     updatedAt: summary.updatedAt,
     state: {
       setup: null,
@@ -349,7 +348,7 @@ describe("GameTimelineScreen", () => {
     expect(
       screen.getByRole("button", { name: "Создать демонстрационную игру" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Нулевая ночь")).toBeInTheDocument();
+    expect(screen.getByText("Ночь 1 · договорка мафии")).toBeInTheDocument();
     expect(screen.getByText(/Событие: #/)).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Игра завершена: Красные победили" }),
@@ -720,8 +719,7 @@ describe("GameTimelineScreen", () => {
               revision: 1,
               duplicate: false,
               status: "completed",
-              rulesetId: selected.rulesetId,
-              rulesetVersion: selected.rulesetVersion,
+
               updatedAt: selected.updatedAt,
               state: {
                 setup: null,
@@ -788,7 +786,7 @@ describe("GameTimelineScreen", () => {
 
     await act(async () => secondResponse.resolve(canonicalSession(second)));
     expect(screen.queryByText("Loading Second…")).toBeNull();
-    expect(screen.getByRole("button", { name: "Red card: Player 8" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Removal announced: Player 8" })).toBeInTheDocument();
   });
 
   it("generates the browser-only sample and renders replay-derived regions and markers", async () => {
@@ -811,13 +809,14 @@ describe("GameTimelineScreen", () => {
     expect(screen.getByRole("heading", { name: "Game timeline" })).toBeInTheDocument();
     expect(screen.getByText("Sample game · not saved")).toBeInTheDocument();
     for (const label of [
-      "Initial night",
+      "Night 1 · Mafia planning",
+      "Zero round",
+      "Voting · zero round",
+      "Night 2",
       "Day 1",
       "Voting 1",
-      "Night 1",
+      "Night 3",
       "Day 2",
-      "Voting 2",
-      "Night 2",
     ]) {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
@@ -828,9 +827,11 @@ describe("GameTimelineScreen", () => {
     expect(
       screen.getByRole("button", { name: /Don checked Player 1: Sheriff/i }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Red card: Player 8/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Removal announced: Player 8/i }),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /completed their turn/i })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Phase: sheriff wake" })).toBeNull();
+
     expect(screen.queryByRole("button", { name: "Phase: night don" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Phase: night sheriff" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Phase: best move" })).toBeNull();
@@ -878,8 +879,8 @@ describe("GameTimelineScreen", () => {
         outcome: "red" as const,
         winner: "red" as const,
         reason: null,
-        rulesetId: "club-mafia",
-        rulesetVersion: 1,
+        timelineAvailable: true,
+
         playedAt: "2026-08-24T18:00:00.000Z",
         day: 2,
         eventCount: 10,
@@ -893,8 +894,8 @@ describe("GameTimelineScreen", () => {
         outcome: "black" as const,
         winner: "black" as const,
         reason: null,
-        rulesetId: "club-mafia",
-        rulesetVersion: 1,
+        timelineAvailable: true,
+
         playedAt: "2026-08-24T19:00:00.000Z",
         day: 3,
         eventCount: 12,
@@ -923,7 +924,7 @@ describe("GameTimelineScreen", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Unable to load Second");
   });
 
-  it("rejects log-only completed history without canonical replay data", async () => {
+  it("keeps completed facts without canonical detail and never decodes a raw log as a replay", async () => {
     const user = userEvent.setup();
     const gameId = "00000000-0000-4000-8000-000000000703";
     const summary = {
@@ -934,8 +935,8 @@ describe("GameTimelineScreen", () => {
       outcome: "red" as const,
       winner: "red" as const,
       reason: null,
-      rulesetId: "club-mafia",
-      rulesetVersion: 1,
+      timelineAvailable: true,
+
       playedAt: "2026-08-24T20:00:00.000Z",
       day: 2,
       eventCount: 2,
@@ -955,8 +956,7 @@ describe("GameTimelineScreen", () => {
               revision: 5,
               duplicate: false,
               status: "completed",
-              rulesetId: summary.rulesetId,
-              rulesetVersion: summary.rulesetVersion,
+
               updatedAt: summary.updatedAt,
               state: {
                 setup: null,
@@ -1000,7 +1000,11 @@ describe("GameTimelineScreen", () => {
       await screen.findByRole("combobox", { name: "Completed game" }),
       gameId,
     );
-    expect(await screen.findByRole("alert")).toHaveTextContent("Unable to load Legacy.");
+    expect(
+      await screen.findByText("Timeline detail is unavailable for this game."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("region", { name: "Recorded facts" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Nomination: Player 1 set Player 7/i })).toBeNull();
     expect(screen.queryByText("Legacy log · state preview unavailable")).toBeNull();
   });

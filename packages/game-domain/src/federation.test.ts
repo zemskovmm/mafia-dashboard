@@ -4,10 +4,7 @@ import type { GameState, SetupState } from "./types.js";
 
 const setup = (): SetupState => {
   let state = domain.beginRoleDraw(
-    domain.createSetup(
-      Array.from({ length: 10 }, (_, i) => ({ id: `p${i + 1}`, seat: i + 1 })),
-      { rulesEdition: domain.FEDERATION_RULES_EDITION },
-    ),
+    domain.createSetup(Array.from({ length: 10 }, (_, i) => ({ id: `p${i + 1}`, seat: i + 1 }))),
     domain.createSeededRandom(71),
   );
   for (let seat = 1; seat <= 10; seat++) state = domain.drawRoleForSeat(state, seat);
@@ -429,7 +426,6 @@ describe("federation lifecycle", () => {
       rulesDrawReason: { rule: "6.5.6", consecutiveUnchangedNights: 3 },
     });
     expect(() => domain.completeNight(third)).toThrow();
-    expect(domain.shouldSuggestDraw(third)).toBe(false);
   });
   it("resets the draw streak immediately on a daytime departure", () => {
     const changed = domain.markPlayerInactive(miss(day()), 1, "eliminated");
@@ -525,7 +521,7 @@ describe("federation accepted ballot", () => {
     });
     expect(next.phase).toBe("goodbye-speech");
     expect(Object.values(next.voteAssignments)).toHaveLength(10);
-    expect(() => domain.skipVoting(voting())).toThrow();
+    expect(() => domain.skipFederationVoting(voting(), "no-nominees")).toThrow();
   });
   it.each([
     [2, 2, false],

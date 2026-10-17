@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CASPER_PLAYER_ID, CASPER_SEAT } from "./casper.js";
 import {
-  advanceSetupPhase,
+  advanceOpeningPhase,
   cancelGame,
   confirmDraw,
   createGame,
@@ -9,7 +9,6 @@ import {
   getDayOrder,
   getRoleTeam,
   markPlayerInactive,
-  shouldSuggestDraw,
 } from "./game.js";
 import {
   beginRoleDraw,
@@ -93,17 +92,18 @@ describe("game phases and victory", () => {
     expect(evaluateVictory(game.players)).toBe("black");
   });
 
-  it("initializes draw-cycle tracking without suggesting a draw", () => {
+  it("initializes current night and draw-cycle counters", () => {
     const game = createGame(completedSetup());
 
     expect(game.cyclesWithoutElimination).toBe(0);
     expect(game.eliminationOccurredThisCycle).toBe(false);
-    expect(shouldSuggestDraw(game)).toBe(false);
+    expect(game.completedGameNights).toBe(0);
+    expect(game.rulesDrawReason).toBeUndefined();
   });
 
   it("requires explained draw and cancellation rulings and makes them terminal", () => {
     const active = {
-      ...advanceSetupPhase(advanceSetupPhase(createGame(completedSetup()))),
+      ...advanceOpeningPhase(advanceOpeningPhase(createGame(completedSetup()))),
       cyclesWithoutElimination: 3,
     };
     const drawn = confirmDraw(active, "Three quiet cycles");
@@ -112,8 +112,8 @@ describe("game phases and victory", () => {
       phase: "draw",
       winner: null,
     });
-    expect(shouldSuggestDraw(active)).toBe(true);
-    expect(shouldSuggestDraw(drawn)).toBe(false);
+    expect(active.phase).toBe("day");
+    expect(drawn.phase).toBe("draw");
     expect(cancelGame(active, "Venue closed")).toMatchObject({
       phase: "cancelled",
       winner: null,
@@ -138,18 +138,19 @@ describe("game phases and victory", () => {
     );
   });
 
-  it("advances through negotiation and Sheriff wake-up into day one", () => {
+  it("advances through negotiation and a separate Sheriff greeting into day one", () => {
     const game = createGame(completedSetup());
     expect(game.phase).toBe("mafia-planning");
 
-    const sheriffWake = advanceSetupPhase(game);
-    expect(sheriffWake.phase).toBe("sheriff-wake");
+    const sheriffWake = advanceOpeningPhase(game);
+    expect(sheriffWake.phase).toBe("sheriff-identification");
 
-    const day = advanceSetupPhase(sheriffWake);
+    const day = advanceOpeningPhase(sheriffWake);
     expect(day.phase).toBe("day");
     expect(day.day).toBe(1);
     expect(day.turnOrder).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-    expect(() => advanceSetupPhase(day)).toThrow(/cannot advance setup/i);
+    expect(day.completedGameNights).toBe(1);
+    expect(() => advanceOpeningPhase(day)).toThrow(/cannot advance setup/i);
   });
 
   it("orders active players clockwise from a requested seat", () => {

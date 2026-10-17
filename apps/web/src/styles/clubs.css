@@ -125,9 +125,7 @@
     transform 160ms ease,
     box-shadow 160ms ease;
 }
-
-.google-auth-button:hover,
-.google-auth-button:focus-visible {
+.google-auth-button:hover {
   box-shadow: 0 14px 40px rgb(0 0 0 / 35%);
   transform: translateY(-2px);
 }
@@ -247,9 +245,7 @@
   border-radius: 9px;
   box-shadow: inset 0 0 0 3px rgb(0 0 0 / 44%);
 }
-
-.club-playing-card:hover,
-.club-playing-card:focus-within {
+.club-playing-card:hover {
   z-index: 3;
   box-shadow: 0 25px 62px rgb(0 0 0 / 68%);
   transform: translateY(-8px) rotate(0);
@@ -452,9 +448,7 @@
     background 160ms ease,
     border-color 160ms ease;
 }
-
-.club-logo-field:hover .club-logo-preview,
-.club-logo-field:focus-within .club-logo-preview {
+.club-logo-field:hover .club-logo-preview {
   color: var(--portal-gold-strong);
   background: rgb(var(--portal-spotlight-rgb) / 8%);
   border-color: rgb(176 141 87 / 58%);

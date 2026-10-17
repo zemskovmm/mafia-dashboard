@@ -41,7 +41,7 @@ interface Authorization {
 }
 const CONTROL_KEY = "control";
 const RETRIES = 8;
-const metadataKeys = new Set(["partitionKey", "rowKey", "etag", "timestamp"]);
+const metadataKeys = new Set(["partitionKey", "rowKey", "etag", "timestamp", "odata.metadata"]);
 const absent = (error: unknown): boolean => status(error) === 404;
 const status = (error: unknown): number | undefined =>
   error !== null &&
@@ -299,12 +299,16 @@ export class AzureTransaction {
 }
 
 export class AzureStorage {
+  static readonly explicitCredentialSupported = true;
   readonly table: TableClient;
   readonly blobs: ContainerClient;
   private readonly authorization = new AsyncLocalStorage<Authorization>();
   private readonly maintenanceOwner = new AsyncLocalStorage<string>();
   private readonly activeTransaction = new AsyncLocalStorage<boolean>();
-  constructor(readonly options: AzureStorageOptions) {
+  constructor(
+    readonly options: AzureStorageOptions,
+    explicitCredential?: Pick<DefaultAzureCredential, "getToken">,
+  ) {
     if (
       !/^[A-Za-z][A-Za-z0-9]{2,62}$/.test(options.tableName) ||
       !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(options.containerName) ||
@@ -314,6 +318,8 @@ export class AzureStorage {
       throw new Error("Invalid Azure storage resource names");
     key(options.partitionKey);
     if (options.connectionString !== undefined) {
+      if (explicitCredential !== undefined)
+        throw new Error("Explicit credentials cannot be combined with a connection string");
       const parts = new Map(
         options.connectionString
           .split(";")
@@ -355,7 +361,7 @@ export class AzureStorage {
     } else {
       if (options.accountName === undefined || !/^[a-z0-9]{3,24}$/.test(options.accountName))
         throw new Error("Azure storage requires a valid account and managed identity");
-      const credential = new DefaultAzureCredential();
+      const credential = explicitCredential ?? new DefaultAzureCredential();
       this.table = new TableClient(
         `https://${options.accountName}.table.core.windows.net`,
         options.tableName,

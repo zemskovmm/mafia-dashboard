@@ -3,31 +3,31 @@
 exports[`host recording > pins the original ceremonial ballot bytes and hashes 1`] = `
 [
   {
-    "stateHashAfter": "sha256:eb2c113c792e5493cd9552bdd656677a16bd0204a11ddc45c1c3d5660802cf65",
+    "stateHashAfter": "sha256:3950bd027f196c090f26d7aac5c65413955eb96e76cc1e9ee74f146ef4fb6c53",
     "stateHashBefore": undefined,
   },
   {
-    "stateHashAfter": "sha256:8f5baff07556cd7042ec6aa83c8b661b1684f1a4d37be7b5ebbc885c52604ad5",
+    "stateHashAfter": "sha256:8d349df903a8ba017a5f015cad279710ce5d1ea8c5475abd767ca20182c0998a",
     "stateHashBefore": undefined,
   },
   {
-    "stateHashAfter": "sha256:e8c690626b3afedf7c7c89d93705ff42fea43fd2ece4ef22b734756c0b89cb95",
+    "stateHashAfter": "sha256:c77c0e1c4c95cdad7804d78c8176366a6fa8399e55a6000ac39e1bd4c4455cbe",
     "stateHashBefore": undefined,
   },
   {
-    "stateHashAfter": "sha256:27c7ee9407e35486c786b7b2e12235bcc67fa0772b964924cc1fb4de68a468de",
+    "stateHashAfter": "sha256:35aff290355b2235f0d9ad45a9eb27fe53b188171bd97361a82e2b55ecfe4f34",
     "stateHashBefore": undefined,
   },
   {
-    "stateHashAfter": "sha256:138280f7970fcab7a0f9a7cb512e07f3aafdfac4b970634fe30905c547f7fdf0",
+    "stateHashAfter": "sha256:cb19e370ed1cbcb5e8bd48ef3003c1c46de54c7c0db2cc2835546fec4512ce12",
     "stateHashBefore": undefined,
   },
   {
-    "stateHashAfter": "sha256:1dfaf18682470fea2aad4325f1a99fbd6c39df6b70b347a1034ef2f2b58877d7",
+    "stateHashAfter": "sha256:a5a74fb5c928d6250ce20c3f2081e9460eda576dbfdbb1469114e0c1bcbf97e4",
     "stateHashBefore": undefined,
   },
   {
-    "stateHashAfter": "sha256:e2caabf3d604d54cbcffb2a8587c9ae4166eb5fd99b5871e3870dab2240f5240",
+    "stateHashAfter": "sha256:21c6c4e8b06e588281b0439fc69716c33107e606938f8a376550ee74327a4be4",
     "stateHashBefore": undefined,
   },
 ]

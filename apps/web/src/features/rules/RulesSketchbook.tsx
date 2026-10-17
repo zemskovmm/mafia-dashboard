@@ -244,7 +244,6 @@ function Leaf({
           <div
             ref={body}
             className="rs-body rs-contents-body"
-            tabIndex={decorative ? undefined : 0}
             aria-label={l.contents}
             onScroll={(event) => onScroll?.(event.currentTarget.scrollTop)}
           >
@@ -288,7 +287,6 @@ function Leaf({
           <div
             ref={body}
             className={`rs-body ${c.reference ? "rs-reference-body" : ""}`}
-            tabIndex={decorative ? undefined : 0}
             aria-label={t.name}
             data-reading-key={c.id}
             onScroll={(event) => onScroll?.(event.currentTarget.scrollTop)}
@@ -360,9 +358,6 @@ export default function RulesSketchbook({
   const [turn, setTurn] = useState<Turn | null>(null);
   const dialog = useRef<HTMLDialogElement>(null);
   const book = useRef<HTMLDivElement>(null);
-  const closeButton = useRef<HTMLButtonElement>(null);
-  const viewport = useRef<HTMLDivElement>(null);
-  const invoker = useRef<HTMLElement | null>(null);
   const hasOpened = useRef(false);
   const activeTurn = useRef<Turn | null>(null);
   const journey = useRef<{
@@ -392,16 +387,11 @@ export default function RulesSketchbook({
     } else setError(chapters.length === 0 ? "—" : undefined);
   }, [open, targetId, chapters]);
 
-  // Match the loading dialog's passive lifecycle: its focus cleanup must finish
-  // before this successor captures the invoker and enters the native top layer.
+  // Keep the native top-layer lifecycle separate from page navigation.
   useEffect(() => {
-    if (!open) {
-      if (invoker.current?.isConnected) invoker.current.focus({ preventScroll: true });
-      return;
-    }
+    if (!open) return;
     const modal = dialog.current;
     if (!modal) return;
-    invoker.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     document.body.classList.add("rules-sketchbook-open");
     modal.showModal();
     // Hidden dialog children have no scroll geometry. Restore after showModal,
@@ -412,7 +402,6 @@ export default function RulesSketchbook({
         targetId !== undefined
           ? 0
           : (scrollPositions.current.get(`${locale}:${position.chapter}`) ?? 0);
-    closeButton.current?.focus({ preventScroll: true });
     const resize = () => {
       cancelRef.current();
       setLayout(dimensions());
@@ -430,7 +419,6 @@ export default function RulesSketchbook({
       cancelRef.current();
       if (modal.open) modal.close();
       document.body.classList.remove("rules-sketchbook-open");
-      if (invoker.current?.isConnected) invoker.current.focus({ preventScroll: true });
     };
   }, [open]);
 
@@ -516,7 +504,6 @@ export default function RulesSketchbook({
     duration = 720,
   ) => {
     if (!open || activeTurn.current) return;
-    viewport.current?.focus({ preventScroll: true });
     if (reducedMotion()) {
       if (automatic) setPosition(to);
       return;
@@ -576,7 +563,6 @@ export default function RulesSketchbook({
         );
       } else begin(to, direction);
     }
-    viewport.current?.focus({ preventScroll: true });
   };
   const destination = (direction: number): Position | null => {
     if (error) return null;
@@ -696,51 +682,15 @@ export default function RulesSketchbook({
         event.stopPropagation();
         close();
       }}
-      onKeyDown={(event) => {
-        if (event.key === "Escape") {
-          event.preventDefault();
-          event.stopPropagation();
-          close();
-        } else if (event.key === "Tab") {
-          const controls = [
-            ...event.currentTarget.querySelectorAll<HTMLElement>(
-              'button:not(:disabled),a[href],[tabindex]:not([tabindex="-1"])',
-            ),
-          ].filter((element) => !element.closest('[inert],[hidden],[aria-hidden="true"]'));
-          event.preventDefault();
-          event.stopPropagation();
-          const index = controls.indexOf(document.activeElement as HTMLElement);
-          const next =
-            index < 0
-              ? event.shiftKey
-                ? controls.length - 1
-                : 0
-              : (index + (event.shiftKey ? -1 : 1) + controls.length) % controls.length;
-          // Native focus scrolling reveals offscreen contents entries.
-          controls[next]?.focus();
-        } else if (
-          !event.altKey &&
-          !event.ctrlKey &&
-          !event.metaKey &&
-          (event.key === "ArrowLeft" || event.key === "ArrowRight")
-        ) {
-          event.preventDefault();
-          event.stopPropagation();
-          go(event.key === "ArrowRight" ? 1 : -1);
-        }
-      }}
     >
       <div
-        ref={viewport}
         className="rs-viewport"
-        tabIndex={-1}
         onClick={(event) => {
           if (event.target === event.currentTarget) close();
         }}
       >
         <div className="rs-dock" style={style}>
           <button
-            ref={closeButton}
             type="button"
             className="rs-close"
             aria-label={labels[locale].close}

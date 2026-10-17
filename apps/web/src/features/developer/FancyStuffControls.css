@@ -1,22 +1,3 @@
-.fancy-stuff-controls {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-}
-.fancy-stuff-controls summary {
-  min-height: 48px;
-  padding: 14px;
-  cursor: pointer;
-}
 .fancy-stuff-fields {
-  display: grid;
   gap: 14px;
-  padding: 0 12px 12px;
-}
-.fancy-stuff-fields button {
-  min-height: 48px;
-}
-.fancy-stuff-fields p {
-  margin: 0;
-  font-size: 0.85rem;
-  color: var(--muted);
 }

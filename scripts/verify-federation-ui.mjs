@@ -11,7 +11,6 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect } from "@playwright/test";
 import {
-  FEDERATION_RULES_EDITION,
   beginNight,
   completeCurrentTurn,
   completeMafiaShots,
@@ -29,7 +28,7 @@ import { assertExactOrigin } from "./session-verifier-contracts.mjs";
 
 const key = "mafia-dashboard.game-session.v5";
 const clone = (value) => JSON.parse(JSON.stringify(value));
-export const legacySetupState = () => ({
+export const currentSetupState = () => ({
   setup: { step: "players", selectedPlayerIds: Array(10).fill(""), setup: null },
   game: null,
   hostPlayerId: null,
@@ -126,7 +125,8 @@ function replay(state) {
   assert.equal(hashGameState(result), hashGameState(state.game), "Live/replay hash equality");
   for (const e of chain) {
     assert.equal(e.replayVersion, state.initialGame.replayVersion);
-    assert.equal(e.rulesEdition, state.initialGame.rulesEdition);
+    assert.equal(e.replayVersion, 3);
+    assert.equal(Object.hasOwn(e, "rulesEdition"), false);
   }
   return {
     head: state.headEventId,
@@ -160,12 +160,8 @@ export function checkpoint(game, template, gameId) {
   replay(state);
   return state;
 }
-/** Actual table input: upward penalty, horizontal menu, or supported keyboard alternate. */
-export async function openPlayerPenalty(
-  page,
-  seat,
-  { locale = "en", input = "pointer", shortcut = true } = {},
-) {
+/** Actual retained upward penalty input using pointer or trusted Chromium touch. */
+export async function openPlayerPenalty(page, seat, { locale = "en", input = "pointer" } = {}) {
   const card = page.locator(`.seat-anchor[data-seat="${seat}"] .player-seat`);
   await expect(card).toBeVisible();
   await card.scrollIntoViewIfNeeded();
@@ -193,16 +189,12 @@ export async function openPlayerPenalty(
         }),
       );
   }, traceBinding);
-  if (input === "keyboard") {
-    assert.equal(shortcut, false, "Shift+F10 opens the full player menu, not the upward shortcut");
-    await card.focus();
-    await page.keyboard.press("Shift+F10");
-  } else {
+  {
     const box = await card.boundingBox();
     assert.ok(box, "Penalty target must be painted");
     const x = box.x + box.width / 2;
-    const y = shortcut ? box.y + box.height - 8 : box.y + box.height / 2;
-    const to = shortcut ? { x, y: y - 72 } : { x: x + 72, y };
+    const y = box.y + box.height - 8;
+    const to = { x, y: y - 72 };
     if (input === "touch") {
       assert.equal(page.context().browser().browserType().name(), "chromium");
       const cdp = await page.context().newCDPSession(page);
@@ -229,11 +221,6 @@ export async function openPlayerPenalty(
       await page.mouse.move(to.x, to.y, { steps: 8 });
       await page.mouse.up();
     }
-  }
-  if (!shortcut) {
-    await expect(page.locator(".table-swipe-menu")).toBeVisible();
-    // The captured card remains the native modal's connected return target.
-    await page.locator(".table-swipe-menu button").click();
   }
   const dialog = page.locator("dialog.federation-judge-dialog.is-discipline[open]");
   try {
@@ -269,17 +256,97 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     width,
     height,
     geometryFailures: [],
-    focusFailures: [],
+    nativeDialogCases: [],
+    horizontalInputs: [],
     scenarios: [],
     screenshots: [],
   };
   const row = report;
-  async function expectReturn(card, label) {
-    try {
-      await expect(card).toBeFocused();
-    } catch (error) {
-      row.focusFailures.push(`${label}: ${error.message}`);
+  async function horizontalInert(seat, label) {
+    const card = page.locator(`.seat-anchor[data-seat="${seat}"] .player-seat`);
+    await card.scrollIntoViewIfNeeded();
+    const before = (await settled(page, api)).current.state;
+    for (const input of page.context().browser().browserType().name() === "chromium"
+      ? ["pointer", "touch"]
+      : ["pointer"]) {
+      const cdp = input === "touch" ? await page.context().newCDPSession(page) : null;
+      try {
+        for (const dx of [-70, 70]) {
+          await card.evaluate((el) => {
+            el.dataset.horizontalTrace = "[]";
+            if (el.dataset.horizontalTraceInstalled) return;
+            el.dataset.horizontalTraceInstalled = "yes";
+            for (const type of [
+              "pointerdown",
+              "pointerup",
+              "pointercancel",
+              "touchstart",
+              "touchend",
+              "click",
+            ])
+              el.addEventListener(type, (event) => {
+                const trace = JSON.parse(el.dataset.horizontalTrace);
+                trace.push({ type, trusted: event.isTrusted, pointerType: event.pointerType });
+                el.dataset.horizontalTrace = JSON.stringify(trace);
+              });
+          });
+          const box = await card.boundingBox();
+          assert.ok(box);
+          const x = box.x + box.width / 2,
+            y = box.y + box.height / 2;
+          if (cdp) {
+            await cdp.send("Input.dispatchTouchEvent", {
+              type: "touchStart",
+              touchPoints: [{ x, y, id: 1 }],
+            });
+            for (let n = 1; n <= 6; n++)
+              await cdp.send("Input.dispatchTouchEvent", {
+                type: "touchMove",
+                touchPoints: [{ x: x + (dx * n) / 6, y, id: 1 }],
+              });
+            await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+          } else {
+            await page.mouse.move(x, y);
+            await page.mouse.down();
+            await page.mouse.move(x + dx, y, { steps: 6 });
+            await page.mouse.up();
+          }
+          await expect(
+            page.locator(".table-swipe-menu, .table-swipe-backdrop, dialog[open]"),
+          ).toHaveCount(0);
+          const after = (await settled(page, api)).current.state;
+          assert.equal(
+            after.headEventId,
+            before.headEventId,
+            `${label}: horizontal drag emitted an accepted action`,
+          );
+          assert.deepEqual(after.game, before.game, `${label}: horizontal drag mutated gameplay`);
+          const trace = JSON.parse(await card.getAttribute("data-horizontal-trace"));
+          assert.ok(trace.some((e) => e.type === "pointerdown" && e.trusted));
+          if (cdp) assert.ok(trace.some((e) => e.type === "touchstart" && e.trusted));
+          row.horizontalInputs.push({
+            label,
+            input,
+            dx,
+            start: { x, y },
+            end: { x: x + dx, y },
+            trace,
+          });
+        }
+      } finally {
+        await cdp?.detach();
+      }
     }
+  }
+  async function expectReturn(card, label) {
+    await expect(page.locator("dialog.federation-judge-dialog[open]")).toHaveCount(0);
+    await expect(card).toBeVisible();
+    row.nativeDialogCases.push({
+      label,
+      closed: true,
+      connectedTarget: true,
+      forcedReturnFocus: "retired",
+    });
   }
   const activeTransitions = [];
   report.activeTransitions = activeTransitions;
@@ -652,15 +719,11 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
   try {
     await freshSetup(page);
     const selected = await read(page);
-    assert.equal(
-      selected.current.state.setup.rulesEdition,
-      FEDERATION_RULES_EDITION,
-      "Fresh player setup captures edition before role draw",
-    );
+    assert.equal(Object.hasOwn(selected.current.state.setup, "rulesEdition"), false);
     await draw(page);
     const planning = await settled(page, api);
-    assert.equal(planning.current.state.initialGame.replayVersion, 2);
-    assert.equal(planning.current.state.game.rulesEdition, FEDERATION_RULES_EDITION);
+    assert.equal(planning.current.state.initialGame.replayVersion, 3);
+    assert.equal(Object.hasOwn(planning.current.state.game, "rulesEdition"), false);
     await expect(page.locator(".game-header")).not.toContainText("MAFGAME");
     await assertTableCorners(page);
     await page.getByRole("button", { name: "Mafia asleep", exact: true }).click();
@@ -770,6 +833,7 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     for (const game of [greeting.current.state.game, day]) {
       const id = randomUUID();
       await seed(page, api, checkpoint(game, template, id), id);
+      await horizontalInert(penaltySeat, game.phase);
       const before = await settled(page, api);
       const dialog = await swipeUp(penaltySeat);
       assert.equal(
@@ -784,6 +848,84 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
         "Dismiss emits no event",
       );
     }
+    // Browser-owned cancellation must suppress both canonical actions and trailing clicks.
+    const gestureCard = page.locator(`.seat-anchor[data-seat="${penaltySeat}"] .player-seat`);
+    const gestureBefore = (await settled(page, api)).current.state;
+    await gestureCard.evaluate((card) =>
+      card.addEventListener(
+        "pointerdown",
+        (event) => {
+          card.dataset.verifierPointer = String(event.pointerId);
+        },
+        { once: true },
+      ),
+    );
+    const gestureBox = await gestureCard.boundingBox();
+    const gestureX = gestureBox.x + gestureBox.width / 2;
+    const gestureY = gestureBox.y + 8;
+    await page.mouse.move(gestureX, gestureY);
+    await page.mouse.down();
+    await page.mouse.move(gestureX, gestureY + 72, { steps: 8 });
+    await gestureCard.evaluate((card) => {
+      const id = Number(card.dataset.verifierPointer);
+      if (card.hasPointerCapture(id)) card.releasePointerCapture(id);
+      delete card.dataset.verifierPointer;
+    });
+    await page.mouse.up();
+    assert.equal(
+      (await read(page)).current.state.headEventId,
+      gestureBefore.headEventId,
+      "Lost capture emits no event or compatibility click",
+    );
+    if (page.context().browser().browserType().name() === "chromium") {
+      const cdp = await page.context().newCDPSession(page);
+      try {
+        await cdp.send("Input.dispatchTouchEvent", {
+          type: "touchStart",
+          touchPoints: [{ x: gestureX, y: gestureY, id: 31 }],
+        });
+        await cdp.send("Input.dispatchTouchEvent", {
+          type: "touchMove",
+          touchPoints: [{ x: gestureX, y: gestureY + 72, id: 31 }],
+        });
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
+      } finally {
+        await cdp.detach();
+      }
+      assert.equal(
+        (await read(page)).current.state.headEventId,
+        gestureBefore.headEventId,
+        "Touch cancel emits no event or compatibility click",
+      );
+    }
+    await page.mouse.move(gestureX, gestureY);
+    await page.mouse.down();
+    await page.mouse.move(gestureX, gestureY + 72, { steps: 8 });
+    await page.mouse.up();
+    const downward = await saveReplay(page, api, "downward-foul-after-cancel", width, height);
+    assert.equal(downward.env.current.state.events.at(-1).type, "foul.issued");
+    assert.equal(
+      downward.env.current.state.game.players.find((p) => p.seat === penaltySeat).fouls,
+      gestureBefore.game.players.find((p) => p.seat === penaltySeat).fouls + 1,
+    );
+    const afterFoul = downward.env.current.state.headEventId;
+    const freshPenalty = await swipeUp(penaltySeat);
+    await page.keyboard.press("Escape");
+    await expect(freshPenalty).toBeHidden();
+    assert.equal(
+      (await read(page)).current.state.headEventId,
+      afterFoul,
+      "Fresh upward menu cancellation emits no incidental event",
+    );
+    row.nativeGestures = {
+      lostCapture: "PASS",
+      touchCancel:
+        page.context().browser().browserType().name() === "chromium"
+          ? "PASS"
+          : "not available: Chromium CDP only",
+      freshDownwardFoul: "PASS",
+      freshUpwardNativeEscape: "PASS",
+    };
     row.scenarios.push({
       name: "opening-and-day-swipe-without-incidental-action",
       input:
@@ -844,20 +986,20 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     }
     row.scenarios.push({ name: "post-result-victim-shooter-swipe-save-reload-replay" });
 
-    // Resume an explicitly legacy saved setup; never override fresh app policy.
-    await seed(page, api, legacySetupState());
+    // Resume a current canonical setup; reload retains the selector-free representation.
+    await seed(page, api, currentSetupState());
     await freshSetup(page);
     await draw(page);
-    const legacy = await settled(page, api);
-    assert.equal(legacy.current.state.initialGame.replayVersion, 1);
-    assert.equal(legacy.current.state.game.rulesEdition, undefined);
-    replay(legacy.current.state);
+    const restored = await settled(page, api);
+    assert.equal(restored.current.state.initialGame.replayVersion, 3);
+    assert.equal(restored.current.state.game.rulesEdition, undefined);
+    replay(restored.current.state);
     await page.reload({ waitUntil: "networkidle" });
-    const legacyReload = await settled(page, api);
-    assert.equal(legacyReload.current.state.initialGame.replayVersion, 1);
+    const restoredReload = await settled(page, api);
+    assert.equal(restoredReload.current.state.initialGame.replayVersion, 3);
     row.scenarios.push({
-      name: "explicit-legacy-resume-v1",
-      ...replay(legacyReload.current.state),
+      name: "current-setup-resume-v3",
+      ...replay(restoredReload.current.state),
     });
 
     let ballot = clone(day);
@@ -869,6 +1011,7 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     const ballotId = randomUUID();
     await seed(page, api, checkpoint(ballot, template, ballotId), ballotId);
     await expect(page.getByRole("button", { name: /^Vote as / }).first()).toBeEnabled();
+    await horizontalInert(1, "current-ballot");
     await expect(
       page.getByRole("button", { name: /Announce full order|Mention candidate|STOP/ }),
     ).toHaveCount(0);
@@ -1022,9 +1165,33 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
       .getByRole("button", { name: "Next candidate", exact: true })
       .boundingBox();
     const reviewSeat = day.players[0].seat;
-    const { card: toolsToggle } = await openPlayerPenalty(page, reviewSeat, { shortcut: false });
+    const { card: toolsToggle } = await openPlayerPenalty(page, reviewSeat, {});
     await page.keyboard.press("Escape");
-    await openPlayerPenalty(page, reviewSeat, { shortcut: false, input: "keyboard" });
+    await expectReturn(toolsToggle, "Native dialog Escape cancellation");
+    const beforeRetiredKeys = (await read(page)).current.state.headEventId;
+    await toolsToggle.focus();
+    await page.keyboard.press("f");
+    await page.keyboard.press("Shift+F10");
+    await page.keyboard.press("ContextMenu");
+    await expect(page.locator(".table-swipe-menu")).toHaveCount(0);
+    await expect(page.locator("dialog.federation-judge-dialog[open]")).toHaveCount(0);
+    assert.equal(
+      (await read(page)).current.state.headEventId,
+      beforeRetiredKeys,
+      "Retired keys emit no event",
+    );
+    await openPlayerPenalty(page, reviewSeat, { input: "pointer" });
+    const nativeSelect = page.getByRole("combobox", { name: "Discipline action", exact: true });
+    const selectBefore = await nativeSelect.inputValue();
+    // macOS native selects use typeahead; ArrowUp/Home alone do not commit.
+    await nativeSelect.press("f");
+    await nativeSelect.press("Enter");
+    assert.equal(
+      await nativeSelect.inputValue(),
+      await nativeSelect.evaluate((select) => select.options[0].value),
+      "Native select typeahead/Enter activation",
+    );
+    await nativeSelect.selectOption(selectBefore);
     await page.getByText("Dispute count", { exact: true }).click();
     await page
       .getByLabel("Dispute reason", { exact: true })
@@ -1080,7 +1247,7 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     await sheet.getByRole("button", { name: "Close", exact: true }).focus();
     await page.keyboard.press("Escape");
     await expect(sheet).toBeHidden();
-    await expect(toolsToggle).toBeFocused();
+    await expectReturn(toolsToggle, "Native dialog Escape after acceptance");
     await page.getByRole("button", { name: "Next candidate", exact: true }).click();
     await expect(page.getByRole("button", { name: "Next candidate", exact: true })).toHaveCount(0);
     const accepted = await settled(page, api);
@@ -1134,7 +1301,6 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
         await seed(page, api, checkpoint(day, template, id), id);
         const { dialog } = await openPlayerPenalty(page, penaltySeat, {
           locale,
-          shortcut: false,
         });
         await dialog
           .getByRole("combobox", {
@@ -1154,12 +1320,13 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
           assert.ok(description.trim().split(/\s+/).length <= 2);
         }
         await rule.selectOption("6.2.2");
-        await dialog
-          .getByRole("combobox", {
+        // Upward discipline derives timing from the actual displayed phase.
+        await expect(
+          dialog.getByRole("combobox", {
             name: locale === "en" ? "Occurrence timing" : "Момент нарушения",
             exact: true,
-          })
-          .selectOption("day-discussion");
+          }),
+        ).toHaveCount(0);
         await page.screenshot({
           path: path.join(evidence, `${width}x${height}-discipline-${locale}.png`),
         });
@@ -1538,7 +1705,7 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     api.clean();
     assert.equal(row.scenarios.length, 12 + 3);
     assert.deepEqual(row.geometryFailures, [], "No primary-control overflow");
-    assert.deepEqual(row.focusFailures, [], "All gesture-menu dismissal focus returns");
+    assert.ok(row.nativeDialogCases.length >= 4, "Native Escape/Close dismissal cases retained");
     console.log(
       `Federation integrated UI ${width}x${height}: PASS (${row.scenarios.length} scenarios)`,
     );

@@ -1,14 +1,16 @@
 /* global AbortController, AbortSignal, URL, fetch */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { clearTimeout } from "node:timers";
 import { chromium } from "@playwright/test";
-import { Pool } from "pg";
+import { tsImport } from "tsx/esm/api";
+import { ownedAzuriteEnvironment } from "./test-local.mjs";
+import { verifyCompletedRecords } from "./verify-completed-records.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const defaultPorts = new Set([3000, 5173]);
@@ -24,8 +26,6 @@ class VerifierError extends Error {
     this.name = "VerifierError";
   }
 }
-
-const isLoopbackHostname = (hostname) => hostname === "127.0.0.1" || hostname === "::1";
 
 export const assertLoopbackHttpOrigin = (candidate) => {
   let parsed;
@@ -56,34 +56,6 @@ export const assertLoopbackHttpOrigin = (candidate) => {
   return parsed.origin;
 };
 
-const assertDisposableDatabaseUrl = (candidate) => {
-  let parsed;
-  try {
-    parsed = new URL(candidate);
-  } catch {
-    throw new VerifierError("The disposable PostgreSQL helper returned an invalid database URL");
-  }
-  if (
-    !["postgres:", "postgresql:"].includes(parsed.protocol) ||
-    !isLoopbackHostname(parsed.hostname) ||
-    parsed.port === "" ||
-    !Number.isInteger(Number(parsed.port)) ||
-    Number(parsed.port) < 1 ||
-    Number(parsed.port) > 65_535 ||
-    [5432, 54328].includes(Number(parsed.port)) ||
-    parsed.pathname !== "/mafia_test" ||
-    parsed.username !== "mafia" ||
-    parsed.password !== "" ||
-    parsed.search !== "" ||
-    parsed.hash !== ""
-  ) {
-    throw new VerifierError(
-      "The disposable PostgreSQL helper did not return an isolated loopback database",
-    );
-  }
-  return parsed.toString();
-};
-
 const inheritedEnvironmentWhitelist = [
   "PATH",
   "HOME",
@@ -106,7 +78,7 @@ const cleanInheritedEnvironment = (inheritedEnv) => {
 
 export const buildVerifierEnvironment = ({
   apiPort,
-  databaseUrl,
+  storage,
   inheritedEnv = process.env,
   webPort,
 }) => {
@@ -115,12 +87,12 @@ export const buildVerifierEnvironment = ({
   if (apiOrigin === webOrigin) {
     throw new VerifierError("The API and Vite verifier origins must use separate ports");
   }
-  const verifiedDatabaseUrl = assertDisposableDatabaseUrl(databaseUrl);
+  const verifiedStorage = ownedAzuriteEnvironment(storage);
   const base = cleanInheritedEnvironment(inheritedEnv);
   const serverEnv = {
     ...base,
     APP_COMMIT: "unknown",
-    DATABASE_URL: verifiedDatabaseUrl,
+    ...verifiedStorage,
     GOOGLE_CLIENT_ID: syntheticGoogleClientId,
     GOOGLE_CLIENT_SECRET: syntheticGoogleClientSecret,
     HOST: "127.0.0.1",
@@ -143,6 +115,11 @@ export const sanitizeDiagnostic = (value) =>
       "session=[redacted-cookie]",
     )
     .replace(/\bpostgres(?:ql)?:\/\/[^\s]+/giu, "[redacted-postgres-url]")
+    .replace(
+      /\b(?:AZURE_STORAGE_CONNECTION_STRING\s*[=:]\s*)?DefaultEndpointsProtocol=[^\s]+/giu,
+      "[redacted-storage-connection]",
+    )
+    .replace(/\bAccountKey\s*=\s*[^;\s]+/giu, "AccountKey=[redacted]")
     .replace(
       /\b[A-Z][A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|KEY|COOKIE)\s*[=:]\s*\S+/gu,
       "[redacted-credential]",
@@ -215,7 +192,13 @@ const childFailure = ({ child, label, output, spawnError }) => {
 };
 
 const stopChild = async (tracked) => {
-  if (tracked === null || tracked.child.exitCode !== null || tracked.spawnError !== null) return;
+  if (
+    tracked === null ||
+    tracked.child.exitCode !== null ||
+    tracked.child.signalCode !== null ||
+    tracked.spawnError !== null
+  )
+    return;
   const exited = once(tracked.child, "exit");
   try {
     tracked.child.kill("SIGTERM");
@@ -299,12 +282,39 @@ const waitForHttp = async ({ label, signal, tracked, url }) => {
   );
 };
 
-const apiResponse = async ({ apiOrigin, clubId, path, token }) => {
-  const headers = { origin: apiOrigin };
+const waitForRestartMarker = async (directory, signal) => {
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline) {
+    throwIfAborted(signal);
+    try {
+      const marker = await readFile(join(directory, "ready"));
+      if (marker.length !== 0) throw new VerifierError("Restart marker must be empty");
+      return;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    await delay(100);
+  }
+  throw new VerifierError("Authoritative session verifier did not request an API restart");
+};
+
+const apiResponse = async ({
+  apiOrigin,
+  clubId,
+  path,
+  token,
+  method = "GET",
+  payload,
+  origin = apiOrigin,
+}) => {
+  const headers = { origin };
   if (token !== undefined) headers.cookie = `${sessionCookieName}=${token}`;
   if (clubId !== undefined) headers["x-club-id"] = clubId;
+  if (payload !== undefined) headers["content-type"] = "application/json";
   const response = await fetch(new URL(path, apiOrigin), {
     headers,
+    method,
+    ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
     signal: AbortSignal.timeout(10_000),
   });
   const text = await response.text();
@@ -323,19 +333,18 @@ const expectStatus = (response, expected, label) => {
   }
 };
 
-const makeSession = async (pool, { displayName, expiresAt }) => {
+export const makeSession = async (accounts, { displayName, expiresAt }) => {
   const token = randomBytes(32).toString("base64url");
   const userId = randomUUID();
   const tokenHash = createHash("sha256").update(token).digest();
-  await pool.query("INSERT INTO users (id, email, display_name) VALUES ($1, $2, $3)", [
-    userId,
-    `${userId}@local-backend-verifier.invalid`,
-    displayName,
-  ]);
-  await pool.query(
-    "INSERT INTO user_sessions (id, token_hash, user_id, expires_at) VALUES ($1, $2, $3, $4)",
-    [randomUUID(), tokenHash, userId, expiresAt],
-  );
+  await accounts.upsertUser({
+    id: userId,
+    subject: `local-backend-verifier:${userId}`,
+    email: `${userId}@local-backend-verifier.invalid`,
+    name: displayName,
+    picture: null,
+  });
+  await accounts.saveSession(userId, tokenHash, expiresAt);
   return { token, tokenHash, userId };
 };
 
@@ -360,7 +369,7 @@ const writeEvidence = async ({ error, stages, status }) => {
     browser: "chromium",
     externalGoogleContacted: false,
     limitations: [
-      "Synthetic database sessions validate local cookie/session lookup, not Google OAuth consent or token exchange.",
+      "Synthetic Azure account/session records validate real cookie lookup, not Google OAuth consent or token exchange.",
       "Chromium is the required browser coverage; WebKit/iPad coverage is not included in this smoke verifier.",
     ],
     status,
@@ -379,12 +388,13 @@ const writeEvidence = async ({ error, stages, status }) => {
 const verify = async () => {
   const stages = [];
   const pass = (name, details = {}) => stages.push({ name, status: "passed", ...details });
-  let postgres = null;
-  let pool = null;
+  let azurite = null;
+  let azure = null;
   let server = null;
   let vite = null;
   let browser = null;
   let browserContext = null;
+  let sessionVerifierResult = null;
   let failure;
   const initialSignalListenerCounts = {
     SIGINT: process.listenerCount("SIGINT"),
@@ -406,44 +416,31 @@ const verify = async () => {
   process.once("SIGTERM", onSigterm);
 
   try {
-    const { startPostgres } = await import("./local-postgres.mjs").catch((error) => {
-      throw new VerifierError(
-        `The disposable PostgreSQL helper is unavailable: ${sanitizeDiagnostic(error)}`,
-      );
-    });
-    if (typeof startPostgres !== "function") {
-      throw new VerifierError("The disposable PostgreSQL helper does not export startPostgres");
-    }
-    postgres = await startPostgres({ disposable: true });
+    const { startAzurite } = await import("./local-azurite.mjs");
+    azurite = await startAzurite({ mode: "test" });
     throwIfAborted(signalController.signal);
-    if (
-      postgres === null ||
-      typeof postgres.stop !== "function" ||
-      typeof postgres.url !== "string"
-    ) {
-      throw new VerifierError(
-        "The disposable PostgreSQL helper returned an invalid lifecycle handle",
-      );
-    }
-    const databaseUrl = assertDisposableDatabaseUrl(postgres.url);
-    pass("disposable-postgres-started");
+    const storage = ownedAzuriteEnvironment(azurite.environment);
+    pass("owned-loopback-azurite-started");
 
     const [apiPort, webPort] = await Promise.all([reserveLoopbackPort(), reserveLoopbackPort()]);
     const { apiOrigin, serverEnv, webEnv, webOrigin } = buildVerifierEnvironment({
       apiPort,
-      databaseUrl,
+      storage,
       webPort,
     });
 
-    await runChild({
-      args: ["--import", "tsx", "apps/server/src/migrate.ts"],
-      command: process.execPath,
-      cwd: repositoryRoot,
-      env: serverEnv,
-      label: "disposable schema migration",
-      signal: signalController.signal,
+    const { createAzureStores } = await tsImport(
+      "../apps/server/src/azure-stores.ts",
+      import.meta.url,
+    );
+    azure = createAzureStores({
+      connectionString: storage.AZURE_STORAGE_CONNECTION_STRING,
+      tableName: storage.AZURE_STORAGE_TABLE_NAME,
+      containerName: storage.AZURE_STORAGE_CONTAINER_NAME,
+      partitionKey: storage.AZURE_STORAGE_PARTITION_KEY,
     });
-    pass("runtime-schema-migrated");
+    await azure.initialize();
+    pass("owned-azure-storage-initialized");
 
     const startServer = async () => {
       if (server !== null)
@@ -495,16 +492,15 @@ const verify = async () => {
     );
     pass("anonymous-access-denied");
 
-    pool = new Pool({ connectionString: databaseUrl });
-    const owner = await makeSession(pool, {
+    const owner = await makeSession(azure.auth, {
       displayName: "Local Backend Owner",
       expiresAt: new Date(Date.now() + 5 * 60_000),
     });
-    const secondUser = await makeSession(pool, {
+    const secondUser = await makeSession(azure.auth, {
       displayName: "Local Backend Stranger",
       expiresAt: new Date(Date.now() + 5 * 60_000),
     });
-    const expired = await makeSession(pool, {
+    const expired = await makeSession(azure.auth, {
       displayName: "Local Backend Expired",
       expiresAt: new Date(Date.now() - 60_000),
     });
@@ -637,7 +633,8 @@ const verify = async () => {
     pass("server-restart-persistence-readback");
 
     await mkdir(evidenceDirectory, { recursive: true });
-    await runChild({
+    const restartGateDirectory = await mkdtemp(join(evidenceDirectory, "restart-gate-"));
+    sessionVerifierResult = runChild({
       args: ["scripts/verify-session-state.mjs"],
       command: process.execPath,
       cwd: repositoryRoot,
@@ -646,12 +643,33 @@ const verify = async () => {
         APP_URL: webOrigin,
         SESSION_AUTH_COOKIE: `${sessionCookieName}=${owner.token}`,
         SESSION_CLUB_ID: clubId,
+        SESSION_RESTART_GATE_DIR: restartGateDirectory,
+        SESSION_RESTART_TIMEOUT_MS: "120000",
         SESSION_SCREENSHOT: resolve(evidenceDirectory, "game-record-restored.png"),
       },
       label: "server-backed game record browser verification",
       signal: signalController.signal,
-      timeout: 180_000,
-    });
+      timeout: 240_000,
+    }).then(
+      () => ({ error: null }),
+      (error) => ({ error }),
+    );
+    await Promise.race([
+      waitForRestartMarker(restartGateDirectory, signalController.signal),
+      sessionVerifierResult.then(({ error }) => {
+        throw error ?? new VerifierError("Session verifier exited before requesting the restart");
+      }),
+    ]);
+    const serverExited = once(server.child, "exit");
+    if (!server.child.kill("SIGKILL"))
+      throw new VerifierError("Owned API process could not be killed");
+    await serverExited;
+    server = null;
+    await startServer();
+    await writeFile(join(restartGateDirectory, "continue"), "", { flag: "wx", mode: 0o600 });
+    const sessionResult = await sessionVerifierResult;
+    if (sessionResult.error !== null) throw sessionResult.error;
+    pass("authoritative-game-survives-api-sigkill-restart");
     pass("game-record-browser-create-restore-delete");
 
     const deniedSecondUser = await apiResponse({
@@ -663,7 +681,16 @@ const verify = async () => {
     expectStatus(deniedSecondUser, 403, "second-user guessed club access");
     pass("cross-user-club-access-denied", { statusCode: 403 });
 
-    await pool.query("DELETE FROM user_sessions WHERE token_hash = $1", [owner.tokenHash]);
+    await verifyCompletedRecords({
+      page,
+      player: playerPayload.player,
+      evidenceDirectory,
+      pass,
+      request: (options) =>
+        apiResponse({ ...options, apiOrigin, clubId, token: owner.token, origin: webOrigin }),
+    });
+
+    await azure.auth.removeSession(owner.tokenHash);
     expectStatus(
       await apiResponse({ apiOrigin, path: "/api/clubs", token: owner.token }),
       401,
@@ -683,14 +710,16 @@ const verify = async () => {
   } catch (error) {
     failure = error instanceof Error ? error : new VerifierError(sanitizeDiagnostic(error));
   } finally {
+    signalController.abort(new VerifierError("Verifier cleanup"));
     const cleanupFailures = [];
     for (const cleanup of [
+      async () => sessionVerifierResult,
       async () => browserContext?.close(),
       async () => browser?.close(),
       async () => stopChild(vite),
       async () => stopChild(server),
-      async () => pool?.end(),
-      async () => postgres?.stop(),
+      async () => azure?.end(),
+      async () => azurite?.stop(),
     ]) {
       try {
         await cleanup();

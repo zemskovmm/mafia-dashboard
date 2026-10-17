@@ -25,7 +25,6 @@ Object.defineProperties(window, {
 // top-layer/inert behavior; these fallbacks only expose the component lifecycle.
 HTMLDialogElement.prototype.showModal ??= function () {
   this.open = true;
-  this.querySelector<HTMLElement>("[autofocus], button, [tabindex='0']")?.focus();
 };
 HTMLDialogElement.prototype.close ??= function () {
   this.open = false;

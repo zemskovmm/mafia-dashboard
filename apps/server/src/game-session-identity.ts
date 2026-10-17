@@ -1,5 +1,4 @@
 import { CASPER_PLAYER_ID, CASPER_SEAT } from "@mafia/game-domain";
-import type { PoolClient } from "pg";
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const profileFields = ["name", "nickname", "firstName", "lastName", "email", "hostName"];
@@ -9,7 +8,7 @@ const record = (value: unknown): value is Record<string, unknown> =>
 export class UnsupportedGameFormatError extends Error {
   readonly code = "unsupported_game_format";
   constructor() {
-    super("Unsupported name-bearing game record");
+    super("Unsupported game record structure");
   }
 }
 
@@ -55,7 +54,31 @@ export const inspectGameIdentities = (state: unknown, results: unknown): Referen
       profileFields.some((key) => Object.hasOwn(value.payload as object, key))
     )
       named = true;
-    if (Object.hasOwn(value, "hostPlayerId")) add(value.hostPlayerId, active);
+    if (Object.hasOwn(value, "hostPlayerId")) {
+      if (value.hostPlayerId === CASPER_PLAYER_ID) invalid = true;
+      add(value.hostPlayerId, active);
+    }
+    if (Object.hasOwn(value, "players") && value.players != null) {
+      if (!Array.isArray(value.players)) invalid = true;
+      else {
+        const ids = new Set<string>();
+        for (const player of value.players) {
+          if (
+            !record(player) ||
+            typeof (player.playerId ?? player.id) !== "string" ||
+            (player.playerId ?? player.id) === ""
+          ) {
+            invalid = true;
+            continue;
+          }
+          const id = (player.playerId ?? player.id) as string;
+          add(id, active);
+          if (ids.has(id.toLowerCase())) invalid = true;
+          ids.add(id.toLowerCase());
+          if (profileFields.some((key) => Object.hasOwn(player, key))) named = true;
+        }
+      }
+    }
     if (Object.hasOwn(value, "selectedPlayerIds")) {
       if (!Array.isArray(value.selectedPlayerIds)) invalid = true;
       else value.selectedPlayerIds.forEach((id) => add(id, active));
@@ -67,7 +90,11 @@ export const inspectGameIdentities = (state: unknown, results: unknown): Referen
       (Object.hasOwn(value, "id") || Object.hasOwn(value, "playerId"))
     ) {
       if (profileFields.some((key) => Object.hasOwn(value, key))) named = true;
-      if ((value.playerId ?? value.id) === CASPER_PLAYER_ID && value.seat !== CASPER_SEAT)
+      if (
+        (value.playerId ?? value.id) === CASPER_PLAYER_ID &&
+        value.seat != null &&
+        value.seat !== CASPER_SEAT
+      )
         invalid = true;
       add(value.playerId ?? value.id, active);
     } else if (Object.hasOwn(value, "playerId")) {
@@ -80,56 +107,44 @@ export const inspectGameIdentities = (state: unknown, results: unknown): Referen
   visit(results, false); // Completed results are historical identity references.
   if (record(state)) {
     const setup = record(state.setup) ? state.setup : null;
-    const selected = new Set<unknown>([
-      ...(Array.isArray(setup?.selectedPlayerIds) ? setup.selectedPlayerIds : []),
-      ...(record(setup?.setup) && Array.isArray(setup.setup.players)
-        ? setup.setup.players.map((player: unknown) => (record(player) ? player.id : null))
-        : []),
-      ...(record(state.game) && Array.isArray(state.game.players)
-        ? state.game.players.map((player: unknown) => (record(player) ? player.id : null))
-        : []),
-    ]);
+    const selected = new Set<unknown>(
+      [
+        ...(Array.isArray(setup?.selectedPlayerIds) ? setup.selectedPlayerIds : []),
+        ...(record(setup?.setup) && Array.isArray(setup.setup.players)
+          ? setup.setup.players.map((player: unknown) => (record(player) ? player.id : null))
+          : []),
+        ...(record(state.game) && Array.isArray(state.game.players)
+          ? state.game.players.map((player: unknown) => (record(player) ? player.id : null))
+          : []),
+      ].map((id) => (typeof id === "string" ? id.toLowerCase() : id)),
+    );
     const host = state.hostPlayerId ?? setup?.hostPlayerId;
     if (
       host === CASPER_PLAYER_ID ||
-      (host !== null && host !== undefined && host !== "" && selected.has(host))
+      (typeof host === "string" && host !== "" && selected.has(host.toLowerCase()))
     )
       invalid = true;
   }
   return { all, selected, invalid, named };
 };
 
-export const assertSupportedGame = (state: unknown, results: unknown): void => {
-  if (inspectGameIdentities(state, results).named) throw new UnsupportedGameFormatError();
-};
-
-export const validateGameIdentities = async (
-  client: PoolClient,
-  clubId: string,
-  state: unknown,
-  results: unknown,
-  newSelection: boolean,
-): Promise<void> => {
-  const refs = inspectGameIdentities(state, results);
-  if (refs.named) throw new UnsupportedGameFormatError();
-  if (refs.invalid || (record(state) && state.hostPlayerId === CASPER_PLAYER_ID)) {
-    throw new InvalidGameIdentityError();
-  }
-  const ids = [...refs.all].sort();
-  if (ids.length === 0) return;
-  // Deletion and save take the same projection-table locks before these row
-  // locks. Locking rows also serializes with profile retirement, regardless of
-  // whether the relational projection is present or consistent.
-  const players = await client.query<{ id: string; retired_at: Date | null }>(
-    "SELECT id, retired_at FROM players WHERE club_id = $1 AND id = ANY($2::uuid[]) ORDER BY id FOR UPDATE",
-    [clubId, ids],
+/** A shape guard only: no edition values, engine routing, decoding or resealing. */
+export const hasEngineSelector = (value: unknown): boolean => {
+  if (Array.isArray(value)) return value.some(hasEngineSelector);
+  if (!record(value)) return false;
+  return Object.entries(value).some(
+    ([key, child]) =>
+      key === "rulesEdition" ||
+      key === "rulesetId" ||
+      key === "rulesetVersion" ||
+      hasEngineSelector(child),
   );
+};
+export const assertSupportedGame = (state: unknown, results: unknown): void => {
   if (
-    players.rows.length !== ids.length ||
-    players.rows.some(
-      (row) => row.retired_at !== null && (newSelection || refs.selected.has(row.id)),
-    )
-  ) {
-    throw new InvalidGameIdentityError();
-  }
+    inspectGameIdentities(state, results).named ||
+    hasEngineSelector(state) ||
+    hasEngineSelector(results)
+  )
+    throw new UnsupportedGameFormatError();
 };

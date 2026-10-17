@@ -1,18 +1,54 @@
-import type { Pool } from "pg";
 import { describe, expect, it, vi } from "vitest";
 import { buildApp } from "./app.js";
-import type { GoogleAuthService } from "./google-auth.js";
+import type { GoogleAuthPort } from "./google-auth.js";
+import type { ApplicationStores } from "./storage-contracts.js";
 
-const pool = { query: vi.fn() } as unknown as Pool;
+const unexpectedAccess = vi.fn(async () => {
+  throw new Error("HTTP security smoke tests must not access persistence");
+});
+const stores: ApplicationStores = {
+  events: { read: unexpectedAccess },
+  games: {
+    create: unexpectedAccess,
+    save: unexpectedAccess,
+    clear: unexpectedAccess,
+    get: unexpectedAccess,
+    listActive: unexpectedAccess,
+    listCompleted: unexpectedAccess,
+    readStatisticsInputs: unexpectedAccess,
+  },
+  tournaments: { list: unexpectedAccess, create: unexpectedAccess, assign: unexpectedAccess },
+  players: {
+    list: unexpectedAccess,
+    get: unexpectedAccess,
+    create: unexpectedAccess,
+    update: unexpectedAccess,
+    delete: unexpectedAccess,
+  },
+  clubs: {
+    listForUser: unexpectedAccess,
+    getRole: unexpectedAccess,
+    isMember: unexpectedAccess,
+    create: unexpectedAccess,
+    claimClubAccess: unexpectedAccess,
+    update: unexpectedAccess,
+    delete: unexpectedAccess,
+  },
+  ready: unexpectedAccess,
+};
 
 const buildLimitedAuthApp = async (trustedProxyHops: 0 | 1 = 0) => {
-  const googleAuth = {
+  const googleAuth: GoogleAuthPort = {
+    configured: true,
     createAuthorizationUrl: vi.fn(
       (state: string) => `https://accounts.example.test?state=${state}`,
     ),
-  } as unknown as GoogleAuthService;
+    completeAuthorization: unexpectedAccess,
+    getUserForSession: vi.fn(async () => null),
+    endSession: unexpectedAccess,
+  };
   const app = await buildApp({
-    pool,
+    stores,
     googleAuth,
     trustedProxyHops,
     authRateLimit: { limit: 1, windowMs: 10_000 },
@@ -137,7 +173,7 @@ describe("server HTTP security policy", () => {
     ["https://mafia.example.test", true],
     ["HTTPS://mafia.example.test", true],
   ])("sets a compatible response baseline for %s", async (publicAppUrl, secure) => {
-    const app = await buildApp({ pool, publicAppUrl });
+    const app = await buildApp({ stores, publicAppUrl });
     await app.ready();
 
     const live = await app.inject({ method: "GET", url: "/health/live" });

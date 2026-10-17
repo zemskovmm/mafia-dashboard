@@ -17,7 +17,8 @@ let setup = beginRoleDraw(
   createSeededRandom(13),
 );
 for (let seat = 1; seat <= 10; seat += 1) setup = drawRoleForSeat(setup, seat);
-const day = advanceSetupPhase(advanceSetupPhase(createGame(completeRoleDraw(setup))));
+let day = createGame(completeRoleDraw(setup));
+while (day.phase !== "day") day = advanceSetupPhase(day);
 const balance = (citizens: number, mafia: number): GameState => {
   let red = 0;
   let black = 0;
@@ -67,12 +68,9 @@ describe("Guessing Game condition", () => {
     expect(isGuessingState(balance(citizens, mafia))).toBe(false);
   });
 
-  it.each<GamePhase>(["mafia-planning", "sheriff-wake", "finished", "draw", "cancelled"])(
-    "rejects %s",
-    (phase) => {
-      expect(isGuessingState({ ...balance(2, 1), phase })).toBe(false);
-    },
-  );
+  it.each<GamePhase>(["mafia-planning", "finished", "draw", "cancelled"])("rejects %s", (phase) => {
+    expect(isGuessingState({ ...balance(2, 1), phase })).toBe(false);
+  });
 
   it("counts a living Don as Mafia and excludes eliminated/red-carded players", () => {
     const game = balance(2, 1);

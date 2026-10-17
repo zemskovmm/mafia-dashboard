@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { inspectGameIdentities } from "./game-session-identity.js";
+import { hasEngineSelector, inspectGameIdentities } from "./game-session-identity.js";
 
 /**
  * Game snapshots are browser-authoritative records.  The server validates only
@@ -40,7 +40,12 @@ const identityOnly = (
   context: z.core.$RefinementCtx,
 ) => {
   const inspected = inspectGameIdentities(value.state, value.results);
-  if (inspected.named || inspected.invalid)
+  if (
+    inspected.named ||
+    inspected.invalid ||
+    hasEngineSelector(value.state) ||
+    hasEngineSelector(value.results)
+  )
     context.addIssue({
       code: "custom",
       path: ["state"],

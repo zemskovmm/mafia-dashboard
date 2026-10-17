@@ -5,6 +5,8 @@ import { createStorageFixture } from "./test-helpers/storage-fixture.js";
 import { blobFields, blobReference, digest, type AzureStorage } from "./azure-storage.js";
 import { AzurePlayerStore } from "./azure-club-player-store.js";
 import { federationRecord } from "./test-helpers/federation-record.js";
+import { projectableResults, statisticsGame } from "./game-session-store.js";
+import { statisticsGame as statisticsTemplate } from "./test-helpers/club-statistics-fixtures.js";
 
 let storage: AzureStorage;
 let close: () => Promise<void>;
@@ -33,6 +35,38 @@ afterAll(async () => {
 });
 
 describe("Azure game snapshot store", () => {
+  it.each([false, true])(
+    "rejects ambiguous duplicate human identities without rewriting input (case variant=%s)",
+    async (caseVariant) => {
+      const id = "abcdef00-0000-4000-8000-000000000001";
+      await storage.mutate((tx) => tx.set(`club:${clubId}:player:${id}`, { id }));
+      const state = {
+        game: {
+          players: [
+            { id, seat: 1, role: "citizen", team: "red" },
+            {
+              id: caseVariant ? id.toUpperCase() : id,
+              seat: 2,
+              role: "citizen",
+              team: "red",
+            },
+          ],
+        },
+      };
+      const original = JSON.stringify(state);
+      await expect(
+        games.create({
+          clubId,
+          creationId: randomUUID(),
+          name: "Duplicate human",
+          state,
+          results: null,
+        }),
+      ).rejects.toMatchObject({ code: "invalid_game_identity" });
+      expect(JSON.stringify(state)).toBe(original);
+    },
+  );
+
   it.each(["red", "black"] as const)(
     "round-trips federation snapshots and a %s-team ruling without changing win projections",
     async (losingTeam) => {
@@ -116,6 +150,7 @@ describe("Azure game snapshot store", () => {
       for (const player of players) {
         expect(rows.find(({ playerId }) => playerId === player.id)).toMatchObject({
           isHost: false,
+          seat: player.seat,
           status: player.status,
           won: player.team === winner,
           outcome: winner,
@@ -151,14 +186,14 @@ describe("Azure game snapshot store", () => {
           winner,
           outcome: winner,
           reason: null,
-          eventCount: 2,
+          eventCount: completedState.events.length,
         }),
       );
       const eventView = await events.read(created.gameId, { includeSecrets: true }, clubId);
-      expect(eventView).toHaveLength(2);
+      expect(eventView).toHaveLength(completedState.events.length);
       expect(eventView.every(({ replayVersion }) => replayVersion === 1)).toBe(true);
-      expect(completedState.initialGame.replayVersion).toBe(2);
-      expect(completedState.events.every(({ replayVersion }) => replayVersion === 2)).toBe(true);
+      expect(completedState.initialGame.replayVersion).toBe(3);
+      expect(completedState.events.every(({ replayVersion }) => replayVersion === 3)).toBe(true);
       expect(loaded?.state.events).toEqual(completedState.events);
 
       const completedCreation = await resumed.create({
@@ -171,44 +206,34 @@ describe("Azure game snapshot store", () => {
       expect(completedCreation.results).toEqual(results);
       expect((await resumed.get(completedCreation.gameId, clubId))?.state).toEqual(completedState);
       expect((await resumed.get(completedCreation.gameId, clubId))?.results).toEqual(results);
-      expect(
-        await storage.read((tx) => tx.list(`club:${clubId}:result:${completedCreation.gameId}:`)),
-      ).toHaveLength(11);
+      const completedRows = await storage.read((tx) =>
+        tx.list(`club:${clubId}:result:${completedCreation.gameId}:`),
+      );
+      expect(completedRows).toHaveLength(11);
+      expect(completedRows).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            playerId: hostPlayerId,
+            isHost: true,
+            outcome: winner,
+            winner,
+          }),
+          ...players.map((player) =>
+            expect.objectContaining({
+              playerId: player.id,
+              seat: player.seat,
+              status: player.status,
+              won: player.team === winner,
+              outcome: winner,
+              winner,
+            }),
+          ),
+        ]),
+      );
     },
   );
 
-  it("preserves discriminator-free legacy baselines across create, save and resume", async () => {
-    const legacy = {
-      game: { phase: "legacy-client-phase", marker: null },
-      initialGame: { replayVersion: 1, game: { phase: "legacy-client-phase", marker: null } },
-      events: [{ id: randomUUID(), replayVersion: 1, sequence: 1, payload: {} }],
-      undoHistory: [{ phase: "legacy-client-phase" }],
-    };
-    const created = await games.create({
-      clubId,
-      creationId: randomUUID(),
-      name: "Legacy",
-      state: legacy,
-      results: null,
-    });
-    const saved = await games.save({
-      clubId,
-      gameId: created.gameId,
-      mutationId: randomUUID(),
-      name: "Legacy",
-      state: legacy,
-      results: { winner: "red", reason: null },
-    });
-    expect(saved.state).toEqual(legacy);
-    expect(saved.results).toEqual({ winner: "red", reason: null });
-    const loaded = await new AzureGameSessionStore(storage).get(created.gameId, clubId);
-    expect(loaded?.state).toEqual(legacy);
-    expect(loaded?.results).not.toHaveProperty("adjudication");
-    expect(loaded?.state.initialGame).not.toHaveProperty("rulesEdition");
-    expect(loaded?.state.game).not.toHaveProperty("rulesEdition");
-  });
-
-  it("preserves the SQL event-view conflict rules without changing canonical history", async () => {
+  it("preserves event-view conflict rules without changing canonical history", async () => {
     const id = randomUUID();
     const candidate = (eventId: string, sequence: number) => ({
       id: eventId,
@@ -265,6 +290,19 @@ describe("Azure game snapshot store", () => {
       duplicate: false,
       state: state("one"),
     });
+    expect(first.gameId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(first.gameId).not.toBe(creationId);
+    expect(
+      await games.create({
+        clubId,
+        creationId,
+        name: "Changed",
+        state: state("changed"),
+        results: null,
+      }),
+    ).toMatchObject({ gameId: first.gameId, name: "First", duplicate: true, state: state("one") });
     const saved = await games.save({
       clubId,
       gameId: first.gameId,
@@ -310,6 +348,7 @@ describe("Azure game snapshot store", () => {
 
   it("rejects malformed adjudication without publishing a snapshot or changing an accepted game", async () => {
     const creationId = randomUUID();
+    const beforeGames = await storage.read((tx) => tx.list(`club:${clubId}:game:`));
     const invalid = {
       adjudication: {
         losingTeam: "red",
@@ -328,6 +367,7 @@ describe("Azure game snapshot store", () => {
       }),
     ).rejects.toMatchObject({ code: "invalid_game_adjudication" });
     expect(await storage.getEntity(`club:${clubId}:creation:${creationId}`)).toBeUndefined();
+    expect(await storage.read((tx) => tx.list(`club:${clubId}:game:`))).toEqual(beforeGames);
     const accepted = await games.create({
       clubId,
       creationId,
@@ -349,6 +389,166 @@ describe("Azure game snapshot store", () => {
     ).rejects.toMatchObject({ code: "invalid_game_adjudication" });
     expect(await storage.getEntity(key)).toEqual(before);
     expect(await games.get(accepted.gameId, clubId)).toEqual(accepted);
+  });
+
+  it("serializes competing saves without ownership fences while retaining several active records", async () => {
+    const first = await games.create({
+      clubId,
+      creationId: randomUUID(),
+      name: "Race",
+      state: state("initial"),
+      results: null,
+    });
+    const second = await games.create({
+      clubId,
+      creationId: randomUUID(),
+      name: "Other active",
+      state: state("untouched"),
+      results: null,
+    });
+    const writes = await Promise.all(
+      ["one", "two", "three"].map((writer) =>
+        games.save({
+          clubId,
+          gameId: first.gameId,
+          name: writer,
+          mutationId: randomUUID(),
+          state: state(writer),
+          results: null,
+        }),
+      ),
+    );
+    expect(writes.map(({ revision }) => revision).sort()).toEqual([2, 3, 4]);
+    const last = writes.find(({ revision }) => revision === 4)!;
+    expect(await games.get(first.gameId, clubId)).toEqual(last);
+    expect(await games.get(second.gameId, clubId)).toEqual(second);
+    expect(await games.listActive(clubId)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ gameId: first.gameId, revision: 4 }),
+        expect.objectContaining({ gameId: second.gameId, revision: 1 }),
+      ]),
+    );
+  });
+
+  it.each(["delete-first", "save-first"] as const)(
+    "keeps deletion idempotent and creation tombstoned during a %s save/delete race",
+    async (order) => {
+      const creationId = randomUUID();
+      const created = await games.create({
+        clubId,
+        creationId,
+        name: "Delete race",
+        state: state("initial"),
+        results: null,
+      });
+      const save = () =>
+        games.save({
+          clubId,
+          gameId: created.gameId,
+          name: "Late",
+          mutationId: randomUUID(),
+          state: state("late"),
+          results: null,
+        });
+      const remove = () => games.clear({ clubId, gameId: created.gameId });
+      const results = await Promise.allSettled(
+        order === "delete-first" ? [remove(), save()] : [save(), remove()],
+      );
+      const deletion = results[order === "delete-first" ? 0 : 1]!;
+      const saved = results[order === "delete-first" ? 1 : 0]!;
+      expect(deletion.status).toBe("fulfilled");
+      if (saved.status === "rejected") {
+        expect(saved.reason).toMatchObject({ code: "game_session_not_found" });
+      } else {
+        expect(saved.value).toMatchObject({ revision: 2, state: state("late") });
+      }
+      await games.clear({ clubId, gameId: created.gameId });
+      expect(await games.get(created.gameId, clubId)).toBeNull();
+      expect(await events.read(created.gameId, { includeSecrets: true }, clubId)).toEqual([]);
+      await expect(
+        games.create({ clubId, creationId, name: "Retry", state: state("retry"), results: null }),
+      ).rejects.toMatchObject({ code: "game_deleted" });
+      await expect(save()).rejects.toMatchObject({ code: "game_session_not_found" });
+    },
+  );
+
+  it("reads ordered canonical event views without mutation and isolates colliding game IDs by club", async () => {
+    const created = await games.create({
+      clubId,
+      creationId: randomUUID(),
+      name: "Stored events",
+      state: state("preserved"),
+      results: null,
+    });
+    const key = `club:${clubId}:game:${created.gameId}`;
+    const row = (await storage.getEntity(key))!;
+    const snapshot = await storage.read((tx) =>
+      tx.readBlob<Record<string, unknown>>(blobReference(row)),
+    );
+    const firstId = randomUUID();
+    const secondId = randomUUID();
+    const canonical = [
+      {
+        gameId: created.gameId,
+        id: firstId,
+        idempotencyKey: randomUUID(),
+        sequence: 1,
+        type: "sheriff.checked",
+        phase: "night-sheriff-result",
+        payload: { targetSeat: 4, match: true },
+        parentEventId: null,
+        replayVersion: 1,
+        stateHashAfter: `sha256:${digest("first")}`,
+        createdAt: "2026-08-18T07:59:00.000Z",
+        duplicate: false,
+      },
+      {
+        gameId: created.gameId,
+        id: secondId,
+        idempotencyKey: randomUUID(),
+        sequence: 2,
+        type: "game.completed",
+        phase: "finished",
+        payload: { winner: "red" },
+        parentEventId: firstId,
+        replayVersion: 1,
+        stateHashAfter: `sha256:${digest("second")}`,
+        createdAt: "2026-08-18T08:00:00.000Z",
+        duplicate: false,
+      },
+    ];
+    // Seed supported stored envelopes, including retained hashes/parent links that
+    // ordinary browser event projection deliberately does not manufacture.
+    await storage.mutate(async (tx) => {
+      for (const target of [clubId, otherClubId]) {
+        const view =
+          target === clubId
+            ? [...canonical].reverse()
+            : [{ ...canonical[1]!, payload: { winner: "black" } }];
+        const ref = await tx.writeBlob({ ...snapshot, events: view }, `club/${target}/game`);
+        await tx.set(`club:${target}:game:${created.gameId}`, { ...row, ...blobFields(ref) });
+      }
+    });
+    const before = await storage.getEntity(key);
+    const bytes = await storage.read((tx) => tx.readBlob(blobReference(before!)));
+    const expected = canonical.map((entry) => ({ ...entry, createdAt: new Date(entry.createdAt) }));
+    expect(await events.read(created.gameId, undefined, clubId)).toEqual(expected);
+    expect(await events.read(created.gameId, { includeSecrets: true }, clubId)).toEqual(expected);
+    expect(await events.read(created.gameId, { includeSecrets: false }, clubId)).toEqual([
+      { ...expected[0], payload: { redacted: true }, stateHashAfter: null },
+      { ...expected[1], stateHashAfter: null },
+    ]);
+    expect(await events.read(created.gameId, { includeSecrets: true }, otherClubId)).toEqual([
+      { ...expected[1], payload: { winner: "black" } },
+    ]);
+    expect(await storage.getEntity(key)).toEqual(before);
+    expect(await storage.read((tx) => tx.readBlob(blobReference(before!)))).toEqual(bytes);
+    expect(await games.get(created.gameId, clubId)).toEqual(created);
+  });
+
+  it("does not retain the removed raw event mutation surface", () => {
+    for (const method of ["append", "createGame", "complete", "clear"])
+      expect(events).not.toHaveProperty(method);
   });
 
   it("keeps save update-only, last-commit-wins even with the same mutation ID, and deletion non-resurrecting", async () => {
@@ -920,4 +1120,66 @@ describe("Azure game snapshot store", () => {
     for (const ref of [snapshot, request])
       expect(await storage.blobs.getBlockBlobClient(ref.name).exists()).toBe(true);
   });
+});
+
+describe("statistics source identity admission", () => {
+  it.each([
+    { kind: "matching-case", complete: true, projectable: true },
+    { kind: "different-roster-case", complete: true, projectable: true },
+    { kind: "missing-human", complete: false, projectable: true },
+    { kind: "different-human", complete: false, projectable: true },
+    { kind: "duplicate-result", complete: false, projectable: false },
+    { kind: "case-duplicate-result", complete: false, projectable: false },
+    { kind: "duplicate-roster", complete: false, projectable: true },
+    { kind: "case-duplicate-roster", complete: false, projectable: true },
+  ])(
+    "keeps $kind coverage honest without rewriting the source",
+    ({ kind, complete, projectable }) => {
+      const template = statisticsTemplate(1);
+      const players = template.participants!.map((player) => ({ ...player }));
+      const roster = players.map(({ playerId, ...player }) => ({
+        ...player,
+        id: kind === "different-roster-case" ? playerId.toUpperCase() : playerId,
+      }));
+      if (kind === "missing-human") players.pop();
+      if (kind === "different-human") players[9]!.playerId = "abcdef00-0000-4000-8000-000000000012";
+      if (kind === "duplicate-result" || kind === "case-duplicate-result") {
+        players[9]!.playerId =
+          kind === "case-duplicate-result"
+            ? players[0]!.playerId.toUpperCase()
+            : players[0]!.playerId;
+      }
+      if (kind === "duplicate-roster" || kind === "case-duplicate-roster") {
+        // Both references can match result seat 1: normalized uniqueness, not only
+        // length and per-entry membership, must reject the missing second human.
+        roster[9] = {
+          ...roster[0]!,
+          id: kind === "case-duplicate-roster" ? roster[0]!.id.toUpperCase() : roster[0]!.id,
+        };
+      }
+      const session = {
+        ...template,
+        state: { game: { players: roster } },
+        results: {
+          hostPlayerId: template.hostPlayerId,
+          outcome: "red",
+          winner: "red",
+          reason: null,
+          playedAt: template.playedAt,
+          players,
+        },
+      };
+      const original = JSON.stringify(session);
+      if (kind.includes("duplicate")) {
+        expect(() => statisticsGame(session)).toThrow("eligible identity");
+      } else {
+        expect(projectableResults(session.results) !== null).toBe(projectable);
+        expect(statisticsGame(session)).toMatchObject({
+          participants: players,
+          rosterComplete: complete,
+        });
+      }
+      expect(JSON.stringify(session)).toBe(original);
+    },
+  );
 });

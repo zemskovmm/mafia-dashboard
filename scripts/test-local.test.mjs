@@ -3,10 +3,24 @@ import { test } from "node:test";
 import { execFile, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { promisify } from "node:util";
-import { stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { createConnection } from "node:net";
-import { testCommand, testEnvironment, runnerMode } from "./test-local.mjs";
+import { URL } from "node:url";
+import { testCommand, testEnvironment } from "./test-local.mjs";
 import { startAzurite } from "./local-azurite.mjs";
+
+const assertOwnedPortsClosed = async (ports) => {
+  for (const port of ports) {
+    await new Promise((resolve, reject) => {
+      const socket = createConnection({ host: "127.0.0.1", port });
+      socket.once("connect", () => {
+        socket.destroy();
+        reject(new Error("Owned Azurite is still running"));
+      });
+      socket.once("error", (error) => (error.code === "ECONNREFUSED" ? resolve() : reject(error)));
+    });
+  }
+};
 
 test("local test command wraps existing checks without recursion", () => {
   assert.deepEqual(testCommand([]), ["npm", "run", "test"]);
@@ -22,11 +36,16 @@ test("local test command wraps existing checks without recursion", () => {
   assert.throws(() => testCommand(["--"]), /Usage/);
 });
 
-test("runner defaults to Azure and permits an explicit PostgreSQL outer reference mode", () => {
-  assert.deepEqual(runnerMode([]), { mode: "azure", args: [] });
-  assert.deepEqual(runnerMode(["--check"]), { mode: "azure", args: ["--check"] });
-  assert.deepEqual(runnerMode(["--postgres", "--check"]), { mode: "postgres", args: ["--check"] });
-  assert.deepEqual(runnerMode(["--", "node", "-v"]), { mode: "azure", args: ["--", "node", "-v"] });
+test("PostgreSQL is unsupported before any fixture or command starts", async () => {
+  assert.throws(() => testCommand(["--postgres", "--check"]), /Usage/);
+  const result = spawnSync(process.execPath, ["scripts/test-local.mjs", "--postgres", "--check"], {
+    encoding: "utf8",
+    timeout: 5_000,
+  });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /Usage/);
+  const source = await readFile(new URL("./test-local.mjs", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /local-postgres|startPostgres|referenceFixture/);
 });
 
 test("Azure test child gets only generated loopback fixture configuration", async () => {
@@ -81,15 +100,13 @@ test("Azure test child gets only generated loopback fixture configuration", asyn
       () => testEnvironment({ ...fixture.environment, AZURE_STORAGE_TABLE_NAME: "wrong" }, {}),
       /loopback Azurite/,
     );
-    const referenceUrl = "postgresql://mafia@127.0.0.1:55444/mafia_test";
-    assert.equal(
-      testEnvironment(fixture.environment, {}, referenceUrl).TEST_DATABASE_URL,
-      referenceUrl,
-    );
-    assert.throws(
-      () => testEnvironment(fixture.environment, {}, "postgresql://remote/prod"),
-      /owned loopback/,
-    );
+    for (const candidate of [
+      "postgresql://remote/prod",
+      "postgresql://mafia@127.0.0.1:55444/mafia_test",
+      null,
+    ]) {
+      assert.throws(() => testEnvironment(candidate, {}), /owned loopback Azurite/);
+    }
   } finally {
     await fixture.stop();
   }
@@ -100,6 +117,7 @@ test(
   { timeout: 60_000 },
   async () => {
     const run = promisify(execFile);
+    let ports;
     await assert.rejects(
       run(
         process.execPath,
@@ -109,186 +127,99 @@ test(
           process.execPath,
           "--input-type=module",
           "-e",
-          "import {TableServiceClient} from '@azure/data-tables'; const e=process.env; const t=TableServiceClient.fromConnectionString(e.TEST_AZURE_STORAGE_CONNECTION_STRING,{allowInsecureConnection:true}); await t.listTables().next(); if(e.DATABASE_URL || e.AZURE_STORAGE_CONNECTION_STRING) throw Error('leaked target'); process.exit(37);",
+          "import {TableServiceClient} from '@azure/data-tables'; const e=process.env; const t=TableServiceClient.fromConnectionString(e.TEST_AZURE_STORAGE_CONNECTION_STRING,{allowInsecureConnection:true}); await t.listTables().next(); if(e.DATABASE_URL || e.TEST_DATABASE_URL || e.AZURE_STORAGE_CONNECTION_STRING) throw Error('leaked target'); console.log(JSON.stringify([...e.TEST_AZURE_STORAGE_CONNECTION_STRING.matchAll(/(?:Blob|Queue|Table)Endpoint=([^;]+)/g)].map(m=>Number(new URL(m[1]).port)))); process.exit(37);",
         ],
         { timeout: 55_000 },
       ),
       (error) => {
         assert.equal(error.code, 37, error.stderr);
+        ports = JSON.parse(error.stdout.trim());
+        assert.equal(ports.length, 3);
         return true;
       },
     );
+    await assertOwnedPortsClosed(ports);
   },
 );
 
-test("interrupting Azure test wrapper terminates its emulator", { timeout: 60_000 }, async () => {
-  const child = spawn(
-    process.execPath,
-    [
-      "scripts/test-local.mjs",
-      "--",
-      process.execPath,
-      "--input-type=module",
-      "-e",
-      "const conn=process.env.TEST_AZURE_STORAGE_CONNECTION_STRING; const port=Number(new URL(conn.match(/BlobEndpoint=([^;]+)/)[1]).port); console.log(JSON.stringify({port})); setInterval(()=>{},1000);",
-    ],
-    { stdio: ["ignore", "pipe", "pipe"] },
-  );
-  const closed = once(child, "close");
-  let output = "";
-  let errors = "";
-  let interrupted = false;
-  child.stderr.on("data", (chunk) => {
-    errors += chunk;
-  });
-  child.stdout.on("data", (chunk) => {
-    output += chunk;
-    if (output.includes("\n") && !interrupted) {
-      interrupted = true;
-      child.kill("SIGTERM");
-    }
-  });
-  const [code] = await closed;
-  assert.equal(code, 143, errors);
-  const { port } = JSON.parse(output.trim());
-  await new Promise((resolve, reject) => {
-    const socket = createConnection({ host: "127.0.0.1", port });
-    socket.once("connect", () => {
-      socket.destroy();
-      reject(new Error("Owned Azurite is still running"));
-    });
-    socket.once("error", (error) => (error.code === "ECONNREFUSED" ? resolve() : reject(error)));
-  });
-});
-
-test("test children receive owned database only, never development credentials or routes", () => {
-  const url = "postgresql://mafia@127.0.0.1:55444/mafia_test";
-  const environment = testEnvironment(url, {
-    PATH: "/bin",
-    HOME: "/home/test",
-    TEST_DATABASE_URL: "postgresql://remote/test",
-    DATABASE_URL: "postgresql://remote/live",
-    GOOGLE_CLIENT_SECRET: "private",
-    GOOGLE_CLIENT_ID: "private-id",
-    PUBLIC_APP_URL: "https://production.example",
-    PGHOST: "production.example",
-    PGOPTIONS: "unsafe",
-    MAFIA_API_PROXY_TARGET: "https://production.example",
-    STATIC_DIR: "/production",
-    SESSION_AUTH_COOKIE: "private-cookie",
-    NODE_OPTIONS: "--import=unsafe.mjs",
-  });
-  assert.equal(environment.TEST_DATABASE_URL, url);
-  assert.equal(environment.PATH, "/bin");
-  for (const key of [
-    "DATABASE_URL",
-    "GOOGLE_CLIENT_ID",
-    "GOOGLE_CLIENT_SECRET",
-    "PUBLIC_APP_URL",
-    "PGHOST",
-    "PGOPTIONS",
-    "MAFIA_API_PROXY_TARGET",
-    "STATIC_DIR",
-    "SESSION_AUTH_COOKIE",
-    "NODE_OPTIONS",
-  ]) {
-    assert.equal(environment[key], undefined, key);
-  }
-  assert.throws(
-    () => testEnvironment("postgresql://remote/mafia_test", {}),
-    /owned loopback test database/,
-  );
-  assert.throws(
-    () => testEnvironment("postgresql://mafia@127.0.0.1:54328/mafia_local", {}),
-    /owned loopback test database/,
-  );
-});
-
-test(
-  "disposable wrapper exercises PostgreSQL, preserves failure, and cleans up",
-  {
-    skip:
-      spawnSync("pg_ctl", ["--version"]).status !== 0
-        ? "Native PostgreSQL is not installed"
-        : false,
-    timeout: 60_000,
-  },
-  async () => {
-    const run = promisify(execFile);
-    let database;
-    await assert.rejects(
-      run(
+for (const [signal, status] of [
+  ["SIGINT", 130],
+  ["SIGTERM", 143],
+]) {
+  test(
+    `interrupting Azure test wrapper with ${signal} terminates its emulator`,
+    { timeout: 60_000 },
+    async () => {
+      const child = spawn(
         process.execPath,
         [
           "scripts/test-local.mjs",
-          "--postgres",
           "--",
           process.execPath,
           "--input-type=module",
           "-e",
-          "import pg from 'pg'; const p = new pg.Pool({connectionString:process.env.TEST_DATABASE_URL}); const r=await p.query(\"SELECT current_database() AS name, current_setting('data_directory') AS directory, current_setting('port') AS port\"); console.log(JSON.stringify(r.rows[0])); await p.end(); process.exit(37);",
+          "const conn=process.env.TEST_AZURE_STORAGE_CONNECTION_STRING; console.log(JSON.stringify([...conn.matchAll(/(?:Blob|Queue|Table)Endpoint=([^;]+)/g)].map(m=>Number(new URL(m[1]).port)))); setInterval(()=>{},1000);",
         ],
-        { timeout: 55_000 },
-      ),
-      (error) => {
-        assert.equal(error.code, 37, error.stderr);
-        database = JSON.parse(error.stdout.trim());
-        assert.equal(database.name, "mafia_test");
-        return true;
-      },
-    );
-    await assert.rejects(stat(database.directory), { code: "ENOENT" });
-    await new Promise((resolve, reject) => {
-      const socket = createConnection({ host: "127.0.0.1", port: Number(database.port) });
-      socket.once("connect", () => {
-        socket.destroy();
-        reject(new Error("Test database still running"));
+        { stdio: ["ignore", "pipe", "pipe"] },
+      );
+      const closed = once(child, "close");
+      let output = "";
+      let errors = "";
+      let interrupted = false;
+      child.stderr.on("data", (chunk) => {
+        errors += chunk;
       });
-      socket.once("error", (error) => (error.code === "ECONNREFUSED" ? resolve() : reject(error)));
-    });
-  },
-);
+      child.stdout.on("data", (chunk) => {
+        output += chunk;
+        if (output.includes("\n") && !interrupted) {
+          interrupted = true;
+          child.kill(signal);
+        }
+      });
+      const [code] = await closed;
+      assert.equal(code, status, errors);
+      const ports = JSON.parse(output.trim());
+      assert.equal(ports.length, 3);
+      await assertOwnedPortsClosed(ports);
+    },
+  );
+}
 
-test(
-  "interrupting a running test stops its disposable database",
-  {
-    skip:
-      spawnSync("pg_ctl", ["--version"]).status !== 0
-        ? "Native PostgreSQL is not installed"
-        : false,
-    timeout: 60_000,
-  },
-  async () => {
-    const child = spawn(
-      process.execPath,
-      [
-        "scripts/test-local.mjs",
-        "--postgres",
-        "--",
-        process.execPath,
-        "--input-type=module",
-        "-e",
-        "import pg from 'pg'; const p=new pg.Pool({connectionString:process.env.TEST_DATABASE_URL}); const r=await p.query(\"SELECT current_setting('data_directory') AS directory\"); console.log(JSON.stringify(r.rows[0])); setInterval(()=>{},1000);",
-      ],
-      { stdio: ["ignore", "pipe", "pipe"] },
-    );
-    const closed = once(child, "close");
-    let output = "";
-    let errors = "";
-    child.stderr.on("data", (chunk) => {
-      errors += chunk;
+test("test children never inherit development credentials or routes", async () => {
+  const fixture = await startAzurite();
+  try {
+    const environment = testEnvironment(fixture.environment, {
+      PATH: "/bin",
+      HOME: "/home/test",
+      TEST_DATABASE_URL: "postgresql://remote/test",
+      DATABASE_URL: "postgresql://remote/live",
+      GOOGLE_CLIENT_SECRET: "private",
+      GOOGLE_CLIENT_ID: "private-id",
+      PUBLIC_APP_URL: "https://production.example",
+      PGHOST: "production.example",
+      PGOPTIONS: "unsafe",
+      MAFIA_API_PROXY_TARGET: "https://production.example",
+      STATIC_DIR: "/production",
+      SESSION_AUTH_COOKIE: "private-cookie",
+      NODE_OPTIONS: "--import=unsafe.mjs",
     });
-    let interrupted = false;
-    child.stdout.on("data", (chunk) => {
-      output += chunk;
-      if (output.includes("\n") && !interrupted) {
-        interrupted = true;
-        child.kill("SIGTERM");
-      }
-    });
-    const [code] = await closed;
-    assert.equal(code, 143, errors);
-    const database = JSON.parse(output.trim());
-    await assert.rejects(stat(database.directory), { code: "ENOENT" });
-  },
-);
+    assert.equal(environment.TEST_DATABASE_URL, undefined);
+    assert.equal(environment.PATH, "/bin");
+    for (const key of [
+      "DATABASE_URL",
+      "GOOGLE_CLIENT_ID",
+      "GOOGLE_CLIENT_SECRET",
+      "PUBLIC_APP_URL",
+      "PGHOST",
+      "PGOPTIONS",
+      "MAFIA_API_PROXY_TARGET",
+      "STATIC_DIR",
+      "SESSION_AUTH_COOKIE",
+      "NODE_OPTIONS",
+    ]) {
+      assert.equal(environment[key], undefined, key);
+    }
+  } finally {
+    await fixture.stop();
+  }
+});

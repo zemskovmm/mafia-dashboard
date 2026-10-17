@@ -16,10 +16,7 @@ export const FederationBallot = ({
   onFoul,
   hostName,
   privacyHidden,
-  onSeatSwipe,
   onSeatPenalty,
-  swipeAction,
-  onDismissSwipeAction,
   canResolve,
   onResolve,
 }: VotingStageProps & { readonly canResolve: boolean; readonly onResolve: () => void }) => {
@@ -52,10 +49,7 @@ export const FederationBallot = ({
         animateActive
         hostName={hostName}
         privacyHidden={privacyHidden}
-        onSeatSwipe={onSeatSwipe}
         onSeatPenalty={onSeatPenalty}
-        swipeAction={swipeAction}
-        onDismissSwipeAction={onDismissSwipeAction}
         seats={game.players.map((player) => ({
           ...player,
           name: displayName(player),
@@ -90,7 +84,7 @@ export const FederationBallot = ({
             <span className="table-prompt">
               {t("candidate", { current: candidateIndex + 1, total: game.turnOrder.length })}
             </span>
-            <strong className="voting-candidate-identity" tabIndex={0}>
+            <strong className="voting-candidate-identity">
               #{liveSeat} {displayName(candidate)}
             </strong>
             <span>{t("votes", { count: totals[liveSeat] ?? 0 })}</span>

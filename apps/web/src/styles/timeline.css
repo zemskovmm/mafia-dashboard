@@ -20,6 +20,14 @@
 .timeline-header h1,
 .timeline-inspector h2 {
   margin: 0;
+  overflow-wrap: anywhere;
+}
+.timeline-header > *,
+.timeline-inspector > * {
+  min-width: 0;
+}
+.timeline-header select {
+  width: 100%;
 }
 .timeline-header label {
   display: grid;
@@ -71,7 +79,7 @@
 .timeline-filter-error {
   grid-column: 1 / -1;
   margin: 0;
-  color: var(--danger);
+  color: var(--red);
 }
 .timeline-loading,
 .timeline-empty,
@@ -82,7 +90,9 @@
   padding: 18px;
 }
 .timeline-error {
-  color: var(--danger);
+  color: var(--red);
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 .timeline-editor {
   display: grid;
@@ -184,7 +194,6 @@
   box-shadow: 0 8px 18px rgb(0 0 0 / 42%);
 }
 .timeline-marker:hover,
-.timeline-marker:focus-visible,
 .timeline-marker.is-selected {
   color: white;
   background: rgb(var(--accent-rgb) / 48%);
@@ -241,6 +250,7 @@
   overflow: hidden;
   margin: 2px 0 0;
   text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 .timeline-inspector p,
 .timeline-inspector ul {
@@ -260,10 +270,11 @@
 
 @media (max-width: 1050px) {
   .timeline-screen {
-    grid-template-rows: auto auto minmax(0, 1fr) minmax(150px, 27vh);
+    grid-template-rows: auto auto minmax(230px, 1fr) minmax(200px, 27vh);
+    overflow-y: auto;
   }
   .timeline-header {
-    grid-template-columns: auto minmax(180px, 1fr) minmax(190px, 250px);
+    grid-template-columns: auto minmax(0, 1fr) minmax(0, 250px);
     padding: 10px 12px;
   }
   .timeline-header > button:last-child {
@@ -271,14 +282,14 @@
     justify-self: stretch;
   }
   .timeline-filters {
-    grid-template-columns: repeat(2, minmax(160px, 1fr)) auto;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
     padding: 8px 12px;
   }
   .timeline-editor {
     padding: 10px 12px 0;
   }
   .timeline-inspector {
-    grid-template-columns: minmax(180px, 0.7fr) minmax(240px, 1fr) minmax(220px, 1fr);
+    grid-template-columns: minmax(0, 1fr);
     gap: 12px;
     margin: 10px 12px 12px;
     padding: 11px 12px;
@@ -286,6 +297,18 @@
 }
 
 @media (max-width: 600px) {
+  .timeline-header {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .timeline-header > label,
+  .timeline-header > button:last-child {
+    grid-column: 1 / -1;
+  }
+  .timeline-header > button:last-child {
+    height: auto;
+    padding-block: 10px;
+    white-space: normal;
+  }
   .timeline-filters {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

@@ -5,23 +5,18 @@ import {
   useReducer,
   useRef,
   useState,
-  type KeyboardEvent,
   type CSSProperties,
 } from "react";
 import {
   applyGameEvent,
   CASPER_NAME,
   CASPER_PLAYER_ID,
-  FEDERATION_RULES_EDITION,
   createGameLogEntry,
-  isFederationGame,
   createInitialGameBaseline,
   hashGameState,
   isCasperPlayer,
-  isMeaningfulGameEventDraft,
   isTerminalGamePhase,
   replayGameLog,
-  selectVotingCandidate,
   type CanonicalGameEventDraft,
   type GameLogEntry,
   type GameState,
@@ -68,7 +63,6 @@ import type {
   ActiveGameSessionSummary,
   CurrentGameSessionState,
   FinalGameResults,
-  GameSessionState,
   MusicAccountStatus,
   PlayerProfile,
   PlayerProfileInput,
@@ -112,6 +106,7 @@ import { GameScreen } from "./features/game/GameScreen.js";
 import { GlassControls, type GlassStatus } from "./features/developer/GlassControls.js";
 import { PlayerExitControls } from "./features/developer/PlayerExitControls.js";
 import { FancyStuffControls } from "./features/developer/FancyStuffControls.js";
+import { DeveloperSettingToggle } from "./features/developer/DeveloperSettingToggle.js";
 import {
   readPlayerExitSettings,
   validatePlayerExitSettings,
@@ -186,7 +181,7 @@ import {
   withBrowserGameStorageGuard,
 } from "./browser-game-storage-lock.js";
 
-import { GameSessionOutbox } from "./session-outbox.js";
+import { GameSessionOutbox, isCurrentGameSessionState } from "./session-outbox.js";
 import { SessionRetryController } from "./session-retry.js";
 import { createRandomId } from "./utils/random-id.js";
 import { applyThemeColor, DEFAULT_THEME_COLOR, readThemeColor } from "./theme.js";
@@ -234,7 +229,6 @@ const phaseMessageKeys: Readonly<Record<string, ShellMessageKey>> = {
   "don-identification": "phaseDonIdentification",
   "sheriff-identification": "phaseSheriffIdentification",
   "free-seating": "phaseFreeSeating",
-  "sheriff-wake": "phaseSheriffWake",
   day: "phaseDay",
   voting: "phaseVoting",
   "voting-cancelled": "phaseVotingCancelled",
@@ -265,8 +259,6 @@ const eventMessageKeys: Readonly<Record<string, ShellMessageKey>> = {
   "turn.completed": "eventTurnCompleted",
   "player.nominated": "eventPlayerNominated",
   "foul.issued": "eventFoulIssued",
-  "player.red-carded": "eventPlayerRedCarded",
-  "voting.skipped": "eventVotingSkipped",
   "voting.resolved": "eventVotingResolved",
   "car-crash.resolved": "eventCarCrashResolved",
   "car-crash.ballot-resolved": "eventCarCrashBallotResolved",
@@ -276,7 +268,6 @@ const eventMessageKeys: Readonly<Record<string, ShellMessageKey>> = {
   "don.check-skipped": "eventDonCheckSkipped",
   "sheriff.checked": "eventSheriffChecked",
   "sheriff.check-skipped": "eventSheriffCheckSkipped",
-  "best-move.completed": "eventBestMoveCompleted",
   "game.completed": "eventGameCompleted",
   "game.drawn": "eventGameDrawn",
   "game.cancelled": "eventGameCancelled",
@@ -405,7 +396,7 @@ const toLocalLogEntry = (entry: GameLogEntry): LocalLogEntry => ({
   createdAt: entry.createdAt,
 });
 
-const asPersistedState = (state: GameSessionState | undefined): PersistedState => {
+const asPersistedState = (state: unknown): PersistedState => {
   if (state === undefined) {
     return {
       setup: null,
@@ -422,6 +413,7 @@ const asPersistedState = (state: GameSessionState | undefined): PersistedState =
       legacyLog: [],
     };
   }
+  if (!isCurrentGameSessionState(state)) throw new Error("Invalid current game session state");
   return {
     ...state,
     setup: state.setup as SetupWizardSessionState | null,
@@ -547,7 +539,7 @@ export const ClubWorkspace = ({
   );
   const [setupInstanceKey, setSetupInstanceKey] = useState(0);
   const [hostPlayerId, setHostPlayerId] = useState<string | null>(initialState.hostPlayerId);
-  const [finalResults, setFinalResults] = useState<FinalGameResults | null>(
+  const [finalResults, setFinalResults] = useState<Readonly<Partial<FinalGameResults>> | null>(
     initialCurrent?.results ?? null,
   );
   const [finishGameState, setFinishGameState] = useState<
@@ -726,12 +718,6 @@ export const ClubWorkspace = ({
   const [statisticsAssignmentRevision, setStatisticsAssignmentRevision] = useState(0);
 
   const appShellRef = useRef<HTMLDivElement>(null);
-  const drawerRef = useRef<HTMLElement>(null);
-  const drawerTriggerRef = useRef<HTMLButtonElement | null>(null);
-  const privacyButtonRef = useRef<HTMLButtonElement | null>(null);
-  const restorePrivacyFocusRef = useRef(false);
-  const preserveDrawerCloseFocusRef = useRef(false);
-  const previousDrawerRef = useRef<typeof activeDrawer>(null);
   const musicRef = useRef<YouTubePlayerHandle>(null);
   const privacyTapsRef = useRef<{ count: number; resetTimer: number | null }>({
     count: 0,
@@ -753,19 +739,15 @@ export const ClubWorkspace = ({
       hashGameState(initialDerivedGame) !== hashGameState(initialCanonicalGame),
   );
   const viewBeforeTimelineRef = useRef<Exclude<WorkspaceView, "timeline">>("game");
-  const statisticsTimelineOpenerRef = useRef<HTMLElement | null>(null);
-  useLayoutEffect(() => {
-    if (view === "statistics" && statisticsTimelineOpenerRef.current?.isConnected) {
-      statisticsTimelineOpenerRef.current.focus();
-    }
-  }, [view]);
   const viewBeforeConsoleRef = useRef<"game" | "players">("game");
   const phaseRef = useRef(initialState.game?.phase ?? setupPhase(initialState.setup?.step));
   const playerRequestRef = useRef(0);
   const activeSessionsRequestRef = useRef(0);
   const resumeRequestRef = useRef(0);
   const unavailableGameIdsRef = useRef(new Set<string>());
-  const persistedResultsRef = useRef<FinalGameResults | null>(initialCurrent?.results ?? null);
+  const persistedResultsRef = useRef<Readonly<Partial<FinalGameResults>> | null>(
+    initialCurrent?.results ?? null,
+  );
   const finishRequestedRef = useRef(initialCurrent?.results != null);
   const finalizingCompletionRef = useRef(false);
   const fullscreenTarget = document.documentElement as WebkitFullscreenElement;
@@ -779,34 +761,6 @@ export const ClubWorkspace = ({
       document.fullscreenEnabled !== false) ||
       (typeof fullscreenTarget.webkitRequestFullscreen === "function" &&
         fullscreenDocument.webkitFullscreenEnabled !== false));
-
-  useEffect(() => {
-    const previousDrawer = previousDrawerRef.current;
-    if (activeDrawer === null) {
-      if (
-        previousDrawer !== null &&
-        !preserveDrawerCloseFocusRef.current &&
-        drawerTriggerRef.current?.isConnected
-      )
-        drawerTriggerRef.current.focus();
-      preserveDrawerCloseFocusRef.current = false;
-    } else {
-      drawerRef.current?.querySelector<HTMLElement>("h2")?.focus();
-    }
-    previousDrawerRef.current = activeDrawer;
-  }, [activeDrawer]);
-
-  useEffect(() => {
-    if (!restorePrivacyFocusRef.current) return;
-    restorePrivacyFocusRef.current = false;
-    privacyButtonRef.current?.focus();
-  }, [devUnlocked]);
-
-  const closeDrawerOnEscape = (event: KeyboardEvent<HTMLElement>) => {
-    if (event.key !== "Escape") return;
-    event.preventDefault();
-    setActiveDrawer(null);
-  };
 
   const activeBranch = (() => {
     try {
@@ -1086,15 +1040,6 @@ export const ClubWorkspace = ({
       const before = canonicalGameRef.current;
       const gameId = sessionSync.gameId;
       if (baseline === null || before === null || gameId === null) return;
-      // V1 folds provisional turns into later decisions. V2 reducers require the
-      // exact accepted phase/cursor, so judge progression must also be canonical.
-      if (!isFederationGame(before) && !isMeaningfulGameEventDraft(draft)) {
-        const nextDraft = applyGameEvent(game ?? before, draft);
-        hasIntermediateDraftRef.current = true;
-        phaseRef.current = nextDraft.phase;
-        setGame(nextDraft);
-        return;
-      }
       const sequence = Math.max(0, ...eventsRef.current.map((entry) => entry.sequence)) + 1;
       const created = createGameLogEntry({
         gameId,
@@ -1435,6 +1380,8 @@ export const ClubWorkspace = ({
 
   const applyRemoteSession = useCallback(
     (session: RemoteGameSession) => {
+      if (session.status !== "active")
+        throw new Error("Completed games cannot be resumed as active games");
       sessionSync.activateRemote({ ...session, state: asPersistedState(session.state) });
       const current = sessionSync.current;
       if (current === null) return;
@@ -1862,7 +1809,6 @@ export const ClubWorkspace = ({
       window.clearTimeout(privacyTapsRef.current.resetTimer);
     }
     privacyTapsRef.current = { count: 0, resetTimer: null };
-    restorePrivacyFocusRef.current = true;
   }, [isManager]);
   const hasCurrentGameState =
     sessionSync.gameId !== null ||
@@ -1928,7 +1874,6 @@ export const ClubWorkspace = ({
               hostPlayerId: "",
               selectedPlayerIds: Array.from({ length: 10 }, () => ""),
               setup: null,
-              rulesEdition: FEDERATION_RULES_EDITION,
               bestMoveEnabled: club.bestMoveEnabled,
             },
         );
@@ -2128,7 +2073,6 @@ export const ClubWorkspace = ({
           </button>
           {view === "game" &&
           game !== null &&
-          isFederationGame(game) &&
           !isTerminalGamePhase(game.phase) &&
           finalResults === null &&
           finishGameState !== "blocked" &&
@@ -2140,8 +2084,7 @@ export const ClubWorkspace = ({
               title={t("rules")}
               aria-haspopup="dialog"
               aria-expanded={rulesGame === game}
-              onClick={(event) => {
-                event.currentTarget.focus();
+              onClick={() => {
                 setActiveDrawer(null);
                 setRulesGame((current) => (current === game ? null : game));
               }}
@@ -2171,7 +2114,6 @@ export const ClubWorkspace = ({
             <span className="toolbar-count">{undoCount}</span>
           </button>
           <button
-            ref={privacyButtonRef}
             type="button"
             className={`privacy-button icon-toolbar-button is-tap-${privacyTapStage}`}
             aria-label={privacyHidden ? t("showPrivateInfo") : t("hidePrivateInfo")}
@@ -2188,8 +2130,7 @@ export const ClubWorkspace = ({
               aria-label={activeDrawer === "log" ? t("closeGameLog") : t("openGameLog")}
               aria-expanded={activeDrawer === "log"}
               aria-controls="game-log-drawer"
-              onClick={(event) => {
-                drawerTriggerRef.current = event.currentTarget;
+              onClick={() => {
                 setActiveDrawer((drawer) => (drawer === "log" ? null : "log"));
               }}
             >
@@ -2203,8 +2144,7 @@ export const ClubWorkspace = ({
             aria-label={activeDrawer === "manage" ? t("closeManageMenu") : t("openManageMenu")}
             aria-expanded={activeDrawer === "manage"}
             aria-controls="manage-menu-drawer"
-            onClick={(event) => {
-              drawerTriggerRef.current = event.currentTarget;
+            onClick={() => {
               setActiveDrawer((drawer) => (drawer === "manage" ? null : "manage"));
             }}
           >
@@ -2217,8 +2157,7 @@ export const ClubWorkspace = ({
               aria-label={activeDrawer === "dev" ? t("closeDeveloperMenu") : t("openDeveloperMenu")}
               aria-expanded={activeDrawer === "dev"}
               aria-controls="dev-menu-drawer"
-              onClick={(event) => {
-                drawerTriggerRef.current = event.currentTarget;
+              onClick={() => {
                 setActiveDrawer((drawer) => (drawer === "dev" ? null : "dev"));
               }}
             >
@@ -2229,14 +2168,12 @@ export const ClubWorkspace = ({
       ) : null}
       {isManager && showWorkspaceTools && activeDrawer === "log" ? (
         <aside
-          ref={drawerRef}
           id="game-log-drawer"
           className="app-drawer game-log-drawer"
           role="dialog"
           aria-label={t("gameLog")}
-          onKeyDown={closeDrawerOnEscape}
         >
-          <h2 tabIndex={-1}>{t("log")}</h2>
+          <h2>{t("log")}</h2>
           <div className="game-log-list">
             {log.length === 0 ? <p>{t("noActionsRecorded")}</p> : null}
             {[...(nominationLogView?.entries ?? log)].reverse().map((entry) => {
@@ -2285,14 +2222,12 @@ export const ClubWorkspace = ({
       ) : null}
       {showWorkspaceTools && activeDrawer === "manage" ? (
         <aside
-          ref={drawerRef}
           id="manage-menu-drawer"
           className="app-drawer manage-menu-drawer"
           role="dialog"
           aria-label={t("manage")}
-          onKeyDown={closeDrawerOnEscape}
         >
-          <h2 tabIndex={-1}>{t("manage")}</h2>
+          <h2>{t("manage")}</h2>
           <div className="manage-menu-actions">
             <button
               type="button"
@@ -2331,7 +2266,6 @@ export const ClubWorkspace = ({
               <button
                 type="button"
                 onClick={() => {
-                  preserveDrawerCloseFocusRef.current = true;
                   roleDrawBackAction();
                   setActiveDrawer(null);
                 }}
@@ -2439,15 +2373,13 @@ export const ClubWorkspace = ({
       ) : null}
       {isManager && devUnlocked && showWorkspaceTools && activeDrawer === "dev" ? (
         <aside
-          ref={drawerRef}
           id="dev-menu-drawer"
           className="app-drawer dev-menu-drawer"
           role="dialog"
           aria-label={t("developerMenu")}
-          onKeyDown={closeDrawerOnEscape}
         >
           <div className="dev-menu-header">
-            <h2 tabIndex={-1}>{t("devMenu")}</h2>
+            <h2>{t("devMenu")}</h2>
             <p
               className="dev-menu-version"
               aria-label={
@@ -2469,27 +2401,20 @@ export const ClubWorkspace = ({
             <GlassControls settings={glass} status={effectiveGlassStatus} onChange={changeGlass} />
             <PlayerExitControls settings={playerExit} onChange={changePlayerExit} />
             <FancyStuffControls settings={fancyStuff} onChange={onFancyStuffChange} />
-            <button
-              type="button"
-              className="dev-setting-toggle"
-              aria-label={
+            <DeveloperSettingToggle
+              title={t("raytracing")}
+              description={t("raytracingDescription")}
+              ariaLabel={
                 lighting.requestedRenderer === "vgpu"
                   ? t("disableRaytracing")
                   : t("enableRaytracing")
               }
-              aria-pressed={lighting.requestedRenderer === "vgpu"}
+              pressed={lighting.requestedRenderer === "vgpu"}
+              stateLabel={t(lighting.requestedRenderer === "vgpu" ? "settingOn" : "settingOff")}
               onClick={() =>
                 selectLightingRenderer(lighting.requestedRenderer === "vgpu" ? "legacy" : "vgpu")
               }
-            >
-              <span>
-                <strong>{t("raytracing")}</strong>
-                <small>{t("raytracingDescription")}</small>
-              </span>
-              <span className="dev-setting-state">
-                {t(lighting.requestedRenderer === "vgpu" ? "settingOn" : "settingOff")}
-              </span>
-            </button>
+            />
             {lighting.vgpuStatus === "initializing" ? (
               <p className="dev-renderer-status" role="status">
                 {t("vgpuInitializing")}
@@ -2499,26 +2424,19 @@ export const ClubWorkspace = ({
                 {t("vgpuFallback")}
               </p>
             ) : null}
-            <button
-              type="button"
-              className="dev-setting-toggle"
+            <DeveloperSettingToggle
+              title={t("playerPulse")}
+              description={t("playerPulseDescription")}
               disabled={lighting.requestedRenderer !== "vgpu"}
-              aria-label={
+              ariaLabel={
                 lighting.playerPulse.enabled ? t("disablePlayerPulse") : t("enablePlayerPulse")
               }
-              aria-pressed={lighting.playerPulse.enabled}
+              pressed={lighting.playerPulse.enabled}
+              stateLabel={t(lighting.playerPulse.enabled ? "settingOn" : "settingOff")}
               onClick={() =>
                 setPlayerPulse({ ...lighting.playerPulse, enabled: !lighting.playerPulse.enabled })
               }
-            >
-              <span>
-                <strong>{t("playerPulse")}</strong>
-                <small>{t("playerPulseDescription")}</small>
-              </span>
-              <span className="dev-setting-state">
-                {t(lighting.playerPulse.enabled ? "settingOn" : "settingOff")}
-              </span>
-            </button>
+            />
             <label className="dev-renderer-field">
               <span>{t("playerPulseSpeedValue", { speed: lighting.playerPulse.speed })}</span>
               <input
@@ -2630,8 +2548,6 @@ export const ClubWorkspace = ({
             {...(isManager
               ? {
                   onOpenTimeline: (gameId: string) => {
-                    statisticsTimelineOpenerRef.current =
-                      document.activeElement instanceof HTMLElement ? document.activeElement : null;
                     viewBeforeTimelineRef.current = "statistics";
                     setStatisticsTimelineGameId(gameId);
                     setView("timeline");
@@ -2704,9 +2620,6 @@ export const ClubWorkspace = ({
             key={setupInstanceKey}
             players={availablePlayersForSetup}
             playersLoading={!playersLoaded}
-            rulesEdition={
-              setupSession === null ? FEDERATION_RULES_EDITION : setupSession.rulesEdition
-            }
             bestMoveEnabled={setupSession?.bestMoveEnabled ?? club.bestMoveEnabled}
             showDevelopmentTools={isManager && devUnlocked && devModeEnabled}
             onPopulateDevelopmentPlayers={populateDevelopmentPlayers}
@@ -2760,8 +2673,7 @@ export const ClubWorkspace = ({
               setResetReturnEventId(null);
               setUndoBudget(0);
               phaseRef.current = next.phase;
-              // Preserve historical setup metadata without exposing it as live controls.
-              if (!isFederationGame(next)) setSetupSession(null);
+              // Preserve current setup deviations through play and recovery.
               setHostPlayerId(selectedHostPlayerId);
               setFinalResults(null);
               if (musicState === "playing") musicRef.current?.playFirstRegularTrack();
@@ -2819,14 +2731,10 @@ export const ClubWorkspace = ({
           game?.phase === "voting"
             ? (seat) => {
                 if (canApplyGameScreenMutation() && game.phase === "voting") {
-                  if (isFederationGame(game)) {
-                    acceptGameEvent({
-                      type: "voting.candidate-selected",
-                      payload: { candidateSeat: seat },
-                    });
-                  } else {
-                    changeGame(selectVotingCandidate(game, seat));
-                  }
+                  acceptGameEvent({
+                    type: "voting.candidate-selected",
+                    payload: { candidateSeat: seat },
+                  });
                 }
               }
             : undefined
@@ -3022,7 +2930,6 @@ export const App = () => {
   const [workspaceReady, setWorkspaceReady] = useState(false);
   const portalRef = useRef<HTMLDivElement>(null);
   const entryInFlight = useRef(false);
-  const focusAfterEntry = useRef(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<ShellMessageKey | null>(null);
   const [storageError, setStorageError] = useState<ShellMessageKey | null>(null);
@@ -3032,7 +2939,6 @@ export const App = () => {
 
   const cancelEntry = useCallback(() => {
     entryInFlight.current = false;
-    focusAfterEntry.current = false;
     setOpening(null);
     setWorkspaceReady(false);
   }, []);
@@ -3040,21 +2946,13 @@ export const App = () => {
   const completeEntry = useCallback(() => {
     if (!entryInFlight.current) return;
     entryInFlight.current = false;
-    focusAfterEntry.current = true;
     setOpening(null);
   }, []);
 
   useEffect(() => {
-    if (opening !== null || selectedClub === null || !workspaceReady || !focusAfterEntry.current)
-      return;
-    const destination = document.querySelector<HTMLElement>(".club-entry-destination");
-    const target =
-      destination?.querySelector<HTMLButtonElement>(".club-exit-button") ?? destination;
-    if (target !== null) {
-      target.focus({ preventScroll: true });
-      focusAfterEntry.current = false;
-      entryInFlight.current = false;
-    }
+    // Readiness releases the guard even without effects or when decoration
+    // completed before legitimate access/storage ownership became ready.
+    if (opening === null && selectedClub !== null && workspaceReady) entryInFlight.current = false;
   }, [opening, selectedClub, workspaceReady]);
 
   useEffect(() => {
@@ -3220,7 +3118,6 @@ export const App = () => {
     }
     setBlockedClub(null);
     entryInFlight.current = true;
-    focusAfterEntry.current = !fancyStuff.clubEntryEffects;
     setWorkspaceReady(false);
     setOpening(fancyStuff.clubEntryEffects ? { ...origin, locale } : null);
     setSelectedClub(club);
@@ -3375,7 +3272,6 @@ export const App = () => {
         <div
           key="club-workspace"
           className="club-entry-destination"
-          tabIndex={-1}
           inert={opening !== null}
           aria-hidden={opening !== null ? true : undefined}
         >

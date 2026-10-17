@@ -76,7 +76,6 @@ describe("critical state", () => {
     "don-identification",
     "sheriff-identification",
     "free-seating",
-    "sheriff-wake",
     "finished",
     "draw",
     "cancelled",

@@ -20,7 +20,7 @@ const ids = {
   mutation: "00000000-0000-4000-8000-000000000004",
 };
 
-const baseline = { replayVersion: 1, game: { phase: "day", day: 1, turn: 0 } };
+const baseline = { replayVersion: 3, game: { phase: "day", day: 1, turn: 0 } };
 const entries = [
   { id: ids.root, gameId: ids.game, parentEventId: null, sequence: 1, type: "game.started" },
   {
@@ -741,10 +741,10 @@ test("exact cleanup deletes a proven ID even when listings omit it and confirms 
 });
 
 test("runtime verifiers enforce the shared contracts at their success boundaries", async () => {
-  const [sessionVerifier, uiVerifier, composeVerifier, oauthVerifier] = await Promise.all([
+  const [sessionVerifier, uiVerifier, localVerifier, oauthVerifier] = await Promise.all([
     readFile(new URL("./verify-session-state.mjs", import.meta.url), "utf8"),
     readFile(new URL("./verify-ui.mjs", import.meta.url), "utf8"),
-    readFile(new URL("./verify-production-compose.mjs", import.meta.url), "utf8"),
+    readFile(new URL("./verify-local-backend.mjs", import.meta.url), "utf8"),
     readFile(new URL("./verify-oauth.mjs", import.meta.url), "utf8"),
   ]);
 
@@ -764,7 +764,24 @@ test("runtime verifiers enforce the shared contracts at their success boundaries
   assert.match(sessionVerifier, /isAuthoritativeGameSnapshotRequest\(/);
   assert.match(
     sessionVerifier,
-    /const startSave = waitForSnapshot\("mafia-planning"\);[\s\S]*Begin Mafia planning stage[\s\S]*await waitForSaved\(startSave\);[\s\S]*Continue night zero to Sheriff wake-up[\s\S]*const beginDay = [\s\S]*Begin day one[\s\S]*await beginDay\.waitFor\(\);[\s\S]*const daySave = waitForSnapshot\("day"\);[\s\S]*await beginDay\.click\(\);[\s\S]*await waitForSaved\(daySave\);/,
+    /const startSave = waitForSnapshot\("mafia-planning"\);[\s\S]*Begin Mafia planning stage[\s\S]*await waitForSaved\(startSave\);[\s\S]*const sheriffSave = waitForSnapshot\("sheriff-identification"\);[\s\S]*Mafia asleep[\s\S]*await waitForSaved\(sheriffSave\);[\s\S]*const beginDay = [\s\S]*Begin round zero[\s\S]*await beginDay\.waitFor\(\);[\s\S]*const daySave = waitForSnapshot\("day"\);[\s\S]*await beginDay\.click\(\);[\s\S]*await waitForSaved\(daySave\);/,
+  );
+  assert.match(sessionVerifier, /Music player panel handle/);
+  assert.match(sessionVerifier, /await playlistPicker\.selectOption\(playlist\.id\)/);
+  assert.match(sessionVerifier, /Object\.hasOwn\(storedSession\.state, "hostName"\)/);
+  assert.match(sessionVerifier, /replayVersion !== CURRENT_REPLAY_VERSION/);
+  assert.doesNotMatch(sessionVerifier, /FEDERATION_REPLAY_VERSION|FEDERATION_RULES_EDITION/);
+  assert.match(sessionVerifier, /hasEngineMetadata\(roleGiveawayState\)/);
+  assert.match(sessionVerifier, /hasEngineMetadata\(storedSession\)/);
+  assert.match(sessionVerifier, /await waitForSaved\(roleGiveawaySave\)/);
+  assert.match(sessionVerifier, /state: roleGiveawayState[\s\S]*await readAuthoritativeSession/);
+  assert.match(
+    sessionVerifier,
+    /state: \{ \.\.\.roleGiveawayState, log: \[\], legacyLog: \[\], events: \[\] \}/,
+  );
+  assert.match(
+    sessionVerifier,
+    /JSON\.stringify\(restartedSession\.state\) !== storedCanonicalState/,
   );
   assert.match(sessionVerifier, /Open Manage menu/);
   assert.match(sessionVerifier, /const acceptedEvent = activeEvents\.at\(-1\)/);
@@ -791,26 +808,21 @@ test("runtime verifiers enforce the shared contracts at their success boundaries
   assert.match(uiVerifier, /Destructive snapshot Reset failed/);
   assert.match(uiVerifier, /rootCheckpoint\?\.phaseAfter !== "mafia-planning"/);
   assert.match(uiVerifier, /dayCheckpoint\?\.phaseAfter !== "day"/);
-  assert.match(composeVerifier, /APP_URL: `http:\/\/127\.0\.0\.1:\$\{port\}`/);
-  assert.doesNotMatch(composeVerifier, /\/api\/games/);
-  assert.match(composeVerifier, /\/tmp\/mafia-app\.pid/);
-  assert.match(composeVerifier, /kill -KILL/);
-  assert.match(composeVerifier, /restartCountAfter <= restartCountBefore/);
-  assert.match(
-    composeVerifier,
-    /spawn\(process\.execPath, \["scripts\/verify-session-state\.mjs"\]/,
-  );
-  assert.match(composeVerifier, /SESSION_RESTART_GATE_DIR: restartGateDirectory/);
-  assert.match(composeVerifier, /SESSION_AUTH_COOKIE: `mafia_session=\$\{sessionToken\}`/);
-  const childLaunch = composeVerifier.indexOf("spawn(process.execPath");
-  const readyWait = composeVerifier.indexOf('waitForMarker("ready")');
-  const kill = composeVerifier.lastIndexOf('sigkillContainerProcess("app")');
-  const readiness = composeVerifier.lastIndexOf("await waitUntilReady()");
-  const continuation = composeVerifier.indexOf('writeRestartMarker("continue")');
+  assert.match(localVerifier, /APP_URL: webOrigin/);
+  assert.doesNotMatch(localVerifier, /\/api\/games|local-postgres|\bPool\b/);
+  assert.match(localVerifier, /args: \["scripts\/verify-session-state\.mjs"\]/);
+  assert.match(localVerifier, /SESSION_RESTART_GATE_DIR: restartGateDirectory/);
+  assert.match(localVerifier, /SESSION_AUTH_COOKIE: `\$\{sessionCookieName\}=\$\{owner\.token\}`/);
+  const childLaunch = localVerifier.indexOf("sessionVerifierResult = runChild(");
+  const readyWait = localVerifier.indexOf("waitForRestartMarker(");
+  const kill = localVerifier.indexOf('server.child.kill("SIGKILL")');
+  const readiness = localVerifier.indexOf("await startServer()", kill);
+  const continuation = localVerifier.indexOf('writeFile(join(restartGateDirectory, "continue")');
+  assert.ok(childLaunch >= 0 && readyWait >= 0 && kill >= 0 && readiness >= 0 && continuation >= 0);
   assert.ok(
     childLaunch < readyWait && readyWait < kill && kill < readiness && readiness < continuation,
   );
-  assert.match(composeVerifier, /await sessionVerifierResult/);
+  assert.match(localVerifier, /await sessionVerifierResult/);
   assert.match(oauthVerifier, /assertVerifierTarget\(/);
   assert.match(oauthVerifier, /parseVerifierAuthCookie\(/);
   assert.match(oauthVerifier, /parseVerifierClubId\(/);
@@ -835,4 +847,29 @@ test("runtime verifiers enforce the shared contracts at their success boundaries
   assert.doesNotMatch(oauthVerifier, /waitForResponse/);
   assert.doesNotMatch(oauthVerifier, /OAUTH_SCREENSHOT|page\.screenshot/);
   assert.doesNotMatch(oauthVerifier, /\$\{pathname\} failed/);
+});
+
+test("browser verifiers retain native controls and explicit dismissal instead of retired authored keys/focus", async () => {
+  const [ui, ipad, seats, federation] = await Promise.all(
+    [
+      "verify-ui.mjs",
+      "verify-ipad-layout.mjs",
+      "verify-setup-seats.mjs",
+      "verify-federation-ui.mjs",
+    ].map((file) => readFile(new URL(file, import.meta.url), "utf8")),
+  );
+  for (const source of [ui, ipad]) {
+    assert.doesNotMatch(source, /assertVisibleFocus/);
+    assert.match(source, /assertNativeControl/);
+    assert.match(source, /Custom drawer Escape is retired/);
+  }
+  assert.match(ui, /page\.keyboard\.press\("Enter"\)/);
+  assert.match(ui, /const forwardKey = browserName === "webkit" \? "Alt\+Tab" : "Tab"/);
+  assert.match(ui, /swipeCard\(keyboardRoleCard, "horizontal"\)/);
+  assert.match(ui, /Retired F\/Shift\+F10 mutated canonical state/);
+  assert.match(ui, /swipeCard\(nominatorCard, "down"\)/);
+  assert.match(seats, /retired picker Escape/);
+  assert.match(seats, /UI_SETUP_EVIDENCE_DIR/);
+  assert.match(federation, /Native dialog Escape cancellation/);
+  assert.doesNotMatch(federation, /input: "keyboard"|toBeFocused\(\)/);
 });

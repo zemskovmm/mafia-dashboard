@@ -1,5 +1,4 @@
 import { assertFederationAction, assertJudgeReason } from "./federation-actions.js";
-import { isFederationGame } from "./rules-edition.js";
 import { evaluateVictory, markPlayerInactive } from "./game.js";
 import type {
   DisciplinaryRemoval,
@@ -8,7 +7,6 @@ import type {
   RemovalObservation,
   RemovalOccurrenceStage,
 } from "./types.js";
-
 export const removalOccurrenceStages: readonly RemovalOccurrenceStage[] = [
   "agreement",
   "before-shooting-count",
@@ -269,9 +267,7 @@ export const announceDisciplinaryRemovals = (
   game: GameState,
   seats?: readonly number[],
 ): GameState => {
-  if (game.phase === "finished") {
-    if (!isFederationGame(game)) throw new Error("Federation rules are required");
-  } else assertFederationAction(game);
+  if (game.phase !== "finished") assertFederationAction(game);
   const pending = game.disciplinaryRemovals?.filter((r) => r.announcement === "pending") ?? [];
   const requested = seats ?? pending.map((r) => r.seat);
   if (

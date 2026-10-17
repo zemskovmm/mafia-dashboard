@@ -2,11 +2,11 @@
 
 ## 1. Product definition
 
-La Verdad is the official application of the [La Verdad club in Málaga](https://mafiamalaga.es): a host-operated, touch-first single-page application for running an in-person ten-player Club Mafia game. It is designed for landscape tablets and laptops, runs locally through Docker Compose, and deploys to Azure Container Apps with PostgreSQL persistence.
+La Verdad is the official application of the [La Verdad club in Málaga](https://mafiamalaga.es): a host-operated, touch-first single-page application for running an in-person ten-player Club Mafia game. It is designed for landscape tablets and laptops, runs locally with an owned Azurite emulator, and deploys to Azure Container Apps with Azure Table/private Blob persistence.
 
 Players do not use accounts or phones. The authenticated host controls setup, music, timers, turns, nominations, voting, night actions, penalties, eliminations, and corrections from one device. The browser persists the authoritative full setup/live snapshot; semantic events provide validated Log, Timeline, and Preview history, while timer and music controls remain local UI state.
 
-The current gameplay contract is owned by [IDD-0002](../.idd/intent/IDD-0002.spec-club-mafia-gameplay.md): new games use the MAFGAME 1 July 2026 edition, while supported pre-federation games retain their original rules and replay hashes. The captured edition does not change on resume. Casper, Best Move-off and direct role corrections remain club options without deviation warnings or acknowledgement screens; they do not imply exact federation compliance. Role giveaway supports immediate triple-tap reroll and either-direction swipe to clear or select an available role. Discretionary referee rulings retain their own safeguards. This outline describes the product contract, not a claim of completed release qualification.
+The current gameplay contract is owned by [IDD-0002](../.idd/intent/IDD-0002.spec-club-mafia-gameplay.md): one current engine follows the MAFGAME 1 July 2026 source with the club options below. Games do not store engine labels or select older rules on resume; the dated reference belongs to documentation, not game identity. Casper, Best Move-off and direct role corrections remain club options without deviation warnings or acknowledgement screens; they do not imply exact federation compliance. Role giveaway supports immediate triple-tap reroll and either-direction swipe to clear or select an available role. Discretionary referee rulings retain their own safeguards. This outline describes the product contract, not a claim of completed release or data-migration qualification.
 
 ## 2. Current product goals
 
@@ -60,7 +60,7 @@ Each player seat shows:
 - active, eliminated, red-carded, current-speaker, nominated, and muted-next-turn states using icon/text as well as color;
 - foul count;
 - host-private role badge behind the privacy shield;
-- context actions: **Foul**, **Red card**, and **Nominate**;
+- downward foul gesture, upward penalty menu (including confirmed Red card), and eligible whole-card nomination/support; left/right gameplay swipes open no Red-card shortcut and apply no action or trailing tap;
 - vote assignment marker during voting;
 - shot/check target marker during private night steps.
 
@@ -82,8 +82,9 @@ Primary hit targets are at least 48×48 CSS pixels. A destructive action require
 - Nicknames are required and case-insensitively unique.
 - Without **Agree for data processing**, only the nickname is stored; first name, last name, and email are cleared.
 - With consent, first name, last name, and email are all required.
-- A player card shows games played, wins, losses, win rate, red/black games and wins, role counts, total fouls, eliminations, red cards, and last played.
-- A completed game stores one idempotent result row per selected player so retries cannot double-count a game.
+- A player card shows games played, W/D/L, win rate, team/role observations, total fouls, eliminations, red cards, Best Move and last played, with observed denominators and incomplete-coverage disclosure. Unknown is not zero or loss; missing one field does not erase unrelated known facts.
+- Completed records may contain minimal, partial or full factual results independently of optional timeline detail. Preserve every game and known identity, result, timestamp, host, tournament and participant observation; retries cannot double-count a game. History includes incomplete records without edition categories; filters cannot match unknown values, and undated records have stable placement without invented dates.
+- Experimental lifetime `club-team-elo-v1` retains its full ordering, 1,500 start, simultaneous team-mean expectation updates with K=32, precision/rounding, provisional/rank rules, correction rebuilds and tournament-delta accounting in [IDD-0007](../.idd/intent/IDD-0007.spec-club-statistics-and-rating.md). Edition is not an eligibility criterion. Known complete non-Casper ten-human rosters, valid seats/roles/teams, played time and accepted outcome are required; unrelated missing fouls or timeline detail are not.
 
 ### Step 2 — Start music
 
@@ -117,7 +118,7 @@ Primary hit targets are at least 48×48 CSS pixels. A destructive action require
 ### Step 5 — Sheriff greeting
 
 - After manually putting Mafia to sleep and confirming **Mafia asleep**, the host sees a separate reminder to wake Sheriff for ten seconds to look around the table and greet the host.
-- **Begin round zero** follows directly, without Don-identification confirmation, masked-identification prompts or a separate free-seating stop. This streamlined club opening is not a claim of exact rulebook opening-procedure compliance. Previously recorded opening steps remain supported without rewriting their history.
+- **Begin round zero** follows directly, without Don-identification confirmation, masked-identification prompts or a separate free-seating stop. This streamlined club opening is not a claim of exact rulebook opening-procedure compliance. Valid retained current opening steps survive ordinary operations without rewritten history.
 - No target check or shot occurs in the initial planning night. It is official game night one; the first shooting night is game night two.
 
 ### Step 6 — Zero-round discussion
@@ -188,7 +189,7 @@ The queue changes only IFrame playback order. Account authorization remains read
 - **Foul:** records the judge's accepted sanction. Third foul affects the next ordinary discussion turn, survives night and does not retroactively shorten a speech underway. It is distinct from farewell eligibility.
 - **Red card:** no farewell; removal/announcement timing follows its day/night occurrence. During shooting/checks, preserve required completion boundaries, exclude a disqualified shooter's shot and retain legitimate combined shot/removal facts. A participant departs only once.
 - **Voting cancellation:** apply the current or nearest affected ballot, including the next day after a result, with rulebook victim exceptions. Several removals do not create several consecutive cancelled days.
-- **Nominate:** during the current player’s eligible window, choose an active player, including self. Each candidate appears once in first-nomination order; no ordinary withdrawal.
+- **Nominate/support:** during the current speaker's eligible window, create one new nomination, including self, and support existing candidates once per target. Retapping corrects only that speaker's own selection without replacing earlier contributions or discarding unrelated actions; counts are surviving relationships, not ballot votes or toggle activity.
 
 ## 10. Voting
 
@@ -212,7 +213,7 @@ Night is a host-private guided sequence.
 
 Don/Sheriff check eligibility is captured for the night. A previously departed owner cannot continue checking. A non-decisively shot same-night owner may finish that night's check before leaving unless an applicable disqualification prevents it. Inactive target seats remain checkable. Checks never restore shooting, voting or speech rights.
 
-Supported pre-federation games retain their original post-departure check rules and canonical hashes; they are not replayed with new reducer semantics or silently migrated.
+There is no alternative post-departure check engine. Accepted historical checks/results remain facts, not a reason to re-adjudicate outcomes or dispatch older rules. Explicit one-time conversion is governed by [IDD-0005](../.idd/intent/IDD-0005.spec-data-compatibility-and-preservation.md); normal reads and saves never perform it.
 
 ### 11.1 Mafia shots
 
@@ -265,7 +266,7 @@ Supported pre-federation games retain their original post-departure check rules 
 
 ## 13. Game log
 
-The browser's complete persisted game-session snapshot is authoritative for live play. PostgreSQL mirrors the last uploaded snapshot and its semantic event prefix without game-rule, replay, ownership or revision validation; game-record access requires authenticated club admin/owner authorization. Semantic events remain the structured source for Log, Timeline, and Preview, while client-side replay validates their shape, parent linkage, legal phase/day transitions, and state hashes without replacing the snapshot's current `GameState`. Each retained entry stores:
+The browser's complete persisted game-session snapshot is authoritative for live play. Azure stores the last accepted snapshot and its semantic event prefix without server-side game-rule/replay validation or client revision fencing; game-record access requires authenticated club membership, with both managers and regular users permitted to host. The server preserves identity/shape and club-isolation checks. Semantic events remain the structured source for Log, Timeline, and Preview, while client-side replay validates their shape, parent linkage, legal phase/day transitions, and state hashes without replacing the snapshot's current `GameState`. Completed factual validity does not depend on a full snapshot or playable history: usable timelines remain read-only, absent detail is visibly unavailable, and corrupt retained history never becomes editable fallback. Each retained entry stores:
 
 - replay sequence, parent event ID, and timestamp;
 - phase and day before/after the action;
@@ -294,9 +295,8 @@ SETUP_PLAYERS
   → SETUP_MUSIC
   → SETUP_ROLE_DRAW
   → SETUP_MAFIA_NEGOTIATION
-  → SETUP_DON_IDENTIFICATION
-  → SETUP_SHERIFF_IDENTIFICATION
-  → SETUP_FREE_SEATING
+  → SETUP_MAFIA_ASLEEP
+  → SETUP_SHERIFF_GREETING
   → DAY_TURNS
   → VOTING (when candidates exist)
   → NIGHT_MAFIA_SHOTS
@@ -316,7 +316,8 @@ Cross-cutting UI state: local running timer, privacy shield, YouTube playback st
 - Landscape tablet and laptop are the primary layouts.
 - Core controls have at least 48×48 CSS-pixel hit targets and adequate separation.
 - Long press is never the only way to invoke an action.
-- Keyboard operation and visible focus are supported on laptops.
+- Setup's trusted horizontal touch opens the correct role chooser initially and after Clear in either direction, without a trailing click. Browser touch policy follows available actions: horizontal-only role cards preserve native vertical pan and pinch zoom; cards needing vertical foul/penalty gestures retain their existing vertical application policy. Cancellation, capture loss, multi-pointer and disabled/read-only cases cannot leave stale actions. Gameplay horizontal no-ops do not remove upward penalties, downward fouls, history or Undo.
+- Native typing, Tab navigation, and button activation follow [IDD-0003's Native interaction contract](../.idd/intent/IDD-0003.spec-host-controls-and-presentation.md#native-interaction); no complete keyboard-only workflow is promised. [Interaction and landscape verification](keyboard-and-landscape-ergonomics.md) distinguishes retained coverage from pending local qualification.
 - Current speaker, nomination, elimination, muted state, and phase use text/icon in addition to color.
 - Night screens use low-glare surfaces and an immediate privacy shield.
 - Animation respects `prefers-reduced-motion`.
@@ -328,6 +329,8 @@ The setup durability/back-navigation, full-volume playback, foul/mute, opening-s
 
 Implemented and accepted behavior includes the current 2-second fade-in, 500-millisecond quick fade-out, 3-second slow fade-out, faint ten-second warning chime, no final speech after a red card, the tie-vote flow in `rules.md`, and complete English/Russian localization of every host-facing surface. Before a club is opened, the portal follows the browser language (`ru` locales use Russian; all others use English). Language is then controlled by the club: existing clubs migrate to English, new clubs default from the creator's browser, owners and managers/editors can change it, and an accepted change applies immediately without altering an active game.
 
-Best Move is enabled for standard new federation games and captured during meaningful setup. A club override is explicitly nonstandard; later preference changes do not rewrite existing games. The per-attempt Skip action never changes that setting. Supported older setup retains its documented setting fallback rather than gaining federation defaults.
+Best Move is enabled for standard new games and captured during meaningful setup. A club override remains supported; later preference changes do not rewrite existing games. The per-attempt Skip action never changes that setting. There is no older-setup rule/default fallback in normal runtime.
 
-Production recovery uses PostgreSQL custom archives with configurable 14-day local and 30-day off-server retention defaults, daily scheduling, weekly isolated semantic restore tests, and the disaster-recovery procedure in `postgresql-backup-and-recovery.md`. Point-in-time recovery remains outside the single-server baseline.
+Azure recovery uses consistent Table/private Blob packages and an isolated local restore drill described in [Azure Storage backup and recovery](azure-storage-backup-and-recovery.md). Production scheduling, retention and live recovery qualification remain separate operational work; old PostgreSQL archives are not deleted by retiring their tooling.
+
+One-time historical normalization is separate from normal runtime and recovery. It preserves every game, known fact and valid relationship; keeps faithful usable timelines; and may retain a completed record as statistics-only when optional history cannot be converted faithfully. Incompatible active or unsent work is a stop condition, never permission to discard it. Any predecessor decoder stays in private local operational material. Production execution still requires exact-target inventory/dry-run, separately authorized writes, proven private backup/recovery and an explicitly authorized compatible app/data cutover; local preparation does not establish completion or deployment authority.
