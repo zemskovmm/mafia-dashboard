@@ -11,6 +11,45 @@ const seats: TableSeatView[] = Array.from({ length: 10 }, (_, index) => ({
 }));
 
 describe("GameTable", () => {
+  it.each(["citizen", "sheriff", "mafia", "don"] as const)(
+    "keeps %s preview neutral and its dealt cue explicit without gameplay states",
+    (role) => {
+      const click = vi.fn();
+      const seat = { ...seats[0]!, roleDraw: { role, dealt: false } };
+      const { rerender } = render(<GameTable seats={[seat]} onSeatClick={click} />);
+      const card = screen.getByRole("button", { name: "Seat 1: Player 1" });
+      expect(card).toHaveClass("role-draw-preview");
+      expect(card).not.toHaveClass("is-role-dealt");
+      expect(card).toHaveTextContent(role);
+      expect(card.querySelector(`[data-role-glyph="${role}"]`)).not.toBeNull();
+      expect(card.querySelector(".role-draw-glow")).toBeNull();
+      rerender(
+        <GameTable
+          seats={[{ ...seat, role, roleDraw: { role, dealt: true } }]}
+          onSeatClick={click}
+        />,
+      );
+      expect(screen.getByRole("button", { name: "Seat 1: Player 1" })).toBe(card);
+      expect(card).toHaveClass("is-role-dealt");
+      expect(card).not.toHaveClass(
+        "role-draw-preview",
+        "is-mafia-shooter",
+        "is-sheriff-highlight",
+        "is-voting-highlight",
+        "is-exiting",
+      );
+      expect(card.querySelector(".role-draw-glow")).not.toBeNull();
+      expect(card.querySelector(".deceased-cross")).toBeNull();
+      fireEvent.click(card);
+      expect(click).toHaveBeenCalledExactlyOnceWith(1);
+      rerender(<GameTable seats={[seat]} privacyHidden />);
+      expect(card).not.toHaveClass("is-role-dealt", "role-draw-preview", "role-draw-card");
+      expect(card).not.toHaveTextContent(role);
+      expect(card).not.toHaveAttribute("data-role-draw-role");
+      expect(card.querySelector("[data-role-glyph]")).toBeNull();
+    },
+  );
+
   it("uses one capability-based native touch policy", () => {
     const horizontal = vi.fn();
     const penalty = vi.fn();

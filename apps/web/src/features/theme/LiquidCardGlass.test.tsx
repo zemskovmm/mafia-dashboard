@@ -232,6 +232,31 @@ describe("LiquidCardGlass", () => {
     expect(animations).toHaveLength(4);
   });
 
+  it("keeps nomination and shared-ready surfaces out of the local player sweep", () => {
+    const { rerender } = render(
+      <button data-player-glass="nomination">
+        <LiquidCardGlass />
+        Ada
+      </button>,
+    );
+    const card = screen.getByRole("button", { name: "Ada" });
+    fireEvent.pointerEnter(card);
+    fireEvent.pointerDown(card);
+    expect(animate).not.toHaveBeenCalled();
+    rerender(
+      <SharedGlassContext.Provider value={true}>
+        <button data-player-glass="profile">
+          <LiquidCardGlass />
+          Ada
+        </button>
+      </SharedGlassContext.Provider>,
+    );
+    const sharedCard = screen.getByRole("button", { name: "Ada" });
+    fireEvent.pointerEnter(sharedCard);
+    fireEvent.pointerDown(sharedCard);
+    expect(animate).not.toHaveBeenCalled();
+  });
+
   it("recovers from zero geometry through the resize fallback without retaining window listeners", () => {
     vi.stubGlobal("ResizeObserver", undefined);
     const { container, unmount } = render(

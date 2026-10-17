@@ -646,6 +646,7 @@ async function verifyFollowup(page, url, config) {
       receipt.semanticStatus = { selected: true, marker: true, glow };
       const utility = page.locator(".utility-panels-toggle");
       await utility.click();
+      await page.locator("#game-utility-panels").waitFor({ state: "hidden" });
       assert.equal(await page.locator("#game-utility-panels").isVisible(), false);
       await utility.click();
       assert.equal(await page.locator("#game-utility-panels").isVisible(), true);
@@ -681,6 +682,7 @@ async function verifyFollowup(page, url, config) {
           "Existing post-swipe click suppression consumes the next click",
         );
         await utility.click();
+        await page.locator("#game-utility-panels").waitFor({ state: "hidden" });
         assert.equal(
           await page.locator("#game-utility-panels").isVisible(),
           false,
@@ -1969,6 +1971,8 @@ try {
       // the canonical ballot, and keyboard works without changing cast votes.
       for (const target of ["left", "name", "count", "right"]) {
         const row = page.locator(".nomination-panel li").nth(1);
+        // Compact utilities scroll independently of the fixed music footer.
+        await row.scrollIntoViewIfNeeded();
         const box = await row.boundingBox();
         assert.ok(box.height >= 48);
         const x =
@@ -1979,8 +1983,24 @@ try {
               : target === "count"
                 ? box.x + box.width - 18
                 : box.x + box.width * 0.4;
+        const hit = await row.evaluate(
+          (node, point) => {
+            const element = document.elementFromPoint(point.x, point.y);
+            return {
+              matches: element?.closest("button") === node.querySelector("button"),
+              element: element?.outerHTML.slice(0, 500),
+            };
+          },
+          { x, y: box.y + box.height / 2 },
+        );
+        assert.ok(hit.matches, `${config.name} ${target}: ${JSON.stringify({ box, hit })}`);
         await page.touchscreen.tap(x, box.y + box.height / 2);
-        assert.equal(await row.locator("button").getAttribute("aria-pressed"), "true");
+        await page.waitForFunction(
+          () =>
+            document
+              .querySelectorAll(".nomination-panel li button")[1]
+              ?.getAttribute("aria-pressed") === "true",
+        );
         await page.locator(".nomination-panel li").first().locator("button").focus();
         await page.keyboard.press("Enter");
         await assertSquareRows();

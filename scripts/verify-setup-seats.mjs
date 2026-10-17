@@ -1,4 +1,4 @@
-/* global URL, structuredClone, document, innerWidth, innerHeight, getComputedStyle, fetch */
+/* global URL, structuredClone, document, innerWidth, innerHeight, getComputedStyle, fetch, Element, HTMLCanvasElement */
 /*
  * Focused real-app setup correction regression. Run against an owned local Vite
  * origin (APP_URL defaults to http://127.0.0.1:8080). Mock API is strict and
@@ -598,10 +598,19 @@ async function roleCorrections(page, state, language, tag, cdp) {
   await activate(choose("sheriff"));
   await expect.poll(() => state.latest()?.state.setup?.setup?.assignments[1]).toBe("sheriff");
   const assigned = checkpoint(state);
+  // A full-pool shuffle may legally keep the same role; force a known rotation
+  // here, while the preview cases separately prove unchanged-role flips.
+  await page.evaluate(() => {
+    window.__setupRoleRandom = Math.random;
+    Math.random = () => 0;
+  });
   await activate(roleCard(page, 1));
   await activate(roleCard(page, 1));
   unchanged(state, assigned, `${tag}: first two taps rerolled`);
   await activate(roleCard(page, 1));
+  await page.evaluate(() => {
+    Math.random = window.__setupRoleRandom;
+  });
   await expect.poll(() => state.latest()?.state.setup?.setup?.assignments[1]).not.toBe("sheriff");
   await expect(menu).toHaveCount(0);
   await noDeviationUI(page);
@@ -667,6 +676,282 @@ async function roleCorrections(page, state, language, tag, cdp) {
   assert.equal(state.latest().gameId, original.gameId, `${tag}: role correction changed identity`);
   assert.equal(state.latest().state.setup.bestMoveEnabled, language === "en");
   assert.equal(state.latest().state.setup.clubDeviationsAcknowledged, undefined);
+}
+
+async function rolePreviewScenario(browser, engine, mode) {
+  const tag = `role-preview-${engine}-${mode}`;
+  if (requestedCase && requestedCase !== tag) return;
+  executedCases.push(tag);
+  const context = await browser.newContext({
+    viewport: { width: 1366, height: 768 },
+    reducedMotion: mode === "reduced" ? "reduce" : "no-preference",
+  });
+  await context.addInitScript(
+    ({ fallback }) => {
+      window.__roleTurns = [];
+      window.__originalRandom = Math.random;
+      const animate = Element.prototype.animate;
+      Element.prototype.animate = function (frames, options) {
+        const animation = animate.call(this, frames, options);
+        if (
+          this.matches(".role-draw-card") &&
+          Array.isArray(frames) &&
+          frames.some((frame) => frame.rotate)
+        ) {
+          window.__roleTurns.push(Number(this.closest(".seat-anchor").dataset.seat));
+        }
+        return animation;
+      };
+      if (fallback) {
+        const getContext = HTMLCanvasElement.prototype.getContext;
+        HTMLCanvasElement.prototype.getContext = function (kind, ...args) {
+          return /webgl/.test(kind) ? null : getContext.call(this, kind, ...args);
+        };
+      }
+    },
+    { fallback: mode === "fallback" },
+  );
+  const page = await context.newPage();
+  page.setDefaultTimeout(15000);
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const state = fixture(page, "en");
+  const card = (number) => roleCard(page, number);
+  const preview = (setup) => {
+    const roles = { ...setup.assignments };
+    setup.players
+      .filter(({ seat }) => roles[seat] === undefined)
+      .sort((a, b) => a.seat - b.seat)
+      .forEach(({ seat }, index) => {
+        roles[seat] = setup.remainingRoles[index];
+      });
+    return roles;
+  };
+  const shown = () =>
+    page
+      .locator(".role-draw-card")
+      .evaluateAll((cards) =>
+        Object.fromEntries(
+          cards.map((node) => [
+            node.closest(".seat-anchor").dataset.seat,
+            node.dataset.roleDrawRole,
+          ]),
+        ),
+      );
+  const settle = () => expect(page.locator(".is-role-flipping")).toHaveCount(0);
+  const turns = () => page.evaluate(() => window.__roleTurns.length);
+  const triple = async (number, value) => {
+    const before = await turns();
+    await page.evaluate((random) => {
+      Math.random = () => random;
+    }, value);
+    for (let tap = 0; tap < 3; tap++) {
+      await card(number).click();
+      if (tap < 2) assert.equal(await turns(), before, `${tag}: partial triple flipped`);
+    }
+    await page.evaluate(() => {
+      Math.random = window.__originalRandom;
+    });
+    assert.equal(
+      await turns(),
+      before + (mode === "reduced" ? 0 : 1),
+      `${tag}: accepted reroll flip`,
+    );
+    await settle();
+  };
+  try {
+    await state.routeReady;
+    await page.goto(baseUrl);
+    await enterSetup(page);
+    await page.getByRole("button", { name: labels.en.select }).click();
+    const choices = page.locator(".availability-player-card[data-availability-state='unselected']");
+    await expect(choices).toHaveCount(11);
+    for (let n = 0; n < 11; n++) await choices.first().click();
+    await page.locator(".availability-close-button").click();
+    await page.locator("#host-player").click();
+    await page.getByRole("option", { name: "UI Player 11", exact: true }).click();
+    await page.getByRole("button", { name: labels.en.assign }).click();
+    await awaitSave(page, state);
+    await page.getByRole("button", { name: labels.en.start }).click();
+    await roleHeading(page, "en", tag);
+    await awaitSave(page, state);
+    await expect(page.locator(".role-badge")).toHaveCount(0);
+    const initial = checkpoint(state);
+    for (let tap = 0; tap < 5; tap++)
+      await page.getByRole("button", { name: /^(Hide|Show) private info$/ }).click();
+    await page.getByRole("button", { name: "Open developer menu" }).click();
+    await expect(page.getByRole("button", { name: "Show undealt role preview" })).toBeDisabled();
+    await page.getByRole("button", { name: "Enable dev mode" }).click();
+    await page.getByRole("button", { name: "Show undealt role preview" }).click();
+    await page.getByRole("button", { name: "Close developer menu" }).click();
+    await expect(page.locator(".role-draw-preview-indicator")).toBeVisible();
+    await expect(page.locator(".role-badge")).toHaveCount(10);
+    same(await shown(), preview(initial.state.setup.setup), `${tag}: truthful initial preview`);
+    await expect(page.locator(".is-role-dealt")).toHaveCount(0);
+    unchanged(state, initial, `${tag}: preview must not deal or save`);
+    assert.equal(state.writes.length, initial.writeCount, `${tag}: preview caused a save`);
+    const identity = await card(7).elementHandle();
+    // WebKit does not focus buttons on pointer click; qualify focus retention
+    // with native keyboard activation, then use pointer taps for the rerolls.
+    await card(7).focus();
+    await card(7).press("Space");
+    assert.equal(await turns(), mode === "reduced" ? 0 : 1, `${tag}: first reveal flip`);
+    if (mode !== "reduced") {
+      const frames = await card(7).evaluate((node) => {
+        const animations = node
+          .getAnimations({ subtree: true })
+          .filter((animation) => animation.id.startsWith("role-draw-"));
+        const front = node.querySelector(".role-draw-face--front"),
+          back = node.querySelector(".role-draw-face--back");
+        const face = animations.find((animation) => animation.effect.target === front);
+        const edge = face.effect.getKeyframes()[1].offset;
+        const samples = [];
+        for (const fraction of [edge / 2, (edge + 1) / 2]) {
+          animations.forEach((animation) => {
+            animation.pause();
+            animation.currentTime = animation.effect.getTiming().duration * fraction;
+          });
+          samples.push({
+            rotate: getComputedStyle(node).rotate,
+            front: getComputedStyle(front).visibility,
+            back: getComputedStyle(back).visibility,
+          });
+        }
+        return samples;
+      });
+      assert.deepEqual(
+        frames.map(({ front, back }) => [front, back]),
+        [
+          ["visible", "hidden"],
+          ["hidden", "visible"],
+        ],
+      );
+      assert.notEqual(frames[1].rotate, "none");
+      await page.screenshot({ path: path.join(evidence, `${tag}-flip.png`) });
+      await card(7).evaluate((node) =>
+        node.getAnimations({ subtree: true }).forEach((animation) => animation.play()),
+      );
+      console.log(`${tag} intermediate frames: ${JSON.stringify(frames)}`);
+    }
+    await settle();
+    assert.equal(await card(7).evaluate((node, original) => node === original, identity), true);
+    await expect(card(7)).toBeFocused();
+    await expect
+      .poll(() => state.latest()?.state.setup?.setup?.assignments[7])
+      .toBe(preview(initial.state.setup.setup)[7]);
+    await card(2).click();
+    await settle();
+    await expect
+      .poll(() => Object.keys(state.latest()?.state.setup?.setup?.assignments ?? {}).length)
+      .toBe(2);
+    const beforeSame = preview(state.latest().state.setup.setup);
+    await triple(7, 0.999999);
+    same(await shown(), beforeSame, `${tag}: unchanged-role legal reroll`);
+    const beforePool = state.latest().state.setup.setup;
+    const eligible = beforePool.players
+      .filter(({ seat }) => seat === 7 || beforePool.assignments[seat] === undefined)
+      .map(({ seat }) => seat)
+      .sort((a, b) => a - b);
+    const expected = { ...beforeSame };
+    const shuffled = eligible.map((seat) => beforeSame[seat]);
+    for (let index = shuffled.length - 1; index > 0; index--)
+      [shuffled[index], shuffled[0]] = [shuffled[0], shuffled[index]];
+    eligible.forEach((seat, index) => {
+      expected[seat] = shuffled[index];
+    });
+    await triple(7, 0);
+    await expect.poll(shown).toEqual(expected);
+    await expect.poll(() => preview(state.latest().state.setup.setup)).toEqual(expected);
+    assert.equal(state.latest().state.setup.setup.assignments[2], beforePool.assignments[2]);
+    const saved = checkpoint(state);
+    await page.getByRole("button", { name: "Open developer menu" }).click();
+    await page.getByRole("button", { name: "Disable dev mode" }).click();
+    await expect(page.locator(".role-badge")).toHaveCount(2);
+    await expect(page.locator(".role-draw-preview-indicator")).toHaveCount(0);
+    unchanged(state, saved, `${tag}: disabling preview must not save`);
+    assert.equal(state.writes.length, saved.writeCount, `${tag}: disabling preview caused a save`);
+    await page.getByRole("button", { name: "Enable dev mode" }).click();
+    await page.getByRole("button", { name: "Close developer menu" }).click();
+    await page.reload();
+    await roleHeading(page, "en", tag);
+    same(await shown(), expected, `${tag}: preview reload`);
+    assert.equal(await turns(), 0, `${tag}: reload replayed a flip`);
+    for (const role of ["citizen", "sheriff", "mafia", "don"]) {
+      const number = Number(Object.keys(expected).find((seat) => expected[seat] === role));
+      if ((await card(number).getAttribute("data-role-dealt")) !== "true") {
+        await card(number).click();
+        await settle();
+      }
+      const visual = await card(number).evaluate((node) => ({
+        scale: getComputedStyle(node).scale,
+        color: getComputedStyle(node).getPropertyValue("--role-draw-rgb").trim(),
+        glow: getComputedStyle(node.querySelector(".role-draw-glow")).backgroundImage,
+        glyph: node.querySelector("[data-role-glyph]").dataset.roleGlyph,
+        rotate: getComputedStyle(node).rotate,
+      }));
+      assert.equal(visual.scale, "1.04");
+      assert.equal(visual.glyph, role);
+      assert.equal(
+        visual.color,
+        role === "citizen" || role === "sheriff" ? "118 205 255" : "255 95 79",
+      );
+      assert.notEqual(visual.glow, "none");
+      assert.equal(visual.rotate, "none");
+    }
+    if (mode === "enhanced")
+      await expect(page.locator(".app-shell")).toHaveAttribute("data-glass-status", "ready");
+    if (mode === "fallback")
+      await expect(page.locator(".app-shell")).not.toHaveAttribute("data-glass-status", "ready");
+    await page.screenshot({ path: path.join(evidence, `${tag}-roles.png`) });
+    for (let number = 1; number <= 10; number++) {
+      if ((await card(number).getAttribute("data-role-dealt")) !== "true") {
+        await card(number).click();
+      }
+    }
+    await settle();
+    await expect
+      .poll(() => Object.keys(state.latest()?.state.setup?.setup?.assignments ?? {}).length)
+      .toBe(10);
+    const fullDeal = checkpoint(state);
+    const flipsBeforeFullReroll = await turns();
+    for (let tap = 0; tap < 3; tap++) await card(7).click();
+    assert.equal(await turns(), flipsBeforeFullReroll, `${tag}: fully dealt reroll flipped`);
+    unchanged(state, fullDeal, `${tag}: fully dealt reroll changed the deck`);
+    assert.equal(state.writes.length, fullDeal.writeCount, `${tag}: fully dealt reroll saved`);
+    await page.locator(".table-advance button").click();
+    await expect.poll(() => state.latest()?.state.game?.phase).toBe("mafia-planning");
+    await expect(
+      page.locator(".role-draw-card, .role-draw-preview-indicator, [data-role-glyph]"),
+    ).toHaveCount(0);
+    const hide = page.getByRole("button", { name: "Hide private info", exact: true });
+    if (await hide.isVisible()) await hide.click();
+    // Existing phase privacy keeps the opening/night roles visible, but masks
+    // daytime roles and counts; Dev preview must not override that boundary.
+    await expect(page.locator(".role-badge")).toHaveCount(10);
+    await page.getByRole("button", { name: "Mafia asleep" }).click();
+    await page.getByRole("button", { name: "Begin round zero" }).click();
+    await expect.poll(() => state.latest()?.state.game?.phase).toBe("day");
+    await expect(
+      page.locator(".role-badge, .role-draw-card, .role-draw-preview-indicator, [data-role-glyph]"),
+    ).toHaveCount(0);
+    await expect(page.locator(".team-counts")).toHaveAttribute("aria-label", /hidden/);
+    await expect(
+      page.locator(".is-mafia-shooter, .is-sheriff-highlight, .is-night-check-highlight"),
+    ).toHaveCount(0);
+    await page.getByRole("button", { name: "Show private info", exact: true }).click();
+    await expect(page.locator(".role-badge")).toHaveCount(10);
+    await hide.click();
+    await expect(page.locator(".role-badge")).toHaveCount(0);
+    await page.screenshot({ path: path.join(evidence, `${tag}-day-private.png`) });
+    state.ensureClean();
+    same(errors, [], `${tag}: browser exceptions`);
+    console.log(`PASS ${tag}`);
+  } catch (error) {
+    await page.screenshot({ path: path.join(evidence, `${tag}-failure.png`) }).catch(() => {});
+    throw error;
+  } finally {
+    await context.close();
+  }
 }
 
 async function scenario(browser, browserName, viewport, language) {
@@ -743,10 +1028,39 @@ async function scenario(browser, browserName, viewport, language) {
     const sameIdentityOption = page.getByRole("option", { name: oldName, exact: true });
     await sameIdentityOption.press("Enter");
     unchanged(state, initialSnapshot, `${tag}: cancelled/same picker`);
-    await dragMouse(page, 1, 1, "same");
+    await page.locator("#host-player").click();
+    await expect(page.locator("#host-player-suggestions")).toBeVisible();
+    await dragMouse(page, 1, 1, "same", async () => {
+      await expect(page.getByRole("listbox")).toHaveCount(0);
+    });
     unchanged(state, initialSnapshot, `${tag}: same-seat drop`);
     await dragMouse(page, 1, null, "outside");
     unchanged(state, initialSnapshot, `${tag}: outside drop`);
+    await handle(page, 1).evaluate((element) => {
+      element.addEventListener(
+        "gotpointercapture",
+        (event) => {
+          element.dataset.verifierPointerId = String(event.pointerId);
+        },
+        { once: true },
+      );
+    });
+    await dragMouse(page, 1, 2, "target", async () => {
+      await handle(page, 1).evaluate((element) => {
+        const pointerId = Number(element.dataset.verifierPointerId);
+        if (!element.hasPointerCapture(pointerId)) throw new Error("Expected real handle capture");
+        element.addEventListener(
+          "lostpointercapture",
+          (event) => {
+            element.dataset.verifierCaptureLoss = String(event.isTrusted);
+          },
+          { once: true },
+        );
+        element.releasePointerCapture(pointerId);
+      });
+    });
+    await expect(handle(page, 1)).toHaveAttribute("data-verifier-capture-loss", "true");
+    unchanged(state, initialSnapshot, `${tag}: genuine capture loss`);
 
     // Partial-seat move: only the target empties before the drag; this is
     // checked separately from a full swap and never interprets a blank as swap.
@@ -761,25 +1075,33 @@ async function scenario(browser, browserName, viewport, language) {
     const beforeMoveNames = await roster(page);
     const first = beforeMoveNames[0];
     await dragMouse(page, 1, 3, "target", async () => {
+      await expect(page.getByRole("listbox")).toHaveCount(0);
       same(await roster(page), beforeMoveNames, `${tag}: pointer move committed early`);
       unchanged(state, beforeMove, `${tag}: pointer move persisted early`);
     });
+    const movedIds = [...beforeMove.state.setup.selectedPlayerIds];
+    [movedIds[0], movedIds[2]] = [movedIds[2], movedIds[0]];
+    await expect
+      .poll(() => state.latest()?.state.setup?.selectedPlayerIds, { timeout: 15000 })
+      .toEqual(movedIds);
+    // WebKit can leave the empty search field focused after the drop. Its
+    // provisional query clears on native blur, independently of the saved move.
+    await page.locator(".player-setup-card h1").click();
     await expect(input(page, 3)).toHaveValue(first);
     await expect(input(page, 1)).toHaveValue("");
-    await expect
-      .poll(() => state.latest()?.state.setup?.selectedPlayerIds[2], { timeout: 15000 })
-      .toBe(beforeMove.state.setup.selectedPlayerIds[0]);
     const moved = snapshot(state);
     assert.equal(moved.gameId, beforeMove.gameId, `${tag}: empty move changed game ID`);
+    assert.equal(
+      moved.state.setup.hostPlayerId,
+      beforeMove.state.setup.hostPlayerId,
+      `${tag}: empty move changed host`,
+    );
     assert.equal(moved.state.setup.setup, null, `${tag}: empty move retained a deal`);
     for (const write of state.writes.slice(beforeMove.writeCount)) {
       const ids = write.state.setup?.selectedPlayerIds;
-      if (ids)
-        assert.ok(
-          ids[0] === "" && ids[2] === beforeMove.state.setup.selectedPlayerIds[0],
-          `${tag}: transient half-move`,
-        );
+      if (ids) same(ids, movedIds, `${tag}: transient half-move or wrong-seat update`);
     }
+    await page.screenshot({ path: path.join(evidence, `${tag}-empty-move.png`), fullPage: true });
     await input(page, 1).click();
     await page.getByRole("option", { name: initial[2], exact: true }).click();
     await expect(page.getByRole("button", { name: labels[language].start })).toBeEnabled();
@@ -823,7 +1145,10 @@ async function scenario(browser, browserName, viewport, language) {
     await expect.poll(() => state.latest()?.state.setup?.step).toBe("players");
     const beforeSwap = checkpoint(state);
     const names = await roster(page);
+    await input(page, 2).click();
+    await expect(page.locator("#seat-2-player-suggestions")).toBeVisible();
     await dragMouse(page, 1, 4, "target", async () => {
+      await expect(page.getByRole("listbox")).toHaveCount(0);
       same(await roster(page), names, `${tag}: pointer move committed before release`);
       unchanged(state, beforeSwap, `${tag}: pointer move persisted before release`);
     });
@@ -909,7 +1234,7 @@ async function scenario(browser, browserName, viewport, language) {
     state.ensureClean();
     same(errors, [], `${tag}: browser exceptions`);
     console.log(
-      `PASS ${tag}: seat corrections, triple-tap reroll, ${cdp && process.env.UI_SETUP_ROLE_INPUT !== "pointer" ? "trusted touch left/right swipes" : "trusted pointer left/right swipes"}, clear/select, native Enter/Space, retired keys inert, full-deal reload/readback, Casper/live without deviation prompts; ${JSON.stringify({ gameId: drawn.gameId, screenshots: 5, viewport: layout.viewport })}`,
+      `PASS ${tag}: seat corrections, picker/drag arbitration, genuine capture-loss recovery, triple-tap reroll, ${cdp && process.env.UI_SETUP_ROLE_INPUT !== "pointer" ? "trusted touch left/right swipes" : "trusted pointer left/right swipes"}, clear/select, native Enter/Space, retired keys inert, full-deal reload/readback, Casper/live without deviation prompts; ${JSON.stringify({ gameId: drawn.gameId, viewport: layout.viewport })}`,
     );
   } catch (error) {
     await page.screenshot({ path: path.join(evidence, `${tag}-failure.png`), fullPage: true });
@@ -964,6 +1289,34 @@ async function touchScenario(browser, language) {
     await touch(page, cdp, 1, 2, true);
     same(await roster(page), original, `${tag}: CDP touchCancel changed roster`);
     unchanged(state, beforeCancel, `${tag}: CDP touchCancel`);
+    // A second real contact cancels the handle's gesture, including when it
+    // lands on a picker rather than another handle. The next single drag works.
+    await handle(page, 1).scrollIntoViewIfNeeded();
+    const start = await center(handle(page, 1));
+    const second = await center(input(page, 2));
+    const destination = await center(seat(page, 2));
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [{ ...start, id: 1 }],
+    });
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [
+        { ...start, id: 1 },
+        { ...second, id: 2 },
+      ],
+    });
+    await expect(page.locator(".setup-seat-card.is-dragging")).toHaveCount(0);
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchMove",
+      touchPoints: [
+        { ...destination, id: 1 },
+        { ...second, id: 2 },
+      ],
+    });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    same(await roster(page), original, `${tag}: second contact changed roster`);
+    unchanged(state, beforeCancel, `${tag}: second contact must cancel`);
     const beforeTouch = checkpoint(state);
     await touch(page, cdp, 1, 2, false, async () => {
       same(await roster(page), original, `${tag}: touch move committed before lift`);
@@ -1019,7 +1372,9 @@ async function touchScenario(browser, language) {
     await page.screenshot({ path: path.join(evidence, `${tag}.png`), fullPage: true });
     state.ensureClean();
     same(errors, [], `${tag}: browser exceptions`);
-    console.log(`PASS ${tag}: trusted CDP touch swap/cancel, scroll if overflow`);
+    console.log(
+      `PASS ${tag}: trusted CDP touch swap/cancel, second-contact cancellation and fresh-drag recovery, scroll if overflow`,
+    );
   } finally {
     await cdp.detach();
     await context.close();
@@ -1031,6 +1386,10 @@ const chrome = await chromium.launch({ channel: "chrome", headless: true });
 try {
   const safari = await webkit.launch({ headless: true });
   try {
+    for (const mode of ["enhanced", "fallback", "reduced"]) {
+      await rolePreviewScenario(chrome, "chromium", mode);
+      await rolePreviewScenario(safari, "webkit", mode);
+    }
     for (const language of ["en", "ru"]) {
       for (const viewport of [
         { width: 1366, height: 768 },

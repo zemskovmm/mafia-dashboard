@@ -1,0 +1,86 @@
+.seat-anchor:has(> .is-role-flipping) {
+  perspective: 800px;
+  z-index: 10;
+}
+.table-stage .player-seat.is-role-flipping {
+  transform-style: preserve-3d;
+  transition: none;
+  will-change: transform, rotate;
+}
+.player-seat.role-draw-card > .role-draw-face {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  padding: inherit;
+  border-radius: inherit;
+  backface-visibility: visible;
+  pointer-events: none;
+}
+.role-draw-face--back {
+  transform: rotateY(180deg);
+  visibility: hidden;
+}
+.table-stage .player-seat.role-draw-card.is-role-dealt {
+  --role-draw-rgb: 118 205 255;
+  scale: 1.04;
+  border-color: rgb(var(--role-draw-rgb) / 85%);
+  box-shadow:
+    0 0 26px rgb(var(--role-draw-rgb) / 48%),
+    0 9px 25px rgb(0 0 0 / 40%);
+}
+.table-stage
+  .player-seat.role-draw-card.is-role-dealt:is(
+    [data-role-draw-role="mafia"],
+    [data-role-draw-role="don"]
+  ) {
+  --role-draw-rgb: 255 95 79;
+}
+/* This full-face wash is NOT the glass child: enhanced glass may hide that child.
+   Shadows remain outside the host perimeter rather than a clipped inner border. */
+.player-seat.role-draw-card > .role-draw-glow {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(
+    145deg,
+    rgb(var(--role-draw-rgb) / 24%),
+    rgb(var(--role-draw-rgb) / 9%)
+  );
+}
+.role-draw-icon[data-role-glyph="sheriff"],
+.role-draw-icon[data-role-glyph="mafia"],
+.role-draw-icon[data-role-glyph="don"] {
+  fill: currentColor;
+  stroke: none;
+}
+/* Preview never borrows the live-game role badge colours. */
+.role-draw-card.role-draw-preview .role-badge {
+  color: var(--muted);
+  background: rgb(255 255 255 / 8%);
+}
+.role-draw-card.is-role-dealt .role-badge {
+  color: rgb(var(--role-draw-rgb));
+  background: rgb(15 20 24 / 70%);
+}
+.role-draw-preview-indicator {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+@media (prefers-reduced-motion: reduce) {
+  .table-stage .player-seat.role-draw-card {
+    transition: none;
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .player-seat.role-draw-card > .role-draw-glow {
+    background: #1b252b;
+  }
+}

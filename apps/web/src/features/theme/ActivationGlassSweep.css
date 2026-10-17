@@ -1,0 +1,15 @@
+/* Independent of the shared scene's .liquid-card-glass visibility. The host
+   retains its own material, border, semantics and stationary content. */
+.activation-glass-sweep {
+  position: absolute;
+  z-index: 0;
+  inset: 0;
+  display: block;
+  overflow: hidden;
+  border-radius: inherit;
+}
+
+.activation-glass-sweep,
+.activation-glass-sweep * {
+  pointer-events: none;
+}

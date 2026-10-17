@@ -272,8 +272,9 @@ h2 {
     repeating-linear-gradient(128deg, transparent 0 50px, rgb(255 255 255 / 5%) 51px 52px);
   filter: blur(8px);
 }
-.live-side-panel :is(.youtube-dock, .youtube-session-queue, .live-music-controls) {
-  background: rgb(12 15 13 / 58%);
+.live-side-panel
+  :is(.youtube-dock, .youtube-session-queue, .live-music-controls, .youtube-player-frame) {
+  background: transparent;
 }
 .app-shell.is-background-grey-33 {
   background: rgb(33% 33% 33%);
@@ -1458,8 +1459,12 @@ h2 {
   left: 50%;
   top: 50%;
   width: clamp(88px, 9vw, 126px);
-  transform: translate(-50%, -50%) rotate(var(--seat-angle))
-    translateY(calc(-1 * var(--table-radius))) rotate(calc(-1 * var(--seat-angle)));
+  /* The closest horizontal step is half the orbit radius. Reserve two 120%
+     cards plus 1px, independently of active seats; keep the vertical orbit. */
+  transform: translate(-50%, -50%)
+    translateX(calc(max(0px, 240% + 2px - var(--table-radius)) * sin(var(--seat-angle))))
+    rotate(var(--seat-angle)) translateY(calc(-1 * var(--table-radius)))
+    rotate(calc(-1 * var(--seat-angle)));
 }
 .table-card {
   position: relative;
@@ -2215,6 +2220,9 @@ button.player-seat.is-voting-highlight::after,
   width: 100%;
   min-width: 0;
 }
+#game-utility-panels .utility-panel-section {
+  padding-inline: var(--nomination-inset, 0px);
+}
 @media not (prefers-reduced-transparency: reduce) {
   .live-side-panel {
     background:
@@ -2309,6 +2317,7 @@ button.player-seat.is-voting-highlight::after,
 }
 .nomination-panel ol {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
   margin-inline: calc(-1 * var(--nomination-inset, 14px));
   padding: 0;
@@ -2327,7 +2336,7 @@ button.player-seat.is-voting-highlight::after,
 .nomination-panel li.is-voting-highlight::after {
   inset: -8px 8px 0;
 }
-.nomination-panel li.is-voting-highlight :is(.nomination-copy span, .nomination-total) {
+.nomination-panel li.is-voting-highlight .nomination-total {
   color: inherit;
 }
 .app-shell[data-lighting-renderer="legacy"]
@@ -2339,8 +2348,10 @@ button.player-seat.is-voting-highlight::after,
   box-shadow: 0 0 0 3px rgb(22 24 25 / 90%);
 }
 .nomination-copy {
-  display: grid;
-  gap: 2px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
   min-width: 0;
 }
 .nomination-panel li > button.nomination-row-target {
@@ -2355,14 +2366,38 @@ button.player-seat.is-voting-highlight::after,
   box-shadow: none;
 }
 .nomination-copy strong {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
-  font-size: 0.78rem;
+  font-size: 0.875rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .nomination-copy span {
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: 0.8125rem;
+}
+.nomination-initiator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+.nomination-initiator svg {
+  width: 1em;
+  height: 1em;
+  flex: 0 0 auto;
+}
+.nomination-initiator-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.nomination-support-count {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 .nomination-total {
   color: var(--muted);
@@ -2521,6 +2556,13 @@ button.player-seat.is-voting-highlight::after,
 .youtube-player-frame > iframe:first-child {
   width: 100%;
   height: 200px;
+  transition: height 240ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .youtube-player-video,
+  .youtube-player-frame > iframe:first-child {
+    transition: none;
+  }
 }
 .reload-player {
   min-height: 30px;
@@ -3504,7 +3546,7 @@ button.player-seat.is-voting-highlight::after,
     margin-top: auto;
   }
   .youtube-dock.is-expanded .youtube-player-frame {
-    grid-template-rows: 260px minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
     height: auto;
     min-height: 0;
   }
@@ -3572,11 +3614,16 @@ button.player-seat.is-voting-highlight::after,
       calc((100cqw - clamp(88px, 9vw, 126px)) / 2)
     );
   }
+  /* A full three-line nickname and vote count must clear both ballot buttons,
+     including just above the short-container breakpoint. */
+  .table-vote-center:has(> .voting-candidate-identity) {
+    transform: translateY(-56px);
+  }
   @container (max-height: 700px) {
     .table-vote-center:has(> .voting-candidate-identity) {
       transform: translateY(-48px);
     }
-    .round-table:has(.voting-candidate-identity) .table-advance {
+    .game-shell.phase-voting .round-table:has(.voting-candidate-identity) .table-advance {
       top: calc(75% - 16px);
     }
     .table-card {
@@ -3616,8 +3663,9 @@ button.player-seat.is-voting-highlight::after,
     --nomination-inset: 7px;
     flex: 0 1 auto;
     min-height: 0;
-    padding: 8px var(--nomination-inset) 0;
-    overflow-y: auto;
+  }
+  #game-utility-panels .utility-panel-section[data-panel="timer"] {
+    padding-top: 8px;
   }
   .live-side-panel.has-live-utilities .timer-panel,
   .live-side-panel.has-live-utilities .nomination-panel {
@@ -3654,7 +3702,7 @@ button.player-seat.is-voting-highlight::after,
     margin-top: auto;
   }
   .live-side-panel.has-live-utilities .youtube-dock.is-expanded .youtube-player-frame {
-    grid-template-rows: 220px minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
     min-height: 0;
   }
   .live-side-panel.has-live-utilities .youtube-dock.is-expanded .youtube-player-video,
@@ -3941,8 +3989,9 @@ html:-webkit-full-screen #root {
     --nomination-inset: 6px;
     flex: 0 1 auto;
     min-height: 0;
-    padding: 7px var(--nomination-inset) 0;
-    overflow-y: auto;
+  }
+  #game-utility-panels .utility-panel-section[data-panel="timer"] {
+    padding-top: 7px;
   }
   .live-side-panel.has-live-utilities .timer-panel,
   .live-side-panel.has-live-utilities .nomination-panel {
@@ -4765,8 +4814,10 @@ html:-webkit-full-screen #root {
     top: 50%;
     display: block;
     width: 84px;
-    transform: translate(-50%, -50%) rotate(var(--seat-angle))
-      translateY(calc(-1 * var(--table-radius))) rotate(calc(-1 * var(--seat-angle)));
+    transform: translate(-50%, -50%)
+      translateX(calc(max(0px, 240% + 2px - var(--table-radius)) * sin(var(--seat-angle))))
+      rotate(var(--seat-angle)) translateY(calc(-1 * var(--table-radius)))
+      rotate(calc(-1 * var(--seat-angle)));
   }
   .table-stage,
   .availability-player-grid {

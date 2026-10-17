@@ -292,6 +292,11 @@ const englishShellMessages = {
   vgpuInitializing: "Starting V-GPU… existing CSS remains active.",
   vgpuFallback: "V-GPU unavailable — using existing CSS",
   playerPulse: "Player glow pulse",
+  previewUndealtRoles: "Preview undealt roles",
+  previewUndealtRolesDescription:
+    "Show the actual pre-rolled roles without dealing cards. Requires dev mode.",
+  showUndealtRolePreview: "Show undealt role preview",
+  hideUndealtRolePreview: "Hide undealt role preview",
   playerPulseDescription: "GPU card glow only; table ambience stays unchanged",
   disablePlayerPulse: "Disable player glow pulse",
   enablePlayerPulse: "Enable player glow pulse",
@@ -655,6 +660,11 @@ const russianShellMessages = {
   vgpuInitializing: "Запуск V-GPU… Пока используется прежний CSS.",
   vgpuFallback: "V-GPU недоступен — используется прежний CSS",
   playerPulse: "Пульсация свечения игроков",
+  previewUndealtRoles: "Предпросмотр невыданных ролей",
+  previewUndealtRolesDescription:
+    "Показывает предварительно распределённые роли, не выдавая карты. Нужен режим разработчика.",
+  showUndealtRolePreview: "Показать невыданные роли",
+  hideUndealtRolePreview: "Скрыть невыданные роли",
   playerPulseDescription: "Только GPU-свечение карточек; атмосфера стола не меняется",
   disablePlayerPulse: "Выключить пульсацию свечения игроков",
   enablePlayerPulse: "Включить пульсацию свечения игроков",

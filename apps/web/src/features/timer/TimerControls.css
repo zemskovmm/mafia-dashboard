@@ -1,0 +1,13 @@
+.timer-panel .timer-feedback-button {
+  position: relative;
+  isolation: isolate;
+}
+
+.timer-feedback-button > :not(.activation-glass-sweep) {
+  position: relative;
+  z-index: 1;
+}
+
+.timer-feedback-button:disabled > .activation-glass-sweep {
+  visibility: hidden;
+}

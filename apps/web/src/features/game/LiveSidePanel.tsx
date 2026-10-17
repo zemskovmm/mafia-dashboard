@@ -4,6 +4,7 @@ import { GlassSurface } from "../theme/GlassSurface.js";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { gameMessages } from "../../i18n/messages/game.js";
 import { GameUtilityPanels } from "./GameUtilityPanels.js";
+import { CollapsiblePanel } from "./CollapsiblePanel.js";
 
 interface LiveSidePanelProps {
   readonly game: GameState | null;
@@ -59,12 +60,12 @@ export const LiveSidePanel = ({
       >
         <span aria-hidden="true" />
       </button>
-      <div id="game-utility-panels" hidden={utilitiesHidden}>
+      <CollapsiblePanel id="game-utility-panels" expanded={!utilitiesHidden}>
         <GameUtilityPanels
           game={game}
           onSelectVotingCandidate={hidden || utilitiesHidden ? undefined : onSelectVotingCandidate}
         />
-      </div>
+      </CollapsiblePanel>
       {children}
     </GlassSurface>
   );

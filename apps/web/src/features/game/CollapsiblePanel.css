@@ -1,0 +1,33 @@
+.panel-reveal {
+  display: grid;
+  grid-template-rows: 1fr;
+  min-height: 0;
+  overflow: hidden;
+  transition: grid-template-rows 240ms ease-out;
+}
+.panel-reveal-content {
+  min-height: 0;
+  overflow-y: auto;
+  opacity: 1;
+  translate: 0 0;
+  visibility: visible;
+  transition:
+    opacity 240ms ease-out,
+    translate 240ms ease-out,
+    visibility 0s;
+}
+.panel-reveal[data-expanded="false"] {
+  grid-template-rows: 0fr;
+}
+.panel-reveal[data-expanded="false"] > .panel-reveal-content {
+  opacity: 0;
+  translate: 0 -8px;
+  visibility: hidden;
+  transition-delay: 0s, 0s, 240ms;
+}
+@media (prefers-reduced-motion: reduce) {
+  .panel-reveal,
+  .panel-reveal-content {
+    transition: none;
+  }
+}

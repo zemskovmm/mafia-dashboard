@@ -89,6 +89,7 @@ import {
   readDeveloperPreferences,
   writeDeveloperModeEnabled,
   writeDeveloperUnlocked,
+  writePreviewUndealtRoles,
 } from "./features/developer/developer-preferences.js";
 import {
   createLightingRendererState,
@@ -708,6 +709,9 @@ export const ClubWorkspace = ({
     () => initialDeveloperPreferences.unlocked && initialDeveloperPreferences.devModeEnabled,
   );
   const [devUnlocked, setDevUnlocked] = useState(() => initialDeveloperPreferences.unlocked);
+  const [previewUndealtRoles, setPreviewUndealtRoles] = useState(
+    () => initialDeveloperPreferences.previewUndealtRoles,
+  );
   const [canaryBurstKey, setCanaryBurstKey] = useState(0);
   const [privacyTapStage, setPrivacyTapStage] = useState(0);
   const [privacyHidden, setPrivacyHidden] = useState(false);
@@ -1608,6 +1612,7 @@ export const ClubWorkspace = ({
 
       clearErrorConsole();
       setDevModeEnabled(false);
+      setPreviewUndealtRoles(false);
       setDevUnlocked(false);
       setCanaryBurstKey(0);
       setPrivacyTapStage(0);
@@ -1802,6 +1807,7 @@ export const ClubWorkspace = ({
     if (!isManager) return;
     clearDeveloperPreferences(window.localStorage);
     setDevModeEnabled(false);
+    setPreviewUndealtRoles(false);
     setDevUnlocked(false);
     setActiveDrawer(null);
     setPrivacyTapStage(0);
@@ -2402,6 +2408,22 @@ export const ClubWorkspace = ({
             <PlayerExitControls settings={playerExit} onChange={changePlayerExit} />
             <FancyStuffControls settings={fancyStuff} onChange={onFancyStuffChange} />
             <DeveloperSettingToggle
+              title={t("previewUndealtRoles")}
+              description={t("previewUndealtRolesDescription")}
+              disabled={!devModeEnabled}
+              ariaLabel={t(
+                previewUndealtRoles ? "hideUndealtRolePreview" : "showUndealtRolePreview",
+              )}
+              pressed={previewUndealtRoles}
+              stateLabel={t(previewUndealtRoles ? "settingOn" : "settingOff")}
+              onClick={() => {
+                if (!isManager || !devUnlocked || !devModeEnabled) return;
+                const enabled = !previewUndealtRoles;
+                writePreviewUndealtRoles(window.localStorage, enabled);
+                setPreviewUndealtRoles(enabled);
+              }}
+            />
+            <DeveloperSettingToggle
               title={t("raytracing")}
               description={t("raytracingDescription")}
               ariaLabel={
@@ -2622,6 +2644,7 @@ export const ClubWorkspace = ({
             playersLoading={!playersLoaded}
             bestMoveEnabled={setupSession?.bestMoveEnabled ?? club.bestMoveEnabled}
             showDevelopmentTools={isManager && devUnlocked && devModeEnabled}
+            previewUndealtRoles={isManager && devUnlocked && devModeEnabled && previewUndealtRoles}
             onPopulateDevelopmentPlayers={populateDevelopmentPlayers}
             onOpenAvailablePlayers={() => setAvailabilityScreenOpen(true)}
             onRoleDrawBackActionChange={updateRoleDrawBackAction}

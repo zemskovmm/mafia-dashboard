@@ -54,20 +54,24 @@ describe("GameUtilityPanels", () => {
     );
     const { rerender } = render(view("en"));
     const rows = screen.getAllByRole("listitem");
-    expect(rows[0]).toHaveTextContent("Initiated by #1 Player 1");
-    expect(rows[0]).toHaveTextContent("Additional supporters (+1): #2 Player 2");
+    const savedNominations = JSON.stringify(game.nominations);
+    expect(rows[0]!.querySelector(".nomination-initiator")).toHaveTextContent("#1 Player 1");
+    expect(screen.getByRole("img", { name: "Initiated by #1 Player 1" })).toBeInTheDocument();
+    expect(rows[0]!.querySelector(".nomination-support-count")).toHaveTextContent("+1");
+    expect(rows[0]).not.toHaveTextContent(/Initiated by|Additional supporters|#2 Player 2/);
     expect(rows[0]).not.toHaveTextContent("#3 Player 3");
-    expect(rows[1]).toHaveTextContent("Additional supporters (+1): #3 Player 3");
+    expect(rows[1]!.querySelector(".nomination-support-count")).toHaveTextContent("+1");
+    expect(rows[1]).not.toHaveTextContent("#3 Player 3");
     expect(rows[0]!.querySelector(".nomination-total")).toBeNull();
     rerender(view("ru"));
-    expect(screen.getAllByRole("listitem")[0]).toHaveTextContent(
-      "Дополнительно поддержали (+1): #2 Player 2",
-    );
+    expect(screen.getByRole("img", { name: "Выдвинул: №1 Player 1" })).toBeInTheDocument();
+    expect(screen.getAllByRole("img", { name: "Дополнительная поддержка: 1" })).toHaveLength(2);
     rerender(view("en", { ...startVoting(game), voteAssignments: { 1: 7 } }));
     const votingRows = screen.getAllByRole("listitem");
     expect(votingRows[0]!.querySelector(".nomination-total")).toHaveTextContent("1");
     expect(votingRows[1]!.querySelector(".nomination-total")).toHaveTextContent("0");
-    expect(votingRows[0]).toHaveTextContent("Additional supporters (+1): #2 Player 2");
+    expect(votingRows[0]!.querySelector(".nomination-support-count")).toHaveTextContent("+1");
+    expect(JSON.stringify(game.nominations)).toBe(savedNominations);
   });
 
   it("does not invent supporter observations for older nominations", () => {
@@ -177,9 +181,8 @@ describe("GameUtilityPanels", () => {
 
     expect(screen.getByRole("region", { name: "Timer controls" })).toBeInTheDocument();
     expect(screen.getByRole("region", { name: "Voting order" })).toHaveTextContent("#2 Player 2");
-    expect(screen.getByRole("region", { name: "Voting order" })).toHaveTextContent(
-      "Initiated by #1 Player 1",
-    );
+    expect(screen.getByRole("region", { name: "Voting order" })).toHaveTextContent("#1 Player 1");
+    expect(screen.getByRole("img", { name: "Initiated by #1 Player 1" })).toBeInTheDocument();
     expect(screen.getByRole("listitem")).not.toHaveAttribute("aria-current");
     expect(screen.getByRole("listitem")).not.toHaveClass("is-voting-highlight");
   });

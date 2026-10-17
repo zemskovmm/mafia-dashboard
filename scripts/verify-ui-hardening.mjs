@@ -2,14 +2,21 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 
-const evidenceDir = resolve(process.env.UI_MATRIX_EVIDENCE_DIR ?? ".AI/plan-09-matrix");
+const evidenceDir = resolve(
+  process.env.UI_MATRIX_EVIDENCE_DIR ?? ".AI/qa/ui-followup/browser/hardening-matrix",
+);
 mkdirSync(evidenceDir, { recursive: true });
 
 const cases = [
   { name: "laptop-1366x768", browser: "chromium", width: 1366, height: 768 },
   { name: "ipad-1366x1024", browser: "webkit", width: 1366, height: 1024 },
   { name: "compact-tablet-1000x600", browser: "chromium", width: 1000, height: 600 },
+  { name: "webkit-compact-tablet-1000x600", browser: "webkit", width: 1000, height: 600 },
 ];
+
+const inherited = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) => !/^UI_.*_ONLY$/.test(key)),
+);
 
 const failures = [];
 for (const testCase of cases) {
@@ -17,7 +24,7 @@ for (const testCase of cases) {
   const result = spawnSync(process.execPath, ["scripts/verify-ui.mjs"], {
     cwd: process.cwd(),
     env: {
-      ...process.env,
+      ...inherited,
       UI_BROWSER: testCase.browser,
       UI_VIEWPORT_WIDTH: String(testCase.width),
       UI_VIEWPORT_HEIGHT: String(testCase.height),

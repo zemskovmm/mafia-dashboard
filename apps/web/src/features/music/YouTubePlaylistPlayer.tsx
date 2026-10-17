@@ -6,6 +6,7 @@ import { reportError } from "../console/error-console.js";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { playersMusicMessages } from "../../i18n/messages/players-music.js";
 import { classifyPanelSwipe } from "../game/panel-swipe.js";
+import { CollapsiblePanel } from "../game/CollapsiblePanel.js";
 import { MusicController } from "./music-controller.js";
 import type { MusicPlayerAdapter } from "./music-controller.js";
 import {
@@ -751,7 +752,7 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
         aria-label={t("YouTube playlist player")}
       >
         <div className="youtube-player-video" id={elementId} />
-        {expanded ? (
+        <CollapsiblePanel expanded={expanded} className="youtube-queue-reveal">
           <section className="youtube-session-queue" aria-label={t("Session playlist queue")}>
             <div className="youtube-session-queue-heading">
               <h2>{t("Session queue")}</h2>
@@ -990,7 +991,7 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
               </div>
             )}
           </section>
-        ) : null}
+        </CollapsiblePanel>
       </section>
     );
   },

@@ -95,9 +95,8 @@ vec3 scene(vec2 p){
  }
  if(u_panel.z>0.0 && sdRound(p,u_panel,20.0)<0.0){
   vec2 panelUV=(p-u_panel.xy)/u_panel.zw;
-  col=mix(col,vec3(.05,.04,.03)+u_theme*.08,.65);
-  col+=vec3(.08)*max(0.0,1.0-panelUV.x-panelUV.y);
-  col+=u_theme*u_gold*.24*spot(panelUV,vec2(.12,.05),.30);
+  col=mix(col,vec3(15.0,16.0,17.0)/255.0,.48);
+  col+=vec3(.04)*max(0.0,1.0-panelUV.x-panelUV.y);
  }
  if(u_nomination.z>0.0 && sdRound(p,u_nomination,14.0)<0.0)
   col=mix(col,vec3(.04,.04,.03)+u_theme*.08,.34);

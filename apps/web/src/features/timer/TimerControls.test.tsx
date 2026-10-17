@@ -1,5 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SharedGlassContext } from "../theme/SharedGlassContext.js";
 import { TimerControls } from "./TimerControls.js";
 
 interface FakeOscillator {
@@ -56,6 +58,16 @@ class FakeAudioContext {
   });
 }
 
+class TestMediaQueryList extends EventTarget {
+  matches = false;
+  change(matches: boolean) {
+    this.matches = matches;
+    this.dispatchEvent(new Event("change"));
+  }
+}
+
+const originalAnimate = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "animate");
+
 beforeEach(() => {
   FakeAudioContext.instances.length = 0;
   vi.stubGlobal("AudioContext", FakeAudioContext);
@@ -64,9 +76,208 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  if (originalAnimate === undefined) Reflect.deleteProperty(HTMLElement.prototype, "animate");
+  else Object.defineProperty(HTMLElement.prototype, "animate", originalAnimate);
 });
 
 describe("TimerControls", () => {
+  describe("activation glass feedback", () => {
+    const animations: Animation[] = [];
+    const mediaQueries = new Map<string, TestMediaQueryList>();
+    const animate = vi.fn(() => {
+      const animation = { cancel: vi.fn(), onfinish: null } as unknown as Animation;
+      animations.push(animation);
+      return animation;
+    });
+
+    beforeEach(() => {
+      animations.length = 0;
+      animate.mockClear();
+      mediaQueries.clear();
+      Object.defineProperty(HTMLElement.prototype, "animate", {
+        configurable: true,
+        value: animate,
+      });
+      vi.stubGlobal("matchMedia", (query: string) => {
+        const media = mediaQueries.get(query) ?? new TestMediaQueryList();
+        mediaQueries.set(query, media);
+        return media as unknown as MediaQueryList;
+      });
+    });
+
+    it.each([false, true])(
+      "sweeps each preset and the face once on activation with shared glass ready=%s",
+      (sharedReady) => {
+        render(
+          <SharedGlassContext.Provider value={sharedReady}>
+            <TimerControls />
+          </SharedGlassContext.Provider>,
+        );
+        const face = screen.getByRole("button", { name: "Timer face" });
+        const digits = face.querySelector("strong");
+        fireEvent.click(face);
+        expect(animations).toHaveLength(0);
+
+        for (const seconds of [60, 30, 20, 10]) {
+          const preset = screen.getByRole("button", { name: `Start ${seconds} second timer` });
+          fireEvent.pointerEnter(preset);
+          fireEvent.pointerDown(preset);
+          const before = animations.length;
+          fireEvent.click(preset, { detail: 1 });
+          expect(animations).toHaveLength(before + 1);
+          expect(face).toHaveTextContent(String(seconds));
+          expect(face).toHaveAccessibleName("Pause timer");
+          expect(animate.mock.instances[before]).toBe(
+            preset.querySelector(".liquid-card-glass__light"),
+          );
+          fireEvent.click(face, { detail: 0 });
+          expect(animations).toHaveLength(before + 2);
+          expect(face).toHaveAccessibleName("Resume timer");
+          expect(face.querySelector("strong")).toBe(digits);
+          expect(animate.mock.instances[before + 1]).toBe(
+            face.querySelector(".liquid-card-glass__light"),
+          );
+          const overlay = preset.querySelector(".activation-glass-sweep");
+          expect(overlay).toHaveAttribute("aria-hidden", "true");
+          expect(overlay).not.toHaveClass("liquid-card-glass");
+          expect(preset).not.toHaveAttribute("data-player-glass");
+        }
+        expect(animate).toHaveBeenCalledWith(
+          [
+            { transform: "rotate(0deg) scale(1)", opacity: 1 },
+            { transform: "rotate(170deg) scale(1.06)", opacity: 0.85, offset: 0.55 },
+            { transform: "rotate(360deg) scale(1)", opacity: 1 },
+          ],
+          { duration: 1050, easing: "ease-in-out", iterations: 1, fill: "none" },
+        );
+        expect(FakeAudioContext.instances[0]!.oscillators).toHaveLength(4);
+      },
+    );
+
+    it.each(["[MouseLeft]", "[TouchA]"])(
+      "keeps %s pointer clicks and native Space/Enter activations single and immediate",
+      async (keys) => {
+        const user = userEvent.setup();
+        render(<TimerControls />);
+        const preset = screen.getByRole("button", { name: "Start 30 second timer" });
+        await user.pointer({ target: preset, keys });
+        expect(animations).toHaveLength(1);
+        const face = screen.getByRole("button", { name: "Pause timer" });
+        await user.pointer({ target: face, keys });
+        expect(face).toHaveAccessibleName("Resume timer");
+        expect(animations).toHaveLength(2);
+        // Tab and native keyboard activation, without application key/focus handlers.
+        await user.tab({ shift: true });
+        expect(preset).toHaveFocus();
+        expect(animations).toHaveLength(2);
+        await user.keyboard(" ");
+        expect(preset).toHaveFocus();
+        expect(face).toHaveAccessibleName("Pause timer");
+        expect(animations).toHaveLength(3);
+        await user.tab();
+        await user.keyboard("{Enter}");
+        expect(face).toHaveFocus();
+        expect(face).toHaveAccessibleName("Resume timer");
+        await user.keyboard(" ");
+        expect(face).toHaveAccessibleName("Pause timer");
+        expect(face).toHaveTextContent("30");
+        expect(animations).toHaveLength(5);
+        expect(FakeAudioContext.instances[0]!.oscillators).toHaveLength(3);
+      },
+    );
+
+    it("cancels face feedback when reset or expiry disables the same button", () => {
+      vi.useFakeTimers();
+      render(<TimerControls />);
+      const preset = screen.getByRole("button", { name: "Start 10 second timer" });
+      fireEvent.click(preset);
+      const face = screen.getByRole("button", { name: "Pause timer" });
+      const light = face.querySelector(".liquid-card-glass__light");
+      fireEvent.click(face, { detail: 1 });
+      fireEvent.click(face, { detail: 1 });
+      expect(face).toBeDisabled();
+      expect(face).toHaveTextContent("00");
+      expect(animations[1]!.cancel).toHaveBeenCalledOnce();
+      expect(animations[2]!.cancel).toHaveBeenCalledOnce();
+      fireEvent.click(face);
+      expect(animations).toHaveLength(3);
+      fireEvent.click(preset);
+      act(() => vi.advanceTimersByTime(9_000));
+      fireEvent.click(face, { detail: 0 });
+      fireEvent.click(face, { detail: 0 });
+      const last = animations.at(-1)!;
+      act(() => vi.advanceTimersByTime(1_000));
+      expect(last.cancel).toHaveBeenCalledOnce();
+      expect(face).toBeDisabled();
+      expect(face.querySelector(".liquid-card-glass__light")).toBe(light);
+    });
+
+    it("replaces interrupted sweeps and removes active animation and listeners on unmount", () => {
+      const { unmount } = render(<TimerControls />);
+      const preset = screen.getByRole("button", { name: "Start 60 second timer" });
+      fireEvent.click(preset);
+      const first = animations[0]!;
+      const obsoleteFinish = first.onfinish;
+      fireEvent.click(preset);
+      expect(first.cancel).toHaveBeenCalledOnce();
+      expect(first.onfinish).toBeNull();
+      obsoleteFinish?.call(first, new Event("finish") as AnimationPlaybackEvent);
+      const current = animations[1]!;
+      expect(screen.getByRole("button", { name: "Pause timer" })).toHaveTextContent("60");
+      unmount();
+      expect(current.cancel).toHaveBeenCalledOnce();
+      expect(current.onfinish).toBeNull();
+      fireEvent.click(preset);
+      expect(animations).toHaveLength(2);
+    });
+
+    it.each(["motion", "transparency"])(
+      "cancels and suppresses sweeps for live reduced-%s without changing timer actions",
+      (preference) => {
+        render(<TimerControls />);
+        const preset = screen.getByRole("button", { name: "Start 10 second timer" });
+        fireEvent.click(preset);
+        const media = mediaQueries.get(`(prefers-reduced-${preference}: reduce)`)!;
+        act(() => media.change(true));
+        expect(animations[0]!.cancel).toHaveBeenCalledOnce();
+        fireEvent.click(preset);
+        const face = screen.getByRole("button", { name: "Pause timer" });
+        expect(face).toHaveClass("is-warning");
+        fireEvent.click(face);
+        expect(face).toHaveAccessibleName("Resume timer");
+        expect(animations).toHaveLength(1);
+        act(() => media.change(false));
+        fireEvent.click(face);
+        expect(face).toHaveAccessibleName("Pause timer");
+        expect(animations).toHaveLength(2);
+      },
+    );
+
+    it.each([
+      undefined,
+      () => {
+        throw new Error("WAAPI unavailable");
+      },
+    ])(
+      "keeps preset replacement, pause and reset usable when animation is unavailable (%s)",
+      (unavailableAnimate) => {
+        Object.defineProperty(HTMLElement.prototype, "animate", {
+          configurable: true,
+          value: unavailableAnimate,
+        });
+        render(<TimerControls />);
+        fireEvent.click(screen.getByRole("button", { name: "Start 60 second timer" }));
+        fireEvent.click(screen.getByRole("button", { name: "Start 10 second timer" }));
+        const face = screen.getByRole("button", { name: "Pause timer" });
+        fireEvent.click(face, { detail: 1 });
+        expect(face).toHaveAccessibleName("Resume timer");
+        fireEvent.click(face, { detail: 1 });
+        expect(face).toHaveTextContent("00");
+        expect(face).toBeDisabled();
+      },
+    );
+  });
+
   it.each([false, true])(
     "double tap resets to stopped zero from paused=%s and cancels audio",
     (paused) => {

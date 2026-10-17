@@ -66,6 +66,7 @@ import {
 import {
   DEVELOPER_MODE_ENABLED_STORAGE_KEY,
   DEVELOPER_UNLOCKED_STORAGE_KEY,
+  PREVIEW_UNDEALT_ROLES_STORAGE_KEY,
 } from "./features/developer/developer-preferences.js";
 import { musicPreferencesStorageKey } from "./features/music/music-preferences.js";
 import * as gameScreenModule from "./features/game/GameScreen.js";
@@ -289,6 +290,7 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
     onPopulateDevelopmentPlayers,
     onOpenAvailablePlayers,
     showDevelopmentTools = false,
+    previewUndealtRoles = false,
     persistencePending = false,
     tournamentControl,
   }: {
@@ -302,6 +304,7 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
     onPopulateDevelopmentPlayers?: () => Promise<readonly PlayerProfile[]>;
     onOpenAvailablePlayers?: () => void;
     showDevelopmentTools?: boolean;
+    previewUndealtRoles?: boolean;
     persistencePending?: boolean;
     tournamentControl?: ReactNode;
   }) => {
@@ -354,6 +357,7 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
           {players.map(({ nickname }) => nickname).join(",")}
         </output>
         <output data-testid="setup-session">{JSON.stringify(session)}</output>
+        <output data-testid="setup-role-preview">{String(previewUndealtRoles)}</output>
         {onOpenAvailablePlayers === undefined ? null : (
           <button type="button" onClick={onOpenAvailablePlayers}>
             Select available players
@@ -3046,7 +3050,11 @@ describe("developer menu", () => {
     for (let tap = 0; tap < 5; tap += 1) fireEvent.click(privacy);
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     expect(screen.getByRole("button", { name: "Enable dev mode" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show undealt role preview" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Enable dev mode" }));
+    await user.click(screen.getByRole("button", { name: "Show undealt role preview" }));
+    expect(screen.getByTestId("setup-role-preview")).toHaveTextContent("true");
+    expect(window.localStorage.getItem(PREVIEW_UNDEALT_ROLES_STORAGE_KEY)).toBe("enabled");
     expect(window.localStorage.getItem(DEVELOPER_UNLOCKED_STORAGE_KEY)).toBe("unlocked");
     expect(window.localStorage.getItem(DEVELOPER_MODE_ENABLED_STORAGE_KEY)).toBe("enabled");
     firstView.unmount();
@@ -3055,25 +3063,36 @@ describe("developer menu", () => {
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     expect(screen.getByRole("button", { name: "Disable dev mode" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Generate test players" })).toBeInTheDocument();
+    expect(screen.getByTestId("setup-role-preview")).toHaveTextContent("true");
+    await user.click(screen.getByRole("button", { name: "Disable dev mode" }));
+    expect(screen.getByTestId("setup-role-preview")).toHaveTextContent("false");
+    expect(window.localStorage.getItem(PREVIEW_UNDEALT_ROLES_STORAGE_KEY)).toBe("enabled");
   });
 
-  it("rejects malformed persisted developer flags and keeps manager guards authoritative", () => {
-    window.localStorage.setItem(DEVELOPER_UNLOCKED_STORAGE_KEY, "yes");
-    window.localStorage.setItem(DEVELOPER_MODE_ENABLED_STORAGE_KEY, "true");
-    renderView(
-      <ClubWorkspace
-        club={{ ...testClub, role: "user" }}
-        onExit={() => undefined}
-        fancyStuff={DEFAULT_FANCY_STUFF_SETTINGS}
-        onFancyStuffChange={() => undefined}
-        onEditClub={() => undefined}
-        onDeleteClub={() => Promise.resolve()}
-      />,
-    );
+  it.each([false, true])(
+    "keeps role preview manager-guarded with valid persisted flags: %s",
+    (valid) => {
+      window.localStorage.setItem(DEVELOPER_UNLOCKED_STORAGE_KEY, valid ? "unlocked" : "yes");
+      window.localStorage.setItem(DEVELOPER_MODE_ENABLED_STORAGE_KEY, valid ? "enabled" : "true");
+      window.localStorage.setItem(PREVIEW_UNDEALT_ROLES_STORAGE_KEY, "enabled");
+      renderView(
+        <ClubWorkspace
+          club={{ ...testClub, role: "user" }}
+          onExit={() => undefined}
+          fancyStuff={DEFAULT_FANCY_STUFF_SETTINGS}
+          onFancyStuffChange={() => undefined}
+          onEditClub={() => undefined}
+          onDeleteClub={() => Promise.resolve()}
+        />,
+      );
 
-    expect(screen.queryByRole("button", { name: "Open developer menu" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Generate test players" })).not.toBeInTheDocument();
-  });
+      expect(screen.queryByRole("button", { name: "Open developer menu" })).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "Generate test players" }),
+      ).not.toBeInTheDocument();
+      expect(screen.getByTestId("setup-role-preview")).toHaveTextContent("false");
+    },
+  );
 
   it("hides developer access, disables tools, and preserves lighting preferences", async () => {
     const user = userEvent.setup();
@@ -3086,6 +3105,7 @@ describe("developer menu", () => {
     const privacy = screen.getByRole("button", { name: "Hide private info" });
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     await user.click(screen.getByRole("button", { name: "Enable dev mode" }));
+    await user.click(screen.getByRole("button", { name: "Show undealt role preview" }));
     await user.click(screen.getByRole("button", { name: "Hide developer mode" }));
 
     expect(screen.queryByRole("dialog", { name: "Developer menu" })).not.toBeInTheDocument();
@@ -3093,6 +3113,8 @@ describe("developer menu", () => {
     expect(screen.queryByRole("button", { name: "Generate test players" })).not.toBeInTheDocument();
     expect(window.localStorage.getItem(DEVELOPER_UNLOCKED_STORAGE_KEY)).toBeNull();
     expect(window.localStorage.getItem(DEVELOPER_MODE_ENABLED_STORAGE_KEY)).toBeNull();
+    expect(window.localStorage.getItem(PREVIEW_UNDEALT_ROLES_STORAGE_KEY)).toBeNull();
+    expect(screen.getByTestId("setup-role-preview")).toHaveTextContent("false");
     expect(window.localStorage.getItem(LIGHTING_RENDERER_STORAGE_KEY)).toBe("legacy");
     expect(JSON.parse(window.localStorage.getItem(PLAYER_PULSE_STORAGE_KEY) ?? "null")).toEqual({
       enabled: false,

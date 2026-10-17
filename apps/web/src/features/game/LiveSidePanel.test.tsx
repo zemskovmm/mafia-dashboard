@@ -1,5 +1,5 @@
-import { fireEvent, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { act, fireEvent, screen, within } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import {
   advanceSetupPhase,
   beginRoleDraw,
@@ -79,14 +79,44 @@ describe("LiveSidePanel", () => {
     const show = screen.getByRole("button", { name: "Show timer and voting" });
     expect(screen.getByRole("region", { name: "Timer controls", hidden: true })).toBe(timer);
     expect(screen.getByRole("region", { name: "Voting order", hidden: true })).toBeInTheDocument();
+    expect(timer.closest(".panel-reveal")).toHaveAttribute("inert");
+    expect(timer.closest(".panel-reveal")).toHaveAttribute("data-expanded", "false");
+    expect(screen.queryByRole("region", { name: "Timer controls" })).toBeNull();
     fireEvent.click(show);
     expect(screen.getByRole("region", { name: "Timer controls" })).toBe(timer);
+    expect(timer.closest(".panel-reveal")).not.toHaveAttribute("inert");
 
     const handle = screen.getByRole("button", { name: "Hide timer and voting" });
     fireEvent.touchStart(handle, { touches: [{ clientX: 20, clientY: 80 }] });
     fireEvent.touchEnd(handle, { changedTouches: [{ clientX: 20, clientY: 20 }] });
     fireEvent.click(handle);
     expect(screen.getByRole("region", { name: "Timer controls" })).toBe(timer);
+  });
+
+  it("continues a hidden countdown and preserves a paused timer through rapid reversals", () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <LiveSidePanel game={null}>
+          <div>Music</div>
+        </LiveSidePanel>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Start 60 second timer" }));
+      const face = screen.getByRole("button", { name: "Pause timer" });
+      fireEvent.click(screen.getByRole("button", { name: "Hide timer and voting" }));
+      act(() => vi.advanceTimersByTime(2000));
+      expect(face.querySelector("strong")).toHaveTextContent("58");
+      fireEvent.click(screen.getByRole("button", { name: "Show timer and voting" }));
+      expect(screen.getByRole("button", { name: "Pause timer" })).toBe(face);
+      fireEvent.click(face);
+      fireEvent.click(screen.getByRole("button", { name: "Hide timer and voting" }));
+      fireEvent.click(screen.getByRole("button", { name: "Show timer and voting" }));
+      act(() => vi.advanceTimersByTime(2000));
+      expect(screen.getByRole("button", { name: "Resume timer" })).toBe(face);
+      expect(face.querySelector("strong")).toHaveTextContent("58");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("uses one CSS-native glass surface for the live rail", () => {

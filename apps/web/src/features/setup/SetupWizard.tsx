@@ -11,6 +11,7 @@ import {
   createGame,
   createSetup,
   drawRoleForSeat,
+  getRoleDrawPreview,
   isCasperPlayer,
   rerollRoleForSeat,
 } from "@mafia/game-domain";
@@ -22,6 +23,7 @@ import { setupMessages } from "../../i18n/messages/setup.js";
 import "./SetupWizard.css";
 import { reportError } from "../console/error-console.js";
 import { GameTable } from "../table/GameTable.js";
+import type { RoleDrawRequest } from "../table/RoleDrawPresentation.js";
 import { LiquidCardGlass } from "../theme/LiquidCardGlass.js";
 
 interface SetupWizardProps {
@@ -33,6 +35,8 @@ interface SetupWizardProps {
   readonly initialSessionState?: SetupWizardSessionState | null;
   readonly onSessionStateChange?: (state: SetupWizardSessionState) => void;
   readonly showDevelopmentTools?: boolean;
+  /** Caller owns the manager/unlocked/enabled Dev gate. Presentation only. */
+  readonly previewUndealtRoles?: boolean;
   readonly onPopulateDevelopmentPlayers?: () => Promise<readonly PlayerProfile[]>;
   readonly onOpenAvailablePlayers?: () => void;
   readonly onRoleDrawBackActionChange?: (action: (() => void) | null) => void;
@@ -119,6 +123,7 @@ interface PlayerComboboxProps {
   readonly value: string;
   readonly players: readonly PlayerProfile[];
   readonly unavailablePlayerIds: readonly string[];
+  readonly suggestionsHidden: boolean;
   readonly onChange: (playerId: string) => void;
 }
 
@@ -129,12 +134,16 @@ const PlayerCombobox = ({
   value,
   players,
   unavailablePlayerIds,
+  suggestionsHidden,
   onChange,
 }: PlayerComboboxProps) => {
   const { t } = useMessages(gameMessages);
   const selectedPlayer = players.find((player) => player.id === value);
   const [query, setQuery] = useState(selectedPlayer?.nickname ?? "");
   const [open, setOpen] = useState(false);
+  // Native focus may stay in a picker while a captured handle drag crosses it.
+  // Suspend only its overlay so hit testing reaches the actual destination seat.
+  const suggestionsOpen = open && !suggestionsHidden;
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const unavailable = new Set(unavailablePlayerIds);
   const matchingPlayers = players.filter(
@@ -173,7 +182,7 @@ const PlayerCombobox = ({
           aria-label={`${label} ${t("setup.player")}`}
           aria-autocomplete="list"
           aria-controls={listboxId}
-          aria-expanded={open}
+          aria-expanded={suggestionsOpen}
           autoComplete="off"
           value={query}
           placeholder={placeholder}
@@ -207,7 +216,7 @@ const PlayerCombobox = ({
           </svg>
         </span>
       </div>
-      {open ? (
+      {suggestionsOpen ? (
         <div
           id={listboxId}
           className="player-combobox-list"
@@ -246,6 +255,7 @@ export const SetupWizard = ({
   initialSessionState = null,
   onSessionStateChange,
   showDevelopmentTools = false,
+  previewUndealtRoles = false,
   onPopulateDevelopmentPlayers,
   onOpenAvailablePlayers,
   onRoleDrawBackActionChange,
@@ -292,6 +302,27 @@ export const SetupWizard = ({
   const [developmentError, setDevelopmentError] = useState(false);
   const [manualRoleSeat, setManualRoleSeat] = useState<number | null>(null);
   const roleTapState = useRef<{ seat: number; count: number; at: number } | null>(null);
+  const roleDrawSequence = useRef(0);
+  const [roleDrawRequests, setRoleDrawRequests] = useState<
+    Readonly<Record<number, RoleDrawRequest>>
+  >({});
+  const completeRoleDrawMotion = (seat: number, id?: number) => {
+    setRoleDrawRequests((current) => {
+      if (!current[seat] || (id !== undefined && current[seat]?.id !== id)) return current;
+      const next = { ...current };
+      delete next[seat];
+      return next;
+    });
+  };
+  const requestRoleDrawMotion = (seat: number) => {
+    const previousRole =
+      setup?.assignments[seat] ??
+      (previewUndealtRoles && setup && setup.step !== "music"
+        ? getRoleDrawPreview(setup)[seat]
+        : undefined);
+    const request = { id: ++roleDrawSequence.current, startedAt: performance.now(), previousRole };
+    setRoleDrawRequests((current) => ({ ...current, [seat]: request }));
+  };
   const seatGridRef = useRef<HTMLDivElement>(null);
   const seatDragRef = useRef<{
     pointerId: number;
@@ -303,6 +334,7 @@ export const SetupWizard = ({
 
   const discardDeal = useCallback(() => {
     setSetup(null);
+    setRoleDrawRequests({});
     setManualRoleSeat(null);
     roleTapState.current = null;
   }, []);
@@ -518,6 +550,7 @@ export const SetupWizard = ({
     if (setup === null || setup.assignments[seat] !== undefined) return;
     setManualRoleSeat(null);
     const nextSetup = drawRoleForSeat(setup, seat);
+    requestRoleDrawMotion(seat);
     setSetup(nextSetup);
     publishSessionState("roles", nextSetup);
     onEvent("setup.role-drawn", {
@@ -546,6 +579,8 @@ export const SetupWizard = ({
     roleTapState.current = null;
 
     const nextSetup = rerollRoleForSeat(setup, seat, Math.random);
+    if (nextSetup === setup) return;
+    requestRoleDrawMotion(seat);
     setSetup(nextSetup);
     publishSessionState("roles", nextSetup);
     onEvent("setup.role-rerolled", {
@@ -560,6 +595,7 @@ export const SetupWizard = ({
     if (includeCasper && manualRoleSeat === CASPER_SEAT) return;
     if (setup === null || manualRoleSeat === null || setup.remainingRoles.length === 0) return;
     const nextSetup = assignRoleForSeat(setup, manualRoleSeat, role);
+    completeRoleDrawMotion(manualRoleSeat);
     setSetup(nextSetup);
     setManualRoleSeat(null);
     roleTapState.current = null;
@@ -573,6 +609,7 @@ export const SetupWizard = ({
     const role = setup.assignments[manualRoleSeat];
     if (role === undefined) return;
     const nextSetup = clearRoleForSeat(setup, manualRoleSeat);
+    completeRoleDrawMotion(manualRoleSeat);
     setSetup(nextSetup);
     setManualRoleSeat(null);
     roleTapState.current = null;
@@ -592,6 +629,7 @@ export const SetupWizard = ({
 
   const returnToPlayerSelection = useCallback(() => {
     setManualRoleSeat(null);
+    setRoleDrawRequests({});
     roleTapState.current = null;
     setStep("players");
     publishSessionState("players", setup);
@@ -607,6 +645,8 @@ export const SetupWizard = ({
   }, [onRoleDrawBackActionChange, returnToPlayerSelection, setup, step]);
 
   if (step === "roles" && setup !== null) {
+    const preview =
+      previewUndealtRoles && setup.step !== "music" ? getRoleDrawPreview(setup) : undefined;
     return (
       <main className="game-shell role-draw-screen">
         <header className="game-header">
@@ -615,7 +655,9 @@ export const SetupWizard = ({
               <span aria-hidden="true">←</span> {t("setup.playerSetup")}
             </button>
             <div>
-              <p className="eyebrow">{t("setup.firstStage")}</p>
+              <p className={preview ? "eyebrow role-draw-preview-indicator" : "eyebrow"}>
+                {preview ? setupT("setup.undealtPreview") : t("setup.firstStage")}
+              </p>
               <h1>{t("setup.roleDraw")}</h1>
             </div>
           </div>
@@ -632,10 +674,18 @@ export const SetupWizard = ({
                     : (selectablePlayers.find(({ id }) => id === player.id)?.nickname ??
                       t("player.anonymous")),
                 role: setup.assignments[player.seat],
+                roleDraw: {
+                  dealt: setup.assignments[player.seat] !== undefined,
+                  role: setup.assignments[player.seat] ?? preview?.[player.seat],
+                  request: roleDrawRequests[player.seat],
+                },
               }))}
               seatActionLabel={(seat) =>
                 seat.role === undefined
-                  ? t("setup.drawRole", { name: seat.name })
+                  ? t("setup.drawRole", { name: seat.name }) +
+                    (seat.roleDraw?.role
+                      ? ` — ${setupT("setup.previewRole", { role: t(roleMessageKeys[seat.roleDraw.role]) })}`
+                      : "")
                   : t(
                       setup.remainingRoles.length > 0 &&
                         !(includeCasper && seat.seat === CASPER_SEAT)
@@ -645,6 +695,7 @@ export const SetupWizard = ({
                     )
               }
               onSeatClick={handleRoleCardTap}
+              onRoleDrawComplete={completeRoleDrawMotion}
               seatActionDisabled={(seat) =>
                 persistencePending || (includeCasper && seat.seat === CASPER_SEAT)
               }
@@ -733,7 +784,13 @@ export const SetupWizard = ({
   return (
     <main className={`setup-shell${step === "players" ? " is-player-setup" : ""}`}>
       {step === "players" ? (
-        <section className="wizard-card player-setup-card">
+        <section
+          className="wizard-card player-setup-card"
+          onPointerDownCapture={(event) => {
+            const drag = seatDragRef.current;
+            if (drag && event.pointerId !== drag.pointerId) cancelSeatDrag();
+          }}
+        >
           <p className="eyebrow">{t("setup.gameSetup")}</p>
           <header className="player-setup-heading">
             <h1>{t("setup.selectPlayers")}</h1>
@@ -805,6 +862,7 @@ export const SetupWizard = ({
             value={hostPlayerId}
             players={selectablePlayers}
             unavailablePlayerIds={selectedPlayerIds.filter(Boolean)}
+            suggestionsHidden={seatDrag !== null}
             onChange={changeHostPlayer}
           />
           <p className="setup-seat-hint">{t("setup.seatHint")}</p>
@@ -843,6 +901,7 @@ export const SetupWizard = ({
                         (selectedId, selectedIndex) => selectedIndex !== index && selectedId !== "",
                       ),
                     ].filter(Boolean)}
+                    suggestionsHidden={seatDrag !== null}
                     onChange={(nextPlayerId) => changeSeatPlayer(index, nextPlayerId)}
                   />
                 )}

@@ -4,6 +4,8 @@ import { useMessages } from "../../i18n/I18nProvider.js";
 import { gameMessages } from "../../i18n/messages/game.js";
 import { readCountdown, startCountdown, toggleCountdown } from "./timer.js";
 import type { CountdownState } from "./timer.js";
+import { ActivationGlassSweep } from "../theme/ActivationGlassSweep.js";
+import "./TimerControls.css";
 
 export interface TimerControlsHandle {
   start(seconds: 10 | 20 | 30 | 60): void;
@@ -118,16 +120,18 @@ export const TimerControls = forwardRef<TimerControlsHandle>((_, ref) => {
           <button
             type="button"
             key={seconds}
+            className="timer-feedback-button"
             aria-label={t("timer.start", { seconds })}
             onClick={() => start(seconds)}
           >
-            +{seconds}
+            <ActivationGlassSweep />
+            <span>+{seconds}</span>
           </button>
         ))}
       </div>
       <button
         type="button"
-        className={`timer-display${remaining <= 10 && remaining > 0 ? " is-warning" : ""}`}
+        className={`timer-display timer-feedback-button${remaining <= 10 && remaining > 0 ? " is-warning" : ""}`}
         aria-label={
           timer === null || timer.status === "expired"
             ? t("timer.face")
@@ -155,6 +159,7 @@ export const TimerControls = forwardRef<TimerControlsHandle>((_, ref) => {
           }
         }}
       >
+        <ActivationGlassSweep disabled={timer === null || timer.status === "expired"} />
         <span className="timer-label">{t("timer.label")}</span>
         <strong>{remaining.toString().padStart(2, "0")}</strong>
         <span>{t("timer.seconds")}</span>
@@ -164,10 +169,12 @@ export const TimerControls = forwardRef<TimerControlsHandle>((_, ref) => {
           <button
             type="button"
             key={seconds}
+            className="timer-feedback-button"
             aria-label={t("timer.start", { seconds })}
             onClick={() => start(seconds)}
           >
-            +{seconds}
+            <ActivationGlassSweep />
+            <span>+{seconds}</span>
           </button>
         ))}
       </div>

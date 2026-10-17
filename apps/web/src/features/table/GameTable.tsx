@@ -14,12 +14,20 @@ import { LiquidCardGlass } from "../theme/LiquidCardGlass.js";
 import { PlayerCardAppearanceContext } from "../theme/PlayerCardAppearanceContext.js";
 import { usePlayerExits } from "../game/PlayerExitProvider.js";
 import { PlayerExitAnimation } from "./PlayerExitAnimation.js";
+import {
+  RoleDrawGlow,
+  RoleDrawIcon,
+  RoleDrawPresentation,
+  type RoleDrawRequest,
+} from "./RoleDrawPresentation.js";
 
 export interface TableSeatView {
   readonly seat: number;
   readonly name: string;
   readonly status?: PlayerStatus;
   readonly role?: Role;
+  /** Explicit giveaway-only facts; preview roles are never dealt assignments. */
+  readonly roleDraw?: Readonly<{ dealt: boolean; role?: Role; request?: RoleDrawRequest }>;
   readonly current?: boolean;
   readonly currentVoter?: boolean;
   readonly fouls?: number;
@@ -47,6 +55,7 @@ interface GameTableProps {
   readonly seatActionLabel?: (seat: TableSeatView) => string;
   readonly seatActionDisabled?: (seat: TableSeatView) => boolean;
   readonly onSeatClick?: (seat: number) => void;
+  readonly onRoleDrawComplete?: (seat: number, id: number) => void;
   readonly onSeatSwipe?: (seat: number) => void;
   readonly onSeatPenalty?: (seat: number) => void;
   readonly onSeatFoul?: (seat: number) => void;
@@ -79,6 +88,7 @@ export const GameTable = ({
   seatActionLabel,
   seatActionDisabled,
   onSeatClick,
+  onRoleDrawComplete,
   onSeatSwipe,
   onSeatPenalty,
   onSeatFoul,
@@ -175,9 +185,11 @@ export const GameTable = ({
             return moved;
           };
           const exit = exits.requests[seat.seat];
+          const roleDraw = privacyHidden ? undefined : seat.roleDraw;
+          const visibleRole = roleDraw ? roleDraw.role : seat.role;
           const waiting = seat.status === "eliminated" && exits.waiting.includes(seat.seat);
           const showRole =
-            seat.role !== undefined &&
+            visibleRole !== undefined &&
             !privacyHidden &&
             !exit?.hideRole &&
             !(exit && exits.privacyHidden);
@@ -191,94 +203,113 @@ export const GameTable = ({
             sheriffHighlight: !privacyHidden && seat.sheriffHighlight,
           });
           const nominationClass = `${seat.nominated ? " is-nominated" : ""}${seat.nominationSelected && appearance.selectionStyle === "check-outline" ? " has-nomination-selection-outline" : ""}`;
+          const roleDrawClass = roleDraw
+            ? ` role-draw-card${roleDraw.dealt ? " is-role-dealt" : roleDraw.role ? " role-draw-preview" : ""}${roleDraw.request ? " is-role-flipping" : ""}`
+            : "";
+          const face = (faceRole: Role | undefined) => (
+            <>
+              <span className="seat-number">{seat.seat}</span>
+              {roleDraw ? <RoleDrawIcon role={faceRole} /> : <PersonIcon />}
+              {seat.nominated ? (
+                <span
+                  className="card-nomination-status"
+                  data-treatment={appearance.nominationTreatment}
+                >
+                  <span
+                    className="card-status-slot card-nomination-symbol"
+                    role="img"
+                    aria-label={t("table.nominated")}
+                  >
+                    <NominationIcon aria-hidden="true" />
+                  </span>
+                  {seat.supportCount ? (
+                    <span
+                      className="card-status-slot card-support"
+                      role="img"
+                      aria-label={t("table.supportCount", { count: seat.supportCount })}
+                    >
+                      <SupportIcon aria-hidden="true" />
+                      <span aria-hidden="true">+{seat.supportCount}</span>
+                    </span>
+                  ) : null}
+                </span>
+              ) : null}
+              {seat.nominationSelected ? (
+                <span
+                  className="card-status-slot card-selection"
+                  role="img"
+                  aria-label={t("table.currentSelection")}
+                >
+                  <Check aria-hidden="true" />
+                </span>
+              ) : null}
+              <span className="card-discipline-status">
+                {seat.fouls ? (
+                  <span
+                    className="card-status-slot foul-markers"
+                    role="img"
+                    aria-label={t("table.foulCount", { count: seat.fouls })}
+                  >
+                    {Array.from({ length: Math.min(3, seat.fouls) }, (_, index) => (
+                      <span key={index} className="foul-dot" aria-hidden="true" />
+                    ))}
+                  </span>
+                ) : null}
+                {seat.muted ? (
+                  <span
+                    className="card-status-slot card-mute"
+                    role="img"
+                    aria-label={t("table.mutedTurn")}
+                  >
+                    <MessageCircleOff aria-hidden="true" />
+                  </span>
+                ) : null}
+              </span>
+              <span className="seat-name">{seat.name}</span>
+              <span className="seat-badges">
+                {showRole && faceRole ? (
+                  <span className={`role-badge role-${faceRole}`}>
+                    {t(roleMessageKeys[faceRole])}
+                  </span>
+                ) : null}
+
+                {seat.voteTargetSeat === undefined ? null : (
+                  <span className="state-badge">
+                    {t("table.voteTarget", { seat: seat.voteTargetSeat })}
+                  </span>
+                )}
+              </span>
+            </>
+          );
           const content = (
             <>
               <LiquidCardGlass />
+              {roleDraw?.dealt ? <RoleDrawGlow /> : null}
               {animateActive ? (
                 <ActivePlayerLighting active={Boolean(activeEmphasis) && !exit} />
               ) : null}
               <VgpuPlayerLightingCanvas
                 kind={exit || (animateActive && lightingKind === "speaker") ? null : lightingKind}
               />
-              <PlayerExitAnimation
-                request={exit}
-                deceased={
-                  !waiting && (seat.status === "eliminated" || seat.status === "red-carded")
-                }
-                onComplete={(id) => exits.complete(seat.seat, id)}
-              >
-                <span className="seat-number">{seat.seat}</span>
-                <PersonIcon />
-                {seat.nominated ? (
-                  <span
-                    className="card-nomination-status"
-                    data-treatment={appearance.nominationTreatment}
-                  >
-                    <span
-                      className="card-status-slot card-nomination-symbol"
-                      role="img"
-                      aria-label={t("table.nominated")}
-                    >
-                      <NominationIcon aria-hidden="true" />
-                    </span>
-                    {seat.supportCount ? (
-                      <span
-                        className="card-status-slot card-support"
-                        role="img"
-                        aria-label={t("table.supportCount", { count: seat.supportCount })}
-                      >
-                        <SupportIcon aria-hidden="true" />
-                        <span aria-hidden="true">+{seat.supportCount}</span>
-                      </span>
-                    ) : null}
-                  </span>
-                ) : null}
-                {seat.nominationSelected ? (
-                  <span
-                    className="card-status-slot card-selection"
-                    role="img"
-                    aria-label={t("table.currentSelection")}
-                  >
-                    <Check aria-hidden="true" />
-                  </span>
-                ) : null}
-                <span className="card-discipline-status">
-                  {seat.fouls ? (
-                    <span
-                      className="card-status-slot foul-markers"
-                      role="img"
-                      aria-label={t("table.foulCount", { count: seat.fouls })}
-                    >
-                      {Array.from({ length: Math.min(3, seat.fouls) }, (_, index) => (
-                        <span key={index} className="foul-dot" aria-hidden="true" />
-                      ))}
-                    </span>
-                  ) : null}
-                  {seat.muted ? (
-                    <span
-                      className="card-status-slot card-mute"
-                      role="img"
-                      aria-label={t("table.mutedTurn")}
-                    >
-                      <MessageCircleOff aria-hidden="true" />
-                    </span>
-                  ) : null}
-                </span>
-                <span className="seat-name">{seat.name}</span>
-                <span className="seat-badges">
-                  {showRole ? (
-                    <span className={`role-badge role-${seat.role}`}>
-                      {t(roleMessageKeys[seat.role])}
-                    </span>
-                  ) : null}
-
-                  {seat.voteTargetSeat === undefined ? null : (
-                    <span className="state-badge">
-                      {t("table.voteTarget", { seat: seat.voteTargetSeat })}
-                    </span>
-                  )}
-                </span>
-              </PlayerExitAnimation>
+              {roleDraw ? (
+                <RoleDrawPresentation
+                  role={visibleRole}
+                  request={roleDraw.request}
+                  onComplete={(id) => onRoleDrawComplete?.(seat.seat, id)}
+                >
+                  {face}
+                </RoleDrawPresentation>
+              ) : (
+                <PlayerExitAnimation
+                  request={exit}
+                  deceased={
+                    !waiting && (seat.status === "eliminated" || seat.status === "red-carded")
+                  }
+                  onComplete={(id) => exits.complete(seat.seat, id)}
+                >
+                  {face(visibleRole)}
+                </PlayerExitAnimation>
+              )}
             </>
           );
           return (
@@ -373,7 +404,10 @@ export const GameTable = ({
             >
               {readOnly ? (
                 <div
-                  className={className + nominationClass}
+                  className={className + nominationClass + roleDrawClass}
+                  data-role-draw-role={roleDraw?.role}
+                  data-role-dealt={roleDraw?.dealt}
+                  data-role-draw-flip={roleDraw?.request?.id}
                   data-player-glass="table"
                   role="group"
                   data-player-exit={exit?.id}
@@ -391,7 +425,10 @@ export const GameTable = ({
                   type="button"
                   disabled={disabled && !foulAvailable}
                   aria-disabled={disabled || undefined}
-                  className={className + nominationClass}
+                  className={className + nominationClass + roleDrawClass}
+                  data-role-draw-role={roleDraw?.role}
+                  data-role-dealt={roleDraw?.dealt}
+                  data-role-draw-flip={roleDraw?.request?.id}
                   aria-pressed={seat.nominationSelected}
                   style={touchAction === undefined ? undefined : { touchAction }}
                   data-player-glass="table"

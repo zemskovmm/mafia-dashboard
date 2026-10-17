@@ -11,6 +11,7 @@ import {
   createSeededRandom,
   createSetup,
   drawRoleForSeat,
+  getRoleDrawPreview,
   type GameState,
 } from "@mafia/game-domain";
 
@@ -125,9 +126,9 @@ const invokeRoleDrawBackAction = (onRoleDrawBackActionChange: ReturnType<typeof 
   act(action);
 };
 
-const seatPointer = (element: Element, type: string, pointerId = 1) => {
+const seatPointer = (element: Element, type: string, pointerId = 1, isPrimary = true) => {
   const event = new Event(type, { bubbles: true, cancelable: true });
-  Object.assign(event, { pointerId, isPrimary: true, button: 0, clientX: 100, clientY: 100 });
+  Object.assign(event, { pointerId, isPrimary, button: 0, clientX: 100, clientY: 100 });
   fireEvent(element, event);
 };
 
@@ -339,6 +340,142 @@ describe("SetupWizard federation setup", () => {
     expect(screen.queryByText("Best Move is disabled.")).toBeNull();
     await finishAllRoles(user);
     expect(onComplete.mock.lastCall?.[0].bestMoveEnabled).toBe(false);
+  });
+
+  it("previews the actual undealt allocation without dealing or publishing on toggle", () => {
+    const session = federationRoleSession();
+    const onEvent = vi.fn();
+    const onSessionStateChange = vi.fn();
+    const props = {
+      players: availablePlayers,
+      onComplete: vi.fn(),
+      initialSessionState: session,
+      onEvent,
+      onSessionStateChange,
+    };
+    const { rerender, container } = render(<SetupWizard {...props} />);
+    const publications = onSessionStateChange.mock.calls.length;
+    expect(container.querySelectorAll(".role-draw-preview")).toHaveLength(0);
+    rerender(<SetupWizard {...props} previewUndealtRoles />);
+    expect(screen.getByText("Dev preview · undealt roles")).toBeVisible();
+    expect(container.querySelectorAll(".role-draw-preview")).toHaveLength(9);
+    session.setup!.remainingRoles.forEach((role, index) => {
+      const card = screen.getByRole("button", {
+        name: `Draw role for Player ${index + 2} — Preview: ${role}`,
+      });
+      expect(card).toHaveTextContent(role);
+      expect(card).not.toHaveClass("is-role-dealt");
+    });
+    expect(container.querySelectorAll(".is-role-dealt")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Begin Mafia planning stage" })).toBeDisabled();
+    expect(onSessionStateChange).toHaveBeenCalledTimes(publications);
+    expect(onEvent).not.toHaveBeenCalled();
+    rerender(<SetupWizard {...props} />);
+    expect(screen.queryByText("Dev preview · undealt roles")).toBeNull();
+    expect(container.querySelectorAll(".role-draw-preview")).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Draw role for Player 2" })).not.toHaveTextContent(
+      /citizen|sheriff|mafia|don/,
+    );
+    expect(onSessionStateChange).toHaveBeenCalledTimes(publications);
+  });
+
+  it("keeps every preview current through arbitrary draws, rerolls, correction and clear", async () => {
+    const user = userEvent.setup();
+    const onSessionStateChange = vi.fn();
+    const { container } = render(
+      <SetupWizard
+        players={availablePlayers}
+        onComplete={vi.fn()}
+        initialSessionState={federationRoleSession()}
+        onSessionStateChange={onSessionStateChange}
+        previewUndealtRoles
+      />,
+    );
+    const inspect = () => {
+      const state = (onSessionStateChange.mock.lastCall![0] as SetupWizardSessionState).setup!;
+      const preview = getRoleDrawPreview(state);
+      state.players.forEach(({ seat }) => {
+        const card = container.querySelector(`.seat-anchor[data-seat="${seat}"] .player-seat`)!;
+        expect(card).toHaveAttribute("data-role-draw-role", preview[seat]);
+        expect(card).toHaveAttribute(
+          "data-role-dealt",
+          String(state.assignments[seat] !== undefined),
+        );
+      });
+      return state;
+    };
+    const before = getRoleDrawPreview(inspect())[7];
+    fireEvent.click(screen.getByRole("button", { name: /^Draw role for Player 7/ }));
+    expect(inspect().assignments[7]).toBe(before);
+    const card = screen.getByRole("button", { name: /^Player 1:/ });
+    fireEvent.click(card);
+    fireEvent.click(card);
+    fireEvent.click(card);
+    inspect();
+    swipeCard(card);
+    await user.click(screen.getAllByRole("button", { name: /Assign .* to seat 1/ })[0]!);
+    inspect();
+    swipeCard(card);
+    await user.click(screen.getByRole("button", { name: "Clear role for seat 1" }));
+    expect(inspect().assignments[1]).toBeUndefined();
+    expect(card).toHaveClass("role-draw-preview");
+    expect(card).not.toHaveClass("is-role-dealt");
+  });
+
+  it("flips only accepted draws and third taps, even for same-role rerolls, without delaying saves", () => {
+    const animate = vi.fn(() => ({ finished: new Promise(() => {}), cancel: vi.fn() }));
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "animate");
+    Object.defineProperty(HTMLElement.prototype, "animate", { configurable: true, value: animate });
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.999999);
+    try {
+      const session = federationRoleSession();
+      const onSessionStateChange = vi.fn();
+      const onEvent = vi.fn();
+      const props = {
+        players: availablePlayers,
+        onComplete: vi.fn(),
+        initialSessionState: session,
+        onSessionStateChange,
+        onEvent,
+      };
+      const { rerender, unmount } = render(<SetupWizard {...props} />);
+      expect(animate).not.toHaveBeenCalled();
+      const card = screen.getByRole("button", { name: "Draw role for Player 2" });
+      card.focus();
+      fireEvent.click(card);
+      expect(animate).toHaveBeenCalledTimes(4);
+      expect(card).toHaveFocus();
+      expect(card).toHaveClass("is-role-dealt");
+      const drawnRole = onSessionStateChange.mock.lastCall![0].setup.assignments[2];
+      expect(onEvent).toHaveBeenCalledExactlyOnceWith("setup.role-drawn", {
+        seat: 2,
+        role: drawnRole,
+        secret: true,
+      });
+      expect(onSessionStateChange.mock.lastCall![0]).not.toHaveProperty("roleDrawRequests");
+      fireEvent.click(card);
+      fireEvent.click(card);
+      expect(animate).toHaveBeenCalledTimes(4);
+      fireEvent.click(card);
+      expect(animate).toHaveBeenCalledTimes(8);
+      expect(onSessionStateChange.mock.lastCall![0].setup.assignments[2]).toBe(drawnRole);
+      expect(onEvent).toHaveBeenLastCalledWith("setup.role-rerolled", {
+        seat: 2,
+        role: drawnRole,
+        secret: true,
+      });
+      rerender(<SetupWizard {...props} previewUndealtRoles persistencePending />);
+      fireEvent.click(card);
+      expect(animate).toHaveBeenCalledTimes(8);
+      const saved = onSessionStateChange.mock.lastCall![0] as SetupWizardSessionState;
+      unmount();
+      render(<SetupWizard {...props} initialSessionState={saved} />);
+      expect(animate).toHaveBeenCalledTimes(8);
+    } finally {
+      random.mockRestore();
+      if (descriptor) Object.defineProperty(HTMLElement.prototype, "animate", descriptor);
+      else Reflect.deleteProperty(HTMLElement.prototype, "animate");
+    }
   });
 
   it("rerolls immediately on the third tap without a deviation acknowledgement", async () => {
@@ -1110,6 +1247,115 @@ describe("SetupWizard", () => {
         await user.click(screen.getByRole("button", { name: "Start game" }));
         expect(onSessionStateChange.mock.lastCall?.[0].setup.assignments).toEqual({});
         expect(screen.getByText("Draw roles · 10 remaining")).toBeInTheDocument();
+      } finally {
+        if (previous) Object.defineProperty(document, "elementFromPoint", previous);
+        else Reflect.deleteProperty(document, "elementFromPoint");
+      }
+    },
+  );
+
+  it.each(["Seat 2 player", "Host player"])(
+    "keeps an open %s picker from intercepting a seat drag",
+    async (label) => {
+      const user = userEvent.setup();
+      const session = { ...partialRoleSession(), step: "players" as const, setup: null };
+      session.selectedPlayerIds[2] = "";
+      const onSessionStateChange = vi.fn();
+      render(
+        <SetupWizard
+          players={playersWithReplacement}
+          onComplete={() => undefined}
+          initialSessionState={session}
+          onSessionStateChange={onSessionStateChange}
+        />,
+      );
+      const picker = screen.getByRole("combobox", { name: label });
+      await user.click(picker);
+      expect(screen.getByRole("listbox")).toBeVisible();
+      const source = screen.getByLabelText("Move player in seat 1");
+      const target = screen.getByRole("combobox", { name: "Seat 3 player" });
+      const previous = Object.getOwnPropertyDescriptor(document, "elementFromPoint");
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: () => screen.queryByRole("listbox") ?? target,
+      });
+      onSessionStateChange.mockClear();
+      try {
+        seatPointer(source, "pointerdown");
+        seatPointer(source, "pointermove");
+        expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+        expect(picker).toHaveAttribute("aria-expanded", "false");
+        expect(picker).toHaveFocus();
+        expect(picker).toBeEnabled();
+        expect(onSessionStateChange).not.toHaveBeenCalled();
+        seatPointer(source, "pointerup");
+        const selectedPlayerIds = [...session.selectedPlayerIds];
+        [selectedPlayerIds[0], selectedPlayerIds[2]] = ["", selectedPlayerIds[0]!];
+        expect(onSessionStateChange).toHaveBeenCalledExactlyOnceWith({
+          ...session,
+          selectedPlayerIds,
+        });
+        // The native picker remains usable after the drag; provisional typing
+        // and ordinary dismissal still do not commit a roster change.
+        await user.click(screen.getByRole("heading", { level: 1 }));
+        onSessionStateChange.mockClear();
+        await user.click(picker);
+        await user.clear(picker);
+        await user.type(picker, "not a player");
+        expect(screen.getByRole("listbox")).toBeVisible();
+        await user.click(screen.getByRole("heading", { level: 1 }));
+        expect(onSessionStateChange).not.toHaveBeenCalled();
+        expect(picker).toHaveValue(label === "Host player" ? "Player 11" : "Player 2");
+      } finally {
+        if (previous) Object.defineProperty(document, "elementFromPoint", previous);
+        else Reflect.deleteProperty(document, "elementFromPoint");
+      }
+    },
+  );
+
+  it.each(["Move player in seat 2", "Seat 2 player", "Host player"])(
+    "cancels a seat drag when a second contact lands on %s",
+    (label) => {
+      const session = { ...partialRoleSession(), step: "players" as const };
+      const onSessionStateChange = vi.fn();
+      render(
+        <SetupWizard
+          players={availablePlayers}
+          onComplete={() => undefined}
+          initialSessionState={session}
+          onSessionStateChange={onSessionStateChange}
+        />,
+      );
+      const source = screen.getByLabelText("Move player in seat 1");
+      const second = screen.getByLabelText(label);
+      const target = screen.getByRole("combobox", { name: "Seat 2 player" });
+      const previous = Object.getOwnPropertyDescriptor(document, "elementFromPoint");
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: () => target,
+      });
+      onSessionStateChange.mockClear();
+      try {
+        seatPointer(source, "pointerdown");
+        seatPointer(second, "pointerdown", 2, false);
+        seatPointer(source, "pointermove");
+        seatPointer(second, "pointerup", 2, false);
+        seatPointer(source, "pointerup");
+        expect(onSessionStateChange).not.toHaveBeenCalled();
+        expect(source.closest("[data-setup-seat]")).not.toHaveClass("is-dragging");
+        seatPointer(source, "pointerdown");
+        seatPointer(source, "pointermove");
+        seatPointer(source, "pointerup");
+        const selectedPlayerIds = [...session.selectedPlayerIds];
+        [selectedPlayerIds[0], selectedPlayerIds[1]] = [
+          selectedPlayerIds[1]!,
+          selectedPlayerIds[0]!,
+        ];
+        expect(onSessionStateChange).toHaveBeenCalledExactlyOnceWith({
+          ...session,
+          selectedPlayerIds,
+          setup: null,
+        });
       } finally {
         if (previous) Object.defineProperty(document, "elementFromPoint", previous);
         else Reflect.deleteProperty(document, "elementFromPoint");

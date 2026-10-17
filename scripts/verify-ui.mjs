@@ -1,7 +1,38 @@
-/* global URL, document, getComputedStyle, HTMLElement, HTMLCanvasElement, HTMLInputElement, innerHeight, innerWidth, structuredClone, localStorage, crypto, TextEncoder, ErrorEvent, Event */
+/* global URL, document, navigator, getComputedStyle, HTMLElement, HTMLCanvasElement, HTMLInputElement, innerHeight, innerWidth, structuredClone, localStorage, crypto, TextEncoder, ErrorEvent, Event, performance, requestAnimationFrame, matchMedia */
 import { chromium, webkit } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import assert from "node:assert/strict";
 import { assertExactOrigin } from "./session-verifier-contracts.mjs";
+import { writeFileSync } from "node:fs";
+import {
+  assertCardSizes,
+  assertCanonicalProjection,
+  assertRailMaterial,
+  assertPlayerLighting,
+  resolveUiMode,
+} from "./ui-presentation-contracts.mjs";
+
+const verificationMode = resolveUiMode(process.env);
+let terminalStage = "initialization";
+const stage = (name) => {
+  terminalStage = name;
+  console.log(`UI_STAGE ${JSON.stringify({ mode: verificationMode, stage: name })}`);
+  writeFileSync(
+    (
+      process.env.UI_FAILURE_SCREENSHOT ?? `.AI/mafia-dashboard-${verificationMode}-failure.png`
+    ).replace(/\.png$/i, "-receipt.json"),
+    JSON.stringify(
+      {
+        mode: verificationMode,
+        stage: name,
+        browser: process.env.UI_BROWSER ?? "chromium",
+        viewport: [process.env.UI_VIEWPORT_WIDTH, process.env.UI_VIEWPORT_HEIGHT],
+      },
+      null,
+      2,
+    ),
+  );
+};
 
 const baseUrl = process.env.APP_URL ?? "http://127.0.0.1:8080";
 const expectedOrigin = new URL(baseUrl).origin;
@@ -91,31 +122,45 @@ const assertSupportedPlayerLighting = async (card, label) => {
       const shell = element.closest(".app-shell");
       if (!(shell instanceof HTMLElement)) throw new Error("Missing application shell");
       const canvas = element.querySelector(".vgpu-player-lighting");
-      const style = getComputedStyle(element);
+      const layer = element.querySelector(".active-player-lighting");
+      const style = getComputedStyle(layer ?? element);
+      const pulse =
+        layer === null ? getComputedStyle(element) : getComputedStyle(layer, "::before");
       return {
         effective: shell.getAttribute("data-lighting-renderer"),
-        gpuReady: canvas?.getAttribute("data-vgpu-ready"),
-        gpuVisibility: canvas === null ? null : getComputedStyle(canvas).visibility,
-        cssAnimation: style.animationName,
-        cssShadow: style.boxShadow,
+        active:
+          layer === null
+            ? element.matches(
+                ".is-voting-highlight, .is-goodbye-highlight, .is-sheriff-highlight, .is-mafia-shooter, .is-night-check-highlight",
+              )
+            : layer.getAttribute("data-active") === "true",
+        opacity: parseFloat(style.opacity),
+        ready: canvas?.getAttribute("data-vgpu-ready"),
+        visibility: canvas === null ? style.visibility : getComputedStyle(canvas).visibility,
+        canvasOpacity: canvas === null ? 0 : parseFloat(getComputedStyle(canvas).opacity),
+        animation: pulse.animationName,
+        shadow: pulse.boxShadow,
+        content: layer === null ? "self" : pulse.content,
+        reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
       };
     });
+  await settleSidePanel();
   let evidence = await read();
   if (evidence.effective === "vgpu") {
     await card.locator('.vgpu-player-lighting[data-vgpu-ready="true"]').waitFor();
+    await card.evaluate(async (element) => {
+      element.getBoundingClientRect();
+      await Promise.all(
+        element
+          .getAnimations({ subtree: true })
+          .filter((animation) => animation.effect?.getTiming().iterations !== Infinity)
+          .map((animation) => animation.finished.catch(() => undefined)),
+      );
+    });
     evidence = await read();
   }
-  const gpuLighting =
-    evidence.effective === "vgpu" &&
-    evidence.gpuReady === "true" &&
-    evidence.gpuVisibility === "visible";
-  const cssLighting =
-    evidence.effective === "legacy" &&
-    evidence.cssAnimation !== "none" &&
-    evidence.cssShadow !== "none";
-  if (!gpuLighting && !cssLighting) {
-    throw new Error(`${label} has no supported lighting outcome: ${JSON.stringify(evidence)}`);
-  }
+  assertPlayerLighting(evidence);
+  console.log(`Player lighting PASS (${label}): ${JSON.stringify(evidence)}`);
   return evidence;
 };
 const assertVoteCountTypography = async (page) => {
@@ -165,8 +210,8 @@ const assertVoteCountTypography = async (page) => {
   for (const sample of Object.values(evidence)) {
     if (
       !near(sample.total, sample.root * 1.44) ||
-      !near(sample.candidate, sample.root * 0.78) ||
-      !near(sample.copy, sample.root * 0.72) ||
+      !near(sample.candidate, sample.root * 0.875) ||
+      !near(sample.copy, sample.root * 0.8125) ||
       !sample.countFits
     ) {
       throw new Error(`Panel vote count sizing differs from 1.44rem: ${JSON.stringify(evidence)}`);
@@ -188,6 +233,16 @@ const assertRolePresentation = async (page, { masked, roleLighting, phase }) => 
     return {
       phase: shell.className,
       roles: shell.querySelectorAll(".role-badge").length,
+      roleFacesValid:
+        cards.length === 10 &&
+        cards.every((card) => {
+          const roles = [...card.querySelectorAll(".role-badge")].map((badge) => badge.textContent);
+          return (
+            roles.length >= 1 &&
+            roles.length <= (card.hasAttribute("data-player-exit") ? 2 : 1) &&
+            new Set(roles).size === 1
+          );
+        }),
       counts: shell.querySelector(".team-counts")?.getAttribute("aria-label"),
       roleCards: roleCards.length,
       roleCanvas: roleCards.filter((card) => card.querySelector(".vgpu-player-lighting")).length,
@@ -205,7 +260,7 @@ const assertRolePresentation = async (page, { masked, roleLighting, phase }) => 
   });
   if (
     !evidence.phase.includes(`phase-${phase}`) ||
-    evidence.roles !== (masked ? 0 : 10) ||
+    (masked ? evidence.roles !== 0 : !evidence.roleFacesValid) ||
     (evidence.counts?.includes("hidden") ?? false) !== masked ||
     (masked && evidence.roleCards !== 0) ||
     (roleLighting &&
@@ -218,9 +273,23 @@ const assertRolePresentation = async (page, { masked, roleLighting, phase }) => 
   }
   console.log(`Role presentation ${phase}: ${JSON.stringify(evidence)}`);
 };
-const evidencePath = (name) => `.AI/mafia-dashboard-${name}.png`;
+const evidencePath = (name) =>
+  process.env.UI_SCREENSHOT
+    ? process.env.UI_SCREENSHOT.replace(/\.png$/i, `-${name}.png`)
+    : `.AI/mafia-dashboard-${name}.png`;
 const screenshotPath = process.env.UI_SCREENSHOT ?? evidencePath("setup");
+const settleSidePanel = () =>
+  page.locator(".live-side-panel").evaluate(async (panel) => {
+    panel.getBoundingClientRect();
+    await Promise.all(
+      [...panel.querySelectorAll(".panel-reveal, .panel-reveal-content, .youtube-player-video")]
+        .flatMap((node) => node.getAnimations())
+        .filter((animation) => animation.effect?.getTiming().iterations !== Infinity)
+        .map((animation) => animation.finished.catch(() => undefined)),
+    );
+  });
 const verifyFadeFooter = async (state, expectedInset) => {
+  await settleSidePanel();
   const evidence = await page.locator(".live-side-panel").evaluate((panel) => {
     const dock = panel.querySelector(".youtube-dock");
     const controls = dock.querySelector(".live-music-controls");
@@ -323,6 +392,41 @@ const verifyUtilityToggle = async () => {
   const originalTimer = await timer.elementHandle();
   const music = rail.locator(".youtube-dock");
   const originalMusic = await music.elementHandle();
+  const observeMotion = async (locator) => {
+    await locator.evaluate((panel) => {
+      panel.__motionSamples = new Promise((resolve) => {
+        const frames = [];
+        const started = performance.now();
+        const sample = () => {
+          frames.push({
+            height: panel.getBoundingClientRect().height,
+            time: performance.now() - started,
+          });
+          if (performance.now() - started < 420) requestAnimationFrame(sample);
+          else resolve(frames);
+        };
+        sample();
+      });
+    });
+    return async (direction) => {
+      const frames = await locator.evaluate((panel) => panel.__motionSamples);
+      const first = frames[0].height;
+      const last = frames.at(-1).height;
+      const low = Math.min(first, last),
+        high = Math.max(first, last);
+      const reduced = await page.evaluate(
+        () => matchMedia("(prefers-reduced-motion: reduce)").matches,
+      );
+      if (
+        high - low < 10 ||
+        (direction === "collapse" ? last >= first : last <= first) ||
+        (!reduced && !frames.some(({ height }) => height > low + 2 && height < high - 2))
+      ) {
+        throw new Error(`Panel ${direction} did not animate its height: ${JSON.stringify(frames)}`);
+      }
+      console.log(`Panel ${direction} frames: ${JSON.stringify(frames)}`);
+    };
+  };
   await page.evaluate(() => document.fonts.ready);
   await page.mouse.move(0, 0);
   const corner = await rail.evaluate((panel) => {
@@ -389,19 +493,42 @@ const verifyUtilityToggle = async () => {
   };
   await toggle.hover();
   await measure("expanded-hover");
+  for (const seconds of [60, 30, 20, 10]) {
+    const preset = page.getByRole("button", { name: `Start ${seconds} second timer`, exact: true });
+    await preset.click();
+    const feedback = await preset.evaluate((button) => ({
+      animations: button.querySelector(".liquid-card-glass__light").getAnimations().length,
+      transform: getComputedStyle(button).transform,
+      reduced:
+        matchMedia("(prefers-reduced-motion: reduce)").matches ||
+        matchMedia("(prefers-reduced-transparency: reduce)").matches,
+    }));
+    if ((!feedback.reduced && feedback.animations !== 1) || feedback.transform !== "none") {
+      throw new Error(
+        `Timer +${seconds} must sweep its light, not its contents: ${JSON.stringify(feedback)}`,
+      );
+    }
+  }
   await page.getByRole("button", { name: "Start 60 second timer", exact: true }).click();
   await page.getByRole("button", { name: "Pause timer", exact: true }).click();
   const paused = await timer.locator("strong").innerText();
   await toggle.hover();
   await page.mouse.down();
   await measure("pressed");
+  const collapsedMotion = await observeMotion(page.locator("#game-utility-panels"));
   await page.mouse.up();
-  await page.locator("#game-utility-panels[hidden]").waitFor({ state: "attached" });
+  await page
+    .locator('#game-utility-panels[data-expanded="false"][inert]')
+    .waitFor({ state: "attached" });
+  await collapsedMotion("collapse");
+  await page.locator("#game-utility-panels").waitFor({ state: "hidden" });
   await measure("collapsed-hover");
   await page.keyboard.press("Tab");
   await toggle.focus();
   await measure("focus");
+  const revealedMotion = await observeMotion(page.locator("#game-utility-panels"));
   await page.keyboard.press("Enter");
+  await revealedMotion("reveal");
   await page.getByRole("button", { name: "Resume timer", exact: true }).waitFor();
   if (
     !(await timer.evaluate((node, original) => node === original, originalTimer)) ||
@@ -421,12 +548,16 @@ const verifyUtilityToggle = async () => {
   await toggle.press("Enter");
   await page.getByRole("button", { name: "Pause timer", exact: true }).click();
   const handle = music.locator(".music-panel-handle");
+  const queueReveal = await observeMotion(music.locator(".youtube-queue-reveal"));
   await handle.click();
+  await queueReveal("reveal");
   await music.locator(".youtube-session-queue").waitFor();
   await verifyFadeFooter("player-expanded");
   await toggle.click();
   await verifyFadeFooter("player-expanded-utilities-hidden");
+  const queueCollapse = await observeMotion(music.locator(".youtube-queue-reveal"));
   await handle.click();
+  await queueCollapse("collapse");
   await verifyFadeFooter("player-collapsed-utilities-hidden");
   await toggle.click();
   await verifyFadeFooter("player-collapsed");
@@ -444,7 +575,11 @@ const timelineScreenshotPath = process.env.UI_TIMELINE_SCREENSHOT ?? evidencePat
 const timelineRightScreenshotPath = timelineScreenshotPath.replace(/\.png$/i, "-right.png");
 const carCrashScreenshotPath =
   process.env.UI_CAR_CRASH_SCREENSHOT ?? evidencePath("car-crash-zero-votes-ipad");
-const testNicknames = Array.from({ length: 11 }, (_, index) => `UI Player ${index + 1}`);
+const testNicknames = Array.from({ length: 11 }, (_, index) =>
+  process.env.UI_LAYOUT_ONLY === "1" && index === 1
+    ? "Александра".repeat(8)
+    : `UI Player ${index + 1}`,
+);
 const emptyStatistics = {
   hostedGames: 0,
   gamesPlayed: 0,
@@ -502,7 +637,8 @@ const browser =
     ? await webkit.launch({ headless: true })
     : await chromium.launch({ channel: "chrome", headless: true });
 const context = await browser.newContext({
-  hasTouch: headerOnly || layoutOnly || federationOnly || rulesSketchbookOnly,
+  // Default also ends in the integrated federation journey, which exercises native tap.
+  hasTouch: true,
   isMobile: layoutOnly && browserName === "webkit",
   viewport:
     Number.isFinite(viewportWidth) &&
@@ -515,8 +651,99 @@ const context = await browser.newContext({
         : { width: 1366, height: 1024 },
 });
 const page = await context.newPage();
+stage("start");
+// These journeys use synthetic account/playlist data, including after reload.
+// Genuine provider and physical-device qualification are separate acceptance lanes.
+await page.addInitScript(() => {
+  class FakeYouTubePlayer {
+    constructor(elementId, options) {
+      const mount = document.getElementById(elementId);
+      if (!mount) throw new Error(`Missing mocked YouTube mount: ${elementId}`);
+      this.options = options;
+      this.volume = 65;
+      this.volumeChanges = [];
+      this.played = false;
+      this.state = -1;
+      this.videoIds = [];
+      this.iframe = document.createElement("iframe");
+      this.iframe.id = elementId;
+      this.iframe.className = mount.className;
+      this.iframe.src = "about:blank";
+      this.iframe.title = "Synthetic YouTube player";
+      mount.replaceWith(this.iframe);
+      window.__uiYouTubePlayer = this;
+      setTimeout(() => options.events?.onReady?.({ target: this }), 0);
+    }
+    playVideo() {
+      this.played = true;
+      this.state = 1;
+      this.options.events?.onStateChange?.({ target: this, data: 1 });
+    }
+    pauseVideo() {
+      this.state = 2;
+      this.options.events?.onStateChange?.({ target: this, data: 2 });
+    }
+    cuePlaylist(videoIds, index = 0) {
+      this.videoIds = [...videoIds];
+      this.playlistIndex = index;
+      this.state = 5;
+      this.options.events?.onStateChange?.({ target: this, data: 5 });
+    }
+    loadPlaylist(videoIds, index = 0) {
+      this.videoIds = [...videoIds];
+      this.playlistIndex = index;
+      this.state = 1;
+      this.options.events?.onStateChange?.({ target: this, data: 1 });
+    }
+    playVideoAt(index) {
+      this.playlistIndex = index;
+      this.playVideo();
+    }
+    setVolume(volume) {
+      this.volume = volume;
+      this.volumeChanges.push(volume);
+    }
+    getVolume() {
+      return this.volume;
+    }
+    getIframe() {
+      return this.iframe;
+    }
+    getPlaylistIndex() {
+      return this.playlistIndex ?? 0;
+    }
+    getPlaylist() {
+      return this.videoIds;
+    }
+    getCurrentTime() {
+      return 0;
+    }
+    getPlayerState() {
+      return this.state;
+    }
+    destroy() {
+      this.iframe.remove();
+    }
+  }
+  window.YT = {
+    Player: FakeYouTubePlayer,
+    PlayerState: { PLAYING: 1, PAUSED: 2, ENDED: 0, BUFFERING: 3, CUED: 5 },
+  };
+});
 const pageErrors = [];
 const routeErrors = [];
+const providerRequests = [];
+await page.route(
+  (url) =>
+    ["youtube.com", "youtube-nocookie.com", "ytimg.com", "googlevideo.com"].some(
+      (host) => url.hostname === host || url.hostname.endsWith(`.${host}`),
+    ),
+  async (route) => {
+    const url = new URL(route.request().url());
+    providerRequests.push(`${url.origin}${url.pathname}`);
+    await route.abort();
+  },
+);
 page.on("response", (response) => {
   if (response.status() >= 400)
     console.warn(
@@ -540,6 +767,9 @@ const assertNoPageErrors = () => {
   if (routeErrors.length > 0) {
     throw new Error(`Unexpected verifier API requests occurred: ${routeErrors.join(" | ")}`);
   }
+  if (providerRequests.length > 0) {
+    throw new Error(`Real provider requested by mocked journey: ${providerRequests.join(" | ")}`);
+  }
 };
 
 const measureMusic = () =>
@@ -558,7 +788,7 @@ const measureMusic = () =>
         ...dock.querySelectorAll(".live-music-controls button"),
       ].map(box),
       video: box(dock.querySelector(".youtube-player-video")),
-      queue: queue ? box(queue) : null,
+      queue: queue ? box(queue.closest(".youtube-queue-reveal")) : null,
       queueContentHeight: queue
         ? [...queue.children].reduce((height, child) => {
             const style = getComputedStyle(child);
@@ -577,8 +807,26 @@ const measureMusic = () =>
     };
   });
 
+const readRailMaterial = () =>
+  page.locator(".live-side-panel").evaluate((rail) => {
+    const canvas = document.querySelector(".glass-scene-canvas");
+    const style = getComputedStyle(rail);
+    return {
+      status: rail.closest(".app-shell")?.getAttribute("data-glass-status"),
+      sceneVisible: canvas !== null && getComputedStyle(canvas).visibility === "visible",
+      sceneWidth: canvas?.width ?? 0,
+      sceneHeight: canvas?.height ?? 0,
+      painted: Number(canvas?.getAttribute("data-glass-draws")) > 0,
+      reducedTransparency: matchMedia("(prefers-reduced-transparency: reduce)").matches,
+      backdrop: style.backdropFilter || style.webkitBackdropFilter || "none",
+      background: style.backgroundColor,
+    };
+  });
+
 const verifyMusicExpansion = async (label, expectedRows = 5) => {
   const handle = page.getByRole("button", { name: "Music player panel handle" });
+  await page.locator(".youtube-queue-reveal").waitFor({ state: "hidden" });
+  await settleSidePanel();
   const compact = await measureMusic();
   const player = await page.locator(".youtube-player-video").elementHandle();
   await handle.dispatchEvent("touchstart", {
@@ -594,6 +842,7 @@ const verifyMusicExpansion = async (label, expectedRows = 5) => {
   }, expectedRows);
   const picker = page.getByRole("combobox", { name: "YouTube Music playlist" });
   await picker.waitFor();
+  await settleSidePanel();
   const headingGeometry = await page
     .locator(".youtube-session-queue-heading")
     .evaluate((header) => {
@@ -644,7 +893,7 @@ const verifyMusicExpansion = async (label, expectedRows = 5) => {
       `Expanded music is not content-sized and bounded (${label}): ${JSON.stringify({ compact, expanded })}`,
     );
   }
-  const queue = page.locator(".youtube-session-queue");
+  const queue = page.locator(".youtube-queue-reveal > .panel-reveal-content");
   const scroll = await queue.evaluate((element) => {
     element.scrollTop = element.scrollHeight;
     return { top: element.scrollTop, height: element.clientHeight, content: element.scrollHeight };
@@ -665,6 +914,7 @@ const verifyMusicExpansion = async (label, expectedRows = 5) => {
   });
   await page.locator(".youtube-dock:not(.is-expanded)").waitFor();
   await handle.dispatchEvent("click"); // Consume the swipe's compatibility click.
+  await page.locator(".youtube-queue-reveal").waitFor({ state: "hidden" });
   if (await picker.isVisible()) throw new Error("Collapsed player exposes playlist picker");
   if (
     !(await player.evaluate(
@@ -907,6 +1157,8 @@ await page.addInitScript(() => {
     envelope.current.state.initialGame = { replayVersion: 3, game };
     envelope.current.state.events = [root];
     envelope.current.state.headEventId = root.id;
+    // Reject invalid fixture preconditions at their producer, before touching browser storage.
+    await window.__mafiaVerifierAssertCanonical(envelope.current.state);
   };
 });
 
@@ -1177,7 +1429,41 @@ await page.route("**/api/game-sessions/**", async (route) => {
 });
 
 const { tsImport } = await import("tsx/esm/api");
-const { runFederationScenarios, currentSetupState, openPlayerPenalty } = await tsImport(
+const domain = await tsImport("../packages/game-domain/src/index.ts", import.meta.url);
+const { getActiveBranch } = await tsImport(
+  "../apps/web/src/features/game/game-history.ts",
+  import.meta.url,
+);
+const { buildTimeline, englishTimelineText } = await tsImport(
+  "../apps/web/src/features/timeline/timeline-model.ts",
+  import.meta.url,
+);
+const { createSampleGameHistory } = await tsImport(
+  "../apps/web/src/features/timeline/sample-game-data.ts",
+  import.meta.url,
+);
+const assertCanonicalState = (state) => {
+  return assertCanonicalProjection(domain, getActiveBranch, state);
+};
+await page.exposeFunction("__mafiaVerifierAssertCanonical", (state) => {
+  assertCanonicalState(state);
+});
+const assertBallotFinishAvailability = async (state, label) => {
+  assertCanonicalState(state);
+  let determined = false;
+  try {
+    domain.resolveVote(state.game);
+    determined = true;
+  } catch {
+    /* unresolved or disputed */
+  }
+  if (
+    (await page.getByRole("button", { name: "Finish voting", exact: true }).isEnabled()) !==
+    determined
+  )
+    throw new Error(`${label}: Finish differs from canonical ballot resolvability`);
+};
+const { runFederationScenarios, currentSetupState } = await tsImport(
   "./verify-federation-ui.mjs",
   import.meta.url,
 );
@@ -1239,6 +1525,7 @@ const restoreCurrentSetup = async () => {
 
 try {
   if (rulesSketchbookOnly) {
+    stage("rules-sketchbook");
     const { runRulesSketchbookScenarios } = await tsImport(
       "./verify-rules-sketchbook-ui.mjs",
       import.meta.url,
@@ -1255,13 +1542,16 @@ try {
     });
     assertNoPageErrors();
     console.log("Rules sketchbook integrated verification: PASS");
+    stage("complete");
     await browser.close();
     process.exit(0);
   }
   if (federationOnly) {
+    stage("federation");
     await verifyFederationJourney();
     assertNoPageErrors();
     console.log("Federation-only integrated verification: PASS");
+    stage("complete");
     await browser.close();
     process.exit(0);
   }
@@ -1326,7 +1616,42 @@ try {
       await verifyFadeFooter(`nominees-${index + 1}`);
       await page.getByRole("button", { name: "Next player", exact: true }).click();
     }
-    const utilities = page.locator("#game-utility-panels");
+    const firstRow = page.locator(".nomination-panel li").first();
+    const nomineeName = (await firstRow.locator(".nomination-copy strong").innerText()).replace(
+      /^#\d+\s+/,
+      "",
+    );
+    await page.getByRole("button", { name: `Support ${nomineeName}`, exact: true }).click();
+    await firstRow.locator(".nomination-support-count", { hasText: "+1" }).waitFor();
+    const rowGeometry = await firstRow.evaluate((row) => {
+      const name = row.querySelector(".nomination-copy strong");
+      const initiator = row.querySelector(".nomination-initiator");
+      const count = row.querySelector(".nomination-support-count");
+      const center = (node) => {
+        const box = node.getBoundingClientRect();
+        return box.y + box.height / 2;
+      };
+      return {
+        centers: [name, initiator, count].map(center),
+        font: parseFloat(getComputedStyle(name).fontSize),
+        primary: getComputedStyle(name).color,
+        secondary: getComputedStyle(initiator).color,
+        count: count.textContent,
+        text: row.textContent,
+      };
+    });
+    if (
+      Math.max(...rowGeometry.centers) - Math.min(...rowGeometry.centers) > 1 ||
+      rowGeometry.font < 14 ||
+      rowGeometry.primary === rowGeometry.secondary ||
+      /Initiated by|Additional supporters/.test(rowGeometry.text)
+    ) {
+      throw new Error(
+        `Voting attribution must be larger, single-line and differently colored: ${JSON.stringify(rowGeometry)}`,
+      );
+    }
+    await verifyFadeFooter("nominees-supported");
+    const utilities = page.locator("#game-utility-panels > .panel-reveal-content");
     const scroll = await utilities.evaluate((element) => {
       element.scrollTop = element.scrollHeight;
       const bounds = element.getBoundingClientRect();
@@ -1357,14 +1682,22 @@ try {
     await verifyFadeSafeAreas("russian-nominees");
     assertNoPageErrors();
     console.log("Utility toggle verification: PASS");
+    stage("complete");
     await browser.close();
     process.exit(0);
   }
   if (layoutOnly) {
+    stage("setup-layout");
     const { verifyIpadLayout } = await import("./verify-ipad-layout.mjs");
-    await verifyIpadLayout(page, { assertNativeControl, assertCoreLayout, assertCoreTargets });
+    await verifyIpadLayout(page, {
+      assertNativeControl,
+      assertCoreLayout,
+      assertCoreTargets,
+      longNickname: testNicknames[1],
+    });
     assertNoPageErrors();
     console.log("iPad layout verification: PASS");
+    stage("complete");
     await browser.close();
     process.exit(0);
   }
@@ -1403,6 +1736,7 @@ try {
     );
   }
   if (headerOnly) {
+    stage("header-gameplay");
     if ((await page.getByText("Development only", { exact: true }).count()) !== 0) {
       throw new Error("Development-only setup tools must be hidden before Dev mode is enabled");
     }
@@ -1903,7 +2237,10 @@ try {
     }
 
     await page.getByRole("button", { name: "Hide timer and voting" }).click();
-    await page.locator("#game-utility-panels[hidden]").waitFor({ state: "attached" });
+    await page
+      .locator('#game-utility-panels[data-expanded="false"][inert]')
+      .waitFor({ state: "attached" });
+    await page.locator("#game-utility-panels").waitFor({ state: "hidden" });
     await page.getByRole("button", { name: "Show timer and voting" }).click();
     await page.getByRole("region", { name: "Timer controls" }).waitFor();
     await page.getByRole("region", { name: "Voting order" }).waitFor();
@@ -1918,6 +2255,7 @@ try {
     if (await page.locator(".nomination-panel").count())
       throw new Error("Removing the sole nomination must remove Voting order");
     if (hardeningOnly) {
+      stage("hardening-ballot");
       // The matrix must reach live ballot controls; the rail geometry alone is insufficient.
       const currentName = await page.locator(".player-seat.is-current .seat-name").innerText();
       await page.getByRole("button", { name: `Nominate ${currentName}`, exact: true }).click();
@@ -1994,23 +2332,30 @@ try {
       );
       await assertCoreLayout("Matrix ballot", ballotSelectors);
       if (viewportWidth === 1000) {
-        const scroll = await page
-          .locator(".live-side-panel.has-live-utilities")
-          .evaluate((panel) => {
-            panel.scrollTop = panel.scrollHeight;
-            return {
-              scrolled: panel.scrollTop,
-              content: panel.scrollHeight,
-              height: panel.clientHeight,
-            };
-          });
-        if (scroll.scrolled <= 0 || scroll.content <= scroll.height) {
+        const utilities = page.locator("#game-utility-panels > .panel-reveal-content");
+        const scroll = await utilities.evaluate((panel) => {
+          panel.scrollTop = panel.scrollHeight;
+          const bounds = panel.getBoundingClientRect();
+          const last = panel
+            .querySelector(".nomination-panel li:last-child")
+            .getBoundingClientRect();
+          return {
+            scrolled: panel.scrollTop,
+            content: panel.scrollHeight,
+            height: panel.clientHeight,
+            lastVisible: last.top >= bounds.top - 1 && last.bottom <= bounds.bottom + 1,
+          };
+        });
+        if (!scroll.lastVisible || (scroll.content > scroll.height + 1 && scroll.scrolled <= 0)) {
           throw new Error(
-            `Compact multi-nominee rail cannot scroll to music controls: ${JSON.stringify(scroll)}`,
+            `Compact utility scroller cannot reach the last nominee: ${JSON.stringify(scroll)}`,
           );
         }
-        await assertCoreLayout("Matrix compact rail music", [".live-music-controls button"]);
-        await page.locator(".live-side-panel.has-live-utilities").evaluate((panel) => {
+        await assertCoreLayout("Matrix compact final nominee/footer", [
+          ".nomination-panel li:last-child .nomination-row-target",
+          ".live-music-controls button",
+        ]);
+        await utilities.evaluate((panel) => {
           panel.scrollTop = 0;
         });
       } else {
@@ -2019,13 +2364,14 @@ try {
       const order = page.getByRole("region", { name: "Voting order" });
       const candidates = order.getByRole("button");
       if ((await candidates.count()) !== 2) throw new Error("Expected two selectable nominees");
-      const first = await candidates.nth(0).innerText();
-      const last = await candidates.nth(1).innerText();
+      const first = await candidates.nth(0).getAttribute("aria-label");
+      const last = await candidates.nth(1).getAttribute("aria-label");
       const snapshot = () =>
         page.evaluate(
           () => JSON.parse(localStorage.getItem("mafia-dashboard.game-session.v5")).current.state,
         );
       const beforeNavigation = await snapshot();
+      const [firstCandidateSeat] = beforeNavigation.game.turnOrder;
       await assertNativeControl(candidates.nth(0), "First nominee");
       await page.keyboard.press("Enter");
       if ((await candidates.nth(0).getAttribute("aria-pressed")) !== "true") {
@@ -2034,9 +2380,19 @@ try {
       if (await page.getByRole("button", { name: "Finish voting" }).isEnabled()) {
         throw new Error("Selecting the first nominee must not finish an unassigned ballot");
       }
-      if ((await snapshot()).events.length !== beforeNavigation.events.length) {
-        throw new Error("Nominee navigation unexpectedly appended a canonical game event");
+      const afterNavigation = await snapshot();
+      const navigationEvents = afterNavigation.events.slice(beforeNavigation.events.length);
+      if (
+        navigationEvents.length !== 1 ||
+        navigationEvents[0].type !== "voting.candidate-selected" ||
+        JSON.stringify(afterNavigation.game.voteAssignments) !==
+          JSON.stringify(beforeNavigation.game.voteAssignments)
+      ) {
+        throw new Error(
+          `Nominee navigation changed allocations or skipped canonical selection: ${JSON.stringify(navigationEvents)}`,
+        );
       }
+      assertCanonicalState(afterNavigation);
       const voterSeat = await page
         .locator(".player-seat:not(.is-inactive)")
         .first()
@@ -2064,17 +2420,22 @@ try {
       if (!(await finish.isEnabled()))
         throw new Error("Deliberate last nominee selection did not fill the remainder");
       await voter.click();
-      if (await finish.isEnabled())
-        throw new Error("Removing automatic remainder must reopen the ballot");
+      const removedAssignment = await snapshot();
+      if (Object.hasOwn(removedAssignment.game.voteAssignments, voterSeat))
+        throw new Error("Removed remainder assignment survived");
+      await assertBallotFinishAvailability(removedAssignment, "Matrix removed remainder");
       await page.locator('.save-indicator[data-status="saved"]').waitFor();
       await page.reload();
-      await page.getByRole("group", { name: "Voting candidate" }).waitFor();
-      if (await finish.isEnabled()) throw new Error("Refresh silently refilled a removed voter");
+      await page.getByRole("status", { name: "Voting candidate" }).waitFor();
+      const reloadedAssignment = await snapshot();
+      if (Object.hasOwn(reloadedAssignment.game.voteAssignments, voterSeat))
+        throw new Error("Refresh silently refilled a removed voter");
+      await assertBallotFinishAvailability(reloadedAssignment, "Matrix restored partial ballot");
       const reloadedOrder = page.getByRole("region", { name: "Voting order" });
-      await reloadedOrder.getByRole("button", { name: first }).click();
-      const ballotVoter = page.getByRole("button", {
-        name: new RegExp(`^Vote as ${voterName} for `),
-      });
+      await reloadedOrder
+        .getByRole("button", { name: new RegExp(`^#${firstCandidateSeat} `) })
+        .click();
+      const ballotVoter = page.locator(`.seat-anchor[data-seat="${voterSeat}"] .player-seat`);
       await ballotVoter.click();
       if (!(await finish.isEnabled()))
         throw new Error("Corrected earlier nominee ballot is incomplete");
@@ -2145,8 +2506,17 @@ try {
         phase: previewPhase,
       });
       const previewBefore = JSON.stringify(await snapshot());
+      const previewDay = assertCanonicalState(await snapshot()).find(
+        ({ entry, after }) => entry.phaseBefore !== "day" && after.phase === "day",
+      );
+      if (!previewDay) throw new Error("Matrix preview lacks a canonical Day boundary");
       await page.getByRole("button", { name: "Open game log" }).click();
-      await page.getByRole("button", { name: "Preview state after log #2" }).click();
+      await page
+        .getByRole("button", {
+          name: `Preview state after log #${previewDay.entry.sequence}`,
+          exact: true,
+        })
+        .click();
       await page.getByRole("heading", { name: /preview/i }).waitFor();
       if (
         await page
@@ -2206,6 +2576,7 @@ try {
         );
         game.phase = "night-mafia";
         game.day = 2;
+        game.completedGameNights = game.day;
         game.currentTurnIndex = 0;
         game.winner = null;
         game.shotAssignments = {};
@@ -2318,6 +2689,11 @@ try {
         });
       };
       await shoot();
+      stage("hardening-outcome");
+      // Animated departure is covered by the privacy journey; measure settled input targets here.
+      await page.waitForFunction(
+        () => document.querySelector(".player-seat[data-player-exit]") === null,
+      );
       await assertAccessibleControls("Matrix pending outcome");
       await assertCoreTargets("Matrix pending outcome");
       await assertCoreLayout("Matrix pending outcome");
@@ -2406,6 +2782,7 @@ try {
       console.log(
         `UI hardening verification: PASS (${viewportWidth}x${viewportHeight}, ${browserName})`,
       );
+      stage("complete");
       await browser.close();
       process.exit(0);
     }
@@ -2430,14 +2807,14 @@ try {
       throw new Error("Panel gestures remounted the persistent music player");
     }
 
-    await page.waitForFunction(() => {
-      const rail = document.querySelector(".live-side-panel.has-live-utilities");
-      const surface = rail;
-      if (!(rail instanceof HTMLElement) || !(surface instanceof HTMLElement)) return false;
-      const style = getComputedStyle(surface);
-      const computedFilter = style.backdropFilter || style.webkitBackdropFilter || "";
-      return surface.classList.contains("glass-surface") && computedFilter.includes("blur");
-    });
+    stage("glass-rail");
+    await page.locator(".glass-surface.live-side-panel.has-live-utilities").waitFor();
+    await page.waitForFunction(
+      () =>
+        !["initializing", "inactive"].includes(
+          document.querySelector(".app-shell")?.getAttribute("data-glass-status"),
+        ),
+    );
     const glassEvidence = await page.evaluate(() => {
       const rail = document.querySelector(".live-side-panel.has-live-utilities");
       const surface = rail;
@@ -2485,7 +2862,6 @@ try {
     });
     if (
       !glassEvidence.mode.includes("glass-surface") ||
-      !glassEvidence.computedFilter.includes("blur") ||
       glassEvidence.playerNode !== playerNodeId ||
       glassEvidence.rail === null ||
       !near(glassEvidence.rail.left, sidePanelGeometry.rail.left) ||
@@ -2493,51 +2869,45 @@ try {
       !near(glassEvidence.rail.width, sidePanelGeometry.rail.width) ||
       !near(glassEvidence.rail.height, sidePanelGeometry.rail.height) ||
       !glassEvidence.timerVisible ||
-      !glassEvidence.votingVisible ||
+      glassEvidence.votingVisible ||
       !glassEvidence.musicVisible
     ) {
       throw new Error(`Live glass rail is invalid: ${JSON.stringify(glassEvidence)}`);
     }
+    assertRailMaterial(await readRailMaterial());
     await page.screenshot({ path: glassScreenshotPath, fullPage: true });
 
     const durableBeforePreview = await page.evaluate(() =>
       localStorage.getItem("mafia-dashboard.game-session.v5"),
     );
     const persistedCheckpoint = JSON.parse(durableBeforePreview ?? "null");
-    const persistedEvents = Array.isArray(persistedCheckpoint?.current?.state.events)
-      ? persistedCheckpoint.current.state.events
-      : [];
-    const intermediateEvents = persistedEvents.filter(
-      (event) =>
-        event?.type === "turn.completed" ||
-        (event?.type === "phase.changed" &&
-          ["sheriff-identification", "night-don", "night-sheriff", "best-move"].includes(
-            event?.payload?.to,
-          )),
+    const replayFrames = assertCanonicalState(persistedCheckpoint.current.state);
+    const rootFrame = replayFrames.find(({ entry }) => entry.parentEventId === null);
+    const dayFrame = replayFrames.find(
+      ({ entry, after }) => entry.phaseBefore !== "day" && after.phase === "day" && after.day === 1,
     );
-    if (persistedEvents.length !== 2 || intermediateEvents.length !== 0) {
-      throw new Error(
-        `Initial Night and Day must persist only root + Day checkpoints: ${JSON.stringify(
-          persistedEvents.map(({ type, payload }) => ({ type, payload })),
-        )}`,
-      );
+    if (rootFrame === undefined || dayFrame === undefined)
+      throw new Error("Preview requires a canonical root and Day 1 boundary");
+    const rootCheckpoint = rootFrame.entry;
+    const dayCheckpoint = dayFrame.entry;
+    if (rootCheckpoint?.phaseAfter !== "mafia-planning" || dayCheckpoint?.phaseAfter !== "day") {
+      throw new Error("Opening preview boundaries must preserve Mafia planning and Day semantics");
     }
-    const rootCheckpoint = persistedEvents[0];
-    const dayCheckpoint = persistedEvents[1];
-    if (
-      rootCheckpoint?.phaseAfter !== "mafia-planning" ||
-      rootCheckpoint.dayAfter !== 0 ||
-      dayCheckpoint?.phaseAfter !== "day" ||
-      dayCheckpoint.dayAfter !== 1
-    ) {
-      throw new Error(
-        "Preview verifier fixtures do not describe the canonical root and Day 1 states",
-      );
-    }
+    const timeline = buildTimeline(replayFrames, englishTimelineText);
+    const rootMarker = timeline.markers.find(({ eventId }) => eventId === rootCheckpoint.id);
+    const dayMarker = timeline.markers.find(({ eventId }) => eventId === dayCheckpoint.id);
+    if (!rootMarker || !dayMarker)
+      throw new Error("Canonical preview boundaries lack semantic timeline markers");
+    stage("history-preview");
     await page.getByRole("button", { name: "Open game log" }).click();
-    await page.getByRole("button", { name: "Preview state after log #1" }).click();
+    await page
+      .getByRole("button", {
+        name: `Preview state after log #${rootCheckpoint.sequence}`,
+        exact: true,
+      })
+      .click();
     await page.getByRole("heading", { name: /preview/i }).waitFor();
-    await page.getByRole("heading", { name: "Night one · Mafia agreement" }).waitFor();
+    await page.locator(`.game-shell.phase-${rootFrame.after.phase}`).waitFor();
     const previewActions = await page
       .locator("main button:not([disabled]):visible")
       .allTextContents();
@@ -2550,7 +2920,8 @@ try {
       );
     }
     await page.getByRole("region", { name: "Timer controls" }).waitFor();
-    await page.getByRole("region", { name: "Voting order" }).waitFor();
+    if (await page.getByRole("region", { name: "Voting order" }).count())
+      throw new Error("Night-root preview exposed a stale daytime voting panel");
     if ((await page.getByLabel("Application tools").count()) !== 0) {
       throw new Error("Application toolbar must be unavailable during history preview");
     }
@@ -2568,16 +2939,19 @@ try {
     await page.getByRole("button", { name: "Enable dev mode" }).click();
     await page.getByRole("button", { name: "Past game timeline" }).click();
     await page.getByRole("heading", { name: "Game timeline" }).waitFor();
-    await page.getByText(/Checkpoint #2$/).waitFor();
-    if ((await page.locator(".timeline-marker").count()) !== 2) {
-      throw new Error("The current Timeline must contain exactly root and Day checkpoints");
+    await page.getByText(new RegExp(`Checkpoint #${timeline.markers.at(-1).sequence}$`)).waitFor();
+    if ((await page.locator(".timeline-marker").count()) !== timeline.markers.length) {
+      throw new Error("The current Timeline differs from its canonical semantic projection");
     }
     const hiddenLivePanel = page.locator(".live-side-panel[hidden]");
     await hiddenLivePanel.waitFor({ state: "attached" });
     if (await hiddenLivePanel.isVisible()) {
       throw new Error("Hidden live controls must not render over the timeline at any breakpoint");
     }
-    await page.getByRole("button", { name: "Phase: day" }).click();
+    await page
+      .locator(".timeline-marker")
+      .filter({ hasText: new RegExp(`^#${dayMarker.sequence}$`) })
+      .click();
     await page.getByRole("button", { name: "Preview timeline checkpoint" }).click();
     await page.getByRole("heading", { name: /preview/i }).waitFor();
     await page.getByRole("heading", { name: "Zero round" }).waitFor();
@@ -2587,9 +2961,12 @@ try {
     await page.getByRole("button", { name: "Open developer menu" }).click();
     await page.getByRole("button", { name: "Past game timeline" }).click();
     await page.getByRole("heading", { name: "Game timeline" }).waitFor();
-    await page.getByRole("button", { name: "Imported game checkpoint" }).click();
+    await page
+      .locator(".timeline-marker")
+      .filter({ hasText: new RegExp(`^#${rootMarker.sequence}$`) })
+      .click();
     const resetTarget = rootCheckpoint;
-    if (resetTarget === undefined || persistedCheckpoint.headEventId === null) {
+    if (resetTarget === undefined || persistedCheckpoint.current.state.headEventId === null) {
       throw new Error("Reset verifier fixture has no canonical target or active head");
     }
     const resetSave = page.waitForResponse((response) => {
@@ -2626,16 +3003,9 @@ try {
         "Timeline must show real host-secret check labels without private-view redaction",
       );
     }
-    for (const label of [
-      "Initial night",
-      "Zero round",
-      "Voting 1",
-      "Night 1",
-      "Day 1",
-      "Voting 2",
-      "Night 2",
-    ]) {
-      await page.getByText(label, { exact: true }).waitFor();
+    const sampleTimeline = buildTimeline(createSampleGameHistory().frames, englishTimelineText);
+    for (const region of sampleTimeline.regions) {
+      await page.getByText(region.label, { exact: true }).waitFor();
     }
     const timelineGeometry = await page.evaluate(() => ({
       documentScroll: document.scrollingElement?.scrollHeight ?? 0,
@@ -2645,8 +3015,8 @@ try {
     }));
     if (
       timelineGeometry.documentScroll > timelineGeometry.viewportHeight + 1 ||
-      timelineGeometry.markerCount !== 23 ||
-      timelineGeometry.regionCount !== 7
+      timelineGeometry.markerCount !== sampleTimeline.markers.length ||
+      timelineGeometry.regionCount !== sampleTimeline.regions.length
     ) {
       throw new Error(
         `Timeline geometry/contents are invalid: ${JSON.stringify(timelineGeometry)}`,
@@ -2657,7 +3027,7 @@ try {
       track.scrollLeft = track.scrollWidth;
     });
     await page.screenshot({ path: timelineRightScreenshotPath, fullPage: true });
-    await page.getByRole("button", { name: /back/i }).click();
+    await page.getByRole("button", { name: "Back", exact: true }).click();
     await page.getByRole("heading", { name: "Night one · Mafia agreement" }).waitFor();
     await page.getByRole("button", { name: "Mafia asleep" }).click();
     await page.getByRole("button", { name: "Begin round zero" }).click();
@@ -2714,38 +3084,45 @@ try {
     await swipeCard(nominatorCard, "down");
     await page.getByRole("button", { name: `Nominate ${nominatorName}`, exact: true }).click();
     await page
-      .getByText(`Initiated by #${nominatorSeat} ${nominatorName}`, { exact: true })
+      .getByRole("img", { name: `Initiated by #${nominatorSeat} ${nominatorName}`, exact: true })
       .waitFor();
     const showPrivateInfo = page.getByRole("button", { name: "Show private info" });
     if ((await showPrivateInfo.count()) > 0) await showPrivateInfo.click();
     const statusLayout = await nominatorCard.evaluate((card) => {
       const name = card.querySelector(".seat-name");
-      const badges = card.querySelector(".seat-badges");
-      if (!(name instanceof HTMLElement) || !(badges instanceof HTMLElement)) {
-        throw new Error("Expected separate nickname and status-pill containers");
-      }
-      const cardBox = card.getBoundingClientRect();
-      const nameBox = name.getBoundingClientRect();
-      const badgeBoxes = [...badges.children].map((badge) => badge.getBoundingClientRect());
+      const box = card.getBoundingClientRect();
+      const rects = [...card.querySelectorAll(".card-status-slot")].map((element) => ({
+        label: element.getAttribute("aria-label"),
+        rect: element.getBoundingClientRect().toJSON(),
+      }));
+      const inside = (r) =>
+        r.width > 0 &&
+        r.height > 0 &&
+        r.left >= box.left &&
+        r.right <= box.right &&
+        r.top >= box.top &&
+        r.bottom <= box.bottom;
       return {
-        nickname: name.textContent,
-        nameHeight: nameBox.height,
-        nameInsideCard: nameBox.top >= cardBox.top && nameBox.bottom <= cardBox.bottom,
-        badgeCount: badgeBoxes.length,
-        badgeRows: new Set(badgeBoxes.map(({ top }) => Math.round(top))).size,
-        flexWrap: getComputedStyle(badges).flexWrap,
+        nickname: name?.textContent,
+        nameInside: name !== null && inside(name.getBoundingClientRect()),
+        roles: card.querySelectorAll(".role-badge").length,
+        nomination: card.querySelectorAll(".card-nomination-symbol").length,
+        fouls: card.querySelectorAll(".foul-dot").length,
+        rects,
+        slotsInside: rects.every(({ rect }) => inside(rect)),
       };
     });
     if (
       statusLayout.nickname !== nominatorName ||
-      statusLayout.nameHeight <= 0 ||
-      !statusLayout.nameInsideCard ||
-      statusLayout.badgeCount !== 3 ||
-      statusLayout.badgeRows >= statusLayout.badgeCount ||
-      statusLayout.flexWrap !== "wrap"
+      !statusLayout.nameInside ||
+      statusLayout.roles !== 1 ||
+      statusLayout.nomination !== 1 ||
+      statusLayout.fouls !== 1 ||
+      statusLayout.rects.length !== 3 ||
+      !statusLayout.slotsInside
     ) {
       throw new Error(
-        `Nickname must remain visible while three status pills wrap: ${JSON.stringify(statusLayout)}`,
+        `Nickname, role and public nomination/foul slots must remain visible and bounded: ${JSON.stringify(statusLayout)}`,
       );
     }
     await page.screenshot({ path: tableScreenshotPath, fullPage: true });
@@ -2769,7 +3146,7 @@ try {
       .click();
     while ((await nextPlayer.count()) > 0) await nextPlayer.click();
     await page.getByRole("button", { name: "Begin voting" }).click();
-    const votingCandidate = page.getByRole("group", { name: "Voting candidate" });
+    const votingCandidate = page.getByRole("status", { name: "Voting candidate" });
     await votingCandidate.waitFor();
     await assertVoteCountTypography(page);
     const votingText = await votingCandidate.innerText();
@@ -2808,7 +3185,7 @@ try {
       );
     }
     await toggleVoter.click();
-    await page.locator(".player-seat:not(.is-inactive)").first().click();
+    await page.locator(".player-seat:not(.is-inactive)").nth(1).click();
     const votingHighlight = page.locator(".player-seat.is-current");
     if ((await votingHighlight.count()) !== 2) {
       throw new Error("Every voter for the current candidate must remain highlighted");
@@ -2835,9 +3212,14 @@ try {
       Number(card.closest("[data-seat]")?.getAttribute("data-seat")),
     );
     await removedVoter.click();
-    if ((await finishVoting.isEnabled()) || (await autoVotingHighlight.count()) !== 7) {
-      throw new Error("Removing an automatic assignment must leave an incomplete ballot");
-    }
+    if ((await autoVotingHighlight.count()) !== 7)
+      throw new Error("Removing an automatic assignment retained public voter emphasis");
+    await assertBallotFinishAvailability(
+      await page.evaluate(
+        () => JSON.parse(localStorage.getItem("mafia-dashboard.game-session.v5")).current.state,
+      ),
+      "Header removed remainder",
+    );
     await page.waitForFunction((seat) => {
       const snapshot = localStorage.getItem("mafia-dashboard.game-session.v5");
       if (snapshot === null) return false;
@@ -2847,20 +3229,75 @@ try {
         saved.current.state.game.voteAssignments[seat] === undefined
       );
     }, removedSeat);
-    await page.reload();
-    await page.getByRole("group", { name: "Voting candidate" }).waitFor();
-    if (
-      (await finishVoting.isEnabled()) ||
-      (await page
-        .getByRole("button", { name: `Vote as ${removedVoterName} for ${secondNominatorMatch[2]}` })
-        .count()) !== 1
-    ) {
+    const beforeVoteReload = await page.evaluate(
+      () => JSON.parse(localStorage.getItem("mafia-dashboard.game-session.v5")).current.state,
+    );
+    let releaseProfiles;
+    const profilesReady = new Promise((resolve) => {
+      releaseProfiles = resolve;
+    });
+    const delayedProfiles = async (route) => {
+      await profilesReady;
+      await route.fallback();
+    };
+    await page.route("**/api/players*", delayedProfiles);
+    try {
+      await page.reload();
+      await page.getByRole("status", { name: "Voting candidate" }).waitFor();
+      const anonymousVoter = page.locator(`.seat-anchor[data-seat="${removedSeat}"] .player-seat`);
+      assert.equal(
+        await anonymousVoter.getAttribute("aria-label"),
+        "Vote as Anonymous player for Anonymous player",
+        "Ballot renders before the delayed player directory is ready",
+      );
+      const anonymousState = await page.evaluate(
+        () => JSON.parse(localStorage.getItem("mafia-dashboard.game-session.v5")).current.state,
+      );
+      assert.deepEqual(anonymousState, beforeVoteReload, "Unloaded names changed canonical state");
+      assertCanonicalState(anonymousState);
+    } finally {
+      releaseProfiles();
+      await page.unroute("**/api/players*", delayedProfiles);
+    }
+    const restoredVoter = page.getByRole("button", {
+      name: `Vote as ${removedVoterName} for ${secondNominatorMatch[2]}`,
+      exact: true,
+    });
+    await restoredVoter.waitFor({ state: "visible", timeout: 5000 });
+    if ((await restoredVoter.count()) !== 1) {
       throw new Error("Reload must retain a removed vote without refilling it");
     }
+    const afterVoteReload = await page.evaluate(
+      () => JSON.parse(localStorage.getItem("mafia-dashboard.game-session.v5")).current.state,
+    );
+    assert.equal(
+      afterVoteReload.game.voteAssignments[removedSeat],
+      undefined,
+      "Reload refilled the removed vote",
+    );
+    assert.deepEqual(
+      afterVoteReload,
+      beforeVoteReload,
+      "Reload changed the persisted canonical state",
+    );
+    assertCanonicalState(afterVoteReload);
     const order = page.getByRole("region", { name: "Voting order" });
     await order.getByRole("button", { name: `#${nominatorSeat} ${nominatorName}` }).click();
-    if (await finishVoting.isEnabled())
-      throw new Error("Selecting an earlier nominee must not refill votes");
+    if (
+      (await page.evaluate(
+        (seat) =>
+          JSON.parse(localStorage.getItem("mafia-dashboard.game-session.v5")).current.state.game
+            .voteAssignments[seat],
+        removedSeat,
+      )) !== undefined
+    )
+      throw new Error("Selecting an earlier nominee refilled a cleared vote");
+    await assertBallotFinishAvailability(
+      await page.evaluate(
+        () => JSON.parse(localStorage.getItem("mafia-dashboard.game-session.v5")).current.state,
+      ),
+      "Header earlier nominee",
+    );
     await order
       .getByRole("button", { name: `#${secondNominatorMatch[1]} ${secondNominatorMatch[2]}` })
       .click();
@@ -2875,8 +3312,15 @@ try {
       })
       .click();
     await order.getByRole("button", { name: `#${nominatorSeat} ${nominatorName}` }).click();
-    if (await finishVoting.isEnabled())
-      throw new Error("Removing after reselection must stay unassigned");
+    if (
+      (await page.evaluate(
+        (seat) =>
+          JSON.parse(localStorage.getItem("mafia-dashboard.game-session.v5")).current.state.game
+            .voteAssignments[seat],
+        removedSeat,
+      )) !== undefined
+    )
+      throw new Error("Removing after reselection refilled the cleared vote");
     await page
       .getByRole("button", { name: `Vote as ${removedVoterName} for ${nominatorName}` })
       .click();
@@ -2917,16 +3361,21 @@ try {
       `.seat-anchor[data-seat="${redCardTargetSeat}"] .player-seat.is-current`,
     );
 
-    // Auto-assigned voters are inactive for swipe actions; a fourth foul still red-cards
-    // an active player and must cancel voting.
+    const removedName = await redCardTarget.locator(".seat-name").innerText();
+    // A fourth foul requires explicit timing and removal acknowledgement.
     for (let foul = 0; foul < 4; foul += 1) {
       await swipeCard(redCardTarget, "down");
     }
+    await page.getByRole("combobox", { name: "Occurrence timing" }).selectOption("open-voting");
+    await page.getByRole("button", { name: "Confirm discipline", exact: true }).click();
+    await page
+      .getByRole("button", { name: `Announce removal of ${removedName}`, exact: true })
+      .click();
     const cancellation = page.getByRole("status", { name: "Voting cancelled" });
     await cancellation.waitFor();
     if (
       !(await cancellation.innerText()).includes(
-        "A player received a red card, so voting is cancelled for this day.",
+        "A disciplinary removal cancels this day’s ballot under the rules. Proceed to night without a voted-out player or farewell speech.",
       )
     ) {
       throw new Error("The cancelled voting screen must explain the red-card reason");
@@ -2946,6 +3395,7 @@ try {
     if (privacyOnly) {
       assertNoPageErrors();
       console.log("Focused voting typography and phase-aware role presentation: PASS");
+      stage("complete");
       await browser.close();
       process.exit(0);
     }
@@ -3134,7 +3584,8 @@ try {
       "-night-complete.png",
     );
     await page.screenshot({ path: nightCompleteScreenshotPath, fullPage: true });
-    await page.getByRole("button", { name: /^Begin day \d+$/ }).click();
+    stage("header-best-move");
+    await page.getByRole("button", { name: "Record Best Move", exact: true }).click();
     await page.getByRole("heading", { name: "Best move" }).waitFor();
     const postNightHighlight = page.locator(".player-seat.is-voting-highlight");
     if ((await postNightHighlight.count()) !== 1) {
@@ -3149,11 +3600,14 @@ try {
     await page.screenshot({ path: bestMoveScreenshotPath, fullPage: true });
     for (let selection = 0; selection < 3; selection += 1) {
       await page
-        .getByRole("button", { name: /^Add .* to Best move$/ })
-        .first()
+        .getByRole("button", { name: `Accept number ${selection + 1}`, exact: true })
         .click();
     }
-    await page.getByRole("button", { name: "Save Best move" }).click();
+    await page
+      .getByRole("checkbox", { name: "Numbers read back and accepted; player sleeps" })
+      .check();
+    await page.getByRole("button", { name: "Accept Best Move", exact: true }).click();
+    await page.getByRole("button", { name: "Announce morning", exact: true }).click();
     await page.getByRole("heading", { name: "Goodbye speech" }).waitFor();
     if ((await page.locator(".player-seat.is-voting-highlight").count()) !== 1) {
       throw new Error("The night victim must stay brightly highlighted during the goodbye speech");
@@ -3179,7 +3633,8 @@ try {
         .slice(0, 3)
         .map((player) => player.seat);
       game.phase = "car-crash-decision";
-      game.day = Math.max(1, game.day);
+      game.day = Math.max(2, game.day);
+      game.completedGameNights = game.day;
       game.carCrashSeats = activeSeats;
       game.carCrashVotes = {};
       game.voteAssignments = {};
@@ -3237,7 +3692,8 @@ try {
       if (game === null || game === undefined)
         throw new Error("Expected a persisted replay baseline");
       game.phase = "car-crash-decision";
-      game.day = Math.max(1, game.day);
+      game.day = Math.max(2, game.day);
+      game.completedGameNights = game.day;
       game.carCrashSeats = game.players
         .filter((player) => player.status === "active")
         .slice(0, 3)
@@ -3260,7 +3716,7 @@ try {
     const eliminateVotes = page.getByRole("button", {
       name: /^Vote as .* to eliminate all car-crash players$/,
     });
-    for (let index = 0; index < 6; index += 1) await eliminateVotes.first().click();
+    for (let index = 0; index < 6; index += 1) await eliminateVotes.nth(index).click();
     const decisionActivePlayers = await page.locator(".player-seat.status-active").count();
     if (
       (await page.locator('.player-seat[title="Swipe down to issue a foul"]').count()) !==
@@ -3381,7 +3837,13 @@ try {
       game.players = game.players.map((player) =>
         player.seat === speaker.seat ? { ...player, status: "eliminated" } : player,
       );
-      game.bestMove = { playerSeat: earlierSeat, selectedSeats: [], mafiaHits: 0 };
+      game.bestMove = {
+        playerSeat: earlierSeat,
+        selectedSeats: [],
+        mafiaHits: 0,
+        completionReason: "declined",
+        readbackAcknowledged: true,
+      };
       game.goodbyeSeats = [speaker.seat];
       game.goodbyeNext = "day";
       await window.__mafiaVerifierCheckpointEnvelope(envelope, game);
@@ -3443,6 +3905,10 @@ try {
         throw new Error("Expected a persisted replay baseline");
       game.phase = "finished";
       game.day = Math.max(1, game.day);
+      // Rendering-only precondition; real deciding actions and Finish are covered by hardening.
+      game.players = game.players.map((player) =>
+        player.team === "black" ? { ...player, status: "eliminated" } : player,
+      );
       game.winner = "red";
       game.goodbyeSeats = undefined;
       game.goodbyeNext = undefined;
@@ -3469,6 +3935,7 @@ try {
     console.log(
       `Focused iPad gameplay verification: PASS ${JSON.stringify({ consoleGeometry, actionRowGeometry, wrappedActionGeometry, timerAudioStarts, centerShadowStyle, sidePanelGeometry, glassEvidence, playerControlGeometry, statusLayout, voteToggleState, votingHighlightStyle, postNightHighlightStyle, staleGoodbyeHighlightState, goodbyeTransitionStyle, nightCycleStyle, dayCycleStyle, resultGeometry, playerControlsScreenshotPath, sidePanelScreenshotPath, glassScreenshotPath, nightCycleScreenshotPath, dayCycleScreenshotPath, tableScreenshotPath, votingScreenshotPath, autoVotingScreenshotPath, cancellationScreenshotPath, shotToggleScreenshotPath, mafiaResultScreenshotPath, nightCompleteScreenshotPath, bestMoveScreenshotPath, goodbyeScreenshotPath, staleGoodbyeScreenshotPath, finishScreenshotPath, previewScreenshotPath, timelineScreenshotPath, timelineRightScreenshotPath, carCrashScreenshotPath, carCrashResultScreenshotPath, deadDonScreenshotPath, deadSheriffScreenshotPath })}`,
     );
+    stage("complete");
     await browser.close();
     process.exit(0);
   }
@@ -3512,73 +3979,6 @@ try {
   }
   await page.screenshot({ path: selectionScreenshotPath, fullPage: true });
 
-  await page.evaluate(() => {
-    class FakeYouTubePlayer {
-      constructor(_elementId, options) {
-        this.options = options;
-        this.volume = 65;
-        this.volumeChanges = [];
-        this.played = false;
-        this.state = -1;
-        this.videoIds = [];
-        this.iframe = document.createElement("iframe");
-        window.__uiYouTubePlayer = this;
-        setTimeout(() => options.events?.onReady?.({ target: this }), 0);
-      }
-      playVideo() {
-        this.played = true;
-        this.state = 1;
-        this.options.events?.onStateChange?.({ target: this, data: 1 });
-      }
-      pauseVideo() {
-        this.state = 2;
-        this.options.events?.onStateChange?.({ target: this, data: 2 });
-      }
-      cuePlaylist(videoIds, index = 0) {
-        this.videoIds = [...videoIds];
-        this.playlistIndex = index;
-        this.state = 5;
-        this.options.events?.onStateChange?.({ target: this, data: 5 });
-      }
-      loadPlaylist(videoIds, index = 0) {
-        this.videoIds = [...videoIds];
-        this.playlistIndex = index;
-        this.state = 1;
-        this.options.events?.onStateChange?.({ target: this, data: 1 });
-      }
-      playVideoAt(index) {
-        this.playlistIndex = index;
-        this.playVideo();
-      }
-      setVolume(volume) {
-        this.volume = volume;
-        this.volumeChanges.push(volume);
-      }
-      getVolume() {
-        return this.volume;
-      }
-      getIframe() {
-        return this.iframe;
-      }
-      getPlaylistIndex() {
-        return this.playlistIndex ?? 0;
-      }
-      getPlaylist() {
-        return this.videoIds;
-      }
-      getCurrentTime() {
-        return 0;
-      }
-      getPlayerState() {
-        return this.state;
-      }
-      destroy() {}
-    }
-    window.YT = {
-      Player: FakeYouTubePlayer,
-      PlayerState: { PLAYING: 1, PAUSED: 2, ENDED: 0, BUFFERING: 3, CUED: 5 },
-    };
-  });
   await page.getByRole("button", { name: "Open Manage menu" }).click();
   await page.getByRole("button", { name: "Music player setup" }).click();
   const musicSetup = page.getByRole("region", { name: "Music player setup" });
@@ -3594,6 +3994,7 @@ try {
     .selectOption("test-playlist");
   await page.screenshot({ path: screenshotPath, fullPage: true });
   await queueHandle.click();
+  stage("music-setup");
   await verifyMusicExpansion("setup");
   if (musicOnly) {
     await page.getByRole("button", { name: "Start game", exact: true }).click();
@@ -3621,6 +4022,7 @@ try {
     }
     assertNoPageErrors();
     console.log("Focused music geometry verification: PASS");
+    stage("complete");
     await browser.close();
     process.exit(0);
   }
@@ -3832,122 +4234,32 @@ try {
   // Later live controls require Day 1, not the planning table. Advance through real controls.
   await page.getByRole("button", { name: "Mafia asleep" }).click();
   await page.getByRole("button", { name: "Begin round zero" }).click();
-  if (headerOnly) {
-    const firstPlayer = selectedPlayers[0]?.nickname;
-    const secondPlayer = selectedPlayers[1]?.nickname;
-    if (firstPlayer === undefined || secondPlayer === undefined) {
-      throw new Error("Phone verification requires the first two selected players");
-    }
-    if (
-      (await page.getByRole("button", { name: `Red card ${firstPlayer}`, exact: true }).count()) !==
-      0
-    ) {
-      throw new Error("Day player cards must not expose a direct red-card button");
-    }
-    const firstPlayerCard = page.locator('.seat-anchor[data-seat="1"] .player-seat');
-    await assertNativeControl(firstPlayerCard, "Live player card");
-    await page.keyboard.press("Shift+F10");
-    if (await page.locator(".table-swipe-menu").count())
-      throw new Error("Retired player shortcut opened context menu");
-    await assertRetiredHorizontalGesture(firstPlayerCard, "Phone player card");
-    await openPlayerPenalty(page, 1);
-    await page.getByLabel("Removal rule", { exact: true }).selectOption("6.2.2");
-    await page.getByRole("button", { name: "Confirm discipline", exact: true }).click();
-    await page
-      .getByRole("button", { name: `Announce removal of ${firstPlayer}`, exact: true })
-      .click();
-    await page.getByText(`Current turn: ${secondPlayer}`).waitFor();
-    await swipeCard(page.locator('.seat-anchor[data-seat="2"] .player-seat'), "down");
-    await page.getByText("Foul ×1").waitFor();
-    const phoneGeometry = await page.evaluate(() => {
-      const rect = (element) => {
-        const box = element.getBoundingClientRect();
-        return {
-          label: element.getAttribute("aria-label") ?? element.textContent?.trim() ?? "unknown",
-          left: box.left,
-          right: box.right,
-          top: box.top,
-          bottom: box.bottom,
-          width: box.width,
-          height: box.height,
-        };
-      };
-      const header = document.querySelector(".game-header");
-      if (!(header instanceof HTMLElement)) throw new Error("Game header missing");
-      const cards = [...document.querySelectorAll(".table-card")].map(rect);
-      const seatActionButtons = [
-        ...document.querySelectorAll('.player-seat[title="Swipe down to issue a foul"]'),
-      ].map(rect);
-      const headerChildren = [...header.children].map(rect);
-      const auxiliaryPanels = [
-        document.querySelector(".youtube-dock.is-compact"),
-        document.querySelector(".game-log-drawer"),
-      ]
-        .filter((element) => element instanceof HTMLElement)
-        .map(rect);
-      return {
-        documentWidth: document.documentElement.scrollWidth,
-        viewportWidth: innerWidth,
-        cards,
-        seatActionButtons,
-        headerChildren,
-        auxiliaryPanels,
-      };
-    });
-    if (phoneGeometry.documentWidth > phoneGeometry.viewportWidth + 1) {
-      throw new Error(`Phone layout clips horizontally: ${JSON.stringify(phoneGeometry)}`);
-    }
-    for (const element of [...phoneGeometry.headerChildren, ...phoneGeometry.cards]) {
-      if (element.left < 0 || element.right > phoneGeometry.viewportWidth) {
-        throw new Error(`Phone element is outside the viewport: ${JSON.stringify(element)}`);
-      }
-    }
-    if (phoneGeometry.seatActionButtons.length !== 9) {
-      throw new Error(
-        "Phone fallback must retain nomination and downward-foul routes on all nine active cards",
-      );
-    }
-    for (const action of phoneGeometry.seatActionButtons) {
-      if (action.width < 38 || action.height < 38) {
-        throw new Error(`Phone seat action is too small: ${JSON.stringify(action)}`);
-      }
-    }
-    for (let leftIndex = 0; leftIndex < phoneGeometry.cards.length; leftIndex += 1) {
-      for (
-        let rightIndex = leftIndex + 1;
-        rightIndex < phoneGeometry.cards.length;
-        rightIndex += 1
-      ) {
-        const left = phoneGeometry.cards[leftIndex];
-        const right = phoneGeometry.cards[rightIndex];
-        const overlaps =
-          Math.min(left.right, right.right) > Math.max(left.left, right.left) &&
-          Math.min(left.bottom, right.bottom) > Math.max(left.top, right.top);
-        if (overlaps) throw new Error(`${left.label} overlaps ${right.label} on phone`);
-      }
-    }
-    for (const panel of phoneGeometry.auxiliaryPanels) {
-      for (const card of phoneGeometry.cards) {
-        const overlaps =
-          Math.min(panel.right, card.right) > Math.max(panel.left, card.left) &&
-          Math.min(panel.bottom, card.bottom) > Math.max(panel.top, card.top);
-        if (overlaps) throw new Error(`${panel.label} obscures ${card.label} on phone`);
-      }
-    }
-    await page.screenshot({ path: tableScreenshotPath, fullPage: true });
-    await assertAccessibleControls("Responsive live game");
-    await assertCoreTargets("Responsive live game");
-    await assertCoreLayout("Responsive live game");
-    assertNoPageErrors();
-    console.log("Responsive phone game verification: PASS");
-    await browser.close();
-    process.exit(0);
-  }
+  // Header/privacy/hardening terminate in their reachable gameplay branch above.
+  stage("fullscreen-live-geometry");
   const enterFullscreen = page.getByRole("button", { name: "Enter fullscreen" });
-  if (!(await enterFullscreen.isEnabled())) throw new Error("Fullscreen API is unavailable");
-  await enterFullscreen.click();
-  await page.waitForFunction(() => document.fullscreenElement !== null);
-  await page.getByRole("button", { name: "Exit fullscreen" }).waitFor();
+  const fullscreenCapability = await page.evaluate(() => {
+    const standalone =
+      navigator.standalone === true || matchMedia("(display-mode: standalone)").matches;
+    return (
+      !standalone &&
+      ((typeof document.documentElement.requestFullscreen === "function" &&
+        document.fullscreenEnabled !== false) ||
+        (typeof document.documentElement.webkitRequestFullscreen === "function" &&
+          document.webkitFullscreenEnabled !== false))
+    );
+  });
+  if ((await enterFullscreen.count()) !== (fullscreenCapability ? 1 : 0))
+    throw new Error("Fullscreen affordance differs from native capability/standalone gate");
+  if (fullscreenCapability) {
+    await enterFullscreen.click();
+    await page.waitForFunction(() =>
+      Boolean(document.fullscreenElement || document.webkitFullscreenElement),
+    );
+    await page.getByRole("button", { name: "Exit fullscreen" }).waitFor();
+  } else
+    console.log(
+      "Fullscreen unsupported/standalone: native gate PASS; continuing live layout and gameplay",
+    );
   await assertAccessibleControls("Fullscreen live game");
   await assertCoreTargets("Fullscreen live game");
   await assertCoreLayout("Fullscreen live game");
@@ -3980,13 +4292,21 @@ try {
     if (!(appShell instanceof HTMLElement)) throw new Error("Missing application shell");
     const table = document.querySelector(".round-table");
     if (!(table instanceof HTMLElement)) throw new Error("Missing round table");
-    const headerTitle = document.querySelector(".game-header > :first-child");
+    const headerTitle = document.querySelector(".game-shell .game-header h1");
     if (!(headerTitle instanceof HTMLElement)) throw new Error("Missing game header title");
     const headerTitleBox = headerTitle.getBoundingClientRect();
     const cards = [...document.querySelectorAll(".table-card")].map((element) => {
       const box = element.getBoundingClientRect();
       return {
         label: element.getAttribute("aria-label"),
+        layoutWidth: parseFloat(getComputedStyle(element).width),
+        layoutHeight: parseFloat(getComputedStyle(element).height),
+        scale:
+          getComputedStyle(element).scale === "none"
+            ? 1
+            : parseFloat(getComputedStyle(element).scale),
+        emphasized: element.matches(".has-active-emphasis .is-current"),
+        voted: element.matches(".is-voted:not(.is-current)"),
         left: box.left,
         right: box.right,
         top: box.top,
@@ -4068,27 +4388,22 @@ try {
       throw new Error(`${name} is outside the fixed viewport: ${JSON.stringify(bounds)}`);
     }
   }
-  const fullscreenExitSafeArea = { right: 88, bottom: 88 };
+  const fullscreenExitSafeArea = fullscreenCapability
+    ? await page.locator(".fullscreen-button").boundingBox()
+    : null;
   if (
-    geometry.headerTitle.left < fullscreenExitSafeArea.right &&
-    geometry.headerTitle.right > 0 &&
-    geometry.headerTitle.top < fullscreenExitSafeArea.bottom &&
-    geometry.headerTitle.bottom > 0
+    fullscreenExitSafeArea !== null &&
+    geometry.headerTitle.left < fullscreenExitSafeArea.x + fullscreenExitSafeArea.width &&
+    geometry.headerTitle.right > fullscreenExitSafeArea.x &&
+    geometry.headerTitle.top < fullscreenExitSafeArea.y + fullscreenExitSafeArea.height &&
+    geometry.headerTitle.bottom > fullscreenExitSafeArea.y
   ) {
     throw new Error(
       `Game header title overlaps the fullscreen exit safe area: ${JSON.stringify(geometry.headerTitle)}`,
     );
   }
-  const [referenceCard] = geometry.cards;
-  if (referenceCard === undefined) throw new Error("Expected table cards");
-  for (const card of geometry.cards) {
-    if (Math.abs(card.width - referenceCard.width) > 0.5) {
-      throw new Error(`Card width mismatch for ${card.label ?? "unknown"}`);
-    }
-    if (Math.abs(card.height - referenceCard.height) > 0.5) {
-      throw new Error(`Card height mismatch for ${card.label ?? "unknown"}`);
-    }
-  }
+  assertCardSizes(geometry.cards);
+  assertRailMaterial(await readRailMaterial());
 
   for (let leftIndex = 0; leftIndex < geometry.cards.length; leftIndex += 1) {
     for (let rightIndex = leftIndex + 1; rightIndex < geometry.cards.length; rightIndex += 1) {
@@ -4164,8 +4479,7 @@ try {
       "YouTube playlist order must not expose an application-level next-track override",
     );
   }
-  await page.getByRole("button", { name: "Mafia asleep" }).click();
-  await page.getByRole("button", { name: "Begin round zero" }).click();
+  await page.locator(".game-shell.phase-day").waitFor();
   const dayTitleGeometry = await page.evaluate(() => {
     const title = document.querySelector(".game-shell .game-header h1");
     if (!(title instanceof HTMLElement)) throw new Error("Missing day phase title");
@@ -4233,13 +4547,15 @@ try {
       tableBackground: table === null ? "" : getComputedStyle(table, "::before").backgroundImage,
     };
   });
-  if (
-    !legacyEvidence.cardAnimation.includes("active-player-pulse") ||
-    !legacyEvidence.tableBackground.includes("gradient")
-  ) {
+  legacyEvidence.publicLight = await assertSupportedPlayerLighting(
+    activeSeat,
+    "CSS persistent public lighting",
+  );
+  if (!legacyEvidence.tableBackground.includes("gradient")) {
     throw new Error(`Legacy lighting changed: ${JSON.stringify(legacyEvidence)}`);
   }
   const legacyLightingScreenshotPath = tableScreenshotPath.replace(/\.png$/i, "-legacy.png");
+  stage("legacy-and-reduced-motion-lighting");
   await page.screenshot({ path: legacyLightingScreenshotPath, fullPage: true });
 
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -4258,6 +4574,7 @@ try {
       `Reduced motion must preserve static CSS lighting: ${JSON.stringify(reducedMotionEvidence)}`,
     );
   }
+  await assertSupportedPlayerLighting(activeSeat, "Reduced-motion static public lighting");
   await page.emulateMedia({ reducedMotion: "no-preference" });
 
   await selectLightingRenderer("vgpu");
@@ -4351,7 +4668,7 @@ try {
           border-color: transparent !important;
           box-shadow: none !important;
         }
-        .player-seat[aria-current="step"] > :not(.vgpu-player-lighting) {
+        .player-seat[aria-current="step"] > :not(.vgpu-player-lighting, .active-player-lighting) {
           visibility: hidden !important;
         }
       `,
@@ -4410,8 +4727,12 @@ try {
     )
     .waitFor();
   await page.screenshot({ path: tableScreenshotPath, fullPage: true });
-  await page.getByRole("button", { name: "Exit fullscreen" }).click();
-  await page.waitForFunction(() => document.fullscreenElement === null);
+  if (fullscreenCapability) {
+    await page.getByRole("button", { name: "Exit fullscreen" }).click();
+    await page.waitForFunction(
+      () => !document.fullscreenElement && !document.webkitFullscreenElement,
+    );
+  }
   assertNoPageErrors();
   // Retain ordinary UI regressions, then qualify the single current canonical path.
   console.log("Legacy UI regression journey: PASS (federation journey still required)");
@@ -4420,11 +4741,49 @@ try {
   mockSessions.clear();
   await verifyFederationJourney();
   assertNoPageErrors();
+  stage("complete");
   console.log(
     `UI browser verification: PASS ${JSON.stringify({ playersScreenshotPath, selectionScreenshotPath, screenshotPath, tableScreenshotPath, legacyLightingScreenshotPath, vgpuLightingScreenshotPath, vgpuPlayerLightingScreenshotPath, vgpuPlayerCanvasScreenshotPath, vgpuEvidence, vgpuTableLightingEvidence, vgpuPlayerLightingEvidence, reducedMotionEvidence, alwaysEnabledPlayerLightingEvidence, independentTableLightingEvidence, playerPulseEvidence })}`,
   );
 } catch (error) {
+  console.error(
+    `UI_TERMINAL ${JSON.stringify({ mode: verificationMode, stage: terminalStage, result: "FAIL", error: error.message })}`,
+  );
   if (!page.isClosed()) {
+    const diagnostic = await page
+      .evaluate(() => ({
+        phase: document.querySelector(".game-shell")?.className,
+        body: document.body.innerText,
+        state: localStorage.getItem("mafia-dashboard.game-session.v5"),
+        boxes: [
+          ...document.querySelectorAll(
+            ".game-header h1, .fullscreen-button, .round-table, .player-seat, .live-side-panel, .table-vote-center, .table-advance button",
+          ),
+        ].map((element) => ({
+          selector: element.className,
+          label: element.getAttribute("aria-label"),
+          box: element.getBoundingClientRect().toJSON(),
+          scale: getComputedStyle(element).scale,
+        })),
+      }))
+      .catch(() => null);
+    writeFileSync(
+      (
+        process.env.UI_FAILURE_SCREENSHOT ?? screenshotPath.replace(/\.png$/i, "-failure.png")
+      ).replace(/\.png$/i, "-diagnostic.json"),
+      JSON.stringify(
+        {
+          mode: verificationMode,
+          stage: terminalStage,
+          error: error.message,
+          pageErrors,
+          routeErrors,
+          diagnostic,
+        },
+        null,
+        2,
+      ),
+    );
     await page
       .screenshot({
         path:

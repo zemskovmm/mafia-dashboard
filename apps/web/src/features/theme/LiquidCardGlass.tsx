@@ -5,6 +5,7 @@ import { DEFAULT_GLASS_SETTINGS, validateGlassSettings } from "./glass-preferenc
 import type { CSSProperties } from "react";
 import { createLiquidCardLens } from "./liquid-card-lens.js";
 import type { LiquidCardLens } from "./liquid-card-lens.js";
+import { createFiniteGlassSweep } from "./finite-glass-sweep.js";
 import "./LiquidCardGlass.css";
 
 const RESIZE_SETTLE_MS = 100;
@@ -107,39 +108,7 @@ export const LiquidCardGlass = () => {
     const view = surface?.ownerDocument.defaultView;
     if (surface === null || light === null || host == null || view == null) return;
     if (sharedReady || host.dataset.playerGlass === "nomination") return;
-    const motion = view.matchMedia?.("(prefers-reduced-motion: reduce)");
-    const transparency = view.matchMedia?.("(prefers-reduced-transparency: reduce)");
-    let animation: Animation | null = null;
-    const cancelSweep = () => {
-      if (animation === null) return;
-      animation.onfinish = null;
-      animation.cancel();
-      animation = null;
-    };
-    const sweep = () => {
-      if (
-        motion?.matches ||
-        transparency?.matches ||
-        host.matches(":disabled, [aria-disabled='true']") ||
-        typeof light.animate !== "function"
-      )
-        return;
-      cancelSweep();
-      // Only this masked highlight moves. The lens map and card content are
-      // unchanged; there is no frame callback, bitmap rebuild or React update.
-      const nextAnimation = light.animate(
-        [
-          { transform: "rotate(0deg) scale(1)", opacity: 1 },
-          { transform: "rotate(170deg) scale(1.06)", opacity: 0.85, offset: 0.55 },
-          { transform: "rotate(360deg) scale(1)", opacity: 1 },
-        ],
-        { duration: 1050, easing: "ease-in-out", iterations: 1, fill: "none" },
-      );
-      animation = nextAnimation;
-      nextAnimation.onfinish = () => {
-        if (animation === nextAnimation) animation = null;
-      };
-    };
+    const { sweep, dispose } = createFiniteGlassSweep(host, light);
     let voted = host.classList.contains("is-voted");
     const stateObserver = new view.MutationObserver(() => {
       const nextVoted = host.classList.contains("is-voted");
@@ -151,15 +120,11 @@ export const LiquidCardGlass = () => {
     stateObserver.observe(host, { attributes: true, attributeFilter: ["class"] });
     host.addEventListener("pointerenter", sweep, { passive: true });
     host.addEventListener("pointerdown", sweep, { passive: true });
-    motion?.addEventListener?.("change", cancelSweep);
-    transparency?.addEventListener?.("change", cancelSweep);
     return () => {
-      cancelSweep();
+      dispose();
       stateObserver.disconnect();
       host.removeEventListener("pointerenter", sweep);
       host.removeEventListener("pointerdown", sweep);
-      motion?.removeEventListener?.("change", cancelSweep);
-      transparency?.removeEventListener?.("change", cancelSweep);
     };
   }, [sharedReady]);
 

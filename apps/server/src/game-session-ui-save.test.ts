@@ -12,10 +12,13 @@ import {
   createSeededRandom,
   createSetup,
   drawRoleForSeat,
+  getRoleDrawPreview,
   hashGameState,
   replayGameLog,
+  rerollRoleForSeat,
   type CanonicalGameEventDraft,
   type GameState,
+  type SetupState,
 } from "@mafia/game-domain";
 import { buildApp } from "./app.js";
 import { DEFAULT_CLUB_ID } from "./club-store.js";
@@ -102,6 +105,80 @@ describe("whole snapshot save", () => {
       name: "UI saved",
       state: { replay: { notVerified: true } },
     });
+  });
+
+  it("preserves seat-bound undealt roles after a reroll through API and private Blob readback", async () => {
+    const players: { id: string; seat: number }[] = [];
+    // This is a persistence round trip, not a concurrent directory-write test.
+    for (let index = 0; index < 10; index += 1) {
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/players",
+        headers: { "x-club-id": DEFAULT_CLUB_ID },
+        payload: {
+          nickname: `Pre-roll ${index + 1} ${randomUUID()}`,
+          consent: false,
+          firstName: null,
+          lastName: null,
+          email: null,
+        },
+      });
+      expect(response.statusCode, response.body).toBe(201);
+      players.push({ id: response.json().player.id as string, seat: index + 1 });
+    }
+    let setup = beginRoleDraw(createSetup(players), createSeededRandom(42));
+    setup = drawRoleForSeat(drawRoleForSeat(setup, 7), 2);
+    const envelope = (deal: SetupState) => ({
+      game: null,
+      setup: { step: "roles", selectedPlayerIds: players.map(({ id }) => id), setup: deal },
+      events: [],
+      headEventId: null,
+    });
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/game-sessions",
+      headers: { "x-club-id": DEFAULT_CLUB_ID },
+      payload: {
+        creationId: randomUUID(),
+        name: "Seat-bound deal",
+        state: envelope(setup),
+        results: null,
+      },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const gameId = created.json().gameId as string;
+    const reshuffled = rerollRoleForSeat(setup, 7, createSeededRandom(17));
+    expect(reshuffled.assignments[2]).toBe(setup.assignments[2]);
+    const expectedPreview = getRoleDrawPreview(reshuffled);
+    const savedState = envelope(reshuffled);
+    const saved = await app.inject({
+      method: "PUT",
+      url: `/api/game-sessions/${gameId}`,
+      headers: { "x-club-id": DEFAULT_CLUB_ID },
+      payload: {
+        mutationId: randomUUID(),
+        name: "Seat-bound deal",
+        state: savedState,
+        results: null,
+      },
+    });
+    expect(saved.statusCode, saved.body).toBe(200);
+    const readback = await app.inject({
+      method: "GET",
+      url: `/api/game-sessions/${gameId}`,
+      headers: { "x-club-id": DEFAULT_CLUB_ID },
+    });
+    expect(readback.statusCode).toBe(200);
+    expect(readback.json().session.state).toEqual(savedState);
+    expect(JSON.parse((await rawGame(gameId)).state)).toEqual(savedState);
+    let restored = readback.json().session.state.setup.setup as SetupState;
+    expect(getRoleDrawPreview(restored)).toEqual(expectedPreview);
+    for (const { seat } of [...players].reverse()) {
+      if (restored.assignments[seat] !== undefined) continue;
+      restored = drawRoleForSeat(restored, seat);
+      expect(restored.assignments[seat]).toBe(expectedPreview[seat]);
+    }
+    expect(restored.assignments).toEqual(expectedPreview);
   });
 
   it("round-trips a rendered UI action and anonymous completed timeline through real API and Azure", async () => {

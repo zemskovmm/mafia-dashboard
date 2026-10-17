@@ -81,10 +81,7 @@
 }
 .app-shell[data-glass-settings] .live-side-panel {
   isolation: isolate;
-  background:
-    linear-gradient(105deg, rgb(255 255 255 / 9%), transparent 34% 72%, rgb(74 161 124 / 8%)),
-    linear-gradient(145deg, rgb(255 255 255 / 14%), transparent 42%),
-    color-mix(in oklch, var(--theme-base) 8%, rgb(12 10 8 / 66%));
+  background: rgb(15 16 17 / 48%);
 }
 .app-shell[data-glass-settings] .live-side-panel::after {
   position: absolute;
@@ -93,8 +90,7 @@
   border-radius: inherit;
   pointer-events: none;
   content: "";
-  background: radial-gradient(circle at 12% 5%, rgb(255 241 202 / 24%), transparent 26%);
-  opacity: var(--glass-gold-light);
+  background: linear-gradient(145deg, rgb(255 255 255 / 4%), transparent 42%);
 }
 .app-shell[data-glass-settings].is-background-grey-33 {
   --glass-bg: #545454;
@@ -212,7 +208,7 @@
 }
 @media (prefers-reduced-transparency: reduce) {
   .app-shell[data-glass-settings] .live-side-panel {
-    background: #1b1712;
+    background: #161819;
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }

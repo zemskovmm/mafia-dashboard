@@ -142,14 +142,8 @@ export async function runRulesSketchbookScenarios({
   );
   const evidence = path.resolve(evidenceDir);
   await mkdir(evidence, { recursive: true });
-  // Keep the production SDK-created iframe and its identity, but isolate remote
-  // playback/network errors. This gate does not qualify YouTube playback.
-  await page.route(/^https:\/\/www\.youtube(?:-nocookie)?\.com\/embed\//, (route) =>
-    route.fulfill({
-      contentType: "text/html",
-      body: "<!doctype html><html><title>Isolated media transport</title></html>",
-    }),
-  );
+  // The shared synthetic provider owns a mounted blank iframe. Keep its exact
+  // identity across reading; the parent's fail-closed provider guard stays active.
   const viewport = page.viewportSize();
   const engine = page.context().browser().browserType().name();
   const report = {
@@ -158,7 +152,7 @@ export async function runRulesSketchbookScenarios({
     viewport,
     origin,
     boundaries:
-      "Actual App and table; isolated browser; exact-origin API fixture. Production SDK creates media iframe; embed transport is blank-fixtured, not playback qualification. Not physical iPad or backend persistence.",
+      "Actual App and table; isolated browser; exact-origin API fixture. Shared synthetic YouTube provider owns a mounted blank iframe; exact DOM identity only, not production SDK/native-control/playback qualification. Not physical iPad or backend persistence.",
     sourceBefore: await rulesSourceManifest(),
     destinations: [],
     references: [],
@@ -706,7 +700,7 @@ export async function runRulesSketchbookScenarios({
       await iframeNode.evaluate(
         (el) => el === document.querySelector("iframe.youtube-player-video"),
       ),
-      "Exact live media iframe retained",
+      "Exact mounted synthetic media iframe retained",
     );
     assert.equal(
       await page.locator("iframe.youtube-player-video").getAttribute("src"),

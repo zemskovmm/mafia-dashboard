@@ -1,8 +1,9 @@
 import { countVotes } from "@mafia/game-domain";
 import type { GameState } from "@mafia/game-domain";
+import { Hand } from "lucide-react";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { gameMessages } from "../../i18n/messages/game.js";
-import { federationHistoryMessages } from "../../i18n/messages/federation-history.js";
+
 import { getNominationSupporterSeats } from "../timeline/nomination-history.js";
 
 import { TimerControls } from "../timer/TimerControls.js";
@@ -16,7 +17,6 @@ export interface GameUtilityPanelsProps {
 
 export const GameUtilityPanels = ({ game, onSelectVotingCandidate }: GameUtilityPanelsProps) => {
   const { t } = useMessages(gameMessages);
-  const nominationText = useMessages(federationHistoryMessages);
 
   const displayName = usePlayerDisplayName();
   const nominationTotals = game === null ? {} : countVotes(game);
@@ -86,28 +86,32 @@ export const GameUtilityPanels = ({ game, onSelectVotingCandidate }: GameUtility
                             ? t("utility.seat", { seat: candidateSeat })
                             : displayName(candidate)}
                         </strong>
-                        <span>
-                          {t("utility.initiatedBy", {
+                        <span
+                          className="nomination-initiator"
+                          role="img"
+                          aria-label={t("utility.initiatedBy", {
                             seat: nominatorSeat,
                             name:
                               nominator === undefined
                                 ? t("utility.seat", { seat: nominatorSeat })
                                 : displayName(nominator),
                           })}
+                        >
+                          <Hand aria-hidden="true" />
+                          <span className="nomination-initiator-name">
+                            #{nominatorSeat}{" "}
+                            {nominator === undefined
+                              ? t("utility.seat", { seat: nominatorSeat })
+                              : displayName(nominator)}
+                          </span>
                         </span>
                         {supporters.length === 0 ? null : (
-                          <span>
-                            {nominationText.t("Additional supporters (+{count}): {supporters}", {
-                              count: supporters.length,
-                              supporters: nominationText.formatList(
-                                supporters.map((seat) => {
-                                  const supporter = game.players.find(
-                                    (player) => player.seat === seat,
-                                  );
-                                  return `#${seat} ${supporter === undefined ? t("utility.seat", { seat }) : displayName(supporter)}`;
-                                }),
-                              ),
-                            })}
+                          <span
+                            className="nomination-support-count"
+                            role="img"
+                            aria-label={t("table.supportCount", { count: supporters.length })}
+                          >
+                            +{supporters.length}
                           </span>
                         )}
                       </span>

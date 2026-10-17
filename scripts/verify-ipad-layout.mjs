@@ -1,11 +1,12 @@
-/* global document, getComputedStyle */
+/* global document, getComputedStyle, matchMedia */
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
+import { assertBalancedCardPlacement, assertCardSizes } from "./ui-presentation-contracts.mjs";
 
 // Run through verify-ui.mjs with UI_LAYOUT_ONLY=1 to reuse its isolated API fixtures.
 export async function verifyIpadLayout(
   page,
-  { assertNativeControl, assertCoreLayout, assertCoreTargets },
+  { assertNativeControl, assertCoreLayout, assertCoreTargets, longNickname },
 ) {
   const output = process.env.UI_LAYOUT_OUTPUT ?? ".AI/ipad-layout";
   await mkdir(output, { recursive: true });
@@ -35,7 +36,9 @@ export async function verifyIpadLayout(
   }
 
   await page.getByRole("button", { name: "Select available players" }).click();
-  const available = page.getByRole("button", { name: /^Mark UI Player \d+ available$/ });
+  const available = page
+    .locator(".availability-player-grid")
+    .getByRole("button", { name: /^Mark .+ available$/ });
   assert.equal(await available.count(), 11);
   for (let index = 0; index < 11; index += 1) await available.first().click();
   await page.getByRole("button", { name: "Close available players" }).click();
@@ -48,23 +51,55 @@ export async function verifyIpadLayout(
   await page.getByRole("button", { name: "Start game", exact: true }).click();
   await page.getByRole("heading", { name: "Role giveaway" }).waitFor();
   const checkTable = async (label) => {
+    await page.locator(".table-stage").evaluate(async (stage) => {
+      await Promise.all(
+        stage
+          .getAnimations({ subtree: true })
+          .filter((animation) => animation.effect?.getTiming().iterations !== Infinity)
+          .map((animation) => animation.finished.catch(() => undefined)),
+      );
+    });
     await page.screenshot({ path: `${output}/${label}.png` });
     const geometry = await page.evaluate(() => {
       const box = (element) => {
-        const { left, right, top, bottom } = element.getBoundingClientRect();
-        return { left, right, top, bottom };
+        const { left, right, top, bottom, width, height } = element.getBoundingClientRect();
+        return { left, right, top, bottom, width, height };
       };
       const workspace = box(document.querySelector(".table-workspace"));
-      const cards = [...document.querySelectorAll(".seat-anchor .table-card")].map((element) => ({
-        seat: element.closest(".seat-anchor").dataset.seat,
-        ...box(element),
-      }));
+      const cards = [...document.querySelectorAll(".seat-anchor .table-card")].map((element) => {
+        const style = getComputedStyle(element);
+        const scale = style.scale;
+        return {
+          seat: element.closest(".seat-anchor").dataset.seat,
+          layoutWidth: Number.parseFloat(style.width),
+          layoutHeight: Number.parseFloat(style.height),
+          emphasized: element.matches(".has-active-emphasis .is-current"),
+          voted: element.matches(".is-voted:not(.is-current)"),
+          scale: scale === "none" ? 1 : Number.parseFloat(scale),
+          ...box(element),
+        };
+      });
       const top = Math.min(...cards.map((card) => card.top)) - workspace.top;
       const bottom = workspace.bottom - Math.max(...cards.map((card) => card.bottom));
-      return { workspace, cards, top, bottom };
+      const controls = [...document.querySelectorAll(".seat-actions button, .table-advance button")]
+        .filter((element) => element.getClientRects().length > 0)
+        .map((element) => ({
+          label: element.getAttribute("aria-label") ?? element.textContent,
+          ...box(element),
+        }));
+      const placement = {
+        compactLandscape: matchMedia(
+          "(min-width: 900px) and (max-width: 1159px) and (orientation: landscape)",
+        ).matches,
+        phase: [...document.querySelector(".game-shell").classList]
+          .find((name) => name.startsWith("phase-"))
+          ?.slice(6),
+      };
+      return { workspace, cards, controls, top, bottom, placement };
     });
     console.log(`${label}: ${JSON.stringify(geometry)}`);
     assert.equal(geometry.cards.length, 10);
+    assertCardSizes(geometry.cards);
     for (const card of geometry.cards) {
       assert.ok(
         card.left >= geometry.workspace.left && card.right <= geometry.workspace.right,
@@ -75,10 +110,20 @@ export async function verifyIpadLayout(
         `${label}: seat ${card.seat} clipped vertically`,
       );
     }
-    assert.ok(
-      Math.abs(geometry.top - geometry.bottom) <= 2,
-      `${label}: unequal top/bottom clearance`,
-    );
+    assertBalancedCardPlacement(geometry.workspace, geometry.cards, label, geometry.placement);
+    if (label.startsWith("voting-")) {
+      for (const [index, card] of geometry.cards.entries()) {
+        for (const other of [...geometry.cards.slice(index + 1), ...geometry.controls]) {
+          assert.ok(
+            card.right <= other.left ||
+              other.right <= card.left ||
+              card.bottom <= other.top ||
+              other.bottom <= card.top,
+            `${label}: rendered seat ${card.seat} overlaps ${other.seat ?? other.label}`,
+          );
+        }
+      }
+    }
     // Portrait keeps the existing scrollable utilities and smaller action targets.
     const viewport = page.viewportSize();
     assert.ok(geometry.cards.every((card) => card.top >= 0 && card.bottom <= viewport.height));
@@ -95,8 +140,8 @@ export async function verifyIpadLayout(
       .click();
   }
   await page.getByRole("button", { name: "Begin Mafia planning stage" }).click();
-  await page.getByRole("button", { name: "Continue night zero to Sheriff wake-up" }).click();
-  await page.getByRole("button", { name: "Begin day one" }).click();
+  await page.getByRole("button", { name: "Mafia asleep", exact: true }).click();
+  await page.getByRole("button", { name: "Begin round zero", exact: true }).click();
   for (const viewport of [
     { width: 1376, height: 900 },
     { width: 1376, height: 1032 },
@@ -123,41 +168,60 @@ export async function verifyIpadLayout(
     );
   }
 
-  for (let index = 0; index < 2; index += 1) {
-    const current = await page.locator(".player-seat.is-current .seat-name").innerText();
-    await page.getByRole("button", { name: `Nominate ${current}`, exact: true }).click();
+  const ordinaryNickname = (await page.locator(".player-seat .seat-name").allTextContents()).find(
+    (name) => name !== longNickname,
+  );
+  for (const nickname of [longNickname, ordinaryNickname]) {
+    await page.getByRole("button", { name: `Nominate ${nickname}`, exact: true }).click();
     await page.getByRole("button", { name: "Next player", exact: true }).click();
   }
   const next = page.getByRole("button", { name: "Next player", exact: true });
   while (await next.count()) await next.click();
   await page.getByRole("button", { name: "Begin voting" }).click();
-  const identity = page.getByRole("group", { name: "Voting candidate" }).locator("strong");
+  const identity = page
+    .getByRole("status", { name: "Voting candidate", exact: true })
+    .locator(".voting-candidate-identity");
   await identity.waitFor();
-  for (const viewport of [
-    { width: 1376, height: 900 },
-    { width: 1376, height: 1032 },
-    { width: 1024, height: 768 },
-    { width: 1366, height: 768 },
-    { width: 1032, height: 1244 },
-  ]) {
-    await page.setViewportSize(viewport);
-    const typography = await identity.evaluate((element) => {
-      const originalClass = element.className;
-      const size = Number.parseFloat(getComputedStyle(element).fontSize);
-      element.className = "";
-      const baseline = Number.parseFloat(getComputedStyle(element).fontSize);
-      element.className = originalClass;
-      return { size, baseline };
-    });
-    assert.ok(
-      Math.abs(typography.size - typography.baseline * 2) < 0.01,
-      `Candidate font must be 2x at ${viewport.width}: ${JSON.stringify(typography)}`,
+  assert.ok((await identity.innerText()).includes(longNickname));
+  const anchors = () =>
+    page.locator(".seat-anchor").evaluateAll((nodes) =>
+      nodes.map((node) => ({
+        seat: node.dataset.seat,
+        ...node.getBoundingClientRect().toJSON(),
+      })),
     );
-    const originalName = await identity.textContent();
-    for (const name of [originalName, `#10 ${"Александра".repeat(8)}`]) {
-      await identity.evaluate((element, text) => {
-        element.textContent = text;
-      }, name);
+  const beforeVotes = await anchors();
+  for (let seat = 1; seat <= 10; seat += 1) {
+    await page.locator(`.seat-anchor[data-seat="${seat}"] .player-seat`).click();
+  }
+  await page.waitForFunction(
+    () => document.querySelectorAll(".player-seat.is-current").length === 10,
+  );
+  assert.deepEqual(await anchors(), beforeVotes, "Voter emphasis must not move seat anchors");
+  for (const nickname of [longNickname, ordinaryNickname]) {
+    assert.ok((await identity.innerText()).includes(nickname));
+    for (const viewport of [
+      { width: 1366, height: 768 },
+      { width: 1376, height: 819 },
+      { width: 1194, height: 834 },
+      { width: 1376, height: 900 },
+      { width: 1376, height: 1032 },
+      { width: 1024, height: 768 },
+      { width: 1032, height: 1244 },
+    ]) {
+      await page.setViewportSize(viewport);
+      const typography = await identity.evaluate((element) => {
+        const originalClass = element.className;
+        const size = Number.parseFloat(getComputedStyle(element).fontSize);
+        element.className = "";
+        const baseline = Number.parseFloat(getComputedStyle(element).fontSize);
+        element.className = originalClass;
+        return { size, baseline };
+      });
+      assert.ok(
+        Math.abs(typography.size - typography.baseline * 2) < 0.01,
+        `Candidate font must be 2x at ${viewport.width}: ${JSON.stringify(typography)}`,
+      );
       const bounds = await identity.evaluate((element) => {
         const group = element.parentElement.getBoundingClientRect();
         const advance = document.querySelector(".table-advance").getBoundingClientRect();
@@ -171,11 +235,15 @@ export async function verifyIpadLayout(
         bounds.bottom + 6 <= bounds.advanceTop && !bounds.overflow,
         `Voting text overlaps controls at ${viewport.width}: ${JSON.stringify(bounds)}`,
       );
+      await checkTable(
+        `voting-${nickname === longNickname ? "emphasized" : "voted"}-${viewport.width}x${viewport.height}`,
+      );
     }
-    await identity.evaluate((element, text) => {
-      element.textContent = text;
-    }, originalName);
-    await checkTable(`voting-${viewport.width}x${viewport.height}`);
+    if (nickname === longNickname) {
+      const beforeCandidate = await anchors();
+      await page.getByRole("button", { name: "Next candidate", exact: true }).click();
+      assert.deepEqual(await anchors(), beforeCandidate, "Candidate changes must not move anchors");
+    }
   }
 
   await page.setViewportSize({ width: 1376, height: 900 });
@@ -183,14 +251,14 @@ export async function verifyIpadLayout(
   await page.getByRole("button", { name: "Enable dev mode" }).click();
   await page.getByRole("button", { name: "Past game timeline" }).click();
   await page.getByRole("heading", { name: "Game timeline" }).waitFor();
-  // Stress native controls' intrinsic sizing with a supported long nickname.
-  await page
-    .getByLabel("Player", { exact: true })
-    .locator("option")
-    .last()
-    .evaluate((option) => {
-      option.textContent = "Александра".repeat(8);
-    });
+  // The real directory nickname also stresses the native filter's intrinsic sizing.
+  assert.equal(
+    await page
+      .getByLabel("Player", { exact: true })
+      .getByRole("option", { name: longNickname, exact: true })
+      .count(),
+    1,
+  );
   for (const viewport of [
     { width: 1376, height: 900 },
     { width: 1376, height: 1032 },

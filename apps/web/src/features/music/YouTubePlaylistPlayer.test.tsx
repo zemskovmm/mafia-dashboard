@@ -215,6 +215,50 @@ describe("YouTubePlaylistPlayer", () => {
     },
   );
 
+  it.each([1, 2])(
+    "keeps player and queue mounted through collapse/reveal in playback state %s",
+    async (state) => {
+      api.listMusicPlaylistItems.mockResolvedValue([
+        { videoId: "a", title: "A", position: 0, thumbnailUrl: null },
+        { videoId: "b", title: "B", position: 1, thumbnailUrl: null },
+      ]);
+      const fake = installQueuePlayer();
+      const onStateChange = vi.fn();
+      const view = (expanded: boolean) => (
+        <YouTubePlaylistPlayer
+          playlistId="PL-collapse"
+          onStateChange={onStateChange}
+          expanded={expanded}
+        />
+      );
+      const { rerender, container } = render(view(true));
+      await fake.ready();
+      fake.state(state);
+      const video = container.querySelector(".youtube-player-video");
+      const queue = screen.getByRole("region", { name: "Session playlist queue" });
+      const commands = [
+        fake.player.cuePlaylist,
+        fake.player.loadPlaylist,
+        fake.player.playVideo,
+        fake.player.pauseVideo,
+        fake.player.setVolume,
+        fake.player.playVideoAt,
+      ];
+      commands.forEach((command) => command.mockClear());
+      rerender(view(false));
+      expect(screen.queryByRole("region", { name: "Session playlist queue" })).toBeNull();
+      expect(queue.closest(".panel-reveal")).toHaveAttribute("inert");
+      expect(queue).toBeInTheDocument();
+      rerender(view(true));
+      expect(screen.getByRole("region", { name: "Session playlist queue" })).toBe(queue);
+      expect(container.querySelector(".youtube-player-video")).toBe(video);
+      expect(fake.constructorSpy).toHaveBeenCalledTimes(1);
+      expect(fake.player.destroy).not.toHaveBeenCalled();
+      commands.forEach((command) => expect(command).not.toHaveBeenCalled());
+      expect(fake.player.getPlayerState()).toBe(state);
+    },
+  );
+
   it("queues Play next without touching active playback or cancelling its fade", async () => {
     api.listMusicPlaylistItems.mockResolvedValue([
       { videoId: "a", title: "A", position: 0, thumbnailUrl: null },
