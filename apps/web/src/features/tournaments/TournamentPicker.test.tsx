@@ -29,6 +29,29 @@ beforeEach(() => {
 });
 
 describe("TournamentPicker", () => {
+  it("uses compact inline creation with a separately cancelled native dialog and preserves selection", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<TournamentPicker compact clubId="club-a" value={tournament.id} onChange={onChange} />);
+    expect(screen.getByRole("switch", { name: "Include in tournament" })).toBeChecked();
+    await screen.findByRole("option", { name: tournament.name });
+    const add = screen.getByRole("button", { name: "New tournament…" });
+    expect(add).toHaveTextContent("+");
+    await user.click(add);
+    const dialog = screen.getByRole("dialog", { name: "New tournament…" });
+    expect(dialog.tagName).toBe("DIALOG");
+    await user.type(screen.getByRole("textbox", { name: "Tournament name" }), "Unfinished");
+    fireEvent(dialog, new Event("cancel", { bubbles: false, cancelable: true }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("combobox", { name: "Tournament" })).toHaveValue(tournament.id);
+    await user.click(add);
+    expect(screen.getByRole("textbox")).toHaveValue("");
+    await user.type(screen.getByRole("textbox"), "Autumn cup");
+    await user.click(screen.getByRole("button", { name: "Create tournament" }));
+    await waitFor(() => expect(onChange).toHaveBeenCalledExactlyOnceWith(tournament.id));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
   it("preserves a just-created choice when the initial list resolves later", async () => {
     const user = userEvent.setup();
     const pendingList = deferred<readonly (typeof tournament)[]>();

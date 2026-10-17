@@ -4,6 +4,7 @@ import { createTournament, listTournaments } from "../../api/client.js";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { tournamentMessages } from "../../i18n/messages/tournaments.js";
 import { reportError } from "../console/error-console.js";
+import { FederationJudgeDialog } from "../game/FederationJudgeDialog.js";
 import "./tournaments.css";
 
 export interface TournamentPickerProps {
@@ -11,6 +12,8 @@ export interface TournamentPickerProps {
   readonly value: string | null;
   readonly onChange: (tournamentId: string | null) => void;
   readonly disabled?: boolean;
+  /** Setup-only layout; state and validity remain owned by this picker. */
+  readonly compact?: boolean;
   readonly onValidityChange?: (valid: boolean) => void;
 }
 
@@ -24,6 +27,7 @@ const ClubTournamentPicker = ({
   value,
   onChange,
   disabled = false,
+  compact = false,
   onValidityChange,
 }: TournamentPickerProps) => {
   const { t } = useMessages(tournamentMessages);
@@ -108,12 +112,45 @@ const ClubTournamentPicker = ({
     }
   };
 
+  const creationFields = (
+    <div className="tournament-picker-create">
+      <label htmlFor={`${id}-name`}>
+        {t("name")}
+        <input
+          id={`${id}-name`}
+          value={name}
+          maxLength={100}
+          disabled={disabled || busy}
+          aria-describedby={`${id}-name-help`}
+          onChange={(event) => setName(event.currentTarget.value)}
+        />
+      </label>
+      <p id={`${id}-name-help`}>{t("nameHelp")}</p>
+      <div className="tournament-picker-actions">
+        <button
+          type="button"
+          disabled={disabled || busy || name.trim().length === 0}
+          onClick={() => void create()}
+        >
+          {t(busy ? "creating" : "create")}
+        </button>
+        {!compact && (
+          <button type="button" disabled={disabled} onClick={cancelCreation}>
+            {t("cancel")}
+          </button>
+        )}
+      </div>
+      {createError && <p role="alert">{t("createError")}</p>}
+    </div>
+  );
+
   return (
-    <div className="tournament-picker">
+    <div className={`tournament-picker${compact ? " tournament-picker--compact" : ""}`}>
       <label className="tournament-picker-toggle" htmlFor={`${id}-include`}>
         <input
           id={`${id}-include`}
           type="checkbox"
+          role={compact ? "switch" : undefined}
           checked={included}
           disabled={disabled}
           onChange={(event) => {
@@ -126,6 +163,7 @@ const ClubTournamentPicker = ({
           }}
         />
         <span>{t("include")}</span>
+        {compact && <span className="tournament-switch-track" aria-hidden="true" />}
       </label>
       {included && (
         <div className="tournament-picker-fields">
@@ -154,10 +192,16 @@ const ClubTournamentPicker = ({
               ))}
             </select>
           </label>
-          {tournaments === null && <p role="status">{t("loading")}</p>}
+          {tournaments === null && (!compact || !listError) && (
+            <p role="status" id={compact && !valid ? `${id}-help` : undefined}>
+              {t("loading")}
+            </p>
+          )}
           {listError && (
             <div>
-              <p role="alert">{t("loadError")}</p>
+              <p role="alert" id={compact && !valid ? `${id}-help` : undefined}>
+                {t("loadError")}
+              </p>
               <button
                 type="button"
                 disabled={disabled || busy}
@@ -167,46 +211,34 @@ const ClubTournamentPicker = ({
               </button>
             </div>
           )}
-          {!valid && <p id={`${id}-help`}>{t("chooseHelp")}</p>}
+          {!valid && (!compact || (tournaments !== null && !listError)) && (
+            <p id={`${id}-help`}>{t("chooseHelp")}</p>
+          )}
           <button
             type="button"
+            aria-label={compact ? t("new") : undefined}
+            className="tournament-picker-new"
             disabled={disabled || busy || creating}
             onClick={() => {
               setCreating(true);
               setCreateError(false);
             }}
           >
-            {t("new")}
+            {compact ? "+" : t("new")}
           </button>
-          {creating && (
-            <div className="tournament-picker-create">
-              <label htmlFor={`${id}-name`}>
-                {t("name")}
-                <input
-                  id={`${id}-name`}
-                  value={name}
-                  maxLength={100}
-                  disabled={disabled || busy}
-                  aria-describedby={`${id}-name-help`}
-                  onChange={(event) => setName(event.currentTarget.value)}
-                />
-              </label>
-              <p id={`${id}-name-help`}>{t("nameHelp")}</p>
-              <div className="tournament-picker-actions">
-                <button
-                  type="button"
-                  disabled={disabled || busy || name.trim().length === 0}
-                  onClick={() => void create()}
-                >
-                  {t(busy ? "creating" : "create")}
-                </button>
-                <button type="button" disabled={disabled} onClick={cancelCreation}>
-                  {t("cancel")}
-                </button>
-              </div>
-              {createError && <p role="alert">{t("createError")}</p>}
-            </div>
-          )}
+          {creating &&
+            (compact ? (
+              <FederationJudgeDialog
+                title={t("new")}
+                closeLabel={t("cancel")}
+                onDismiss={cancelCreation}
+                className="tournament-create-dialog"
+              >
+                {creationFields}
+              </FederationJudgeDialog>
+            ) : (
+              creationFields
+            ))}
         </div>
       )}
     </div>

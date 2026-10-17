@@ -456,11 +456,11 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
   }
   async function freshSetup(page) {
     await enter(page);
-    const heading = page.getByRole("heading", { name: "Select 10 players + host" });
+    const heading = page.getByRole("heading", { name: "Select players", exact: true });
     await expect(heading.or(page.locator(".players-shell"))).toBeVisible();
     if (!(await heading.isVisible())) {
       await expect(page.locator(".players-shell")).toBeVisible();
-      await page.locator(".players-screen-header button").click();
+      await page.getByRole("button", { name: "Back to game", exact: true }).click();
     }
     await expect(heading).toBeVisible();
     await page.getByRole("button", { name: "Select available players" }).click();
@@ -1502,6 +1502,7 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     await page.getByRole("button", { name: "Open developer menu", exact: true }).click();
     const enableDev = page.getByRole("button", { name: "Enable dev mode", exact: true });
     if (await enableDev.isVisible()) await enableDev.click();
+    await page.getByRole("button", { name: "Open Manage menu", exact: true }).click();
     await page.getByRole("button", { name: "Past game timeline", exact: true }).click();
     const shotDetails = page.getByRole("complementary", { name: "Selected event details" });
     await expect(

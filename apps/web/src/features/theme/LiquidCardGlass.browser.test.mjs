@@ -545,7 +545,7 @@ for (const [engine, launch] of [
           nomination: [0, 0, 0, 0],
           workspace: [0, 0, 0, 0],
           workspaceRadius: 20,
-          noir: false,
+
           background: [0.05, 0.05, 0.05],
           top: [0.07, 0.06, 0.04],
           theme: [0.76, 0.6, 0.34],

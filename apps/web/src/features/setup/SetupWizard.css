@@ -12,3 +12,241 @@
 .role-draw-screen .table-stage:has(.manual-role-menu) .table-advance {
   visibility: hidden;
 }
+
+/* Setup owns layout; canonical DOM order stays 1–10. */
+.player-setup-card .player-setup-heading {
+  display: grid;
+  gap: 8px;
+  align-items: start;
+}
+.player-setup-card .player-setup-controls {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  align-items: start;
+  column-gap: 24px;
+  min-height: 156px;
+}
+.player-setup-card .player-setup-controls .casper-toggle {
+  justify-content: start;
+  max-width: none;
+  min-height: 48px;
+}
+.setup-shell .player-setup-card .player-input-grid {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: repeat(5, auto);
+  grid-auto-flow: column;
+  gap: 12px;
+  margin: 16px 0;
+}
+.player-setup-card .setup-seat-card {
+  display: block;
+  min-width: 0;
+}
+.player-setup-card .setup-seat-content {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 48px;
+  align-items: center;
+  gap: 8px;
+  transition: none;
+}
+.player-setup-card .setup-seat-content > .player-combobox {
+  min-width: 0;
+}
+.player-setup-card .setup-seat-content > .player-combobox > label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+.player-setup-card .player-combobox-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 48px 36px;
+  align-items: center;
+}
+.player-setup-card .player-combobox-control > input[readonly] {
+  grid-column: 1 / -1;
+}
+.player-setup-card
+  .player-combobox-control:not(:has(.player-combobox-clear))
+  .player-combobox-opener {
+  grid-column: 1 / 3;
+}
+.player-setup-card .player-combobox-control .player-combobox-clear,
+.player-setup-card .player-combobox-control .player-combobox-chevron {
+  position: static;
+  grid-row: 1;
+  min-width: 0;
+  top: auto;
+  right: auto;
+  transform: none;
+}
+.player-setup-card .player-combobox-control .player-combobox-clear {
+  grid-column: 2;
+}
+.player-setup-card .player-combobox-control .player-combobox-chevron {
+  grid-column: 3;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  min-height: 48px;
+  padding: 0;
+  background: transparent;
+  border-color: transparent;
+  pointer-events: auto;
+}
+.player-setup-card .player-combobox-opener {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  grid-column: 1;
+  grid-row: 1;
+  padding: 0 4px 0 14px;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+}
+.player-setup-card .setup-seat-card .player-combobox-opener {
+  padding-left: 4px;
+  background: transparent;
+  border-color: transparent;
+  font-weight: 500;
+}
+.player-setup-card .player-combobox-opener.is-placeholder {
+  color: #c1b49f;
+}
+.player-setup-card .player-combobox.is-open {
+  z-index: 35;
+}
+.player-setup-card .setup-seat-card:has(.player-combobox.is-open) {
+  z-index: 36;
+}
+/* The stable seat is never translated: only its inert preview content moves. */
+.player-setup-card .setup-seat-card.is-dragging {
+  transform: none;
+  box-shadow: none;
+}
+.player-setup-card .setup-seat-card.is-dragging .setup-seat-content {
+  opacity: 0.2;
+}
+.player-setup-card:has(.is-dragging) .setup-seat-content {
+  pointer-events: none;
+  transition: transform 180ms ease;
+}
+.player-setup-card .setup-seat-card.is-drop-target {
+  z-index: 2;
+  border-width: 1px;
+  padding: 8px;
+}
+.setup-seat-drag-preview {
+  position: fixed;
+  z-index: 70;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 48px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--accent, #d5b878);
+  border-radius: 12px;
+  background: rgb(34 31 29 / 96%);
+  box-shadow: 0 14px 30px rgb(0 0 0 / 45%);
+  color: var(--text, #f5f2eb);
+  pointer-events: none;
+}
+.setup-seat-drag-preview > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.setup-seat-preview-grip {
+  text-align: center;
+  font-size: 24px;
+  color: var(--accent);
+}
+.player-setup-card .setup-seat-content[data-swap-preview]::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: -8px;
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  background: rgb(34 31 29 / 96%);
+}
+/* Native top layer escapes clipping while retaining the opener's DOM/tab order. */
+.setup-player-popup {
+  position: fixed;
+  inset: auto;
+  margin: 0;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid #75634d;
+  border-radius: 10px;
+  background: #24211f;
+  color: #f5f2eb;
+  box-shadow: 0 18px 45px rgb(0 0 0 / 55%);
+  isolation: isolate;
+}
+.setup-player-popup > input {
+  flex: 0 0 48px;
+  min-height: 48px;
+  min-width: 0;
+  width: 100%;
+  padding: 8px 12px;
+  color: #f5f2eb;
+  background: #181715;
+  border: 1px solid #75634d;
+}
+.setup-player-popup > input::placeholder {
+  color: #c1b49f;
+  opacity: 1;
+}
+.setup-player-popup .player-combobox-list {
+  position: static;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  width: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+  background: #24211f;
+}
+.setup-player-popup .player-combobox-list button {
+  min-height: 48px;
+  padding: 8px 12px;
+  text-align: left;
+  color: #f5f2eb;
+}
+@media (max-width: 699px) {
+  .setup-shell .player-setup-card .player-input-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+    grid-auto-flow: row;
+  }
+  .player-setup-card .player-setup-controls {
+    grid-template-columns: minmax(0, 1fr);
+    min-height: 0;
+    gap: 8px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .player-setup-card .setup-seat-content,
+  .player-setup-card:has(.is-dragging) .setup-seat-content {
+    transition: none;
+    transition-duration: 0s !important;
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .setup-seat-drag-preview {
+    background: #24211f;
+    box-shadow: none;
+  }
+}

@@ -17,6 +17,8 @@ export interface GlassSettings {
   readonly nominationIcon: "vote" | "flag";
   readonly supportIcon: "hand" | "thumbs-up";
   readonly selectionStyle: "check-outline" | "check";
+  readonly buttonFrosting: number;
+  readonly buttonGold: number;
 }
 
 export const DEFAULT_GLASS_SETTINGS: GlassSettings = Object.freeze({
@@ -36,6 +38,8 @@ export const DEFAULT_GLASS_SETTINGS: GlassSettings = Object.freeze({
   nominationIcon: "vote",
   supportIcon: "hand",
   selectionStyle: "check-outline",
+  buttonFrosting: 70,
+  buttonGold: 35,
 });
 
 const validNumber = (value: unknown, maximum: number, fallback: number): number =>
@@ -62,6 +66,8 @@ export const validateGlassSettings = (value: unknown): GlassSettings => {
     edgeHighlights: validNumber(record.edgeHighlights, 100, DEFAULT_GLASS_SETTINGS.edgeHighlights),
     caustics: validNumber(record.caustics, 100, DEFAULT_GLASS_SETTINGS.caustics),
     nominationTint: validNumber(record.nominationTint, 50, DEFAULT_GLASS_SETTINGS.nominationTint),
+    buttonFrosting: validNumber(record.buttonFrosting, 100, DEFAULT_GLASS_SETTINGS.buttonFrosting),
+    buttonGold: validNumber(record.buttonGold, 100, DEFAULT_GLASS_SETTINGS.buttonGold),
     nominationColor:
       typeof record.nominationColor === "string" &&
       /^#[\da-f]{6}$/i.test(record.nominationColor) &&

@@ -576,6 +576,67 @@ test("durable envelopes require an explicit current undo budget", () => {
   );
 });
 
+test("canonical comparison keeps long and legacy-zero budgets separate from empty undoHistory", () => {
+  const longEntries = Array.from({ length: 13 }, (_, index) => ({
+    id: `00000000-0000-4000-8000-${String(index + 100).padStart(12, "0")}`,
+    gameId: ids.game,
+    parentEventId:
+      index === 0 ? null : `00000000-0000-4000-8000-${String(index + 99).padStart(12, "0")}`,
+    sequence: index + 1,
+    type: index === 0 ? "game.started" : "turn.completed",
+  }));
+  for (const undoBudget of [12, 0]) {
+    const candidate = clone(session);
+    candidate.state.events = longEntries;
+    candidate.state.headEventId = longEntries.at(-1).id;
+    candidate.state.game = replay(baseline, longEntries).game;
+    candidate.state.undoHistory = [];
+    candidate.state.undoBudget = undoBudget;
+    const durable = clone(envelope);
+    durable.current.state = clone(candidate.state);
+    assert.doesNotThrow(() => assertEnvelopeMatchesSession(durable, candidate, replay));
+    const mismatch = clone(candidate);
+    mismatch.state.undoBudget = undoBudget === 0 ? 12 : 0;
+    assert.throws(() => assertEnvelopeMatchesSession(durable, mismatch, replay), /undo budget/i);
+  }
+});
+
+test("session persistence verifier guards unlimited Undo and the explicit Finish boundary", async () => {
+  const source = await readFile(new URL("./verify-session-state.mjs", import.meta.url), "utf8");
+  assert.match(source, /storedSession\.state\.undoHistory\.length !== 0/);
+  assert.match(
+    source,
+    /state\.undoBudget !== \(completed \? 0 : eligibleEntries\(expectedEntries\)\.length\)/,
+  );
+  assert.match(source, /replayPersistedLog\(state\.initialGame, expectedEntries\)\.game/);
+  assert.match(source, /isDeepStrictEqual\(envelope\.current\.state, authoritative\.state\)/);
+  for (const boundary of [
+    "server-saved-legacy-zero",
+    "legacy-zero-immediate-native-undo",
+    "acknowledged-mid-undo-reload",
+    "new-action-after-discard",
+    "new-branch-reload-no-resurrection",
+    "baseline-reload-undo-disabled",
+    "winner-still-undoable-before-finish",
+    "explicit-finish-pending-lock",
+    "explicit-finish-reload-lock",
+    "acknowledged-finish-reload-lock",
+  ])
+    assert.ok(source.includes(boundary), `Missing real-persistence boundary: ${boundary}`);
+  assert.match(source, /for \(let turn = 0; turn < 5;/);
+  assert.match(source, /for \(let index = 0; index < 11;/);
+  assert.match(
+    source,
+    /pending\.outbox\.some\(\(\{ mutationId \}\) => mutationId === responseLossProbe\.mutationId\)/,
+  );
+  assert.match(source, /assertRetainedState\(mutation\.state, retained/);
+  assert.match(source, /retriedMutationIds\.includes\(responseLossProbe\.mutationId\)/);
+  assert.match(source, /await route\.fetch\(\{ maxRedirects: 0 \}\)/);
+  assert.match(source, /await route\.abort\("failed"\)/);
+  assert.match(source, /const removalContext = await createContext\(\)/);
+  assert.match(source, /if \(\(await removedSave\)\.status\(\) !== 404\)/);
+});
+
 test("authoritative readbacks must satisfy the fresh reset postcondition", () => {
   const expected = {
     gameId: ids.game,
@@ -799,7 +860,9 @@ test("runtime verifiers enforce the shared contracts at their success boundaries
   );
   assert.match(sessionVerifier, /gameSessionStorageKeyForClub\(clubId\)/);
   assert.match(sessionVerifier, /assertBrowserGameEnvelopeOwner\(restoredEnvelope, clubId\)/);
-  assert.equal(sessionVerifier.match(/window\.localStorage\.getItem\(storageKey\)/g)?.length, 2);
+  assert.match(sessionVerifier, /const readEnvelope = async \(page\) =>/);
+  assert.match(sessionVerifier, /JSON\.parse\(window\.localStorage\.getItem\(key\) \?\? "null"\)/);
+  assert.match(sessionVerifier, /const remainingEnvelope = await removalPage\.evaluate/);
   assert.doesNotMatch(uiVerifier, /sessionStorage\.getItem\("mafia-dashboard\.game-session\.v4"\)/);
   assert.match(uiVerifier, /localStorage\.getItem\("mafia-dashboard\.game-session\.v5"\)/);
   assert.match(uiVerifier, /assertExactOrigin\(route\.request\(\)\.url\(\), expectedOrigin\)/);

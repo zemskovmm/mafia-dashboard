@@ -173,7 +173,6 @@ export const GlassScene = ({
         workspace: visibleRect(workspace),
         workspaceRadius:
           workspace === null ? 0 : parseFloat(getComputedStyle(workspace).borderTopLeftRadius),
-        noir: workspace?.matches(".availability-selection-card") ?? false,
         background: variable("--glass-bg", [0.047, 0.043, 0.04]),
         top: variable("--glass-top", [0.063, 0.055, 0.043]),
         theme: variable("--theme-base", [0.765, 0.604, 0.345]),

@@ -56,7 +56,7 @@ const players = Array.from({ length: 11 }, (_, index) => ({
 }));
 const labels = {
   en: {
-    setup: "Select 10 players + host",
+    setup: "Select players",
     select: "Select available players",
     assign: "Assign players",
     start: "Start game",
@@ -66,7 +66,7 @@ const labels = {
     casper: "Include Casper",
   },
   ru: {
-    setup: "Выберите 10 игроков и ведущего",
+    setup: "Выберите игроков",
     select: "Выбрать доступных игроков",
     assign: "Рассадить игроков",
     start: "Начать игру",
@@ -82,6 +82,7 @@ function fixture(page, language) {
   const errors = [];
   const writes = [];
   const sessions = new Map();
+  const tournaments = [];
   let revision = 0;
   const club = {
     id: uuid(101),
@@ -110,6 +111,7 @@ function fixture(page, language) {
     const state = clone(mutation.state);
     const session = {
       gameId: id,
+      tournamentId: sessions.get(id)?.tournamentId ?? mutation.tournamentId ?? null,
       name: mutation.name,
       revision,
       duplicate: false,
@@ -164,6 +166,31 @@ function fixture(page, language) {
           club.language = update.language;
           return json(route, { club });
         }
+        if (
+          pathname === "/api/tournaments" &&
+          !url.search &&
+          request.headers()["x-club-id"] === club.id
+        ) {
+          if (method === "GET") return json(route, { tournaments });
+          if (method === "POST") {
+            const payload = request.postDataJSON();
+            if (
+              Object.keys(payload).length !== 1 ||
+              typeof payload.name !== "string" ||
+              !payload.name.trim()
+            )
+              return fail(route);
+            const tournament = {
+              id: uuid(200 + tournaments.length),
+              clubId: club.id,
+              name: payload.name.trim(),
+              createdAt: "2026-10-17T00:00:00.000Z",
+              updatedAt: "2026-10-17T00:00:00.000Z",
+            };
+            tournaments.push(tournament);
+            return json(route, { tournament }, 201);
+          }
+        }
         if (method === "GET" && pathname === "/api/players" && !url.search)
           return json(route, { players });
         if (method === "GET" && pathname === "/api/music/oauth/status" && !url.search)
@@ -191,6 +218,27 @@ function fixture(page, language) {
           )
             return fail(route);
           return json(route, save(randomUUID(), mutation), 201);
+        }
+        const tournamentGame = pathname.match(
+          /^\/api\/game-sessions\/([0-9a-f-]{36})\/tournament$/i,
+        )?.[1];
+        if (
+          tournamentGame &&
+          method === "PUT" &&
+          !url.search &&
+          request.headers()["x-club-id"] === club.id
+        ) {
+          const payload = request.postDataJSON();
+          const session = sessions.get(tournamentGame);
+          if (
+            !session ||
+            Object.keys(payload).length !== 1 ||
+            (payload.tournamentId !== null &&
+              !tournaments.some(({ id }) => id === payload.tournamentId))
+          )
+            return fail(route);
+          sessions.set(tournamentGame, { ...session, tournamentId: payload.tournamentId });
+          return json(route, { tournamentId: payload.tournamentId });
         }
         const gameId = pathname.match(/^\/api\/game-sessions\/([0-9a-f-]{36})$/i)?.[1];
         if (gameId && !url.search) {
@@ -230,7 +278,8 @@ const seat = (page, n) => page.locator(`.setup-seat-card[data-setup-seat="${n}"]
 const handle = (page, n) => seat(page, n).locator(".setup-seat-drag-handle");
 const input = (page, n) => page.locator(`#seat-${n}-player`);
 const roster = async (page) =>
-  Promise.all(Array.from({ length: 10 }, (_, n) => input(page, n + 1).inputValue()));
+  Promise.all(Array.from({ length: 10 }, (_, n) => pickerValue(input(page, n + 1))));
+const pickerValue = (picker) => picker.evaluate((element) => element.value);
 const center = async (locator) => {
   const box = await locator.boundingBox();
   assert.ok(box && box.width > 0 && box.height > 0, "Missing drag target geometry");
@@ -275,9 +324,109 @@ async function enterSetup(page) {
   if (await clubCard.isVisible()) await clubCard.first().click();
   await page.locator(".players-shell, .player-setup-card").first().waitFor();
   if (await page.locator(".players-shell").isVisible()) {
-    await page.locator(".players-screen-header button").click();
+    await page.getByRole("button", { name: "Back to game", exact: true }).click();
   }
   await page.locator(".player-setup-card h1").waitFor();
+}
+
+async function assertSwapPreview(page, from, to, source, destination, bounds) {
+  const clone = page.locator(".setup-seat-drag-preview");
+  await expect(clone).toHaveCount(1);
+  await expect(clone).toHaveAttribute("aria-hidden", "true");
+  assert.equal(
+    await clone.locator("button, input, select, a, [tabindex]").count(),
+    0,
+    "Drag decoration is inert",
+  );
+  assert.equal(await clone.evaluate((el) => getComputedStyle(el).pointerEvents), "none");
+  await expect
+    .poll(
+      async () => {
+        const box = await clone.boundingBox();
+        return (
+          box !== null &&
+          Math.abs(box.x - (destination.x - source.x + bounds.x)) < 1 &&
+          Math.abs(box.y - (destination.y - source.y + bounds.y)) < 1
+        );
+      },
+      { message: "React must consume the final trusted pointer move before preview readback" },
+    )
+    .toBe(true);
+  const actual = await clone.boundingBox();
+  assert.ok(
+    Math.abs(actual.x - (destination.x - source.x + bounds.x)) < 1,
+    `Drag preserves horizontal grab offset: ${JSON.stringify({ actual, destination, source, bounds })}`,
+  );
+  assert.ok(
+    Math.abs(actual.y - (destination.y - source.y + bounds.y)) < 1,
+    "Drag follows pointer with vertical grab offset",
+  );
+  const stable = await seat(page, from).boundingBox();
+  same(
+    { x: stable.x, width: stable.width, height: stable.height },
+    { x: bounds.x, width: bounds.width, height: bounds.height },
+    "Source seat hit region changed size or column",
+  );
+  // Native edge scrolling may change viewport y; the canonical layout box must not translate.
+  assert.equal(
+    await seat(page, from).evaluate((el) => el.offsetTop),
+    bounds.localTop,
+    "Source seat layout row moved during preview",
+  );
+  assert.equal(
+    await seat(page, from).evaluate((el) => getComputedStyle(el).transform),
+    "none",
+    "Seat hit region itself was transformed",
+  );
+  if (to !== null && to !== from && !(await seat(page, to).locator("#casper-player").count())) {
+    await expect(seat(page, to).locator(".setup-seat-content")).toHaveAttribute(
+      "data-swap-preview",
+      "true",
+    );
+    const targetBounds = await seat(page, to).boundingBox();
+    const transform = await seat(page, to)
+      .locator(".setup-seat-content")
+      .evaluate((el) => el.style.transform);
+    assert.equal(
+      transform,
+      `translate(${stable.x - targetBounds.x}px, ${stable.y - targetBounds.y}px)`,
+      "Exact target preview must go to source, not shift intervening seats",
+    );
+  }
+}
+
+async function popupBrowse(page, language, tag) {
+  for (const n of [1, 3, 5, 6, 8, 10]) {
+    const opener = input(page, n);
+    await opener.scrollIntoViewIfNeeded();
+    await opener.click();
+    await expect(page.getByRole("listbox")).toHaveCount(1);
+    await expect(page.getByRole("searchbox")).not.toBeFocused();
+    await expect(page.getByRole("searchbox")).toHaveValue("");
+    const last = page.getByRole("option").last();
+    await last.scrollIntoViewIfNeeded();
+    const popup = await page.locator(".setup-player-popup").boundingBox();
+    const view = page.viewportSize();
+    assert.ok(
+      popup.x >= 0 &&
+        popup.y >= 0 &&
+        popup.x + popup.width <= view.width + 1 &&
+        popup.y + popup.height <= view.height + 1,
+      `${tag}: seat ${n} popup clipped by viewport`,
+    );
+    const point = await center(last);
+    assert.ok(
+      await last.evaluate((el, p) => el.contains(document.elementFromPoint(p.x, p.y)), point),
+      `${tag}: last option is covered`,
+    );
+    if ([3, 5, 8, 10].includes(n))
+      await page.screenshot({
+        path: path.join(evidence, `${tag}-popup-seat-${n}.png`),
+        fullPage: true,
+      });
+    await opener.click();
+    await expect(page.locator(".setup-player-popup")).toHaveCount(0);
+  }
 }
 
 async function dragMouse(page, from, to, final = "target", beforeRelease = async () => {}) {
@@ -292,10 +441,28 @@ async function dragMouse(page, from, to, final = "target", beforeRelease = async
         : { x: Math.max(1, (await page.viewportSize()).width - 3), y: 3 };
   onscreen(page, source, "Mouse drag source");
   onscreen(page, destination, "Mouse drag destination");
+  const bounds = await seat(page, from).boundingBox();
+  bounds.localTop = await seat(page, from).evaluate((el) => el.offsetTop);
+  const draggable = (await handle(page, from).getAttribute("aria-disabled")) !== "true";
   await page.mouse.move(source.x, source.y);
   await page.mouse.down();
   try {
     await page.mouse.move(destination.x, destination.y, { steps: 12 });
+    if (draggable) {
+      await assertSwapPreview(
+        page,
+        from,
+        final === "target" ? to : null,
+        source,
+        destination,
+        bounds,
+      );
+      if (final === "target" && to !== from)
+        await page.screenshot({
+          path: path.join(evidence, `${requestedCase ?? "mouse"}-preview-${from}-${to}.png`),
+          fullPage: true,
+        });
+    }
     await beforeRelease();
   } finally {
     await page.mouse.up();
@@ -309,6 +476,8 @@ async function touch(page, cdp, from, to, cancel = false, beforeRelease = async 
   const end = await center(seat(page, to));
   onscreen(page, start, "CDP touch source");
   onscreen(page, end, "CDP touch destination");
+  const bounds = await seat(page, from).boundingBox();
+  bounds.localTop = await seat(page, from).evaluate((el) => el.offsetTop);
   const point = (x, y) => [{ x, y, id: 1, radiusX: 1, radiusY: 1, force: 1 }];
   await cdp.send("Input.dispatchTouchEvent", {
     type: "touchStart",
@@ -320,6 +489,14 @@ async function touch(page, cdp, from, to, cancel = false, beforeRelease = async 
       const y = start.y + ((end.y - start.y) * step) / 8;
       await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: point(x, y) });
     }
+    await assertSwapPreview(page, from, to, start, end, bounds);
+    await page.screenshot({
+      path: path.join(
+        evidence,
+        `${requestedCase ?? "touch"}-preview-${from}-${to}-${cancel ? "cancel" : "commit"}.png`,
+      ),
+      fullPage: true,
+    });
     await beforeRelease();
   } finally {
     await cdp.send("Input.dispatchTouchEvent", {
@@ -350,10 +527,11 @@ async function geometry(page, label, language) {
         s.querySelector(".setup-seat-drag-handle").getAttribute("aria-label"),
       ),
       inputLabels: seats.map((s) =>
-        s.querySelector('input[role="combobox"]')?.getAttribute("aria-label"),
+        s.querySelector('button[role="combobox"]')?.getAttribute("aria-label"),
       ),
       viewport: { width: innerWidth, height: innerHeight },
       card: rect(card),
+      seatRects: seats.map(rect),
       handleRects: handles.map((s) => rect(s.querySelector(".setup-seat-drag-handle"))),
       actions: controls.map(rect),
       scroll: { client: card.clientHeight, content: card.scrollHeight },
@@ -383,6 +561,31 @@ async function geometry(page, label, language) {
       `${label}: picker ${n} label`,
     );
   }
+  const boxes = result.seatRects;
+  if (result.viewport.width >= 700) {
+    assert.ok(boxes[5].left > boxes[0].right, `${label}: second column must start at seat 6`);
+    for (let i = 0; i < 5; i += 1) {
+      assert.ok(Math.abs(boxes[i].left - boxes[0].left) < 1, `${label}: left column seat ${i + 1}`);
+      assert.ok(
+        Math.abs(boxes[i + 5].left - boxes[5].left) < 1,
+        `${label}: right column seat ${i + 6}`,
+      );
+      assert.ok(
+        Math.abs(boxes[i].width - boxes[i + 5].width) < 1,
+        `${label}: columns must have equal widths`,
+      );
+      assert.ok(Math.abs(boxes[i].top - boxes[i + 5].top) < 1, `${label}: paired column row ${i}`);
+      if (i > 0)
+        assert.ok(boxes[i].top > boxes[i - 1].top, `${label}: column-major vertical order`);
+    }
+  } else {
+    for (let i = 1; i < 10; i += 1) {
+      assert.ok(
+        Math.abs(boxes[i].left - boxes[0].left) < 1 && boxes[i].top > boxes[i - 1].top,
+        `${label}: narrow sequential seats`,
+      );
+    }
+  }
   for (const box of result.handleRects) {
     assert.ok(
       box.width >= 48 && box.height >= 48,
@@ -402,6 +605,16 @@ async function roleHeading(page, language, label) {
   const title = page.locator(".role-draw-heading h1");
   await expect(back).toHaveAccessibleName(labels[language].back);
   await expect(title).toHaveText(labels[language].role);
+  await page.evaluate(() => document.fonts.ready);
+  await expect
+    .poll(
+      async () => {
+        const box = await back.boundingBox();
+        return box !== null && box.width >= 48 && box.height >= 48;
+      },
+      { message: `${label}: native back target must settle at 48×48 or larger` },
+    )
+    .toBe(true);
   const b = await back.boundingBox();
   const h = await title.boundingBox();
   await expect(page.locator(".phase-banner, .setup-edition-label")).toHaveCount(0);
@@ -409,7 +622,7 @@ async function roleHeading(page, language, label) {
   const toolbar = await page.locator(".app-fixed-toolbar").boundingBox();
   assert.ok(
     b && h && progress && b.width >= 48 && b.height >= 48,
-    `${label}: back button size/heading/progress`,
+    `${label}: back button size/heading/progress: ${JSON.stringify({ b, h, progress })}`,
   );
   assert.ok(
     b.y + b.height <= h.y + 1 ||
@@ -986,7 +1199,7 @@ async function scenario(browser, browserName, viewport, language) {
     await page.getByRole("option", { name: "UI Player 11", exact: true }).click();
     await page.getByRole("button", { name: labels[language].assign }).click();
     await expect(page.locator(".setup-seat-card")).toHaveCount(10);
-    await expect(input(page, 1)).not.toHaveValue("");
+    await expect.poll(() => pickerValue(input(page, 1))).not.toBe("");
     const initial = await roster(page);
     assert.equal(new Set(initial).size, 10, `${tag}: duplicate seats`);
     assert.ok(!initial.includes("UI Player 11"), `${tag}: host assigned to seat`);
@@ -997,6 +1210,8 @@ async function scenario(browser, browserName, viewport, language) {
       .poll(() => state.latest()?.state.setup?.selectedPlayerIds.filter(Boolean).length)
       .toBe(10);
     const initialSnapshot = checkpoint(state);
+    await popupBrowse(page, language, tag);
+    unchanged(state, initialSnapshot, `${tag}: browse/dismiss preserved roster`);
     same(
       initialSnapshot.state.setup.selectedPlayerIds.map(
         (id) => players.find((p) => p.id === id)?.nickname,
@@ -1008,16 +1223,23 @@ async function scenario(browser, browserName, viewport, language) {
     // Native typing is provisional; custom Escape reset is retired. Blur still cancels.
     const picker = input(page, 1);
     const oldName = initial[0];
-    await picker.fill("UI Player 999");
-    await picker.press("Escape");
+    await picker.click();
+    await expect(picker).toHaveJSProperty("tagName", "BUTTON");
+    await expect(picker).toHaveAttribute("aria-expanded", "true");
+    const search = page.getByRole("searchbox");
+    await expect(search).not.toBeFocused();
+    await search.click();
+    await search.fill("UI Player 999");
+    await search.press("Escape");
     // Chromium clears type=search natively; WebKit may retain the query. Neither
     // engine should invoke the removed app-owned reset to the selected nickname.
-    await expect(picker).not.toHaveValue(oldName);
+    await expect(search).not.toHaveValue(oldName);
+    assert.equal(await pickerValue(picker), oldName, `${tag}: query changed committed name`);
     await expect(picker).toHaveAttribute("aria-expanded", "true");
     unchanged(state, initialSnapshot, `${tag}: retired picker Escape`);
-    await picker.fill("UI Player 999");
+    await search.fill("UI Player 999");
     await page.locator(".player-setup-card h1").click();
-    await expect(picker).toHaveValue(oldName);
+    await expect.poll(() => pickerValue(picker)).toBe(oldName);
     await picker.click();
     await picker.press("ArrowDown");
     assert.equal(
@@ -1030,7 +1252,8 @@ async function scenario(browser, browserName, viewport, language) {
     unchanged(state, initialSnapshot, `${tag}: cancelled/same picker`);
     await page.locator("#host-player").click();
     await expect(page.locator("#host-player-suggestions")).toBeVisible();
-    await dragMouse(page, 1, 1, "same", async () => {
+    // The host popup correctly obscures top-row handles; start on an uncovered seat.
+    await dragMouse(page, 4, 4, "same", async () => {
       await expect(page.getByRole("listbox")).toHaveCount(0);
     });
     unchanged(state, initialSnapshot, `${tag}: same-seat drop`);
@@ -1065,7 +1288,7 @@ async function scenario(browser, browserName, viewport, language) {
     // Partial-seat move: only the target empties before the drag; this is
     // checked separately from a full swap and never interprets a blank as swap.
     await seat(page, 3).locator(".player-combobox-clear").click();
-    await expect(input(page, 3)).toHaveValue("");
+    await expect.poll(() => pickerValue(input(page, 3))).toBe("");
     await expect
       .poll(() => state.latest()?.state.setup?.selectedPlayerIds[2], { timeout: 15000 })
       .toBe("");
@@ -1087,8 +1310,8 @@ async function scenario(browser, browserName, viewport, language) {
     // WebKit can leave the empty search field focused after the drop. Its
     // provisional query clears on native blur, independently of the saved move.
     await page.locator(".player-setup-card h1").click();
-    await expect(input(page, 3)).toHaveValue(first);
-    await expect(input(page, 1)).toHaveValue("");
+    await expect.poll(() => pickerValue(input(page, 3))).toBe(first);
+    await expect.poll(() => pickerValue(input(page, 1))).toBe("");
     const moved = snapshot(state);
     assert.equal(moved.gameId, beforeMove.gameId, `${tag}: empty move changed game ID`);
     assert.equal(
@@ -1128,12 +1351,15 @@ async function scenario(browser, browserName, viewport, language) {
     await expect(page.locator(".player-setup-card h1")).toHaveText(labels[language].setup);
     await expect.poll(() => state.latest()?.state.setup?.step).toBe("players");
     const beforeDealNoop = checkpoint(state);
-    const seatName = await input(page, 1).inputValue();
-    await input(page, 1).fill("UI Player 999");
-    await input(page, 1).press("Escape");
-    await expect(input(page, 1)).not.toHaveValue(seatName);
+    const seatName = await pickerValue(input(page, 1));
+    await input(page, 1).click();
+    await page.getByRole("searchbox").click();
+    await page.getByRole("searchbox").fill("UI Player 999");
+    await page.getByRole("searchbox").press("Escape");
+    await expect(page.getByRole("searchbox")).not.toHaveValue(seatName);
+    assert.equal(await pickerValue(input(page, 1)), seatName, `${tag}: dealt query changed name`);
     await page.locator(".player-setup-card h1").click();
-    await expect(input(page, 1)).toHaveValue(seatName);
+    await expect.poll(() => pickerValue(input(page, 1))).toBe(seatName);
     await dragMouse(page, 1, 1, "same");
     unchanged(state, beforeDealNoop, `${tag}: cancelled picker / no-op retained roles`);
     await page.getByRole("button", { name: labels[language].start }).click();
@@ -1250,6 +1476,146 @@ async function scenario(browser, browserName, viewport, language) {
   }
 }
 
+async function setupControlsScenario(browser, engine, mode, width = 1000) {
+  const tag = `setup-controls-${engine}-${mode}-${width}`;
+  if (requestedCase && requestedCase !== tag) return;
+  executedCases.push(tag);
+  const context = await browser.newContext({
+    viewport: { width, height: 900 },
+    hasTouch: true,
+    reducedMotion: mode === "reduced" ? "reduce" : "no-preference",
+  });
+  if (mode === "fallback")
+    await context.addInitScript(() => {
+      const getContext = HTMLCanvasElement.prototype.getContext;
+      HTMLCanvasElement.prototype.getContext = function (kind, ...args) {
+        return /webgl/.test(kind) ? null : getContext.call(this, kind, ...args);
+      };
+    });
+  const page = await context.newPage();
+  const state = fixture(page, "en");
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await state.routeReady;
+  try {
+    await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
+    await enterSetup(page);
+    await expect(page.locator(".tournament-picker--compact")).toHaveCount(1);
+    const header = page.locator(".player-setup-heading");
+    const host = page.locator("#host-player");
+    await page.evaluate(() => document.fonts.ready);
+    const hostLayout = () =>
+      host.evaluate((el) => {
+        const card = el.closest(".player-setup-card");
+        return {
+          top: el.getBoundingClientRect().top + card.scrollTop - card.getBoundingClientRect().top,
+          panelHeight: card.getBoundingClientRect().height,
+        };
+      });
+    const offHost = await hostLayout();
+    const casper = await header.locator(".casper-toggle").boundingBox();
+    const tournamentSwitch = await header.locator(".tournament-picker-toggle").boundingBox();
+    if (width >= 700)
+      assert.ok(
+        casper.x + casper.width <= tournamentSwitch.x &&
+          Math.abs(casper.y - tournamentSwitch.y) < 2,
+        `${tag}: tournament and Casper switches must be alongside`,
+      );
+    await page.locator(".tournament-picker-toggle").click();
+    await expect(page.getByRole("switch", { name: "Include in tournament" })).toBeChecked();
+    await expect(page.getByRole("combobox", { name: "Tournament", exact: true })).toBeVisible();
+    // Read rect and scroll atomically: native focus may scroll the internal card.
+    const onHost = await hostLayout();
+    if (width >= 700) {
+      assert.ok(
+        Math.abs(onHost.top - offHost.top) < 1,
+        `${tag}: tournament toggle must not move host within layout: ${JSON.stringify({ offHost, onHost })}`,
+      );
+      assert.equal(
+        onHost.panelHeight,
+        offHost.panelHeight,
+        `${tag}: tournament controls expanded outer panel`,
+      );
+    }
+    await page.getByRole("button", { name: "New tournament…", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "New tournament…", exact: true });
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toHaveJSProperty("tagName", "DIALOG");
+    await page.getByRole("textbox", { name: "Tournament name" }).fill("Cancelled fixture draft");
+    await page.getByRole("textbox", { name: "Tournament name" }).press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByRole("combobox", { name: "Tournament", exact: true })).toHaveValue("");
+    await page.getByRole("button", { name: "New tournament…", exact: true }).click();
+    await expect(page.getByRole("textbox", { name: "Tournament name" })).toHaveValue("");
+    await page
+      .getByRole("textbox", { name: "Tournament name" })
+      .fill("Owned local fixture tournament");
+    await page.getByRole("button", { name: "Create tournament", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByRole("combobox", { name: "Tournament", exact: true })).toHaveValue(
+      uuid(200),
+    );
+    await expect.poll(() => [...state.sessions.values()].at(-1)?.tournamentId).toBe(uuid(200));
+    await header.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(evidence, `${tag}-header.png`), fullPage: true });
+    // Return the fixture metadata to its ordinary non-tournament setup before checking the roster.
+    await page.locator(".tournament-picker-toggle").click();
+    await expect(page.getByRole("switch", { name: "Include in tournament" })).not.toBeChecked();
+    await expect.poll(() => [...state.sessions.values()].at(-1)?.tournamentId).toBe(null);
+    await page.getByRole("button", { name: labels.en.select }).click();
+    const choices = page.locator(".availability-player-card[data-availability-state='unselected']");
+    await expect(choices).toHaveCount(11);
+    for (let n = 0; n < 11; n += 1) await choices.first().click();
+    await page.locator(".availability-close-button").click();
+    await host.tap();
+    await expect(page.getByRole("searchbox")).not.toBeFocused();
+    await expect(page.getByRole("option")).toHaveCount(11);
+    await page.getByRole("searchbox").tap();
+    await page.getByRole("searchbox").pressSequentially("UI Player 11");
+    await expect(page.getByRole("option")).toHaveCount(1);
+    await page.getByRole("option").last().scrollIntoViewIfNeeded();
+    await page.getByRole("option", { name: "UI Player 11", exact: true }).tap();
+    await awaitSave(page, state);
+    // WebKit mouse activation blurs a searched input to null before option click.
+    // Exercise an empty seat with actual typing and a trusted mouse click, not just touch/browse.
+    await input(page, 1).click();
+    await page.getByRole("searchbox").click();
+    await page.getByRole("searchbox").pressSequentially("UI Player 1");
+    await page.getByRole("option", { name: "UI Player 1", exact: true }).click();
+    await expect.poll(() => pickerValue(input(page, 1))).toBe("UI Player 1");
+    await expect.poll(() => state.latest()?.state.setup?.selectedPlayerIds[0]).toBe(players[0].id);
+    await page.getByRole("button", { name: labels.en.assign }).click();
+    await geometry(page, tag, "en");
+    await popupBrowse(page, "en", tag);
+    if (width >= 700)
+      await dragMouse(page, 2, 7, "target", async () => {
+        if (mode === "reduced")
+          assert.equal(
+            await seat(page, 7)
+              .locator(".setup-seat-content")
+              .evaluate((el) => getComputedStyle(el).transitionDuration),
+            "0s",
+          );
+        await page.screenshot({
+          path: path.join(evidence, `${tag}-swap-preview.png`),
+          fullPage: true,
+        });
+      });
+    await header.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: path.join(evidence, `${tag}-populated.png`), fullPage: true });
+    state.ensureClean();
+    same(errors, [], `${tag}: browser exceptions`);
+    console.log(
+      `PASS ${tag}: native compact tournament create/cancel, stable header, real geometry, popup clipping and swap preview`,
+    );
+  } catch (error) {
+    await page.screenshot({ path: path.join(evidence, `${tag}-failure.png`), fullPage: true });
+    throw error;
+  } finally {
+    await context.close();
+  }
+}
+
 async function touchScenario(browser, language) {
   const tag = `chromium-touch-1000x600-${language}`;
   if (requestedCase && requestedCase !== tag) return;
@@ -1276,10 +1642,16 @@ async function touchScenario(browser, language) {
     await expect(choices).toHaveCount(11);
     for (let n = 0; n < 11; n += 1) await choices.first().click();
     await page.locator(".availability-close-button").click();
-    await page.locator("#host-player").click();
-    await page.getByRole("option", { name: "UI Player 11", exact: true }).click();
+    const host = page.locator("#host-player");
+    await host.tap();
+    await expect(host).toHaveJSProperty("tagName", "BUTTON");
+    await expect(page.getByRole("searchbox")).not.toBeFocused();
+    await page.getByRole("searchbox").tap();
+    await expect(page.getByRole("searchbox")).toBeFocused();
+    await page.getByRole("searchbox").fill("UI Player 11");
+    await page.getByRole("option", { name: "UI Player 11", exact: true }).tap();
     await page.getByRole("button", { name: labels[language].assign }).click();
-    await expect(input(page, 2)).not.toHaveValue("");
+    await expect.poll(() => pickerValue(input(page, 2))).not.toBe("");
     await awaitSave(page, state);
     await expect
       .poll(() => state.latest()?.state.setup?.selectedPlayerIds.filter(Boolean).length)
@@ -1324,7 +1696,7 @@ async function touchScenario(browser, language) {
     });
     const swapped = [...original];
     [swapped[0], swapped[1]] = [swapped[1], swapped[0]];
-    await expect(input(page, 1)).toHaveValue(swapped[0]);
+    await expect.poll(() => pickerValue(input(page, 1))).toBe(swapped[0]);
     same(await roster(page), swapped, `${tag}: CDP touch swap failed`);
     await expect
       .poll(() => state.latest()?.state.setup?.selectedPlayerIds.slice(0, 2))
@@ -1387,9 +1759,12 @@ try {
   const safari = await webkit.launch({ headless: true });
   try {
     for (const mode of ["enhanced", "fallback", "reduced"]) {
+      await setupControlsScenario(chrome, "chromium", mode);
+      await setupControlsScenario(safari, "webkit", mode);
       await rolePreviewScenario(chrome, "chromium", mode);
       await rolePreviewScenario(safari, "webkit", mode);
     }
+    await setupControlsScenario(chrome, "chromium", "enhanced", 650);
     for (const language of ["en", "ru"]) {
       for (const viewport of [
         { width: 1366, height: 768 },

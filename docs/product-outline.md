@@ -106,7 +106,7 @@ Primary hit targets are at least 48×48 CSS pixels. A destructive action require
 - A seat cannot draw twice; assigned roles and remaining counts are host-private.
 - Continue appears in the center only after all ten seats have one role.
 - Entering role giveaway from valid player/host selection requests the first durable setup snapshot before any role is drawn. The server generates the game GUID; a new game waits for that response, retaining the setup draft on failure. Reloads and offline update retries retain the same returned GUID, role deck, assignments, and pending save.
-- **Back to player selection** preserves the host and seat selection without revealing drawn roles. Returning with unchanged selections preserves partial role-draw progress; changing the host or any seat resets that progress. Back-navigation and re-entry retain the same game ID.
+- **Player setup** on the role-giveaway screen preserves the host and seat selection without revealing drawn roles; Manage does not duplicate this action. Returning with unchanged selections preserves partial role-draw progress; changing the host or any seat resets that progress. Back-navigation and re-entry retain the same game ID.
 - **Active games** lists all active games stored on the server for the selected club. Club admins/owners may open any game or delete it directly from this list. Multiple active games are allowed; starting another game does not delete a saved one. Deletion permanently removes the stored game without recording results, and is confirmed only after the server acknowledges it.
 - There is no session claim, takeover, heartbeat, or stale-writer protection. Concurrent clients may overwrite each other's snapshots. A removed GUID cannot be recreated by an update; an already-open client discovers removal on its next request.
 
@@ -286,7 +286,7 @@ Required durable event families include:
 - Mafia shots, Don/Sheriff checks, and secret results;
 - elimination and victory.
 
-Timer starts/stops/ticks and music playback/fades/navigation are auxiliary controls and are never durable log entries. Ordinary Undo permanently removes the latest undoable event and its tail. Timeline Reset permanently retains only the selected root-to-checkpoint prefix. Neither action creates a log event, and there is no Reset Return. At most the latest three ordinary actions may be undone, and Undo cannot cross an event that advances the day. Undo and Reset become unavailable immediately after the host clicks **Finish game**.
+Timer starts/stops/ticks and music playback/fades/navigation are auxiliary controls and are never durable log entries. Ordinary Undo permanently removes the latest undoable event and its tail. Timeline Reset permanently retains only the selected root-to-checkpoint prefix. Neither action creates a log event, and there is no Reset Return. Undo has no action quota and may cross day transitions through the retained history of the current unfinished game, including after reload or server resume. The initial/admitted checkpoint is the truthful lower boundary; missing or discarded history is not recreated, and legacy budget fields do not restrict retained eligible history. Undo displays no numerical allowance. Undo and Reset become unavailable immediately after the host clicks **Finish game**.
 
 ## 14. Phase model
 

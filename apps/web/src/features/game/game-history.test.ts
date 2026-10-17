@@ -3,6 +3,7 @@ import { advanceSetupPhase, createGame } from "@mafia/game-domain";
 import {
   createGameLogEntry,
   createInitialGameBaseline,
+  hashGameState,
   type CanonicalGameEventDraft,
   type GameLogEntry,
   type InitialGameBaseline,
@@ -95,6 +96,7 @@ describe("active game history", () => {
     ]) {
       const invalid = { ...entry, ...changes } as unknown as GameLogEntry;
       expect(() => getActiveBranch([invalid], invalid.id)).toThrow();
+      expect(() => getRemainingUndoBudget([invalid], invalid.id)).toThrow();
     }
   });
 
@@ -126,12 +128,16 @@ describe("active game history", () => {
     for (const outcome of ["adjudicated", "rules-draw"] as const) {
       const history = createFederationSampleGameHistory(outcome);
       const undoable = getUndoableEvents(history.activeEntries);
-      const expectedBudget = outcome === "adjudicated" ? 1 : 3;
-      expect(undoable).toHaveLength(expectedBudget);
+      const expectedCount = history.activeEntries.length - (outcome === "adjudicated" ? 2 : 1);
+      expect(expectedCount).toBeGreaterThan(3);
+      expect(undoable).toHaveLength(expectedCount);
+      expect(
+        undoable.some(({ type }) => type === "game.started" || type === "game.completed"),
+      ).toBe(false);
       expect(undoable.at(-1)?.type).toBe(
         outcome === "adjudicated" ? "game.adjudicated" : "phase.changed",
       );
-      expect(getRemainingUndoBudget(history.entries, history.headEventId)).toBe(expectedBudget);
+      expect(getRemainingUndoBudget(history.entries, history.headEventId)).toBe(expectedCount);
       const last = undoable.at(-1)!;
       expect(replayToEvent(history.baseline, history.entries, last.parentEventId!).phase).not.toBe(
         outcome === "adjudicated" ? "finished" : "draw",
@@ -164,40 +170,104 @@ describe("active game history", () => {
     expect(replayToEvent(baseline, all, right.entry.id)).toEqual(right.after);
   });
 
-  it("offers at most three undoable events after the latest new-day checkpoint", () => {
-    const { first, second, left } = fixture();
-    const syntheticDay: GameLogEntry = {
-      ...left.entry,
-      id: eventId(5),
-      sequence: 5,
-      parentEventId: left.entry.id,
-      dayBefore: 1,
-      dayAfter: 2,
-      phaseBefore: "night-resolution",
-      phaseAfter: "day",
-    };
-    const afterDay = {
-      ...first.entry,
-      id: eventId(6),
-      sequence: 6,
-      parentEventId: syntheticDay.id,
-    };
+  it("offers every retained action from an admitted checkpoint", () => {
+    const { baseline, root, first, second, left } = fixture();
+    const fourth = append(left.after, 5, left.entry.id, {
+      type: "foul.issued",
+      payload: { seat: 8, foulNumber: 1, redCarded: false },
+    });
+    const fifth = append(fourth.after, 6, fourth.entry.id, {
+      type: "turn.completed",
+      payload: { seat: 2 },
+    });
+    const accepted = [root, first, second, left, fourth, fifth];
+    const entries = accepted.map(({ entry }) => entry);
+    const original = JSON.stringify({ baseline, entries });
 
-    expect(getUndoableEvents([first.entry, second.entry, left.entry])).toHaveLength(3);
-    expect(
-      getUndoableEvents([first.entry, second.entry, left.entry, syntheticDay, afterDay]),
-    ).toEqual([afterDay]);
+    expect(getUndoableEvents(entries)).toEqual(entries.slice(1));
+    for (let length = entries.length; length > 1; length -= 1) {
+      const retained = entries.slice(0, length);
+      const oldest = getUndoableEvents(retained)[0]!;
+      const latest = getUndoableEvents(retained).at(-1)!;
+      expect(oldest.id).toBe(first.entry.id);
+      expect(latest.id).toBe(retained.at(-1)!.id);
+      expect(replayToEvent(baseline, retained, latest.parentEventId!)).toEqual(
+        accepted[length - 2]!.after,
+      );
+    }
+    expect(getUndoableEvents([root.entry])).toEqual([]);
+    expect(getUndoableEvents([])).toEqual([]);
+    expect(replayToEvent(baseline, entries, root.entry.id)).toEqual(baseline.game);
+    expect(baseline.game.phase).toBe("day");
+    expect(JSON.stringify({ baseline, entries })).toBe(original);
   });
 
-  it("does not replenish consumed undo capacity after reload", () => {
-    const { root, first, second, left, right } = fixture();
-    const all = [root.entry, first.entry, second.entry, left.entry, right.entry];
+  it("retains earlier actions across a canonical night-to-day transition", () => {
+    const history = createFederationSampleGameHistory("rules-draw");
+    const crossingIndex = history.frames.findIndex(
+      ({ before, after }) => before.day === 1 && after.day === 2,
+    );
+    expect(crossingIndex).toBeGreaterThan(0);
+    const crossing = history.frames[crossingIndex]!;
+    expect(crossing.before.phase).toBe("night-resolution");
+    expect(crossing.after.phase).toBe("day");
+    const entries = history.activeEntries.slice(0, crossingIndex + 2);
+    const original = JSON.stringify({ baseline: history.baseline, entries });
 
-    expect(getRemainingUndoBudget(all, right.entry.id)).toBe(3);
-    expect(getRemainingUndoBudget(all, left.entry.id)).toBe(2);
-    expect(getRemainingUndoBudget(all, second.entry.id)).toBe(1);
-    expect(getRemainingUndoBudget(all, first.entry.id)).toBe(0);
+    expect(getUndoableEvents(entries)).toEqual(entries.slice(1));
+    expect(getUndoableEvents(entries)).toContain(crossing.entry);
+    for (let length = entries.length; length > 1; length -= 1) {
+      const retained = entries.slice(0, length);
+      const latest = getUndoableEvents(retained).at(-1)!;
+      const restored = replayToEvent(history.baseline, retained, latest.parentEventId!);
+      expect(restored).toEqual(history.frames[length - 1]!.before);
+      expect(hashGameState(restored)).toBe(retained[length - 2]!.stateHashAfter);
+    }
+    expect(getUndoableEvents(entries.slice(0, 1))).toEqual([]);
+    expect(JSON.stringify({ baseline: history.baseline, entries })).toBe(original);
+  });
+
+  it("derives availability only from the active prefix, not discarded or sibling sequences", () => {
+    const { root, first, second, left, right } = fixture();
+    const distantSibling = append(right.after, 9_000, right.entry.id, {
+      type: "foul.issued",
+      payload: { seat: 8, foulNumber: 1, redCarded: false },
+    });
+    const all = [
+      distantSibling.entry,
+      right.entry,
+      left.entry,
+      second.entry,
+      first.entry,
+      root.entry,
+    ];
+    const original = JSON.stringify(all);
+
+    for (const [head, expectedCount] of [
+      [distantSibling.entry, 4],
+      [right.entry, 3],
+      [left.entry, 3],
+      [second.entry, 2],
+      [first.entry, 1],
+      [root.entry, 0],
+    ] as const) {
+      expect(getRemainingUndoBudget(all, head.id)).toBe(expectedCount);
+      expect(getRemainingUndoBudget(getActiveBranch(all, head.id), head.id)).toBe(expectedCount);
+      const reloaded = JSON.parse(JSON.stringify(all)) as GameLogEntry[];
+      expect(getRemainingUndoBudget(reloaded, head.id)).toBe(expectedCount);
+    }
     expect(getRemainingUndoBudget(all, null)).toBe(0);
+    expect(getRemainingUndoBudget([], null)).toBe(0);
+    expect(JSON.stringify(all)).toBe(original);
+  });
+
+  it("rejects replay hash corruption without repairing the retained history", () => {
+    const { baseline, root, first } = fixture();
+    const entries = [root.entry, { ...first.entry, stateHashAfter: `sha256:${"0".repeat(64)}` }];
+    const original = JSON.stringify({ baseline, entries });
+
+    expect(() => replayToEvent(baseline, entries, first.entry.id)).toThrow(/hash/i);
+    expect(JSON.stringify({ baseline, entries })).toBe(original);
   });
 
   it("fails closed for cycles and missing parents", () => {

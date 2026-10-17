@@ -206,6 +206,10 @@ textarea:read-write {
 input::placeholder {
   color: #62666d;
 }
+.app-shell :is(.player-combobox, .availability-search, .player-search) input::placeholder {
+  color: #c1b8a8;
+  opacity: 1;
+}
 h1,
 h2,
 p {
@@ -420,6 +424,8 @@ h2 {
   height: 100dvh;
   padding: max(14px, env(safe-area-inset-top)) max(14px, env(safe-area-inset-right))
     max(14px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
+  /* Leave the always-available Save/Rules toolbar above native console actions. */
+  padding-top: calc(max(16px, env(safe-area-inset-top)) + 62px);
   overflow: hidden;
   background: var(--bg);
 }
@@ -3127,15 +3133,23 @@ button.player-seat.is-voting-highlight::after,
   font-size: 0.78rem;
 }
 .manage-club-actions .language-selector {
-  grid-template-columns: minmax(0, 1fr) minmax(120px, 160px);
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
-  padding: 8px 10px;
+  gap: 0;
+  padding: 10px 0 0;
   border: 1px solid var(--border);
   border-radius: 10px;
 }
 .manage-club-actions .language-selector select {
-  height: 36px;
-  min-height: 36px;
+  width: 100%;
+  min-width: 0;
+  height: 48px;
+  min-height: 48px;
+  border: 0;
+  background: transparent;
+}
+.manage-club-actions .language-selector > span {
+  padding-inline: 14px;
 }
 .dev-disclosure {
   border: 1px solid var(--border);
@@ -3231,6 +3245,7 @@ button.player-seat.is-voting-highlight::after,
 .manage-music-setup {
   display: grid;
   gap: 12px;
+  margin-top: 12px;
   padding: 12px;
   background: rgb(255 255 255 / 3%);
   border: 1px solid var(--border);
@@ -3238,6 +3253,22 @@ button.player-seat.is-voting-highlight::after,
 }
 .manage-music-setup .account-playlist-picker {
   padding: 12px;
+}
+.music-account-name {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.music-account-disconnect {
+  display: grid;
+  flex: 0 0 48px;
+  width: 48px;
+  min-height: 48px;
+  place-items: center;
+}
+.music-account-disconnect svg {
+  width: 20px;
+  height: 20px;
 }
 .manage-music-setup button {
   width: auto;
@@ -5107,6 +5138,9 @@ html:-webkit-full-screen #root {
 .app-shell:has(.app-fixed-toolbar > :nth-child(8)) {
   --toolbar-count: 8;
 }
+.app-shell:has(.app-fixed-toolbar > :nth-child(9)) {
+  --toolbar-count: 9;
+}
 .app-fixed-toolbar {
   top: var(--layout-top);
   right: var(--layout-right);
@@ -5339,6 +5373,91 @@ html:-webkit-full-screen #root {
   }
 }
 
+/* Every directory owns a bounded native scroller, not the fixed document.
+   This also covers portrait sizes outside the landscape-only layout branches. */
+.app-shell.has-top-level-screen > .players-shell {
+  position: relative;
+  z-index: 1;
+  width: calc(100% - var(--layout-left) - var(--layout-right));
+  height: 100%;
+  min-height: 0;
+  margin: 0 var(--layout-left);
+  padding: var(--layout-content-top) 0 var(--layout-bottom);
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  touch-action: pan-x pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+.app-shell:has(> .players-shell) .app-status-bar {
+  position: fixed;
+}
+.app-status-bar > div:has(.players-back-action) {
+  position: relative;
+  padding-right: 136px;
+}
+.players-back-action {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 48px;
+  min-height: 48px;
+  padding-inline: 12px;
+  font-size: 0.8rem;
+}
+@media (min-width: 761px) and (max-width: 899px),
+  (min-width: 900px) and (max-width: 1159px) and (orientation: portrait),
+  (min-width: 1160px) and (max-height: 719px) {
+  .app-shell:has(> .setup-shell:is(.is-player-setup, .is-music-setup)) {
+    --setup-sidebar-width: clamp(260px, 32vw, 335px);
+  }
+  .has-top-level-screen > .setup-shell:is(.is-player-setup, .is-music-setup) {
+    width: calc(
+      100% - var(--layout-left) - var(--layout-right) - var(--layout-gutter) -
+        var(--setup-sidebar-width)
+    );
+    height: 100%;
+  }
+  .setup-shell.is-player-setup .player-setup-card,
+  .setup-shell.is-music-setup .music-step {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .app-shell:has(> .setup-shell:is(.is-player-setup, .is-music-setup))
+    > .live-side-panel:not([hidden]) {
+    position: fixed;
+    z-index: 1;
+    top: var(--layout-content-top);
+    right: var(--layout-right);
+    bottom: var(--layout-bottom);
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    width: var(--setup-sidebar-width);
+    min-height: 0;
+    padding: 0;
+    overflow: auto;
+    border-radius: 20px;
+    overscroll-behavior: contain;
+  }
+  .app-shell:has(> .setup-shell:is(.is-player-setup, .is-music-setup)) .live-side-panel > * {
+    flex: 0 0 auto;
+    width: 100%;
+    min-width: 0;
+  }
+  .app-shell:has(> .setup-shell:is(.is-player-setup, .is-music-setup))
+    .live-side-panel
+    .youtube-dock.is-compact {
+    position: static;
+    width: 100%;
+    margin-top: auto;
+    border: 0;
+    border-top: 1px solid var(--border);
+    border-radius: 0 0 20px 20px;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

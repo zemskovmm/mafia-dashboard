@@ -8,6 +8,7 @@ import { mkdtemp, readFile, mkdir, writeFile, rm } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import process from "node:process";
 import { verifySharedPlayerGlass } from "./GlassScene.shared-scenarios.mjs";
+import { verifyHostUi } from "./GlassScene.host-ui-scenarios.mjs";
 import {
   capturePlayerCardSources,
   verifyPlayerCards,
@@ -35,7 +36,7 @@ const evidence = resolve(
 );
 assert.ok(
   process.env.GLASS_SCENARIO === undefined ||
-    ["shared", "legacy", "player-cards"].includes(process.env.GLASS_SCENARIO),
+    ["shared", "legacy", "player-cards", "host-ui"].includes(process.env.GLASS_SCENARIO),
   "Unknown GLASS_SCENARIO",
 );
 assert.ok(
@@ -1362,6 +1363,11 @@ try {
         : {}),
     });
     try {
+      if (process.env.GLASS_SCENARIO === "host-ui") {
+        assert.ok(!followupPhase, "Select only one focused scenario");
+        await verifyHostUi({ browser, config, url, evidence, results });
+        continue;
+      }
       if (process.env.GLASS_SCENARIO === "player-cards") {
         assert.ok(!followupPhase, "Select only one focused scenario");
         await verifyPlayerCards({ browser, config, url, evidence, results });
@@ -1403,9 +1409,12 @@ try {
               document.querySelector("#host-player")?.value === "Host" &&
               document.querySelector("#seat-10-player")?.value === "Player 10",
           );
-        assert.equal(await setupPage.locator("#host-player").inputValue(), empty ? "" : "Host");
         assert.equal(
-          await setupPage.locator("#seat-10-player").inputValue(),
+          await setupPage.locator("#host-player").getAttribute("value"),
+          empty ? "" : "Host",
+        );
+        assert.equal(
+          await setupPage.locator("#seat-10-player").getAttribute("value"),
           empty ? "" : "Player 10",
         );
         const assertPanelAlignment = async (label, inset) => {
@@ -2030,7 +2039,11 @@ try {
       // exercises the existing shrink/fade transition for other-candidate voters.
       assert.ok((await voter.getAttribute("class")).includes("is-current"));
       await page.locator(".nomination-panel li").nth(1).locator("button").click();
-      await page.waitForTimeout(320);
+      await page.waitForFunction(() => {
+        const card = document.querySelector('.seat-anchor[data-seat="1"] > .player-seat');
+        const style = getComputedStyle(card);
+        return Number(style.opacity) === 0.55 && style.scale === "0.88";
+      });
       const voted = await voter.evaluate((el) => ({
         opacity: Number(getComputedStyle(el).opacity),
         scale: getComputedStyle(el).scale,
@@ -2245,16 +2258,41 @@ try {
       assert.equal(await page.evaluate(() => window.releasedGlass.isContextLost()), true);
       await setRange("Gold background light", 0);
       await page.waitForFunction(
-        () => getComputedStyle(document.querySelector(".app-shell"), "::before").opacity === "0",
+        () =>
+          Number(
+            getComputedStyle(document.querySelector(".app-shell")).getPropertyValue(
+              "--glass-gold-light",
+            ),
+          ) === 0,
       );
-      const fallbackZero = await shell.evaluate((el) => getComputedStyle(el, "::before").opacity);
+      const fallbackZero = await shell.evaluate(
+        (el) => getComputedStyle(el, "::before").backgroundImage,
+      );
       await setRange("Gold background light", 100);
       await page.waitForFunction(
-        () => getComputedStyle(document.querySelector(".app-shell"), "::before").opacity === "1",
+        () =>
+          Number(
+            getComputedStyle(document.querySelector(".app-shell")).getPropertyValue(
+              "--glass-gold-light",
+            ),
+          ) === 1,
       );
-      const fallbackFull = await shell.evaluate((el) => getComputedStyle(el, "::before").opacity);
-      assert.equal(fallbackZero, "0");
-      assert.equal(fallbackFull, "1");
+      await page.waitForFunction(
+        (before) =>
+          getComputedStyle(document.querySelector(".app-shell"), "::before").backgroundImage !==
+          before,
+        fallbackZero,
+      );
+      const fallbackFull = await shell.evaluate(
+        (el) => getComputedStyle(el, "::before").backgroundImage,
+      );
+      assert.notEqual(
+        fallbackZero,
+        fallbackFull,
+        "Gold tuning changes the continuous fallback scene",
+      );
+      assert.match(fallbackZero, /linear-gradient/, "The base scene remains when gold is zero");
+      assert.equal(await shell.evaluate((el) => getComputedStyle(el, "::before").opacity), "1");
       const washStack = await page.locator(".live-side-panel").evaluate((el) => ({
         isolation: getComputedStyle(el).isolation,
         wash: getComputedStyle(el, "::after").zIndex,

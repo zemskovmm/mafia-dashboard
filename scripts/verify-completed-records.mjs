@@ -160,7 +160,7 @@ export const verifyCompletedRecords = async ({
       path: resolve(evidenceDirectory, `partial-metrics-${text.locale}.png`),
     });
     await statisticsScreen.getByRole("button", { name: text.backToGame, exact: true }).click();
-    await page.locator(".dev-toolbar-button").click();
+    await page.locator(".manage-toolbar-button").click();
     await page.getByRole("button", { name: text.timeline, exact: true }).click();
     const selector = page.getByRole("combobox", { name: text.selector, exact: true });
     await selector.selectOption(saved[1].session.gameId);

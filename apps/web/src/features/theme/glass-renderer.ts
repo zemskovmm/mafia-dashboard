@@ -18,7 +18,7 @@ export interface GlassSceneGeometry {
   readonly nomination: SceneRect;
   readonly workspace: SceneRect;
   readonly workspaceRadius: number;
-  readonly noir: boolean;
+
   readonly background: readonly number[];
   readonly top: readonly number[];
   readonly theme: readonly number[];
@@ -46,7 +46,7 @@ uniform vec4 u_panel;
 uniform vec4 u_nomination;
 uniform vec4 u_workspace;
 uniform float u_workspaceRadius;
-uniform float u_noir;
+
 uniform vec4 u_clips[4];
 uniform vec4 u_clipRadii;
 uniform vec4 u_rect;
@@ -75,13 +75,14 @@ float sdRound(vec2 p,vec4 r,float radius){
 float spot(vec2 uv,vec2 center,float size){return exp(-dot(uv-center,uv-center)/(size*size));}
 vec3 scene(vec2 p){
  vec2 uv=p/u_view;
- vec3 col=mix(u_top,u_bg,smoothstep(0.0,.45,uv.y));
- // Broad wash is independently scaled. Table/status colors and edges are not.
- col+=u_theme*u_gold*(.28*spot(uv,vec2(.86,.42),.27)+.18*spot(uv,vec2(.5,-.2),.4)
- +.34*spot(uv,vec2(.74,.16),.20)+.18*spot(uv,vec2(.28,.72),.28));
- col+=vec3(.04,.12,.08)*spot(uv,vec2(.76,.82),.32);
- float stripe=1.0-smoothstep(.6,1.7,abs(mod(p.x*.78+p.y*.63,52.0)-26.0));
- col+=vec3(.02)*stripe;
+ // The decorative scene is anchored to the viewport, never a panel's bounds.
+ vec3 col=mix(u_top,u_bg,clamp(uv.x*.4+uv.y*.6,0.0,1.0));
+ col+=u_theme*u_gold*.25*exp(-dot(uv,uv)*2.3);
+ float t=mod(p.x*.829+p.y*.559+390.0,195.0);
+ float band=smoothstep(78.0,95.0,t)*(1.0-smoothstep(119.0,144.0,t));
+ float mask=mix(.08,.8,smoothstep(0.0,.38,uv.y))*(1.0-.60*smoothstep(.82,1.0,uv.y));
+ col+=vec3(.125,.120,.091)*band*mask;
+ col+=sin(p.x*1.73+p.y*2.31)*sin(p.y*1.17-p.x*.83)*.002;
  if(u_table.z>0.0){
   vec2 center=u_table.xy+u_table.zw*.5;
   float distance=length((p-center)/(u_table.zw*.5));
@@ -101,19 +102,7 @@ vec3 scene(vec2 p){
  if(u_nomination.z>0.0 && sdRound(p,u_nomination,14.0)<0.0)
   col=mix(col,vec3(.04,.04,.03)+u_theme*.08,.34);
  if(u_workspace.z>0.0 && sdRound(p,u_workspace,u_workspaceRadius)<0.0){
-  // This is the existing setup panel's fill, not a new background theme.
-  col=mix(col,vec3(15.0,16.0,17.0)/255.0,.84);
-  if(u_noir>.5){
-   vec2 local=p-u_workspace.xy;
-   vec2 uv=local/u_workspace.zw;
-   col=mix(vec3(.1255,.149,.1373),vec3(.0824,.102,.0941),clamp(uv.x*.4+uv.y*.6,0.0,1.0));
-   col+=u_theme*u_gold*.25*exp(-dot(uv,uv)*2.3);
-   float t=mod(local.x*.829+local.y*.559+390.0,195.0);
-   float band=smoothstep(78.0,95.0,t)*(1.0-smoothstep(119.0,144.0,t));
-   float mask=mix(.08,.8,smoothstep(0.0,.38,uv.y))*(1.0-.60*smoothstep(.82,1.0,uv.y));
-   col+=vec3(.125,.120,.091)*band*mask;
-   col+=sin(local.x*1.73+local.y*2.31)*sin(local.y*1.17-local.x*.83)*.002;
-  }
+  col=mix(col,vec3(15.0,16.0,17.0)/255.0,.48);
  }
  return col;
 }
@@ -243,7 +232,7 @@ export const createGlassRenderer = (canvas: HTMLCanvasElement): GlassRenderer =>
         rect("u_nomination", scene.nomination);
         rect("u_workspace", scene.workspace);
         scalar("u_workspaceRadius", scene.workspaceRadius);
-        scalar("u_noir", scene.noir ? 1 : 0);
+
         rgb("u_bg", scene.background);
         rgb("u_top", scene.top);
         rgb("u_theme", scene.theme);

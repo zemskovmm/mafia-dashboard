@@ -117,20 +117,18 @@ try {
       ? {
           openManageMenu: "Открыть меню управления",
           musicPlayerSetup: "Настройка музыкального плеера",
-          connectedAccount: /^Подключено: /,
           playlist: "Плейлист YouTube Music",
           playlistRequired: "Нужен плейлист",
         }
       : {
           openManageMenu: "Open Manage menu",
           musicPlayerSetup: "Music player setup",
-          connectedAccount: /^Connected as /,
           playlist: "YouTube Music playlist",
           playlistRequired: "Playlist required",
         };
   await page.getByRole("button", { name: labels.openManageMenu, exact: true }).click();
   await page.getByRole("button", { name: labels.musicPlayerSetup, exact: true }).click();
-  await page.getByText(labels.connectedAccount).waitFor();
+  await page.locator(".music-account-name").waitFor();
   const playlistSelector = page.getByLabel(labels.playlist);
   await playlistSelector.waitFor();
   if ((await playlistSelector.locator("option:not([value=''])").count()) !== playlists.length) {

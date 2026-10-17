@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import {
@@ -39,7 +40,6 @@ interface SetupWizardProps {
   readonly previewUndealtRoles?: boolean;
   readonly onPopulateDevelopmentPlayers?: () => Promise<readonly PlayerProfile[]>;
   readonly onOpenAvailablePlayers?: () => void;
-  readonly onRoleDrawBackActionChange?: (action: (() => void) | null) => void;
   /** Creation is in flight; role changes must not outrun the server GUID. */
   readonly persistencePending?: boolean;
   readonly playersLoading?: boolean;
@@ -124,6 +124,8 @@ interface PlayerComboboxProps {
   readonly players: readonly PlayerProfile[];
   readonly unavailablePlayerIds: readonly string[];
   readonly suggestionsHidden: boolean;
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
   readonly onChange: (playerId: string) => void;
 }
 
@@ -135,111 +137,196 @@ const PlayerCombobox = ({
   players,
   unavailablePlayerIds,
   suggestionsHidden,
+  open,
+  onOpenChange,
   onChange,
 }: PlayerComboboxProps) => {
   const { t } = useMessages(gameMessages);
+  const { t: setupT } = useMessages(setupMessages);
   const selectedPlayer = players.find((player) => player.id === value);
-  const [query, setQuery] = useState(selectedPlayer?.nickname ?? "");
-  const [open, setOpen] = useState(false);
-  // Native focus may stay in a picker while a captured handle drag crosses it.
-  // Suspend only its overlay so hit testing reaches the actual destination seat.
+  const [query, setQuery] = useState("");
+  const root = useRef<HTMLDivElement>(null);
+  const popup = useRef<HTMLDivElement>(null);
+  const popupPointer = useRef<number | null>(null);
+  const pointerReleaseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [position, setPosition] = useState<{
+    left: number;
+    top?: number;
+    bottom?: number;
+    width: number;
+    maxHeight: number;
+  }>({ left: 0, top: 0, width: 0, maxHeight: 280 });
   const suggestionsOpen = open && !suggestionsHidden;
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const unavailable = new Set(unavailablePlayerIds);
   const matchingPlayers = players.filter(
     (player) =>
       (player.id === value || !unavailable.has(player.id)) &&
-      (normalizedQuery.length === 0 ||
-        player.nickname.toLocaleLowerCase().includes(normalizedQuery)),
+      (!normalizedQuery || player.nickname.toLocaleLowerCase().includes(normalizedQuery)),
   );
   const listboxId = `${id}-suggestions`;
+  const contains = (target: EventTarget | null) =>
+    target instanceof Node && (root.current?.contains(target) || popup.current?.contains(target));
 
   useEffect(() => {
-    if (!open) setQuery(selectedPlayer?.nickname ?? "");
-  }, [open, selectedPlayer?.nickname]);
+    if (!suggestionsOpen) {
+      setQuery("");
+      return;
+    }
+    const reposition = () => {
+      const rect = root.current?.querySelector(".player-combobox-control")?.getBoundingClientRect();
+      if (!rect) return;
+      const margin = 8;
+      const ownerBounds = root.current?.closest(".player-setup-card")?.getBoundingClientRect();
+      const owner = ownerBounds && ownerBounds.width > 0 ? ownerBounds : undefined;
+      const leftLimit = Math.max(margin, (owner?.left ?? 0) + margin);
+      const rightLimit = Math.min(
+        window.innerWidth - margin,
+        (owner?.right ?? window.innerWidth) - margin,
+      );
+      const width = Math.min(Math.max(rect.width, 260), rightLimit - leftLimit);
+      const below = window.innerHeight - rect.bottom - margin;
+      const above = rect.top - margin;
+      const height = Math.min(320, Math.max(below, above));
+      const down = below >= Math.min(240, above);
+      setPosition({
+        left: Math.max(leftLimit, Math.min(rect.left, rightLimit - width)),
+        top: down ? rect.bottom + 4 : undefined,
+        bottom: down ? undefined : window.innerHeight - rect.top + 4,
+        width,
+        maxHeight: height - 4,
+      });
+    };
+    const dismiss = (event: PointerEvent) => {
+      if (!contains(event.target)) onOpenChange(false);
+    };
+    const finishPopupPointer = (event: PointerEvent) => {
+      if (popupPointer.current !== event.pointerId) return;
+      // Compatibility mouse activation follows pointerup. Keep the boundary alive
+      // for that native click, without preventing focus/blur or native scrolling.
+      pointerReleaseTimer.current = setTimeout(() => {
+        popupPointer.current = null;
+        pointerReleaseTimer.current = null;
+      }, 0);
+    };
+    // Native top-layer presentation escapes clipping without moving the popup
+    // out of the opener's DOM/tab order or moving focus into its search field.
+    popup.current?.showPopover?.();
+    reposition();
+    document.addEventListener("pointerdown", dismiss, true);
+    document.addEventListener("pointerup", finishPopupPointer, true);
+    document.addEventListener("pointercancel", finishPopupPointer, true);
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    return () => {
+      document.removeEventListener("pointerdown", dismiss, true);
+      document.removeEventListener("pointerup", finishPopupPointer, true);
+      document.removeEventListener("pointercancel", finishPopupPointer, true);
+      if (pointerReleaseTimer.current !== null) clearTimeout(pointerReleaseTimer.current);
+      pointerReleaseTimer.current = null;
+      popupPointer.current = null;
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+    };
+  }, [suggestionsOpen, onOpenChange]);
 
-  const choosePlayer = (player: PlayerProfile) => {
-    onChange(player.id);
-    setQuery(player.nickname);
-    setOpen(false);
+  const blur = (event: React.FocusEvent) => {
+    // WebKit mouse activation can blur search to null before the option click.
+    // Only an in-popup pointer gesture may suppress that ambiguous blur.
+    if (event.relatedTarget === null && popupPointer.current !== null) return;
+    if (!contains(event.relatedTarget)) onOpenChange(false);
   };
-
   return (
-    <div
-      className="player-combobox"
-      onBlur={(event) => {
-        if (event.currentTarget.contains(event.relatedTarget)) return;
-        setOpen(false);
-        setQuery(selectedPlayer?.nickname ?? "");
-      }}
-    >
+    <div ref={root} className={`player-combobox${suggestionsOpen ? " is-open" : ""}`} onBlur={blur}>
       <label htmlFor={id}>{label}</label>
       <div className="player-combobox-control">
-        <input
+        <button
           id={id}
-          type="search"
+          type="button"
           role="combobox"
+          className={`player-combobox-opener${selectedPlayer ? "" : " is-placeholder"}`}
           aria-label={`${label} ${t("setup.player")}`}
-          aria-autocomplete="list"
+          aria-haspopup="listbox"
           aria-controls={listboxId}
           aria-expanded={suggestionsOpen}
-          autoComplete="off"
-          value={query}
-          placeholder={placeholder}
-          onFocus={() => setOpen(true)}
-          onChange={(event) => {
-            setQuery(event.currentTarget.value);
-            setOpen(true);
-          }}
-        />
+          value={selectedPlayer?.nickname ?? ""}
+          onClick={() => onOpenChange(!suggestionsOpen)}
+        >
+          {selectedPlayer?.nickname ?? placeholder}
+        </button>
         {value === "" ? null : (
           <button
             type="button"
             className="player-combobox-clear"
             aria-label={t("setup.clear", { label })}
-            onPointerDown={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-            }}
             onClick={() => {
               onChange("");
-              setQuery("");
-              setOpen(false);
+              onOpenChange(false);
             }}
           >
             ×
           </button>
         )}
-        <span className="player-combobox-chevron" aria-hidden="true">
-          <svg viewBox="0 0 16 10">
+        <button
+          type="button"
+          className="player-combobox-chevron"
+          aria-label={setupT("setup.browsePlayers", { label })}
+          aria-expanded={suggestionsOpen}
+          aria-controls={listboxId}
+          onClick={() => onOpenChange(!suggestionsOpen)}
+        >
+          <svg aria-hidden="true" viewBox="0 0 16 10">
             <path d="m2 2 6 6 6-6" />
           </svg>
-        </span>
+        </button>
       </div>
       {suggestionsOpen ? (
         <div
-          id={listboxId}
-          className="player-combobox-list"
-          role="listbox"
-          aria-label={t("setup.suggestions", { label })}
+          ref={popup}
+          popover="manual"
+          className="setup-player-popup"
+          style={position}
+          onBlur={blur}
+          onPointerDownCapture={(event) => {
+            if (pointerReleaseTimer.current !== null) clearTimeout(pointerReleaseTimer.current);
+            pointerReleaseTimer.current = null;
+            popupPointer.current = event.pointerId;
+          }}
         >
-          {matchingPlayers.length === 0 ? (
-            <p>{t("setup.noMatchingPlayers")}</p>
-          ) : (
-            matchingPlayers.map((player) => (
-              <button
-                id={`${id}-option-${player.id}`}
-                key={player.id}
-                type="button"
-                role="option"
-                aria-selected={player.id === value}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => choosePlayer(player)}
-              >
-                {player.nickname}
-              </button>
-            ))
-          )}
+          <input
+            type="search"
+            aria-label={setupT("setup.searchPlayers", { label })}
+            placeholder={placeholder}
+            autoComplete="off"
+            value={query}
+            onChange={(event) => setQuery(event.currentTarget.value)}
+          />
+          <div
+            id={listboxId}
+            className="player-combobox-list"
+            role="listbox"
+            aria-label={t("setup.suggestions", { label })}
+          >
+            {matchingPlayers.length === 0 ? (
+              <p>{t("setup.noMatchingPlayers")}</p>
+            ) : (
+              matchingPlayers.map((player) => (
+                <button
+                  id={`${id}-option-${player.id}`}
+                  key={player.id}
+                  type="button"
+                  role="option"
+                  aria-selected={player.id === value}
+                  onClick={() => {
+                    onChange(player.id);
+                    onOpenChange(false);
+                  }}
+                >
+                  {player.nickname}
+                </button>
+              ))
+            )}
+          </div>
         </div>
       ) : null}
     </div>
@@ -258,7 +345,6 @@ export const SetupWizard = ({
   previewUndealtRoles = false,
   onPopulateDevelopmentPlayers,
   onOpenAvailablePlayers,
-  onRoleDrawBackActionChange,
   persistencePending = false,
   playersLoading = false,
   tournamentControl,
@@ -323,14 +409,29 @@ export const SetupWizard = ({
     const request = { id: ++roleDrawSequence.current, startedAt: performance.now(), previousRole };
     setRoleDrawRequests((current) => ({ ...current, [seat]: request }));
   };
+  const [openPicker, setOpenPicker] = useState<string | null>(null);
   const seatGridRef = useRef<HTMLDivElement>(null);
   const seatDragRef = useRef<{
     pointerId: number;
     source: number;
     selection: readonly string[];
     host: string;
+    roster: readonly PlayerProfile[];
+    offsetX: number;
+    offsetY: number;
+    width: number;
+    height: number;
   } | null>(null);
-  const [seatDrag, setSeatDrag] = useState<{ source: number; target: number | null } | null>(null);
+  const [seatDrag, setSeatDrag] = useState<{
+    source: number;
+    target: number | null;
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+    swapX: number;
+    swapY: number;
+  } | null>(null);
 
   const discardDeal = useCallback(() => {
     setSetup(null);
@@ -346,7 +447,17 @@ export const SetupWizard = ({
 
   useEffect(() => {
     cancelSeatDrag();
-  }, [selectedPlayerIds, hostPlayerId, step, playersLoading]);
+  }, [selectedPlayerIds, hostPlayerId, step, playersLoading, availablePlayers, persistencePending]);
+
+  useEffect(() => {
+    if (!seatDrag) return;
+    const extraPointer = (event: PointerEvent) => {
+      if (seatDragRef.current && event.pointerId !== seatDragRef.current.pointerId)
+        cancelSeatDrag();
+    };
+    document.addEventListener("pointerdown", extraPointer, true);
+    return () => document.removeEventListener("pointerdown", extraPointer, true);
+  }, [seatDrag !== null]);
 
   const seatAtPointer = (event: ReactPointerEvent<HTMLElement>) => {
     const card = document
@@ -368,18 +479,37 @@ export const SetupWizard = ({
       event.button !== 0 ||
       seatDragRef.current ||
       playersLoading ||
+      persistencePending ||
       !selectedPlayerIds[source] ||
       selectedPlayerIds[source] === CASPER_PLAYER_ID
     )
       return;
     event.preventDefault();
+    const bounds = event.currentTarget
+      .closest<HTMLElement>("[data-setup-seat]")!
+      .getBoundingClientRect();
+    setOpenPicker(null);
     seatDragRef.current = {
       pointerId: event.pointerId,
       source,
       selection: selectedPlayerIds,
       host: hostPlayerId,
+      roster: availablePlayers,
+      offsetX: event.clientX - bounds.left,
+      offsetY: event.clientY - bounds.top,
+      width: bounds.width,
+      height: bounds.height,
     };
-    setSeatDrag({ source, target: null });
+    setSeatDrag({
+      source,
+      target: null,
+      left: bounds.left,
+      top: bounds.top,
+      width: bounds.width,
+      height: bounds.height,
+      swapX: 0,
+      swapY: 0,
+    });
     event.currentTarget.setPointerCapture?.(event.pointerId);
   };
 
@@ -393,7 +523,25 @@ export const SetupWizard = ({
       else if (event.clientY > bounds.bottom - 40) scroller.scrollTop += 16;
     }
     const target = seatAtPointer(event);
-    setSeatDrag({ source: drag.source, target: target === drag.source ? null : target });
+    const sourceBounds = seatGridRef.current
+      ?.querySelector(`[data-setup-seat="${drag.source + 1}"]`)
+      ?.getBoundingClientRect();
+    const targetBounds =
+      target === null
+        ? null
+        : seatGridRef.current
+            ?.querySelector(`[data-setup-seat="${target + 1}"]`)
+            ?.getBoundingClientRect();
+    setSeatDrag({
+      source: drag.source,
+      target: target === drag.source ? null : target,
+      left: event.clientX - drag.offsetX,
+      top: event.clientY - drag.offsetY,
+      width: drag.width,
+      height: drag.height,
+      swapX: sourceBounds && targetBounds ? sourceBounds.left - targetBounds.left : 0,
+      swapY: sourceBounds && targetBounds ? sourceBounds.top - targetBounds.top : 0,
+    });
   };
 
   const finishSeatDrag = (event: ReactPointerEvent<HTMLElement>) => {
@@ -409,7 +557,9 @@ export const SetupWizard = ({
       target === drag.source ||
       drag.selection !== selectedPlayerIds ||
       drag.host !== hostPlayerId ||
+      drag.roster !== availablePlayers ||
       step !== "players" ||
+      persistencePending ||
       playersLoading
     )
       return;
@@ -635,15 +785,6 @@ export const SetupWizard = ({
     publishSessionState("players", setup);
   }, [publishSessionState, setup]);
 
-  useEffect(() => {
-    if (step !== "roles" || setup === null) {
-      onRoleDrawBackActionChange?.(null);
-      return;
-    }
-    onRoleDrawBackActionChange?.(returnToPlayerSelection);
-    return () => onRoleDrawBackActionChange?.(null);
-  }, [onRoleDrawBackActionChange, returnToPlayerSelection, setup, step]);
-
   if (step === "roles" && setup !== null) {
     const preview =
       previewUndealtRoles && setup.step !== "music" ? getRoleDrawPreview(setup) : undefined;
@@ -794,23 +935,25 @@ export const SetupWizard = ({
           <p className="eyebrow">{t("setup.gameSetup")}</p>
           <header className="player-setup-heading">
             <h1>{t("setup.selectPlayers")}</h1>
-            <label className="casper-toggle">
-              <span>{t("setup.includeCasper")}</span>
-              <input
-                type="checkbox"
-                role="switch"
-                checked={includeCasper}
-                onChange={(event) =>
-                  changeSeatPlayer(
-                    CASPER_SEAT - 1,
-                    event.currentTarget.checked ? CASPER_PLAYER_ID : "",
-                  )
-                }
-              />
-              <span className="casper-switch-track" aria-hidden="true" />
-            </label>
+            <div className="player-setup-controls">
+              <label className="casper-toggle">
+                <span>{t("setup.includeCasper")}</span>
+                <input
+                  type="checkbox"
+                  role="switch"
+                  checked={includeCasper}
+                  onChange={(event) =>
+                    changeSeatPlayer(
+                      CASPER_SEAT - 1,
+                      event.currentTarget.checked ? CASPER_PLAYER_ID : "",
+                    )
+                  }
+                />
+                <span className="casper-switch-track" aria-hidden="true" />
+              </label>
+              {tournamentControl}
+            </div>
           </header>
-          {tournamentControl}
           {selectablePlayers.length < humanSeatCount + 1 ? (
             <p className="player-guidance">
               {t("setup.playerGuidance", { count: humanSeatCount + 1 })}
@@ -856,6 +999,8 @@ export const SetupWizard = ({
             </div>
           ) : null}
           <PlayerCombobox
+            open={openPicker === "host"}
+            onOpenChange={(open) => setOpenPicker(open ? "host" : null)}
             id="host-player"
             label={t("setup.host")}
             placeholder={t("setup.searchHost")}
@@ -865,7 +1010,6 @@ export const SetupWizard = ({
             suggestionsHidden={seatDrag !== null}
             onChange={changeHostPlayer}
           />
-          <p className="setup-seat-hint">{t("setup.seatHint")}</p>
           <div className="player-input-grid" ref={seatGridRef}>
             {selectedPlayerIds.map((playerId, index) => (
               <div
@@ -875,65 +1019,111 @@ export const SetupWizard = ({
                 className={`setup-seat-card${seatDrag?.source === index ? " is-dragging" : ""}${seatDrag?.target === index ? " is-drop-target" : ""}`}
               >
                 <LiquidCardGlass />
-                <span className="setup-seat-number" aria-hidden="true">
-                  {index + 1}
-                </span>
-                {includeCasper && index === CASPER_SEAT - 1 ? (
-                  <div className="player-combobox">
-                    <label htmlFor="casper-player">{t("setup.seat", { seat: CASPER_SEAT })}</label>
-                    <input
-                      id="casper-player"
-                      aria-label={`${t("setup.seat", { seat: CASPER_SEAT })} ${t("setup.player")}`}
-                      value={CASPER_NAME}
-                      readOnly
-                    />
-                  </div>
-                ) : (
-                  <PlayerCombobox
-                    id={`seat-${index + 1}-player`}
-                    label={t("setup.seat", { seat: index + 1 })}
-                    placeholder={t("setup.searchNickname")}
-                    value={playerId}
-                    players={selectablePlayers}
-                    unavailablePlayerIds={[
-                      hostPlayerId,
-                      ...selectedPlayerIds.filter(
-                        (selectedId, selectedIndex) => selectedIndex !== index && selectedId !== "",
-                      ),
-                    ].filter(Boolean)}
-                    suggestionsHidden={seatDrag !== null}
-                    onChange={(nextPlayerId) => changeSeatPlayer(index, nextPlayerId)}
-                  />
-                )}
-                <span
-                  className="setup-seat-drag-handle"
-                  aria-label={t("setup.moveSeat", { seat: index + 1 })}
-                  aria-disabled={playersLoading || !playerId || playerId === CASPER_PLAYER_ID}
-                  onPointerDown={(event) => beginSeatDrag(event, index)}
-                  onPointerMove={moveSeatDrag}
-                  onPointerUp={finishSeatDrag}
-                  onPointerCancel={(event) => {
-                    if (event.pointerId === seatDragRef.current?.pointerId) cancelSeatDrag();
-                  }}
-                  onLostPointerCapture={(event) => {
-                    if (event.pointerId === seatDragRef.current?.pointerId) cancelSeatDrag();
+                <div
+                  className="setup-seat-content"
+                  data-swap-preview={seatDrag?.target === index || undefined}
+                  style={{
+                    transform:
+                      seatDrag?.target === index
+                        ? `translate(${seatDrag.swapX}px, ${seatDrag.swapY}px)`
+                        : undefined,
                   }}
                 >
-                  <svg aria-hidden="true" viewBox="0 0 24 24">
-                    <circle cx="8" cy="6" r="1.5" />
-                    <circle cx="16" cy="6" r="1.5" />
-                    <circle cx="8" cy="12" r="1.5" />
-                    <circle cx="16" cy="12" r="1.5" />
-                    <circle cx="8" cy="18" r="1.5" />
-                    <circle cx="16" cy="18" r="1.5" />
-                  </svg>
-                </span>
+                  <span className="setup-seat-number" aria-hidden="true">
+                    {index + 1}
+                  </span>
+                  {includeCasper && index === CASPER_SEAT - 1 ? (
+                    <div className="player-combobox">
+                      <label htmlFor="casper-player">
+                        {t("setup.seat", { seat: CASPER_SEAT })}
+                      </label>
+                      <input
+                        id="casper-player"
+                        aria-label={`${t("setup.seat", { seat: CASPER_SEAT })} ${t("setup.player")}`}
+                        value={CASPER_NAME}
+                        readOnly
+                      />
+                    </div>
+                  ) : (
+                    <PlayerCombobox
+                      open={openPicker === `seat-${index}`}
+                      onOpenChange={(open) => setOpenPicker(open ? `seat-${index}` : null)}
+                      id={`seat-${index + 1}-player`}
+                      label={t("setup.seat", { seat: index + 1 })}
+                      placeholder={t("setup.searchNickname")}
+                      value={playerId}
+                      players={selectablePlayers}
+                      unavailablePlayerIds={[
+                        hostPlayerId,
+                        ...selectedPlayerIds.filter(
+                          (selectedId, selectedIndex) =>
+                            selectedIndex !== index && selectedId !== "",
+                        ),
+                      ].filter(Boolean)}
+                      suggestionsHidden={seatDrag !== null}
+                      onChange={(nextPlayerId) => changeSeatPlayer(index, nextPlayerId)}
+                    />
+                  )}
+                  <span
+                    className="setup-seat-drag-handle"
+                    aria-label={t("setup.moveSeat", { seat: index + 1 })}
+                    aria-disabled={
+                      playersLoading ||
+                      persistencePending ||
+                      !playerId ||
+                      playerId === CASPER_PLAYER_ID
+                    }
+                    onPointerDown={(event) => beginSeatDrag(event, index)}
+                    onPointerMove={moveSeatDrag}
+                    onPointerUp={finishSeatDrag}
+                    onPointerCancel={(event) => {
+                      if (event.pointerId === seatDragRef.current?.pointerId) cancelSeatDrag();
+                    }}
+                    onLostPointerCapture={(event) => {
+                      if (event.pointerId === seatDragRef.current?.pointerId) cancelSeatDrag();
+                    }}
+                  >
+                    <svg aria-hidden="true" viewBox="0 0 24 24">
+                      <circle cx="8" cy="6" r="1.5" />
+                      <circle cx="16" cy="6" r="1.5" />
+                      <circle cx="8" cy="12" r="1.5" />
+                      <circle cx="16" cy="12" r="1.5" />
+                      <circle cx="8" cy="18" r="1.5" />
+                      <circle cx="16" cy="18" r="1.5" />
+                    </svg>
+                  </span>
+                </div>
                 {seatDrag?.target === index ? (
                   <span className="setup-seat-drop-label">{t("setup.dropToSwap")}</span>
                 ) : null}
               </div>
             ))}
           </div>
+          {seatDrag
+            ? createPortal(
+                <div
+                  className="setup-seat-drag-preview"
+                  aria-hidden="true"
+                  inert
+                  style={{
+                    left: seatDrag.left,
+                    top: seatDrag.top,
+                    width: seatDrag.width,
+                    height: seatDrag.height,
+                  }}
+                >
+                  <span className="setup-seat-number">{seatDrag.source + 1}</span>
+                  <span>
+                    {
+                      selectablePlayers.find(({ id }) => id === selectedPlayerIds[seatDrag.source])
+                        ?.nickname
+                    }
+                  </span>
+                  <span className="setup-seat-preview-grip">⠿</span>
+                </div>,
+                document.body,
+              )
+            : null}
           <div
             className="player-setup-actions"
             role="group"

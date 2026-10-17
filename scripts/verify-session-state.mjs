@@ -1,5 +1,7 @@
 /* global URL, document, fetch */
 import { randomUUID } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { CURRENT_REPLAY_VERSION, replayGameLog } from "@mafia/game-domain";
@@ -120,7 +122,20 @@ const playerNames = Array.from(
   { length: 11 },
   (_, index) => `Session ${runId} Player ${String(index + 1).padStart(2, "0")}`,
 );
-const screenshotPath = process.env.SESSION_SCREENSHOT ?? "/tmp/mafia-session-restored.png";
+const screenshotPath = process.env.SESSION_SCREENSHOT ?? ".AI/qa/session-state/restored.png";
+const undoEvidencePath = screenshotPath.replace(/\.png$/iu, "-unlimited-undo.json");
+const undoEvidence = { checkpoints: [], nativeUndoCount: 0, responseLoss: null };
+const eligibleEntries = (entries) =>
+  entries.filter(
+    ({ type }) => !["game.started", "game.checkpointed", "game.completed"].includes(type),
+  );
+// Persistence is JSON: optional undefined fields do not survive the wire. The
+// real replay still validates every canonical hash before this serialization.
+const replayPersistedLog = (baseline, entries) => {
+  const replayed = replayGameLog(baseline, entries);
+  return { ...replayed, game: JSON.parse(JSON.stringify(replayed.game)) };
+};
+let responseLossProbe = null;
 const browser = await chromium.launch({
   channel: "chrome",
   headless: true,
@@ -251,6 +266,31 @@ const createContext = async () => {
         createdSetupStates.set(createdGameId, request.postDataJSON().state);
         await route.fulfill({ response });
         return;
+      }
+      if (
+        classification.kind === "owned-session-mutation" &&
+        request.method() === "PUT" &&
+        classification.gameId === responseLossProbe?.gameId &&
+        responseLossProbe.hold
+      ) {
+        if (responseLossProbe.accepted === null) {
+          const response = await route.fetch({ maxRedirects: 0 });
+          if (!response.ok())
+            throw new Error(`Response-loss save failed: HTTP ${response.status()}`);
+          responseLossProbe.accepted = await response.json();
+          responseLossProbe.mutationId = request.postDataJSON().mutationId;
+        } else {
+          responseLossProbe.retryCount += 1;
+        }
+        await route.abort("failed");
+        return;
+      }
+      if (
+        classification.kind === "owned-session-mutation" &&
+        request.method() === "PUT" &&
+        classification.gameId === responseLossProbe?.gameId
+      ) {
+        responseLossProbe.retriedMutationIds.push(request.postDataJSON().mutationId);
       }
       await route.continue();
     } catch (error) {
@@ -568,6 +608,98 @@ try {
   }
   const [gameId] = createdGameIds;
   const gameName = (await waitForAuthoritativePhase(gameId, "day")).name;
+  const readEnvelope = async (page) =>
+    page.evaluate((key) => JSON.parse(window.localStorage.getItem(key) ?? "null"), storageKey);
+  const assertRetainedState = (state, expectedEntries, label, completed = false) => {
+    const head = expectedEntries.at(-1)?.id ?? null;
+    if (
+      !isDeepStrictEqual(state.events, expectedEntries) ||
+      state.headEventId !== head ||
+      state.resetReturnEventId !== null ||
+      !isDeepStrictEqual(state.undoHistory, []) ||
+      state.undoBudget !== (completed ? 0 : eligibleEntries(expectedEntries).length) ||
+      !isDeepStrictEqual(state.game, replayPersistedLog(state.initialGame, expectedEntries).game) ||
+      !isDeepStrictEqual(
+        state.log.slice(state.legacyLog.length).map(({ id }) => id),
+        expectedEntries.map(({ id }) => id),
+      )
+    ) {
+      throw new Error(`${label}: retained prefix/head/log/replay/derived Undo differs`);
+    }
+  };
+  const savedCheckpoint = async (page, label, expectedEntries, completed = false) => {
+    const deadline = Date.now() + 20_000;
+    let lastError;
+    while (Date.now() < deadline) {
+      try {
+        const envelope = await readEnvelope(page);
+        assertBrowserGameEnvelopeOwner(envelope, clubId);
+        if (envelope.outbox.length !== 0) throw new Error("Save is not acknowledged yet");
+        const authoritative = await readAuthoritativeSession(gameId);
+        assertEnvelopeMatchesSession(envelope, authoritative, replayPersistedLog);
+        assertRetainedState(envelope.current.state, expectedEntries, label, completed);
+        if (!isDeepStrictEqual(envelope.current.state, authoritative.state)) {
+          throw new Error("Full persisted canonical snapshot differs from the browser");
+        }
+        if ((authoritative.status === "completed") !== completed) {
+          throw new Error("Explicit Finish status differs from authoritative readback");
+        }
+        undoEvidence.checkpoints.push({ label, envelope, authoritative });
+        return authoritative;
+      } catch (error) {
+        lastError = error;
+        await delay(100);
+      }
+    }
+    throw new Error(`${label}: ${lastError?.message ?? "save timeout"}`, { cause: lastError });
+  };
+  const genuineAction = async (page, name, label) => {
+    const before = (await readEnvelope(page)).current.state;
+    const control = page.getByRole("button", { name, exact: true });
+    if ((await control.evaluate((element) => element.tagName)) !== "BUTTON") {
+      throw new Error(`${label}: the action is not a native button`);
+    }
+    await control.click();
+    await page.waitForFunction(
+      ({ key, head }) =>
+        JSON.parse(window.localStorage.getItem(key)).current.state.headEventId !== head,
+      { key: storageKey, head: before.headEventId },
+    );
+    const after = (await readEnvelope(page)).current.state;
+    if (
+      after.events.length !== before.events.length + 1 ||
+      !isDeepStrictEqual(after.events.slice(0, -1), before.events) ||
+      after.events.at(-1).parentEventId !== before.headEventId ||
+      eligibleEntries(after.events).length !== eligibleEntries(before.events).length + 1
+    ) {
+      throw new Error(`${label}: native action did not append exactly one genuine eligible event`);
+    }
+    return savedCheckpoint(page, label, after.events);
+  };
+  await savedCheckpoint(
+    firstPage,
+    "initial-day",
+    (await readEnvelope(firstPage)).current.state.events,
+  );
+  for (let turn = 0; turn < 9; turn += 1) {
+    await genuineAction(firstPage, "Next player", `zero-round-turn-${turn + 1}`);
+  }
+  for (const name of [
+    "Begin night",
+    "Evaluate Mafia shots",
+    "Continue night",
+    "Skip Don check",
+    "Skip Sheriff check",
+    "Announce morning",
+  ]) {
+    await genuineAction(firstPage, name, `next-day-${name}`);
+  }
+  const nextDay = (await readEnvelope(firstPage)).current.state.game;
+  if (nextDay.day !== 2 || nextDay.phase !== "day" || nextDay.currentTurnIndex !== 0) {
+    throw new Error(
+      "Unlimited Undo fixture did not cross a genuine ordinary night-to-day transition",
+    );
+  }
 
   const activeResponse = await apiContext.get(`${apiBaseUrl}/api/game-sessions`, {
     maxRedirects: 0,
@@ -608,7 +740,7 @@ try {
     activeEventId = event.parentEventId;
   }
   const activeEvents = storedEvents.filter(({ id }) => activeEventIds.has(id));
-  const replayed = replayGameLog(storedSession.state.initialGame, activeEvents);
+  const replayed = replayPersistedLog(storedSession.state.initialGame, activeEvents);
   if (
     storedSession.state.hostPlayerId !== players[10].id ||
     Object.hasOwn(storedSession.state, "hostName") ||
@@ -616,6 +748,8 @@ try {
     storedSession.state.game?.phase !== "day" ||
     storedSession.state.game?.currentTurnIndex !== 0 ||
     storedSession.state.undoHistory.length !== 0 ||
+    storedSession.state.undoBudget !== eligibleEntries(activeEvents).length ||
+    eligibleEntries(activeEvents).length <= 5 ||
     storedSession.state.initialGame?.replayVersion !== CURRENT_REPLAY_VERSION ||
     hasEngineMetadata(storedSession) ||
     activeEvents.length === 0 ||
@@ -630,7 +764,7 @@ try {
         playlistId: storedSession.state.playlistId,
         phase: storedSession.state.game?.phase,
         currentTurnIndex: storedSession.state.game?.currentTurnIndex,
-        undoCount: storedSession.state.undoHistory.length,
+        undoCount: storedSession.state.undoBudget,
         replayVersion: storedSession.state.initialGame?.replayVersion,
         eventTypes: activeEvents.map(({ type }) => type),
         replayMatches: isDeepStrictEqual(replayed.game, storedSession.state.game),
@@ -697,7 +831,7 @@ try {
   if (secondDeleteResponse.status() !== 204) {
     throw new Error(`Second-game UI delete failed: HTTP ${secondDeleteResponse.status()}`);
   }
-  await secondPage.getByRole("heading", { name: "Select 10 players + host" }).waitFor();
+  await secondPage.getByRole("heading", { name: "Select players", exact: true }).waitFor();
   const secondReadback = await apiContext.get(`/api/game-sessions/${secondId}`);
   if (secondReadback.status() !== 404) throw new Error("Deleted second game remains on the server");
   const lateSave = await apiContext.put(`/api/game-sessions/${secondId}`, {
@@ -739,7 +873,7 @@ try {
   if (acceptedEvent?.type !== "phase.changed" || acceptedEvent.parentEventId == null) {
     throw new Error("Reset probe has no accepted phase event with a parent");
   }
-  const resetGame = replayGameLog(
+  const resetGame = replayPersistedLog(
     storedSession.state.initialGame,
     activeEvents.filter(({ id }) => id !== acceptedEvent.id),
   ).game;
@@ -777,12 +911,22 @@ try {
   if (!resetResponse.ok()) {
     throw new Error(`Authoritative snapshot reset probe failed: HTTP ${resetResponse.status()}`);
   }
-  assertSessionPostcondition(await resetResponse.json(), resetPostcondition, replayGameLog);
+  assertSessionPostcondition(await resetResponse.json(), resetPostcondition, replayPersistedLog);
   const resetReadback = await readAuthoritativeSession(
     gameId,
     "Authoritative reset readback failed",
   );
-  assertSessionPostcondition(resetReadback, resetPostcondition, replayGameLog);
+  assertSessionPostcondition(resetReadback, resetPostcondition, replayPersistedLog);
+  if (
+    resetReadback.state.undoBudget !== 0 ||
+    eligibleEntries(resetReadback.state.events).length <= 5
+  ) {
+    throw new Error("Legacy-zero resume fixture was not durably saved with long eligible history");
+  }
+  undoEvidence.checkpoints.push({
+    label: "server-saved-legacy-zero",
+    authoritative: resetReadback,
+  });
   authoritativeSession = resetReadback;
   await firstContext.close();
 
@@ -797,16 +941,18 @@ try {
   await restartedPage.getByRole("button", { name: `Resume ${gameName}` }).click();
 
   const restoredPhaseAction = restartedPage.getByRole("button", {
-    name: "Begin round zero",
+    name: "Announce morning",
     exact: true,
   });
   await restoredPhaseAction.waitFor();
-  const restoredEnvelope = await restartedPage.evaluate((storageKey) => {
-    const raw = window.localStorage.getItem(storageKey);
-    return raw === null ? null : JSON.parse(raw);
-  }, storageKey);
+  authoritativeSession = await savedCheckpoint(
+    restartedPage,
+    "legacy-zero-server-resume",
+    resetEntries,
+  );
+  const restoredEnvelope = await readEnvelope(restartedPage);
   assertBrowserGameEnvelopeOwner(restoredEnvelope, clubId);
-  assertEnvelopeMatchesSession(restoredEnvelope, authoritativeSession, replayGameLog);
+  assertEnvelopeMatchesSession(restoredEnvelope, authoritativeSession, replayPersistedLog);
   if (
     JSON.stringify(restoredEnvelope.current.state) !== JSON.stringify(authoritativeSession.state)
   ) {
@@ -815,17 +961,318 @@ try {
   await restartedPage.locator(".club-curtain-opening").waitFor({ state: "detached" });
   await restartedPage.screenshot({ path: screenshotPath, fullPage: true });
 
+  // Preserve the original open-client deletion probe on a separately resumed stale tab.
+  const removalContext = await createContext();
+  const removalPage = await removalContext.newPage();
+  await removalPage.goto(targetUrl.href, { waitUntil: "networkidle" });
+  await removalPage
+    .getByRole("button", { name: `Open ${selectedClub.name} in ${selectedClub.city}`, exact: true })
+    .click();
+  await removalPage.getByRole("button", { name: "Open Manage menu" }).click();
+  await removalPage.getByRole("button", { name: `Resume ${gameName}`, exact: true }).click();
+  await removalPage.getByRole("button", { name: "Announce morning", exact: true }).waitFor();
+  await savedCheckpoint(removalPage, "independent-removal-client", resetEntries);
+
+  // Undo must work immediately after server resume, before a fresh action could
+  // accidentally replenish a legacy zero allowance.
+  const legacyLast = eligibleEntries(resetEntries).at(-1);
+  const legacyRetained = resetEntries.slice(
+    0,
+    resetEntries.findIndex(({ id }) => id === legacyLast.id),
+  );
+  const legacyUndo = restartedPage.getByRole("button", { name: "Undo last action", exact: true });
+  if (
+    !(await legacyUndo.isEnabled()) ||
+    (await legacyUndo.evaluate((element) => element.tagName)) !== "BUTTON" ||
+    (await legacyUndo.innerText()).trim() !== ""
+  ) {
+    throw new Error("Legacy-zero server resume did not enable native, badge-free Undo");
+  }
+  await legacyUndo.click();
+  undoEvidence.nativeUndoCount += 1;
+  await savedCheckpoint(restartedPage, "legacy-zero-immediate-native-undo", legacyRetained);
+  await genuineAction(restartedPage, "Skip Sheriff check", "legacy-zero-reapply-undone-action");
+  await genuineAction(restartedPage, "Announce morning", "legacy-zero-native-action");
+  for (let turn = 0; turn < 5; turn += 1) {
+    await genuineAction(restartedPage, "Next player", `day-two-turn-${turn + 1}`);
+  }
+  let retained = (await readEnvelope(restartedPage)).current.state.events;
+  const discardedIds = new Set([legacyLast.id]);
+  const undo = async (label, loseResponse = false) => {
+    const eligible = eligibleEntries(retained).at(-1);
+    if (eligible === undefined) throw new Error(`${label}: expected an eligible action`);
+    const next = retained.slice(
+      0,
+      retained.findIndex(({ id }) => id === eligible.id),
+    );
+    for (const { id } of retained.slice(next.length)) discardedIds.add(id);
+    const control = restartedPage.getByRole("button", { name: "Undo last action", exact: true });
+    if (
+      !(await control.isEnabled()) ||
+      (await control.evaluate((element) => element.tagName)) !== "BUTTON" ||
+      (await control.innerText()).trim() !== ""
+    ) {
+      throw new Error(`${label}: Undo is not enabled/native/badge-free`);
+    }
+    if (loseResponse) {
+      responseLossProbe = {
+        gameId,
+        hold: true,
+        accepted: null,
+        mutationId: null,
+        retryCount: 0,
+        retriedMutationIds: [],
+      };
+    }
+    await control.click();
+    undoEvidence.nativeUndoCount += 1;
+    retained = next;
+    if (loseResponse) {
+      const deadline = Date.now() + 20_000;
+      while (responseLossProbe.accepted === null && Date.now() < deadline) await delay(50);
+      if (responseLossProbe.accepted === null)
+        throw new Error("Response-loss save never reached the real API");
+      const persisted = await readAuthoritativeSession(gameId);
+      assertRetainedState(persisted.state, retained, `${label}-accepted-before-response-loss`);
+      if (!isDeepStrictEqual(persisted, responseLossProbe.accepted)) {
+        throw new Error("Lost-response mutation differs from authoritative persistence");
+      }
+      await restartedPage.reload({ waitUntil: "networkidle" });
+      await restartedPage.getByRole("button", { name: "Undo last action", exact: true }).waitFor();
+      const pending = await readEnvelope(restartedPage);
+      assertRetainedState(pending.current.state, retained, `${label}-queued-reload`);
+      if (
+        pending.outbox.length === 0 ||
+        !pending.outbox.some(({ mutationId }) => mutationId === responseLossProbe.mutationId)
+      ) {
+        throw new Error(
+          "Response-loss reload dropped the queued mutation or its idempotency identity",
+        );
+      }
+      for (const mutation of pending.outbox) {
+        assertRetainedState(mutation.state, retained, `${label}-queued-mutation`);
+      }
+      undoEvidence.responseLoss = { pending, persisted, mutationId: responseLossProbe.mutationId };
+      responseLossProbe.hold = false;
+      await restartedPage.locator(".save-indicator").click();
+      const retried = await savedCheckpoint(restartedPage, label, retained);
+      if (
+        !responseLossProbe.retriedMutationIds.includes(responseLossProbe.mutationId) ||
+        !isDeepStrictEqual(retried.state, persisted.state) ||
+        !isDeepStrictEqual(retried.results, persisted.results)
+      ) {
+        throw new Error("Response-loss retry changed the Undo snapshot or its mutation identity");
+      }
+      // The store versions each accepted full-snapshot save, including retries;
+      // logical idempotence is exact prefix/head/state equality, not revision reuse.
+      undoEvidence.responseLoss.retriedRevision = retried.revision;
+      undoEvidence.responseLoss.retriedMutationIds = responseLossProbe.retriedMutationIds;
+      responseLossProbe = null;
+    } else {
+      await savedCheckpoint(restartedPage, label, retained);
+    }
+  };
+  for (let index = 0; index < 11; index += 1) {
+    await undo(`native-undo-${index + 1}`, index === 1);
+    if (index === 3) {
+      await restartedPage.reload({ waitUntil: "networkidle" });
+      await restartedPage.getByRole("button", { name: "Undo last action", exact: true }).waitFor();
+      await savedCheckpoint(restartedPage, "acknowledged-mid-undo-reload", retained);
+    }
+  }
+  if ((await readEnvelope(restartedPage)).current.state.game.day !== 1) {
+    throw new Error("Native Undo did not return through the ordinary night into the earlier day");
+  }
+  const branchParent = retained.at(-1).id;
+  const branch = await genuineAction(restartedPage, "Begin night", "new-action-after-discard");
+  if (
+    branch.state.events.at(-1).parentEventId !== branchParent ||
+    branch.state.events.some(({ id }) => discardedIds.has(id)) ||
+    branch.state.log.some(({ id }) => discardedIds.has(id))
+  ) {
+    throw new Error("A new native action resurrected the discarded suffix");
+  }
+  retained = branch.state.events;
+  await restartedPage.reload({ waitUntil: "networkidle" });
+  await restartedPage.getByRole("button", { name: "Undo last action", exact: true }).waitFor();
+  await savedCheckpoint(restartedPage, "new-branch-reload-no-resurrection", retained);
+
+  while (eligibleEntries(retained).length > 0) await undo("oldest-retained-action");
+  if (
+    await restartedPage.getByRole("button", { name: "Undo last action", exact: true }).isEnabled()
+  ) {
+    throw new Error("The initialization-only baseline still permits Undo");
+  }
+  await restartedPage.reload({ waitUntil: "networkidle" });
+  await restartedPage.getByRole("button", { name: "Mafia asleep", exact: true }).waitFor();
+  await savedCheckpoint(restartedPage, "baseline-reload-undo-disabled", retained);
+  if (
+    await restartedPage.getByRole("button", { name: "Undo last action", exact: true }).isEnabled()
+  ) {
+    throw new Error("Reload re-enabled Undo at the initialization-only baseline");
+  }
+  await genuineAction(restartedPage, "Mafia asleep", "finish-fixture-sheriff");
+  await genuineAction(restartedPage, "Begin round zero", "finish-fixture-day");
+  const outcomeBefore = (await readEnvelope(restartedPage)).current.state.events;
+  const awardVictory = async (label) => {
+    const card = restartedPage.getByRole("button", { name: /^Nominate / }).first();
+    await card.scrollIntoViewIfNeeded();
+    const box = await card.boundingBox();
+    if (box === null) throw new Error("No native player card for the discipline gesture");
+    const x = box.x + box.width / 2;
+    const y = box.y + box.height / 2;
+    await restartedPage.mouse.move(x, y);
+    await restartedPage.mouse.down();
+    await restartedPage.mouse.move(x, y - 72, { steps: 12 });
+    await restartedPage.mouse.up();
+    const dialog = restartedPage.getByRole("dialog");
+    undoEvidence.outcomeGesture = {
+      box,
+      hit: await restartedPage.evaluate(
+        ({ x, y }) => {
+          const element = document.elementFromPoint(x, y);
+          return {
+            tag: element?.tagName,
+            label: element?.closest("button")?.getAttribute("aria-label"),
+            text: element?.textContent,
+          };
+        },
+        { x, y },
+      ),
+      dialogs: await restartedPage
+        .locator("dialog")
+        .evaluateAll((dialogs) =>
+          dialogs.map((dialog) => ({ open: dialog.open, text: dialog.innerText })),
+        ),
+    };
+    await restartedPage.screenshot({
+      path: screenshotPath.replace(/\.png$/iu, "-outcome-gesture.png"),
+      fullPage: true,
+    });
+    await dialog
+      .getByRole("combobox", { name: /^Discipline action/ })
+      .selectOption("opponent-victory");
+    await dialog
+      .getByLabel("Judge's reason", { exact: true })
+      .fill("Synthetic local unlimited Undo qualification");
+    await genuineAction(restartedPage, "Award victory to opposing team", label);
+  };
+  await awardVictory("winner-before-explicit-finish");
+  if (
+    (await readEnvelope(restartedPage)).current.results !== null ||
+    !(await restartedPage
+      .getByRole("button", { name: "Undo last action", exact: true })
+      .isEnabled())
+  ) {
+    throw new Error("Reaching a winner incorrectly locked Undo before Finish");
+  }
+  retained = (await readEnvelope(restartedPage)).current.state.events;
+  await undo("winner-still-undoable-before-finish");
+  if (!isDeepStrictEqual(retained, outcomeBefore))
+    throw new Error("Outcome Undo did not retain its exact prefix");
+  await awardVictory("winner-reentered-before-finish");
+  responseLossProbe = {
+    gameId,
+    hold: true,
+    accepted: null,
+    mutationId: null,
+    retryCount: 0,
+    retriedMutationIds: [],
+  };
+  await restartedPage.getByRole("button", { name: "Finish the game", exact: true }).click();
+  await restartedPage.waitForFunction(
+    (key) => JSON.parse(window.localStorage.getItem(key)).current.results !== null,
+    storageKey,
+  );
+  const finishedEntries = (await readEnvelope(restartedPage)).current.state.events;
+  const finishDeadline = Date.now() + 20_000;
+  while (responseLossProbe.accepted === null && Date.now() < finishDeadline) await delay(50);
+  if (responseLossProbe.accepted === null) throw new Error("Finish never reached the real API");
+  const finishedSession = await readAuthoritativeSession(gameId);
+  const assertPendingFinish = async (label) => {
+    const envelope = await readEnvelope(restartedPage);
+    assertBrowserGameEnvelopeOwner(envelope, clubId);
+    assertRetainedState(envelope.current.state, finishedEntries, label, true);
+    assertRetainedState(finishedSession.state, finishedEntries, label, true);
+    if (
+      !isDeepStrictEqual(envelope.current.state, finishedSession.state) ||
+      !isDeepStrictEqual(envelope.current.results, finishedSession.results) ||
+      finishedSession.status !== "completed" ||
+      envelope.current.results === null ||
+      envelope.outbox.length !== 1 ||
+      envelope.outbox[0].mutationId !== responseLossProbe.mutationId ||
+      finishedEntries.filter(({ type }) => type === "game.completed").length !== 1
+    ) {
+      throw new Error(
+        `${label}: Finish changed its retained snapshot, result, or pending identity`,
+      );
+    }
+    undoEvidence.checkpoints.push({ label, envelope, authoritative: finishedSession });
+  };
+  await assertPendingFinish("explicit-finish-pending-lock");
+  if (
+    await restartedPage.getByRole("button", { name: "Undo last action", exact: true }).isEnabled()
+  ) {
+    throw new Error("Explicit Finish left Undo enabled");
+  }
+  await restartedPage.reload({ waitUntil: "networkidle" });
+  await restartedPage.getByRole("button", { name: "Undo last action", exact: true }).waitFor();
+  await assertPendingFinish("explicit-finish-reload-lock");
+  if (
+    await restartedPage.getByRole("button", { name: "Undo last action", exact: true }).isEnabled()
+  ) {
+    throw new Error("Reload unlocked an explicitly finished game");
+  }
+  responseLossProbe.hold = false;
+  await restartedPage.locator(".save-indicator").click();
+  await restartedPage.getByRole("heading", { name: "Select players", exact: true }).waitFor();
+  if ((await readEnvelope(restartedPage)) !== null) {
+    throw new Error("Acknowledged Finish did not clear its durable current-game envelope");
+  }
+  const completed = await readAuthoritativeSession(gameId);
+  assertRetainedState(completed.state, finishedEntries, "acknowledged-finish", true);
+  if (
+    completed.status !== "completed" ||
+    !isDeepStrictEqual(completed.state, finishedSession.state) ||
+    !isDeepStrictEqual(completed.results, finishedSession.results) ||
+    !responseLossProbe.retriedMutationIds.includes(responseLossProbe.mutationId)
+  ) {
+    throw new Error("Acknowledged Finish retry changed the completed record or mutation identity");
+  }
+  undoEvidence.checkpoints.push({ label: "acknowledged-finish", authoritative: completed });
+  responseLossProbe = null;
+  await restartedPage.reload({ waitUntil: "networkidle" });
+  await restartedPage
+    .getByRole("button", { name: `Open ${selectedClub.name} in ${selectedClub.city}`, exact: true })
+    .click();
+  await restartedPage.getByRole("heading", { name: "Select players", exact: true }).waitFor();
+  if (
+    (await readEnvelope(restartedPage)) !== null ||
+    (await restartedPage
+      .getByRole("button", { name: "Undo last action", exact: true })
+      .isEnabled()) ||
+    !isDeepStrictEqual(await readAuthoritativeSession(gameId), completed)
+  ) {
+    throw new Error(
+      "Reload after Finish restored mutable history or changed the completed server record",
+    );
+  }
+  undoEvidence.checkpoints.push({
+    label: "acknowledged-finish-reload-lock",
+    authoritative: completed,
+  });
+
   const directDelete = await apiContext.delete(`/api/game-sessions/${gameId}`);
   if (directDelete.status() !== 204) throw new Error("Direct server-side delete failed");
-  const removedSave = restartedPage.waitForResponse(
+  const removedSave = removalPage.waitForResponse(
     (response) =>
       response.request().method() === "PUT" &&
       new URL(response.url()).pathname === `/api/game-sessions/${gameId}`,
   );
-  await restoredPhaseAction.click();
+  await removalPage.getByRole("button", { name: "Announce morning", exact: true }).click();
   if ((await removedSave).status() !== 404)
     throw new Error("The open client recreated a removed game");
-  await restartedPage
+  await removalPage
     .getByRole("button", {
       name: "This game was removed from the server. Its local copy will not be recreated.",
       exact: true,
@@ -845,7 +1292,7 @@ try {
     maxRedirects: 0,
   });
   if (tombstoned.status() !== 404) throw new Error("Cleared session remains server-restorable");
-  const remainingEnvelope = await restartedPage.evaluate(
+  const remainingEnvelope = await removalPage.evaluate(
     (storageKey) => window.localStorage.getItem(storageKey),
     storageKey,
   );
@@ -853,6 +1300,7 @@ try {
   if (removedEnvelope?.removed !== true || removedEnvelope.outbox.length !== 0) {
     throw new Error("Removed game retained automatic retries or lost its local recovery copy");
   }
+  await removalContext.close();
   await restartedContext.close();
 } catch (error) {
   verificationError = error instanceof Error ? error : new Error(String(error));
@@ -901,6 +1349,20 @@ try {
   }
   await cleanupAttempt("API context close", () => apiContext.dispose());
   await cleanupAttempt("browser close", () => browser.close());
+  mkdirSync(dirname(undoEvidencePath), { recursive: true });
+  writeFileSync(
+    undoEvidencePath,
+    `${JSON.stringify(
+      {
+        ...undoEvidence,
+        pass: verificationError === null && cleanupErrors.length === 0,
+        failure: verificationError?.message ?? null,
+        cleanupErrors: cleanupErrors.map(({ message }) => message),
+      },
+      null,
+      2,
+    )}\n`,
+  );
 }
 
 const failures = [...(verificationError === null ? [] : [verificationError]), ...cleanupErrors];
@@ -909,4 +1371,7 @@ if (failures.length > 0) {
 }
 console.log(
   `Authoritative ${restartGateDirectory === undefined ? "browser" : "application"} restart verification: PASS (${screenshotPath})`,
+);
+console.log(
+  `Unlimited Undo persistence verification: PASS (${undoEvidence.nativeUndoCount} native Undos; ${undoEvidence.checkpoints.length} canonical/API checkpoints; ${undoEvidencePath})`,
 );

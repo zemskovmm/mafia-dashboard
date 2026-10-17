@@ -285,7 +285,6 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
     onStartGame = () => undefined,
     initialSessionState,
     onSessionStateChange,
-    onRoleDrawBackActionChange,
     onEvent,
     onPopulateDevelopmentPlayers,
     onOpenAvailablePlayers,
@@ -299,7 +298,6 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
     onStartGame?: () => void;
     initialSessionState?: SetupWizardSessionState | null;
     onSessionStateChange?: (state: SetupWizardSessionState) => void;
-    onRoleDrawBackActionChange?: (action: (() => void) | null) => void;
     onEvent: (type: string, payload: Record<string, unknown>) => void;
     onPopulateDevelopmentPlayers?: () => Promise<readonly PlayerProfile[]>;
     onOpenAvailablePlayers?: () => void;
@@ -335,18 +333,7 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
         onComplete(assignedGame, hostPlayerId, "Host Player");
       }
     }, [autoStart, seenPending, persistencePending, onComplete]);
-    useEffect(() => {
-      if (session?.step !== "roles" || session.setup === null) {
-        onRoleDrawBackActionChange?.(null);
-        return;
-      }
-      onRoleDrawBackActionChange?.(() => {
-        const next: SetupWizardSessionState = { ...session, step: "players" };
-        setSession(next);
-        onSessionStateChange?.(next);
-      });
-      return () => onRoleDrawBackActionChange?.(null);
-    }, [onRoleDrawBackActionChange, onSessionStateChange, session]);
+
     return (
       <main>
         <h1>
@@ -357,6 +344,18 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
           {players.map(({ nickname }) => nickname).join(",")}
         </output>
         <output data-testid="setup-session">{JSON.stringify(session)}</output>
+        {session?.step === "roles" ? (
+          <button
+            type="button"
+            onClick={() => {
+              const next = { ...session, step: "players" as const };
+              setSession(next);
+              onSessionStateChange?.(next);
+            }}
+          >
+            Player setup
+          </button>
+        ) : null}
         <output data-testid="setup-role-preview">{String(previewUndealtRoles)}</output>
         {onOpenAvailablePlayers === undefined ? null : (
           <button type="button" onClick={onOpenAvailablePlayers}>
@@ -945,7 +944,7 @@ describe("statistics navigation and separate tournament setup", () => {
     api.createGameSession.mockReturnValue(creation.promise);
     api.assignGameTournament.mockReturnValue(assignment.promise);
     render(<App />);
-    fireEvent.click(screen.getByRole("checkbox", { name: "Include in tournament" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Include in tournament" }));
     await screen.findByRole("option", { name: "Autumn cup" });
     expect(api.createGameSession).not.toHaveBeenCalled();
     fireEvent.change(screen.getByRole("combobox", { name: "Tournament" }), {
@@ -956,7 +955,6 @@ describe("statistics navigation and separate tournament setup", () => {
     expect(input.state.setup).not.toHaveProperty("rulesEdition");
     const user = userEvent.setup();
     await user.click(screen.getByRole("combobox", { name: "Host player" }));
-    await user.type(screen.getByRole("combobox", { name: "Host player" }), "Host");
     await user.click(screen.getByRole("option", { name: "Host Player" }));
     fireEvent.click(screen.getByRole("button", { name: "Assign players" }));
     expect(screen.getByRole("button", { name: "Start game" })).toBeDisabled();
@@ -1030,7 +1028,7 @@ describe("statistics navigation and separate tournament setup", () => {
       ),
     );
     expect(screen.queryByRole("heading", { name: "Browser game data needs attention" })).toBeNull();
-    expect(screen.getByRole("checkbox", { name: "Include in tournament" })).toBeChecked();
+    expect(screen.getByRole("switch", { name: "Include in tournament" })).toBeChecked();
     await waitFor(() =>
       expect(JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).gameId).toBe(serverId),
     );
@@ -1600,7 +1598,7 @@ describe("statistics navigation and separate tournament setup", () => {
     const assignment = deferred<string | null>();
     api.assignGameTournament.mockReturnValueOnce(assignment.promise).mockResolvedValueOnce(null);
     render(<App />);
-    const toggle = screen.getByRole("checkbox", { name: "Include in tournament" });
+    const toggle = screen.getByRole("switch", { name: "Include in tournament" });
     expect(toggle).not.toBeChecked();
     fireEvent.click(toggle);
     await screen.findByRole("option", { name: "Autumn cup" });
@@ -1629,7 +1627,7 @@ describe("statistics navigation and separate tournament setup", () => {
     );
     expect(screen.getByRole("combobox", { name: "Tournament" })).toHaveValue(second);
     expect(screen.getByRole("button", { name: "Start test game" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("checkbox", { name: "Include in tournament" }));
+    fireEvent.click(screen.getByRole("switch", { name: "Include in tournament" }));
     await act(async () => assignment.resolve(second));
     await waitFor(() =>
       expect(api.assignGameTournament).toHaveBeenLastCalledWith(serverId, null, testClub.id),
@@ -1637,7 +1635,7 @@ describe("statistics navigation and separate tournament setup", () => {
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Start test game" })).toBeEnabled(),
     );
-    expect(screen.getByRole("checkbox", { name: "Include in tournament" })).not.toBeChecked();
+    expect(screen.getByRole("switch", { name: "Include in tournament" })).not.toBeChecked();
     expect(api.createGameSession).toHaveBeenCalledTimes(1);
   });
 
@@ -1651,7 +1649,7 @@ describe("statistics navigation and separate tournament setup", () => {
     await waitFor(() =>
       expect(api.assignGameTournament).toHaveBeenCalledWith(serverId, first, testClub.id),
     );
-    expect(screen.getByRole("checkbox", { name: "Include in tournament" })).toBeChecked();
+    expect(screen.getByRole("switch", { name: "Include in tournament" })).toBeChecked();
     expect(screen.getByRole("button", { name: "Start test game" })).toBeDisabled();
     await act(async () => held.resolve(first));
     await waitFor(() =>
@@ -1660,13 +1658,13 @@ describe("statistics navigation and separate tournament setup", () => {
     expect(api.createGameSession).not.toHaveBeenCalled();
     view.unmount();
     render(<App />);
-    expect(screen.getByRole("checkbox", { name: "Include in tournament" })).toBeChecked();
+    expect(screen.getByRole("switch", { name: "Include in tournament" })).toBeChecked();
     vi.spyOn(window, "confirm").mockReturnValue(true);
     fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
     fireEvent.click(screen.getByRole("button", { name: "Start new game" }));
     fireEvent.click(await screen.findByRole("button", { name: "Close available players" }));
     await waitFor(() =>
-      expect(screen.getByRole("checkbox", { name: "Include in tournament" })).not.toBeChecked(),
+      expect(screen.getByRole("switch", { name: "Include in tournament" })).not.toBeChecked(),
     );
   });
 
@@ -2726,7 +2724,7 @@ describe("manage menu", () => {
     expect(within(dev).queryByRole("region", { name: "Active games" })).not.toBeInTheDocument();
   });
 
-  it("moves role-giveaway return into Manage without resetting the draw", async () => {
+  it("keeps role-giveaway return in-flow and out of Manage without resetting the draw", async () => {
     const user = userEvent.setup();
     render(<App />);
 
@@ -2737,7 +2735,9 @@ describe("manage menu", () => {
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
 
     const manage = screen.getByRole("dialog", { name: "Manage" });
-    const back = within(manage).getByRole("button", { name: "Back to player selection" });
+    expect(within(manage).queryByRole("button", { name: "Back to player selection" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Close Manage menu" }));
+    const back = screen.getByRole("button", { name: "Player setup" });
     back.focus();
     await user.keyboard("{Enter}");
 
@@ -2908,6 +2908,8 @@ describe("developer menu", () => {
       refraction: 10,
       goldLight: 63,
       matte: false,
+      buttonFrosting: 70,
+      buttonGold: 35,
       profile: "edge",
       frosting: 50,
       tint: 13,
@@ -3275,7 +3277,7 @@ describe("developer menu", () => {
     await user.click(screen.getByRole("button", { name: "Record meaningful checkpoint" }));
     expect(screen.getByText("Game fouls 1")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Past game timeline" }));
     expect(screen.getByText(/#1 · Checkpoint #2/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Foul 1: Player 1/i }));
@@ -3285,7 +3287,7 @@ describe("developer menu", () => {
 
     await user.click(screen.getByRole("button", { name: "Exit preview" }));
     expect(screen.getByText("Game fouls 1")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Past game timeline" }));
     await user.click(screen.getByRole("button", { name: "Imported game checkpoint" }));
     await user.click(screen.getByRole("button", { name: "Reset game to timeline checkpoint" }));
@@ -3300,11 +3302,12 @@ describe("developer menu", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Past game timeline" }));
 
     expect(screen.getByRole("heading", { name: "Game timeline" })).toBeInTheDocument();
-    expect(screen.queryByLabelText("Application tools")).toBeNull();
+    expect(screen.getByRole("button", { name: "Rules" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Undo last action" })).toBeNull();
     expect(await screen.findByText("No completed games yet.")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /back/i }));
@@ -3320,7 +3323,7 @@ describe("developer menu", () => {
     await waitFor(() => expect(api.saveGameSession).toHaveBeenCalled());
     api.saveGameSession.mockClear();
 
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Past game timeline" }));
     await user.click(screen.getByRole("button", { name: "Imported game checkpoint" }));
     await user.click(screen.getByRole("button", { name: /back/i }));
@@ -3357,7 +3360,8 @@ describe("developer menu", () => {
     await user.click(screen.getByRole("button", { name: "Console" }));
     expect(screen.getByRole("heading", { level: 1, name: "Console" })).toBeInTheDocument();
     expect(screen.getByText("Captured before Console navigation")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Application tools")).toBeNull();
+    expect(screen.getByRole("button", { name: "Rules" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Undo last action" })).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Back" }));
     expect(screen.getByRole("heading", { name: "Live test game" })).toBeInTheDocument();
@@ -3426,12 +3430,15 @@ describe("developer menu", () => {
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     await user.click(screen.getByRole("button", { name: "Enable dev mode" }));
     expect(screen.getByRole("button", { name: "Generate test players" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Past game timeline" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Past game timeline" }));
     expect(screen.getByRole("button", { name: "Generate sample game data" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Back" }));
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     await user.click(screen.getByRole("button", { name: "Disable dev mode" }));
     expect(screen.queryByRole("button", { name: "Generate test players" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Past game timeline" }));
     expect(screen.queryByRole("button", { name: "Generate sample game data" })).toBeNull();
   });
@@ -4209,12 +4216,63 @@ describe("developer menu", () => {
     expect(controls.parentElement).toBe(player.closest(".youtube-dock"));
   });
 
+  it("keeps Rules available before a game and in ordinary navigation without developer access", async () => {
+    const user = userEvent.setup();
+    renderView(<App />);
+    expect(screen.queryByRole("button", { name: "Open developer menu" })).toBeNull();
+    const openBook = async () => {
+      const rules = screen.getByRole("button", { name: "Rules" });
+      expect(screen.getAllByRole("button", { name: "Rules" })).toHaveLength(1);
+      await user.click(rules);
+      const book = await screen.findByRole("dialog", { name: "Illustrated Mafia rulebook" });
+      cancelDialog(book);
+      expect(screen.queryByRole("dialog", { name: "Illustrated Mafia rulebook" })).toBeNull();
+    };
+    await openBook();
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    const manage = screen.getByRole("dialog", { name: "Manage" });
+    expect(
+      within(manage)
+        .getAllByRole("button")
+        .slice(0, 4)
+        .map((button) => button.textContent),
+    ).toEqual(["Start new game", "Players screen", "Past game timeline", "Statistics"]);
+    await user.click(within(manage).getByRole("button", { name: "Players screen" }));
+    const banner = screen.getByRole("banner", { name: "Application status" });
+    expect(within(banner).getByRole("button", { name: "Back to game" })).toBeVisible();
+    expect(screen.getAllByRole("button", { name: "Back to game" })).toHaveLength(1);
+    expect(screen.queryByText("Search players", { selector: "span" })).toBeNull();
+    expect(screen.getByRole("searchbox", { name: "Search players" })).toBeVisible();
+    await openBook();
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    await user.click(screen.getByRole("button", { name: "Past game timeline" }));
+    await openBook();
+    expect(api.clearGameSession).not.toHaveBeenCalled();
+  });
+
+  it("places Dev immediately before role visibility and omits the Undo number", async () => {
+    render(<App />);
+    await screen.findByRole("button", { name: "Open developer menu" });
+    const dev = screen.getByRole("button", { name: "Open developer menu" });
+    expect(dev.nextElementSibling).toBe(screen.getByRole("button", { name: "Hide private info" }));
+    const undo = screen.getByRole("button", { name: "Undo last action" });
+    expect(undo).toBeDisabled();
+    expect(undo.querySelector(".toolbar-count")).toBeNull();
+    expect(undo.textContent).toBe("");
+    await userEvent.setup().click(dev);
+    expect(
+      within(screen.getByRole("dialog", { name: "Developer menu" })).queryByRole("button", {
+        name: "Past game timeline",
+      }),
+    ).toBeNull();
+  });
+
   it("hides unavailable fullscreen while keeping Undo and the private mask across views", async () => {
     const user = userEvent.setup();
     render(<App />);
 
     expect(screen.queryByRole("button", { name: /fullscreen/i })).toBeNull();
-    const undo = screen.getByRole("button", { name: /undo last action.*0 available/i });
+    const undo = screen.getByRole("button", { name: "Undo last action" });
     const privacy = screen.getByRole("button", { name: "Hide private info" });
 
     expect(undo).toBeVisible();
@@ -4226,7 +4284,7 @@ describe("developer menu", () => {
     await user.click(screen.getByRole("button", { name: "Players screen" }));
 
     expect(screen.queryByRole("button", { name: /fullscreen/i })).toBeNull();
-    expect(screen.getByRole("button", { name: /undo last action.*0 available/i })).toBe(undo);
+    expect(screen.getByRole("button", { name: "Undo last action" })).toBe(undo);
     expect(screen.getByRole("button", { name: "Hide private info" })).toBe(privacy);
   });
 
@@ -5183,12 +5241,7 @@ describe("authoritative game session lifecycle", () => {
     const firstRender = render(<App />);
     await user.click(screen.getByRole("button", { name: "Enter role giveaway" }));
     await user.click(screen.getByRole("button", { name: "Assign first role" }));
-    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
-    await user.click(
-      within(screen.getByRole("dialog", { name: "Manage" })).getByRole("button", {
-        name: "Back to player selection",
-      }),
-    );
+    await user.click(screen.getByRole("button", { name: "Player setup" }));
 
     let persisted: {
       gameId: string;
@@ -5724,7 +5777,8 @@ describe("authoritative game session lifecycle", () => {
     await user.click(screen.getByRole("button", { name: "Open game log" }));
     await user.click(screen.getByRole("button", { name: "Preview state after log #1" }));
     expect(screen.getByRole("heading", { name: "Preview game state" })).toBeInTheDocument();
-    expect(screen.queryByLabelText("Application tools")).toBeNull();
+    expect(screen.getByRole("button", { name: "Rules" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Undo last action" })).toBeNull();
     expect(
       within(screen.getByRole("main"))
         .getAllByRole("button")
@@ -5982,7 +6036,7 @@ describe("authoritative game session lifecycle", () => {
     });
     expect(gameScreenHarness.liveGame?.bestMove).toBeUndefined();
     expect(gameScreenHarness.liveGame?.goodbyeSeats).toBeUndefined();
-    expect(screen.getByRole("button", { name: /undo last action.*3 available/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Undo last action" })).toBeEnabled();
     await waitFor(() =>
       expect(api.saveGameSession.mock.calls.at(-1)?.[1]).toMatchObject({
         kind: "snapshot",
@@ -6000,7 +6054,7 @@ describe("authoritative game session lifecycle", () => {
     firstRender.unmount();
     render(<App />);
     expect(gameScreenHarness.liveGame).toMatchObject({ phase: "finished", winner: "black" });
-    expect(screen.getByRole("button", { name: /undo last action.*3 available/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Undo last action" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: /undo last action/i }));
     expect(gameScreenHarness.liveGame).toMatchObject({ phase: "night-mafia-result", winner: null });
     expect(
@@ -6533,7 +6587,7 @@ describe("authoritative game session lifecycle", () => {
         ]),
       }),
     });
-    expect(screen.getByRole("button", { name: /undo last action.*3 available/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Undo last action" })).toBeEnabled();
     await waitFor(() =>
       expect(
         screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
@@ -6542,7 +6596,7 @@ describe("authoritative game session lifecycle", () => {
     firstRender.unmount();
     render(<App />);
     expect(gameScreenHarness.liveGame).toMatchObject({ phase: "finished", winner: "red" });
-    expect(screen.getByRole("button", { name: /undo last action.*3 available/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Undo last action" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: /undo last action/i }));
     expect(gameScreenHarness.liveGame).toMatchObject({ phase: "finished", winner: "red" });
     await user.click(screen.getByRole("button", { name: /undo last action/i }));
@@ -6639,7 +6693,7 @@ describe("authoritative game session lifecycle", () => {
           }),
         }),
       );
-      expect(screen.getByRole("button", { name: /undo last action.*1 available/i })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Undo last action" })).toBeEnabled();
       expect(screen.getByRole("button", { name: "Finish the game" })).toBeEnabled();
       await waitFor(() =>
         expect(
@@ -6649,7 +6703,7 @@ describe("authoritative game session lifecycle", () => {
       firstRender.unmount();
       const secondRender = render(<App />);
       expect(gameScreenHarness.liveGame).toMatchObject({ phase: outcome, winner: null });
-      expect(screen.getByRole("button", { name: /undo last action.*1 available/i })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Undo last action" })).toBeEnabled();
       expect(screen.getByRole("button", { name: "Finish the game" })).toBeEnabled();
 
       await user.click(screen.getByRole("button", { name: /undo last action/i }));
@@ -6662,10 +6716,10 @@ describe("authoritative game session lifecycle", () => {
         expect.objectContaining({ type: "game.checkpointed" }),
       ]);
       expect(undone.current.state.resetReturnEventId).toBeNull();
-      expect(screen.getByRole("button", { name: /undo last action.*0 available/i })).toBeDisabled();
+      expect(screen.getByRole("button", { name: "Undo last action" })).toBeDisabled();
 
       act(() => gameScreenHarness.liveOnAcceptedEvent?.({ type, payload: { reason } }));
-      expect(screen.getByRole("button", { name: /undo last action.*1 available/i })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Undo last action" })).toBeEnabled();
       await waitFor(() =>
         expect(
           screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
@@ -7296,18 +7350,18 @@ describe("undo checkpoints", () => {
     expect(
       gameScreenHarness.liveGame?.players.find(({ seat }) => seat === targetSeat),
     ).toMatchObject({ fouls: 3, mutePending: true });
-    expect(screen.getByRole("button", { name: /undo last action.*2 available/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Undo last action" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: /undo last action/i }));
     expect(
       gameScreenHarness.liveGame?.players.find(({ seat }) => seat === targetSeat),
     ).toMatchObject({ fouls: 3, mutePending: true });
-    expect(screen.getByRole("button", { name: /undo last action.*1 available/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Undo last action" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: /undo last action/i }));
     expect(gameScreenHarness.liveGame).toMatchObject({ phase: "day", currentTurnIndex: 0 });
     expect(
       gameScreenHarness.liveGame?.players.find(({ seat }) => seat === targetSeat),
     ).toMatchObject({ fouls: 2, mutePending: false, status: "active" });
-    expect(screen.getByRole("button", { name: /undo last action.*0 available/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Undo last action" })).toBeEnabled();
     await waitFor(() =>
       expect(api.saveGameSession.mock.calls.at(-1)?.[1]).toMatchObject({
         kind: "snapshot",
@@ -7376,7 +7430,7 @@ describe("undo checkpoints", () => {
     });
   });
 
-  it("preserves the remaining ordinary undo budget across reload", async () => {
+  it("derives unlimited Undo from retained history across reload despite a legacy zero budget", async () => {
     const user = userEvent.setup();
     const firstRender = render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
@@ -7387,7 +7441,7 @@ describe("undo checkpoints", () => {
     await user.click(screen.getByRole("button", { name: /undo last action/i }));
     await user.click(screen.getByRole("button", { name: /undo last action/i }));
     expect(screen.getByText("Game fouls 2")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /undo last action.*1 available/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Undo last action" })).toBeEnabled();
     await waitFor(() =>
       expect(
         screen.getByRole("button", { name: "Saved to server · tap to check connection" }),
@@ -7395,15 +7449,19 @@ describe("undo checkpoints", () => {
     );
 
     firstRender.unmount();
+    const envelope = JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!);
+    envelope.current.state.undoBudget = 0;
+    window.localStorage.setItem(gameSessionStorageKey, JSON.stringify(envelope));
     render(<App />);
 
     expect(screen.getByText("Game fouls 2")).toBeInTheDocument();
-    const remainingUndo = screen.getByRole("button", {
-      name: /undo last action.*1 available/i,
-    });
+    const remainingUndo = screen.getByRole("button", { name: "Undo last action" });
     await user.click(remainingUndo);
     expect(screen.getByText("Game fouls 1")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /undo last action.*0 available/i })).toBeDisabled();
+    expect(remainingUndo).toBeEnabled();
+    await user.click(remainingUndo);
+    expect(screen.getByText("Game fouls 0")).toBeInTheDocument();
+    expect(remainingUndo).toBeDisabled();
   });
 
   it("persists a destructive Reset across reload without a Reset Return action", async () => {
@@ -7416,7 +7474,7 @@ describe("undo checkpoints", () => {
       await user.click(screen.getByRole("button", { name: "Record meaningful checkpoint" }));
     }
     await user.click(screen.getByRole("button", { name: /undo last action/i }));
-    expect(screen.getByRole("button", { name: /undo last action.*2 available/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Undo last action" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "Open game log" }));
     await user.click(screen.getByRole("button", { name: "Preview state after log #1" }));
     await user.click(screen.getByRole("button", { name: "Reset game to this state" }));
@@ -7430,7 +7488,7 @@ describe("undo checkpoints", () => {
     firstRender.unmount();
     render(<App />);
     expect(screen.getByText("Game fouls 0")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /undo last action.*0 available/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Undo last action" })).toBeDisabled();
     expect(
       JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null"),
     ).toMatchObject({
@@ -7444,7 +7502,7 @@ describe("undo checkpoints", () => {
     });
   });
 
-  it("retains only three ordinary actions and undo removes matching log state", async () => {
+  it("undoes all retained ordinary actions and removes their matching log state", async () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Start test game" }));
@@ -7456,11 +7514,11 @@ describe("undo checkpoints", () => {
     await user.click(screen.getByRole("button", { name: "Open game log" }));
     expect(screen.getAllByText("Foul issued")).toHaveLength(4);
 
-    for (let index = 0; index < 3; index += 1) {
+    for (let index = 0; index < 4; index += 1) {
       await user.click(screen.getByRole("button", { name: /undo last action/i }));
     }
-    expect(screen.getByText("Game fouls 1")).toBeInTheDocument();
-    expect(screen.getAllByText("Foul issued")).toHaveLength(1);
+    expect(screen.getByText("Game fouls 0")).toBeInTheDocument();
+    expect(screen.queryAllByText("Foul issued")).toHaveLength(0);
     expect(screen.getByRole("button", { name: /undo last action/i })).toBeDisabled();
   });
 });

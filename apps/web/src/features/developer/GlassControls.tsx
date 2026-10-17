@@ -173,6 +173,57 @@ export const GlassControls = ({
             ))}
           </div>
         </details>
+        <details className="dev-button-glass">
+          <summary>{t("glassButtons")}</summary>
+          <div className="dev-disclosure-fields dev-glass-fields">
+            <label className="dev-renderer-field">
+              <span>
+                {t("buttonFrosting")} · {settings.buttonFrosting}%
+              </span>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                aria-label={t("buttonFrosting")}
+                aria-describedby="glass-material-reason"
+                value={settings.buttonFrosting}
+                disabled={reducedTransparency}
+                onChange={(event) =>
+                  onChange({ ...settings, buttonFrosting: Number(event.currentTarget.value) })
+                }
+              />
+            </label>
+            <label className="dev-renderer-field">
+              <span>
+                {t("buttonGold")} · {settings.buttonGold}%
+              </span>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                step="1"
+                aria-label={t("buttonGold")}
+                value={settings.buttonGold}
+                onChange={(event) =>
+                  onChange({ ...settings, buttonGold: Number(event.currentTarget.value) })
+                }
+              />
+            </label>
+            <button
+              type="button"
+              onClick={() =>
+                onChange({
+                  ...settings,
+                  buttonFrosting: DEFAULT_GLASS_SETTINGS.buttonFrosting,
+                  buttonGold: DEFAULT_GLASS_SETTINGS.buttonGold,
+                })
+              }
+            >
+              {t("resetButtonGlass")}
+            </button>
+          </div>
+        </details>
         <details className="dev-player-card-appearance">
           <summary>{t("playerCardAppearance")}</summary>
           <div className="dev-disclosure-fields dev-glass-fields">

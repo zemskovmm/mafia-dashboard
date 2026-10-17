@@ -21,13 +21,16 @@ Object.defineProperties(window, {
   sessionStorage: { configurable: true, value: memoryStorage() },
 });
 
-// jsdom lacks native dialog activation and media queries. Browser suites prove
+// jsdom lacks native dialog/popover activation and media queries. Browser suites prove
 // top-layer/inert behavior; these fallbacks only expose the component lifecycle.
 HTMLDialogElement.prototype.showModal ??= function () {
   this.open = true;
 };
 HTMLDialogElement.prototype.close ??= function () {
   this.open = false;
+};
+HTMLElement.prototype.showPopover ??= function () {
+  this.style.display = "block";
 };
 window.matchMedia ??= (query) =>
   Object.assign(new EventTarget(), {

@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import console from "node:console";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import process from "node:process";
 import { after, before, test } from "node:test";
 import { fileURLToPath, URL } from "node:url";
@@ -18,9 +18,10 @@ import { createServer } from "vite";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const repository = join(directory, "../../../../..");
-const evidenceRoot =
-  process.env.CLUB_ENTRY_OUTPUT_ROOT ??
-  join(repository, ".AI/reports/club-entry-integration/browser");
+const evidenceRoot = resolve(
+  repository,
+  process.env.CLUB_ENTRY_OUTPUT_ROOT ?? ".AI/reports/club-entry-integration/browser",
+);
 await mkdir(evidenceRoot, { recursive: true });
 const output = await mkdtemp(join(evidenceRoot, "run-"));
 const fancyStuffKey = "mafia-dashboard.fancy-stuff.v1";
@@ -767,6 +768,309 @@ scenario("portal-editor-long-labels", {}, async ({ page, context, row, capture }
     "long account titles and original club labels retained despite CSS uppercase/ellipsis; real New club/editor/cancel handlers; no accidental burn/save; saved theme retained",
   );
 });
+
+// Opaque corner markers make clipped/covered artwork detectable in decoded
+// screenshots, independently of a declared object-fit value or DOM bounds.
+const logoCornerColors = [
+  [240, 40, 80],
+  [40, 220, 110],
+  [40, 120, 240],
+  [240, 210, 40],
+];
+function logoFixture(name, width, height) {
+  const png = new PNG({ width, height });
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const left = x < width * 0.14,
+        right = x >= width * 0.86;
+      const top = y < height * 0.14,
+        bottom = y >= height * 0.86;
+      const corner = top ? (left ? 0 : right ? 1 : -1) : bottom ? (left ? 2 : right ? 3 : -1) : -1;
+      const color = corner < 0 ? [215, 220, 225] : logoCornerColors[corner];
+      const offset = (y * width + x) * 4;
+      png.data.set([...color, 255], offset);
+    }
+  }
+  const buffer = PNG.sync.write(png);
+  return {
+    name: `${name}.png`,
+    mimeType: "image/png",
+    buffer,
+    value: `data:image/png;base64,${buffer.toString("base64")}`,
+  };
+}
+const editorLogos = {
+  square: logoFixture("large-square", 1000, 1000),
+  landscape: logoFixture("landscape", 1600, 400),
+  portrait: logoFixture("portrait", 400, 1200),
+};
+async function chooseEditorLogo(page, index, fixture) {
+  const chooser = page.waitForEvent("filechooser");
+  await page.locator(".club-logo-field").nth(index).locator(".club-logo-preview").click();
+  await (
+    await chooser
+  ).setFiles({ name: fixture.name, mimeType: fixture.mimeType, buffer: fixture.buffer });
+  await page.waitForFunction(
+    ({ index, value }) => {
+      const image = document.querySelectorAll(".club-logo-preview img")[index];
+      return image?.getAttribute("src") === value && image.complete && image.naturalWidth > 0;
+    },
+    { index, value: fixture.value },
+    { polling: 10 },
+  );
+}
+async function editorLogoReceipt(page, capture, label, failures) {
+  await page.locator(".club-logo-fields").scrollIntoViewIfNeeded();
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll(".club-logo-preview img")].every(
+      (image) => image.complete && image.naturalWidth > 0,
+    ),
+  );
+  const geometry = await page.locator(".club-logo-preview").evaluateAll((nodes) =>
+    nodes.map((node) => {
+      const rect = (element) => {
+        const { x, y, width, height } = element.getBoundingClientRect();
+        return { x, y, width, height };
+      };
+      const frame = rect(node),
+        style = getComputedStyle(node);
+      const image = node.querySelector("img"),
+        change = node.querySelector(".club-logo-change");
+      let painting = null;
+      if (image) {
+        const imageRect = rect(image),
+          css = getComputedStyle(image);
+        const left = parseFloat(css.paddingLeft),
+          top = parseFloat(css.paddingTop);
+        const width = imageRect.width - left - parseFloat(css.paddingRight);
+        const height = imageRect.height - top - parseFloat(css.paddingBottom);
+        const scale = Math.min(width / image.naturalWidth, height / image.naturalHeight);
+        painting = {
+          element: imageRect,
+          x: imageRect.x + left + (width - image.naturalWidth * scale) / 2,
+          y: imageRect.y + top + (height - image.naturalHeight * scale) / 2,
+          width: image.naturalWidth * scale,
+          height: image.naturalHeight * scale,
+          naturalWidth: image.naturalWidth,
+          naturalHeight: image.naturalHeight,
+          objectFit: css.objectFit,
+        };
+      }
+      return {
+        frame,
+        radius: style.borderTopLeftRadius,
+        painting,
+        change: change ? rect(change) : null,
+      };
+    }),
+  );
+  const png = PNG.sync.read(await capture(label));
+  const errors = [];
+  const [header, card] = geometry;
+  if (
+    Math.abs(header.frame.width - card.frame.width) > 1 ||
+    Math.abs(header.frame.height - card.frame.height) > 1
+  )
+    errors.push("preview frames must have matching dimensions");
+  for (const [index, item] of geometry.entries()) {
+    const { frame, painting, change } = item;
+    if (frame.width <= frame.height || item.radius.includes("%") || parseFloat(item.radius) > 16)
+      errors.push(`${index}: rectangular frame with modest corners`);
+    if (!painting) continue;
+    const image = painting.element;
+    if (
+      image.x < frame.x ||
+      image.y < frame.y ||
+      image.x + image.width > frame.x + frame.width ||
+      image.y + image.height > frame.y + frame.height
+    )
+      errors.push(`${index}: intrinsic image element escapes preview frame`);
+    if (painting.objectFit !== "contain") errors.push(`${index}: whole-image contain required`);
+    if (
+      painting.x < frame.x + 3 ||
+      painting.y < frame.y + 3 ||
+      painting.x + painting.width > frame.x + frame.width - 3 ||
+      painting.y + painting.height > frame.y + frame.height - 3
+    )
+      errors.push(`${index}: painted boundary must remain inside padded frame`);
+    if (Math.abs(painting.x + painting.width / 2 - frame.x - frame.width / 2) > 1)
+      errors.push(`${index}: image must be horizontally centered`);
+    if (change && painting.y + painting.height > change.y)
+      errors.push(`${index}: Change must not cover artwork`);
+    item.cornerPixels = logoCornerColors.map((expected, corner) => {
+      const x = Math.round(painting.x + painting.width * (corner % 2 ? 0.93 : 0.07));
+      const y = Math.round(painting.y + painting.height * (corner > 1 ? 0.93 : 0.07));
+      const offset = (y * png.width + x) * 4;
+      const actual = [...png.data.subarray(offset, offset + 3)];
+      const visible =
+        actual.length === 3 &&
+        actual.every((value, channel) => Math.abs(value - expected[channel]) <= 12);
+      if (!visible) errors.push(`${index}: corner ${corner} missing/clipped/covered (${actual})`);
+      return { x, y, expected, actual, visible };
+    });
+  }
+  const overflow = await page.evaluate(() => ({
+    width: document.documentElement.scrollWidth,
+    viewport: window.innerWidth,
+  }));
+  if (overflow.width > overflow.viewport + 1) errors.push("editor must not overflow horizontally");
+  failures.push(...errors.map((error) => `${label}: ${error}`));
+  return { label, geometry, overflow, errors };
+}
+for (const engine of ["chromium", "webkit"]) {
+  for (const [width, height] of [
+    [1000, 600],
+    [390, 844],
+  ]) {
+    for (const locale of ["en", "ru"]) {
+      scenario(
+        `club-editor-logos-${engine}-${width}x${height}-${locale}`,
+        {
+          engine,
+          viewport: { width, height },
+          locale: locale === "ru" ? "ru-RU" : "en-US",
+          reducedMotion: "reduce",
+        },
+        async ({ page, context, row, capture }) => {
+          const labels =
+            locale === "en"
+              ? {
+                  name: "Club name",
+                  city: "City",
+                  cancel: "Cancel",
+                  save: "Save club",
+                  manage: "Open Manage menu",
+                  edit: "Edit club",
+                  bestMove: "Enable Best move",
+                }
+              : {
+                  name: "Название клуба",
+                  city: "Город",
+                  cancel: "Отмена",
+                  save: "Сохранить клуб",
+                  manage: "Открыть меню управления",
+                  edit: "Изменить клуб",
+                  bestMove: "Включить «Лучший ход»",
+                };
+          const savedClub = {
+            ...clubs[0],
+            language: locale,
+            bestMoveEnabled: locale === "en",
+            headerLogo: editorLogos.landscape.value,
+            cardLogo: editorLogos.portrait.value,
+          };
+          const writes = [];
+          await context.route(`${baseURL}/api/clubs`, (route) =>
+            route.fulfill({ json: { clubs: [savedClub] } }),
+          );
+          await context.route(`${baseURL}/api/clubs/${savedClub.id}`, (route) => {
+            assert.equal(route.request().method(), "PUT");
+            const input = route.request().postDataJSON();
+            writes.push(input);
+            return route.fulfill({ json: { club: { ...savedClub, ...input } } });
+          });
+          await picker(page, locale === "en" ? englishSlogan : russianSlogan);
+          assert.equal(
+            await page.locator(".club-card-logo img").getAttribute("src"),
+            savedClub.cardLogo,
+          );
+          assert.equal(
+            await page
+              .locator(".club-card-logo img")
+              .evaluate((node) => getComputedStyle(node).objectFit),
+            "cover",
+            "actual selection-card rendering retained",
+          );
+          await page.locator(".new-club-card").click();
+          const failures = [];
+          row.logoPreviews = [await editorLogoReceipt(page, capture, "new-empty", failures)];
+          assert.equal(
+            await page.getByRole("checkbox", { name: labels.bestMove, exact: true }).isChecked(),
+            true,
+          );
+          await chooseEditorLogo(page, 0, editorLogos.square);
+          await chooseEditorLogo(page, 1, editorLogos.portrait);
+          row.logoPreviews.push(
+            await editorLogoReceipt(page, capture, "new-square-portrait", failures),
+          );
+          await chooseEditorLogo(page, 0, editorLogos.landscape);
+          await chooseEditorLogo(page, 1, editorLogos.square);
+          row.logoPreviews.push(
+            await editorLogoReceipt(page, capture, "new-landscape-square", failures),
+          );
+          await page.getByRole("button", { name: labels.cancel, exact: true }).click();
+          assert.equal(writes.length, 0, "new-club Cancel persists nothing");
+          await openButton(page).click();
+          await settled(page);
+          const header = page.locator(".active-club-header-logo");
+          assert.equal(await header.getAttribute("src"), savedClub.headerLogo);
+          row.workspaceHeader = await header.evaluate((node) => {
+            const css = getComputedStyle(node);
+            return { width: css.width, height: css.height, objectFit: css.objectFit };
+          });
+          assert.equal(row.workspaceHeader.height, "36px");
+          assert.equal(
+            row.workspaceHeader.objectFit,
+            "contain",
+            "actual workspace-header rendering retained",
+          );
+          await page.getByRole("button", { name: labels.manage, exact: true }).click();
+          await page.getByRole("button", { name: labels.edit, exact: true }).click();
+          await page.locator(".club-editor-card").waitFor();
+          row.logoPreviews.push(
+            await editorLogoReceipt(page, capture, "edit-saved-landscape-portrait", failures),
+          );
+          if (await page.getByRole("checkbox", { name: labels.bestMove, exact: true }).count())
+            failures.push("Edit club must omit Best Move");
+          await page.getByLabel(labels.name, { exact: true }).fill("Unsaved edit");
+          await chooseEditorLogo(page, 0, editorLogos.square);
+          await page.getByRole("button", { name: labels.cancel, exact: true }).click();
+          assert.equal(writes.length, 0, "edit Cancel persists no field/image mutation");
+          await openButton(page).click();
+          await settled(page);
+          await page.getByRole("button", { name: labels.manage, exact: true }).click();
+          await page.getByRole("button", { name: labels.edit, exact: true }).click();
+          assert.equal(
+            await page.getByLabel(labels.name, { exact: true }).inputValue(),
+            savedClub.name,
+          );
+          assert.deepEqual(
+            await page
+              .locator(".club-logo-preview img")
+              .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("src"))),
+            [savedClub.headerLogo, savedClub.cardLogo],
+          );
+          await page.getByLabel(labels.city, { exact: true }).fill("Sevilla");
+          await page.getByRole("button", { name: labels.save, exact: true }).click();
+          await page.locator(".club-card-open").waitFor();
+          assert.deepEqual(writes, [
+            {
+              name: savedClub.name,
+              city: "Sevilla",
+              language: locale,
+              headerLogo: savedClub.headerLogo,
+              cardLogo: savedClub.cardLogo,
+              bestMoveEnabled: savedClub.bestMoveEnabled,
+            },
+          ]);
+          assert.equal(
+            await page.locator(".club-card-logo img").getAttribute("src"),
+            savedClub.cardLogo,
+          );
+          row.savedValue = {
+            bestMoveEnabled: writes[0].bestMoveEnabled,
+            imagesUnchanged: true,
+            writes: writes.length,
+          };
+          row.checks.push(
+            "actual new/edit editor; native file chooser and Change; decoded four-corner pixels for square/portrait/landscape; matching empty/populated rectangles; cancel/save preserve stored images and true/false Best Move; actual header/card consumers unchanged",
+          );
+          assert.deepEqual(failures, [], "matching rectangles and complete uncropped artwork");
+        },
+      );
+    }
+  }
+}
 
 scenario(
   "saved-theme-entry-and-return",

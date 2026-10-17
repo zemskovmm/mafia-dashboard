@@ -372,7 +372,7 @@ const PlayerCard = ({
 
 export const PlayersScreen = ({
   players,
-  onBack = () => undefined,
+  onBack,
   onCreate,
   onUpdate,
   onDelete,
@@ -393,11 +393,13 @@ export const PlayersScreen = ({
 
   return (
     <main className="players-shell">
-      <header className="players-screen-header">
-        <button type="button" onClick={onBack}>
-          {t("Back to game")}
-        </button>
-      </header>
+      {onBack === undefined ? null : (
+        <header className="players-screen-header">
+          <button type="button" onClick={onBack}>
+            {t("Back to game")}
+          </button>
+        </header>
+      )}
       <GlassSurface
         as="section"
         className="new-player-panel"
@@ -441,10 +443,10 @@ export const PlayersScreen = ({
       </GlassSurface>
 
       <label className="player-search" htmlFor="player-search">
-        <span>{t("Search players")}</span>
         <input
           id="player-search"
           type="search"
+          aria-label={t("Search players")}
           value={query}
           placeholder={t("Search players placeholder")}
           onChange={(event) => setQuery(event.currentTarget.value)}

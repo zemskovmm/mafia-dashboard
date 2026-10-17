@@ -41,31 +41,14 @@ export const replayToEvent = (
   eventId: string,
 ): GameState => replayGameLog(baseline, getActiveBranch(entries, eventId)).game;
 
-export const getUndoableEvents = (
-  activeBranch: readonly GameLogEntry[],
-): readonly GameLogEntry[] => {
-  let checkpointIndex = -1;
-  for (const [index, entry] of activeBranch.entries()) {
-    if (entry.dayAfter > entry.dayBefore) checkpointIndex = index;
-  }
-  return activeBranch
-    .slice(checkpointIndex + 1)
-    .filter(
-      ({ type }) =>
-        type !== "game.started" && type !== "game.checkpointed" && type !== "game.completed",
-    )
-    .slice(-3);
-};
+export const getUndoableEvents = (activeBranch: readonly GameLogEntry[]): readonly GameLogEntry[] =>
+  activeBranch.filter(
+    ({ type }) =>
+      type !== "game.started" && type !== "game.checkpointed" && type !== "game.completed",
+  );
 
+/** Compatibility name: availability is derived from retained actions, never a quota. */
 export const getRemainingUndoBudget = (
   entries: readonly GameLogEntry[],
   headEventId: string | null,
-): number => {
-  if (headEventId === null) return 0;
-  const activeBranch = getActiveBranch(entries, headEventId);
-  const head = activeBranch.at(-1);
-  if (head === undefined) return 0;
-  const maximumSequence = Math.max(...entries.map(({ sequence }) => sequence));
-  const alreadyUndone = Math.max(0, maximumSequence - head.sequence);
-  return Math.min(getUndoableEvents(activeBranch).length, Math.max(0, 3 - alreadyUndone));
-};
+): number => getUndoableEvents(getActiveBranch(entries, headEventId)).length;

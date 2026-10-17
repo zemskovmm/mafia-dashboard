@@ -34,6 +34,42 @@ beforeEach(() => {
 });
 
 describe("AccountPlaylistPicker", () => {
+  it("shows only the connected name and a named disconnect icon with duplicate-request protection", async () => {
+    let resolveDisconnect!: () => void;
+    vi.mocked(disconnectMusicAccount).mockReturnValue(
+      new Promise((resolve) => {
+        resolveDisconnect = resolve;
+      }),
+    );
+    const onAccountDisconnected = vi.fn();
+    render(
+      <Picker
+        view="account"
+        playlistId=""
+        onPlaylistIdChange={vi.fn()}
+        onAccountDisconnected={onAccountDisconnected}
+        status={{ configured: true, connected: true, accountLabel: "Fixture Host" }}
+        statusError={false}
+        onRetry={vi.fn()}
+        onStatusChange={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Fixture Host", { exact: true })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "YouTube Music library" })).toBeNull();
+    expect(screen.queryByText(/Connected as/)).toBeNull();
+    const disconnect = screen.getByRole("button", { name: "Disconnect account" });
+    expect(disconnect.textContent).toBe("");
+    expect(disconnect.querySelector("svg")).toHaveAttribute("aria-hidden", "true");
+    const user = userEvent.setup();
+    await user.click(disconnect);
+    expect(disconnect).toBeDisabled();
+    expect(disconnect).toHaveAttribute("aria-busy", "true");
+    await user.click(disconnect);
+    expect(disconnectMusicAccount).toHaveBeenCalledOnce();
+    await act(async () => resolveDisconnect());
+    expect(onAccountDisconnected).toHaveBeenCalledOnce();
+  });
+
   it("offers only Mafia-prefixed titles without changing an excluded active playlist", async () => {
     const titles = [
       "Mafia Chill",
@@ -180,7 +216,7 @@ describe("AccountPlaylistPicker", () => {
       }),
     ).toBeNull();
     expect(listMusicPlaylists).toHaveBeenCalledOnce();
-    expect(screen.getByText("Connected as Mafia Host")).toBeInTheDocument();
+    expect(screen.getByText("Mafia Host", { exact: true })).toBeInTheDocument();
     expect(
       within(picker).getByRole("option", { name: "Mafia Chill · 12 tracks" }),
     ).toBeInTheDocument();
@@ -212,7 +248,7 @@ describe("AccountPlaylistPicker", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Unable to load YouTube Music playlists. Please try again.",
     );
-    expect(screen.getByText("Connected as Mafia Host")).toBeInTheDocument();
+    expect(screen.getByText("Mafia Host", { exact: true })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Disconnect account" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Connect YouTube Music account" })).toBeNull();
 
@@ -398,7 +434,7 @@ describe("AccountPlaylistPicker", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Unable to disconnect the YouTube Music account. Please try again.",
     );
-    expect(screen.getByText("Connected as Mafia Host")).toBeInTheDocument();
+    expect(screen.getByText("Mafia Host", { exact: true })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Disconnect account" })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "YouTube Music playlist" })).toHaveValue(
       "PL-music",

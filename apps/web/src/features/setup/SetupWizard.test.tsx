@@ -1,5 +1,5 @@
 import { swipeCard } from "../../test-card-gestures.js";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { PlayerProfile } from "../../api/client.js";
@@ -75,6 +75,11 @@ const Harness = ({
   />
 );
 
+const pickerSearch = async (user: ReturnType<typeof userEvent.setup>, opener: HTMLElement) => {
+  if (opener.getAttribute("aria-expanded") !== "true") await user.click(opener);
+  return screen.getByRole("searchbox");
+};
+
 const choosePlayer = async (
   user: ReturnType<typeof userEvent.setup>,
   fieldName: string,
@@ -82,8 +87,8 @@ const choosePlayer = async (
 ) => {
   const field = screen.getByRole("combobox", { name: fieldName });
   await user.click(field);
-  await user.clear(field);
-  await user.type(field, player.nickname);
+  await user.clear(await pickerSearch(user, field));
+  await user.type(await pickerSearch(user, field), player.nickname);
   const suggestionsName = `${fieldName.replace(/ player$/, "")} suggestions`;
   await user.click(
     within(screen.getByRole("listbox", { name: suggestionsName })).getByRole("option", {
@@ -115,15 +120,6 @@ const partialRoleSession = () => {
     selectedPlayerIds,
     setup,
   };
-};
-
-const invokeRoleDrawBackAction = (onRoleDrawBackActionChange: ReturnType<typeof vi.fn>) => {
-  const action = [...onRoleDrawBackActionChange.mock.calls]
-    .reverse()
-    .map(([candidate]) => candidate)
-    .find((candidate): candidate is () => void => typeof candidate === "function");
-  if (action === undefined) throw new Error("Role back action was not registered");
-  act(action);
 };
 
 const seatPointer = (element: Element, type: string, pointerId = 1, isPrimary = true) => {
@@ -257,7 +253,7 @@ describe("SetupWizard federation setup", () => {
       await user.click(screen.getByRole("button", { name: backLabel }));
       expect(
         screen.getByRole("heading", {
-          name: locale === "en" ? "Select 10 players + host" : "Выберите 10 игроков и ведущего",
+          name: locale === "en" ? "Select players" : "Выберите игроков",
         }),
       ).not.toHaveAttribute("tabindex");
       expect(container.querySelector(".setup-edition-label")).toBeNull();
@@ -283,7 +279,10 @@ describe("SetupWizard federation setup", () => {
         onSessionStateChange={onSessionStateChange}
       />,
     );
-    await user.type(screen.getByRole("combobox", { name: "Host player" }), "Player");
+    await user.type(
+      await pickerSearch(user, screen.getByRole("combobox", { name: "Host player" })),
+      "Player",
+    );
     await user.click(screen.getByRole("heading", { level: 1 }));
     expect(onSessionStateChange.mock.lastCall?.[0]).not.toHaveProperty("rulesEdition");
   });
@@ -721,35 +720,114 @@ describe("SetupWizard federation setup", () => {
 });
 
 describe("SetupWizard", () => {
-  it("keeps search typing and Tab native while ignoring removed picker navigation", async () => {
+  it("keeps searched options mounted through WebKit null-target blur until native pointer selection", async () => {
     const user = userEvent.setup();
     const changed = vi.fn();
     render(
       <SetupWizard
-        players={availablePlayers}
+        players={playersWithReplacement}
         onComplete={vi.fn()}
+        initialSessionState={{ ...partialRoleSession(), step: "players" }}
         onSessionStateChange={changed}
       />,
     );
-    const input = screen.getByRole("combobox", { name: "Host player" });
-    await user.type(input, "Player 11");
-    const before = changed.mock.lastCall?.[0];
-    expect(screen.getByRole("option", { name: "Player 11" })).toBeVisible();
-    expect(input).not.toHaveAttribute("aria-activedescendant");
-    for (const key of ["ArrowDown", "ArrowUp", "Enter", "Escape"]) {
-      const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
-      fireEvent(input, event);
-      expect(event.defaultPrevented).toBe(false);
-      expect(input).toHaveValue("Player 11");
-      expect(changed.mock.lastCall?.[0]).toEqual(before);
-    }
-    await user.tab();
-    const option = screen.getByRole("option", { name: "Player 11" });
-    expect(option).toHaveFocus();
-    await user.keyboard("{Enter}");
-    expect(changed.mock.lastCall?.[0].hostPlayerId).toBe(availablePlayers[10]!.id);
+    const opener = screen.getByRole("combobox", { name: "Host player" });
+    const search = await pickerSearch(user, opener);
+    await user.type(search, "Player 12");
+    changed.mockClear();
+    const option = screen.getByRole("option", { name: "Player 12" });
+    fireEvent.pointerDown(option, { pointerId: 7, pointerType: "mouse", isPrimary: true });
+    fireEvent.blur(search, { relatedTarget: null });
+    expect(option).toBeInTheDocument();
+    expect(changed).not.toHaveBeenCalled();
+    fireEvent.pointerUp(option, { pointerId: 7, pointerType: "mouse", isPrimary: true });
+    fireEvent.click(option);
+    expect(opener).toHaveValue("Player 12");
+    expect(changed.mock.lastCall?.[0]).toMatchObject({
+      hostPlayerId: replacementPlayer.id,
+      setup: null,
+    });
+    expect(screen.queryByRole("listbox")).toBeNull();
+    await user.click(opener);
+    await user.click(screen.getByRole("heading", { level: 1 }));
     expect(screen.queryByRole("listbox")).toBeNull();
   });
+  it("opens a selected name with a native browse-only button and searches only deliberately", async () => {
+    const user = userEvent.setup();
+    const session = { ...partialRoleSession(), step: "players" as const };
+    const changed = vi.fn();
+    render(
+      <SetupWizard
+        players={playersWithReplacement}
+        onComplete={vi.fn()}
+        initialSessionState={session}
+        onSessionStateChange={changed}
+      />,
+    );
+    changed.mockClear();
+    const host = screen.getByRole("combobox", { name: "Host player" });
+    expect(host.tagName).toBe("BUTTON");
+    await user.click(host);
+    expect(host).toHaveAttribute("aria-expanded", "true");
+    const search = screen.getByRole("searchbox", { name: "Search Host" });
+    expect(search).not.toHaveFocus();
+    expect(search).toHaveValue("");
+    expect(screen.getByRole("option", { name: "Player 12" })).toBeVisible();
+    await user.type(search, "Player 11");
+    await user.click(screen.getByRole("option", { name: "Player 11" }));
+    expect(changed).not.toHaveBeenCalled();
+    await user.click(host);
+    await user.click(screen.getByRole("combobox", { name: "Seat 1 player" }));
+    expect(screen.getAllByRole("listbox")).toHaveLength(1);
+    expect(host).toHaveAttribute("aria-expanded", "false");
+    await user.click(screen.getByRole("heading", { level: 1 }));
+    expect(screen.queryByRole("searchbox")).toBeNull();
+    expect(changed).not.toHaveBeenCalled();
+  });
+  it.each(["Host", "Seat 1"])(
+    "reaches %s search and selection with native Tab/Enter only",
+    async (label) => {
+      const user = userEvent.setup();
+      const changed = vi.fn();
+      render(
+        <SetupWizard
+          players={availablePlayers}
+          onComplete={vi.fn()}
+          onSessionStateChange={changed}
+        />,
+      );
+      const opener = screen.getByRole("combobox", { name: `${label} player` });
+      for (let step = 0; step < 12 && document.activeElement !== opener; step++) await user.tab();
+      expect(opener).toHaveFocus();
+      await user.keyboard("{Enter}");
+      const input = screen.getByRole("searchbox", { name: `Search ${label}` });
+      expect(input).not.toHaveFocus();
+      await user.tab();
+      await user.tab();
+      expect(input).toHaveFocus();
+      await user.keyboard("Player 11");
+      const before = changed.mock.lastCall?.[0];
+      expect(screen.getByRole("option", { name: "Player 11" })).toBeVisible();
+      expect(input).not.toHaveAttribute("aria-activedescendant");
+      for (const key of ["ArrowDown", "ArrowUp", "Enter", "Escape"]) {
+        const event = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+        fireEvent(input, event);
+        expect(event.defaultPrevented).toBe(false);
+        expect(input).toHaveValue("Player 11");
+        expect(changed.mock.lastCall?.[0]).toEqual(before);
+      }
+      await user.tab();
+      const option = screen.getByRole("option", { name: "Player 11" });
+      expect(option).toHaveFocus();
+      await user.keyboard("{Enter}");
+      expect(
+        label === "Host"
+          ? changed.mock.lastCall?.[0].hostPlayerId
+          : changed.mock.lastCall?.[0].selectedPlayerIds[0],
+      ).toBe(availablePlayers[10]!.id);
+      expect(screen.queryByRole("listbox")).toBeNull();
+    },
+  );
   it("gives every empty, assigned and Casper seat a shared glass host without decorating picker options", async () => {
     const user = userEvent.setup();
     const session = { ...partialRoleSession(), step: "players" as const, setup: null };
@@ -778,7 +856,7 @@ describe("SetupWizard", () => {
     expect(screen.getByRole("combobox", { name: "Seat 1 player" })).toHaveValue("Player 1");
     expect(screen.getByRole("textbox", { name: "Seat 10 player" })).toHaveAttribute("readonly");
     await user.click(emptySeat);
-    await user.type(emptySeat, "Player 7");
+    await user.type(await pickerSearch(user, emptySeat), "Player 7");
     const option = screen.getByRole("option", { name: "Player 7" });
     expect(option).not.toHaveAttribute("data-player-glass");
     expect(option.querySelector(".liquid-card-glass")).toBeNull();
@@ -796,7 +874,7 @@ describe("SetupWizard", () => {
   it("groups the accessible Casper switch with the selection heading", async () => {
     const user = userEvent.setup();
     render(<Harness onComplete={vi.fn()} />);
-    const heading = screen.getByRole("heading", { name: "Select 10 players + host" });
+    const heading = screen.getByRole("heading", { name: "Select players" });
     const header = heading.closest("header");
     expect(header).not.toBeNull();
     const toggle = within(header!).getByRole("switch", { name: "Include Casper" });
@@ -859,8 +937,13 @@ describe("SetupWizard", () => {
     );
     expect(selection.selectedPlayerIds[9]).toBe("casper");
     await user.click(screen.getByRole("combobox", { name: "Host player" }));
-    await user.clear(screen.getByRole("combobox", { name: "Host player" }));
-    await user.type(screen.getByRole("combobox", { name: "Host player" }), "Casper");
+    await user.clear(
+      await pickerSearch(user, screen.getByRole("combobox", { name: "Host player" })),
+    );
+    await user.type(
+      await pickerSearch(user, screen.getByRole("combobox", { name: "Host player" })),
+      "Casper",
+    );
     expect(screen.queryByRole("option", { name: "Casper" })).not.toBeInTheDocument();
   });
 
@@ -868,12 +951,10 @@ describe("SetupWizard", () => {
     const user = userEvent.setup();
     const onComplete = vi.fn();
     const onSessionStateChange = vi.fn<(state: SetupWizardSessionState) => void>();
-    const onRoleDrawBackActionChange = vi.fn();
     const props = {
       players: availablePlayers.slice(0, 10),
       onComplete,
       onSessionStateChange,
-      onRoleDrawBackActionChange,
     };
     const { unmount } = render(<SetupWizard {...props} />);
     await user.click(screen.getByRole("switch", { name: "Include Casper" }));
@@ -890,7 +971,7 @@ describe("SetupWizard", () => {
     expect(screen.queryByRole("dialog", { name: "Choose role" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Draw role for Player 1" }));
     const assignments = onSessionStateChange.mock.lastCall?.[0].setup?.assignments;
-    invokeRoleDrawBackAction(onRoleDrawBackActionChange);
+    await user.click(screen.getByRole("button", { name: "Player setup" }));
     expect(screen.getByRole("switch", { name: "Include Casper" })).toBeChecked();
     const saved = onSessionStateChange.mock.lastCall?.[0];
     expect(screen.getByRole("textbox", { name: "Seat 10 player" })).toHaveValue("Casper");
@@ -918,14 +999,12 @@ describe("SetupWizard", () => {
   it("replaces only C10 when toggled and clears role progress when Casper is removed", async () => {
     const user = userEvent.setup();
     const onSessionStateChange = vi.fn();
-    const onRoleDrawBackActionChange = vi.fn();
     render(
       <SetupWizard
         players={availablePlayers}
         onComplete={vi.fn()}
         initialSessionState={{ ...partialRoleSession(), step: "players" }}
         onSessionStateChange={onSessionStateChange}
-        onRoleDrawBackActionChange={onRoleDrawBackActionChange}
       />,
     );
     await user.click(screen.getByRole("switch", { name: "Include Casper" }));
@@ -936,7 +1015,7 @@ describe("SetupWizard", () => {
     });
     await user.click(screen.getByRole("button", { name: "Start game" }));
     expect(screen.getByText("Draw roles · 9 remaining")).toBeInTheDocument();
-    invokeRoleDrawBackAction(onRoleDrawBackActionChange);
+    await user.click(screen.getByRole("button", { name: "Player setup" }));
     await user.click(screen.getByRole("switch", { name: "Include Casper" }));
     expect(screen.getByRole("combobox", { name: "Seat 10 player" })).toHaveValue("");
     expect(screen.getByRole("button", { name: "Start game" })).toBeDisabled();
@@ -989,11 +1068,11 @@ describe("SetupWizard", () => {
     expect(screen.getByRole("button", { name: "Assign players" })).toBeDisabled();
     const host = screen.getByRole("combobox", { name: "Host player" });
     await user.click(host);
-    await user.type(host, "Virtual");
+    await user.type(await pickerSearch(user, host), "Virtual");
     expect(screen.queryByRole("option", { name: "Virtual Casper" })).not.toBeInTheDocument();
     const seat = screen.getByRole("combobox", { name: "Seat 1 player" });
     await user.click(seat);
-    await user.type(seat, "Virtual");
+    await user.type(await pickerSearch(user, seat), "Virtual");
     expect(screen.queryByRole("option", { name: "Virtual Casper" })).not.toBeInTheDocument();
   });
 
@@ -1141,23 +1220,18 @@ describe("SetupWizard", () => {
     const user = userEvent.setup();
     const session = partialRoleSession();
     const onSessionStateChange = vi.fn();
-    const onRoleDrawBackActionChange = vi.fn();
     render(
       <SetupWizard
         players={availablePlayers}
         onComplete={() => undefined}
         onSessionStateChange={onSessionStateChange}
         initialSessionState={session}
-        {...({ onRoleDrawBackActionChange } as Record<string, unknown>)}
       />,
     );
 
-    expect(onRoleDrawBackActionChange).toHaveBeenCalledWith(expect.any(Function));
     await user.click(screen.getByRole("button", { name: "Player setup" }));
 
-    expect(screen.getByRole("heading", { name: "Select 10 players + host" })).not.toHaveAttribute(
-      "tabindex",
-    );
+    expect(screen.getByRole("heading", { name: "Select players" })).not.toHaveAttribute("tabindex");
     expect(screen.getByRole("combobox", { name: "Host player" })).toHaveValue("Player 11");
     expect(
       screen
@@ -1165,7 +1239,6 @@ describe("SetupWizard", () => {
         .map((seat) => (seat as HTMLInputElement).value),
     ).toEqual(availablePlayers.slice(0, 10).map(({ nickname }) => nickname));
     expect(onSessionStateChange.mock.lastCall?.[0]).toEqual({ ...session, step: "players" });
-    expect(onRoleDrawBackActionChange.mock.lastCall).toEqual([null]);
     expect(screen.queryByText(session.setup.assignments[1]!)).not.toBeInTheDocument();
   });
 
@@ -1175,7 +1248,6 @@ describe("SetupWizard", () => {
     const onStartGame = vi.fn();
     const onEvent = vi.fn();
     const onSessionStateChange = vi.fn();
-    const onRoleDrawBackActionChange = vi.fn();
     render(
       <SetupWizard
         players={availablePlayers}
@@ -1184,11 +1256,10 @@ describe("SetupWizard", () => {
         onEvent={onEvent}
         onSessionStateChange={onSessionStateChange}
         initialSessionState={session}
-        onRoleDrawBackActionChange={onRoleDrawBackActionChange}
       />,
     );
 
-    invokeRoleDrawBackAction(onRoleDrawBackActionChange);
+    await user.click(screen.getByRole("button", { name: "Player setup" }));
     await user.click(screen.getByRole("button", { name: "Start game" }));
 
     expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
@@ -1228,6 +1299,16 @@ describe("SetupWizard", () => {
       try {
         seatPointer(source, "pointerdown");
         seatPointer(source, "pointermove");
+        expect(document.querySelector(".setup-seat-drag-preview")).toHaveAttribute(
+          "aria-hidden",
+          "true",
+        );
+        expect(document.querySelector(".setup-seat-drag-preview")).toHaveTextContent("Player 1");
+        expect(
+          target.closest("[data-setup-seat]")?.querySelector(".setup-seat-content"),
+        ).toHaveAttribute("data-swap-preview", "true");
+        expect(screen.getByRole("combobox", { name: "Seat 1 player" })).toHaveValue("Player 1");
+        expect(target).toHaveValue("Player 7");
         expect(onSessionStateChange).not.toHaveBeenCalled();
         seatPointer(source, "pointerup");
         const selectedPlayerIds = [...session.selectedPlayerIds];
@@ -1300,8 +1381,8 @@ describe("SetupWizard", () => {
         await user.click(screen.getByRole("heading", { level: 1 }));
         onSessionStateChange.mockClear();
         await user.click(picker);
-        await user.clear(picker);
-        await user.type(picker, "not a player");
+        await user.clear(await pickerSearch(user, picker));
+        await user.type(await pickerSearch(user, picker), "not a player");
         expect(screen.getByRole("listbox")).toBeVisible();
         await user.click(screen.getByRole("heading", { level: 1 }));
         expect(onSessionStateChange).not.toHaveBeenCalled();
@@ -1480,14 +1561,14 @@ describe("SetupWizard", () => {
     for (const label of ["Host player", "Seat 1 player"]) {
       const field = screen.getByRole("combobox", { name: label });
       const original = (field as HTMLInputElement).value;
-      await user.clear(field);
-      await user.type(field, "Player 12");
+      await user.clear(await pickerSearch(user, field));
+      await user.type(await pickerSearch(user, field), "Player 12");
       expect(onSessionStateChange).not.toHaveBeenCalled();
       await user.click(screen.getByRole("heading", { level: 1 }));
       expect(field).toHaveValue(original);
-      await user.clear(field);
-      await user.type(field, "not a player");
-      await user.click(screen.getByRole("heading", { name: "Select 10 players + host" }));
+      await user.clear(await pickerSearch(user, field));
+      await user.type(await pickerSearch(user, field), "not a player");
+      await user.click(screen.getByRole("heading", { name: "Select players" }));
       expect(field).toHaveValue(original);
       expect(onSessionStateChange).not.toHaveBeenCalled();
     }
@@ -1499,7 +1580,6 @@ describe("SetupWizard", () => {
     const user = userEvent.setup();
     const onStartGame = vi.fn();
     const onSessionStateChange = vi.fn();
-    const onRoleDrawBackActionChange = vi.fn();
     render(
       <SetupWizard
         players={playersWithReplacement}
@@ -1507,11 +1587,10 @@ describe("SetupWizard", () => {
         onStartGame={onStartGame}
         onSessionStateChange={onSessionStateChange}
         initialSessionState={partialRoleSession()}
-        onRoleDrawBackActionChange={onRoleDrawBackActionChange}
       />,
     );
 
-    invokeRoleDrawBackAction(onRoleDrawBackActionChange);
+    await user.click(screen.getByRole("button", { name: "Player setup" }));
     onSessionStateChange.mockClear();
     await choosePlayer(user, "Host player", replacementPlayer);
 
@@ -1526,7 +1605,6 @@ describe("SetupWizard", () => {
     const user = userEvent.setup();
     const onStartGame = vi.fn();
     const onSessionStateChange = vi.fn();
-    const onRoleDrawBackActionChange = vi.fn();
     render(
       <SetupWizard
         players={playersWithReplacement}
@@ -1534,11 +1612,10 @@ describe("SetupWizard", () => {
         onStartGame={onStartGame}
         onSessionStateChange={onSessionStateChange}
         initialSessionState={partialRoleSession()}
-        onRoleDrawBackActionChange={onRoleDrawBackActionChange}
       />,
     );
 
-    invokeRoleDrawBackAction(onRoleDrawBackActionChange);
+    await user.click(screen.getByRole("button", { name: "Player setup" }));
     onSessionStateChange.mockClear();
     await choosePlayer(user, "Seat 1 player", replacementPlayer);
 
@@ -1557,7 +1634,6 @@ describe("SetupWizard", () => {
       nickname: `Generated ${index + 1}`,
     }));
     const onSessionStateChange = vi.fn();
-    const onRoleDrawBackActionChange = vi.fn();
     render(
       <SetupWizard
         players={availablePlayers}
@@ -1566,11 +1642,10 @@ describe("SetupWizard", () => {
         onPopulateDevelopmentPlayers={() => Promise.resolve(generated)}
         onSessionStateChange={onSessionStateChange}
         initialSessionState={partialRoleSession()}
-        onRoleDrawBackActionChange={onRoleDrawBackActionChange}
       />,
     );
 
-    invokeRoleDrawBackAction(onRoleDrawBackActionChange);
+    await user.click(screen.getByRole("button", { name: "Player setup" }));
     onSessionStateChange.mockClear();
     await user.click(
       screen.getByRole("button", {
@@ -1595,8 +1670,8 @@ describe("SetupWizard", () => {
     expect(screen.queryByRole("button", { name: /set up music/i })).not.toBeInTheDocument();
     const firstSeat = screen.getByRole("combobox", { name: "Seat 1 player" });
     await user.click(firstSeat);
-    await user.clear(firstSeat);
-    await user.type(firstSeat, host.nickname);
+    await user.clear(await pickerSearch(user, firstSeat));
+    await user.type(await pickerSearch(user, firstSeat), host.nickname);
     expect(
       within(screen.getByRole("listbox", { name: "Seat 1 suggestions" })).queryByRole("option", {
         name: host.nickname,
@@ -1605,8 +1680,8 @@ describe("SetupWizard", () => {
 
     const hostSelector = screen.getByRole("combobox", { name: "Host player" });
     await user.click(hostSelector);
-    await user.clear(hostSelector);
-    await user.type(hostSelector, availablePlayers[1]!.nickname);
+    await user.clear(await pickerSearch(user, hostSelector));
+    await user.type(await pickerSearch(user, hostSelector), availablePlayers[1]!.nickname);
     expect(
       within(screen.getByRole("listbox", { name: "Host suggestions" })).queryByRole("option", {
         name: availablePlayers[1]!.nickname,
@@ -1620,14 +1695,14 @@ describe("SetupWizard", () => {
 
     const seat = screen.getByRole("combobox", { name: "Seat 1 player" });
     await user.click(seat);
-    await user.type(seat, "PLAYER 10");
+    await user.type(await pickerSearch(user, seat), "PLAYER 10");
     const seatSuggestions = screen.getByRole("listbox", { name: "Seat 1 suggestions" });
     expect(within(seatSuggestions).getByRole("option", { name: "Player 10" })).toBeInTheDocument();
     await user.click(within(seatSuggestions).getByRole("option", { name: "Player 10" }));
 
     const host = screen.getByRole("combobox", { name: "Host player" });
     await user.click(host);
-    await user.type(host, "PLAYER 11");
+    await user.type(await pickerSearch(user, host), "PLAYER 11");
     await user.click(
       within(screen.getByRole("listbox", { name: "Host suggestions" })).getByRole("option", {
         name: "Player 11",
@@ -1808,7 +1883,7 @@ describe("SetupWizard", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: /select 10 players/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /select players/i })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Seat 1 player" })).toHaveValue("Player 1");
     expect(screen.queryByText(/table music/i)).not.toBeInTheDocument();
   });
@@ -1832,7 +1907,7 @@ describe("SetupWizard", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: /select 10 players/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /select players/i })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Host player" })).toHaveValue("");
   });
 
@@ -1882,7 +1957,7 @@ describe("SetupWizard", () => {
       />,
     );
 
-    expect(screen.getByRole("heading", { name: /select 10 players/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /select players/i })).toBeInTheDocument();
     const startGame = screen.getByRole("button", { name: /^start game$/i });
     expect(startGame).toBeDisabled();
 

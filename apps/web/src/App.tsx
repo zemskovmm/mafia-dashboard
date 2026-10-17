@@ -127,12 +127,8 @@ import { PlayerCardAppearanceContext } from "./features/theme/PlayerCardAppearan
 
 import { isCriticalState } from "./features/game/critical-state.js";
 import { LiveSidePanel } from "./features/game/LiveSidePanel.js";
-import {
-  getActiveBranch,
-  getRemainingUndoBudget,
-  getUndoableEvents,
-  replayToEvent,
-} from "./features/game/game-history.js";
+import { getActiveBranch, getUndoableEvents, replayToEvent } from "./features/game/game-history.js";
+import { RulesBookHost } from "./features/rules/RulesBookHost.js";
 import { AccountPlaylistPicker } from "./features/music/AccountPlaylistPicker.js";
 import { MusicDock } from "./features/music/MusicDock.js";
 import {
@@ -189,6 +185,7 @@ import { applyThemeColor, DEFAULT_THEME_COLOR, readThemeColor } from "./theme.js
 import "./styles/app.css";
 import "./styles/clubs.css";
 import "./styles/timeline.css";
+import "./features/theme/GameButtonGlass.css";
 
 interface LocalLogEntry {
   readonly id: string;
@@ -517,7 +514,7 @@ export const ClubWorkspace = ({
   })();
   const initialDerivedGame = initialState.game ?? initialCanonicalGame;
   const [game, setGame] = useState<GameState | null>(initialDerivedGame);
-  const [rulesGame, setRulesGame] = useState<GameState | null>(null);
+  const [rulesOpen, setRulesOpen] = useState(false);
   const [initialGame, setInitialGame] = useState<InitialGameBaseline | null>(
     initialState.initialGame,
   );
@@ -529,11 +526,6 @@ export const ClubWorkspace = ({
   );
   const [previewTargetEventId, setPreviewTargetEventId] = useState<string | null>(null);
   const [previewGame, setPreviewGame] = useState<GameState | null>(null);
-  const [undoBudget, setUndoBudget] = useState(
-    () =>
-      initialState.undoBudget ??
-      getRemainingUndoBudget(initialState.events, initialState.headEventId),
-  );
 
   const [setupSession, setSetupSession] = useState<SetupWizardSessionState | null>(
     initialState.setup,
@@ -668,7 +660,7 @@ export const ClubWorkspace = ({
   const [activeDrawer, setActiveDrawer] = useState<"log" | "manage" | "dev" | null>(null);
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [appVersionUnavailable, setAppVersionUnavailable] = useState(false);
-  const [roleDrawBackAction, setRoleDrawBackAction] = useState<(() => void) | null>(null);
+
   const [musicSetupOpen, setMusicSetupOpen] = useState(false);
   const [backgroundShade, setBackgroundShade] = useState<BackgroundShade>("black");
   const [glass, setGlass] = useState(() => readGlassSettings());
@@ -809,8 +801,10 @@ export const ClubWorkspace = ({
       ),
     };
   })();
-  const undoHistory = undoBudget === 0 ? [] : getUndoableEvents(activeBranch).slice(-undoBudget);
-  const undoCount = finalResults === null ? undoHistory.length : 0;
+  const undoHistory = getUndoableEvents(activeBranch);
+  // Retain the transport field, but derive availability solely from canonical history.
+  const undoBudget = finalResults === null ? undoHistory.length : 0;
+  const undoCount = undoBudget;
   const previewEntry = events.find(({ id }) => id === previewTargetEventId);
   const renderedGameScreenMutationGeneration = gameScreenMutationGenerationRef.current;
   const canApplyGameScreenMutation = () =>
@@ -1073,9 +1067,6 @@ export const ClubWorkspace = ({
       setEvents(nextEvents);
       setHeadEventId(created.entry.id);
       setResetReturnEventId(null);
-      if (draft.type !== "game.started" && draft.type !== "game.completed") {
-        setUndoBudget((current) => (created.after.day > before.day ? 0 : Math.min(3, current + 1)));
-      }
       setGame(displayedAfter);
       if (created.after.phase !== "finished") {
         setFinalResults(null);
@@ -1145,7 +1136,6 @@ export const ClubWorkspace = ({
       gameScreenMutationGenerationRef.current += 1;
       moveHeadLocally(eventId);
       setResetReturnEventId(null);
-      setUndoBudget(0);
       previewTargetEventIdRef.current = null;
       setPreviewTargetEventId(null);
       setPreviewGame(null);
@@ -1204,7 +1194,7 @@ export const ClubWorkspace = ({
           ...getActiveBranch(eventsRef.current, headEventIdRef.current).map(toLocalLogEntry),
         ],
         undoHistory: [],
-        undoBudget,
+        undoBudget: 0,
         initialGame: initialGameRef.current,
         events: eventsRef.current,
         headEventId: headEventIdRef.current,
@@ -1219,12 +1209,11 @@ export const ClubWorkspace = ({
   const undoLastGameAction = () => {
     if (finalResults !== null) return;
     const entry = undoHistory.at(-1);
-    if (entry?.parentEventId == null) return;
+    if (entry === undefined) return;
     const retained = getActiveBranch(eventsRef.current, entry.parentEventId);
     eventsRef.current = retained;
     setEvents(retained);
     moveHeadLocally(entry.parentEventId);
-    setUndoBudget((current) => Math.max(0, current - 1));
   };
 
   const handleMusicState = useCallback((state: YouTubePlaybackState) => {
@@ -1425,9 +1414,6 @@ export const ClubWorkspace = ({
       setLegacyLog(restored.legacyLog);
       legacyLogRef.current = restored.legacyLog;
       setResetReturnEventId(restored.resetReturnEventId);
-      setUndoBudget(
-        restored.undoBudget ?? getRemainingUndoBudget(restored.events, restored.headEventId),
-      );
       setSetupSession(restored.setup);
       setAvailablePlayerIds(
         (current) => new Set([...current, ...setupHumanPlayerIds(restored.setup)]),
@@ -1504,7 +1490,6 @@ export const ClubWorkspace = ({
     setLegacyLog([]);
     legacyLogRef.current = [];
     setResetReturnEventId(null);
-    setUndoBudget(0);
     gameScreenMutationGenerationRef.current += 1;
     previewTargetEventIdRef.current = null;
     setPreviewTargetEventId(null);
@@ -1727,9 +1712,7 @@ export const ClubWorkspace = ({
     writeLightingRenderer(window.localStorage, renderer);
     dispatchLighting({ type: "select", renderer });
   }, []);
-  const updateRoleDrawBackAction = useCallback((action: (() => void) | null) => {
-    setRoleDrawBackAction(() => action);
-  }, []);
+
   const setPlayerPulse = useCallback((settings: PlayerPulseSettings) => {
     writePlayerPulse(window.localStorage, settings);
     dispatchLighting({ type: "set-player-pulse", settings });
@@ -1744,6 +1727,22 @@ export const ClubWorkspace = ({
   );
 
   const showWorkspaceTools = previewGame === null && (view === "game" || view === "players");
+  const rulesButton = (
+    <button
+      type="button"
+      className="icon-toolbar-button"
+      aria-label={t("rules")}
+      title={t("rules")}
+      aria-haspopup="dialog"
+      aria-expanded={rulesOpen}
+      onClick={() => {
+        setActiveDrawer(null);
+        setRulesOpen((open) => !open);
+      }}
+    >
+      <BookOpen aria-hidden="true" />
+    </button>
+  );
   useEffect(() => {
     if (
       activeDrawer !== "dev" ||
@@ -1898,6 +1897,7 @@ export const ClubWorkspace = ({
       onChange={changeTournament}
       onValidityChange={setTournamentValid}
       disabled={sessionSync.isRemoved || metadataBlocksCreation}
+      compact={game === null && view === "game"}
     />
   );
   const activeSessionsPanel = (
@@ -1999,6 +1999,8 @@ export const ClubWorkspace = ({
           "--glass-matte-blur": `${glass.matte ? glass.frosting * 0.04 : 0}px`,
           "--glass-matte-lens-blur": `${glass.matte ? glass.frosting * 0.012 : 0}px`,
           "--glass-tint": glass.tint / 100,
+          "--button-glass-frost": `${glass.buttonFrosting * 0.06}px`,
+          "--button-glass-gold": glass.buttonGold / 100,
           "--glass-edge-highlights": glass.edgeHighlights / 100,
           "--glass-caustics": glass.caustics / 100,
           "--card-nomination-color": glass.nominationColor,
@@ -2017,7 +2019,7 @@ export const ClubWorkspace = ({
       data-player-pulse-strength={lighting.playerPulse.strength}
     >
       {glassSceneMounted ? <GlassScene settings={glass} onStatus={setGlassStatus} /> : null}
-      {view === "statistics" ? (
+      {!showWorkspaceTools ? (
         <div className="app-fixed-toolbar" aria-label={t("applicationTools")}>
           <button
             type="button"
@@ -2031,6 +2033,7 @@ export const ClubWorkspace = ({
           >
             <Save aria-hidden="true" />
           </button>
+          {rulesButton}
         </div>
       ) : null}
       {showApplicationStatus ? (
@@ -2043,9 +2046,22 @@ export const ClubWorkspace = ({
             <img className="active-club-header-logo" src={club.headerLogo} alt="" />
           )}
           <div>
-            <p className="eyebrow">
-              {view === "players" ? t("persistentPlayers") : t("gameSetupSession", { sessionName })}
-            </p>
+            <div className="app-status-eyebrow">
+              <p className="eyebrow">
+                {view === "players"
+                  ? t("persistentPlayers")
+                  : t("gameSetupSession", { sessionName })}
+              </p>
+              {view === "players" ? (
+                <button
+                  type="button"
+                  className="players-back-action"
+                  onClick={() => setView("game")}
+                >
+                  {t("backToGame")}
+                </button>
+              ) : null}
+            </div>
             <h1 aria-label={applicationStatusTitle}>
               <span className="active-club-title-name">{club.name}</span>
               <span aria-hidden="true"> · </span>
@@ -2077,27 +2093,7 @@ export const ClubWorkspace = ({
           >
             <Save aria-hidden="true" />
           </button>
-          {view === "game" &&
-          game !== null &&
-          !isTerminalGamePhase(game.phase) &&
-          finalResults === null &&
-          finishGameState !== "blocked" &&
-          canApplyGameScreenMutation() ? (
-            <button
-              type="button"
-              className="icon-toolbar-button"
-              aria-label={t("rules")}
-              title={t("rules")}
-              aria-haspopup="dialog"
-              aria-expanded={rulesGame === game}
-              onClick={() => {
-                setActiveDrawer(null);
-                setRulesGame((current) => (current === game ? null : game));
-              }}
-            >
-              <BookOpen aria-hidden="true" />
-            </button>
-          ) : null}
+          {rulesButton}
           {fullscreenAvailable || isFullscreen ? (
             <button
               type="button"
@@ -2112,13 +2108,26 @@ export const ClubWorkspace = ({
           <button
             type="button"
             className="undo-button icon-toolbar-button"
-            aria-label={t("undoLastAction", { count: undoCount })}
+            aria-label={t("undoLastAction")}
             disabled={undoCount === 0}
             onClick={undoLastGameAction}
           >
             <Undo2 aria-hidden="true" />
-            <span className="toolbar-count">{undoCount}</span>
           </button>
+          {isManager && devUnlocked ? (
+            <button
+              type="button"
+              className="dev-toolbar-button icon-toolbar-button"
+              aria-label={activeDrawer === "dev" ? t("closeDeveloperMenu") : t("openDeveloperMenu")}
+              aria-expanded={activeDrawer === "dev"}
+              aria-controls="dev-menu-drawer"
+              onClick={() => {
+                setActiveDrawer((drawer) => (drawer === "dev" ? null : "dev"));
+              }}
+            >
+              <Wrench aria-hidden="true" />
+            </button>
+          ) : null}
           <button
             type="button"
             className={`privacy-button icon-toolbar-button is-tap-${privacyTapStage}`}
@@ -2156,22 +2165,9 @@ export const ClubWorkspace = ({
           >
             <SlidersHorizontal aria-hidden="true" />
           </button>
-          {isManager && devUnlocked ? (
-            <button
-              type="button"
-              className="dev-toolbar-button icon-toolbar-button"
-              aria-label={activeDrawer === "dev" ? t("closeDeveloperMenu") : t("openDeveloperMenu")}
-              aria-expanded={activeDrawer === "dev"}
-              aria-controls="dev-menu-drawer"
-              onClick={() => {
-                setActiveDrawer((drawer) => (drawer === "dev" ? null : "dev"));
-              }}
-            >
-              <Wrench aria-hidden="true" />
-            </button>
-          ) : null}
         </div>
       ) : null}
+      <RulesBookHost open={rulesOpen} onClose={() => setRulesOpen(false)} />
       {isManager && showWorkspaceTools && activeDrawer === "log" ? (
         <aside
           id="game-log-drawer"
@@ -2238,16 +2234,6 @@ export const ClubWorkspace = ({
             <button
               type="button"
               onClick={() => {
-                setActiveDrawer(null);
-                setStatisticsTimelineGameId(undefined);
-                setView("statistics");
-              }}
-            >
-              {t("statisticsScreen")}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
                 if (view === "players" && humanPlayers.length < 10) {
                   setPlayerGateError({
                     key: "addRegisteredPlayers",
@@ -2268,30 +2254,43 @@ export const ClubWorkspace = ({
             >
               {t("startNewGame")}
             </button>
-            {roleDrawBackAction === null ? null : (
+
+            {isManager ? (
               <button
                 type="button"
                 onClick={() => {
-                  roleDrawBackAction();
+                  setPlayerGateError(null);
+                  setAvailabilityScreenOpen(false);
+                  setView("players");
                   setActiveDrawer(null);
                 }}
               >
-                {t("backToPlayerSelection")}
+                {t("playersScreen")}
               </button>
-            )}
+            ) : null}
+            <button
+              type="button"
+              onClick={() => {
+                viewBeforeTimelineRef.current = view === "players" ? "players" : "game";
+                setStatisticsTimelineGameId(undefined);
+                setActiveDrawer(null);
+                setView("timeline");
+              }}
+            >
+              {t("pastGameTimeline")}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setActiveDrawer(null);
+                setStatisticsTimelineGameId(undefined);
+                setView("statistics");
+              }}
+            >
+              {t("statisticsScreen")}
+            </button>
             {isManager ? (
               <>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPlayerGateError(null);
-                    setAvailabilityScreenOpen(false);
-                    setView("players");
-                    setActiveDrawer(null);
-                  }}
-                >
-                  {t("playersScreen")}
-                </button>
                 <button
                   type="button"
                   aria-expanded={musicSetupOpen}
@@ -2502,17 +2501,6 @@ export const ClubWorkspace = ({
             <button
               type="button"
               onClick={() => {
-                viewBeforeTimelineRef.current = view === "players" ? "players" : "game";
-                setStatisticsTimelineGameId(undefined);
-                setActiveDrawer(null);
-                setView("timeline");
-              }}
-            >
-              {t("pastGameTimeline")}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
                 viewBeforeConsoleRef.current = view === "players" ? "players" : "game";
                 setActiveDrawer(null);
                 setView("console");
@@ -2554,7 +2542,7 @@ export const ClubWorkspace = ({
 
       {view === "statistics" ||
       (view === "timeline" && viewBeforeTimelineRef.current === "statistics") ? (
-        <div hidden={view !== "statistics"}>
+        <div className="statistics-route" hidden={view !== "statistics"}>
           <StatisticsScreen
             clubId={club.id}
             isManager={isManager}
@@ -2622,7 +2610,6 @@ export const ClubWorkspace = ({
           ) : null}
           <PlayersScreen
             players={players}
-            onBack={() => setView("game")}
             onCreate={createProfile}
             onUpdate={updateProfile}
             onDelete={deleteProfile}
@@ -2647,7 +2634,6 @@ export const ClubWorkspace = ({
             previewUndealtRoles={isManager && devUnlocked && devModeEnabled && previewUndealtRoles}
             onPopulateDevelopmentPlayers={populateDevelopmentPlayers}
             onOpenAvailablePlayers={() => setAvailabilityScreenOpen(true)}
-            onRoleDrawBackActionChange={updateRoleDrawBackAction}
             persistencePending={
               sessionSync.isCreating ||
               sessionSync.isRemoved ||
@@ -2694,7 +2680,6 @@ export const ClubWorkspace = ({
               setEvents([started.entry]);
               setHeadEventId(started.entry.id);
               setResetReturnEventId(null);
-              setUndoBudget(0);
               phaseRef.current = next.phase;
               // Preserve current setup deviations through play and recovery.
               setHostPlayerId(selectedHostPlayerId);
@@ -2709,8 +2694,6 @@ export const ClubWorkspace = ({
           key={`${previewGame === null ? "live" : "preview"}-${renderedGameScreenMutationGeneration}`}
           game={previewGame ?? game}
           playerExitSettings={playerExit}
-          rulesOpen={rulesGame === game && previewGame === null && canApplyGameScreenMutation()}
-          onRulesClose={() => setRulesGame(null)}
           gameName={sessionName}
           hostName={
             hostPlayerId === null

@@ -1,4 +1,4 @@
-/* global URL, document, navigator, getComputedStyle, HTMLElement, HTMLCanvasElement, HTMLInputElement, innerHeight, innerWidth, structuredClone, localStorage, crypto, TextEncoder, ErrorEvent, Event, performance, requestAnimationFrame, matchMedia */
+/* global URL, document, navigator, getComputedStyle, HTMLElement, HTMLCanvasElement, HTMLButtonElement, innerHeight, innerWidth, structuredClone, localStorage, crypto, TextEncoder, ErrorEvent, Event, performance, requestAnimationFrame, matchMedia */
 import { chromium, webkit } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import assert from "node:assert/strict";
@@ -52,6 +52,17 @@ const unlockDeveloperMenu = async (page) => {
     for (let tap = 0; tap < 5; tap += 1) await privacy.click();
   }
   await menuButton.waitFor();
+};
+const assertReadOnlyToolbar = async (page) => {
+  const toolbar = page.getByLabel("Application tools");
+  assert.equal(
+    await toolbar.locator("button").count(),
+    2,
+    "Preview keeps only Save and Rules, not gameplay controls",
+  );
+  assert.equal(await toolbar.locator(".save-indicator").count(), 1);
+  assert.equal(await toolbar.getByRole("button", { name: "Rules", exact: true }).count(), 1);
+  return toolbar;
 };
 // Use existing card gesture routes, not removed authored key handlers.
 const swipeCard = async (card, direction) => {
@@ -1519,7 +1530,7 @@ const restoreCurrentSetup = async () => {
     { clubId: testClub.id, gameId, state },
   );
   await page.goto(browserAppUrl, { waitUntil: "networkidle" });
-  await page.getByRole("heading", { name: "Select 10 players + host" }).waitFor();
+  await page.getByRole("heading", { name: "Select players", exact: true }).waitFor();
   await unlockDeveloperMenu(page);
 };
 
@@ -1566,7 +1577,7 @@ try {
     await page.waitForTimeout(950);
   }
   await unlockDeveloperMenu(page);
-  const setupHeading = page.getByRole("heading", { name: "Select 10 players + host" });
+  const setupHeading = page.getByRole("heading", { name: "Select players", exact: true });
   if (!(await setupHeading.isVisible())) {
     await page.getByRole("heading", { name: "Players & statistics" }).waitFor();
     await page.getByRole("article", { name: "Player UI Player 1", exact: true }).waitFor();
@@ -1792,6 +1803,11 @@ try {
     }
     await page.getByRole("button", { name: "Clear console" }).click();
     await page.getByText("No errors have been captured.").waitFor();
+    await page.getByRole("button", { name: "Rules", exact: true }).click();
+    const consoleRules = page.locator("dialog.rules-sketchbook[open]");
+    await consoleRules.waitFor();
+    await consoleRules.locator(".rs-close").click();
+    await page.getByRole("heading", { name: "Console", exact: true }).waitFor();
     await page.getByRole("button", { name: "Back" }).click();
     await setupHeading.waitFor();
 
@@ -1863,12 +1879,15 @@ try {
     }
     const firstSeat = page.getByRole("combobox", { name: "Seat 1 player" });
     await page.waitForFunction(
-      (input) => input instanceof HTMLInputElement && input.value !== "",
+      (button) => button instanceof HTMLButtonElement && button.value !== "",
       await firstSeat.elementHandle(),
     );
-    const firstSeatName = await firstSeat.inputValue();
+    const firstSeatName = await firstSeat.evaluate((button) => button.value);
     await page.getByRole("button", { name: "Clear Seat 1", exact: true }).click();
-    if ((await firstSeat.inputValue()) !== "" || (await startGame.isEnabled())) {
+    if (
+      (await firstSeat.evaluate((button) => button.value)) !== "" ||
+      (await startGame.isEnabled())
+    ) {
       throw new Error("Clearing Seat 1 must empty the seat and disable Start game");
     }
     await firstSeat.click();
@@ -1887,7 +1906,7 @@ try {
         !(clear instanceof HTMLElement) ||
         !(chevron instanceof HTMLElement)
       ) {
-        throw new Error("Expected the player input, Clear button, and down arrow");
+        throw new Error("Expected the player browse button, Clear button, and down arrow");
       }
       const inputBox = input.getBoundingClientRect();
       const clearBox = clear.getBoundingClientRect();
@@ -1903,7 +1922,7 @@ try {
     if (
       Math.abs(playerControlGeometry.inputCenterY - playerControlGeometry.clearCenterY) > 1 ||
       Math.abs(playerControlGeometry.inputCenterY - playerControlGeometry.chevronCenterY) > 1 ||
-      playerControlGeometry.clearRight >= playerControlGeometry.chevronLeft
+      playerControlGeometry.clearRight > playerControlGeometry.chevronLeft
     ) {
       throw new Error(
         `Clear must sit left of a vertically centered arrow: ${JSON.stringify(playerControlGeometry)}`,
@@ -2526,9 +2545,7 @@ try {
       ) {
         throw new Error("Preview exposed a live Finish action");
       }
-      if (await page.getByLabel("Application tools").count()) {
-        throw new Error("Preview exposed live host actions");
-      }
+      await assertReadOnlyToolbar(page);
       await page.locator(".game-shell.is-history-preview.phase-day").waitFor();
       await assertRolePresentation(page, {
         masked: true,
@@ -2755,7 +2772,7 @@ try {
         throw new Error("Rejected Finish permitted a destructive Reset");
       await page.getByRole("button", { name: "Exit preview" }).click();
       await blockedSave.click();
-      await page.getByRole("heading", { name: "Select 10 players + host" }).waitFor();
+      await page.getByRole("heading", { name: "Select players", exact: true }).waitFor();
       if (
         completionAttempts.length !== 2 ||
         new Set(completionAttempts.map(({ mutationId }) => mutationId)).size !== 1
@@ -2922,9 +2939,12 @@ try {
     await page.getByRole("region", { name: "Timer controls" }).waitFor();
     if (await page.getByRole("region", { name: "Voting order" }).count())
       throw new Error("Night-root preview exposed a stale daytime voting panel");
-    if ((await page.getByLabel("Application tools").count()) !== 0) {
-      throw new Error("Application toolbar must be unavailable during history preview");
-    }
+    const previewTools = await assertReadOnlyToolbar(page);
+    await previewTools.getByRole("button", { name: "Rules", exact: true }).click();
+    const previewRules = page.locator("dialog.rules-sketchbook[open]");
+    await previewRules.waitFor();
+    await previewRules.locator(".rs-close").click();
+    await page.getByRole("heading", { name: /preview/i }).waitFor();
     await page.screenshot({ path: previewScreenshotPath, fullPage: true });
     await page.getByRole("button", { name: "Exit preview" }).click();
     await page.getByRole("heading", { name: "Zero round" }).waitFor();
@@ -2937,6 +2957,7 @@ try {
 
     await page.getByRole("button", { name: "Open developer menu" }).click();
     await page.getByRole("button", { name: "Enable dev mode" }).click();
+    await page.getByRole("button", { name: "Open Manage menu" }).click();
     await page.getByRole("button", { name: "Past game timeline" }).click();
     await page.getByRole("heading", { name: "Game timeline" }).waitFor();
     await page.getByText(new RegExp(`Checkpoint #${timeline.markers.at(-1).sequence}$`)).waitFor();
@@ -2958,7 +2979,7 @@ try {
     await page.getByRole("button", { name: "Exit preview" }).click();
     await page.getByRole("heading", { name: "Zero round" }).waitFor();
 
-    await page.getByRole("button", { name: "Open developer menu" }).click();
+    await page.getByRole("button", { name: "Open Manage menu" }).click();
     await page.getByRole("button", { name: "Past game timeline" }).click();
     await page.getByRole("heading", { name: "Game timeline" }).waitFor();
     await page
@@ -2985,7 +3006,7 @@ try {
     await page.getByRole("heading", { name: "Night one · Mafia agreement" }).waitFor();
     if (!(await resetSave).ok()) throw new Error("Destructive snapshot Reset failed");
 
-    await page.getByRole("button", { name: "Open developer menu" }).click();
+    await page.getByRole("button", { name: "Open Manage menu" }).click();
     await page.getByRole("button", { name: "Past game timeline" }).click();
     await page.getByRole("heading", { name: "Game timeline" }).waitFor();
     await page.getByRole("button", { name: "Generate sample game data" }).click();
@@ -3441,7 +3462,7 @@ try {
     const durableBeforeNightTimeline = await page.evaluate(() =>
       localStorage.getItem("mafia-dashboard.game-session.v5"),
     );
-    await page.getByRole("button", { name: "Open developer menu" }).click();
+    await page.getByRole("button", { name: "Open Manage menu" }).click();
     await page.getByRole("button", { name: "Past game timeline" }).click();
     await page.getByRole("heading", { name: "Game timeline" }).waitFor();
     if ((await page.locator(".timeline-marker").count()) === 0) {
@@ -3953,14 +3974,21 @@ try {
   await page.getByRole("button", { name: "Assign players" }).click();
   const playerSelectors = page.getByRole("combobox", { name: /^Seat \d+ player$/ });
   if ((await playerSelectors.count()) !== 10) throw new Error("Expected ten player selectors");
-  await page.waitForFunction(() =>
-    [...document.querySelectorAll('input[aria-label^="Seat "][aria-label$=" player"]')].every(
-      (input) => input instanceof HTMLInputElement && input.value !== "",
-    ),
-  );
+  await page.waitForFunction(() => {
+    const seats = [
+      ...document.querySelectorAll(
+        'button[role="combobox"][aria-label^="Seat "][aria-label$=" player"]',
+      ),
+    ];
+    return (
+      seats.length === 10 &&
+      seats.every((button) => button instanceof HTMLButtonElement && button.value !== "")
+    );
+  });
   const selectedPlayerNames = await playerSelectors.evaluateAll((selectors) =>
     selectors.map((selector) => {
-      if (!(selector instanceof HTMLInputElement)) throw new Error("Expected player input");
+      if (!(selector instanceof HTMLButtonElement))
+        throw new Error("Expected native player browse button");
       return selector.value;
     }),
   );

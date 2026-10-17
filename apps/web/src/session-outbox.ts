@@ -217,7 +217,6 @@ export const isCurrentGameSessionState = (value: unknown): value is CurrentGameS
   Array.isArray(value.legacyLog) &&
   Array.isArray(value.undoHistory) &&
   isNonNegativeInteger(value.undoBudget) &&
-  value.undoBudget <= 3 &&
   Array.isArray(value.events) &&
   hasCurrentCanonicalShape(value) &&
   !containsCopiedPlayerName(value);

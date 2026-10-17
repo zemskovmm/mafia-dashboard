@@ -23,6 +23,8 @@ const defaults = {
   nominationIcon: "vote",
   supportIcon: "hand",
   selectionStyle: "check-outline",
+  buttonFrosting: 70,
+  buttonGold: 35,
 };
 const controls = [
   ["refraction", "Refraction strength", 24],
@@ -505,22 +507,27 @@ async function verifyInteractions(page, family) {
     const before = await gameState(page);
     await picker.click();
     await page.getByRole("listbox").waitFor();
-    await picker.fill("Player");
+    assert.equal(await picker.evaluate((node) => node.tagName), "BUTTON");
+    const search = page.getByRole("searchbox", { name: "Search Seat 1", exact: true });
+    await search.click();
+    await search.fill("Player");
     await page.keyboard.press("ArrowDown");
     assert.equal(await picker.getAttribute("aria-activedescendant"), null);
     await page.keyboard.press("Escape");
     assert.equal(await page.getByRole("listbox").isVisible(), true);
     assert.deepEqual(await gameState(page), before, "Native editing/keys do not select a player");
-    // Escape on type=search is browser-owned; ordinary blur restores the selection.
-    await page.getByRole("heading", { name: "Select 10 players + host", exact: true }).click();
+    // Escape on type=search is browser-owned; outside interaction dismisses it.
+    await page.getByRole("heading", { name: "Select players", exact: true }).click();
     assert.equal(await page.getByRole("listbox").count(), 0);
-    assert.equal(await picker.inputValue(), "Player 1");
+    assert.equal(await picker.getAttribute("value"), "Player 1");
     await picker.click();
     const option = page.locator("#seat-1-player-suggestions").getByRole("option", {
       name: "Player 1",
       exact: true,
     });
-    await option.focus();
+    await page.getByRole("searchbox", { name: "Search Seat 1", exact: true }).click();
+    await page.keyboard.press("Tab");
+    assert.equal(await option.evaluate((node) => document.activeElement === node), true);
     await page.keyboard.press("Enter");
     assert.equal(await page.getByRole("listbox").count(), 0);
     assert.deepEqual(
@@ -540,10 +547,23 @@ async function verifyInteractions(page, family) {
         document.querySelector("#seat-1-player")?.value === "Player 2" &&
         document.querySelector("#seat-2-player")?.value === "Player 1",
     );
+    const expectedSeats = [...before.setup.selectedPlayerIds];
+    [expectedSeats[0], expectedSeats[1]] = [expectedSeats[1], expectedSeats[0]];
+    await page.waitForFunction(
+      (expected) =>
+        JSON.stringify(
+          JSON.parse(localStorage.getItem("mafia-dashboard.game-session.v5"))?.current?.state?.setup
+            ?.selectedPlayerIds,
+        ) === JSON.stringify(expected),
+      expectedSeats,
+    );
     const state = await gameState(page);
-    assert.ok(state.setup.selectedPlayerIds[0].endsWith("000000000002"));
-    assert.ok(state.setup.selectedPlayerIds[1].endsWith("000000000001"));
-    return "native picker edit/option Enter, no authored arrows/Escape, ordinary blur and pointer drag swap; canonical setup readback";
+    assert.deepEqual(
+      state.setup.selectedPlayerIds,
+      expectedSeats,
+      "Exact swap is durably committed; all other seats unchanged",
+    );
+    return "browse-first picker, deliberate search, native Tab/option Enter, no authored arrows/Escape, outside dismissal and pointer drag swap; canonical setup readback";
   }
   if (family === "availability") {
     const search = page.getByRole("searchbox", { name: "Search available players" });

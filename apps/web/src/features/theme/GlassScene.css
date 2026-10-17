@@ -1,18 +1,18 @@
 .dev-glass-fields {
   gap: 8px;
 }
-:is(.dev-glass-advanced, .dev-player-card-appearance) {
+:is(.dev-glass-advanced, .dev-player-card-appearance, .dev-button-glass) {
   min-width: 0;
   border-top: 1px solid var(--border);
 }
-:is(.dev-glass-advanced, .dev-player-card-appearance) > :not(summary) {
+:is(.dev-glass-advanced, .dev-player-card-appearance, .dev-button-glass) > :not(summary) {
   margin-block: 8px;
 }
-:is(.dev-glass-advanced, .dev-player-card-appearance) label {
+:is(.dev-glass-advanced, .dev-player-card-appearance, .dev-button-glass) label {
   display: grid;
   gap: 6px;
 }
-:is(.dev-glass-advanced, .dev-player-card-appearance) :is(input, select) {
+:is(.dev-glass-advanced, .dev-player-card-appearance, .dev-button-glass) :is(input, select) {
   width: 100%;
   min-width: 0;
 }
@@ -43,41 +43,30 @@
   flex-shrink: 0;
 }
 
-/* Own the existing body wash inside this workspace so no unscaled duplicate
-   survives behind it. Entry/management retain their own HTML materials. */
+/* One viewport-relative Noir scene, also sampled by the enhanced renderer.
+   Panel surfaces never restart the decorative background. */
 .app-shell[data-glass-settings] {
-  --glass-bg: var(--bg);
-  --glass-top: var(--page-top);
-  background:
-    radial-gradient(circle at 76% 82%, rgb(23 90 69 / 24%), transparent 30rem),
-    repeating-linear-gradient(128deg, transparent 0 50px, rgb(255 255 255 / 3%) 51px 52px),
-    linear-gradient(180deg, var(--glass-top) 0%, var(--glass-bg) 45%);
+  --glass-bg: #151a18;
+  --glass-top: #202623;
+  isolation: isolate;
+  background: transparent;
 }
 .app-shell[data-glass-settings]::before {
-  /* Separate opacity scales only the broad wash, never semantic lighting or
-     edge highlights, without nested relative-color alpha arithmetic. */
   background:
-    radial-gradient(circle at 86% 42%, rgb(from var(--theme-base) r g b / 28%), transparent 24rem),
-    radial-gradient(circle at 50% -20%, rgb(from var(--theme-base) r g b / 18%), transparent 38rem),
     radial-gradient(
-      circle at 74% 16%,
-      rgb(from var(--theme-base) r g b / 34%) 0 4%,
-      transparent 25%
+      ellipse at 0 0,
+      rgb(from var(--theme-base) r g b / calc(0.25 * var(--glass-gold-light, 0.25))),
+      transparent 78%
     ),
-    radial-gradient(
-      circle at 28% 72%,
-      rgb(from var(--theme-base) r g b / 18%) 0 8%,
-      transparent 32%
+    repeating-linear-gradient(
+      146deg,
+      transparent 0 78px,
+      rgb(32 32 26 / 80%) 95px 119px,
+      transparent 144px 195px
     ),
-    conic-gradient(
-      from 135deg at 64% 48%,
-      transparent 0 18%,
-      rgb(from var(--theme-base) r g b / 14%) 25%,
-      transparent 34% 68%,
-      rgb(from var(--theme-base) r g b / 10%) 78%,
-      transparent 88%
-    );
-  opacity: var(--glass-gold-light);
+    linear-gradient(125deg, var(--glass-top), var(--glass-bg));
+  filter: none;
+  opacity: 1;
 }
 .app-shell[data-glass-settings] .live-side-panel {
   isolation: isolate;
@@ -173,41 +162,11 @@
   background: none;
   box-shadow: none;
 }
-.app-shell .availability-selection-card {
-  isolation: isolate;
-  background: linear-gradient(125deg, #202623, #151a18);
-}
-.availability-selection-card::before,
-.availability-selection-card::after {
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  border-radius: inherit;
-  content: "";
-}
-.availability-selection-card::before {
-  background: repeating-linear-gradient(
-    146deg,
-    transparent 0 78px,
-    #20201a 95px 119px,
-    transparent 144px 195px
-  );
-}
-.availability-selection-card::after {
-  background: radial-gradient(
-    ellipse at 0 0,
-    rgb(from var(--theme-base) r g b / 25%),
-    transparent 78%
-  );
-  opacity: var(--glass-gold-light, 0.25);
-}
-.app-shell[data-glass-status="ready"] .availability-selection-card::before,
-.app-shell[data-glass-status="ready"] .availability-selection-card::after {
-  content: none;
+.app-shell[data-glass-settings] .player-setup-card {
+  background: rgb(15 16 17 / 48%);
 }
 @media (prefers-reduced-transparency: reduce) {
-  .app-shell[data-glass-settings] .live-side-panel {
+  .app-shell[data-glass-settings] :is(.live-side-panel, .player-setup-card) {
     background: #161819;
     -webkit-backdrop-filter: none;
     backdrop-filter: none;

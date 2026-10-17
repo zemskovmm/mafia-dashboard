@@ -249,6 +249,7 @@ export async function verifyIpadLayout(
   await page.setViewportSize({ width: 1376, height: 900 });
   await page.getByRole("button", { name: "Open developer menu" }).click();
   await page.getByRole("button", { name: "Enable dev mode" }).click();
+  await page.getByRole("button", { name: "Open Manage menu" }).click();
   await page.getByRole("button", { name: "Past game timeline" }).click();
   await page.getByRole("heading", { name: "Game timeline" }).waitFor();
   // The real directory nickname also stresses the native filter's intrinsic sizing.

@@ -211,6 +211,130 @@ describe("ClubPortal", () => {
     ).not.toBeChecked();
   });
 
+  it.each([true, false])(
+    "hides Edit club Best Move and preserves its saved %s value and logos through save/cancel",
+    async (bestMoveEnabled) => {
+      const user = userEvent.setup();
+      const onSaveClub = vi.fn().mockResolvedValue(undefined);
+      const onEditingChange = vi.fn();
+      const club: Club = {
+        id: "00000000-0000-4000-8000-000000000101",
+        name: "La Verdad",
+        city: "Málaga",
+        headerLogo:
+          "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='1200' height='300'/>",
+        cardLogo:
+          "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='300' height='900'/>",
+        language: "en",
+        bestMoveEnabled,
+        role: "manager",
+        createdAt: "2026-10-15T00:00:00.000Z",
+        updatedAt: "2026-10-15T00:00:00.000Z",
+      };
+      const editor = (
+        <ClubPortal
+          user={creator}
+          authConfigured
+          authUnavailable={false}
+          clubs={[club]}
+          loading={false}
+          error={null}
+          editing={club}
+          onSignOut={vi.fn()}
+          onEditingChange={onEditingChange}
+          onSaveClub={onSaveClub}
+          onOpenClub={vi.fn()}
+        />
+      );
+      const { rerender } = render(editor);
+
+      expect(screen.queryByRole("checkbox", { name: "Enable Best move" })).not.toBeInTheDocument();
+      expect(screen.getByRole("img", { name: "Header logo preview" })).toHaveAttribute(
+        "src",
+        club.headerLogo,
+      );
+      expect(screen.getByRole("img", { name: "Playing-card logo preview" })).toHaveAttribute(
+        "src",
+        club.cardLogo,
+      );
+      expect(screen.getAllByText("Change")).toHaveLength(2);
+      await user.clear(screen.getByLabelText("Club name"));
+      await user.type(screen.getByLabelText("Club name"), "Renamed club");
+      await user.clear(screen.getByLabelText("City"));
+      await user.type(screen.getByLabelText("City"), "Sevilla");
+      await user.selectOptions(screen.getByRole("combobox", { name: "Language" }), "ru");
+      await user.click(screen.getByRole("button", { name: "Cancel" }));
+      expect(onEditingChange).toHaveBeenCalledWith(null);
+      expect(onSaveClub).not.toHaveBeenCalled();
+      expect(club).toMatchObject({
+        name: "La Verdad",
+        city: "Málaga",
+        language: "en",
+        bestMoveEnabled,
+      });
+
+      // Honor the controlled editor's close callback, then reopen the saved club.
+      rerender(<></>);
+      rerender(editor);
+      expect(screen.getByLabelText("Club name")).toHaveValue(club.name);
+      expect(screen.getByLabelText("City")).toHaveValue(club.city);
+      expect(screen.getByRole("combobox", { name: "Language" })).toHaveValue(club.language);
+      await user.clear(screen.getByLabelText("Club name"));
+      await user.type(screen.getByLabelText("Club name"), "Renamed club");
+      await user.clear(screen.getByLabelText("City"));
+      await user.type(screen.getByLabelText("City"), "Sevilla");
+      await user.selectOptions(screen.getByRole("combobox", { name: "Language" }), "ru");
+      await user.click(screen.getByRole("button", { name: "Save club" }));
+      await waitFor(() =>
+        expect(onSaveClub).toHaveBeenCalledExactlyOnceWith(club.id, {
+          name: "Renamed club",
+          city: "Sevilla",
+          language: "ru",
+          headerLogo: club.headerLogo,
+          cardLogo: club.cardLogo,
+          bestMoveEnabled,
+        }),
+      );
+
+      // FileReader uploads also retain the hidden setting, without rewriting
+      // the source club or transforming either uploaded value.
+      onSaveClub.mockClear();
+      rerender(<></>);
+      rerender(editor);
+      const image = "<svg xmlns='http://www.w3.org/2000/svg' width='800' height='200'/>";
+      const imageValue = `data:image/svg+xml;base64,${btoa(image)}`;
+      await user.upload(
+        screen.getByLabelText(/Header logo/, { selector: "input" }),
+        new File([image], "header.svg", { type: "image/svg+xml" }),
+      );
+      await user.upload(
+        screen.getByLabelText(/Playing-card logo/, { selector: "input" }),
+        new File([image], "card.svg", { type: "image/svg+xml" }),
+      );
+      await waitFor(() => {
+        expect(screen.getByRole("img", { name: "Header logo preview" })).toHaveAttribute(
+          "src",
+          imageValue,
+        );
+        expect(screen.getByRole("img", { name: "Playing-card logo preview" })).toHaveAttribute(
+          "src",
+          imageValue,
+        );
+      });
+      await user.click(screen.getByRole("button", { name: "Save club" }));
+      await waitFor(() =>
+        expect(onSaveClub).toHaveBeenCalledExactlyOnceWith(club.id, {
+          name: club.name,
+          city: club.city,
+          language: club.language,
+          headerLogo: imageValue,
+          cardLogo: imageValue,
+          bestMoveEnabled,
+        }),
+      );
+    },
+  );
+
   it("defaults a new club to the browser language and submits an explicit language", async () => {
     const user = userEvent.setup();
     const onSaveClub = vi.fn().mockResolvedValue(undefined);

@@ -29,6 +29,27 @@ const Harness = ({
 };
 
 describe("Glass controls", () => {
+  it("tunes and resets button glass independently of player cards and background", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<Harness status="off" onChange={onChange} />);
+    await user.click(screen.getByText("Glass", { selector: "summary" }));
+    await user.click(screen.getByText("Game buttons", { selector: "summary" }));
+    const frost = screen.getByRole("slider", { name: "Button frosting" });
+    const gold = screen.getByRole("slider", { name: "Button gold strength" });
+    expect(frost).toBeEnabled();
+    expect(gold).toBeEnabled();
+    fireEvent.change(frost, { target: { value: "0" } });
+    fireEvent.change(gold, { target: { value: "100" } });
+    expect(onChange).toHaveBeenLastCalledWith({
+      ...DEFAULT_GLASS_SETTINGS,
+      buttonFrosting: 0,
+      buttonGold: 100,
+    });
+    await user.click(screen.getByRole("button", { name: "Reset button glass" }));
+    expect(onChange).toHaveBeenLastCalledWith(DEFAULT_GLASS_SETTINGS);
+  });
+
   it.each([
     ["en", "Glass", "Fine tuning"],
     ["ru", "Стекло", "Тонкая настройка"],

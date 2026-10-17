@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Unplug } from "lucide-react";
 import { ApiError, disconnectMusicAccount, listMusicPlaylists } from "../../api/client.js";
 import type { MusicAccountStatus, MusicPlaylist } from "../../api/client.js";
 import { reportError } from "../console/error-console.js";
@@ -106,14 +107,13 @@ export const AccountPlaylistPicker = ({
       {view === "account" ? (
         <>
           <div className="account-playlist-heading">
-            <div>
-              <h2>{t("Music library")}</h2>
-              <p className="muted">
-                {t("Connected as {account}", { account: status.accountLabel ?? "" })}
-              </p>
-            </div>
+            <p className="music-account-name">{status.accountLabel ?? ""}</p>
             <button
               type="button"
+              className="music-account-disconnect"
+              aria-label={disconnecting ? t("Disconnecting…") : t("Disconnect account")}
+              title={t("Disconnect account")}
+              aria-busy={disconnecting}
               disabled={disconnecting}
               onClick={() => {
                 setDisconnecting(true);
@@ -131,7 +131,7 @@ export const AccountPlaylistPicker = ({
                   .finally(() => setDisconnecting(false));
               }}
             >
-              {disconnecting ? t("Disconnecting…") : t("Disconnect account")}
+              <Unplug aria-hidden="true" />
             </button>
           </div>
           {disconnectFailed ? (

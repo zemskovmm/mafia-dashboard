@@ -100,7 +100,7 @@ const ClubEditor = ({
         </label>
         <label className="club-logo-field">
           <span>{t("playingCardLogo")}</span>
-          <span className="club-logo-preview card-logo-preview">
+          <span className="club-logo-preview">
             {cardLogo === null ? (
               <span className="club-logo-placeholder">
                 <ImagePlus aria-hidden="true" />
@@ -121,14 +121,16 @@ const ClubEditor = ({
           />
         </label>
       </div>
-      <label>
-        <input
-          type="checkbox"
-          checked={bestMoveEnabled}
-          onChange={(event) => setBestMoveEnabled(event.target.checked)}
-        />
-        {t("bestMoveEnabled")}
-      </label>
+      {club === null ? (
+        <label>
+          <input
+            type="checkbox"
+            checked={bestMoveEnabled}
+            onChange={(event) => setBestMoveEnabled(event.target.checked)}
+          />
+          {t("bestMoveEnabled")}
+        </label>
+      ) : null}
       {club === null ? (
         <label>
           <input

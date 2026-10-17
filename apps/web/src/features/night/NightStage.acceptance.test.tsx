@@ -318,7 +318,7 @@ describe("App physical-count acceptance and recovery", () => {
     view.unmount();
     renderWorkspace();
     expect(game().phase).toBe("car-crash-result");
-    await user.click(screen.getByRole("button", { name: "Undo last action · 1 available" }));
+    await user.click(screen.getByRole("button", { name: "Undo last action" }));
     expect(game().phase).toBe("car-crash-decision");
     expect(game().carCrashVotes).toEqual({});
     expect(game().carCrashResult).toBeUndefined();
@@ -401,10 +401,7 @@ describe("App physical-count acceptance and recovery", () => {
       );
       await user.click(
         screen.getByRole("button", {
-          name:
-            locale === "en"
-              ? "Undo last action · 2 available"
-              : "Отменить последнее действие · доступно: 2",
+          name: locale === "en" ? "Undo last action" : "Отменить последнее действие",
         }),
       );
       expect(game().shotObservations).toHaveLength(3);
@@ -412,10 +409,7 @@ describe("App physical-count acceptance and recovery", () => {
       expect(document.querySelectorAll(".shooter-button.has-additional-shots")).toHaveLength(0);
       await user.click(
         screen.getByRole("button", {
-          name:
-            locale === "en"
-              ? "Undo last action · 1 available"
-              : "Отменить последнее действие · доступно: 1",
+          name: locale === "en" ? "Undo last action" : "Отменить последнее действие",
         }),
       );
       expect(game().shotObservations).toBeUndefined();

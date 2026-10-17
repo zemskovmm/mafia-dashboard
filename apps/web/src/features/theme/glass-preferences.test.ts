@@ -24,6 +24,8 @@ const approvedDefaults = {
   nominationIcon: "vote",
   supportIcon: "hand",
   selectionStyle: "check-outline",
+  buttonFrosting: 70,
+  buttonGold: 35,
 } as const;
 
 const customizedSettings = {
@@ -43,6 +45,8 @@ const customizedSettings = {
   nominationIcon: "flag",
   supportIcon: "thumbs-up",
   selectionStyle: "check",
+  buttonFrosting: 20,
+  buttonGold: 80,
 } as const;
 
 const numericFields = [
@@ -53,6 +57,8 @@ const numericFields = [
   ["edgeHighlights", 100],
   ["caustics", 100],
   ["nominationTint", 50],
+  ["buttonFrosting", 100],
+  ["buttonGold", 100],
 ] as const;
 
 describe("device-local glass preferences", () => {
@@ -81,10 +87,8 @@ describe("device-local glass preferences", () => {
       expect(validateGlassSettings(legacySettings)).toEqual(customizedSettings);
       const setItem = vi.fn();
       writeGlassSettings(legacySettings, () => ({ setItem }));
-      expect(setItem).toHaveBeenCalledExactlyOnceWith(
-        GLASS_STORAGE_KEY,
-        JSON.stringify(customizedSettings),
-      );
+      expect(setItem).toHaveBeenCalledExactlyOnceWith(GLASS_STORAGE_KEY, expect.any(String));
+      expect(JSON.parse(setItem.mock.calls[0]![1])).toEqual(customizedSettings);
     },
   );
   it.each(numericFields)("validates %s independently within 0..%s", (field, maximum) => {
@@ -142,7 +146,8 @@ describe("device-local glass preferences", () => {
       expect(settings).toEqual(expected);
       const setItem = vi.fn();
       writeGlassSettings(settings, () => ({ setItem }));
-      expect(setItem).toHaveBeenCalledExactlyOnceWith(GLASS_STORAGE_KEY, JSON.stringify(expected));
+      expect(setItem).toHaveBeenCalledExactlyOnceWith(GLASS_STORAGE_KEY, expect.any(String));
+      expect(JSON.parse(setItem.mock.calls[0]![1])).toEqual(expected);
       expect(DEFAULT_GLASS_SETTINGS).toHaveProperty("matte", true);
     },
   );
@@ -178,7 +183,8 @@ describe("device-local glass preferences", () => {
     const value = customizedSettings;
     const withDerivedState = { ...value, active: true, resolvedTint: 0.2, status: "ready" };
     writeGlassSettings(withDerivedState, () => ({ setItem }));
-    expect(setItem).toHaveBeenCalledExactlyOnceWith(GLASS_STORAGE_KEY, JSON.stringify(value));
+    expect(setItem).toHaveBeenCalledExactlyOnceWith(GLASS_STORAGE_KEY, expect.any(String));
+    expect(JSON.parse(setItem.mock.calls[0]![1])).toEqual(value);
     expect(readGlassSettings(() => ({ getItem: () => JSON.stringify(value) }))).toEqual(value);
   });
   it("validates the six player-card fields independently and accepts only six-digit hex colors", () => {
