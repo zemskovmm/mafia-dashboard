@@ -72,6 +72,28 @@
   background: rgb(var(--card-nomination-rgb, 230 188 126) / var(--card-nomination-tint, 0.18));
 }
 
+/* Selection is an independent surface finish, including with global Matte off.
+   GPU-ready surfaces use the equivalent per-surface shader contribution. */
+.table-stage .player-seat.is-nomination-selected .liquid-card-glass__backdrop {
+  -webkit-backdrop-filter: blur(min(12px, calc(var(--glass-matte-blur, 0px) + 4px))) saturate(108%);
+  backdrop-filter: blur(min(12px, calc(var(--glass-matte-blur, 0px) + 4px))) saturate(108%);
+}
+.table-stage .player-seat.is-nomination-selected .liquid-card-glass__lens {
+  filter: blur(min(12px, calc(var(--glass-matte-lens-blur, 0px) + 4px)));
+}
+.table-stage .player-seat.is-nomination-selected .liquid-card-glass__backdrop::before {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  content: "";
+  background: rgb(163 171 163 / 7%);
+}
+@media (prefers-reduced-transparency: reduce) {
+  .table-stage .player-seat.is-nomination-selected .liquid-card-glass__backdrop::before {
+    background: rgb(163 171 163 / 18%);
+  }
+}
+
 /* WebKit accepts URL syntax but does not render SVG backdrop displacement.
    Engines exposing its prefixed backdrop API deliberately retain CSS blur;
    syntax support alone must not silently replace that working fallback. */
@@ -80,6 +102,13 @@
   .liquid-card-glass[data-liquid-card-lens="ready"] .liquid-card-glass__backdrop {
     backdrop-filter: var(--liquid-card-refraction) blur(var(--glass-matte-lens-blur, 0.6px))
       saturate(1.18);
+  }
+  .table-stage
+    .player-seat.is-nomination-selected
+    .liquid-card-glass[data-liquid-card-lens="ready"]
+    .liquid-card-glass__backdrop {
+    backdrop-filter: var(--liquid-card-refraction)
+      blur(min(12px, calc(var(--glass-matte-lens-blur, 0.6px) + 4px))) saturate(1.18);
   }
 }
 

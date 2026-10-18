@@ -98,7 +98,8 @@ it("resumes an interrupted club purge through HTTP only for its original manager
     );
     setActor(owner);
     const resumed = await app.inject({ method: "DELETE", url: `/api/clubs/${clubId}` });
-    expect(resumed.statusCode).toBe(204);
+    expect(resumed.statusCode).toBe(200);
+    expect(resumed.json()).toEqual({ deleted: true, physicalCleanup: "not_guaranteed" });
     expect(await fixture.storage.read((tx) => tx.list(`club:${clubId}:`))).toEqual([]);
   } finally {
     fault.mockRestore();

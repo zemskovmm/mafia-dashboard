@@ -98,7 +98,10 @@ describe("GameScreen", () => {
       });
       expect(card).toHaveClass("is-sheriff-highlight");
       expect(card.querySelector(".vgpu-player-lighting")).not.toBeNull();
-      expect(card.querySelector(".role-badge")).toHaveTextContent("sheriff");
+      expect(card.querySelector('.player-role-icon[role="img"]')).toHaveAttribute(
+        "aria-label",
+        "sheriff",
+      );
       expect(container.querySelectorAll(".is-sheriff-highlight")).toHaveLength(1);
       expect(container.querySelector(".game-shell")).toHaveClass("is-table-cycle-night");
       rerender(<GameScreen {...props} game={game} privacyHidden={false} />);
@@ -129,7 +132,7 @@ describe("GameScreen", () => {
       rerender(<GameScreen {...props} game={day} privacyHidden />);
       expect(container.querySelector(".game-shell")).toHaveClass("is-table-cycle-day");
       expect(container.querySelector(".is-sheriff-highlight")).toBeNull();
-      expect(container.querySelector(".role-badge")).toBeNull();
+      expect(container.querySelector('.player-role-icon[role="img"]')).toBeNull();
     },
   );
 
@@ -345,7 +348,9 @@ describe("GameScreen", () => {
     const props = { hostName: "Host", onGameChange, onEvent };
     const { container, rerender } = render(<GameScreen {...props} game={day} privacyHidden />);
     const inspect = (masked: boolean) => {
-      expect(container.querySelectorAll(".role-badge")).toHaveLength(masked ? 0 : 10);
+      expect(container.querySelectorAll('.player-role-icon[role="img"]')).toHaveLength(
+        masked ? 0 : 10,
+      );
       expect(container.querySelector(".team-counts")).toHaveAttribute(
         "aria-label",
         masked ? "Active team counts hidden" : "7 active citizens and 3 active Mafia",

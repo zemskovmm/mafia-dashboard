@@ -1,3 +1,5 @@
+import type { PlayerRoleIcons, PlayerRoleIconsInput } from "./player-role-icon-contracts.js";
+
 export class ManagerLockedError extends Error {
   public readonly code = "manager_locked";
 
@@ -34,6 +36,7 @@ export interface PlayerProfileInput {
   readonly lastName: string | null;
   readonly email: string | null;
   readonly clubAccess?: PlayerClubAccess;
+  readonly roleIcons?: PlayerRoleIconsInput;
 }
 
 interface PlayerStatistics {
@@ -56,7 +59,9 @@ interface PlayerStatistics {
   readonly bestMoveMafiaHits: number;
 }
 
-export interface PlayerProfile extends Omit<PlayerProfileInput, "clubAccess"> {
+export interface PlayerProfile extends Omit<PlayerProfileInput, "clubAccess" | "roleIcons"> {
+  readonly roleIcons?: PlayerRoleIcons;
+  readonly roleIconsVersion?: string | null;
   readonly id: string;
   readonly clubAccess: PlayerClubAccess;
   readonly managerLocked: boolean;

@@ -2,11 +2,19 @@ import { useEffect, useState } from "react";
 import { isCasperPlayer } from "@mafia/game-domain";
 import { ApiError } from "../../api/client.js";
 import type { PlayerProfile, PlayerProfileInput } from "../../api/client.js";
+import {
+  PLAYER_ICON_ROLES,
+  type PlayerRoleIcons,
+  type PlayerRoleIconsInput,
+} from "../../api/player-role-icon-contracts.js";
 import { reportError } from "../console/error-console.js";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { playersMusicMessages } from "../../i18n/messages/players-music.js";
 import { GlassSurface } from "../theme/GlassSurface.js";
 import { LiquidCardGlass } from "../theme/LiquidCardGlass.js";
+import { roleIconMessages } from "../../i18n/messages/role-icons.js";
+import { RoleIconFields } from "./RoleIconPicker.js";
+import { usePlayerRoleAppearance } from "./player-display.js";
 
 interface PlayersScreenProps {
   readonly players: readonly PlayerProfile[];
@@ -24,6 +32,7 @@ interface ProfileDraft {
   readonly firstName: string;
   readonly lastName: string;
   readonly email: string;
+  readonly roleIcons?: PlayerRoleIconsInput;
 }
 
 const emptyDraft: ProfileDraft = {
@@ -44,24 +53,43 @@ const draftFromPlayer = (player: PlayerProfile): ProfileDraft => ({
   email: player.email ?? "",
 });
 
-const toInput = (draft: ProfileDraft): PlayerProfileInput =>
-  draft.consent
-    ? {
-        nickname: draft.nickname.trim(),
-        consent: true,
-        clubAccess: draft.clubAccess,
-        firstName: draft.firstName.trim(),
-        lastName: draft.lastName.trim(),
-        email: draft.email.trim(),
-      }
-    : {
-        nickname: draft.nickname.trim(),
-        consent: false,
-        clubAccess: draft.clubAccess === "manager" ? "manager" : "none",
-        firstName: null,
-        lastName: null,
-        email: null,
-      };
+const withoutUploadedIcons = (
+  saved: PlayerRoleIcons | undefined,
+  changes: PlayerRoleIconsInput | undefined,
+): PlayerRoleIconsInput | undefined => {
+  const result = { ...changes };
+  const combined = { ...saved, ...changes };
+  for (const role of PLAYER_ICON_ROLES) {
+    if (combined[role]?.kind === "image" || combined[role]?.kind === "upload") result[role] = null;
+  }
+  return Object.keys(result).length ? result : undefined;
+};
+
+const toInput = (draft: ProfileDraft): PlayerProfileInput => {
+  const roleIcons = draft.consent
+    ? draft.roleIcons
+    : withoutUploadedIcons(undefined, draft.roleIcons);
+  return {
+    ...(roleIcons && Object.keys(roleIcons).length ? { roleIcons } : {}),
+    ...(draft.consent
+      ? {
+          nickname: draft.nickname.trim(),
+          consent: true,
+          clubAccess: draft.clubAccess,
+          firstName: draft.firstName.trim(),
+          lastName: draft.lastName.trim(),
+          email: draft.email.trim(),
+        }
+      : {
+          nickname: draft.nickname.trim(),
+          consent: false,
+          clubAccess: draft.clubAccess === "manager" ? "manager" : "none",
+          firstName: null,
+          lastName: null,
+          email: null,
+        }),
+  };
+};
 
 type PlayersMusicTranslate = (
   key: keyof typeof playersMusicMessages.en,
@@ -213,6 +241,8 @@ const PlayerCard = ({
   readonly deletionProtected: boolean;
 }) => {
   const { formatDate, t } = useMessages(playersMusicMessages);
+  const { t: iconText } = useMessages(roleIconMessages);
+  const { images } = usePlayerRoleAppearance(player.id);
   const [draft, setDraft] = useState(() => draftFromPlayer(player));
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -322,7 +352,27 @@ const PlayerCard = ({
           busy={saving || deleting}
           managerLocked={player.managerLocked}
           managerGuidanceId={deletionGuidanceId}
-          onChange={setDraft}
+          onChange={(next) =>
+            setDraft(
+              next.consent
+                ? next
+                : { ...next, roleIcons: withoutUploadedIcons(player.roleIcons, next.roleIcons) },
+            )
+          }
+        />
+        <RoleIconFields
+          choices={{ ...player.roleIcons, ...draft.roleIcons }}
+          draftIdentity={player}
+          images={images}
+          consent={draft.consent}
+          busy={saving || deleting}
+          labelPrefix={player.nickname}
+          onChange={(role, choice) =>
+            setDraft((current) => ({
+              ...current,
+              roleIcons: { ...current.roleIcons, [role]: choice },
+            }))
+          }
         />
         {blockedReason === null ? null : (
           <p id={deletionGuidanceId} className="deletion-guidance">
@@ -333,6 +383,17 @@ const PlayerCard = ({
         <div className="player-card-actions">
           <button type="submit" disabled={saving || deleting}>
             {saving ? t("Saving…") : t("Save {nickname}", { nickname: player.nickname })}
+          </button>
+          <button
+            type="button"
+            disabled={saving || deleting}
+            aria-label={iconText("Cancel player changes", { player: player.nickname })}
+            onClick={() => {
+              setDraft(draftFromPlayer(player));
+              setError(null);
+            }}
+          >
+            {iconText("Cancel")}
           </button>
           {onDelete === undefined || player.managerLocked ? null : (
             <button
@@ -379,6 +440,7 @@ export const PlayersScreen = ({
   deletionProtectedPlayerIds,
 }: PlayersScreenProps) => {
   const { t } = useMessages(playersMusicMessages);
+  const { t: iconText } = useMessages(roleIconMessages);
   const [draft, setDraft] = useState<ProfileDraft>(emptyDraft);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -436,8 +498,37 @@ export const PlayersScreen = ({
             labelPrefix={t("New player")}
             busy={saving}
             managerLocked={false}
-            onChange={setDraft}
+            onChange={(next) =>
+              setDraft(
+                next.consent
+                  ? next
+                  : { ...next, roleIcons: withoutUploadedIcons(undefined, next.roleIcons) },
+              )
+            }
           />
+          <RoleIconFields
+            choices={draft.roleIcons ?? {}}
+            consent={draft.consent}
+            busy={saving}
+            labelPrefix={t("New player")}
+            onChange={(role, choice) =>
+              setDraft((current) => ({
+                ...current,
+                roleIcons: { ...current.roleIcons, [role]: choice },
+              }))
+            }
+          />
+          <button
+            type="button"
+            disabled={saving}
+            aria-label={iconText("Cancel player changes", { player: t("New player") })}
+            onClick={() => {
+              setDraft(emptyDraft);
+              setError(null);
+            }}
+          >
+            {iconText("Cancel")}
+          </button>
           {error === null ? null : <p role="alert">{error}</p>}
         </form>
       </GlassSurface>

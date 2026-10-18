@@ -1,7 +1,7 @@
 import type { PlayerStatus, Role } from "@mafia/game-domain";
 import type { CSSProperties, ReactNode } from "react";
 import { useContext, useRef } from "react";
-import { Check, Flag, Hand, MessageCircleOff, ThumbsUp, Vote } from "lucide-react";
+import { Hand, MessageCircleOff } from "lucide-react";
 import { resolvePlayerLightingKind } from "../effects/PlayerCardLighting.js";
 import {
   ActivePlayerLighting,
@@ -9,19 +9,22 @@ import {
   VgpuTableLightingCanvas,
 } from "../effects/vgpu/VgpuLightingCanvas.js";
 import { useMessages } from "../../i18n/I18nProvider.js";
-import { gameMessages, type GameMessageKey } from "../../i18n/messages/game.js";
+import { gameMessages } from "../../i18n/messages/game.js";
 import { LiquidCardGlass } from "../theme/LiquidCardGlass.js";
 import { PlayerCardAppearanceContext } from "../theme/PlayerCardAppearanceContext.js";
+import { cardSuit, CARD_SUIT_SYMBOLS } from "./card-suit.js";
+import { CardGameIdentityContext } from "./CardGameIdentityContext.js";
+import { PlayerRoleIcon } from "./PlayerRoleIcon.js";
 import { usePlayerExits } from "../game/PlayerExitProvider.js";
 import { PlayerExitAnimation } from "./PlayerExitAnimation.js";
 import {
   RoleDrawGlow,
-  RoleDrawIcon,
   RoleDrawPresentation,
   type RoleDrawRequest,
 } from "./RoleDrawPresentation.js";
 
 export interface TableSeatView {
+  readonly playerId?: string;
   readonly seat: number;
   readonly name: string;
   readonly status?: PlayerStatus;
@@ -65,21 +68,8 @@ interface GameTableProps {
   readonly readOnly?: boolean;
 }
 
-const PersonIcon = () => (
-  <svg viewBox="0 0 48 48" aria-hidden="true" className="person-icon">
-    <circle cx="24" cy="15" r="8" />
-    <path d="M9 43c1.3-11.1 6.3-16.7 15-16.7S37.7 31.9 39 43" />
-  </svg>
-);
-
 const TABLE_POSITION_COUNT = 10;
 const FIRST_SEAT_ANGLE = 198;
-const roleMessageKeys: Record<Role, GameMessageKey> = {
-  citizen: "role.citizen",
-  don: "role.don",
-  mafia: "role.mafia",
-  sheriff: "role.sheriff",
-};
 
 export const GameTable = ({
   seats,
@@ -99,8 +89,7 @@ export const GameTable = ({
 }: GameTableProps) => {
   const { t } = useMessages(gameMessages);
   const appearance = useContext(PlayerCardAppearanceContext);
-  const NominationIcon = appearance.nominationIcon === "flag" ? Flag : Vote;
-  const SupportIcon = appearance.supportIcon === "thumbs-up" ? ThumbsUp : Hand;
+  const gameId = useContext(CardGameIdentityContext);
   const exits = usePlayerExits();
   const seatButtonsRef = useRef(new Map<number, HTMLButtonElement>());
   const swipeStart = useRef<{
@@ -202,47 +191,45 @@ export const GameTable = ({
             mafiaShooter: !privacyHidden && seat.mafiaShooter,
             sheriffHighlight: !privacyHidden && seat.sheriffHighlight,
           });
-          const nominationClass = `${seat.nominated ? " is-nominated" : ""}${seat.nominationSelected && appearance.selectionStyle === "check-outline" ? " has-nomination-selection-outline" : ""}`;
+          const nominationClass = `${seat.nominated ? " is-nominated" : ""}${seat.nominationSelected ? " is-nomination-selected" : ""}`;
+          const suit = cardSuit(gameId, seat.playerId);
+          const index = (lower: boolean) => (
+            <span className={`card-index${lower ? " card-index--lower" : ""}`} aria-hidden="true">
+              <span className="seat-number">{seat.seat}</span>
+              <span className="card-suit">{suit === null ? "◇" : CARD_SUIT_SYMBOLS[suit]}</span>
+            </span>
+          );
           const roleDrawClass = roleDraw
             ? ` role-draw-card${roleDraw.dealt ? " is-role-dealt" : roleDraw.role ? " role-draw-preview" : ""}${roleDraw.request ? " is-role-flipping" : ""}`
             : "";
           const face = (faceRole: Role | undefined) => (
             <>
-              <span className="seat-number">{seat.seat}</span>
-              {roleDraw ? <RoleDrawIcon role={faceRole} /> : <PersonIcon />}
-              {seat.nominated ? (
-                <span
-                  className="card-nomination-status"
-                  data-treatment={appearance.nominationTreatment}
-                >
+              {index(false)}
+              {index(true)}
+              <PlayerRoleIcon role={showRole ? faceRole : undefined} playerId={seat.playerId} />
+              <span
+                className="card-nomination-status"
+                data-treatment={appearance.nominationTreatment}
+              >
+                {seat.nominated ? (
                   <span
                     className="card-status-slot card-nomination-symbol"
                     role="img"
                     aria-label={t("table.nominated")}
                   >
-                    <NominationIcon aria-hidden="true" />
+                    <Hand aria-hidden="true" />
                   </span>
-                  {seat.supportCount ? (
-                    <span
-                      className="card-status-slot card-support"
-                      role="img"
-                      aria-label={t("table.supportCount", { count: seat.supportCount })}
-                    >
-                      <SupportIcon aria-hidden="true" />
-                      <span aria-hidden="true">+{seat.supportCount}</span>
-                    </span>
-                  ) : null}
-                </span>
-              ) : null}
-              {seat.nominationSelected ? (
-                <span
-                  className="card-status-slot card-selection"
-                  role="img"
-                  aria-label={t("table.currentSelection")}
-                >
-                  <Check aria-hidden="true" />
-                </span>
-              ) : null}
+                ) : null}
+                {seat.nominated && seat.supportCount ? (
+                  <span
+                    className="card-status-slot card-support"
+                    role="img"
+                    aria-label={t("table.supportCount", { count: seat.supportCount })}
+                  >
+                    <span aria-hidden="true">+{seat.supportCount}</span>
+                  </span>
+                ) : null}
+              </span>
               <span className="card-discipline-status">
                 {seat.fouls ? (
                   <span
@@ -267,12 +254,6 @@ export const GameTable = ({
               </span>
               <span className="seat-name">{seat.name}</span>
               <span className="seat-badges">
-                {showRole && faceRole ? (
-                  <span className={`role-badge role-${faceRole}`}>
-                    {t(roleMessageKeys[faceRole])}
-                  </span>
-                ) : null}
-
                 {seat.voteTargetSeat === undefined ? null : (
                   <span className="state-badge">
                     {t("table.voteTarget", { seat: seat.voteTargetSeat })}

@@ -7,6 +7,7 @@ export interface GlassSurfaceGeometry {
   readonly radius: number;
   readonly tint: readonly [number, number, number];
   readonly tintAmount?: number;
+  readonly selectionFinish?: number;
   readonly opacity: number;
   readonly roundedClips?: readonly { readonly rect: SceneRect; readonly radius: number }[];
 }
@@ -68,6 +69,7 @@ uniform float u_tintAmount;
 uniform float u_edgeHighlights;
 uniform float u_caustics;
 uniform float u_lens;
+uniform float u_selectionFinish;
 float sdRound(vec2 p,vec4 r,float radius){
  vec2 q=abs(p-r.xy-r.zw*.5)-(r.zw*.5-vec2(radius));
  return length(max(q,0.0))+min(max(q.x,q.y),0.0)-radius;
@@ -131,10 +133,13 @@ void main(){
  vec3 col=scene(displaced);
  // Fixed five-tap frosting of the same displaced decoration, in CSS pixels.
  // Clear mode keeps one sample; rims, tint and HTML content are not blurred.
- if(u_matte>.5 && u_frosting>0.0){
-  col=col*.4+.15*(scene(displaced+vec2(u_frosting,0.0))+scene(displaced-vec2(u_frosting,0.0))
-   +scene(displaced+vec2(0.0,u_frosting))+scene(displaced-vec2(0.0,u_frosting)));
+ float frost=min(12.0,(u_matte>.5?u_frosting:0.0)+u_selectionFinish*8.0);
+ if(frost>0.0){
+  col=col*.4+.15*(scene(displaced+vec2(frost,0.0))+scene(displaced-vec2(frost,0.0))
+   +scene(displaced+vec2(0.0,frost))+scene(displaced-vec2(0.0,frost)));
  }
+ // A restrained neutral frosted veil; semantic tint is applied afterwards.
+ col=mix(col,vec3(.64,.67,.64),u_selectionFinish*.14);
  col=mix(col,u_tint,u_tintAmount);
  float rim=(1.0-smoothstep(.35,2.0,-d));
  float light=pow(max(0.0,dot(normal,normalize(vec2(-.65,-.75)))),5.0);
@@ -265,6 +270,7 @@ export const createGlassRenderer = (canvas: HTMLCanvasElement): GlassRenderer =>
           gl.scissor(left, height - bottom, right - left, bottom - top);
           rect("u_rect", surface.rect);
           scalar("u_radius", surface.radius);
+          scalar("u_selectionFinish", surface.selectionFinish ?? 0);
           scalar("u_opacity", surface.opacity);
           rgb("u_tint", surface.tint);
           scalar("u_tintAmount", surface.tintAmount ?? scene.tintAmount);

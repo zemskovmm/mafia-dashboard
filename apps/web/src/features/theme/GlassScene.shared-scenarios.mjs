@@ -20,9 +20,6 @@ const defaults = {
   nominationTint: 18,
   nominationColor: "#e6bc7e",
   nominationTreatment: "hybrid",
-  nominationIcon: "vote",
-  supportIcon: "hand",
-  selectionStyle: "check-outline",
   buttonFrosting: 70,
   buttonGold: 35,
 };
@@ -430,17 +427,11 @@ async function verifyNominationMaterial(page) {
     "Appearance controls must not change events/state",
   );
   await probe.evaluate((el, original) => el.setAttribute("class", original), original);
-  await page.getByLabel("Nomination icon", { exact: true }).selectOption("flag");
-  await page.getByLabel("Support icon", { exact: true }).selectOption("thumbs-up");
-  await page.getByLabel("This speaker’s choice", { exact: true }).selectOption("check");
   const customized = {
     ...defaults,
     nominationTint: 50,
     nominationColor: "#88c7e3",
     nominationTreatment: "tint",
-    nominationIcon: "flag",
-    supportIcon: "thumbs-up",
-    selectionStyle: "check",
   };
   assert.deepEqual(await saved(page), customized);
   await page.reload();
@@ -453,9 +444,6 @@ async function verifyNominationMaterial(page) {
     ["nominationTint", "Nomination tint"],
     ["nominationColor", "Nomination color"],
     ["nominationTreatment", "Nomination treatment"],
-    ["nominationIcon", "Nomination icon"],
-    ["supportIcon", "Support icon"],
-    ["selectionStyle", "This speaker’s choice"],
   ])
     assert.equal(
       await page.getByLabel(label, { exact: true }).inputValue(),

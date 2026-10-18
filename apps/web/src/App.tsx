@@ -152,6 +152,7 @@ import { projectNominationHistory } from "./features/timeline/nomination-history
 import { StatisticsScreen } from "./features/statistics/StatisticsScreen.js";
 import { TournamentPicker } from "./features/tournaments/TournamentPicker.js";
 import { PlayerDirectoryProvider } from "./features/players/player-display.js";
+import { CardGameIdentityContext } from "./features/table/CardGameIdentityContext.js";
 import { I18nProvider, useMessages, type FeatureI18n, type Locale } from "./i18n/I18nProvider.js";
 import { LanguageSelector } from "./i18n/LanguageSelector.js";
 import { shellMessages, type ShellMessageKey } from "./i18n/messages/shell.js";
@@ -2808,7 +2809,11 @@ export const ClubWorkspace = ({
       >
         <SharedGlassContext.Provider value={sharedGlassReady}>
           <PlayerCardAppearanceContext.Provider value={glass}>
-            <PlayerDirectoryProvider profiles={players}>{content}</PlayerDirectoryProvider>
+            <PlayerDirectoryProvider profiles={players} clubId={club.id}>
+              <CardGameIdentityContext.Provider value={sessionSync.gameId}>
+                {content}
+              </CardGameIdentityContext.Provider>
+            </PlayerDirectoryProvider>
           </PlayerCardAppearanceContext.Provider>
         </SharedGlassContext.Provider>
       </VgpuLightingProvider>
@@ -2938,6 +2943,7 @@ export const App = () => {
   const entryInFlight = useRef(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<ShellMessageKey | null>(null);
+  const [showDeletionNotice, setShowDeletionNotice] = useState(false);
   const [storageError, setStorageError] = useState<ShellMessageKey | null>(null);
   const [browserGameRecoveryPending, setBrowserGameRecoveryPending] = useState(false);
   const [browserGameRecoveryError, setBrowserGameRecoveryError] = useState(false);
@@ -3039,6 +3045,7 @@ export const App = () => {
   }, []);
 
   const endSession = async () => {
+    setShowDeletionNotice(false);
     cancelEntry();
     setLoading(true);
     try {
@@ -3061,6 +3068,7 @@ export const App = () => {
 
   const saveClub = async (clubId: string | null, input: ClubInput | ClubUpdateInput) => {
     if (user === null) throw new Error("Sign in before editing a club");
+    setShowDeletionNotice(false);
     try {
       if (clubId === null && (!("ownerConsent" in input) || input.ownerConsent !== true)) {
         throw new Error("Owner profile consent is required to create a club");
@@ -3087,8 +3095,9 @@ export const App = () => {
     if (!window.confirm(t("deleteClubConfirmation", { name: club.name }))) {
       return;
     }
+    setShowDeletionNotice(false);
     try {
-      await deleteClub(club.id);
+      const result = await deleteClub(club.id);
       const cleanup = {
         localStorage: window.localStorage,
         clubId: club.id,
@@ -3106,6 +3115,7 @@ export const App = () => {
       setBrowserGameState(readBrowserGameStorageState(window.localStorage));
       setEditingClub(null);
       setError(null);
+      setShowDeletionNotice(result.physicalCleanup === "not_guaranteed");
     } catch (error) {
       reportError(error, { source: "api", context: "clubs.delete" });
       setError("clubDeleteFailed");
@@ -3115,6 +3125,7 @@ export const App = () => {
   const openClub = (club: Club, origin: ClubEntryOrigin) => {
     if (entryInFlight.current || selectedClub !== null || browserGameState.kind === "invalid")
       return;
+    setShowDeletionNotice(false);
     setEditingClub(null);
     const attachment = readBrowserGameAttachment(window.localStorage);
     if (attachment !== null && attachment.clubId !== club.id) {
@@ -3244,9 +3255,13 @@ export const App = () => {
           clubs={clubs}
           loading={loading}
           error={error === null ? null : t(error)}
+          showDeletionNotice={showDeletionNotice}
           editing={editingClub}
           onSignOut={endSession}
-          onEditingChange={setEditingClub}
+          onEditingChange={(editing) => {
+            setShowDeletionNotice(false);
+            setEditingClub(editing);
+          }}
           onSaveClub={saveClub}
           onOpenClub={openClub}
         />

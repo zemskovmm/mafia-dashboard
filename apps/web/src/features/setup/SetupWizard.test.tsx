@@ -362,7 +362,7 @@ describe("SetupWizard federation setup", () => {
       const card = screen.getByRole("button", {
         name: `Draw role for Player ${index + 2} — Preview: ${role}`,
       });
-      expect(card).toHaveTextContent(role);
+      expect(card.querySelector(".player-role-icon")).toHaveAttribute("aria-label", role);
       expect(card).not.toHaveClass("is-role-dealt");
     });
     expect(container.querySelectorAll(".is-role-dealt")).toHaveLength(1);

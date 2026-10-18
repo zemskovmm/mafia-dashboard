@@ -221,16 +221,24 @@ describe("club API client", () => {
     );
   });
 
-  it("uses the secure server session for club requests", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
-    vi.stubGlobal("fetch", fetchMock);
+  it.each([200, 204])(
+    "reports unguaranteed physical cleanup for a %s club deletion using the secure session",
+    async (status) => {
+      const result = { deleted: true, physicalCleanup: "not_guaranteed" };
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue(
+          new Response(status === 204 ? null : JSON.stringify(result), { status }),
+        );
+      vi.stubGlobal("fetch", fetchMock);
 
-    await deleteClub("00000000-0000-4000-8000-000000000101");
+      await expect(deleteClub("00000000-0000-4000-8000-000000000101")).resolves.toEqual(result);
 
-    expect(fetchMock).toHaveBeenCalledWith("/api/clubs/00000000-0000-4000-8000-000000000101", {
-      method: "DELETE",
-    });
-  });
+      expect(fetchMock).toHaveBeenCalledWith("/api/clubs/00000000-0000-4000-8000-000000000101", {
+        method: "DELETE",
+      });
+    },
+  );
 
   it("loads and clears the current Google-backed application session", async () => {
     const session = {

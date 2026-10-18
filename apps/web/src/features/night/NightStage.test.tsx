@@ -134,7 +134,7 @@ describe("NightStage", () => {
   );
 
   it.each(["night-mafia", "night-don", "night-sheriff", "night-resolution"] as const)(
-    "keeps role badges visible in %s with the daytime toggle on",
+    "keeps accessible role artwork visible in %s with the daytime toggle on",
     (phase) => {
       const game = { ...createNightGame(), phase };
       render(
@@ -145,7 +145,7 @@ describe("NightStage", () => {
           onEvent={() => undefined}
         />,
       );
-      expect(document.querySelectorAll(".role-badge")).toHaveLength(10);
+      expect(document.querySelectorAll('.player-role-icon[role="img"]')).toHaveLength(10);
     },
   );
   it.each(["en", "ru"] as const)(

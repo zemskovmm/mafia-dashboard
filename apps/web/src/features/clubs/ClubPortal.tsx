@@ -15,6 +15,7 @@ interface ClubPortalProps {
   readonly clubs: readonly Club[];
   readonly loading: boolean;
   readonly error: string | null;
+  readonly showDeletionNotice?: boolean;
   readonly editing: Club | "new" | null;
   readonly onSignOut: () => Promise<void>;
   readonly onEditingChange: (editing: Club | "new" | null) => void;
@@ -182,6 +183,7 @@ export const ClubPortal = ({
   clubs,
   loading,
   error,
+  showDeletionNotice = false,
   editing,
   onSignOut,
   onEditingChange,
@@ -241,6 +243,11 @@ export const ClubPortal = ({
           <strong>{t("applicationName")}</strong>
         </div>
         <h1 className={editing === null ? "club-portal-slogan" : undefined}>{portalTitle}</h1>
+        {user !== null && showDeletionNotice ? (
+          <p className="club-auth-status" role="status">
+            {t("clubDeletedWithoutErasure")}
+          </p>
+        ) : null}
         {user === null ? (
           loading ? (
             <p className="club-auth-status" role="status">

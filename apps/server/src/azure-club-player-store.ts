@@ -11,6 +11,15 @@ import { inspectGameIdentities } from "./game-session-identity.js";
 import type { AzureStorage, AzureTransaction } from "./azure-storage.js";
 import { blobReference, digest, uuidKey } from "./azure-storage.js";
 import { DEFAULT_CLUB_ID } from "./club-store.js";
+import type { PlayerRoleIconBundle } from "./player-role-icon-contracts.js";
+import {
+  type PlayerRoleIconRow,
+  playerRoleIconReference,
+  playerRoleIconSelectors,
+  preparePlayerRoleIcons,
+  readPlayerRoleIcons,
+  savePlayerRoleIcons,
+} from "./player-role-icons.js";
 
 interface ClubRow {
   id: string;
@@ -33,7 +42,7 @@ interface MemberRow {
   role: ClubRole;
   accessPlayerId?: string;
 }
-interface PlayerRow {
+interface PlayerRow extends PlayerRoleIconRow {
   id: string;
   nickname?: string;
   firstName?: string;
@@ -398,7 +407,9 @@ export class AzureClubStore {
                   logoRef(row as unknown as ClubRow, "header"),
                   logoRef(row as unknown as ClubRow, "card"),
                 ].filter((ref) => ref !== null)
-              : row.rowKey.includes(":game:")
+              : row.rowKey.includes(":game:") ||
+                  (row.rowKey.includes(":player:") &&
+                    playerRoleIconReference(row as PlayerRoleIconRow) !== null)
                 ? [blobReference(row)]
                 : [];
             for (const ref of refs) await removeBlob(this.storage, ref);
@@ -428,6 +439,14 @@ export class AzureClubStore {
           return true;
         });
         if (!purged) break;
+      }
+      // A failed Table publication leaves staging without a live or cleanup row.
+      // Sweep the exact club namespace too, under the same durable fence. Match
+      // legacy UUID casing while deleting the original exact owned Blob name.
+      const root = this.storage.blobPrefix(await this.storage.getControl());
+      for await (const blob of this.storage.blobs.listBlobsFlat({ prefix: root })) {
+        if (blob.name.slice(root.length).toLowerCase().startsWith(ownedPurpose))
+          await this.storage.deleteOwnedBlob(blob.name);
       }
       return this.storage.read(async (tx) => {
         const marker = await tx.get<{ userId: string }>(tombstoneKey);
@@ -497,6 +516,8 @@ export class AzurePlayerStore {
         return {
           id: row.id,
           nickname: row.nickname!,
+          roleIcons: playerRoleIconSelectors(row),
+          roleIconsVersion: row.roleIconsVersion ?? null,
           firstName: row.firstName ?? null,
           lastName: row.lastName ?? null,
           email: row.email ?? null,
@@ -529,8 +550,18 @@ export class AzurePlayerStore {
     );
   }
 
+  public getRoleIcons(id: string, clubId = DEFAULT_CLUB_ID): Promise<PlayerRoleIconBundle | null> {
+    return this.storage.read(async (tx) => {
+      if (!(await available(tx, clubId))) return null;
+      const row = await tx.get<PlayerRow>(playerKey(clubId, id));
+      if (!row || row.retiredAt) return null;
+      return readPlayerRoleIcons(tx, row, clubId, id);
+    });
+  }
+
   public async create(input: PlayerProfileInput, clubId = DEFAULT_CLUB_ID): Promise<PlayerProfile> {
     const id = randomUUID();
+    const icons = await preparePlayerRoleIcons(input.roleIcons, input.consent);
     await this.storage.mutate(async (tx) => {
       validateProfileInput(input);
       if (!(await available(tx, clubId))) throw new Error("Club was not found");
@@ -541,6 +572,7 @@ export class AzurePlayerStore {
       const now = new Date();
       const row: PlayerRow = {
         id,
+        ...(await savePlayerRoleIcons(tx, {}, icons, input.consent, clubId, id)),
         nickname: input.nickname.trim(),
         firstName: optional(input.firstName),
         lastName: optional(input.lastName),
@@ -567,6 +599,7 @@ export class AzurePlayerStore {
     clubId: string,
     actorUserId: string,
   ): Promise<PlayerProfile | null> {
+    const icons = await preparePlayerRoleIcons(input.roleIcons, input.consent);
     const updated = await this.storage.mutate(async (tx) => {
       if (!(await available(tx, clubId))) return false;
       const existing = await tx.get<PlayerRow>(playerKey(clubId, id));
@@ -598,6 +631,7 @@ export class AzurePlayerStore {
       await updateLinkedMember(tx, clubId, existing.id, existing.userId, linked, access);
       await tx.set(playerKey(clubId, id), {
         id: existing.id,
+        ...(await savePlayerRoleIcons(tx, existing, icons, input.consent, clubId, id)),
         nickname: input.nickname.trim(),
         firstName: optional(input.firstName),
         lastName: optional(input.lastName),
@@ -642,6 +676,8 @@ export class AzurePlayerStore {
       }
       if (row.userId) await updateLinkedMember(tx, clubId, row.id, row.userId, undefined, "none");
       await tx.delete(nicknameKey(clubId, row.nickname!));
+      const iconRef = playerRoleIconReference(row);
+      if (iconRef) await tx.retireBlob(iconRef);
       await tx.set(playerKey(clubId, id), {
         id: row.id,
         clubAccess: "none",

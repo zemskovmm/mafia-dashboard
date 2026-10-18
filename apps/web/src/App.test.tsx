@@ -51,6 +51,7 @@ import { createFederationSampleGameHistory } from "./features/timeline/sample-ga
 import { ApiError, type Club, type PlayerProfile, type RemoteGameSession } from "./api/client.js";
 import { App as WelcomeApp, ClubWorkspace } from "./App.js";
 import { DEFAULT_FANCY_STUFF_SETTINGS } from "./features/effects/fancy-stuff-preferences.js";
+import { cardSuit, CARD_SUIT_SYMBOLS } from "./features/table/card-suit.js";
 
 import { gameSessionStorageKey, GameSessionOutbox } from "./session-outbox.js";
 import { withBrowserGameStorageGuard } from "./browser-game-storage-lock.js";
@@ -915,7 +916,10 @@ beforeEach(() => {
   api.signOut.mockReset().mockResolvedValue(undefined);
   api.listClubs.mockReset().mockResolvedValue([]);
   api.createClub.mockReset();
-  api.deleteClub.mockReset().mockResolvedValue(undefined);
+  api.deleteClub.mockReset().mockResolvedValue({
+    deleted: true,
+    physicalCleanup: "not_guaranteed",
+  });
   api.updateClub.mockReset();
 });
 
@@ -2376,43 +2380,81 @@ describe("club welcome", () => {
     ).toBeInTheDocument();
   });
 
-  it("deletes a club from Manage and returns to the welcome screen", async () => {
-    const user = userEvent.setup();
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
-    api.getAuthSession.mockResolvedValue({
-      configured: true,
-      user: {
-        id: "00000000-0000-4000-8000-000000000001",
-        email: "owner@mafiamalaga.es",
-        name: "Mafia Malaga owner",
-        picture: null,
-      },
-    });
-    api.listClubs.mockResolvedValue([testClub]);
-    render(<WelcomeApp />);
-    await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i });
+  it.each(["en", "ru"] as const)(
+    "reports club deletion without guaranteed erasure in %s",
+    async (language) => {
+      const user = userEvent.setup();
+      const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+      api.getAuthSession.mockResolvedValue(authenticatedUser);
+      const club = { ...testClub, language };
+      api.listClubs.mockResolvedValue([club]);
+      render(
+        <I18nProvider locale={language}>
+          <WelcomeApp />
+        </I18nProvider>,
+      );
+      await user.click(await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i }));
+      seedBrowserGame(club, "00000000-0000-4000-8000-000000000308", "Deleted table");
+      window.localStorage.setItem("unrelated-local", "keep");
+      await user.click(
+        await screen.findByRole("button", {
+          name: language === "en" ? "Open Manage menu" : "Открыть меню управления",
+        }),
+      );
+      await user.click(
+        screen.getByRole("button", {
+          name: language === "en" ? "Delete club" : "Удалить клуб",
+        }),
+      );
 
-    await user.click(screen.getByRole("button", { name: /Mafia Malaga.*Málaga/i }));
-    seedBrowserGame(testClub, "00000000-0000-4000-8000-000000000308", "Deleted table");
-    window.localStorage.setItem("unrelated-local", "keep");
-    await user.click(await screen.findByRole("button", { name: "Open Manage menu" }));
-    await user.click(screen.getByRole("button", { name: "Delete club" }));
-
-    expect(confirm).toHaveBeenCalledWith(
-      'Delete "Mafia Malaga" and all of its players, games, and statistics? This cannot be undone.',
-    );
-    expect(api.deleteClub).toHaveBeenCalledWith(testClub.id);
-    expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBeNull();
-    expect(window.localStorage.getItem("unrelated-local")).toBe("keep");
-    expect(
-      await screen.findByRole("heading", { name: "The city sleeps. The game begins." }),
-    ).toBeInTheDocument();
-    await waitFor(() =>
+      expect(confirm).toHaveBeenCalledWith(
+        language === "en"
+          ? 'Delete "Mafia Malaga" and revoke access to its players, games, and statistics? This cannot be undone. Complete erasure of private stored files is not guaranteed; files may remain indefinitely.'
+          : "Удалить «Mafia Malaga» и закрыть доступ к его игрокам, играм и статистике? Это действие нельзя отменить. Полное удаление файлов из закрытого хранилища не гарантируется; они могут храниться бессрочно.",
+      );
+      expect(api.deleteClub).toHaveBeenCalledWith(testClub.id);
+      expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBeNull();
+      expect(window.localStorage.getItem("unrelated-local")).toBe("keep");
+      const notice =
+        language === "en"
+          ? "Club deleted and access revoked. Complete erasure of private stored files is not guaranteed; files may remain indefinitely."
+          : "Клуб удалён, доступ закрыт. Полное удаление файлов из закрытого хранилища не гарантируется; они могут храниться бессрочно.";
+      expect(await screen.findByRole("status")).toHaveTextContent(notice);
       expect(
         screen.queryByRole("button", { name: /Mafia Malaga.*Málaga/i }),
-      ).not.toBeInTheDocument(),
-    );
-  });
+      ).not.toBeInTheDocument();
+      await user.click(
+        screen.getByRole("button", { name: language === "en" ? /New club/ : /Новый клуб/ }),
+      );
+      expect(screen.queryByText(notice)).not.toBeInTheDocument();
+    },
+  );
+
+  it.each(["cancel", "failure"] as const)(
+    "preserves the club after deletion %s without a success notice",
+    async (outcome) => {
+      const user = userEvent.setup();
+      vi.spyOn(window, "confirm").mockReturnValue(outcome !== "cancel");
+      if (outcome === "failure")
+        api.deleteClub.mockRejectedValueOnce(new Error("Storage unavailable"));
+      api.getAuthSession.mockResolvedValue(authenticatedUser);
+      api.listClubs.mockResolvedValue([testClub]);
+      render(<WelcomeApp />);
+      await user.click(await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i }));
+      await user.click(await screen.findByRole("button", { name: "Open Manage menu" }));
+      await user.click(screen.getByRole("button", { name: "Delete club" }));
+      expect(api.deleteClub).toHaveBeenCalledTimes(outcome === "cancel" ? 0 : 1);
+      await user.click(
+        screen.getByRole("button", { name: "Choose another club · current club Mafia Malaga" }),
+      );
+      expect(
+        await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i }),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/Club deleted and access revoked/)).not.toBeInTheDocument();
+      if (outcome === "failure")
+        expect(screen.getByRole("alert")).toHaveTextContent("The club could not be deleted.");
+    },
+  );
 
   it("signs out the current application session", async () => {
     const user = userEvent.setup();
@@ -2918,9 +2960,6 @@ describe("developer menu", () => {
       nominationTint: 18,
       nominationColor: "#e6bc7e",
       nominationTreatment: "hybrid",
-      nominationIcon: "vote",
-      supportIcon: "hand",
-      selectionStyle: "check-outline",
     });
     await user.click(screen.getByRole("button", { name: "Hide developer mode" }));
     expect(JSON.parse(window.localStorage.getItem(key) ?? "null").enabled).toBe(true);
@@ -4444,16 +4483,26 @@ describe("developer menu", () => {
         await waitFor(() => expect(api.createGameSession).toHaveBeenCalledOnce());
         await user.click(screen.getByRole("button", { name: "Draw role for Player 1" }));
         const table = screen.getByRole("region", { name: "Mafia table" });
-        const firstBadge = table.querySelector(".role-badge");
-        expect(firstBadge).toBeVisible();
-        expect(table.querySelectorAll(".role-badge")).toHaveLength(1);
+        const firstArtwork = table.querySelector('.player-role-icon[role="img"]');
+        expect(firstArtwork).toBeVisible();
+        expect(table.querySelectorAll('.player-role-icon[role="img"]')).toHaveLength(1);
+        expect(table.querySelector(".role-badge")).toBeNull();
+        const gameId = JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).gameId;
+        const suitGlyphs = () =>
+          [...table.querySelectorAll(".card-suit")].map((node) => node.textContent);
+        const expectedSuits = assignedGame.players.flatMap((player) => {
+          const suit = CARD_SUIT_SYMBOLS[cardSuit(gameId, player.id)!];
+          return [suit, suit];
+        });
+        expect(suitGlyphs()).toEqual(expectedSuits);
         expect(screen.getByText("Draw roles · 9 remaining")).toBeVisible();
 
         for (let toggle = 0; toggle < 2; toggle += 1) {
           await user.click(screen.getByRole("button", { name: /^(show|hide) private info$/i }));
-          expect(table.querySelector(".role-badge")).toBe(firstBadge);
-          expect(firstBadge).toBeVisible();
-          expect(table.querySelectorAll(".role-badge")).toHaveLength(1);
+          expect(table.querySelector('.player-role-icon[role="img"]')).toBe(firstArtwork);
+          expect(firstArtwork).toBeVisible();
+          expect(table.querySelectorAll('.player-role-icon[role="img"]')).toHaveLength(1);
+          expect(suitGlyphs()).toEqual(expectedSuits);
           expect(screen.getAllByRole("button", { name: /^Draw role for/ })).toHaveLength(9);
           expect(screen.getByText("Draw roles · 9 remaining")).toBeVisible();
         }
@@ -4465,19 +4514,22 @@ describe("developer menu", () => {
             screen.getByRole("button", { name: `Draw role for ${playerLabel(seat)}` }),
           );
         }
-        expect(table.querySelectorAll(".role-badge")).toHaveLength(10);
+        expect(table.querySelectorAll('.player-role-icon[role="img"]')).toHaveLength(10);
         expect(within(table).getByText("All roles assigned")).toBeVisible();
         expect(screen.queryByText("Draw roles · 0 remaining")).not.toBeInTheDocument();
         await user.click(screen.getByRole("button", { name: "Begin Mafia planning stage" }));
         expect(screen.queryByRole("heading", { name: "Role giveaway" })).not.toBeInTheDocument();
         const gameTable = screen.getByRole("region", { name: "Mafia table" });
-        expect(gameTable.querySelectorAll(".role-badge")).toHaveLength(10);
+        expect(gameTable.querySelectorAll('.player-role-icon[role="img"]')).toHaveLength(10);
+        expect(
+          [...gameTable.querySelectorAll(".card-suit")].map((node) => node.textContent),
+        ).toEqual(expectedSuits);
         expect(screen.getByRole("button", { name: "Show private info" })).toHaveAttribute(
           "aria-pressed",
           "true",
         );
         await user.click(screen.getByRole("button", { name: "Show private info" }));
-        expect(gameTable.querySelectorAll(".role-badge")).toHaveLength(10);
+        expect(gameTable.querySelectorAll('.player-role-icon[role="img"]')).toHaveLength(10);
         await waitFor(() =>
           expect(api.saveGameSession.mock.lastCall?.[1].state.initialGame?.replayVersion).toBe(3),
         );
@@ -6204,11 +6256,12 @@ describe("authoritative game session lifecycle", () => {
     await user.click(screen.getByText("Glass", { selector: "summary" }));
     fireEvent.change(screen.getByLabelText("Nomination tint"), { target: { value: "0" } });
     fireEvent.change(screen.getByLabelText("Nomination color"), { target: { value: "#88c7e3" } });
-    await user.selectOptions(screen.getByLabelText("Nomination icon"), "flag");
-    await user.selectOptions(screen.getByLabelText("Support icon"), "thumbs-up");
+    expect(screen.queryByLabelText("Nomination icon")).toBeNull();
+    expect(screen.queryByLabelText("Support icon")).toBeNull();
     await user.selectOptions(screen.getByLabelText("Nomination treatment"), "tint");
-    expect(card(7).querySelector(".lucide-flag")).not.toBeNull();
-    expect(card(7).querySelector(".lucide-thumbs-up")).not.toBeNull();
+    expect(card(7).querySelector(".card-nomination-symbol .lucide-hand")).not.toBeNull();
+    expect(card(7).querySelector(".card-support")).toHaveTextContent("+1");
+    expect(card(7).querySelector(".card-support svg")).toBeNull();
     expect(document.querySelector(".app-shell")).toHaveStyle(
       "--card-nomination-color: #88c7e3; --card-nomination-tint: 0",
     );
@@ -6217,7 +6270,7 @@ describe("authoritative game session lifecycle", () => {
     first.unmount();
     render(<App />);
     await waitFor(() => expect(card(7)).toHaveAttribute("aria-pressed", "true"));
-    expect(card(7).querySelector(".lucide-flag")).not.toBeNull();
+    expect(card(7).querySelector(".card-nomination-symbol .lucide-hand")).not.toBeNull();
     expect(card(7).querySelector(".card-support")).toHaveTextContent("+1");
     expect(saved().events).toEqual(beforeAppearance.events);
     await user.click(screen.getByRole("button", { name: "Open game log" }));

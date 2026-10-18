@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { TableClient } from "@azure/data-tables";
+import sharp from "sharp";
 import { buildApp } from "./app.js";
 import { DEFAULT_CLUB_ID } from "./club-store.js";
 import type { AppUser } from "./google-auth.js";
@@ -672,12 +673,40 @@ describe("server-backed game records", () => {
       expect(filtered.statusCode, filtered.body).toBe(200);
       expect(filtered.json().sessions).toEqual(completedSummaries);
       expect(await readGame(gameId)).toEqual(bytes);
+      const iconBytes = await sharp({
+        create: { width: 16, height: 16, channels: 4, background: "red" },
+      })
+        .png()
+        .toBuffer();
+      const withIcons = await players.update(
+        roster[0]!.id,
+        {
+          nickname: roster[0]!.nickname,
+          consent: true,
+          firstName: "Icon",
+          lastName: "Person",
+          email: `icon-${randomUUID()}@example.test`,
+          roleIcons: {
+            citizen: {
+              kind: "image",
+              dataUrl: `data:image/png;base64,${iconBytes.toString("base64")}`,
+            },
+            mafia: { kind: "builtin", id: "cat" },
+          },
+        },
+        DEFAULT_CLUB_ID,
+        owner.id,
+      );
+      expect(withIcons!.roleIcons!.citizen!.kind).toBe("upload");
+      expect(await readGame(gameId)).toEqual(bytes);
       await players.update(
         roster[0]!.id,
         profile(`Renamed ${randomUUID()}`),
         DEFAULT_CLUB_ID,
         owner.id,
       );
+      expect((await players.getRoleIcons(roster[0]!.id))!.images).toEqual({});
+      expect(await readGame(gameId)).toEqual(bytes);
       expect(await players.delete(roster[0]!.id)).toBe("deleted");
       expect(await players.get(roster[0]!.id)).toBeNull();
       expect(await players.delete(host.id)).toBe("deleted");
@@ -869,7 +898,8 @@ describe("server-backed game records", () => {
     expect(await playerResults(session.json().gameId, clubId)).toHaveLength(1);
     const snapshot = await readGame(session.json().gameId, clubId);
     const removed = await app.inject({ method: "DELETE", url: `/api/clubs/${clubId}` });
-    expect(removed.statusCode, removed.body).toBe(204);
+    expect(removed.statusCode, removed.body).toBe(200);
+    expect(removed.json()).toEqual({ deleted: true, physicalCleanup: "not_guaranteed" });
     expect(await rows(`club:${clubId}:`)).toEqual([]);
     expect(await storage.getEntity(`deleted-club:${clubId}`)).toBeDefined();
     // Club deletion owns a maintenance freeze and physically purges its private Blob.

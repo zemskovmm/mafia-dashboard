@@ -20,6 +20,7 @@ describe("buildApp startup", () => {
       },
       tournaments: { list: unexpectedAccess, create: unexpectedAccess, assign: unexpectedAccess },
       players: {
+        getRoleIcons: unexpectedAccess,
         list: unexpectedAccess,
         get: unexpectedAccess,
         create: unexpectedAccess,

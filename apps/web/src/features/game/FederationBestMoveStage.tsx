@@ -133,6 +133,7 @@ export const FederationBestMoveStage = ({
       hostName={hostName}
       privacyHidden={false}
       seats={game.players.map((player) => ({
+        playerId: player.id,
         ...player,
         name: displayName(player),
         votingHighlight: player.seat === game.bestMove?.playerSeat,

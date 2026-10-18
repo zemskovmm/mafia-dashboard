@@ -10,6 +10,10 @@ import process from "node:process";
 import { verifySharedPlayerGlass } from "./GlassScene.shared-scenarios.mjs";
 import { verifyHostUi } from "./GlassScene.host-ui-scenarios.mjs";
 import {
+  verifyPortraitCards,
+  verifyPortraitNightLayout,
+} from "./PortraitCards.browser-scenarios.mjs";
+import {
   capturePlayerCardSources,
   verifyPlayerCards,
 } from "./GlassScene.player-card-scenarios.mjs";
@@ -30,13 +34,15 @@ const evidence = resolve(
   root,
   followupPhase
     ? `.AI/reports/review-followup-2026-10-16/${process.env.UI_FOLLOWUP_RUN ?? `ui-${followupPhase}-${Date.now()}`}`
-    : process.env.GLASS_SCENARIO === "player-cards"
+    : ["player-cards", "portrait-cards"].includes(process.env.GLASS_SCENARIO)
       ? `.AI/qa/player-card-production/${new Date().toISOString().replaceAll(":", "-")}`
       : `.AI/qa/app-glass/${new Date().toISOString().replaceAll(":", "-")}`,
 );
 assert.ok(
   process.env.GLASS_SCENARIO === undefined ||
-    ["shared", "legacy", "player-cards", "host-ui"].includes(process.env.GLASS_SCENARIO),
+    ["shared", "legacy", "player-cards", "portrait-cards", "host-ui"].includes(
+      process.env.GLASS_SCENARIO,
+    ),
   "Unknown GLASS_SCENARIO",
 );
 assert.ok(
@@ -50,6 +56,8 @@ assert.ok(
       "chrome-compact",
       "chrome-phone",
       "chrome-tablet",
+      "chrome-s6-portrait",
+      "chrome-s6-landscape",
       "webkit-phone",
       "webkit-tablet",
     ].includes(process.env.GLASS_BROWSER),
@@ -57,7 +65,7 @@ assert.ok(
 );
 assert.ok(
   process.env.GLASS_BROWSER !== "webkit-landscape" ||
-    process.env.GLASS_SCENARIO === "player-cards" ||
+    ["player-cards", "portrait-cards"].includes(process.env.GLASS_SCENARIO) ||
     followupPhase,
   "webkit-landscape requires player-cards or UI_FOLLOWUP_PHASE",
 );
@@ -99,7 +107,7 @@ const game=phase==="player-cards"?plainDay:phase==="day"?day:phase==="night"?beg
 const gameId="00000000-0000-4000-8000-000000000399";
 const checkpoint=createGameLogEntry({gameId,id:"00000000-0000-4000-8000-000000000398",sequence:1,parentEventId:null,createdAt:"2026-10-15T00:00:00.000Z",before:game,draft:{type:"game.checkpointed",payload:{}}});
 const statistics=Object.fromEntries(["hostedGames","gamesPlayed","wins","losses","redGames","redWins","blackGames","blackWins","sheriffGames","citizenGames","mafiaGames","donGames","totalFouls","eliminations","redCards","bestMoves","bestMoveMafiaHits"].map(key=>[key,0]));
-const profiles=players.map(p=>({...p,nickname:"Player "+p.seat,consent:false,clubAccess:"none",managerLocked:false,firstName:null,lastName:null,email:null,consentAt:null,lastPlayedAt:null,statistics:{...statistics},createdAt:club.createdAt,updatedAt:club.createdAt}));
+const profiles=players.map(p=>({...p,nickname:new URLSearchParams(location.search).has("long-names")?((new URLSearchParams(location.search).get("locale")==="ru"?"Очень длинное имя игрока ":"A very long English nickname ")+p.seat).slice(0,32):"Player "+p.seat,consent:false,clubAccess:"none",managerLocked:false,firstName:null,lastName:null,email:null,consentAt:null,lastPlayedAt:null,statistics:{...statistics},createdAt:club.createdAt,updatedAt:club.createdAt}));
 const host={...profiles[0],id:"00000000-0000-4000-8000-000000000011",nickname:"Host"};
 if(phase==="setup")profiles.push(host);
 const playerSetup=phase==="setup"?{step:"players",hostPlayerId:emptySetup?"":host.id,selectedPlayerIds:players.map(p=>emptySetup?"":p.id),setup:null}:null;
@@ -158,7 +166,7 @@ const bundleBinding = {};
 const results = [];
 const runId = new Date().toISOString();
 const sourceBefore =
-  process.env.GLASS_SCENARIO === "player-cards" || followupPhase
+  ["player-cards", "portrait-cards"].includes(process.env.GLASS_SCENARIO) || followupPhase
     ? await capturePlayerCardSources(root)
     : null;
 if (sourceBefore)
@@ -635,7 +643,7 @@ async function verifyFollowup(page, url, config) {
       const before = await canonical();
       const selected = page.locator('.game-shell .seat-anchor[data-seat="3"] > .player-seat');
       assert.equal(await selected.getAttribute("aria-pressed"), "true");
-      assert.equal(await selected.locator(".card-selection svg").count(), 1);
+      assert.ok((await selected.getAttribute("class")).includes("is-nomination-selected"));
       const glow = await page
         .locator(".game-shell .player-seat.is-current")
         .first()
@@ -955,7 +963,7 @@ async function verifyFollowup(page, url, config) {
       const selected = page.locator('.game-shell .seat-anchor[data-seat="3"] > .player-seat');
       await selected.waitFor();
       assert.equal(await selected.getAttribute("aria-pressed"), "true");
-      assert.equal(await selected.locator(".card-selection svg").count(), 1);
+      assert.ok((await selected.getAttribute("class")).includes("is-nomination-selected"));
       const gameBefore = await canonical();
       await focused(selected, "selected native player button");
       await screenshot("focused-selected-player");
@@ -985,7 +993,8 @@ async function verifyFollowup(page, url, config) {
         gameBefore.events.length + 2,
         "Native Enter/Space each perform one canonical nomination action",
       );
-      assert.equal(await selected.locator(".card-selection svg").count(), 1);
+      assert.equal(await selected.getAttribute("aria-pressed"), "true");
+      assert.ok((await selected.getAttribute("class")).includes("is-nomination-selected"));
       receipt.semanticSelection = {
         before: "true",
         after: await selected.getAttribute("aria-pressed"),
@@ -1286,7 +1295,7 @@ try {
       },
       outfile: join(temp, mode === "production" ? "fixture.js" : "strict.js"),
       bundle: true,
-      metafile: process.env.GLASS_SCENARIO === "player-cards" || Boolean(followupPhase),
+      metafile: Boolean(sourceBefore),
       format: "esm",
       jsx: "automatic",
       define: { "process.env.NODE_ENV": JSON.stringify(mode), "import.meta.env": "{}" },
@@ -1328,7 +1337,13 @@ try {
   await new Promise((done) => server.listen(0, "127.0.0.1", done));
   const url = `http://127.0.0.1:${server.address().port}`;
   for (const config of [
-    ...(followupPhase
+    ...(process.env.GLASS_SCENARIO === "portrait-cards"
+      ? [
+          { name: "chrome-s6-portrait", engine: chromium, viewport: { width: 700, height: 1100 } },
+          { name: "chrome-s6-landscape", engine: chromium, viewport: { width: 1138, height: 712 } },
+        ]
+      : []),
+    ...(followupPhase || process.env.GLASS_SCENARIO === "portrait-cards"
       ? [
           { name: "chrome-phone", engine: chromium, viewport: { width: 390, height: 844 } },
           { name: "chrome-tablet", engine: chromium, viewport: { width: 768, height: 1024 } },
@@ -1363,6 +1378,12 @@ try {
         : {}),
     });
     try {
+      if (process.env.GLASS_SCENARIO === "portrait-cards") {
+        if (process.env.PORTRAIT_NIGHT_ONLY === "1")
+          await verifyPortraitNightLayout({ browser, config, url, evidence, results });
+        else await verifyPortraitCards({ browser, config, url, evidence, results });
+        continue;
+      }
       if (process.env.GLASS_SCENARIO === "host-ui") {
         assert.ok(!followupPhase, "Select only one focused scenario");
         await verifyHostUi({ browser, config, url, evidence, results });
@@ -2406,7 +2427,10 @@ try {
         });
         await phasePage.getByRole("button", { name: "Hide private info" }).click();
         // Existing privacy suppression is day-only; night judge roles stay visible.
-        assert.equal(await phasePage.locator(".role-badge").count(), phase === "day" ? 0 : 10);
+        assert.equal(
+          await phasePage.locator(".player-role-icon[role=img]").count(),
+          phase === "day" ? 0 : 10,
+        );
         await phasePage.getByRole("button", { name: "Show private info" }).click();
         await phasePage.getByRole("button", { name: "Open developer menu" }).click();
         await phasePage.locator(".dev-glass-controls > summary").click();
@@ -2579,7 +2603,12 @@ try {
       "Native interaction matrix must complete every selected engine/layout, locale and mode",
     );
   console.log(JSON.stringify(results, null, 2));
-  if (process.env.GLASS_SCENARIO === "player-cards")
+  if (process.env.GLASS_SCENARIO === "portrait-cards")
+    assert.ok(
+      results.length >= (process.env.PORTRAIT_NIGHT_ONLY === "1" ? 1 : 3),
+      "Portrait matrix cannot pass without running selected cases",
+    );
+  if (["player-cards", "portrait-cards"].includes(process.env.GLASS_SCENARIO))
     assert.equal(
       results.filter((result) => result.status === "failed").length,
       0,

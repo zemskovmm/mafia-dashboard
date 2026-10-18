@@ -9,6 +9,11 @@ import {
   type StatisticsFilters,
   type StatisticsHistoryPage,
 } from "@mafia/game-domain";
+import type {
+  PlayerRoleIconBundle,
+  PlayerRoleIcons,
+  PlayerRoleIconsInput,
+} from "./player-role-icon-contracts.js";
 
 interface PlayerStatistics {
   readonly hostedGames: number;
@@ -32,6 +37,8 @@ interface PlayerStatistics {
 
 export interface PlayerProfile {
   readonly id: string;
+  readonly roleIcons?: PlayerRoleIcons;
+  readonly roleIconsVersion?: string | null;
   readonly nickname: string;
   readonly consent: boolean;
   readonly clubAccess: "none" | "user" | "manager";
@@ -80,7 +87,12 @@ export interface Club extends ClubDetails {
   readonly updatedAt: string;
 }
 
-export type PlayerProfileInput =
+export interface ClubDeletionResult {
+  readonly deleted: true;
+  readonly physicalCleanup: "not_guaranteed";
+}
+
+export type PlayerProfileInput = { readonly roleIcons?: PlayerRoleIconsInput } & (
   | {
       readonly nickname: string;
       readonly consent: false;
@@ -104,7 +116,8 @@ export type PlayerProfileInput =
       readonly firstName: string;
       readonly lastName: string;
       readonly email: string;
-    };
+    }
+);
 
 export interface FinalGameResults {
   readonly hostPlayerId: string;
@@ -466,11 +479,14 @@ export const updateClub = async (clubId: string, input: ClubUpdateInput): Promis
   return ((await response.json()) as { club: Club }).club;
 };
 
-export const deleteClub = async (clubId: string): Promise<void> => {
+export const deleteClub = async (clubId: string): Promise<ClubDeletionResult> => {
   const response = await fetch(`/api/clubs/${clubId}`, {
     method: "DELETE",
   });
   if (!response.ok) return throwApiError(response, "Unable to delete club");
+  return response.status === 204
+    ? { deleted: true, physicalCleanup: "not_guaranteed" }
+    : ((await response.json()) as ClubDeletionResult);
 };
 
 export const getMusicAccountStatus = async (): Promise<MusicAccountStatus> => {
@@ -505,6 +521,22 @@ export const listPlayers = async (clubId?: string): Promise<readonly PlayerProfi
   if (!response.ok) return throwApiError(response, "Unable to load players");
   const body = (await response.json()) as { players: readonly PlayerProfile[] };
   return body.players;
+};
+
+/** All configured images, never a request selected by a secret game role. */
+export const getPlayerRoleIcons = async (
+  playerId: string,
+  clubId: string,
+  signal?: AbortSignal,
+): Promise<PlayerRoleIconBundle> => {
+  const response = await fetch(`/api/players/${encodeURIComponent(playerId)}/role-icons`, {
+    headers: clubHeaders(clubId),
+    credentials: "same-origin",
+    cache: "no-store",
+    signal,
+  });
+  if (!response.ok) return throwApiError(response, "Unable to load player role icons");
+  return (await response.json()) as PlayerRoleIconBundle;
 };
 
 export const createPlayer = async (

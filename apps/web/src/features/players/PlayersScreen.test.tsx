@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../api/client.js";
@@ -10,6 +10,8 @@ import { PlayersScreen } from "./PlayersScreen.js";
 afterEach(() => {
   clearErrorConsole();
   cleanup();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 const profile = (overrides: Partial<PlayerProfile> = {}): PlayerProfile => ({
@@ -45,6 +47,236 @@ const profile = (overrides: Partial<PlayerProfile> = {}): PlayerProfile => ({
     bestMoveMafiaHits: 0,
   },
   ...overrides,
+});
+
+describe("PlayersScreen role icons", () => {
+  it.each(["read", "decode", "selection"] as const)(
+    "invalidates a same-player refreshed profile during %s without saving obsolete artwork",
+    async (phase) => {
+      const user = userEvent.setup();
+      let lateLoad: (() => void) | undefined;
+      const abort = vi.spyOn(FileReader.prototype, "abort");
+      const decoded: { onload: (() => void) | null; onerror: (() => void) | null }[] = [];
+      if (phase === "read") {
+        vi.spyOn(FileReader.prototype, "readAsDataURL").mockImplementation(function (
+          this: FileReader,
+        ) {
+          const callback = this.onload;
+          lateLoad = () =>
+            callback?.call(this, new ProgressEvent("load") as ProgressEvent<FileReader>);
+        });
+      } else if (phase === "decode") {
+        class PendingImage {
+          naturalWidth = 16;
+          naturalHeight = 8;
+          onload: (() => void) | null = null;
+          onerror: (() => void) | null = null;
+          constructor() {
+            decoded.push(this);
+          }
+          set src(value: string) {
+            if (value) lateLoad = this.onload ?? undefined;
+          }
+        }
+        vi.stubGlobal("Image", PendingImage);
+      }
+      const original = profile({ roleIconsVersion: "one" });
+      const onUpdate = vi.fn().mockResolvedValue(undefined);
+      const { rerender } = render(
+        <PlayersScreen players={[original]} onCreate={vi.fn()} onUpdate={onUpdate} />,
+      );
+      await user.click(screen.getByRole("button", { name: "Alpha: Citizen icon" }));
+      if (phase === "selection") await user.click(screen.getByRole("button", { name: "Cat" }));
+      else {
+        fireEvent.change(screen.getByLabelText("Upload image"), {
+          target: { files: [new File(["png"], "a.png", { type: "image/png" })] },
+        });
+        if (phase === "decode") await waitFor(() => expect(decoded).toHaveLength(1));
+      }
+      const refreshed = {
+        ...original,
+        roleIconsVersion: "two",
+        roleIcons: { citizen: { kind: "builtin" as const, id: "crown" as const } },
+      };
+      rerender(<PlayersScreen players={[refreshed]} onCreate={vi.fn()} onUpdate={onUpdate} />);
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      if (phase === "read") expect(abort).toHaveBeenCalledOnce();
+      if (phase === "decode") expect(decoded[0]?.onload).toBeNull();
+      await act(async () => {
+        lateLoad?.();
+      });
+      expect(screen.getByRole("button", { name: "Alpha: Citizen icon" })).toHaveTextContent(
+        "Crown",
+      );
+      await user.click(screen.getByRole("button", { name: "Save Alpha" }));
+      expect(onUpdate).toHaveBeenCalledExactlyOnceWith(
+        original.id,
+        expect.not.objectContaining({ roleIcons: expect.anything() }),
+      );
+    },
+  );
+
+  it("aborts a pending file read when the profile changes and cannot apply it to the replacement", async () => {
+    const user = userEvent.setup();
+    let lateLoad: (() => void) | undefined;
+    const read = vi.spyOn(FileReader.prototype, "readAsDataURL").mockImplementation(function (
+      this: FileReader,
+    ) {
+      const callback = this.onload;
+      lateLoad = () => callback?.call(this, new ProgressEvent("load") as ProgressEvent<FileReader>);
+    });
+    const abort = vi.spyOn(FileReader.prototype, "abort");
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
+    const { rerender } = render(
+      <PlayersScreen players={[profile()]} onCreate={vi.fn()} onUpdate={onUpdate} />,
+    );
+    await user.click(screen.getByRole("button", { name: "Alpha: Citizen icon" }));
+    fireEvent.change(screen.getByLabelText("Upload image"), {
+      target: { files: [new File(["png"], "a.png", { type: "image/png" })] },
+    });
+    const beta = profile({ id: "00000000-0000-4000-8000-000000000002", nickname: "Beta" });
+    rerender(<PlayersScreen players={[beta]} onCreate={vi.fn()} onUpdate={onUpdate} />);
+    expect(abort).toHaveBeenCalledOnce();
+    expect(read.mock.contexts[0]).toHaveProperty("onload", null);
+    lateLoad?.();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Beta: Citizen icon" })).toHaveTextContent(
+      "Default icon",
+    );
+    await user.click(screen.getByRole("button", { name: "Save Beta" }));
+    expect(onUpdate).toHaveBeenCalledExactlyOnceWith(
+      beta.id,
+      expect.not.objectContaining({ roleIcons: expect.anything() }),
+    );
+  });
+
+  const chooseIcon = async (
+    user: ReturnType<typeof userEvent.setup>,
+    role: string,
+    icon: string,
+  ) => {
+    await user.click(screen.getByRole("button", { name: `Alpha: ${role} icon` }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: icon }));
+    await user.click(screen.getByRole("button", { name: "Use icon" }));
+  };
+
+  it("keeps all four roles independent, with explicit reset and omitted-role preservation", async () => {
+    const user = userEvent.setup();
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
+    const player = profile({
+      roleIcons: {
+        citizen: { kind: "builtin", id: "cat" },
+        mafia: { kind: "builtin", id: "venetian-mask" },
+        don: { kind: "builtin", id: "crown" },
+        sheriff: { kind: "builtin", id: "star" },
+      },
+    });
+    render(<PlayersScreen players={[player]} onCreate={vi.fn()} onUpdate={onUpdate} />);
+    expect(screen.getByRole("button", { name: "Alpha: Don icon" })).toHaveTextContent("Crown");
+    await chooseIcon(user, "Citizen", "Dog");
+    await user.click(screen.getByRole("button", { name: "Alpha: Mafia icon" }));
+    await user.click(screen.getByRole("button", { name: "Use default" }));
+    await user.click(screen.getByRole("button", { name: "Use icon" }));
+    expect(onUpdate).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Alpha: Don icon" })).toHaveTextContent("Crown");
+    await user.click(screen.getByRole("button", { name: "Save Alpha" }));
+    expect(onUpdate).toHaveBeenCalledExactlyOnceWith(
+      player.id,
+      expect.objectContaining({
+        roleIcons: { citizen: { kind: "builtin", id: "dog" }, mafia: null },
+      }),
+    );
+    expect(player.roleIcons?.citizen).toEqual({ kind: "builtin", id: "cat" });
+  });
+
+  it("cancels picker changes and the complete profile draft without any request", async () => {
+    const user = userEvent.setup();
+    const onUpdate = vi.fn();
+    render(
+      <PlayersScreen
+        players={[profile({ roleIcons: { citizen: { kind: "builtin", id: "cat" } } })]}
+        onCreate={vi.fn()}
+        onUpdate={onUpdate}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Alpha: Citizen icon" }));
+    await user.click(screen.getByRole("button", { name: "Dog" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("button", { name: "Alpha: Citizen icon" })).toHaveTextContent("Cat");
+    await chooseIcon(user, "Citizen", "Dog");
+    await user.clear(screen.getByLabelText("Alpha nickname"));
+    await user.type(screen.getByLabelText("Alpha nickname"), "Changed");
+    await user.click(screen.getByRole("button", { name: "Cancel Alpha changes" }));
+    expect(screen.getByRole("button", { name: "Alpha: Citizen icon" })).toHaveTextContent("Cat");
+    expect(screen.getByLabelText("Alpha nickname")).toHaveValue("Alpha");
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  it("keeps the draft after save failure and retries the same choice without replacing saved art", async () => {
+    const user = userEvent.setup();
+    const onUpdate = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Save failed"))
+      .mockResolvedValue(undefined);
+    const player = profile({ roleIcons: { citizen: { kind: "builtin", id: "cat" } } });
+    render(<PlayersScreen players={[player]} onCreate={vi.fn()} onUpdate={onUpdate} />);
+    await chooseIcon(user, "Citizen", "Dog");
+    await user.click(screen.getByRole("button", { name: "Save Alpha" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/could not be saved/);
+    expect(screen.getByRole("button", { name: "Alpha: Citizen icon" })).toHaveTextContent("Dog");
+    expect(player.roleIcons?.citizen).toEqual({ kind: "builtin", id: "cat" });
+    await user.click(screen.getByRole("button", { name: "Save Alpha" }));
+    expect(onUpdate).toHaveBeenCalledTimes(2);
+    expect(onUpdate.mock.calls[1]).toEqual(onUpdate.mock.calls[0]);
+  });
+
+  it("withdraws uploaded choices but retains built-ins, including after consent is re-enabled", async () => {
+    const user = userEvent.setup();
+    const onUpdate = vi.fn().mockResolvedValue(undefined);
+    const player = profile({
+      roleIcons: {
+        citizen: { kind: "upload", id: "owned" },
+        mafia: { kind: "builtin", id: "cat" },
+      },
+    });
+    render(<PlayersScreen players={[player]} onCreate={vi.fn()} onUpdate={onUpdate} />);
+    await user.click(screen.getByLabelText("Alpha Agree for data processing"));
+    expect(screen.getByRole("button", { name: "Alpha: Citizen icon" })).toHaveTextContent(
+      "Default icon",
+    );
+    expect(screen.getByRole("button", { name: "Alpha: Mafia icon" })).toHaveTextContent("Cat");
+    await user.click(screen.getByRole("button", { name: "Save Alpha" }));
+    expect(onUpdate).toHaveBeenCalledExactlyOnceWith(
+      player.id,
+      expect.objectContaining({ consent: false, roleIcons: { citizen: null } }),
+    );
+    await user.click(screen.getByLabelText("Alpha Agree for data processing"));
+    expect(screen.getByRole("button", { name: "Alpha: Citizen icon" })).toHaveTextContent(
+      "Default icon",
+    );
+  });
+
+  it("adds built-in preferences to a new nickname-only player", async () => {
+    const user = userEvent.setup();
+    const onCreate = vi.fn().mockResolvedValue(undefined);
+    render(<PlayersScreen players={[]} onCreate={onCreate} onUpdate={vi.fn()} />);
+    await user.type(screen.getByLabelText("New player nickname"), "Newbie");
+    await user.click(screen.getByRole("button", { name: "New player: Sheriff icon" }));
+    expect(screen.getByLabelText("Upload image")).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Shield" }));
+    await user.click(screen.getByRole("button", { name: "Use icon" }));
+    await user.click(screen.getByRole("button", { name: "Add player" }));
+    expect(onCreate).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        nickname: "Newbie",
+        consent: false,
+        roleIcons: { sheriff: { kind: "builtin", id: "shield" } },
+      }),
+    );
+    expect(screen.getByRole("button", { name: "New player: Sheriff icon" })).toHaveTextContent(
+      "Default icon",
+    );
+  });
 });
 
 describe("PlayersScreen", () => {

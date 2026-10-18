@@ -157,6 +157,9 @@ export const GlassScene = ({
               radius: Math.min(Number.isFinite(radius) ? radius : 10, rect[2] / 2, rect[3] / 2),
               tint,
               tintAmount,
+              selectionFinish: element.matches(".table-stage .player-seat.is-nomination-selected")
+                ? 0.5
+                : 0,
               opacity: Number(s.opacity),
               roundedClips,
             },

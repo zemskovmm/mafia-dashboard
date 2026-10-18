@@ -27,6 +27,7 @@ export async function capturePlayerCardSources(root) {
     "package-lock.json",
     "apps/web/package.json",
     "packages/game-domain/package.json",
+    "apps/web/src/features/theme/PortraitCards.browser-scenarios.mjs",
   ])
     files[path] = createHash("sha256")
       .update(await readFile(join(root, path)))
@@ -80,6 +81,50 @@ async function mouseDrag(page, seat, dx, dy) {
   await page.mouse.down();
   await page.mouse.move(x + dx, y + dy, { steps: 8 });
   await page.mouse.up();
+}
+// GameScreen has always guarded foul four with an explicit occurrence observation.
+// Exercise that public flow without counting opening/cancellation as accepted events.
+async function fourthFoul(page, seat) {
+  assert.equal((await state(page)).game.players.find((p) => p.seat === seat).fouls, 3);
+  const dialog = page.getByRole("dialog");
+  const open = async () => {
+    await mouseDrag(page, seat, 0, 60);
+    await dialog.waitFor();
+    assert.equal(
+      await dialog.getByRole("combobox", { name: "Discipline action", exact: true }).inputValue(),
+      "foul",
+    );
+    assert.equal(
+      await dialog.getByRole("button", { name: "Confirm discipline", exact: true }).isDisabled(),
+      true,
+      "Fourth foul needs an explicit occurrence timing",
+    );
+  };
+  await unchanged(page, async () => {
+    await open();
+    await dialog.getByRole("button", { name: "Close", exact: true }).click();
+    await dialog.waitFor({ state: "detached" });
+  });
+  await unchanged(page, async () => {
+    await open();
+    await dialog
+      .getByRole("combobox", { name: "Occurrence timing", exact: true })
+      .selectOption("day-discussion");
+  });
+  const next = await changed(page, () =>
+    dialog.getByRole("button", { name: "Confirm discipline", exact: true }).click(),
+  );
+  assert.equal(next.events.at(-1).type, "discipline.foul-issued");
+  assert.deepEqual(next.events.at(-1).payload, {
+    seat,
+    foulNumber: 4,
+    redCarded: true,
+    removal: { seat, stage: "day-discussion", rule: "6.2.1", reason: "", checkInProgress: false },
+  });
+  assert.equal(next.game.players.find((p) => p.seat === seat).fouls, 4);
+  assert.equal(next.game.players.find((p) => p.seat === seat).status, "red-carded");
+  await dialog.waitFor({ state: "detached" });
+  return next;
 }
 async function touchDrag(page, cdp, seat, options = {}) {
   const b = await card(page, seat).boundingBox();
@@ -202,7 +247,7 @@ function assertMarkers(layout) {
   for (const seat of layout) {
     assert.ok(seat.card.x >= 0 && seat.card.y >= 0, `Seat ${seat.seat} outside viewport`);
     for (const marker of seat.markers) {
-      assert.ok(Math.abs(marker.rect.width / seat.scale - 25) < 0.1, marker.className);
+      assert.ok(Math.abs(marker.rect.width / seat.scale - 23) < 0.1, marker.className);
       assert.ok(Number(marker.opacity) > 0, marker.className);
       assert.ok(
         marker.rect.left >= seat.card.left && marker.rect.right <= seat.card.right,
@@ -369,13 +414,19 @@ export async function verifyPlayerCards({ browser, config, url, evidence, result
           unchanged(page, () => crossCardTouch(page, cdp, 1, 2)),
         );
         await check("cross-card red-carded second contact also cancels shared swipe", async () => {
-          for (let foul = 1; foul <= 4; foul++)
-            await changed(page, () => mouseDrag(page, 2, 0, 60));
+          for (let foul = 1; foul <= 3; foul++) {
+            const next = await changed(page, () => mouseDrag(page, 2, 0, 60));
+            assert.equal(next.game.players.find((p) => p.seat === 2).fouls, foul);
+          }
+          await fourthFoul(page, 2);
           assert.equal(
             (await state(page)).game.players.find((p) => p.seat === 2).status,
             "red-carded",
           );
           await unchanged(page, () => crossCardTouch(page, cdp, 1, 2));
+          await changed(page, () =>
+            page.getByRole("button", { name: "Announce removal of Player 2", exact: true }).click(),
+          );
         });
         await check("next intentional touch works after cancellation", () =>
           changed(page, () => card(page, 3).tap()),
@@ -390,12 +441,8 @@ export async function verifyPlayerCards({ browser, config, url, evidence, result
             await card(page, 2).getByRole("img", { name: "Выдвинут", exact: true }).count(),
             1,
           );
-          assert.equal(
-            await card(page, 2)
-              .getByRole("img", { name: "Выбран текущим выступающим", exact: true })
-              .count(),
-            1,
-          );
+          assert.equal(await card(page, 2).getAttribute("aria-pressed"), "true");
+          assert.ok((await card(page, 2).getAttribute("class")).includes("is-nomination-selected"));
           assert.equal(await card(page, 4).getAttribute("aria-keyshortcuts"), null);
           assert.match(await card(page, 4).getAttribute("title"), /Смахните вниз/);
           assert.doesNotMatch(await card(page, 4).getAttribute("title"), /\bF\b/);
@@ -418,7 +465,7 @@ export async function verifyPlayerCards({ browser, config, url, evidence, result
           assert.equal(last.game.voteAssignments[1], undefined);
         });
       } else if (kind === "legacy") {
-        await check("legacy edition real tap and downward foul gestures", async () => {
+        await check("saved glass preference real tap and downward foul gestures", async () => {
           await changed(page, () => card(page, 2).click());
           for (let n = 1; n <= 3; n++) {
             await changed(page, () => mouseDrag(page, 7, 0, 60));
@@ -426,12 +473,15 @@ export async function verifyPlayerCards({ browser, config, url, evidence, result
           }
           assert.equal(await card(page, 7).locator(".lucide-message-circle-off").count(), 1);
         });
-        await check("legacy fourth foul follows existing removal", async () => {
-          const next = await changed(page, () => mouseDrag(page, 7, 0, 60));
-          assert.equal(next.game.players.find((p) => p.seat === 7).fouls, 4);
-          assert.equal(next.game.players.find((p) => p.seat === 7).status, "red-carded");
-          assert.equal(await card(page, 7).locator(".foul-dot").count(), 3);
-        });
+        await check(
+          "fourth foul uses guarded discipline and one atomic removal event",
+          async () => {
+            const next = await fourthFoul(page, 7);
+            assert.equal(next.game.players.find((p) => p.seat === 7).fouls, 4);
+            assert.equal(next.game.players.find((p) => p.seat === 7).status, "red-carded");
+            assert.equal(await card(page, 7).locator(".foul-dot").count(), 3);
+          },
+        );
       } else if (kind === "fallback") {
         await check("allocation failure retains real nomination/support glyphs", async () => {
           await page.waitForFunction(
@@ -448,7 +498,7 @@ export async function verifyPlayerCards({ browser, config, url, evidence, result
           await page.getByRole("button", { name: "Close developer menu", exact: true }).click();
           assert.equal(await card(page, 2).locator(".card-nomination-symbol svg").count(), 1);
           assert.equal(await card(page, 2).locator(".card-support").innerText(), "+1");
-          assert.equal(await card(page, 2).locator(".card-selection svg").count(), 1);
+          assert.ok((await card(page, 2).getAttribute("class")).includes("is-nomination-selected"));
           assertMarkers(await markerGeometry(page));
         });
       } else {
@@ -490,11 +540,14 @@ export async function verifyPlayerCards({ browser, config, url, evidence, result
             await changed(page, () => card(page, 2).click());
           },
         );
-        await check("next speaker clears only mint check, keeps round nomination", async () => {
+        await check("next speaker clears only surface finish, keeps round nomination", async () => {
           await changed(page, () =>
             page.getByRole("button", { name: "Next player", exact: true }).click(),
           );
-          assert.equal(await card(page, 2).locator(".card-selection").count(), 0);
+          assert.equal(
+            (await card(page, 2).getAttribute("class")).includes("is-nomination-selected"),
+            false,
+          );
           assert.equal(await card(page, 2).locator(".card-nomination-symbol").count(), 1);
         });
         await check("one original plus independent unique supports across speakers", async () => {
@@ -637,23 +690,25 @@ export async function verifyPlayerCards({ browser, config, url, evidence, result
 
         const canonicalBeforeAppearance = await state(page);
         await check(
-          "six live developer settings at zero tint preserve essential glyphs",
+          "retained tint/color/treatment settings at zero tint preserve fixed indicators",
           async () => {
             await openControls(page);
             await setInput(page, "Nomination tint", 0);
             await page.getByLabel("Nomination treatment", { exact: true }).selectOption("tint");
             await page.getByRole("button", { name: "Blue nomination tint", exact: true }).click();
-            await page.getByLabel("Nomination icon", { exact: true }).selectOption("flag");
-            await page.getByLabel("Support icon", { exact: true }).selectOption("thumbs-up");
-            await page.getByLabel("This speaker’s choice", { exact: true }).selectOption("check");
-            assert.equal(await card(page, 2).locator(".lucide-flag").count(), 1);
-            assert.equal(await card(page, 2).locator(".lucide-thumbs-up").count(), 1);
-            assert.equal(await card(page, 2).locator(".card-selection").count(), 1);
+            assert.equal(await page.getByLabel("Nomination icon", { exact: true }).count(), 0);
+            assert.equal(await page.getByLabel("Support icon", { exact: true }).count(), 0);
             assert.equal(
-              (await card(page, 2).getAttribute("class")).includes(
-                "has-nomination-selection-outline",
-              ),
-              false,
+              await page.getByLabel("This speaker’s choice", { exact: true }).count(),
+              0,
+            );
+            assert.equal(await card(page, 2).locator(".lucide-hand").count(), 1);
+            assert.equal(
+              await card(page, 2).locator(".card-support svg,.card-selection").count(),
+              0,
+            );
+            assert.ok(
+              (await card(page, 2).getAttribute("class")).includes("is-nomination-selected"),
             );
             assert.equal(await card(page, 2).locator(".card-support").innerText(), "+3");
             assert.deepEqual(await state(page), canonicalBeforeAppearance);
@@ -676,7 +731,7 @@ export async function verifyPlayerCards({ browser, config, url, evidence, result
                 ),
               "0",
             );
-            assert.equal(await card(page, 2).locator(".lucide-flag").count(), 1);
+            assert.equal(await card(page, 2).locator(".lucide-hand").count(), 1);
             assert.equal(await card(page, 2).locator(".card-support").innerText(), "+3");
             await page.getByRole("button", { name: "Enable enhanced glass", exact: true }).click();
             await page.waitForFunction(
@@ -711,16 +766,13 @@ export async function verifyPlayerCards({ browser, config, url, evidence, result
           );
           assert.deepEqual(await state(page), canonicalBeforeAppearance);
           assert.equal(await card(page, 2).locator(".card-support").innerText(), "+3");
-          assert.equal(await card(page, 2).locator(".lucide-flag").count(), 1);
+          assert.equal(await card(page, 2).locator(".lucide-hand").count(), 1);
           assert.equal(await card(page, 6).locator(".foul-dot").count(), 3);
           await openControls(page);
           for (const [label, value] of [
             ["Nomination tint", "50"],
             ["Nomination color", "#bda5ec"],
             ["Nomination treatment", "hybrid"],
-            ["Nomination icon", "flag"],
-            ["Support icon", "thumbs-up"],
-            ["This speaker’s choice", "check"],
           ])
             assert.equal(await page.getByLabel(label, { exact: true }).inputValue(), value);
           await page.getByRole("button", { name: "Reset glass settings", exact: true }).click();
@@ -736,15 +788,8 @@ export async function verifyPlayerCards({ browser, config, url, evidence, result
             await page.getByLabel("Nomination tint", { exact: true }).inputValue(),
             "18",
           );
-          assert.equal(
-            await page.getByLabel("Nomination icon", { exact: true }).inputValue(),
-            "vote",
-          );
-          assert.equal(await page.getByLabel("Support icon", { exact: true }).inputValue(), "hand");
-          assert.equal(
-            await page.getByLabel("This speaker’s choice", { exact: true }).inputValue(),
-            "check-outline",
-          );
+          for (const label of ["Nomination icon", "Support icon", "This speaker’s choice"])
+            assert.equal(await page.getByLabel(label, { exact: true }).count(), 0);
           await page.getByRole("button", { name: "Close developer menu", exact: true }).click();
           assert.deepEqual(await state(page), canonicalBeforeAppearance);
         });
@@ -777,10 +822,16 @@ export async function verifyPlayerCards({ browser, config, url, evidence, result
           async () => {
             await unchanged(page, async () => {
               await page.getByRole("button", { name: "Hide private info", exact: true }).click();
-              assert.equal(await page.locator(".game-shell .role-badge").count(), 0);
+              assert.equal(
+                await page.locator('.game-shell .player-role-icon[role="img"]').count(),
+                0,
+              );
               await openControls(page);
               await page.getByRole("button", { name: "Close developer menu", exact: true }).click();
-              assert.equal(await page.locator(".game-shell .role-badge").count(), 0);
+              assert.equal(
+                await page.locator('.game-shell .player-role-icon[role="img"]').count(),
+                0,
+              );
             });
           },
         );

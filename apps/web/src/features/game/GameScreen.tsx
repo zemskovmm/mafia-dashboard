@@ -612,6 +612,7 @@ export const GameScreen = ({
                   hostName={hostName}
                   privacyHidden={effectivePrivacyHidden}
                   seats={game.players.map((player) => ({
+                    playerId: player.id,
                     ...player,
                     name: displayName(player),
                     current:
@@ -672,6 +673,7 @@ export const GameScreen = ({
                   hostName={hostName}
                   privacyHidden={effectivePrivacyHidden}
                   seats={game.players.map((player) => ({
+                    playerId: player.id,
                     seat: player.seat,
                     name: displayName(player),
                     role: player.role,

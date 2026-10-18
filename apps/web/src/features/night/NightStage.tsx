@@ -98,6 +98,7 @@ export const NightStage = ({
         privacyHidden={false}
         onSeatPenalty={onSeatPenalty}
         seats={game.players.map((player) => ({
+          playerId: player.id,
           ...player,
           name: displayName(player),
           mafiaShooter: player.status === "active" && player.team === "black",
@@ -214,6 +215,7 @@ export const NightStage = ({
         hostName={tableHostName}
         privacyHidden={false}
         seats={game.players.map((player) => ({
+          playerId: player.id,
           ...player,
           name: displayName(player),
           mafiaShooter: player.team === "black" && game.shotAssignments[player.seat] !== undefined,
@@ -260,6 +262,7 @@ export const NightStage = ({
         hostName={tableHostName}
         privacyHidden={false}
         seats={game.players.map((player) => ({
+          playerId: player.id,
           ...player,
           name: displayName(player),
           mafiaShooter: donEligible && player.role === "don",
@@ -337,6 +340,7 @@ export const NightStage = ({
         hostName={tableHostName}
         privacyHidden={false}
         seats={game.players.map((player) => ({
+          playerId: player.id,
           ...player,
           name: displayName(player),
           mafiaShooter: donEligible && player.role === "don",
@@ -383,6 +387,7 @@ export const NightStage = ({
         hostName={tableHostName}
         privacyHidden={false}
         seats={game.players.map((player) => ({
+          playerId: player.id,
           ...player,
           name: displayName(player),
           sheriffHighlight: sheriffEligible && player.role === "sheriff",
@@ -460,6 +465,7 @@ export const NightStage = ({
         hostName={tableHostName}
         privacyHidden={false}
         seats={game.players.map((player) => ({
+          playerId: player.id,
           ...player,
           name: displayName(player),
           sheriffHighlight: sheriffEligible && player.role === "sheriff",
@@ -516,7 +522,11 @@ export const NightStage = ({
         onSeatPenalty={onSeatPenalty}
         hostName={tableHostName}
         privacyHidden={false}
-        seats={game.players.map((player) => ({ ...player, name: displayName(player) }))}
+        seats={game.players.map((player) => ({
+          playerId: player.id,
+          ...player,
+          name: displayName(player),
+        }))}
         center={
           <div className="table-check-center">
             <span className="table-prompt">{t("night.stageComplete")}</span>

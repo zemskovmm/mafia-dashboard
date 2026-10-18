@@ -11,6 +11,7 @@ import type {
 } from "./game-session-store.js";
 import type { AppUser } from "./google-auth.js";
 import type { PlayerProfile, PlayerProfileInput } from "./player-store.js";
+import type { PlayerRoleIconBundle } from "./player-role-icon-contracts.js";
 
 /** Application-facing ports; no persistence implementation is needed for their types. */
 export interface ApplicationStores {
@@ -39,6 +40,7 @@ export interface ApplicationStores {
     assign(gameId: string, tournamentId: string | null, clubId: string): Promise<string | null>;
   };
   readonly players: {
+    getRoleIcons(id: string, clubId?: string): Promise<PlayerRoleIconBundle | null>;
     list(clubId?: string): Promise<readonly PlayerProfile[]>;
     get(id: string, clubId?: string): Promise<PlayerProfile | null>;
     create(input: PlayerProfileInput, clubId?: string): Promise<PlayerProfile>;

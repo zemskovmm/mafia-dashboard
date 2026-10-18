@@ -5467,3 +5467,207 @@ html:-webkit-full-screen #root {
     animation-duration: 0.01ms !important;
   }
 }
+
+/* Portrait playing cards. Only the actual table family adopts this geometry. */
+.table-stage .table-card.player-seat {
+  height: auto;
+  aspect-ratio: 5 / 7;
+  padding: 8px 5px;
+  gap: 5px;
+}
+.table-stage .player-role-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  color: #d0d6e0;
+}
+.table-stage .player-role-icon > svg,
+.table-stage .player-role-icon > img,
+.table-stage .player-role-icon .person-icon {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.table-stage .card-index {
+  position: absolute;
+  top: 7px;
+  left: 7px;
+  display: grid;
+  justify-items: center;
+  gap: 1px;
+  color: rgb(235 235 216 / 53%);
+  text-shadow:
+    0 1px 0 rgb(255 255 255 / 15%),
+    0 -1px 1px rgb(0 0 0 / 80%);
+  font:
+    500 13px/1 "JetBrains Mono",
+    monospace;
+  pointer-events: none;
+}
+.table-stage .card-index .seat-number {
+  position: static;
+  color: inherit;
+  font: inherit;
+}
+.table-stage .card-suit {
+  font-size: 16px;
+  line-height: 1;
+}
+.table-stage .card-index--lower {
+  inset: auto 7px 7px auto;
+  transform: rotate(180deg);
+}
+.table-stage .card-nomination-status,
+.table-stage .card-discipline-status {
+  top: calc(50% - 17px);
+  width: 23px;
+  height: 34px;
+  grid-template-rows: 17px 17px;
+  gap: 0;
+  align-items: center;
+}
+.table-stage .card-nomination-status {
+  left: 1px;
+}
+.table-stage .card-discipline-status {
+  right: 1px;
+}
+.table-stage .card-nomination-symbol {
+  grid-row: 1;
+}
+.table-stage .card-nomination-symbol svg {
+  transform: scaleX(0.82);
+  transform-origin: center;
+}
+.table-stage .card-support {
+  grid-row: 2;
+  font-size: 10px;
+}
+.table-stage .foul-markers {
+  grid-row: 1;
+}
+.table-stage .card-mute {
+  grid-row: 2;
+}
+.table-stage .card-status-slot {
+  width: 23px;
+}
+.table-stage .card-discipline-status .foul-dot {
+  width: 4px;
+  height: 4px;
+}
+.table-stage .seat-name {
+  width: 100%;
+  font-size: clamp(10px, 1vw, 13px);
+}
+.table-stage .seat-badges:empty {
+  display: none;
+}
+.table-stage .player-seat > :is(.player-exit-face, .role-draw-face) {
+  gap: 5px;
+}
+
+@media (min-width: 540px) and (orientation: portrait), (min-width: 761px) {
+  .table-layout-shell .table-stage {
+    container-type: size;
+  }
+  .table-layout-shell .round-table {
+    --portrait-width: min(126px, 13.5cqw, 17cqh);
+    --portrait-height: calc(var(--portrait-width) * 1.4);
+    --portrait-side-offset: calc(var(--portrait-height) * 1.23);
+    --portrait-radius-x: calc((100cqw - var(--portrait-width) * 1.2 - 10px) / 2);
+    --portrait-radius-y: calc((100cqh - var(--portrait-height) * 1.2 - 12px) / 1.902);
+  }
+  .table-layout-shell .round-table:has(.seat-actions) {
+    --portrait-side-offset: max(
+      calc(var(--portrait-height) * 1.23),
+      calc(var(--portrait-height) + 53px)
+    );
+  }
+  .table-layout-shell .table-stage .seat-anchor {
+    width: var(--portrait-width);
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%)
+      translate(
+        calc(sin(var(--seat-angle)) * var(--portrait-radius-x)),
+        calc(cos(var(--seat-angle)) * -1 * var(--portrait-radius-y))
+      );
+  }
+  /* The three side cards need full portrait-height separation even on a short
+     landscape ellipse. Diagonal neighbours have independent horizontal room. */
+  .table-layout-shell .table-stage .seat-anchor:is([data-seat="2"], [data-seat="9"]) {
+    transform: translate(-50%, -50%)
+      translate(
+        calc(sin(var(--seat-angle)) * var(--portrait-radius-x)),
+        var(--portrait-side-offset)
+      );
+  }
+  .table-layout-shell .table-stage .seat-anchor:is([data-seat="4"], [data-seat="7"]) {
+    transform: translate(-50%, -50%)
+      translate(
+        calc(sin(var(--seat-angle)) * var(--portrait-radius-x)),
+        calc(var(--portrait-side-offset) * -1)
+      );
+  }
+}
+@media (max-width: 539px), (max-width: 760px) and (orientation: landscape) {
+  .table-stage .round-table {
+    row-gap: 34px;
+  }
+  .table-stage .seat-anchor {
+    width: min(126px, 100%);
+    justify-self: center;
+  }
+  .table-stage .seat-actions {
+    width: 100%;
+  }
+}
+@media (min-width: 700px) and (max-height: 700px), (min-width: 700px) and (max-width: 900px) {
+  .table-stage .player-role-icon {
+    width: 28px;
+    height: 28px;
+  }
+  .table-stage .card-index {
+    font-size: 10px;
+    top: 5px;
+    left: 5px;
+  }
+  .table-stage .card-suit {
+    font-size: 12px;
+  }
+  .table-stage .card-index--lower {
+    inset: auto 5px 5px auto;
+  }
+}
+/* Size containment needs an explicit block size outside fixed table shells. */
+@media (min-width: 540px) and (max-width: 760px) and (orientation: portrait) {
+  .table-layout-shell .round-table:has(.seat-actions) {
+    --portrait-side-offset: max(
+      calc(var(--portrait-height) * 1.23),
+      calc(var(--portrait-height) + 38px)
+    );
+  }
+  .game-shell.phase-night-mafia .seat-anchor[data-seat="3"] .seat-actions {
+    transform: translateX(calc(-50% + 8px));
+  }
+  .game-shell.phase-night-mafia .seat-anchor[data-seat="8"] .seat-actions {
+    transform: translateX(calc(-50% - 8px));
+  }
+}
+@media (min-width: 900px) and (max-width: 1159px) and (orientation: landscape) {
+  /* These shells retain their existing columnar action rails. */
+  .table-layout-shell .round-table:has(.seat-actions) {
+    --portrait-side-offset: calc(var(--portrait-height) * 1.23);
+  }
+}
+@media (min-width: 761px) and (max-width: 1159px) and (orientation: portrait),
+  (min-width: 761px) and (max-width: 899px),
+  (min-width: 1160px) and (max-height: 719px) {
+  .table-layout-shell .table-stage {
+    height: min(84vw, 820px);
+    min-height: 0;
+    padding: 0;
+  }
+}

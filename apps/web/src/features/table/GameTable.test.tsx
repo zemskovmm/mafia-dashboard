@@ -11,6 +11,40 @@ const seats: TableSeatView[] = Array.from({ length: 10 }, (_, index) => ({
 }));
 
 describe("GameTable", () => {
+  it("renders paired decorative indices, fixed hand/count and a sharp accessible role without pills", () => {
+    const { container, rerender } = render(
+      <GameTable
+        seats={[
+          {
+            ...seats[0]!,
+            role: "sheriff",
+            nominated: true,
+            supportCount: 9,
+            nominationSelected: true,
+            fouls: 3,
+            muted: true,
+          },
+        ]}
+      />,
+    );
+    const card = screen.getByRole("button", { name: "Seat 1: Player 1" });
+    expect(card.querySelectorAll(".card-index")).toHaveLength(2);
+    for (const index of card.querySelectorAll(".card-index"))
+      expect(index).toHaveAttribute("aria-hidden", "true");
+    expect(card.querySelector(".card-index--lower")).toHaveTextContent("1");
+    expect(card.querySelector(".card-nomination-symbol .lucide-hand")).not.toBeNull();
+    expect(card.querySelector(".card-support svg")).toBeNull();
+    expect(screen.getByRole("img", { name: "sheriff" })).toHaveClass("player-role-icon");
+    expect(card.querySelector(".role-badge,.card-selection")).toBeNull();
+    expect(card).toHaveAttribute("aria-pressed", "true");
+    expect(card).toHaveClass("is-nomination-selected");
+    rerender(<GameTable seats={[{ ...seats[0]!, role: "sheriff" }]} privacyHidden />);
+    expect(screen.queryByRole("img", { name: "sheriff" })).toBeNull();
+    expect(container.querySelector('[data-role-glyph="sheriff"]')).toBeNull();
+    expect(card.querySelector(".card-nomination-status")).not.toBeNull();
+    expect(card.querySelector(".card-discipline-status")).not.toBeNull();
+    expect(card.querySelector(".card-support")).toBeNull();
+  });
   it.each(["citizen", "sheriff", "mafia", "don"] as const)(
     "keeps %s preview neutral and its dealt cue explicit without gameplay states",
     (role) => {
@@ -20,7 +54,7 @@ describe("GameTable", () => {
       const card = screen.getByRole("button", { name: "Seat 1: Player 1" });
       expect(card).toHaveClass("role-draw-preview");
       expect(card).not.toHaveClass("is-role-dealt");
-      expect(card).toHaveTextContent(role);
+      expect(screen.getByRole("img", { name: role })).toBeInTheDocument();
       expect(card.querySelector(`[data-role-glyph="${role}"]`)).not.toBeNull();
       expect(card.querySelector(".role-draw-glow")).toBeNull();
       rerender(
@@ -46,7 +80,7 @@ describe("GameTable", () => {
       expect(card).not.toHaveClass("is-role-dealt", "role-draw-preview", "role-draw-card");
       expect(card).not.toHaveTextContent(role);
       expect(card).not.toHaveAttribute("data-role-draw-role");
-      expect(card.querySelector("[data-role-glyph]")).toBeNull();
+      expect(card.querySelector("[data-role-glyph]")).toHaveAttribute("data-role-glyph", "hidden");
     },
   );
 
@@ -87,47 +121,27 @@ describe("GameTable", () => {
     await user.keyboard("{Enter} ");
     expect(click).toHaveBeenCalledTimes(2);
   });
-  it("separates round nominations, additional supporters and the current speaker selection with live icons", () => {
-    const nominatedSeats = [
-      { ...seats[0]!, nominated: true, supportCount: 9, nominationSelected: true },
-    ];
+  it("separates round support from surface-only current selection independently of tint", () => {
+    const seat = { ...seats[0]!, nominated: true, supportCount: 9, nominationSelected: true };
     const { rerender } = render(
-      <PlayerCardAppearanceContext.Provider value={DEFAULT_GLASS_SETTINGS}>
-        <GameTable seats={nominatedSeats} />
+      <PlayerCardAppearanceContext.Provider
+        value={{ ...DEFAULT_GLASS_SETTINGS, nominationTint: 0, nominationTreatment: "tint" }}
+      >
+        <GameTable seats={[seat]} />
       </PlayerCardAppearanceContext.Provider>,
     );
     const card = screen.getByRole("button", { name: "Seat 1: Player 1" });
-    expect(card).toHaveClass("is-nominated", "has-nomination-selection-outline");
+    expect(card).toHaveClass("is-nominated", "is-nomination-selected");
     expect(card).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("img", { name: "Nominated" })).toHaveClass("card-status-slot");
+    expect(
+      screen.getByRole("img", { name: "Nominated" }).querySelector(".lucide-hand"),
+    ).not.toBeNull();
     expect(screen.getByRole("img", { name: "Additional supporters: 9" })).toHaveTextContent("+9");
-    expect(screen.getByRole("img", { name: "Selected by current speaker" })).toHaveClass(
-      "card-status-slot",
+    expect(card.querySelector(".card-selection,.role-badge")).toBeNull();
+    rerender(<GameTable seats={[{ ...seat, nominationSelected: false }]} readOnly />);
+    expect(screen.getByRole("group", { name: "Seat 1: Player 1" })).not.toHaveClass(
+      "is-nomination-selected",
     );
-    expect(card.querySelector(".lucide-vote")).not.toBeNull();
-    expect(card.querySelector(".lucide-hand")).not.toBeNull();
-    rerender(
-      <PlayerCardAppearanceContext.Provider
-        value={{
-          ...DEFAULT_GLASS_SETTINGS,
-          nominationTint: 0,
-          nominationTreatment: "tint",
-          nominationIcon: "flag",
-          supportIcon: "thumbs-up",
-          selectionStyle: "check",
-        }}
-      >
-        <GameTable seats={nominatedSeats} />
-      </PlayerCardAppearanceContext.Provider>,
-    );
-    expect(card).not.toHaveClass("has-nomination-selection-outline");
-    expect(card.querySelector(".lucide-flag")).not.toBeNull();
-    expect(card.querySelector(".lucide-thumbs-up")).not.toBeNull();
-    expect(screen.getByRole("img", { name: "Nominated" })).toBeVisible();
-    expect(screen.getByRole("img", { name: "Selected by current speaker" })).toBeVisible();
-    rerender(<GameTable seats={[{ ...nominatedSeats[0]!, nominationSelected: false }]} readOnly />);
-    expect(screen.getByRole("group", { name: "Seat 1: Player 1" })).toHaveClass("is-nominated");
-    expect(screen.queryByRole("img", { name: "Selected by current speaker" })).toBeNull();
     expect(screen.getByRole("img", { name: "Additional supporters: 9" })).toHaveTextContent("+9");
   });
 
@@ -517,7 +531,7 @@ describe("GameTable", () => {
     const player = screen.getByRole("button", { name: "Seat 1: Player 1" });
     expect(player.querySelector(".seat-name")).toHaveTextContent("Player 1");
     const badges = player.querySelector(".seat-badges");
-    expect(badges).toHaveTextContent("citizen");
+    expect(screen.getByRole("img", { name: "citizen" })).toBeInTheDocument();
     expect(badges).not.toHaveTextContent("Foul");
     expect(screen.getByRole("img", { name: "Foul ×1" }).querySelectorAll(".foul-dot")).toHaveLength(
       1,

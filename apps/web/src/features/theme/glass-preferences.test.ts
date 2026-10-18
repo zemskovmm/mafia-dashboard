@@ -21,9 +21,6 @@ const approvedDefaults = {
   nominationTint: 18,
   nominationColor: "#e6bc7e",
   nominationTreatment: "hybrid",
-  nominationIcon: "vote",
-  supportIcon: "hand",
-  selectionStyle: "check-outline",
   buttonFrosting: 70,
   buttonGold: 35,
 } as const;
@@ -42,9 +39,6 @@ const customizedSettings = {
   nominationTint: 35,
   nominationColor: "#39a9db",
   nominationTreatment: "tint",
-  nominationIcon: "flag",
-  supportIcon: "thumbs-up",
-  selectionStyle: "check",
   buttonFrosting: 20,
   buttonGold: 80,
 } as const;
@@ -62,6 +56,18 @@ const numericFields = [
 ] as const;
 
 describe("device-local glass preferences", () => {
+  it("discards retired glyph/check choices, including on persisted writes, without resetting retained values", () => {
+    const old = {
+      ...customizedSettings,
+      nominationIcon: "flag",
+      supportIcon: "thumbs-up",
+      selectionStyle: "check-outline",
+    };
+    expect(validateGlassSettings(old)).toEqual(customizedSettings);
+    const setItem = vi.fn();
+    writeGlassSettings(old, () => ({ setItem }));
+    expect(JSON.parse(setItem.mock.calls[0]![1])).toEqual(customizedSettings);
+  });
   it("uses the approved expanded defaults for fresh and reset settings", () => {
     expect(DEFAULT_GLASS_SETTINGS).toEqual(approvedDefaults);
     expect(readGlassSettings(() => ({ getItem: () => null }))).toEqual(approvedDefaults);
@@ -190,9 +196,6 @@ describe("device-local glass preferences", () => {
   it("validates the six player-card fields independently and accepts only six-digit hex colors", () => {
     const choices = {
       nominationTreatment: ["icons", "tint", "hybrid"],
-      nominationIcon: ["vote", "flag"],
-      supportIcon: ["hand", "thumbs-up"],
-      selectionStyle: ["check-outline", "check"],
     } as const;
     for (const field of Object.keys(choices) as (keyof typeof choices)[]) {
       for (const value of choices[field]) {

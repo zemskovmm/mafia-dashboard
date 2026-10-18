@@ -294,30 +294,6 @@ export const GlassControls = ({
                     ["hybrid", "nominationTreatmentHybrid"],
                   ],
                 ],
-                [
-                  "nominationIcon",
-                  "nominationIcon",
-                  [
-                    ["vote", "nominationIconVote"],
-                    ["flag", "nominationIconFlag"],
-                  ],
-                ],
-                [
-                  "supportIcon",
-                  "supportIcon",
-                  [
-                    ["hand", "supportIconHand"],
-                    ["thumbs-up", "supportIconThumbsUp"],
-                  ],
-                ],
-                [
-                  "selectionStyle",
-                  "speakerSelectionStyle",
-                  [
-                    ["check-outline", "speakerSelectionCheckOutline"],
-                    ["check", "speakerSelectionCheck"],
-                  ],
-                ],
               ] as const
             ).map(([field, label, choices]) => (
               <label key={field} className="dev-renderer-field">

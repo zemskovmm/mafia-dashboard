@@ -109,9 +109,6 @@ describe("Glass controls", () => {
     }
     const choices = [
       ["nominationTreatment", "Nomination treatment", ["icons", "tint", "hybrid"]],
-      ["nominationIcon", "Nomination icon", ["flag", "vote"]],
-      ["supportIcon", "Support icon", ["thumbs-up", "hand"]],
-      ["selectionStyle", "This speaker’s choice", ["check", "check-outline"]],
     ] as const;
     for (const [field, name, values] of choices) {
       const control = screen.getByRole("combobox", { name });
@@ -147,14 +144,7 @@ describe("Glass controls", () => {
       );
       await user.click(screen.getByText("Glass", { selector: "summary" }));
       await user.click(screen.getByText("Player cards", { selector: "summary" }));
-      for (const label of [
-        "Nomination tint",
-        "Nomination color",
-        "Nomination treatment",
-        "Nomination icon",
-        "Support icon",
-        "This speaker’s choice",
-      ])
+      for (const label of ["Nomination tint", "Nomination color", "Nomination treatment"])
         expect(screen.getByLabelText(label, { exact: true })).not.toBeDisabled();
       fireEvent.change(screen.getByLabelText("Nomination tint"), { target: { value: "0" } });
       await user.selectOptions(screen.getByLabelText("Nomination treatment"), "tint");
@@ -391,9 +381,6 @@ describe("Glass controls", () => {
     expect(screen.getByLabelText("Тонировка выставления")).toHaveValue("18");
     expect(screen.getByLabelText("Цвет выставления")).toHaveValue("#e6bc7e");
     expect(screen.getByLabelText("Оформление выставления")).toHaveValue("hybrid");
-    expect(screen.getByLabelText("Значок выставления")).toHaveValue("vote");
-    expect(screen.getByLabelText("Значок поддержки")).toHaveValue("hand");
-    expect(screen.getByLabelText("Выбор текущего выступающего")).toHaveValue("check-outline");
     expect(screen.getByRole("status")).toHaveTextContent("графический контекст потерян");
     fireEvent.click(screen.getByRole("button", { name: "Сбросить настройки стекла" }));
     expect(onChange).toHaveBeenCalledExactlyOnceWith(DEFAULT_GLASS_SETTINGS);

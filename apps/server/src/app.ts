@@ -34,6 +34,7 @@ import {
 } from "./club-statistics.js";
 import { InvalidTournamentNameError, TournamentNotFoundError } from "./tournament-metadata.js";
 import { statisticsIdentityKey as identityKey } from "./statistics-identity.js";
+import { playerRoleIconsInputSchema, PlayerRoleIconValidationError } from "./player-role-icons.js";
 
 const gameIdParams = z.object({ gameId: z.uuid() });
 const gameSessionListQuery = z
@@ -86,30 +87,39 @@ const createClubBody = clubBody.extend({
   bestMoveEnabled: z.boolean().default(true),
   ownerConsent: z.literal(true),
 });
-const noConsentPlayerBody = z.object({
-  nickname,
-  consent: z.literal(false),
-  clubAccess: z.literal("none").default("none"),
-  firstName: z.null().optional(),
-  lastName: z.null().optional(),
-  email: z.null().optional(),
-});
-const consentedPlayerBody = z.object({
-  nickname,
-  consent: z.literal(true),
-  clubAccess: z.enum(["none", "user", "manager"]).default("none"),
-  firstName: z.string().trim().min(1).max(100),
-  lastName: z.string().trim().min(1).max(100),
-  email: z.email().max(254),
-});
-const linkedManagerConsentWithdrawalBody = z.object({
-  nickname,
-  consent: z.literal(false),
-  clubAccess: z.literal("manager"),
-  firstName: z.null().optional(),
-  lastName: z.null().optional(),
-  email: z.null().optional(),
-});
+const noConsentPlayerBody = z
+  .object({
+    roleIcons: playerRoleIconsInputSchema.optional(),
+    nickname,
+    consent: z.literal(false),
+    clubAccess: z.literal("none").default("none"),
+    firstName: z.null().optional(),
+    lastName: z.null().optional(),
+    email: z.null().optional(),
+  })
+  .strict();
+const consentedPlayerBody = z
+  .object({
+    roleIcons: playerRoleIconsInputSchema.optional(),
+    nickname,
+    consent: z.literal(true),
+    clubAccess: z.enum(["none", "user", "manager"]).default("none"),
+    firstName: z.string().trim().min(1).max(100),
+    lastName: z.string().trim().min(1).max(100),
+    email: z.email().max(254),
+  })
+  .strict();
+const linkedManagerConsentWithdrawalBody = z
+  .object({
+    roleIcons: playerRoleIconsInputSchema.optional(),
+    nickname,
+    consent: z.literal(false),
+    clubAccess: z.literal("manager"),
+    firstName: z.null().optional(),
+    lastName: z.null().optional(),
+    email: z.null().optional(),
+  })
+  .strict();
 const playerProfileBody = z.discriminatedUnion("consent", [
   noConsentPlayerBody,
   consentedPlayerBody,
@@ -525,14 +535,14 @@ export const buildApp = async ({
     if (role === null) {
       const resumed = await clubStore.resumeDeletion?.(user.id, params.data.clubId);
       return resumed
-        ? reply.code(204).send()
+        ? reply.send({ deleted: true, physicalCleanup: "not_guaranteed" })
         : reply.code(403).send({ error: "club_access_denied" });
     }
     if (role !== "manager") return reply.code(403).send({ error: "club_manager_required" });
     // Deletion owns its transaction-level authorization and durable purge actor.
     // Ordinary membership guards must not deny it after its own tombstone.
     return (await clubStore.delete(user.id, params.data.clubId))
-      ? reply.code(204).send()
+      ? reply.send({ deleted: true, physicalCleanup: "not_guaranteed" })
       : reply.code(404).send({ error: "club_not_found" });
   });
 
@@ -639,6 +649,18 @@ export const buildApp = async ({
     };
   });
 
+  app.get("/api/players/:playerId/role-icons", async (request, reply) => {
+    const clubId = await selectedClub(request, reply);
+    if (clubId === null) return;
+    const params = playerIdParams.safeParse(request.params);
+    if (!params.success) return reply.code(400).send(validationFailure(params.error.issues));
+    const bundle = await authorizedRequest(request, clubId, false, () =>
+      playerStore.getRoleIcons(params.data.playerId, clubId),
+    );
+    reply.header("cache-control", "private, no-store");
+    return bundle === null ? reply.code(404).send({ error: "player_not_found" }) : bundle;
+  });
+
   app.post("/api/players", async (request, reply) => {
     const clubId = await selectedManagerClub(request, reply);
     if (clubId === null) return;
@@ -660,7 +682,10 @@ export const buildApp = async ({
       );
       return reply.code(201).send({ player });
     } catch (error) {
-      if (error instanceof ClubAccessConsentRequiredError) {
+      if (
+        error instanceof ClubAccessConsentRequiredError ||
+        error instanceof PlayerRoleIconValidationError
+      ) {
         return reply.code(400).send({ error: error.code });
       }
       if (isUniqueViolation(error)) {
@@ -702,7 +727,10 @@ export const buildApp = async ({
       }
       return { player };
     } catch (error) {
-      if (error instanceof ClubAccessConsentRequiredError) {
+      if (
+        error instanceof ClubAccessConsentRequiredError ||
+        error instanceof PlayerRoleIconValidationError
+      ) {
         return reply.code(400).send({ error: error.code });
       }
       if (error instanceof ManagerLockedError) {

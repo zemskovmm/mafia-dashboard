@@ -14,9 +14,6 @@ export interface GlassSettings {
   readonly nominationTint: number;
   readonly nominationColor: string;
   readonly nominationTreatment: "icons" | "tint" | "hybrid";
-  readonly nominationIcon: "vote" | "flag";
-  readonly supportIcon: "hand" | "thumbs-up";
-  readonly selectionStyle: "check-outline" | "check";
   readonly buttonFrosting: number;
   readonly buttonGold: number;
 }
@@ -35,9 +32,6 @@ export const DEFAULT_GLASS_SETTINGS: GlassSettings = Object.freeze({
   nominationTint: 18,
   nominationColor: "#e6bc7e",
   nominationTreatment: "hybrid",
-  nominationIcon: "vote",
-  supportIcon: "hand",
-  selectionStyle: "check-outline",
   buttonFrosting: 70,
   buttonGold: 35,
 });
@@ -80,18 +74,6 @@ export const validateGlassSettings = (value: unknown): GlassSettings => {
       record.nominationTreatment === "hybrid"
         ? record.nominationTreatment
         : DEFAULT_GLASS_SETTINGS.nominationTreatment,
-    nominationIcon:
-      record.nominationIcon === "vote" || record.nominationIcon === "flag"
-        ? record.nominationIcon
-        : DEFAULT_GLASS_SETTINGS.nominationIcon,
-    supportIcon:
-      record.supportIcon === "hand" || record.supportIcon === "thumbs-up"
-        ? record.supportIcon
-        : DEFAULT_GLASS_SETTINGS.supportIcon,
-    selectionStyle:
-      record.selectionStyle === "check-outline" || record.selectionStyle === "check"
-        ? record.selectionStyle
-        : DEFAULT_GLASS_SETTINGS.selectionStyle,
   };
 };
 

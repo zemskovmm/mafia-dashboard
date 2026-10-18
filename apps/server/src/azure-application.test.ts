@@ -37,7 +37,14 @@ const storesFixture = () => {
       readStatisticsInputs: vi.fn(async () => ({ players: [], games: [], tournaments: [] })),
     },
     tournaments: { list: vi.fn(async () => []), create: vi.fn(), assign: vi.fn() },
-    players: { list, get: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
+    players: {
+      getRoleIcons: vi.fn(),
+      list,
+      get: vi.fn(),
+      create: vi.fn(),
+      update: vi.fn(),
+      delete: vi.fn(),
+    },
     clubs: {
       listForUser: vi.fn(async () => []),
       getRole,

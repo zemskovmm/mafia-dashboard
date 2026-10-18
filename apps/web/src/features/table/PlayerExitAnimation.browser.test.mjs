@@ -208,7 +208,7 @@ for (const [name, engine, launch] of [
             rotate: getComputedStyle(element).rotate,
             front: getComputedStyle(element.querySelector(".player-exit-front")).visibility,
             back: getComputedStyle(element.querySelector(".player-exit-back")).visibility,
-            roles: element.querySelectorAll(".role-badge").length,
+            roles: element.querySelectorAll(".player-role-icon[role=img]").length,
             glass: element.querySelectorAll(":scope > .liquid-card-glass").length,
           }));
           assert.notEqual(pose.rotate, "none");
@@ -364,9 +364,14 @@ for (const [name, engine, launch] of [
         await page.evaluate(() => window.exitFixture.exclude());
         await page.locator(`${cardSelector(victim)}[data-player-exit]`).waitFor();
         await sample(page, 0.7);
-        assert.ok((await page.locator(`${cardSelector(victim)} .role-badge`).count()) > 0);
+        assert.ok(
+          (await page.locator(`${cardSelector(victim)} .player-role-icon[role=img]`).count()) > 0,
+        );
         await page.evaluate(() => window.exitFixture.setPrivacy(true));
-        assert.equal(await page.locator(`${cardSelector(victim)} .role-badge`).count(), 0);
+        assert.equal(
+          await page.locator(`${cardSelector(victim)} .player-role-icon[role=img]`).count(),
+          0,
+        );
         await page.evaluate(() => window.exitFixture.correction());
         assert.equal(await page.locator(".seat-anchor [data-player-exit]").count(), 0);
         await page.evaluate(() => window.exitFixture.load("finished"));

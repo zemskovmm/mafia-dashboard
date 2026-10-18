@@ -124,6 +124,7 @@ export const VotingStage = ({
         hostName={hostName}
         privacyHidden={privacyHidden}
         seats={game.players.map((player) => ({
+          playerId: player.id,
           ...player,
           name: displayName(player),
           muted: player.mutePending,
@@ -153,6 +154,7 @@ export const VotingStage = ({
         hostName={hostName}
         privacyHidden={privacyHidden}
         seats={game.players.map((player) => ({
+          playerId: player.id,
           ...player,
           name: displayName(player),
           muted: player.mutePending,
@@ -221,6 +223,7 @@ export const VotingStage = ({
         hostName={hostName}
         privacyHidden={privacyHidden}
         seats={game.players.map((player) => ({
+          playerId: player.id,
           ...player,
           name: displayName(player),
           muted: player.mutePending,

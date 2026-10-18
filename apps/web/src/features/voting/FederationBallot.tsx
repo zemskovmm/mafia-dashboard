@@ -51,6 +51,7 @@ export const FederationBallot = ({
         privacyHidden={privacyHidden}
         onSeatPenalty={onSeatPenalty}
         seats={game.players.map((player) => ({
+          playerId: player.id,
           ...player,
           name: displayName(player),
           muted: player.mutePending,

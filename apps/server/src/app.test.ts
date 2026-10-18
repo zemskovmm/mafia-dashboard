@@ -349,7 +349,8 @@ describe("server API", () => {
       url: `/api/clubs/${secondClubId}`,
       headers: authHeaders,
     });
-    expect(deletedClub.statusCode).toBe(204);
+    expect(deletedClub.statusCode).toBe(200);
+    expect(deletedClub.json()).toEqual({ deleted: true, physicalCleanup: "not_guaranteed" });
     const afterDelete = await app.inject({
       method: "GET",
       url: "/api/clubs",
@@ -728,9 +729,9 @@ describe("server API", () => {
       clubAccess: "manager",
       managerLocked: true,
     });
-    await expect(
-      app.inject({ method: "DELETE", url: `/api/clubs/${clubId}` }),
-    ).resolves.toHaveProperty("statusCode", 204);
+    const deleted = await app.inject({ method: "DELETE", url: `/api/clubs/${clubId}` });
+    expect(deleted.statusCode).toBe(200);
+    expect(deleted.json()).toEqual({ deleted: true, physicalCleanup: "not_guaranteed" });
   });
 
   it("returns 403 when an editor tries to restore locked Owner consent and PII", async () => {

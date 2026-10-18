@@ -808,6 +808,7 @@ export const SetupWizard = ({
             <GameTable
               hostName={hostPlayer?.nickname ?? t("setup.unknownHost")}
               seats={setup.players.map((player) => ({
+                playerId: player.id,
                 seat: player.seat,
                 name:
                   player.id === CASPER_PLAYER_ID
