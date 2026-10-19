@@ -1,4 +1,6 @@
 .timeline-screen {
+  position: relative;
+  z-index: 1;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) minmax(170px, 24vh);
   width: 100%;

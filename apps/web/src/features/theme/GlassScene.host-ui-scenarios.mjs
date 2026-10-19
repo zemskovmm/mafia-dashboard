@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { writeFile } from "node:fs/promises";
+import { PNG } from "pngjs";
 import { validateGlassSettings } from "./glass-preferences.ts";
 
 const glassKey = "mafia-dashboard.glass.v1";
@@ -669,6 +670,273 @@ async function statisticsPlayerScroll(page, locale, capture, checks) {
     `${locale}: every native directional probe must move Statistics`,
   );
   return checks;
+}
+
+export async function verifyDirectoryTimeline({ browser, config, url, evidence, results }) {
+  for (const locale of ["en", "ru"])
+    for (const enhanced of [false, true]) {
+      const prefix = `${config.name}-${locale}-${enhanced ? "glass" : "fallback"}`;
+      const ru = locale === "ru";
+      const page = await browser.newPage({ viewport: config.viewport, hasTouch: true });
+      page.setDefaultTimeout(10000);
+      const receipt = {
+        browser: config.name,
+        locale,
+        enhanced,
+        checks: [],
+        errors: [],
+        painted: [],
+      };
+      page.on("pageerror", (error) => receipt.errors.push(error.message));
+      await page.route("**/*", (route) =>
+        route.request().url().startsWith(`${url}/`) ? route.continue() : route.abort(),
+      );
+      const capture = async (name) => {
+        await page.screenshot({ path: join(evidence, `${prefix}-${name}.png`) });
+      };
+      const painted = async (selector) => {
+        const box = await page.locator(selector).boundingBox();
+        assert.ok(
+          box && box.y >= 0 && box.y + box.height <= config.viewport.height,
+          `${selector}: inside viewport`,
+        );
+        const image = PNG.sync.read(await page.screenshot({ scale: "css" }));
+        let textPixels = 0;
+        for (let y = Math.ceil(box.y); y < Math.floor(box.y + box.height); y++)
+          for (let x = Math.ceil(box.x); x < Math.floor(box.x + box.width); x++) {
+            const i = (y * image.width + x) * 4;
+            // Error text is red, not white; the decorative background is dark.
+            if (Math.max(...image.data.subarray(i, i + 3)) > 150) textPixels++;
+          }
+        receipt.painted.push({ selector, textPixels });
+        assert.ok(textPixels > 20, `${selector}: text is painted above the decorative background`);
+      };
+      try {
+        await page.goto(
+          `${url}/?phase=${enhanced ? "day" : "setup"}&empty&full-app&locale=${locale}${enhanced ? "&glass" : ""}`,
+        );
+        await page.locator(".club-entry-destination .app-shell").waitFor();
+        await settle(page);
+        await page.locator('.save-indicator[data-status="saved"]').waitFor();
+        // App may normalize the seeded active game's derived display log on entry.
+        // Only subsequent directory/history navigation is under the read-only oracle.
+        receipt.initialRequests = await page.evaluate(() => window.fixtureRequests.length);
+        await menu(page, ru ? "Экран игроков" : "Players screen", locale);
+        await page.locator(".player-card-grid > article").last().waitFor();
+        await page
+          .locator(`.app-shell[data-glass-status="${enhanced ? "ready" : "off"}"]`)
+          .waitFor();
+        const preferences = await saved(page);
+        receipt.environment = await page.evaluate(() => ({
+          width: innerWidth,
+          height: innerHeight,
+          dpr: window.devicePixelRatio,
+          viewportScale: window.visualViewport?.scale,
+          zoom: getComputedStyle(document.documentElement).zoom,
+        }));
+        await capture("before");
+        receipt.before = await inspect(page);
+        receipt.ancestors = await page.locator(".players-shell").evaluate((node) => {
+          const rows = [];
+          for (; node; node = node.parentElement) {
+            const css = getComputedStyle(node);
+            rows.push({
+              tag: node.tagName,
+              class: node.className,
+              rect: node.getBoundingClientRect().toJSON(),
+              client: node.clientHeight,
+              scroll: node.scrollHeight,
+              overflow: css.overflow,
+              height: css.height,
+            });
+          }
+          return rows;
+        });
+        const scroller = page.locator(".players-shell");
+        const cdp =
+          browser.browserType().name() === "chromium"
+            ? await page.context().newCDPSession(page)
+            : null;
+        try {
+          const top = async () => {
+            for (let i = 0; i < 30 && (await scrollState(scroller)).top > 1; i++)
+              await nativeScrollStep(page, scroller, scroller, "wheel-end", -1);
+            assert.ok((await scrollState(scroller)).top <= 1, "Native input restores top");
+          };
+          for (const input of ["wheel", "mixed", ...(cdp ? ["touch"] : [])]) {
+            await top();
+            receipt.checks.push(
+              await nativeScrollStep(
+                page,
+                scroller,
+                page.locator("#new-player-nickname"),
+                input,
+                1,
+                cdp,
+              ),
+            );
+            await top();
+            receipt.checks.push(
+              await nativeScrollStep(
+                page,
+                scroller,
+                page.locator(".new-player-panel .role-icon-fields__art").first(),
+                input,
+                1,
+                cdp,
+              ),
+            );
+            // Reach the cards using native input, never locator auto-scroll or scrollTop assignment.
+            const card = page.locator(".player-card-grid > article").first();
+            for (
+              let i = 0;
+              i < 10 && (await card.boundingBox()).y > config.viewport.height - 100;
+              i++
+            )
+              await nativeScrollStep(page, scroller, scroller, "wheel", 1);
+            receipt.checks.push(await nativeScrollStep(page, scroller, card, input, 1, cdp));
+            const up = await nativeScrollStep(page, scroller, scroller, input, -1, cdp);
+            assert.ok(up.after.top < up.before.top, `${input}: scrolls upward`);
+            receipt.checks.push(up);
+          }
+          await top();
+          receipt.wheelBottom = await nativeEnd(
+            page,
+            ".players-shell",
+            ".player-card-grid > article button",
+            "wheel-end",
+          );
+          await capture("directory-bottom");
+          if (cdp) {
+            await top();
+            receipt.touchBottom = await nativeEnd(
+              page,
+              ".players-shell",
+              ".player-card-grid > article button",
+              "touch",
+              cdp,
+            );
+          }
+          await top();
+        } finally {
+          await cdp?.detach();
+        }
+        await capture("after");
+        assert.ok(
+          receipt.checks.every(
+            ({ before, after, direction }) => direction * (after.top - before.top) > 0,
+          ),
+          "Every native input moves the actual App directory",
+        );
+        await page.locator("#new-player-nickname").fill("Unsaved draft");
+        const search = page.locator(".players-shell input[type=search]");
+        await search.fill("Player 10");
+        assert.equal(await page.locator(".player-card-grid > article").count(), 1);
+        assert.equal(await page.locator("#new-player-nickname").inputValue(), "Unsaved draft");
+        await search.fill("");
+        await page.locator(".players-back-action").tap();
+        await menu(page, ru ? "Хронология прошлых игр" : "Past game timeline", locale);
+        const chooser = page.locator(".timeline-header select");
+        await chooser
+          .locator("option[value='00000000-0000-4000-8000-000000000701']")
+          .waitFor({ state: "attached" });
+        await painted(".timeline-header h1");
+        await capture("timeline-open");
+        await chooser.selectOption("00000000-0000-4000-8000-000000000701");
+        await page.locator(".timeline-marker").first().waitFor();
+        await page.locator(".timeline-marker").first().click();
+        assert.ok((await page.locator(".timeline-inspector").innerText()).length > 20);
+        await page.locator(".timeline-inspector h2").scrollIntoViewIfNeeded();
+        await painted(".timeline-inspector h2");
+        await capture("timeline-inspector");
+        await page.locator(".timeline-header h1").scrollIntoViewIfNeeded();
+        await painted(".timeline-header h1");
+        await capture("timeline-recorded");
+        await chooser.selectOption("00000000-0000-4000-8000-000000000702");
+        await page
+          .getByText(
+            ru
+              ? "Подробная хронология этой игры недоступна."
+              : "Timeline detail is unavailable for this game.",
+          )
+          .waitFor();
+        assert.equal(await page.locator(".timeline-marker").count(), 0);
+        await capture("timeline-facts-only");
+        await page.evaluate(() => {
+          window.timelineFixtureMode = "details-error";
+        });
+        await chooser.selectOption("00000000-0000-4000-8000-000000000701");
+        await page.locator(".timeline-error").waitFor();
+        await painted(".timeline-error");
+        await capture("timeline-detail-error");
+        await page.evaluate(() => {
+          window.timelineFixtureMode = "populated";
+        });
+        const outcome = page.locator(".timeline-filters select").last();
+        await outcome.selectOption("red");
+        assert.equal(await outcome.inputValue(), "red");
+        await page.locator(".timeline-filters button").click();
+        assert.equal(await outcome.inputValue(), "");
+        for (const mode of ["empty", "loading", "error"]) {
+          await page.locator(".timeline-back").click();
+          await page.evaluate(() => {
+            window.releaseTimelineFixture = null;
+            window.timelineFixtureMode = "loading";
+          });
+          await menu(page, ru ? "Хронология прошлых игр" : "Past game timeline", locale);
+          // Active-game history remains the default when present; explicitly choose past history.
+          if ((await chooser.inputValue()) !== "") await chooser.selectOption("");
+          await page.waitForFunction(() => typeof window.releaseTimelineFixture === "function");
+          if (mode !== "loading")
+            await page.evaluate((mode) => {
+              window.timelineFixtureMode = mode;
+              window.releaseTimelineFixture();
+            }, mode);
+          const selector =
+            mode === "empty"
+              ? ".timeline-empty"
+              : mode === "loading"
+                ? ".timeline-loading"
+                : ".timeline-error";
+          await page.locator(selector).waitFor();
+          await painted(selector);
+          await capture(`timeline-${mode}`);
+          if (mode === "loading") {
+            await page.evaluate(() => {
+              window.timelineFixtureMode = "populated";
+              window.releaseTimelineFixture();
+            });
+            await chooser
+              .locator("option[value='00000000-0000-4000-8000-000000000701']")
+              .waitFor({ state: "attached" });
+          }
+        }
+        await page.locator(".timeline-back").click();
+        await menu(page, ru ? "Экран игроков" : "Players screen", locale);
+        await page.locator(".players-shell").waitFor();
+        assert.ok(
+          (await scrollState(page.locator(".players-shell"))).client <= config.viewport.height,
+        );
+        assert.deepEqual(
+          await saved(page),
+          preferences,
+          "Rendering preferences preserved across navigation",
+        );
+        receipt.requests = await page.evaluate(() => window.fixtureRequests);
+        assert.ok(
+          receipt.requests.slice(receipt.initialRequests).every(({ method }) => method === "GET"),
+          "Directory and completed-history verification is read-only",
+        );
+        assert.deepEqual(receipt.errors, []);
+      } finally {
+        await writeFile(
+          join(evidence, `${prefix}-directory-timeline.json`),
+          JSON.stringify(receipt, null, 2),
+        );
+        await page.close();
+      }
+      results.push({ browser: config.name, locale, enhanced, passed: true });
+    }
 }
 
 export const verifyHostUi = async ({ browser, config, url, evidence, results }) => {

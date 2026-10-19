@@ -8,7 +8,7 @@ import { mkdtemp, readFile, mkdir, writeFile, rm } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import process from "node:process";
 import { verifySharedPlayerGlass } from "./GlassScene.shared-scenarios.mjs";
-import { verifyHostUi } from "./GlassScene.host-ui-scenarios.mjs";
+import { verifyHostUi, verifyDirectoryTimeline } from "./GlassScene.host-ui-scenarios.mjs";
 import { verifyTabletUi } from "./TabletUi.browser-scenarios.mjs";
 import {
   verifyPortraitCards,
@@ -41,9 +41,15 @@ const evidence = resolve(
 );
 assert.ok(
   process.env.GLASS_SCENARIO === undefined ||
-    ["shared", "legacy", "player-cards", "portrait-cards", "host-ui", "tablet-ui"].includes(
-      process.env.GLASS_SCENARIO,
-    ),
+    [
+      "shared",
+      "legacy",
+      "player-cards",
+      "portrait-cards",
+      "host-ui",
+      "tablet-ui",
+      "directory-timeline",
+    ].includes(process.env.GLASS_SCENARIO),
   "Unknown GLASS_SCENARIO",
 );
 assert.ok(
@@ -55,6 +61,7 @@ assert.ok(
       "webkit-landscape",
       "webkit-compact",
       "chrome-landscape",
+      "chrome-wide",
       "chrome-compact",
       "chrome-phone",
       "chrome-tablet",
@@ -83,11 +90,12 @@ const temp = await mkdtemp(join(evidence, "fixture-"));
 const entry = `
 import React from "react";
 import {createRoot} from "react-dom/client";
-import { ClubWorkspace } from "./apps/web/src/App.tsx";
+import { App, ClubWorkspace } from "./apps/web/src/App.tsx";
 import { DEFAULT_FANCY_STUFF_SETTINGS } from "./apps/web/src/features/effects/fancy-stuff-preferences.ts";
 import {I18nProvider} from "./apps/web/src/i18n/I18nProvider.tsx";
 import {GameSessionOutbox} from "./apps/web/src/session-outbox.ts";
 import {withBrowserGameStorageGuard} from "./apps/web/src/browser-game-storage-lock.ts";
+import {createSampleGameHistory} from "./apps/web/src/features/timeline/sample-game-data.ts";
 import {createSetup,beginRoleDraw,createSeededRandom,drawRoleForSeat,createGame,completeRoleDraw,advanceSetupPhase,nominate,completeCurrentTurn,startVoting,selectVotingCandidate,createGameLogEntry,createInitialGameBaseline} from "@mafia/game-domain";
 import {beginNight,toggleAllMafiaShotsForTarget,resolveMafiaShots} from "@mafia/game-domain";
 import "./apps/web/src/styles/app.css";
@@ -112,8 +120,13 @@ const statistics=Object.fromEntries(["hostedGames","gamesPlayed","wins","losses"
 const profiles=players.map(p=>({...p,nickname:new URLSearchParams(location.search).has("long-names")?((new URLSearchParams(location.search).get("locale")==="ru"?"Очень длинное имя игрока ":"A very long English nickname ")+p.seat).slice(0,32):"Player "+p.seat,consent:false,clubAccess:"none",managerLocked:false,firstName:null,lastName:null,email:null,consentAt:null,lastPlayedAt:null,statistics:{...statistics},createdAt:club.createdAt,updatedAt:club.createdAt}));
 const host={...profiles[0],id:"00000000-0000-4000-8000-000000000011",nickname:"Host"};
 if(phase==="setup")profiles.push(host);
-const playerSetup=phase==="setup"?{step:"players",hostPlayerId:emptySetup?"":host.id,selectedPlayerIds:players.map(p=>emptySetup?"":p.id),setup:null}:null;
+const playerSetup=phase==="setup"?{step:"players",hostPlayerId:emptySetup?"":host.id,selectedPlayerIds:players.map(p=>emptySetup?"":p.id),setup:null,...(query.has("full-app")?{bestMoveEnabled:true}:{})}:null;
 window.fixtureRequests=[];window.fixtureUnexpected=[];
+window.timelineFixtureMode="populated";
+const completedId="00000000-0000-4000-8000-000000000701";
+const factsId="00000000-0000-4000-8000-000000000702";
+const completedHistory=query.has("full-app")?createSampleGameHistory():null;
+const completedSummary={gameId:completedId,name:"Recorded table",revision:1,hostPlayerId:null,outcome:"red",winner:"red",reason:null,playedAt:club.createdAt,day:2,timelineAvailable:true,eventCount:completedHistory?.entries.length??0,updatedAt:club.updatedAt};
 window.fetch=async(url,options={})=>{const path=new URL(url,location.origin).pathname;let body={};
 window.fixtureRequests.push({path,method:options.method??"GET",body:options.body?JSON.parse(options.body):null});
 if(${followupPhase === "13"}){
@@ -126,6 +139,8 @@ if(path.startsWith("/api/players/")&&options.method==="PUT"){
  if(index<0)throw new Error("Unknown fixture player "+path);
  profiles[index]={...profiles[index],...JSON.parse(options.body)};body={player:profiles[index]};
 }
+else if(path==="/api/auth/session")body={configured:true,user:{id:host.id,email:"fixture@example.com",name:"Fixture",picture:null}};
+else if(path==="/api/clubs")body={clubs:[club]};
 else if(path==="/api/players")body={players:profiles};
 else if(path.includes("/version"))body={version:"glass-regression"};
 else if(${followupPhase === "13"}&&path==="/api/tournaments")body={tournaments:[]};
@@ -136,6 +151,15 @@ else if(phase==="setup"&&path==="/api/music/oauth/status")body={configured:true,
 else if(phase==="setup"&&path==="/api/music/playlists")body={playlists:${followupPhase ? '[{id:"fixture-playlist",title:"Mafia local recovery",itemCount:1}]' : "[]"}};
 else if(${Boolean(followupPhase)}&&path.includes("/api/music/playlists/"))body={items:[{entryId:"local-entry",videoId:"local-video",title:"Local recovery track",position:0}]};
 else if(path.includes("/ready"))body={ready:true};
+else if(query.has("full-app")&&path==="/api/game-sessions"&&new URL(url,location.origin).searchParams.get("status")==="completed"){
+ if(window.timelineFixtureMode==="loading")await new Promise(resolve=>{window.releaseTimelineFixture=resolve;});
+ if(window.timelineFixtureMode==="error")return new Response(JSON.stringify({error:"Fixture unavailable"}),{status:503});
+ body={sessions:window.timelineFixtureMode==="empty"?[]:[completedSummary,{...completedSummary,gameId:factsId,name:"Facts only",timelineAvailable:false,eventCount:0}]};
+}
+else if(query.has("full-app")&&["/api/game-sessions/"+completedId,"/api/game-sessions/"+factsId].includes(path)){
+ if(window.timelineFixtureMode==="details-error")return new Response(JSON.stringify({error:"Fixture unavailable"}),{status:503});
+ body={session:{gameId:path.split("/").at(-1),name:path.endsWith(factsId)?"Facts only":"Recorded table",revision:1,duplicate:false,status:"completed",updatedAt:club.updatedAt,state:path.endsWith(factsId)?{}:{setup:null,game:completedHistory.game,hostPlayerId:null,playlistId:"",log:[],undoHistory:[],undoBudget:0,initialGame:completedHistory.baseline,events:completedHistory.entries.map(entry=>({...entry,gameId:completedId})),headEventId:completedHistory.headEventId,resetReturnEventId:null,legacyLog:[]},results:null}};
+}
 else if(path==="/api/game-sessions")body={sessions:${followupPhase ? 'new URL(url,location.origin).searchParams.get("status")==="completed"?[{gameId:"00000000-0000-4000-8000-000000000499",name:(locale==="ru"?"Очень длинное название завершённой игры ":"An exceptionally long completed game title ").repeat(5),outcome:"red"}]:[]' : "[]"}};
 else if(path.includes("/game-sessions/")){
  const stored=JSON.parse(localStorage.getItem("mafia-dashboard.game-session.v5")||"null");
@@ -144,7 +168,7 @@ else if(path.includes("/game-sessions/")){
  body=options.method==="PUT"?session:{session};
 }
 return new Response(JSON.stringify(body),{status:200,headers:{"Content-Type":"application/json"}});};
-withBrowserGameStorageGuard(async storageGuard=>{
+await withBrowserGameStorageGuard(async storageGuard=>{
 if(!localStorage.getItem("mafia-dashboard.glass-fixture-seeded")){
  new GameSessionOutbox({storage:localStorage,storageGuard,clubId:club.id,createId:()=>crypto.randomUUID(),save:()=>Promise.resolve()}).activateRemote({gameId,clubId:club.id,name:"Glass regression",hostName:"Host",status:"active",revision:1,appliedOperationId:null,results:null,createdAt:club.createdAt,updatedAt:club.updatedAt,state:{setup:playerSetup,game:playerSetup?null:checkpoint.after,hostPlayerId:playerSetup?.hostPlayerId||null,playlistId:"",log:[],undoHistory:[],undoBudget:0,initialGame:playerSetup?null:createInitialGameBaseline(game),events:playerSetup?[]:[checkpoint.entry],headEventId:playerSetup?null:checkpoint.entry.id,resetReturnEventId:null,legacyLog:[]}});
  localStorage.setItem("mafia-dashboard.glass-fixture-seeded","yes");
@@ -158,10 +182,12 @@ if(!localStorage.getItem("mafia-dashboard.glass-fixture-seeded")){
  if(new URLSearchParams(location.search).has("glass"))localStorage.setItem("mafia-dashboard.glass.v1",JSON.stringify({version:1,enabled:true,refraction:10,goldLight:25,profile:"simple"}));
  else if(!new URLSearchParams(location.search).has("fresh"))localStorage.setItem("mafia-dashboard.glass.v1",JSON.stringify({version:1,enabled:false,refraction:10,goldLight:25,profile:"simple"}));
 }
+if(query.has("full-app"))return;
 const app=createRoot(document.getElementById("root"));
 app.render(<React.StrictMode><I18nProvider locale={locale}><ClubWorkspace storageGuard={storageGuard} club={club} onExit={()=>app.unmount()} onEditClub={()=>{}} onDeleteClub={()=>Promise.resolve()} fancyStuff={DEFAULT_FANCY_STUFF_SETTINGS} onFancyStuffChange={()=>{}}/></I18nProvider></React.StrictMode>);
 await new Promise(()=>{});
 });
+if(query.has("full-app"))createRoot(document.getElementById("root")).render(<React.StrictMode><I18nProvider locale={locale}><App/></I18nProvider></React.StrictMode>);
 `;
 let server;
 const bundleBinding = {};
@@ -1370,6 +1396,9 @@ try {
       : []),
     { name: "webkit-compact", engine: webkit, viewport: { width: 1000, height: 600 } },
     { name: "chrome-landscape", engine: chromium, viewport: { width: 1366, height: 768 } },
+    ...(process.env.GLASS_SCENARIO === "directory-timeline"
+      ? [{ name: "chrome-wide", engine: chromium, viewport: { width: 2160, height: 1100 } }]
+      : []),
     { name: "chrome-compact", engine: chromium, viewport: { width: 1000, height: 600 } },
   ].filter(
     (config) =>
@@ -1397,6 +1426,10 @@ try {
       }
       if (process.env.GLASS_SCENARIO === "tablet-ui") {
         await verifyTabletUi({ browser, config, url, evidence, results });
+        continue;
+      }
+      if (process.env.GLASS_SCENARIO === "directory-timeline") {
+        await verifyDirectoryTimeline({ browser, config, url, evidence, results });
         continue;
       }
       if (process.env.GLASS_SCENARIO === "host-ui") {
