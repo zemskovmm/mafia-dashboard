@@ -89,16 +89,27 @@ export function assertBalancedCardPlacement(
       "car-crash-skipped",
       "voting-cancelled",
     ].includes(phase)
-      ? { 1: -14, 2: -8, 9: -8, 10: -14, ...(phase === "day" ? { 5: 2, 6: 2 } : {}) }
+      ? {
+          1: -14,
+          2: -8,
+          9: -8,
+          10: -14,
+          ...(phase === "day" ? { 5: 2, 6: 2 } : {}),
+          ...(phase === "voting" ? { 2: 2, 4: -2, 7: -2, 9: 2 } : {}),
+        }
       : {};
   const placements = cards.map((card) => {
     if (!Number.isFinite(card.scale) || card.scale <= 0) {
       throw new Error(`${label}: invalid card scale`);
     }
-    // The actual rendered bounds still own clipping checks. Only grid centering
-    // excludes the intentional, center-origin speaker/voter scale.
+    // Rendered bounds still own clipping/overlap checks. Only orbit centering
+    // excludes the specified candidate lift and center-origin speaker/voter scale.
+    const lift = card.votingCandidate ? -4 : 0;
+    if ((card.translateY ?? 0) !== lift) {
+      throw new Error(`${label}: unexpected candidate translation`);
+    }
     const inset = ((card.bottom - card.top) * (1 - 1 / card.scale)) / 2;
-    const offset = offsets[card.seat] ?? 0;
+    const offset = (offsets[card.seat] ?? 0) + lift;
     return { top: card.top + inset - offset, bottom: card.bottom - inset - offset };
   });
   const top = Math.min(...placements.map((card) => card.top)) - workspace.top;

@@ -140,7 +140,7 @@ async function rules(page) {
   await page.locator("dialog.rules-sketchbook[open]").waitFor({ state: "detached" });
 }
 
-async function menu(page, name) {
+export async function menu(page, name) {
   await page.getByRole("button", { name: "Open Manage menu", exact: true }).tap();
   await page.getByRole("button", { name, exact: true }).tap();
 }
@@ -170,7 +170,7 @@ async function nativeRange(page, label, fraction) {
   return Number(await control.inputValue());
 }
 
-async function wheelToEnd(page, selector, lastSelector) {
+export async function wheelToEnd(page, selector, lastSelector) {
   const scroller = page.locator(selector);
   const before = await scroller.evaluate((node) => ({
     top: node.scrollTop,
@@ -182,24 +182,36 @@ async function wheelToEnd(page, selector, lastSelector) {
   if (page.context().browser().browserType().name() === "chromium") {
     const cdp = await page.context().newCDPSession(page);
     try {
-      const x = b.x + 5;
+      // Start over actual row/card content, not the empty scroller gutter.
+      const x = b.x + b.width / 2;
       const start = Math.min(b.y + b.height, page.viewportSize().height) - 80;
       const end = Math.max(b.y + 140, start - 400);
-      await cdp.send("Input.dispatchTouchEvent", {
-        type: "touchStart",
-        touchPoints: [{ x, y: start }],
-      });
-      for (let step = 1; step <= 8; step++) {
+      for (let swipe = 0; swipe < 16; swipe++) {
         await cdp.send("Input.dispatchTouchEvent", {
-          type: "touchMove",
-          touchPoints: [{ x, y: start + ((end - start) * step) / 8 }],
+          type: "touchStart",
+          touchPoints: [{ x, y: start }],
         });
-        await page.waitForTimeout(16);
+        for (let step = 1; step <= 8; step++) {
+          await cdp.send("Input.dispatchTouchEvent", {
+            type: "touchMove",
+            touchPoints: [{ x, y: start + ((end - start) * step) / 8 }],
+          });
+          await page.waitForTimeout(16);
+        }
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+        await page.waitForTimeout(120);
+        if (
+          await scroller.evaluate(
+            (node) => node.scrollTop + node.clientHeight >= node.scrollHeight - 2,
+          )
+        )
+          break;
       }
-      await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-      await page.waitForFunction(
-        ({ selector, top }) => document.querySelector(selector).scrollTop > top,
-        { selector, top: before.top },
+      assert.ok(
+        await scroller.evaluate(
+          (node) => node.scrollTop + node.clientHeight >= node.scrollHeight - 2,
+        ),
+        `${selector}: touch alone reaches bottom before any wheel fallback`,
       );
       touch = { before: before.top, after: await scroller.evaluate((node) => node.scrollTop) };
     } finally {
@@ -256,7 +268,7 @@ async function wheelToEnd(page, selector, lastSelector) {
 // The owning bundle has the real ClubWorkspace and synthetic API/identity only.
 // Add the missing populated read-only statistics response to its existing fetch
 // fixture; leave application transport and every rendering component untouched.
-async function statisticsFixture(page) {
+export async function statisticsFixture(page) {
   await page.evaluate(() => {
     const original = window.fetch;
     const totals = { games: 3, outcomeGames: 3, wins: 1, draws: 1, losses: 1, winRate: 33.3 };

@@ -50,7 +50,8 @@ export const RoleDrawPresentation = ({
     const settle = () => {
       if (!active) return;
       active = false;
-      animations.forEach((animation) => animation.cancel());
+      // Retain the last frame until React commits the upright current face.
+      // Effect cleanup cancels WAAPI in that same commit, before paint.
       complete.current(request.id);
     };
     try {
@@ -74,6 +75,7 @@ export const RoleDrawPresentation = ({
       // A later animate() can fail after earlier ones started; observe their
       // cancellation rejections before settling the partial request.
       void Promise.all(animations.map((animation) => animation.finished)).catch(() => {});
+      animations.forEach((animation) => animation.cancel());
       settle();
       return;
     }
@@ -92,13 +94,24 @@ export const RoleDrawPresentation = ({
       preference?.removeEventListener?.("change", interrupt);
     };
   }, [request]);
-  if (!request) return children(role);
   return (
     <>
-      <span ref={front} className="role-draw-face role-draw-face--front" aria-hidden="true">
-        {children(request.previousRole)}
-      </span>
-      <span ref={back} className="role-draw-face role-draw-face--back" aria-hidden="true">
+      {request ? (
+        <span
+          key="front"
+          ref={front}
+          className="role-draw-face role-draw-face--front"
+          aria-hidden="true"
+        >
+          {children(request.previousRole)}
+        </span>
+      ) : null}
+      <span
+        key="current"
+        ref={back}
+        className={`role-draw-face${request ? " role-draw-face--back" : ""}`}
+        aria-hidden={request ? true : undefined}
+      >
         {children(role)}
       </span>
     </>

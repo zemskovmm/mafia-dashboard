@@ -9,6 +9,7 @@ import { resolve, join } from "node:path";
 import process from "node:process";
 import { verifySharedPlayerGlass } from "./GlassScene.shared-scenarios.mjs";
 import { verifyHostUi } from "./GlassScene.host-ui-scenarios.mjs";
+import { verifyTabletUi } from "./TabletUi.browser-scenarios.mjs";
 import {
   verifyPortraitCards,
   verifyPortraitNightLayout,
@@ -40,7 +41,7 @@ const evidence = resolve(
 );
 assert.ok(
   process.env.GLASS_SCENARIO === undefined ||
-    ["shared", "legacy", "player-cards", "portrait-cards", "host-ui"].includes(
+    ["shared", "legacy", "player-cards", "portrait-cards", "host-ui", "tablet-ui"].includes(
       process.env.GLASS_SCENARIO,
     ),
   "Unknown GLASS_SCENARIO",
@@ -49,6 +50,7 @@ assert.ok(
   process.env.GLASS_BROWSER === undefined ||
     [
       "chrome-ipad",
+      "chrome-browser-chrome",
       "webkit-ipad",
       "webkit-landscape",
       "webkit-compact",
@@ -1353,6 +1355,15 @@ try {
         ]
       : []),
     { name: "chrome-ipad", engine: chromium, viewport: { width: 1366, height: 1024 } },
+    ...(process.env.GLASS_SCENARIO === "tablet-ui"
+      ? [
+          {
+            name: "chrome-browser-chrome",
+            engine: chromium,
+            viewport: { width: 1376, height: 900 },
+          },
+        ]
+      : []),
     { name: "webkit-ipad", engine: webkit, viewport: { width: 1366, height: 1024 } },
     ...(process.env.GLASS_SCENARIO === "player-cards"
       ? [{ name: "webkit-landscape", engine: webkit, viewport: { width: 1366, height: 768 } }]
@@ -1382,6 +1393,10 @@ try {
         if (process.env.PORTRAIT_NIGHT_ONLY === "1")
           await verifyPortraitNightLayout({ browser, config, url, evidence, results });
         else await verifyPortraitCards({ browser, config, url, evidence, results });
+        continue;
+      }
+      if (process.env.GLASS_SCENARIO === "tablet-ui") {
+        await verifyTabletUi({ browser, config, url, evidence, results });
         continue;
       }
       if (process.env.GLASS_SCENARIO === "host-ui") {

@@ -243,14 +243,17 @@ const assertRolePresentation = async (page, { masked, roleLighting, phase }) => 
     );
     return {
       phase: shell.className,
-      roles: shell.querySelectorAll(".role-badge").length,
+      roles: shell.querySelectorAll('.player-role-icon[role="img"]').length,
       roleFacesValid:
         cards.length === 10 &&
         cards.every((card) => {
-          const roles = [...card.querySelectorAll(".role-badge")].map((badge) => badge.textContent);
+          const roles = [...card.querySelectorAll('.player-role-icon[role="img"]')].map((icon) =>
+            icon.getAttribute("aria-label"),
+          );
           return (
             roles.length >= 1 &&
             roles.length <= (card.hasAttribute("data-player-exit") ? 2 : 1) &&
+            roles.every((role) => Boolean(role?.trim())) &&
             new Set(roles).size === 1
           );
         }),
@@ -975,6 +978,7 @@ const coreTargetSelectors = [
   ".player-seat",
   ".seat-actions button",
   ".table-advance button",
+  ".table-night-center button",
   ".timer-panel button",
   ".nomination-panel button",
   ".panel-swipe-handle",
@@ -1973,12 +1977,18 @@ try {
         .first()
         .click();
     }
-    if (
-      (await page.locator(".role-giveaway-table .role-badge").count()) !== 10 &&
-      (await page.locator(".role-badge").count()) !== 10
-    ) {
+    const drawnRoles = page.locator('.role-draw-card .player-role-icon[role="img"]');
+    await page.waitForFunction(
+      () =>
+        [...document.querySelectorAll(".role-draw-card")].length === 10 &&
+        [...document.querySelectorAll(".role-draw-card")].every((card) => {
+          const roles = card.querySelectorAll('.player-role-icon[role="img"]');
+          return roles.length === 1 && Boolean(roles[0].getAttribute("aria-label")?.trim());
+        }),
+    );
+    if ((await drawnRoles.count()) !== 10) {
       throw new Error(
-        "Deliberate role giveaway must retain all drawn role badges under the mask toggle",
+        "Deliberate role giveaway must retain all drawn role artwork under the mask toggle",
       );
     }
     await page.screenshot({
@@ -3126,7 +3136,7 @@ try {
       return {
         nickname: name?.textContent,
         nameInside: name !== null && inside(name.getBoundingClientRect()),
-        roles: card.querySelectorAll(".role-badge").length,
+        roles: card.querySelectorAll('.player-role-icon[role="img"]').length,
         nomination: card.querySelectorAll(".card-nomination-symbol").length,
         fouls: card.querySelectorAll(".foul-dot").length,
         rects,

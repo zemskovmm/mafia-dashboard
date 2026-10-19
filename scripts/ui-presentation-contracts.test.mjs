@@ -15,6 +15,66 @@ import {
 } from "./ui-presentation-contracts.mjs";
 import { tsImport } from "tsx/esm/api";
 
+test("role artwork oracle rejects missing labels, mismatched exit faces and masked leaks", async () => {
+  const source = readFileSync(new URL("./verify-ui.mjs", import.meta.url), "utf8");
+  const tree = ts.createSourceFile("verify-ui.mjs", source, ts.ScriptTarget.Latest, true);
+  const declaration = tree.statements
+    .filter(ts.isVariableStatement)
+    .flatMap((statement) => [...statement.declarationList.declarations])
+    .find((node) => node.name.getText(tree) === "assertRolePresentation");
+  assert.ok(declaration);
+  const validate = runInContext(
+    `(${declaration.initializer.getText(tree)})`,
+    createContext({
+      console: { log() {} },
+    }),
+  );
+  const verify = (labels, { masked = false, exiting = false } = {}) => {
+    const cards = labels.map((roles) => ({
+      matches: () => false,
+      hasAttribute: (name) => name === "data-player-exit" && exiting,
+      classList: { contains: () => false },
+      querySelectorAll: (selector) =>
+        selector === '.player-role-icon[role="img"]'
+          ? roles.map((role) => ({ getAttribute: () => role }))
+          : [],
+    }));
+    const shell = {
+      className: "game-shell phase-day",
+      querySelectorAll: (selector) =>
+        selector === ".player-seat"
+          ? cards
+          : cards.flatMap((card) => card.querySelectorAll(selector)),
+      querySelector: () => ({
+        getAttribute: () => (masked ? "Team counts hidden" : "Citizens 7 Mafia 3"),
+      }),
+      closest: () => ({ getAttribute: () => "legacy" }),
+    };
+    return validate(
+      { locator: () => ({ evaluate: (callback) => callback(shell) }) },
+      {
+        masked,
+        roleLighting: false,
+        phase: "day",
+      },
+    );
+  };
+  const visible = Array.from({ length: 10 }, () => ["citizen"]);
+  await verify(visible);
+  await verify(
+    Array.from({ length: 10 }, () => []),
+    { masked: true },
+  );
+  await assert.rejects(verify([[], ...visible.slice(1)]), /leaked or was suppressed/);
+  await assert.rejects(verify([[""], ...visible.slice(1)]), /leaked or was suppressed/);
+  await assert.rejects(verify(visible, { masked: true }), /leaked or was suppressed/);
+  await assert.rejects(
+    verify([["citizen", "mafia"], ...visible.slice(1)], { exiting: true }),
+    /leaked or was suppressed/,
+  );
+  await verify([["citizen", "citizen"], ...visible.slice(1)], { exiting: true });
+});
+
 test("mocked YouTube provider is installed before navigation and survives fresh documents", () => {
   const source = readFileSync(new URL("./verify-ui.mjs", import.meta.url), "utf8");
   const tree = ts.createSourceFile("verify-ui.mjs", source, ts.ScriptTarget.Latest, true);
@@ -146,6 +206,23 @@ test("layout centering separates card placement from rendered speaker enlargemen
   assert.throws(
     () => assertBalancedCardPlacement(workspace, [{ top: 10, bottom: 190, scale: 0 }]),
     /scale/,
+  );
+});
+
+test("candidate lift is explicit and does not mask an unbalanced orbit", () => {
+  const workspace = { top: 0, bottom: 200 };
+  const cards = [
+    { top: 6, bottom: 86, scale: 1, votingCandidate: true, translateY: -4 },
+    { top: 110, bottom: 190, scale: 1 },
+  ];
+  assert.doesNotThrow(() => assertBalancedCardPlacement(workspace, cards));
+  assert.throws(
+    () => assertBalancedCardPlacement(workspace, [{ ...cards[0], translateY: -12 }, cards[1]]),
+    /unexpected candidate translation/,
+  );
+  assert.throws(
+    () => assertBalancedCardPlacement(workspace, [{ ...cards[0], top: -1, bottom: 79 }, cards[1]]),
+    /clearance/,
   );
 });
 

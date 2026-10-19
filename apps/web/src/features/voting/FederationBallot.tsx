@@ -5,6 +5,7 @@ import { votingMessages } from "../../i18n/messages/voting.js";
 import { GameTable } from "../table/GameTable.js";
 import { usePlayerDisplayName } from "../players/player-display.js";
 import type { VotingStageProps } from "./VotingStage.js";
+import { getNominationSupporterSeats } from "../timeline/nomination-history.js";
 
 import "./FederationBallot.css";
 
@@ -27,6 +28,12 @@ export const FederationBallot = ({
   const liveSeat = ballot.selectedCandidateSeat;
   const candidate = game.players.find(({ seat }) => seat === liveSeat)!;
   const totals = countVotes(game);
+  const nominations = new Map(
+    game.nominations.map((nomination) => [
+      nomination.candidateSeat,
+      getNominationSupporterSeats(nomination).length,
+    ]),
+  );
   const paused = ballot.dispute !== undefined;
   const open = !paused && !ballot.reviewedCandidateSeats.includes(liveSeat);
 
@@ -55,6 +62,9 @@ export const FederationBallot = ({
           ...player,
           name: displayName(player),
           muted: player.mutePending,
+          nominated: nominations.has(player.seat),
+          supportCount: nominations.get(player.seat) ?? 0,
+          votingCandidate: player.seat === liveSeat,
           currentVoter: game.voteAssignments[player.seat] === ballot.selectedCandidateSeat,
           voted: game.voteAssignments[player.seat] !== undefined,
           inactive: player.status !== "active",

@@ -75,6 +75,9 @@ export async function verifyIpadLayout(
           layoutHeight: Number.parseFloat(style.height),
           emphasized: element.matches(".has-active-emphasis .is-current"),
           voted: element.matches(".is-voted:not(.is-current)"),
+          votingCandidate: element.classList.contains("is-voting-candidate"),
+          translateY:
+            style.translate === "none" ? 0 : Number.parseFloat(style.translate.split(" ").at(-1)),
           scale: scale === "none" ? 1 : Number.parseFloat(scale),
           ...box(element),
         };

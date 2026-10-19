@@ -33,6 +33,7 @@ export interface TableSeatView {
   readonly roleDraw?: Readonly<{ dealt: boolean; role?: Role; request?: RoleDrawRequest }>;
   readonly current?: boolean;
   readonly currentVoter?: boolean;
+  readonly votingCandidate?: boolean;
   readonly fouls?: number;
   readonly nominated?: boolean;
   readonly supportCount?: number;
@@ -191,7 +192,7 @@ export const GameTable = ({
             mafiaShooter: !privacyHidden && seat.mafiaShooter,
             sheriffHighlight: !privacyHidden && seat.sheriffHighlight,
           });
-          const nominationClass = `${seat.nominated ? " is-nominated" : ""}${seat.nominationSelected ? " is-nomination-selected" : ""}`;
+          const nominationClass = `${seat.nominated ? " is-nominated" : ""}${seat.nominationSelected ? " is-nomination-selected" : ""}${seat.votingCandidate ? " is-voting-candidate" : ""}`;
           const suit = cardSuit(gameId, seat.playerId);
           const index = (lower: boolean) => (
             <span className={`card-index${lower ? " card-index--lower" : ""}`} aria-hidden="true">

@@ -174,7 +174,9 @@ const ClubTournamentPicker = ({
               value={value ?? ""}
               disabled={disabled || busy || tournaments === null}
               aria-invalid={!valid}
-              aria-describedby={!valid ? `${id}-help` : undefined}
+              aria-describedby={
+                !valid && (!compact || tournaments === null || listError) ? `${id}-help` : undefined
+              }
               onChange={(event) => {
                 if (event.currentTarget.value !== "") onChange(event.currentTarget.value);
               }}
@@ -211,9 +213,7 @@ const ClubTournamentPicker = ({
               </button>
             </div>
           )}
-          {!valid && (!compact || (tournaments !== null && !listError)) && (
-            <p id={`${id}-help`}>{t("chooseHelp")}</p>
-          )}
+          {!valid && !compact && <p id={`${id}-help`}>{t("chooseHelp")}</p>}
           <button
             type="button"
             aria-label={compact ? t("new") : undefined}

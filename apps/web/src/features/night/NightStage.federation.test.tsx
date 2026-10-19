@@ -115,6 +115,10 @@ describe("federation NightStage", () => {
       for (let repeat = 0; repeat < 12; repeat++) await user.click(observationButton(target.seat));
       await user.click(observationButton(10));
       expect(observationButton(target.seat)).toHaveClass("is-selected", "has-additional-shots");
+      expect(
+        observationButton(target.seat).querySelector(".additional-shot-count"),
+      ).toHaveTextContent("+12");
+      expect(observationButton(10).querySelector(".additional-shot-count")).toHaveTextContent("+1");
       expect(observationButton(target.seat)).toHaveAttribute(
         "aria-description",
         locale === "en" ? "Additional shots recorded: 12" : "Дополнительных выстрелов: 12",

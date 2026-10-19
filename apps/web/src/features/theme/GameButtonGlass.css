@@ -17,7 +17,13 @@
     .nomination-panel button,
     .live-music-controls button,
     .youtube-session-queue button
-  ):not(.player-seat, .is-selected, .has-additional-shots, [aria-pressed="true"]) {
+  ):not(
+    .player-seat,
+    .nomination-row-target,
+    .is-selected,
+    .has-additional-shots,
+    [aria-pressed="true"]
+  ) {
   --control-gold: var(--button-glass-gold, 0.35);
   border-color: rgb(229 199 137 / calc(0.2 + var(--control-gold) * 0.4));
   background:
@@ -62,7 +68,13 @@
       .nomination-panel button,
       .live-music-controls button,
       .youtube-session-queue button
-    ):not(.player-seat, .is-selected, .has-additional-shots, [aria-pressed="true"]) {
+    ):not(
+      .player-seat,
+      .nomination-row-target,
+      .is-selected,
+      .has-additional-shots,
+      [aria-pressed="true"]
+    ) {
     background: color-mix(in srgb, #75603a calc(var(--button-glass-gold, 0.35) * 40%), #161b19);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;

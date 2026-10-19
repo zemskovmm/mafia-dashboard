@@ -1272,6 +1272,12 @@ h2 {
     box-shadow 160ms ease,
     opacity 160ms ease;
 }
+.game-shell.phase-day .table-advance {
+  top: 66%;
+}
+.game-shell.phase-voting .table-advance {
+  top: calc(75% - 28px);
+}
 .table-advance > button:hover:not(:disabled),
 .table-advance-options > button:first-child:hover:not(:disabled) {
   background:
@@ -1299,7 +1305,7 @@ h2 {
   width: 100%;
 }
 .phase-voting .table-advance-options {
-  gap: 12px;
+  gap: 8px;
 }
 .table-advance-secondary {
   min-height: 30px;
@@ -1408,6 +1414,7 @@ h2 {
 }
 .table-vote-center:has(> .voting-candidate-identity) {
   /* Keep the count clear when the scrollable identity uses all three lines. */
+  gap: 4px;
   transform: translateY(-24px);
 }
 .table-vote-center > .voting-candidate-identity {
@@ -1494,6 +1501,7 @@ h2 {
     border-color 280ms ease,
     box-shadow 280ms ease,
     scale 280ms ease,
+    translate 250ms ease,
     transform 280ms ease;
 }
 .table-stage.has-active-emphasis {
@@ -2068,16 +2076,49 @@ button.player-seat.is-voting-highlight::after,
   color: var(--text);
 }
 .seat-actions button.is-selected {
-  color: white;
-  background: rgb(178 38 43 / 88%);
+  color: var(--text);
+  background: rgb(178 38 43 / 18%);
   border-color: #ff8177;
+  box-shadow: 0 0 14px rgb(255 95 79 / 35%);
   opacity: 1;
 }
 .seat-actions .shooter-button.has-additional-shots {
   border-color: var(--accent-hover);
-  box-shadow:
-    inset 0 0 0 1px var(--accent-hover),
-    0 0 12px rgb(from var(--accent) r g b / 24%);
+  background: rgb(from var(--accent) r g b / 16%);
+  box-shadow: 0 0 14px rgb(from var(--accent) r g b / 35%);
+}
+.shooter-button.is-selected::before {
+  content: "✓";
+  font-size: 0.7em;
+}
+.additional-shot-count {
+  display: block;
+  font-size: 0.7em;
+  font-weight: 700;
+  line-height: 1.1;
+}
+.game-shell:is(
+    .phase-night-mafia,
+    .phase-night-don,
+    .phase-night-don-result,
+    .phase-night-sheriff,
+    .phase-night-sheriff-result
+  )
+  .table-advance {
+  top: 64%;
+}
+.table-stage .player-seat.is-voting-candidate {
+  /* Leave room between adjacent cards when every voter is enlarged. */
+  translate: 0 -4px;
+}
+.game-shell.phase-night-mafia .table-night-center {
+  /* Reserve the fixed-height action between observation and lower shooting rows. */
+  transform: translateY(-20px);
+}
+@media (prefers-reduced-transparency: reduce) {
+  .seat-actions button:is(.is-selected, .has-additional-shots) {
+    background: #392e20;
+  }
 }
 .table-stage button {
   border-radius: var(--table-control-radius);
@@ -3652,10 +3693,10 @@ button.player-seat.is-voting-highlight::after,
   }
   @container (max-height: 700px) {
     .table-vote-center:has(> .voting-candidate-identity) {
-      transform: translateY(-48px);
+      transform: translateY(-56px);
     }
     .game-shell.phase-voting .round-table:has(.voting-candidate-identity) .table-advance {
-      top: calc(75% - 16px);
+      top: calc(75% - 42px);
     }
     .table-card {
       /* sin(36deg) gives the seat step; reserve 48px actions + 5px gap + 6px clearance. */
@@ -4170,6 +4211,13 @@ html:-webkit-full-screen #root {
     .seat-anchor:is([data-seat="2"], [data-seat="9"]) {
     top: calc(50% - 8px);
   }
+  /* Enlarged voters and the candidate lift must clear their vertical neighbors. */
+  .game-shell.phase-voting .seat-anchor:is([data-seat="2"], [data-seat="9"]) {
+    top: calc(50% + 2px);
+  }
+  .game-shell.phase-voting .seat-anchor:is([data-seat="4"], [data-seat="7"]) {
+    top: calc(50% - 2px);
+  }
   .game-shell:is(
       .phase-day,
       .phase-voting,
@@ -4322,6 +4370,15 @@ html:-webkit-full-screen #root {
     top: calc(100% + 53px);
     bottom: auto;
   }
+  @media (min-width: 1000px) {
+    /* These rows fit side by side; staggering collides with seat 10's column. */
+    .game-shell.phase-night-mafia
+      .seat-anchor[data-seat="6"]
+      .seat-actions:has(> .shooter-button:nth-child(3)) {
+      top: calc(100% + 5px);
+      transform: translateX(calc(-50% - 4px));
+    }
+  }
   .table-center {
     --center-shadow-size: 145px;
     top: 50%;
@@ -4330,6 +4387,13 @@ html:-webkit-full-screen #root {
     left: 50%;
     width: 190px;
     height: 190px;
+  }
+  .game-shell.phase-night-mafia .table-advance {
+    /* Clear the observed-shooting toggle; side columns leave this center free. */
+    top: 71%;
+  }
+  .game-shell.phase-night-mafia .table-night-center {
+    transform: none;
   }
   .table-primary {
     width: 145px;
@@ -4375,10 +4439,10 @@ html:-webkit-full-screen #root {
     max-height: 2.3em;
   }
   .table-vote-center:has(> .voting-candidate-identity) {
-    transform: translateY(-56px);
+    transform: translateY(-72px);
   }
   .game-shell.phase-voting .round-table:has(.voting-candidate-identity) .table-advance {
-    top: calc(75% - 14px);
+    top: calc(75% - 60px);
   }
   .candidate-navigation button,
   .table-choice-actions button,

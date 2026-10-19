@@ -159,6 +159,11 @@ export const NightStage = ({
                 }}
               >
                 #{shooter.seat}
+                {additionalShots > 0 ? (
+                  <span className="additional-shot-count" aria-hidden="true">
+                    +{additionalShots}
+                  </span>
+                ) : null}
               </button>
             );
           })

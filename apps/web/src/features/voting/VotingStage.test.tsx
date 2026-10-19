@@ -89,6 +89,25 @@ const federationVotingGame = (nominees = [4, 6]): GameState => {
   return startVoting(game);
 };
 
+it("retains nominee markers while moving candidate emphasis independently of voters", async () => {
+  const user = userEvent.setup();
+  const { container } = render(<Harness onResolved={vi.fn()} />);
+  const card = (seat: number) =>
+    container.querySelector(`.seat-anchor[data-seat="${seat}"] > .player-seat`)!;
+  expect(card(4).querySelector(".card-nomination-symbol")).not.toBeNull();
+  expect(card(6).querySelector(".card-nomination-symbol")).not.toBeNull();
+  expect(card(4)).toHaveClass("is-voting-candidate");
+  expect(card(4)).not.toHaveClass("is-current");
+  await user.click(card(1));
+  expect(card(1)).toHaveClass("is-current");
+  expect(card(1).querySelector(".state-badge")).toHaveTextContent("4");
+  await user.click(screen.getByRole("button", { name: "Next candidate" }));
+  expect(card(4)).not.toHaveClass("is-voting-candidate");
+  expect(card(6)).toHaveClass("is-voting-candidate");
+  expect(card(4).querySelector(".card-nomination-symbol")).not.toBeNull();
+  expect(card(1).querySelector(".state-badge")).toHaveTextContent("4");
+});
+
 const stoppedFederationBallot = (initial: GameState, votes: Record<number, number>): GameState => {
   let game = applyGameEvent(initial, { type: "voting.order-announced", payload: {} });
   game = applyGameEvent(game, { type: "voting.order-announced", payload: {} });

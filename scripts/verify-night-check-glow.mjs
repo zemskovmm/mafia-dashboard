@@ -105,8 +105,12 @@ try {
         await expect(other).toHaveCSS("opacity", "0.48");
         // Night is exempt from the daytime masking toggle (IDD-0003).
         if (mode.endsWith("privacy")) {
-          await expect(page.locator(".role-badge:visible")).toHaveCount(10);
-          await expect(owner.locator(".role-badge")).toBeVisible();
+          await expect(page.locator('.player-role-icon[role="img"]:visible')).toHaveCount(10);
+          await expect(owner.locator('.player-role-icon[role="img"]')).toBeVisible();
+          await expect(owner.locator('.player-role-icon[role="img"]')).toHaveAttribute(
+            "aria-label",
+            role,
+          );
         }
         if (prior) {
           // A role eliminated before this night has no check or active-owner glow.
@@ -158,7 +162,7 @@ try {
           }))),
           vgpuStatus: await shell.getAttribute("data-vgpu-status"),
           daytimeMaskingEnabled: mode.endsWith("privacy"),
-          visibleRoleBadges: await page.locator(".role-badge:visible").count(),
+          visibleRoleIcons: await page.locator('.player-role-icon[role="img"]:visible').count(),
           compatMode: await page.evaluate(() => document.compatMode),
         };
         if (mode === "check") await screenshot(`${renderer}-${role}-${mode}`);
@@ -189,7 +193,7 @@ try {
       phase: element.getAttribute("data-phase"),
       effectiveRenderer: element.getAttribute("data-lighting-renderer"),
       vgpuStatus: element.getAttribute("data-vgpu-status"),
-      roleBadges: element.querySelectorAll(".role-badge").length,
+      roleIcons: element.querySelectorAll('.player-role-icon[role="img"]').length,
       compatMode: document.compatMode,
     }));
   }

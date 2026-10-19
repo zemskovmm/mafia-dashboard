@@ -52,10 +52,18 @@
 }
 
 .tournament-picker--compact {
-  display: grid;
-  gap: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  margin-left: auto;
 }
 .tournament-picker--compact .tournament-picker-fields {
+  flex: 1 1 220px;
+  min-width: 0;
   grid-template-columns: minmax(0, 1fr) 48px;
   gap: 4px 8px;
   align-items: start;
@@ -68,6 +76,7 @@
 }
 .tournament-picker--compact .tournament-picker-fields select {
   width: 100%;
+  min-width: 0;
   font-size: 0.9rem;
 }
 .tournament-picker--compact .tournament-picker-new {

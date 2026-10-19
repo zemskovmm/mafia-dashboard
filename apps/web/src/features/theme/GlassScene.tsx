@@ -92,6 +92,9 @@ export const GlassScene = ({
       collected = [];
       const surfaces = [...root.querySelectorAll<HTMLElement>("[data-player-glass]")].flatMap(
         (element) => {
+          // Screen-space lenses cannot represent a rotating 3D perimeter.
+          // The moving card owns its local fallback during the reveal.
+          if (element.classList.contains("is-role-flipping")) return [];
           const rect = visibleRect(element);
           if (rect[2] === 0 || rect[3] === 0) return [];
           let clip = intersect(rect, view);

@@ -81,6 +81,7 @@ describe("RoleDrawPresentation", () => {
     expect(frames.flat().every((frame) => frame.opacity === undefined)).toBe(true);
     expect(container.querySelector(".role-draw-face--front")).toHaveTextContent("citizen");
     expect(container.querySelector(".role-draw-face--back")).toHaveTextContent("sheriff");
+    const currentFace = container.querySelector(".role-draw-face--back");
     expect(container.querySelector(".deceased-cross")).toBeNull();
     rerender(fixture(motion, complete));
     expect(animate).toHaveBeenCalledTimes(4);
@@ -88,9 +89,11 @@ describe("RoleDrawPresentation", () => {
       animations.forEach((animation) => animation.resolve());
     });
     expect(complete).toHaveBeenCalledExactlyOnceWith(1);
-    expect(animations.every((animation) => animation.cancel.mock.calls.length > 0)).toBe(true);
+    expect(animations.every((animation) => animation.cancel.mock.calls.length === 0)).toBe(true);
     rerender(fixture(undefined, complete));
-    expect(container.querySelector(".role-draw-face")).toBeNull();
+    expect(container.querySelector(".role-draw-face--front")).toBeNull();
+    expect(container.querySelector(".role-draw-face")).toBe(currentFace);
+    expect(animations.every((animation) => animation.cancel.mock.calls.length > 0)).toBe(true);
     expect(screen.getByRole("button").style.rotate).toBe("");
     expect(screen.getByRole("button")).toHaveTextContent("sheriff");
   });
@@ -132,7 +135,7 @@ describe("RoleDrawPresentation", () => {
 
   it.each(["hidden", "reduced"])("cancels in-flight motion when %s", (mode) => {
     const complete = vi.fn();
-    const { unmount } = render(fixture(request(), complete));
+    const { unmount, rerender } = render(fixture(request(), complete));
     act(() => {
       if (mode === "hidden") {
         vi.spyOn(document, "hidden", "get").mockReturnValue(true);
@@ -143,6 +146,7 @@ describe("RoleDrawPresentation", () => {
       }
     });
     expect(complete).toHaveBeenCalledExactlyOnceWith(1);
+    rerender(fixture(undefined, complete));
     expect(animations.every((animation) => animation.cancel.mock.calls.length > 0)).toBe(true);
     unmount();
     expect(vi.getTimerCount()).toBe(0);

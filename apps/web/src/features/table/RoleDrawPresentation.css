@@ -7,6 +7,9 @@
   transition: none;
   will-change: transform, rotate;
 }
+.app-shell[data-glass-status="ready"] .player-seat.is-role-flipping > .liquid-card-glass {
+  visibility: visible;
+}
 .player-seat.role-draw-card > .role-draw-face {
   position: absolute;
   inset: 0;

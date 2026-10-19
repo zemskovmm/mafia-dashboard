@@ -25,9 +25,28 @@
   visibility: hidden;
   transition-delay: 0s, 0s, 240ms;
 }
+/* Move the intrinsic-height surface, not the shrinking grid track: percentage
+   translation on that track would reverse direction as its height approaches 0. */
+#game-utility-panels > .panel-reveal-content {
+  opacity: 1;
+  translate: none;
+  transition: visibility 0s;
+}
+#game-utility-panels[data-expanded="false"] > .panel-reveal-content {
+  transition-delay: 240ms;
+}
+.utility-panel-surface {
+  translate: 0 0;
+  transition: translate 240ms ease-out;
+}
+#game-utility-panels[data-expanded="false"] .utility-panel-surface {
+  translate: 0 -100%;
+}
 @media (prefers-reduced-motion: reduce) {
   .panel-reveal,
-  .panel-reveal-content {
+  .panel-reveal-content,
+  .utility-panel-surface,
+  #game-utility-panels > .panel-reveal-content {
     transition: none;
   }
 }

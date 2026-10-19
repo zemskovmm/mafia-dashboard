@@ -61,10 +61,14 @@ export const LiveSidePanel = ({
         <span aria-hidden="true" />
       </button>
       <CollapsiblePanel id="game-utility-panels" expanded={!utilitiesHidden}>
-        <GameUtilityPanels
-          game={game}
-          onSelectVotingCandidate={hidden || utilitiesHidden ? undefined : onSelectVotingCandidate}
-        />
+        <div className="utility-panel-surface">
+          <GameUtilityPanels
+            game={game}
+            onSelectVotingCandidate={
+              hidden || utilitiesHidden ? undefined : onSelectVotingCandidate
+            }
+          />
+        </div>
       </CollapsiblePanel>
       {children}
     </GlassSurface>

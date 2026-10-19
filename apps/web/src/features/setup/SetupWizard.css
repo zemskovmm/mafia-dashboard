@@ -15,16 +15,19 @@
 
 /* Setup owns layout; canonical DOM order stays 1–10. */
 .player-setup-card .player-setup-heading {
-  display: grid;
-  gap: 8px;
-  align-items: start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
 }
 .player-setup-card .player-setup-controls {
-  display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
-  align-items: start;
-  column-gap: 24px;
-  min-height: 156px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  margin-left: auto;
+  min-width: 0;
+  max-width: 100%;
 }
 .player-setup-card .player-setup-controls .casper-toggle {
   justify-content: start;
