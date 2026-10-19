@@ -114,7 +114,6 @@
   min-width: 0;
   max-width: 100%;
   overflow-x: auto;
-  overscroll-behavior-x: contain;
   border: 1px solid var(--border);
   border-radius: 8px;
 }
@@ -157,10 +156,10 @@
   color: var(--muted);
   font-size: 0.75rem;
 }
-.statistics-table td {
+.statistics-table:not(.statistics-breakdown) td {
   min-width: 74px;
 }
-.statistics-table td:nth-child(3) {
+.statistics-table:not(.statistics-breakdown) td:nth-child(3) {
   min-width: 145px;
 }
 .statistics-group th {
