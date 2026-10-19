@@ -216,8 +216,9 @@
 @media (prefers-reduced-transparency: reduce) {
   .liquid-card-glass__backdrop {
     background: var(--liquid-card-opaque-fill, #1b2520);
-    -webkit-backdrop-filter: none;
-    backdrop-filter: none;
+    /* Accessibility wins over the more specific selected-card finish too. */
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
   }
   .liquid-card-glass[data-liquid-card-lens="ready"] .liquid-card-glass__backdrop {
     -webkit-backdrop-filter: none;

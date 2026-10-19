@@ -52,16 +52,21 @@ function screenshotDelta(first, second) {
 // This works with preserveDrawingBuffer:false and does not change that option.
 // An opt-in diagnostic replaces only scene colours, never lens geometry/math:
 // background and refracted samples still call the exact same scene function.
-async function installPixelProbe(page) {
-  await page.addInitScript(() => {
-    window.sharedProbe = { frames: new Map(), contexts: new Set(), pattern: false, offset: 0 };
-    const source = WebGLRenderingContext.prototype.shaderSource;
-    WebGLRenderingContext.prototype.shaderSource = function (shader, text) {
-      if (/vec3\s+scene\s*\(\s*vec2\s+p\s*\)/.test(text) && text.includes("u_lens")) {
-        text = text.replace(/vec3\s+scene\s*\(\s*vec2\s+p\s*\)/, "vec3 originalScene(vec2 p)");
-        text = text.replace(
-          /void\s+main\s*\(/,
-          `
+async function installPixelProbe(page, { diagnosticShader = true } = {}) {
+  await page.addInitScript(
+    ({ diagnosticShader }) => {
+      window.sharedProbe = { frames: new Map(), contexts: new Set(), pattern: false, offset: 0 };
+      const source = WebGLRenderingContext.prototype.shaderSource;
+      WebGLRenderingContext.prototype.shaderSource = function (shader, text) {
+        if (
+          diagnosticShader &&
+          /vec3\s+scene\s*\(\s*vec2\s+p\s*\)/.test(text) &&
+          text.includes("u_lens")
+        ) {
+          text = text.replace(/vec3\s+scene\s*\(\s*vec2\s+p\s*\)/, "vec3 originalScene(vec2 p)");
+          text = text.replace(
+            /void\s+main\s*\(/,
+            `
           uniform float u_verifier_pattern;
           uniform float u_verifier_offset;
           vec3 scene(vec2 p) {
@@ -70,47 +75,73 @@ async function installPixelProbe(page) {
             return mix(originalScene(p),mix(vec3(.08,.12,.15),vec3(.88,.75,.51),band),.65);
           }
           void main(`,
-        );
-      }
-      return source.call(this, shader, text);
-    };
-    const draw = WebGLRenderingContext.prototype.drawArrays;
-    const pending = new Set();
-    WebGLRenderingContext.prototype.drawArrays = function (...args) {
-      const canvas = this.canvas;
-      const isGlass = canvas.classList.contains("glass-scene-canvas");
-      if (isGlass) {
-        window.sharedProbe.contexts.add(this);
-        const program = this.getParameter(this.CURRENT_PROGRAM);
+          );
+        }
+        return source.call(this, shader, text);
+      };
+      const draw = WebGLRenderingContext.prototype.drawArrays;
+      const pending = new Set();
+      WebGLRenderingContext.prototype.drawArrays = function (...args) {
+        const canvas = this.canvas;
+        const isGlass = canvas.classList.contains("glass-scene-canvas");
+        if (isGlass) {
+          window.sharedProbe.contexts.add(this);
+          const program = this.getParameter(this.CURRENT_PROGRAM);
 
-        this.uniform1f(
-          this.getUniformLocation(program, "u_verifier_pattern"),
-          window.sharedProbe.pattern ? 1 : 0,
-        );
-        this.uniform1f(
-          this.getUniformLocation(program, "u_verifier_offset"),
-          window.sharedProbe.offset,
-        );
-      }
-      const result = draw.apply(this, args);
-      if (isGlass && !pending.has(canvas)) {
-        pending.add(canvas);
-        queueMicrotask(() => {
-          pending.delete(canvas);
-          if (this.isContextLost()) return;
-          const pixels = new Uint8Array(canvas.width * canvas.height * 4);
-          this.readPixels(0, 0, canvas.width, canvas.height, this.RGBA, this.UNSIGNED_BYTE, pixels);
-          window.sharedProbe.frames.set(canvas, {
-            pixels,
-            width: canvas.width,
-            height: canvas.height,
+          if (diagnosticShader)
+            this.uniform1f(
+              this.getUniformLocation(program, "u_verifier_pattern"),
+              window.sharedProbe.pattern ? 1 : 0,
+            );
+          if (diagnosticShader)
+            this.uniform1f(
+              this.getUniformLocation(program, "u_verifier_offset"),
+              window.sharedProbe.offset,
+            );
+        }
+        const result = draw.apply(this, args);
+        if (isGlass && !pending.has(canvas)) {
+          pending.add(canvas);
+          queueMicrotask(() => {
+            pending.delete(canvas);
+            if (this.isContextLost()) return;
+            const pixels = new Uint8Array(canvas.width * canvas.height * 4);
+            this.readPixels(
+              0,
+              0,
+              canvas.width,
+              canvas.height,
+              this.RGBA,
+              this.UNSIGNED_BYTE,
+              pixels,
+            );
+            window.sharedProbe.frames.set(canvas, {
+              pixels,
+              width: canvas.width,
+              height: canvas.height,
+            });
           });
-        });
-      }
-      return result;
-    };
-  });
+        }
+        return result;
+      };
+    },
+    { diagnosticShader },
+  );
 }
+
+// Reuse the real final-frame probe/mask math for city acceptance, with shader
+// diagnostics explicitly disabled. No second renderer or pixel-test framework.
+export {
+  defaults,
+  installPixelProbe,
+  settle,
+  redraw,
+  snapshot,
+  difference,
+  hostState,
+  assertPainted,
+  setRange,
+};
 
 async function settle(page) {
   await page.evaluate(

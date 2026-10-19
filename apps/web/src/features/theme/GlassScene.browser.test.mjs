@@ -8,6 +8,11 @@ import { mkdtemp, readFile, mkdir, writeFile, rm } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import process from "node:process";
 import { verifySharedPlayerGlass } from "./GlassScene.shared-scenarios.mjs";
+import {
+  backgroundCases,
+  captureBackgroundSources,
+  verifyApplicationBackgrounds,
+} from "./GlassScene.background-scenarios.mjs";
 import { verifyHostUi, verifyDirectoryTimeline } from "./GlassScene.host-ui-scenarios.mjs";
 import { verifyTabletUi } from "./TabletUi.browser-scenarios.mjs";
 import {
@@ -35,14 +40,17 @@ const evidence = resolve(
   root,
   followupPhase
     ? `.AI/reports/review-followup-2026-10-16/${process.env.UI_FOLLOWUP_RUN ?? `ui-${followupPhase}-${Date.now()}`}`
-    : ["player-cards", "portrait-cards"].includes(process.env.GLASS_SCENARIO)
-      ? `.AI/qa/player-card-production/${new Date().toISOString().replaceAll(":", "-")}`
-      : `.AI/qa/app-glass/${new Date().toISOString().replaceAll(":", "-")}`,
+    : process.env.GLASS_SCENARIO === "backgrounds"
+      ? `.AI/qa/noir-city-backgrounds/${new Date().toISOString().replaceAll(":", "-")}`
+      : ["player-cards", "portrait-cards"].includes(process.env.GLASS_SCENARIO)
+        ? `.AI/qa/player-card-production/${new Date().toISOString().replaceAll(":", "-")}`
+        : `.AI/qa/app-glass/${new Date().toISOString().replaceAll(":", "-")}`,
 );
 assert.ok(
   process.env.GLASS_SCENARIO === undefined ||
     [
       "shared",
+      "backgrounds",
       "legacy",
       "player-cards",
       "portrait-cards",
@@ -85,6 +93,26 @@ if (["12", "13"].includes(followupPhase)) {
     "Native interaction requires a supported layout, not an empty matrix",
   );
 }
+const backgroundBrowsers = ["chrome-landscape", "chrome-compact", "webkit-ipad"];
+if (process.env.GLASS_SCENARIO === "backgrounds") {
+  const scoped = resolve(root, ".AI/qa/noir-city-backgrounds");
+  assert.ok(
+    evidence === scoped || evidence.startsWith(`${scoped}/`),
+    "Background evidence must remain under .AI/qa/noir-city-backgrounds/",
+  );
+  assert.ok(!followupPhase, "Select only one focused scenario");
+  assert.ok(
+    process.env.GLASS_BROWSER === undefined ||
+      backgroundBrowsers.includes(process.env.GLASS_BROWSER),
+    "Backgrounds requires chrome-landscape, chrome-compact or webkit-ipad",
+  );
+}
+assert.ok(
+  process.env.GLASS_BACKGROUND_CASE === undefined ||
+    (process.env.GLASS_SCENARIO === "backgrounds" &&
+      backgroundCases.includes(process.env.GLASS_BACKGROUND_CASE)),
+  "Unknown GLASS_BACKGROUND_CASE or missing backgrounds scenario",
+);
 await mkdir(evidence, { recursive: true });
 const temp = await mkdtemp(join(evidence, "fixture-"));
 const entry = `
@@ -101,6 +129,8 @@ import {beginNight,toggleAllMafiaShotsForTarget,resolveMafiaShots} from "@mafia/
 import "./apps/web/src/styles/app.css";
 import "./apps/web/src/features/theme/GlassScene.css";
 const query=new URLSearchParams(location.search);
+const backgroundFixture=${process.env.GLASS_SCENARIO === "backgrounds"}?query.get("background-state"):null;
+if(backgroundFixture!==null&&!["auth","loading","error","recovery"].includes(backgroundFixture))throw new Error("Unknown background App fixture "+backgroundFixture);
 const locale=query.get("locale")==="ru"?"ru":"en";
 const club={id:"00000000-0000-4000-8000-000000000101",name:"Glass regression",city:"Test",headerLogo:null,cardLogo:null,language:locale,bestMoveEnabled:true,role:"manager",createdAt:"2026-10-15T00:00:00.000Z",updatedAt:"2026-10-15T00:00:00.000Z"};
 const players=Array.from({length:10},(_,i)=>({id:"00000000-0000-4000-8000-"+String(i+1).padStart(12,"0"),seat:i+1}));
@@ -129,6 +159,13 @@ const completedHistory=query.has("full-app")?createSampleGameHistory():null;
 const completedSummary={gameId:completedId,name:"Recorded table",revision:1,hostPlayerId:null,outcome:"red",winner:"red",reason:null,playedAt:club.createdAt,day:2,timelineAvailable:true,eventCount:completedHistory?.entries.length??0,updatedAt:club.updatedAt};
 window.fetch=async(url,options={})=>{const path=new URL(url,location.origin).pathname;let body={};
 window.fixtureRequests.push({path,method:options.method??"GET",body:options.body?JSON.parse(options.body):null});
+if(${process.env.GLASS_SCENARIO === "backgrounds"}){
+ const method=options.method??"GET";
+ const known=method==="GET"&&["/api/auth/session","/api/clubs","/api/players","/health/version","/api/ready","/api/music/oauth/status","/api/music/playlists","/api/game-sessions","/api/tournaments","/api/statistics","/api/game-sessions/"+completedId,"/api/game-sessions/"+factsId].includes(path)||["GET","PUT"].includes(method)&&path==="/api/game-sessions/"+gameId;
+ if(!known){window.fixtureUnexpected.push({path,method});throw new Error("Unexpected background fixture request "+method+" "+path);}
+ if(path==="/api/auth/session"&&backgroundFixture==="loading")await new Promise(resolve=>{window.releaseBackgroundLoading=resolve;});
+ if(path==="/api/clubs"&&backgroundFixture==="error")return new Response(JSON.stringify({error:"Fixture clubs unavailable"}),{status:503,headers:{"Content-Type":"application/json"}});
+}
 if(${followupPhase === "13"}){
  const method=options.method??"GET";
  const known=method==="GET"&&["/api/players","/health/version","/api/ready","/api/music/oauth/status","/api/music/playlists","/api/game-sessions","/api/tournaments","/api/statistics"].includes(path)||["GET","PUT"].includes(method)&&path==="/api/game-sessions/"+gameId;
@@ -139,14 +176,14 @@ if(path.startsWith("/api/players/")&&options.method==="PUT"){
  if(index<0)throw new Error("Unknown fixture player "+path);
  profiles[index]={...profiles[index],...JSON.parse(options.body)};body={player:profiles[index]};
 }
-else if(path==="/api/auth/session")body={configured:true,user:{id:host.id,email:"fixture@example.com",name:"Fixture",picture:null}};
-else if(path==="/api/clubs")body={clubs:[club]};
+else if(path==="/api/auth/session")body={configured:true,user:backgroundFixture==="auth"?null:{id:host.id,email:"fixture@example.com",name:"Fixture",picture:null}};
+else if(path==="/api/clubs")body={clubs:backgroundFixture==="recovery"?[]:[club]};
 else if(path==="/api/players")body={players:profiles};
 else if(path.includes("/version"))body={version:"glass-regression"};
-else if(${followupPhase === "13"}&&path==="/api/tournaments")body={tournaments:[]};
-else if(${followupPhase === "13"}&&path==="/api/statistics")body={players:[],tournaments:[],coverage:{completedGames:0,unavailableGames:0,pendingGames:0},algorithm:"club-team-elo-v1"};
-else if(${followupPhase === "13"}&&path==="/api/music/oauth/status")body={configured:false,connected:false,accountLabel:null};
-else if(${followupPhase === "13"}&&path==="/api/music/playlists")body={playlists:[]};
+else if(${followupPhase === "13" || process.env.GLASS_SCENARIO === "backgrounds"}&&path==="/api/tournaments")body={tournaments:[]};
+else if(${followupPhase === "13" || process.env.GLASS_SCENARIO === "backgrounds"}&&path==="/api/statistics")body={players:[],tournaments:[],coverage:{completedGames:0,unavailableGames:0,pendingGames:0},algorithm:"club-team-elo-v1"};
+else if(${followupPhase === "13" || process.env.GLASS_SCENARIO === "backgrounds"}&&path==="/api/music/oauth/status")body={configured:false,connected:false,accountLabel:null};
+else if(${followupPhase === "13" || process.env.GLASS_SCENARIO === "backgrounds"}&&path==="/api/music/playlists")body={playlists:[]};
 else if(phase==="setup"&&path==="/api/music/oauth/status")body={configured:true,connected:true,accountLabel:"Layout fixture"};
 else if(phase==="setup"&&path==="/api/music/playlists")body={playlists:${followupPhase ? '[{id:"fixture-playlist",title:"Mafia local recovery",itemCount:1}]' : "[]"}};
 else if(${Boolean(followupPhase)}&&path.includes("/api/music/playlists/"))body={items:[{entryId:"local-entry",videoId:"local-video",title:"Local recovery track",position:0}]};
@@ -177,10 +214,13 @@ if(!localStorage.getItem("mafia-dashboard.glass-fixture-seeded")){
  if(!playerSetup)localStorage.setItem("mafia-dashboard.developer-mode.v1","enabled");
  }
  localStorage.setItem("mafia-dashboard.lighting-renderer.v1","legacy");
+ // Retained gold/procedural-source assertions intentionally exercise plain black.
+ // The focused backgrounds lane alone qualifies the new untouched city default.
+ if(${process.env.GLASS_SCENARIO !== "backgrounds"})localStorage.setItem("mafia-dashboard.background.v1",JSON.stringify({version:1,background:"black"}));
  // Preserve the pre-rollout broad material scenario explicitly. The new fresh
  // scenarios independently prove edge-default refraction on every family.
  if(new URLSearchParams(location.search).has("glass"))localStorage.setItem("mafia-dashboard.glass.v1",JSON.stringify({version:1,enabled:true,refraction:10,goldLight:25,profile:"simple"}));
- else if(!new URLSearchParams(location.search).has("fresh"))localStorage.setItem("mafia-dashboard.glass.v1",JSON.stringify({version:1,enabled:false,refraction:10,goldLight:25,profile:"simple"}));
+ else if(${process.env.GLASS_SCENARIO !== "backgrounds"}&&!new URLSearchParams(location.search).has("fresh"))localStorage.setItem("mafia-dashboard.glass.v1",JSON.stringify({version:1,enabled:false,refraction:10,goldLight:25,profile:"simple"}));
 }
 if(query.has("full-app"))return;
 const app=createRoot(document.getElementById("root"));
@@ -190,12 +230,18 @@ await new Promise(()=>{});
 if(query.has("full-app"))createRoot(document.getElementById("root")).render(<React.StrictMode><I18nProvider locale={locale}><App/></I18nProvider></React.StrictMode>);
 `;
 let server;
+let sourceChanges = [];
 const bundleBinding = {};
 const results = [];
 const runId = new Date().toISOString();
+const captureSources =
+  process.env.GLASS_SCENARIO === "backgrounds"
+    ? captureBackgroundSources
+    : capturePlayerCardSources;
 const sourceBefore =
-  ["player-cards", "portrait-cards"].includes(process.env.GLASS_SCENARIO) || followupPhase
-    ? await capturePlayerCardSources(root)
+  ["backgrounds", "player-cards", "portrait-cards"].includes(process.env.GLASS_SCENARIO) ||
+  followupPhase
+    ? await captureSources(root)
     : null;
 if (sourceBefore)
   await writeFile(join(evidence, "source-before.json"), JSON.stringify(sourceBefore, null, 2));
@@ -1351,11 +1397,25 @@ try {
       if (["/fixture.js", "/fixture.css", "/strict.js", "/strict.css"].includes(path)) {
         res.setHeader("Content-Type", path.endsWith("js") ? "text/javascript" : "text/css");
         res.end(await readFile(join(temp, path.slice(1))));
-      } else {
+      } else if (
+        [
+          "/backgrounds/noir-skyline.svg",
+          "/backgrounds/old-town.svg",
+          "/backgrounds/harbour.svg",
+          "/la-verdad.svg",
+        ].includes(path)
+      ) {
+        // Exact public asset allowlist: never expose arbitrary repository paths.
+        res.setHeader("Content-Type", "image/svg+xml");
+        res.end(await readFile(join(root, "apps/web/public", path.slice(1))));
+      } else if (path === "/" || path === "/strict/") {
         res.setHeader("Content-Type", "text/html");
         const html =
           '<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/fixture.css"></head><body><div id="root"></div><script type="module" src="/fixture.js"></script></body></html>';
         res.end(path.startsWith("/strict/") ? html.replaceAll("fixture", "strict") : html);
+      } else {
+        res.statusCode = 404;
+        res.end();
       }
     } catch {
       res.statusCode = 404;
@@ -1402,6 +1462,7 @@ try {
     { name: "chrome-compact", engine: chromium, viewport: { width: 1000, height: 600 } },
   ].filter(
     (config) =>
+      (process.env.GLASS_SCENARIO !== "backgrounds" || backgroundBrowsers.includes(config.name)) &&
       (!followupPhase ||
         (["12", "13"].includes(followupPhase)
           ? ["chrome-landscape", "chrome-compact", "webkit-ipad"].includes(config.name)
@@ -1418,6 +1479,10 @@ try {
         : {}),
     });
     try {
+      if (process.env.GLASS_SCENARIO === "backgrounds") {
+        await verifyApplicationBackgrounds({ browser, config, url, evidence, results });
+        continue;
+      }
       if (process.env.GLASS_SCENARIO === "portrait-cards") {
         if (process.env.PORTRAIT_NIGHT_ONLY === "1")
           await verifyPortraitNightLayout({ browser, config, url, evidence, results });
@@ -2265,11 +2330,10 @@ try {
       );
       await page.evaluate(() => document.documentElement.style.removeProperty("--theme-base"));
       const shades = [];
-      for (let i = 0; i < 4; i++) {
+      for (const shade of ["grey-33", "grey-66", "white", "black"]) {
         await page
-          .locator(".dev-menu-actions button")
-          .filter({ hasText: /Use .*background/ })
-          .click();
+          .getByRole("combobox", { name: "Application background", exact: true })
+          .selectOption(shade);
         await page.waitForTimeout(80);
         shades.push(await shell.getAttribute("data-background-shade"));
       }
@@ -2650,6 +2714,21 @@ try {
       (process.env.GLASS_BROWSER ? 1 : 3) * 4,
       "Native interaction matrix must complete every selected engine/layout, locale and mode",
     );
+  if (process.env.GLASS_SCENARIO === "backgrounds") {
+    const selected = process.env.GLASS_BACKGROUND_CASE
+      ? [process.env.GLASS_BACKGROUND_CASE]
+      : backgroundCases;
+    const browsers = process.env.GLASS_BROWSER ? [process.env.GLASS_BROWSER] : backgroundBrowsers;
+    assert.deepEqual(
+      results.map(({ engine, scenario }) => `${engine}/${scenario}`).sort(),
+      browsers.flatMap((engine) => selected.map((name) => `${engine}/backgrounds-${name}`)).sort(),
+      "Background matrix must execute every selected named case exactly once",
+    );
+    assert.ok(
+      results.every(({ status }) => status === "passed"),
+      "Background acceptance failures",
+    );
+  }
   console.log(JSON.stringify(results, null, 2));
   if (process.env.GLASS_SCENARIO === "portrait-cards")
     assert.ok(
@@ -2665,10 +2744,11 @@ try {
 } finally {
   // Persist partial/failing runs too, appending rather than erasing prior evidence.
   if (sourceBefore) {
-    const after = await capturePlayerCardSources(root);
+    const after = await captureSources(root);
     const changed = [
       ...new Set([...Object.keys(sourceBefore.files), ...Object.keys(after.files)]),
     ].filter((path) => sourceBefore.files[path] !== after.files[path]);
+    sourceChanges = changed;
     await writeFile(join(evidence, "source-after.json"), JSON.stringify(after, null, 2));
     await writeFile(
       join(evidence, "source-binding.json"),
@@ -2684,7 +2764,9 @@ try {
       ),
     );
     console.log(
-      "PLAYER CARD SOURCE BINDING",
+      process.env.GLASS_SCENARIO === "backgrounds"
+        ? "BACKGROUND SOURCE BINDING"
+        : "PLAYER CARD SOURCE BINDING",
       JSON.stringify({ evidence, before: sourceBefore.digest, after: after.digest, changed }),
     );
   }
@@ -2704,4 +2786,10 @@ try {
   );
   await new Promise((done) => server?.close(done) ?? done());
   await rm(temp, { recursive: true, force: true });
+  if (process.env.GLASS_SCENARIO === "backgrounds")
+    assert.deepEqual(
+      sourceChanges,
+      [],
+      "Background qualification requires unchanged App/renderer/CSS/preferences/assets from build through final frame",
+    );
 }

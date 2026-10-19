@@ -21,10 +21,12 @@ export const GlassControls = ({
   settings,
   status,
   onChange,
+  monochromeBackground = false,
 }: Readonly<{
   settings: GlassSettings;
   status: GlassStatus;
   onChange: (settings: GlassSettings) => void;
+  monochromeBackground?: boolean;
 }>) => {
   const { t } = useMessages(shellMessages);
   const active = settings.enabled && status === "ready";
@@ -93,13 +95,14 @@ export const GlassControls = ({
             aria-label={t("goldBackgroundLight")}
             aria-describedby="glass-gold-description"
             value={settings.goldLight}
+            disabled={monochromeBackground}
             onChange={(event) =>
               onChange({ ...settings, goldLight: Number(event.currentTarget.value) })
             }
           />
         </label>
         <p id="glass-gold-description" className="dev-renderer-status">
-          {t("glassGoldDescription")}
+          {t(monochromeBackground ? "glassGoldMonochromeReason" : "glassGoldDescription")}
         </p>
         <details className="dev-glass-advanced">
           <summary>{t("glassFineTuning")}</summary>

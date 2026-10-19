@@ -12,6 +12,12 @@ const englishShellMessages = {
   backgroundGrey33: "33% grey",
   backgroundGrey66: "66% grey",
   backgroundWhite: "white",
+  applicationBackground: "Application background",
+  backgroundNoirSkyline: "Noir skyline",
+  backgroundOldTown: "Old town",
+  backgroundHarbour: "Harbour",
+  glassGoldMonochromeReason:
+    "City backgrounds stay monochrome. Choose a plain background to adjust gold light; its saved value is retained.",
   resetActiveGame: {
     one: "Reset the active game to log #{sequence}? {count} later action will be permanently deleted.",
     other:
@@ -304,7 +310,7 @@ const englishShellMessages = {
   settingOff: "Off",
   pastGameTimeline: "Past game timeline",
   console: "Console",
-  useBackground: "Use {background} background",
+
   disableDevMode: "Disable dev mode",
   enableDevMode: "Enable dev mode",
   hideDeveloperMode: "Hide developer mode",
@@ -365,6 +371,12 @@ const russianShellMessages = {
   backgroundGrey33: "серый 33%",
   backgroundGrey66: "серый 66%",
   backgroundWhite: "белый",
+  applicationBackground: "Фон приложения",
+  backgroundNoirSkyline: "Ночной мегаполис",
+  backgroundOldTown: "Старый город",
+  backgroundHarbour: "Гавань",
+  glassGoldMonochromeReason:
+    "Городские фоны остаются монохромными. Для настройки золотого света выберите однотонный фон; сохранённое значение не меняется.",
   resetActiveGame: {
     one: "Вернуть текущую игру к записи журнала №{sequence}? {count} последующее действие будет удалено навсегда.",
     few: "Вернуть текущую игру к записи журнала №{sequence}? {count} последующих действия будут удалены навсегда.",
@@ -670,7 +682,7 @@ const russianShellMessages = {
   settingOff: "Выкл.",
   pastGameTimeline: "Хронология прошлых игр",
   console: "Консоль",
-  useBackground: "Использовать {background} фон",
+
   disableDevMode: "Выключить режим разработчика",
   enableDevMode: "Включить режим разработчика",
   hideDeveloperMode: "Скрыть режим разработчика",

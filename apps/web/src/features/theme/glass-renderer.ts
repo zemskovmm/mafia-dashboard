@@ -1,4 +1,4 @@
-// One WebGL1 scene for all optical surfaces. No DOM/video capture or textures.
+// One WebGL1 scene for all optical surfaces. No DOM/video capture.
 // Background and displaced lens samples call the exact same scene function.
 export type SceneRect = readonly [number, number, number, number];
 export interface GlassSurfaceGeometry {
@@ -42,6 +42,9 @@ void main(){gl_Position=vec4(a_position,0.0,1.0);}`;
 const fragment = `precision highp float;
 uniform vec2 u_resolution;
 uniform vec2 u_view;
+uniform sampler2D u_backgroundImage;
+uniform float u_hasBackgroundImage;
+uniform vec2 u_backgroundScale;
 uniform vec4 u_table;
 uniform vec4 u_panel;
 uniform vec4 u_nomination;
@@ -78,13 +81,19 @@ float spot(vec2 uv,vec2 center,float size){return exp(-dot(uv-center,uv-center)/
 vec3 scene(vec2 p){
  vec2 uv=p/u_view;
  // The decorative scene is anchored to the viewport, never a panel's bounds.
- vec3 col=mix(u_top,u_bg,clamp(uv.x*.4+uv.y*.6,0.0,1.0));
- col+=u_theme*u_gold*.25*exp(-dot(uv,uv)*2.3);
- float t=mod(p.x*.829+p.y*.559+390.0,195.0);
- float band=smoothstep(78.0,95.0,t)*(1.0-smoothstep(119.0,144.0,t));
- float mask=mix(.08,.8,smoothstep(0.0,.38,uv.y))*(1.0-.60*smoothstep(.82,1.0,uv.y));
- col+=vec3(.125,.120,.091)*band*mask;
- col+=sin(p.x*1.73+p.y*2.31)*sin(p.y*1.17-p.x*.83)*.002;
+ vec3 col;
+ if(u_hasBackgroundImage>.5){
+  // Exactly the CSS fixed-viewport center/cover transform, including lenses.
+  col=texture2D(u_backgroundImage,(uv-.5)*u_backgroundScale+.5).rgb;
+ }else{
+  col=mix(u_top,u_bg,clamp(uv.x*.4+uv.y*.6,0.0,1.0));
+  col+=u_theme*u_gold*.25*exp(-dot(uv,uv)*2.3);
+  float t=mod(p.x*.829+p.y*.559+390.0,195.0);
+  float band=smoothstep(78.0,95.0,t)*(1.0-smoothstep(119.0,144.0,t));
+  float mask=mix(.08,.8,smoothstep(0.0,.38,uv.y))*(1.0-.60*smoothstep(.82,1.0,uv.y));
+  col+=vec3(.125,.120,.091)*band*mask;
+  col+=sin(p.x*1.73+p.y*2.31)*sin(p.y*1.17-p.x*.83)*.002;
+ }
  if(u_table.z>0.0){
   vec2 center=u_table.xy+u_table.zw*.5;
   float distance=length((p-center)/(u_table.zw*.5));
@@ -152,7 +161,10 @@ export interface GlassRenderer {
   dispose: (releaseContext?: boolean) => void;
 }
 
-export const createGlassRenderer = (canvas: HTMLCanvasElement): GlassRenderer => {
+export const createGlassRenderer = (
+  canvas: HTMLCanvasElement,
+  backgroundImage?: HTMLImageElement,
+): GlassRenderer => {
   const gl = canvas.getContext("webgl", {
     alpha: false,
     antialias: false,
@@ -165,13 +177,65 @@ export const createGlassRenderer = (canvas: HTMLCanvasElement): GlassRenderer =>
   const shaders: WebGLShader[] = [];
   let program: WebGLProgram | null = null;
   let buffer: WebGLBuffer | null = null;
+  let texture: WebGLTexture | null = null;
+  let disposed = false;
   const dispose = (releaseContext = true) => {
+    if (disposed) return;
+    disposed = true;
+    if (texture !== null) gl.deleteTexture(texture);
     if (buffer !== null) gl.deleteBuffer(buffer);
     if (program !== null) gl.deleteProgram(program);
     for (const shader of shaders) gl.deleteShader(shader);
     if (releaseContext && !gl.isContextLost()) gl.getExtension("WEBGL_lose_context")?.loseContext();
   };
   try {
+    texture = gl.createTexture();
+    if (texture === null) throw new Error("Background texture allocation failed");
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    // NPOT city SVGs must remain complete on WebGL1: no mipmaps or repeat.
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    let sourceWidth = 1;
+    let sourceHeight = 1;
+    if (backgroundImage !== undefined) {
+      sourceWidth = backgroundImage.naturalWidth;
+      sourceHeight = backgroundImage.naturalHeight;
+      if (!backgroundImage.complete || sourceWidth <= 0 || sourceHeight <= 0)
+        throw new Error("Background image is not decoded");
+      const limit = Math.min(2048, gl.getParameter(gl.MAX_TEXTURE_SIZE) as number);
+      if (limit < 1) throw new Error("Background texture unavailable");
+      const scale = Math.min(1, limit / sourceWidth, limit / sourceHeight);
+      // Always rasterize explicitly, even at intrinsic size. WebKit can reuse
+      // the SVG's last CSS-painted (e.g. phone-size) raster during direct image
+      // upload, leaving black regions despite a successful WebGL error check.
+      const bounded = document.createElement("canvas");
+      bounded.width = Math.max(1, Math.floor(sourceWidth * scale));
+      bounded.height = Math.max(1, Math.floor(sourceHeight * scale));
+      const context = bounded.getContext("2d");
+      if (context === null) throw new Error("Background rasterization unavailable");
+      context.drawImage(backgroundImage, 0, 0, bounded.width, bounded.height);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bounded);
+    } else {
+      // Even the procedural branch needs a complete bound sampler on WebGL1.
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA,
+        1,
+        1,
+        0,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        new Uint8Array([0, 0, 0, 255]),
+      );
+    }
+    if (gl.isContextLost() || gl.getError() !== gl.NO_ERROR)
+      throw new Error("Background texture upload failed");
     const compile = (kind: number, source: string) => {
       const shader = gl.createShader(kind);
       if (shader === null) throw new Error("Shader allocation failed");
@@ -215,7 +279,7 @@ export const createGlassRenderer = (canvas: HTMLCanvasElement): GlassRenderer =>
     return {
       dispose,
       draw: (scene) => {
-        if (gl.isContextLost()) throw new Error("Graphics context lost");
+        if (disposed || gl.isContextLost()) throw new Error("Graphics context unavailable");
         const dpr = Math.min(
           window.devicePixelRatio || 1,
           1.5,
@@ -232,6 +296,16 @@ export const createGlassRenderer = (canvas: HTMLCanvasElement): GlassRenderer =>
         gl.useProgram(program);
         gl.uniform2f(uniform("u_resolution"), width, height);
         gl.uniform2f(uniform("u_view"), scene.width, scene.height);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.uniform1i(uniform("u_backgroundImage"), 0);
+        scalar("u_hasBackgroundImage", backgroundImage === undefined ? 0 : 1);
+        const cover = Math.max(scene.width / sourceWidth, scene.height / sourceHeight);
+        gl.uniform2f(
+          uniform("u_backgroundScale"),
+          scene.width / (sourceWidth * cover),
+          scene.height / (sourceHeight * cover),
+        );
         rect("u_table", scene.table);
         rect("u_panel", scene.panel);
         rect("u_nomination", scene.nomination);

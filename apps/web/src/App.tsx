@@ -5,6 +5,7 @@ import {
   useReducer,
   useRef,
   useState,
+  type ComponentProps,
   type CSSProperties,
 } from "react";
 import {
@@ -105,6 +106,12 @@ import {
 import { VgpuLightingProvider } from "./features/effects/vgpu/VgpuLightingProvider.js";
 import { GameScreen } from "./features/game/GameScreen.js";
 import { GlassControls, type GlassStatus } from "./features/developer/GlassControls.js";
+import { AppBackgroundProvider, useAppBackground } from "./features/theme/AppBackground.js";
+import {
+  BACKGROUND_OPTIONS,
+  isCityBackground,
+  validateBackground,
+} from "./features/theme/background-preferences.js";
 import { PlayerExitControls } from "./features/developer/PlayerExitControls.js";
 import { FancyStuffControls } from "./features/developer/FancyStuffControls.js";
 import { DeveloperSettingToggle } from "./features/developer/DeveloperSettingToggle.js";
@@ -204,22 +211,13 @@ type PlayerGateError = Readonly<{
   readonly count: number;
 }>;
 
-const backgroundShadeOrder: readonly BackgroundShade[] = ["black", "grey-33", "grey-66", "white"];
 const backgroundShadeClass: Record<BackgroundShade, string> = {
   black: "",
   "grey-33": " is-background-grey-33",
   "grey-66": " is-background-grey-66",
   white: " is-light-background",
 };
-const backgroundShadeMessageKey: Record<
-  BackgroundShade,
-  "backgroundBlack" | "backgroundGrey33" | "backgroundGrey66" | "backgroundWhite"
-> = {
-  black: "backgroundBlack",
-  "grey-33": "backgroundGrey33",
-  "grey-66": "backgroundGrey66",
-  white: "backgroundWhite",
-};
+
 type ShellTranslator = FeatureI18n<ShellMessageKey>["t"];
 const phaseMessageKeys: Readonly<Record<string, ShellMessageKey>> = {
   "setup-players": "phaseSetupPlayers",
@@ -427,7 +425,13 @@ const asPersistedState = (state: unknown): PersistedState => {
   };
 };
 
-export const ClubWorkspace = ({
+export const ClubWorkspace = (props: ComponentProps<typeof ClubWorkspaceContent>) => (
+  <AppBackgroundProvider>
+    <ClubWorkspaceContent {...props} />
+  </AppBackgroundProvider>
+);
+
+const ClubWorkspaceContent = ({
   club,
   storageGuard,
   onExit,
@@ -663,7 +667,9 @@ export const ClubWorkspace = ({
   const [appVersionUnavailable, setAppVersionUnavailable] = useState(false);
 
   const [musicSetupOpen, setMusicSetupOpen] = useState(false);
-  const [backgroundShade, setBackgroundShade] = useState<BackgroundShade>("black");
+  const { background, changeBackground, reloadBackground } = useAppBackground();
+  const cityBackground = isCityBackground(background);
+  const backgroundShade: BackgroundShade = cityBackground ? "black" : background;
   const [glass, setGlass] = useState(() => readGlassSettings());
   const [playerExit, setPlayerExit] = useState(readPlayerExitSettings);
   const changePlayerExit = useCallback((settings: PlayerExitSettings) => {
@@ -1595,6 +1601,7 @@ export const ClubWorkspace = ({
         );
       }
       setMusicPreferences(readMusicPreferences(window.localStorage, club.id));
+      reloadBackground();
 
       clearErrorConsole();
       setDevModeEnabled(false);
@@ -1705,10 +1712,7 @@ export const ClubWorkspace = ({
         : availabilityScreenOpen
           ? t("availableCount", { count: availablePlayersForSetup.length })
           : t("selectPlayers");
-  const nextBackgroundShade =
-    backgroundShadeOrder[
-      (backgroundShadeOrder.indexOf(backgroundShade) + 1) % backgroundShadeOrder.length
-    ]!;
+
   const selectLightingRenderer = useCallback((renderer: LightingRenderer) => {
     writeLightingRenderer(window.localStorage, renderer);
     dispatchLighting({ type: "select", renderer });
@@ -1991,12 +1995,13 @@ export const ClubWorkspace = ({
         showApplicationStatus ? " has-top-level-screen" : ""
       }${isFullscreen ? " is-fullscreen" : ""}`}
       data-background-shade={backgroundShade}
+      data-background={background}
       data-glass-settings="local"
       data-glass-requested={glass.enabled ? "enhanced" : "existing"}
       data-glass-status={effectiveGlassStatus}
       style={
         {
-          "--glass-gold-light": glass.goldLight / 100,
+          "--glass-gold-light": cityBackground ? 0 : glass.goldLight / 100,
           "--glass-matte-blur": `${glass.matte ? glass.frosting * 0.04 : 0}px`,
           "--glass-matte-lens-blur": `${glass.matte ? glass.frosting * 0.012 : 0}px`,
           "--glass-tint": glass.tint / 100,
@@ -2019,7 +2024,9 @@ export const ClubWorkspace = ({
       data-player-pulse-speed={lighting.playerPulse.speed}
       data-player-pulse-strength={lighting.playerPulse.strength}
     >
-      {glassSceneMounted ? <GlassScene settings={glass} onStatus={setGlassStatus} /> : null}
+      {glassSceneMounted ? (
+        <GlassScene background={background} settings={glass} onStatus={setGlassStatus} />
+      ) : null}
       {!showWorkspaceTools ? (
         <div className="app-fixed-toolbar" aria-label={t("applicationTools")}>
           <button
@@ -2404,7 +2411,12 @@ export const ClubWorkspace = ({
             </p>
           </div>
           <div className="dev-menu-actions">
-            <GlassControls settings={glass} status={effectiveGlassStatus} onChange={changeGlass} />
+            <GlassControls
+              settings={glass}
+              status={effectiveGlassStatus}
+              onChange={changeGlass}
+              monochromeBackground={cityBackground}
+            />
             <PlayerExitControls settings={playerExit} onChange={changePlayerExit} />
             <FancyStuffControls settings={fancyStuff} onChange={onFancyStuffChange} />
             <DeveloperSettingToggle
@@ -2509,11 +2521,22 @@ export const ClubWorkspace = ({
             >
               {t("console")}
             </button>
-            <button type="button" onClick={() => setBackgroundShade(nextBackgroundShade)}>
-              {t("useBackground", {
-                background: t(backgroundShadeMessageKey[nextBackgroundShade]),
-              })}
-            </button>
+            <label className="dev-background-field">
+              <span>{t("applicationBackground")}</span>
+              <select
+                aria-label={t("applicationBackground")}
+                value={background}
+                onChange={(event) =>
+                  changeBackground(validateBackground(event.currentTarget.value))
+                }
+              >
+                {BACKGROUND_OPTIONS.map(({ id, message }) => (
+                  <option key={id} value={id}>
+                    {t(message)}
+                  </option>
+                ))}
+              </select>
+            </label>
             <button
               type="button"
               aria-pressed={devModeEnabled}
@@ -2917,7 +2940,13 @@ const LockedClubWorkspace = ({
   );
 };
 
-export const App = () => {
+export const App = () => (
+  <AppBackgroundProvider>
+    <AppContent />
+  </AppBackgroundProvider>
+);
+
+const AppContent = () => {
   const { locale, setLocale, t } = useMessages(shellMessages);
   const portalLocale = useRef(locale).current;
   const [fancyStuff, setFancyStuff] = useState(readFancyStuffSettings);

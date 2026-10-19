@@ -2925,6 +2925,10 @@ describe("developer menu", () => {
     );
     const first = render(<App />);
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Application background" }),
+      "black",
+    );
     const section = screen.getByText("Glass", { selector: "summary" });
     expect(section.closest("details")).not.toHaveAttribute("open");
     await user.click(section);
@@ -2981,6 +2985,7 @@ describe("developer menu", () => {
       "true",
     );
     await user.click(screen.getByRole("button", { name: "Reset glass settings" }));
+    expect(screen.getByRole("combobox", { name: "Application background" })).toHaveValue("black");
     expect(screen.getByLabelText("Gold background light")).toHaveValue("25");
     expect(screen.getByRole("button", { name: "Disable enhanced glass" })).toHaveAttribute(
       "aria-pressed",
@@ -4559,29 +4564,93 @@ describe("developer menu", () => {
     expect(mask.querySelector("svg")).not.toBeNull();
   });
 
-  it("cycles the application background through black, 33%, 66%, and white", async () => {
+  it("selects and remembers app-wide city and plain backgrounds without game writes", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    const mounted = render(<App />);
 
     const logButton = screen.getByRole("button", { name: "Open game log" });
     const devButton = screen.getByRole("button", { name: "Open developer menu" });
     await user.click(devButton);
 
     expect(screen.getByRole("dialog", { name: "Developer menu" })).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Use 33% grey background" }));
+    const background = screen.getByRole("combobox", { name: "Application background" });
+    expect(background).toHaveValue("noir-skyline");
+    expect(within(background).getAllByRole("option")).toHaveLength(7);
+    api.saveGameSession.mockClear();
+    api.createGameSession.mockClear();
+    for (const id of ["old-town", "harbour", "noir-skyline", "black"]) {
+      await user.selectOptions(background, id);
+      expect(document.querySelector(".app-background-root")).toHaveAttribute("data-background", id);
+    }
+    await user.selectOptions(background, "grey-33");
     expect(document.querySelector(".app-shell")).toHaveClass("is-background-grey-33");
 
-    await user.click(screen.getByRole("button", { name: "Use 66% grey background" }));
+    await user.selectOptions(background, "grey-66");
     expect(document.querySelector(".app-shell")).toHaveClass("is-background-grey-66");
 
-    await user.click(screen.getByRole("button", { name: "Use white background" }));
+    await user.selectOptions(background, "white");
     expect(document.querySelector(".app-shell")).toHaveClass("is-light-background");
-
-    await user.click(screen.getByRole("button", { name: "Use black background" }));
-
-    expect(document.querySelector(".app-shell")).toHaveAttribute("data-background-shade", "black");
     expect(logButton).toBeVisible();
     expect(devButton).toBeVisible();
+    expect(api.saveGameSession).not.toHaveBeenCalled();
+    expect(api.createGameSession).not.toHaveBeenCalled();
+    mounted.unmount();
+    render(<App />);
+    expect(document.querySelector(".app-background-root")).toHaveAttribute(
+      "data-background",
+      "white",
+    );
+  });
+
+  it("keeps one background owner through club entry, hiding Dev and returning to the portal", async () => {
+    const user = userEvent.setup();
+    api.getAuthSession.mockResolvedValue(authenticatedUser);
+    api.listClubs.mockResolvedValue([testClub]);
+    render(
+      <StrictMode>
+        <WelcomeApp />
+      </StrictMode>,
+    );
+    await user.click(await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i }));
+    const privacy = await screen.findByRole("button", { name: /private info/i });
+    for (let tap = 0; tap < 6; tap += 1) fireEvent.click(privacy);
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Application background" }),
+      "harbour",
+    );
+    await user.click(screen.getByRole("button", { name: "Hide developer mode" }));
+    await user.click(
+      screen.getByRole("button", { name: "Choose another club · current club Mafia Malaga" }),
+    );
+    const open = await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i });
+    expect(document.querySelectorAll(".app-background-root")).toHaveLength(1);
+    expect(document.querySelector(".app-background-root")).toHaveAttribute(
+      "data-background",
+      "harbour",
+    );
+    await user.click(open);
+    await screen.findByRole("button", { name: "Choose another club · current club Mafia Malaga" });
+    expect(document.querySelectorAll(".app-background-root")).toHaveLength(1);
+    expect(document.querySelector(".app-shell")).toHaveAttribute("data-background", "harbour");
+  });
+
+  it("keeps background selection usable when appearance storage writes are denied", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const setItem = window.localStorage.setItem;
+    const write = vi.spyOn(window.localStorage, "setItem").mockImplementation((key, value) => {
+      if (key === "mafia-dashboard.background.v1") throw new Error("Storage denied");
+      setItem(key, value);
+    });
+    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Application background" }),
+      "old-town",
+    );
+    expect(document.querySelector(".app-shell")).toHaveAttribute("data-background", "old-town");
+    expect(write).toHaveBeenCalledWith("mafia-dashboard.background.v1", expect.any(String));
+    expect(window.localStorage.getItem("mafia-dashboard.background.v1")).toBeNull();
   });
 
   it("keeps browser-only clearing available when persistence is offline", async () => {
@@ -4648,6 +4717,10 @@ describe("developer menu", () => {
     expect(musicPlayer).toHaveAttribute("data-playlist-id", "remembered-playlist");
 
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Application background" }),
+      "old-town",
+    );
     await user.click(screen.getByRole("button", { name: "Clear all data" }));
     await waitFor(() =>
       expect(window.localStorage.getItem(musicPreferencesStorageKey(testClub.id))).toBeNull(),
@@ -4655,6 +4728,11 @@ describe("developer menu", () => {
     await waitFor(() => {
       expect(musicPlayer).toHaveAttribute("data-playlist-id", "");
     });
+    expect(document.querySelector(".app-background-root")).toHaveAttribute(
+      "data-background",
+      "noir-skyline",
+    );
+    expect(window.localStorage.getItem("mafia-dashboard.background.v1")).toBeNull();
     const privacy = screen.getByRole("button", { name: "Hide private info" });
     for (let tap = 0; tap < 5; tap += 1) fireEvent.click(privacy);
     await user.click(screen.getByRole("button", { name: "Music player panel handle" }));

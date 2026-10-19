@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 import type { GlassStatus } from "../developer/GlassControls.js";
 import { validateGlassSettings, type GlassSettings } from "./glass-preferences.js";
+import { backgroundAsset, type BackgroundId } from "./background-preferences.js";
 import {
   createGlassRenderer,
   type GlassRenderer,
@@ -30,11 +31,14 @@ const intersect = (a: SceneRect, b: SceneRect): SceneRect => {
 export const GlassScene = ({
   settings,
   onStatus,
+  background = "black",
 }: Readonly<{
   settings: GlassSettings;
   onStatus: (status: GlassStatus) => void;
+  background?: BackgroundId;
 }>) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const contextLostRef = useRef(false);
   const settingsRef = useRef(settings);
   const redrawRef = useRef<(() => void) | null>(null);
   settingsRef.current = validateGlassSettings(settings);
@@ -46,6 +50,9 @@ export const GlassScene = ({
     const canvas = canvasRef.current;
     const root = canvas?.closest(".app-shell");
     if (canvas === null || !(root instanceof HTMLElement)) return;
+    // Hide old pixels synchronously, before the parent's status update commits.
+    canvas.style.visibility = "hidden";
+    delete canvas.dataset.glassBackground;
     if (typeof window.matchMedia !== "function" || typeof ResizeObserver !== "function") {
       onStatus("unavailable");
       return;
@@ -58,7 +65,9 @@ export const GlassScene = ({
     let disposed = false;
     let draws = 0;
     let lastGeometry = "";
-    let lost = false;
+    let lost = contextLostRef.current;
+    let generation = 0;
+    let pendingImage: HTMLImageElement | null = null;
     let painted = new Set<HTMLElement>();
     let collected: HTMLElement[] = [];
     const markPainted = (elements: readonly HTMLElement[]) => {
@@ -66,6 +75,16 @@ export const GlassScene = ({
       for (const element of painted) if (!next.has(element)) delete element.dataset.glassPainted;
       for (const element of next) element.dataset.glassPainted = "true";
       painted = next;
+    };
+    const clearPaint = () => {
+      canvas.style.visibility = "hidden";
+      delete canvas.dataset.glassBackground;
+      markPainted([]);
+    };
+    const cancelImage = () => {
+      generation += 1;
+      pendingImage?.removeAttribute("src");
+      pendingImage = null;
     };
     const colors = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
     const colorCache = new Map<string, readonly number[]>();
@@ -213,13 +232,15 @@ export const GlassScene = ({
           draws += 1;
           canvas.dataset.glassDraws = String(draws);
           canvas.dataset.glassSurfaces = String(scene.surfaces.length);
+          canvas.dataset.glassBackground = background;
+          canvas.style.visibility = "";
           onStatus("ready");
         }
         // A filtered/replaced host may reuse pixels at identical geometry.
         markPainted(collected);
         if (now < until) frame = requestAnimationFrame(draw);
       } catch {
-        markPainted([]);
+        clearPaint();
         stop();
         renderer?.dispose(false);
         renderer = null;
@@ -236,10 +257,11 @@ export const GlassScene = ({
       // Media changes reuse the canvas context. Deliberately losing it here
       // would be indistinguishable from an external loss and prevent restart.
       stop();
+      cancelImage();
       renderer?.dispose(false);
       renderer = null;
       lastGeometry = "";
-      markPainted([]);
+      clearPaint();
       if (transparency.matches) {
         onStatus("reduced-transparency");
         return;
@@ -249,11 +271,37 @@ export const GlassScene = ({
         return;
       }
       onStatus("initializing");
-      try {
-        renderer = createGlassRenderer(canvas);
-        schedule(950, true);
-      } catch {
-        onStatus("unavailable");
+      const version = generation;
+      const current = () => !disposed && version === generation && !lost && !transparency.matches;
+      const initialize = (image?: HTMLImageElement) => {
+        if (!current()) return;
+        pendingImage = null;
+        try {
+          renderer = createGlassRenderer(canvas, image);
+          schedule(950, true);
+        } catch {
+          clearPaint();
+          onStatus("unavailable");
+        }
+      };
+      const asset = backgroundAsset(background);
+      if (asset === null) initialize();
+      else {
+        // Decode once per start, never from the geometry collector or draw loop.
+        // The CSS fallback uses this exact SVG; no independent city generator.
+        const image = new Image();
+        pendingImage = image;
+        image.decoding = "async";
+        image.src = asset;
+        void image.decode().then(
+          () => initialize(image),
+          () => {
+            if (!current()) return;
+            pendingImage = null;
+            clearPaint();
+            onStatus("unavailable");
+          },
+        );
       }
     };
     const geometryChanged = () => schedule(950);
@@ -264,7 +312,9 @@ export const GlassScene = ({
     const contextLost = (event: Event) => {
       event.preventDefault();
       lost = true;
-      markPainted([]);
+      contextLostRef.current = true;
+      cancelImage();
+      clearPaint();
       stop();
       renderer?.dispose(false);
       renderer = null;
@@ -272,6 +322,7 @@ export const GlassScene = ({
     };
     const contextRestored = () => {
       lost = false;
+      contextLostRef.current = false;
       start();
     };
     const preferenceChanged = () => {
@@ -327,7 +378,8 @@ export const GlassScene = ({
     start();
     return () => {
       disposed = true;
-      markPainted([]);
+      cancelImage();
+      clearPaint();
       stop();
       mutation.disconnect();
       children.disconnect();
@@ -354,6 +406,6 @@ export const GlassScene = ({
       renderer = null;
       onStatus("initializing");
     };
-  }, [onStatus]);
+  }, [background, onStatus]);
   return <canvas ref={canvasRef} className="glass-scene-canvas" aria-hidden="true" />;
 };

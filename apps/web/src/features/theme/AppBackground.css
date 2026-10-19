@@ -1,0 +1,52 @@
+.app-background-root {
+  position: relative;
+  isolation: isolate;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+.app-background {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: #101010 var(--app-background-image) center / cover no-repeat;
+}
+.app-background-root[data-background="grey-33"] > .app-background {
+  background-color: #545454;
+}
+.app-background-root[data-background="grey-66"] > .app-background {
+  background-color: #a8a8a8;
+}
+.app-background-root[data-background="white"] > .app-background {
+  background-color: #f5f5f2;
+}
+.app-background-root[data-background-kind="city"]
+  :is(.app-shell, .club-portal, .game-shell, .game-header) {
+  background: transparent;
+}
+.app-background-root :is(.club-portal, .timeline-screen, .error-console-screen) {
+  background: transparent;
+}
+.app-background-root[data-background-kind="city"] .app-shell::before {
+  content: none;
+}
+.app-background-root .app-shell:not([data-glass-settings])::before {
+  content: none;
+}
+.app-background-root:is([data-background="grey-66"], [data-background="white"])
+  :is(.club-portal-content > h1, .club-auth-status, .error-console-header h1) {
+  color: #17181a;
+}
+.app-background-root:is([data-background="grey-66"], [data-background="white"]) .club-user-chip {
+  background: rgb(8 8 8 / 86%);
+}
+.dev-background-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.dev-background-field select {
+  width: 100%;
+  min-width: 0;
+}

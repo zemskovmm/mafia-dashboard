@@ -29,6 +29,25 @@ const Harness = ({
 };
 
 describe("Glass controls", () => {
+  it("retains background gold while monochrome cities make its control unavailable", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    const settings = { ...DEFAULT_GLASS_SETTINGS, goldLight: 72 };
+    const view = render(
+      <GlassControls settings={settings} status="ready" onChange={onChange} monochromeBackground />,
+    );
+    await user.click(screen.getByText("Glass", { selector: "summary" }));
+    const gold = screen.getByRole("slider", { name: "Gold background light" });
+    expect(gold).toBeDisabled();
+    expect(gold).toHaveValue("72");
+    expect(gold).toHaveAccessibleDescription(/City backgrounds stay monochrome/);
+    expect(screen.getByRole("slider", { name: "Refraction strength" })).toBeEnabled();
+    view.rerender(<GlassControls settings={settings} status="ready" onChange={onChange} />);
+    expect(gold).toBeEnabled();
+    expect(gold).toHaveValue("72");
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it("tunes and resets button glass independently of player cards and background", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
