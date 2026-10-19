@@ -14,6 +14,7 @@ This repository contains the touch-first TypeScript web application with Azure T
 - [`docs/architecture.md`](docs/architecture.md) — current workspace boundaries, client rendering, and lighting-renderer lifecycle.
 - [`docs/adr/0001-typescript-modular-monolith.md`](docs/adr/0001-typescript-modular-monolith.md) — initial SPA/API/PostgreSQL architecture decision.
 - [`docs/azure-deployment.md`](docs/azure-deployment.md) — Azure Container Apps, identity-authenticated Table/private Blob storage, GitHub OIDC deployment and rollback boundaries.
+- [`docs/public-website.md`](docs/public-website.md) — the separate static club website, local preview, assets and manual GitHub Pages publication.
 
 - [`docs/azure-storage-backup-and-recovery.md`](docs/azure-storage-backup-and-recovery.md) — local Table/private Blob packages, owner-checked freeze recovery and isolated restore; not a production cutover.
 
@@ -25,6 +26,8 @@ This repository contains the touch-first TypeScript web application with Azure T
 The application is a TypeScript npm workspace with a React/Vite SPA, Fastify API, pure game-domain package, and remotely published game-session snapshots. Setup state is persisted directly; live play is derived from an immutable game baseline and parent-linked semantic events. The client defaults to V-GPU lighting, retains existing CSS lighting while V-GPU starts or fails, and offers a **Raytracing** toggle to switch between GPU and legacy CSS. Local development starts the API, Vite, and an owned Azurite emulator together. Azure deployment uses Table/Blob with managed identity and the existing application Docker image. [IDD-0006](.idd/intent/IDD-0006.adr-azure-table-and-blob-persistence.md) records the supported persistence boundary. Automated production Storage backups are not configured by this release.
 
 ## Default development app (Mac and iPad)
+
+For the backend-free public club website instead, run `npm run dev -w @mafia/site` and open <http://127.0.0.1:5174/>. Its static GitHub Pages build is separate from the authenticated host application described below.
 
 Prerequisites: Node 22+ and npm 10+; the pinned Azurite dependency is installed with the workspace. Development and local checks require no PostgreSQL service or client tools. The default private HTTPS route also requires this Mac's Tailscale connection and existing Serve mapping:
 

@@ -4,6 +4,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 COPY apps/web/package.json apps/web/package.json
 COPY apps/server/package.json apps/server/package.json
+COPY apps/site/package.json apps/site/package.json
 COPY packages/game-domain/package.json packages/game-domain/package.json
 RUN npm run ci:install
 

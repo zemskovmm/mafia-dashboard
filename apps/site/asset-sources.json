@@ -1,0 +1,224 @@
+[
+  {
+    "file": "assets/night-city.webp",
+    "source": "https://static.tildacdn.net/tild3335-6630-4232-b966-643830326135/assets_task_01jvqrp3.webp",
+    "sha256": "c71efc5cd8c907113c8ea452ebf526537cbabb1bc1863434237f1b850676c7fa",
+    "license": "Original club artwork; reused for the owner-authorized website replica."
+  },
+  {
+    "file": "assets/roles-desktop.png",
+    "source": "https://static.tildacdn.net/tild3863-3837-4539-b038-336636303939/4_____1160_600-min.png",
+    "sha256": "a7977a64337190bea2521aad8ee4035f5f1bb04f93b25b3713f495e4ad32e9d2",
+    "license": "Original club artwork; reused for the owner-authorized website replica."
+  },
+  {
+    "file": "assets/roles-mobile.png",
+    "source": "https://static.tildacdn.net/tild6331-6262-4337-a439-313439633364/2_____586_600.png",
+    "sha256": "04f2cc645a4792f31c2142d5008bbf63fdc4979f831bbd666c31e26fd036474b",
+    "license": "Original club artwork; reused for the owner-authorized website replica."
+  },
+  {
+    "file": "assets/favicon.webp",
+    "source": "https://static.tildacdn.net/tild3136-3438-4238-a166-663533616562/wgv.webp",
+    "sha256": "5308b32b8c613661e70236b0b8b256a30b8017df8370cb25312625686e3784cd",
+    "license": "Original club artwork; reused for the owner-authorized website replica."
+  },
+  {
+    "file": "assets/feature-0.svg",
+    "source": "https://static.tildacdn.net/lib/icons/tilda/-/paint/b08d57--2-0-100/brain_knowledge.svg",
+    "sha256": "7e04ca274f207ff23354c52c5ccdd336df9faca683ddbc14c3b569b038e233fb",
+    "license": "Tilda Icons license; visible Icons from Tilda Publishing attribution is required."
+  },
+  {
+    "file": "assets/feature-1.svg",
+    "source": "https://static.tildacdn.net/lib/icons/tilda/-/paint/b08d57--2-0-100/group_team_people.svg",
+    "sha256": "ea78d0384e03f1b4b0c4cc77162d8e71cb73e822954d23d085487e5f01366ae6",
+    "license": "Tilda Icons license; visible Icons from Tilda Publishing attribution is required."
+  },
+  {
+    "file": "assets/feature-2.svg",
+    "source": "https://static.tildacdn.net/lib/icons/tilda/-/paint/b08d57--2-0-100/timer_stopwatch_efficiency.svg",
+    "sha256": "c955723ef14043276a97eef56ba3746a454e0caec80b813534b61ccd48fc9784",
+    "license": "Tilda Icons license; visible Icons from Tilda Publishing attribution is required."
+  },
+  {
+    "file": "assets/feature-3.svg",
+    "source": "https://static.tildacdn.net/lib/icons/tilda/-/paint/b08d57--2-0-100/moon_face.svg",
+    "sha256": "7d42440851146394d3834f448bebfd41fdc362817efb9015362c2f04ae841849",
+    "license": "Tilda Icons license; visible Icons from Tilda Publishing attribution is required."
+  },
+  {
+    "file": "assets/feature-4.svg",
+    "source": "https://static.tildacdn.net/lib/icons/tilda/-/paint/b08d57--2-0-100/head_question_man.svg",
+    "sha256": "082c8685182da5464bb9c5e70e7e540d0e5febf49aca5172613360584b83de36",
+    "license": "Tilda Icons license; visible Icons from Tilda Publishing attribution is required."
+  },
+  {
+    "file": "assets/feature-5.svg",
+    "source": "https://static.tildacdn.net/lib/icons/tilda/-/paint/b08d57--2-0-100/star_quality.svg",
+    "sha256": "df5bcd74bdeef81ec92a3420411e8a0f5be91b774ec6d4e657024938b56bfb05",
+    "license": "Tilda Icons license; visible Icons from Tilda Publishing attribution is required."
+  },
+  {
+    "file": "assets/testimonial-0.jpg",
+    "source": "https://static.tildacdn.net/tild6539-6535-4438-a134-616466373861/2025-05-29_220001.jpg",
+    "sha256": "2e77dba3d52c40d12a27042aea06790fd0e9a8ebd89c754abd7d18831501be09",
+    "license": "Original club artwork; reused for the owner-authorized website replica."
+  },
+  {
+    "file": "assets/testimonial-1.png",
+    "source": "https://static.tildacdn.net/tild3137-3038-4966-a266-333333613339/Screenshot_2025-05-2.png",
+    "sha256": "90bbae403bec7562faace804c032b9979db815f0859c4d6921437eb972ac8fac",
+    "license": "Original club artwork; reused for the owner-authorized website replica."
+  },
+  {
+    "file": "assets/testimonial-2.jpg",
+    "source": "https://static.tildacdn.net/tild3161-3265-4235-a439-643133303833/2025-05-29_234734.jpg",
+    "sha256": "af462676e16add4a1b2902dcb523f84a6db9ab5efd9da63bc4879ae6250295e8",
+    "license": "Original club artwork; reused for the owner-authorized website replica."
+  },
+  {
+    "file": "assets/game-2026-08-17.png",
+    "source": "https://static.tildacdn.net/tild3737-6231-4430-a265-373432343830/ChatGPT_Image_Aug_17.png",
+    "sha256": "268177bbb9011de9bb0d12ea9fee5b1959784695c5c931058a99147577f62163",
+    "license": "Original club artwork; reused for the owner-authorized website replica."
+  },
+  {
+    "file": "assets/hosting-app.webp",
+    "source": "Current Mafia Dashboard app rendered with isolated synthetic demonstration data.",
+    "sha256": "5c162b843353373d6fac7c1a4a244c21880c6d0a0df191ceba52d6a310ea02a3",
+    "license": "Project-owned UI screenshot; no production account or player data."
+  },
+  {
+    "file": "fonts/4iCv6KVjbNBYlgoC1CzjvWyNPYZvg7UI.woff2",
+    "source": "https://fonts.gstatic.com/s/ubuntu/v21/4iCv6KVjbNBYlgoC1CzjvWyNPYZvg7UI.woff2",
+    "sha256": "96a4c8f5874f09ed2845a4c1d9caa0fbb082c004e666560f7566cdb7da397a64",
+    "license": "Ubuntu Font Licence 1.0; unmodified font metadata and accompanying UFL retained."
+  },
+  {
+    "file": "fonts/4iCv6KVjbNBYlgoC1CzjtGyNPYZvg7UI.woff2",
+    "source": "https://fonts.gstatic.com/s/ubuntu/v21/4iCv6KVjbNBYlgoC1CzjtGyNPYZvg7UI.woff2",
+    "sha256": "e8f6e58243e162464daa2326059b8772fea0f2d0ef8c4abd0d36ce3be829ae63",
+    "license": "Ubuntu Font Licence 1.0; unmodified font metadata and accompanying UFL retained."
+  },
+  {
+    "file": "fonts/4iCv6KVjbNBYlgoC1CzjvGyNPYZvg7UI.woff2",
+    "source": "https://fonts.gstatic.com/s/ubuntu/v21/4iCv6KVjbNBYlgoC1CzjvGyNPYZvg7UI.woff2",
+    "sha256": "c561a0a505d32361887088c48fbb7744d48287c4f87b46aef39b88a67a21f748",
+    "license": "Ubuntu Font Licence 1.0; unmodified font metadata and accompanying UFL retained."
+  },
+  {
+    "file": "fonts/4iCv6KVjbNBYlgoC1Czjs2yNPYZvg7UI.woff2",
+    "source": "https://fonts.gstatic.com/s/ubuntu/v21/4iCv6KVjbNBYlgoC1Czjs2yNPYZvg7UI.woff2",
+    "sha256": "a5a9f0bd5ffe6ed66a545034113c5a475e31fa2054417df310c02fe4614f89f3",
+    "license": "Ubuntu Font Licence 1.0; unmodified font metadata and accompanying UFL retained."
+  },
+  {
+    "file": "fonts/4iCv6KVjbNBYlgoC1CzjvmyNPYZvg7UI.woff2",
+    "source": "https://fonts.gstatic.com/s/ubuntu/v21/4iCv6KVjbNBYlgoC1CzjvmyNPYZvg7UI.woff2",
+    "sha256": "4205f8597b13d869b9418ecac1d9f3621dcd196285d729c51cb34ff5099cba0d",
+    "license": "Ubuntu Font Licence 1.0; unmodified font metadata and accompanying UFL retained."
+  },
+  {
+    "file": "fonts/4iCv6KVjbNBYlgoC1CzjsGyNPYZvgw.woff2",
+    "source": "https://fonts.gstatic.com/s/ubuntu/v21/4iCv6KVjbNBYlgoC1CzjsGyNPYZvgw.woff2",
+    "sha256": "29378bb033f20552b17f3ffd9362e124ccbb35ee22408f52a8eaa389fddfafe9",
+    "license": "Ubuntu Font Licence 1.0; unmodified font metadata and accompanying UFL retained."
+  },
+  {
+    "file": "fonts/4iCs6KVjbNBYlgoKcg72nU6AF7xm.woff2",
+    "source": "https://fonts.gstatic.com/s/ubuntu/v21/4iCs6KVjbNBYlgoKcg72nU6AF7xm.woff2",
+    "sha256": "13e12b77e81c756c20023df4e9c2e499b7ec1f26cf5f9c8a0e9a7adca7ec202f",
+    "license": "Ubuntu Font Licence 1.0; unmodified font metadata and accompanying UFL retained."
+  },
+  {
+    "file": "fonts/4iCs6KVjbNBYlgoKew72nU6AF7xm.woff2",
+    "source": "https://fonts.gstatic.com/s/ubuntu/v21/4iCs6KVjbNBYlgoKew72nU6AF7xm.woff2",
+    "sha256": "09193112c3fc60c972c90a14becd364a3ff44c1c751360e840e5648cf0ebc99e",
+    "license": "Ubuntu Font Licence 1.0; unmodified font metadata and accompanying UFL retained."
+  },
+  {
+    "file": "fonts/4iCs6KVjbNBYlgoKcw72nU6AF7xm.woff2",
+    "source": "https://fonts.gstatic.com/s/ubuntu/v21/4iCs6KVjbNBYlgoKcw72nU6AF7xm.woff2",
+    "sha256": "da3bf03df2bca7b1576ae43ffccabbbd36b8c2b2697a33d4eaf8e1e5f78adaf2",
+    "license": "Ubuntu Font Licence 1.0; unmodified font metadata and accompanying UFL retained."
+  },
+  {
+    "file": "fonts/4iCs6KVjbNBYlgoKfA72nU6AF7xm.woff2",
+    "source": "https://fonts.gstatic.com/s/ubuntu/v21/4iCs6KVjbNBYlgoKfA72nU6AF7xm.woff2",
+    "sha256": "becb45781714720b7ec131f18209c450af299b140111ff0750f292467935279a",
+    "license": "Ubuntu Font Licence 1.0; unmodified font metadata and accompanying UFL retained."
+  },
+  {
+    "file": "fonts/4iCs6KVjbNBYlgoKcQ72nU6AF7xm.woff2",
+    "source": "https://fonts.gstatic.com/s/ubuntu/v21/4iCs6KVjbNBYlgoKcQ72nU6AF7xm.woff2",
+    "sha256": "c0a43c2ed13c456b3a4afa5db09b77403855dd3359576daf453674af5e766fea",
+    "license": "Ubuntu Font Licence 1.0; unmodified font metadata and accompanying UFL retained."
+  },
+  {
+    "file": "fonts/4iCs6KVjbNBYlgoKfw72nU6AFw.woff2",
+    "source": "https://fonts.gstatic.com/s/ubuntu/v21/4iCs6KVjbNBYlgoKfw72nU6AFw.woff2",
+    "sha256": "1765c67da4a24fc6d9dc3cd16484fe694106495423e45412dc6a986cc6928fd5",
+    "license": "Ubuntu Font Licence 1.0; unmodified font metadata and accompanying UFL retained."
+  },
+  {
+    "file": "fonts/4iCv6KVjbNBYlgoCxCvjvWyNPYZvg7UI.woff2",
+    "source": "https://fonts.gstatic.com/s/ubuntu/v21/4iCv6KVjbNBYlgoCxCvjvWyNPYZvg7UI.woff2",
+    "sha256": "479634ac3002e7ecff71d50d716e674338e04b5a5c54504b09af298e3ce74224",
+    "license": "Ubuntu Font Licence 1.0; unmodified font metadata and accompanying UFL retained."
+  },
+  {
+    "file": "fonts/4iCv6KVjbNBYlgoCxCvjtGyNPYZvg7UI.woff2",
+    "source": "https://fonts.gstatic.com/s/ubuntu/v21/4iCv6KVjbNBYlgoCxCvjtGyNPYZvg7UI.woff2",
+    "sha256": "71d8784956df557797413e953f79e9c3762e0ac2b52a2d22af9cf9cc1d52a2a1",
+    "license": "Ubuntu Font Licence 1.0; unmodified font metadata and accompanying UFL retained."
+  },
+  {
+    "file": "fonts/4iCv6KVjbNBYlgoCxCvjvGyNPYZvg7UI.woff2",
+    "source": "https://fonts.gstatic.com/s/ubuntu/v21/4iCv6KVjbNBYlgoCxCvjvGyNPYZvg7UI.woff2",
+    "sha256": "d9dc7484b4c79bd99542e4726087fa31862dd8f85269490c0ed09b97e5a3ada8",
+    "license": "Ubuntu Font Licence 1.0; unmodified font metadata and accompanying UFL retained."
+  },
+  {
+    "file": "fonts/4iCv6KVjbNBYlgoCxCvjs2yNPYZvg7UI.woff2",
+    "source": "https://fonts.gstatic.com/s/ubuntu/v21/4iCv6KVjbNBYlgoCxCvjs2yNPYZvg7UI.woff2",
+    "sha256": "2cf532c41a60c9247667ba552b18dcd8da855cc236f75f48e85648c800d557b0",
+    "license": "Ubuntu Font Licence 1.0; unmodified font metadata and accompanying UFL retained."
+  },
+  {
+    "file": "fonts/4iCv6KVjbNBYlgoCxCvjvmyNPYZvg7UI.woff2",
+    "source": "https://fonts.gstatic.com/s/ubuntu/v21/4iCv6KVjbNBYlgoCxCvjvmyNPYZvg7UI.woff2",
+    "sha256": "6a8caadf9c9202af350bc97e2062fa01035ac5f520848804c5ae564c06137431",
+    "license": "Ubuntu Font Licence 1.0; unmodified font metadata and accompanying UFL retained."
+  },
+  {
+    "file": "fonts/4iCv6KVjbNBYlgoCxCvjsGyNPYZvgw.woff2",
+    "source": "https://fonts.gstatic.com/s/ubuntu/v21/4iCv6KVjbNBYlgoCxCvjsGyNPYZvgw.woff2",
+    "sha256": "39dd78306b58e45cd666ea75964f405fa5957b53af75c024f8adc1f3fe1e6a48",
+    "license": "Ubuntu Font Licence 1.0; unmodified font metadata and accompanying UFL retained."
+  },
+  {
+    "file": "fonts/poiret-one.ttf",
+    "source": "https://fonts.gstatic.com/s/poiretone/v18/UqyVK80NJXN4zfRgbdfbk5k.ttf",
+    "sha256": "fc5144677287becb9843b88ac9f232a3fa4f48b05ced123608b8695d0aab1cf5",
+    "license": "SIL OFL 1.1; copyright and license bundled as Poiret-One-OFL.txt."
+  },
+  {
+    "file": "licenses/Poiret-One-OFL.txt",
+    "source": "https://raw.githubusercontent.com/google/fonts/main/ofl/poiretone/OFL.txt",
+    "sha256": "9323f8b5e780712bd57862857fc51df54aec3ab81b6be88b5d4c1459767d8828",
+    "license": "Original license wording; trailing line whitespace removed."
+  },
+  {
+    "file": "licenses/Ubuntu-UFL.txt",
+    "source": "https://assets.ubuntu.com/v1/81e5605d-ubuntu-font-licence-1.0.txt",
+    "sha256": "2f0015108d68627bd788d313f529c21ff4da2c2c42a5e1f3883acc83480f9002",
+    "license": "Original license text; font copyright notices retained in unmodified font binaries."
+  },
+  {
+    "file": "licenses/Tilda-Icons.txt",
+    "source": "https://tilda.cc/free-icons/license/",
+    "sha256": "519015a40fd7af0e4605979f216e02ebb612dd8d3c6c421cc19757f7f5b09bf7",
+    "license": "Tilda Icons agreement; required active attribution appears in the website footer."
+  }
+]

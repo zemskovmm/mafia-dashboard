@@ -3,6 +3,7 @@
 ## Current architecture
 
 - `apps/web/`: React/Vite host application.
+- `apps/site/`: independent static La Verdad public website for GitHub Pages; no dashboard API or backend dependency.
 - `apps/server/`: Fastify API, authentication, club isolation, Azure Table/private Blob persistence, and production static hosting.
 - `packages/game-domain/`: framework-independent Club Mafia rules, canonical events, and replay logic.
 - `docs/`: current product, architecture, and deployment documentation.

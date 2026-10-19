@@ -4,3 +4,5 @@ node_modules/
 coverage/
 playwright-report/
 test-results/
+# Original third-party icon bytes are checked against their provenance hashes.
+apps/site/public/assets/*.svg

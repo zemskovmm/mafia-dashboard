@@ -137,7 +137,7 @@ test("pull requests run CI while main pushes and manual dispatch run deployment"
     read(".github/workflows/deploy-azure.yml"),
   ]);
 
-  assert.deepEqual(workflows, ["ci.yml", "deploy-azure.yml"]);
+  assert.deepEqual(workflows, ["ci.yml", "deploy-azure.yml", "deploy-site-pages.yml"]);
   assert.match(ci, /^on:\n\s{2}pull_request:\n\npermissions:/m);
   assert.match(ci, /npm run ci:install[\s\S]*npm run check:local/);
   assert.doesNotMatch(ci, /postgres|TEST_DATABASE_URL|\bservices:/i);
@@ -148,7 +148,7 @@ test("pull requests run CI while main pushes and manual dispatch run deployment"
 test("every external workflow action is pinned to an immutable commit", async () => {
   const directory = new URL(".github/workflows/", root);
   const workflows = (await readdir(directory)).filter((name) => name.endsWith(".yml"));
-  assert.equal(workflows.length, 2);
+  assert.equal(workflows.length, 3);
 
   for (const workflow of workflows) {
     const source = await read(`.github/workflows/${workflow}`);

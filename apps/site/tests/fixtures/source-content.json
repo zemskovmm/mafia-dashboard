@@ -1,0 +1,286 @@
+{
+  "source": "https://mafiamalaga.es",
+  "normalization": "Remove Unicode whitespace only; preserve all letters, punctuation, emphasis text and list/link structure.",
+  "fields": [
+    {
+      "key": "brand",
+      "routes": [""],
+      "sha256": "7fbfdacf2a9c2f95827cfa810a8f8b0070d5a83b8c7cf791373cc98632fee78e",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "subtitle-wide",
+      "routes": [""],
+      "sha256": "97c05055030823e73541b1ca2b685638bd79c8cd55de1df8675411e71b7471cb",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "subtitle-mobile",
+      "routes": [""],
+      "sha256": "0394b8f4bfea2673ef119705c5145db53e543ecf18d26697bdbc90097edab6e3",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "hero-wide",
+      "routes": [""],
+      "sha256": "26b4ca6902b3a3f854a1f697030b09c5c39d956a096f7ffb1402f5a937ec6f97",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "hero-mobile",
+      "routes": [""],
+      "sha256": "0c61eefe2f0d60cc64cd2ae6a53ce1af2967df583c282fc6926a3efbc289cfe4",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "features-heading",
+      "routes": [""],
+      "sha256": "496db3bc5cd4c398c1a9f2f6c81103ebd25b67e11e912bd570b41d758439f553",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "feature-0-title",
+      "routes": [""],
+      "sha256": "86cf37d8aa736aff691dbab7441d6ad54583ab740ae214e179ca7a88dd30817e",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "feature-0-body",
+      "routes": [""],
+      "sha256": "a78f8249b5f7045b005f9bd4d29d780c66223f60a5dac58d8194c08984206934",
+      "listItems": 0,
+      "links": ["#how-to-play"]
+    },
+    {
+      "key": "feature-1-title",
+      "routes": [""],
+      "sha256": "52809d39fc40c5480f05bccd06448cd36ff2249b63639bc83311d743b9411e6b",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "feature-1-body",
+      "routes": [""],
+      "sha256": "772aa47f76ed3f5fe89b39ba04a3677b0cdddbccfd4bacbd8c599e61b78eeab7",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "feature-2-title",
+      "routes": [""],
+      "sha256": "ff940f95969a2e466ca0e079f333f2a24eb1a3113aadb3601d08d6baa4b72007",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "feature-2-body",
+      "routes": [""],
+      "sha256": "0b8cb531ff20827fe1928bb5340e9022e2971417e49bd43019d06b3b70479261",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "feature-3-title",
+      "routes": [""],
+      "sha256": "894123f0a6943108ce5be2b432f3272c12c041142da9819ce03463f8673d12ff",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "feature-3-body",
+      "routes": [""],
+      "sha256": "b7620252cf3d72ee33b93e76f51d3bfb9e50f5a735b82ca09ad19f407ac7b8eb",
+      "listItems": 0,
+      "links": ["#getting-started"]
+    },
+    {
+      "key": "feature-4-title",
+      "routes": [""],
+      "sha256": "78a6da2a1d92fc6c69d595490aa51169d5167a57fd0552eedb588b673a34e9b6",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "feature-4-body",
+      "routes": [""],
+      "sha256": "02755f57c820823c504cd449405ae664abea9e19d2bd8a5452cc21943baba71c",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "feature-5-title",
+      "routes": [""],
+      "sha256": "011dfe05a5c97e5f9d5a6fcda43392222783fb70cbdb110f9ccc33a608748f31",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "feature-5-body",
+      "routes": [""],
+      "sha256": "19e9aa76c873b0c4297d1cb46d9038908dae7fa9a58dd8e3ffdfc2c8b027ae13",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "testimonial-0-quote",
+      "routes": [""],
+      "sha256": "0d10d72562b87186f4e62f89d1943293cf443d37bfcd2daccbdff216e75a1760",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "testimonial-0-name",
+      "routes": [""],
+      "sha256": "6d7746490cd6c711430e5013a2e42b551f2fd21d0698a6889bb64ec04af2ac65",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "testimonial-0-job",
+      "routes": [""],
+      "sha256": "c0bb83c00f6bc67e0945a87a83bcfe17652cc1d2f6c4dd69f02fc4911eb077d2",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "testimonial-1-quote",
+      "routes": [""],
+      "sha256": "f1d2f8ea04375a55c6ddbd0b9d3b7390a8df94e05c27f8a374d55fada3c7c8db",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "testimonial-1-name",
+      "routes": [""],
+      "sha256": "25f4b213274e11e1c2dde0e3c6f8c9fd264c86baf5eead720be98d91e728a330",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "testimonial-1-job",
+      "routes": [""],
+      "sha256": "2eebc0d83cbafcecdc3f90e17380d72682180642062ce6863d6c0b72dd942146",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "testimonial-2-quote",
+      "routes": [""],
+      "sha256": "6b873ada6b77317c8cae8d704273127ec211076c65ff24f82eadc62bd942dd13",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "testimonial-2-name",
+      "routes": [""],
+      "sha256": "c6bbf47edbdf4fae1bac1e7a45335f72ee0634fdcb1006ac127d9c8e0eabdf8a",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "testimonial-2-job",
+      "routes": [""],
+      "sha256": "40cc813397494fb3a35fbbce93d93d8831663aa0b14798af36f4da4059e4ec29",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "video-title",
+      "routes": [""],
+      "sha256": "4bd6dcbe109ea9162e44943bfdfff01c5ebe2e2373a802b8d69c3a6cf53bfb4c",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "video-description",
+      "routes": [""],
+      "sha256": "3f5aa743eb9228c8ed03a29f4d5280b4bff3d4597a8cbfd61efb2136ed6076dd",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "checklist-title",
+      "routes": [""],
+      "sha256": "338ab1e0a004bb31c7b78725cd00c4a447b771ccd8f1f811dcde6fe0429415af",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "checklist-body",
+      "routes": [""],
+      "sha256": "76c70e57a044c79f8e6d506509839b7d915ab74c341c2a654a7c0bc9d9923266",
+      "listItems": 9,
+      "links": [
+        "#popup:videoplayer",
+        "#code-of-conduct",
+        "https://www.youtube.com/watch?v=yNbF5k4sVRk&list=PLrDRU9lcDcit1DBV9FDKxTjbh9JRfBLma&index=2&ab_channel=%224MAFIA%22club",
+        "https://www.youtube.com/watch?v=8H4R2JPjn90&list=PLrDRU9lcDcit1DBV9FDKxTjbh9JRfBLma&index=7&ab_channel=%224MAFIA%22club",
+        "https://www.youtube.com/playlist?list=PLvPPB8iso7FoBA-AX0RSPMyd8EysKmv1F",
+        "https://www.youtube.com/watch?v=yNbF5k4sVRk&list=PLrDRU9lcDcit1DBV9FDKxTjbh9JRfBLma&index=2&ab_channel=%224MAFIA%22club"
+      ]
+    },
+    {
+      "key": "night-quote",
+      "routes": ["", "games/2026-08-17/", "games/2026-09-06/"],
+      "sha256": "10c5cbf4e5bcb56ceefb1d2c70f2631ca16de24d6bd5c02868fa397e6c2e2010",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "rules-title",
+      "routes": [""],
+      "sha256": "c29f84d2e559fbc687ac86043f3de9fae014931021b28b4e4cbf29294deb2d92",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "rules-body",
+      "routes": [""],
+      "sha256": "abd149c0df3c3f28da83faf6c772d70a386a77b180fdade4f0dd4d2f99574506",
+      "listItems": 19,
+      "links": []
+    },
+    {
+      "key": "footer-byline",
+      "routes": ["", "games/2026-08-17/", "games/2026-09-06/"],
+      "sha256": "4f0592ca1f3242b75d280e315123f93a5640692254b6f4ef07fa20296f19f049",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "game-2026-08-17-title",
+      "routes": ["games/2026-08-17/"],
+      "sha256": "d9c620edf9ec2a0ed08b9e99e4d040a2831297c582cde32a67e564aca50444a3",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "game-2026-08-17-body",
+      "routes": ["games/2026-08-17/"],
+      "sha256": "0dbfc29e26ca1f3c44a826b4df0e893e82532eb08dd27611e49c8a8a2049cccb",
+      "listItems": 24,
+      "links": []
+    },
+    {
+      "key": "game-2026-09-06-title",
+      "routes": ["games/2026-09-06/"],
+      "sha256": "1853e2f1397331800346f021d825d20541f079e3bfc0f260196c41ea053a4b8a",
+      "listItems": 0,
+      "links": []
+    },
+    {
+      "key": "game-2026-09-06-body",
+      "routes": ["games/2026-09-06/"],
+      "sha256": "708e3bea4f363c34930563461fd031dba89eeaefc4abb36b00bc31cf58738279",
+      "listItems": 11,
+      "links": []
+    }
+  ]
+}
