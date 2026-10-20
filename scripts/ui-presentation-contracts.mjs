@@ -17,6 +17,7 @@ export function resolveUiMode(env) {
       "PRIVACY",
       "HARDENING",
       "RULES_SKETCHBOOK",
+      "FANCY_FEATURES",
       "FEDERATION",
       "SIDE_PANEL",
       "LAYOUT",
@@ -38,6 +39,7 @@ export function resolveUiMode(env) {
     throw new Error(`Conflicting verifier modes: ${selected.join(", ")}`);
   }
   if (env.UI_RULES_SKETCHBOOK_ONLY === "1") return "rules-sketchbook";
+  if (env.UI_FANCY_FEATURES_ONLY === "1") return "fancy-features";
   if (env.UI_FEDERATION_ONLY === "1") return "federation";
   if (env.UI_SIDE_PANEL_ONLY === "1") return "side-panel";
   if (env.UI_LAYOUT_ONLY === "1") return "layout";

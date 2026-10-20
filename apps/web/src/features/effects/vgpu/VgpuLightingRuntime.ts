@@ -306,6 +306,15 @@ export const createVgpuLightingRuntime = async (
   }
 };
 
+let lightingModule: Promise<typeof VgpuModule> | undefined;
+export const preloadVgpuLighting = (): Promise<typeof VgpuModule> => {
+  lightingModule ??= import("vgpu").catch((error: unknown) => {
+    lightingModule = undefined;
+    throw error;
+  });
+  return lightingModule;
+};
+
 export const loadVgpuLightingRuntime = async (
   options: Readonly<{ onError: (error: unknown) => void }>,
-): Promise<VgpuLightingRuntime> => createVgpuLightingRuntime(await import("vgpu"), options);
+): Promise<VgpuLightingRuntime> => createVgpuLightingRuntime(await preloadVgpuLighting(), options);

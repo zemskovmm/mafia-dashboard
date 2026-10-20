@@ -2,6 +2,9 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import RulesSketchbook from "./RulesSketchbook.js";
 import type { RulesChapter } from "./rules-types.js";
+import { FancyFeaturesContext } from "../effects/FancyFeaturesContext.js";
+import { rulesChapters } from "./rules-content.js";
+import { ruleReferenceIds, ruleReferenceTarget } from "./rule-references.js";
 
 const chapter = (id: string, reference?: string): RulesChapter => ({
   id,
@@ -60,6 +63,152 @@ afterEach(() => {
 });
 
 describe("RulesSketchbook", () => {
+  it("does not let an inactive sibling reader remove the active reader's enhancement ownership", () => {
+    const props = { locale: "en" as const, chapters, onClose: vi.fn() };
+    const view = (fancy: boolean, includeClosed = true) => (
+      <FancyFeaturesContext.Provider value={fancy}>
+        <RulesSketchbook key="active" {...props} open />
+        {includeClosed && <RulesSketchbook key="inactive" {...props} open={false} />}
+      </FancyFeaturesContext.Provider>
+    );
+    const { rerender } = render(view(true));
+    expect(document.body).toHaveClass("rules-sketchbook-enhanced");
+    rerender(view(false));
+    expect(document.body).not.toHaveClass("rules-sketchbook-enhanced");
+    rerender(view(true));
+    expect(document.body).toHaveClass("rules-sketchbook-enhanced");
+    rerender(view(true, false));
+    expect(document.body).toHaveClass("rules-sketchbook-enhanced");
+  });
+
+  it.each(["en", "ru"] as const)(
+    "keeps every real semantic target readable in the flat reader (%s)",
+    (locale) => {
+      render(
+        <FancyFeaturesContext.Provider value={false}>
+          <RulesSketchbook open locale={locale} chapters={rulesChapters} onClose={vi.fn()} />
+        </FancyFeaturesContext.Provider>,
+      );
+      for (const rule of ruleReferenceIds) {
+        fireEvent.click(
+          screen.getByRole("button", { name: locale === "en" ? "Contents" : "Содержание" }),
+        );
+        fireEvent.click(
+          document.querySelector(`[data-chapter-target="${ruleReferenceTarget(rule)}"]`)!,
+        );
+        const target = document.querySelector(`[data-reading-key="${ruleReferenceTarget(rule)}"]`)!;
+        expect(target.closest(".rs-leaf")).toHaveAttribute("data-side", "text");
+        expect(target.querySelector(".rs-paragraph")).toBeVisible();
+        expect(
+          [...target.querySelectorAll(".rs-paragraph")].map((node) => node.textContent).join(" ")
+            .length,
+        ).toBeGreaterThan(200);
+        expect(document.querySelector(".rs-plate-art, .rs-curl")).toBeNull();
+      }
+    },
+  );
+
+  it("changes presentation in-place without losing reference, scroll, contents or native dialog lifetime", () => {
+    const props = { open: true, locale: "en" as const, chapters, onClose: vi.fn() };
+    const view = (enhanced: boolean) => (
+      <FancyFeaturesContext.Provider value={enhanced}>
+        <RulesSketchbook {...props} targetId="rule-6.2.1" />
+      </FancyFeaturesContext.Provider>
+    );
+    const { rerender } = render(view(true));
+    const modal = screen.getByRole("dialog");
+    const paper = document.querySelector(".rs-book")!;
+    const show = vi.spyOn(HTMLDialogElement.prototype, "showModal");
+    const close = vi.spyOn(HTMLDialogElement.prototype, "close");
+    const body = document.querySelector<HTMLElement>(".rs-spread .rs-body")!;
+    body.scrollTop = 173;
+    fireEvent.scroll(body);
+    rerender(view(false));
+    expect(screen.getByRole("dialog")).toBe(modal);
+    expect(paper).toHaveAttribute("data-chapter", "rule-6.2.1");
+    expect(document.querySelector(".rs-spread .rs-body")).toHaveProperty("scrollTop", 173);
+    expect(modal).toHaveAttribute("data-presentation", "flat");
+    expect(document.body).not.toHaveClass("rules-sketchbook-enhanced");
+    rerender(view(true));
+    expect(screen.getByRole("dialog")).toBe(modal);
+    expect(paper).toHaveAttribute("data-chapter", "rule-6.2.1");
+    expect(body.scrollTop).toBe(173);
+    fireEvent.click(screen.getByRole("button", { name: "Contents" }));
+    rerender(view(false));
+    expect(paper).toHaveAttribute("data-chapter", "contents");
+    expect(document.querySelector(".rs-source-note")).toHaveTextContent("An authored club guide");
+    expect(show).not.toHaveBeenCalled();
+    expect(close).not.toHaveBeenCalled();
+    // Upright controls are siblings of, never children of, the tilted book plane.
+    for (const name of ["Close book", "Contents", "Previous page", "Next page"]) {
+      expect(paper.contains(screen.getByRole("button", { name }))).toBe(false);
+    }
+  });
+
+  it("cancels an active enhanced journey when switched off and keeps flat navigation immediate", () => {
+    vi.spyOn(window, "matchMedia").mockReturnValue({
+      matches: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } as unknown as MediaQueryList);
+    const cancelled = vi.spyOn(window, "cancelAnimationFrame");
+    const props = { open: true, locale: "en" as const, chapters, onClose: vi.fn() };
+    const { rerender } = render(
+      <FancyFeaturesContext.Provider value={true}>
+        <RulesSketchbook {...props} />
+      </FancyFeaturesContext.Provider>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    expect(document.querySelector(".rs-curl")).not.toBeNull();
+    rerender(
+      <FancyFeaturesContext.Provider value={false}>
+        <RulesSketchbook {...props} />
+      </FancyFeaturesContext.Provider>,
+    );
+    expect(document.querySelector(".rs-curl")).toBeNull();
+    expect(cancelled).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Next page" }));
+    expect(document.querySelector(".rs-book")).toHaveAttribute("data-chapter", "rule-6.2.1");
+    expect(document.querySelector(".rs-curl")).toBeNull();
+  });
+
+  it.each(["en", "ru"] as const)(
+    "reads every flat destination immediately without artwork or curls (%s)",
+    (locale) => {
+      vi.spyOn(window, "matchMedia").mockReturnValue({
+        matches: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      } as unknown as MediaQueryList);
+      const request = vi.spyOn(window, "requestAnimationFrame");
+      render(
+        <FancyFeaturesContext.Provider value={false}>
+          <RulesSketchbook open locale={locale} chapters={chapters} onClose={vi.fn()} />
+        </FancyFeaturesContext.Provider>,
+      );
+      const contents = locale === "en" ? "Contents" : "Содержание";
+      const next = locale === "en" ? "Next page" : "Следующая страница";
+      const previous = locale === "en" ? "Previous page" : "Предыдущая страница";
+      const paper = document.querySelector(".rs-book")!;
+      expect(screen.getByRole("dialog")).toHaveAttribute("data-presentation", "flat");
+      expect(document.body).not.toHaveClass("rules-sketchbook-enhanced");
+      expect(document.querySelector(".rs-plate-art, .rs-binding, .rs-spine, .rs-curl")).toBeNull();
+      for (const entry of chapters) {
+        fireEvent.click(screen.getByRole("button", { name: contents }));
+        fireEvent.click(document.querySelector(`[data-chapter-target="${entry.id}"]`)!);
+        expect(paper).toHaveAttribute("data-chapter", entry.id);
+        expect(paper).toHaveAttribute("data-side", "text");
+        expect(screen.getByText(entry[locale].paragraphs![0]!)).toBeVisible();
+      }
+      fireEvent.click(screen.getByRole("button", { name: previous }));
+      expect(paper).toHaveAttribute("data-chapter", "rule-6.2.1");
+      expect(paper).toHaveAttribute("data-side", "text");
+      fireEvent.click(screen.getByRole("button", { name: next }));
+      expect(paper).toHaveAttribute("data-chapter", "rule-6.2.2");
+      expect(request).not.toHaveBeenCalled();
+    },
+  );
+
   it("opens the exact semantic reference outside the application underlay", () => {
     const root = document.createElement("div");
     root.id = "root";

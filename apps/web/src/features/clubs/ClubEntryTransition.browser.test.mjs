@@ -1414,16 +1414,16 @@ const otherPreferences = {
 };
 const fancyLabels = {
   en: {
-    section: "Fancy stuff",
-    disable: "Disable club entry effects",
-    enable: "Enable club entry effects",
+    section: "Fancy Features",
+    disable: "Disable Fancy Features",
+    enable: "Enable Fancy Features",
     developer: "Open developer menu",
     privacy: "Hide private info",
   },
   ru: {
     section: "Красивые эффекты",
-    disable: "Выключить эффекты входа в клуб",
-    enable: "Включить эффекты входа в клуб",
+    disable: "Выключить красивые эффекты",
+    enable: "Включить красивые эффекты",
     developer: "Открыть меню разработчика",
     privacy: "Скрыть личную информацию",
   },
@@ -1752,7 +1752,7 @@ for (const [engine, width, height, locale] of [
         true,
         locale === "ru" ? "keyboard" : "mouse",
       );
-      assert.deepEqual(await storedFancyStuff(page), { version: 1, clubEntryEffects: false });
+      assert.deepEqual(await storedFancyStuff(page), { version: 2, enabled: false });
       await capture("effects-off-control");
       await closeFancyStuff(page);
       row.checks.push(
@@ -1775,7 +1775,7 @@ for (const [engine, width, height, locale] of [
       await page.clock.resume();
       await page.reload();
       await offPortal(page, slogan);
-      assert.deepEqual(await storedFancyStuff(page), { version: 1, clubEntryEffects: false });
+      assert.deepEqual(await storedFancyStuff(page), { version: 2, enabled: false });
       await assertOtherPreferences(page);
       await pauseEntryClock(page);
       row.reloadEntry = await directEntry(page, "keyboard");
@@ -1787,7 +1787,7 @@ for (const [engine, width, height, locale] of [
         false,
         locale === "ru" ? "keyboard" : "mouse",
       );
-      assert.deepEqual(await storedFancyStuff(page), { version: 1, clubEntryEffects: true });
+      assert.deepEqual(await storedFancyStuff(page), { version: 2, enabled: true });
       await closeFancyStuff(page);
       await page.locator(".club-exit-button").click();
       await page.getByRole("heading", { name: slogan, exact: true }).waitFor();
@@ -1863,9 +1863,7 @@ scenario("fancy-stuff-preference-only-denied-setitem", {}, async ({ page, row, c
     assert.equal(await storedFancyStuff(page), null, "Denied OFF is not falsely persisted");
     row.storageDenial = await denial.evaluate((state) => state.receipt());
     assert.deepEqual(row.storageDenial, {
-      rejected: [
-        { key: fancyStuffKey, value: JSON.stringify({ version: 1, clubEntryEffects: false }) },
-      ],
+      rejected: [{ key: fancyStuffKey, value: JSON.stringify({ version: 2, enabled: false }) }],
       unrelatedWrite: "yes",
     });
     await capture("denied-write-live-off");

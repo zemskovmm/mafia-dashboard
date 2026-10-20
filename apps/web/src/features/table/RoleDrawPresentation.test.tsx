@@ -1,6 +1,7 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Role } from "@mafia/game-domain";
+import { FancyFeaturesContext } from "../effects/FancyFeaturesContext.js";
 import { RoleDrawPresentation, type RoleDrawRequest } from "./RoleDrawPresentation.js";
 
 const request = (id = 1): RoleDrawRequest => ({
@@ -67,6 +68,59 @@ describe("RoleDrawPresentation", () => {
     expect(screen.getByRole("button")).toHaveTextContent("sheriff");
     expect(animate).not.toHaveBeenCalled();
     expect(complete).not.toHaveBeenCalled();
+  });
+
+  it("bypasses disabled Fancy motion, settles once and never replays a completed request on re-enable", () => {
+    const complete = vi.fn();
+    const motion = request();
+    const view = (enabled: boolean) => (
+      <FancyFeaturesContext.Provider value={enabled}>
+        {fixture(motion, complete)}
+      </FancyFeaturesContext.Provider>
+    );
+    const { container, rerender } = render(view(false));
+    expect(animate).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledExactlyOnceWith(1);
+    expect(container.querySelector(".role-draw-face--front,.role-draw-face--back")).toBeNull();
+    const current = container.querySelector(".role-draw-face");
+    expect(current).toHaveTextContent("sheriff");
+    rerender(view(true));
+    expect(animate).not.toHaveBeenCalled();
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".role-draw-face")).toBe(current);
+    expect(container.querySelector(".role-draw-face--back")).toBeNull();
+  });
+
+  it("cancels a live flip immediately on Fancy OFF with no stale callback, remount or replay", async () => {
+    const complete = vi.fn();
+    const motion = request();
+    const view = (enabled: boolean) => (
+      <FancyFeaturesContext.Provider value={enabled}>
+        {fixture(motion, complete)}
+      </FancyFeaturesContext.Provider>
+    );
+    const { container, rerender } = render(view(true));
+    expect(animate).toHaveBeenCalledTimes(4);
+    const current = container.querySelector(".role-draw-face--back");
+    rerender(view(false));
+    expect(complete).toHaveBeenCalledExactlyOnceWith(1);
+    expect(animations.every((animation) => animation.cancel.mock.calls.length === 1)).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(container.querySelector(".role-draw-face")).toBe(current);
+    expect(container.querySelector(".role-draw-face--front,.role-draw-face--back")).toBeNull();
+    await act(async () => animations.forEach((animation) => animation.resolve()));
+    rerender(view(true));
+    expect(animate).toHaveBeenCalledTimes(4);
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".role-draw-face")).toBe(current);
+    expect(container.querySelector(".role-draw-face--back")).toBeNull();
+    rerender(
+      <FancyFeaturesContext.Provider value={true}>
+        {fixture(request(2), complete)}
+      </FancyFeaturesContext.Provider>,
+    );
+    expect(animate).toHaveBeenCalledTimes(8);
+    expect(complete).toHaveBeenCalledTimes(1);
   });
 
   it("switches old/new faces at the edge without opacity/death effects and settles upright", async () => {

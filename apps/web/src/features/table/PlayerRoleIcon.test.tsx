@@ -68,6 +68,10 @@ describe("card role artwork privacy boundary", () => {
     );
     expect(appearance).toHaveBeenCalledWith("opaque-player");
     expect(container.querySelector("[data-custom-role-choice]")).toBeNull();
+    const unknown = container.querySelector('[data-role-glyph="unknown"]');
+    expect(unknown).not.toBeNull();
+    expect(unknown?.querySelector("path")).toHaveAttribute("data-question-mark");
+    expect(screen.queryByRole("img")).toBeNull();
   });
   it("maps suits by game and player, not current seat/name/role/order, through read-only rendering", () => {
     const players = [

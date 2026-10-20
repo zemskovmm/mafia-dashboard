@@ -49,7 +49,10 @@ const unlockDeveloperMenu = async (page) => {
     await page.keyboard.press("Meta+Alt+d");
     if (await menuButton.isVisible()) throw new Error("Retired developer shortcut unlocked Dev");
     const privacy = page.getByRole("button", { name: /^(Hide|Show) private info$/ });
-    for (let tap = 0; tap < 5; tap += 1) await privacy.click();
+    assert.equal(await page.getByText("Development only", { exact: true }).count(), 0);
+    for (let tap = 0; tap < 4; tap += 1) await privacy.click();
+    assert.equal(await menuButton.count(), 0, "Four privacy taps do not unlock Dev");
+    await privacy.click();
   }
   await menuButton.waitFor();
 };
@@ -641,6 +644,7 @@ const viewportHeight = Number(process.env.UI_VIEWPORT_HEIGHT ?? "");
 const headerOnly = process.env.UI_HEADER_ONLY === "1";
 const federationOnly = process.env.UI_FEDERATION_ONLY === "1";
 const rulesSketchbookOnly = process.env.UI_RULES_SKETCHBOOK_ONLY === "1";
+const fancyFeaturesOnly = process.env.UI_FANCY_FEATURES_ONLY === "1";
 const privacyOnly = process.env.UI_PRIVACY_ONLY === "1";
 const layoutOnly = process.env.UI_LAYOUT_ONLY === "1";
 const musicOnly = process.env.UI_MUSIC_ONLY === "1";
@@ -1539,6 +1543,25 @@ const restoreCurrentSetup = async () => {
 };
 
 try {
+  if (fancyFeaturesOnly) {
+    stage("fancy-features");
+    const { runFancyFeaturesScenarios } = await tsImport(
+      "./verify-fancy-features-ui.mjs",
+      import.meta.url,
+    );
+    await runFancyFeaturesScenarios({
+      page,
+      baseUrl,
+      club: testClub,
+      players: testPlayers,
+      api: federationApi,
+      evidenceDir: process.env.FANCY_UI_EVIDENCE_DIR ?? `.AI/reports/fancy-features/${browserName}`,
+    });
+    assertNoPageErrors();
+    stage("complete");
+    await browser.close();
+    process.exit(0);
+  }
   if (rulesSketchbookOnly) {
     stage("rules-sketchbook");
     const { runRulesSketchbookScenarios } = await tsImport(
@@ -1752,8 +1775,8 @@ try {
   }
   if (headerOnly) {
     stage("header-gameplay");
-    if ((await page.getByText("Development only", { exact: true }).count()) !== 0) {
-      throw new Error("Development-only setup tools must be hidden before Dev mode is enabled");
+    if ((await page.getByText("Development only", { exact: true }).count()) !== 1) {
+      throw new Error("Five-tap unlock must immediately expose development-only setup tools");
     }
     await page.evaluate(() => {
       console.error(new Error("Verifier console error"));
@@ -1768,7 +1791,20 @@ try {
       window.dispatchEvent(rejection);
     });
     await page.getByRole("button", { name: "Open developer menu" }).click();
-    await page.getByRole("button", { name: "Enable dev mode" }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Enable dev mode" }).count(), 0);
+    assert.equal(
+      await page.getByRole("button", { name: "Show undealt role preview" }).isEnabled(),
+      true,
+    );
+    assert.deepEqual(
+      await page
+        .getByLabel("Application tools")
+        .locator("button")
+        .evaluateAll((buttons) =>
+          buttons.slice(0, 3).map((button) => button.getAttribute("aria-label")),
+        ),
+      ["Rules", "Undo last action", "Open game log"],
+    );
     if ((await page.getByRole("button", { name: /table center shadow/i }).count()) !== 0) {
       throw new Error("The permanent table-center shadow must not expose a Dev setting");
     }
@@ -2965,8 +3001,6 @@ try {
       throw new Error("Read-only preview changed the durable game head, revision, or outbox");
     }
 
-    await page.getByRole("button", { name: "Open developer menu" }).click();
-    await page.getByRole("button", { name: "Enable dev mode" }).click();
     await page.getByRole("button", { name: "Open Manage menu" }).click();
     await page.getByRole("button", { name: "Past game timeline" }).click();
     await page.getByRole("heading", { name: "Game timeline" }).waitFor();
@@ -3137,6 +3171,9 @@ try {
         nickname: name?.textContent,
         nameInside: name !== null && inside(name.getBoundingClientRect()),
         roles: card.querySelectorAll('.player-role-icon[role="img"]').length,
+        roleInside: [...card.querySelectorAll('.player-role-icon[role="img"]')].every((role) =>
+          inside(role.getBoundingClientRect()),
+        ),
         nomination: card.querySelectorAll(".card-nomination-symbol").length,
         fouls: card.querySelectorAll(".foul-dot").length,
         rects,
@@ -3147,9 +3184,10 @@ try {
       statusLayout.nickname !== nominatorName ||
       !statusLayout.nameInside ||
       statusLayout.roles !== 1 ||
+      !statusLayout.roleInside ||
       statusLayout.nomination !== 1 ||
       statusLayout.fouls !== 1 ||
-      statusLayout.rects.length !== 3 ||
+      statusLayout.rects.length !== 2 ||
       !statusLayout.slotsInside
     ) {
       throw new Error(
@@ -3455,7 +3493,10 @@ try {
       .first()
       .locator(".shooter-button")
       .count();
-    const targetCard = page.locator("button.player-seat.status-active:has(.role-citizen)").first();
+    const targetCard = page
+      .locator("button.player-seat.status-active")
+      .filter({ has: page.getByRole("img", { name: "citizen", exact: true }) })
+      .first();
     await targetCard.click();
     if ((await page.locator(".shooter-button.is-selected").count()) !== shooterCount) {
       throw new Error("Clicking a player card must assign every active Mafia shot");

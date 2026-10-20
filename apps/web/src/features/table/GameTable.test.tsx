@@ -11,6 +11,51 @@ const seats: TableSeatView[] = Array.from({ length: 10 }, (_, index) => ({
 }));
 
 describe("GameTable", () => {
+  it("uses question marks on unknown giveaway faces, including the first-reveal old face, but not ordinary masked play", () => {
+    const animate = vi.fn(() => ({ finished: new Promise(() => {}), cancel: vi.fn() }));
+    const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "animate");
+    Object.defineProperty(HTMLElement.prototype, "animate", { configurable: true, value: animate });
+    try {
+      const { rerender, unmount } = render(
+        <GameTable seats={[{ ...seats[0]!, roleDraw: { dealt: false } }]} />,
+      );
+      const card = screen.getByRole("button", { name: "Seat 1: Player 1" });
+      expect(card.querySelector('[data-role-glyph="unknown"]')).not.toBeNull();
+      expect(card.querySelector('[role="img"],img')).toBeNull();
+      rerender(
+        <GameTable
+          seats={[
+            {
+              ...seats[0]!,
+              role: "mafia",
+              roleDraw: {
+                role: "mafia",
+                dealt: true,
+                request: { id: 1, startedAt: performance.now() },
+              },
+            },
+          ]}
+        />,
+      );
+      expect(animate).toHaveBeenCalledTimes(4);
+      expect(
+        card.querySelector('.role-draw-face--front [data-role-glyph="unknown"]'),
+      ).not.toBeNull();
+      expect(
+        card.querySelector(".role-draw-face--front [aria-label],.role-draw-face--front img"),
+      ).toBeNull();
+      expect(card.querySelector('.role-draw-face--back [data-role-glyph="mafia"]')).not.toBeNull();
+      rerender(<GameTable seats={[{ ...seats[0]!, roleDraw: { dealt: false } }]} />);
+      expect(card.querySelector('[data-role-glyph="unknown"]')).not.toBeNull();
+      rerender(<GameTable seats={[{ ...seats[0]!, role: "mafia" }]} privacyHidden />);
+      expect(card.querySelector('[data-role-glyph="unknown"]')).toBeNull();
+      expect(card.querySelector('[data-role-glyph="hidden"] circle')).not.toBeNull();
+      unmount();
+    } finally {
+      if (descriptor) Object.defineProperty(HTMLElement.prototype, "animate", descriptor);
+      else Reflect.deleteProperty(HTMLElement.prototype, "animate");
+    }
+  });
   it("renders paired decorative indices, fixed hand/count and a sharp accessible role without pills", () => {
     const { container, rerender } = render(
       <GameTable

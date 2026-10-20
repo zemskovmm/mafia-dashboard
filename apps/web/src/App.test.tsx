@@ -52,6 +52,8 @@ import { ApiError, type Club, type PlayerProfile, type RemoteGameSession } from 
 import { App as WelcomeApp, ClubWorkspace } from "./App.js";
 import { DEFAULT_FANCY_STUFF_SETTINGS } from "./features/effects/fancy-stuff-preferences.js";
 import { cardSuit, CARD_SUIT_SYMBOLS } from "./features/table/card-suit.js";
+import type * as FancyAssets from "./features/effects/fancy-assets.js";
+import type * as RulesBookAssets from "./features/rules/rules-book-assets.js";
 
 import { gameSessionStorageKey, GameSessionOutbox } from "./session-outbox.js";
 import { withBrowserGameStorageGuard } from "./browser-game-storage-lock.js";
@@ -76,6 +78,19 @@ import type { SetupWizardSessionState } from "./features/setup/SetupWizard.js";
 import { I18nProvider } from "./i18n/I18nProvider.js";
 import { THEME_COLOR_STORAGE_KEY } from "./theme.js";
 import { playerLabel } from "./test-player-directory.js";
+
+const visualAssets = vi.hoisted(() => ({ prepare: vi.fn(), ready: true }));
+vi.mock("./features/effects/fancy-assets.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof FancyAssets>()),
+  prepareFancyAssets: visualAssets.prepare,
+  areFancyAssetsReady: () => visualAssets.ready,
+}));
+// jsdom cannot decode local image/font resources; real readiness is covered by
+// the asset tests and the actual-browser reader journeys.
+vi.mock("./features/rules/rules-book-assets.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof RulesBookAssets>()),
+  preloadRulesBookAssets: () => Promise.resolve(),
+}));
 
 const api = vi.hoisted(() => {
   const saveGameSession = vi.fn();
@@ -842,6 +857,8 @@ const player = (nickname: string, id: string): PlayerProfile => ({
 });
 
 beforeEach(() => {
+  visualAssets.ready = true;
+  visualAssets.prepare.mockReset().mockResolvedValue(undefined);
   gameScreenHarness.previewGame = null;
   gameScreenHarness.previewOnGameChange = null;
   gameScreenHarness.liveGame = null;
@@ -1704,6 +1721,30 @@ describe("statistics navigation and separate tournament setup", () => {
 });
 
 describe("club welcome", () => {
+  it("offers skippable optional startup preparation without late effects after Continue", async () => {
+    visualAssets.ready = false;
+    const preparation = deferred<void>();
+    visualAssets.prepare.mockReturnValue(preparation.promise);
+    api.getAuthSession.mockResolvedValue(authenticatedUser);
+    api.listClubs.mockResolvedValue([testClub]);
+    render(<WelcomeApp />);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Continue with lightweight visuals" }),
+    );
+    expect(document.querySelector(".club-entry-source")).not.toHaveAttribute("inert");
+    expect(document.querySelector(".club-entry-source")).toHaveAttribute(
+      "data-fancy-features",
+      "off",
+    );
+    await act(async () => preparation.resolve());
+    expect(document.querySelector(".club-entry-source")).toHaveAttribute(
+      "data-fancy-features",
+      "off",
+    );
+    expect(screen.queryByText("Preparing visuals…")).toBeNull();
+    expect(window.localStorage.getItem("mafia-dashboard.fancy-stuff.v1")).toBeNull();
+  });
+
   it("localizes the other-tab error in Russian", async () => {
     api.getAuthSession.mockResolvedValue(authenticatedUser);
     api.listClubs.mockResolvedValue([testClub]);
@@ -1851,6 +1892,9 @@ describe("club welcome", () => {
   );
 
   it("restores the browser game owner before rendering a club workspace", async () => {
+    visualAssets.ready = false;
+    const preparation = deferred<void>();
+    visualAssets.prepare.mockReturnValue(preparation.promise);
     api.getAuthSession.mockResolvedValue(authenticatedUser);
     api.listClubs.mockResolvedValue([testClub, otherClub]);
     seedBrowserGame(otherClub, "00000000-0000-4000-8000-000000000301", "Sevilla table");
@@ -1863,6 +1907,13 @@ describe("club welcome", () => {
       }),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Mafia Malaga.*Málaga/i })).toBeNull();
+    expect(document.querySelector(".fancy-preparation--startup")).toBeNull();
+    expect(document.querySelector(".fancy-preparation--inline")).toBeInTheDocument();
+    const workspace = document.querySelector(".app-shell");
+    expect(workspace).toHaveAttribute("data-fancy-features", "off");
+    await act(async () => preparation.resolve());
+    expect(document.querySelector(".app-shell")).toBe(workspace);
+    expect(workspace).toHaveAttribute("data-fancy-features", "on");
   });
 
   it("blocks another club until the synchronized local game is explicitly released", async () => {
@@ -2162,8 +2213,34 @@ describe("club welcome", () => {
     await waitFor(() => expect(document.querySelector(".club-entry-source")).toBeNull());
   });
 
+  it("keeps saved-off workspace visuals lightweight without changing requested appearance", () => {
+    window.localStorage.setItem(
+      "mafia-dashboard.glass.v1",
+      JSON.stringify({ version: 1, enabled: true }),
+    );
+    renderView(
+      <ClubWorkspace
+        club={testClub}
+        onExit={() => undefined}
+        onEditClub={() => undefined}
+        onDeleteClub={() => Promise.resolve()}
+        fancyStuff={{ version: 2, enabled: false }}
+        onFancyStuffChange={() => undefined}
+      />,
+    );
+    expect(document.querySelector(".app-shell")).toHaveAttribute("data-fancy-features", "off");
+    expect(document.querySelector(".app-shell")).toHaveAttribute("data-glass-status", "off");
+    expect(document.querySelector(".app-shell")).toHaveAttribute(
+      "data-lighting-renderer",
+      "legacy",
+    );
+    expect(document.querySelector(".glass-scene")).toBeNull();
+    expect(document.querySelector(".vgpu-table-lighting")).toBeNull();
+    expect(JSON.parse(window.localStorage.getItem("mafia-dashboard.glass.v1")!).enabled).toBe(true);
+  });
+
   it.each([false, true])(
-    "switches Fancy stuff off for real entry without changing other settings (storage denied: %s)",
+    "switches Fancy Features off for real entry without changing other settings (storage denied: %s)",
     async (storageDenied) => {
       const user = userEvent.setup();
       api.getAuthSession.mockResolvedValue(authenticatedUser);
@@ -2173,10 +2250,10 @@ describe("club welcome", () => {
       const privacy = await screen.findByRole("button", { name: /private info/i });
       for (let tap = 0; tap < 6; tap += 1) await user.click(privacy);
       await user.click(await screen.findByRole("button", { name: "Open developer menu" }));
-      const section = screen.getByText("Fancy stuff", { selector: "summary" });
+      const section = screen.getByText("Fancy Features", { selector: "summary" });
       expect(section.closest("details")).not.toHaveAttribute("open");
       await user.click(section);
-      const toggle = screen.getByRole("button", { name: "Disable club entry effects" });
+      const toggle = screen.getByRole("button", { name: "Disable Fancy Features" });
       expect(toggle).toHaveAttribute("aria-pressed", "true");
       const otherKeys = [
         THEME_COLOR_STORAGE_KEY,
@@ -2196,15 +2273,15 @@ describe("club welcome", () => {
           originalSet.call(this, key, value);
         });
       await user.click(toggle);
-      expect(screen.getByRole("button", { name: "Enable club entry effects" })).toHaveAttribute(
+      expect(screen.getByRole("button", { name: "Enable Fancy Features" })).toHaveAttribute(
         "aria-pressed",
         "false",
       );
       expect(otherKeys.map((key) => window.localStorage.getItem(key))).toEqual(otherSettings);
       if (!storageDenied)
         expect(JSON.parse(window.localStorage.getItem("mafia-dashboard.fancy-stuff.v1")!)).toEqual({
-          version: 1,
-          clubEntryEffects: false,
+          version: 2,
+          enabled: false,
         });
       await user.click(screen.getByRole("button", { name: /^Choose another club/ }));
       const clubButton = await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i });
@@ -3089,30 +3166,54 @@ describe("developer menu", () => {
     expect(document.querySelectorAll("[data-canary-particle]")).toHaveLength(32);
   });
 
-  it("restores developer access and enabled tools independently after remount", async () => {
+  it("unlocks all developer tools in one step and restores access after remount", async () => {
     const user = userEvent.setup();
     const firstView = renderView(<App />);
     const privacy = screen.getByRole("button", { name: "Hide private info" });
     for (let tap = 0; tap < 5; tap += 1) fireEvent.click(privacy);
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
-    expect(screen.getByRole("button", { name: "Enable dev mode" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Show undealt role preview" })).toBeDisabled();
-    await user.click(screen.getByRole("button", { name: "Enable dev mode" }));
+    expect(screen.queryByRole("button", { name: "Enable dev mode" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show undealt role preview" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Generate test players" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Show undealt role preview" }));
     expect(screen.getByTestId("setup-role-preview")).toHaveTextContent("true");
     expect(window.localStorage.getItem(PREVIEW_UNDEALT_ROLES_STORAGE_KEY)).toBe("enabled");
     expect(window.localStorage.getItem(DEVELOPER_UNLOCKED_STORAGE_KEY)).toBe("unlocked");
-    expect(window.localStorage.getItem(DEVELOPER_MODE_ENABLED_STORAGE_KEY)).toBe("enabled");
+    expect(window.localStorage.getItem(DEVELOPER_MODE_ENABLED_STORAGE_KEY)).toBeNull();
     firstView.unmount();
 
     renderView(<App />);
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
-    expect(screen.getByRole("button", { name: "Disable dev mode" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Disable dev mode" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Generate test players" })).toBeInTheDocument();
     expect(screen.getByTestId("setup-role-preview")).toHaveTextContent("true");
-    await user.click(screen.getByRole("button", { name: "Disable dev mode" }));
+    await user.click(screen.getByRole("button", { name: "Hide developer mode" }));
     expect(screen.getByTestId("setup-role-preview")).toHaveTextContent("false");
-    expect(window.localStorage.getItem(PREVIEW_UNDEALT_ROLES_STORAGE_KEY)).toBe("enabled");
+    expect(window.localStorage.getItem(PREVIEW_UNDEALT_ROLES_STORAGE_KEY)).toBeNull();
+  });
+
+  it("ignores the retired developer enable flag without granting unlocked access", () => {
+    window.localStorage.setItem(DEVELOPER_MODE_ENABLED_STORAGE_KEY, "enabled");
+    const first = renderView(<App />);
+    expect(screen.queryByRole("button", { name: "Open developer menu" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Generate test players" })).toBeNull();
+    first.unmount();
+    window.localStorage.setItem(DEVELOPER_UNLOCKED_STORAGE_KEY, "unlocked");
+    window.localStorage.setItem(DEVELOPER_MODE_ENABLED_STORAGE_KEY, "disabled");
+    renderView(<App />);
+    expect(screen.getByRole("button", { name: "Generate test players" })).toBeInTheDocument();
+    expect(screen.getByTestId("setup-role-preview")).toHaveTextContent("false");
+  });
+
+  it("unlocks developer tools for the session when saving preferences is denied", () => {
+    renderView(<App />);
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("Denied", "SecurityError");
+    });
+    const privacy = screen.getByRole("button", { name: "Hide private info" });
+    for (let tap = 0; tap < 5; tap += 1) fireEvent.click(privacy);
+    expect(screen.getByRole("button", { name: "Open developer menu" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Generate test players" })).toBeInTheDocument();
   });
 
   it.each([false, true])(
@@ -3150,7 +3251,6 @@ describe("developer menu", () => {
     render(<App />);
     const privacy = screen.getByRole("button", { name: "Hide private info" });
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
-    await user.click(screen.getByRole("button", { name: "Enable dev mode" }));
     await user.click(screen.getByRole("button", { name: "Show undealt role preview" }));
     await user.click(screen.getByRole("button", { name: "Hide developer mode" }));
 
@@ -3468,11 +3568,12 @@ describe("developer menu", () => {
 
   it("gates setup development tools behind the session Dev mode", async () => {
     const user = userEvent.setup();
-    render(<App />);
+    renderView(<App />);
 
     expect(screen.queryByRole("button", { name: "Generate test players" })).toBeNull();
+    const privacy = screen.getByRole("button", { name: "Hide private info" });
+    for (let tap = 0; tap < 5; tap += 1) fireEvent.click(privacy);
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
-    await user.click(screen.getByRole("button", { name: "Enable dev mode" }));
     expect(screen.getByRole("button", { name: "Generate test players" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Past game timeline" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
@@ -3480,7 +3581,7 @@ describe("developer menu", () => {
     expect(screen.getByRole("button", { name: "Generate sample game data" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Back" }));
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
-    await user.click(screen.getByRole("button", { name: "Disable dev mode" }));
+    await user.click(screen.getByRole("button", { name: "Hide developer mode" }));
     expect(screen.queryByRole("button", { name: "Generate test players" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Past game timeline" }));
@@ -4300,6 +4401,12 @@ describe("developer menu", () => {
     const dev = screen.getByRole("button", { name: "Open developer menu" });
     expect(dev.nextElementSibling).toBe(screen.getByRole("button", { name: "Hide private info" }));
     const undo = screen.getByRole("button", { name: "Undo last action" });
+    const toolbar = screen.getByLabelText("Application tools");
+    expect(within(toolbar).getAllByRole("button").slice(0, 3)).toEqual([
+      screen.getByRole("button", { name: "Rules" }),
+      undo,
+      screen.getByRole("button", { name: "Open game log" }),
+    ]);
     expect(undo).toBeDisabled();
     expect(undo.querySelector(".toolbar-count")).toBeNull();
     expect(undo.textContent).toBe("");
@@ -7681,8 +7788,6 @@ describe("player workflows", () => {
     });
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
-    await user.click(screen.getByRole("button", { name: "Enable dev mode" }));
     await user.click(screen.getByRole("button", { name: "Generate test players" }));
 
     await waitFor(() => expect(api.createPlayer).toHaveBeenCalledTimes(11));
@@ -7699,8 +7804,6 @@ describe("player workflows", () => {
       .mockRejectedValueOnce(new Error("network unavailable"));
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "Open developer menu" }));
-    await user.click(screen.getByRole("button", { name: "Enable dev mode" }));
     await user.click(screen.getByRole("button", { name: "Generate test players" }));
 
     await waitFor(() => expect(api.deletePlayer).toHaveBeenCalledTimes(2));

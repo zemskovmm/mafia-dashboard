@@ -26,17 +26,17 @@ describe("fancy stuff controls", () => {
   it.each([
     {
       locale: "en" as const,
-      section: "Fancy stuff",
-      disable: "Disable club entry effects",
-      enable: "Enable club entry effects",
+      section: "Fancy Features",
+      disable: "Disable Fancy Features",
+      enable: "Enable Fancy Features",
       on: "On",
       off: "Off",
     },
     {
       locale: "ru" as const,
       section: "Красивые эффекты",
-      disable: "Выключить эффекты входа в клуб",
-      enable: "Включить эффекты входа в клуб",
+      disable: "Выключить красивые эффекты",
+      enable: "Включить красивые эффекты",
       on: "Вкл.",
       off: "Выкл.",
     },
@@ -56,7 +56,7 @@ describe("fancy stuff controls", () => {
     expect(toggle).toHaveTextContent(labels.on);
     toggle.focus();
     await user.keyboard("{Enter}");
-    expect(changed).toHaveBeenLastCalledWith({ version: 1, clubEntryEffects: false });
+    expect(changed).toHaveBeenLastCalledWith({ version: 2, enabled: false });
     const disabled = screen.getByRole("button", { name: labels.enable });
     expect(disabled).toHaveAttribute("aria-pressed", "false");
     expect(disabled).toHaveTextContent(labels.off);

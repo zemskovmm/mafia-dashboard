@@ -427,7 +427,6 @@ export async function verifyPortraitCards({ browser, config, url, evidence, resu
     await page.addInitScript(
       ({ mode }) => {
         localStorage.setItem("mafia-dashboard.developer-unlocked.v1", "unlocked");
-        localStorage.setItem("mafia-dashboard.developer-mode.v1", "enabled");
         if (mode === "fallback") {
           const get = HTMLCanvasElement.prototype.getContext;
           HTMLCanvasElement.prototype.getContext = function (kind, ...args) {

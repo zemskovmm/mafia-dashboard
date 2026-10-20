@@ -311,8 +311,6 @@ const englishShellMessages = {
   pastGameTimeline: "Past game timeline",
   console: "Console",
 
-  disableDevMode: "Disable dev mode",
-  enableDevMode: "Enable dev mode",
   hideDeveloperMode: "Hide developer mode",
   clearing: "Clearing…",
   clearAllData: "Clear all data",
@@ -683,8 +681,6 @@ const russianShellMessages = {
   pastGameTimeline: "Хронология прошлых игр",
   console: "Консоль",
 
-  disableDevMode: "Выключить режим разработчика",
-  enableDevMode: "Включить режим разработчика",
   hideDeveloperMode: "Скрыть режим разработчика",
   clearing: "Очистка…",
   clearAllData: "Очистить все данные",

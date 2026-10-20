@@ -26,6 +26,7 @@ import { reportError } from "../console/error-console.js";
 import { GameTable } from "../table/GameTable.js";
 import type { RoleDrawRequest } from "../table/RoleDrawPresentation.js";
 import { LiquidCardGlass } from "../theme/LiquidCardGlass.js";
+import { SetupTournamentFieldsContext } from "../tournaments/SetupTournamentFieldsContext.js";
 
 interface SetupWizardProps {
   readonly players: readonly PlayerProfile[];
@@ -387,6 +388,7 @@ export const SetupWizard = ({
   const [populatingPlayers, setPopulatingPlayers] = useState(false);
   const [developmentError, setDevelopmentError] = useState(false);
   const [manualRoleSeat, setManualRoleSeat] = useState<number | null>(null);
+  const [tournamentFieldsTarget, setTournamentFieldsTarget] = useState<HTMLDivElement | null>(null);
   const roleTapState = useRef<{ seat: number; count: number; at: number } | null>(null);
   const roleDrawSequence = useRef(0);
   const [roleDrawRequests, setRoleDrawRequests] = useState<
@@ -952,7 +954,9 @@ export const SetupWizard = ({
                 />
                 <span className="casper-switch-track" aria-hidden="true" />
               </label>
-              {tournamentControl}
+              <SetupTournamentFieldsContext.Provider value={tournamentFieldsTarget}>
+                {tournamentControl}
+              </SetupTournamentFieldsContext.Provider>
             </div>
           </header>
           {selectablePlayers.length < humanSeatCount + 1 ? (
@@ -1100,6 +1104,7 @@ export const SetupWizard = ({
               </div>
             ))}
           </div>
+          <div className="player-setup-tournament-fields" ref={setTournamentFieldsTarget} />
           {seatDrag
             ? createPortal(
                 <div

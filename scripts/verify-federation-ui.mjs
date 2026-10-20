@@ -1500,8 +1500,7 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     const missed = await saveReplay(page, api, "multiple-shots-miss", width, height);
     assert.equal(missed.env.current.state.game.nightResult.kind, "miss");
     await page.getByRole("button", { name: "Open developer menu", exact: true }).click();
-    const enableDev = page.getByRole("button", { name: "Enable dev mode", exact: true });
-    if (await enableDev.isVisible()) await enableDev.click();
+    await expect(page.getByRole("button", { name: "Enable dev mode", exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Open Manage menu", exact: true }).click();
     await page.getByRole("button", { name: "Past game timeline", exact: true }).click();
     const shotDetails = page.getByRole("complementary", { name: "Selected event details" });

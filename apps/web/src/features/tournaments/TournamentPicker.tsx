@@ -1,10 +1,12 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useContext, useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { ClubTournament } from "@mafia/game-domain";
 import { createTournament, listTournaments } from "../../api/client.js";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { tournamentMessages } from "../../i18n/messages/tournaments.js";
 import { reportError } from "../console/error-console.js";
 import { FederationJudgeDialog } from "../game/FederationJudgeDialog.js";
+import { SetupTournamentFieldsContext } from "./SetupTournamentFieldsContext.js";
 import "./tournaments.css";
 
 export interface TournamentPickerProps {
@@ -32,6 +34,7 @@ const ClubTournamentPicker = ({
 }: TournamentPickerProps) => {
   const { t } = useMessages(tournamentMessages);
   const id = useId();
+  const setupFieldsTarget = useContext(SetupTournamentFieldsContext);
   const [enabled, setEnabled] = useState(value !== null);
   const [tournaments, setTournaments] = useState<readonly ClubTournament[] | null>(null);
   const [listError, setListError] = useState(false);
@@ -42,7 +45,10 @@ const ClubTournamentPicker = ({
   const [createError, setCreateError] = useState(false);
   const createRequest = useRef(0);
   const included = enabled || value !== null;
-  const valid = !included || value !== null;
+  // A restored ID is not validation: the current list or an acknowledged
+  // creation must resolve it before setup can start a tournament game.
+  const valid =
+    !included || (value !== null && tournaments?.some(({ id }) => id === value) === true);
 
   useEffect(() => {
     onValidityChange?.(valid);
@@ -144,6 +150,85 @@ const ClubTournamentPicker = ({
     </div>
   );
 
+  const fields = included ? (
+    <div
+      className={`tournament-picker-fields${compact ? " tournament-picker-fields--compact" : ""}`}
+    >
+      <label htmlFor={`${id}-selection`}>
+        {t("tournament")}
+        <select
+          id={`${id}-selection`}
+          value={value ?? ""}
+          disabled={disabled || busy || tournaments === null}
+          aria-invalid={!valid}
+          aria-describedby={
+            !valid && (!compact || tournaments === null || listError) ? `${id}-help` : undefined
+          }
+          onChange={(event) => {
+            if (event.currentTarget.value !== "") onChange(event.currentTarget.value);
+          }}
+        >
+          <option value="" disabled>
+            {t("choose")}
+          </option>
+          {value !== null && !tournaments?.some(({ id }) => id === value) && (
+            <option value={value}>{t("selected")}</option>
+          )}
+          {tournaments?.map((tournament) => (
+            <option key={tournament.id} value={tournament.id}>
+              {tournament.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      {tournaments === null && (!compact || !listError) && (
+        <p role="status" id={compact && !valid ? `${id}-help` : undefined}>
+          {t("loading")}
+        </p>
+      )}
+      {listError && (
+        <div>
+          <p role="alert" id={compact && !valid ? `${id}-help` : undefined}>
+            {t("loadError")}
+          </p>
+          <button
+            type="button"
+            disabled={disabled || busy}
+            onClick={() => setRetry((count) => count + 1)}
+          >
+            {t("retry")}
+          </button>
+        </div>
+      )}
+      {!valid && !compact && <p id={`${id}-help`}>{t("chooseHelp")}</p>}
+      <button
+        type="button"
+        aria-label={compact ? t("new") : undefined}
+        className="tournament-picker-new"
+        disabled={disabled || busy || creating}
+        onClick={() => {
+          setCreating(true);
+          setCreateError(false);
+        }}
+      >
+        {compact ? "+" : t("new")}
+      </button>
+      {creating &&
+        (compact ? (
+          <FederationJudgeDialog
+            title={t("new")}
+            closeLabel={t("cancel")}
+            onDismiss={cancelCreation}
+            className="tournament-create-dialog"
+          >
+            {creationFields}
+          </FederationJudgeDialog>
+        ) : (
+          creationFields
+        ))}
+    </div>
+  ) : null;
+
   return (
     <div className={`tournament-picker${compact ? " tournament-picker--compact" : ""}`}>
       <label className="tournament-picker-toggle" htmlFor={`${id}-include`}>
@@ -165,82 +250,7 @@ const ClubTournamentPicker = ({
         <span>{t("include")}</span>
         {compact && <span className="tournament-switch-track" aria-hidden="true" />}
       </label>
-      {included && (
-        <div className="tournament-picker-fields">
-          <label htmlFor={`${id}-selection`}>
-            {t("tournament")}
-            <select
-              id={`${id}-selection`}
-              value={value ?? ""}
-              disabled={disabled || busy || tournaments === null}
-              aria-invalid={!valid}
-              aria-describedby={
-                !valid && (!compact || tournaments === null || listError) ? `${id}-help` : undefined
-              }
-              onChange={(event) => {
-                if (event.currentTarget.value !== "") onChange(event.currentTarget.value);
-              }}
-            >
-              <option value="" disabled>
-                {t("choose")}
-              </option>
-              {value !== null && !tournaments?.some(({ id }) => id === value) && (
-                <option value={value}>{t("selected")}</option>
-              )}
-              {tournaments?.map((tournament) => (
-                <option key={tournament.id} value={tournament.id}>
-                  {tournament.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          {tournaments === null && (!compact || !listError) && (
-            <p role="status" id={compact && !valid ? `${id}-help` : undefined}>
-              {t("loading")}
-            </p>
-          )}
-          {listError && (
-            <div>
-              <p role="alert" id={compact && !valid ? `${id}-help` : undefined}>
-                {t("loadError")}
-              </p>
-              <button
-                type="button"
-                disabled={disabled || busy}
-                onClick={() => setRetry((count) => count + 1)}
-              >
-                {t("retry")}
-              </button>
-            </div>
-          )}
-          {!valid && !compact && <p id={`${id}-help`}>{t("chooseHelp")}</p>}
-          <button
-            type="button"
-            aria-label={compact ? t("new") : undefined}
-            className="tournament-picker-new"
-            disabled={disabled || busy || creating}
-            onClick={() => {
-              setCreating(true);
-              setCreateError(false);
-            }}
-          >
-            {compact ? "+" : t("new")}
-          </button>
-          {creating &&
-            (compact ? (
-              <FederationJudgeDialog
-                title={t("new")}
-                closeLabel={t("cancel")}
-                onDismiss={cancelCreation}
-                className="tournament-create-dialog"
-              >
-                {creationFields}
-              </FederationJudgeDialog>
-            ) : (
-              creationFields
-            ))}
-        </div>
-      )}
+      {compact && setupFieldsTarget ? createPortal(fields, setupFieldsTarget) : fields}
     </div>
   );
 };

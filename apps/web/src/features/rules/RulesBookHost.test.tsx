@@ -39,6 +39,7 @@ describe("lazy rules-book boundary", () => {
     const errorOutput = vi.spyOn(console, "error").mockImplementation(() => undefined);
     load.reject!(new Error("Simulated unavailable reader chunk"));
     expect(await screen.findByRole("alert")).toHaveTextContent("The book could not load");
+    expect(screen.getByRole("button", { name: "Try again" })).toBeVisible();
     cancelDialog(screen.getByRole("dialog"));
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(invoke).toBeVisible();

@@ -1,6 +1,7 @@
-/* global URL, document, localStorage, getComputedStyle, requestAnimationFrame, MutationObserver */
+/* global URL, document, localStorage, getComputedStyle, requestAnimationFrame, MutationObserver, HTMLImageElement, FontFaceSet */
 /** Opt-in actual-App scenarios; imported by verify-ui.mjs, never a synthetic reader host.
  * APP_URL=http://127.0.0.1:5197 UI_RULES_SKETCHBOOK_ONLY=1 node scripts/verify-ui.mjs
+ * Run UI_RULES_PRESENTATION=enhanced (default) and =flat in fresh contexts.
  * API responses are the existing exact-origin fixture, not backend persistence.
  */
 import assert from "node:assert/strict";
@@ -25,6 +26,7 @@ import {
   ruleReferenceIds,
 } from "../apps/web/src/features/rules/rule-references.ts";
 import { removalRules } from "../apps/web/src/i18n/messages/federation-discipline.ts";
+import { FANCY_STUFF_STORAGE_KEY } from "../apps/web/src/features/effects/fancy-stuff-preferences.ts";
 import { checkpoint, currentSetupState, openPlayerPenalty } from "./verify-federation-ui.mjs";
 import { assertExactOrigin } from "./session-verifier-contracts.mjs";
 
@@ -146,8 +148,52 @@ export async function runRulesSketchbookScenarios({
   // identity across reading; the parent's fail-closed provider guard stays active.
   const viewport = page.viewportSize();
   const engine = page.context().browser().browserType().name();
+  const presentation = process.env.UI_RULES_PRESENTATION ?? "enhanced";
+  assert.ok(["enhanced", "flat"].includes(presentation), "Known rules presentation");
+  const enhanced = presentation === "enhanced";
+  const enhancedRequests = [];
+  const optionalRequest = (request) => {
+    if (
+      ["font", "image"].includes(request.resourceType()) &&
+      /\/(?:club|night)(?:-[\w-]+)?\.webp$|\/cormorant[^/]*\.ttf$/i.test(
+        new URL(request.url()).pathname,
+      )
+    ) {
+      enhancedRequests.push({ type: request.resourceType(), url: request.url() });
+    }
+  };
+  page.on("request", optionalRequest);
+  await page.addInitScript(() => {
+    window.__rulesReadiness = { images: [], fonts: [] };
+    const decode = HTMLImageElement.prototype.decode;
+    HTMLImageElement.prototype.decode = function (...args) {
+      return decode.apply(this, args).then((value) => {
+        if (/\/(?:club|night)(?:-[\w-]+)?\.webp(?:\?|$)/i.test(this.src))
+          window.__rulesReadiness.images.push(this.src);
+        return value;
+      });
+    };
+    const load = FontFaceSet.prototype.load;
+    FontFaceSet.prototype.load = function (font, text) {
+      return load.call(this, font, text).then((faces) => {
+        if (font.includes("RulesCormorant"))
+          window.__rulesReadiness.fonts.push({
+            font,
+            text,
+            faces: faces.map((face) => ({
+              family: face.family,
+              weight: face.weight,
+              style: face.style,
+              status: face.status,
+            })),
+          });
+        return faces;
+      });
+    };
+  });
   const report = {
     engine,
+    presentation,
     browserVersion: page.context().browser().version(),
     viewport,
     origin,
@@ -159,6 +205,7 @@ export async function runRulesSketchbookScenarios({
     scenarios: [],
     screenshots: [],
     failures: [],
+    enhancedRequests,
   };
   const previousLanguage = club.language;
   const book = page.locator("dialog.rules-sketchbook[open]");
@@ -238,6 +285,13 @@ export async function runRulesSketchbookScenarios({
         legacyGameId: null,
       },
     });
+    await page.evaluate(
+      ({ key, enabled }) => localStorage.setItem(key, JSON.stringify({ version: 2, enabled })),
+      {
+        key: FANCY_STUFF_STORAGE_KEY,
+        enabled: enhanced,
+      },
+    );
     // App readiness, not third-party YouTube traffic, determines this read-only gate.
     await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
     assertExactOrigin(page.url(), origin);
@@ -262,8 +316,98 @@ export async function runRulesSketchbookScenarios({
     const opener = page.getByRole("button", { name: labels[locale].header, exact: true });
     await opener.click();
     await idle();
+    await expect(book).toHaveAttribute("data-presentation", presentation);
+    await presentationGeometry();
     assert.ok(await book.evaluate((d) => d.matches(":modal")), "Native foreground modal");
     return opener;
+  }
+  async function presentationGeometry() {
+    const state = await book.evaluate((dialog) => {
+      const book = dialog.querySelector(".rs-book");
+      const bounds = book.getBoundingClientRect();
+      return {
+        transform: getComputedStyle(book).transform,
+        filter: getComputedStyle(document.querySelector("#root")).filter,
+        bounds: { left: bounds.left, right: bounds.right, top: bounds.top, bottom: bounds.bottom },
+        controls: [...dialog.querySelectorAll(".rs-close,.rs-bookmark,.rs-edge")].map((control) => {
+          const r = control.getBoundingClientRect();
+          return {
+            transform: getComputedStyle(control).transform,
+            insideBook: book.contains(control),
+            left: r.left,
+            right: r.right,
+            top: r.top,
+            bottom: r.bottom,
+          };
+        }),
+        families: [...dialog.querySelectorAll(".rs-body,.rs-body *")].map(
+          (node) => getComputedStyle(node).fontFamily,
+        ),
+        optionalNodes: dialog.querySelectorAll(".rs-plate-art,.rs-binding,.rs-spine,.rs-curl")
+          .length,
+        runningAnimations: dialog
+          .getAnimations({ subtree: true })
+          .filter((animation) => animation.playState === "running").length,
+        readiness: window.__rulesReadiness,
+      };
+    });
+    assert.equal(state.controls.length, 4);
+    assert.ok(
+      state.controls.every((control) => control.transform === "none" && !control.insideBook),
+      "All controls stay upright outside the book plane",
+    );
+    for (const bounds of [state.bounds, ...state.controls])
+      assert.ok(
+        bounds.left >= 0 &&
+          bounds.top >= 0 &&
+          bounds.right <= viewport.width + 1 &&
+          bounds.bottom <= viewport.height + 1,
+        `Rendered book/control bounds: ${JSON.stringify(bounds)}`,
+      );
+    if (enhanced) {
+      assert.notEqual(
+        state.transform,
+        "none",
+        "Enhanced resting book has a real oblique transform",
+      );
+      assert.equal(
+        new Set(state.readiness.images).size,
+        2,
+        "Both artwork images decoded before enhanced activation",
+      );
+      for (const font of [
+        'normal 400 20px "RulesCormorant"',
+        'normal 600 20px "RulesCormorant"',
+        'italic 400 20px "RulesCormorant"',
+      ]) {
+        const loaded = state.readiness.fonts.find((row) => row.font === font);
+        assert.ok(
+          loaded &&
+            /[A-Z]/.test(loaded.text) &&
+            /[А-ЯЁ]/.test(loaded.text) &&
+            loaded.faces.length &&
+            loaded.faces.every((face) => face.status === "loaded"),
+          `Real EN/RU font-face readiness: ${font}`,
+        );
+      }
+    } else {
+      assert.equal(state.transform, "none");
+      assert.equal(state.filter, "none", "Flat reader does not blur the underlying app");
+      assert.equal(state.optionalNodes, 0, "No art, binding, curl clones or spine in flat mode");
+      assert.equal(state.runningAnimations, 0, "No decorative reader loops in flat mode");
+      assert.ok(
+        state.families.every((family) => !family.includes("RulesCormorant")),
+        "Flat content uses system fonts",
+      );
+      assert.deepEqual(
+        state.readiness,
+        { images: [], fonts: [] },
+        "OFF never prepares enhanced assets",
+      );
+      assert.deepEqual(enhancedRequests, [], "OFF fetches no enhanced artwork/font bytes");
+    }
+    report.presentationChecks ??= [];
+    report.presentationChecks.push(state);
   }
   async function readable(chapter, locale) {
     await expect(paper).toHaveAttribute("data-chapter", chapter.id);
@@ -412,6 +556,7 @@ export async function runRulesSketchbookScenarios({
     await opener.click();
     await idle();
     await expect(dialog).toHaveAttribute("inert", "");
+    await expect(book).toHaveAttribute("data-presentation", presentation);
     await expect(dialog).toHaveAttribute("aria-hidden", "true");
     if (!report.lowerBlurChecked?.includes(locale)) {
       report.lowerBlurChecked ??= [];
@@ -419,7 +564,7 @@ export async function runRulesSketchbookScenarios({
       try {
         await expect
           .poll(() => dialog.evaluate((d) => getComputedStyle(d).filter))
-          .toBe("blur(14px)");
+          .toBe(enhanced ? "blur(14px)" : "none");
       } catch (error) {
         const actual = await dialog.evaluate((d) => ({
           filter: getComputedStyle(d).filter,
@@ -603,88 +748,164 @@ export async function runRulesSketchbookScenarios({
     await openHeader("en");
     await screenshot("blur-after");
     const underlay = await page.locator("#root").evaluate((el) => getComputedStyle(el).filter);
-    assert.ok(underlay.includes("blur(14px)"), `Actual App underlay filter: ${underlay}`);
-    await book.locator(".rs-bookmark").click();
-    await idle();
-    await paper.evaluate((el) => {
-      const log = { started: Date.now(), ids: [el.getAttribute("data-chapter")] };
-      const observer = new MutationObserver(() => {
-        const id = el.getAttribute("data-chapter");
-        if (log.ids.at(-1) !== id) log.ids.push(id);
+    assert.equal(
+      underlay,
+      enhanced ? "blur(14px)" : "none",
+      `Actual App underlay filter: ${underlay}`,
+    );
+    if (enhanced) {
+      await book.locator(".rs-bookmark").click();
+      await idle();
+      await paper.evaluate((el) => {
+        const log = { started: Date.now(), ids: [el.getAttribute("data-chapter")] };
+        const observer = new MutationObserver(() => {
+          const id = el.getAttribute("data-chapter");
+          if (log.ids.at(-1) !== id) log.ids.push(id);
+        });
+        observer.observe(el, { attributes: true, attributeFilter: ["data-chapter"] });
+        el.__rulesJourneyLog = log;
+        el.__rulesJourneyObserver = observer;
       });
-      observer.observe(el, { attributes: true, attributeFilter: ["data-chapter"] });
-      el.__rulesJourneyLog = log;
-      el.__rulesJourneyObserver = observer;
-    });
-    await book.locator(`.rs-spread [data-chapter-target="${rulesChapters.at(-1).id}"]`).click();
-    await expect(book.locator(".rs-curl")).toBeVisible();
-    await screenshot("bounded-intermediate-journey-curl");
-    await expect(paper).toHaveAttribute("data-chapter", rulesChapters.at(-1).id, { timeout: 5000 });
-    await idle();
-    const journey = await paper.evaluate((el) => {
-      el.__rulesJourneyObserver.disconnect();
-      return {
-        ids: el.__rulesJourneyLog.ids,
-        elapsedMs: Date.now() - el.__rulesJourneyLog.started,
-      };
-    });
-    assert.deepEqual(
-      journey.ids,
-      ["contents", ...rulesChapters.map((chapter) => chapter.id)],
-      "Every real intermediate chapter is visibly traversed",
-    );
-    assert.ok(journey.elapsedMs < 5000, `Bounded intermediate journey: ${journey.elapsedMs}ms`);
-    report.scenarios.push({
-      name: "bounded-contents-journey-all-28-intermediate-chapters",
-      ...journey,
-    });
-    await page.emulateMedia({ reducedMotion: "reduce" });
-    await contents();
-    await book.locator(`.rs-spread [data-chapter-target="${rulesChapters[0].id}"]`).click();
-    await idle();
-    await page.emulateMedia({ reducedMotion: "no-preference" });
-    await contents();
-    await book.locator(`.rs-spread [data-chapter-target="${rulesChapters[0].id}"]`).click();
-    await expect(book.locator(".rs-curl")).toBeVisible();
-    await screenshot("automatic-curl");
-    await idle();
-    const textPaper = book.locator('.rs-spread .rs-leaf[data-side="text"]');
-    const box = await textPaper.boundingBox();
-    const x = box.x + box.width * 0.8;
-    const y = box.y + box.height * 0.72;
-    await page.mouse.move(x, y);
-    await page.mouse.down();
-    await page.mouse.move(x - box.width * 0.45, y, { steps: 12 });
-    await expect(book.locator(".rs-curl")).toBeVisible();
-    await screenshot("drag-curl");
-    await page.mouse.up();
-    await idle();
-    assert.ok(
-      (await paper.getAttribute("data-chapter")) !== rulesChapters[0].id,
-      "Actual drag commits a turn",
-    );
-    // Physical click on paper (not a navigation button), then resize during the next turn.
-    const box2 = await paper.boundingBox();
-    await page.mouse.click(box2.x + box2.width * 0.92, box2.y + box2.height * 0.68);
-    await expect(book.locator(".rs-curl")).toBeVisible();
-    await page.setViewportSize({
-      width: Math.max(360, viewport.width - 30),
-      height: viewport.height - 20,
-    });
-    await idle();
-    await page.setViewportSize(viewport);
-    await paper.evaluate(async () => {
-      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    });
-    await idle();
-    // Former reader arrow shortcuts are inert; the real page control starts the turn.
-    const retainedChapter = await paper.getAttribute("data-chapter");
-    await page.keyboard.press("ArrowRight");
-    await expect(paper).toHaveAttribute("data-chapter", retainedChapter);
-    await expect(book.locator(".rs-curl")).toHaveCount(0);
-    await book.locator(".rs-next").click();
-    await expect(book.locator(".rs-curl")).toBeVisible();
-    await closeBook();
+      await book.locator(`.rs-spread [data-chapter-target="${rulesChapters.at(-1).id}"]`).click();
+      await expect(book.locator(".rs-curl")).toBeVisible();
+      await screenshot("bounded-intermediate-journey-curl");
+      await expect(paper).toHaveAttribute("data-chapter", rulesChapters.at(-1).id, {
+        timeout: 5000,
+      });
+      await idle();
+      const journey = await paper.evaluate((el) => {
+        el.__rulesJourneyObserver.disconnect();
+        return {
+          ids: el.__rulesJourneyLog.ids,
+          elapsedMs: Date.now() - el.__rulesJourneyLog.started,
+        };
+      });
+      assert.deepEqual(
+        journey.ids,
+        ["contents", ...rulesChapters.map((chapter) => chapter.id)],
+        "Every real intermediate chapter is visibly traversed",
+      );
+      assert.ok(journey.elapsedMs < 5000, `Bounded intermediate journey: ${journey.elapsedMs}ms`);
+      report.scenarios.push({
+        name: "bounded-contents-journey-all-28-intermediate-chapters",
+        ...journey,
+      });
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      await contents();
+      await book.locator(`.rs-spread [data-chapter-target="${rulesChapters[0].id}"]`).click();
+      await idle();
+      await page.emulateMedia({ reducedMotion: "no-preference" });
+      await contents();
+      await book.locator(`.rs-spread [data-chapter-target="${rulesChapters[0].id}"]`).click();
+      await expect(book.locator(".rs-curl")).toBeVisible();
+      await screenshot("automatic-curl");
+      await idle();
+      const textPaper = book.locator('.rs-spread .rs-leaf[data-side="text"]');
+      const box = await textPaper.boundingBox();
+      const x = box.x + box.width * 0.8;
+      const y = box.y + box.height * 0.72;
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+      await page.mouse.move(x - box.width * 0.45, y, { steps: 12 });
+      await expect(book.locator(".rs-curl")).toBeVisible();
+      await screenshot("drag-curl");
+      await page.mouse.up();
+      await idle();
+      assert.ok(
+        (await paper.getAttribute("data-chapter")) !== rulesChapters[0].id,
+        "Actual drag commits a turn",
+      );
+      const afterForward = await paper.evaluate((el) => `${el.dataset.chapter}:${el.dataset.side}`);
+      const reverseClick = await paper.boundingBox();
+      await page.mouse.click(
+        reverseClick.x + reverseClick.width * 0.18,
+        reverseClick.y + reverseClick.height * 0.68,
+      );
+      await expect(book.locator(".rs-curl")).toBeVisible();
+      await idle();
+      const afterReverseClick = await paper.evaluate(
+        (el) => `${el.dataset.chapter}:${el.dataset.side}`,
+      );
+      assert.notEqual(afterReverseClick, afterForward, "Oblique paper click turns backward");
+      const reverseDrag = await paper.boundingBox();
+      await page.mouse.move(
+        reverseDrag.x + reverseDrag.width * 0.18,
+        reverseDrag.y + reverseDrag.height * 0.7,
+      );
+      await page.mouse.down();
+      await page.mouse.move(
+        reverseDrag.x + reverseDrag.width * 0.68,
+        reverseDrag.y + reverseDrag.height * 0.7,
+        { steps: 12 },
+      );
+      await expect(book.locator(".rs-curl")).toBeVisible();
+      await screenshot("reverse-drag-curl");
+      await page.mouse.up();
+      await idle();
+      assert.notEqual(
+        await paper.evaluate((el) => `${el.dataset.chapter}:${el.dataset.side}`),
+        afterReverseClick,
+        "Oblique drag turns backward",
+      );
+      // Reverse turns can end on contents; establish ordinary paper again so
+      // the next trusted click cannot accidentally target a contents button.
+      await page.emulateMedia({ reducedMotion: "reduce" });
+      await contents();
+      await book.locator(`.rs-spread [data-chapter-target="${rulesChapters[0].id}"]`).click();
+      await idle();
+      await page.emulateMedia({ reducedMotion: "no-preference" });
+      // Let the native media-query change/cancel event settle before a new gesture.
+      await paper.evaluate(
+        () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+      );
+      // Physical click on paper (not a navigation button), then resize during the next turn.
+      const box2 = await paper.boundingBox();
+      await page.mouse.click(box2.x + box2.width * 0.82, box2.y + box2.height * 0.68);
+      await expect(book.locator(".rs-curl")).toBeVisible();
+      await page.setViewportSize({
+        width: Math.max(360, viewport.width - 30),
+        height: viewport.height - 20,
+      });
+      await idle();
+      await page.setViewportSize(viewport);
+      await paper.evaluate(async () => {
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      });
+      await idle();
+      // Former reader arrow shortcuts are inert; the real page control starts the turn.
+      const retainedChapter = await paper.getAttribute("data-chapter");
+      await page.keyboard.press("ArrowRight");
+      await expect(paper).toHaveAttribute("data-chapter", retainedChapter);
+      await expect(book.locator(".rs-curl")).toHaveCount(0);
+      await book.locator(".rs-next").click();
+      await expect(book.locator(".rs-curl")).toBeVisible();
+      await closeBook();
+    } else {
+      await contents();
+      await book.locator(`.rs-spread [data-chapter-target="${rulesChapters[0].id}"]`).click();
+      await idle();
+      const box = await paper.boundingBox();
+      await page.mouse.click(box.x + box.width * 0.82, box.y + box.height * 0.68);
+      await expect(paper).toHaveAttribute("data-chapter", rulesChapters[1].id);
+      await expect(paper).toHaveAttribute("data-side", "text");
+      await expect(book.locator(".rs-curl")).toHaveCount(0);
+      await page.mouse.move(box.x + box.width * 0.18, box.y + box.height * 0.7);
+      await page.mouse.down();
+      await page.mouse.move(box.x + box.width * 0.68, box.y + box.height * 0.7, { steps: 12 });
+      await page.mouse.up();
+      await expect(paper).toHaveAttribute("data-chapter", rulesChapters[0].id);
+      await expect(paper).toHaveAttribute("data-side", "text");
+      await expect(book.locator(".rs-curl")).toHaveCount(0);
+      await page.setViewportSize({
+        width: Math.max(360, viewport.width - 30),
+        height: viewport.height - 20,
+      });
+      await idle();
+      await page.setViewportSize(viewport);
+      await presentationGeometry();
+      await screenshot("flat-native-navigation-resize");
+      await closeBook();
+    }
     await nativeFocus("Native Escape interrupts turn without authored return");
     await screenshot("blur-before");
     assert.equal(await page.locator("#root").evaluate((el) => getComputedStyle(el).filter), "none");
@@ -707,19 +928,29 @@ export async function runRulesSketchbookScenarios({
       iframeSource,
     );
     await expect(timer).toHaveAttribute("aria-label", "Pause timer");
-    assert.notEqual(await timer.innerText(), initialTimer, "Timer continues while reading");
+    await expect
+      .poll(() => timer.innerText(), { message: "Timer continues while reading" })
+      .not.toBe(initialTimer);
     await unchanged(before);
     report.scenarios.push({
-      name: "actual-click-drag-painted-curl-resize-interrupted-turn-timer-media-identity",
+      name: enhanced
+        ? "oblique-click-drag-both-directions-painted-curl-resize-interrupted-turn-timer-media-identity"
+        : "flat-immediate-click-drag-text-only-resize-timer-media-identity",
       underlay,
     });
     if (engine === "chromium") {
       await page.emulateMedia({ reducedMotion: "reduce" });
+      const scrollViewport = { width: viewport.width, height: Math.min(viewport.height, 650) };
+      await page.setViewportSize(scrollViewport);
       await openHeader("en");
       await contents();
       await book.locator('.rs-spread [data-chapter-target="rule-6.3.5"]').click();
       await idle();
       const prose = body();
+      assert.ok(
+        await prose.evaluate((el) => el.scrollHeight > el.clientHeight + 1),
+        "The native touch fixture must actually overflow in either presentation",
+      );
       const p = await prose.boundingBox();
       const cdp = await page.context().newCDPSession(page);
       const x = p.x + p.width / 2,
@@ -790,7 +1021,9 @@ export async function runRulesSketchbookScenarios({
       report.scenarios.push({
         name: "trusted-CDP-touch-vertical-prose-scroll-no-page-turn-reopen-retains-direct-resets",
         physicalIPad: false,
+        viewport: scrollViewport,
       });
+      await page.setViewportSize(viewport);
     }
     assertRulesCoverage(report);
     api.clean();
@@ -799,6 +1032,7 @@ export async function runRulesSketchbookScenarios({
     await screenshot("failure").catch(() => {});
     throw error;
   } finally {
+    page.off("request", optionalRequest);
     club.language = previousLanguage;
     report.sourceAfter = await rulesSourceManifest();
     report.changedSources = [
@@ -817,7 +1051,7 @@ export async function runRulesSketchbookScenarios({
       `Actual App qualification failures: ${report.failures.length}; see ${evidence}/results.json`,
     );
   console.log(
-    `Rules actual App ${engine} ${viewport.width}x${viewport.height}: PASS (${report.destinations.length} destinations; ${report.references.length} references including forced values)`,
+    `Rules actual App ${presentation} ${engine} ${viewport.width}x${viewport.height}: PASS (${report.destinations.length} destinations; ${report.references.length} references including forced values)`,
   );
   return report;
 }

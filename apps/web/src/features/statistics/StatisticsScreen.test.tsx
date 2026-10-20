@@ -710,7 +710,11 @@ describe("StatisticsScreen", () => {
     const { rerender } = renderScreen({ onTournamentAssigned });
     await user.click(await screen.findByRole("button", { name: "Alpha" }));
     await user.click(await screen.findByRole("button", { name: "Change tournament" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Save tournament" })).toBeEnabled(),
+    );
     await user.click(screen.getByRole("button", { name: "Save tournament" }));
+    expect(assignGameTournament).toHaveBeenCalledExactlyOnceWith("game-a", "event-a", "club-a");
     rerender(
       <StatisticsScreen
         clubId="club-b"
@@ -724,7 +728,9 @@ describe("StatisticsScreen", () => {
     expect(onTournamentAssigned).not.toHaveBeenCalled();
     await user.click(await screen.findByRole("button", { name: "Alpha" }));
     await user.click(await screen.findByRole("button", { name: "Change tournament" }));
-    expect(screen.getByRole("button", { name: "Save tournament" })).toBeEnabled();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Save tournament" })).toBeEnabled(),
+    );
   });
 
   it("localizes labels, numeric precision, dates and unrated explanations in Russian", async () => {

@@ -27,6 +27,13 @@ import { votingMessages } from "../../i18n/messages/voting.js";
 import { namedProfiles, renderWithProfiles } from "../../test-player-directory.js";
 import { TimerControls } from "../timer/TimerControls.js";
 import { GameScreen } from "./GameScreen.js";
+import type * as RulesBookAssets from "../rules/rules-book-assets.js";
+
+// jsdom has no image/font decoding; the real readiness boundary is browser-tested.
+vi.mock("../rules/rules-book-assets.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof RulesBookAssets>()),
+  preloadRulesBookAssets: () => Promise.resolve(),
+}));
 
 const render = (ui: Parameters<typeof renderWithProfiles>[0]) =>
   renderWithProfiles(ui, namedProfiles("player-"));

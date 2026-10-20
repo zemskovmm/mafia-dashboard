@@ -206,6 +206,17 @@
   visibility: hidden;
 }
 
+/* Master OFF is a static material, not the expensive local optics fallback.
+   Keep nomination/selection washes and host borders, including if the shared
+   scene's last painted marker has not yet been cleared. */
+.liquid-card-glass.liquid-card-glass--static {
+  visibility: visible !important;
+}
+.liquid-card-glass--static .liquid-card-glass__backdrop {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .liquid-card-glass__light {
     animation: none;

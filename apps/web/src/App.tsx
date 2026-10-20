@@ -76,6 +76,10 @@ import type {
 import { ClubPortal } from "./features/clubs/ClubPortal.js";
 import { ClubFire } from "./features/clubs/ClubFire.js";
 import { ClubEntryTransition, type ClubEntryOrigin } from "./features/clubs/ClubEntryTransition.js";
+import { FancyFeaturesContext, useFancyFeatures } from "./features/effects/FancyFeaturesContext.js";
+import { FancyPreparation } from "./features/effects/FancyPreparation.js";
+import { useFancyPreparation } from "./features/effects/useFancyPreparation.js";
+import type { FancyAssetRequirements } from "./features/effects/fancy-assets.js";
 import {
   readFancyStuffSettings,
   validateFancyStuffSettings,
@@ -88,7 +92,6 @@ import { CanaryFirework } from "./features/effects/CanaryFirework.js";
 import {
   clearDeveloperPreferences,
   readDeveloperPreferences,
-  writeDeveloperModeEnabled,
   writeDeveloperUnlocked,
   writePreviewUndealtRoles,
 } from "./features/developer/developer-preferences.js";
@@ -426,9 +429,11 @@ const asPersistedState = (state: unknown): PersistedState => {
 };
 
 export const ClubWorkspace = (props: ComponentProps<typeof ClubWorkspaceContent>) => (
-  <AppBackgroundProvider>
-    <ClubWorkspaceContent {...props} />
-  </AppBackgroundProvider>
+  <FancyFeaturesContext.Provider value={useFancyFeatures() && props.fancyStuff.enabled}>
+    <AppBackgroundProvider>
+      <ClubWorkspaceContent {...props} />
+    </AppBackgroundProvider>
+  </FancyFeaturesContext.Provider>
 );
 
 const ClubWorkspaceContent = ({
@@ -442,6 +447,7 @@ const ClubWorkspaceContent = ({
   onThemeColorChange = () => undefined,
   fancyStuff,
   onFancyStuffChange,
+  onFancyRequirementsChange,
 }: {
   readonly club: Club;
   readonly storageGuard?: BrowserGameStorageGuard;
@@ -453,9 +459,13 @@ const ClubWorkspaceContent = ({
   readonly onThemeColorChange?: (color: string) => void;
   readonly fancyStuff: FancyStuffSettings;
   readonly onFancyStuffChange: (settings: FancyStuffSettings) => void;
+  readonly onFancyRequirementsChange?: (
+    value: Pick<FancyAssetRequirements, "glass" | "vgpu">,
+  ) => void;
 }) => {
   const { t, formatTime } = useMessages(shellMessages);
   const timelineI18n = useMessages(timelineConsoleMessages);
+  const fancyEnabled = useFancyFeatures();
   const isManager = club.role === "manager";
   const sessionSyncRef = useRef<GameSessionOutbox | null>(null);
   if (sessionSyncRef.current === null) {
@@ -700,18 +710,39 @@ const ClubWorkspaceContent = ({
     window.localStorage,
     createLightingRendererState,
   );
+  useEffect(() => {
+    onFancyRequirementsChange?.({
+      glass: glass.enabled,
+      vgpu: lighting.requestedRenderer === "vgpu",
+    });
+  }, [glass.enabled, lighting.requestedRenderer, onFancyRequirementsChange]);
+  const previousFancyEnabled = useRef(fancyEnabled);
+  useLayoutEffect(() => {
+    if (previousFancyEnabled.current === fancyEnabled) return;
+    previousFancyEnabled.current = fancyEnabled;
+    dispatchLighting({ type: "select", renderer: lighting.requestedRenderer });
+  }, [fancyEnabled, lighting.requestedRenderer]);
+  const effectiveLighting = fancyEnabled
+    ? lighting
+    : {
+        ...lighting,
+        effectiveRenderer: "legacy" as const,
+        vgpuStatus: "idle" as const,
+        playerPulse: { ...lighting.playerPulse, enabled: false },
+      };
 
   const [initialDeveloperPreferences] = useState(() =>
     readDeveloperPreferences(window.localStorage),
   );
-  const [devModeEnabled, setDevModeEnabled] = useState(
-    () => initialDeveloperPreferences.unlocked && initialDeveloperPreferences.devModeEnabled,
-  );
+
   const [devUnlocked, setDevUnlocked] = useState(() => initialDeveloperPreferences.unlocked);
   const [previewUndealtRoles, setPreviewUndealtRoles] = useState(
     () => initialDeveloperPreferences.previewUndealtRoles,
   );
   const [canaryBurstKey, setCanaryBurstKey] = useState(0);
+  useEffect(() => {
+    if (!fancyEnabled) setCanaryBurstKey(0);
+  }, [fancyEnabled]);
   const [privacyTapStage, setPrivacyTapStage] = useState(0);
   const [privacyHidden, setPrivacyHidden] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(() => currentFullscreenElement() !== null);
@@ -1604,7 +1635,6 @@ const ClubWorkspaceContent = ({
       reloadBackground();
 
       clearErrorConsole();
-      setDevModeEnabled(false);
       setPreviewUndealtRoles(false);
       setDevUnlocked(false);
       setCanaryBurstKey(0);
@@ -1787,7 +1817,7 @@ const ClubWorkspaceContent = ({
       setPrivacyTapStage(5);
       writeDeveloperUnlocked(window.localStorage, true);
       setDevUnlocked(true);
-      setCanaryBurstKey((key) => key + 1);
+      if (fancyEnabled) setCanaryBurstKey((key) => key + 1);
       return;
     }
     privacyTapsRef.current = {
@@ -1799,18 +1829,10 @@ const ClubWorkspaceContent = ({
     };
     setPrivacyTapStage(count);
   };
-  const setDevelopmentToolsEnabled = useCallback(
-    (enabled: boolean) => {
-      if (!isManager || !devUnlocked) return;
-      writeDeveloperModeEnabled(window.localStorage, enabled);
-      setDevModeEnabled(enabled);
-    },
-    [devUnlocked, isManager],
-  );
+
   const hideDeveloperMode = useCallback(() => {
     if (!isManager) return;
     clearDeveloperPreferences(window.localStorage);
-    setDevModeEnabled(false);
     setPreviewUndealtRoles(false);
     setDevUnlocked(false);
     setActiveDrawer(null);
@@ -1977,14 +1999,17 @@ const ClubWorkspaceContent = ({
     </section>
   );
 
-  const glassSceneMounted = glass.enabled && (view === "game" || view === "players");
-  const effectiveGlassStatus: GlassStatus = glassReducedTransparency
-    ? "reduced-transparency"
-    : !glass.enabled
-      ? "off"
-      : !glassSceneMounted
-        ? "inactive"
-        : glassStatus;
+  const glassSceneMounted =
+    fancyEnabled && glass.enabled && (view === "game" || view === "players");
+  const effectiveGlassStatus: GlassStatus = !fancyEnabled
+    ? "off"
+    : glassReducedTransparency
+      ? "reduced-transparency"
+      : !glass.enabled
+        ? "off"
+        : !glassSceneMounted
+          ? "inactive"
+          : glassStatus;
   const sharedGlassReady = glassSceneMounted && effectiveGlassStatus === "ready";
   const content = (
     <div
@@ -1993,7 +2018,8 @@ const ClubWorkspaceContent = ({
         tableLayoutActive ? " has-live-game table-layout-shell" : ""
       }${view === "game" && game !== null ? " has-game-screen" : ""}${
         showApplicationStatus ? " has-top-level-screen" : ""
-      }${isFullscreen ? " is-fullscreen" : ""}`}
+      }${isFullscreen ? " is-fullscreen" : ""}${fancyEnabled ? "" : " is-fancy-off"}`}
+      data-fancy-features={fancyEnabled ? "on" : "off"}
       data-background-shade={backgroundShade}
       data-background={background}
       data-glass-settings="local"
@@ -2017,10 +2043,10 @@ const ClubWorkspaceContent = ({
             glass.nominationTreatment === "icons" ? 0 : glass.nominationTint / 100,
         } as CSSProperties
       }
-      data-lighting-renderer={lighting.effectiveRenderer}
+      data-lighting-renderer={effectiveLighting.effectiveRenderer}
       data-lighting-renderer-requested={lighting.requestedRenderer}
-      data-vgpu-status={lighting.vgpuStatus}
-      data-player-pulse={lighting.playerPulse.enabled ? "enabled" : "disabled"}
+      data-vgpu-status={effectiveLighting.vgpuStatus}
+      data-player-pulse={effectiveLighting.playerPulse.enabled ? "enabled" : "disabled"}
       data-player-pulse-speed={lighting.playerPulse.speed}
       data-player-pulse-strength={lighting.playerPulse.strength}
     >
@@ -2029,6 +2055,7 @@ const ClubWorkspaceContent = ({
       ) : null}
       {!showWorkspaceTools ? (
         <div className="app-fixed-toolbar" aria-label={t("applicationTools")}>
+          {rulesButton}
           <button
             type="button"
             className="save-indicator icon-toolbar-button"
@@ -2041,7 +2068,6 @@ const ClubWorkspaceContent = ({
           >
             <Save aria-hidden="true" />
           </button>
-          {rulesButton}
         </div>
       ) : null}
       {showApplicationStatus ? (
@@ -2081,6 +2107,31 @@ const ClubWorkspaceContent = ({
       ) : null}
       {showWorkspaceTools ? (
         <div className="app-fixed-toolbar" aria-label={t("applicationTools")}>
+          {rulesButton}
+          <button
+            type="button"
+            className="undo-button icon-toolbar-button"
+            aria-label={t("undoLastAction")}
+            disabled={undoCount === 0}
+            onClick={undoLastGameAction}
+          >
+            <Undo2 aria-hidden="true" />
+          </button>
+          {isManager ? (
+            <button
+              type="button"
+              className="log-toolbar-button icon-toolbar-button"
+              aria-label={activeDrawer === "log" ? t("closeGameLog") : t("openGameLog")}
+              aria-expanded={activeDrawer === "log"}
+              aria-controls="game-log-drawer"
+              onClick={() => {
+                setActiveDrawer((drawer) => (drawer === "log" ? null : "log"));
+              }}
+            >
+              <ListTree aria-hidden="true" />
+              <span className="toolbar-count">{log.length}</span>
+            </button>
+          ) : null}
           <button
             type="button"
             className="club-exit-button icon-toolbar-button"
@@ -2101,7 +2152,6 @@ const ClubWorkspaceContent = ({
           >
             <Save aria-hidden="true" />
           </button>
-          {rulesButton}
           {fullscreenAvailable || isFullscreen ? (
             <button
               type="button"
@@ -2113,15 +2163,6 @@ const ClubWorkspaceContent = ({
               {isFullscreen ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
             </button>
           ) : null}
-          <button
-            type="button"
-            className="undo-button icon-toolbar-button"
-            aria-label={t("undoLastAction")}
-            disabled={undoCount === 0}
-            onClick={undoLastGameAction}
-          >
-            <Undo2 aria-hidden="true" />
-          </button>
           {isManager && devUnlocked ? (
             <button
               type="button"
@@ -2144,23 +2185,10 @@ const ClubWorkspaceContent = ({
             onClick={togglePrivacy}
           >
             {privacyHidden ? <Eye aria-hidden="true" /> : <EyeOff aria-hidden="true" />}
-            {canaryBurstKey > 0 ? <CanaryFirework burstKey={canaryBurstKey} /> : null}
+            {fancyEnabled && canaryBurstKey > 0 ? (
+              <CanaryFirework burstKey={canaryBurstKey} />
+            ) : null}
           </button>
-          {isManager ? (
-            <button
-              type="button"
-              className="log-toolbar-button icon-toolbar-button"
-              aria-label={activeDrawer === "log" ? t("closeGameLog") : t("openGameLog")}
-              aria-expanded={activeDrawer === "log"}
-              aria-controls="game-log-drawer"
-              onClick={() => {
-                setActiveDrawer((drawer) => (drawer === "log" ? null : "log"));
-              }}
-            >
-              <ListTree aria-hidden="true" />
-              <span className="toolbar-count">{log.length}</span>
-            </button>
-          ) : null}
           <button
             type="button"
             className="manage-toolbar-button icon-toolbar-button"
@@ -2422,14 +2450,13 @@ const ClubWorkspaceContent = ({
             <DeveloperSettingToggle
               title={t("previewUndealtRoles")}
               description={t("previewUndealtRolesDescription")}
-              disabled={!devModeEnabled}
               ariaLabel={t(
                 previewUndealtRoles ? "hideUndealtRolePreview" : "showUndealtRolePreview",
               )}
               pressed={previewUndealtRoles}
               stateLabel={t(previewUndealtRoles ? "settingOn" : "settingOff")}
               onClick={() => {
-                if (!isManager || !devUnlocked || !devModeEnabled) return;
+                if (!isManager || !devUnlocked) return;
                 const enabled = !previewUndealtRoles;
                 writePreviewUndealtRoles(window.localStorage, enabled);
                 setPreviewUndealtRoles(enabled);
@@ -2449,11 +2476,11 @@ const ClubWorkspaceContent = ({
                 selectLightingRenderer(lighting.requestedRenderer === "vgpu" ? "legacy" : "vgpu")
               }
             />
-            {lighting.vgpuStatus === "initializing" ? (
+            {effectiveLighting.vgpuStatus === "initializing" ? (
               <p className="dev-renderer-status" role="status">
                 {t("vgpuInitializing")}
               </p>
-            ) : lighting.vgpuStatus === "fallback" ? (
+            ) : effectiveLighting.vgpuStatus === "fallback" ? (
               <p className="dev-renderer-status" role="status">
                 {t("vgpuFallback")}
               </p>
@@ -2537,13 +2564,7 @@ const ClubWorkspaceContent = ({
                 ))}
               </select>
             </label>
-            <button
-              type="button"
-              aria-pressed={devModeEnabled}
-              onClick={() => setDevelopmentToolsEnabled(!devModeEnabled)}
-            >
-              {devModeEnabled ? t("disableDevMode") : t("enableDevMode")}
-            </button>
+
             <button type="button" className="danger-action" onClick={hideDeveloperMode}>
               {t("hideDeveloperMode")}
             </button>
@@ -2602,7 +2623,7 @@ const ClubWorkspaceContent = ({
             : { initialGameId: statisticsTimelineGameId })}
           backLabel={statisticsTimelineGameId === undefined ? undefined : t("backToStatistics")}
           onBack={() => setView(viewBeforeTimelineRef.current)}
-          showDevelopmentTools={isManager && devUnlocked && devModeEnabled}
+          showDevelopmentTools={isManager && devUnlocked}
           currentHistory={
             statisticsTimelineGameId === undefined ? currentTimelineHistory : undefined
           }
@@ -2654,8 +2675,8 @@ const ClubWorkspaceContent = ({
             players={availablePlayersForSetup}
             playersLoading={!playersLoaded}
             bestMoveEnabled={setupSession?.bestMoveEnabled ?? club.bestMoveEnabled}
-            showDevelopmentTools={isManager && devUnlocked && devModeEnabled}
-            previewUndealtRoles={isManager && devUnlocked && devModeEnabled && previewUndealtRoles}
+            showDevelopmentTools={isManager && devUnlocked}
+            previewUndealtRoles={isManager && devUnlocked && previewUndealtRoles}
             onPopulateDevelopmentPlayers={populateDevelopmentPlayers}
             onOpenAvailablePlayers={() => setAvailabilityScreenOpen(true)}
             persistencePending={
@@ -2822,9 +2843,9 @@ const ClubWorkspaceContent = ({
   );
 
   return (
-    <LightingRendererContext.Provider value={lighting}>
+    <LightingRendererContext.Provider value={effectiveLighting}>
       <VgpuLightingProvider
-        enabled={lighting.requestedRenderer === "vgpu"}
+        enabled={fancyEnabled && lighting.requestedRenderer === "vgpu"}
         generation={lighting.vgpuGeneration}
         playerPulse={lighting.playerPulse}
         onReady={reportVgpuReady}
@@ -2950,6 +2971,24 @@ const AppContent = () => {
   const { locale, setLocale, t } = useMessages(shellMessages);
   const portalLocale = useRef(locale).current;
   const [fancyStuff, setFancyStuff] = useState(readFancyStuffSettings);
+  const { background } = useAppBackground();
+  const [assetOptions, setAssetOptions] = useState(() => {
+    try {
+      return {
+        glass: readGlassSettings().enabled,
+        vgpu: createLightingRendererState(window.localStorage).requestedRenderer === "vgpu",
+      };
+    } catch {
+      return { glass: true, vgpu: true };
+    }
+  });
+  const changeAssetOptions = useCallback((next: Pick<FancyAssetRequirements, "glass" | "vgpu">) => {
+    setAssetOptions((previous) =>
+      previous.glass === next.glass && previous.vgpu === next.vgpu ? previous : next,
+    );
+  }, []);
+  const preparation = useFancyPreparation(fancyStuff.enabled, { background, ...assetOptions });
+  const [startupSettled, setStartupSettled] = useState(false);
   const changeFancyStuff = (settings: FancyStuffSettings) => {
     const next = validateFancyStuffSettings(settings);
     setFancyStuff(next);
@@ -2977,6 +3016,13 @@ const AppContent = () => {
   const [browserGameRecoveryPending, setBrowserGameRecoveryPending] = useState(false);
   const [browserGameRecoveryError, setBrowserGameRecoveryError] = useState(false);
   const [browserGameReleaseError, setBrowserGameReleaseError] = useState(false);
+  useEffect(() => {
+    if (preparation.status !== "preparing" || selectedClub !== null || editingClub !== null)
+      setStartupSettled(true);
+  }, [preparation.status, selectedClub, editingClub]);
+  useEffect(() => {
+    if (!preparation.enabled) setOpening(null);
+  }, [preparation.enabled]);
 
   const cancelEntry = useCallback(() => {
     entryInFlight.current = false;
@@ -3165,7 +3211,7 @@ const AppContent = () => {
     setBlockedClub(null);
     entryInFlight.current = true;
     setWorkspaceReady(false);
-    setOpening(fancyStuff.clubEntryEffects ? { ...origin, locale } : null);
+    setOpening(preparation.enabled ? { ...origin, locale } : null);
     setSelectedClub(club);
   };
 
@@ -3266,14 +3312,41 @@ const AppContent = () => {
     }
   };
 
+  const startupPreparation =
+    !startupSettled &&
+    preparation.status === "preparing" &&
+    selectedClub === null &&
+    editingClub === null &&
+    user !== null &&
+    !loading &&
+    error === null &&
+    storageError === null &&
+    browserGameState.kind === "empty" &&
+    !showDeletionNotice;
+  const preparationNotice =
+    user !== null &&
+    !loading &&
+    error === null &&
+    storageError === null &&
+    browserGameState.kind !== "invalid" &&
+    blockedClub === null ? (
+      <FancyPreparation
+        status={preparation.status}
+        startup={startupPreparation}
+        onContinue={preparation.skip}
+        onRetry={preparation.retry}
+      />
+    ) : null;
+
   const portal = (
     <div
       key="club-portal"
       ref={portalRef}
-      className="club-entry-source"
+      className={`club-entry-source${preparation.enabled ? "" : " is-fancy-off"}`}
+      data-fancy-features={preparation.enabled ? "on" : "off"}
       data-burning={opening !== null ? "true" : undefined}
-      inert={opening !== null}
-      aria-hidden={opening !== null ? true : undefined}
+      inert={opening !== null || startupPreparation}
+      aria-hidden={opening !== null || startupPreparation ? true : undefined}
       lang={opening?.locale ?? portalLocale}
     >
       <I18nProvider locale={opening?.locale ?? portalLocale} manageDocumentLanguage={false}>
@@ -3295,7 +3368,7 @@ const AppContent = () => {
           onOpenClub={openClub}
         />
       </I18nProvider>
-      {fancyStuff.clubEntryEffects ? (
+      {preparation.enabled ? (
         <ClubFire
           rootRef={portalRef}
           enabled={
@@ -3318,7 +3391,8 @@ const AppContent = () => {
 
   if (selectedClub !== null) {
     return (
-      <>
+      <FancyFeaturesContext.Provider value={preparation.enabled}>
+        {preparationNotice}
         <div
           key="club-workspace"
           className="club-entry-destination"
@@ -3362,6 +3436,7 @@ const AppContent = () => {
             onThemeColorChange={setThemeColor}
             fancyStuff={fancyStuff}
             onFancyStuffChange={changeFancyStuff}
+            onFancyRequirementsChange={changeAssetOptions}
           />
         </div>
         {opening !== null ? portal : null}
@@ -3373,7 +3448,7 @@ const AppContent = () => {
             onComplete={completeEntry}
           />
         ) : null}
-      </>
+      </FancyFeaturesContext.Provider>
     );
   }
 
@@ -3382,7 +3457,8 @@ const AppContent = () => {
     !clubs.some(({ id }) => id === browserGameState.attachment.clubId);
 
   return (
-    <>
+    <FancyFeaturesContext.Provider value={preparation.enabled}>
+      {preparationNotice}
       {portal}
       {browserGameState.kind === "invalid" ? (
         <div className="browser-game-backdrop">
@@ -3471,6 +3547,6 @@ const AppContent = () => {
           </section>
         </div>
       ) : null}
-    </>
+    </FancyFeaturesContext.Provider>
   );
 };

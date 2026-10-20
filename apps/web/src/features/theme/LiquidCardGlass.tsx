@@ -6,6 +6,7 @@ import type { CSSProperties } from "react";
 import { createLiquidCardLens } from "./liquid-card-lens.js";
 import type { LiquidCardLens } from "./liquid-card-lens.js";
 import { createFiniteGlassSweep } from "./finite-glass-sweep.js";
+import { useFancyFeatures } from "../effects/FancyFeaturesContext.js";
 import "./LiquidCardGlass.css";
 
 const RESIZE_SETTLE_MS = 100;
@@ -33,6 +34,7 @@ const localRadius = (surface: HTMLElement, width: number, height: number): numbe
  * fill, focus outline and state colours; this span owns only the glass surface.
  */
 export const LiquidCardGlass = () => {
+  const fancyEnabled = useFancyFeatures();
   const sharedReady = useContext(SharedGlassContext);
   const appearance = validateGlassSettings({
     ...DEFAULT_GLASS_SETTINGS,
@@ -41,10 +43,11 @@ export const LiquidCardGlass = () => {
   const surfaceRef = useRef<HTMLSpanElement>(null);
   const lightRef = useRef<HTMLSpanElement>(null);
   const filterId = `liquid-card-lens-${useId()}`;
-  const [lens, setLens] = useState<LiquidCardLens | null>(null);
+  const [preparedLens, setLens] = useState<LiquidCardLens | null>(null);
+  const lens = fancyEnabled ? preparedLens : null;
 
   useEffect(() => {
-    if (sharedReady) {
+    if (!fancyEnabled || sharedReady) {
       setLens(null);
       return;
     }
@@ -71,6 +74,7 @@ export const LiquidCardGlass = () => {
     };
     reducedTransparency?.addEventListener?.("change", updateLens);
     const scheduleResize = (nextWidth: number, nextHeight: number) => {
+      if (disposed) return;
       if (width === nextWidth && height === nextHeight) return;
       width = nextWidth;
       height = nextHeight;
@@ -99,9 +103,10 @@ export const LiquidCardGlass = () => {
       view.removeEventListener("resize", onWindowResize);
       reducedTransparency?.removeEventListener?.("change", updateLens);
     };
-  }, [sharedReady]);
+  }, [fancyEnabled, sharedReady]);
 
   useEffect(() => {
+    if (!fancyEnabled) return;
     const surface = surfaceRef.current;
     const light = lightRef.current;
     const host = surface?.parentElement;
@@ -126,7 +131,7 @@ export const LiquidCardGlass = () => {
       host.removeEventListener("pointerenter", sweep);
       host.removeEventListener("pointerdown", sweep);
     };
-  }, [sharedReady]);
+  }, [fancyEnabled, sharedReady]);
 
   const style = {
     "--card-nomination-color": appearance.nominationColor,
@@ -146,7 +151,7 @@ export const LiquidCardGlass = () => {
   return (
     <span
       ref={surfaceRef}
-      className="liquid-card-glass"
+      className={`liquid-card-glass${fancyEnabled ? "" : " liquid-card-glass--static"}`}
       aria-hidden="true"
       data-liquid-card-lens={lens === null ? "fallback" : "ready"}
       style={style}
@@ -185,9 +190,11 @@ export const LiquidCardGlass = () => {
         </svg>
       )}
       <span className="liquid-card-glass__backdrop" aria-hidden="true" />
-      <span className="liquid-card-glass__caustics" aria-hidden="true">
-        <span ref={lightRef} className="liquid-card-glass__light" aria-hidden="true" />
-      </span>
+      {fancyEnabled ? (
+        <span className="liquid-card-glass__caustics" aria-hidden="true">
+          <span ref={lightRef} className="liquid-card-glass__light" aria-hidden="true" />
+        </span>
+      ) : null}
       <span className="liquid-card-glass__rim" aria-hidden="true" />
     </span>
   );

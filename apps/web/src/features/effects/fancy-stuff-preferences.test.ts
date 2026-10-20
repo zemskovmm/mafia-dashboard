@@ -15,8 +15,8 @@ describe("fancy stuff preferences", () => {
         values.set(key, value);
       }),
     };
-    expect(readFancyStuffSettings(() => storage)).toEqual({ version: 1, clubEntryEffects: true });
-    const off = { ...DEFAULT_FANCY_STUFF_SETTINGS, clubEntryEffects: false };
+    expect(readFancyStuffSettings(() => storage)).toEqual({ version: 2, enabled: true });
+    const off = { ...DEFAULT_FANCY_STUFF_SETTINGS, enabled: false };
     writeFancyStuffSettings(off, () => storage);
     expect(storage.setItem).toHaveBeenCalledExactlyOnceWith(
       FANCY_STUFF_STORAGE_KEY,
@@ -33,12 +33,21 @@ describe("fancy stuff preferences", () => {
     "[]",
     '"false"',
     '{"clubEntryEffects":false}',
-    '{"version":2,"clubEntryEffects":false}',
+    '{"version":3,"enabled":false}',
+    '{"version":2,"enabled":"false"}',
     '{"version":1,"clubEntryEffects":"false"}',
   ])("defaults safely for absent or malformed stored data: %s", (raw) => {
     expect(readFancyStuffSettings(() => ({ getItem: () => raw }))).toEqual(
       DEFAULT_FANCY_STUFF_SETTINGS,
     );
+  });
+
+  it.each([false, true])("preserves the old entry-effects choice as the master: %s", (enabled) => {
+    expect(
+      readFancyStuffSettings(() => ({
+        getItem: () => JSON.stringify({ version: 1, clubEntryEffects: enabled }),
+      })),
+    ).toEqual({ version: 2, enabled });
   });
 
   it("tolerates denied storage access, reads and writes", () => {

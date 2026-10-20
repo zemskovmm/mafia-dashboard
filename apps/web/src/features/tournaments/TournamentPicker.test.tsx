@@ -5,6 +5,8 @@ import { I18nProvider } from "../../i18n/I18nProvider.js";
 import type * as ApiClient from "../../api/client.js";
 import { createTournament, listTournaments } from "../../api/client.js";
 import { TournamentPicker } from "./TournamentPicker.js";
+import { SetupTournamentFieldsContext } from "./SetupTournamentFieldsContext.js";
+import { useState } from "react";
 
 vi.mock("../../api/client.js", async (importOriginal) => ({
   ...(await importOriginal<typeof ApiClient>()),
@@ -29,6 +31,75 @@ beforeEach(() => {
 });
 
 describe("TournamentPicker", () => {
+  it("keeps loading, error/retry, empty and disabled fields in the setup slot with fail-closed validity", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<readonly (typeof tournament)[]>();
+    vi.mocked(listTournaments).mockReturnValueOnce(pending.promise).mockResolvedValueOnce([]);
+    const validity = vi.fn();
+    const change = vi.fn();
+    const Fixture = ({ disabled = false }: { disabled?: boolean }) => {
+      const [target, setTarget] = useState<HTMLDivElement | null>(null);
+      return (
+        <>
+          <header data-testid="heading">
+            <SetupTournamentFieldsContext.Provider value={target}>
+              <TournamentPicker
+                compact
+                clubId="club-a"
+                value="event-a"
+                disabled={disabled}
+                onChange={change}
+                onValidityChange={validity}
+              />
+            </SetupTournamentFieldsContext.Provider>
+          </header>
+          <div data-testid="lower-fields" ref={setTarget} />
+        </>
+      );
+    };
+    const { rerender } = render(<Fixture />);
+    const slot = screen.getByTestId("lower-fields");
+    const select = screen.getByRole("combobox", { name: "Tournament" });
+    expect(slot).toContainElement(select);
+    expect(slot).toHaveTextContent("Loading tournaments…");
+    expect(validity).toHaveBeenLastCalledWith(false);
+    expect(select).toBeDisabled();
+    await act(async () => pending.reject(new Error("private")));
+    expect(slot).toContainElement(screen.getByRole("alert"));
+    expect(screen.getByTestId("heading")).not.toContainElement(select);
+    expect(validity).toHaveBeenLastCalledWith(false);
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(select).toBeEnabled());
+    expect(screen.getAllByRole("option")).toHaveLength(2);
+    expect(screen.queryByRole("option", { name: "Autumn cup" })).toBeNull();
+    expect(validity).toHaveBeenLastCalledWith(false);
+    await user.click(screen.getByRole("button", { name: "New tournament…" }));
+    await user.type(screen.getByRole("textbox"), "Autumn cup");
+    await user.click(screen.getByRole("button", { name: "Create tournament" }));
+    await waitFor(() => expect(change).toHaveBeenCalledExactlyOnceWith("event-a"));
+    expect(slot).toContainElement(screen.getByRole("option", { name: "Autumn cup" }));
+    expect(select).toHaveValue("event-a");
+    expect(validity).toHaveBeenLastCalledWith(true);
+    rerender(<Fixture disabled />);
+    expect(select).toBeDisabled();
+    expect(screen.getByRole("switch")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "New tournament…" })).toBeDisabled();
+    expect(listTournaments).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves non-setup and noncompact consumers inline even when a setup target exists", () => {
+    const target = document.createElement("div");
+    const { container } = render(
+      <SetupTournamentFieldsContext.Provider value={target}>
+        <TournamentPicker clubId="club-a" value="event-a" onChange={vi.fn()} />
+      </SetupTournamentFieldsContext.Provider>,
+    );
+    expect(container.querySelector(".tournament-picker")).toContainElement(
+      screen.getByRole("combobox"),
+    );
+    expect(target).toBeEmptyDOMElement();
+  });
+
   it("uses compact inline creation with a separately cancelled native dialog and preserves selection", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();

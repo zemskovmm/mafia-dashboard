@@ -26,6 +26,8 @@ export interface RulesChapter {
 
 export interface RulesSketchbookProps {
   readonly open: boolean;
+  /** The host keeps optional presentation flat until shared assets are ready. */
+  readonly enhancedReady?: boolean;
   readonly targetId?: string;
   readonly locale: Locale;
   readonly chapters: readonly RulesChapter[];

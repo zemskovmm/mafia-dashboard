@@ -9,8 +9,8 @@ import {
 import { createPortal } from "react-dom";
 import { rulesReaderMessages as labels } from "../../i18n/messages/rules-reader.js";
 import type { RulesChapter, RulesSketchbookProps } from "./rules-types.js";
-import clubArt from "./assets/club.webp";
-import nightArt from "./assets/night.webp";
+import { useFancyFeatures } from "../effects/FancyFeaturesContext.js";
+import { clubArt, nightArt } from "./rules-book-assets.js";
 import "./rules-sketchbook.css";
 
 type Position = { chapter: number; side: "art" | "text" };
@@ -188,6 +188,7 @@ interface LeafProps {
   error?: string;
   scrollTop?: number;
   onScroll?: (top: number) => void;
+  enhanced?: boolean;
 }
 function Leaf({
   position,
@@ -199,6 +200,7 @@ function Leaf({
   error,
   scrollTop = 0,
   onScroll,
+  enhanced = true,
 }: LeafProps) {
   const body = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
@@ -272,7 +274,7 @@ function Leaf({
                 </section>
               ))}
             </nav>
-            <p className="rs-contents-note">{l.hint}</p>
+            <p className="rs-contents-note">{enhanced ? l.hint : l.flatHint}</p>
             <p className="rs-source-note">{l.note}</p>
           </div>
         )
@@ -351,7 +353,10 @@ export default function RulesSketchbook({
   locale,
   chapters,
   onClose,
+  enhancedReady = true,
 }: RulesSketchbookProps) {
+  const fancy = useFancyFeatures();
+  const enhanced = fancy && enhancedReady;
   const [position, setPosition] = useState<Position>({ chapter: 0, side: "text" });
   const [error, setError] = useState<string>();
   const [layout, setLayout] = useState(dimensions);
@@ -439,6 +444,15 @@ export default function RulesSketchbook({
     releaseCapture();
   };
   cancelRef.current = cancel;
+  useLayoutEffect(() => {
+    cancelRef.current();
+    if (!enhanced) setPosition((current) => ({ ...current, side: "text" }));
+    // A visited but closed toolbar/penalty reader must not clear another host's
+    // active decoration. Only an open enhanced reader owns this body class.
+    if (!open || !enhanced) return;
+    document.body.classList.add("rules-sketchbook-enhanced");
+    return () => document.body.classList.remove("rules-sketchbook-enhanced");
+  }, [open, enhanced]);
   const close = () => {
     cancel();
     onCloseRef.current();
@@ -504,7 +518,7 @@ export default function RulesSketchbook({
     duration = 720,
   ) => {
     if (!open || activeTurn.current) return;
-    if (reducedMotion()) {
+    if (!enhanced || reducedMotion()) {
       if (automatic) setPosition(to);
       return;
     }
@@ -542,7 +556,7 @@ export default function RulesSketchbook({
     else {
       const direction = chapter > position.chapter ? 1 : -1;
       const distance = Math.abs(chapter - position.chapter);
-      if (chapter >= 0 && distance > 1 && !reducedMotion()) {
+      if (enhanced && chapter >= 0 && distance > 1 && !reducedMotion()) {
         // Traverse real intervening chapters, speeding long trips rather than
         // making the reader wait for a full manual turn on every spread.
         const duration = Math.min(320, 1200 / distance);
@@ -566,7 +580,7 @@ export default function RulesSketchbook({
   };
   const destination = (direction: number): Position | null => {
     if (error) return null;
-    if (layout.single) {
+    if (enhanced && layout.single) {
       const physical =
         position.chapter < 0 ? -1 : position.chapter * 2 + (position.side === "text" ? 1 : 0);
       const next = physical + direction;
@@ -638,7 +652,10 @@ export default function RulesSketchbook({
       0.002,
       Math.min(
         0.998,
-        (-dx * current.direction) / ((layout.width / (layout.single ? 1 : 2)) * 1.65),
+        (-dx * current.direction) /
+          (((book.current?.getBoundingClientRect().width || layout.width) /
+            (enhanced && !layout.single ? 2 : 1)) *
+            1.65),
       ),
     );
     draw(current.progress);
@@ -649,7 +666,7 @@ export default function RulesSketchbook({
     releaseCapture();
     suppressClick.current = true;
     if (current.moved) {
-      if (reducedMotion()) {
+      if (!enhanced || reducedMotion()) {
         if (current.progress > 0.16) go(current.direction);
       } else animate(current.progress > 0.16 ? 1 : 0);
     } else go(current.direction);
@@ -665,9 +682,9 @@ export default function RulesSketchbook({
           : turn.from;
   const visibleSide = turn && layout.single ? turn.to.side : position.side;
   const style = {
-    "--rs-width": `${layout.width}px`,
+    "--rs-width": `${enhanced ? layout.width : Math.min(760, layout.width)}px`,
     "--rs-height": `${layout.height}px`,
-    "--rs-page": `${layout.width / (layout.single ? 1 : 2)}px`,
+    "--rs-page": `${enhanced ? layout.width / (layout.single ? 1 : 2) : Math.min(760, layout.width)}px`,
   } as CSSProperties;
   if (open) hasOpened.current = true;
   if (!hasOpened.current) return null;
@@ -675,7 +692,8 @@ export default function RulesSketchbook({
     <dialog
       ref={dialog}
       className="rules-sketchbook"
-      aria-label={labels[locale].book}
+      data-presentation={enhanced ? "enhanced" : "flat"}
+      aria-label={enhanced ? labels[locale].book : labels[locale].flatBook}
       lang={locale}
       onCancel={(event) => {
         event.preventDefault();
@@ -715,7 +733,7 @@ export default function RulesSketchbook({
           </button>
           <div
             ref={book}
-            className={`rs-book ${layout.single ? "rs-single" : ""} ${turn ? "rs-turning" : ""}`}
+            className={`rs-book ${layout.single || !enhanced ? "rs-single" : ""} ${turn ? "rs-turning" : ""}`}
             data-chapter={error ? "unavailable" : (chapters[position.chapter]?.id ?? "contents")}
             data-side={position.side}
             aria-busy={turn ? true : undefined}
@@ -738,7 +756,7 @@ export default function RulesSketchbook({
               go(paperDirection(event.clientX));
             }}
           >
-            <div className="rs-binding" aria-hidden="true" />
+            {enhanced && <div className="rs-binding" aria-hidden="true" />}
             <div
               className="rs-spread"
               aria-hidden={turn ? true : undefined}
@@ -746,13 +764,15 @@ export default function RulesSketchbook({
             >
               {(["art", "text"] as const).map(
                 (face) =>
-                  (!layout.single || visibleSide === face) && (
+                  ((!enhanced && face === "text") ||
+                    (enhanced && (!layout.single || visibleSide === face))) && (
                     <Leaf
                       key={face}
                       position={visiblePosition(face)}
                       face={face}
                       chapters={chapters}
                       locale={locale}
+                      enhanced={enhanced}
                       onChoose={choose}
                       error={face === "text" ? error : undefined}
                       scrollTop={scrollTop(visiblePosition(face))}
@@ -768,8 +788,8 @@ export default function RulesSketchbook({
                   ),
               )}
             </div>
-            <div className="rs-spine" aria-hidden="true" />
-            {turn && (
+            {enhanced && <div className="rs-spine" aria-hidden="true" />}
+            {enhanced && turn && (
               <div
                 className={`rs-curl ${turn.direction < 0 ? "rs-reverse" : ""}`}
                 aria-hidden="true"
@@ -824,25 +844,25 @@ export default function RulesSketchbook({
                 ))}
               </div>
             )}
-            <button
-              type="button"
-              className="rs-edge rs-back"
-              aria-label={labels[locale].previous}
-              disabled={!destination(-1) || Boolean(turn)}
-              onClick={() => go(-1)}
-            >
-              <span aria-hidden="true">‹</span>
-            </button>
-            <button
-              type="button"
-              className="rs-edge rs-next"
-              aria-label={labels[locale].next}
-              disabled={!destination(1) || Boolean(turn)}
-              onClick={() => go(1)}
-            >
-              <span aria-hidden="true">›</span>
-            </button>
           </div>
+          <button
+            type="button"
+            className="rs-edge rs-back"
+            aria-label={labels[locale].previous}
+            disabled={!destination(-1) || Boolean(turn)}
+            onClick={() => go(-1)}
+          >
+            <span aria-hidden="true">‹</span>
+          </button>
+          <button
+            type="button"
+            className="rs-edge rs-next"
+            aria-label={labels[locale].next}
+            disabled={!destination(1) || Boolean(turn)}
+            onClick={() => go(1)}
+          >
+            <span aria-hidden="true">›</span>
+          </button>
         </div>
       </div>
       <p className="rs-sr-only" role="status" aria-live="polite">

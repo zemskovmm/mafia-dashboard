@@ -825,6 +825,9 @@ export async function verifySharedPlayerGlass({ browser, config, url, evidence, 
             `Fresh ${scenario} must render default-on shared glass without developer access; actual status=${await page.locator(".app-shell").getAttribute("data-glass-status")}; ${error.message}`,
           ),
         );
+      // Renderer readiness precedes WebKit's derived fallback-style resolution.
+      // Measure settled material at the native paint boundary, not mid-update.
+      await settle(page);
       assert.equal(await page.locator(".glass-scene-canvas").count(), 1);
       if (scenario === "availability")
         receipt.material = {
@@ -1105,7 +1108,6 @@ export async function verifySharedPlayerGlass({ browser, config, url, evidence, 
       // It must not depend on reopening or retaining any developer controls.
       await page.evaluate(() => {
         localStorage.removeItem("mafia-dashboard.developer-unlocked.v1");
-        localStorage.removeItem("mafia-dashboard.developer-mode.v1");
       });
       await page.reload();
       await page.waitForFunction(

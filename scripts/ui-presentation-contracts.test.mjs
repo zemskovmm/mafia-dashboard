@@ -303,7 +303,14 @@ test("mode selection retains each named journey and requires the gameplay parent
     );
     assert.throws(() => resolveUiMode({ [`UI_${mode}_ONLY`]: "1" }), /requires UI_HEADER_ONLY/);
   }
-  for (const mode of ["SIDE_PANEL", "MUSIC", "LAYOUT", "RULES_SKETCHBOOK", "FEDERATION"]) {
+  for (const mode of [
+    "SIDE_PANEL",
+    "MUSIC",
+    "LAYOUT",
+    "RULES_SKETCHBOOK",
+    "FEDERATION",
+    "FANCY_FEATURES",
+  ]) {
     assert.equal(
       resolveUiMode({ [`UI_${mode}_ONLY`]: "1" }),
       mode.toLowerCase().replaceAll("_", "-"),

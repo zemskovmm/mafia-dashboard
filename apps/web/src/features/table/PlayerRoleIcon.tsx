@@ -8,14 +8,15 @@ import { RoleDrawIcon } from "./RoleDrawPresentation.js";
 export const PlayerRoleIcon = ({
   role,
   playerId,
-}: Readonly<{ role?: Role; playerId?: string }>) => {
+  unknown = false,
+}: Readonly<{ role?: Role; playerId?: string; unknown?: boolean }>) => {
   const { t } = useMessages(gameMessages);
   const { roleIcons, images } = usePlayerRoleAppearance(playerId);
   // Resolve the whole appearance bundle independent of role visibility.
   if (role === undefined)
     return (
       <span className="player-role-icon" aria-hidden="true">
-        <RoleDrawIcon />
+        <RoleDrawIcon unknown={unknown} />
       </span>
     );
   return (

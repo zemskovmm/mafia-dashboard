@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { DEFAULT_PLAYER_PULSE, type PlayerPulseSettings } from "../lighting-preferences.js";
 import { loadVgpuLightingRuntime, type VgpuLightingRuntime } from "./VgpuLightingRuntime.js";
+import { useFancyFeatures } from "../FancyFeaturesContext.js";
 
 interface RuntimeOptions {
   readonly onError: (error: unknown) => void;
@@ -29,14 +30,16 @@ export const VgpuLightingProvider = ({
   createRuntime = loadVgpuLightingRuntime,
   children,
 }: VgpuLightingProviderProps) => {
+  const fancyEnabled = useFancyFeatures();
+  const active = enabled && fancyEnabled;
   const [runtime, setRuntime] = useState<VgpuLightingRuntime | null>(null);
 
   useEffect(() => {
-    runtime?.setPlayerPulse(playerPulse);
-  }, [playerPulse, runtime]);
+    if (active) runtime?.setPlayerPulse(playerPulse);
+  }, [active, playerPulse, runtime]);
 
   useEffect(() => {
-    if (!enabled) {
+    if (!active) {
       setRuntime(null);
       return;
     }
@@ -87,7 +90,9 @@ export const VgpuLightingProvider = ({
       activeRuntime?.dispose();
       activeRuntime = null;
     };
-  }, [createRuntime, enabled, generation, onFailure, onReady]);
+  }, [active, createRuntime, generation, onFailure, onReady]);
 
-  return <RuntimeContext.Provider value={runtime}>{children}</RuntimeContext.Provider>;
+  return (
+    <RuntimeContext.Provider value={active ? runtime : null}>{children}</RuntimeContext.Provider>
+  );
 };

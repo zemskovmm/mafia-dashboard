@@ -61,25 +61,25 @@
   max-width: 100%;
   margin-left: auto;
 }
-.tournament-picker--compact .tournament-picker-fields {
+.tournament-picker-fields--compact {
   flex: 1 1 220px;
   min-width: 0;
   grid-template-columns: minmax(0, 1fr) 48px;
   gap: 4px 8px;
   align-items: start;
 }
-.tournament-picker--compact .tournament-picker-fields > label {
+.tournament-picker-fields--compact > label {
   grid-column: 1;
   grid-row: 1;
   font-size: 0;
   gap: 0;
 }
-.tournament-picker--compact .tournament-picker-fields select {
+.tournament-picker-fields--compact select {
   width: 100%;
   min-width: 0;
   font-size: 0.9rem;
 }
-.tournament-picker--compact .tournament-picker-new {
+.tournament-picker-fields--compact .tournament-picker-new {
   grid-column: 2;
   grid-row: 1;
   width: 48px;
@@ -87,7 +87,7 @@
   padding: 0;
   font-size: 1.5rem;
 }
-.tournament-picker--compact .tournament-picker-fields > :not(label, .tournament-picker-new) {
+.tournament-picker-fields--compact > :not(label, .tournament-picker-new) {
   grid-column: 1 / -1;
 }
 .tournament-create-dialog {
@@ -161,11 +161,11 @@
   }
 }
 
-.tournament-picker--compact .tournament-picker-fields > div {
+.tournament-picker-fields--compact > div {
   display: flex;
   gap: 8px;
   align-items: center;
 }
-.tournament-picker--compact .tournament-picker-fields > div > p {
+.tournament-picker-fields--compact > div > p {
   flex: 1;
 }

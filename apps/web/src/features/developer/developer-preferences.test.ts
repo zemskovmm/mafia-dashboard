@@ -5,7 +5,6 @@ import {
   DEVELOPER_UNLOCKED_STORAGE_KEY,
   PREVIEW_UNDEALT_ROLES_STORAGE_KEY,
   readDeveloperPreferences,
-  writeDeveloperModeEnabled,
   writeDeveloperUnlocked,
   writePreviewUndealtRoles,
 } from "./developer-preferences.js";
@@ -14,7 +13,6 @@ describe("developer preferences", () => {
   it("defaults developer flags and role preview off and rejects malformed values", () => {
     expect(readDeveloperPreferences({ getItem: () => null })).toEqual({
       unlocked: false,
-      devModeEnabled: false,
       previewUndealtRoles: false,
     });
     expect(
@@ -26,19 +24,19 @@ describe("developer preferences", () => {
               ? "yes"
               : null,
       }),
-    ).toEqual({ unlocked: false, devModeEnabled: false, previewUndealtRoles: false });
+    ).toEqual({ unlocked: false, previewUndealtRoles: false });
   });
 
-  it("persists developer menu access and development tools independently", () => {
+  it("persists one developer access flag and ignores the retired enable flag", () => {
     const setItem = vi.fn();
 
     writeDeveloperUnlocked({ setItem }, true);
-    writeDeveloperModeEnabled({ setItem }, true);
-    writeDeveloperModeEnabled({ setItem }, false);
-
-    expect(setItem).toHaveBeenNthCalledWith(1, DEVELOPER_UNLOCKED_STORAGE_KEY, "unlocked");
-    expect(setItem).toHaveBeenNthCalledWith(2, DEVELOPER_MODE_ENABLED_STORAGE_KEY, "enabled");
-    expect(setItem).toHaveBeenNthCalledWith(3, DEVELOPER_MODE_ENABLED_STORAGE_KEY, "disabled");
+    expect(setItem).toHaveBeenCalledExactlyOnceWith(DEVELOPER_UNLOCKED_STORAGE_KEY, "unlocked");
+    expect(
+      readDeveloperPreferences({
+        getItem: (key) => (key === DEVELOPER_MODE_ENABLED_STORAGE_KEY ? "enabled" : null),
+      }).unlocked,
+    ).toBe(false);
   });
 
   it("persists the role preview independently and fails closed when storage is blocked", () => {
@@ -50,7 +48,6 @@ describe("developer preferences", () => {
     writePreviewUndealtRoles(storage, true);
     expect(readDeveloperPreferences(storage)).toEqual({
       unlocked: false,
-      devModeEnabled: false,
       previewUndealtRoles: true,
     });
     writePreviewUndealtRoles(storage, false);
@@ -60,10 +57,10 @@ describe("developer preferences", () => {
     };
     expect(readDeveloperPreferences({ getItem: blocked })).toEqual({
       unlocked: false,
-      devModeEnabled: false,
       previewUndealtRoles: false,
     });
     expect(() => writePreviewUndealtRoles({ setItem: blocked }, true)).not.toThrow();
+    expect(() => writeDeveloperUnlocked({ setItem: blocked }, true)).not.toThrow();
     expect(() => clearDeveloperPreferences({ removeItem: blocked })).not.toThrow();
   });
 

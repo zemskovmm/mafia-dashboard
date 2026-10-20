@@ -11,6 +11,7 @@ import {
 } from "react";
 import type { PlayerExitSettings } from "../effects/player-exit-preferences.js";
 import { pendingGoodbyeSeats, playerExitSeats } from "./player-exit-transitions.js";
+import { useFancyFeatures } from "../effects/FancyFeaturesContext.js";
 
 export interface PlayerExitRequest {
   readonly id: number;
@@ -42,7 +43,8 @@ export const PlayerExitProvider = ({
   settings: PlayerExitSettings;
   children: ReactNode;
 }>) => {
-  const previous = useRef({ game, live, privacyHidden });
+  const fancyEnabled = useFancyFeatures();
+  const previous = useRef({ game, live, privacyHidden, fancyEnabled });
   const serial = useRef(0);
   const [requests, setRequests] = useState<Requests>({});
   const complete = useCallback((seat: number, id: number) => {
@@ -56,7 +58,7 @@ export const PlayerExitProvider = ({
 
   useLayoutEffect(() => {
     const before = previous.current;
-    previous.current = { game, live, privacyHidden };
+    previous.current = { game, live, privacyHidden, fancyEnabled };
     const replacement =
       before.game.players.length !== game.players.length ||
       game.players.some(
@@ -66,6 +68,8 @@ export const PlayerExitProvider = ({
     if (
       !live ||
       !before.live ||
+      !fancyEnabled ||
+      !before.fancyEnabled ||
       replacement ||
       !settings.enabled ||
       game.phase === "draw" ||
@@ -92,9 +96,10 @@ export const PlayerExitProvider = ({
         hideRole: before.privacyHidden || privacyHidden,
       };
     setRequests((current) => ({ ...current, ...additions }));
-  }, [game, live, privacyHidden, settings]);
+  }, [fancyEnabled, game, live, privacyHidden, settings]);
 
   useEffect(() => {
+    if (!fancyEnabled || !settings.enabled) return;
     const motion = window.matchMedia?.("(prefers-reduced-motion: reduce)");
     const interrupt = () => {
       if (document.hidden || motion?.matches) setRequests({});
@@ -105,10 +110,11 @@ export const PlayerExitProvider = ({
       document.removeEventListener("visibilitychange", interrupt);
       motion?.removeEventListener("change", interrupt);
     };
-  }, []);
+  }, [fancyEnabled, settings.enabled]);
 
   // Expire even if a phase temporarily has no table. New table instances join the same clock.
   useEffect(() => {
+    if (!fancyEnabled) return;
     const timers = Object.entries(requests).flatMap(([seat, request]) =>
       request
         ? [
@@ -126,11 +132,16 @@ export const PlayerExitProvider = ({
         : [],
     );
     return () => timers.forEach((timer) => window.clearTimeout(timer));
-  }, [requests, complete]);
+  }, [fancyEnabled, requests, complete]);
 
   return (
     <PlayerExitContext.Provider
-      value={{ requests, waiting: live ? pendingGoodbyeSeats(game) : [], privacyHidden, complete }}
+      value={{
+        requests: fancyEnabled ? requests : {},
+        waiting: live ? pendingGoodbyeSeats(game) : [],
+        privacyHidden,
+        complete,
+      }}
     >
       {children}
     </PlayerExitContext.Provider>

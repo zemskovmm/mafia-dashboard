@@ -45,6 +45,13 @@
   display: block;
   min-width: 0;
 }
+.player-setup-tournament-fields:empty {
+  display: none;
+}
+.player-setup-tournament-fields {
+  min-width: 0;
+  margin-bottom: 16px;
+}
 .player-setup-card .setup-seat-content {
   display: grid;
   grid-template-columns: 32px minmax(0, 1fr) 48px;

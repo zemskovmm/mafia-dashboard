@@ -1,5 +1,6 @@
 const en = {
   book: "Illustrated Mafia rulebook",
+  flatBook: "Mafia rules",
   close: "Close book",
   contents: "Contents",
   previous: "Previous page",
@@ -14,6 +15,7 @@ const en = {
   missing: "This reference is not available",
   empty: "The book is not available",
   hint: "Choose a chapter. We’ll turn the pages.",
+  flatHint: "Choose a chapter to read.",
   note: "An authored club guide based on MAFGAME, 28 April 2026. Not a complete rulebook or an official translation. App-specific procedures and retained legacy editions may differ.",
   tableCaption: "one table, many stories",
   cardsCaption: "read the people, not the cards",
@@ -26,12 +28,14 @@ const en = {
   statusClose: "Close",
   loading: "Opening the book…",
   failed: "The book could not load. Your game and unfinished form are unchanged.",
+  retry: "Try again",
   readRule: "Read rule {rule} in the book",
   chooseRule: "Choose a rule to read",
 } as const;
 
 const ru = {
   book: "Иллюстрированные правила Мафии",
+  flatBook: "Правила Мафии",
   close: "Закрыть книгу",
   contents: "Содержание",
   previous: "Предыдущая страница",
@@ -46,6 +50,7 @@ const ru = {
   missing: "Это правило недоступно",
   empty: "Книга недоступна",
   hint: "Выберите главу — страницы перелистнутся.",
+  flatHint: "Выберите главу для чтения.",
   note: "Авторское клубное руководство по MAFGAME от 28 апреля 2026 года. Не полный регламент и не официальный перевод. Процедуры приложения и сохранённые прежние редакции могут отличаться.",
   tableCaption: "один стол, много историй",
   cardsCaption: "читайте людей, а не карты",
@@ -58,6 +63,7 @@ const ru = {
   statusClose: "Закрыть",
   loading: "Открываем книгу…",
   failed: "Книга не загрузилась. Игра и незавершённая форма сохранены без изменений.",
+  retry: "Попробовать снова",
   readRule: "Открыть пункт {rule} в книге",
   chooseRule: "Сначала выберите пункт правил",
 } as const satisfies Record<keyof typeof en, string>;

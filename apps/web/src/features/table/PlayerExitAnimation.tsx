@@ -1,4 +1,5 @@
-import { useLayoutEffect, useRef, type ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useFancyFeatures } from "../effects/FancyFeaturesContext.js";
 import { playerExitMotion } from "../effects/player-exit-motion.js";
 import type { PlayerExitRequest } from "../game/PlayerExitProvider.js";
 import "./PlayerExitAnimation.css";
@@ -15,6 +16,10 @@ export const PlayerExitAnimation = ({
   onComplete: (id: number) => void;
   children: ReactNode;
 }>) => {
+  const fancy = useFancyFeatures();
+  const [suppressedRequest, setSuppressedRequest] = useState<PlayerExitRequest>();
+  const completedRequest = useRef<PlayerExitRequest>(undefined);
+  const presentingRequest = fancy && request !== suppressedRequest ? request : undefined;
   const front = useRef<HTMLSpanElement>(null);
   const back = useRef<HTMLSpanElement>(null);
   const complete = useRef(onComplete);
@@ -23,9 +28,21 @@ export const PlayerExitAnimation = ({
   });
   useLayoutEffect(() => {
     if (!request) return;
+    const finish = () => {
+      if (completedRequest.current === request) return;
+      completedRequest.current = request;
+      complete.current(request.id);
+    };
+    if (!fancy) {
+      // Direct developer previews bypass the provider. Settle here, and retain
+      // the static endpoint if a caller keeps this request through re-enabling.
+      setSuppressedRequest(request);
+      finish();
+      return;
+    }
+    if (completedRequest.current === request) return;
     const card = front.current?.closest<HTMLElement>(".player-seat");
     const motionPreference = window.matchMedia?.("(prefers-reduced-motion: reduce)");
-    const finish = () => complete.current(request.id);
     if (
       !card?.animate ||
       !front.current ||
@@ -86,10 +103,10 @@ export const PlayerExitAnimation = ({
       document.removeEventListener("visibilitychange", interrupt);
       motionPreference?.removeEventListener("change", interrupt);
     };
-  }, [request]);
+  }, [request, fancy]);
 
   const cross = <span className="deceased-cross" aria-hidden="true" />;
-  if (!request)
+  if (!presentingRequest)
     return (
       <>
         {children}

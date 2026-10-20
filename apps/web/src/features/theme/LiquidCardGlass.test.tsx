@@ -4,6 +4,7 @@ import { LiquidCardGlass } from "./LiquidCardGlass.js";
 import { SharedGlassContext } from "./SharedGlassContext.js";
 import { PlayerCardAppearanceContext } from "./PlayerCardAppearanceContext.js";
 import { DEFAULT_GLASS_SETTINGS } from "./glass-preferences.js";
+import { FancyFeaturesContext } from "../effects/FancyFeaturesContext.js";
 
 class TestResizeObserver {
   static instances: TestResizeObserver[] = [];
@@ -82,6 +83,73 @@ afterEach(() => {
 });
 
 describe("LiquidCardGlass", () => {
+  it("creates no optics while Fancy is off and releases only decorative work on live toggles", async () => {
+    const disconnect = vi.spyOn(MutationObserver.prototype, "disconnect");
+    const fixture = (fancy: boolean, shared = false) => (
+      <FancyFeaturesContext.Provider value={fancy}>
+        <SharedGlassContext.Provider value={shared}>
+          <button className="player-seat is-nominated" data-width="257">
+            <LiquidCardGlass />
+            Ada
+          </button>
+          <input aria-label="Draft" defaultValue="unchanged" />
+        </SharedGlassContext.Provider>
+      </FancyFeaturesContext.Provider>
+    );
+    const { container, rerender, unmount } = render(fixture(false));
+    const card = screen.getByRole("button", { name: "Ada" });
+    const draft = screen.getByRole("textbox", { name: "Draft" });
+    const surface = container.querySelector(".liquid-card-glass");
+    expect(surface).toHaveClass("liquid-card-glass--static");
+    expect(container.querySelector("filter, .liquid-card-glass__caustics")).toBeNull();
+    expect(HTMLCanvasElement.prototype.getContext).not.toHaveBeenCalled();
+    expect(TestResizeObserver.instances).toHaveLength(0);
+    expect(mediaQueries.size).toBe(0);
+    fireEvent.pointerDown(card);
+    expect(animate).not.toHaveBeenCalled();
+    rerender(fixture(false, true));
+    expect(TestResizeObserver.instances).toHaveLength(0);
+
+    fireEvent.change(draft, { target: { value: "kept draft" } });
+    rerender(fixture(true));
+    expect(container.querySelector("filter")).toBeInTheDocument();
+    expect(surface).not.toHaveClass("liquid-card-glass--static");
+    fireEvent.pointerDown(card);
+    expect(animations).toHaveLength(1);
+    const observer = TestResizeObserver.instances[0]!;
+    act(() => observer.resize(261, 108));
+    expect(vi.getTimerCount()).toBeGreaterThan(0);
+
+    rerender(fixture(false));
+    expect(observer.disconnect).toHaveBeenCalledOnce();
+    expect(disconnect).toHaveBeenCalled();
+    expect(animations[0]?.cancel).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(container.querySelector("filter, .liquid-card-glass__caustics")).toBeNull();
+    const contextCalls = vi.mocked(HTMLCanvasElement.prototype.getContext).mock.calls.length;
+    act(() => {
+      observer.resize(265, 108);
+      mediaQueries.get("(prefers-reduced-transparency: reduce)")?.change(false);
+      vi.advanceTimersByTime(200);
+    });
+    await act(async () => card.classList.add("is-voted"));
+    fireEvent.pointerDown(card);
+    expect(HTMLCanvasElement.prototype.getContext).toHaveBeenCalledTimes(contextCalls);
+    expect(animations).toHaveLength(1);
+
+    card.setAttribute("data-width", "269");
+    rerender(fixture(true));
+    expect(container.querySelector("filter")).toHaveAttribute("width", "269");
+    expect(animations).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Ada" })).toBe(card);
+    expect(screen.getByRole("textbox", { name: "Draft" })).toBe(draft);
+    expect(draft).toHaveValue("kept draft");
+    fireEvent.pointerDown(card);
+    expect(animations).toHaveLength(2);
+    unmount();
+    expect(animations[1]?.cancel).toHaveBeenCalledOnce();
+  });
+
   it("exposes live nomination material variables independently of glass readiness without rebuilding optics", () => {
     const fixture = (
       nominationTint = 18,

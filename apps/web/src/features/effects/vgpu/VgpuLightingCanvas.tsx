@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useLightingRenderer } from "../LightingRendererContext.js";
+import { useFancyFeatures } from "../FancyFeaturesContext.js";
 import type { PlayerLightingKind } from "../PlayerCardLighting.js";
 import { useVgpuLightingRuntime } from "./VgpuLightingProvider.js";
 import { lightingPadding, type VgpuLightingDescriptor } from "./VgpuLightingRuntime.js";
@@ -60,13 +61,14 @@ const LightingCanvas = ({
 export const VgpuPlayerLightingCanvas = ({
   kind,
 }: Readonly<{ kind: PlayerLightingKind | null }>) => {
+  const fancyEnabled = useFancyFeatures();
   const { requestedRenderer } = useLightingRenderer();
   const descriptor = useMemo<VgpuLightingDescriptor | null>(
     () =>
       kind === null ? null : { kind: "player", ...playerColours[kind], fire: kind === "mafia" },
     [kind],
   );
-  if (requestedRenderer !== "vgpu" || descriptor === null) return null;
+  if (!fancyEnabled || requestedRenderer !== "vgpu" || descriptor === null) return null;
   return (
     <LightingCanvas className="vgpu-lighting-canvas vgpu-player-lighting" descriptor={descriptor} />
   );
@@ -107,6 +109,7 @@ export const ActivePlayerLighting = ({ active }: Readonly<{ active: boolean }>) 
 };
 
 export const VgpuTableLightingCanvas = () => {
+  const fancyEnabled = useFancyFeatures();
   const { requestedRenderer } = useLightingRenderer();
   const canvasRef = useRef<HTMLSpanElement>(null);
   const [cycle, setCycle] = useState<"day" | "night">("day");
@@ -120,10 +123,10 @@ export const VgpuTableLightingCanvas = () => {
     const observer = new MutationObserver(update);
     observer.observe(shell, { attributeFilter: ["class"] });
     return () => observer.disconnect();
-  }, [requestedRenderer]);
+  }, [requestedRenderer, fancyEnabled]);
 
   const descriptor = useMemo<VgpuLightingDescriptor>(() => ({ kind: "table", cycle }), [cycle]);
-  if (requestedRenderer !== "vgpu") return null;
+  if (!fancyEnabled || requestedRenderer !== "vgpu") return null;
   return (
     <span ref={canvasRef} className="vgpu-table-lighting-host">
       <LightingCanvas

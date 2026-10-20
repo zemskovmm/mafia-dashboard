@@ -8,6 +8,7 @@ import {
 import { VgpuPlayerLightingCanvas, VgpuTableLightingCanvas } from "./VgpuLightingCanvas.js";
 import { VgpuLightingProvider } from "./VgpuLightingProvider.js";
 import type { VgpuLightingRuntime } from "./VgpuLightingRuntime.js";
+import { FancyFeaturesContext } from "../FancyFeaturesContext.js";
 
 const lighting: LightingRendererContextValue = {
   requestedRenderer: "vgpu",
@@ -65,6 +66,28 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("V-GPU lighting canvases", () => {
+  it("omits and releases both canvas families while Fancy Features is off", async () => {
+    const env = setupRuntime();
+    const tree = (enabled: boolean) => (
+      <FancyFeaturesContext.Provider value={enabled}>
+        <Harness runtime={env.runtime}>
+          <main className="game-shell is-table-cycle-day">
+            <VgpuTableLightingCanvas />
+            <VgpuPlayerLightingCanvas kind="speaker" />
+          </main>
+        </Harness>
+      </FancyFeaturesContext.Provider>
+    );
+    const view = render(tree(false));
+    expect(view.container.querySelectorAll("canvas")).toHaveLength(0);
+    expect(env.register).not.toHaveBeenCalled();
+    view.rerender(tree(true));
+    await waitFor(() => expect(env.register).toHaveBeenCalledTimes(2));
+    view.rerender(tree(false));
+    expect(view.container.querySelectorAll("canvas")).toHaveLength(0);
+    expect(env.disposers.every((dispose) => dispose.mock.calls.length === 1)).toBe(true);
+  });
+
   it("registers the selected player palette and marks the compiled canvas ready", async () => {
     const env = setupRuntime();
     const { container } = render(

@@ -207,7 +207,11 @@ export const GameTable = ({
             <>
               {index(false)}
               {index(true)}
-              <PlayerRoleIcon role={showRole ? faceRole : undefined} playerId={seat.playerId} />
+              <PlayerRoleIcon
+                role={showRole ? faceRole : undefined}
+                playerId={seat.playerId}
+                unknown={roleDraw !== undefined && faceRole === undefined}
+              />
               <span
                 className="card-nomination-status"
                 data-treatment={appearance.nominationTreatment}

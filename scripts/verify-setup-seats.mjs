@@ -441,6 +441,13 @@ async function dragMouse(page, from, to, final = "target", beforeRelease = async
         : { x: Math.max(1, (await page.viewportSize()).width - 3), y: 3 };
   onscreen(page, source, "Mouse drag source");
   onscreen(page, destination, "Mouse drag destination");
+  assert.ok(
+    await handle(page, from).evaluate(
+      (element, point) => element.contains(document.elementFromPoint(point.x, point.y)),
+      source,
+    ),
+    "Mouse drag starts on an unobstructed native handle",
+  );
   const bounds = await seat(page, from).boundingBox();
   bounds.localTop = await seat(page, from).evaluate((el) => el.offsetTop);
   const draggable = (await handle(page, from).getAttribute("aria-disabled")) !== "true";
@@ -873,7 +880,7 @@ async function roleCorrections(page, state, language, tag, cdp) {
   await page.screenshot({ path: path.join(evidence, `${tag}-role-cleared.png`), fullPage: true });
   await awaitSave(page, state);
   await page.reload({ waitUntil: "domcontentloaded" });
-  await expect(roleCard(page, 1).locator(".role-badge")).toHaveCount(0);
+  await expect(roleCard(page, 1).locator(".player-role-icon[role='img']")).toHaveCount(0);
   await expect(page.locator(".table-advance button")).toBeDisabled();
   await noDeviationUI(page);
   unchanged(state, clearedFull, `${tag}: reload lost cleared role`);
@@ -893,6 +900,7 @@ async function roleCorrections(page, state, language, tag, cdp) {
 
 async function rolePreviewScenario(browser, engine, mode) {
   const tag = `role-preview-${engine}-${mode}`;
+  const animated = mode !== "reduced" && mode !== "lightweight";
   if (requestedCase && requestedCase !== tag) return;
   executedCases.push(tag);
   const context = await browser.newContext({
@@ -900,7 +908,12 @@ async function rolePreviewScenario(browser, engine, mode) {
     reducedMotion: mode === "reduced" ? "reduce" : "no-preference",
   });
   await context.addInitScript(
-    ({ fallback }) => {
+    ({ fallback, lightweight }) => {
+      if (lightweight)
+        window.localStorage.setItem(
+          "mafia-dashboard.fancy-stuff.v1",
+          JSON.stringify({ version: 2, enabled: false }),
+        );
       window.__roleTurns = [];
       window.__originalRandom = Math.random;
       const animate = Element.prototype.animate;
@@ -922,7 +935,7 @@ async function rolePreviewScenario(browser, engine, mode) {
         };
       }
     },
-    { fallback: mode === "fallback" },
+    { fallback: mode === "fallback", lightweight: mode === "lightweight" },
   );
   const page = await context.newPage();
   page.setDefaultTimeout(15000);
@@ -965,11 +978,7 @@ async function rolePreviewScenario(browser, engine, mode) {
     await page.evaluate(() => {
       Math.random = window.__originalRandom;
     });
-    assert.equal(
-      await turns(),
-      before + (mode === "reduced" ? 0 : 1),
-      `${tag}: accepted reroll flip`,
-    );
+    assert.equal(await turns(), before + (animated ? 1 : 0), `${tag}: accepted reroll flip`);
     await settle();
   };
   try {
@@ -988,18 +997,25 @@ async function rolePreviewScenario(browser, engine, mode) {
     await page.getByRole("button", { name: labels.en.start }).click();
     await roleHeading(page, "en", tag);
     await awaitSave(page, state);
-    await expect(page.locator(".role-badge")).toHaveCount(0);
+    await expect(page.locator(".player-role-icon[role='img']")).toHaveCount(0);
+    await expect(page.locator("[data-role-glyph='unknown'] [data-question-mark]")).toHaveCount(10);
+    await expect(page.locator(".role-draw-card [aria-label], .role-draw-card img")).toHaveCount(0);
     const initial = checkpoint(state);
     for (let tap = 0; tap < 5; tap++)
       await page.getByRole("button", { name: /^(Hide|Show) private info$/ }).click();
     await page.getByRole("button", { name: "Open developer menu" }).click();
-    await expect(page.getByRole("button", { name: "Show undealt role preview" })).toBeDisabled();
-    await page.getByRole("button", { name: "Enable dev mode" }).click();
+    await expect(page.getByRole("button", { name: "Show undealt role preview" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Enable dev mode" })).toHaveCount(0);
     await page.getByRole("button", { name: "Show undealt role preview" }).click();
     await page.getByRole("button", { name: "Close developer menu" }).click();
     await expect(page.locator(".role-draw-preview-indicator")).toBeVisible();
-    await expect(page.locator(".role-badge")).toHaveCount(10);
+    await expect(page.locator(".player-role-icon[role='img']")).toHaveCount(10);
     same(await shown(), preview(initial.state.setup.setup), `${tag}: truthful initial preview`);
+    for (const [number, role] of Object.entries(preview(initial.state.setup.setup)))
+      await expect(
+        card(Number(number)).getByRole("img", { name: role, exact: true }),
+      ).toBeVisible();
+    await expect(page.locator("[data-role-glyph='unknown']")).toHaveCount(0);
     await expect(page.locator(".is-role-dealt")).toHaveCount(0);
     unchanged(state, initial, `${tag}: preview must not deal or save`);
     assert.equal(state.writes.length, initial.writeCount, `${tag}: preview caused a save`);
@@ -1008,8 +1024,8 @@ async function rolePreviewScenario(browser, engine, mode) {
     // with native keyboard activation, then use pointer taps for the rerolls.
     await card(7).focus();
     await card(7).press("Space");
-    assert.equal(await turns(), mode === "reduced" ? 0 : 1, `${tag}: first reveal flip`);
-    if (mode !== "reduced") {
+    assert.equal(await turns(), animated ? 1 : 0, `${tag}: first reveal flip`);
+    if (animated) {
       const frames = await card(7).evaluate((node) => {
         const animations = node
           .getAnimations({ subtree: true })
@@ -1078,12 +1094,17 @@ async function rolePreviewScenario(browser, engine, mode) {
     assert.equal(state.latest().state.setup.setup.assignments[2], beforePool.assignments[2]);
     const saved = checkpoint(state);
     await page.getByRole("button", { name: "Open developer menu" }).click();
-    await page.getByRole("button", { name: "Disable dev mode" }).click();
-    await expect(page.locator(".role-badge")).toHaveCount(2);
+    await page.getByRole("button", { name: "Hide undealt role preview" }).click();
+    await expect(page.locator(".player-role-icon[role='img']")).toHaveCount(2);
+    await expect(page.locator("[data-role-glyph='unknown'] [data-question-mark]")).toHaveCount(8);
+    for (const [number, role] of Object.entries(saved.state.setup.setup.assignments))
+      await expect(
+        card(Number(number)).getByRole("img", { name: role, exact: true }),
+      ).toBeVisible();
     await expect(page.locator(".role-draw-preview-indicator")).toHaveCount(0);
     unchanged(state, saved, `${tag}: disabling preview must not save`);
     assert.equal(state.writes.length, saved.writeCount, `${tag}: disabling preview caused a save`);
-    await page.getByRole("button", { name: "Enable dev mode" }).click();
+    await page.getByRole("button", { name: "Show undealt role preview" }).click();
     await page.getByRole("button", { name: "Close developer menu" }).click();
     await page.reload();
     await roleHeading(page, "en", tag);
@@ -1115,6 +1136,12 @@ async function rolePreviewScenario(browser, engine, mode) {
       await expect(page.locator(".app-shell")).toHaveAttribute("data-glass-status", "ready");
     if (mode === "fallback")
       await expect(page.locator(".app-shell")).not.toHaveAttribute("data-glass-status", "ready");
+    if (mode === "lightweight") {
+      await expect(page.locator(".app-shell")).toHaveAttribute("data-fancy-features", "off");
+      await expect(
+        page.locator(".glass-scene,.vgpu-table-lighting,.vgpu-player-lighting"),
+      ).toHaveCount(0);
+    }
     await page.screenshot({ path: path.join(evidence, `${tag}-roles.png`) });
     for (let number = 1; number <= 10; number++) {
       if ((await card(number).getAttribute("data-role-dealt")) !== "true") {
@@ -1134,27 +1161,29 @@ async function rolePreviewScenario(browser, engine, mode) {
     await page.locator(".table-advance button").click();
     await expect.poll(() => state.latest()?.state.game?.phase).toBe("mafia-planning");
     await expect(
-      page.locator(".role-draw-card, .role-draw-preview-indicator, [data-role-glyph]"),
+      page.locator(".role-draw-card, .role-draw-preview-indicator, [data-role-glyph='unknown']"),
     ).toHaveCount(0);
     const hide = page.getByRole("button", { name: "Hide private info", exact: true });
     if (await hide.isVisible()) await hide.click();
     // Existing phase privacy keeps the opening/night roles visible, but masks
     // daytime roles and counts; Dev preview must not override that boundary.
-    await expect(page.locator(".role-badge")).toHaveCount(10);
+    await expect(page.locator(".player-role-icon[role='img']")).toHaveCount(10);
     await page.getByRole("button", { name: "Mafia asleep" }).click();
     await page.getByRole("button", { name: "Begin round zero" }).click();
     await expect.poll(() => state.latest()?.state.game?.phase).toBe("day");
     await expect(
-      page.locator(".role-badge, .role-draw-card, .role-draw-preview-indicator, [data-role-glyph]"),
+      page.locator(
+        ".player-role-icon[role='img'], .role-draw-card, .role-draw-preview-indicator, [data-role-glyph]:not([data-role-glyph='hidden'])",
+      ),
     ).toHaveCount(0);
     await expect(page.locator(".team-counts")).toHaveAttribute("aria-label", /hidden/);
     await expect(
       page.locator(".is-mafia-shooter, .is-sheriff-highlight, .is-night-check-highlight"),
     ).toHaveCount(0);
     await page.getByRole("button", { name: "Show private info", exact: true }).click();
-    await expect(page.locator(".role-badge")).toHaveCount(10);
+    await expect(page.locator(".player-role-icon[role='img']")).toHaveCount(10);
     await hide.click();
-    await expect(page.locator(".role-badge")).toHaveCount(0);
+    await expect(page.locator(".player-role-icon[role='img']")).toHaveCount(0);
     await page.screenshot({ path: path.join(evidence, `${tag}-day-private.png`) });
     state.ensureClean();
     same(errors, [], `${tag}: browser exceptions`);
@@ -1371,8 +1400,10 @@ async function scenario(browser, browserName, viewport, language) {
     await expect.poll(() => state.latest()?.state.setup?.step).toBe("players");
     const beforeSwap = checkpoint(state);
     const names = await roster(page);
-    await input(page, 2).click();
-    await expect(page.locator("#seat-2-player-suggestions")).toBeVisible();
+    // In compact view the seat-2 popup opens above and covers seat 1's handle.
+    // Keep the picker-open cancellation check, but start from a reachable handle.
+    await input(page, 6).click();
+    await expect(page.locator("#seat-6-player-suggestions")).toBeVisible();
     await dragMouse(page, 1, 4, "target", async () => {
       await expect(page.getByRole("listbox")).toHaveCount(0);
       same(await roster(page), names, `${tag}: pointer move committed before release`);
@@ -1492,6 +1523,13 @@ async function setupControlsScenario(browser, engine, mode, width = 1000) {
         return /webgl/.test(kind) ? null : getContext.call(this, kind, ...args);
       };
     });
+  if (mode === "lightweight")
+    await context.addInitScript(() => {
+      window.localStorage.setItem(
+        "mafia-dashboard.fancy-stuff.v1",
+        JSON.stringify({ version: 2, enabled: false }),
+      );
+    });
   const page = await context.newPage();
   const state = fixture(page, "en");
   const errors = [];
@@ -1500,19 +1538,99 @@ async function setupControlsScenario(browser, engine, mode, width = 1000) {
   try {
     await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
     await enterSetup(page);
+    if (mode === "lightweight")
+      await expect(page.locator(".app-shell")).toHaveAttribute("data-fancy-features", "off");
     await expect(page.locator(".tournament-picker--compact")).toHaveCount(1);
     const header = page.locator(".player-setup-heading");
     const host = page.locator("#host-player");
     await page.evaluate(() => document.fonts.ready);
-    const hostLayout = () =>
-      host.evaluate((el) => {
-        const card = el.closest(".player-setup-card");
+    const layout = () =>
+      page.locator(".player-setup-card").evaluate((card) => {
+        const panel = card.getBoundingClientRect();
+        const box = (el) => {
+          const rect = el.getBoundingClientRect();
+          return {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+            layoutX: rect.x + card.scrollLeft - panel.x,
+            layoutY: rect.y + card.scrollTop - panel.y,
+          };
+        };
+        const fields = card.querySelector(".tournament-picker-fields");
+        const grid = card.querySelector(".player-input-grid");
         return {
-          top: el.getBoundingClientRect().top + card.scrollTop - card.getBoundingClientRect().top,
-          panelHeight: card.getBoundingClientRect().height,
+          panel: { x: panel.x, y: panel.y, width: panel.width, height: panel.height },
+          scrollTop: card.scrollTop,
+          scrollLeft: card.scrollLeft,
+          stable: [
+            card.querySelector(".player-setup-heading"),
+            card.querySelector("#host-player"),
+            grid,
+            ...card.querySelectorAll(".setup-seat-card"),
+          ].map(box),
+          fields: fields ? box(fields) : null,
+          fieldsAfterGrid: fields ? Boolean(grid.compareDocumentPosition(fields) & 4) : null,
+          fieldsBeforeActions: fields
+            ? Boolean(
+                fields.compareDocumentPosition(card.querySelector(".player-setup-actions")) & 4,
+              )
+            : null,
+          headerContainsFields: card.querySelector(".player-setup-heading").contains(fields),
+          overflow: document.documentElement.scrollWidth > innerWidth,
         };
       });
-    const offHost = await hostLayout();
+    const before = await layout();
+    const stable = async (phase) => {
+      const after = await layout();
+      await appendFile(
+        path.join(evidence, `${tag}-placement.jsonl`),
+        `${JSON.stringify({ phase, before, after })}\n`,
+      );
+      for (const field of ["x", "y", "width", "height"])
+        assert.ok(
+          Math.abs(after.panel[field] - before.panel[field]) < 1,
+          `${tag} ${phase}: outer panel ${field}`,
+        );
+      after.stable.forEach((box, index) => {
+        for (const field of ["layoutX", "layoutY", "width", "height"])
+          assert.ok(
+            Math.abs(box[field] - before.stable[index][field]) < 1,
+            `${tag} ${phase}: layout moved at ${index}/${field}: ${JSON.stringify({ before, after })}`,
+          );
+      });
+      assert.equal(after.overflow, false, `${tag} ${phase}: horizontal page overflow`);
+      if (after.fields) {
+        assert.equal(after.headerContainsFields, false);
+        assert.equal(after.fieldsAfterGrid, true);
+        assert.equal(after.fieldsBeforeActions, true);
+        const grid = after.stable[2];
+        assert.ok(
+          after.fields.layoutY >= grid.layoutY + grid.height - 1,
+          `${tag} ${phase}: fields not beneath player list`,
+        );
+      }
+    };
+    let releaseList;
+    const pendingList = new Promise((resolve) => {
+      releaseList = resolve;
+    });
+    let listRequests = 0;
+    await page.route(
+      (url) => url.pathname === "/api/tournaments",
+      async (route) => {
+        if (route.request().method() !== "GET" || listRequests++ > 0) return route.fallback();
+        assertExactOrigin(route.request().url(), origin);
+        assert.equal(route.request().headers()["x-club-id"], uuid(101));
+        await pendingList;
+        return route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({ error: "Fixture unavailable" }),
+        });
+      },
+    );
     const casper = await header.locator(".casper-toggle").boundingBox();
     const tournamentSwitch = await header.locator(".tournament-picker-toggle").boundingBox();
     if (width >= 700)
@@ -1524,44 +1642,56 @@ async function setupControlsScenario(browser, engine, mode, width = 1000) {
     await page.locator(".tournament-picker-toggle").click();
     await expect(page.getByRole("switch", { name: "Include in tournament" })).toBeChecked();
     await expect(page.getByRole("combobox", { name: "Tournament", exact: true })).toBeVisible();
-    // Read rect and scroll atomically: native focus may scroll the internal card.
-    const onHost = await hostLayout();
-    if (width >= 700) {
-      assert.ok(
-        Math.abs(onHost.top - offHost.top) < 1,
-        `${tag}: tournament toggle must not move host within layout: ${JSON.stringify({ offHost, onHost })}`,
-      );
-      assert.equal(
-        onHost.panelHeight,
-        offHost.panelHeight,
-        `${tag}: tournament controls expanded outer panel`,
-      );
-    }
+    await expect(page.getByText("Loading tournaments…", { exact: true })).toBeVisible();
+    await stable("loading");
+    releaseList();
+    await expect(page.getByRole("alert")).toHaveText("Unable to load tournaments.");
+    await stable("error");
+    await page.getByRole("button", { name: "Retry", exact: true }).click();
+    await expect(page.getByRole("combobox", { name: "Tournament", exact: true })).toBeEnabled();
+    await expect(
+      page.getByRole("combobox", { name: "Tournament", exact: true }).locator("option"),
+    ).toHaveCount(1);
+    await stable("empty-after-retry");
     await page.getByRole("button", { name: "New tournament…", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "New tournament…", exact: true });
     await expect(dialog).toBeVisible();
     await expect(dialog).toHaveJSProperty("tagName", "DIALOG");
+    await stable("creation-open");
     await page.getByRole("textbox", { name: "Tournament name" }).fill("Cancelled fixture draft");
     await page.getByRole("textbox", { name: "Tournament name" }).press("Escape");
     await expect(dialog).toHaveCount(0);
     await expect(page.getByRole("combobox", { name: "Tournament", exact: true })).toHaveValue("");
+    await stable("creation-cancelled");
     await page.getByRole("button", { name: "New tournament…", exact: true }).click();
     await expect(page.getByRole("textbox", { name: "Tournament name" })).toHaveValue("");
     await page
       .getByRole("textbox", { name: "Tournament name" })
-      .fill("Owned local fixture tournament");
+      .fill(
+        "Owned local fixture tournament — Очень длинное название турнира для проверки размещения",
+      );
     await page.getByRole("button", { name: "Create tournament", exact: true }).click();
     await expect(dialog).toHaveCount(0);
     await expect(page.getByRole("combobox", { name: "Tournament", exact: true })).toHaveValue(
       uuid(200),
     );
     await expect.poll(() => [...state.sessions.values()].at(-1)?.tournamentId).toBe(uuid(200));
+    await stable("created-and-selected");
+    await page.getByRole("combobox", { name: "Tournament", exact: true }).selectOption(uuid(200));
+    await stable("selected-existing");
+    await page.locator(".player-setup-actions").scrollIntoViewIfNeeded();
+    await expect(page.getByRole("button", { name: labels.en.start, exact: true })).toBeVisible();
+    await page.screenshot({
+      path: path.join(evidence, `${tag}-lower-tournament.png`),
+      fullPage: true,
+    });
     await header.scrollIntoViewIfNeeded();
     await page.screenshot({ path: path.join(evidence, `${tag}-header.png`), fullPage: true });
     // Return the fixture metadata to its ordinary non-tournament setup before checking the roster.
     await page.locator(".tournament-picker-toggle").click();
     await expect(page.getByRole("switch", { name: "Include in tournament" })).not.toBeChecked();
     await expect.poll(() => [...state.sessions.values()].at(-1)?.tournamentId).toBe(null);
+    await stable("off-again");
     await page.getByRole("button", { name: labels.en.select }).click();
     const choices = page.locator(".availability-player-card[data-availability-state='unselected']");
     await expect(choices).toHaveCount(11);
@@ -1758,7 +1888,7 @@ const chrome = await chromium.launch({ channel: "chrome", headless: true });
 try {
   const safari = await webkit.launch({ headless: true });
   try {
-    for (const mode of ["enhanced", "fallback", "reduced"]) {
+    for (const mode of ["enhanced", "fallback", "reduced", "lightweight"]) {
       await setupControlsScenario(chrome, "chromium", mode);
       await setupControlsScenario(safari, "webkit", mode);
       await rolePreviewScenario(chrome, "chromium", mode);
@@ -1783,5 +1913,7 @@ try {
   await chrome.close();
 }
 assert.ok(executedCases.length > 0, `Unknown UI_SETUP_CASE: ${requestedCase}`);
+assert.equal(executedCases.length, requestedCase ? 1 : 31);
+assert.equal(new Set(executedCases).size, executedCases.length);
 console.log(`Setup cases executed: ${JSON.stringify(executedCases)}`);
 console.log(`Setup seat verifier PASS; screenshots: ${evidence}`);

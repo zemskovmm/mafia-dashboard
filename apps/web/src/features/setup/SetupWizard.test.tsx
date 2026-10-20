@@ -4,6 +4,9 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { PlayerProfile } from "../../api/client.js";
 import { I18nProvider } from "../../i18n/I18nProvider.js";
+import { TournamentPicker } from "../tournaments/TournamentPicker.js";
+import * as apiClient from "../../api/client.js";
+import { useState } from "react";
 import { SetupWizard, type SetupWizardSessionState } from "./SetupWizard.js";
 import {
   assignRoleForSeat,
@@ -151,6 +154,73 @@ const requestReroll = async (user: ReturnType<typeof userEvent.setup>) => {
 };
 
 describe("SetupWizard federation setup", () => {
+  it("keeps one tournament switch in the heading and its live fields after every seat, before actions", async () => {
+    const user = userEvent.setup();
+    const list = vi
+      .spyOn(apiClient, "listTournaments")
+      .mockResolvedValue([{ id: "event-a", name: "A very long tournament name" }]);
+    const change = vi.fn();
+    const Fixture = () => {
+      const [value, setValue] = useState<string | null>(null);
+      const [valid, setValid] = useState(true);
+      return (
+        <SetupWizard
+          players={availablePlayers}
+          onComplete={vi.fn()}
+          initialSessionState={{ ...partialRoleSession(), step: "players" }}
+          tournamentValid={valid}
+          tournamentControl={
+            <TournamentPicker
+              compact
+              clubId="club-a"
+              value={value}
+              onChange={(next) => {
+                change(next);
+                setValue(next);
+              }}
+              onValidityChange={setValid}
+            />
+          }
+        />
+      );
+    };
+    try {
+      const { container } = render(<Fixture />);
+      const toggle = screen.getByRole("switch", { name: "Include in tournament" });
+      const start = screen.getByRole("button", { name: "Start game" });
+      const heading = toggle.closest(".player-setup-heading")!;
+      const grid = container.querySelector(".player-input-grid")!;
+      const actions = container.querySelector(".player-setup-actions")!;
+      expect(start).toBeEnabled();
+      expect(screen.queryByRole("combobox", { name: "Tournament" })).toBeNull();
+      await user.click(toggle);
+      const select = screen.getByRole("combobox", { name: "Tournament" });
+      const fields = select.closest(".tournament-picker-fields")!;
+      expect(heading).not.toContainElement(fields as HTMLElement);
+      expect(fields.closest(".player-setup-card")).toBe(grid.closest(".player-setup-card"));
+      expect(grid.compareDocumentPosition(fields) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(
+        fields.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(start).toBeDisabled();
+      await screen.findByRole("option", { name: "A very long tournament name" });
+      await user.selectOptions(select, "event-a");
+      expect(start).toBeEnabled();
+      await user.click(screen.getByRole("button", { name: "New tournament…" }));
+      const dialog = screen.getByRole("dialog");
+      fireEvent(dialog, new Event("cancel", { cancelable: true }));
+      expect(select).toHaveValue("event-a");
+      expect(change).toHaveBeenCalledExactlyOnceWith("event-a");
+      expect(list).toHaveBeenCalledTimes(1);
+      await user.click(toggle);
+      expect(screen.queryByRole("combobox", { name: "Tournament" })).toBeNull();
+      expect(start).toBeEnabled();
+      expect(change).toHaveBeenLastCalledWith(null);
+      expect(screen.getAllByRole("switch", { name: "Include in tournament" })).toHaveLength(1);
+    } finally {
+      list.mockRestore();
+    }
+  });
   it("keeps the ordinary setup layout and captured edition, gating roles until tournament metadata is valid and acknowledged", async () => {
     const user = userEvent.setup();
     const onSessionStateChange = vi.fn();
@@ -311,6 +381,9 @@ describe("SetupWizard federation setup", () => {
     expect(screen.getByRole("button", { name: "Start game" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "Start game" }));
     expect(screen.getByRole("button", { name: "Casper: citizen" })).toBeDisabled();
+    const casper = screen.getByRole("button", { name: "Casper: citizen" });
+    expect(casper.querySelector('[data-role-glyph="citizen"] circle')).not.toBeNull();
+    expect(casper.querySelector('[data-role-glyph="unknown"]')).toBeNull();
   });
 
   it("retains Best Move-off on resume without requiring an acknowledgement", async () => {
@@ -355,6 +428,7 @@ describe("SetupWizard federation setup", () => {
     const { rerender, container } = render(<SetupWizard {...props} />);
     const publications = onSessionStateChange.mock.calls.length;
     expect(container.querySelectorAll(".role-draw-preview")).toHaveLength(0);
+    expect(container.querySelectorAll('[data-role-glyph="unknown"]')).toHaveLength(9);
     rerender(<SetupWizard {...props} previewUndealtRoles />);
     expect(screen.getByText("Dev preview · undealt roles")).toBeVisible();
     expect(container.querySelectorAll(".role-draw-preview")).toHaveLength(9);
@@ -363,6 +437,7 @@ describe("SetupWizard federation setup", () => {
         name: `Draw role for Player ${index + 2} — Preview: ${role}`,
       });
       expect(card.querySelector(".player-role-icon")).toHaveAttribute("aria-label", role);
+      expect(card.querySelector('[data-role-glyph="unknown"]')).toBeNull();
       expect(card).not.toHaveClass("is-role-dealt");
     });
     expect(container.querySelectorAll(".is-role-dealt")).toHaveLength(1);
@@ -372,6 +447,7 @@ describe("SetupWizard federation setup", () => {
     rerender(<SetupWizard {...props} />);
     expect(screen.queryByText("Dev preview · undealt roles")).toBeNull();
     expect(container.querySelectorAll(".role-draw-preview")).toHaveLength(0);
+    expect(container.querySelectorAll('[data-role-glyph="unknown"]')).toHaveLength(9);
     expect(screen.getByRole("button", { name: "Draw role for Player 2" })).not.toHaveTextContent(
       /citizen|sheriff|mafia|don/,
     );

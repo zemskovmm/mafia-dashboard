@@ -211,7 +211,6 @@ if(!localStorage.getItem("mafia-dashboard.glass-fixture-seeded")){
  localStorage.setItem("mafia-dashboard.glass-fixture-seeded","yes");
  if(!new URLSearchParams(location.search).has("fresh")){
  localStorage.setItem("mafia-dashboard.developer-unlocked.v1","unlocked");
- if(!playerSetup)localStorage.setItem("mafia-dashboard.developer-mode.v1","enabled");
  }
  localStorage.setItem("mafia-dashboard.lighting-renderer.v1","legacy");
  // Retained gold/procedural-source assertions intentionally exercise plain black.
@@ -2300,7 +2299,6 @@ try {
       assert.equal(await page.getByRole("button", { name: "Open developer menu" }).count(), 0);
       await page.evaluate(() => {
         localStorage.setItem("mafia-dashboard.developer-unlocked.v1", "unlocked");
-        localStorage.setItem("mafia-dashboard.developer-mode.v1", "enabled");
       });
       await page.reload();
       await page.getByRole("button", { name: "Open developer menu" }).click();

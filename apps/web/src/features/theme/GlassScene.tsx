@@ -2,6 +2,8 @@ import { useEffect, useLayoutEffect, useRef } from "react";
 import type { GlassStatus } from "../developer/GlassControls.js";
 import { validateGlassSettings, type GlassSettings } from "./glass-preferences.js";
 import { backgroundAsset, type BackgroundId } from "./background-preferences.js";
+import { useFancyFeatures } from "../effects/FancyFeaturesContext.js";
+import { loadVisualImage } from "../effects/image-assets.js";
 import {
   createGlassRenderer,
   type GlassRenderer,
@@ -37,7 +39,9 @@ export const GlassScene = ({
   onStatus: (status: GlassStatus) => void;
   background?: BackgroundId;
 }>) => {
+  const fancyEnabled = useFancyFeatures();
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const initializedContextRef = useRef<WebGLRenderingContext | null>(null);
   const contextLostRef = useRef(false);
   const settingsRef = useRef(settings);
   const redrawRef = useRef<(() => void) | null>(null);
@@ -47,6 +51,12 @@ export const GlassScene = ({
   }, [settings]);
 
   useLayoutEffect(() => {
+    if (!fancyEnabled) {
+      contextLostRef.current = false;
+      initializedContextRef.current = null;
+      onStatus("off");
+      return;
+    }
     const canvas = canvasRef.current;
     const root = canvas?.closest(".app-shell");
     if (canvas === null || !(root instanceof HTMLElement)) return;
@@ -67,7 +77,6 @@ export const GlassScene = ({
     let lastGeometry = "";
     let lost = contextLostRef.current;
     let generation = 0;
-    let pendingImage: HTMLImageElement | null = null;
     let painted = new Set<HTMLElement>();
     let collected: HTMLElement[] = [];
     const markPainted = (elements: readonly HTMLElement[]) => {
@@ -83,8 +92,6 @@ export const GlassScene = ({
     };
     const cancelImage = () => {
       generation += 1;
-      pendingImage?.removeAttribute("src");
-      pendingImage = null;
     };
     const colors = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
     const colorCache = new Map<string, readonly number[]>();
@@ -275,9 +282,12 @@ export const GlassScene = ({
       const current = () => !disposed && version === generation && !lost && !transparency.matches;
       const initialize = (image?: HTMLImageElement) => {
         if (!current()) return;
-        pendingImage = null;
         try {
           renderer = createGlassRenderer(canvas, image);
+          // The renderer has already acquired this exact context. Retain it
+          // across background preparation so teardown never creates a context
+          // merely to release it when a decode or preference prevented startup.
+          initializedContextRef.current = canvas.getContext("webgl");
           schedule(950, true);
         } catch {
           clearPaint();
@@ -287,21 +297,14 @@ export const GlassScene = ({
       const asset = backgroundAsset(background);
       if (asset === null) initialize();
       else {
-        // Decode once per start, never from the geometry collector or draw loop.
+        // Preparation and this consumer share the same decoded image. Cleanup
+        // invalidates our generation, never the cache's image or another owner.
         // The CSS fallback uses this exact SVG; no independent city generator.
-        const image = new Image();
-        pendingImage = image;
-        image.decoding = "async";
-        image.src = asset;
-        void image.decode().then(
-          () => initialize(image),
-          () => {
-            if (!current()) return;
-            pendingImage = null;
-            clearPaint();
-            onStatus("unavailable");
-          },
-        );
+        void loadVisualImage(asset).then(initialize, () => {
+          if (!current()) return;
+          clearPaint();
+          onStatus("unavailable");
+        });
       }
     };
     const geometryChanged = () => schedule(950);
@@ -399,13 +402,16 @@ export const GlassScene = ({
       renderer?.dispose(false);
       // StrictMode replays layout effects on the same connected canvas. Delete
       // resources now, but release its context only after a genuine DOM exit.
+      const initializedContext = initializedContextRef.current;
       queueMicrotask(() => {
         if (!canvas.isConnected)
-          canvas.getContext("webgl")?.getExtension("WEBGL_lose_context")?.loseContext();
+          initializedContext?.getExtension("WEBGL_lose_context")?.loseContext();
       });
       renderer = null;
       onStatus("initializing");
     };
-  }, [background, onStatus]);
-  return <canvas ref={canvasRef} className="glass-scene-canvas" aria-hidden="true" />;
+  }, [background, fancyEnabled, onStatus]);
+  return fancyEnabled ? (
+    <canvas ref={canvasRef} className="glass-scene-canvas" aria-hidden="true" />
+  ) : null;
 };

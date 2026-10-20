@@ -1,10 +1,11 @@
 export const DEVELOPER_UNLOCKED_STORAGE_KEY = "mafia-dashboard.developer-unlocked.v1";
+// Retained only to clear the obsolete independent activation preference.
 export const DEVELOPER_MODE_ENABLED_STORAGE_KEY = "mafia-dashboard.developer-mode.v1";
 export const PREVIEW_UNDEALT_ROLES_STORAGE_KEY = "mafia-dashboard.preview-undealt-roles.v1";
 
 export interface DeveloperPreferences {
   readonly unlocked: boolean;
-  readonly devModeEnabled: boolean;
+
   readonly previewUndealtRoles: boolean;
 }
 
@@ -24,22 +25,21 @@ export const readDeveloperPreferences = (storage: StorageReader): DeveloperPrefe
   try {
     return {
       unlocked: storage.getItem(DEVELOPER_UNLOCKED_STORAGE_KEY) === "unlocked",
-      devModeEnabled: storage.getItem(DEVELOPER_MODE_ENABLED_STORAGE_KEY) === "enabled",
+
       previewUndealtRoles: storage.getItem(PREVIEW_UNDEALT_ROLES_STORAGE_KEY) === "enabled",
     };
   } catch {
-    return { unlocked: false, devModeEnabled: false, previewUndealtRoles: false };
+    return { unlocked: false, previewUndealtRoles: false };
   }
 };
 
-export const writeDeveloperUnlocked = (storage: StorageWriter, unlocked: boolean): unknown =>
-  storage.setItem(DEVELOPER_UNLOCKED_STORAGE_KEY, unlocked ? "unlocked" : "hidden");
-
-export const writeDeveloperModeEnabled = (
-  storage: StorageWriter,
-  devModeEnabled: boolean,
-): unknown =>
-  storage.setItem(DEVELOPER_MODE_ENABLED_STORAGE_KEY, devModeEnabled ? "enabled" : "disabled");
+export const writeDeveloperUnlocked = (storage: StorageWriter, unlocked: boolean): void => {
+  try {
+    storage.setItem(DEVELOPER_UNLOCKED_STORAGE_KEY, unlocked ? "unlocked" : "hidden");
+  } catch {
+    // Unlocking remains usable for the session when persistence is unavailable.
+  }
+};
 
 export const clearDeveloperPreferences = (storage: StorageRemover): void => {
   for (const key of [

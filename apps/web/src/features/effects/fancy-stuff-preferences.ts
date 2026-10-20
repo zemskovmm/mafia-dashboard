@@ -1,25 +1,24 @@
 export const FANCY_STUFF_STORAGE_KEY = "mafia-dashboard.fancy-stuff.v1";
 
 export interface FancyStuffSettings {
-  readonly version: 1;
-  readonly clubEntryEffects: boolean;
+  readonly version: 2;
+  readonly enabled: boolean;
 }
 
 export const DEFAULT_FANCY_STUFF_SETTINGS: FancyStuffSettings = Object.freeze({
-  version: 1,
-  clubEntryEffects: true,
+  version: 2,
+  enabled: true,
 });
 
 export const validateFancyStuffSettings = (value: unknown): FancyStuffSettings => {
-  if (value === null || typeof value !== "object" || !("version" in value) || value.version !== 1)
-    return DEFAULT_FANCY_STUFF_SETTINGS;
+  if (value === null || typeof value !== "object") return DEFAULT_FANCY_STUFF_SETTINGS;
   const record = value as Record<string, unknown>;
+  const enabled = record.version === 1 ? record.clubEntryEffects : record.enabled;
+  if ((record.version !== 1 && record.version !== 2) || typeof enabled !== "boolean")
+    return DEFAULT_FANCY_STUFF_SETTINGS;
   return {
-    version: 1,
-    clubEntryEffects:
-      typeof record.clubEntryEffects === "boolean"
-        ? record.clubEntryEffects
-        : DEFAULT_FANCY_STUFF_SETTINGS.clubEntryEffects,
+    version: 2,
+    enabled,
   };
 };
 
