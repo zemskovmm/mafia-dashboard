@@ -58,7 +58,6 @@ export interface ApplicationStores {
   readonly clubs: {
     listForUser(userId: string): Promise<readonly Club[]>;
     getRole(userId: string, clubId: string): Promise<ClubRole | null>;
-    isMember(userId: string, clubId: string): Promise<boolean>;
     create(userOrId: AppUser | string, input: ClubInput): Promise<Club>;
     claimClubAccess(userId: string, verifiedEmail: string): Promise<void>;
     update(

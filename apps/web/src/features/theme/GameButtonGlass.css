@@ -5,15 +5,12 @@
   :is(
     .app-fixed-toolbar > button,
     .player-setup-actions > button,
-    .setup-completion-actions > button,
     .availability-close-button,
     .table-advance button,
     .table-center button,
     .seat-actions button,
-    .table-header-actions button,
     .role-draw-heading > button,
     .timer-panel button,
-    .voting-panel button,
     .nomination-panel button,
     .live-music-controls button,
     .youtube-session-queue button
@@ -41,14 +38,12 @@
   backdrop-filter: blur(var(--button-glass-frost, 4.2px)) saturate(1.18);
 }
 .app-shell[data-glass-settings]
-  :is(.table-advance, .table-center, .voting-panel, .nomination-panel, .youtube-session-queue)
+  :is(.table-advance, .table-center, .nomination-panel, .youtube-session-queue)
   .danger-action {
   color: var(--red);
   border-color: var(--red);
 }
-.app-shell[data-glass-settings]
-  :is(.player-setup-actions, .setup-completion-actions, .table-advance)
-  :is(.primary-action, .table-primary) {
+.app-shell[data-glass-settings] :is(.player-setup-actions, .table-advance) :is(.primary-action) {
   border-color: var(--accent-hover);
 }
 @media (prefers-reduced-transparency: reduce) {
@@ -56,15 +51,12 @@
     :is(
       .app-fixed-toolbar > button,
       .player-setup-actions > button,
-      .setup-completion-actions > button,
       .availability-close-button,
       .table-advance button,
       .table-center button,
       .seat-actions button,
-      .table-header-actions button,
       .role-draw-heading > button,
       .timer-panel button,
-      .voting-panel button,
       .nomination-panel button,
       .live-music-controls button,
       .youtube-session-queue button

@@ -60,11 +60,6 @@ export class GameHistoryError extends Error {
   }
 }
 
-export const historyDiagnosticFromError = (error: unknown): HistoryDiagnostic | null =>
-  error instanceof Error && "diagnostic" in error
-    ? sanitizeHistoryDiagnostic(error.diagnostic)
-    : null;
-
 export const withHistoryDiagnostic = <T>(diagnostic: HistoryDiagnostic, action: () => T): T => {
   try {
     return action();

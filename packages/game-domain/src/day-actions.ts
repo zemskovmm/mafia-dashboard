@@ -472,24 +472,6 @@ export const beginSkippedCarCrashDecision = (
     carCrashVotes: undefined,
   };
 };
-export const assignCarCrashVote = (
-  game: GameState,
-  voterSeat: number,
-  eliminateBoth: boolean,
-): GameState => {
-  if (game.phase !== "car-crash-decision") {
-    throw new Error("Eliminate-both votes require the car-crash decision phase");
-  }
-  const voter = game.players.find(({ seat }) => seat === voterSeat);
-  if (voter?.status !== "active") throw new Error("Only active players may vote");
-  if (game.carCrashVotes?.[voterSeat] !== undefined) {
-    throw new Error(`Seat ${voterSeat} has already voted`);
-  }
-  return {
-    ...game,
-    carCrashVotes: { ...game.carCrashVotes, [voterSeat]: eliminateBoth },
-  };
-};
 const resolveCarCrashCount = (
   game: GameState,
   explicitlyCompleted: boolean,

@@ -60,7 +60,6 @@ describe("application version", () => {
       clubs: {
         listForUser: unexpectedAccess,
         getRole: unexpectedAccess,
-        isMember: unexpectedAccess,
         create: unexpectedAccess,
         claimClubAccess: unexpectedAccess,
         update: unexpectedAccess,

@@ -10,6 +10,8 @@ The browser owns game rules, setup checks, and semantic replay. The first meanin
 
 A club may have multiple active games. The client lists and opens those server records without takeover, and permanently deletes a selected game through the same club-scoped API. Updates never create missing records, so a deleted game cannot be resurrected by a late save. There are no game claims, heartbeats, expiry or stale-writer fencing. New games require a server response before play; existing games retain offline save retries. Deletion is acknowledged only after the server succeeds, and another client discovers deletion on its next request.
 
+For nomination/support input, preflight `setNominationSelection` against the displayed current speaker. If it returns the same game object, record no action: canonical `nomination.selection-set` admission rejects no-op relation updates. Accepted corrections change only that speaker's relationship and must not discard later unrelated events.
+
 ## Persistence
 
 The accepted storage decision is [IDD-0006](../.idd/intent/IDD-0006.adr-azure-table-and-blob-persistence.md). Azure is the sole backend, with no SQL fallback or dual writes. Readiness, authentication, club access, profiles, games, music credentials and maintained verification do not require PostgreSQL.

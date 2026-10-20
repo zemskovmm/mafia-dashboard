@@ -48,7 +48,6 @@
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.62.1",
     "azurite": "3.37.0",
-    "concurrently": "^10.0.5",
     "eslint": "^10.8.1",
     "eslint-plugin-no-unsanitized": "^4.1.5",
     "eslint-plugin-security": "^4.0.1",

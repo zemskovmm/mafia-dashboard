@@ -317,16 +317,14 @@ h2 {
 .muted {
   color: var(--muted);
 }
-.primary-action,
-.table-primary {
+.primary-action {
   min-height: 52px;
   padding: 0 20px;
   background: var(--accent);
   border-color: var(--accent);
   font-weight: 600;
 }
-.primary-action:hover:not(:disabled),
-.table-primary:hover:not(:disabled) {
+.primary-action:hover:not(:disabled) {
   background: var(--accent-hover);
 }
 
@@ -514,11 +512,6 @@ h2 {
     monospace;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-.players-note {
-  max-width: 690px;
-  margin: 0 0 18px;
-  color: var(--muted);
 }
 .player-search {
   display: grid;
@@ -902,17 +895,6 @@ h2 {
   padding: 10px;
   color: var(--muted);
 }
-.setup-completion-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: flex-end;
-  margin-top: 24px;
-}
-.setup-completion-actions button {
-  min-height: 48px;
-  padding: 0 18px;
-}
 .player-setup-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1038,12 +1020,6 @@ h2 {
   margin: 0;
   color: #ffb2b8;
 }
-.wide-field {
-  display: grid;
-  gap: 6px;
-  color: var(--muted);
-  font-size: 0.78rem;
-}
 .music-step {
   display: grid;
   gap: 18px;
@@ -1107,16 +1083,6 @@ h2 {
 }
 .oauth-connect:hover {
   background: var(--accent-hover);
-}
-.music-actions,
-.timer-presets {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.music-actions button {
-  min-height: 48px;
-  padding: 0 16px;
 }
 .account-playlist-error {
   margin: 8px 0 0;
@@ -1354,47 +1320,6 @@ h2 {
   font-size: 0.62rem;
   text-transform: capitalize;
 }
-.table-primary {
-  width: 176px;
-  min-width: 176px;
-  max-width: 176px;
-  height: 52px;
-  min-height: 52px;
-  padding: 8px 12px;
-  border-radius: 12px;
-  box-shadow: 0 12px 28px rgb(0 0 0 / 34%);
-}
-.turn-actions {
-  display: grid;
-  grid-template-rows: 52px 42px;
-  gap: 12px;
-  place-items: center;
-  width: 190px;
-  min-height: 106px;
-}
-.turn-actions .table-primary {
-  width: 176px;
-}
-.turn-actions > button:last-child {
-  width: 152px;
-  min-height: 42px;
-  justify-self: center;
-}
-.turn-actions > button:last-child {
-  background: rgb(0 0 0 / 20%);
-}
-.table-center-secondary {
-  min-height: 38px;
-  padding: 5px 12px;
-  color: rgb(255 255 255 / 78%);
-  font-size: 0.68rem;
-  background: rgb(0 0 0 / 24%);
-  border-color: rgb(255 255 255 / 14%);
-  border-radius: 999px;
-}
-.table-center-secondary:hover:not(:disabled) {
-  background: rgb(255 255 255 / 9%);
-}
 .federation-shooting-observation > button[aria-pressed="true"] {
   color: var(--accent-hover);
   background: rgb(from var(--accent) r g b / 18%);
@@ -1434,29 +1359,6 @@ h2 {
   color: var(--muted);
   font-size: 0.74rem;
   line-height: 1.4;
-}
-.candidate-navigation,
-.table-choice-actions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
-}
-.candidate-navigation {
-  grid-template-columns: 1fr;
-}
-.candidate-navigation button,
-.table-choice-actions button,
-.table-center-primary {
-  min-height: 38px;
-  padding: 5px 8px;
-  font-size: 0.68rem;
-  background: rgb(0 0 0 / 28%);
-}
-.table-choice-actions button.is-selected,
-.table-center-primary {
-  color: white;
-  background: var(--accent);
-  border-color: var(--accent-hover);
 }
 .deceased-player-card,
 .night-miss-card {
@@ -2027,7 +1929,6 @@ button.player-seat.is-voting-highlight::after,
   min-height: 0;
 }
 .role-badge,
-.foul-badge,
 .state-badge {
   padding: 2px 5px;
   border-radius: 99px;
@@ -2042,10 +1943,6 @@ button.player-seat.is-voting-highlight::after,
 .role-don {
   color: #ffccd0;
   background: rgb(239 93 104 / 18%);
-}
-.foul-badge {
-  color: #ffe0ad;
-  background: rgb(229 169 77 / 16%);
 }
 .state-badge {
   color: #f4d3ff;
@@ -2160,21 +2057,9 @@ button.player-seat.is-voting-highlight::after,
 .game-header h1 {
   margin-bottom: 0;
 }
-.role-draw-header-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-}
 .role-draw-back {
   min-height: 48px;
   padding: 0 16px;
-}
-.game-header-actions {
-  display: flex;
-  gap: 8px;
-  margin-right: 96px;
 }
 .undo-button,
 .fullscreen-button,
@@ -2254,7 +2139,6 @@ button.player-seat.is-voting-highlight::after,
   border-color: rgb(113 112 255 / 58%);
   box-shadow: 0 0 36px rgb(113 112 255 / 26%);
 }
-.best-move-center,
 .day-center-stack {
   position: relative;
   z-index: 2;
@@ -2301,20 +2185,11 @@ button.player-seat.is-voting-highlight::after,
   border-radius: 999px;
 }
 .timer-panel,
-.nomination-panel,
-.role-draw-panel {
+.nomination-panel {
   padding: 14px;
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 14px;
-}
-.role-draw-panel {
-  display: grid;
-  gap: 10px;
-}
-.role-draw-panel p {
-  margin: 0;
-  color: var(--muted);
 }
 .timer-panel {
   display: grid;
@@ -2350,9 +2225,6 @@ button.player-seat.is-voting-highlight::after,
 .timer-display.is-warning {
   color: #ffca76;
   box-shadow: inset 0 0 0 1px rgb(229 169 77 / 40%);
-}
-.timer-preset-60 {
-  height: 100%;
 }
 .timer-side-presets {
   display: grid;
@@ -2466,33 +2338,10 @@ button.player-seat.is-voting-highlight::after,
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
-.night-banner {
-  color: #ffccd0;
-  background: rgb(239 93 104 / 10%);
-  border-color: rgb(239 93 104 / 24%);
-}
-.sheriff-banner {
-  color: #cbd2ff;
-  background: rgb(113 112 255 / 10%);
-  border-color: rgb(113 112 255 / 26%);
-}
-.current-turn-copy {
-  margin: 0 auto;
-  padding: 8px;
-  color: #d5d4ff;
-  text-align: center;
-}
 
-.voting-stage,
 .night-stage {
   min-height: 650px;
   padding: clamp(16px, 3vw, 34px);
-}
-.candidate-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin: 22px 0;
 }
 .candidate {
   min-width: 150px;
@@ -2510,15 +2359,7 @@ button.player-seat.is-voting-highlight::after,
   color: var(--muted);
   font-size: 0.75rem;
 }
-.voter-grid,
-.night-target-grid {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(100px, 1fr));
-  gap: 9px;
-  margin: 20px 0;
-}
-.voter,
-.night-target-grid button {
+.voter {
   min-height: 84px;
   display: grid;
   justify-items: start;
@@ -2534,14 +2375,6 @@ button.player-seat.is-voting-highlight::after,
   border-color: rgb(29 155 102 / 55%);
   background: rgb(29 155 102 / 10%);
 }
-.voter-seat,
-.night-target-grid strong {
-  color: var(--accent-hover);
-  font:
-    500 0.7rem "JetBrains Mono",
-    monospace;
-}
-.tie-notice,
 .secret-result {
   margin: 12px 0;
   padding: 14px;
@@ -2551,9 +2384,6 @@ button.player-seat.is-voting-highlight::after,
 }
 .night-stage h2 {
   font-size: 1.8rem;
-}
-.night-instruction {
-  color: var(--muted);
 }
 .secret-result {
   color: #d5d4ff;
@@ -2615,10 +2445,6 @@ button.player-seat.is-voting-highlight::after,
   .youtube-player-frame > iframe:first-child {
     transition: none;
   }
-}
-.reload-player {
-  min-height: 30px;
-  background: rgb(0 0 0 / 75%);
 }
 .youtube-session-queue {
   min-height: 0;
@@ -3280,14 +3106,6 @@ button.player-seat.is-voting-highlight::after,
   border-color: rgb(255 207 115 / 30%);
   box-shadow: 0 0 14px rgb(255 187 68 / 10%);
 }
-@media (prefers-reduced-motion: reduce) {
-  .is-day-night-indicator-visible .round-table,
-  .is-day-night-indicator-visible .round-table::before,
-  .is-day-night-indicator-visible .round-table::after {
-    transition: none;
-    animation: none;
-  }
-}
 .manage-music-setup {
   display: grid;
   gap: 12px;
@@ -3364,18 +3182,6 @@ button.player-seat.is-voting-highlight::after,
 .session-swipe-content > div {
   display: grid;
   gap: 3px;
-}
-.session-delete-action {
-  position: absolute;
-  z-index: 1;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: 92px;
-  color: white;
-  background: var(--red);
-  border: 0;
-  border-radius: 0;
 }
 .manage-active-sessions li span {
   color: var(--muted);
@@ -3557,17 +3363,6 @@ button.player-seat.is-voting-highlight::after,
   .table-layout-shell .game-header h1 {
     font-size: clamp(1.4rem, 2vw, 1.85rem);
   }
-
-  .table-layout-shell .game-header-actions {
-    grid-column: 3;
-    justify-self: end;
-    gap: 6px;
-    margin-right: 142px;
-  }
-  .table-layout-shell .game-header-actions button {
-    padding-right: 10px;
-    padding-left: 10px;
-  }
   .dev-menu-drawer,
   .manage-menu-drawer,
   .game-log-drawer {
@@ -3593,13 +3388,12 @@ button.player-seat.is-voting-highlight::after,
     overscroll-behavior: contain;
     -webkit-overflow-scrolling: touch;
   }
-  .has-top-level-screen > .setup-shell:is(.is-player-setup, .is-music-setup) {
+  .has-top-level-screen > .setup-shell:is(.is-player-setup) {
     width: var(--main-card-width);
     height: 100%;
     padding: var(--main-card-top) 0 var(--layout-bottom);
   }
-  .setup-shell.is-player-setup .player-setup-card,
-  .setup-shell.is-music-setup .music-step {
+  .setup-shell.is-player-setup .player-setup-card {
     display: flex;
     flex-direction: column;
     width: 100%;
@@ -3617,9 +3411,6 @@ button.player-seat.is-voting-highlight::after,
     margin: 18px 0 0;
   }
   .player-setup-card .player-setup-actions {
-    margin-top: auto;
-  }
-  .music-step .setup-completion-actions {
     margin-top: auto;
   }
   .youtube-dock.is-expanded .youtube-player-frame {
@@ -3831,18 +3622,11 @@ html:-webkit-full-screen #root {
     flex: 1 1 320px;
     margin: 0;
   }
-  .game-header-actions {
-    flex-wrap: wrap;
-    margin-right: 0;
-  }
   .player-card-grid {
     grid-template-columns: 1fr;
   }
   .live-layout {
     grid-template-columns: 1fr;
-  }
-  .utility-rail {
-    grid-template-columns: 1fr 1fr;
   }
   .round-table {
     --table-size: min(68vw, 650px);
@@ -3950,14 +3734,13 @@ html:-webkit-full-screen #root {
     height: 12px;
     font-size: 0.44rem;
   }
-  .has-top-level-screen > .setup-shell:is(.is-player-setup, .is-music-setup) {
+  .has-top-level-screen > .setup-shell:is(.is-player-setup) {
     width: var(--s6-main-width);
     height: calc(100% - var(--layout-header-height) - var(--layout-gutter));
     margin: 0 0 0 var(--s6-edge);
     padding: var(--layout-top) 0 var(--s6-edge);
   }
-  .setup-shell.is-player-setup .player-setup-card,
-  .setup-shell.is-music-setup .music-step {
+  .setup-shell.is-player-setup .player-setup-card {
     display: flex;
     flex-direction: column;
     width: 100%;
@@ -3989,8 +3772,7 @@ html:-webkit-full-screen #root {
     gap: 2px;
     font-size: 0.64rem;
   }
-  .player-setup-card .player-setup-actions,
-  .music-step .setup-completion-actions {
+  .player-setup-card .player-setup-actions {
     margin-top: 10px;
   }
   .has-top-level-screen > .players-shell {
@@ -4161,7 +3943,6 @@ html:-webkit-full-screen #root {
     font-size: 0.62rem;
   }
   .role-badge,
-  .foul-badge,
   .state-badge {
     padding: 1px 4px;
     font-size: 0.43rem;
@@ -4400,28 +4181,6 @@ html:-webkit-full-screen #root {
   .game-shell.phase-night-mafia .table-night-center {
     transform: none;
   }
-  .table-primary {
-    width: 145px;
-    min-width: 120px;
-    max-width: 145px;
-    height: 44px;
-    min-height: 44px;
-    padding: 6px 10px;
-    font-size: 0.68rem;
-  }
-  .turn-actions {
-    grid-template-rows: 44px 36px;
-    gap: 8px;
-    width: 160px;
-    min-height: 88px;
-  }
-  .turn-actions .table-primary {
-    width: 145px;
-  }
-  .turn-actions > button:last-child {
-    width: 132px;
-    min-height: 36px;
-  }
   .table-vote-center,
   .table-night-center,
   .table-check-center {
@@ -4448,22 +4207,6 @@ html:-webkit-full-screen #root {
   }
   .game-shell.phase-voting .round-table:has(.voting-candidate-identity) .table-advance {
     top: calc(75% - 60px);
-  }
-  .candidate-navigation button,
-  .table-choice-actions button,
-  .night-result-actions button,
-  .table-center-primary {
-    min-height: 32px;
-    padding: 3px 5px;
-    font-size: 0.56rem;
-  }
-  .utility-rail {
-    grid-template-columns: 1fr;
-    align-content: start;
-    gap: 7px;
-    min-height: 0;
-    padding-bottom: 210px;
-    overflow: hidden;
   }
   .timer-panel,
   .nomination-panel {
@@ -4544,9 +4287,6 @@ html:-webkit-full-screen #root {
   .player-input-grid {
     grid-template-columns: 1fr;
   }
-  .setup-completion-actions {
-    display: grid;
-  }
   .game-shell {
     padding-inline: 8px;
   }
@@ -4560,24 +4300,12 @@ html:-webkit-full-screen #root {
   .game-header > .phase-banner {
     width: 100%;
   }
-  .game-header-actions {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    width: 100%;
-  }
-  .game-header-actions button {
-    min-width: 0;
-    padding-inline: 6px;
-  }
   .game-header h1 {
     font-size: 1.55rem;
   }
   .privacy-button {
     margin-right: 0;
     font-size: 0.7rem;
-  }
-  .utility-rail {
-    grid-template-columns: 1fr;
   }
   .table-workspace {
     padding: 8px 0;
@@ -4618,17 +4346,6 @@ html:-webkit-full-screen #root {
     margin: 8px auto 2px;
     transform: none;
   }
-  .table-primary {
-    width: 100%;
-    max-width: none;
-    min-height: 48px;
-    aspect-ratio: auto;
-    border-radius: 10px;
-  }
-  .turn-actions {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    width: 100%;
-  }
   .seat-anchor {
     position: static;
     display: grid;
@@ -4655,11 +4372,6 @@ html:-webkit-full-screen #root {
     min-width: 0;
     min-height: 42px;
     padding-inline: 3px;
-  }
-
-  .voter-grid,
-  .night-target-grid {
-    grid-template-columns: repeat(2, 1fr);
   }
   .youtube-dock.is-compact {
     position: static;
@@ -4758,14 +4470,13 @@ html:-webkit-full-screen #root {
     min-height: 44px;
     border-radius: 11px;
   }
-  .has-top-level-screen > .setup-shell:is(.is-player-setup, .is-music-setup) {
+  .has-top-level-screen > .setup-shell:is(.is-player-setup) {
     width: calc(100% - var(--s6p-edge) * 2);
     height: calc(100% - var(--s6p-content-top) - var(--s6p-dock-height) - var(--s6p-edge) * 2);
     margin: 0 var(--s6p-edge);
     padding: 0;
   }
-  .setup-shell.is-player-setup .player-setup-card,
-  .setup-shell.is-music-setup .music-step {
+  .setup-shell.is-player-setup .player-setup-card {
     display: flex;
     flex-direction: column;
     width: 100%;
@@ -4940,7 +4651,6 @@ html:-webkit-full-screen #root {
     font-size: 0.62rem;
   }
   .role-badge,
-  .foul-badge,
   .state-badge {
     padding: 1px 4px;
     font-size: 0.43rem;
@@ -4964,34 +4674,12 @@ html:-webkit-full-screen #root {
     padding: 0 2px;
     font-size: 0.5rem;
   }
-
-  .table-primary {
-    width: 145px;
-    min-width: 120px;
-    max-width: 145px;
-    height: 44px;
-    min-height: 44px;
-    padding: 6px 10px;
-    font-size: 0.68rem;
-  }
-  .turn-actions .table-primary {
-    width: 145px;
-  }
   .table-vote-center,
   .table-night-center,
   .table-check-center {
     gap: 5px;
     width: 150px;
     font-size: 0.66rem;
-  }
-  .utility-rail {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    align-content: stretch;
-    gap: var(--s6p-edge);
-    height: var(--s6p-utility-height);
-    min-height: 0;
-    overflow: hidden;
   }
   .timer-panel,
   .nomination-panel {
@@ -5039,11 +4727,6 @@ html:-webkit-full-screen #root {
 }
 
 /* Pre-game corrections stay in the ordinary player setup workspace. */
-.setup-seat-hint {
-  margin: 18px 0 8px;
-  color: var(--muted);
-  font-size: 0.85rem;
-}
 .player-setup-card .player-input-grid {
   gap: 12px 20px;
   margin: 8px 0 20px;
@@ -5311,7 +4994,7 @@ html:-webkit-full-screen #root {
   }
   /* Extend panel borders to the common gutter; keep the safe area inside them. */
   .app-shell.has-live-game,
-  .app-shell:has(> .setup-shell:is(.is-player-setup, .is-music-setup)) {
+  .app-shell:has(> .setup-shell:is(.is-player-setup)) {
     --layout-bottom: var(--layout-gutter);
   }
   .table-layout-shell.has-live-game .table-workspace {
@@ -5375,13 +5058,12 @@ html:-webkit-full-screen #root {
   .table-layout-shell .game-shell {
     padding: var(--layout-top) var(--layout-right) var(--layout-bottom) var(--layout-left);
   }
-  .has-top-level-screen > .setup-shell:is(.is-player-setup, .is-music-setup) {
+  .has-top-level-screen > .setup-shell:is(.is-player-setup) {
     width: calc(100% - var(--layout-left) - var(--layout-right));
     margin: 0 var(--layout-left);
     padding: var(--layout-content-top) 0 var(--layout-bottom);
   }
-  .setup-shell.is-player-setup .player-setup-card,
-  .setup-shell.is-music-setup .music-step {
+  .setup-shell.is-player-setup .player-setup-card {
     width: 100%;
     margin-inline: 0;
   }
@@ -5420,7 +5102,7 @@ html:-webkit-full-screen #root {
   .table-layout-shell .game-shell {
     padding: var(--layout-top) var(--layout-right) var(--layout-bottom) var(--layout-left);
   }
-  .has-top-level-screen > .setup-shell:is(.is-player-setup, .is-music-setup) {
+  .has-top-level-screen > .setup-shell:is(.is-player-setup) {
     width: calc(100% - var(--layout-left) - var(--layout-right));
     margin: 0 var(--layout-left);
     padding: 0;
@@ -5476,26 +5158,24 @@ html:-webkit-full-screen #root {
 @media (min-width: 761px) and (max-width: 899px),
   (min-width: 900px) and (max-width: 1159px) and (orientation: portrait),
   (min-width: 1160px) and (max-height: 719px) {
-  .app-shell:has(> .setup-shell:is(.is-player-setup, .is-music-setup)) {
+  .app-shell:has(> .setup-shell:is(.is-player-setup)) {
     --setup-sidebar-width: clamp(260px, 32vw, 335px);
   }
-  .has-top-level-screen > .setup-shell:is(.is-player-setup, .is-music-setup) {
+  .has-top-level-screen > .setup-shell:is(.is-player-setup) {
     width: calc(
       100% - var(--layout-left) - var(--layout-right) - var(--layout-gutter) -
         var(--setup-sidebar-width)
     );
     height: 100%;
   }
-  .setup-shell.is-player-setup .player-setup-card,
-  .setup-shell.is-music-setup .music-step {
+  .setup-shell.is-player-setup .player-setup-card {
     display: flex;
     flex-direction: column;
     height: 100%;
     overflow-y: auto;
     overscroll-behavior: contain;
   }
-  .app-shell:has(> .setup-shell:is(.is-player-setup, .is-music-setup))
-    > .live-side-panel:not([hidden]) {
+  .app-shell:has(> .setup-shell:is(.is-player-setup)) > .live-side-panel:not([hidden]) {
     position: fixed;
     z-index: 1;
     top: var(--layout-content-top);
@@ -5511,14 +5191,12 @@ html:-webkit-full-screen #root {
     border-radius: 20px;
     overscroll-behavior: contain;
   }
-  .app-shell:has(> .setup-shell:is(.is-player-setup, .is-music-setup)) .live-side-panel > * {
+  .app-shell:has(> .setup-shell:is(.is-player-setup)) .live-side-panel > * {
     flex: 0 0 auto;
     width: 100%;
     min-width: 0;
   }
-  .app-shell:has(> .setup-shell:is(.is-player-setup, .is-music-setup))
-    .live-side-panel
-    .youtube-dock.is-compact {
+  .app-shell:has(> .setup-shell:is(.is-player-setup)) .live-side-panel .youtube-dock.is-compact {
     position: static;
     width: 100%;
     margin-top: auto;

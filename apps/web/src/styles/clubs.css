@@ -537,17 +537,6 @@
   color: var(--accent-hover);
 }
 
-.finish-game-button {
-  width: 100%;
-  min-height: 40px;
-  margin-top: 12px;
-  color: #fff;
-  font-weight: 800;
-  background: linear-gradient(135deg, var(--accent-hover), var(--accent));
-  border-color: rgb(var(--accent-rgb) / 62%);
-}
-
-.finish-game-error,
 .finish-game-local {
   display: block;
   margin-top: 7px;

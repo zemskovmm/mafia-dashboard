@@ -347,9 +347,6 @@ const normalizeEnvelope = (value: unknown): CurrentGameSessionEnvelope | null =>
   };
 };
 
-export const isCurrentGameSessionEnvelope = (value: unknown): value is CurrentGameSessionEnvelope =>
-  normalizeEnvelope(value) !== null;
-
 export const parseCurrentGameSessionEnvelope = (raw: string): CurrentGameSessionEnvelope | null => {
   try {
     return normalizeEnvelope(JSON.parse(raw));

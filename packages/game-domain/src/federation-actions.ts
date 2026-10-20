@@ -386,8 +386,6 @@ export const finalizeBestMove = (
     },
   };
 };
-export const skipBestMove = (game: GameState): GameState =>
-  finalizeBestMove(game, "declined", true);
 export const adjudicateOpponentVictory = (
   game: GameState,
   adjudication: OpponentVictoryAdjudication,

@@ -78,9 +78,6 @@
   -webkit-backdrop-filter: blur(min(12px, calc(var(--glass-matte-blur, 0px) + 4px))) saturate(108%);
   backdrop-filter: blur(min(12px, calc(var(--glass-matte-blur, 0px) + 4px))) saturate(108%);
 }
-.table-stage .player-seat.is-nomination-selected .liquid-card-glass__lens {
-  filter: blur(min(12px, calc(var(--glass-matte-lens-blur, 0px) + 4px)));
-}
 .table-stage .player-seat.is-nomination-selected .liquid-card-glass__backdrop::before {
   position: absolute;
   inset: 0;

@@ -48,7 +48,6 @@ const storesFixture = () => {
     clubs: {
       listForUser: vi.fn(async () => []),
       getRole,
-      isMember: vi.fn(),
       create: vi.fn(),
       claimClubAccess: vi.fn(),
       update: vi.fn(),

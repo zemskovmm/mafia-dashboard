@@ -250,10 +250,6 @@ export class AzureClubStore {
     });
   }
 
-  public async isMember(userId: string, clubId: string): Promise<boolean> {
-    return (await this.getRole(userId, clubId)) !== null;
-  }
-
   public getRole(userId: string, clubId: string): Promise<ClubRole | null> {
     return this.storage.read(async (tx) => {
       if (!(await available(tx, clubId))) return null;
