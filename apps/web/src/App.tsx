@@ -78,6 +78,7 @@ import { ClubFire } from "./features/clubs/ClubFire.js";
 import { ClubEntryTransition, type ClubEntryOrigin } from "./features/clubs/ClubEntryTransition.js";
 import { FancyFeaturesContext, useFancyFeatures } from "./features/effects/FancyFeaturesContext.js";
 import { FancyPreparation } from "./features/effects/FancyPreparation.js";
+import { readTutorialHelp, writeTutorialHelp } from "./features/tutorial/tutorial-preferences.js";
 import { useFancyPreparation } from "./features/effects/useFancyPreparation.js";
 import type { FancyAssetRequirements } from "./features/effects/fancy-assets.js";
 import {
@@ -682,6 +683,7 @@ const ClubWorkspaceContent = ({
   const backgroundShade: BackgroundShade = cityBackground ? "black" : background;
   const [glass, setGlass] = useState(() => readGlassSettings());
   const [playerExit, setPlayerExit] = useState(readPlayerExitSettings);
+  const [showTutorialHelp, setShowTutorialHelp] = useState(readTutorialHelp);
   const changePlayerExit = useCallback((settings: PlayerExitSettings) => {
     const valid = validatePlayerExitSettings(settings);
     setPlayerExit(valid);
@@ -2269,6 +2271,19 @@ const ClubWorkspaceContent = ({
           <div className="manage-menu-actions">
             <button
               type="button"
+              role="switch"
+              aria-checked={showTutorialHelp}
+              aria-label={t("showTutorialHelp")}
+              onClick={() => {
+                const enabled = !showTutorialHelp;
+                setShowTutorialHelp(enabled);
+                writeTutorialHelp(enabled);
+              }}
+            >
+              {t("showTutorialHelp")} · {t(showTutorialHelp ? "settingOn" : "settingOff")}
+            </button>
+            <button
+              type="button"
               onClick={() => {
                 if (view === "players" && humanPlayers.length < 10) {
                   setPlayerGateError({
@@ -2672,6 +2687,7 @@ const ClubWorkspaceContent = ({
         <>
           <SetupWizard
             key={setupInstanceKey}
+            showTutorialHelp={showTutorialHelp}
             players={availablePlayersForSetup}
             playersLoading={!playersLoaded}
             bestMoveEnabled={setupSession?.bestMoveEnabled ?? club.bestMoveEnabled}
@@ -2736,6 +2752,7 @@ const ClubWorkspaceContent = ({
         </>
       ) : (
         <GameScreen
+          showTutorialHelp={showTutorialHelp}
           key={`${previewGame === null ? "live" : "preview"}-${renderedGameScreenMutationGeneration}`}
           game={previewGame ?? game}
           playerExitSettings={playerExit}

@@ -105,11 +105,21 @@ export const FederationBallot = ({
         advance={
           <div className="table-advance-options">
             {nextSeat !== undefined ? (
-              <button type="button" disabled={paused} onClick={advance}>
+              <button
+                type="button"
+                data-tutorial-action="next-candidate"
+                disabled={paused}
+                onClick={advance}
+              >
                 {t("nextCandidate")}
               </button>
             ) : null}
-            <button type="button" disabled={!canResolve} onClick={onResolve}>
+            <button
+              type="button"
+              data-tutorial-action="finish-voting"
+              disabled={!canResolve}
+              onClick={onResolve}
+            >
               {t("resolveVoting")}
             </button>
           </div>

@@ -1,0 +1,320 @@
+.role-tutorial-help {
+  flex: 0 0 48px;
+  width: 48px;
+  min-height: 48px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 1.3rem;
+}
+
+.role-tutorial {
+  --tutorial-tap-duration: 1s;
+  --tutorial-tap-count: 1;
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #fff8e9;
+  overflow: hidden;
+  touch-action: pan-y pinch-zoom;
+}
+
+.role-tutorial::backdrop {
+  background: rgb(9 12 18 / 36%);
+}
+
+.role-tutorial-target {
+  position: absolute;
+  border: 2px solid #ffe3a3;
+  border-radius: 18px;
+  box-shadow: 0 0 0 5px rgb(255 224 151 / 12%);
+  pointer-events: none;
+}
+
+.role-tutorial-gesture {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+}
+
+.role-tutorial-hand {
+  position: absolute;
+  left: -27px;
+  top: -3px;
+  width: 64px;
+  height: 80px;
+  overflow: visible;
+  filter: drop-shadow(0 3px 5px rgb(0 0 0 / 70%));
+  transform-origin: 27px 3px;
+}
+
+.role-tutorial-hand path:first-child {
+  fill: #fff3da;
+  stroke: #4b3423;
+  stroke-width: 2;
+}
+
+.role-tutorial-hand path:last-child {
+  stroke: #9c7956;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.role-tutorial-tap {
+  position: absolute;
+  left: -14px;
+  top: -14px;
+  width: 28px;
+  height: 28px;
+  border: 2px solid #ffe3a3;
+  border-radius: 50%;
+}
+
+.role-tutorial-tap-count {
+  position: absolute;
+  top: 43px;
+  left: -24px;
+  padding: 3px 7px;
+  border-radius: 8px;
+  background: #181b22;
+  color: #ffe3a3;
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+.role-tutorial[data-taps="3"] {
+  --tutorial-tap-duration: 0.5s;
+  --tutorial-tap-count: 3;
+}
+
+.role-tutorial-target[data-example="true"] {
+  border-style: dashed;
+  background: #242a35;
+}
+
+.role-tutorial-example {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  min-height: 180px;
+  margin-bottom: 12px;
+  padding: 10px;
+  gap: 8px;
+  border: 2px dashed #ffe3a3;
+  border-radius: 14px;
+  background: #242a35;
+  text-align: center;
+}
+
+.role-tutorial-example span {
+  font-size: 0.8rem;
+  line-height: 1.2;
+  color: #ffe3a3;
+}
+
+.role-tutorial-example strong {
+  font-size: 1.8rem;
+  line-height: 1;
+}
+
+.role-tutorial[data-animated="true"] .role-tutorial-hand {
+  animation: tutorial-point var(--tutorial-tap-duration) ease-in-out var(--tutorial-tap-count);
+}
+
+.role-tutorial[data-animated="true"] .role-tutorial-tap {
+  animation: tutorial-tap var(--tutorial-tap-duration) ease-out var(--tutorial-tap-count);
+}
+
+.role-tutorial-callout {
+  position: absolute;
+  width: min(340px, calc(100% - 32px));
+  max-height: calc(100% - 32px);
+  overflow-y: auto;
+  touch-action: pan-y pinch-zoom;
+  padding: 18px;
+  border: 1px solid rgb(255 227 163 / 50%);
+  border-radius: 20px;
+  background: rgb(19 23 31 / 94%);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 35%);
+}
+
+.role-tutorial-callout header,
+.role-tutorial-callout footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.role-tutorial-callout button {
+  min-width: 48px;
+  min-height: 48px;
+  flex-shrink: 0;
+}
+
+.role-tutorial-callout .role-tutorial-close {
+  padding: 0;
+  font-size: 1.5rem;
+  background: transparent;
+  border-color: transparent;
+}
+
+.role-tutorial-progress {
+  color: #ffe3a3;
+  font-size: 0.8rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.role-tutorial-copy h2 {
+  margin: 6px 0 12px;
+  font-size: 1.35rem;
+  line-height: 1.25;
+}
+
+.role-tutorial-copy p {
+  margin: 0 0 16px;
+  line-height: 1.5;
+  font-size: 1rem;
+}
+
+.role-tutorial-copy .role-tutorial-note,
+.role-tutorial-callout small {
+  color: #c5c0b7;
+  font-size: 0.8rem;
+}
+
+.role-tutorial-callout small {
+  display: block;
+  text-align: center;
+  margin-top: 12px;
+}
+
+.role-tutorial-dots {
+  display: flex;
+  gap: 6px;
+}
+
+.role-tutorial-dots i {
+  width: 6px;
+  height: 6px;
+  background: #827d72;
+  border-radius: 50%;
+}
+
+.role-tutorial-dots i[data-active="true"] {
+  background: #ffe3a3;
+}
+
+@keyframes tutorial-point {
+  0%,
+  100% {
+    transform: translate(4px, 7px) rotate(8deg);
+  }
+  35% {
+    transform: translate(0, 0) rotate(0);
+  }
+}
+
+@keyframes tutorial-tap {
+  0%,
+  25% {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  40% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.8);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .role-tutorial[data-animated="true"] .role-tutorial-hand,
+  .role-tutorial[data-animated="true"] .role-tutorial-tap {
+    animation: none;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .role-tutorial-callout {
+    background: #13171f;
+  }
+}
+
+.game-tutorial-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.role-tutorial[data-gesture="up"] .role-tutorial-tap,
+.role-tutorial[data-gesture="down"] .role-tutorial-tap {
+  display: none;
+}
+
+.role-tutorial[data-animated="true"][data-gesture="up"] .role-tutorial-hand {
+  animation: tutorial-swipe-up 1.2s ease-in-out 2;
+}
+
+.role-tutorial[data-animated="true"][data-gesture="down"] .role-tutorial-hand {
+  animation: tutorial-swipe-down 1.2s ease-in-out 2;
+}
+
+.role-tutorial-target[data-hand-above="true"] .role-tutorial-hand {
+  rotate: 180deg;
+}
+
+.role-tutorial-target[data-hand-above="true"] .role-tutorial-tap-count {
+  top: -60px;
+}
+
+.role-tutorial[data-animated="true"][data-gesture="up"]
+  .role-tutorial-target[data-hand-above="true"]
+  .role-tutorial-hand {
+  animation-name: tutorial-swipe-down;
+}
+
+.role-tutorial[data-animated="true"][data-gesture="down"]
+  .role-tutorial-target[data-hand-above="true"]
+  .role-tutorial-hand {
+  animation-name: tutorial-swipe-up;
+}
+
+@keyframes tutorial-swipe-up {
+  0%,
+  100% {
+    transform: translateY(20px);
+  }
+  65% {
+    transform: translateY(-20px);
+  }
+}
+
+@keyframes tutorial-swipe-down {
+  0%,
+  100% {
+    transform: translateY(-20px);
+  }
+  65% {
+    transform: translateY(20px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .role-tutorial[data-animated="true"][data-gesture] .role-tutorial-hand,
+  .role-tutorial[data-animated="true"][data-gesture]
+    .role-tutorial-target[data-hand-above]
+    .role-tutorial-hand,
+  .role-tutorial[data-animated="true"][data-gesture] .role-tutorial-tap {
+    animation: none;
+  }
+}

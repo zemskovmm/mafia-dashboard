@@ -6,7 +6,7 @@ import type { PlayerProfile } from "../../api/client.js";
 import { I18nProvider } from "../../i18n/I18nProvider.js";
 import { TournamentPicker } from "../tournaments/TournamentPicker.js";
 import * as apiClient from "../../api/client.js";
-import { useState } from "react";
+import { StrictMode, useState } from "react";
 import { SetupWizard, type SetupWizardSessionState } from "./SetupWizard.js";
 import {
   assignRoleForSeat,
@@ -154,6 +154,323 @@ const requestReroll = async (user: ReturnType<typeof userEvent.setup>) => {
 };
 
 describe("SetupWizard federation setup", () => {
+  it("hides and dismisses role help immediately without changing the deal or chooser", async () => {
+    const user = userEvent.setup();
+    const onEvent = vi.fn();
+    const onSessionStateChange = vi.fn();
+    const props = {
+      players: availablePlayers,
+      initialSessionState: partialRoleSession(),
+      onComplete: vi.fn(),
+      onEvent,
+      onSessionStateChange,
+    };
+    const { rerender } = render(<SetupWizard {...props} />);
+    const card = screen.getByRole("button", { name: /^Player 1:/ });
+    swipeCard(card);
+    const chooser = screen.getByRole("dialog", { name: "Choose role" });
+    await user.click(screen.getByRole("button", { name: "Role giveaway help" }));
+    onSessionStateChange.mockClear();
+    rerender(<SetupWizard {...props} showTutorialHelp={false} />);
+    expect(screen.queryByRole("dialog", { name: "Role giveaway tutorial" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Role giveaway help" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Choose role" })).toBe(chooser);
+    rerender(<SetupWizard {...props} />);
+    expect(screen.queryByRole("dialog", { name: "Role giveaway tutorial" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Role giveaway help" }));
+    expect(screen.getByRole("heading", { name: "Tap to reveal" })).toBeVisible();
+    expect(onEvent).not.toHaveBeenCalled();
+    expect(onSessionStateChange).not.toHaveBeenCalled();
+  });
+  it("retains the harmless-deal reminder alongside the reshuffle eligibility note", async () => {
+    const user = userEvent.setup();
+    render(
+      <SetupWizard
+        players={availablePlayers}
+        initialSessionState={partialRoleSession()}
+        onComplete={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Role giveaway help" }));
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    const dialog = screen.getByRole("dialog", { name: "Role giveaway tutorial" });
+    expect(dialog).toHaveTextContent(
+      "Only while cards remain. Not for Casper. The role may stay the same.",
+    );
+    expect(dialog).toHaveTextContent("Just a guide — your deal stays unchanged.");
+  });
+  it("keeps the reopened tutorial visible through a stale StrictMode cleanup close event", async () => {
+    const user = userEvent.setup();
+    render(
+      <StrictMode>
+        <SetupWizard
+          players={availablePlayers}
+          initialSessionState={partialRoleSession()}
+          onComplete={vi.fn()}
+        />
+      </StrictMode>,
+    );
+    await user.click(screen.getByRole("button", { name: "Role giveaway help" }));
+    const dialog = screen.getByRole("dialog", { name: "Role giveaway tutorial" });
+    // Native close is queued: StrictMode has reopened the dialog before it arrives.
+    expect(dialog).toHaveAttribute("open");
+    fireEvent(dialog, new Event("close"));
+    expect(screen.getByRole("dialog", { name: "Role giveaway tutorial" })).toBeVisible();
+    // A genuine native close still synchronizes the React open state.
+    dialog.removeAttribute("open");
+    fireEvent(dialog, new Event("close"));
+    expect(screen.queryByRole("dialog", { name: "Role giveaway tutorial" })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Role giveaway help" }));
+    expect(screen.getByRole("heading", { name: "Tap to reveal" })).toBeVisible();
+  });
+
+  it.each(["en", "ru"] as const)(
+    "offers a manual, harmless role tutorial in %s",
+    async (locale) => {
+      const user = userEvent.setup();
+      const onEvent = vi.fn();
+      const onSessionStateChange = vi.fn();
+      const onComplete = vi.fn();
+      const labels =
+        locale === "en"
+          ? {
+              help: "Role giveaway help",
+              title: "Role giveaway tutorial",
+              next: "Next",
+              back: "Back",
+              done: "Done",
+              close: "Close tutorial",
+              first: "Tap to reveal",
+              second: "Three taps to reshuffle",
+            }
+          : {
+              help: "Помощь с раздачей ролей",
+              title: "Как раздавать роли",
+              next: "Далее",
+              back: "Назад",
+              done: "Готово",
+              close: "Закрыть подсказки",
+              first: "Нажмите, чтобы открыть роль",
+              second: "Три нажатия для перераздачи",
+            };
+      render(
+        <I18nProvider locale={locale}>
+          <SetupWizard
+            players={availablePlayers}
+            initialSessionState={partialRoleSession()}
+            onComplete={onComplete}
+            onEvent={onEvent}
+            onSessionStateChange={onSessionStateChange}
+          />
+        </I18nProvider>,
+      );
+      expect(screen.queryByRole("dialog", { name: labels.title })).toBeNull();
+      onSessionStateChange.mockClear();
+      const random = vi.spyOn(Math, "random");
+      try {
+        await user.click(screen.getByRole("button", { name: labels.help }));
+        const dialog = screen.getByRole("dialog", { name: labels.title });
+        expect(within(dialog).getByRole("heading", { name: labels.first })).toBeVisible();
+        expect(within(dialog).getByRole("button", { name: labels.back })).toBeDisabled();
+        await user.click(within(dialog).getByRole("button", { name: labels.next }));
+        expect(within(dialog).getByRole("heading", { name: labels.second })).toBeVisible();
+        await user.click(within(dialog).getByRole("button", { name: labels.back }));
+        expect(within(dialog).getByRole("heading", { name: labels.first })).toBeVisible();
+        await user.click(within(dialog).getByRole("button", { name: labels.next }));
+        await user.click(within(dialog).getByRole("button", { name: labels.next }));
+        await user.click(within(dialog).getByRole("button", { name: labels.done }));
+        expect(screen.queryByRole("dialog", { name: labels.title })).toBeNull();
+        await user.click(screen.getByRole("button", { name: labels.help }));
+        expect(screen.getByRole("heading", { name: labels.first })).toBeVisible();
+        fireEvent(
+          screen.getByRole("dialog", { name: labels.title }),
+          new Event("cancel", { cancelable: true }),
+        );
+        expect(screen.queryByRole("dialog", { name: labels.title })).toBeNull();
+        await user.click(screen.getByRole("button", { name: labels.help }));
+        await user.click(screen.getByRole("button", { name: labels.close }));
+        expect(onEvent).not.toHaveBeenCalled();
+        expect(onComplete).not.toHaveBeenCalled();
+        expect(onSessionStateChange).not.toHaveBeenCalled();
+        expect(random).not.toHaveBeenCalled();
+      } finally {
+        random.mockRestore();
+      }
+    },
+  );
+
+  it("keeps tutorial swipes bounded and ignores interrupted or non-horizontal gestures", async () => {
+    const user = userEvent.setup();
+    const onEvent = vi.fn();
+    render(
+      <SetupWizard
+        players={availablePlayers}
+        initialSessionState={partialRoleSession()}
+        onComplete={vi.fn()}
+        onEvent={onEvent}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Role giveaway help" }));
+    const dialog = screen.getByRole("dialog", { name: "Role giveaway tutorial" });
+    const pointer = (type: string, x: number, y = 100, id = 1) => {
+      const event = new Event(type, { bubbles: true });
+      Object.assign(event, {
+        clientX: x,
+        clientY: y,
+        pointerId: id,
+        isPrimary: id === 1,
+        button: 0,
+      });
+      fireEvent(dialog, event);
+    };
+    for (const [x, y] of [
+      [110, 100],
+      [100, 200],
+      [190, 100],
+    ]) {
+      pointer("pointerdown", 100);
+      pointer("pointerup", x!, y!);
+      expect(within(dialog).getByRole("heading", { name: "Tap to reveal" })).toBeVisible();
+    }
+    for (const interruption of ["pointercancel", "lostpointercapture", "second-pointer"]) {
+      pointer("pointerdown", 200);
+      if (interruption === "second-pointer") pointer("pointerdown", 190, 100, 2);
+      else pointer(interruption, 200);
+      pointer("pointerup", 100);
+      expect(within(dialog).getByRole("heading", { name: "Tap to reveal" })).toBeVisible();
+    }
+    for (let index = 0; index < 3; index++) {
+      pointer("pointerdown", 200);
+      pointer("pointerup", 100);
+      fireEvent.click(dialog);
+    }
+    expect(within(dialog).getByRole("heading", { name: "Ready to begin" })).toBeVisible();
+    pointer("pointerdown", 100);
+    pointer("pointerup", 200);
+    expect(within(dialog).getByRole("heading", { name: "Three taps to reshuffle" })).toBeVisible();
+    expect(onEvent).not.toHaveBeenCalled();
+  });
+
+  it("preserves correction drafts but discards partial reroll taps across tutorial visits", async () => {
+    const user = userEvent.setup();
+    const onEvent = vi.fn();
+    render(
+      <SetupWizard
+        players={availablePlayers}
+        initialSessionState={partialRoleSession()}
+        onComplete={vi.fn()}
+        onEvent={onEvent}
+      />,
+    );
+    const card = screen.getByRole("button", { name: /^Player 1:/ });
+    fireEvent.click(card);
+    fireEvent.click(card);
+    await user.click(screen.getByRole("button", { name: "Role giveaway help" }));
+    await user.click(screen.getByRole("button", { name: "Close tutorial" }));
+    fireEvent.click(card);
+    expect(onEvent).not.toHaveBeenCalled();
+    fireEvent.click(card);
+    fireEvent.click(card);
+    expect(onEvent).toHaveBeenCalledExactlyOnceWith(
+      "setup.role-rerolled",
+      expect.objectContaining({ seat: 1 }),
+    );
+    onEvent.mockClear();
+    swipeCard(card);
+    const draft = screen.getByRole("dialog", { name: "Choose role" });
+    const before = draft.textContent;
+    await user.click(screen.getByRole("button", { name: "Role giveaway help" }));
+    await user.click(screen.getByRole("button", { name: "Close tutorial" }));
+    expect(screen.getByRole("dialog", { name: "Choose role" })).toBe(draft);
+    expect(draft.textContent).toBe(before);
+    expect(onEvent).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Player setup" }));
+    expect(screen.queryByRole("button", { name: "Role giveaway help" })).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Role giveaway tutorial" })).toBeNull();
+  });
+
+  it.each([false, true])(
+    "uses labeled demo artwork when the deal has no eligible example (complete: %s)",
+    async (complete) => {
+      const user = userEvent.setup();
+      const session = partialRoleSession();
+      let setup = beginRoleDraw(createSetup(session.setup.players), createSeededRandom(1));
+      if (complete) for (let seat = 1; seat <= 10; seat++) setup = drawRoleForSeat(setup, seat);
+      const onEvent = vi.fn();
+      render(
+        <SetupWizard
+          players={availablePlayers}
+          initialSessionState={{ ...session, setup }}
+          onComplete={vi.fn()}
+          onEvent={onEvent}
+        />,
+      );
+      const bounds = vi
+        .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+        .mockImplementation(function (this: HTMLElement) {
+          return this.matches("dialog")
+            ? new DOMRect(0, 0, 1200, 800)
+            : new DOMRect(20, 20, 120, 140);
+        });
+      try {
+        await user.click(screen.getByRole("button", { name: "Role giveaway help" }));
+        if (complete)
+          expect(screen.getByRole("img", { name: "Example: undealt card" })).toBeVisible();
+        else expect(screen.queryByRole("img", { name: "Example: undealt card" })).toBeNull();
+        await user.click(screen.getByRole("button", { name: "Next" }));
+        expect(screen.getByRole("img", { name: "Example: dealt card" })).toBeVisible();
+        expect(onEvent).not.toHaveBeenCalled();
+        await user.click(screen.getByRole("button", { name: "Close tutorial" }));
+        expect(document.querySelectorAll(".player-seat.is-role-dealt")).toHaveLength(
+          complete ? 10 : 0,
+        );
+      } finally {
+        bounds.mockRestore();
+      }
+    },
+  );
+
+  it.each(["undealt", "complete", "pending", "casper"])(
+    "keeps tutorial harmless for %s deals",
+    async (state) => {
+      const user = userEvent.setup();
+      const session = partialRoleSession();
+      const players = session.setup.players.map((player) =>
+        state === "casper" && player.seat === 10 ? { ...player, id: "casper" } : player,
+      );
+      let setup = beginRoleDraw(createSetup(players), createSeededRandom(1));
+      if (state === "complete")
+        for (let seat = 1; seat <= 10; seat++) setup = drawRoleForSeat(setup, seat);
+      const onSessionStateChange = vi.fn();
+      const onEvent = vi.fn();
+      const { unmount } = render(
+        <SetupWizard
+          players={availablePlayers}
+          persistencePending={state === "pending"}
+          initialSessionState={{
+            ...session,
+            setup,
+            selectedPlayerIds: players.map(({ id }) => id),
+          }}
+          onComplete={vi.fn()}
+          onEvent={onEvent}
+          onSessionStateChange={onSessionStateChange}
+        />,
+      );
+      onSessionStateChange.mockClear();
+      await user.click(screen.getByRole("button", { name: "Role giveaway help" }));
+      await user.click(screen.getByRole("button", { name: "Next" }));
+      expect(
+        screen.getByText("Only while cards remain. Not for Casper. The role may stay the same."),
+      ).toBeVisible();
+      await user.click(screen.getByRole("button", { name: "Next" }));
+      expect(onEvent).not.toHaveBeenCalled();
+      expect(onSessionStateChange).not.toHaveBeenCalled();
+      unmount();
+      expect(screen.queryByRole("dialog", { name: "Role giveaway tutorial" })).toBeNull();
+    },
+  );
+
   it("keeps one tournament switch in the heading and its live fields after every seat, before actions", async () => {
     const user = userEvent.setup();
     const list = vi

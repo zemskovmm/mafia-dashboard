@@ -8,6 +8,7 @@ import {
   getCurrentTurnDuration,
   isVotingRequired,
   issueFoul,
+  isNightCheckEligible,
   setNominationSelection,
 } from "@mafia/game-domain";
 import type { CanonicalGameEventDraft, GameState } from "@mafia/game-domain";
@@ -28,6 +29,7 @@ import { isCriticalState } from "./critical-state.js";
 import { isGuessingState } from "./guessing-state.js";
 import { VotingStage } from "../voting/VotingStage.js";
 import { PlayerExitProvider } from "./PlayerExitProvider.js";
+import { GameTutorial, isGameTutorialPhase } from "../tutorial/GameTutorial.js";
 import {
   DEFAULT_PLAYER_EXIT_SETTINGS,
   type PlayerExitSettings,
@@ -42,6 +44,7 @@ interface GameScreenProps {
   readonly onEvent: (type: string, payload: Record<string, unknown>) => void;
   readonly onAcceptedEvent?: (event: CanonicalGameEventDraft) => GameState | void;
   readonly mode?: "live" | "preview";
+  readonly showTutorialHelp?: boolean;
   readonly previewSequence?: number;
   readonly onExitPreview?: () => void;
   readonly onResetPreview?: () => void;
@@ -136,6 +139,7 @@ export const GameScreen = ({
   onEvent,
   onAcceptedEvent,
   mode = "live",
+  showTutorialHelp = true,
   previewSequence,
   onExitPreview = () => undefined,
   onResetPreview = () => undefined,
@@ -408,6 +412,15 @@ export const GameScreen = ({
     return <span className="table-prompt">{t("game.waitingForNextAction")}</span>;
   })();
 
+  const dayAdvanceLabel = isLastDayTurn
+    ? votingRequired
+      ? t(getActiveNominations(game).length === 1 ? "game.laterSoleNominee" : "game.beginVoting")
+      : t("game.beginNight")
+    : t("game.nextPlayer");
+  const tieAdvanceLabel =
+    game.currentTurnIndex >= game.turnOrder.length - 1
+      ? t("game.beginRevote")
+      : t("game.nextNominee");
   const tableAdvance = (() => {
     if (mode === "preview") return undefined;
     if (game.phase === "finished" || game.phase === "draw" || game.phase === "cancelled") {
@@ -465,24 +478,14 @@ export const GameScreen = ({
     if (game.phase === "day") {
       return (
         <button type="button" disabled={currentPlayer === undefined} onClick={finishTurn}>
-          {isLastDayTurn
-            ? votingRequired
-              ? t(
-                  getActiveNominations(game).length === 1
-                    ? "game.laterSoleNominee"
-                    : "game.beginVoting",
-                )
-              : t("game.beginNight")
-            : t("game.nextPlayer")}
+          {dayAdvanceLabel}
         </button>
       );
     }
     if (game.phase === "car-crash") {
       return (
         <button type="button" disabled={currentPlayer === undefined} onClick={finishTurn}>
-          {game.currentTurnIndex >= game.turnOrder.length - 1
-            ? t("game.beginRevote")
-            : t("game.nextNominee")}
+          {tieAdvanceLabel}
         </button>
       );
     }
@@ -497,6 +500,24 @@ export const GameScreen = ({
   const tableCycle =
     opening || game.phase === "best-move" || game.phase.startsWith("night-") ? "night" : "day";
   const effectivePrivacyHidden = privacyHidden && tableCycle === "day";
+  const tutorialCheckAvailable =
+    game.phase === "night-don"
+      ? isNightCheckEligible(game, "don")
+      : game.phase === "night-sheriff"
+        ? isNightCheckEligible(game, "sheriff")
+        : true;
+  const tutorialContext = JSON.stringify([
+    game.players.map(({ id }) => id),
+    game.phase,
+    game.day,
+    game.currentTurnIndex,
+    currentPlayer?.seat,
+    game.ballot?.selectedCandidateSeat,
+    game.ballot?.dispute !== undefined,
+    gameplayBlocked,
+    penaltiesAvailable,
+    tutorialCheckAvailable,
+  ]);
 
   return (
     <PlayerExitProvider
@@ -525,11 +546,25 @@ export const GameScreen = ({
               {t("game.live")} · {clubName === undefined ? "" : `${clubName} · `}
               {displayGameName}
             </p>
-            <h1>
-              {mode === "preview"
-                ? `${phaseTitle(game, t)} · ${t("game.preview")}`
-                : phaseTitle(game, t)}
-            </h1>
+            <div className="game-tutorial-heading">
+              <h1>
+                {mode === "preview"
+                  ? `${phaseTitle(game, t)} · ${t("game.preview")}`
+                  : phaseTitle(game, t)}
+              </h1>
+              {mode === "live" && showTutorialHelp && isGameTutorialPhase(game.phase) && (
+                <GameTutorial
+                  key={tutorialContext}
+                  phase={isSkippedCarCrash(game) ? "car-crash-skipped" : game.phase}
+                  advanceLabel={game.phase === "car-crash" ? tieAdvanceLabel : dayAdvanceLabel}
+                  nominationAvailable={!gameplayBlocked && currentPlayer !== undefined}
+                  foulAvailable={foulAvailable}
+                  penaltyAvailable={penaltiesAvailable && !gameplayBlocked}
+                  checkAvailable={tutorialCheckAvailable}
+                  ballotPaused={game.ballot?.dispute !== undefined}
+                />
+              )}
+            </div>
           </div>
         </header>
 

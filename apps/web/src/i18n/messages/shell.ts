@@ -2,6 +2,7 @@ import type { FeatureMessages } from "../I18nProvider.js";
 import type { Message } from "./types.js";
 
 const englishShellMessages = {
+  showTutorialHelp: "Show tutorial help buttons",
   pendingTournamentChanges: "Pending tournament changes",
   tournamentSwitchBlocked:
     "Game switching is blocked until pending changes are saved. They are safe on this device; use the save indicator to retry or correct the tournament selection.",
@@ -359,6 +360,7 @@ const englishShellMessages = {
 export type ShellMessageKey = keyof typeof englishShellMessages;
 
 const russianShellMessages = {
+  showTutorialHelp: "Показывать кнопки подсказок",
   pendingTournamentChanges: "Несохранённые изменения турниров",
   tournamentSwitchBlocked:
     "Переключение игр заблокировано, пока изменения не сохранены. Они остаются на этом устройстве; повторите сохранение через индикатор или исправьте выбор турнира.",

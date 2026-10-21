@@ -949,6 +949,66 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("tutorial help preference", () => {
+  it.each(["setup", "game"])(
+    "updates %s help immediately even when preference storage is denied",
+    async (view) => {
+      const setup = vi.spyOn(setupWizardModule, "SetupWizard");
+      const game = vi.spyOn(gameScreenModule, "GameScreen");
+      window.localStorage.setItem(
+        `mafia-dashboard.available-player-ids.${testClub.id}`,
+        JSON.stringify([...assignedGame.players.map(({ id }) => id), hostPlayerId]),
+      );
+      if (view === "game") restoreFederationCheckpoint(federationGame());
+      renderView(<App />);
+      const target = view === "game" ? game : setup;
+      await waitFor(() =>
+        expect(target.mock.lastCall?.[0]).toMatchObject({ showTutorialHelp: true }),
+      );
+      const setItem = Storage.prototype.setItem;
+      vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
+        this: Storage,
+        key,
+        value,
+      ) {
+        if (key === "mafia-dashboard.tutorial-help.v1")
+          throw new DOMException("Denied", "SecurityError");
+        setItem.call(this, key, value);
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+      const toggle = screen.getByRole("switch", { name: "Show tutorial help buttons" });
+      fireEvent.click(toggle);
+      expect(toggle).not.toBeChecked();
+      expect(target.mock.lastCall?.[0]).toMatchObject({ showTutorialHelp: false });
+      fireEvent.click(toggle);
+      expect(toggle).toBeChecked();
+      expect(target.mock.lastCall?.[0]).toMatchObject({ showTutorialHelp: true });
+    },
+  );
+
+  it("offers default-on help in ordinary Manage and remembers hiding it without saving the game", async () => {
+    restoreFederationCheckpoint(federationGame());
+    const first = renderView(<App />);
+    await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
+    const saved = window.localStorage.getItem(gameSessionStorageKey);
+    api.saveGameSession.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    const toggle = screen.getByRole("switch", { name: "Show tutorial help buttons" });
+    expect(toggle).toBeChecked();
+    fireEvent.click(toggle);
+    expect(toggle).not.toBeChecked();
+    expect(window.localStorage.getItem(gameSessionStorageKey)).toBe(saved);
+    expect(api.saveGameSession).not.toHaveBeenCalled();
+    first.unmount();
+    renderView(<App />);
+    await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
+    fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    expect(screen.getByRole("switch", { name: "Show tutorial help buttons" })).not.toBeChecked();
+    fireEvent.click(screen.getByRole("switch", { name: "Show tutorial help buttons" }));
+    expect(screen.getByRole("switch", { name: "Show tutorial help buttons" })).toBeChecked();
+  });
+});
+
 describe("statistics navigation and separate tournament setup", () => {
   it("gates the real wizard after first tournament selection until creation and latest metadata are acknowledged", async () => {
     const { SetupWizard: RealSetupWizard } = await vi.importActual<typeof setupWizardModule>(

@@ -22,6 +22,7 @@ import { useMessages } from "../../i18n/I18nProvider.js";
 import { gameMessages, type GameMessageKey } from "../../i18n/messages/game.js";
 import { setupMessages } from "../../i18n/messages/setup.js";
 import "./SetupWizard.css";
+import { RoleGiveawayTutorial } from "./RoleGiveawayTutorial.js";
 import { reportError } from "../console/error-console.js";
 import { GameTable } from "../table/GameTable.js";
 import type { RoleDrawRequest } from "../table/RoleDrawPresentation.js";
@@ -37,6 +38,7 @@ interface SetupWizardProps {
   readonly initialSessionState?: SetupWizardSessionState | null;
   readonly onSessionStateChange?: (state: SetupWizardSessionState) => void;
   readonly showDevelopmentTools?: boolean;
+  readonly showTutorialHelp?: boolean;
   /** Caller owns the manager/unlocked/enabled Dev gate. Presentation only. */
   readonly previewUndealtRoles?: boolean;
   readonly onPopulateDevelopmentPlayers?: () => Promise<readonly PlayerProfile[]>;
@@ -343,6 +345,7 @@ export const SetupWizard = ({
   initialSessionState = null,
   onSessionStateChange,
   showDevelopmentTools = false,
+  showTutorialHelp = true,
   previewUndealtRoles = false,
   onPopulateDevelopmentPlayers,
   onOpenAvailablePlayers,
@@ -803,6 +806,20 @@ export const SetupWizard = ({
               </p>
               <h1>{t("setup.roleDraw")}</h1>
             </div>
+            {showTutorialHelp && (
+              <RoleGiveawayTutorial
+                seats={setup.players
+                  .filter((player) => !isCasperPlayer(player))
+                  .map(({ seat }) => ({
+                    seat,
+                    dealt: setup.assignments[seat] !== undefined,
+                  }))}
+                continueLabel={t("setup.startPlanning")}
+                onVisibilityChange={() => {
+                  roleTapState.current = null;
+                }}
+              />
+            )}
           </div>
         </header>
         <div className="live-layout">
