@@ -12,6 +12,7 @@ import { getClubStatistics, getPlayerStatistics, listTournaments } from "../../a
 import { useMessages, type FeatureI18n } from "../../i18n/I18nProvider.js";
 import { gameMessages } from "../../i18n/messages/game.js";
 import { statisticsMessages, type StatisticsMessageKey } from "../../i18n/messages/statistics.js";
+import { notebookMessages } from "../../i18n/messages/notebook.js";
 import { reportError } from "../console/error-console.js";
 import { GlassSurface } from "../theme/GlassSurface.js";
 import { TournamentPicker } from "../tournaments/TournamentPicker.js";
@@ -21,6 +22,7 @@ export interface StatisticsScreenProps {
   readonly clubId: string;
   readonly isManager: boolean;
   readonly onBack: () => void;
+  readonly onImport?: () => void;
   readonly onOpenTimeline?: (gameId: string) => void;
   readonly onTournamentAssigned?: (gameId: string, tournamentId: string | null) => void;
   readonly onAssignTournament?: (
@@ -64,6 +66,7 @@ export const StatisticsScreen = (props: StatisticsScreenProps) => (
 
 const ClubStatisticsScreen = (props: StatisticsScreenProps) => {
   const { t } = useMessages(statisticsMessages);
+  const notebookText = useMessages(notebookMessages);
   const dateHelpId = useId();
   const [filters, setFilters] = useState<StatisticsFilters>({});
   const [tournaments, setTournaments] = useState<readonly ClubTournament[]>([]);
@@ -115,6 +118,11 @@ const ClubStatisticsScreen = (props: StatisticsScreenProps) => {
           {t("back")}
         </button>
         <h1>{t("heading")}</h1>
+        {props.onImport === undefined ? null : (
+          <button type="button" onClick={props.onImport}>
+            {notebookText.t("importGame")}
+          </button>
+        )}
       </header>
       <GlassSurface
         as="section"

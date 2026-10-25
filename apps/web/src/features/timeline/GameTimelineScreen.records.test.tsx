@@ -73,6 +73,61 @@ const localized = {
 
 describe.each(["en", "ru"] as const)("engine-independent completed records (%s)", (locale) => {
   afterEach(() => vi.restoreAllMocks());
+  it("offers notebook import from history without requesting a live-game action", () => {
+    const onImport = vi.fn();
+    render(
+      <I18nProvider locale={locale}>
+        <GameTimelineScreen
+          clubId="club"
+          onBack={vi.fn()}
+          onImport={onImport}
+          loaders={{ listCompleted: async () => [], getSession: async () => session() }}
+        />
+      </I18nProvider>,
+    );
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: locale === "en" ? "Import paper game" : "Импорт игры из тетради",
+      }),
+    );
+    expect(onImport).toHaveBeenCalledOnce();
+  });
+
+  it("reopens sparse notebook observations without constructing a replay", async () => {
+    const replay = vi.spyOn(domain, "replayGameLog");
+    const saved = session(
+      {
+        notebook: {
+          dayCount: 2,
+          cells: [
+            { seat: 1, day: 1, phase: "day", nomination: 4, eliminated: true },
+            { seat: 2, day: 1, phase: "night", eliminated: true },
+          ],
+          bestMove: { targetSeats: [5, 6, 8] },
+        },
+      },
+      { players: [{ playerId: "known-player", seat: 1, role: "sheriff" }] },
+    );
+    const bytes = JSON.stringify(saved);
+    const view = render(
+      <I18nProvider locale={locale}>
+        <GameTimelineScreen
+          clubId="club"
+          initialGameId={gameId}
+          onBack={vi.fn()}
+          players={[{ id: "known-player", nickname: "Current nickname" }]}
+          loaders={{ listCompleted: async () => [summary], getSession: async () => saved }}
+        />
+      </I18nProvider>,
+    );
+    expect(await screen.findByText("4 X")).toBeInTheDocument();
+    expect(screen.getAllByRole("table")).toHaveLength(2);
+    expect(screen.getAllByText("Current nickname").length).toBeGreaterThanOrEqual(2);
+    expect(replay).not.toHaveBeenCalled();
+    expect(JSON.stringify(saved)).toBe(bytes);
+    view.unmount();
+  });
+
   it.each([
     {},
     { initialGame: null, events: [], headEventId: null },

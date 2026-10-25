@@ -161,6 +161,7 @@ import { GameTimelineScreen } from "./features/timeline/GameTimelineScreen.js";
 import { buildTimeline } from "./features/timeline/timeline-model.js";
 import { projectNominationHistory } from "./features/timeline/nomination-history.js";
 import { StatisticsScreen } from "./features/statistics/StatisticsScreen.js";
+import { NotebookImportScreen } from "./features/import/NotebookImportScreen.js";
 import { TournamentPicker } from "./features/tournaments/TournamentPicker.js";
 import { PlayerDirectoryProvider } from "./features/players/player-display.js";
 import { CardGameIdentityContext } from "./features/table/CardGameIdentityContext.js";
@@ -209,7 +210,7 @@ interface LocalLogEntry {
 }
 
 type BackgroundShade = "black" | "grey-33" | "grey-66" | "white";
-type WorkspaceView = "game" | "players" | "statistics" | "timeline" | "console";
+type WorkspaceView = "game" | "players" | "statistics" | "timeline" | "console" | "import";
 type PlayerGateError = Readonly<{
   readonly key: "addRegisteredPlayers" | "markAvailablePlayers";
   readonly count: number;
@@ -775,6 +776,7 @@ const ClubWorkspaceContent = ({
       hashGameState(initialDerivedGame) !== hashGameState(initialCanonicalGame),
   );
   const viewBeforeTimelineRef = useRef<Exclude<WorkspaceView, "timeline">>("game");
+  const viewBeforeImportRef = useRef<"statistics" | "timeline">("statistics");
   const viewBeforeConsoleRef = useRef<"game" | "players">("game");
   const phaseRef = useRef(initialState.game?.phase ?? setupPhase(initialState.setup?.step));
   const playerRequestRef = useRef(0);
@@ -864,7 +866,7 @@ const ClubWorkspaceContent = ({
         setPlayersError(false);
         // Synthetic Casper never counts as a registered human; names alone are not reserved.
         if (isManager && nextPlayers.filter((player) => !isCasperPlayer(player)).length < 10)
-          setView("players");
+          setView((current) => (current === "import" ? current : "players"));
       }
     } catch (error) {
       reportError(error, { source: "api", context: "players.list" });
@@ -1505,7 +1507,7 @@ const ClubWorkspaceContent = ({
     if (canLeaveWorkspace()) onExit();
   };
 
-  const resetLocalState = useCallback(() => {
+  const resetLocalState = useCallback((preserveImportView = false) => {
     setSessionName(nextGameName(window.localStorage, new Date()));
     setGame(null);
     setSetupSession(null);
@@ -1518,7 +1520,7 @@ const ClubWorkspaceContent = ({
     setFinishGameState("ready");
     setPlaylistId(defaultPlaylistId);
     setSetupInstanceKey((key) => key + 1);
-    setView("game");
+    setView((current) => (preserveImportView && current === "import" ? current : "game"));
     setAvailabilityScreenOpen(false);
     setInitialGame(null);
     initialGameRef.current = null;
@@ -1552,7 +1554,8 @@ const ClubWorkspaceContent = ({
     void (async () => {
       try {
         await sessionSync.clear(async () => undefined);
-        resetLocalState();
+        // A background live-game acknowledgement must not discard a separate import request.
+        resetLocalState(true);
         void Promise.all([refreshPlayers(), refreshActiveSessions()]).catch((error: unknown) =>
           reportError(error, { source: "api", context: "game.finish-refresh" }),
         );
@@ -1722,6 +1725,7 @@ const ClubWorkspaceContent = ({
     appShellRef.current.scrollLeft = 0;
   }, [tableLayoutActive]);
   const showApplicationStatus =
+    view !== "import" &&
     view !== "timeline" &&
     view !== "statistics" &&
     (view === "players" || (game === null && !roleGiveawayActive));
@@ -2601,7 +2605,10 @@ const ClubWorkspaceContent = ({
       ) : null}
 
       {view === "statistics" ||
-      (view === "timeline" && viewBeforeTimelineRef.current === "statistics") ? (
+      (view === "timeline" && viewBeforeTimelineRef.current === "statistics") ||
+      (view === "import" &&
+        (viewBeforeImportRef.current === "statistics" ||
+          viewBeforeTimelineRef.current === "statistics")) ? (
         <div className="statistics-route" hidden={view !== "statistics"}>
           <StatisticsScreen
             clubId={club.id}
@@ -2615,6 +2622,10 @@ const ClubWorkspaceContent = ({
               return next;
             }}
             onBack={() => setView("game")}
+            onImport={() => {
+              viewBeforeImportRef.current = "statistics";
+              setView("import");
+            }}
             {...(isManager
               ? {
                   onOpenTimeline: (gameId: string) => {
@@ -2627,35 +2638,52 @@ const ClubWorkspaceContent = ({
           />
         </div>
       ) : null}
-      {view === "statistics" ? null : isManager && view === "console" ? (
-        <ErrorConsoleScreen onBack={() => setView(viewBeforeConsoleRef.current)} />
-      ) : isManager && view === "timeline" ? (
-        <GameTimelineScreen
+      {isManager &&
+      (view === "timeline" || (view === "import" && viewBeforeImportRef.current === "timeline")) ? (
+        <div hidden={view !== "timeline"}>
+          <GameTimelineScreen
+            clubId={club.id}
+            players={players}
+            refreshRevision={statisticsAssignmentRevision}
+            onImport={() => {
+              viewBeforeImportRef.current = "timeline";
+              setView("import");
+            }}
+            {...(statisticsTimelineGameId === undefined
+              ? {}
+              : { initialGameId: statisticsTimelineGameId })}
+            backLabel={statisticsTimelineGameId === undefined ? undefined : t("backToStatistics")}
+            onBack={() => setView(viewBeforeTimelineRef.current)}
+            showDevelopmentTools={isManager && devUnlocked}
+            currentHistory={
+              statisticsTimelineGameId === undefined ? currentTimelineHistory : undefined
+            }
+            onPreviewCurrentEvent={(eventId) => {
+              previewEventState(eventId);
+              setView("game");
+            }}
+            {...(finalResults === null
+              ? {
+                  onResetCurrentEvent: (eventId: string) => {
+                    void resetToEventState(eventId).then((reset) => {
+                      if (reset) setView("game");
+                    });
+                  },
+                }
+              : {})}
+          />
+        </div>
+      ) : null}
+      {view === "import" ? (
+        <NotebookImportScreen
+          key={club.id}
           clubId={club.id}
           players={players}
-          {...(statisticsTimelineGameId === undefined
-            ? {}
-            : { initialGameId: statisticsTimelineGameId })}
-          backLabel={statisticsTimelineGameId === undefined ? undefined : t("backToStatistics")}
-          onBack={() => setView(viewBeforeTimelineRef.current)}
-          showDevelopmentTools={isManager && devUnlocked}
-          currentHistory={
-            statisticsTimelineGameId === undefined ? currentTimelineHistory : undefined
-          }
-          onPreviewCurrentEvent={(eventId) => {
-            previewEventState(eventId);
-            setView("game");
-          }}
-          {...(finalResults === null
-            ? {
-                onResetCurrentEvent: (eventId: string) => {
-                  void resetToEventState(eventId).then((reset) => {
-                    if (reset) setView("game");
-                  });
-                },
-              }
-            : {})}
+          onBack={() => setView(viewBeforeImportRef.current)}
+          onSaved={() => setStatisticsAssignmentRevision((revision) => revision + 1)}
         />
+      ) : view === "statistics" || view === "timeline" ? null : isManager && view === "console" ? (
+        <ErrorConsoleScreen onBack={() => setView(viewBeforeConsoleRef.current)} />
       ) : isManager && view === "players" ? (
         <>
           {playerGateError !== null ? (

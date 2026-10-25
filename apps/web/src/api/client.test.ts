@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { NotebookGameCreation } from "@mafia/game-domain";
 import {
   ApiError,
   assignGameTournament,
@@ -355,6 +356,37 @@ describe("player API client", () => {
 });
 
 describe("game session aggregate API client", () => {
+  it("posts sparse notebook observations through the club-scoped creation endpoint unchanged", async () => {
+    const input: NotebookGameCreation = {
+      creationId: "00000000-0000-4000-8000-000000000801",
+      name: "Paper game",
+      state: {
+        notebook: {
+          dayCount: 2,
+          cells: [{ seat: 2, day: 1, phase: "day", nomination: 10, eliminated: true }],
+        },
+      },
+      results: { players: [{ playerId: player.id, seat: 2 }] },
+    };
+    const saved = { gameId: "server-id", status: "completed", ...input };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify(saved), { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(createGameSession(input, "club-id")).resolves.toEqual(saved);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/game-sessions",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ "x-club-id": "club-id" }),
+        body: JSON.stringify(input),
+      }),
+    );
+    expect(input.state).not.toHaveProperty("game");
+    expect(input.state).not.toHaveProperty("events");
+    expect(input.results.players[0]).not.toHaveProperty("fouls");
+  });
+
   it("retains partial completed factual detail without inventing a current game or timeline", async () => {
     const gameId = "00000000-0000-4000-8000-000000000002";
     const clubId = "00000000-0000-4000-8000-000000000101";

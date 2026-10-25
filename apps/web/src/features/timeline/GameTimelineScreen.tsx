@@ -45,6 +45,10 @@ import { createSampleGameHistory } from "./sample-game-data.js";
 import { buildTimeline, type TimelineMarker, type TimelineText } from "./timeline-model.js";
 import { completedRecordFacts, type CompletedRecordFacts } from "./completed-record.js";
 import { CompletedRecordDetails } from "./CompletedRecordDetails.js";
+import { notebookMessages } from "../../i18n/messages/notebook.js";
+import { readNotebookRecord } from "../import/notebook-import.js";
+import { NotebookRecordView } from "../import/NotebookRecordView.js";
+import type { NotebookRecord } from "@mafia/game-domain";
 
 interface TimelineLoaders {
   readonly listCompleted: (
@@ -57,6 +61,8 @@ interface TimelineLoaders {
 interface GameTimelineScreenProps {
   readonly clubId: string;
   readonly onBack: () => void;
+  readonly onImport?: () => void;
+  readonly refreshRevision?: number;
   readonly initialGameId?: string;
   readonly backLabel?: string;
   readonly players?: readonly { readonly id: string; readonly nickname: string }[];
@@ -73,6 +79,7 @@ interface GameTimelineScreenProps {
 
 interface LoadedHistory {
   readonly label: string;
+  readonly notebook?: NotebookRecord | null;
   readonly frames: readonly ReplayFrame[] | null;
 
   readonly facts: CompletedRecordFacts | null;
@@ -135,6 +142,8 @@ export const GameTimelineScreen = (props: GameTimelineScreenProps) => (
 const TenantGameTimelineScreen = ({
   clubId,
   onBack,
+  onImport,
+  refreshRevision = 0,
   initialGameId,
   backLabel,
   players = [],
@@ -145,6 +154,7 @@ const TenantGameTimelineScreen = ({
   onResetCurrentEvent,
 }: GameTimelineScreenProps) => {
   const i18n = useMessages(timelineConsoleMessages);
+  const notebookText = useMessages(notebookMessages);
   const timelineText: TimelineText = {
     ...i18n,
     playerName: (id) =>
@@ -235,7 +245,7 @@ const TenantGameTimelineScreen = ({
     return () => {
       if (listRequestRef.current === request) listRequestRef.current += 1;
     };
-  }, [clubId, from, i18n, invalidDateRange, loaders, outcome, playerId, to]);
+  }, [clubId, from, i18n, invalidDateRange, loaders, outcome, playerId, to, refreshRevision]);
 
   useEffect(() => {
     if (selectedGameId === "current") setHistory(loadCurrentHistory());
@@ -295,6 +305,7 @@ const TenantGameTimelineScreen = ({
           frames: replayed,
 
           facts: completedRecordFacts(session, summary ?? null),
+          notebook: readNotebookRecord(session.state.notebook),
           sample: false,
           current: false,
           headEventId: null,
@@ -387,11 +398,18 @@ const TenantGameTimelineScreen = ({
             ))}
           </select>
         </label>
-        {showDevelopmentTools ? (
-          <button type="button" onClick={showSample}>
-            {i18n.t("Generate sample game data")}
-          </button>
-        ) : null}
+        <div className="timeline-header-actions">
+          {onImport === undefined ? null : (
+            <button type="button" onClick={onImport}>
+              {notebookText.t("importGame")}
+            </button>
+          )}
+          {showDevelopmentTools ? (
+            <button type="button" onClick={showSample}>
+              {i18n.t("Generate sample game data")}
+            </button>
+          ) : null}
+        </div>
       </header>
 
       <section className="timeline-filters" aria-label={i18n.t("History filters")}>
@@ -496,6 +514,13 @@ const TenantGameTimelineScreen = ({
         <p className="timeline-empty">{i18n.t("No completed games yet.")}</p>
       ) : null}
 
+      {history?.notebook == null ? null : (
+        <NotebookRecordView
+          notebook={history.notebook}
+          participants={history.facts?.participants ?? []}
+          playerName={(id) => timelineText.playerName?.(id) ?? i18n.t("Anonymous player")}
+        />
+      )}
       {history?.facts == null ? null : (
         <CompletedRecordDetails
           facts={history.facts}

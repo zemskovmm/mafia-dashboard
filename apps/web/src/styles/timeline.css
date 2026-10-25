@@ -31,6 +31,11 @@
 .timeline-header select {
   width: 100%;
 }
+.timeline-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .timeline-header label {
   display: grid;
   gap: 5px;

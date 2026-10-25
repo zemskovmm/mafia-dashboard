@@ -145,6 +145,13 @@ beforeEach(() => {
 });
 
 describe("StatisticsScreen", () => {
+  it("offers notebook import to a regular club member without manager controls", async () => {
+    const onImport = vi.fn();
+    renderScreen({ onImport });
+    await userEvent.setup().click(screen.getByRole("button", { name: "Import paper game" }));
+    expect(onImport).toHaveBeenCalledOnce();
+  });
+
   it("uses one current record view without edition controls or historical engine labels", async () => {
     const user = userEvent.setup();
     renderScreen();

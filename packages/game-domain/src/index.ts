@@ -11,3 +11,4 @@ export * from "./rule-error.js";
 export * from "./setup.js";
 export * from "./types.js";
 export * from "./statistics-types.js";
+export * from "./notebook.js";

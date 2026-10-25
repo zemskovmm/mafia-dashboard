@@ -8,6 +8,7 @@ import {
   type PlayerStatisticsResponse,
   type StatisticsFilters,
   type StatisticsHistoryPage,
+  type NotebookGameCreation,
 } from "@mafia/game-domain";
 import type {
   PlayerRoleIconBundle,
@@ -577,7 +578,7 @@ export const deletePlayer = async (playerId: string, clubId?: string): Promise<v
 };
 
 export const createGameSession = async (
-  input: GameSessionCreation,
+  input: GameSessionCreation | NotebookGameCreation,
   clubId?: string,
 ): Promise<RemoteGameSession> => {
   const response = await fetchPersistenceRequest("/api/game-sessions", {

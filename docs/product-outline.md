@@ -86,6 +86,16 @@ Primary hit targets are at least 48×48 CSS pixels. A destructive action require
 - Completed records may contain minimal, partial or full factual results independently of optional timeline detail. Preserve every game and known identity, result, timestamp, host, tournament and participant observation; retries cannot double-count a game. History includes incomplete records without edition categories; filters cannot match unknown values, and undated records have stable placement without invented dates.
 - Experimental lifetime `club-team-elo-v1` retains its full ordering, 1,500 start, simultaneous team-mean expectation updates with K=32, precision/rounding, provisional/rank rules, correction rebuilds and tournament-delta accounting in [IDD-0007](../.idd/intent/IDD-0007.spec-club-statistics-and-rating.md). Edition is not an eligibility criterion. Known complete non-Casper ten-human rosters, valid seats/roles/teams, played time and accepted outcome are required; unrelated missing fouls or timeline detail are not.
 
+### Importing notebook games
+
+Open **Statistics → Import paper game** (also available from the host's game-history screen). Select saved club players in their seat rows, choose any known roles, and transcribe the paper table. Register missing nicknames in Players first; names are not copied into the saved game.
+
+- In a day column, `10` means the row's player nominated seat 10. `X` records that row's elimination; `10 X` records both observations. A night column accepts only `X`—it is not a check or shooting-target field.
+- Select Citizen explicitly when known. The other role choices retain the paper legend: `•/м` Mafia, `Д` Don, `*` Sheriff. A known seat's role can be retained even if its player's identity is unknown; it does not create a player or assign statistics to an invented identity. Blank roles and cells mean unknown, not Citizen or proof of no action.
+- Add day/night pairs as needed. Optional Best Move (`ЛХ`) records up to three distinct target seats and a separately selected owner. Unknown roles do not turn into zero hits.
+- Fill in the known game name, outcome, host and played date/time; leave unavailable metadata blank. Review the table before saving. After an uncertain save, use Retry rather than creating another import.
+- The saved game appears as a completed record with a readable notebook table and available statistics, not a fabricated playable replay. Importing does not replace the live game or its recovery data.
+
 ### Step 2 — Start music
 
 - Connect the host's Google account and choose a playlist from the account's YouTube Music library.

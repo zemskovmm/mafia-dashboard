@@ -11,6 +11,7 @@ import { chromium } from "@playwright/test";
 import { tsImport } from "tsx/esm/api";
 import { ownedAzuriteEnvironment } from "./test-local.mjs";
 import { verifyCompletedRecords } from "./verify-completed-records.mjs";
+import { verifyNotebookImport } from "./verify-notebook-import.mjs";
 
 const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const defaultPorts = new Set([3000, 5173]);
@@ -682,6 +683,15 @@ const verify = async () => {
     pass("cross-user-club-access-denied", { statusCode: 403 });
 
     await verifyCompletedRecords({
+      page,
+      player: playerPayload.player,
+      evidenceDirectory,
+      pass,
+      request: (options) =>
+        apiResponse({ ...options, apiOrigin, clubId, token: owner.token, origin: webOrigin }),
+    });
+
+    await verifyNotebookImport({
       page,
       player: playerPayload.player,
       evidenceDirectory,

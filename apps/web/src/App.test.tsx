@@ -1010,6 +1010,240 @@ describe("tutorial help preference", () => {
 });
 
 describe("statistics navigation and separate tournament setup", () => {
+  it.each(["dirty", "pending", "uncertain"] as const)(
+    "preserves a %s paper import when a background live-game finish is acknowledged",
+    async (importState) => {
+      restoreFederationCheckpoint({ ...federationGame(), phase: "finished", winner: "red" });
+      api.getClubStatistics.mockResolvedValue({
+        players: [],
+        tournaments: [],
+        coverage: { completedGames: 0, partialGames: 0, unavailableGames: 0, pendingGames: 1 },
+        algorithm: "club-team-elo-v1",
+      });
+      render(<App />);
+      await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
+      api.saveGameSession.mockClear();
+      const completion = deferred<{ revision: number; duplicate: boolean }>();
+      api.saveGameSession.mockImplementationOnce(() => completion.promise);
+      fireEvent.click(screen.getByRole("button", { name: "Finish the game" }));
+      await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledOnce());
+      const completionOperation = api.saveGameSession.mock.calls[0]![1];
+      expect(completionOperation.results).toMatchObject({ winner: "red", hostPlayerId });
+
+      api.createGameSession.mockClear();
+      const importedId = "00000000-0000-4000-8000-000000000811";
+      const imported = deferred<RemoteGameSession>();
+      api.createGameSession.mockImplementation(async (input) => {
+        const saved: RemoteGameSession = {
+          gameId: importedId,
+          revision: 1,
+          duplicate: importState !== "dirty",
+          status: "completed",
+          updatedAt: "2026-10-25T12:00:00Z",
+          name: input.name,
+          state: input.state,
+          results: input.results,
+        };
+        api.getGameSession.mockResolvedValue(saved);
+        return saved;
+      });
+      if (importState !== "dirty")
+        api.createGameSession.mockImplementationOnce(() => imported.promise);
+      fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+      fireEvent.click(screen.getByRole("button", { name: "Statistics" }));
+      fireEvent.change(screen.getByLabelText("From (UTC)"), { target: { value: "2026-01-01" } });
+      fireEvent.click(screen.getByRole("button", { name: "Import paper game" }));
+      fireEvent.change(screen.getByLabelText("Game label"), {
+        target: { value: "Retained paper" },
+      });
+      fireEvent.change(screen.getByLabelText("Player at seat 1"), {
+        target: { value: assignedGame.players[0]!.id },
+      });
+      fireEvent.change(screen.getByLabelText("Seat 1, day 1"), { target: { value: "4 X" } });
+      if (importState !== "dirty") {
+        fireEvent.click(screen.getByRole("button", { name: "Review import" }));
+        fireEvent.click(screen.getByRole("button", { name: "Import game" }));
+        expect(screen.getByRole("button", { name: "Saving and verifying…" })).toBeDisabled();
+        if (importState === "uncertain") {
+          await act(async () => imported.reject(new Error("Lost import acknowledgement")));
+          expect(screen.getByRole("alert")).toHaveTextContent("Your exact request is retained");
+        }
+      }
+      const originalPayload = api.createGameSession.mock.calls[0]?.[0];
+      const originalJson = JSON.stringify(originalPayload);
+
+      await act(async () =>
+        completion.resolve({ revision: completionOperation.baseRevision + 1, duplicate: false }),
+      );
+      await waitFor(() => expect(window.localStorage.getItem(gameSessionStorageKey)).toBeNull());
+      expect(screen.getByRole("main", { name: "Import paper game" })).toBeInTheDocument();
+      const liveSaveCount = api.saveGameSession.mock.calls.length;
+      if (importState === "dirty") {
+        expect(screen.getByLabelText("Game label")).toHaveValue("Retained paper");
+        expect(screen.getByLabelText("Player at seat 1")).toHaveValue(assignedGame.players[0]!.id);
+        expect(screen.getByLabelText("Seat 1, day 1")).toHaveValue("4 X");
+        expect(api.createGameSession).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByRole("button", { name: "Review import" }));
+        fireEvent.click(screen.getByRole("button", { name: "Import game" }));
+      } else {
+        if (importState === "pending") {
+          expect(screen.getByRole("button", { name: "Saving and verifying…" })).toBeDisabled();
+          await act(async () => imported.reject(new Error("Lost import acknowledgement")));
+        }
+        expect(screen.getByRole("button", { name: "Edit table" })).toBeDisabled();
+        fireEvent.click(screen.getByRole("button", { name: "Retry same import" }));
+      }
+      expect(await screen.findByRole("status")).toHaveTextContent("Game imported and verified");
+      expect(api.getGameSession).toHaveBeenCalledWith(importedId, testClub.id);
+      expect(api.createGameSession).toHaveBeenCalledTimes(importState === "dirty" ? 1 : 2);
+      if (importState !== "dirty") {
+        expect(originalPayload.creationId).toMatch(/^[0-9a-f-]{36}$/);
+        expect(api.createGameSession.mock.lastCall?.[0]).toBe(originalPayload);
+        expect(JSON.stringify(api.createGameSession.mock.lastCall?.[0])).toBe(originalJson);
+      }
+      expect(api.saveGameSession).toHaveBeenCalledTimes(liveSaveCount);
+      fireEvent.click(screen.getByRole("button", { name: "Back" }));
+      expect(screen.getByLabelText("From (UTC)")).toHaveValue("2026-01-01");
+      fireEvent.click(screen.getByRole("button", { name: "Back to game" }));
+      expect(screen.getByRole("button", { name: "Start test game" })).toBeInTheDocument();
+      expect(window.localStorage.getItem(gameSessionStorageKey)).toBeNull();
+    },
+  );
+
+  it("preserves a paper draft when a delayed player refresh returns fewer than ten players", async () => {
+    restoreFederationCheckpoint({ ...federationGame(), phase: "finished", winner: "red" });
+    const refreshedPlayers = deferred<readonly PlayerProfile[]>();
+    api.listPlayers
+      .mockResolvedValueOnce([
+        ...assignedGame.players.map((seat) => player(playerLabel(seat), seat.id)),
+        player("Host Player", hostPlayerId),
+      ])
+      .mockReturnValueOnce(refreshedPlayers.promise);
+    api.getClubStatistics.mockResolvedValue({
+      players: [],
+      tournaments: [],
+      coverage: { completedGames: 1, partialGames: 0, unavailableGames: 0, pendingGames: 0 },
+      algorithm: "club-team-elo-v1",
+    });
+    render(<App />);
+    await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
+    fireEvent.click(screen.getByRole("button", { name: "Finish the game" }));
+    await screen.findByRole("button", { name: "Start test game" });
+    await waitFor(() => expect(api.listPlayers).toHaveBeenCalledTimes(2));
+    expect(window.localStorage.getItem(gameSessionStorageKey)).toBeNull();
+    api.createGameSession.mockClear();
+    const importedId = "00000000-0000-4000-8000-000000000812";
+    api.createGameSession.mockImplementation(async (input) => {
+      const saved: RemoteGameSession = {
+        gameId: importedId,
+        revision: 1,
+        duplicate: false,
+        status: "completed",
+        updatedAt: "2026-10-25T12:00:00Z",
+        name: input.name,
+        state: input.state,
+        results: input.results,
+      };
+      api.getGameSession.mockResolvedValue(saved);
+      return saved;
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    fireEvent.click(screen.getByRole("button", { name: "Statistics" }));
+    fireEvent.click(screen.getByRole("button", { name: "Import paper game" }));
+    fireEvent.change(screen.getByLabelText("Game label"), {
+      target: { value: "Sparse directory" },
+    });
+    fireEvent.change(screen.getByLabelText("Player at seat 1"), {
+      target: { value: assignedGame.players[0]!.id },
+    });
+    fireEvent.change(screen.getByLabelText("Seat 1, day 1"), { target: { value: "4 X" } });
+
+    await act(async () =>
+      refreshedPlayers.resolve([
+        player(playerLabel(assignedGame.players[0]!), assignedGame.players[0]!.id),
+      ]),
+    );
+    expect(screen.getByRole("main", { name: "Import paper game" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Game label")).toHaveValue("Sparse directory");
+    expect(screen.getByLabelText("Player at seat 1")).toHaveValue(assignedGame.players[0]!.id);
+    expect(screen.getByLabelText("Seat 1, day 1")).toHaveValue("4 X");
+    expect(within(screen.getByLabelText("Player at seat 1")).getAllByRole("option")).toHaveLength(
+      2,
+    );
+    vi.spyOn(window, "confirm").mockReturnValueOnce(false);
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(window.confirm).toHaveBeenCalledWith(
+      expect.stringContaining("Leave this unsaved import"),
+    );
+    expect(screen.getByLabelText("Game label")).toHaveValue("Sparse directory");
+    fireEvent.click(screen.getByRole("button", { name: "Review import" }));
+    fireEvent.click(screen.getByRole("button", { name: "Import game" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("Game imported and verified");
+    expect(api.createGameSession).toHaveBeenCalledOnce();
+    expect(api.getGameSession).toHaveBeenCalledWith(importedId, testClub.id);
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    fireEvent.click(screen.getByRole("button", { name: "Back to game" }));
+    expect(screen.getByRole("button", { name: "Start test game" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    fireEvent.click(screen.getByRole("button", { name: "Players screen" }));
+    expect(screen.getByText("Need 10 players · 1 registered")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start new game" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Add 9 more registered players");
+    expect(window.localStorage.getItem(gameSessionStorageKey)).toBeNull();
+  });
+
+  it("imports a paper game without replacing live recovery or losing statistics filters", async () => {
+    const live = federationGame();
+    restoreFederationCheckpoint(live);
+    api.getClubStatistics.mockResolvedValue({
+      players: [],
+      tournaments: [],
+      coverage: { completedGames: 0, partialGames: 0, unavailableGames: 0, pendingGames: 1 },
+      algorithm: "club-team-elo-v1",
+    });
+    render(<App />);
+    await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
+    const original = window.localStorage.getItem(gameSessionStorageKey);
+    api.saveGameSession.mockClear();
+    api.createGameSession.mockClear();
+    const importedId = "00000000-0000-4000-8000-000000000810";
+    api.createGameSession.mockImplementation(async (input) => {
+      const saved = {
+        gameId: importedId,
+        revision: 1,
+        duplicate: false,
+        status: "completed",
+        updatedAt: "2026-10-25T12:00:00Z",
+        name: input.name,
+        state: input.state,
+        results: input.results,
+      };
+      api.getGameSession.mockResolvedValue(saved);
+      return saved;
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    fireEvent.click(screen.getByRole("button", { name: "Statistics" }));
+    fireEvent.change(screen.getByLabelText("From (UTC)"), { target: { value: "2026-01-01" } });
+    fireEvent.click(screen.getByRole("button", { name: "Import paper game" }));
+    fireEvent.change(screen.getByLabelText("Game label"), { target: { value: "Notebook" } });
+    fireEvent.change(screen.getByLabelText("Player at seat 1"), {
+      target: { value: assignedGame.players[0]!.id },
+    });
+    fireEvent.change(screen.getByLabelText("Seat 1, day 1"), { target: { value: "4 X" } });
+    fireEvent.click(screen.getByRole("button", { name: "Review import" }));
+    fireEvent.click(screen.getByRole("button", { name: "Import game" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("Game imported and verified");
+    expect(api.createGameSession).toHaveBeenCalledOnce();
+    expect(api.getGameSession).toHaveBeenCalledWith(importedId, testClub.id);
+    expect(window.localStorage.getItem(gameSessionStorageKey)).toBe(original);
+    expect(api.saveGameSession).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByLabelText("From (UTC)")).toHaveValue("2026-01-01");
+    fireEvent.click(screen.getByRole("button", { name: "Back to game" }));
+    expect(gameScreenHarness.liveGame).toEqual(live);
+  });
+
   it("gates the real wizard after first tournament selection until creation and latest metadata are acknowledged", async () => {
     const { SetupWizard: RealSetupWizard } = await vi.importActual<typeof setupWizardModule>(
       "./features/setup/SetupWizard.js",
