@@ -235,6 +235,31 @@ test("Azure readback accepts only the configured version and exact commit", asyn
   assert.equal(notReady.status, 1, "version identity cannot bypass failed readiness");
 });
 
+test("Azure readback diagnoses configuration mismatches without logging container values", async () => {
+  const script = readbackFixture(await read(".github/workflows/deploy-azure.yml"));
+  const configuration = deploymentConfiguration();
+  const sensitiveValue = "private-container-value-fixture";
+  configuration.env.push({ name: "PRIVATE_SETTING", value: sensitiveValue });
+  const healthy = runReadback(script, configuration);
+  assert.equal(healthy.status, 0, healthy.stderr);
+  assert.doesNotMatch(healthy.stdout + healthy.stderr, new RegExp(sensitiveValue));
+
+  for (const [field, value, diagnostic] of [
+    ["provisioningState", "Failed", "provisioning state"],
+    ["minReplicas", 0, "replica count"],
+    ["targetPort", 80, "ingress port"],
+    ["image", "wrong-image", "image digest"],
+  ]) {
+    const result = runReadback(script, { ...configuration, [field]: value });
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(
+      result.stderr,
+      new RegExp(`Azure deployment configuration mismatch: ${diagnostic}`),
+    );
+    assert.doesNotMatch(result.stdout + result.stderr, new RegExp(sensitiveValue));
+  }
+});
+
 test("Azure readback rejects wrong provider, namespace, identity, images and initialization", async () => {
   const script = readbackFixture(await read(".github/workflows/deploy-azure.yml"));
   for (const initialize of ["false", "true"]) {

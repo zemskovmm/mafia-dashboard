@@ -75,6 +75,8 @@ Foundation detection fingerprints sorted Bicep/workflow/helper bytes and non-sec
 
 The workflow checks the existing subscription/app/environment, refuses unknown account adoption, validates foundation inputs and rejects foundation what-if deletions or writes to retained SQL/network/environment resources. It applies the foundation incrementally, reads back the exact successful record, and then deploys the app to its **existing** canonical HTTPS hostname. It does not recreate a missing target or invent a replacement hostname. Initialization must succeed before web startup. Release readback requires the expected image in both containers, one replica, port 3000, the exact Storage identity/namespace/provider and absence of SQL/connection-string env. Existing `/health/ready` and `/health/version` checks still require the expected commit and composed version.
 
+Verification runs **after** the application has been applied: a failed verification step does not roll back the release. Configuration failures name the mismatched check without dumping container environment values. The jq verifier binds identity and environment variables before boolean assertions so its meaning stays the same on jq 1.7 and 1.8; jq 1.8 changed the precedence of `as` relative to boolean operators. Do not suppress verification failures or accept readiness without the exact release identity.
+
 ### Approved first cutover checklist
 
 1. Confirm subscription, RG, app/environment identity, old private SQL resources and rollback-eligible SQL image/config without printing credentials. Confirm workload-profile init identity support and foundation RBAC authority. Stop on drift or destructive what-if.

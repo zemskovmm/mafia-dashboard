@@ -309,26 +309,37 @@ jobs:
             --name "$app_name" \
             --query '{provisioningState:properties.provisioningState,minReplicas:properties.template.scale.minReplicas,maxReplicas:properties.template.scale.maxReplicas,targetPort:properties.configuration.ingress.targetPort,image:properties.template.containers[0].image,initImage:properties.template.initContainers[0].image,identity:identity,env:properties.template.containers[0].env,initEnv:properties.template.initContainers[0].env}' \
             --output json)
-          jq --exit-status --arg image "$DEPLOY_IMAGE" \
+          if ! jq --exit-status --arg image "$DEPLOY_IMAGE" \
             --arg account "$AZURE_STORAGE_ACCOUNT_NAME" --arg table "$AZURE_STORAGE_TABLE_NAME" \
             --arg container "$AZURE_STORAGE_CONTAINER_NAME" --arg partition "$AZURE_STORAGE_PARTITION_KEY" \
             --arg initialize "$INITIALIZE_STORAGE" \
             --arg identity "/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/$AZURE_RESOURCE_GROUP/providers/Microsoft.ManagedIdentity/userAssignedIdentities/${AZURE_NAME_PREFIX}-storage" '
               def fields: map({key: .name, value: .value}) | from_entries;
-              . as $app | (.env | fields) as $env | (.initEnv | fields) as $init |
-              .provisioningState == "Succeeded" and .minReplicas == 1 and .maxReplicas == 1 and
-              .targetPort == 3000 and .image == $image and .initImage == $image and
-              .identity.type == "UserAssigned" and
-              ((.identity.userAssignedIdentities | keys | map(ascii_downcase)) == [($identity | ascii_downcase)]) and
-              ($app.identity.userAssignedIdentities | to_entries[0].value.clientId) as $client |
-              ($client | type == "string") and ($client | length > 0) and
-              all([$env, $init][]; .STORAGE_PROVIDER == "azure" and
+              def require(condition; description):
+                if condition then . else error("Azure deployment configuration mismatch: " + description) end;
+              # Bind before boolean expressions: jq 1.8 changed `as` precedence.
+              (.env | fields) as $env | (.initEnv | fields) as $init |
+              (.identity.userAssignedIdentities // {} | to_entries[0].value.clientId) as $client |
+              require(.provisioningState == "Succeeded"; "provisioning state") |
+              require(.minReplicas == 1 and .maxReplicas == 1; "replica count") |
+              require(.targetPort == 3000; "ingress port") |
+              require(.image == $image and .initImage == $image; "image digest") |
+              require(.identity.type == "UserAssigned" and
+                ((.identity.userAssignedIdentities | keys | map(ascii_downcase)) == [($identity | ascii_downcase)]) and
+                ($client | type == "string") and ($client | length > 0); "Storage identity") |
+              require(all([$env, $init][]; .STORAGE_PROVIDER == "azure" and
                 .AZURE_STORAGE_ACCOUNT_NAME == $account and .AZURE_STORAGE_TABLE_NAME == $table and
                 .AZURE_STORAGE_CONTAINER_NAME == $container and .AZURE_STORAGE_PARTITION_KEY == $partition and
-                .AZURE_CLIENT_ID == $client and (has("DATABASE_URL") | not) and (has("AZURE_STORAGE_CONNECTION_STRING") | not)) and
-              $env.AZURE_STORAGE_INITIALIZE == "false" and $init.AZURE_STORAGE_INITIALIZE == $initialize
-            ' <<<"$configuration" >/dev/null
-          printf '%s\n' "$configuration"
+                .AZURE_CLIENT_ID == $client and (has("DATABASE_URL") | not) and (has("AZURE_STORAGE_CONNECTION_STRING") | not));
+                "Storage provider, namespace or credentials") |
+              require($env.AZURE_STORAGE_INITIALIZE == "false" and $init.AZURE_STORAGE_INITIALIZE == $initialize;
+                "Storage initialization") |
+              true
+            ' <<<"$configuration" >/dev/null; then
+            echo "::error::Application deployment was applied, but configuration verification failed." >&2
+            exit 1
+          fi
+          echo "Azure deployment configuration verified."
           for _ in $(seq 1 30); do
             if curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
               "${{ steps.app.outputs.public_url }}/health/ready" >/dev/null; then
