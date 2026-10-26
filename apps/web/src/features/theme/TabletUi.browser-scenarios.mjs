@@ -1,8 +1,149 @@
-/* global document, getComputedStyle, requestAnimationFrame, window, Response, URL, performance */
+/* global document, getComputedStyle, requestAnimationFrame, window, Response, URL, performance, localStorage */
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { writeFile } from "node:fs/promises";
 import { menu, statisticsFixture, wheelToEnd } from "./GlassScene.host-ui-scenarios.mjs";
+
+// Real App entry/scroll ancestry and durable recovery; only API transport is synthetic.
+export async function verifySetupBlockers({ browser, config, url, evidence, results }) {
+  const checks = [];
+  for (const locale of ["en", "ru"]) {
+    const page = await browser.newPage({ viewport: config.viewport, hasTouch: true });
+    page.setDefaultTimeout(10000);
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.route("**/*", (route) =>
+      new URL(route.request().url()).origin === url ? route.continue() : route.abort(),
+    );
+    const label = `${config.name}-setup-blocked-${locale}`;
+    try {
+      await page.goto(`${url}/?phase=setup&full-app&locale=${locale}`);
+      await page.locator(".club-entry-destination .player-setup-card").waitFor();
+      await page.waitForFunction(
+        () => document.querySelector("#seat-10-player")?.textContent === "Player 10",
+      );
+      const start = page.getByRole("button", {
+        name: locale === "en" ? "Start game" : "Начать игру",
+        exact: true,
+      });
+      assert.equal(await start.isEnabled(), true);
+      await start.click();
+      await page.locator(".role-draw-screen").waitFor();
+      await page
+        .getByRole("button", {
+          name: locale === "en" ? "Player setup" : "Выбор игроков",
+          exact: true,
+        })
+        .click();
+      await page.waitForFunction(() => {
+        const record = JSON.parse(localStorage.getItem("mafia-dashboard.game-session.v5"));
+        return record.current.state.setup.step === "players" && record.outbox.length === 0;
+      });
+      const before = await page.evaluate(() => {
+        const key = "mafia-dashboard.game-session.v5";
+        const record = JSON.parse(localStorage.getItem(key));
+        record.removed = true;
+        record.outbox = [];
+        record.failed = false;
+        localStorage.setItem(key, JSON.stringify(record));
+        localStorage.setItem(
+          "mafia-dashboard.tutorial-help.v1",
+          JSON.stringify({ version: 1, enabled: false }),
+        );
+        return { gameId: record.gameId, setup: record.current.state.setup };
+      });
+      await page.reload();
+      const notice = page.locator(".setup-start-blocker");
+      await notice.waitFor();
+      await page.waitForFunction(
+        () => document.querySelector("#seat-10-player")?.textContent === "Player 10",
+      );
+      assert.equal(await start.isDisabled(), true);
+      assert.notEqual(await page.locator(".save-indicator").getAttribute("data-status"), "saved");
+      const reason = await notice.locator("p").innerText();
+      assert.match(reason, locale === "en" ? /removed from the server/ : /удалена с сервера/);
+      assert.equal(
+        await start.getAttribute("aria-describedby"),
+        await notice.locator("p").getAttribute("id"),
+      );
+      await start.scrollIntoViewIfNeeded();
+      const geometry = await page.evaluate(() => {
+        const notice = document.querySelector(".setup-start-blocker");
+        const rect = notice.getBoundingClientRect();
+        const button = notice.querySelector("button");
+        const b = button.getBoundingClientRect();
+        return {
+          notice: rect.toJSON(),
+          viewport: { width: window.innerWidth, height: window.innerHeight },
+          actionHit: button.contains(
+            document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2),
+          ),
+          horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+        };
+      });
+      assert.ok(
+        geometry.notice.top >= 0 && geometry.notice.bottom <= geometry.viewport.height,
+        JSON.stringify(geometry),
+      );
+      assert.equal(geometry.actionHit, true);
+      assert.equal(geometry.horizontalOverflow, false);
+      await page.screenshot({ path: join(evidence, `${label}.png`) });
+      const recovery = notice.getByRole("button");
+      page.once("dialog", (dialog) => dialog.dismiss());
+      await recovery.click();
+      assert.equal(await start.isDisabled(), true, "Cancel must retain the removed record");
+      assert.deepEqual(
+        await page.evaluate(
+          () =>
+            JSON.parse(localStorage.getItem("mafia-dashboard.game-session.v5")).current.state.setup,
+        ),
+        before.setup,
+      );
+      page.once("dialog", (dialog) => dialog.accept());
+      await recovery.click();
+      await page.waitForFunction(
+        () => document.querySelector("#host-player")?.getAttribute("value") === "",
+      );
+      const after = await page.evaluate(() => ({
+        current: JSON.parse(localStorage.getItem("mafia-dashboard.game-session.v5")),
+        parked: Object.keys(localStorage)
+          .filter((key) => key.startsWith("mafia-dashboard.game-session.v5.parked."))
+          .map((key) => JSON.parse(localStorage.getItem(key))),
+        posts: window.fixtureRequests.filter(
+          ({ path, method }) => path === "/api/game-sessions" && method === "POST",
+        ),
+        unexpected: window.fixtureUnexpected,
+      }));
+      assert.equal(after.current?.gameId ?? null, null);
+      assert.equal(
+        after.parked.some((record) => record.gameId === before.gameId && record.removed),
+        true,
+      );
+      assert.deepEqual(after.posts, [], "Explicit fresh setup must not recreate the removed game");
+      assert.deepEqual(after.unexpected, []);
+      assert.deepEqual(errors, []);
+      checks.push({
+        label,
+        reason,
+        geometry,
+        protectedGameId: before.gameId,
+        recovery: "cancel then explicit new game; old record parked",
+      });
+    } catch (error) {
+      await page.screenshot({ path: join(evidence, `${label}-failure.png`) });
+      checks.push({ label, failure: error.message, errors });
+      throw error;
+    } finally {
+      await writeFile(
+        join(evidence, `${config.name}-setup-blockers.json`),
+        JSON.stringify(checks, null, 2),
+      );
+      await page.close();
+    }
+  }
+  assert.equal(checks.length, 2);
+  results.push({ setupBlockers: config.name, checks });
+}
 
 // Reuses the actual ClubWorkspace bundle and its disposable canonical fixtures.
 export async function verifyTabletUi({ browser, config, url, evidence, results }) {

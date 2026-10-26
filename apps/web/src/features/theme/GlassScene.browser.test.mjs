@@ -14,7 +14,7 @@ import {
   verifyApplicationBackgrounds,
 } from "./GlassScene.background-scenarios.mjs";
 import { verifyHostUi, verifyDirectoryTimeline } from "./GlassScene.host-ui-scenarios.mjs";
-import { verifyTabletUi } from "./TabletUi.browser-scenarios.mjs";
+import { verifySetupBlockers, verifyTabletUi } from "./TabletUi.browser-scenarios.mjs";
 import {
   verifyPortraitCards,
   verifyPortraitNightLayout,
@@ -56,6 +56,7 @@ assert.ok(
       "portrait-cards",
       "host-ui",
       "tablet-ui",
+      "setup-blockers",
       "directory-timeline",
     ].includes(process.env.GLASS_SCENARIO),
   "Unknown GLASS_SCENARIO",
@@ -159,7 +160,7 @@ const completedHistory=query.has("full-app")?createSampleGameHistory():null;
 const completedSummary={gameId:completedId,name:"Recorded table",revision:1,hostPlayerId:null,outcome:"red",winner:"red",reason:null,playedAt:club.createdAt,day:2,timelineAvailable:true,eventCount:completedHistory?.entries.length??0,updatedAt:club.updatedAt};
 window.fetch=async(url,options={})=>{const path=new URL(url,location.origin).pathname;let body={};
 window.fixtureRequests.push({path,method:options.method??"GET",body:options.body?JSON.parse(options.body):null});
-if(${process.env.GLASS_SCENARIO === "backgrounds"}){
+if(${["backgrounds", "setup-blockers"].includes(process.env.GLASS_SCENARIO)}){
  const method=options.method??"GET";
  const known=method==="GET"&&["/api/auth/session","/api/clubs","/api/players","/health/version","/api/ready","/api/music/oauth/status","/api/music/playlists","/api/game-sessions","/api/tournaments","/api/statistics","/api/game-sessions/"+completedId,"/api/game-sessions/"+factsId].includes(path)||["GET","PUT"].includes(method)&&path==="/api/game-sessions/"+gameId;
  if(!known){window.fixtureUnexpected.push({path,method});throw new Error("Unexpected background fixture request "+method+" "+path);}
@@ -238,8 +239,9 @@ const captureSources =
     ? captureBackgroundSources
     : capturePlayerCardSources;
 const sourceBefore =
-  ["backgrounds", "player-cards", "portrait-cards"].includes(process.env.GLASS_SCENARIO) ||
-  followupPhase
+  ["backgrounds", "player-cards", "portrait-cards", "setup-blockers"].includes(
+    process.env.GLASS_SCENARIO,
+  ) || followupPhase
     ? await captureSources(root)
     : null;
 if (sourceBefore)
@@ -1490,6 +1492,11 @@ try {
       }
       if (process.env.GLASS_SCENARIO === "tablet-ui") {
         await verifyTabletUi({ browser, config, url, evidence, results });
+        continue;
+      }
+      if (process.env.GLASS_SCENARIO === "setup-blockers") {
+        assert.ok(!followupPhase, "Select only one focused scenario");
+        await verifySetupBlockers({ browser, config, url, evidence, results });
         continue;
       }
       if (process.env.GLASS_SCENARIO === "directory-timeline") {

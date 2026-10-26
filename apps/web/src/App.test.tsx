@@ -74,7 +74,7 @@ import {
 import { musicPreferencesStorageKey } from "./features/music/music-preferences.js";
 import * as gameScreenModule from "./features/game/GameScreen.js";
 import * as setupWizardModule from "./features/setup/SetupWizard.js";
-import type { SetupWizardSessionState } from "./features/setup/SetupWizard.js";
+import type { SetupStartBlocker, SetupWizardSessionState } from "./features/setup/SetupWizard.js";
 import { I18nProvider } from "./i18n/I18nProvider.js";
 import { THEME_COLOR_STORAGE_KEY } from "./theme.js";
 import { playerLabel } from "./test-player-directory.js";
@@ -307,6 +307,7 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
     showDevelopmentTools = false,
     previewUndealtRoles = false,
     persistencePending = false,
+    startBlocker,
     tournamentControl,
   }: {
     players: readonly PlayerProfile[];
@@ -320,6 +321,7 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
     showDevelopmentTools?: boolean;
     previewUndealtRoles?: boolean;
     persistencePending?: boolean;
+    startBlocker?: SetupStartBlocker;
     tournamentControl?: ReactNode;
   }) => {
     const [session, setSession] = useState<SetupWizardSessionState | null>(
@@ -356,6 +358,21 @@ vi.mock("./features/setup/SetupWizard.js", () => ({
           {step === "roles" ? "Role giveaway" : step === "music" ? "Restored setup" : "Game setup"}
         </h1>
         {tournamentControl}
+        {/* App wiring only; real setup rendering is verified by component/browser tests. */}
+        {startBlocker === undefined ? null : (
+          <div data-testid="setup-start-blocker">
+            {startBlocker.message}
+            {startBlocker.action === undefined ? null : (
+              <button
+                type="button"
+                disabled={startBlocker.action.disabled}
+                onClick={startBlocker.action.onClick}
+              >
+                {startBlocker.action.label}
+              </button>
+            )}
+          </div>
+        )}
         <output data-testid="setup-player-pool">
           {players.map(({ nickname }) => nickname).join(",")}
         </output>
@@ -1248,7 +1265,7 @@ describe("statistics navigation and separate tournament setup", () => {
     const { SetupWizard: RealSetupWizard } = await vi.importActual<typeof setupWizardModule>(
       "./features/setup/SetupWizard.js",
     );
-    vi.spyOn(setupWizardModule, "SetupWizard").mockImplementation(RealSetupWizard);
+    const wizard = vi.spyOn(setupWizardModule, "SetupWizard").mockImplementation(RealSetupWizard);
     window.localStorage.setItem(
       `mafia-dashboard.available-player-ids.${testClub.id}`,
       JSON.stringify([...assignedGame.players.map(({ id }) => id), hostPlayerId]),
@@ -1273,6 +1290,13 @@ describe("statistics navigation and separate tournament setup", () => {
     await user.click(screen.getByRole("option", { name: "Host Player" }));
     fireEvent.click(screen.getByRole("button", { name: "Assign players" }));
     expect(screen.getByRole("button", { name: "Start game" })).toBeDisabled();
+    expect(wizard.mock.lastCall?.[0].startBlocker?.message).toBe(
+      "Waiting for the server to create this game before roles can be assigned.",
+    );
+    expect(screen.getByRole("button", { name: /^Saving ·/ })).toHaveAttribute(
+      "data-status",
+      "saving",
+    );
     fireEvent.change(screen.getByRole("combobox", { name: "Tournament" }), {
       target: { value: second },
     });
@@ -1287,8 +1311,12 @@ describe("statistics navigation and separate tournament setup", () => {
       expect(api.assignGameTournament).toHaveBeenCalledWith(serverId, second, testClub.id),
     );
     expect(screen.getByRole("button", { name: "Start game" })).toBeDisabled();
+    expect(wizard.mock.lastCall?.[0].startBlocker?.message).toBe(
+      "Waiting for tournament changes to be saved before this game can start.",
+    );
     await act(async () => assignment.resolve(second));
     await waitFor(() => expect(screen.getByRole("button", { name: "Start game" })).toBeEnabled());
+    expect(wizard.mock.lastCall?.[0].startBlocker).toBeUndefined();
     fireEvent.click(screen.getByRole("button", { name: "Start game" }));
     expect(await screen.findByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
     const envelope = JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!);
@@ -1679,7 +1707,7 @@ describe("statistics navigation and separate tournament setup", () => {
       fireEvent.change(screen.getByRole("combobox", { name: "Tournament" }), {
         target: { value: first },
       });
-      await screen.findByRole("button", { name: /Save blocked.*1 change safe/ });
+      await screen.findByRole("button", { name: /Save blocked.*1 change pending/ });
       if (switching === "new") {
         fireEvent.click(screen.getByRole("button", { name: "Start new game" }));
         await waitFor(() =>
@@ -1860,13 +1888,13 @@ describe("statistics navigation and separate tournament setup", () => {
       new ApiError("Tournament removed", 404, "tournament_not_found"),
     );
     render(<WelcomeApp />);
-    await screen.findByRole("button", { name: /Save blocked.*1 change safe/ });
+    await screen.findByRole("button", { name: /Save blocked.*1 change pending/ });
     fireEvent.click(
       screen.getByRole("button", { name: "Choose another club · current club Mafia Malaga" }),
     );
     expect(window.alert).toHaveBeenCalledWith(expect.stringContaining("leaving this club"));
     expect(JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).current).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: /Save blocked.*1 change safe/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Save blocked.*1 change pending/ }));
     await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
     expect(window.localStorage.getItem(gameSessionStorageKey)).toBeNull();
     expect(api.assignGameTournament.mock.calls).toEqual([
@@ -1966,10 +1994,29 @@ describe("statistics navigation and separate tournament setup", () => {
     );
     expect(screen.getByRole("switch", { name: "Include in tournament" })).toBeChecked();
     expect(screen.getByRole("button", { name: "Start test game" })).toBeDisabled();
-    await act(async () => held.resolve(first));
+    expect(screen.getByTestId("setup-start-blocker")).toHaveTextContent(
+      "Waiting for tournament changes to be saved before this game can start.",
+    );
+    expect(within(screen.getByTestId("setup-start-blocker")).queryByRole("button")).toBeNull();
+    await act(async () => held.reject(new ApiError("Save rejected", 400, "invalid")));
+    expect(screen.getByTestId("setup-start-blocker")).toHaveTextContent("Save blocked");
+    const retry = deferred<string | null>();
+    api.assignGameTournament.mockReturnValueOnce(retry.promise);
+    fireEvent.click(
+      within(screen.getByTestId("setup-start-blocker")).getByRole("button", {
+        name: "Retry saving",
+      }),
+    );
+    expect(screen.getByTestId("setup-start-blocker")).not.toHaveTextContent("Save blocked");
+    expect(screen.getByRole("button", { name: /^Saving ·/ })).toHaveAttribute(
+      "data-status",
+      "saving",
+    );
+    await act(async () => retry.resolve(first));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Start test game" })).toBeEnabled(),
     );
+    expect(screen.queryByTestId("setup-start-blocker")).toBeNull();
     expect(api.createGameSession).not.toHaveBeenCalled();
     view.unmount();
     render(<App />);
@@ -1981,6 +2028,55 @@ describe("statistics navigation and separate tournament setup", () => {
     await waitFor(() =>
       expect(screen.getByRole("switch", { name: "Include in tournament" })).not.toBeChecked(),
     );
+  });
+
+  it("does not show saved success when tournament mutation fails to reach browser storage", async () => {
+    api.listTournaments.mockResolvedValue(tournaments);
+    const wizard = vi.spyOn(setupWizardModule, "SetupWizard");
+    const assignment = deferred<string | null>();
+    api.assignGameTournament.mockReturnValueOnce(assignment.promise);
+    seedBrowserGame(testClub, serverId, "Storage failure");
+    render(<App />);
+    await act(async () => undefined);
+    await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
+    const original = window.localStorage.getItem(gameSessionStorageKey);
+    const setItem = window.localStorage.setItem.bind(window.localStorage);
+    const storage = vi.spyOn(window.localStorage, "setItem").mockImplementation((key, value) => {
+      if (key === gameSessionStorageKey) throw new Error("Storage denied");
+      setItem(key, value);
+    });
+    fireEvent.click(screen.getByRole("switch", { name: "Include in tournament" }));
+    await screen.findByRole("option", { name: "Autumn cup" });
+    fireEvent.change(screen.getByRole("combobox", { name: "Tournament" }), {
+      target: { value: first },
+    });
+    const blocker = screen.getByTestId("setup-start-blocker");
+    expect(blocker).toHaveTextContent("Waiting for tournament changes to be saved");
+    expect(blocker).not.toHaveTextContent(/safe on this device|Saved to server/);
+    expect(
+      screen.queryByRole("button", { name: "Saved to server · tap to check connection" }),
+    ).toBeNull();
+    // The pending fallback is rendered before the existing auto-sync effect starts.
+    expect(
+      wizard.mock.calls.some(([props]) => props.startBlocker?.message.includes("Save pending ·")),
+    ).toBe(true);
+    expect(screen.getByRole("button", { name: /^Saving ·/ })).toHaveAttribute(
+      "data-status",
+      "saving",
+    );
+    expect(window.localStorage.getItem(gameSessionStorageKey)).toBe(original);
+    storage.mockRestore();
+    await act(async () => assignment.reject(new ApiError("Retry rejected", 400, "invalid")));
+    expect(screen.getByTestId("setup-start-blocker")).not.toHaveTextContent(
+      /safe on this device|Saved to server/,
+    );
+    fireEvent.click(within(blocker).getByRole("button", { name: "Retry saving" }));
+    await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
+    expect(screen.queryByTestId("setup-start-blocker")).toBeNull();
+    expect(api.assignGameTournament).toHaveBeenCalledWith(serverId, first, testClub.id);
+    expect(
+      JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).tournamentAssociation,
+    ).toMatchObject({ confirmedTournamentId: first, pending: null });
   });
 
   it("keeps member statistics separate from manager profile administration", async () => {
@@ -3811,12 +3907,65 @@ describe("developer menu", () => {
     api.listPlayers.mockRejectedValueOnce(new Error("Players endpoint failed"));
     render(<App />);
     await waitFor(() => expect(api.listPlayers).toHaveBeenCalled());
+    expect(screen.getByTestId("setup-start-blocker")).toHaveTextContent(
+      "Player profiles are temporarily unavailable.",
+    );
 
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     await user.click(screen.getByRole("button", { name: "Console" }));
 
     expect(screen.getByText("Players endpoint failed")).toBeInTheDocument();
     expect(screen.getByText("players.list")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    const retry = deferred<readonly PlayerProfile[]>();
+    api.listPlayers.mockReturnValueOnce(retry.promise);
+    await user.click(
+      within(screen.getByTestId("setup-start-blocker")).getByRole("button", {
+        name: "Retry loading players",
+      }),
+    );
+    expect(screen.getByTestId("setup-start-blocker")).toHaveTextContent(
+      "Loading player profiles before setup can start…",
+    );
+    expect(screen.getByTestId("setup-start-blocker")).not.toHaveTextContent(
+      "temporarily unavailable",
+    );
+    expect(within(screen.getByTestId("setup-start-blocker")).queryByRole("button")).toBeNull();
+    await act(async () =>
+      retry.resolve([
+        ...assignedGame.players.map((seat) => player(playerLabel(seat), seat.id)),
+        player("Host Player", hostPlayerId),
+      ]),
+    );
+    expect(screen.queryByTestId("setup-start-blocker")).toBeNull();
+    expect(api.listPlayers).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears the initial directory loading blocker and does not block on a later refresh failure", async () => {
+    const initial = deferred<readonly PlayerProfile[]>();
+    api.listPlayers.mockReturnValueOnce(initial.promise);
+    const otherId = "00000000-0000-4000-8000-000000000082";
+    api.listActiveGameSessions.mockResolvedValue([
+      { gameId: otherId, name: "Other table", revision: 1, hostPlayerId, phase: "day", day: 1 },
+    ]);
+    render(<App />);
+    expect(screen.getByTestId("setup-start-blocker")).toHaveTextContent(
+      "Loading player profiles before setup can start…",
+    );
+    await act(async () =>
+      initial.resolve([
+        ...assignedGame.players.map((seat) => player(playerLabel(seat), seat.id)),
+        player("Host Player", hostPlayerId),
+      ]),
+    );
+    expect(screen.queryByTestId("setup-start-blocker")).toBeNull();
+    api.listPlayers.mockRejectedValueOnce(new Error("Later refresh failed"));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete Other table" }));
+    await waitFor(() => expect(api.listPlayers).toHaveBeenCalledTimes(2));
+    expect(screen.queryByTestId("setup-start-blocker")).toBeNull();
+    expect(screen.getByRole("button", { name: "Start test game" })).toBeEnabled();
   });
 
   it("changes the glass color from Manage", async () => {
@@ -5191,25 +5340,146 @@ describe("authoritative game session lifecycle", () => {
     ).toMatchObject({ gameId: "00000000-0000-4000-8000-000000000090" });
   });
 
-  it("treats a 404 for an acknowledged legacy game as removed, never a new POST", async () => {
-    const id = "00000000-0000-4000-8000-000000000081";
-    seedBrowserGame(testClub, id, "Deleted table");
-    const raw = JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5")!);
-    delete raw.creationId;
-    delete raw.removed;
-    delete raw.legacyGameId;
-    window.localStorage.setItem("mafia-dashboard.game-session.v5", JSON.stringify(raw));
-    api.getGameSession.mockRejectedValueOnce(new ApiError("missing", 404, "not_found"));
-    render(<App />);
-    await waitFor(() => expect(api.getGameSession).toHaveBeenCalledWith(id, testClub.id));
-    await waitFor(() =>
+  it.each(["en", "ru"] as const)(
+    "retries rejected setup creation with the same identity and roster (%s)",
+    async (locale) => {
+      const creationId = "00000000-0000-4000-8000-000000000802";
+      const setup = {
+        step: "players" as const,
+        hostPlayerId,
+        selectedPlayerIds: assignedGame.players.map(({ id }) => id),
+        setup: null,
+      };
+      const outbox = new GameSessionOutbox({
+        storage: window.localStorage,
+        clubId: testClub.id,
+        createId: () => creationId,
+        save: vi.fn(),
+      });
+      outbox.beginCreation("Rejected setup", { ...browserSessionState(""), setup }, null);
+      api.createGameSession.mockRejectedValueOnce(
+        new ApiError("Creation rejected", 400, "invalid"),
+      );
+      render(
+        <I18nProvider locale={locale}>
+          <App />
+        </I18nProvider>,
+      );
+      const blocked = locale === "en" ? /^Save blocked ·/ : /^Сохранение заблокировано ·/;
+      await screen.findByRole("button", { name: blocked });
+      const blocker = screen.getByTestId("setup-start-blocker");
+      expect(blocker).toHaveTextContent(
+        locale === "en"
+          ? "Waiting for the server to create this game before roles can be assigned."
+          : "Ожидается создание игры на сервере, прежде чем можно будет раздать роли.",
+      );
+      expect(screen.getByRole("button", { name: blocked })).toHaveAttribute(
+        "data-status",
+        "offline",
+      );
+      expect(screen.getByRole("button", { name: "Start test game" })).toBeDisabled();
+      expect(api.createGameSession).toHaveBeenCalledTimes(1);
+      const roster = screen.getByTestId("setup-session").textContent;
+      fireEvent.click(
+        within(blocker).getByRole("button", {
+          name: locale === "en" ? "Retry saving" : "Повторить сохранение",
+        }),
+      );
+      await screen.findByRole("button", {
+        name:
+          locale === "en"
+            ? "Saved to server · tap to check connection"
+            : "Сохранено на сервере · нажмите, чтобы проверить подключение",
+      });
+      expect(screen.queryByTestId("setup-start-blocker")).toBeNull();
+      expect(screen.getByRole("button", { name: "Start test game" })).toBeEnabled();
+      expect(screen.getByTestId("setup-session").textContent).toBe(roster);
+      expect(api.createGameSession).toHaveBeenCalledTimes(2);
+      expect(api.createGameSession.mock.calls.map(([input]) => input.creationId)).toEqual([
+        creationId,
+        creationId,
+      ]);
       expect(
-        JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null"),
-      ).toMatchObject({ gameId: id, removed: true, creationId: null }),
-    );
-    expect(api.createGameSession).not.toHaveBeenCalled();
-    expect(api.saveGameSession).not.toHaveBeenCalled();
-  });
+        JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).current.state.setup,
+      ).toEqual(setup);
+    },
+  );
+
+  it.each(["en", "ru"] as const)(
+    "treats a 404 for an acknowledged legacy game as removed, never a new POST (%s)",
+    async (locale) => {
+      const id = "00000000-0000-4000-8000-000000000081";
+      seedBrowserGame(testClub, id, "Deleted table");
+      const raw = JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5")!);
+      raw.current.state.setup = {
+        step: "players",
+        hostPlayerId,
+        selectedPlayerIds: assignedGame.players.map(({ id }) => id),
+        setup: null,
+      };
+      delete raw.creationId;
+      delete raw.removed;
+      delete raw.legacyGameId;
+      window.localStorage.setItem("mafia-dashboard.game-session.v5", JSON.stringify(raw));
+      api.getGameSession.mockRejectedValueOnce(new ApiError("missing", 404, "not_found"));
+      const view = render(
+        <I18nProvider locale={locale}>
+          <App />
+        </I18nProvider>,
+      );
+      await waitFor(() => expect(api.getGameSession).toHaveBeenCalledWith(id, testClub.id));
+      await waitFor(() =>
+        expect(
+          JSON.parse(window.localStorage.getItem("mafia-dashboard.game-session.v5") ?? "null"),
+        ).toMatchObject({ gameId: id, removed: true, creationId: null }),
+      );
+      expect(api.createGameSession).not.toHaveBeenCalled();
+      expect(api.saveGameSession).not.toHaveBeenCalled();
+      const removed =
+        locale === "en"
+          ? "This game was removed from the server. Its local copy will not be recreated."
+          : "Эта игра удалена с сервера. Её локальная копия не будет создана заново.";
+      const newGame = locale === "en" ? "Start new game" : "Начать новую игру";
+      expect(screen.getByTestId("setup-start-blocker")).toHaveTextContent(removed);
+      expect(screen.getByRole("button", { name: removed })).toHaveAttribute(
+        "data-status",
+        "removed",
+      );
+      expect(screen.getByRole("button", { name: "Start test game" })).toBeDisabled();
+      const roster = screen.getByTestId("setup-session").textContent;
+      fireEvent.click(screen.getByRole("button", { name: removed }));
+      await waitFor(() => expect(api.checkServerReady).toHaveBeenCalled());
+      expect(screen.getByRole("button", { name: removed })).toHaveAttribute(
+        "data-status",
+        "removed",
+      );
+      view.unmount();
+      render(
+        <I18nProvider locale={locale}>
+          <App />
+        </I18nProvider>,
+      );
+      expect(screen.getByTestId("setup-start-blocker")).toHaveTextContent(removed);
+      expect(screen.getByTestId("setup-session").textContent).toBe(roster);
+      const confirm = vi
+        .spyOn(window, "confirm")
+        .mockReturnValueOnce(false)
+        .mockReturnValueOnce(true);
+      fireEvent.click(
+        within(screen.getByTestId("setup-start-blocker")).getByRole("button", { name: newGame }),
+      );
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId("setup-session").textContent).toBe(roster);
+      fireEvent.click(
+        within(screen.getByTestId("setup-start-blocker")).getByRole("button", { name: newGame }),
+      );
+      await waitFor(() => expect(screen.queryByTestId("setup-start-blocker")).toBeNull());
+      expect(window.localStorage.getItem(gameSessionStorageKey)).toBeNull();
+      expect(api.createGameSession).not.toHaveBeenCalled();
+      expect(api.saveGameSession).not.toHaveBeenCalled();
+      expect(api.clearGameSession).not.toHaveBeenCalled();
+    },
+  );
   it("starts a new game without deleting the saved previous game", async () => {
     const user = userEvent.setup();
     const oldId = "00000000-0000-4000-8000-000000000081";

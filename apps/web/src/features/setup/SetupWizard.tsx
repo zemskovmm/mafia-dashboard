@@ -1,5 +1,5 @@
 import { createPortal } from "react-dom";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import {
   assignRoleForSeat,
@@ -29,6 +29,15 @@ import type { RoleDrawRequest } from "../table/RoleDrawPresentation.js";
 import { LiquidCardGlass } from "../theme/LiquidCardGlass.js";
 import { SetupTournamentFieldsContext } from "../tournaments/SetupTournamentFieldsContext.js";
 
+export interface SetupStartBlocker {
+  readonly message: string;
+  readonly action?: {
+    readonly label: string;
+    readonly onClick: () => void;
+    readonly disabled?: boolean;
+  };
+}
+
 interface SetupWizardProps {
   readonly players: readonly PlayerProfile[];
   readonly bestMoveEnabled?: boolean;
@@ -46,6 +55,8 @@ interface SetupWizardProps {
   /** Creation is in flight; role changes must not outrun the server GUID. */
   readonly persistencePending?: boolean;
   readonly playersLoading?: boolean;
+  /** Caller-owned loading/persistence failure, with its existing recovery action. */
+  readonly startBlocker?: SetupStartBlocker;
   /** Separate game metadata; never part of the canonical setup/game snapshot. */
   readonly tournamentControl?: ReactNode;
   readonly tournamentValid?: boolean;
@@ -351,12 +362,14 @@ export const SetupWizard = ({
   onOpenAvailablePlayers,
   persistencePending = false,
   playersLoading = false,
+  startBlocker,
   tournamentControl,
   tournamentValid = true,
 }: SetupWizardProps) => {
   const { t } = useMessages(gameMessages);
   const { t: setupT } = useMessages(setupMessages);
   const gameBestMoveEnabled = initialSessionState?.bestMoveEnabled ?? bestMoveEnabled;
+  const startBlockerId = useId();
   // Retain historical metadata without creating or requiring acknowledgements.
   const acknowledgedDeviations = initialSessionState?.clubDeviationsAcknowledged;
 
@@ -630,11 +643,28 @@ export const SetupWizard = ({
     [selectablePlayers, selectedPlayerIds],
   );
   const hostPlayer = selectablePlayers.find(({ id }) => id === hostPlayerId);
-  const playersReady =
-    !playersLoading &&
-    hostPlayer !== undefined &&
-    players.length === 10 &&
-    new Set([hostPlayerId, ...selectedPlayerIds.filter(Boolean)]).size === 11;
+  const missingSeats = selectedPlayerIds.flatMap((_, index) =>
+    players.some(({ seat }) => seat === index + 1) ? [] : [index + 1],
+  );
+  const selectedIds = [hostPlayerId, ...selectedPlayerIds];
+  const duplicateSeats = players
+    .filter(({ id }) => selectedIds.indexOf(id) !== selectedIds.lastIndexOf(id))
+    .map(({ seat }) => seat);
+  const startBlockedReason =
+    startBlocker?.message ??
+    (playersLoading
+      ? setupT("setup.loadingPlayers")
+      : hostPlayer === undefined
+        ? setupT("setup.needHost")
+        : missingSeats.length > 0
+          ? setupT("setup.needSeats", { seats: missingSeats.join(", ") })
+          : duplicateSeats.length > 0
+            ? setupT("setup.duplicatePlayers", { seats: duplicateSeats.join(", ") })
+            : !tournamentValid
+              ? setupT("setup.needTournament")
+              : persistencePending
+                ? setupT("setup.waitingForSave")
+                : undefined);
 
   const publishSessionState = useCallback(
     (nextStep: WizardStep, nextSetup: SetupState | null) => {
@@ -682,7 +712,7 @@ export const SetupWizard = ({
   }, [discardDeal, hostPlayerId, humanSeatCount, includeCasper, selectablePlayers]);
 
   const startRoleDraw = () => {
-    if (!playersReady || hostPlayer === undefined || !tournamentValid || persistencePending) return;
+    if (startBlockedReason !== undefined || hostPlayer === undefined) return;
     const resumeRoleDraw = setup !== null && roleDrawMatchesPlayers(setup, players);
     const nextSetup = resumeRoleDraw
       ? { ...setup, players }
@@ -1147,6 +1177,20 @@ export const SetupWizard = ({
                 document.body,
               )
             : null}
+          {startBlockedReason === undefined ? null : (
+            <div className="setup-start-blocker" role="status">
+              <p id={startBlockerId}>{startBlockedReason}</p>
+              {startBlocker?.action === undefined ? null : (
+                <button
+                  type="button"
+                  onClick={startBlocker.action.onClick}
+                  disabled={startBlocker.action.disabled}
+                >
+                  {startBlocker.action.label}
+                </button>
+              )}
+            </div>
+          )}
           <div
             className="player-setup-actions"
             role="group"
@@ -1168,7 +1212,8 @@ export const SetupWizard = ({
             <button
               className="primary-action"
               type="button"
-              disabled={!playersReady || !tournamentValid || persistencePending}
+              disabled={startBlockedReason !== undefined}
+              aria-describedby={startBlockedReason === undefined ? undefined : startBlockerId}
               onClick={startRoleDraw}
             >
               {t("setup.startGame")}

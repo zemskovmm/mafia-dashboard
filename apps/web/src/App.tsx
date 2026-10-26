@@ -155,7 +155,11 @@ import {
 } from "./features/music/YouTubePlaylistPlayer.js";
 import { PlayersScreen } from "./features/players/PlayersScreen.js";
 import { buildFinalGameResults } from "./features/players/game-results.js";
-import { SetupWizard, type SetupWizardSessionState } from "./features/setup/SetupWizard.js";
+import {
+  SetupWizard,
+  type SetupStartBlocker,
+  type SetupWizardSessionState,
+} from "./features/setup/SetupWizard.js";
 import { AvailablePlayersScreen } from "./features/setup/AvailablePlayersScreen.js";
 import { GameTimelineScreen } from "./features/timeline/GameTimelineScreen.js";
 import { buildTimeline } from "./features/timeline/timeline-model.js";
@@ -858,6 +862,7 @@ const ClubWorkspaceContent = ({
   const refreshPlayers = useCallback(async () => {
     const request = playerRequestRef.current + 1;
     playerRequestRef.current = request;
+    setPlayersError(false);
     try {
       const nextPlayers = await listPlayers(club.id);
       if (playerRequestRef.current === request) {
@@ -1694,28 +1699,63 @@ const ClubWorkspaceContent = ({
   const availablePlayersForSetup = humanPlayers.filter(({ id }) => availablePlayerIds.has(id));
 
   const persistenceSnapshot = sessionRetry.getSnapshot();
-  const persistenceState =
-    persistenceSnapshot.phase === "saved" && sessionSync.status === "offline"
-      ? "offline"
-      : persistenceSnapshot.phase;
   const pendingChanges = sessionSync.pendingCount;
+  // Retry can still say saved after removal or a mutation whose storage write threw.
+  const persistenceState = sessionSync.isRemoved
+    ? "removed"
+    : persistenceSnapshot.phase === "saved"
+      ? sessionSync.status === "offline"
+        ? "offline"
+        : pendingChanges > 0 || sessionSync.isCreating || sessionSync.hasPendingMetadata
+          ? "pending"
+          : "saved"
+      : persistenceSnapshot.phase;
   const pendingLabel = t("pendingChanges", { count: pendingChanges });
   const saveStatusLabel =
-    sessionSync.isRemoved && !sessionSync.hasPendingMetadata
+    persistenceState === "removed"
       ? t("gameRemoved")
       : persistenceState === "saved"
         ? t("savedToServer")
-        : persistenceState === "offline"
-          ? persistenceSnapshot.terminalReason === "rejected"
-            ? t("saveBlocked", { pendingLabel })
-            : t("offline", { pendingLabel })
-          : persistenceState === "retrying"
-            ? t("saveFailed", {
-                attempt: persistenceSnapshot.attempt,
-                maxAttempts: persistenceSnapshot.maxAttempts,
-                pendingLabel,
-              })
-            : t("saving", { pendingLabel });
+        : persistenceState === "pending"
+          ? t("savePending", { pendingLabel })
+          : persistenceState === "offline"
+            ? persistenceSnapshot.terminalReason === "rejected"
+              ? t("saveBlocked", { pendingLabel })
+              : t("offline", { pendingLabel })
+            : persistenceState === "retrying"
+              ? t("saveFailed", {
+                  attempt: persistenceSnapshot.attempt,
+                  maxAttempts: persistenceSnapshot.maxAttempts,
+                  pendingLabel,
+                })
+              : t("saving", { pendingLabel });
+  const canRetrySetupSave =
+    persistenceState === "offline" ||
+    persistenceState === "pending" ||
+    (persistenceState === "retrying" && persistenceSnapshot.nextRetryAt !== null);
+  const setupStartBlocker: SetupStartBlocker | undefined = sessionSync.isRemoved
+    ? {
+        message: t("gameRemoved"),
+        action: { label: t("startNewGame"), onClick: () => void startNewGame() },
+      }
+    : !playersLoaded
+      ? playersError
+        ? {
+            message: t("playerProfilesUnavailable"),
+            action: { label: t("retryLoadingPlayers"), onClick: () => void refreshPlayers() },
+          }
+        : { message: t("setupPlayersLoading") }
+      : sessionSync.isCreating || sessionSync.hasPendingMetadata
+        ? {
+            message: [
+              t(sessionSync.isCreating ? "setupCreationPending" : "setupTournamentPending"),
+              ...(canRetrySetupSave ? [saveStatusLabel] : []),
+            ].join(" "),
+            ...(canRetrySetupSave
+              ? { action: { label: t("retrySaving"), onClick: () => sessionRetry.retryNow() } }
+              : {}),
+          }
+        : undefined;
   const setupStep = setupSession?.step ?? "players";
   const roleGiveawayActive = view === "game" && game === null && setupStep === "roles";
   const tableLayoutActive = view === "game" && (game !== null || roleGiveawayActive);
@@ -1920,6 +1960,8 @@ const ClubWorkspaceContent = ({
       else sessionRetry.requestAutoSync();
     } catch (error) {
       reportError(error, { source: "persistence", context: "game-session.tournament" });
+      // A failed durable write may leave an in-memory pending intent without notifying.
+      setSyncRender((revision) => revision + 1);
     }
   };
   const tournamentPicker = (
@@ -2723,6 +2765,7 @@ const ClubWorkspaceContent = ({
             previewUndealtRoles={isManager && devUnlocked && previewUndealtRoles}
             onPopulateDevelopmentPlayers={populateDevelopmentPlayers}
             onOpenAvailablePlayers={() => setAvailabilityScreenOpen(true)}
+            startBlocker={setupStartBlocker}
             persistencePending={
               sessionSync.isCreating ||
               sessionSync.isRemoved ||

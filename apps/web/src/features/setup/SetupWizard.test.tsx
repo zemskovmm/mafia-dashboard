@@ -538,6 +538,131 @@ describe("SetupWizard federation setup", () => {
       list.mockRestore();
     }
   });
+  it("explains an external start blocker beside the action even with help hidden, then resumes unchanged", async () => {
+    const user = userEvent.setup();
+    const retry = vi.fn();
+    const onStartGame = vi.fn();
+    const session: SetupWizardSessionState = {
+      step: "players",
+      hostPlayerId: availablePlayers[10]!.id,
+      selectedPlayerIds: availablePlayers.slice(0, 10).map(({ id }) => id),
+      setup: null,
+    };
+    const props = {
+      players: availablePlayers,
+      initialSessionState: session,
+      onComplete: vi.fn(),
+      onStartGame,
+      showTutorialHelp: false,
+    };
+    const view = render(
+      <SetupWizard
+        {...props}
+        startBlocker={{
+          message: "The game could not be saved. Retry before starting.",
+          action: { label: "Retry save", onClick: retry },
+        }}
+      />,
+    );
+    const start = screen.getByRole("button", { name: "Start game" });
+    expect(start).toBeDisabled();
+    expect(start).toHaveAccessibleDescription(
+      "The game could not be saved. Retry before starting.",
+    );
+    expect(screen.getByText("The game could not be saved. Retry before starting.")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Retry save" }));
+    expect(retry).toHaveBeenCalledOnce();
+    expect(onStartGame).not.toHaveBeenCalled();
+    expect(screen.getByRole("combobox", { name: "Host player" })).toHaveTextContent("Player 11");
+    view.rerender(<SetupWizard {...props} />);
+    expect(start).toBeEnabled();
+    expect(start).not.toHaveAttribute("aria-describedby");
+    expect(screen.queryByText("The game could not be saved. Retry before starting.")).toBeNull();
+    await user.click(start);
+    expect(onStartGame).toHaveBeenCalledOnce();
+    expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
+  });
+  it.each(["en", "ru"] as const)(
+    "explains local setup prerequisites and clears them in %s",
+    async (locale) => {
+      const user = userEvent.setup();
+      const session: SetupWizardSessionState = {
+        step: "players",
+        hostPlayerId: availablePlayers[10]!.id,
+        selectedPlayerIds: availablePlayers.slice(0, 10).map(({ id }) => id),
+        setup: null,
+      };
+      const props = {
+        players: availablePlayers,
+        initialSessionState: session,
+        onComplete: vi.fn(),
+      };
+      const fixture = (extra = {}) => (
+        <I18nProvider locale={locale}>
+          <SetupWizard {...props} {...extra} />
+        </I18nProvider>
+      );
+      const view = render(fixture({ playersLoading: true }));
+      const start = screen.getByRole("button", {
+        name: locale === "en" ? "Start game" : "Начать игру",
+      });
+      expect(start).toBeDisabled();
+      expect(start).toHaveAccessibleDescription(
+        locale === "en" ? "Loading players…" : "Загрузка игроков…",
+      );
+      view.rerender(fixture({ tournamentValid: false }));
+      expect(start).toHaveAccessibleDescription(
+        locale === "en"
+          ? "Select a tournament or turn off tournament inclusion."
+          : "Выберите турнир или отключите участие в турнире.",
+      );
+      view.rerender(fixture({ persistencePending: true }));
+      expect(start).toHaveAccessibleDescription(
+        locale === "en"
+          ? "Waiting for game changes to be saved before starting."
+          : "Перед началом игры нужно дождаться сохранения изменений.",
+      );
+      view.rerender(fixture());
+      expect(start).toBeEnabled();
+      await user.click(
+        screen.getByRole("button", {
+          name: locale === "en" ? "Clear Seat 3" : "Очистить: Место 3",
+        }),
+      );
+      expect(start).toBeDisabled();
+      expect(start).toHaveAccessibleDescription(
+        locale === "en" ? "Select players for seats: 3." : "Выберите игроков для мест: 3.",
+      );
+      expect(screen.getByRole("status")).toBeVisible();
+    },
+  );
+  it("identifies duplicate host/seat assignments and missing host before starting", () => {
+    const session: SetupWizardSessionState = {
+      step: "players",
+      hostPlayerId: availablePlayers[0]!.id,
+      selectedPlayerIds: availablePlayers.slice(0, 10).map(({ id }) => id),
+      setup: null,
+    };
+    const { unmount } = render(
+      <SetupWizard players={availablePlayers} initialSessionState={session} onComplete={vi.fn()} />,
+    );
+    const start = screen.getByRole("button", { name: "Start game" });
+    expect(start).toBeDisabled();
+    expect(start).toHaveAccessibleDescription(
+      "Use different players for seats: 1. The host cannot occupy a seat.",
+    );
+    unmount();
+    render(
+      <SetupWizard
+        players={availablePlayers}
+        initialSessionState={{ ...session, hostPlayerId: "" }}
+        onComplete={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Start game" })).toHaveAccessibleDescription(
+      "Select a host who is not playing.",
+    );
+  });
   it("keeps the ordinary setup layout and captured edition, gating roles until tournament metadata is valid and acknowledged", async () => {
     const user = userEvent.setup();
     const onSessionStateChange = vi.fn();

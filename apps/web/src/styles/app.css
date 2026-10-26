@@ -349,17 +349,20 @@ h2 {
 .save-indicator[data-status="saved"] span {
   background: var(--green);
 }
-.save-indicator[data-status="offline"] span {
+.save-indicator[data-status="offline"] span,
+.save-indicator[data-status="removed"] span {
   background: var(--red);
 }
 .save-indicator[data-status="saved"] {
   color: var(--green);
 }
 .save-indicator[data-status="saving"],
-.save-indicator[data-status="retrying"] {
+.save-indicator[data-status="retrying"],
+.save-indicator[data-status="pending"] {
   color: var(--amber);
 }
-.save-indicator[data-status="offline"] {
+.save-indicator[data-status="offline"],
+.save-indicator[data-status="removed"] {
   color: var(--red);
 }
 

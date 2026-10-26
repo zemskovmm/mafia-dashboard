@@ -5,7 +5,7 @@ const englishShellMessages = {
   showTutorialHelp: "Show tutorial help buttons",
   pendingTournamentChanges: "Pending tournament changes",
   tournamentSwitchBlocked:
-    "Game switching is blocked until pending changes are saved. They are safe on this device; use the save indicator to retry or correct the tournament selection.",
+    "Game switching is blocked until pending changes are saved. Use the save indicator to retry or correct the tournament selection.",
   tournamentExitBlocked:
     "Save or correct pending tournament changes before leaving this club. Use the save indicator to retry.",
   applicationName: "La Verdad",
@@ -54,10 +54,16 @@ const englishShellMessages = {
   },
   savedToServer: "Saved to server · tap to check connection",
   gameRemoved: "This game was removed from the server. Its local copy will not be recreated.",
-  saveBlocked: "Save blocked · {pendingLabel} safe on this device · tap to retry",
-  offline: "Offline · {pendingLabel} safe on this device · tap to retry",
+  savePending: "Save pending · {pendingLabel} not yet confirmed · tap to retry",
+  saveBlocked: "Save blocked · {pendingLabel} pending · tap to retry",
+  offline: "Offline · {pendingLabel} pending · tap to retry",
   saveFailed: "Save failed · retry {attempt} of {maxAttempts} · {pendingLabel} pending",
   saving: "Saving · {pendingLabel} pending",
+  setupPlayersLoading: "Loading player profiles before setup can start…",
+  retryLoadingPlayers: "Retry loading players",
+  setupCreationPending: "Waiting for the server to create this game before roles can be assigned.",
+  setupTournamentPending: "Waiting for tournament changes to be saved before this game can start.",
+  retrySaving: "Retry saving",
   playersStatistics: "Players & statistics",
   availablePlayers: "Available players",
   gameSetup: "Game setup",
@@ -363,7 +369,7 @@ const russianShellMessages = {
   showTutorialHelp: "Показывать кнопки подсказок",
   pendingTournamentChanges: "Несохранённые изменения турниров",
   tournamentSwitchBlocked:
-    "Переключение игр заблокировано, пока изменения не сохранены. Они остаются на этом устройстве; повторите сохранение через индикатор или исправьте выбор турнира.",
+    "Переключение игр заблокировано, пока изменения не сохранены. Повторите сохранение через индикатор или исправьте выбор турнира.",
   tournamentExitBlocked:
     "Перед выходом из клуба сохраните изменения турниров или исправьте их. Для повторной попытки используйте индикатор сохранения.",
   applicationName: "La Verdad",
@@ -416,13 +422,20 @@ const russianShellMessages = {
   },
   savedToServer: "Сохранено на сервере · нажмите, чтобы проверить подключение",
   gameRemoved: "Эта игра удалена с сервера. Её локальная копия не будет создана заново.",
+  savePending:
+    "Сохранение ожидается · ещё не подтверждено: {pendingLabel} · нажмите, чтобы повторить",
   saveBlocked:
-    "Сохранение заблокировано · {pendingLabel} безопасно хранятся на этом устройстве · нажмите, чтобы повторить",
-  offline:
-    "Нет подключения · {pendingLabel} безопасно хранятся на этом устройстве · нажмите, чтобы повторить",
+    "Сохранение заблокировано · ожидают сохранения: {pendingLabel} · нажмите, чтобы повторить",
+  offline: "Нет подключения · ожидают сохранения: {pendingLabel} · нажмите, чтобы повторить",
   saveFailed:
     "Сохранение не удалось · попытка {attempt} из {maxAttempts} · ожидают сохранения: {pendingLabel}",
   saving: "Сохранение · ожидают сохранения: {pendingLabel}",
+  setupPlayersLoading: "Загрузка профилей игроков перед началом настройки…",
+  retryLoadingPlayers: "Повторить загрузку игроков",
+  setupCreationPending: "Ожидается создание игры на сервере, прежде чем можно будет раздать роли.",
+  setupTournamentPending:
+    "Ожидается сохранение изменений турниров, прежде чем можно будет начать игру.",
+  retrySaving: "Повторить сохранение",
   playersStatistics: "Игроки и статистика",
   availablePlayers: "Доступные игроки",
   gameSetup: "Настройка игры",
