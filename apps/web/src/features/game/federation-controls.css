@@ -21,8 +21,7 @@
   align-items: center;
 }
 .federation-discipline button,
-.federation-shooting-observation button,
-.federation-transcript button {
+.federation-shooting-observation button {
   min-height: 48px;
 }
 .federation-best-move,
@@ -40,11 +39,6 @@
   padding-left: 1.2rem;
   min-height: 1.2em;
 }
-.federation-best-move > label {
-  display: block;
-  cursor: pointer;
-}
-.federation-best-move input[type="checkbox"],
 .federation-judge-dialog input[type="checkbox"] {
   width: 24px;
   height: 24px;
@@ -55,7 +49,7 @@
 }
 .game-shell .federation-best-actions {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 48px;
+  grid-template-columns: minmax(0, 1fr);
   gap: 0.35rem;
 }
 .game-shell .federation-best-actions > button {
@@ -67,6 +61,7 @@
     transform: translate(-50%, -65%);
   }
   .game-shell.phase-best-move .table-advance:has(.federation-best-actions) {
+    top: 66%;
     width: min(210px, 50%);
   }
 }

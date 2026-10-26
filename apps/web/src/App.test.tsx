@@ -6818,9 +6818,15 @@ describe("authoritative game session lifecycle", () => {
     expect(replayGameLog(undone.initialGame, undone.events).game).toEqual(undone.game);
   });
 
-  it.each([0, 2])(
-    "persists real federation Best Move entry before accepting %s numbers and finalizing",
-    async (count) => {
+  it.each([
+    [0, false],
+    [1, false],
+    [2, false],
+    [3, false],
+    [3, true],
+  ] as const)(
+    "persists %s Best Move selections, record=%s, reload and Undo without readback",
+    async (count, record) => {
       const { GameScreen } = await vi.importActual<typeof gameScreenModule>(
         "./features/game/GameScreen.js",
       );
@@ -6842,43 +6848,53 @@ describe("authoritative game session lifecycle", () => {
       await waitFor(() =>
         expect(api.saveGameSession.mock.lastCall?.[1].state.game.phase).toBe("best-move"),
       );
-      for (let seat = 1; seat <= count; seat += 1)
-        await user.click(screen.getByRole("button", { name: `Accept number ${seat}` }));
-      await user.click(
-        screen.getByRole("checkbox", { name: "Numbers read back and accepted; player sleeps" }),
+      const seats = [1, 3, 4].slice(0, count);
+      for (const seat of seats)
+        await user.click(
+          screen.getByRole("button", { name: `Select player ${seat} for Best Move` }),
+        );
+      await waitFor(() =>
+        expect(api.saveGameSession.mock.lastCall?.[1].state.game.bestMove.selectedSeats).toEqual(
+          seats,
+        ),
       );
-      await user.click(
-        screen.getByRole("button", { name: count === 0 ? "Skip Best Move" : "Finish early" }),
-      );
+      const draft = api.saveGameSession.mock.lastCall![1].state;
+      expect(draft.game.bestMove.mafiaHits).toBeUndefined();
+      expect(replayGameLog(draft.initialGame, draft.events).game).toEqual(draft.game);
+      cleanup();
+      render(<App />);
+      const restoredRecord = await screen.findByRole("button", { name: "Record Best Move" });
+      expect(restoredRecord).toHaveProperty("disabled", count !== 3);
+      for (const seat of seats)
+        expect(
+          screen.getByRole("button", { name: `Deselect player ${seat} from Best Move` }),
+        ).toHaveAttribute("aria-pressed", "true");
+      const finishName = record ? "Record Best Move" : "Skip Best Move";
+      await user.click(screen.getByRole("button", { name: finishName }));
       await waitFor(() =>
         expect(api.saveGameSession.mock.lastCall?.[1].state.game.bestMove.completionReason).toBe(
-          count === 0 ? "declined" : "finished-early",
+          record ? "complete-list" : "declined",
         ),
       );
       const saved = api.saveGameSession.mock.lastCall![1].state;
       expect(saved.game.phase).toBe("night-resolution");
-      expect(saved.game.bestMove.selectedSeats).toEqual(count === 0 ? [] : [1, 2]);
+      expect(saved.game.bestMove.selectedSeats).toEqual(record ? seats : []);
+      expect(saved.game.bestMove.readbackAcknowledged).toBeUndefined();
+      if (!record) expect(saved.game.bestMove.mafiaHits).toBeUndefined();
       expect(saved.game.bestMoveEnabled).toBe(true);
       expect(replayGameLog(saved.initialGame, saved.events).game).toEqual(saved.game);
       cleanup();
       render(<App />);
       expect(await screen.findByRole("button", { name: "Announce morning" })).toBeEnabled();
       await user.click(screen.getByRole("button", { name: /undo last action/i }));
-      expect(
-        screen.getByRole("button", { name: count === 0 ? "Skip Best Move" : "Finish early" }),
-      ).toBeDisabled();
+      expect(screen.getByRole("button", { name: finishName })).toBeEnabled();
       await waitFor(() =>
         expect(api.saveGameSession.mock.lastCall?.[1].state.game.phase).toBe("best-move"),
       );
       const undone = api.saveGameSession.mock.lastCall![1].state;
-      expect(undone.game.bestMove.selectedSeats).toEqual(count === 0 ? [] : [1, 2]);
+      expect(undone.game.bestMove.selectedSeats).toEqual(seats);
       expect(replayGameLog(undone.initialGame, undone.events).game).toEqual(undone.game);
-      await user.click(
-        screen.getByRole("checkbox", { name: "Numbers read back and accepted; player sleeps" }),
-      );
-      await user.click(
-        screen.getByRole("button", { name: count === 0 ? "Skip Best Move" : "Finish early" }),
-      );
+      await user.click(screen.getByRole("button", { name: finishName }));
       await user.click(screen.getByRole("button", { name: "Announce morning" }));
       await waitFor(() =>
         expect(api.saveGameSession.mock.lastCall?.[1].state.game.phase).toBe("goodbye-speech"),

@@ -535,14 +535,7 @@ export const NightStage = ({
         center={
           <div className="table-check-center">
             <span className="table-prompt">{t("night.stageComplete")}</span>
-            {game.bestMove?.completionReason ? (
-              <FederationBestMoveTranscript
-                game={game}
-                onGameChange={onGameChange}
-                onEvent={onEvent}
-                onAcceptedEvent={onAcceptedEvent}
-              />
-            ) : null}
+            {game.bestMove?.completionReason ? <FederationBestMoveTranscript game={game} /> : null}
             {game.nightResult === undefined ? null : (
               <MafiaShotResultCard game={game} result={game.nightResult} />
             )}

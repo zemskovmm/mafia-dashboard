@@ -260,10 +260,10 @@ There is no alternative post-departure check engine. Accepted historical checks/
 
 ### 11.5 Best Move
 
-- The first shooting-night victim may give up to three accepted numbers, in order, during night with a twenty-second time allowance. Two or more first-day departures suppress eligibility.
-- Preserve an accepted prefix of zero through three numbers when time, interruption or decline ends the attempt. Ordinary changes/additions after acceptance are not allowed; an obvious-slip correction is explicit.
-- **Skip Best Move** records decline for an empty list and continues to morning/farewell without changing preferences. **Finish early** preserves already accepted numbers. Timer expiry signals STOP but never advances automatically.
-- The judge reads back the numbers and says accepted; only then does morning follow. Recorded hits are descriptive, not tournament scoring.
+- The first shooting-night victim may name three other players during night with a twenty-second time allowance. Two or more first-day departures suppress eligibility.
+- Click other players' cards to select or deselect up to three distinct players, with voting-style highlights. **Record Best Move** is enabled only for three selections and saves them immediately.
+- **Skip Best Move** is always available during selection, discards the draft and records no Best Move result or hit count, continuing to morning/farewell without changing preferences. These are the only two Best Move actions: no checkboxes, observation/readback confirmations, early-finish, cutoff or slip-correction controls. Timer expiry never saves or advances automatically. Normal Undo/history remains available, and earlier recorded observations are preserved.
+- Recording or skipping enables the normal morning action. Recorded hits are descriptive, not tournament scoring.
 
 ## 12. Victory
 
@@ -313,7 +313,7 @@ SETUP_PLAYERS
   → NIGHT_DON_CHECK (when Don eligible this night)
   → NIGHT_SHERIFF_CHECK (when Sheriff eligible this night)
   → NIGHT_RESOLUTION
-  → BEST_MOVE (when eligible, still night; accepted prefix or Skip)
+  → BEST_MOVE (when eligible, still night; select three and Record, or Skip)
   → MORNING / FAREWELL (when applicable)
   → DAY_TURNS ...
   → FINISHED

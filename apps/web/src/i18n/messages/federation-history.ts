@@ -84,6 +84,14 @@ const en = {
   "Skip basis nine three restricted":
     "three tied players at a nine-player table without both required night/check conditions",
   "Skip basis zero round five": "five-way tie in the zero round",
+  "Best Move selection added: {player}": "Best Move selection added: {player}",
+  "Best Move selection removed: {player}": "Best Move selection removed: {player}",
+  "Best Move recorded: {selections}": "Best Move recorded: {selections}",
+  "Best Move recorded by {owner}: {selections}; {hits}":
+    "Best Move recorded by {owner}: {selections}; {hits}",
+  "Best Move skipped": "Best Move skipped",
+  "Best Move skipped by {owner}; no result recorded":
+    "Best Move skipped by {owner}; no result recorded",
   "Best Move number {number} accepted: {player}": "Best Move number {number} accepted: {player}",
   "Best Move slip corrected at number {number}: {before} → {after}":
     "Best Move slip corrected at number {number}: {before} → {after}",
@@ -190,6 +198,14 @@ const ru = {
   "Skip basis nine three restricted":
     "трое кандидатов набрали равные голоса при девяти игроках без обоих обязательных условий ночи и проверки",
   "Skip basis zero round five": "пять кандидатов набрали равные голоса в нулевом круге",
+  "Best Move selection added: {player}": "Выбран игрок для лучшего хода: {player}",
+  "Best Move selection removed: {player}": "Убран игрок из лучшего хода: {player}",
+  "Best Move recorded: {selections}": "Лучший ход записан: {selections}",
+  "Best Move recorded by {owner}: {selections}; {hits}":
+    "Записан лучший ход {owner}: {selections}; {hits}",
+  "Best Move skipped": "Лучший ход пропущен",
+  "Best Move skipped by {owner}; no result recorded":
+    "Лучший ход {owner} пропущен; результат не записан",
   "Best Move number {number} accepted: {player}": "Принят номер {number} лучшего хода: {player}",
   "Best Move slip corrected at number {number}: {before} → {after}":
     "Исправлена оговорка в номере {number} лучшего хода: {before} → {after}",

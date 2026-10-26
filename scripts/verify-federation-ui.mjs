@@ -42,7 +42,7 @@ export const currentSetupState = () => ({
   resetReturnEventId: null,
   legacyLog: [],
 });
-const envelope = (clubId, gameId, state) => ({
+export const envelope = (clubId, gameId, state) => ({
   version: 5,
   clubId,
   gameId,
@@ -63,6 +63,8 @@ const sources = [
   "apps/web/src/features/night/NightStage.tsx",
   "apps/web/src/features/night/NightShootingObservation.tsx",
   "apps/web/src/i18n/messages/night.ts",
+  "apps/web/src/i18n/messages/federation-best-move.ts",
+  "apps/web/src/i18n/messages/federation-history.ts",
   "scripts/verify-federation-ui.mjs",
   "apps/web/src/features/game/FederationBestMoveStage.tsx",
   "apps/web/src/features/voting/FederationBallot.tsx",
@@ -1643,30 +1645,45 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
       row.screenshots.push(await capture(page, `best-${count}-sheriff-readback`, width, height));
       await page.getByRole("button", { name: "Continue night", exact: true }).click();
       await page.getByRole("button", { name: "Record Best Move", exact: true }).click();
-      for (const n of [7, 7].slice(0, count))
-        await page.getByRole("button", { name: `Accept number ${n}`, exact: true }).click();
+      const selections = day.players
+        .filter((p) => p.seat !== victim)
+        .slice(0, count)
+        .map((p) => p.seat);
+      await expect(page.locator(".table-advance button")).toHaveText([
+        "Record Best Move",
+        "Skip Best Move",
+      ]);
+      await expect(page.locator(".table-stage input, .table-stage select")).toHaveCount(0);
+      for (const n of selections) {
+        await page
+          .getByRole("button", { name: `Select player ${n} for Best Move`, exact: true })
+          .click();
+        await expect(
+          page.getByRole("button", { name: `Deselect player ${n} from Best Move`, exact: true }),
+        ).toHaveAttribute("aria-pressed", "true");
+      }
       api.clean();
-      const finishName = count === 0 ? "Skip Best Move" : "Finish early";
-      await expect(page.getByRole("button", { name: finishName, exact: true })).toBeDisabled();
-      await page
-        .getByRole("checkbox", {
-          name: "Numbers read back and accepted; player sleeps",
-          exact: true,
-        })
-        .check();
-      row.screenshots.push(await capture(page, `best-${count}-accepted-prefix`, width, height));
-      await page.getByRole("button", { name: finishName, exact: true }).click();
+      await expect(
+        page.getByRole("button", { name: "Record Best Move", exact: true }),
+      ).toBeDisabled();
+      const draft = await settled(page, api);
+      replay(draft.current.state);
+      await page.reload({ waitUntil: "networkidle" });
+      assert.deepEqual((await settled(page, api)).current.state, draft.current.state);
+      row.screenshots.push(await capture(page, `best-${count}-selected-draft`, width, height));
+      await page.getByRole("button", { name: "Skip Best Move", exact: true }).click();
       const finalized = await saveReplay(page, api, `best-${count}-finalized`, width, height);
       assert.equal(finalized.env.current.state.game.phase, "night-resolution");
       assert.equal(finalized.env.current.state.game.day, 1);
-      assert.deepEqual(
-        finalized.env.current.state.game.bestMove.selectedSeats,
-        [7, 7].slice(0, count),
-      );
+      assert.deepEqual(finalized.env.current.state.game.bestMove.selectedSeats, []);
+      assert.equal(finalized.env.current.state.game.bestMove.completionReason, "declined");
+      assert.equal(Object.hasOwn(finalized.env.current.state.game.bestMove, "mafiaHits"), false);
       assert.equal(
-        finalized.env.current.state.game.bestMove.completionReason,
-        count === 0 ? "declined" : "finished-early",
+        Object.hasOwn(finalized.env.current.state.game.bestMove, "readbackAcknowledged"),
+        false,
       );
+      assert.equal(branch(finalized.env.current.state).at(-1).type, "best-move.skipped");
+      assert.deepEqual(branch(finalized.env.current.state).at(-1).payload, {});
       await page.reload({ waitUntil: "networkidle" });
       const beforeUndo = await settled(page, api);
       replay(beforeUndo.current.state);
@@ -1676,14 +1693,14 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
       replay(undone.current.state);
       assert.equal(undone.current.state.game.phase, "best-move");
       assert.equal(undone.current.state.game.bestMove.completionReason, undefined);
-      assert.deepEqual(undone.current.state.game.bestMove.selectedSeats, [7, 7].slice(0, count));
-      await page
-        .getByRole("checkbox", {
-          name: "Numbers read back and accepted; player sleeps",
-          exact: true,
-        })
-        .check();
-      await page.getByRole("button", { name: finishName, exact: true }).click();
+      assert.deepEqual(undone.current.state.game.bestMove.selectedSeats, selections);
+      assert.deepEqual(
+        branch(undone.current.state),
+        branch(draft.current.state),
+        "Undo restores the pre-Skip branch",
+      );
+      assert.equal(undone.current.state.headEventId, draft.current.state.headEventId);
+      await page.getByRole("button", { name: "Skip Best Move", exact: true }).click();
       await page.getByRole("button", { name: "Announce morning", exact: true }).click();
       const morning = await saveReplay(page, api, `best-${count}-morning`, width, height);
       assert.equal(morning.env.current.state.game.phase, "goodbye-speech");
@@ -1696,7 +1713,7 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
       assert.equal(hashGameState(restored.current.state.game), morning.proof.hash);
       replay(restored.current.state);
       row.scenarios.push({
-        name: `first-kill-best-move-${count === 0 ? "skip" : "partial-finish"}-undo-reload-morning`,
+        name: `first-kill-best-move-${count === 0 ? "empty-skip" : "partial-skip"}-undo-reload-morning`,
         ...morning.proof,
       });
       row.screenshots.push(await capture(page, `best-${count}-morning`, width, height));

@@ -4,15 +4,19 @@ import AxeBuilder from "@axe-core/playwright";
 import assert from "node:assert/strict";
 import { assertExactOrigin } from "./session-verifier-contracts.mjs";
 import { writeFileSync } from "node:fs";
+import { tsImport } from "tsx/esm/api";
 import {
   assertCardSizes,
   assertCanonicalProjection,
   assertRailMaterial,
   assertPlayerLighting,
-  resolveUiMode,
 } from "./ui-presentation-contracts.mjs";
 
-const verificationMode = resolveUiMode(process.env);
+const { resolveBestMoveUiMode, runBestMoveScenarios } = await tsImport(
+  "./verify-best-move-ui.mjs",
+  import.meta.url,
+);
+const verificationMode = resolveBestMoveUiMode(process.env);
 let terminalStage = "initialization";
 const stage = (name) => {
   terminalStage = name;
@@ -643,6 +647,7 @@ const viewportWidth = Number(process.env.UI_VIEWPORT_WIDTH ?? "");
 const viewportHeight = Number(process.env.UI_VIEWPORT_HEIGHT ?? "");
 const headerOnly = process.env.UI_HEADER_ONLY === "1";
 const federationOnly = process.env.UI_FEDERATION_ONLY === "1";
+const bestMoveOnly = process.env.UI_BEST_MOVE_ONLY === "1";
 const rulesSketchbookOnly = process.env.UI_RULES_SKETCHBOOK_ONLY === "1";
 const fancyFeaturesOnly = process.env.UI_FANCY_FEATURES_ONLY === "1";
 const privacyOnly = process.env.UI_PRIVACY_ONLY === "1";
@@ -1447,7 +1452,6 @@ await page.route("**/api/game-sessions/**", async (route) => {
   });
 });
 
-const { tsImport } = await import("tsx/esm/api");
 const domain = await tsImport("../packages/game-domain/src/index.ts", import.meta.url);
 const { getActiveBranch } = await tsImport(
   "../apps/web/src/features/game/game-history.ts",
@@ -1543,6 +1547,24 @@ const restoreCurrentSetup = async () => {
 };
 
 try {
+  if (bestMoveOnly) {
+    stage("best-move");
+    await runBestMoveScenarios({
+      page,
+      baseUrl,
+      club: testClub,
+      players: testPlayers,
+      api: federationApi,
+      evidenceDir:
+        process.env.BEST_MOVE_UI_EVIDENCE_DIR ??
+        `.AI/best-move-ui/${browserName}-${page.viewportSize().width}x${page.viewportSize().height}`,
+    });
+    assertNoPageErrors();
+    console.log("Best Move integrated verification: PASS");
+    stage("complete");
+    await browser.close();
+    process.exit(0);
+  }
   if (fancyFeaturesOnly) {
     stage("fancy-features");
     const { runFancyFeaturesScenarios } = await tsImport(
@@ -3670,15 +3692,46 @@ try {
     );
     const bestMoveScreenshotPath = tableScreenshotPath.replace(/\.png$/i, "-best-move.png");
     await page.screenshot({ path: bestMoveScreenshotPath, fullPage: true });
-    for (let selection = 0; selection < 3; selection += 1) {
+    const bestMoveSeats = await page.evaluate(() => {
+      const game = JSON.parse(localStorage.getItem("mafia-dashboard.game-session.v5")).current.state
+        .game;
+      return game.players
+        .filter((p) => p.seat !== game.bestMove.playerSeat)
+        .slice(0, 3)
+        .map((p) => p.seat);
+    });
+    assert.deepEqual(await page.locator(".table-advance button").allTextContents(), [
+      "Record Best Move",
+      "Skip Best Move",
+    ]);
+    assert.equal(await page.locator(".table-stage input, .table-stage select").count(), 0);
+    assert.equal(
+      await page.getByRole("button", { name: "Record Best Move", exact: true }).isDisabled(),
+      true,
+    );
+    for (const seat of bestMoveSeats) {
       await page
-        .getByRole("button", { name: `Accept number ${selection + 1}`, exact: true })
+        .getByRole("button", { name: `Select player ${seat} for Best Move`, exact: true })
         .click();
+      assert.equal(
+        await page
+          .getByRole("button", { name: `Deselect player ${seat} from Best Move`, exact: true })
+          .getAttribute("aria-pressed"),
+        "true",
+      );
     }
-    await page
-      .getByRole("checkbox", { name: "Numbers read back and accepted; player sleeps" })
-      .check();
-    await page.getByRole("button", { name: "Accept Best Move", exact: true }).click();
+    await page.getByRole("button", { name: "Record Best Move", exact: true }).click();
+    await page.locator('.save-indicator[data-status="saved"]').waitFor();
+    const recordedBestMove = await page.evaluate(
+      () => JSON.parse(localStorage.getItem("mafia-dashboard.game-session.v5")).current.state,
+    );
+    assert.equal(recordedBestMove.game.phase, "night-resolution");
+    assert.deepEqual(recordedBestMove.game.bestMove.selectedSeats, bestMoveSeats);
+    assert.equal(recordedBestMove.game.bestMove.completionReason, "complete-list");
+    assert.equal(Object.hasOwn(recordedBestMove.game.bestMove, "readbackAcknowledged"), false);
+    assert.equal(recordedBestMove.events.at(-1).type, "best-move.recorded");
+    assert.deepEqual(recordedBestMove.events.at(-1).payload, {});
+    assertCanonicalProjection(domain, getActiveBranch, recordedBestMove);
     await page.getByRole("button", { name: "Announce morning", exact: true }).click();
     await page.getByRole("heading", { name: "Goodbye speech" }).waitFor();
     if ((await page.locator(".player-seat.is-voting-highlight").count()) !== 1) {

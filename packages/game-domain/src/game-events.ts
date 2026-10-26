@@ -20,9 +20,12 @@ import {
   recordHostVote,
   mentionVotingCandidate,
   recordActualMultipleShot,
+  recordBestMove,
   recordShotObservations,
   ruleOnVotingDispute,
+  skipBestMove,
   stopVotingCandidate,
+  toggleBestMoveSelection,
 } from "./federation-actions.js";
 import {
   acceptCarCrashBallot,
@@ -122,6 +125,9 @@ export const canonicalGameEventTypes = [
   "best-move.number-accepted",
   "best-move.slip-corrected",
   "best-move.finalized",
+  "best-move.selection-toggled",
+  "best-move.recorded",
+  "best-move.skipped",
   "game.adjudicated",
   "discipline.removal-observed",
   "discipline.removals-announced",
@@ -345,6 +351,9 @@ export type CanonicalGameEventDraft =
         readonly readbackAcknowledged: true;
       }
     >
+  | EventDraft<"best-move.selection-toggled", { readonly seat: number }>
+  | EventDraft<"best-move.recorded", Record<string, never>>
+  | EventDraft<"best-move.skipped", Record<string, never>>
   | EventDraft<"game.adjudicated", OpponentVictoryAdjudication>
   | EventDraft<"discipline.removal-observed", RemovalObservation>
   | EventDraft<
@@ -438,6 +447,9 @@ export const canonicalGameEventSecrecy = {
   "best-move.number-accepted": true,
   "best-move.slip-corrected": true,
   "best-move.finalized": true,
+  "best-move.selection-toggled": true,
+  "best-move.recorded": true,
+  "best-move.skipped": true,
   "game.adjudicated": false,
   "discipline.removal-observed": true,
   "discipline.removals-announced": false,
@@ -765,6 +777,7 @@ const assertCanonicalPayload = (type: CanonicalGameEventType, value: unknown): v
       }
       return;
     case "best-move.number-accepted":
+    case "best-move.selection-toggled":
       assertExactKeys(payload, ["seat"], `${type} payload`);
       assertSeat(payload.seat, `${type}.seat`);
       return;
@@ -788,6 +801,8 @@ const assertCanonicalPayload = (type: CanonicalGameEventType, value: unknown): v
       return;
     case "game.started":
     case "game.checkpointed":
+    case "best-move.recorded":
+    case "best-move.skipped":
     case "don.check-skipped":
     case "sheriff.check-skipped":
       assertExactKeys(payload, [], `${type} payload`);
@@ -1453,12 +1468,22 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
       throw new Error("Best Move contains at most three accepted numbers");
     for (const seat of bestMove.selectedSeats)
       assertSeat(seat, `${context}.bestMove.selectedSeats`);
-    if (
-      bestMove.completionReason !== undefined &&
-      (!bestMoveCompletionReasons.includes(bestMove.completionReason as string) ||
-        bestMove.readbackAcknowledged !== true)
-    )
-      throw new Error("Completed Best Move needs legal cutoff and accepted readback");
+    const completed = bestMove.completionReason !== undefined;
+    const hostCompletion = completed && bestMove.readbackAcknowledged === undefined;
+    if (completed) {
+      if (!bestMoveCompletionReasons.includes(bestMove.completionReason as string))
+        throw new Error("Completed Best Move needs a legal completion reason");
+      if (hostCompletion) {
+        if (
+          !["complete-list", "declined"].includes(bestMove.completionReason as string) ||
+          new Set(bestMove.selectedSeats).size !== bestMove.selectedSeats.length ||
+          bestMove.selectedSeats.includes(bestMove.playerSeat)
+        )
+          throw new Error("Recorded Best Move requires distinct other players or an empty skip");
+      } else if (bestMove.readbackAcknowledged !== true) {
+        throw new Error("Completed Best Move needs accepted readback");
+      }
+    }
     if (bestMove.completionReason === "declined" && bestMove.selectedSeats.length !== 0)
       throw new Error("A declined Best Move has zero accepted entries");
     if (bestMove.completionReason === "complete-list" && bestMove.selectedSeats.length !== 3)
@@ -1470,7 +1495,7 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
       (p) => p.team === "black" && new Set(bestMove.selectedSeats as number[]).has(p.seat),
     ).length;
     if (
-      bestMove.completionReason !== undefined
+      completed && !(hostCompletion && bestMove.completionReason === "declined")
         ? bestMove.mafiaHits !== expectedHits
         : bestMove.mafiaHits !== undefined
     )
@@ -1784,6 +1809,12 @@ const applyValidatedGameEvent = (game: GameState, event: CanonicalGameEventDraft
       );
     case "best-move.finalized":
       return finalizeBestMove(game, event.payload.reason, event.payload.readbackAcknowledged);
+    case "best-move.selection-toggled":
+      return toggleBestMoveSelection(game, event.payload.seat);
+    case "best-move.recorded":
+      return recordBestMove(game);
+    case "best-move.skipped":
+      return skipBestMove(game);
     case "game.adjudicated":
       return adjudicateOpponentVictory(game, event.payload);
     case "game.started":

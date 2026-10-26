@@ -357,6 +357,55 @@ export const correctBestMoveSlip = (
 };
 const countBestMoveHits = (game: GameState, seats: readonly number[]) =>
   game.players.filter((p) => p.team === "black" && new Set(seats).has(p.seat)).length;
+/** Tentative host selection, not an observation of spoken acceptance or readback. */
+export const toggleBestMoveSelection = (game: GameState, seat: number): GameState => {
+  const bestMove = requireBestMove(game);
+  requireSeat(game, seat);
+  const selected = bestMove.selectedSeats.includes(seat);
+  // Retained accepted prefixes can contain self/duplicate entries. Only an
+  // explicit deselection removes them; never normalize the restored draft.
+  if (!selected && seat === bestMove.playerSeat)
+    throw new Error("Best Move selects other players only");
+  if (!selected && bestMove.selectedSeats.length >= 3)
+    throw new Error("Best Move selects at most three distinct other players");
+  return {
+    ...game,
+    bestMove: {
+      playerSeat: bestMove.playerSeat,
+      selectedSeats: selected
+        ? bestMove.selectedSeats.filter((old) => old !== seat)
+        : [...bestMove.selectedSeats, seat],
+    },
+  };
+};
+export const recordBestMove = (game: GameState): GameState => {
+  const bestMove = requireBestMove(game);
+  if (
+    bestMove.selectedSeats.length !== 3 ||
+    new Set(bestMove.selectedSeats).size !== 3 ||
+    bestMove.selectedSeats.includes(bestMove.playerSeat)
+  )
+    throw new Error("Record Best Move requires three distinct other players");
+  for (const seat of bestMove.selectedSeats) requireSeat(game, seat);
+  return {
+    ...game,
+    phase: "night-resolution",
+    bestMove: {
+      playerSeat: bestMove.playerSeat,
+      selectedSeats: bestMove.selectedSeats,
+      completionReason: "complete-list",
+      mafiaHits: countBestMoveHits(game, bestMove.selectedSeats),
+    },
+  };
+};
+export const skipBestMove = (game: GameState): GameState => {
+  const bestMove = requireBestMove(game);
+  return {
+    ...game,
+    phase: "night-resolution",
+    bestMove: { playerSeat: bestMove.playerSeat, selectedSeats: [], completionReason: "declined" },
+  };
+};
 export const finalizeBestMove = (
   game: GameState,
   reason: BestMoveCompletionReason,

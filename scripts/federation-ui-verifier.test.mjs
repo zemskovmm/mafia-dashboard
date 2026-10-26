@@ -75,6 +75,86 @@ test("night checkpoint establishes only a precondition, never a Best Move outcom
   assert.equal(isCurrentGameSessionState(state), true);
 });
 
+test("focused Best Move fixture is an admitted first-shooting precondition, not a selected result", async () => {
+  const { bestMoveNightFixture, bestMoveFixtureTargets } = await tsImport(
+    "./verify-best-move-ui.mjs",
+    import.meta.url,
+  );
+  const players = Array.from({ length: 11 }, (_, i) => ({
+    id: `00000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`,
+  }));
+  const state = bestMoveNightFixture(players, id);
+  assert.equal(isCurrentGameSessionState(state), true);
+  assert.equal(state.hostPlayerId, players[10].id);
+  assert.equal(state.game.phase, "night-mafia");
+  assert.equal(state.game.completedGameNights, 1);
+  assert.equal(state.game.bestMove, undefined);
+  assert.deepEqual(state.game.shotAssignments, {});
+  assert.deepEqual(
+    state.events.map((event) => event.type),
+    ["game.checkpointed"],
+  );
+  const { victim, targets } = bestMoveFixtureTargets(state);
+  assert.equal(victim.role, "citizen");
+  assert.equal(targets.includes(victim.seat), false);
+  assert.equal(targets.length, 3);
+  assert.equal(new Set(targets).size, 3);
+  assert.equal(
+    state.game.players.filter((p) => p.team === "black" && targets.includes(p.seat)).length,
+    2,
+  );
+  assert.equal(
+    domain.hashGameState(domain.replayGameLog(state.initialGame, state.events, id).game),
+    domain.hashGameState(state.game),
+  );
+});
+
+test("focused Best Move mode uses the strict shared runner and rejects conflicting/invalid modes", async () => {
+  const { resolveBestMoveUiMode } = await tsImport("./verify-best-move-ui.mjs", import.meta.url);
+  assert.equal(resolveBestMoveUiMode({}), "default");
+  assert.equal(resolveBestMoveUiMode({ UI_BEST_MOVE_ONLY: "0", UI_HEADER_ONLY: "1" }), "header");
+  assert.equal(resolveBestMoveUiMode({ UI_BEST_MOVE_ONLY: "1" }), "best-move");
+  for (const env of [
+    { UI_BEST_MOVE_ONLY: "true" },
+    { UI_BEST_MOVE_ONLY: "1", UI_FEDERATION_ONLY: "1" },
+    { UI_BEST_MOVE_ONLY: "1", UI_HEADER_ONLY: "1" },
+    { UI_BEST_MOVE_ONLY: "1", UI_UNKNOWN_ONLY: "1" },
+  ])
+    assert.throws(() => resolveBestMoveUiMode(env));
+  const runner = await readFile(new URL("./verify-ui.mjs", import.meta.url), "utf8");
+  assert.match(runner, /const verificationMode = resolveBestMoveUiMode\(process\.env\)/);
+  assert.match(
+    runner,
+    /if \(bestMoveOnly\) \{[\s\S]*?runBestMoveScenarios\([\s\S]*?api: federationApi/,
+  );
+  assert.match(runner, /assertNoPageErrors\(\);[\s\S]*?Best Move integrated verification: PASS/);
+});
+
+test("focused Best Move matrix cannot pass empty, missing, duplicate or mislabeled outcomes", async () => {
+  const { assertBestMoveCoverage } = await tsImport("./verify-best-move-ui.mjs", import.meta.url);
+  const report = { scenarios: [], interactions: [] };
+  for (const locale of ["en", "ru"]) {
+    for (const outcome of ["skip-0", "skip-1", "skip-2", "skip-3", "record-3"])
+      report.scenarios.push({ locale, outcome });
+    for (const name of ["select-retap", "limit-deselect-all", "timer-manual"])
+      report.interactions.push({ locale, name });
+  }
+  assert.doesNotThrow(() => assertBestMoveCoverage(report));
+  assert.throws(() => assertBestMoveCoverage({ scenarios: [], interactions: [] }));
+  const missing = structuredClone(report);
+  missing.scenarios.pop();
+  assert.throws(() => assertBestMoveCoverage(missing));
+  const duplicate = structuredClone(report);
+  duplicate.scenarios[0] = duplicate.scenarios[1];
+  assert.throws(() => assertBestMoveCoverage(duplicate));
+  const wrongLocale = structuredClone(report);
+  wrongLocale.scenarios[0].locale = "de";
+  assert.throws(() => assertBestMoveCoverage(wrongLocale));
+  const noLimit = structuredClone(report);
+  noLimit.interactions.pop();
+  assert.throws(() => assertBestMoveCoverage(noLimit));
+});
+
 test("corrupted browser root hashes and foreign fields fail closed", () => {
   const state = checkpoint(opening(), { ...currentSetupState(), setup: null }, id);
   assert.throws(() =>

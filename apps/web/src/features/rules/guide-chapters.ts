@@ -308,9 +308,9 @@ export const guideChapters = [
     en: {
       title: ["One last", "good instinct."],
       name: "Best Move",
-      tag: "07 / THREE NUMBERS, OR FEWER",
+      tag: "07 / THREE PLAYERS, OR SKIP",
       plate: "Fig. VII — A thought left on the table",
-      note: "Remember the order in which the numbers were spoken.",
+      note: "Tap a card again to remove it from the selection.",
       lede: "The first shooting-night victim can leave a reading of the table.",
       rules: [
         [
@@ -318,12 +318,12 @@ export const guideChapters = [
           "When eligible, the victim gets up to 20 seconds before morning and farewell. The option is unavailable after two or more first-day departures or a miss.",
         ],
         [
-          "Accept what was said",
-          "Record up to three accepted seat numbers in spoken order. Zero, one or two are valid when the player declines, time ends or the attempt is stopped.",
+          "Select three other players",
+          "Tap player cards to select or deselect them. Record Best Move becomes available when exactly three other players are selected and saves them immediately.",
         ],
         [
-          "Read it back",
-          "The judge reads back the accepted numbers and acknowledges acceptance. Once complete, they cannot be replaced except to correct an obvious slip.",
+          "Record or skip",
+          "Skip Best Move discards the selection without recording a result. Neither action needs a checkbox or extra confirmation; use Undo for corrections. The timer never advances automatically.",
         ],
       ],
       margin:
@@ -332,9 +332,9 @@ export const guideChapters = [
     ru: {
       title: ["Последняя", "догадка."],
       name: "Лучший ход",
-      tag: "07 / ТРИ НОМЕРА ИЛИ МЕНЬШЕ",
+      tag: "07 / ТРИ ИГРОКА ИЛИ ПРОПУСК",
       plate: "Рис. VII — Мысль, оставленная за столом",
-      note: "Сохраните порядок произнесённых номеров.",
+      note: "Повторное нажатие на карточку снимает выбор.",
       lede: "Жертва первой стрельбы может оставить своё видение стола.",
       rules: [
         [
@@ -342,12 +342,12 @@ export const guideChapters = [
           "При наличии права даётся до 20 секунд до утра и прощальной речи. После двух уходов в первый день или промаха ЛХ недоступен.",
         ],
         [
-          "Запишите сказанное",
-          "До трёх принятых номеров в порядке речи. Ноль, один или два допустимы при отказе, истечении времени или остановке попытки.",
+          "Выберите трёх других игроков",
+          "Нажимайте на карточки, чтобы выбрать игроков или снять выбор. Кнопка «Записать лучший ход» доступна только при выборе трёх других игроков и сразу сохраняет их.",
         ],
         [
-          "Повторите вслух",
-          "Судья зачитывает принятые номера и подтверждает их. После завершения менять их можно лишь для исправления очевидной оговорки.",
+          "Запишите или пропустите",
+          "«Пропустить лучший ход» сбрасывает выбор без записи результата. Флажки и дополнительные подтверждения не нужны; для исправлений используйте отмену действия. Таймер не переключает этап автоматически.",
         ],
       ],
       margin:

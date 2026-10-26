@@ -38,6 +38,7 @@ export interface TableSeatView {
   readonly nominated?: boolean;
   readonly supportCount?: number;
   readonly nominationSelected?: boolean;
+  readonly pressed?: boolean;
   readonly muted?: boolean;
   readonly mafiaShooter?: boolean;
   readonly sheriffHighlight?: boolean;
@@ -415,7 +416,7 @@ export const GameTable = ({
                   data-role-draw-role={roleDraw?.role}
                   data-role-dealt={roleDraw?.dealt}
                   data-role-draw-flip={roleDraw?.request?.id}
-                  aria-pressed={seat.nominationSelected}
+                  aria-pressed={seat.pressed ?? seat.nominationSelected}
                   style={touchAction === undefined ? undefined : { touchAction }}
                   data-player-glass="table"
                   aria-label={label}

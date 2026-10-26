@@ -708,100 +708,150 @@ describe("federation GameScreen table shortcuts", () => {
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Zero round");
   });
 
-  it.each([0, 1, 2, 3])(
-    "accepts a %i-number prefix at night before a separate morning action",
-    async (count) => {
+  it.each(["en", "ru"] as const)(
+    "toggles three other cards and records immediately without ceremony controls in %s",
+    async (locale) => {
       const user = userEvent.setup();
       const initial = bestMove();
       const accepted = vi.fn();
       const changed = vi.fn();
-      render(<Harness initial={initial} accepted={accepted} changed={changed} />);
+      const recordName = locale === "en" ? "Record Best Move" : "Записать лучший ход";
+      const skipName = locale === "en" ? "Skip Best Move" : "Пропустить лучший ход";
+      render(
+        <I18nProvider locale={locale}>
+          <Harness initial={initial} accepted={accepted} changed={changed} />
+        </I18nProvider>,
+      );
+      const card = (seat: number) =>
+        document.querySelector<HTMLButtonElement>(`[data-seat="${seat}"] .player-seat`)!;
+      const targets = initial.players.filter((p) => p.seat !== initial.bestMove!.playerSeat);
+      const record = screen.getByRole("button", { name: recordName });
+      expect(record).toBeDisabled();
+      expect(screen.getByRole("button", { name: skipName })).toBeEnabled();
+      expect(card(initial.bestMove!.playerSeat)).toBeDisabled();
+      expect(document.querySelectorAll(".table-advance button")).toHaveLength(2);
+      expect(document.querySelector(".table-stage input, .table-stage select")).toBeNull();
       expect(document.querySelector(".game-shell")).toHaveClass("is-table-cycle-night");
-      expect(
-        screen.getByText("20 seconds · record only judge-accepted numbers"),
-      ).toBeInTheDocument();
-      for (const seat of [7, initial.bestMove!.playerSeat, 7].slice(0, count)) {
-        await user.click(screen.getByRole("button", { name: `Accept number ${seat}` }));
+      await user.click(card(targets[0]!.seat));
+      expect(card(targets[0]!.seat)).toHaveAttribute("aria-pressed", "true");
+      expect(card(targets[0]!.seat)).toHaveClass("is-voting-highlight");
+      await user.click(card(targets[0]!.seat));
+      expect(card(targets[0]!.seat)).toHaveAttribute("aria-pressed", "false");
+      expect(card(targets[0]!.seat)).not.toHaveClass("is-voting-highlight");
+      expect(changed.mock.lastCall?.[0].bestMove.selectedSeats).toEqual([]);
+      for (const target of targets.slice(0, 3)) {
+        expect(record).toBeDisabled();
+        await user.click(card(target.seat));
       }
-      const numbers = within(screen.getByRole("list", { name: "Accepted Best Move numbers" }));
-      expect(numbers.queryAllByRole("listitem").map((li) => li.textContent)).toEqual(
-        [7, initial.bestMove!.playerSeat, 7].slice(0, count).map((seat) => `#${seat}`),
-      );
-      expect(screen.queryByRole("button", { name: "Skip Best Move" })).toBe(
-        count === 0 ? screen.getByRole("button", { name: "Skip Best Move" }) : null,
-      );
-      const finish = screen.getByRole("button", {
-        name: count === 0 ? "Skip Best Move" : count === 3 ? "Accept Best Move" : "Finish early",
-      });
-      expect(finish).toBeDisabled();
-      await user.click(
-        screen.getByRole("checkbox", { name: "Numbers read back and accepted; player sleeps" }),
-      );
-      await user.click(finish);
+      expect(record).toBeEnabled();
+      expect(card(targets[3]!.seat)).toBeDisabled();
+      expect(card(targets[0]!.seat)).toBeEnabled();
+      await user.click(card(targets[0]!.seat));
+      expect(record).toBeDisabled();
+      expect(card(targets[3]!.seat)).toBeEnabled();
+      await user.click(card(targets[3]!.seat));
+      expect(changed.mock.lastCall?.[0].bestMove.mafiaHits).toBeUndefined();
+      await user.click(record);
       expect(changed.mock.lastCall?.[0]).toMatchObject({
         phase: "night-resolution",
         day: 1,
         bestMoveEnabled: true,
         bestMove: {
-          selectedSeats: [7, initial.bestMove!.playerSeat, 7].slice(0, count),
-          completionReason:
-            count === 0 ? "declined" : count === 3 ? "complete-list" : "finished-early",
-          readbackAcknowledged: true,
+          selectedSeats: targets.slice(1, 4).map((p) => p.seat),
+          completionReason: "complete-list",
         },
       });
-      expect(screen.queryByRole("button", { name: /^Accept number / })).toBeNull();
-      await user.click(screen.getByRole("button", { name: "Announce morning" }));
+      expect(changed.mock.lastCall?.[0].bestMove.readbackAcknowledged).toBeUndefined();
+      expect(accepted.mock.lastCall?.[0]).toEqual({ type: "best-move.recorded", payload: {} });
+      expect(document.querySelector(".federation-transcript button")).toBeNull();
+      expect(screen.queryByRole("dialog")).toBeNull();
+      await user.click(
+        screen.getByRole("button", {
+          name: locale === "en" ? "Announce morning" : "Объявить утро",
+        }),
+      );
       expect(changed.mock.lastCall?.[0]).toMatchObject({
         phase: "goodbye-speech",
         day: 2,
         completedGameNights: 2,
       });
       expect(
-        accepted.mock.calls.filter(([event]) => event.type === "best-move.finalized"),
+        accepted.mock.calls.filter(([event]) => event.type === "best-move.recorded"),
       ).toHaveLength(1);
     },
   );
 
-  it.each([
-    ["interrupted", 1],
-    ["time-expired", 2],
-    ["time-expired", 0],
-  ] as const)("records the judge's %s cutoff with %i accepted numbers", async (reason, count) => {
+  it.each([0, 1, 2, 3])(
+    "skips immediately with %i tentative selections and no result",
+    async (count) => {
+      const user = userEvent.setup();
+      const changed = vi.fn();
+      const accepted = vi.fn();
+      const initial = bestMove();
+      const targets = initial.players.filter((p) => p.seat !== initial.bestMove!.playerSeat);
+      render(
+        <Harness
+          initial={{
+            ...initial,
+            bestMove: {
+              ...initial.bestMove!,
+              selectedSeats: targets.slice(0, count).map((p) => p.seat),
+            },
+          }}
+          changed={changed}
+          accepted={accepted}
+        />,
+      );
+      expect(screen.queryByRole("checkbox")).toBeNull();
+      await user.click(screen.getByRole("button", { name: "Skip Best Move" }));
+      expect(accepted.mock.lastCall?.[0]).toEqual({
+        type: "best-move.skipped",
+        payload: {},
+      });
+      expect(changed.mock.lastCall?.[0]).toMatchObject({
+        phase: "night-resolution",
+        bestMoveEnabled: true,
+        bestMove: { selectedSeats: [], completionReason: "declined" },
+      });
+      expect(changed.mock.lastCall?.[0].bestMove.mafiaHits).toBeUndefined();
+      expect(changed.mock.lastCall?.[0].bestMove.readbackAcknowledged).toBeUndefined();
+      expect(screen.getByRole("button", { name: "Announce morning" })).toBeEnabled();
+    },
+  );
+
+  it("allows explicit deselection of a restored self/duplicate prefix without rewriting it on load", async () => {
     const user = userEvent.setup();
-    const changed = vi.fn();
-    const accepted = vi.fn();
     const initial = bestMove();
+    const owner = initial.bestMove!.playerSeat;
+    const other = initial.players.find((p) => p.seat !== owner)!.seat;
+    const accepted = vi.fn();
+    const changed = vi.fn();
     render(
       <Harness
         initial={{
           ...initial,
-          bestMove: { ...initial.bestMove!, selectedSeats: [3, 6].slice(0, count) },
+          bestMove: { ...initial.bestMove!, selectedSeats: [owner, other, other] },
         }}
-        changed={changed}
         accepted={accepted}
+        changed={changed}
       />,
     );
+    expect(accepted).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Record Best Move" })).toBeDisabled();
     await user.click(
-      screen.getByRole("checkbox", { name: "Numbers read back and accepted; player sleeps" }),
+      screen.getByRole("button", { name: `Deselect player ${owner} from Best Move` }),
     );
-    await user.click(screen.getByRole("button", { name: "Choose Best Move cutoff" }));
-    expect(screen.getByRole("dialog", { name: "Choose Best Move cutoff" })).toBeInTheDocument();
+    expect(changed.mock.lastCall?.[0].bestMove.selectedSeats).toEqual([other, other]);
+    expect(
+      screen.getByRole("button", { name: `Select player ${owner} for Best Move` }),
+    ).toBeDisabled();
     await user.click(
-      screen.getByRole("button", {
-        name: reason === "interrupted" ? "Finish: interrupted" : "Finish: time expired",
-      }),
+      screen.getByRole("button", { name: `Deselect player ${other} from Best Move` }),
     );
-    expect(accepted.mock.lastCall?.[0]).toEqual({
-      type: "best-move.finalized",
-      payload: { reason, readbackAcknowledged: true },
-    });
-    expect(changed.mock.lastCall?.[0]).toMatchObject({
-      phase: "night-resolution",
-      bestMove: { selectedSeats: [3, 6].slice(0, count), completionReason: reason },
-    });
+    expect(changed.mock.lastCall?.[0].bestMove.selectedSeats).toEqual([]);
   });
 
-  it("keeps the accepted Best Move prefix unchanged when the local twenty-second timer expires", () => {
+  it("keeps tentative Best Move selections unchanged when the local twenty-second timer expires", () => {
     vi.useFakeTimers();
     const initial = bestMove();
     const changed = vi.fn();
@@ -821,11 +871,12 @@ describe("federation GameScreen table shortcuts", () => {
     expect(screen.getByRole("button", { name: "Timer face" })).toHaveTextContent("00");
     expect(changed).not.toHaveBeenCalled();
     expect(accepted).not.toHaveBeenCalled();
-    expect(screen.getByRole("list", { name: "Accepted Best Move numbers" })).toHaveTextContent(
+    expect(screen.getByRole("list", { name: "Selected Best Move players" })).toHaveTextContent(
       "#8#3",
     );
     expect(document.querySelector(".game-shell")).toHaveClass("is-table-cycle-night");
-    expect(screen.queryByRole("button", { name: "Skip Best Move" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Record Best Move" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Skip Best Move" })).toBeEnabled();
   });
 
   it("does not enable Finish Game while a terminal removal still needs its public announcement", async () => {
@@ -875,28 +926,6 @@ describe("federation GameScreen table shortcuts", () => {
     expect(screen.getByRole("button", { name: "Finish the game" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Finish the game" }));
     expect(finish).not.toHaveBeenCalled();
-  });
-
-  it("corrects an obvious slip explicitly after readback, without reopening ordinary entry", async () => {
-    const user = userEvent.setup();
-    const initial = bestMove();
-    const changed = vi.fn();
-    render(<Harness initial={initial} changed={changed} />);
-    await user.click(screen.getByRole("button", { name: "Accept number 3" }));
-    await user.click(
-      screen.getByRole("checkbox", { name: "Numbers read back and accepted; player sleeps" }),
-    );
-    await user.click(screen.getByRole("button", { name: "Finish early" }));
-    await user.click(screen.getByText("Correct an obvious slip"));
-    await user.selectOptions(screen.getByLabelText("Accepted entry"), "0");
-    await user.selectOptions(screen.getByLabelText("Correct number"), "8");
-    await user.type(screen.getByLabelText("Slip correction reason"), "Misheard eight as three");
-    await user.click(screen.getByRole("button", { name: "Confirm slip correction" }));
-    expect(changed.mock.lastCall?.[0]).toMatchObject({
-      phase: "night-resolution",
-      bestMove: { selectedSeats: [8], completionReason: "finished-early" },
-    });
-    expect(screen.queryByRole("button", { name: "Accept number 3" })).toBeNull();
   });
 
   it("shows nomination-only entitlement without consuming it on timer expiry", () => {

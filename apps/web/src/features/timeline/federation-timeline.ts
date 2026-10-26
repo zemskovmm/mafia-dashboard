@@ -384,6 +384,59 @@ export const describeFederationEvent = (
           : text.t("Voting skipped: {basis}", { basis: text.t(key) });
       return named("voting-cancelled", "ban", label);
     }
+    case "best-move.selection-toggled": {
+      if (!Number.isInteger(payload.seat) || bestMove === undefined) return null;
+      return named(
+        "best-move",
+        "lightbulb",
+        text.t(
+          bestMove.selectedSeats.includes(payload.seat as number)
+            ? "Best Move selection added: {player}"
+            : "Best Move selection removed: {player}",
+          { player: player(payload.seat) },
+        ),
+      );
+    }
+    case "best-move.recorded": {
+      if (
+        bestMove?.completionReason !== "complete-list" ||
+        bestMove.readbackAcknowledged !== undefined ||
+        bestMove.selectedSeats.length !== 3 ||
+        new Set(bestMove.selectedSeats).size !== 3 ||
+        bestMove.selectedSeats.includes(bestMove.playerSeat) ||
+        !Number.isInteger(bestMove.mafiaHits)
+      )
+        return null;
+      const selections = text.formatList(bestMove.selectedSeats.map(player));
+      return {
+        kind: "best-move",
+        icon: "lightbulb",
+        label: text.t("Best Move recorded: {selections}", { selections }),
+        ariaLabel: text.t("Best Move recorded by {owner}: {selections}; {hits}", {
+          owner: player(bestMove.playerSeat),
+          selections,
+          hits: text.t("Mafia hits", { count: bestMove.mafiaHits! }),
+        }),
+        result: String(bestMove.mafiaHits),
+      };
+    }
+    case "best-move.skipped": {
+      if (
+        bestMove?.completionReason !== "declined" ||
+        bestMove.selectedSeats.length !== 0 ||
+        bestMove.mafiaHits !== undefined ||
+        bestMove.readbackAcknowledged !== undefined
+      )
+        return null;
+      return {
+        kind: "best-move",
+        icon: "lightbulb",
+        label: text.t("Best Move skipped"),
+        ariaLabel: text.t("Best Move skipped by {owner}; no result recorded", {
+          owner: player(bestMove.playerSeat),
+        }),
+      };
+    }
     case "best-move.number-accepted": {
       if (!Number.isInteger(payload.seat) || bestMove === undefined) return null;
       const label = text.t("Best Move number {number} accepted: {player}", {

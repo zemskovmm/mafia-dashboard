@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  adjudicateOpponentVictory,
   createGameLogEntry,
   isSecretGameEventType,
   type CanonicalGameEventDraft,
@@ -9,6 +10,8 @@ import {
 import { timelineConsoleMessages } from "../../i18n/messages/timeline-console.js";
 import type { Message } from "../../i18n/messages/types.js";
 import { createFederationSampleGameHistory, createSampleGameHistory } from "./sample-game-data.js";
+import { buildFinalGameResults } from "../players/game-results.js";
+import { completedRecordFacts } from "./completed-record.js";
 import {
   buildPublicTimeline,
   buildTimeline,
@@ -56,6 +59,105 @@ const replayFrames = (
 };
 
 describe("federation timeline projections", () => {
+  it.each([0, 1, 2, 3])(
+    "does not synthesize a zero-hit result from a skipped %i-card draft in final results or completed facts",
+    (count) => {
+      const initial = createFederationSampleGameHistory().frames.find(
+        ({ entry }) => entry.type === "best-move.number-accepted",
+      )!.before;
+      const frames = replayFrames(initial, [
+        ...[8, 9, 10]
+          .slice(0, count)
+          .map((seat) => ({ type: "best-move.selection-toggled", payload: { seat } }) as const),
+        { type: "best-move.skipped", payload: {} },
+      ]);
+      const game = adjudicateOpponentVictory(frames.at(-1)!.after, {
+        losingTeam: "black",
+        rule: "6.3.1",
+        reason: "Referee ruling",
+        committeeApproved: false,
+      });
+      const results = buildFinalGameResults(game, new Date("2026-10-26T10:00:00Z"), "host")!;
+      expect(results.players.every(({ bestMoveHits }) => bestMoveHits === null)).toBe(true);
+      for (const storedResults of [null, results]) {
+        const facts = completedRecordFacts(
+          {
+            gameId: "best-move-skipped",
+            name: "Skipped Best Move",
+            status: "completed",
+            revision: 1,
+            duplicate: false,
+            updatedAt: "2026-10-26T10:00:00Z",
+            state: { game },
+            results: storedResults,
+          },
+          null,
+        );
+        expect(facts.participants).toHaveLength(10);
+        expect(facts.participants?.every(({ bestMoveHits }) => bestMoveHits === null)).toBe(true);
+      }
+    },
+  );
+  it.each([text, russian])(
+    "describes tentative card selection and recording without claiming spoken acceptance or readback",
+    (localized) => {
+      const initial = createFederationSampleGameHistory().frames.find(
+        ({ entry }) => entry.type === "best-move.number-accepted",
+      )!.before;
+      const frames = replayFrames(initial, [
+        ...[8, 9, 8, 8, 10].map(
+          (seat) => ({ type: "best-move.selection-toggled", payload: { seat } }) as const,
+        ),
+        { type: "best-move.recorded", payload: {} },
+      ]);
+      const markers = buildTimeline(frames, localized).markers;
+      expect(
+        markers.every(({ kind, regionId }) => kind === "best-move" && regionId === "night-1"),
+      ).toBe(true);
+      expect(markers[0]?.label).toBe(
+        localized === text
+          ? "Best Move selection added: Player 8"
+          : "Выбран игрок для лучшего хода: Player 8",
+      );
+      expect(markers[2]?.label).toBe(
+        localized === text
+          ? "Best Move selection removed: Player 8"
+          : "Убран игрок из лучшего хода: Player 8",
+      );
+      expect(markers.slice(0, -1).every((marker) => marker.result === undefined)).toBe(true);
+      expect(markers.at(-1)).toMatchObject({ kind: "best-move", result: "3" });
+      expect(markers.at(-1)?.ariaLabel).toBe(
+        localized === text
+          ? "Best Move recorded by Player 2: Player 9, Player 8, Player 10; 3 Mafia hits"
+          : "Записан лучший ход Player 2: Player 9, Player 8 и Player 10; 3 попадания в мафию",
+      );
+      expect(JSON.stringify(markers)).not.toMatch(/accepted|readback|подтверждены|зачитаны|принят/);
+      expect(buildPublicTimeline(frames, localized).markers).toEqual([]);
+      expect(JSON.stringify(buildPublicTimeline(frames, localized))).not.toContain("mafiaHits");
+    },
+  );
+  it.each([text, russian])(
+    "describes skipping a draft without inventing a zero-hit result",
+    (localized) => {
+      const initial = createFederationSampleGameHistory().frames.find(
+        ({ entry }) => entry.type === "best-move.number-accepted",
+      )!.before;
+      const frames = replayFrames(initial, [
+        { type: "best-move.selection-toggled", payload: { seat: 8 } },
+        { type: "best-move.skipped", payload: {} },
+      ]);
+      const marker = buildTimeline(frames, localized).markers.at(-1)!;
+      expect(marker.kind).toBe("best-move");
+      expect(marker.result).toBeUndefined();
+      expect(marker.ariaLabel).toBe(
+        localized === text
+          ? "Best Move skipped by Player 2; no result recorded"
+          : "Лучший ход Player 2 пропущен; результат не записан",
+      );
+      expect(marker.ariaLabel).not.toMatch(/hits|попадани|readback|подтверждены/);
+      expect(buildPublicTimeline(frames, localized).markers).toEqual([]);
+    },
+  );
   it.each([text, russian])(
     "retains repeated target-specific private physical shots in occurrence order",
     (localized) => {
