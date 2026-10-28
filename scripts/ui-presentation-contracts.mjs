@@ -22,6 +22,7 @@ export function resolveUiMode(env) {
       "SIDE_PANEL",
       "LAYOUT",
       "MUSIC",
+      "PLAYER_CARDS",
     ].map((mode) => `UI_${mode}_ONLY`),
   );
   const selected = [];
@@ -48,6 +49,7 @@ export function resolveUiMode(env) {
     if (env.UI_PRIVACY_ONLY === "1") return "privacy";
     return "header";
   }
+  if (env.UI_PLAYER_CARDS_ONLY === "1") return "player-cards";
   if (env.UI_MUSIC_ONLY === "1") return "music";
   return "default";
 }

@@ -13,12 +13,23 @@ import {
   createSeededRandom,
   createSetup,
   drawRoleForSeat,
+  beginNight,
+  toggleAllMafiaShotsForTarget,
+  resolveMafiaShots,
+  completeMafiaShots,
+  skipDonCheck,
+  skipSheriffCheck,
+  completeNight,
+  completeGoodbyeSpeech,
+  completeEliminations,
 } from "@mafia/game-domain";
 import type { GameState, PlayerInput } from "@mafia/game-domain";
 import { I18nProvider } from "../../i18n/I18nProvider.js";
 import { GameScreen } from "./GameScreen.js";
 import { expectServerAcceptsEvent } from "../../test-game-event-contract.js";
 import { namedProfiles, playerLabel, renderWithProfiles } from "../../test-player-directory.js";
+import { PlayerCardStyleContext } from "../theme/PlayerCardStyleContext.js";
+import { FancyFeaturesContext } from "../effects/FancyFeaturesContext.js";
 
 const render = (ui: Parameters<typeof renderWithProfiles>[0]) =>
   renderWithProfiles(ui, namedProfiles("player-"));
@@ -77,6 +88,112 @@ const DayHarness = () => {
 };
 
 describe("GameScreen", () => {
+  it.each([false, true])(
+    "turns the actual pre-departure printed side after the provider's delayed request (privacy: %s)",
+    (privacyHidden) => {
+      const animate = vi.fn(() => ({ finished: new Promise(() => {}), cancel: vi.fn() }));
+      const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "animate");
+      Object.defineProperty(HTMLElement.prototype, "animate", {
+        configurable: true,
+        value: animate,
+      });
+      try {
+        const day = createDayGame();
+        const victim = day.players.find((player) => player.role === "citizen")!;
+        const goodbye = completeEliminations(day, [victim.seat]);
+        const tree = (game: GameState) => (
+          <FancyFeaturesContext.Provider value={true}>
+            <PlayerCardStyleContext.Provider value={{ style: "classic", rolePlacement: "below" }}>
+              <GameScreen
+                game={game}
+                privacyHidden={privacyHidden}
+                hostName="Host"
+                onGameChange={() => undefined}
+                onEvent={() => undefined}
+              />
+            </PlayerCardStyleContext.Provider>
+          </FancyFeaturesContext.Provider>
+        );
+        const { container, rerender, unmount } = render(tree(goodbye));
+        rerender(tree(completeGoodbyeSpeech(goodbye)));
+        const card = container.querySelector(
+          `.seat-anchor[data-seat="${victim.seat}"] .player-seat`,
+        )!;
+        expect(animate).toHaveBeenCalledTimes(4);
+        expect(
+          card.querySelector(".printed-player-card__outgoing .printed-player-card__art") !== null,
+        ).toBe(!privacyHidden);
+        expect(
+          card.querySelector(".printed-player-card__outgoing .printed-player-card__back-art") !==
+            null,
+        ).toBe(privacyHidden);
+        expect(
+          card.querySelector(".printed-player-card__current .printed-player-card__back-art"),
+        ).not.toBeNull();
+        expect(card.querySelector(".printed-player-card__role")).toBeNull();
+        unmount();
+      } finally {
+        if (descriptor) Object.defineProperty(HTMLElement.prototype, "animate", descriptor);
+        else Reflect.deleteProperty(HTMLElement.prototype, "animate");
+      }
+    },
+  );
+
+  it("holds printed faces through private night and pending goodbye, then preserves privacy and restored state", () => {
+    const day = { ...createDayGame(), bestMoveEnabled: false };
+    const victim = day.players.find((player) => player.role === "citizen")!;
+    const night = beginNight(day);
+    const result = resolveMafiaShots(toggleAllMafiaShotsForTarget(night, victim.seat)).game;
+    const applied = completeMafiaShots(result);
+    const afterDon = applied.phase === "night-don" ? skipDonCheck(applied) : applied;
+    const afterSheriff = afterDon.phase === "night-sheriff" ? skipSheriffCheck(afterDon) : afterDon;
+    const goodbye = completeNight(afterSheriff);
+    expect(goodbye.phase).toBe("goodbye-speech");
+    const departed = completeGoodbyeSpeech(goodbye);
+    const tree = (game: GameState, privacyHidden: boolean, mode: "live" | "preview" = "live") => (
+      <FancyFeaturesContext.Provider value={false}>
+        <PlayerCardStyleContext.Provider value={{ style: "classic", rolePlacement: "below" }}>
+          <GameScreen
+            game={game}
+            privacyHidden={privacyHidden}
+            mode={mode}
+            hostName="Host"
+            onGameChange={() => undefined}
+            onEvent={() => undefined}
+          />
+        </PlayerCardStyleContext.Provider>
+      </FancyFeaturesContext.Provider>
+    );
+    const { container, rerender } = render(tree(night, true));
+    const card = () =>
+      container.querySelector(`.seat-anchor[data-seat="${victim.seat}"] .player-seat`)!;
+    const faceUrl = card().querySelector("img")?.getAttribute("src");
+    for (const game of [night, result, applied, afterDon, afterSheriff]) {
+      rerender(tree(game, true));
+      expect(card(), game.phase).toHaveAttribute("data-card-face", "front");
+      expect(card().querySelector("img")).toHaveAttribute("src", faceUrl);
+    }
+    rerender(tree(goodbye, false));
+    expect(card()).toHaveAttribute("data-card-face", "front");
+    rerender(tree(goodbye, false, "preview"));
+    expect(card()).toHaveAttribute("data-card-face", "front");
+    rerender(tree(goodbye, true));
+    expect(card()).toHaveAttribute("data-card-face", "back");
+    rerender(tree(goodbye, false));
+    expect(card()).toHaveAttribute("data-card-face", "front");
+    rerender(tree(departed, false));
+    expect(card()).toHaveAttribute("data-card-face", "back");
+    expect(card().querySelector(".deceased-cross")).toBeNull();
+    rerender(tree(departed, true));
+    rerender(tree(departed, false));
+    expect(card()).toHaveAttribute("data-card-face", "back");
+    rerender(tree(day, true));
+    expect(card()).toHaveAttribute("data-card-face", "back");
+    rerender(tree(day, false));
+    expect(card()).toHaveAttribute("data-card-face", "front");
+    expect(card().querySelector("img")).toHaveAttribute("src", faceUrl);
+  });
+
   it.each([["sheriff-identification", "Begin round zero"]] as const)(
     "highlights only the active Sheriff during %s and conceals the cue on entering day",
     async (phase, nextAction) => {

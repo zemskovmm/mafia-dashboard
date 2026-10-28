@@ -966,6 +966,41 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("player card style preference", () => {
+  it("switches real table cards in ordinary Manage, preserves game state and remembers the choice", async () => {
+    const actual = await vi.importActual<typeof gameScreenModule>("./features/game/GameScreen.js");
+    vi.spyOn(gameScreenModule, "GameScreen").mockImplementation(actual.GameScreen);
+    restoreFederationCheckpoint(federationGame());
+    const first = renderView(<App />);
+    await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
+    const saved = window.localStorage.getItem(gameSessionStorageKey);
+    api.saveGameSession.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    const selector = screen.getByRole("combobox", { name: "Player card style" });
+    expect(selector).toHaveValue("glass");
+    expect(screen.queryByRole("button", { name: "Open developer menu" })).not.toBeInTheDocument();
+    fireEvent.change(selector, { target: { value: "classic" } });
+    expect(document.querySelectorAll('.player-seat[data-card-style="classic"]')).toHaveLength(10);
+    fireEvent.change(screen.getByRole("combobox", { name: "Role placement" }), {
+      target: { value: "top" },
+    });
+    expect(window.localStorage.getItem(gameSessionStorageKey)).toBe(saved);
+    expect(api.saveGameSession).not.toHaveBeenCalled();
+    first.unmount();
+    const second = renderView(<App />);
+    await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
+    expect(document.querySelectorAll('.player-seat[data-card-style="classic"]')).toHaveLength(10);
+    fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    expect(screen.getByRole("combobox", { name: "Player card style" })).toHaveValue("classic");
+    expect(screen.getByRole("combobox", { name: "Role placement" })).toHaveValue("top");
+    fireEvent.change(screen.getByRole("combobox", { name: "Player card style" }), {
+      target: { value: "glass" },
+    });
+    expect(document.querySelectorAll('.player-seat[data-player-glass="table"]')).toHaveLength(10);
+    second.unmount();
+  });
+});
+
 describe("tutorial help preference", () => {
   it.each(["setup", "game"])(
     "updates %s help immediately even when preference storage is denied",

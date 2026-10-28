@@ -1547,6 +1547,27 @@ const restoreCurrentSetup = async () => {
 };
 
 try {
+  if (verificationMode === "player-cards") {
+    stage("player-cards");
+    const { runPlayerCardStyleScenarios } = await tsImport(
+      "./verify-player-card-styles-ui.mjs",
+      import.meta.url,
+    );
+    await runPlayerCardStyleScenarios({
+      page,
+      baseUrl,
+      club: testClub,
+      players: testPlayers,
+      api: federationApi,
+      evidenceDir:
+        process.env.PLAYER_CARDS_UI_EVIDENCE_DIR ??
+        `.AI/player-cards-ui/${browserName}-${page.viewportSize().width}x${page.viewportSize().height}`,
+    });
+    assertNoPageErrors();
+    stage("complete");
+    await browser.close();
+    process.exit(0);
+  }
   if (bestMoveOnly) {
     stage("best-move");
     await runBestMoveScenarios({

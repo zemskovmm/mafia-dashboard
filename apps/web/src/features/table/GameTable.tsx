@@ -12,6 +12,8 @@ import { useMessages } from "../../i18n/I18nProvider.js";
 import { gameMessages } from "../../i18n/messages/game.js";
 import { LiquidCardGlass } from "../theme/LiquidCardGlass.js";
 import { PlayerCardAppearanceContext } from "../theme/PlayerCardAppearanceContext.js";
+import { PlayerCardStyleContext } from "../theme/PlayerCardStyleContext.js";
+import { PrintedPlayerCard } from "./PrintedPlayerCard.js";
 import { cardSuit, CARD_SUIT_SYMBOLS } from "./card-suit.js";
 import { CardGameIdentityContext } from "./CardGameIdentityContext.js";
 import { PlayerRoleIcon } from "./PlayerRoleIcon.js";
@@ -91,6 +93,8 @@ export const GameTable = ({
 }: GameTableProps) => {
   const { t } = useMessages(gameMessages);
   const appearance = useContext(PlayerCardAppearanceContext);
+  const cardPreferences = useContext(PlayerCardStyleContext);
+  const printed = cardPreferences.style !== "glass";
   const gameId = useContext(CardGameIdentityContext);
   const exits = usePlayerExits();
   const seatButtonsRef = useRef(new Map<number, HTMLButtonElement>());
@@ -178,20 +182,33 @@ export const GameTable = ({
           const exit = exits.requests[seat.seat];
           const roleDraw = privacyHidden ? undefined : seat.roleDraw;
           const visibleRole = roleDraw ? roleDraw.role : seat.role;
-          const waiting = seat.status === "eliminated" && exits.waiting.includes(seat.seat);
+          const waiting =
+            seat.status === "eliminated" &&
+            (printed ? exits.pendingDepartures : exits.waiting).includes(seat.seat);
           const showRole =
             visibleRole !== undefined &&
             !privacyHidden &&
             !exit?.hideRole &&
             !(exit && exits.privacyHidden);
+          const departed =
+            !waiting &&
+            !seat.provisionalDeceased &&
+            (seat.status === "eliminated" || seat.status === "red-carded");
+          const printedPrivacy = Boolean(
+            privacyHidden || exit?.hideRole || (exit && exits.privacyHidden),
+          );
+          const printedFaceDown =
+            printed &&
+            (printedPrivacy || departed || (roleDraw !== undefined && visibleRole === undefined));
+          const privateCuesVisible = !privacyHidden && !printedFaceDown;
           // Voters share speaker visuals, not the current-speaker aria semantics.
           const activeEmphasis = seat.current || seat.currentVoter;
-          const className = `table-card player-seat status-${seat.status ?? "active"}${activeEmphasis ? " is-current" : ""}${seat.mafiaShooter && !privacyHidden ? " is-mafia-shooter" : ""}${seat.sheriffHighlight && !privacyHidden ? " is-sheriff-highlight" : ""}${seat.nightCheckHighlight && !privacyHidden ? " is-night-check-highlight" : ""}${seat.goodbyeHighlight ? " is-goodbye-highlight" : ""}${seat.votingHighlight ? " is-voting-highlight" : ""}${seat.voted ? " is-voted" : ""}${seat.dimmed && !privacyHidden ? " is-dimmed" : ""}${seat.inactive ? " is-inactive" : ""}${seat.provisionalDeceased ? " is-provisional-deceased" : ""}${exit ? " is-exiting" : ""}${waiting ? " is-awaiting-goodbye" : ""}`;
+          const className = `table-card player-seat status-${seat.status ?? "active"}${activeEmphasis ? " is-current" : ""}${seat.mafiaShooter && privateCuesVisible ? " is-mafia-shooter" : ""}${seat.sheriffHighlight && privateCuesVisible ? " is-sheriff-highlight" : ""}${seat.nightCheckHighlight && privateCuesVisible ? " is-night-check-highlight" : ""}${seat.goodbyeHighlight ? " is-goodbye-highlight" : ""}${seat.votingHighlight ? " is-voting-highlight" : ""}${seat.voted ? " is-voted" : ""}${seat.dimmed && !privacyHidden ? " is-dimmed" : ""}${seat.inactive ? " is-inactive" : ""}${seat.provisionalDeceased ? " is-provisional-deceased" : ""}${exit ? " is-exiting" : ""}${waiting ? " is-awaiting-goodbye" : ""}`;
           const lightingKind = resolvePlayerLightingKind({
             ...seat,
             current: activeEmphasis,
-            mafiaShooter: !privacyHidden && seat.mafiaShooter,
-            sheriffHighlight: !privacyHidden && seat.sheriffHighlight,
+            mafiaShooter: privateCuesVisible && seat.mafiaShooter,
+            sheriffHighlight: privateCuesVisible && seat.sheriffHighlight,
           });
           const nominationClass = `${seat.nominated ? " is-nominated" : ""}${seat.nominationSelected ? " is-nomination-selected" : ""}${seat.votingCandidate ? " is-voting-candidate" : ""}`;
           const suit = cardSuit(gameId, seat.playerId);
@@ -201,18 +218,12 @@ export const GameTable = ({
               <span className="card-suit">{suit === null ? "◇" : CARD_SUIT_SYMBOLS[suit]}</span>
             </span>
           );
-          const roleDrawClass = roleDraw
-            ? ` role-draw-card${roleDraw.dealt ? " is-role-dealt" : roleDraw.role ? " role-draw-preview" : ""}${roleDraw.request ? " is-role-flipping" : ""}`
-            : "";
-          const face = (faceRole: Role | undefined) => (
+          const roleDrawClass =
+            roleDraw && !printedFaceDown
+              ? ` role-draw-card${roleDraw.dealt ? " is-role-dealt" : roleDraw.role ? " role-draw-preview" : ""}${roleDraw.request ? " is-role-flipping" : ""}`
+              : "";
+          const statusRails = (
             <>
-              {index(false)}
-              {index(true)}
-              <PlayerRoleIcon
-                role={showRole ? faceRole : undefined}
-                playerId={seat.playerId}
-                unknown={roleDraw !== undefined && faceRole === undefined}
-              />
               <span
                 className="card-nomination-status"
                 data-treatment={appearance.nominationTreatment}
@@ -258,27 +269,60 @@ export const GameTable = ({
                   </span>
                 ) : null}
               </span>
+            </>
+          );
+          const voteBadge = (
+            <span className="seat-badges">
+              {seat.voteTargetSeat === undefined ? null : (
+                <span className="state-badge">
+                  {t("table.voteTarget", { seat: seat.voteTargetSeat })}
+                </span>
+              )}
+            </span>
+          );
+          const face = (faceRole: Role | undefined) => (
+            <>
+              {index(false)}
+              {index(true)}
+              <PlayerRoleIcon
+                role={showRole ? faceRole : undefined}
+                playerId={seat.playerId}
+                unknown={roleDraw !== undefined && faceRole === undefined}
+              />
+              {statusRails}
               <span className="seat-name">{seat.name}</span>
-              <span className="seat-badges">
-                {seat.voteTargetSeat === undefined ? null : (
-                  <span className="state-badge">
-                    {t("table.voteTarget", { seat: seat.voteTargetSeat })}
-                  </span>
-                )}
-              </span>
+              {voteBadge}
             </>
           );
           const content = (
             <>
-              <LiquidCardGlass />
-              {roleDraw?.dealt ? <RoleDrawGlow /> : null}
+              {!printed ? <LiquidCardGlass /> : null}
+              {roleDraw?.dealt && !printedFaceDown ? <RoleDrawGlow /> : null}
               {animateActive ? (
                 <ActivePlayerLighting active={Boolean(activeEmphasis) && !exit} />
               ) : null}
               <VgpuPlayerLightingCanvas
                 kind={exit || (animateActive && lightingKind === "speaker") ? null : lightingKind}
               />
-              {roleDraw ? (
+              {cardPreferences.style !== "glass" ? (
+                <PrintedPlayerCard
+                  style={cardPreferences.style}
+                  seat={seat.seat}
+                  name={seat.name}
+                  suit={suit === null ? "◇" : CARD_SUIT_SYMBOLS[suit]}
+                  role={showRole && !printedFaceDown ? visibleRole : undefined}
+                  rolePlacement={cardPreferences.rolePlacement}
+                  faceDown={printedFaceDown}
+                  privacyHidden={printedPrivacy}
+                  roleDrawRequest={roleDraw?.request}
+                  exitRequest={departed ? exit : undefined}
+                  onRoleDrawComplete={(id) => onRoleDrawComplete?.(seat.seat, id)}
+                  onExitComplete={(id) => exits.complete(seat.seat, id)}
+                >
+                  {statusRails}
+                  {voteBadge}
+                </PrintedPlayerCard>
+              ) : roleDraw ? (
                 <RoleDrawPresentation
                   role={visibleRole}
                   request={roleDraw.request}
@@ -392,10 +436,12 @@ export const GameTable = ({
               {readOnly ? (
                 <div
                   className={className + nominationClass + roleDrawClass}
-                  data-role-draw-role={roleDraw?.role}
-                  data-role-dealt={roleDraw?.dealt}
+                  data-role-draw-role={printedFaceDown ? undefined : roleDraw?.role}
+                  data-role-dealt={printedFaceDown ? undefined : roleDraw?.dealt}
                   data-role-draw-flip={roleDraw?.request?.id}
-                  data-player-glass="table"
+                  data-player-glass={printed ? undefined : "table"}
+                  data-card-style={cardPreferences.style}
+                  data-card-face={printed ? (printedFaceDown ? "back" : "front") : undefined}
                   role="group"
                   data-player-exit={exit?.id}
                   aria-label={label}
@@ -413,12 +459,14 @@ export const GameTable = ({
                   disabled={disabled && !foulAvailable}
                   aria-disabled={disabled || undefined}
                   className={className + nominationClass + roleDrawClass}
-                  data-role-draw-role={roleDraw?.role}
-                  data-role-dealt={roleDraw?.dealt}
+                  data-role-draw-role={printedFaceDown ? undefined : roleDraw?.role}
+                  data-role-dealt={printedFaceDown ? undefined : roleDraw?.dealt}
                   data-role-draw-flip={roleDraw?.request?.id}
                   aria-pressed={seat.pressed ?? seat.nominationSelected}
                   style={touchAction === undefined ? undefined : { touchAction }}
-                  data-player-glass="table"
+                  data-player-glass={printed ? undefined : "table"}
+                  data-card-style={cardPreferences.style}
+                  data-card-face={printed ? (printedFaceDown ? "back" : "front") : undefined}
                   aria-label={label}
                   data-player-exit={exit?.id}
                   aria-current={seat.current ? "step" : undefined}

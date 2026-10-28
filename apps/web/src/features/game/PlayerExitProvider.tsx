@@ -10,7 +10,11 @@ import {
   type ReactNode,
 } from "react";
 import type { PlayerExitSettings } from "../effects/player-exit-preferences.js";
-import { pendingGoodbyeSeats, playerExitSeats } from "./player-exit-transitions.js";
+import {
+  pendingGoodbyeSeats,
+  pendingPublicDepartureSeats,
+  playerExitSeats,
+} from "./player-exit-transitions.js";
 import { useFancyFeatures } from "../effects/FancyFeaturesContext.js";
 
 export interface PlayerExitRequest {
@@ -18,15 +22,24 @@ export interface PlayerExitRequest {
   readonly startedAt: number;
   readonly settings: PlayerExitSettings;
   readonly hideRole: boolean;
+  /** Capture the outgoing printed side before child layout effects see the new game. */
+  readonly fromFaceDown?: boolean;
 }
 
 type Requests = Readonly<Partial<Record<number, PlayerExitRequest>>>;
 const PlayerExitContext = createContext<{
   requests: Requests;
   waiting: readonly number[];
+  pendingDepartures: readonly number[];
   privacyHidden: boolean;
   complete: (seat: number, id: number) => void;
-}>({ requests: {}, waiting: [], privacyHidden: false, complete: () => undefined });
+}>({
+  requests: {},
+  waiting: [],
+  pendingDepartures: [],
+  privacyHidden: false,
+  complete: () => undefined,
+});
 
 export const usePlayerExits = () => useContext(PlayerExitContext);
 
@@ -88,13 +101,20 @@ export const PlayerExitProvider = ({
     const seats = playerExitSeats(before.game, game);
     if (!seats.length) return;
     const additions: Partial<Record<number, PlayerExitRequest>> = {};
-    for (const seat of seats)
+    const pendingBefore = pendingPublicDepartureSeats(before.game);
+    for (const seat of seats) {
+      const statusBefore = before.game.players.find((player) => player.seat === seat)?.status;
       additions[seat] = {
         id: ++serial.current,
         startedAt: performance.now(),
         settings,
         hideRole: before.privacyHidden || privacyHidden,
+        fromFaceDown:
+          before.privacyHidden ||
+          statusBefore === "red-carded" ||
+          (statusBefore === "eliminated" && !pendingBefore.includes(seat)),
       };
+    }
     setRequests((current) => ({ ...current, ...additions }));
   }, [fancyEnabled, game, live, privacyHidden, settings]);
 
@@ -139,6 +159,7 @@ export const PlayerExitProvider = ({
       value={{
         requests: fancyEnabled ? requests : {},
         waiting: live ? pendingGoodbyeSeats(game) : [],
+        pendingDepartures: pendingPublicDepartureSeats(game),
         privacyHidden,
         complete,
       }}

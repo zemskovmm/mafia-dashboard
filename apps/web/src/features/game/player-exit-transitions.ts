@@ -9,6 +9,14 @@ export const pendingGoodbyeSeats = (game: GameState): readonly number[] => {
   return [];
 };
 
+/** Snapshot presentation must not announce a private kill or an unfinished goodbye. */
+export const pendingPublicDepartureSeats = (game: GameState): readonly number[] => {
+  const goodbye = pendingGoodbyeSeats(game);
+  return privateNight(game) && game.nightResult?.kind === "kill"
+    ? [...new Set([...goodbye, game.nightResult.targetSeat])]
+    : goodbye;
+};
+
 /** Only compare accepted forward states within one live GameScreen generation. */
 export const playerExitSeats = (previous: GameState, next: GameState): readonly number[] => {
   const samePlayer = (seat: number) => {

@@ -293,6 +293,155 @@ test("canonical presentation checkpoints reject hash corruption, divergent state
   assert.throws(() => assertCanonicalProjection(domain, getActiveBranch, lifecycle));
 });
 
+test("player-card mode uses the shared resolver and rejects all competing modes", async () => {
+  const { resolveBestMoveUiMode } = await tsImport("./verify-best-move-ui.mjs", import.meta.url);
+  assert.equal(resolveUiMode({ UI_PLAYER_CARDS_ONLY: "1" }), "player-cards");
+  assert.equal(resolveBestMoveUiMode({ UI_PLAYER_CARDS_ONLY: "1" }), "player-cards");
+  for (const other of [
+    "HEADER",
+    "FEDERATION",
+    "FANCY_FEATURES",
+    "LAYOUT",
+    "MUSIC",
+    "RULES_SKETCHBOOK",
+    "SIDE_PANEL",
+  ]) {
+    assert.throws(
+      () => resolveBestMoveUiMode({ UI_PLAYER_CARDS_ONLY: "1", [`UI_${other}_ONLY`]: "1" }),
+      /[Cc]onflict/,
+    );
+  }
+  assert.throws(
+    () => resolveBestMoveUiMode({ UI_PLAYER_CARDS_ONLY: "1", UI_BEST_MOVE_ONLY: "1" }),
+    /conflicts/,
+  );
+  for (const child of ["PRIVACY", "HARDENING"])
+    assert.throws(
+      () =>
+        resolveBestMoveUiMode({
+          UI_PLAYER_CARDS_ONLY: "1",
+          UI_HEADER_ONLY: "1",
+          [`UI_${child}_ONLY`]: "1",
+        }),
+      /Conflicting/,
+    );
+  assert.equal(
+    resolveBestMoveUiMode({ UI_PLAYER_CARDS_ONLY: "0", UI_BEST_MOVE_ONLY: "1" }),
+    "best-move",
+  );
+  assert.throws(() => resolveUiMode({ UI_PLAYER_CARDS_ONLY: "true" }), /must be 0 or 1/);
+  for (const value of ["", "0"])
+    assert.equal(resolveUiMode({ UI_PLAYER_CARDS_ONLY: value }), "default");
+});
+
+test("player-card fixtures are admitted domain checkpoints with real departure timing", async () => {
+  const { playerCardFixture } = await tsImport(
+    "./verify-player-card-styles-ui.mjs",
+    import.meta.url,
+  );
+  const domain = await tsImport("../packages/game-domain/src/index.ts", import.meta.url);
+  const { getActiveBranch } = await tsImport(
+    "../apps/web/src/features/game/game-history.ts",
+    import.meta.url,
+  );
+  const { isCurrentGameSessionState } = await tsImport(
+    "../apps/web/src/session-outbox.ts",
+    import.meta.url,
+  );
+  const players = Array.from({ length: 11 }, (_, i) => ({
+    id: `00000000-0000-4000-8000-${String(i + 1).padStart(12, "0")}`,
+    nickname: `Player ${i + 1}`,
+  }));
+  for (const stage of ["day", "night-result", "goodbye", "departed", "roles"]) {
+    const fixture = playerCardFixture(players, "00000000-0000-4000-8000-000000000777", stage);
+    assert.equal(isCurrentGameSessionState(fixture.state), true, stage);
+    assert.equal(fixture.state.hostPlayerId, players[10].id);
+    if (stage === "roles") {
+      assert.equal(fixture.state.game, null);
+      assert.equal(fixture.state.setup.step, "roles");
+      assert.equal(Object.keys(fixture.state.setup.setup.assignments).length, 0);
+      assert.equal(fixture.state.setup.setup.remainingRoles.length, 10);
+      continue;
+    }
+    assertCanonicalProjection(domain, getActiveBranch, fixture.state);
+    assert.equal(fixture.state.game.players.length, 10);
+    assert.equal(new Set(fixture.state.game.players.map(({ role }) => role)).size, 4);
+    assert.equal(fixture.state.events.length, 1, "No invented pre-fixture gameplay events");
+    if (stage !== "day") {
+      const victim = fixture.state.game.players.find(({ seat }) => seat === fixture.victimSeat);
+      assert.equal(victim.status, "eliminated");
+      if (stage === "night-result") assert.equal(fixture.state.game.phase, "night-don");
+      if (stage === "goodbye") assert.deepEqual(fixture.state.game.goodbyeSeats, [victim.seat]);
+      if (stage === "departed") {
+        assert.equal(fixture.state.game.phase, "day");
+        assert.equal(fixture.state.game.goodbyeSeats, undefined);
+      }
+    }
+  }
+  assert.throws(() => playerCardFixture(players.slice(0, 10), "bad", "day"), /separate host/);
+  assert.throws(
+    () => playerCardFixture([...players.slice(0, 10), players[0]], "bad", "day"),
+    /separate host/,
+  );
+  assert.throws(() => playerCardFixture(players, "bad", "unknown"), /Unknown player-card fixture/);
+});
+
+test("player-card dispatch reuses the strict App fixture without replacing provider/error guards", () => {
+  const runner = readFileSync(new URL("./verify-ui.mjs", import.meta.url), "utf8");
+  const scenario = readFileSync(
+    new URL("./verify-player-card-styles-ui.mjs", import.meta.url),
+    "utf8",
+  );
+  const dispatch = runner.indexOf('if (verificationMode === "player-cards")');
+  assert.ok(dispatch > runner.indexOf("const federationApi ="));
+  assert.ok(dispatch < runner.indexOf("if (bestMoveOnly)"));
+  const branch = runner.slice(dispatch, runner.indexOf("if (bestMoveOnly)"));
+  assert.match(branch, /tsImport\([\s\S]*verify-player-card-styles-ui\.mjs/);
+  assert.match(branch, /api: federationApi/);
+  assert.match(branch, /assertNoPageErrors\(\)/);
+  assert.match(runner, /assertExactOrigin\(request\.url\(\), expectedOrigin\)/);
+  assert.match(runner, /if \(!pathname\.startsWith\("\/api\/"\)\) \{\s+await route\.fallback\(\)/);
+  assert.match(runner, /Real provider requested by mocked journey/);
+  assert.match(runner, /Unexpected verifier API requests occurred/);
+  assert.match(runner, /window\.YT =/);
+  assert.doesNotMatch(
+    scenario,
+    /\.route\(|\.setContent\(|\.launch\(|force:\s*true/,
+    "Scenario cannot replace the App, duplicate API routes or bypass native hit testing",
+  );
+});
+
+test("player-card source manifest includes App, presentation preferences and all replaceable deck assets", async () => {
+  const { playerCardSourceManifest } = await tsImport(
+    "./verify-player-card-styles-ui.mjs",
+    import.meta.url,
+  );
+  const manifest = await playerCardSourceManifest();
+  for (const file of [
+    "apps/web/src/App.tsx",
+    "apps/web/src/features/table/GameTable.tsx",
+    "apps/web/src/features/table/PrintedPlayerCard.tsx",
+    "apps/web/src/features/table/PrintedPlayerCard.css",
+    "apps/web/src/features/theme/player-card-preferences.ts",
+    "apps/web/src/features/table/card-decks.ts",
+  ])
+    assert.match(manifest[file], /^[a-f\d]{64}$/);
+  const assets = Object.keys(manifest).filter(
+    (file) => file.startsWith("apps/web/src/assets/player-cards/") && file.endsWith(".svg"),
+  );
+  assert.equal(assets.length, 33);
+  for (const style of ["classic", "heritage", "noir"]) {
+    const faces = assets.filter((file) => file.includes(`/${style}/face-`));
+    assert.equal(faces.length, 10);
+    assert.equal(
+      new Set(faces.map((file) => manifest[file])).size,
+      10,
+      "Distinct replaceable face bytes",
+    );
+    assert.equal(assets.filter((file) => file.endsWith(`/${style}/back.svg`)).length, 1);
+  }
+});
+
 test("mode selection retains each named journey and requires the gameplay parent", () => {
   assert.equal(resolveUiMode({}), "default");
   assert.equal(resolveUiMode({ UI_HEADER_ONLY: "1" }), "header");

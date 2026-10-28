@@ -1,0 +1,358 @@
+/* Only numbered, opt-in printed seats. Do not alter orbit, dimensions or action targets. */
+.app-shell
+  .table-stage
+  .table-card.player-seat:is(
+    [data-card-style="classic"],
+    [data-card-style="heritage"],
+    [data-card-style="noir"]
+  ),
+.table-stage
+  .table-card.player-seat:is(
+    [data-card-style="classic"],
+    [data-card-style="heritage"],
+    [data-card-style="noir"]
+  ) {
+  padding: 0;
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+/* An opaque printed reverse replaces Glass's grayscale/deceased overlay. Keep
+   voter emphasis and public lighting independent of departure/privacy. */
+.app-shell
+  .table-stage
+  .table-card.player-seat:is(
+    [data-card-style="classic"],
+    [data-card-style="heritage"],
+    [data-card-style="noir"]
+  ):is(.status-eliminated, .status-red-carded, .is-inactive, .is-dimmed, .is-provisional-deceased) {
+  filter: none;
+  opacity: 1;
+}
+.printed-player-card {
+  --printed-paper: #faf6ea;
+  --printed-ink: #273039;
+  --printed-red: #ad3437;
+  --printed-gold: #b8954e;
+  position: absolute;
+  inset: 0;
+  display: block;
+  container-type: inline-size;
+  border-radius: inherit;
+  color: var(--printed-ink);
+  perspective: 800px;
+  pointer-events: none;
+  text-align: center;
+}
+.printed-player-card--heritage {
+  --printed-paper: #eadcc0;
+  --printed-ink: #5a392b;
+  --printed-red: #91472f;
+  --printed-gold: #aa8151;
+}
+.printed-player-card--noir {
+  --printed-paper: #172321;
+  --printed-ink: #d6bc83;
+  --printed-red: #e18d79;
+  --printed-gold: #8f774b;
+}
+.printed-player-card__motion,
+.printed-player-card__surface,
+.printed-player-card__status {
+  position: absolute;
+  inset: 0;
+  display: block;
+  border-radius: inherit;
+}
+.printed-player-card__motion {
+  transform-style: preserve-3d;
+}
+.printed-player-card__surface {
+  overflow: hidden;
+  background: var(--printed-paper);
+  color: var(--printed-ink);
+  /* Explicit visibility keyframes switch at the true 90-degree edge. Visible
+     backfaces are intentional: ancestor opacity/filter can flatten WebKit 3D.
+     The incoming surface counter-rotates, so its print never reads mirrored. */
+  backface-visibility: visible;
+  -webkit-backface-visibility: visible;
+}
+.printed-player-card--heritage .printed-player-card__surface {
+  background: radial-gradient(ellipse at 50% 40%, #f6ebd2, var(--printed-paper) 80%);
+}
+.printed-player-card--noir .printed-player-card__surface {
+  background: linear-gradient(120deg, #23332e, #13211d 75%);
+}
+.printed-player-card__incoming {
+  transform: rotateY(180deg);
+  visibility: hidden;
+}
+.printed-player-card__back-art {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+}
+.printed-player-card__frame {
+  position: absolute;
+  inset: 4%;
+  width: 92%;
+  height: 92%;
+  color: var(--printed-gold);
+}
+.printed-player-card__index {
+  position: absolute;
+  z-index: 2;
+  left: 6.5%;
+  top: 5%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  color: var(--printed-ink);
+  font:
+    500 max(11px, 14cqw)/0.95 Georgia,
+    serif;
+}
+.printed-player-card__suit {
+  font-size: max(10px, 11cqw);
+}
+.printed-player-card__index--lower {
+  inset: auto 6.5% 5% auto;
+  transform: rotate(180deg);
+}
+.printed-player-card__index--red {
+  color: var(--printed-red);
+}
+.printed-player-card__art {
+  position: absolute;
+  top: 10%;
+  left: 18%;
+  width: 64%;
+  height: 80%;
+  object-fit: contain;
+}
+.printed-player-card--heritage .printed-player-card__art {
+  top: 8%;
+  height: 67%;
+}
+.printed-player-card--noir .printed-player-card__art {
+  height: 65%;
+}
+.printed-player-card__name-band {
+  position: absolute;
+  z-index: 2;
+  top: 46%;
+  left: 18%;
+  width: 64%;
+  height: 8.4%;
+  min-height: 12px;
+  display: grid;
+  align-items: center;
+  padding-inline: 3%;
+  border-block: 1px solid var(--printed-ink);
+  background: var(--printed-paper);
+}
+.printed-player-card__name {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font:
+    bold max(10px, 7.6cqw)/1.05 Georgia,
+    serif;
+}
+.printed-player-card:is(.printed-player-card--heritage, .printed-player-card--noir)
+  .printed-player-card__name-band {
+  top: 73%;
+  height: 8%;
+  border-color: var(--printed-gold);
+}
+.printed-player-card:is(.printed-player-card--heritage, .printed-player-card--noir)
+  .printed-player-card__name {
+  font-weight: normal;
+  font-variant: small-caps;
+}
+.printed-player-card__role {
+  position: absolute;
+  z-index: 3;
+  top: max(55.5%, calc(46% + 13px));
+  left: 19%;
+  width: 62%;
+  padding: 1% 0;
+  color: var(--printed-ink);
+  background: var(--printed-paper);
+  font:
+    600 max(9px, 4.8cqw)/1.05 -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+  overflow-wrap: anywhere;
+}
+.printed-player-card:is(.printed-player-card--heritage, .printed-player-card--noir)
+  .printed-player-card__role {
+  top: 82%;
+}
+.printed-player-card[data-role-placement="ribbon"] .printed-player-card__name-band {
+  height: 17%;
+  min-height: 25px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+}
+.printed-player-card--classic[data-role-placement="ribbon"] .printed-player-card__name-band {
+  top: 42%;
+}
+.printed-player-card[data-role-placement="ribbon"] .printed-player-card__role {
+  position: static;
+  width: 100%;
+  padding: 0;
+  background: transparent;
+}
+.printed-player-card[data-role-placement="top"] .printed-player-card__role {
+  top: 4.6%;
+  left: 24%;
+  width: 52%;
+}
+@container (max-width: 90px) {
+  .printed-player-card:is(.printed-player-card--heritage, .printed-player-card--noir)
+    .printed-player-card__name-band {
+    top: 68%;
+  }
+  .printed-player-card:is(
+      .printed-player-card--heritage,
+      .printed-player-card--noir
+    )[data-role-placement="below"]
+    .printed-player-card__role {
+    top: calc(68% + 13px);
+  }
+  .printed-player-card:is(
+      .printed-player-card--heritage,
+      .printed-player-card--noir
+    )[data-role-placement="ribbon"]
+    .printed-player-card__name-band {
+    top: 64%;
+  }
+}
+.printed-player-card__caption {
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  bottom: 9%;
+  padding: 3px 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--printed-paper);
+  color: var(--printed-ink);
+  font:
+    600 max(10px, 7.2cqw)/1.15 Georgia,
+    serif;
+}
+/* Public indicators stay mounted once, outside the moving paper, including down states. */
+.printed-player-card .printed-player-card__status {
+  z-index: 4;
+  color: var(--printed-ink);
+}
+.table-stage .printed-player-card .card-nomination-status,
+.table-stage .printed-player-card .card-discipline-status {
+  top: calc(50% - 17px);
+  width: 18%;
+  height: 34px;
+  grid-template-rows: 17px 17px;
+  gap: 0;
+  align-items: center;
+  border-radius: 3px;
+  background: var(--printed-paper);
+  color: var(--printed-ink);
+}
+.table-stage .printed-player-card .card-nomination-status {
+  left: 1%;
+}
+.table-stage .printed-player-card .card-discipline-status {
+  right: 1%;
+  color: var(--printed-red);
+}
+.table-stage .printed-player-card .card-nomination-status:empty,
+.table-stage .printed-player-card .card-discipline-status:empty {
+  display: none;
+}
+.table-stage .printed-player-card .card-status-slot {
+  width: 100%;
+}
+.table-stage .printed-player-card .card-status-slot svg {
+  width: 15px;
+  height: 15px;
+  max-width: 100%;
+}
+.table-stage .printed-player-card .card-support {
+  color: var(--printed-ink);
+  font-size: 10px;
+}
+.table-stage .printed-player-card .foul-markers {
+  gap: 2px;
+}
+.table-stage .printed-player-card .foul-dot {
+  width: 3px;
+  height: 3px;
+  background: var(--printed-red);
+  box-shadow: none;
+}
+.table-stage .printed-player-card .card-mute {
+  color: var(--printed-red);
+}
+.table-stage .printed-player-card .seat-badges {
+  position: absolute;
+  bottom: 1%;
+  left: 19%;
+  width: 62%;
+  flex-wrap: nowrap;
+}
+.table-stage .printed-player-card .state-badge {
+  max-width: 100%;
+  padding: 1px 2px;
+  border-radius: 2px;
+  background: var(--printed-paper);
+  color: var(--printed-ink);
+  font-size: 8px;
+  white-space: nowrap;
+}
+/* Keep meaningful selection and dealt lighting above opaque paper. No glass lens,
+   focus decoration or role-dependent artwork is introduced. */
+.table-stage
+  .player-seat:is(
+    [data-card-style="classic"],
+    [data-card-style="heritage"],
+    [data-card-style="noir"]
+  ).is-nomination-selected
+  .printed-player-card__surface::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgb(222 175 90 / 18%);
+  pointer-events: none;
+}
+.table-stage
+  .player-seat:is(
+    [data-card-style="classic"],
+    [data-card-style="heritage"],
+    [data-card-style="noir"]
+  )
+  > .role-draw-glow {
+  z-index: 2;
+}
+@media (prefers-reduced-transparency: reduce) {
+  /* Paper is already opaque. Retain the host's static dealt perimeter without
+     letting the Glass accessibility wash cover the print and public indicators. */
+  .table-stage
+    .player-seat:is(
+      [data-card-style="classic"],
+      [data-card-style="heritage"],
+      [data-card-style="noir"]
+    )
+    > .role-draw-glow {
+    background: none;
+  }
+}

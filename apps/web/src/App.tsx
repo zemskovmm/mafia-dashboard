@@ -135,6 +135,14 @@ import "./features/theme/GlassScene.css";
 import { GlassScene } from "./features/theme/GlassScene.js";
 import { SharedGlassContext } from "./features/theme/SharedGlassContext.js";
 import { PlayerCardAppearanceContext } from "./features/theme/PlayerCardAppearanceContext.js";
+import { PlayerCardStyleContext } from "./features/theme/PlayerCardStyleContext.js";
+import { PlayerCardStyleControls } from "./features/theme/PlayerCardStyleControls.js";
+import {
+  readPlayerCardPreferences,
+  validatePlayerCardPreferences,
+  writePlayerCardPreferences,
+  type PlayerCardPreferences,
+} from "./features/theme/player-card-preferences.js";
 
 import { isCriticalState } from "./features/game/critical-state.js";
 import { LiveSidePanel } from "./features/game/LiveSidePanel.js";
@@ -687,6 +695,12 @@ const ClubWorkspaceContent = ({
   const cityBackground = isCityBackground(background);
   const backgroundShade: BackgroundShade = cityBackground ? "black" : background;
   const [glass, setGlass] = useState(() => readGlassSettings());
+  const [playerCards, setPlayerCards] = useState(readPlayerCardPreferences);
+  const changePlayerCards = useCallback((settings: PlayerCardPreferences) => {
+    const valid = validatePlayerCardPreferences(settings);
+    setPlayerCards(valid);
+    writePlayerCardPreferences(valid);
+  }, []);
   const [playerExit, setPlayerExit] = useState(readPlayerExitSettings);
   const [showTutorialHelp, setShowTutorialHelp] = useState(readTutorialHelp);
   const changePlayerExit = useCallback((settings: PlayerExitSettings) => {
@@ -2315,6 +2329,7 @@ const ClubWorkspaceContent = ({
         >
           <h2>{t("manage")}</h2>
           <div className="manage-menu-actions">
+            <PlayerCardStyleControls settings={playerCards} onChange={changePlayerCards} />
             <button
               type="button"
               role="switch"
@@ -2941,11 +2956,13 @@ const ClubWorkspaceContent = ({
       >
         <SharedGlassContext.Provider value={sharedGlassReady}>
           <PlayerCardAppearanceContext.Provider value={glass}>
-            <PlayerDirectoryProvider profiles={players} clubId={club.id}>
-              <CardGameIdentityContext.Provider value={sessionSync.gameId}>
-                {content}
-              </CardGameIdentityContext.Provider>
-            </PlayerDirectoryProvider>
+            <PlayerCardStyleContext.Provider value={playerCards}>
+              <PlayerDirectoryProvider profiles={players} clubId={club.id}>
+                <CardGameIdentityContext.Provider value={sessionSync.gameId}>
+                  {content}
+                </CardGameIdentityContext.Provider>
+              </PlayerDirectoryProvider>
+            </PlayerCardStyleContext.Provider>
           </PlayerCardAppearanceContext.Provider>
         </SharedGlassContext.Provider>
       </VgpuLightingProvider>

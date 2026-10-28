@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 import { GameTable, type TableSeatView } from "./GameTable.js";
 import { PlayerCardAppearanceContext } from "../theme/PlayerCardAppearanceContext.js";
 import { DEFAULT_GLASS_SETTINGS } from "../theme/glass-preferences.js";
+import { PlayerCardStyleContext } from "../theme/PlayerCardStyleContext.js";
+import type { PlayerCardStyle } from "../theme/player-card-preferences.js";
 
 const seats: TableSeatView[] = Array.from({ length: 10 }, (_, index) => ({
   seat: index + 1,
@@ -11,6 +13,199 @@ const seats: TableSeatView[] = Array.from({ length: 10 }, (_, index) => ({
 }));
 
 describe("GameTable", () => {
+  it.each(["classic", "heritage", "noir"] as const)(
+    "uses %s artwork without role icons and preserves the action host when changing style",
+    (style) => {
+      const onSeatClick = vi.fn();
+      const tree = (selectedStyle: PlayerCardStyle, privacyHidden = false) => (
+        <PlayerCardStyleContext.Provider value={{ style: selectedStyle, rolePlacement: "below" }}>
+          <GameTable
+            seats={seats.map((seat) => ({ ...seat, role: "citizen" }))}
+            privacyHidden={privacyHidden}
+            onSeatClick={onSeatClick}
+          />
+        </PlayerCardStyleContext.Provider>
+      );
+      const { rerender } = render(tree("glass"));
+      const card = screen.getByRole("button", { name: "Seat 1: Player 1" });
+      expect(card.querySelector(".player-role-icon")).not.toBeNull();
+      rerender(tree(style));
+      expect(screen.getByRole("button", { name: "Seat 1: Player 1" })).toBe(card);
+      expect(card).toHaveAttribute("data-card-style", style);
+      expect(card).toHaveAttribute("data-card-face", "front");
+      expect(card).not.toHaveAttribute("data-player-glass");
+      expect(card.querySelector(".player-role-icon,.liquid-card-glass")).toBeNull();
+      expect(card).toHaveTextContent(/citizen/i);
+      const images = screen
+        .getAllByRole("button", { name: /^Seat \d+:/ })
+        .map((element) => element.querySelector("img")?.getAttribute("src"));
+      expect(images.every(Boolean)).toBe(true);
+      expect(new Set(images).size).toBe(10);
+      fireEvent.click(card);
+      expect(onSeatClick).toHaveBeenCalledExactlyOnceWith(1);
+      rerender(tree(style, true));
+      expect(card).toHaveAttribute("data-card-face", "back");
+      expect(card).not.toHaveTextContent(/citizen/i);
+      expect(card.querySelector(".player-role-icon,.deceased-cross")).toBeNull();
+      const backs = screen
+        .getAllByRole("button", { name: /^Seat \d+:/ })
+        .map((element) => element.querySelector("img")?.getAttribute("src"));
+      expect(backs.every(Boolean)).toBe(true);
+      expect(new Set(backs).size).toBe(1);
+      expect(backs[0]).not.toBe(images[0]);
+      rerender(tree("glass"));
+      expect(card).toHaveAttribute("data-player-glass", "table");
+      expect(card.querySelector(".player-role-icon")).not.toBeNull();
+    },
+  );
+
+  it("keeps printed elimination down after privacy clears and a restored player hidden until privacy clears", () => {
+    const tree = (deceased: boolean, privacyHidden: boolean) => (
+      <PlayerCardStyleContext.Provider value={{ style: "classic", rolePlacement: "below" }}>
+        <GameTable
+          seats={[
+            {
+              ...seats[0]!,
+              role: "mafia",
+              status: deceased ? "eliminated" : "active",
+              inactive: deceased,
+            },
+          ]}
+          privacyHidden={privacyHidden}
+        />
+      </PlayerCardStyleContext.Provider>
+    );
+    const { rerender } = render(tree(false, false));
+    const card = screen.getByRole("button", { name: "Seat 1: Player 1" });
+    expect(card).toHaveAttribute("data-card-face", "front");
+    rerender(tree(true, true));
+    rerender(tree(true, false));
+    expect(card).toHaveAttribute("data-card-face", "back");
+    expect(card).not.toHaveTextContent(/mafia/i);
+    expect(card.querySelector(".deceased-cross")).toBeNull();
+    rerender(tree(false, true));
+    expect(card).toHaveAttribute("data-card-face", "back");
+    rerender(tree(false, false));
+    expect(card).toHaveAttribute("data-card-face", "front");
+    expect(card).toHaveTextContent(/mafia/i);
+  });
+
+  it("does not turn a provisional private result down and removes role-specific light on a completed departure", () => {
+    const tree = (provisionalDeceased: boolean) => (
+      <PlayerCardStyleContext.Provider value={{ style: "noir", rolePlacement: "below" }}>
+        <GameTable
+          seats={[
+            {
+              ...seats[0]!,
+              role: "sheriff",
+              status: "eliminated",
+              provisionalDeceased,
+              sheriffHighlight: true,
+              nightCheckHighlight: true,
+            },
+          ]}
+        />
+      </PlayerCardStyleContext.Provider>
+    );
+    const { rerender } = render(tree(true));
+    const card = screen.getByRole("button", { name: "Seat 1: Player 1" });
+    expect(card).toHaveAttribute("data-card-face", "front");
+    expect(card).toHaveTextContent(/sheriff/i);
+    rerender(tree(false));
+    expect(card).toHaveAttribute("data-card-face", "back");
+    expect(card).not.toHaveTextContent(/sheriff/i);
+    expect(card).not.toHaveClass("is-sheriff-highlight", "is-night-check-highlight");
+    expect(card.querySelector(".vgpu-player-lighting")).toBeNull();
+  });
+
+  it.each(["classic", "heritage", "noir"] as const)(
+    "preserves printed %s gestures and their click suppression",
+    (style) => {
+      const click = vi.fn();
+      const foul = vi.fn();
+      const penalty = vi.fn();
+      render(
+        <PlayerCardStyleContext.Provider value={{ style, rolePlacement: "below" }}>
+          <GameTable
+            seats={[{ ...seats[0]!, role: "citizen" }]}
+            onSeatClick={click}
+            onSeatFoul={foul}
+            onSeatPenalty={penalty}
+          />
+        </PlayerCardStyleContext.Provider>,
+      );
+      const card = screen.getByRole("button", { name: "Seat 1: Player 1" });
+      fireEvent.click(card);
+      expect(click).toHaveBeenCalledExactlyOnceWith(1);
+      swipeCard(card, 0, 80);
+      expect(foul).toHaveBeenCalledExactlyOnceWith(1);
+      fireEvent.click(card);
+      expect(click).toHaveBeenCalledTimes(1);
+      swipeCard(card, 0, -80);
+      expect(penalty).toHaveBeenCalledExactlyOnceWith(1);
+      expect(card).toHaveStyle({ touchAction: "none" });
+    },
+  );
+
+  it("uses a neutral printed back for unknown giveaway roles and a face for deliberate preview", () => {
+    const tree = (preview: boolean) => (
+      <PlayerCardStyleContext.Provider value={{ style: "heritage", rolePlacement: "ribbon" }}>
+        <GameTable
+          seats={[
+            {
+              ...seats[0]!,
+              role: "don",
+              roleDraw: { dealt: false, ...(preview ? { role: "don" as const } : {}) },
+            },
+          ]}
+        />
+      </PlayerCardStyleContext.Provider>
+    );
+    const { rerender } = render(tree(false));
+    const card = screen.getByRole("button", { name: "Seat 1: Player 1" });
+    expect(card).toHaveAttribute("data-card-face", "back");
+    expect(card).not.toHaveTextContent(/don/i);
+    expect(card.querySelector("[data-role-glyph],.role-draw-glow")).toBeNull();
+    rerender(tree(true));
+    expect(card).toHaveAttribute("data-card-face", "front");
+    expect(card).toHaveTextContent(/don/i);
+    expect(card.querySelector(".role-draw-glow")).toBeNull();
+  });
+
+  it("keeps printed read-only cards and public cues independent of hidden roles", () => {
+    render(
+      <PlayerCardStyleContext.Provider value={{ style: "noir", rolePlacement: "top" }}>
+        <GameTable
+          seats={[
+            {
+              ...seats[0]!,
+              role: "sheriff",
+              nominated: true,
+              supportCount: 2,
+              fouls: 2,
+              muted: true,
+              nominationSelected: true,
+              voted: true,
+              voteTargetSeat: 9,
+            },
+          ]}
+          privacyHidden
+          readOnly
+        />
+      </PlayerCardStyleContext.Provider>,
+    );
+    const card = screen.getByRole("group", { name: "Seat 1: Player 1" });
+    expect(card).toHaveAttribute("data-card-style", "noir");
+    expect(card).toHaveAttribute("data-card-face", "back");
+    expect(card).not.toHaveTextContent(/sheriff/i);
+    expect(card.querySelector(".card-nomination-symbol .lucide-hand")).not.toBeNull();
+    expect(card.querySelector(".card-support")).toHaveTextContent("+2");
+    expect(card.querySelector(".foul-markers")).not.toBeNull();
+    expect(card.querySelector(".card-mute")).not.toBeNull();
+    expect(card.querySelector(".state-badge")).toHaveTextContent("9");
+    expect(card.querySelector("button")).toBeNull();
+  });
+
   it("uses question marks on unknown giveaway faces, including the first-reveal old face, but not ordinary masked play", () => {
     const animate = vi.fn(() => ({ finished: new Promise(() => {}), cancel: vi.fn() }));
     const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "animate");
