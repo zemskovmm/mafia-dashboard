@@ -15,11 +15,7 @@ import {
 import { votingMessages } from "../../i18n/messages/voting.js";
 import { FederationBallotTools } from "../voting/FederationBallotTools.js";
 import { usePlayerDisplayName } from "../players/player-display.js";
-import {
-  defaultRemovalStage,
-  hasImmediateRemovalAnnouncement,
-  removalStagesForPhase,
-} from "./federation-ui-state.js";
+import { defaultRemovalStage, removalStagesForPhase } from "./federation-ui-state.js";
 import { AdjudicationControls } from "./AdjudicationControls.js";
 import { FederationJudgeDialog } from "./FederationJudgeDialog.js";
 import { RuleBookButton } from "../rules/RuleBookButton.js";
@@ -53,7 +49,6 @@ export const FederationDisciplineControls = (props: DisciplineControlsProps) => 
   const displayName = usePlayerDisplayName();
   const open = (!!request && request.game === game) || rulesOpen;
   const player = game.players.find((p) => p.seat === request?.seat);
-  const pending = game.disciplinaryRemovals?.filter((r) => r.announcement === "pending") ?? [];
   const submit = (draft: CanonicalGameEventDraft) => {
     const result = tryApplyGameEvent(game, draft);
     if (!result.ok || readerOpen) return;
@@ -65,35 +60,6 @@ export const FederationDisciplineControls = (props: DisciplineControlsProps) => 
   };
   return (
     <div className="federation-discipline">
-      {pending.length ? (
-        <section className="federation-announcements" aria-label={t("discipline.pending")}>
-          {hasImmediateRemovalAnnouncement(game) ? (
-            <small role="status">{t("discipline.blocked")}</small>
-          ) : null}
-          {pending.map((r) => {
-            const subject = game.players.find((p) => p.seat === r.seat)!;
-            const draft: CanonicalGameEventDraft = {
-              type: "discipline.removals-announced",
-              payload: { seats: [r.seat] },
-            };
-            const available = tryApplyGameEvent(game, draft).ok;
-            return (
-              <button
-                key={r.seat}
-                type="button"
-                disabled={!available}
-                title={available ? undefined : t("discipline.wait")}
-                onClick={() => {
-                  submit(draft);
-                  onComplete?.();
-                }}
-              >
-                {t("discipline.announce", { name: displayName(subject) })}
-              </button>
-            );
-          })}
-        </section>
-      ) : null}
       {removalStagesForPhase(game.phase).length &&
       !["finished", "draw", "cancelled"].includes(game.phase) ? (
         <FederationJudgeDialog

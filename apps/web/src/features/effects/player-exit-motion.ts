@@ -65,5 +65,11 @@ export const playerExitMotion = (settings: PlayerExitSettings) => {
     { visibility: "visible", offset: edge },
     { visibility: "visible", offset: 1 },
   ];
-  return { duration, apex, flipStart, edge, lift, turn, front, back };
+  // Directional reflections must match the upright resting surface. Change
+  // their handedness only at the invisible edge, never when the host settles.
+  const material: Keyframe[] = front.map(({ visibility, ...frame }) => ({
+    ...frame,
+    scale: visibility === "visible" ? "1 1" : "-1 1",
+  }));
+  return { duration, apex, flipStart, edge, lift, turn, front, back, material };
 };

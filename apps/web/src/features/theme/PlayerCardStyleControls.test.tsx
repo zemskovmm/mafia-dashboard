@@ -37,7 +37,7 @@ const languages = [
     style: "Player card style",
     placement: "Role placement",
     styles: ["Glass", "French Classic", "Old-world Engraved", "Noir Royale"],
-    placements: ["Below name", "Name band", "Near top"],
+    placements: ["Lower on card", "Role band", "Near top"],
   },
   {
     locale: "ru",
@@ -45,7 +45,7 @@ const languages = [
     style: "Стиль карточек игроков",
     placement: "Расположение роли",
     styles: ["Стекло", "Французская классика", "Старинная гравюра", "Нуар Рояль"],
-    placements: ["Под именем", "В полосе имени", "Вверху"],
+    placements: ["Внизу карточки", "Полоса роли", "Вверху"],
   },
 ] as const;
 

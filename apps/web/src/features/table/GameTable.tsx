@@ -1,4 +1,4 @@
-import type { PlayerStatus, Role } from "@mafia/game-domain";
+import { getRoleTeam, type PlayerStatus, type Role, type Winner } from "@mafia/game-domain";
 import type { CSSProperties, ReactNode } from "react";
 import { useContext, useRef } from "react";
 import { Hand, MessageCircleOff } from "lucide-react";
@@ -19,6 +19,11 @@ import { CardGameIdentityContext } from "./CardGameIdentityContext.js";
 import { PlayerRoleIcon } from "./PlayerRoleIcon.js";
 import { usePlayerExits } from "../game/PlayerExitProvider.js";
 import { PlayerExitAnimation } from "./PlayerExitAnimation.js";
+import { departurePresentationStyle } from "./PlayerDepartureEffects.js";
+import { PlayerFeedback } from "./PlayerFeedback.js";
+import { DEFAULT_PLAYER_EXIT_SETTINGS } from "../effects/player-exit-preferences.js";
+import "./GameTable.css";
+import { PlayerCardCaption } from "./PlayerCardCaption.js";
 import {
   RoleDrawGlow,
   RoleDrawPresentation,
@@ -56,6 +61,8 @@ export interface TableSeatView {
 
 interface GameTableProps {
   readonly seats: readonly TableSeatView[];
+  readonly completed?: boolean;
+  readonly winner?: Winner;
   readonly animateActive?: boolean;
   readonly hostName?: string;
   readonly privacyHidden?: boolean;
@@ -77,8 +84,10 @@ const FIRST_SEAT_ANGLE = 198;
 
 export const GameTable = ({
   seats,
+  completed = false,
+  winner = null,
   animateActive = false,
-  privacyHidden = false,
+  privacyHidden: requestedPrivacyHidden = false,
   seatActionLabel,
   seatActionDisabled,
   onSeatClick,
@@ -97,6 +106,7 @@ export const GameTable = ({
   const printed = cardPreferences.style !== "glass";
   const gameId = useContext(CardGameIdentityContext);
   const exits = usePlayerExits();
+  const privacyHidden = requestedPrivacyHidden && !completed;
   const seatButtonsRef = useRef(new Map<number, HTMLButtonElement>());
   const swipeStart = useRef<{
     readonly seat: number;
@@ -179,30 +189,41 @@ export const GameTable = ({
             }
             return moved;
           };
-          const exit = exits.requests[seat.seat];
-          const roleDraw = privacyHidden ? undefined : seat.roleDraw;
+          const exit = completed ? undefined : exits.requests[seat.seat];
+          const roleDraw = privacyHidden || completed ? undefined : seat.roleDraw;
           const visibleRole = roleDraw ? roleDraw.role : seat.role;
           const waiting =
-            seat.status === "eliminated" &&
-            (printed ? exits.pendingDepartures : exits.waiting).includes(seat.seat);
+            seat.status === "eliminated" && exits.pendingDepartures.includes(seat.seat);
           const showRole =
             visibleRole !== undefined &&
             !privacyHidden &&
             !exit?.hideRole &&
             !(exit && exits.privacyHidden);
           const departed =
+            !completed &&
             !waiting &&
             !seat.provisionalDeceased &&
             (seat.status === "eliminated" || seat.status === "red-carded");
           const printedPrivacy = Boolean(
             privacyHidden || exit?.hideRole || (exit && exits.privacyHidden),
           );
+          const departureCause = departed
+            ? (exits.endpoints[seat.seat] ??
+              (seat.status === "red-carded" ? "discipline" : "unknown"))
+            : undefined;
+          const departureStyle = departurePresentationStyle(
+            departureCause,
+            exit?.settings ?? exits.settings ?? DEFAULT_PLAYER_EXIT_SETTINGS,
+          );
           const printedFaceDown =
             printed &&
             (printedPrivacy || departed || (roleDraw !== undefined && visibleRole === undefined));
           const privateCuesVisible = !privacyHidden && !printedFaceDown;
           // Voters share speaker visuals, not the current-speaker aria semantics.
-          const activeEmphasis = seat.current || seat.currentVoter;
+          const activeEmphasis = !completed && (seat.current || seat.currentVoter);
+          const winningTeam =
+            completed && seat.role && getRoleTeam(seat.role) === winner ? winner : undefined;
+          const completionClass = completed ? " is-game-complete" : "";
           const className = `table-card player-seat status-${seat.status ?? "active"}${activeEmphasis ? " is-current" : ""}${seat.mafiaShooter && privateCuesVisible ? " is-mafia-shooter" : ""}${seat.sheriffHighlight && privateCuesVisible ? " is-sheriff-highlight" : ""}${seat.nightCheckHighlight && privateCuesVisible ? " is-night-check-highlight" : ""}${seat.goodbyeHighlight ? " is-goodbye-highlight" : ""}${seat.votingHighlight ? " is-voting-highlight" : ""}${seat.voted ? " is-voted" : ""}${seat.dimmed && !privacyHidden ? " is-dimmed" : ""}${seat.inactive ? " is-inactive" : ""}${seat.provisionalDeceased ? " is-provisional-deceased" : ""}${exit ? " is-exiting" : ""}${waiting ? " is-awaiting-goodbye" : ""}`;
           const lightingKind = resolvePlayerLightingKind({
             ...seat,
@@ -247,7 +268,10 @@ export const GameTable = ({
                   </span>
                 ) : null}
               </span>
-              <span className="card-discipline-status">
+              <PlayerFeedback
+                className="card-discipline-status"
+                request={exits.feedback[seat.seat]}
+              >
                 {seat.fouls ? (
                   <span
                     className="card-status-slot foul-markers"
@@ -268,7 +292,7 @@ export const GameTable = ({
                     <MessageCircleOff aria-hidden="true" />
                   </span>
                 ) : null}
-              </span>
+              </PlayerFeedback>
             </>
           );
           const voteBadge = (
@@ -290,7 +314,6 @@ export const GameTable = ({
                 unknown={roleDraw !== undefined && faceRole === undefined}
               />
               {statusRails}
-              <span className="seat-name">{seat.name}</span>
               {voteBadge}
             </>
           );
@@ -302,13 +325,16 @@ export const GameTable = ({
                 <ActivePlayerLighting active={Boolean(activeEmphasis) && !exit} />
               ) : null}
               <VgpuPlayerLightingCanvas
-                kind={exit || (animateActive && lightingKind === "speaker") ? null : lightingKind}
+                kind={
+                  completed || exit || (animateActive && lightingKind === "speaker")
+                    ? null
+                    : lightingKind
+                }
               />
               {cardPreferences.style !== "glass" ? (
                 <PrintedPlayerCard
                   style={cardPreferences.style}
                   seat={seat.seat}
-                  name={seat.name}
                   suit={suit === null ? "◇" : CARD_SUIT_SYMBOLS[suit]}
                   role={showRole && !printedFaceDown ? visibleRole : undefined}
                   rolePlacement={cardPreferences.rolePlacement}
@@ -316,6 +342,7 @@ export const GameTable = ({
                   privacyHidden={printedPrivacy}
                   roleDrawRequest={roleDraw?.request}
                   exitRequest={departed ? exit : undefined}
+                  departureCause={departureCause}
                   onRoleDrawComplete={(id) => onRoleDrawComplete?.(seat.seat, id)}
                   onExitComplete={(id) => exits.complete(seat.seat, id)}
                 >
@@ -333,8 +360,19 @@ export const GameTable = ({
               ) : (
                 <PlayerExitAnimation
                   request={exit}
+                  departureCause={departureCause}
+                  reverse={
+                    <>
+                      {index(false)}
+                      {index(true)}
+                      {statusRails}
+                      {voteBadge}
+                    </>
+                  }
                   deceased={
-                    !waiting && (seat.status === "eliminated" || seat.status === "red-carded")
+                    !completed &&
+                    !waiting &&
+                    (seat.status === "eliminated" || seat.status === "red-carded")
                   }
                   onComplete={(id) => exits.complete(seat.seat, id)}
                 >
@@ -435,15 +473,20 @@ export const GameTable = ({
             >
               {readOnly ? (
                 <div
-                  className={className + nominationClass + roleDrawClass}
+                  className={className + nominationClass + roleDrawClass + completionClass}
+                  data-winner-team={winningTeam}
                   data-role-draw-role={printedFaceDown ? undefined : roleDraw?.role}
                   data-role-dealt={printedFaceDown ? undefined : roleDraw?.dealt}
                   data-role-draw-flip={roleDraw?.request?.id}
                   data-player-glass={printed ? undefined : "table"}
                   data-card-style={cardPreferences.style}
-                  data-card-face={printed ? (printedFaceDown ? "back" : "front") : undefined}
+                  data-card-face={
+                    completed ? "front" : printed ? (printedFaceDown ? "back" : "front") : undefined
+                  }
                   role="group"
                   data-player-exit={exit?.id}
+                  data-departure-cause={departureCause}
+                  style={departureStyle}
                   aria-label={label}
                   aria-current={seat.current ? "step" : undefined}
                 >
@@ -458,17 +501,21 @@ export const GameTable = ({
                   type="button"
                   disabled={disabled && !foulAvailable}
                   aria-disabled={disabled || undefined}
-                  className={className + nominationClass + roleDrawClass}
+                  className={className + nominationClass + roleDrawClass + completionClass}
+                  data-winner-team={winningTeam}
                   data-role-draw-role={printedFaceDown ? undefined : roleDraw?.role}
                   data-role-dealt={printedFaceDown ? undefined : roleDraw?.dealt}
                   data-role-draw-flip={roleDraw?.request?.id}
                   aria-pressed={seat.pressed ?? seat.nominationSelected}
-                  style={touchAction === undefined ? undefined : { touchAction }}
+                  style={{ ...departureStyle, touchAction }}
                   data-player-glass={printed ? undefined : "table"}
                   data-card-style={cardPreferences.style}
-                  data-card-face={printed ? (printedFaceDown ? "back" : "front") : undefined}
+                  data-card-face={
+                    completed ? "front" : printed ? (printedFaceDown ? "back" : "front") : undefined
+                  }
                   aria-label={label}
                   data-player-exit={exit?.id}
+                  data-departure-cause={departureCause}
                   aria-current={seat.current ? "step" : undefined}
                   aria-haspopup={horizontalActionAvailable ? "dialog" : undefined}
                   title={foulAvailable ? t("table.foulHint") : undefined}
@@ -480,6 +527,7 @@ export const GameTable = ({
                   {content}
                 </button>
               )}
+              <PlayerCardCaption name={seat.name} />
               {readOnly || renderSeatActions === undefined ? null : (
                 <div className="seat-actions">{renderSeatActions(seat)}</div>
               )}

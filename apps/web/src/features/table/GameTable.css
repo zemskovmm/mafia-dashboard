@@ -1,0 +1,32 @@
+/* Only the enlarged seat needs extra space; other names stay clear of its neighbours. */
+.table-stage.has-active-emphasis .player-seat.is-current + .player-seat-caption {
+  top: calc(100% + 5px + var(--seat-active-overhang, 0%));
+}
+
+/* Lower action rows clear the external name without changing the seat orbit. */
+.table-stage .seat-anchor:is([data-seat="5"], [data-seat="6"]) > .seat-actions {
+  top: calc(100% + 5px + var(--seat-active-overhang, 0%) + 22px);
+  bottom: auto;
+}
+
+/* Completion reveals the original card, without changing its recorded status. */
+.table-stage .table-card.player-seat.is-game-complete {
+  opacity: 1;
+  filter: none;
+  border-color: var(--border);
+}
+
+/* Match the giveaway palette, not the domain's historical red/black team names. */
+.table-stage :is(.winner-red, .player-seat[data-winner-team="red"]) {
+  --winner-rgb: 118 205 255;
+}
+.table-stage :is(.winner-black, .player-seat[data-winner-team="black"]) {
+  --winner-rgb: 255 95 79;
+}
+.table-stage .winner-card:is(.winner-red, .winner-black),
+.table-stage .table-card.player-seat[data-winner-team] {
+  border-color: rgb(var(--winner-rgb) / 85%);
+  box-shadow:
+    0 0 26px rgb(var(--winner-rgb) / 48%),
+    0 9px 25px rgb(0 0 0 / 40%);
+}

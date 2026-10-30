@@ -9,6 +9,7 @@ import {
   isVotingRequired,
   issueFoul,
   isNightCheckEligible,
+  isTerminalGamePhase,
   setNominationSelection,
 } from "@mafia/game-domain";
 import type { CanonicalGameEventDraft, GameState } from "@mafia/game-domain";
@@ -18,17 +19,18 @@ import {
   FederationDisciplineControls,
   type DisciplineRequest,
 } from "./FederationDisciplineControls.js";
-import { hasImmediateRemovalAnnouncement } from "./federation-ui-state.js";
 import { FederationBestMoveStage } from "./FederationBestMoveStage.js";
 import { RulesBookHost } from "../rules/RulesBookHost.js";
 import type { RuleReferenceId } from "../rules/rule-references.js";
 import { NightStage } from "../night/NightStage.js";
 import { usePlayerDisplayName } from "../players/player-display.js";
 import { GameTable } from "../table/GameTable.js";
+import { PlayerResultFeedback } from "../table/PlayerFeedback.js";
 import { isCriticalState } from "./critical-state.js";
 import { isGuessingState } from "./guessing-state.js";
 import { VotingStage } from "../voting/VotingStage.js";
 import { PlayerExitProvider } from "./PlayerExitProvider.js";
+import type { PlayerActionPresentation } from "./player-action-presentation.js";
 import { GameTutorial, isGameTutorialPhase } from "../tutorial/GameTutorial.js";
 import {
   DEFAULT_PLAYER_EXIT_SETTINGS,
@@ -38,6 +40,7 @@ import {
 interface GameScreenProps {
   readonly game: GameState;
   readonly playerExitSettings?: PlayerExitSettings;
+  readonly playerPresentation?: PlayerActionPresentation;
   readonly gameName?: string;
   readonly hostName: string;
   readonly onGameChange: (game: GameState) => void;
@@ -133,6 +136,7 @@ const phaseTitle = (game: GameState, t: GameTranslator): string => {
 export const GameScreen = ({
   game,
   playerExitSettings = DEFAULT_PLAYER_EXIT_SETTINGS,
+  playerPresentation,
   gameName,
   hostName,
   onGameChange,
@@ -166,10 +170,6 @@ export const GameScreen = ({
   const [ruleRequest, setRuleRequest] = useState<{ game: GameState; rule: RuleReferenceId } | null>(
     null,
   );
-  const gameplayBlocked =
-    hasImmediateRemovalAnnouncement(game) ||
-    (game.phase === "finished" &&
-      !!game.disciplinaryRemovals?.some((r) => r.announcement === "pending"));
   const currentSeat = game.turnOrder[game.currentTurnIndex];
   const currentPlayer = game.players.find(
     ({ seat, status }) => seat === currentSeat && status === "active",
@@ -196,8 +196,7 @@ export const GameScreen = ({
   const activeMafia = game.players.filter(
     ({ team, status }) => team === "black" && status === "active",
   ).length;
-  const foulAvailable =
-    mode === "live" && !gameplayBlocked && game.day >= 1 && foulPhases.has(game.phase);
+  const foulAvailable = mode === "live" && game.day >= 1 && foulPhases.has(game.phase);
   const penaltiesAvailable =
     mode === "live" &&
     finishGameState !== "blocked" &&
@@ -277,7 +276,6 @@ export const GameScreen = ({
   const toggleNomination = (seat: number) => {
     if (
       mode !== "live" ||
-      gameplayBlocked ||
       game.phase !== "day" ||
       !currentPlayer ||
       !game.players.some((player) => player.seat === seat && player.status === "active")
@@ -318,7 +316,7 @@ export const GameScreen = ({
     }
     if (game.phase === "finished" && game.winner !== null) {
       return (
-        <div className={`winner-card winner-${game.winner}`} role="status">
+        <PlayerResultFeedback className={`winner-card winner-${game.winner}`}>
           <span className="table-prompt">{t("game.finished")}</span>
           <strong>{game.winner === "red" ? t("game.citizensWon") : t("game.mafiaWon")}</strong>
           {finishGameState === "queued" || finishGameState === "blocked" ? (
@@ -326,7 +324,7 @@ export const GameScreen = ({
               {t(finishGameState === "blocked" ? "game.saveStateBlocked" : "game.saveStateLocal")}
             </span>
           ) : null}
-        </div>
+        </PlayerResultFeedback>
       );
     }
     if (game.phase === "draw" || game.phase === "cancelled") {
@@ -499,7 +497,8 @@ export const GameScreen = ({
   const endgameLabel = isGuessingState(game) ? t("game.guessingGame") : t("game.critical");
   const tableCycle =
     opening || game.phase === "best-move" || game.phase.startsWith("night-") ? "night" : "day";
-  const effectivePrivacyHidden = privacyHidden && tableCycle === "day";
+  const completed = isTerminalGamePhase(game.phase);
+  const effectivePrivacyHidden = privacyHidden && tableCycle === "day" && !completed;
   const tutorialCheckAvailable =
     game.phase === "night-don"
       ? isNightCheckEligible(game, "don")
@@ -514,7 +513,6 @@ export const GameScreen = ({
     currentPlayer?.seat,
     game.ballot?.selectedCandidateSeat,
     game.ballot?.dispute !== undefined,
-    gameplayBlocked,
     penaltiesAvailable,
     tutorialCheckAvailable,
   ]);
@@ -522,6 +520,7 @@ export const GameScreen = ({
   return (
     <PlayerExitProvider
       game={game}
+      presentation={playerPresentation}
       live={mode === "live"}
       privacyHidden={effectivePrivacyHidden}
       settings={playerExitSettings}
@@ -557,9 +556,9 @@ export const GameScreen = ({
                   key={tutorialContext}
                   phase={isSkippedCarCrash(game) ? "car-crash-skipped" : game.phase}
                   advanceLabel={game.phase === "car-crash" ? tieAdvanceLabel : dayAdvanceLabel}
-                  nominationAvailable={!gameplayBlocked && currentPlayer !== undefined}
+                  nominationAvailable={currentPlayer !== undefined}
                   foulAvailable={foulAvailable}
-                  penaltyAvailable={penaltiesAvailable && !gameplayBlocked}
+                  penaltyAvailable={penaltiesAvailable}
                   checkAvailable={tutorialCheckAvailable}
                   ballotPaused={game.ballot?.dispute !== undefined}
                 />
@@ -640,9 +639,11 @@ export const GameScreen = ({
                 </span>
               ) : null}
             </div>
-            <fieldset className="federation-gameplay-boundary" disabled={gameplayBlocked}>
+            <fieldset className="federation-gameplay-boundary">
               {mode === "preview" ? (
                 <GameTable
+                  completed={completed}
+                  winner={game.winner}
                   animateActive={game.phase === "day" || game.phase === "car-crash"}
                   hostName={hostName}
                   privacyHidden={effectivePrivacyHidden}
@@ -702,6 +703,8 @@ export const GameScreen = ({
                 />
               ) : (
                 <GameTable
+                  completed={completed}
+                  winner={game.winner}
                   onSeatPenalty={openPenalty}
                   onSeatFoul={foulAvailable ? foulPlayer : undefined}
                   animateActive={game.phase === "day" || game.phase === "car-crash"}

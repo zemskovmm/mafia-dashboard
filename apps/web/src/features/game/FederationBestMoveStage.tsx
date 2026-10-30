@@ -14,12 +14,11 @@ interface BestMoveProps {
   readonly onAcceptedEvent?: (event: CanonicalGameEventDraft) => void;
 }
 
-export const FederationBestMoveTranscript = ({ game }: { readonly game: GameState }) => {
+const FederationBestMoveTranscript = ({ game }: { readonly game: GameState }) => {
   const { t } = useMessages(federationBestMoveMessages);
-  if (!game.bestMove || game.bestMove.completionReason === "declined") return null;
+  if (!game.bestMove || game.bestMove.completionReason) return null;
   return (
     <div className="federation-transcript">
-      {game.bestMove.completionReason ? <strong>{t("best.finalized")}</strong> : null}
       <ol aria-label={t("best.selected")}>
         {game.bestMove.selectedSeats.map((number, position) => (
           <li key={position}>#{number}</li>

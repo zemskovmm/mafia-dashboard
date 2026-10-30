@@ -17,8 +17,6 @@ const day = () => {
   return game;
 };
 const miss = (game: GameState) => {
-  if (game.disciplinaryRemovals?.some((r) => r.announcement === "pending"))
-    game = domain.announceDisciplinaryRemovals(game);
   let next = domain.completeMafiaShots(domain.resolveMafiaShots(domain.beginNight(game)).game);
   if (next.phase === "night-don") next = domain.skipDonCheck(next);
   if (next.phase === "night-sheriff") next = domain.skipSheriffCheck(next);
@@ -310,7 +308,7 @@ describe("federation disciplinary boundaries", () => {
     expect(next).toMatchObject({ phase: "finished", winner: "black" });
     expect(next.players.find((p) => p.seat === red[1])?.status).toBe("eliminated");
   });
-  it("requires count-stage public announcement before opening private checks", () => {
+  it("opens private checks after shot evaluation without a count-stage announcement acknowledgement", () => {
     const initial = day();
     const night = domain.beginNight(initial);
     const victim = night.players.find((p) => p.role === "citizen")!.seat;
@@ -325,12 +323,19 @@ describe("federation disciplinary boundaries", () => {
       },
     );
     const result = domain.resolveMafiaShots(removed).game;
-    expect(() => domain.completeMafiaShots(result)).toThrow(/announcement/i);
+    const completed = domain.completeMafiaShots(result);
+    expect(completed.phase).toBe("night-don");
+    expect(completed.disciplinaryRemovals?.[0]).toMatchObject({
+      announcement: "pending",
+      departure: "departed",
+      shotDeath: true,
+    });
+    expect(completed.ballotCancellationDay).toBeUndefined();
     expect(domain.completeMafiaShots(domain.announceDisciplinaryRemovals(result)).phase).toBe(
       "night-don",
     );
   });
-  it("will not advance morning while a required night announcement remains pending", () => {
+  it("advances morning deliberately without inventing a pending night announcement", () => {
     const initial = day();
     const night = domain.beginNight(initial);
     const citizen = night.players.find((p) => p.role === "citizen")!.seat;
@@ -346,10 +351,16 @@ describe("federation disciplinary boundaries", () => {
     );
     if (state.phase === "night-don") state = domain.skipDonCheck(state);
     if (state.phase === "night-sheriff") state = domain.skipSheriffCheck(state);
-    expect(() => domain.completeNight(state)).toThrow(/announcement/i);
+    const completed = domain.completeNight(state);
+    expect(completed).toMatchObject({
+      phase: "day",
+      day: 2,
+      ballotCancellationDay: 2,
+      disciplinaryRemovals: [{ announcement: "pending", departure: "departed" }],
+    });
     expect(domain.completeNight(domain.announceDisciplinaryRemovals(state)).phase).toBe("day");
   });
-  it("publishes immediate day/planning removals through a separate seat-only announcement", () => {
+  it("continues after immediate removal without requiring the retained seat-only announcement event", () => {
     const state = domain.observeDisciplinaryRemoval(day(), {
       seat: 1,
       stage: "day-discussion",
@@ -361,10 +372,77 @@ describe("federation disciplinary boundaries", () => {
     expect(domain.announceDisciplinaryRemovals(state).disciplinaryRemovals?.[0]?.announcement).toBe(
       "announced",
     );
-    expect(() =>
-      domain.applyGameEvent(state, { type: "turn.completed", payload: { seat: 2 } }),
-    ).toThrow(/announcement/i);
+    const continued = domain.applyGameEvent(state, {
+      type: "turn.completed",
+      payload: { seat: 2 },
+    });
+    expect(continued.turnOrder[continued.currentTurnIndex]).toBe(3);
+    expect(continued.disciplinaryRemovals).toEqual(state.disciplinaryRemovals);
   });
+  it("does not bypass an unsettled physical count by completing shots or morning", () => {
+    const night = domain.beginNight(day());
+    const seat = night.players.find((p) => p.role === "citizen")!.seat;
+    const counting = domain.observeDisciplinaryRemoval(night, {
+      seat,
+      stage: "shooting-count",
+      rule: "6.2.3",
+      reason: "",
+      checkInProgress: false,
+    });
+    expect(() => domain.completeMafiaShots(counting)).toThrow();
+    // A restored boundary label cannot settle the physical departure itself.
+    const premature = { ...counting, phase: "night-mafia-result" as const };
+    expect(() => domain.completeMafiaShots(premature)).toThrow(/departure|count/i);
+    expect(() => domain.completeNight({ ...counting, phase: "night-resolution" })).toThrow(
+      /departure|count/i,
+    );
+    expect(counting.disciplinaryRemovals?.[0]?.departure).toBe("pending");
+    expect(domain.resolveMafiaShots(counting).game.disciplinaryRemovals?.[0]).toMatchObject({
+      departure: "departed",
+      announcement: "pending",
+    });
+  });
+  it.each(["don", "sheriff"] as const)(
+    "preserves the underway %s check and departure without an announcement gate",
+    (owner) => {
+      let state = domain.completeMafiaShots(
+        domain.resolveMafiaShots(domain.beginNight(day())).game,
+      );
+      if (owner === "sheriff") state = domain.skipDonCheck(state);
+      const seat = state.players.find((p) => p.role === owner)!.seat;
+      state = domain.observeDisciplinaryRemoval(state, {
+        seat,
+        stage: owner === "don" ? "don-check" : "sheriff-check",
+        rule: "6.2.3",
+        reason: "",
+        checkInProgress: true,
+      });
+      const skip = owner === "don" ? domain.skipDonCheck : domain.skipSheriffCheck;
+      expect(() => skip(state)).toThrow(/underway/i);
+      expect(() => domain.completeNight({ ...state, phase: "night-resolution" })).toThrow(
+        /departure|check/i,
+      );
+      expect(() =>
+        domain.applyGameEvent(state, { type: "phase.changed", payload: { to: "day" } }),
+      ).toThrow();
+      const check = owner === "don" ? domain.performDonCheck : domain.performSheriffCheck;
+      const proceed = owner === "don" ? domain.continueDonCheck : domain.continueSheriffCheck;
+      state = check(state, 1).game;
+      expect(state.disciplinaryRemovals?.[0]?.departure).toBe("pending");
+      state = proceed(state);
+      if (state.phase === "night-sheriff") state = domain.skipSheriffCheck(state);
+      expect(domain.completeNight(state)).toMatchObject({
+        phase: "day",
+        disciplinaryRemovals: [
+          {
+            announcement: "pending",
+            departure: "departed",
+            checkCompletionPending: false,
+          },
+        ],
+      });
+    },
+  );
   it("only accepts recorded timing facts consistent with the current phase", () => {
     expect(() =>
       domain.observeDisciplinaryRemoval(day(), {

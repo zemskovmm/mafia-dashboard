@@ -4,6 +4,10 @@ import { useMessages } from "../../i18n/I18nProvider.js";
 import { gameMessages } from "../../i18n/messages/game.js";
 import { useFancyFeatures } from "../effects/FancyFeaturesContext.js";
 import { playerExitMotion } from "../effects/player-exit-motion.js";
+import { playerDepartureTimeline } from "../effects/player-departure-timeline.js";
+import { synchronizeCardAnimations } from "../effects/synchronize-card-animations.js";
+import type { PlayerDepartureCause } from "../game/player-action-presentation.js";
+import { animateDepartureEffects, DepartureMarks, TornReverse } from "./PlayerDepartureEffects.js";
 import { DEFAULT_PLAYER_EXIT_SETTINGS } from "../effects/player-exit-preferences.js";
 import type { PlayerExitRequest } from "../game/PlayerExitProvider.js";
 import type { PrintedCardStyle, PrintedRolePlacement } from "../theme/player-card-preferences.js";
@@ -22,7 +26,6 @@ type Turn = Readonly<{ fromDown: boolean; fromRole?: Role }> &
 export const PrintedPlayerCard = ({
   style,
   seat,
-  name,
   suit,
   role,
   rolePlacement,
@@ -30,13 +33,13 @@ export const PrintedPlayerCard = ({
   privacyHidden,
   roleDrawRequest,
   exitRequest,
+  departureCause,
   onRoleDrawComplete,
   onExitComplete,
   children,
 }: Readonly<{
   style: PrintedCardStyle;
   seat: number;
-  name: string;
   suit: string;
   role?: Role;
   rolePlacement: PrintedRolePlacement;
@@ -44,6 +47,7 @@ export const PrintedPlayerCard = ({
   privacyHidden: boolean;
   roleDrawRequest?: RoleDrawRequest;
   exitRequest?: PlayerExitRequest;
+  departureCause?: PlayerDepartureCause;
   onRoleDrawComplete?: (id: number) => void;
   onExitComplete?: (id: number) => void;
   children?: ReactNode;
@@ -54,6 +58,7 @@ export const PrintedPlayerCard = ({
   const motionElement = useRef<HTMLSpanElement>(null);
   const outgoing = useRef<HTMLSpanElement>(null);
   const current = useRef<HTMLSpanElement>(null);
+  const publicIdentity = useRef<HTMLSpanElement>(null);
   const [turn, setTurn] = useState<Turn>();
   const active = useRef<Turn>(undefined);
   const previous = useRef<{
@@ -131,7 +136,10 @@ export const PrintedPlayerCard = ({
     if (!turn || active.current !== turn) return;
     const preference = window.matchMedia?.("(prefers-reduced-motion: reduce)");
     const settings = turn.kind === "exit" ? turn.request.settings : DEFAULT_PLAYER_EXIT_SETTINGS;
-    const motion = playerExitMotion(settings);
+    const motion =
+      turn.kind === "exit"
+        ? playerDepartureTimeline(settings, turn.request.cause)
+        : playerExitMotion(settings);
     const startedAt = turn.kind === "privacy" ? turn.startedAt : turn.request.startedAt;
     const elapsed = Math.max(0, performance.now() - startedAt);
     const animations: Animation[] = [];
@@ -152,55 +160,68 @@ export const PrintedPlayerCard = ({
     const settle = () => {
       if (!running || active.current !== turn) return;
       running = false;
-      dispose();
+      // Keep filled native frames until the commit installs the static paper
+      // and public plane; the layout cleanup then releases all tracks together.
       active.current = undefined;
       setTurn(undefined);
       if (turn.kind !== "privacy") finishRequest(turn.kind, turn.request.id);
     };
+    const host = motionElement.current?.closest<HTMLElement>(".player-seat");
     if (
       !fancy ||
       !settings.enabled ||
       document.hidden ||
       preference?.matches ||
-      !motionElement.current?.animate ||
+      !host?.animate ||
       !outgoing.current ||
       !current.current ||
+      !publicIdentity.current ||
       elapsed >= motion.duration
     ) {
       settle();
       return;
     }
+    const cleanup = () => {
+      running = false;
+      dispose();
+    };
     try {
       const options: KeyframeAnimationOptions = {
         duration: motion.duration,
         fill: "both",
         easing: "linear",
       };
+      const publicTurn = motion.turn.map((frame) => {
+        const degrees = Number.parseFloat(String(frame.rotate).split(/\s+/).at(-1) ?? "0");
+        return { ...frame, rotate: `y ${-degrees}deg` };
+      });
       for (const [target, frames] of [
-        [motionElement.current, motion.lift],
-        [motionElement.current, motion.turn],
+        [host, motion.lift],
+        [host, motion.turn],
         [outgoing.current, motion.front],
         [current.current, motion.back],
+        [publicIdentity.current, publicTurn],
       ] as const) {
         const animation = target.animate(frames, options);
         animations.push(animation);
         animation.id = `printed-card-${turn.kind}-${turn.kind === "privacy" ? startedAt : turn.request.id}`;
-        animation.currentTime = elapsed;
       }
+      if (turn.kind === "exit") {
+        animateDepartureEffects(host, host, turn.request, animations);
+      }
+      synchronizeCardAnimations(animations, startedAt);
     } catch {
       // Observe cancellation of any animations started before a later animate() failed.
       void Promise.all(animations.map((animation) => animation.finished)).catch(() => {});
       settle();
-      return;
+      // Register the same commit-owned cleanup even when startup was partial.
+      return cleanup;
     }
     void Promise.all(animations.map((animation) => animation.finished)).then(settle, settle);
     timeout = window.setTimeout(settle, motion.duration - elapsed + 80);
     document.addEventListener("visibilitychange", interrupt);
     preference?.addEventListener?.("change", interrupt);
-    return () => {
-      running = false;
-      dispose();
-    };
+    return cleanup;
   }, [turn, fancy, finishRequest]);
 
   // Never cache revealing markup. This guard applies on the very render that
@@ -212,17 +233,7 @@ export const PrintedPlayerCard = ({
     ) : null;
   const face = (down: boolean, faceRole?: Role) =>
     down ? (
-      <>
-        <img
-          className="printed-player-card__back-art"
-          src={artwork.back}
-          alt=""
-          draggable={false}
-        />
-        <span className="printed-player-card__caption">
-          {seat} · {name}
-        </span>
-      </>
+      <img className="printed-player-card__back-art" src={artwork.back} alt="" draggable={false} />
     ) : (
       <>
         <PrintedFrame style={style} />
@@ -237,17 +248,18 @@ export const PrintedPlayerCard = ({
           </span>
         ))}
         <img className="printed-player-card__art" src={artwork.front} alt="" draggable={false} />
-        <span className="printed-player-card__name-band">
-          <span className="printed-player-card__name">{name}</span>
-          {rolePlacement === "ribbon" ? roleLabel(faceRole) : null}
-        </span>
-        {rolePlacement !== "ribbon" ? roleLabel(faceRole) : null}
+        {rolePlacement === "ribbon" && faceRole ? (
+          <span className="printed-player-card__role-band">{roleLabel(faceRole)}</span>
+        ) : (
+          roleLabel(faceRole)
+        )}
       </>
     );
   return (
     <span
       className={`printed-player-card printed-player-card--${style}`}
       data-down={faceDown}
+      data-turning={turn ? "true" : undefined}
       data-role-placement={rolePlacement}
     >
       <span ref={motionElement} className="printed-player-card__motion">
@@ -258,16 +270,28 @@ export const PrintedPlayerCard = ({
             aria-hidden="true"
           >
             {face(turn.fromDown, turn.fromRole)}
+            <DepartureMarks cause={departureCause} />
           </span>
         ) : null}
         <span
           ref={current}
-          className={`printed-player-card__surface printed-player-card__current${turn ? " printed-player-card__incoming" : ""}`}
+          className={`${departureCause === "vote" ? "player-torn-reverse" : "printed-player-card__surface"} printed-player-card__current${turn ? " printed-player-card__incoming" : ""}`}
         >
-          {face(faceDown, role)}
+          {departureCause === "vote" ? (
+            <TornReverse>
+              <span className="printed-player-card__surface">{face(true)}</span>
+            </TornReverse>
+          ) : (
+            <>
+              {face(faceDown, role)}
+              <DepartureMarks cause={departureCause} />
+            </>
+          )}
         </span>
       </span>
-      <span className="printed-player-card__status">{children}</span>
+      <span ref={publicIdentity} className="printed-player-card__public">
+        <span className="printed-player-card__status">{children}</span>
+      </span>
     </span>
   );
 };

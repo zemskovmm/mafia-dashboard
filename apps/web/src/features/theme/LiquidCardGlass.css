@@ -11,6 +11,40 @@
   border: 0;
   border-radius: inherit;
   pointer-events: none;
+  /* One material, two disconnected regions. This polygon walks each fragment
+     separately, joined by a zero-area bridge along the top edge. Coordinates
+     match PLAYER_TEAR_SEAM_POINTS; only the material is cut/faded, never public
+     identity/status. At tear=0 the complementary regions form an intact card.
+     Keep this projection in sync with the shared normalized geometry. */
+  --player-tear-scale: calc(
+    1 - clamp(2, var(--player-exit-gap, 6), 12) / 100 * clamp(0, var(--player-exit-tear, 0), 1)
+  );
+  --player-tear-clip: polygon(
+    evenodd,
+    0% 0%,
+    calc(50% * var(--player-tear-scale)) 0%,
+    calc(47% * var(--player-tear-scale)) 14%,
+    calc(53% * var(--player-tear-scale)) 28%,
+    calc(48% * var(--player-tear-scale)) 42%,
+    calc(54% * var(--player-tear-scale)) 56%,
+    calc(47% * var(--player-tear-scale)) 70%,
+    calc(52% * var(--player-tear-scale)) 84%,
+    calc(50% * var(--player-tear-scale)) 100%,
+    0% 100%,
+    0% 0%,
+    100% 0%,
+    100% 100%,
+    calc(100% - 50% * var(--player-tear-scale)) 100%,
+    calc(100% - 48% * var(--player-tear-scale)) 84%,
+    calc(100% - 53% * var(--player-tear-scale)) 70%,
+    calc(100% - 46% * var(--player-tear-scale)) 56%,
+    calc(100% - 52% * var(--player-tear-scale)) 42%,
+    calc(100% - 47% * var(--player-tear-scale)) 28%,
+    calc(100% - 53% * var(--player-tear-scale)) 14%,
+    calc(100% - 50% * var(--player-tear-scale)) 0%,
+    100% 0%,
+    0% 0%
+  );
 }
 
 /* Outrank the existing player-seat > :not(.vgpu-player-lighting) rule without
@@ -34,9 +68,14 @@
   inset: 0;
   display: block;
   border-radius: inherit;
+  /* Clip the optical layer itself, not its parent: a parent clip/opacity
+     creates a backdrop root and prevents the existing URL lens from sampling
+     the real scene even on an ordinary intact card. */
+  clip-path: var(--player-tear-clip);
 }
 
 .liquid-card-glass__backdrop {
+  opacity: calc(clamp(0, var(--player-exit-fade, 1), 1) * var(--glass-local-weight, 1));
   background: rgb(
     var(--liquid-state-rgb, 20 26 23) /
       calc(
@@ -110,7 +149,10 @@
 }
 
 .liquid-card-glass__caustics {
-  opacity: calc(0.72 * var(--glass-caustics, 1));
+  opacity: calc(
+    0.72 * var(--glass-caustics, 1) * clamp(0, var(--player-exit-fade, 1), 1) *
+      var(--glass-local-weight, 1)
+  );
   -webkit-mask-image: var(
     --liquid-card-edge-mask,
     radial-gradient(ellipse at center, transparent 60%, #000 100%)
@@ -139,7 +181,10 @@
 /* Only this same-edge rim is stroked. No inner inset border/shadow. */
 .liquid-card-glass__rim {
   border: 1px solid var(--liquid-card-edge-color, #f4f2df66);
-  opacity: var(--glass-edge-highlights, 1);
+  opacity: calc(
+    var(--glass-edge-highlights, 1) * clamp(0, var(--player-exit-fade, 1), 1) *
+      var(--glass-local-weight, 1)
+  );
 }
 
 @supports (mask-composite: exclude) or (-webkit-mask-composite: xor) {
@@ -201,6 +246,13 @@
 }
 .app-shell[data-glass-status="ready"] [data-glass-painted="true"] > .liquid-card-glass {
   visibility: hidden;
+}
+/* The draw updates shared weight before exposing its complementary local
+   optical layers. Keep the material parent opaque so backdrop sampling works. */
+.app-shell[data-glass-status="ready"]
+  [data-glass-painted="true"][data-glass-blending="true"]
+  > .liquid-card-glass {
+  visibility: visible;
 }
 
 /* Master OFF is a static material, not the expensive local optics fallback.

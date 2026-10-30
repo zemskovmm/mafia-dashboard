@@ -1,6 +1,9 @@
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useFancyFeatures } from "../effects/FancyFeaturesContext.js";
-import { playerExitMotion } from "../effects/player-exit-motion.js";
+import { playerDepartureTimeline } from "../effects/player-departure-timeline.js";
+import { synchronizeCardAnimations } from "../effects/synchronize-card-animations.js";
+import type { PlayerDepartureCause } from "../game/player-action-presentation.js";
+import { animateDepartureEffects, DepartureMarks, TornReverse } from "./PlayerDepartureEffects.js";
 import type { PlayerExitRequest } from "../game/PlayerExitProvider.js";
 import "./PlayerExitAnimation.css";
 
@@ -8,11 +11,16 @@ import "./PlayerExitAnimation.css";
 export const PlayerExitAnimation = ({
   request,
   deceased,
+  departureCause,
+  reverse,
   onComplete,
   children,
 }: Readonly<{
   request?: PlayerExitRequest;
   deceased: boolean;
+  departureCause?: PlayerDepartureCause;
+  /** Public status only; player names and role artwork belong to the front. */
+  reverse: ReactNode;
   onComplete: (id: number) => void;
   children: ReactNode;
 }>) => {
@@ -27,10 +35,11 @@ export const PlayerExitAnimation = ({
     complete.current = onComplete;
   });
   useLayoutEffect(() => {
-    if (!request) return;
+    if (!request || suppressedRequest === request) return;
     const finish = () => {
       if (completedRequest.current === request) return;
       completedRequest.current = request;
+      setSuppressedRequest(request);
       complete.current(request.id);
     };
     if (!fancy) {
@@ -54,7 +63,7 @@ export const PlayerExitAnimation = ({
       finish();
       return;
     }
-    const motion = playerExitMotion(request.settings);
+    const motion = playerDepartureTimeline(request.settings, request.cause);
     const elapsed = Math.max(0, performance.now() - request.startedAt);
     if (elapsed >= motion.duration) {
       finish();
@@ -65,25 +74,41 @@ export const PlayerExitAnimation = ({
       fill: "both",
       easing: "linear",
     };
-    const animations = [
-      card.animate(motion.lift, options),
-      card.animate(motion.turn, options),
-      front.current.animate(motion.front, options),
-      back.current.animate(motion.back, options),
-      card.animate(
-        [
-          { opacity: 1, offset: 0, easing: "steps(1, end)" },
-          { opacity: 0.48, offset: motion.edge },
-          { opacity: 0.48, offset: 1 },
-        ],
-        options,
-      ),
-    ];
-    for (const animation of animations) {
-      animation.id = `player-exit-${request.id}`;
-      animation.currentTime = elapsed;
-    }
+    const animations: Animation[] = [];
     let active = true;
+    let timeout: number | undefined;
+    const interrupt = () => {
+      if (document.hidden || motionPreference?.matches) finish();
+    };
+    const cleanup = () => {
+      active = false;
+      window.clearTimeout(timeout);
+      timeout = undefined;
+      animations.forEach((animation) => animation.cancel());
+      document.removeEventListener("visibilitychange", interrupt);
+      motionPreference?.removeEventListener?.("change", interrupt);
+    };
+    try {
+      for (const [target, frames] of [
+        [card, motion.lift],
+        [card, motion.turn],
+        [front.current, motion.front],
+        [back.current, motion.back],
+      ] as const)
+        animations.push(target.animate(frames, options));
+      for (const material of card.querySelectorAll<HTMLElement>(":scope > .liquid-card-glass"))
+        animations.push(material.animate(motion.material, options));
+      animateDepartureEffects(card, card, request, animations);
+      for (const animation of animations) animation.id = `player-exit-${request.id}`;
+      synchronizeCardAnimations(animations, request.startedAt);
+    } catch {
+      for (const animation of animations) {
+        void animation.finished.catch(() => {});
+      }
+      finish();
+      // Even partial startup retains its frames until the static React commit.
+      return cleanup;
+    }
     void Promise.all(animations.map((animation) => animation.finished)).then(
       () => {
         if (active) finish();
@@ -92,35 +117,47 @@ export const PlayerExitAnimation = ({
         if (active) finish();
       },
     );
-    const interrupt = () => {
-      if (document.hidden || motionPreference?.matches) finish();
-    };
+    timeout = window.setTimeout(finish, motion.duration - elapsed + 80);
     document.addEventListener("visibilitychange", interrupt);
-    motionPreference?.addEventListener("change", interrupt);
-    return () => {
-      active = false;
-      animations.forEach((animation) => animation.cancel());
-      document.removeEventListener("visibilitychange", interrupt);
-      motionPreference?.removeEventListener("change", interrupt);
-    };
-  }, [request, fancy]);
+    motionPreference?.addEventListener?.("change", interrupt);
+    return cleanup;
+  }, [request, fancy, suppressedRequest]);
 
   const cross = <span className="deceased-cross" aria-hidden="true" />;
+  const known = deceased && departureCause && departureCause !== "unknown";
+  const neutral = (
+    <>
+      <span className="player-exit-decoration" aria-hidden="true">
+        {/* The host's single Glass material owns the reverse, including its tear.
+            Only cause-specific marks belong above it, never an inset card frame. */}
+        {departureCause === "vote" ? <TornReverse>{null}</TornReverse> : null}
+        <DepartureMarks cause={departureCause} />
+      </span>
+      {reverse}
+    </>
+  );
   if (!presentingRequest)
     return (
       <>
-        {children}
-        {deceased ? cross : null}
+        {known ? neutral : children}
+        {deceased && !known ? cross : null}
       </>
     );
   return (
     <>
       <span ref={front} className="player-exit-face player-exit-front" aria-hidden="true">
         {children}
+        <DepartureMarks cause={departureCause} />
       </span>
       <span ref={back} className="player-exit-face player-exit-back" aria-hidden="true">
-        {children}
-        {cross}
+        {known ? (
+          neutral
+        ) : (
+          <>
+            {reverse}
+            {cross}
+          </>
+        )}
       </span>
     </>
   );

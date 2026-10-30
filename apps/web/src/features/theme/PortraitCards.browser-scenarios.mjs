@@ -29,7 +29,7 @@ async function layout(page) {
         card: r(node),
         workspace: r(node.closest(".table-workspace")),
         role: r(node.querySelector(".player-role-icon")),
-        name: r(node.querySelector(".seat-name")),
+        name: r(node.parentElement.querySelector(":scope > .player-seat-caption")),
         indices: [...node.querySelectorAll(".card-index")].map((el) => ({
           rect: r(el),
           text: el.textContent,

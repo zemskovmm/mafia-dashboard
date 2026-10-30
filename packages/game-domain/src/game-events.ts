@@ -1713,20 +1713,6 @@ const applyDisciplineContext = (
 const applyValidatedGameEvent = (game: GameState, event: CanonicalGameEventDraft): GameState => {
   assertCanonicalGameEventDraft(event);
   if (
-    game.disciplinaryRemovals?.some(
-      (r) =>
-        r.announcement === "pending" &&
-        !["shooting-count", "don-check", "sheriff-check"].includes(r.stage),
-    ) &&
-    ![
-      "discipline.removals-announced",
-      "discipline.removal-observed",
-      "game.checkpointed",
-      "game.adjudicated",
-    ].includes(event.type)
-  )
-    throw new Error("An immediate public removal announcement is required before further gameplay");
-  if (
     isTerminalGamePhase(game.phase) &&
     event.type !== "game.checkpointed" &&
     !(game.phase === "finished" && event.type === "game.completed") &&

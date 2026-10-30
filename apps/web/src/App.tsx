@@ -109,6 +109,7 @@ import {
 } from "./features/effects/lighting-preferences.js";
 import { VgpuLightingProvider } from "./features/effects/vgpu/VgpuLightingProvider.js";
 import { GameScreen } from "./features/game/GameScreen.js";
+import { projectPlayerActions } from "./features/game/player-action-presentation.js";
 import { GlassControls, type GlassStatus } from "./features/developer/GlassControls.js";
 import { AppBackgroundProvider, useAppBackground } from "./features/theme/AppBackground.js";
 import {
@@ -866,6 +867,14 @@ const ClubWorkspaceContent = ({
   const undoBudget = finalResults === null ? undoHistory.length : 0;
   const undoCount = undoBudget;
   const previewEntry = events.find(({ id }) => id === previewTargetEventId);
+  const presentationFrames = currentTimelineHistory?.frames ?? [];
+  const displayedPresentationFrames =
+    previewTargetEventId === null
+      ? presentationFrames
+      : presentationFrames.slice(
+          0,
+          presentationFrames.findIndex((frame) => frame.entry.id === previewTargetEventId) + 1,
+        );
   const renderedGameScreenMutationGeneration = gameScreenMutationGenerationRef.current;
   const canApplyGameScreenMutation = () =>
     !sessionSync.isCreating &&
@@ -2842,6 +2851,10 @@ const ClubWorkspaceContent = ({
           key={`${previewGame === null ? "live" : "preview"}-${renderedGameScreenMutationGeneration}`}
           game={previewGame ?? game}
           playerExitSettings={playerExit}
+          playerPresentation={projectPlayerActions(
+            displayedPresentationFrames,
+            previewGame ?? game,
+          )}
           gameName={sessionName}
           hostName={
             hostPlayerId === null

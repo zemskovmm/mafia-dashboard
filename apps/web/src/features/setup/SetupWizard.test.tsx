@@ -960,7 +960,11 @@ describe("SetupWizard federation setup", () => {
       const card = screen.getByRole("button", { name: "Draw role for Player 2" });
       card.focus();
       fireEvent.click(card);
-      expect(animate).toHaveBeenCalledTimes(4);
+      expect(animate).toHaveBeenCalledTimes(6);
+      expect(animate.mock.contexts.slice(4)).toEqual([
+        card.querySelector(":scope > .liquid-card-glass"),
+        card.querySelector(":scope > .role-draw-glow"),
+      ]);
       expect(card).toHaveFocus();
       expect(card).toHaveClass("is-role-dealt");
       const drawnRole = onSessionStateChange.mock.lastCall![0].setup.assignments[2];
@@ -972,9 +976,9 @@ describe("SetupWizard federation setup", () => {
       expect(onSessionStateChange.mock.lastCall![0]).not.toHaveProperty("roleDrawRequests");
       fireEvent.click(card);
       fireEvent.click(card);
-      expect(animate).toHaveBeenCalledTimes(4);
+      expect(animate).toHaveBeenCalledTimes(6);
       fireEvent.click(card);
-      expect(animate).toHaveBeenCalledTimes(8);
+      expect(animate).toHaveBeenCalledTimes(12);
       expect(onSessionStateChange.mock.lastCall![0].setup.assignments[2]).toBe(drawnRole);
       expect(onEvent).toHaveBeenLastCalledWith("setup.role-rerolled", {
         seat: 2,
@@ -983,11 +987,11 @@ describe("SetupWizard federation setup", () => {
       });
       rerender(<SetupWizard {...props} previewUndealtRoles persistencePending />);
       fireEvent.click(card);
-      expect(animate).toHaveBeenCalledTimes(8);
+      expect(animate).toHaveBeenCalledTimes(12);
       const saved = onSessionStateChange.mock.lastCall![0] as SetupWizardSessionState;
       unmount();
       render(<SetupWizard {...props} initialSessionState={saved} />);
-      expect(animate).toHaveBeenCalledTimes(8);
+      expect(animate).toHaveBeenCalledTimes(12);
     } finally {
       random.mockRestore();
       if (descriptor) Object.defineProperty(HTMLElement.prototype, "animate", descriptor);

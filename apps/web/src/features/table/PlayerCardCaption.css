@@ -1,0 +1,17 @@
+/* Absolute placement keeps the seat anchor's height and circular orbit intact. */
+.player-seat-caption.seat-name {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  width: 100%;
+  height: 16px;
+  display: block;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: rgb(12 15 18 / 86%);
+  color: var(--text);
+  font-size: clamp(0.67rem, 1vw, 0.82rem);
+  line-height: 16px;
+  text-align: center;
+  pointer-events: none;
+}

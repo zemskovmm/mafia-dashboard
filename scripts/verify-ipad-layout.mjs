@@ -171,9 +171,9 @@ export async function verifyIpadLayout(
     );
   }
 
-  const ordinaryNickname = (await page.locator(".player-seat .seat-name").allTextContents()).find(
-    (name) => name !== longNickname,
-  );
+  const ordinaryNickname = (
+    await page.locator(".seat-anchor > .player-seat-caption").allTextContents()
+  ).find((name) => name !== longNickname);
   for (const nickname of [longNickname, ordinaryNickname]) {
     await page.getByRole("button", { name: `Nominate ${nickname}`, exact: true }).click();
     await page.getByRole("button", { name: "Next player", exact: true }).click();

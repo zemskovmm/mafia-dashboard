@@ -1,5 +1,7 @@
 // One WebGL1 scene for all optical surfaces. No DOM/video capture.
 // Background and displaced lens samples call the exact same scene function.
+import { PLAYER_TEAR_SEAM_POINTS } from "../effects/player-tear-geometry.js";
+
 export type SceneRect = readonly [number, number, number, number];
 export interface GlassSurfaceGeometry {
   readonly rect: SceneRect;
@@ -9,6 +11,8 @@ export interface GlassSurfaceGeometry {
   readonly tintAmount?: number;
   readonly selectionFinish?: number;
   readonly opacity: number;
+  /** Gap is total original-width percent; both clipped halves stay in rect. */
+  readonly tear?: { readonly progress: number; readonly gap: number };
   readonly roundedClips?: readonly { readonly rect: SceneRect; readonly radius: number }[];
 }
 export interface GlassSceneGeometry {
@@ -73,9 +77,38 @@ uniform float u_edgeHighlights;
 uniform float u_caustics;
 uniform float u_lens;
 uniform float u_selectionFinish;
+uniform float u_tear;
+uniform float u_tearGap;
 float sdRound(vec2 p,vec4 r,float radius){
  vec2 q=abs(p-r.xy-r.zw*.5)-(r.zw*.5-vec2(radius));
  return length(max(q,0.0))+min(max(q.x,q.y),0.0)-radius;
+}
+void tearSegment(vec2 p,vec2 a,vec2 b,inout float distance,inout float seamX){
+ vec2 edge=b-a;
+ distance=min(distance,length(p-a-edge*clamp(dot(p-a,edge)/dot(edge,edge),0.0,1.0)));
+ if(p.y>=a.y && p.y<=b.y)seamX=mix(a.x,b.x,clamp((p.y-a.y)/(b.y-a.y),0.0,1.0));
+}
+float sdFragment(vec2 p,float side){
+ // Full-card clipped halves are compressed toward their own exterior edges.
+ // The two corresponding seam points are always exactly gap*tear apart.
+ float scale=1.0-u_tearGap*u_tear;
+ float offset=side>0.0?0.0:1.0-scale;
+ vec2 local=p;
+ local.x=u_rect.x+(p.x-u_rect.x-offset*u_rect.z)/scale;
+ float outer=sdRound(local,u_rect,u_radius)*scale;
+ float distance=1.0e20;
+ float seamX=u_rect.x+u_rect.z*(.5*scale+offset);
+ ${PLAYER_TEAR_SEAM_POINTS.slice(1)
+   .map((point, index) => {
+     const previous = PLAYER_TEAR_SEAM_POINTS[index]!;
+     return `tearSegment(p,u_rect.xy+u_rect.zw*vec2(${previous[0]}*scale+offset,${previous[1].toFixed(2)}),u_rect.xy+u_rect.zw*vec2(${point[0]}*scale+offset,${point[1].toFixed(2)}),distance,seamX);`;
+   })
+   .join("\n ")}
+ return max(outer,distance*(p.x<seamX?-side:side));
+}
+float sdSurface(vec2 p){
+ if(u_tear>0.0)return min(sdFragment(p,1.0),sdFragment(p,-1.0));
+ return sdRound(p,u_rect,u_radius);
 }
 float spot(vec2 uv,vec2 center,float size){return exp(-dot(uv-center,uv-center)/(size*size));}
 vec3 scene(vec2 p){
@@ -120,7 +153,7 @@ vec3 scene(vec2 p){
 void main(){
  vec2 p=vec2(gl_FragCoord.x/u_resolution.x*u_view.x,(1.0-gl_FragCoord.y/u_resolution.y)*u_view.y);
  if(u_lens<.5){gl_FragColor=vec4(scene(p),1.0);return;}
- float d=sdRound(p,u_rect,u_radius);
+ float d=sdSurface(p);
  if(d>0.0)discard;
  for(int i=0;i<4;i++){
   if(u_clips[i].z>0.0 && sdRound(p,u_clips[i],u_clipRadii[i])>0.0)discard;
@@ -129,9 +162,11 @@ void main(){
  vec2 q=p-u_rect.xy-u_rect.zw*.5;
  vec2 normal=normalize(q/(u_rect.zw*.5)+vec2(.00001));
  float amount=u_strength*(.20+edge*.80);
+ if(u_profile>.5 || u_tear>0.0){
+  normal=normalize(vec2(sdSurface(p+vec2(.5,0.0))-sdSurface(p-vec2(.5,0.0)),
+   sdSurface(p+vec2(0.0,.5))-sdSurface(p-vec2(0.0,.5)))+vec2(.00001));
+ }
  if(u_profile>.5){
-  normal=normalize(vec2(sdRound(p+vec2(.5,0.0),u_rect,u_radius)-sdRound(p-vec2(.5,0.0),u_rect,u_radius),
-   sdRound(p+vec2(0.0,.5),u_rect,u_radius)-sdRound(p-vec2(0.0,.5),u_rect,u_radius))+vec2(.00001));
   float band=min(18.0,min(u_rect.z,u_rect.w)*.25);
   float t=clamp(1.0+d/band,0.0,1.0);
   amount=u_strength*t*t*(3.0-2.0*t);
@@ -326,6 +361,8 @@ export const createGlassRenderer = (
         scalar("u_tintAmount", scene.tintAmount);
         scalar("u_edgeHighlights", scene.edgeHighlights);
         scalar("u_caustics", scene.caustics);
+        scalar("u_tear", 0);
+        scalar("u_tearGap", 0);
         scalar("u_lens", 0);
         gl.disable(gl.SCISSOR_TEST);
         gl.disable(gl.BLEND);
@@ -345,6 +382,10 @@ export const createGlassRenderer = (
           rect("u_rect", surface.rect);
           scalar("u_radius", surface.radius);
           scalar("u_selectionFinish", surface.selectionFinish ?? 0);
+          // Optional geometry must never leak into a subsequent ordinary host
+          // or frame. Keep one draw/registration/resource for the union.
+          scalar("u_tear", surface.tear?.progress ?? 0);
+          scalar("u_tearGap", (surface.tear?.gap ?? 0) / 100);
           scalar("u_opacity", surface.opacity);
           rgb("u_tint", surface.tint);
           scalar("u_tintAmount", surface.tintAmount ?? scene.tintAmount);

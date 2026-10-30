@@ -20,7 +20,13 @@ const fixture = (motion: RoleDrawRequest | undefined, complete: (id: number) => 
 
 describe("RoleDrawPresentation", () => {
   const descriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "animate");
-  let animations: Array<{ cancel: ReturnType<typeof vi.fn>; resolve: () => void }>;
+  const timelineDescriptor = Object.getOwnPropertyDescriptor(document, "timeline");
+  let animations: Array<{
+    cancel: ReturnType<typeof vi.fn>;
+    resolve: () => void;
+    startTime: number | null;
+    currentTime: number | null;
+  }>;
   let animate: ReturnType<typeof vi.fn>;
   let reduced: boolean;
   let change: (() => void) | undefined;
@@ -43,10 +49,18 @@ describe("RoleDrawPresentation", () => {
     );
     animate = vi.fn(() => {
       let resolve!: () => void;
-      const finished = new Promise<void>((done) => {
+      let reject!: (error: Error) => void;
+      const finished = new Promise<void>((done, fail) => {
         resolve = done;
+        reject = fail;
       });
-      const animation = { finished, cancel: vi.fn(), resolve };
+      const animation = {
+        finished,
+        cancel: vi.fn(() => reject(new Error("Animation cancelled"))),
+        resolve,
+        startTime: null as number | null,
+        currentTime: null as number | null,
+      };
       animations.push(animation);
       return animation;
     });
@@ -56,9 +70,89 @@ describe("RoleDrawPresentation", () => {
     cleanup();
     if (descriptor) Object.defineProperty(HTMLElement.prototype, "animate", descriptor);
     else Reflect.deleteProperty(HTMLElement.prototype, "animate");
+    if (timelineDescriptor) Object.defineProperty(document, "timeline", timelineDescriptor);
+    else Reflect.deleteProperty(document, "timeline");
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     vi.useRealTimers();
+  });
+
+  it("anchors every reveal track to the accepted request's native epoch", () => {
+    vi.spyOn(performance, "now").mockReturnValue(100);
+    Object.defineProperty(document, "timeline", {
+      configurable: true,
+      value: { currentTime: 100 },
+    });
+    render(fixture({ ...request(), startedAt: 80 }, vi.fn()));
+    expect(animations).toHaveLength(4);
+    expect(animations.map(({ startTime }) => startTime)).toEqual(Array(4).fill(80));
+    expect(animations.every(({ currentTime }) => currentTime === null)).toBe(true);
+  });
+
+  it("commits the retained request's upright current face before releasing filled effects", async () => {
+    const snapshots: boolean[] = [];
+    let retainedAtCompletion = false;
+    const complete = vi.fn(() => {
+      retainedAtCompletion = animations.every(({ cancel }) => cancel.mock.calls.length === 0);
+    });
+    const motion = request(91);
+    const { container, rerender } = render(fixture(motion, complete));
+    const current = container.querySelector(".role-draw-face--back");
+    const host = container.querySelector("button");
+    for (const animation of animations) {
+      const cancel = animation.cancel.getMockImplementation() as () => void;
+      animation.cancel.mockImplementation(() => {
+        snapshots.push(
+          container.querySelector(".role-draw-face--front,.role-draw-face--back") === null,
+        );
+        cancel();
+      });
+    }
+    await act(async () => animations.forEach(({ resolve }) => resolve()));
+    expect(complete).toHaveBeenCalledExactlyOnceWith(91);
+    expect(retainedAtCompletion).toBe(true);
+    expect(snapshots).toEqual(Array(4).fill(true));
+    expect(container.querySelector("button")).toBe(host);
+    expect(container.querySelector(".role-draw-face")).toBe(current);
+    expect(animations.every(({ cancel }) => cancel.mock.calls.length === 1)).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+    rerender(fixture(motion, complete));
+    expect(animate).toHaveBeenCalledTimes(4);
+    expect(complete).toHaveBeenCalledTimes(1);
+  });
+
+  it("commits static reveal after partial startup before cancellation without replay", async () => {
+    const snapshots: boolean[] = [];
+    let retainedAtCompletion = false;
+    const complete = vi.fn(() => {
+      retainedAtCompletion = animations.every(({ cancel }) => cancel.mock.calls.length === 0);
+    });
+    const start = animate.getMockImplementation() as () => (typeof animations)[number];
+    animate.mockImplementationOnce(() => {
+      const animation = start();
+      const cancel = animation.cancel.getMockImplementation() as () => void;
+      animation.cancel.mockImplementation(() => {
+        snapshots.push(
+          document.querySelector(".role-draw-face--front,.role-draw-face--back") === null,
+        );
+        cancel();
+      });
+      return animation;
+    });
+    animate.mockImplementationOnce(() => {
+      throw new Error("Unsupported rotation");
+    });
+    const motion = request(92);
+    const { container, rerender } = render(fixture(motion, complete));
+    expect(complete).toHaveBeenCalledExactlyOnceWith(92);
+    expect(retainedAtCompletion).toBe(true);
+    expect(snapshots).toEqual([true]);
+    expect(animations[0]!.cancel).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".role-draw-face")).toHaveTextContent("sheriff");
+    rerender(fixture(motion, complete));
+    expect(animate).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+    await act(async () => {});
   });
 
   it("does not animate an initial or ordinary rerendered role", () => {
@@ -143,7 +237,7 @@ describe("RoleDrawPresentation", () => {
       animations.forEach((animation) => animation.resolve());
     });
     expect(complete).toHaveBeenCalledExactlyOnceWith(1);
-    expect(animations.every((animation) => animation.cancel.mock.calls.length === 0)).toBe(true);
+    expect(animations.every((animation) => animation.cancel.mock.calls.length === 1)).toBe(true);
     rerender(fixture(undefined, complete));
     expect(container.querySelector(".role-draw-face--front")).toBeNull();
     expect(container.querySelector(".role-draw-face")).toBe(currentFace);

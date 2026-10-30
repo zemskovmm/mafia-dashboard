@@ -8,7 +8,6 @@ const en = {
   "best.timer": "20 seconds",
   "best.skip": "Skip Best Move",
   "best.record": "Record Best Move",
-  "best.finalized": "Best Move recorded",
 } as const satisfies Record<string, Message>;
 const ru = {
   "best.prompt": "Выберите трёх других игроков",
@@ -18,6 +17,5 @@ const ru = {
   "best.timer": "20 секунд",
   "best.skip": "Пропустить лучший ход",
   "best.record": "Записать лучший ход",
-  "best.finalized": "Лучший ход записан",
 } as const satisfies Record<keyof typeof en, Message>;
 export const federationBestMoveMessages = { en, ru } as const;

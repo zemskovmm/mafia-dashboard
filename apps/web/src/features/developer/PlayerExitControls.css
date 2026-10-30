@@ -1,0 +1,31 @@
+/* Only the harmless developer sample; real card skins stay in their renderers. */
+.player-exit-controls .player-exit-preview.table-stage {
+  position: relative;
+  display: block;
+  flex: none;
+  width: 126px;
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+  margin: 18px auto 46px;
+}
+.player-exit-controls .player-exit-preview .player-seat {
+  position: relative;
+  width: 100%;
+}
+.player-exit-resolved-timing {
+  display: grid;
+  gap: 6px;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+.player-exit-resolved-timing p {
+  margin: 0;
+  color: var(--muted);
+}
+.player-exit-controls .player-exit-preview-result {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}

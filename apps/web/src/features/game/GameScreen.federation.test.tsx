@@ -551,6 +551,17 @@ describe("federation GameScreen table shortcuts", () => {
         type: "discipline.removal-observed",
         payload: { rule: "6.2.2", reason: "" },
       });
+      expect(accepted).toHaveBeenCalledOnce();
+      expect(
+        screen.queryByRole("button", { name: /Announce removal|Объявить удаление/ }),
+      ).toBeNull();
+      expect(document.querySelector(".federation-announcements")).toBeNull();
+      const next = screen.getByRole("button", {
+        name: locale === "en" ? "Next player" : "Следующий игрок",
+      });
+      expect(next).toBeEnabled();
+      await user.click(next);
+      expect(accepted.mock.lastCall?.[0].type).toBe("turn.completed");
     },
   );
   it.each(["en", "ru"] as const)(
@@ -763,7 +774,10 @@ describe("federation GameScreen table shortcuts", () => {
       });
       expect(changed.mock.lastCall?.[0].bestMove.readbackAcknowledged).toBeUndefined();
       expect(accepted.mock.lastCall?.[0]).toEqual({ type: "best-move.recorded", payload: {} });
-      expect(document.querySelector(".federation-transcript button")).toBeNull();
+      expect(document.querySelector(".federation-transcript")).toBeNull();
+      expect(
+        screen.queryByText(locale === "en" ? "Best Move recorded" : "Лучший ход записан"),
+      ).toBeNull();
       expect(screen.queryByRole("dialog")).toBeNull();
       await user.click(
         screen.getByRole("button", {
@@ -778,8 +792,32 @@ describe("federation GameScreen table shortcuts", () => {
       expect(
         accepted.mock.calls.filter(([event]) => event.type === "best-move.recorded"),
       ).toHaveLength(1);
+      expect(document.querySelector(".federation-transcript")).toBeNull();
     },
   );
+
+  it("keeps a restored recorded Best Move in state without displaying its result on the table", () => {
+    let initial = bestMove();
+    for (const player of initial.players
+      .filter((p) => p.seat !== initial.bestMove!.playerSeat)
+      .slice(0, 3)) {
+      initial = applyGameEvent(initial, {
+        type: "best-move.selection-toggled",
+        payload: { seat: player.seat },
+      });
+    }
+    initial = applyGameEvent(initial, { type: "best-move.recorded", payload: {} });
+    const accepted = vi.fn();
+    const changed = vi.fn();
+    render(<Harness initial={initial} accepted={accepted} changed={changed} />);
+    expect(initial.bestMove?.completionReason).toBe("complete-list");
+    expect(initial.bestMove?.selectedSeats).toHaveLength(3);
+    expect(document.querySelector(".federation-transcript")).toBeNull();
+    expect(screen.queryByText("Best Move recorded")).toBeNull();
+    expect(screen.getByRole("button", { name: "Announce morning" })).toBeEnabled();
+    expect(accepted).not.toHaveBeenCalled();
+    expect(changed).not.toHaveBeenCalled();
+  });
 
   it.each([0, 1, 2, 3])(
     "skips immediately with %i tentative selections and no result",
@@ -879,7 +917,7 @@ describe("federation GameScreen table shortcuts", () => {
     expect(screen.getByRole("button", { name: "Skip Best Move" })).toBeEnabled();
   });
 
-  it("does not enable Finish Game while a terminal removal still needs its public announcement", async () => {
+  it("allows Finish Game after terminal removal without an announcement acknowledgement", async () => {
     const user = userEvent.setup();
     let initial = day();
     for (const player of initial.players.filter((p) => p.role === "mafia")) {
@@ -923,9 +961,10 @@ describe("federation GameScreen table shortcuts", () => {
         finishGameState="ready"
       />,
     );
-    expect(screen.getByRole("button", { name: "Finish the game" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /Announce removal/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "Finish the game" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "Finish the game" }));
-    expect(finish).not.toHaveBeenCalled();
+    expect(finish).toHaveBeenCalledOnce();
   });
 
   it("shows nomination-only entitlement without consuming it on timer expiry", () => {
@@ -981,7 +1020,7 @@ describe("federation GameScreen table shortcuts", () => {
   });
 
   it.each(["shooting-count"])(
-    "records displayed %s occurrence and waits for a legal public announcement",
+    "records displayed %s occurrence and settles departure through actual shot evaluation",
     async (stage) => {
       const user = userEvent.setup();
       const initial = beginNight(day());
@@ -1015,20 +1054,19 @@ describe("federation GameScreen table shortcuts", () => {
           },
         ],
       });
-      const announce = screen.getByRole("button", { name: "Announce removal of Player 1" });
-      if (stage === "before-shooting-count") {
-        expect(screen.getByRole("button", { name: "Evaluate Mafia shots" })).toBeDisabled();
-        await user.click(announce);
-        expect(screen.getByRole("button", { name: "Evaluate Mafia shots" })).toBeEnabled();
-        expect(accepted.mock.lastCall?.[0]).toEqual({
-          type: "discipline.removals-announced",
-          payload: { seats: [1] },
-        });
-      } else {
-        expect(announce).toBeDisabled();
-        await user.click(screen.getByRole("button", { name: "Evaluate Mafia shots" }));
-        expect(screen.getByRole("button", { name: "Announce removal of Player 1" })).toBeEnabled();
-      }
+      expect(screen.queryByRole("button", { name: /Announce removal/ })).toBeNull();
+      expect(accepted).toHaveBeenCalledOnce();
+      await user.click(screen.getByRole("button", { name: "Evaluate Mafia shots" }));
+      expect(changed.mock.lastCall?.[0].disciplinaryRemovals[0]).toMatchObject({
+        departure: "departed",
+        announcement: "pending",
+      });
+      expect(screen.getByRole("button", { name: "Continue night" })).toBeEnabled();
+      await user.click(screen.getByRole("button", { name: "Continue night" }));
+      expect(changed.mock.lastCall?.[0].phase).not.toBe("night-mafia-result");
+      expect(
+        accepted.mock.calls.some(([event]) => event.type === "discipline.removals-announced"),
+      ).toBe(false);
     },
   );
 
@@ -1078,12 +1116,17 @@ describe("federation GameScreen table shortcuts", () => {
     expect(
       changed.mock.lastCall?.[0].players.find((p: { seat: number }) => p.seat === 2),
     ).toMatchObject({ fouls: 4, status: "red-carded" });
-    expect(screen.getByRole("button", { name: "Next player" })).toBeDisabled();
-    await user.click(screen.getByRole("button", { name: "Announce removal of Player 2" }));
+    expect(screen.queryByRole("button", { name: /Announce removal/ })).toBeNull();
+    expect(accepted).toHaveBeenCalledOnce();
     expect(screen.getByRole("button", { name: "Next player" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Next player" }));
+    expect(accepted.mock.lastCall?.[0].type).toBe("turn.completed");
+    expect(changed.mock.lastCall?.[0].turnOrder[changed.mock.lastCall?.[0].currentTurnIndex]).toBe(
+      3,
+    );
   });
 
-  it("preserves an underway Don check then requires a separate public announcement before morning", async () => {
+  it("preserves an underway Don check without requiring an announcement acknowledgement before morning", async () => {
     const user = userEvent.setup();
     const initial = completeMafiaShots(resolveMafiaShots(beginNight(day())).game);
     const owner = initial.players.find((p) => p.role === "don")!;
@@ -1101,18 +1144,23 @@ describe("federation GameScreen table shortcuts", () => {
       screen.getByRole("checkbox", { name: "This player's check was already underway" }),
     );
     await user.click(screen.getByRole("button", { name: "Confirm discipline" }));
-    expect(
-      screen.getByRole("button", { name: "Announce removal of Player " + owner.seat }),
-    ).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /Announce removal/ })).toBeNull();
+    expect(changed.mock.lastCall?.[0].disciplinaryRemovals[0]).toMatchObject({
+      departure: "pending",
+      checkCompletionPending: true,
+      announcement: "pending",
+    });
     expect(screen.getByRole("button", { name: "Skip Don check" })).toBeDisabled();
     const target = initial.players.find((p) => p.seat !== owner.seat)!;
     await user.click(screen.getByRole("button", { name: "Don check Player " + target.seat }));
     await user.click(screen.getByRole("button", { name: "Proceed to Sheriff check" }));
     await user.click(screen.getByRole("button", { name: "Skip Sheriff check" }));
-    expect(screen.getByRole("button", { name: "Announce morning" })).toBeDisabled();
-    await user.click(
-      screen.getByRole("button", { name: "Announce removal of Player " + owner.seat }),
-    );
+    expect(changed.mock.lastCall?.[0].disciplinaryRemovals[0]).toMatchObject({
+      departure: "departed",
+      checkCompletionPending: false,
+      announcement: "pending",
+    });
+    expect(screen.getByRole("button", { name: "Announce morning" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "Announce morning" }));
     expect(changed.mock.lastCall?.[0]).toMatchObject({
       phase: "day",
@@ -1144,8 +1192,10 @@ describe("federation GameScreen table shortcuts", () => {
     expect(
       changed.mock.lastCall?.[0].players.filter((p: { status: string }) => p.status !== "active"),
     ).toHaveLength(1);
-    await user.click(screen.getByRole("button", { name: `Announce removal of Player ${victim}` }));
+    expect(screen.queryByRole("button", { name: /Announce removal/ })).toBeNull();
     expect(screen.getByRole("button", { name: "Begin day 1" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Begin day 1" }));
+    expect(changed.mock.lastCall?.[0].phase).toBe("day");
   });
 
   it("labels a later sole nominee departure instead of promising an unnecessary open ballot", () => {

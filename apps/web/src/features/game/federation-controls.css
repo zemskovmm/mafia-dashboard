@@ -14,12 +14,6 @@
   font-size: 0.8rem;
 }
 
-.federation-announcements {
-  display: flex;
-  gap: 0.35rem;
-  flex-wrap: wrap;
-  align-items: center;
-}
 .federation-discipline button,
 .federation-shooting-observation button {
   min-height: 48px;

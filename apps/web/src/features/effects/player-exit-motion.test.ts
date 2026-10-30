@@ -26,6 +26,11 @@ describe("player exit motion", () => {
       expect(motion.flipStart).toBe((100 / 580) * (1 - overlap / 100));
       expect(motion.lift).toEqual(playerExitMotion(defaults).lift);
       expect(motion.turn.at(-1)).toEqual({ rotate: "y 180deg", offset: 1 });
+      expect(motion.material).toEqual([
+        { scale: "1 1", offset: 0, easing: "steps(1, end)" },
+        { scale: "-1 1", offset: motion.edge },
+        { scale: "-1 1", offset: 1 },
+      ]);
     }
     const early = playerExitMotion({ ...defaults, liftMs: 700, landingMs: 200 });
     expect(early.edge).toBeLessThan(early.apex);

@@ -20,7 +20,6 @@ import type { CanonicalGameEventDraft, GameState, NightShotResult } from "@mafia
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { nightMessages } from "../../i18n/messages/night.js";
 import { NightShootingObservation } from "./NightShootingObservation.js";
-import { FederationBestMoveTranscript } from "../game/FederationBestMoveStage.js";
 import { GameTable } from "../table/GameTable.js";
 import { LiquidCardGlass } from "../theme/LiquidCardGlass.js";
 import { usePlayerDisplayName } from "../players/player-display.js";
@@ -236,9 +235,7 @@ export const NightStage = ({
             type="button"
             disabled={
               !!game.disciplinaryRemovals?.some(
-                (r) =>
-                  ["shooting-count", "after-shooting-result"].includes(r.stage) &&
-                  r.announcement === "pending",
+                (r) => r.departure === "pending" || r.checkCompletionPending,
               )
             }
             onClick={() => {
@@ -535,7 +532,6 @@ export const NightStage = ({
         center={
           <div className="table-check-center">
             <span className="table-prompt">{t("night.stageComplete")}</span>
-            {game.bestMove?.completionReason ? <FederationBestMoveTranscript game={game} /> : null}
             {game.nightResult === undefined ? null : (
               <MafiaShotResultCard game={game} result={game.nightResult} />
             )}
@@ -544,7 +540,11 @@ export const NightStage = ({
         advance={
           <button
             type="button"
-            disabled={!!game.disciplinaryRemovals?.some((r) => r.announcement === "pending")}
+            disabled={
+              !!game.disciplinaryRemovals?.some(
+                (r) => r.departure === "pending" || r.checkCompletionPending,
+              )
+            }
             onClick={() => {
               const next = completeNight(game);
               if (onAcceptedEvent !== undefined) {

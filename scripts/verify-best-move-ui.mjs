@@ -541,13 +541,14 @@ export async function runBestMoveScenarios({ page, baseUrl, club, players, api, 
           );
           await expect(page.locator(".table-advance button")).toHaveText([w.morning]);
           await noRetiredControls();
-          await expect(page.locator(".federation-transcript")).toHaveCount(recorded ? 1 : 0);
+          await expect(page.locator(".federation-transcript")).toHaveCount(0);
           return result;
         }
         const final = await finish();
         await snapshot(`${tag}-finished`, final);
         await capture(`${tag}-finished`);
         await reload(final);
+        await expect(page.locator(".federation-transcript")).toHaveCount(0);
         const undone = await undo(draft, w);
         await selectionUi(undone.current.state, w);
         await reload(undone);
@@ -567,6 +568,7 @@ export async function runBestMoveScenarios({ page, baseUrl, club, players, api, 
           final.current.state.game.completedGameNights + 1,
         );
         assert.deepEqual(morning.current.state.game.bestMove, final.current.state.game.bestMove);
+        await expect(page.locator(".federation-transcript")).toHaveCount(0);
         await expect(page.getByRole("heading", { name: w.goodbye, exact: true })).toBeVisible();
         await expect(page.locator(".player-seat.is-voting-highlight")).toHaveCount(1);
         await expect(card(victim.seat)).toHaveClass(/is-voting-highlight/);

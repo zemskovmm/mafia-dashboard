@@ -1,0 +1,188 @@
+@property --player-exit-tear {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+@property --player-exit-fade {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 1;
+}
+@property --player-exit-hit {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 3;
+}
+@property --player-exit-sanction {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 0;
+}
+
+.player-bullet-holes {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 4;
+}
+.player-bullet-hole {
+  position: absolute;
+  width: 14%;
+  aspect-ratio: 1;
+  left: 28%;
+  top: 26%;
+  opacity: clamp(0, calc(var(--player-exit-hit) - var(--hole) + 1), 1);
+  background: radial-gradient(
+    circle,
+    #08090a 0 24%,
+    #232522 26% 35%,
+    #c9c2a4 37% 44%,
+    #5a5147 47% 53%,
+    transparent 57%
+  );
+  filter: drop-shadow(0 1px 1px #0009);
+  clip-path: polygon(
+    50% 0,
+    58% 20%,
+    78% 5%,
+    75% 29%,
+    100% 37%,
+    81% 51%,
+    98% 73%,
+    72% 72%,
+    65% 100%,
+    49% 79%,
+    24% 97%,
+    27% 72%,
+    0 63%,
+    19% 44%,
+    4% 20%,
+    32% 25%
+  );
+}
+.player-bullet-hole:nth-child(2) {
+  left: 62%;
+  top: 35%;
+  transform: rotate(32deg);
+}
+.player-bullet-hole:nth-child(3) {
+  left: 43%;
+  top: 63%;
+  transform: rotate(-21deg);
+}
+.player-disciplinary-card {
+  position: absolute;
+  z-index: 6;
+  left: auto;
+  right: 0;
+  top: 0;
+  width: 24%;
+  height: 28%;
+  border: 1px solid #f0aaa4;
+  border-radius: 8%;
+  background: #b93c48;
+  box-shadow: 0 2px 5px #0006;
+  opacity: var(--player-exit-sanction);
+  transform-origin: top right;
+  transform: scaleY(calc(0.8 + var(--player-exit-sanction) * 0.2));
+  pointer-events: none;
+}
+.player-disciplinary-ribbon {
+  position: absolute;
+  z-index: 5;
+  inset: 0 0 auto auto;
+  width: 11%;
+  height: 27%;
+  background: #b93c48;
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 82%, 0 100%);
+  box-shadow: inset 2px 0 #ffffff38;
+  pointer-events: none;
+}
+.player-disciplinary-ribbon::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: #ffb4aa;
+  opacity: var(--player-exit-sanction);
+}
+.player-torn-fragment {
+  position: absolute;
+  inset: 0;
+  display: block;
+  border-radius: inherit;
+  overflow: hidden;
+  opacity: var(--player-exit-fade);
+  transform: scaleX(calc(1 - var(--player-exit-gap, 6) / 100 * var(--player-exit-tear)));
+  transform-origin: left center;
+}
+.player-torn-fragment--right {
+  transform-origin: right center;
+}
+
+.player-torn-reverse {
+  position: absolute;
+  inset: 0;
+  display: block;
+  border-radius: inherit;
+}
+.player-torn-fragment > .printed-player-card__surface {
+  position: absolute;
+  inset: 0;
+}
+.printed-player-card__current.is-torn-reverse {
+  background: transparent;
+  overflow: visible;
+}
+/* Fading only material leaves public labels and the existing status rail legible. */
+.table-stage .table-card.player-seat[data-departure-cause],
+.player-exit-preview .table-card.player-seat[data-departure-cause] {
+  opacity: 1;
+  filter: none;
+}
+.table-stage .table-card.player-seat[data-departure-cause="vote"],
+.player-exit-preview .table-card.player-seat[data-departure-cause="vote"] {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+.table-card.player-seat[data-departure-cause="vote"]::before,
+.table-card.player-seat[data-departure-cause="vote"]::after {
+  display: none;
+}
+.player-exit-decoration {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.player-exit-public-identity {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+/* Printed paper fades once; torn-fragment parents already own their fade. */
+.player-seat[data-departure-cause] .printed-player-card__surface {
+  opacity: var(--player-exit-fade);
+}
+.player-seat[data-departure-cause] .player-torn-fragment > .printed-player-card__surface {
+  opacity: 1;
+}
+/* Glass artwork is separate from its already fade-aware optical material. */
+.player-seat[data-departure-cause]:not([data-departure-cause="vote"]) .player-exit-decoration,
+.player-seat[data-departure-cause="unknown"] .deceased-cross,
+.player-seat[data-departure-cause="unknown"] .person-icon,
+.player-seat[data-departure-cause="unknown"] .player-role-icon {
+  opacity: var(--player-exit-fade);
+}
+@media (prefers-reduced-motion: reduce) {
+  /* The global 0.01ms rule must not create transitions on otherwise static
+     paint owners: reduced-motion departures show their endpoint immediately. */
+  .player-seat[data-departure-cause],
+  .player-seat[data-departure-cause] *,
+  .player-seat[data-departure-cause] *::before,
+  .player-seat[data-departure-cause] *::after {
+    transition: none !important;
+  }
+}

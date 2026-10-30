@@ -2,6 +2,7 @@ import type { Role } from "@mafia/game-domain";
 import { useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { useFancyFeatures } from "../effects/FancyFeaturesContext.js";
 import { playerExitMotion } from "../effects/player-exit-motion.js";
+import { synchronizeCardAnimations } from "../effects/synchronize-card-animations.js";
 import { DEFAULT_PLAYER_EXIT_SETTINGS } from "../effects/player-exit-preferences.js";
 import "./RoleDrawPresentation.css";
 
@@ -34,10 +35,11 @@ export const RoleDrawPresentation = ({
     complete.current = onComplete;
   });
   useLayoutEffect(() => {
-    if (!request) return;
+    if (!request || suppressedRequest === request) return;
     const completeRequest = () => {
       if (completedRequest.current === request) return;
       completedRequest.current = request;
+      setSuppressedRequest(request);
       complete.current(request.id);
     };
     if (!fancy) {
@@ -65,6 +67,18 @@ export const RoleDrawPresentation = ({
     }
     const animations: Animation[] = [];
     let active = true;
+    let timeout: number | undefined;
+    const interrupt = () => {
+      if (document.hidden || preference?.matches) settle();
+    };
+    const cleanup = () => {
+      active = false;
+      window.clearTimeout(timeout);
+      timeout = undefined;
+      animations.forEach((animation) => animation.cancel());
+      document.removeEventListener("visibilitychange", interrupt);
+      preference?.removeEventListener?.("change", interrupt);
+    };
     const settle = () => {
       if (!active) return;
       active = false;
@@ -87,31 +101,28 @@ export const RoleDrawPresentation = ({
         const animation = target.animate(frames, options);
         animations.push(animation);
         animation.id = `role-draw-${request.id}`;
-        animation.currentTime = elapsed;
       }
+      for (const material of card.querySelectorAll<HTMLElement>(
+        ":scope > .liquid-card-glass, :scope > .role-draw-glow",
+      )) {
+        const animation = material.animate(motion.material, options);
+        animation.id = `role-draw-${request.id}`;
+        animations.push(animation);
+      }
+      synchronizeCardAnimations(animations, request.startedAt);
     } catch {
       // A later animate() can fail after earlier ones started; observe their
       // cancellation rejections before settling the partial request.
       void Promise.all(animations.map((animation) => animation.finished)).catch(() => {});
-      animations.forEach((animation) => animation.cancel());
       settle();
-      return;
+      return cleanup;
     }
     void Promise.all(animations.map((animation) => animation.finished)).then(settle, settle);
-    const timeout = window.setTimeout(settle, motion.duration - elapsed + 80);
-    const interrupt = () => {
-      if (document.hidden || preference?.matches) settle();
-    };
+    timeout = window.setTimeout(settle, motion.duration - elapsed + 80);
     document.addEventListener("visibilitychange", interrupt);
     preference?.addEventListener?.("change", interrupt);
-    return () => {
-      active = false;
-      window.clearTimeout(timeout);
-      animations.forEach((animation) => animation.cancel());
-      document.removeEventListener("visibilitychange", interrupt);
-      preference?.removeEventListener?.("change", interrupt);
-    };
-  }, [request, fancy]);
+    return cleanup;
+  }, [request, fancy, suppressedRequest]);
   return (
     <>
       {presentingRequest ? (

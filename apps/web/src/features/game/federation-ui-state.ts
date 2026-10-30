@@ -1,4 +1,4 @@
-import type { GamePhase, GameState, RemovalOccurrenceStage } from "@mafia/game-domain";
+import type { GamePhase, RemovalOccurrenceStage } from "@mafia/game-domain";
 
 // Permitted observed boundaries; the shortcut supplies a current-screen default for confirmation.
 export const removalStagesForPhase = (phase: GamePhase): readonly RemovalOccurrenceStage[] => {
@@ -44,10 +44,3 @@ export const defaultRemovalStage = (phase: GamePhase): RemovalOccurrenceStage | 
     : phase === "goodbye-speech"
       ? "farewell"
       : (removalStagesForPhase(phase)[0] ?? "");
-
-export const hasImmediateRemovalAnnouncement = (game: GameState): boolean =>
-  game.disciplinaryRemovals?.some(
-    (removal) =>
-      removal.announcement === "pending" &&
-      !["shooting-count", "don-check", "sheriff-check"].includes(removal.stage),
-  ) ?? false;

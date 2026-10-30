@@ -180,14 +180,10 @@ export const getMafiaShotResult = (game: GameState): NightShotResult => {
   return resultForTargets(game, targets);
 };
 export const completeMafiaShots = (game: GameState): GameState => {
-  if (
-    game.disciplinaryRemovals?.some(
-      (r) =>
-        ["shooting-count", "after-shooting-result"].includes(r.stage) &&
-        r.announcement === "pending",
-    )
-  )
-    throw new Error("Count-stage removal announcement is required before private checks");
+  // Unrecorded public speech is not acknowledgement debt; physical departures
+  // and any underway private check still have to settle at their own boundary.
+  if (game.disciplinaryRemovals?.some((r) => r.departure === "pending" || r.checkCompletionPending))
+    throw new Error("A pending disciplinary departure/check must settle before private checks");
   if (game.phase !== "night-mafia-result") {
     throw new Error("Mafia shots can only complete after evaluation");
   }
@@ -299,10 +295,8 @@ export const skipSheriffCheck = (game: GameState): GameState => {
   return settleCheckRemoval(continued, "sheriff");
 };
 export const completeNight = (game: GameState): GameState => {
-  if (game.disciplinaryRemovals?.some((r) => r.announcement === "pending"))
-    throw new Error(
-      "Required night removal announcements must be accepted before morning/Best Move",
-    );
+  if (game.disciplinaryRemovals?.some((r) => r.departure === "pending" || r.checkCompletionPending))
+    throw new Error("A pending disciplinary departure/check must settle before morning/Best Move");
   const prepared = prepareBestMove(game);
   if (prepared.phase === "best-move") return prepared;
   const completed = completeFederationGameNight(prepared);

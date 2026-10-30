@@ -202,7 +202,7 @@ async function geometry(page) {
         anchor: node.parentElement.getBoundingClientRect().toJSON(),
         card: local(node),
         person: local(node.querySelector(".person-icon")),
-        name: local(node.querySelector(".seat-name")),
+        name: local(node.parentElement.querySelector(":scope > .player-seat-caption")),
       };
     }),
   );
@@ -218,7 +218,9 @@ async function markerGeometry(page) {
         person: rect(node.querySelector(".person-icon")),
         name: (() => {
           const range = document.createRange();
-          range.selectNodeContents(node.querySelector(".seat-name"));
+          range.selectNodeContents(
+            node.parentElement.querySelector(":scope > .player-seat-caption"),
+          );
           return range.getBoundingClientRect().toJSON();
         })(),
         markers: [...node.querySelectorAll(".card-status-slot")].map((el) => {
@@ -424,9 +426,7 @@ export async function verifyPlayerCards({ browser, config, url, evidence, result
             "red-carded",
           );
           await unchanged(page, () => crossCardTouch(page, cdp, 1, 2));
-          await changed(page, () =>
-            page.getByRole("button", { name: "Announce removal of Player 2", exact: true }).click(),
-          );
+          assert.equal(await page.getByRole("button", { name: /Announce removal/ }).count(), 0);
         });
         await check("next intentional touch works after cancellation", () =>
           changed(page, () => card(page, 3).tap()),

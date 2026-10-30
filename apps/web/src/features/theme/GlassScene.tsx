@@ -12,6 +12,7 @@ import {
 } from "./glass-renderer.js";
 
 const empty: SceneRect = [0, 0, 0, 0];
+const opticalHandoffMs = 120;
 const visibleRect = (element: Element | null): SceneRect => {
   if (!(element instanceof HTMLElement) || element.closest("[hidden]")) return empty;
   const r = element.getBoundingClientRect();
@@ -79,16 +80,39 @@ export const GlassScene = ({
     let generation = 0;
     let painted = new Set<HTMLElement>();
     let collected: HTMLElement[] = [];
+    let localTurns = new WeakMap<HTMLElement, number | null>();
+    let localWeights = new Map<HTMLElement, number>();
+    const setLocalWeight = (element: HTMLElement, weight: number) => {
+      if (weight > 0) {
+        element.dataset.glassBlending = "true";
+        const value = String(weight);
+        if (element.style.getPropertyValue("--glass-local-weight") !== value)
+          element.style.setProperty("--glass-local-weight", value);
+      } else {
+        delete element.dataset.glassBlending;
+        if (element.style.getPropertyValue("--glass-local-weight") !== "")
+          element.style.removeProperty("--glass-local-weight");
+      }
+    };
     const markPainted = (elements: readonly HTMLElement[]) => {
       const next = new Set(elements);
-      for (const element of painted) if (!next.has(element)) delete element.dataset.glassPainted;
-      for (const element of next) element.dataset.glassPainted = "true";
+      for (const element of painted)
+        if (!next.has(element)) {
+          delete element.dataset.glassPainted;
+          setLocalWeight(element, 0);
+        }
+      for (const element of next) {
+        element.dataset.glassPainted = "true";
+        setLocalWeight(element, localWeights.get(element) ?? 0);
+      }
       painted = next;
     };
     const clearPaint = () => {
       canvas.style.visibility = "hidden";
       delete canvas.dataset.glassBackground;
       markPainted([]);
+      localTurns = new WeakMap();
+      localWeights.clear();
     };
     const cancelImage = () => {
       generation += 1;
@@ -109,18 +133,29 @@ export const GlassScene = ({
       colorCache.set(value, result);
       return result;
     };
-    const collect = (): GlassSceneGeometry => {
+    const collect = (now: number): GlassSceneGeometry => {
       const style = getComputedStyle(root);
       const variable = (name: string, fallback: readonly number[]) =>
         color(style.getPropertyValue(name), fallback);
       const view: SceneRect = [0, 0, window.innerWidth, window.innerHeight];
       const night = root.querySelector(".is-table-cycle-night") !== null;
       collected = [];
+      localWeights = new Map();
       const surfaces = [...root.querySelectorAll<HTMLElement>("[data-player-glass]")].flatMap(
         (element) => {
           // Screen-space lenses cannot represent a rotating 3D perimeter.
-          // The moving card owns its local fallback during the reveal.
-          if (element.classList.contains("is-role-flipping")) return [];
+          // The moving card owns its local fallback until it is planar again.
+          const s = getComputedStyle(element);
+          const degrees = Number.parseFloat(s.rotate.split(/\s+/).at(-1) ?? "0");
+          const turning =
+            (element.hasAttribute("data-player-exit") ||
+              element.classList.contains("is-role-flipping")) &&
+            Number.isFinite(degrees) &&
+            Math.abs(Math.sin((degrees * Math.PI) / 180)) > 1e-4;
+          if (turning) {
+            localTurns.set(element, null);
+            return [];
+          }
           const rect = visibleRect(element);
           if (rect[2] === 0 || rect[3] === 0) return [];
           let clip = intersect(rect, view);
@@ -140,7 +175,32 @@ export const GlassScene = ({
           }
           // Retain local fallback rather than pretending unsupported clipping painted.
           if (clip[2] === 0 || clip[3] === 0 || roundedClips.length > 4) return [];
-          const s = getComputedStyle(element);
+          const exitValue = (name: string, fallback: number, min: number, max: number) => {
+            const value = s.getPropertyValue(name).trim();
+            const number = value === "" ? fallback : Number(value);
+            return Number.isFinite(number) ? Math.max(min, Math.min(max, number)) : fallback;
+          };
+          const tear = exitValue("--player-exit-tear", 0, 0, 1);
+          const gap = exitValue("--player-exit-gap", 6, 2, 12);
+          const fade = exitValue("--player-exit-fade", 1, 0, 1);
+          let sharedWeight = 1;
+          const handoff = localTurns.get(element);
+          if (handoff !== undefined) {
+            const began = handoff ?? now;
+            // Only the returning planar lens blends. The semantic card, public
+            // content and shared opaque scene never receive this opacity.
+            if (
+              !motion.matches &&
+              (element.hasAttribute("data-player-exit") ||
+                element.classList.contains("role-draw-card"))
+            )
+              sharedWeight = Math.min(1, Math.max(0, (now - began) / opticalHandoffMs));
+            if (sharedWeight < 1) {
+              localTurns.set(element, began);
+              localWeights.set(element, 1 - sharedWeight);
+              until = Math.max(until, began + opticalHandoffMs);
+            } else localTurns.delete(element);
+          }
           const radius = parseFloat(s.borderTopLeftRadius) * (rect[2] / element.offsetWidth);
           const baseTint: readonly [number, number, number] = element.matches(
             ".is-sheriff-highlight",
@@ -189,7 +249,8 @@ export const GlassScene = ({
               selectionFinish: element.matches(".table-stage .player-seat.is-nomination-selected")
                 ? 0.5
                 : 0,
-              opacity: Number(s.opacity),
+              opacity: Number(s.opacity) * fade * sharedWeight,
+              ...(tear > 0 ? { tear: { progress: tear, gap } } : {}),
               roundedClips,
             },
           ];
@@ -231,7 +292,7 @@ export const GlassScene = ({
       frame = null;
       if (disposed || document.hidden || transparency.matches || renderer === null) return;
       try {
-        const scene = collect();
+        const scene = collect(now);
         const geometry = JSON.stringify(scene);
         if (geometry !== lastGeometry) {
           renderer.draw(scene);
@@ -308,6 +369,13 @@ export const GlassScene = ({
       }
     };
     const geometryChanged = () => schedule(950);
+    const playerExitMotion = (event: Event) => {
+      const duration = (event as CustomEvent<{ duration?: unknown }>).detail?.duration;
+      if (typeof duration !== "number" || !Number.isFinite(duration) || duration < 0) return;
+      // WAAPI custom-property ticks do not mutate style attributes. Stay awake
+      // for this bounded track, including the first frame after its endpoint.
+      schedule(Math.min(duration, 30_000));
+    };
     const returnToPage = () => {
       if (document.hidden) stop();
       else schedule(950, true);
@@ -374,6 +442,7 @@ export const GlassScene = ({
     root.addEventListener("scroll", geometryChanged, true);
     root.addEventListener("transitionrun", geometryChanged, true);
     root.addEventListener("transitionend", geometryChanged, true);
+    root.addEventListener("player-exit-motion", playerExitMotion);
     canvas.addEventListener("webglcontextlost", contextLost);
     canvas.addEventListener("webglcontextrestored", contextRestored);
     transparency.addEventListener("change", preferenceChanged);
@@ -395,6 +464,7 @@ export const GlassScene = ({
       root.removeEventListener("scroll", geometryChanged, true);
       root.removeEventListener("transitionrun", geometryChanged, true);
       root.removeEventListener("transitionend", geometryChanged, true);
+      root.removeEventListener("player-exit-motion", playerExitMotion);
       canvas.removeEventListener("webglcontextlost", contextLost);
       canvas.removeEventListener("webglcontextrestored", contextRestored);
       transparency.removeEventListener("change", preferenceChanged);

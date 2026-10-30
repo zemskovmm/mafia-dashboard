@@ -54,7 +54,222 @@ const day = () =>
       (to) => ({ type: "phase.changed", payload: { to } }) as CanonicalGameEventDraft,
     ),
   ).game;
+const removalStages = [
+  "agreement",
+  "day-discussion",
+  "open-voting",
+  "before-shooting-count",
+  "shooting-count",
+  "after-shooting-result",
+  "don-check",
+  "sheriff-check",
+] as const;
+// Captured from the unmodified reducer before removing acknowledgement gates.
+// The byte digest includes the baseline, every payload and every state hash.
+const retainedRemovalHashes = {
+  agreement: {
+    bytesHash: "8282481be3352c40bda103a587ca89574aa95280df3dc981c6e53accad4ebe70",
+    stateHash: "sha256:56d0dde57bf4b3a0580c2d1dc4e0217cf166c5d40da82e6a2425d408f990a2d6",
+  },
+  "day-discussion": {
+    bytesHash: "33aff1fb944c01a1d5f817a36a20fdcf15559e72aa9c4be7a8adf990bdfb5f31",
+    stateHash: "sha256:b46b4486e55feb691a69113be01a174c9ec7332e4de63492e3cbb3b7fb10851d",
+  },
+  "open-voting": {
+    bytesHash: "9ceeac159dab2c679a447d23f2661cabc74d4dcdf54342bdafd52e15506aa8d1",
+    stateHash: "sha256:2d0d3c107e806b6129b76d298b0edaba5280aff3f56051c17ef361baf958ac53",
+  },
+  "before-shooting-count": {
+    bytesHash: "2ee33ea9a822e4a37307cc0fdf71f23829ca58438b27973981a85dc632b63bf8",
+    stateHash: "sha256:5fa1a0bbe89fc6a18aa2574fca44e1263e963f0b05e0caf17e6873eb1153086a",
+  },
+  "shooting-count": {
+    bytesHash: "4281ffb0db5f9b7f84b8598af47637a9fa61b224b29aef070b7748eba1c27436",
+    stateHash: "sha256:36f571db5eb05da6874ded96dbb2545d828579c290e667dd6139bdc3d48ae0e4",
+  },
+  "after-shooting-result": {
+    bytesHash: "fb7ab2b11f046521e8a85d149a5fb27a37a932a6829c57ea4b335469f4534839",
+    stateHash: "sha256:4c2361c699aedbd124c7002e55fdf9ab63b47c66c9e572fb377c7103784222f0",
+  },
+  "don-check": {
+    bytesHash: "8a69096ff8aaaa00ceabba4d9b0b7b70a3cc4b12fd7426df5d943c59e5f7e14a",
+    stateHash: "sha256:f849d3ab98263621ac07b65b60211ad25293db23d1522932e3d84eff5d2fc940",
+  },
+  "sheriff-check": {
+    bytesHash: "bae6d25c1376d626b3810c5d2f7418fa13d2d83496d9e03124b456ab385b550f",
+    stateHash: "sha256:999acd4406c24d6ca8203d21a2fe7acddbca4367002c964e887dd2bab97c02d4",
+  },
+};
+const removalScenario = (stage: (typeof removalStages)[number]) => {
+  const initial = stage === "agreement" ? opening() : day();
+  const citizen = initial.players.find((p) => p.role === "citizen")!.seat;
+  const don = initial.players.find((p) => p.role === "don")!.seat;
+  const sheriff = initial.players.find((p) => p.role === "sheriff")!.seat;
+  const phase = (to: GameState["phase"]): CanonicalGameEventDraft => ({
+    type: "phase.changed",
+    payload: { to },
+  });
+  const miss: CanonicalGameEventDraft = {
+    type: "mafia.shots-resolved",
+    payload: { shots: [], result: { kind: "miss" } },
+  };
+  const kill = (targetSeat: number): CanonicalGameEventDraft => ({
+    type: "mafia.shots-resolved",
+    payload: {
+      shots: initial.players
+        .filter((p) => p.team === "black")
+        .map((p) => ({ shooterSeat: p.seat, targetSeat, secret: true })),
+      result: { kind: "kill", targetSeat },
+    },
+  });
+  const skipDon: CanonicalGameEventDraft = { type: "don.check-skipped", payload: {} };
+  const skipSheriff: CanonicalGameEventDraft = { type: "sheriff.check-skipped", payload: {} };
+  let seat = citizen;
+  let prefix: CanonicalGameEventDraft[] = [];
+  let settlement: CanonicalGameEventDraft[] = [];
+  let continuation: CanonicalGameEventDraft[];
+  if (stage === "agreement") continuation = [phase("mafia-sleep")];
+  else if (stage === "day-discussion") {
+    seat = 1;
+    continuation = [{ type: "turn.completed", payload: { seat: 2 } }];
+  } else if (stage === "open-voting") {
+    prefix = [
+      { type: "player.nominated", payload: { nominatorSeat: 1, candidateSeat: 1 } },
+      { type: "player.nominated", payload: { nominatorSeat: 2, candidateSeat: 2 } },
+      phase("voting"),
+    ];
+    continuation = [phase("night-mafia")];
+  } else if (stage === "before-shooting-count") {
+    prefix = [phase("night-mafia")];
+    continuation = [miss, phase("night-don"), skipDon, skipSheriff, phase("day")];
+  } else if (stage === "shooting-count") {
+    prefix = [phase("night-mafia")];
+    settlement = [kill(citizen)];
+    continuation = [phase("night-don"), skipDon, skipSheriff, phase("day")];
+  } else if (stage === "after-shooting-result") {
+    seat = sheriff;
+    prefix = [phase("night-mafia"), kill(sheriff)];
+    continuation = [phase("night-don"), skipDon, phase("day")];
+  } else {
+    const isDon = stage === "don-check";
+    seat = isDon ? don : sheriff;
+    prefix = [phase("night-mafia"), miss, phase("night-don"), ...(isDon ? [] : [skipDon])];
+    settlement = [
+      {
+        type: isDon ? "don.checked" : "sheriff.checked",
+        payload: { targetSeat: isDon ? sheriff : don, match: true },
+      },
+      phase(isDon ? "night-sheriff" : "night-resolution"),
+      ...(isDon ? [skipSheriff] : []),
+    ];
+    continuation = [phase("day")];
+  }
+  const removal: CanonicalGameEventDraft = {
+    type: "discipline.removal-observed",
+    payload: {
+      seat,
+      stage,
+      rule: "6.2.3",
+      reason: "Private judge note",
+      checkInProgress: stage === "don-check" || stage === "sheriff-check",
+    },
+  };
+  const announcement: CanonicalGameEventDraft = {
+    type: "discipline.removals-announced",
+    payload: { seats: [seat] },
+  };
+  return { initial, seat, prefix, removal, settlement, announcement, continuation };
+};
 describe("strict federation canonical replay", () => {
+  it.each(removalStages)("preserves retained %s announcement bytes and hashes", async (stage) => {
+    const { initial, prefix, removal, settlement, announcement, continuation } =
+      removalScenario(stage);
+    const { baseline, entries } = chain(initial, [
+      ...prefix,
+      removal,
+      ...settlement,
+      announcement,
+      ...continuation,
+    ]);
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(JSON.stringify({ baseline, entries })),
+    );
+    expect({
+      bytesHash: [...new Uint8Array(digest)]
+        .map((byte) => byte.toString(16).padStart(2, "0"))
+        .join(""),
+      stateHash: entries.at(-1)!.stateHashAfter,
+    }).toEqual(retainedRemovalHashes[stage]);
+    const publicEntry = entries.find((entry) => entry.type === "discipline.removals-announced")!;
+    expect(publicEntry.payload).toEqual(announcement.payload);
+    expect(isSecretGameEventType(publicEntry.type)).toBe(false);
+    expect(JSON.stringify(publicEntry)).not.toContain("Private judge note");
+    expect(isSecretGameEventType("discipline.removal-observed")).toBe(true);
+  });
+  it.each(removalStages)(
+    "continues restored pending %s without announcing or rewriting the prefix; one Undo reverses removal",
+    (stage) => {
+      const { initial, prefix, removal, settlement, announcement, continuation } =
+        removalScenario(stage);
+      const recorded = chain(initial, [...prefix, removal]);
+      const savedPrefix = JSON.stringify(recorded.entries);
+      const baseline = JSON.parse(JSON.stringify(recorded.baseline));
+      const entries: GameLogEntry[] = JSON.parse(savedPrefix);
+      let game = replayGameLog(baseline, entries).game;
+      const pending = JSON.parse(JSON.stringify(recorded.game));
+      expect(game).toEqual(pending);
+      expect(game.disciplinaryRemovals?.[0]?.announcement).toBe("pending");
+      expect(hashGameState(game)).toBe(entries.at(-1)?.stateHashAfter);
+      // Truncation is the domain's Undo contract: no synthetic acknowledgement
+      // can sit between the removal and its immediately preceding accepted state.
+      expect(replayGameLog(baseline, entries.slice(0, -1)).game).toEqual(
+        JSON.parse(JSON.stringify(chain(initial, prefix).game)),
+      );
+      const suffix = [...settlement, ...continuation];
+      for (const [index, draft] of suffix.entries()) {
+        const accepted = createGameLogEntry({
+          gameId: "federation",
+          id: `e${entries.length + 1}`,
+          sequence: entries.length + 1,
+          parentEventId: entries.at(-1)!.id,
+          createdAt: "2026-10-14T10:00:00Z",
+          before: game,
+          draft,
+        });
+        entries.push(accepted.entry);
+        game = replayGameLog(baseline, JSON.parse(JSON.stringify(entries))).game;
+        expect(game).toEqual(JSON.parse(JSON.stringify(accepted.after)));
+        if (index === 0)
+          expect(replayGameLog(baseline, entries.slice(0, -1)).game).toEqual(pending);
+      }
+      expect(JSON.stringify(entries.slice(0, recorded.entries.length))).toBe(savedPrefix);
+      expect(entries.some((entry) => entry.type === "discipline.removals-announced")).toBe(false);
+      expect(game.disciplinaryRemovals?.[0]).toMatchObject({
+        announcement: "pending",
+        departure: "departed",
+        checkCompletionPending: false,
+      });
+      const historical = chain(initial, [
+        ...prefix,
+        removal,
+        ...settlement,
+        announcement,
+        ...continuation,
+      ]).game;
+      expect(game).toEqual(
+        JSON.parse(
+          JSON.stringify({
+            ...historical,
+            disciplinaryRemovals: historical.disciplinaryRemovals?.map((r) => ({
+              ...r,
+              announcement: "pending",
+            })),
+          }),
+        ),
+      );
+    },
+  );
   it.each([
     { subject: "victim", multiple: false },
     { subject: "don", multiple: false },
@@ -146,7 +361,12 @@ describe("strict federation canonical replay", () => {
       expect(removed.ballotCancellationDay).toBe(
         subject === "victim" ? undefined : initial.day + 1,
       );
-      expect(() => completeMafiaShots(removed)).toThrow(/announcement/);
+      const pendingCompletion = chain(initial, [
+        ...prefix,
+        removal,
+        { type: "phase.changed", payload: { to: completeMafiaShots(removed).phase } },
+      ]).game;
+      expect(pendingCompletion.disciplinaryRemovals?.[0]?.announcement).toBe("pending");
       expect(() => applyGameEvent(removed, removal)).toThrow();
       const announcement: CanonicalGameEventDraft = {
         type: "discipline.removals-announced",
@@ -161,6 +381,13 @@ describe("strict federation canonical replay", () => {
         announcement,
         { type: "phase.changed", payload: { to: nextPhase } },
       ]).game;
+      expect(pendingCompletion).toEqual({
+        ...completed,
+        disciplinaryRemovals: completed.disciplinaryRemovals?.map((r) => ({
+          ...r,
+          announcement: "pending",
+        })),
+      });
       expect(completed.players.filter((p) => p.status !== "active")).toHaveLength(
         subject === "victim" || multiple ? 1 : 2,
       );
@@ -169,7 +396,7 @@ describe("strict federation canonical replay", () => {
     },
   );
   it.each(["victim", "two-offenders", "deciding"])(
-    "preserves post-result consequences through later boundaries: %s",
+    "preserves unannounced post-result consequences through later boundaries: %s",
     (scenario) => {
       let initial = day();
       const reds = initial.players.filter((p) => p.role === "citizen").map((p) => p.seat);
@@ -214,8 +441,7 @@ describe("strict federation canonical replay", () => {
           },
         });
       expect(game).toMatchObject({ phase: "night-mafia-result", winner: null });
-      accept({ type: "discipline.removals-announced", payload: { seats: offenders } });
-      expect(game.phase).toBe("night-mafia-result");
+      expect(game.disciplinaryRemovals?.every((r) => r.announcement === "pending")).toBe(true);
       accept({ type: "phase.changed", payload: { to: completeMafiaShots(game).phase } });
       if (scenario === "deciding") {
         expect(game).toMatchObject({ phase: "finished", winner: "black" });
@@ -529,9 +755,22 @@ describe("strict federation canonical replay", () => {
         disciplinaryRemovals: [{ ...removal, departure: "departed", announcement: "pending" }],
       });
       expect(entries.at(-1)?.stateHashAfter).toBe(hashGameState(game));
-      expect(() =>
-        applyGameEvent(game, { type: "phase.changed", payload: { to: "night-mafia" } }),
-      ).toThrow(/immediate public removal announcement/i);
+      const continuation: CanonicalGameEventDraft[] =
+        stage === "day-discussion"
+          ? [
+              { type: "player.nominated", payload: { nominatorSeat: 3, candidateSeat: 5 } },
+              { type: "phase.changed", payload: { to: "voting-cancelled" } },
+            ]
+          : [];
+      const unannounced = chain(game, [
+        ...continuation,
+        { type: "phase.changed", payload: { to: "night-mafia" } },
+      ]);
+      expect(unannounced.game).toMatchObject({
+        phase: "night-mafia",
+        disciplinaryRemovals: [{ announcement: "pending" }],
+      });
+      expect(unannounced.game.ballotCancellationDay).toBeUndefined();
       const announced = chain(game, [
         { type: "discipline.removals-announced", payload: { seats: [2] } },
         ...(stage === "day-discussion"

@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
   advanceOpeningPhase,
+  applyGameEvent,
   startVoting,
   issueFoul,
   beginRoleDraw,
@@ -22,6 +23,9 @@ import {
   completeNight,
   completeGoodbyeSpeech,
   completeEliminations,
+  adjudicateOpponentVictory,
+  confirmDraw,
+  cancelGame,
 } from "@mafia/game-domain";
 import type { GameState, PlayerInput } from "@mafia/game-domain";
 import { I18nProvider } from "../../i18n/I18nProvider.js";
@@ -88,6 +92,160 @@ const DayHarness = () => {
 };
 
 describe("GameScreen", () => {
+  describe.each(["glass", "classic", "heritage", "noir"] as const)(
+    "%s completed cards",
+    (style) => {
+      it.each(["red", "black"] as const)(
+        "reveals every front and highlights the %s party, including departed winners, then restores privacy",
+        (winner) => {
+          let active = createDayGame();
+          const citizen = active.players.find((player) => player.role === "citizen")!;
+          const mafia = active.players.find((player) => player.role === "mafia")!;
+          for (let foul = 0; foul < 4; foul++) active = issueFoul(active, citizen.seat);
+          active = completeEliminations(active, [mafia.seat]);
+          while (active.phase === "goodbye-speech") active = completeGoodbyeSpeech(active);
+          const completed = adjudicateOpponentVictory(active, {
+            losingTeam: winner === "red" ? "black" : "red",
+            rule: "6.3.1",
+            reason: "Fixture ruling",
+            committeeApproved: false,
+          });
+          const before = JSON.stringify(completed);
+          const onGameChange = vi.fn();
+          const onEvent = vi.fn();
+          const tree = (game: GameState, mode: "live" | "preview" = "live") => (
+            <PlayerCardStyleContext.Provider value={{ style, rolePlacement: "below" }}>
+              <GameScreen
+                game={game}
+                hostName="Host"
+                privacyHidden
+                mode={mode}
+                onGameChange={onGameChange}
+                onEvent={onEvent}
+              />
+            </PlayerCardStyleContext.Provider>
+          );
+          const { container, rerender } = render(tree(active));
+          for (const mode of ["live", "preview"] as const) {
+            rerender(tree(completed, mode));
+            const cards = container.querySelectorAll(".player-seat");
+            expect(cards).toHaveLength(10);
+            for (const player of completed.players) {
+              const card = container.querySelector(
+                `.seat-anchor[data-seat="${player.seat}"] > .player-seat`,
+              )!;
+              expect(card).toHaveAttribute("data-card-face", "front");
+              expect(card).not.toHaveTextContent(playerLabel(player));
+              expect(card.nextElementSibling).toHaveClass("player-seat-caption");
+              expect(card.nextElementSibling).toHaveTextContent(playerLabel(player));
+              if (style === "glass") {
+                expect(card.querySelector(".player-role-icon")).toHaveAccessibleName(
+                  new RegExp(player.role, "i"),
+                );
+              } else expect(card).toHaveTextContent(new RegExp(player.role, "i"));
+              expect(card).toHaveClass(`status-${player.status}`, "is-game-complete");
+              expect(card).not.toHaveAttribute("data-departure-cause");
+              expect(card).not.toHaveAttribute("data-player-exit");
+              if (player.team === winner) expect(card).toHaveAttribute("data-winner-team", winner);
+              else expect(card).not.toHaveAttribute("data-winner-team");
+            }
+            expect(
+              container.querySelector(
+                ".deceased-cross,.player-torn-fragment,.player-bullet-hole,.player-disciplinary-ribbon",
+              ),
+            ).toBeNull();
+          }
+          rerender(tree(active));
+          expect(container.querySelector("[data-winner-team],.is-game-complete")).toBeNull();
+          if (style !== "glass") {
+            // Return to a daytime state, where the unchanged privacy preference applies.
+            rerender(tree(createDayGame()));
+            expect(container.querySelectorAll('[data-card-face="back"]')).toHaveLength(10);
+            expect(
+              container.querySelector(".printed-player-card__role,.printed-player-card__name"),
+            ).toBeNull();
+          }
+          expect(JSON.stringify(completed)).toBe(before);
+          expect(onGameChange).not.toHaveBeenCalled();
+          expect(onEvent).not.toHaveBeenCalled();
+        },
+      );
+
+      it.each(["draw", "cancelled"] as const)(
+        "reveals a %s game without awarding a party",
+        (phase) => {
+          const game = (phase === "draw" ? confirmDraw : cancelGame)(
+            createDayGame(),
+            "Fixture ruling",
+          );
+          const { container } = render(
+            <PlayerCardStyleContext.Provider value={{ style, rolePlacement: "below" }}>
+              <GameScreen
+                game={game}
+                hostName="Host"
+                privacyHidden
+                onGameChange={vi.fn()}
+                onEvent={vi.fn()}
+              />
+            </PlayerCardStyleContext.Provider>,
+          );
+          expect(container.querySelectorAll('[data-card-face="front"]')).toHaveLength(10);
+          expect(container.querySelector("[data-winner-team]")).toBeNull();
+        },
+      );
+    },
+  );
+
+  it("keeps disciplinary history read-only and live controls usable without announcement acknowledgement", async () => {
+    const game = applyGameEvent(createDayGame(), {
+      type: "discipline.removal-observed",
+      payload: {
+        seat: 5,
+        stage: "day-discussion",
+        rule: "6.2.3",
+        reason: "",
+        checkInProgress: false,
+      },
+    });
+    const onGameChange = vi.fn();
+    const onEvent = vi.fn();
+    const onExitPreview = vi.fn();
+    const onResetPreview = vi.fn();
+    const props = {
+      game,
+      hostName: "Host",
+      privacyHidden: false,
+      onGameChange,
+      onEvent,
+      onExitPreview,
+      onResetPreview,
+    };
+    const { container, rerender } = render(<GameScreen {...props} />);
+    expect(screen.getByRole("button", { name: "Next player" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: /Announce removal/ })).toBeNull();
+    rerender(<GameScreen {...props} mode="preview" canResetPreview />);
+    expect(container.querySelectorAll("button.player-seat")).toHaveLength(0);
+    expect(container.querySelectorAll('.player-seat[role="group"]')).toHaveLength(10);
+    const exit = screen.getByRole("button", { name: "Exit preview" });
+    const reset = screen.getByRole("button", { name: "Reset game to this state" });
+    expect(exit).toBeEnabled();
+    expect(reset).toBeEnabled();
+    const user = userEvent.setup();
+    await user.click(exit);
+    await user.click(reset);
+    expect(onExitPreview).toHaveBeenCalledOnce();
+    expect(onResetPreview).toHaveBeenCalledOnce();
+    expect(onGameChange).not.toHaveBeenCalled();
+    expect(onEvent).not.toHaveBeenCalled();
+    rerender(<GameScreen {...props} mode="preview" canResetPreview={false} />);
+    expect(exit).toBeEnabled();
+    expect(reset).toBeDisabled();
+    rerender(<GameScreen {...props} />);
+    expect(screen.getByRole("button", { name: "Next player" })).toBeEnabled();
+    expect(onGameChange).not.toHaveBeenCalled();
+    expect(onEvent).not.toHaveBeenCalled();
+  });
+
   it.each([false, true])(
     "turns the actual pre-departure printed side after the provider's delayed request (privacy: %s)",
     (privacyHidden) => {
@@ -119,7 +277,13 @@ describe("GameScreen", () => {
         const card = container.querySelector(
           `.seat-anchor[data-seat="${victim.seat}"] .player-seat`,
         )!;
-        expect(animate).toHaveBeenCalledTimes(4);
+        expect(animate).toHaveBeenCalledTimes(7); // Four turn tracks, public inverse, tear and fade.
+        expect(card.querySelector(".printed-player-card__public")).not.toBeNull();
+        expect(card).toHaveAttribute("data-departure-cause", "vote");
+        expect(card.querySelectorAll(".player-torn-fragment")).toHaveLength(2);
+        expect(card.querySelector(".printed-player-card__current")).not.toHaveClass(
+          "printed-player-card__surface",
+        );
         expect(
           card.querySelector(".printed-player-card__outgoing .printed-player-card__art") !== null,
         ).toBe(!privacyHidden);

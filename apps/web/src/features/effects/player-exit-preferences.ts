@@ -17,6 +17,12 @@ export interface PlayerExitSettings {
   readonly lift: PlayerExitCurve;
   readonly flip: PlayerExitCurve;
   readonly drop: PlayerExitCurve;
+  readonly impactMs: number;
+  readonly tearMs: number;
+  readonly fadeMs: number;
+  readonly disciplineMs: number;
+  readonly gap: number;
+  readonly finalOpacity: number;
 }
 
 export const DEFAULT_PLAYER_EXIT_SETTINGS: PlayerExitSettings = Object.freeze({
@@ -28,6 +34,12 @@ export const DEFAULT_PLAYER_EXIT_SETTINGS: PlayerExitSettings = Object.freeze({
   lift: Object.freeze({ easing: "out", strength: 100 }),
   flip: Object.freeze({ easing: "out", strength: 100 }),
   drop: Object.freeze({ easing: "out", strength: 100 }),
+  impactMs: 420,
+  tearMs: 360,
+  fadeMs: 360,
+  disciplineMs: 600,
+  gap: 6,
+  finalOpacity: 45,
 });
 
 const bounded = (value: unknown, min: number, max: number, fallback: number): number =>
@@ -60,6 +72,17 @@ export const validatePlayerExitSettings = (value: unknown): PlayerExitSettings =
     lift: validateCurve(record.lift),
     flip: validateCurve(record.flip),
     drop: validateCurve(record.drop),
+    impactMs: bounded(record.impactMs, 240, 900, DEFAULT_PLAYER_EXIT_SETTINGS.impactMs),
+    tearMs: bounded(record.tearMs, 200, 800, DEFAULT_PLAYER_EXIT_SETTINGS.tearMs),
+    fadeMs: bounded(record.fadeMs, 200, 900, DEFAULT_PLAYER_EXIT_SETTINGS.fadeMs),
+    disciplineMs: bounded(
+      record.disciplineMs,
+      300,
+      1000,
+      DEFAULT_PLAYER_EXIT_SETTINGS.disciplineMs,
+    ),
+    gap: bounded(record.gap, 2, 12, DEFAULT_PLAYER_EXIT_SETTINGS.gap),
+    finalOpacity: bounded(record.finalOpacity, 25, 70, DEFAULT_PLAYER_EXIT_SETTINGS.finalOpacity),
   };
 };
 

@@ -9,8 +9,8 @@ const en = {
   heritage: "Old-world Engraved",
   noir: "Noir Royale",
   rolePlacement: "Role placement",
-  below: "Below name",
-  ribbon: "Name band",
+  below: "Lower on card",
+  ribbon: "Role band",
   top: "Near top",
   local: "Numbered table cards. Saved only in this browser.",
 } as const satisfies Record<string, Message>;
@@ -23,8 +23,8 @@ const ru = {
   heritage: "Старинная гравюра",
   noir: "Нуар Рояль",
   rolePlacement: "Расположение роли",
-  below: "Под именем",
-  ribbon: "В полосе имени",
+  below: "Внизу карточки",
+  ribbon: "Полоса роли",
   top: "Вверху",
   local: "Нумерованные карточки на столе. Сохраняется только в этом браузере.",
 } as const satisfies Record<keyof typeof en, Message>;

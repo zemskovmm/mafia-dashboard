@@ -938,6 +938,46 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
           : "trusted Playwright pointer drag",
     });
 
+    const dayPenaltyId = randomUUID();
+    await seed(page, api, checkpoint(day, template, dayPenaltyId), dayPenaltyId);
+    const beforeDayPenalty = await settled(page, api);
+    const dayPenalty = await swipeUp(penaltySeat);
+    await dayPenalty
+      .getByRole("combobox", { name: "Removal rule", exact: true })
+      .selectOption("6.2.3");
+    await dayPenalty.getByRole("button", { name: "Confirm discipline", exact: true }).click();
+    const dayRemoved = await saveReplay(page, api, "day-penalty-no-announcement", width, height);
+    assert.equal(branch(dayRemoved.env.current.state).at(-1).type, "discipline.removal-observed");
+    assert.equal(
+      branch(dayRemoved.env.current.state).length,
+      branch(beforeDayPenalty.current.state).length + 1,
+    );
+    await expect(page.getByRole("button", { name: /Announce removal/ })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Next player", exact: true })).toBeEnabled();
+    row.screenshots.push(await capture(page, "day-penalty-no-announcement", width, height));
+    await page.reload({ waitUntil: "networkidle" });
+    assert.deepEqual(
+      (await settled(page, api)).current.state.game,
+      dayRemoved.env.current.state.game,
+    );
+    await page.getByRole("button", { name: "Next player", exact: true }).click();
+    const continuedDay = await settled(page, api);
+    assert.equal(branch(continuedDay.current.state).at(-1).type, "turn.completed");
+    await undo(page);
+    assert.deepEqual(
+      (await settled(page, api)).current.state.game,
+      dayRemoved.env.current.state.game,
+    );
+    await undo(page);
+    const undoneDayPenalty = await settled(page, api);
+    assert.equal(
+      undoneDayPenalty.current.state.headEventId,
+      beforeDayPenalty.current.state.headEventId,
+    );
+    assert.deepEqual(undoneDayPenalty.current.state.game, beforeDayPenalty.current.state.game);
+    replay(undoneDayPenalty.current.state);
+    row.scenarios.push({ name: "day-penalty-continue-reload-single-action-undo-no-announcement" });
+
     for (const subject of ["victim", "shooter"]) {
       const id = randomUUID();
       await seed(page, api, checkpoint(beginNight(day), template, id), id);
@@ -972,19 +1012,33 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
         removed.env.current.state.game.disciplinaryRemovals.at(-1).stage,
         "after-shooting-result",
       );
-      await expect(
-        page.getByRole("button", { name: "Continue night", exact: true }),
-      ).toBeDisabled();
+      await expect(page.getByRole("button", { name: "Continue night", exact: true })).toBeEnabled();
+      await expect(page.getByRole("button", { name: /Announce removal/ })).toHaveCount(0);
+      assert.equal(
+        branch(removed.env.current.state).filter((e) => e.type === "discipline.removals-announced")
+          .length,
+        0,
+      );
       await page.reload({ waitUntil: "networkidle" });
       assert.equal(
         (await settled(page, api)).current.state.headEventId,
         removed.env.current.state.headEventId,
       );
-      await page
-        .getByRole("button", { name: `Announce removal of ${display(day, seat)}`, exact: true })
-        .click();
+      await expect(page.getByRole("button", { name: /Announce removal/ })).toHaveCount(0);
       await page.getByRole("button", { name: "Continue night", exact: true }).click();
       replay((await settled(page, api)).current.state);
+      await undo(page);
+      const beforeContinuation = await settled(page, api);
+      assert.equal(
+        beforeContinuation.current.state.headEventId,
+        removed.env.current.state.headEventId,
+      );
+      assert.deepEqual(beforeContinuation.current.state.game, removed.env.current.state.game);
+      await undo(page);
+      const beforePenalty = await settled(page, api);
+      assert.equal(beforePenalty.current.state.headEventId, resolved.current.state.headEventId);
+      assert.deepEqual(beforePenalty.current.state.game, resolved.current.state.game);
+      replay(beforePenalty.current.state);
     }
     row.scenarios.push({ name: "post-result-victim-shooter-swipe-save-reload-replay" });
 

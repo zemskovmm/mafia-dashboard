@@ -13,6 +13,57 @@ const seats: TableSeatView[] = Array.from({ length: 10 }, (_, index) => ({
 }));
 
 describe("GameTable", () => {
+  it.each(["glass", "classic", "heritage", "noir"] as const)(
+    "keeps one %s name below and outside both faces through privacy, departure and completion",
+    (style) => {
+      let name = "Alexandra Very-Long-Player-Name";
+      const tree = (
+        privacyHidden = false,
+        departed = false,
+        completed = false,
+        readOnly = false,
+      ) => (
+        <PlayerCardStyleContext.Provider value={{ style, rolePlacement: "below" }}>
+          <GameTable
+            seats={[
+              { ...seats[0]!, name, role: "mafia", status: departed ? "eliminated" : "active" },
+            ]}
+            privacyHidden={privacyHidden}
+            completed={completed}
+            readOnly={readOnly}
+          />
+        </PlayerCardStyleContext.Provider>
+      );
+      const { container, rerender } = render(tree());
+      const caption = container.querySelector(".seat-anchor > .player-seat-caption");
+      expect(caption).toHaveTextContent(name);
+      expect(caption).toHaveAttribute("title", name);
+      for (const [privacy, departed, completed, readOnly] of [
+        [true, false, false, false],
+        [false, true, false, false],
+        [true, true, true, false],
+        [true, true, true, true],
+        [false, false, false, false],
+      ]) {
+        rerender(tree(privacy, departed, completed, readOnly));
+        expect(container.querySelectorAll(".player-seat-caption")).toHaveLength(1);
+        expect(container.querySelector(".player-seat-caption")).toBe(caption);
+        const card = screen.getByRole(readOnly ? "group" : "button", { name: `Seat 1: ${name}` });
+        expect(card.nextElementSibling).toBe(caption);
+        expect(card).not.toHaveTextContent(name);
+        expect(caption?.closest(".player-seat")).toBeNull();
+      }
+      const card = screen.getByRole("button", { name: `Seat 1: ${name}` });
+      const artwork = card.querySelector("img");
+      name = "Renamed player";
+      rerender(tree());
+      expect(screen.getByRole("button", { name: `Seat 1: ${name}` })).toBe(card);
+      expect(card.querySelector("img")).toBe(artwork);
+      expect(card.nextElementSibling).toBe(caption);
+      expect(caption).toHaveTextContent(name);
+    },
+  );
+
   it.each(["classic", "heritage", "noir"] as const)(
     "uses %s artwork without role icons and preserves the action host when changing style",
     (style) => {
@@ -232,7 +283,11 @@ describe("GameTable", () => {
           ]}
         />,
       );
-      expect(animate).toHaveBeenCalledTimes(4);
+      expect(animate).toHaveBeenCalledTimes(6);
+      expect(animate.mock.contexts.slice(4)).toEqual([
+        card.querySelector(":scope > .liquid-card-glass"),
+        card.querySelector(":scope > .role-draw-glow"),
+      ]);
       expect(
         card.querySelector('.role-draw-face--front [data-role-glyph="unknown"]'),
       ).not.toBeNull();
@@ -627,7 +682,8 @@ describe("GameTable", () => {
         expect(card.firstElementChild).toHaveClass("liquid-card-glass");
         expect(card.firstElementChild).toHaveAttribute("aria-hidden", "true");
         expect(card.querySelectorAll(".liquid-card-glass")).toHaveLength(1);
-        expect(card.querySelector(".seat-name")).not.toHaveAttribute("data-player-glass");
+        expect(card.nextElementSibling).toHaveClass("player-seat-caption");
+        expect(card.nextElementSibling).not.toHaveAttribute("data-player-glass");
       }
       if (!readOnly) {
         fireEvent.click(cards[6]!);
@@ -769,7 +825,8 @@ describe("GameTable", () => {
     );
 
     const player = screen.getByRole("button", { name: "Seat 1: Player 1" });
-    expect(player.querySelector(".seat-name")).toHaveTextContent("Player 1");
+    expect(player.nextElementSibling).toHaveClass("player-seat-caption");
+    expect(player.nextElementSibling).toHaveTextContent("Player 1");
     const badges = player.querySelector(".seat-badges");
     expect(screen.getByRole("img", { name: "citizen" })).toBeInTheDocument();
     expect(badges).not.toHaveTextContent("Foul");
