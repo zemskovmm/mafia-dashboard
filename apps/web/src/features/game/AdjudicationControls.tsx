@@ -8,7 +8,11 @@ import {
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { adjudicationMessages } from "../../i18n/messages/adjudication.js";
 import { RuleBookButton } from "../rules/RuleBookButton.js";
-import { adjudicationRules as rules, type RuleReferenceId } from "../rules/rule-references.js";
+import {
+  adjudicationRules as rules,
+  ruleReferenceEmojis,
+  type RuleReferenceId,
+} from "../rules/rule-references.js";
 
 export const AdjudicationControls = ({
   game,
@@ -98,6 +102,7 @@ export const AdjudicationControls = ({
         <label>
           {t("rule")}
           <select
+            className="discipline-select"
             value={rule}
             onChange={(event) => {
               setRule(event.currentTarget.value);
@@ -106,7 +111,7 @@ export const AdjudicationControls = ({
           >
             {rules.map((value) => (
               <option key={value} value={value}>
-                {t(value)}
+                {ruleReferenceEmojis[value]} {t(value)}
               </option>
             ))}
           </select>

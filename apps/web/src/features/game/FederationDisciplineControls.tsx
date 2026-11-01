@@ -19,7 +19,7 @@ import { defaultRemovalStage, removalStagesForPhase } from "./federation-ui-stat
 import { AdjudicationControls } from "./AdjudicationControls.js";
 import { FederationJudgeDialog } from "./FederationJudgeDialog.js";
 import { RuleBookButton } from "../rules/RuleBookButton.js";
-import type { RuleReferenceId } from "../rules/rule-references.js";
+import { ruleReferenceEmojis, type RuleReferenceId } from "../rules/rule-references.js";
 import "./federation-controls.css";
 
 export interface DisciplineRequest {
@@ -199,7 +199,11 @@ const PenaltyForm = ({
         ) : null}
         <label>
           {t("discipline.action")}
-          <select value={action} onChange={(e) => setAction(e.target.value as typeof action)}>
+          <select
+            className="discipline-select"
+            value={action}
+            onChange={(e) => setAction(e.target.value as typeof action)}
+          >
             {shortcut ? null : <option value="foul">{t("discipline.foul")}</option>}
             <option value="removal">{t("discipline.removal")}</option>
             <option value="opponent-victory">{t("discipline.opponentVictory")}</option>
@@ -252,6 +256,7 @@ const PenaltyForm = ({
                   <label>
                     {t("discipline.rule")}
                     <select
+                      className="discipline-select"
                       value={fourth ? "6.2.1" : rule}
                       disabled={fourth}
                       onChange={(e) => setRule(e.target.value)}
@@ -259,7 +264,7 @@ const PenaltyForm = ({
                       <option value="">{t("discipline.chooseRule")}</option>
                       {removalRules.map((value) => (
                         <option key={value} value={value}>
-                          {value} · {t(`rule.${value}`)}
+                          {ruleReferenceEmojis[value]} {value} · {t(`rule.${value}`)}
                         </option>
                       ))}
                     </select>

@@ -85,9 +85,13 @@
   align-items: end;
   gap: 0.5rem;
 }
-.discipline-rule-picker select {
+.discipline-select {
   min-width: 0;
   width: 100%;
+  height: 48px;
+}
+.discipline-rule-picker > button {
+  height: 48px;
 }
 .federation-judge-dialog[open],
 .federation-judge-dialog .federation-discipline-form,
@@ -106,14 +110,14 @@
   min-height: 48px;
 }
 @supports (appearance: base-select) {
-  .discipline-rule-picker select,
-  .discipline-rule-picker select::picker(select) {
+  .discipline-select,
+  .discipline-select::picker(select) {
     appearance: base-select;
   }
-  .discipline-rule-picker select {
+  .discipline-select {
     align-items: center;
   }
-  .discipline-rule-picker select::picker(select) {
+  .discipline-select::picker(select) {
     min-width: anchor-size(width);
     width: max-content;
     max-width: calc(100vw - 2rem);
@@ -122,14 +126,8 @@
     border: 1px solid var(--border);
     border-radius: 8px;
   }
-  .discipline-rule-picker option {
+  .discipline-select option {
     min-height: 48px;
     padding: 0.5rem 0.75rem;
-  }
-  @supports (font: -apple-system-body) {
-    .federation-judge-dialog .discipline-rule-picker select {
-      /* WebKit's ordinary native select uses the declared 44px height. */
-      min-height: 44px;
-    }
   }
 }

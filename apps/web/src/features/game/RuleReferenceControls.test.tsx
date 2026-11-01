@@ -35,6 +35,13 @@ const day = (): GameState => {
 const render = (ui: Parameters<typeof renderWithProfiles>[0]) =>
   renderWithProfiles(ui, namedProfiles("player-"));
 const adjudicationRules = ["6.3.1", "6.3.2", "6.3.3", "6.3.4", "6.3.5", "6.6.4"];
+const expectRuleLabel = (select: HTMLElement, rule: string) => {
+  const number = rule.replaceAll(".", "\\.");
+  const option = within(select).getByRole("option", { name: new RegExp(`${number} · `) });
+  expect(option.textContent).toMatch(
+    new RegExp(`^\\p{Extended_Pictographic}\\uFE0F? ${number} · \\S`, "u"),
+  );
+};
 
 // Exercise real selectors and native-dialog ownership. Reader rendering is covered
 // separately; this callback stands in only for the parent's transient open request.
@@ -63,6 +70,7 @@ describe("disciplinary rule references", () => {
       const help = within(selector.closest(".discipline-rule-picker")!).getByRole("button");
       expect(help).toBeDisabled();
       for (const rule of removalRules) {
+        expectRuleLabel(selector, rule);
         await user.selectOptions(selector, rule);
         expect(help).toBeEnabled();
         expect(help).toHaveAttribute("type", "button");
@@ -71,6 +79,9 @@ describe("disciplinary rule references", () => {
         expect(onOpenRule).toHaveBeenLastCalledWith(rule);
         expect(selector).toHaveValue(rule);
       }
+      expect(within(selector).getByRole("option", { name: /6\.2\.8/ })).toHaveTextContent(
+        locale === "en" ? "🤫 6.2.8 · Secret whispering" : "🤫 6.2.8 · Тайный шёпот",
+      );
       await user.selectOptions(
         screen.getByLabelText(locale === "en" ? "Discipline action" : "Дисциплинарное действие"),
         "opponent-victory",
@@ -78,6 +89,7 @@ describe("disciplinary rule references", () => {
       const opposing = screen.getByLabelText(locale === "en" ? "Applicable rule" : "Пункт правил");
       const opposingHelp = within(opposing.closest(".discipline-rule-picker")!).getByRole("button");
       for (const rule of adjudicationRules) {
+        expectRuleLabel(opposing, rule);
         await user.selectOptions(opposing, rule);
         await user.click(opposingHelp);
         expect(onOpenRule).toHaveBeenLastCalledWith(rule);

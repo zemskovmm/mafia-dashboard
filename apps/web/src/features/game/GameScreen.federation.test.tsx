@@ -508,7 +508,7 @@ describe("federation GameScreen table shortcuts", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
   it.each(["en", "ru"] as const)(
-    "shows short removal rules and accepts no extra reason in %s",
+    "shows short emoji-first removal rules and accepts no extra reason in %s",
     async (locale) => {
       const user = userEvent.setup();
       const accepted = vi.fn();
@@ -531,13 +531,16 @@ describe("federation GameScreen table shortcuts", () => {
       const options = within(rule).getAllByRole("option").slice(1);
       expect(options).toHaveLength(13);
       for (const option of options) {
-        const [number, description = ""] = (option.textContent ?? "").split(" · ");
+        const [prefix = "", description = ""] = (option.textContent ?? "").split(" · ");
+        const [emoji, number] = prefix.split(" ");
+        expect(emoji).toMatch(/^\p{Extended_Pictographic}\uFE0F?$/u);
         expect(number).toMatch(/^6\.2\.(?:[1-9]|1[0-3])$/);
+        expect(option.getAttribute("value")).toBe(number);
         expect(description.trim().split(/\s+/).length).toBeLessThanOrEqual(2);
         expect(description.trim().length).toBeGreaterThan(0);
       }
       expect(options[1]).toHaveTextContent(
-        locale === "en" ? "6.2.2 · Insults" : "6.2.2 · Оскорбления",
+        locale === "en" ? "🗯️ 6.2.2 · Insults" : "🗯️ 6.2.2 · Оскорбления",
       );
       await user.selectOptions(rule, "6.2.2");
       const confirm = screen.getByRole("button", {

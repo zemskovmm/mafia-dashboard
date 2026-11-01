@@ -672,6 +672,21 @@ export async function runRulesSketchbookScenarios({
       ).toBeDisabled();
       await dialog.getByLabel(l.reason, { exact: true }).fill(`unfinished removal ${locale}`);
       const removal = dialog.getByRole("combobox", { name: l.rule, exact: true });
+      const assertRuleAlignment = async (select) => {
+        const field = await select.boundingBox();
+        const bookButton = await select.evaluate((element) => {
+          const { x, y, width, height } = element
+            .closest(".discipline-rule-picker")
+            .querySelector("button")
+            .getBoundingClientRect();
+          return { x, y, width, height };
+        });
+        assert.equal(field.height, bookButton.height, "Book button and dropdown have equal height");
+        assert.equal(field.height, 48, "Rule fields retain a full touch-sized height");
+        assert.equal(bookButton.y, field.y, "Book button and dropdown align along both edges");
+        return { field, bookButton };
+      };
+      const removalAlignment = await assertRuleAlignment(removal);
       assert.deepEqual(
         await removal
           .locator("option")
@@ -743,10 +758,61 @@ export async function runRulesSketchbookScenarios({
         await removal.selectOption(id);
         await reference(dialog, id, locale, before);
       }
-      await dialog
-        .getByRole("combobox", { name: l.action, exact: true })
-        .selectOption("opponent-victory");
+      const action = dialog.getByRole("combobox", { name: l.action, exact: true });
+      const actionBounds = await action.boundingBox();
+      assert.equal(actionBounds.height, 48, "Discipline action matches the rule field height");
+      if (await action.evaluate(() => CSS.supports("appearance", "base-select"))) {
+        await action.click();
+        const victory = action.locator('option[value="opponent-victory"]');
+        await expect(victory).toBeVisible();
+        const optionBounds = await victory.boundingBox();
+        assert.ok(
+          optionBounds.width >= actionBounds.width - 4,
+          "Action popup uses the field width",
+        );
+        assert.ok(optionBounds.height >= 48, "Action popup has touch-sized rows");
+        assert.ok(
+          optionBounds.x >= 0 && optionBounds.x + optionBounds.width <= viewport.width,
+          "Action popup stays within the viewport",
+        );
+        await screenshot(`${locale}-wide-action-popup`);
+        await page.keyboard.press("Escape");
+        await expect(victory).not.toBeVisible();
+        await expect(action).toHaveValue("removal");
+        await expect(dialog).toBeVisible();
+        assert.deepEqual(await action.boundingBox(), actionBounds);
+        await action.click();
+        await victory.click();
+        await expect(action).toHaveValue("opponent-victory");
+      } else {
+        await action.selectOption("opponent-victory");
+      }
       const applicable = dialog.getByRole("combobox", { name: l.applicable, exact: true });
+      const applicableAlignment = await assertRuleAlignment(applicable);
+      if (await applicable.evaluate(() => CSS.supports("appearance", "base-select"))) {
+        await applicable.click();
+        const longOption = applicable.locator('option[value="6.3.3"]');
+        await expect(longOption).toBeVisible();
+        await longOption.scrollIntoViewIfNeeded();
+        const optionBounds = await longOption.boundingBox();
+        assert.ok(optionBounds.width >= applicableAlignment.field.width - 4);
+        assert.ok(
+          optionBounds.x >= 0 && optionBounds.x + optionBounds.width <= viewport.width,
+          "Long emoji-prefixed rule options remain within the viewport",
+        );
+        await screenshot(`${locale}-wide-applicable-popup`);
+        await longOption.click();
+        await expect(applicable).toHaveValue("6.3.3");
+        assert.deepEqual(await assertRuleAlignment(applicable), applicableAlignment);
+        await screenshot(`${locale}-aligned-applicable-controls`);
+      }
+      report.scenarios.push({
+        locale,
+        name: "aligned-discipline-controls-and-wide-action-popup",
+        actionBounds,
+        removalAlignment,
+        applicableAlignment,
+      });
       assert.deepEqual(
         await applicable.locator("option").evaluateAll((els) => els.map((o) => o.value)),
         [...adjudicationRules],
