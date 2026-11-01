@@ -521,7 +521,13 @@ for (const [name, engine, launch] of [
             );
             assert.equal(await page.locator('.seat-anchor [data-card-face="front"]').count(), 10);
             assert.equal(await page.locator('.seat-anchor [data-winner-team="black"]').count(), 3);
-            assert.equal(await page.locator(".seat-anchor > .player-seat-caption").count(), 10);
+            assert.equal(await page.locator(".seat-anchor > .player-seat-caption").count(), 0);
+            assert.equal(
+              await page
+                .locator(".seat-anchor .player-seat :is(.seat-name,.printed-player-card__name)")
+                .count(),
+              10,
+            );
             assert.equal(
               await page
                 .locator(

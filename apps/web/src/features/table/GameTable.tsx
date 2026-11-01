@@ -218,6 +218,7 @@ export const GameTable = ({
           const printedFaceDown =
             printed &&
             (printedPrivacy || departed || (roleDraw !== undefined && visibleRole === undefined));
+          const showNameCaption = printedFaceDown || departed;
           const privateCuesVisible = !privacyHidden && !printedFaceDown;
           // Voters share speaker visuals, not the current-speaker aria semantics.
           const activeEmphasis = !completed && (seat.current || seat.currentVoter);
@@ -313,6 +314,11 @@ export const GameTable = ({
                 playerId={seat.playerId}
                 unknown={roleDraw !== undefined && faceRole === undefined}
               />
+              {!showNameCaption ? (
+                <span className="seat-name" title={seat.name}>
+                  {seat.name}
+                </span>
+              ) : null}
               {statusRails}
               {voteBadge}
             </>
@@ -336,6 +342,7 @@ export const GameTable = ({
                   style={cardPreferences.style}
                   seat={seat.seat}
                   suit={suit === null ? "◇" : CARD_SUIT_SYMBOLS[suit]}
+                  name={seat.name}
                   role={showRole && !printedFaceDown ? visibleRole : undefined}
                   rolePlacement={cardPreferences.rolePlacement}
                   faceDown={printedFaceDown}
@@ -527,7 +534,7 @@ export const GameTable = ({
                   {content}
                 </button>
               )}
-              <PlayerCardCaption name={seat.name} />
+              {showNameCaption ? <PlayerCardCaption name={seat.name} /> : null}
               {readOnly || renderSeatActions === undefined ? null : (
                 <div className="seat-actions">{renderSeatActions(seat)}</div>
               )}

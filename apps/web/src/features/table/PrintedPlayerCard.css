@@ -157,23 +157,41 @@
 .printed-player-card--noir .printed-player-card__art {
   height: 65%;
 }
-.printed-player-card__role-band {
+.printed-player-card__name-band {
   position: absolute;
   z-index: 2;
   top: 46%;
   left: 18%;
   width: 64%;
-  min-height: 22px;
+  height: 8.4%;
+  min-height: 12px;
   display: grid;
   align-items: center;
-  padding: 2px 3%;
+  padding-inline: 3%;
   border-block: 1px solid var(--printed-ink);
   background: var(--printed-paper);
 }
+.printed-player-card__name {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font:
+    bold max(10px, 7.6cqw)/1.05 Georgia,
+    serif;
+}
 .printed-player-card:is(.printed-player-card--heritage, .printed-player-card--noir)
-  .printed-player-card__role-band {
+  .printed-player-card__name-band {
   top: 73%;
+  height: 8%;
   border-color: var(--printed-gold);
+}
+.printed-player-card:is(.printed-player-card--heritage, .printed-player-card--noir)
+  .printed-player-card__name {
+  font-weight: normal;
+  font-variant: small-caps;
 }
 .printed-player-card__role {
   position: absolute;
@@ -196,7 +214,15 @@
   .printed-player-card__role {
   top: 82%;
 }
-.printed-player-card--classic[data-role-placement="ribbon"] .printed-player-card__role-band {
+.printed-player-card[data-role-placement="ribbon"] .printed-player-card__name-band {
+  height: 17%;
+  min-height: 25px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+}
+.printed-player-card--classic[data-role-placement="ribbon"] .printed-player-card__name-band {
   top: 42%;
 }
 .printed-player-card[data-role-placement="ribbon"] .printed-player-card__role {
@@ -212,7 +238,7 @@
 }
 @container (max-width: 90px) {
   .printed-player-card:is(.printed-player-card--heritage, .printed-player-card--noir)
-    .printed-player-card__role-band {
+    .printed-player-card__name-band {
     top: 68%;
   }
   .printed-player-card:is(
@@ -226,7 +252,7 @@
       .printed-player-card--heritage,
       .printed-player-card--noir
     )[data-role-placement="ribbon"]
-    .printed-player-card__role-band {
+    .printed-player-card__name-band {
     top: 64%;
   }
 }

@@ -140,9 +140,17 @@ describe("player exit controls", () => {
         fireEvent.click(screen.getByRole("button", { name: "Preview exit" }));
         const card = container.querySelector<HTMLElement>(".player-exit-preview .player-seat")!;
         expect(card).toHaveAttribute("data-card-style", style);
-        expect(card.querySelector(".seat-name,.printed-player-card__name")).toBeNull();
-        expect(card.nextElementSibling).toHaveClass("player-seat-caption");
-        expect(card.nextElementSibling).toHaveTextContent(card.getAttribute("aria-label")!);
+        const departed = ["unknown", "mafia", "vote", "fourth-foul", "exclusion"].includes(action);
+        if (departed) {
+          expect(card.querySelector(".seat-name,.printed-player-card__name")).toBeNull();
+          expect(card.nextElementSibling).toHaveClass("player-seat-caption");
+          expect(card.nextElementSibling).toHaveTextContent(card.getAttribute("aria-label")!);
+        } else {
+          expect(card.querySelector(".seat-name,.printed-player-card__name")).toHaveTextContent(
+            card.getAttribute("aria-label")!,
+          );
+          expect(card.nextElementSibling).toBeNull();
+        }
         if (style === "glass") {
           expect(card.firstElementChild).toHaveClass("liquid-card-glass");
           expect(card.querySelectorAll(":scope > .liquid-card-glass")).toHaveLength(1);
@@ -151,7 +159,6 @@ describe("player exit controls", () => {
           expect(card.querySelector(".liquid-card-glass")).toBeNull();
           expect(card.querySelector(`.printed-player-card--${style}`)).toBeInTheDocument();
         }
-        const departed = ["unknown", "mafia", "vote", "fourth-foul", "exclusion"].includes(action);
         expect(card.classList.contains("status-active")).toBe(!departed);
         expect(card.classList.contains("is-exiting")).toBe(departed);
         expect(animate).toHaveBeenCalled();

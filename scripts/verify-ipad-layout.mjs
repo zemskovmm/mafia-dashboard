@@ -172,7 +172,7 @@ export async function verifyIpadLayout(
   }
 
   const ordinaryNickname = (
-    await page.locator(".seat-anchor > .player-seat-caption").allTextContents()
+    await page.locator(".seat-anchor > .player-seat .seat-name").allTextContents()
   ).find((name) => name !== longNickname);
   for (const nickname of [longNickname, ordinaryNickname]) {
     await page.getByRole("button", { name: `Nominate ${nickname}`, exact: true }).click();

@@ -1,5 +1,6 @@
 import type { Role } from "@mafia/game-domain";
 import { useCallback, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { gameMessages } from "../../i18n/messages/game.js";
 import { useFancyFeatures } from "../effects/FancyFeaturesContext.js";
@@ -12,6 +13,7 @@ import { DEFAULT_PLAYER_EXIT_SETTINGS } from "../effects/player-exit-preferences
 import type { PlayerExitRequest } from "../game/PlayerExitProvider.js";
 import type { PrintedCardStyle, PrintedRolePlacement } from "../theme/player-card-preferences.js";
 import { getCardArtwork } from "./card-decks.js";
+import { PlayerCardCaption } from "./PlayerCardCaption.js";
 import type { RoleDrawRequest } from "./RoleDrawPresentation.js";
 import "./PrintedPlayerCard.css";
 
@@ -27,6 +29,7 @@ export const PrintedPlayerCard = ({
   style,
   seat,
   suit,
+  name,
   role,
   rolePlacement,
   faceDown,
@@ -41,6 +44,7 @@ export const PrintedPlayerCard = ({
   style: PrintedCardStyle;
   seat: number;
   suit: string;
+  name: string;
   role?: Role;
   rolePlacement: PrintedRolePlacement;
   faceDown: boolean;
@@ -59,6 +63,7 @@ export const PrintedPlayerCard = ({
   const outgoing = useRef<HTMLSpanElement>(null);
   const current = useRef<HTMLSpanElement>(null);
   const publicIdentity = useRef<HTMLSpanElement>(null);
+  const revealCaption = useRef<HTMLSpanElement>(null);
   const [turn, setTurn] = useState<Turn>();
   const active = useRef<Turn>(undefined);
   const previous = useRef<{
@@ -209,6 +214,8 @@ export const PrintedPlayerCard = ({
       if (turn.kind === "exit") {
         animateDepartureEffects(host, host, turn.request, animations);
       }
+      if (revealCaption.current)
+        animations.push(revealCaption.current.animate(motion.front, options));
       synchronizeCardAnimations(animations, startedAt);
     } catch {
       // Observe cancellation of any animations started before a later animate() failed.
@@ -248,51 +255,66 @@ export const PrintedPlayerCard = ({
           </span>
         ))}
         <img className="printed-player-card__art" src={artwork.front} alt="" draggable={false} />
-        {rolePlacement === "ribbon" && faceRole ? (
-          <span className="printed-player-card__role-band">{roleLabel(faceRole)}</span>
-        ) : (
-          roleLabel(faceRole)
-        )}
-      </>
-    );
-  return (
-    <span
-      className={`printed-player-card printed-player-card--${style}`}
-      data-down={faceDown}
-      data-turning={turn ? "true" : undefined}
-      data-role-placement={rolePlacement}
-    >
-      <span ref={motionElement} className="printed-player-card__motion">
-        {turn ? (
-          <span
-            ref={outgoing}
-            className="printed-player-card__surface printed-player-card__outgoing"
-            aria-hidden="true"
-          >
-            {face(turn.fromDown, turn.fromRole)}
-            <DepartureMarks cause={departureCause} />
+        {!faceDown ? (
+          <span className="printed-player-card__name-band">
+            <span className="printed-player-card__name" title={name}>
+              {name}
+            </span>
+            {rolePlacement === "ribbon" ? roleLabel(faceRole) : null}
           </span>
         ) : null}
-        <span
-          ref={current}
-          className={`${departureCause === "vote" ? "player-torn-reverse" : "printed-player-card__surface"} printed-player-card__current${turn ? " printed-player-card__incoming" : ""}`}
-        >
-          {departureCause === "vote" ? (
-            <TornReverse>
-              <span className="printed-player-card__surface">{face(true)}</span>
-            </TornReverse>
-          ) : (
-            <>
-              {face(faceDown, role)}
+        {rolePlacement !== "ribbon" ? roleLabel(faceRole) : null}
+      </>
+    );
+  // A reveal keeps public identity outside the host until the same native
+  // visibility track hides the old back and exposes the name on the front.
+  const captionAnchor =
+    turn?.fromDown && !faceDown
+      ? motionElement.current?.closest(".player-seat")?.parentElement
+      : null;
+  return (
+    <>
+      {captionAnchor
+        ? createPortal(<PlayerCardCaption name={name} ref={revealCaption} />, captionAnchor)
+        : null}
+      <span
+        className={`printed-player-card printed-player-card--${style}`}
+        data-down={faceDown}
+        data-turning={turn ? "true" : undefined}
+        data-role-placement={rolePlacement}
+      >
+        <span ref={motionElement} className="printed-player-card__motion">
+          {turn ? (
+            <span
+              ref={outgoing}
+              className="printed-player-card__surface printed-player-card__outgoing"
+              aria-hidden="true"
+            >
+              {face(turn.fromDown, turn.fromRole)}
               <DepartureMarks cause={departureCause} />
-            </>
-          )}
+            </span>
+          ) : null}
+          <span
+            ref={current}
+            className={`${departureCause === "vote" ? "player-torn-reverse" : "printed-player-card__surface"} printed-player-card__current${turn ? " printed-player-card__incoming" : ""}`}
+          >
+            {departureCause === "vote" ? (
+              <TornReverse>
+                <span className="printed-player-card__surface">{face(true)}</span>
+              </TornReverse>
+            ) : (
+              <>
+                {face(faceDown, role)}
+                <DepartureMarks cause={departureCause} />
+              </>
+            )}
+          </span>
+        </span>
+        <span ref={publicIdentity} className="printed-player-card__public">
+          <span className="printed-player-card__status">{children}</span>
         </span>
       </span>
-      <span ref={publicIdentity} className="printed-player-card__public">
-        <span className="printed-player-card__status">{children}</span>
-      </span>
-    </span>
+    </>
   );
 };
 

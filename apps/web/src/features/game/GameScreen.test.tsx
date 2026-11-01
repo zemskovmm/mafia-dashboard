@@ -135,9 +135,10 @@ describe("GameScreen", () => {
                 `.seat-anchor[data-seat="${player.seat}"] > .player-seat`,
               )!;
               expect(card).toHaveAttribute("data-card-face", "front");
-              expect(card).not.toHaveTextContent(playerLabel(player));
-              expect(card.nextElementSibling).toHaveClass("player-seat-caption");
-              expect(card.nextElementSibling).toHaveTextContent(playerLabel(player));
+              expect(card.querySelector(".seat-name,.printed-player-card__name")).toHaveTextContent(
+                playerLabel(player),
+              );
+              expect(card.parentElement?.querySelector(".player-seat-caption")).toBeNull();
               if (style === "glass") {
                 expect(card.querySelector(".player-role-icon")).toHaveAccessibleName(
                   new RegExp(player.role, "i"),

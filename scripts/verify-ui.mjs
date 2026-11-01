@@ -1692,9 +1692,7 @@ try {
     await verifyFadeFooter("day-one-no-nominees");
     await verifyFadeSafeAreas("day-one-no-nominees");
     for (let index = 0; index < 3; index += 1) {
-      const current = await page
-        .locator(".seat-anchor:has(> .player-seat.is-current) > .player-seat-caption")
-        .innerText();
+      const current = await page.locator(".player-seat.is-current .seat-name").innerText();
       await page.getByRole("button", { name: `Nominate ${current}`, exact: true }).click();
       await verifyFadeFooter(`nominees-${index + 1}`);
       await page.getByRole("button", { name: "Next player", exact: true }).click();
@@ -2367,14 +2365,10 @@ try {
     if (hardeningOnly) {
       stage("hardening-ballot");
       // The matrix must reach live ballot controls; the rail geometry alone is insufficient.
-      const currentName = await page
-        .locator(".seat-anchor:has(> .player-seat.is-current) > .player-seat-caption")
-        .innerText();
+      const currentName = await page.locator(".player-seat.is-current .seat-name").innerText();
       await page.getByRole("button", { name: `Nominate ${currentName}`, exact: true }).click();
       await page.getByRole("button", { name: "Next player" }).click();
-      const otherName = await page
-        .locator(".seat-anchor:has(> .player-seat.is-current) > .player-seat-caption")
-        .innerText();
+      const otherName = await page.locator(".player-seat.is-current .seat-name").innerText();
       await page.getByRole("button", { name: `Nominate ${otherName}`, exact: true }).click();
       while (await page.getByRole("button", { name: "Next player" }).count()) {
         await page.getByRole("button", { name: "Next player" }).click();
@@ -2514,10 +2508,7 @@ try {
       if (voterSeat === undefined || voterSeat === null)
         throw new Error("No eligible matrix voter");
       const voter = page.locator(`.seat-anchor[data-seat="${voterSeat}"] .player-seat`);
-      const voterName = await voter
-        .locator("..")
-        .locator(":scope > .player-seat-caption")
-        .innerText();
+      const voterName = await voter.locator(".seat-name").innerText();
       await assertNativeControl(voter, "Ballot voter");
       await page.keyboard.press("Enter");
       await page
@@ -3179,7 +3170,7 @@ try {
     const firstPlayerMatch = [
       null,
       await firstPlayerCard.evaluate((card) => card.closest(".seat-anchor").dataset.seat),
-      await firstPlayerCard.locator("..").locator(":scope > .player-seat-caption").innerText(),
+      await firstPlayerCard.locator(".seat-name").innerText(),
     ];
     if (firstPlayerMatch === undefined || firstPlayerMatch === null) {
       throw new Error(`Could not identify the first speaker: ${firstPlayerLabel ?? "missing"}`);
@@ -3191,7 +3182,7 @@ try {
     const nominatorMatch = [
       null,
       await nominatorCard.evaluate((card) => card.closest(".seat-anchor").dataset.seat),
-      await nominatorCard.locator("..").locator(":scope > .player-seat-caption").innerText(),
+      await nominatorCard.locator(".seat-name").innerText(),
     ];
     if (nominatorMatch === undefined || nominatorMatch === null) {
       throw new Error(`Could not identify the next speaker: ${nominatorLabel ?? "missing"}`);
@@ -3206,7 +3197,7 @@ try {
     const showPrivateInfo = page.getByRole("button", { name: "Show private info" });
     if ((await showPrivateInfo.count()) > 0) await showPrivateInfo.click();
     const statusLayout = await nominatorCard.evaluate((card) => {
-      const name = card.parentElement.querySelector(":scope > .player-seat-caption");
+      const name = card.querySelector(".seat-name");
       const box = card.getBoundingClientRect();
       const rects = [...card.querySelectorAll(".card-status-slot")].map((element) => ({
         label: element.getAttribute("aria-label"),
@@ -3221,21 +3212,10 @@ try {
         r.bottom <= box.bottom;
       return {
         nickname: name?.textContent,
-        nameBelow:
+        nameInside:
           name !== null &&
-          (() => {
-            const r = name.getBoundingClientRect(),
-              workspace = card.closest(".table-workspace").getBoundingClientRect();
-            return (
-              r.width > 0 &&
-              r.height > 0 &&
-              r.top >= box.bottom - 1 &&
-              r.left >= workspace.left &&
-              r.right <= workspace.right &&
-              r.bottom <= workspace.bottom &&
-              name.checkVisibility({ opacityProperty: true, visibilityProperty: true })
-            );
-          })(),
+          inside(name.getBoundingClientRect()) &&
+          name.checkVisibility({ opacityProperty: true, visibilityProperty: true }),
         roles: card.querySelectorAll('.player-role-icon[role="img"]').length,
         roleInside: [...card.querySelectorAll('.player-role-icon[role="img"]')].every((role) =>
           inside(role.getBoundingClientRect()),
@@ -3248,7 +3228,7 @@ try {
     });
     if (
       statusLayout.nickname !== nominatorName ||
-      !statusLayout.nameBelow ||
+      !statusLayout.nameInside ||
       statusLayout.roles !== 1 ||
       !statusLayout.roleInside ||
       statusLayout.nomination !== 1 ||
@@ -3269,7 +3249,7 @@ try {
     const secondNominatorMatch = [
       null,
       await secondNominatorCard.evaluate((card) => card.closest(".seat-anchor").dataset.seat),
-      await secondNominatorCard.locator("..").locator(":scope > .player-seat-caption").innerText(),
+      await secondNominatorCard.locator(".seat-name").innerText(),
     ];
     if (secondNominatorMatch === undefined || secondNominatorMatch === null) {
       throw new Error(
@@ -3342,10 +3322,7 @@ try {
     const finishVoting = page.getByRole("button", { name: "Finish voting" });
     if (!(await finishVoting.isEnabled())) throw new Error("A complete ballot must be finishable");
     const removedVoter = autoVotingHighlight.first();
-    const removedVoterName = await removedVoter
-      .locator("..")
-      .locator(":scope > .player-seat-caption")
-      .innerText();
+    const removedVoterName = await removedVoter.locator(".seat-name").innerText();
     const removedSeat = await removedVoter.evaluate((card) =>
       Number(card.closest("[data-seat]")?.getAttribute("data-seat")),
     );

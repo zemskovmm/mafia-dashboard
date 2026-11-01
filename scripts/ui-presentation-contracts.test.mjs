@@ -865,9 +865,13 @@ test("printed host ownership oracle preserves real lighting overhang but rejects
   );
   const frame = {
     tag: "BUTTON",
+    style: "classic",
+    face: "back",
+    captionCount: 1,
+    names: [],
     hostTurns: 1,
     innerTurns: 0,
-    caption: { visible: true, upright: true, opacity: 1 },
+    caption: { visible: true, upright: true, opacity: 1, sibling: true },
     layoutWidth: 100,
     box: { x: 150, y: 50, width: 10, height: 150 },
     lights: [
@@ -880,7 +884,7 @@ test("printed host ownership oracle preserves real lighting overhang but rejects
     null,
     { visible: false, upright: true, opacity: 1 },
     { visible: true, upright: false, opacity: 1 },
-    { visible: true, upright: true, opacity: 0.45 },
+    { visible: true, upright: true, opacity: 0.45, sibling: true },
   ])
     assert.throws(() => assertPrintedTurnFrame({ ...frame, caption }), /external name/);
   assert.throws(() => assertPrintedTurnFrame({ ...frame, hostTurns: 0 }), /semantic host/);
@@ -909,6 +913,247 @@ test("printed host ownership oracle preserves real lighting overhang but rejects
       }),
     /upright full-width/,
   );
+});
+
+test("face-up names use their fronts while down/departed names stay external throughout motion", async () => {
+  const { assertPlayerCardTurnNames } = await tsImport(
+    "./verify-player-card-styles-ui.mjs",
+    import.meta.url,
+  );
+  const frontName = { front: true, inBand: true, visible: true };
+  for (const style of ["glass", "classic", "heritage", "noir"]) {
+    const front = {
+      style,
+      face: "front",
+      cause: null,
+      hostTurns: 1,
+      captionCount: 0,
+      caption: null,
+      names: [frontName],
+    };
+    assert.doesNotThrow(() => assertPlayerCardTurnNames(front));
+    // Masked/undealt Glass still has a neutral front; it is not a nameless back.
+    if (style === "glass")
+      assert.doesNotThrow(() => assertPlayerCardTurnNames({ ...front, face: null }));
+    const twins = { ...front, names: [frontName, { ...frontName, visible: false }] };
+    assert.doesNotThrow(() => assertPlayerCardTurnNames(twins));
+    assert.throws(
+      () => assertPlayerCardTurnNames({ ...front, names: [{ ...frontName, visible: false }] }),
+      /exactly one visible name/,
+    );
+    if (style !== "glass") {
+      const reveal = {
+        ...front,
+        captionCount: 1,
+        caption: { visible: true, upright: true, opacity: 1, sibling: true },
+        names: [{ ...frontName, visible: false }],
+      };
+      assert.doesNotThrow(() => assertPlayerCardTurnNames(reveal));
+      assert.doesNotThrow(() =>
+        assertPlayerCardTurnNames({
+          ...reveal,
+          caption: { ...reveal.caption, visible: false },
+          names: [frontName],
+        }),
+      );
+      assert.throws(
+        () => assertPlayerCardTurnNames({ ...reveal, names: [frontName] }),
+        /exactly one visible name/,
+      );
+    }
+    assert.throws(
+      () => assertPlayerCardTurnNames({ ...twins, hostTurns: 0 }),
+      /current\/outgoing fronts/,
+    );
+    assert.throws(
+      () => assertPlayerCardTurnNames({ ...front, names: [frontName, frontName] }),
+      /face visibility/,
+    );
+    assert.throws(
+      () => assertPlayerCardTurnNames({ ...front, names: [] }),
+      /current\/outgoing fronts/,
+    );
+    assert.throws(
+      () => assertPlayerCardTurnNames({ ...front, names: [{ ...frontName, front: false }] }),
+      /front content/,
+    );
+    assert.throws(
+      () => assertPlayerCardTurnNames({ ...front, captionCount: 1 }),
+      /only to down\/departed/,
+    );
+    if (style !== "glass")
+      assert.throws(
+        () => assertPlayerCardTurnNames({ ...front, names: [{ ...frontName, inBand: false }] }),
+        /name band/,
+      );
+    for (const cause of ["mafia", "vote", "discipline", "unknown"]) {
+      const down = {
+        ...front,
+        face: style === "glass" && cause === "unknown" ? "front" : "back",
+        cause,
+        captionCount: 1,
+        names: [],
+        caption: { visible: true, upright: true, opacity: 1, sibling: true },
+      };
+      assert.doesNotThrow(() => assertPlayerCardTurnNames(down));
+      assert.throws(
+        () => assertPlayerCardTurnNames({ ...down, names: [{ ...frontName, visible: false }] }),
+        /No names inside/,
+      );
+      for (const captionCount of [0, 2])
+        assert.throws(
+          () => assertPlayerCardTurnNames({ ...down, captionCount }),
+          /only to down\/departed/,
+        );
+      for (const change of [
+        { visible: false },
+        { upright: false },
+        { sibling: false },
+        { opacity: 0.45 },
+      ])
+        assert.throws(
+          () => assertPlayerCardTurnNames({ ...down, caption: { ...down.caption, ...change } }),
+          /external name/,
+        );
+    }
+    if (style !== "glass") {
+      assert.doesNotThrow(() =>
+        assertPlayerCardTurnNames({
+          ...front,
+          face: "back",
+          names: [],
+          captionCount: 1,
+          caption: { visible: true, upright: true, opacity: 1, sibling: true },
+        }),
+      );
+    }
+  }
+});
+
+test("name geometry retains original front positions without relaxing caption, neighbour or action clearance", async () => {
+  const { assertPlayerCardTurnNames } = await tsImport(
+    "./verify-player-card-styles-ui.mjs",
+    import.meta.url,
+  );
+  const source = readFileSync(
+    new URL("./verify-player-card-styles-ui.mjs", import.meta.url),
+    "utf8",
+  );
+  const tree = ts.createSourceFile("verifier.mjs", source, ts.ScriptTarget.Latest, true);
+  let captions;
+  const visit = (node) => {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === "captions")
+      captions = node.getText(tree);
+    ts.forEachChild(node, visit);
+  };
+  visit(tree);
+  assert.ok(captions, "Execute the existing browser geometry oracle, not a second harness");
+  const rect = (left, top, width, height) => ({
+    left,
+    top,
+    right: left + width,
+    bottom: top + height,
+    width,
+    height,
+  });
+  const rowsFor = (style, external = false) =>
+    Array.from({ length: 10 }, (_, index) => {
+      const card = rect(40 + (index % 5) * 150, 40 + Math.floor(index / 5) * 250, 100, 140);
+      const band = rect(
+        card.left + 18,
+        card.top + card.height * (style === "classic" ? 0.46 : 0.73),
+        64,
+        18,
+      );
+      const text = `Player ${index + 1}`;
+      return {
+        seat: index + 1,
+        style,
+        face: external ? "back" : "front",
+        cause: external ? "unknown" : null,
+        external,
+        captionCount: external ? 1 : 0,
+        faceNames: external ? [] : [{ front: true, inBand: true, visible: true }],
+        count: 1,
+        tag: "SPAN",
+        hidden: external ? "true" : null,
+        sibling: external,
+        text,
+        title: text,
+        fullLabel: text,
+        cardText: external ? "" : text,
+        visible: true,
+        upright: true,
+        clipped: false,
+        longLabelBounded: true,
+        opacity: 1,
+        bounds: external
+          ? rect(card.left, card.bottom + 5, 100, 16)
+          : rect(card.left + 18, style === "glass" ? card.top + 105 : band.top + 2, 64, 12),
+        card,
+        anchor: card,
+        workspace: rect(0, 0, 900, 600),
+        artwork: rect(card.left + 20, card.top + 20, 60, 80),
+        band,
+        actions: [],
+      };
+    });
+  const check = (rows, controls = []) =>
+    runInContext(
+      `(${captions})`,
+      createContext({
+        assert,
+        assertPlayerCardTurnNames,
+        players: rows.map(({ text }) => ({ nickname: text })),
+        page: {
+          viewportSize: () => ({ width: 900, height: 600 }),
+          locator: (selector) => ({
+            evaluateAll: async () => (selector.includes("seat-anchor") ? rows : controls),
+          }),
+        },
+      }),
+    )();
+  for (const style of ["glass", "classic", "heritage", "noir"]) {
+    for (const external of [false, true]) {
+      const rows = rowsFor(style, external);
+      await check(rows);
+      for (const [mutate, message] of [
+        [
+          (row) => {
+            row.clipped = true;
+          },
+          /clipped/,
+        ],
+        [
+          (row) => {
+            row.opacity = 0.45;
+          },
+          /ancestor fade|fade the external name/,
+        ],
+        [
+          (row) => {
+            row.longLabelBounded = false;
+          },
+          /bounded/,
+        ],
+      ]) {
+        const changed = structuredClone(rows);
+        mutate(changed[0]);
+        await assert.rejects(check(changed), message);
+      }
+      await assert.rejects(check(rows, [rows[0].bounds]), /native action clearance/);
+      const neighbour = structuredClone(rows);
+      neighbour[1].card = rows[0].bounds;
+      await assert.rejects(check(neighbour), /artwork clearance 2/);
+    }
+    const rows = rowsFor(style);
+    if (style === "glass") rows[0].artwork.bottom = rows[0].bounds.bottom;
+    else rows[0].band.top = rows[0].card.top + 10;
+    await assert.rejects(check(rows), /Glass name below artwork|original middle\/lower name band/);
+    const down = rowsFor(style, true);
+    down[0].bounds = rect(down[0].card.left, down[0].card.top + 50, 100, 16);
+    await assert.rejects(check(down), /below card/);
+  }
 });
 
 test("glow pixel sampling stays within each phase without the zero-width edge-on singularity", async () => {
@@ -988,16 +1233,25 @@ test("real printed-turn probe observes native host/light geometry and immediate 
   };
   let moves = 0,
     captionAncestorOpacity = 1;
-  const captionRoot = {};
+  const captionRoot = {
+    querySelector: () => publicNames[0] ?? null,
+    querySelectorAll: () => publicNames,
+  };
   const captionNode = {
     textContent: "Player 1",
     parentElement: captionRoot,
     getBoundingClientRect: () => rectangle,
     checkVisibility: () => true,
   };
+  let face = "back",
+    publicNames = [captionNode],
+    faceNames = [];
   const host = {
-    parentElement: { querySelector: () => captionNode },
+    parentElement: captionRoot,
+    nextElementSibling: captionNode,
     tagName: "BUTTON",
+    getAttribute: (name) =>
+      ({ "data-card-style": "classic", "data-card-face": face })[name] ?? null,
     offsetWidth: 100,
     offsetHeight: 150,
     getBoundingClientRect: () => rectangle,
@@ -1006,13 +1260,15 @@ test("real printed-turn probe observes native host/light geometry and immediate 
     classList: { contains: () => false },
     querySelector: () => null,
     querySelectorAll: (selector) =>
-      selector === ".printed-player-card__role,[data-role-glyph]"
-        ? privateVisible
-          ? [{}]
-          : []
-        : privateVisible
-          ? [glow]
-          : [],
+      selector === ".seat-name,.printed-player-card__name,.printed-player-card__caption"
+        ? faceNames
+        : selector === ".printed-player-card__role,[data-role-glyph]"
+          ? privateVisible
+            ? [{}]
+            : []
+          : privateVisible
+            ? [glow]
+            : [],
     getAnimations: () => [
       {
         id: "printed-card-draw-7",
@@ -1083,6 +1339,29 @@ test("real printed-turn probe observes native host/light geometry and immediate 
   assert.equal(immediate.privateCues, false);
   assert.equal(immediate.privateGlows, 0);
   assert.equal(immediate.privateCanvases, 0);
+  assert.equal(immediate.captionCount, 1);
+  assert.equal(immediate.caption.sibling, true);
+  assert.equal(immediate.names.length, 0);
+  face = "front";
+  publicNames = [];
+  const frontName = {
+    textContent: "Player 1",
+    checkVisibility: () => true,
+    closest: (selector) =>
+      selector === ".printed-player-card__surface" ? { querySelector: () => ({}) } : {},
+  };
+  faceNames = [frontName, { ...frontName, checkVisibility: () => false }];
+  const reroll = probe.sample();
+  assert.equal(reroll.caption, null);
+  assert.equal(reroll.captionCount, 0);
+  assert.equal(reroll.face, "front");
+  assert.equal(
+    reroll.names.length,
+    2,
+    "Retain real current/outgoing front names for visibility checks",
+  );
+  assert.equal(reroll.names[0].front && reroll.names[0].inBand && reroll.names[0].visible, true);
+  assert.equal(reroll.names[1].visible, false);
   assert.equal(moves, 0, "Probe does not pause, finish or seek the native action");
   now = 1501;
   queued();
@@ -1192,6 +1471,58 @@ test("H3 keeps passive natural traces separate from paired pixels and uses all p
   assert.match(
     source,
     /reloadWithoutFeedback\(\),\s*before,\s*"Each deck restores the exact accepted history"/,
+  );
+});
+
+test("player-captions and reverse-completion keep face names, prompt down captions and the existing canonical journeys", () => {
+  const source = readFileSync(
+    new URL("./verify-player-card-styles-ui.mjs", import.meta.url),
+    "utf8",
+  );
+  const tree = ts.createSourceFile("verifier.mjs", source, ts.ScriptTarget.Latest, true);
+  const functions = new Map();
+  const visit = (node) => {
+    if (ts.isFunctionDeclaration(node) && node.name)
+      functions.set(node.name.text, node.getText(tree));
+    ts.forEachChild(node, visit);
+  };
+  visit(tree);
+  const names = functions.get("captions"),
+    placement = functions.get("roleLayout"),
+    completed = functions.get("completedCards");
+  assert.match(names, /style === "glass" \? Boolean\(cause\) : face === "back"/);
+  assert.match(names, /external \? publicNames : cardNames/);
+  assert.match(names, /assertPlayerCardTurnNames\(/);
+  assert.match(placement, /current\.querySelector\("\.printed-player-card__name"\)/);
+  assert.match(placement, /current\.querySelector\("\.printed-player-card__name-band"\)/);
+  assert.doesNotMatch(placement, /player-seat-caption|printed-player-card__role-band/);
+  assert.match(completed, /el\.querySelectorAll\("\.seat-name,\.printed-player-card__name"\)/);
+  assert.match(completed, /assert\.equal\(\s*row\.captions,\s*0,/);
+  assert.match(completed, /assert\.deepEqual\(row\.names,/);
+  const captions = functions.get("playerCaptionScenarios"),
+    completion = functions.get("completionScenarios");
+  assert.match(captions, /assertPlayerCardTurnNames\(row\)/);
+  assert.match(captions, /firstCaption\.box\[key\]/);
+  for (const subject of ["goodbye.victimSeat", "5"])
+    assert.ok(
+      captions.includes(`await turn(${subject},`),
+      "Accepted departures retain immediate native-motion name observation",
+    );
+  assert.doesNotMatch(captions, /await turn\(city\.victimSeat,/);
+  assert.match(
+    captions,
+    /await sweep\("vote-departure", \{ backs: \[city\.victimSeat\] \}, "vote"\)/,
+  );
+  assert.match(captions, /assert\.deepEqual\(actual, expected,/);
+  assert.match(captions, /await completionScenarios\(\)/);
+  assert.match(completion, /for \(const winner of \["red", "black"\]\)/);
+  assert.match(completion, /for \(const stage of \["draw", "cancelled"\]\)/);
+  assert.match(completion, /reloadWithoutFeedback\(\)/);
+  assert.match(completion, /await prefix\(active\.events/);
+  assert.match(completion, /await undo\(\)/);
+  assert.match(
+    functions.get("privacy"),
+    /\.seat-name,\.printed-player-card__name,\.printed-player-card__caption/,
   );
 });
 

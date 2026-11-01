@@ -202,7 +202,7 @@ async function geometry(page) {
         anchor: node.parentElement.getBoundingClientRect().toJSON(),
         card: local(node),
         person: local(node.querySelector(".person-icon")),
-        name: local(node.parentElement.querySelector(":scope > .player-seat-caption")),
+        name: local(node.querySelector(".seat-name")),
       };
     }),
   );
@@ -218,9 +218,7 @@ async function markerGeometry(page) {
         person: rect(node.querySelector(".person-icon")),
         name: (() => {
           const range = document.createRange();
-          range.selectNodeContents(
-            node.parentElement.querySelector(":scope > .player-seat-caption"),
-          );
+          range.selectNodeContents(node.querySelector(".seat-name"));
           return range.getBoundingClientRect().toJSON();
         })(),
         markers: [...node.querySelectorAll(".card-status-slot")].map((el) => {

@@ -1,8 +1,12 @@
+import type { Ref } from "react";
 import "./PlayerCardCaption.css";
 
-/** Public identity stays outside the rotating/fading card and its private faces. */
-export const PlayerCardCaption = ({ name }: Readonly<{ name: string }>) => (
-  <span className="seat-name player-seat-caption" title={name} aria-hidden="true">
+/** Face-down/departed identity stays outside the rotating/fading card and its backs. */
+export const PlayerCardCaption = ({
+  name,
+  ref,
+}: Readonly<{ name: string; ref?: Ref<HTMLSpanElement> }>) => (
+  <span ref={ref} className="seat-name player-seat-caption" title={name} aria-hidden="true">
     {name}
   </span>
 );

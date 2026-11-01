@@ -14,7 +14,7 @@ const seats: TableSeatView[] = Array.from({ length: 10 }, (_, index) => ({
 
 describe("GameTable", () => {
   it.each(["glass", "classic", "heritage", "noir"] as const)(
-    "keeps one %s name below and outside both faces through privacy, departure and completion",
+    "keeps the original %s front name and uses an external caption only while down or departed",
     (style) => {
       let name = "Alexandra Very-Long-Player-Name";
       const tree = (
@@ -35,10 +35,8 @@ describe("GameTable", () => {
         </PlayerCardStyleContext.Provider>
       );
       const { container, rerender } = render(tree());
-      const caption = container.querySelector(".seat-anchor > .player-seat-caption");
-      expect(caption).toHaveTextContent(name);
-      expect(caption).toHaveAttribute("title", name);
       for (const [privacy, departed, completed, readOnly] of [
+        [false, false, false, false],
         [true, false, false, false],
         [false, true, false, false],
         [true, true, true, false],
@@ -46,12 +44,26 @@ describe("GameTable", () => {
         [false, false, false, false],
       ]) {
         rerender(tree(privacy, departed, completed, readOnly));
-        expect(container.querySelectorAll(".player-seat-caption")).toHaveLength(1);
-        expect(container.querySelector(".player-seat-caption")).toBe(caption);
         const card = screen.getByRole(readOnly ? "group" : "button", { name: `Seat 1: ${name}` });
-        expect(card.nextElementSibling).toBe(caption);
-        expect(card).not.toHaveTextContent(name);
-        expect(caption?.closest(".player-seat")).toBeNull();
+        const external = !completed && (departed || (privacy && style !== "glass"));
+        const caption = container.querySelector(".seat-anchor > .player-seat-caption");
+        expect(container.querySelectorAll(".seat-name,.printed-player-card__name")).toHaveLength(1);
+        if (external) {
+          expect(caption).toHaveTextContent(name);
+          expect(caption).toHaveAttribute("title", name);
+          expect(card.nextElementSibling).toBe(caption);
+          expect(card).not.toHaveTextContent(name);
+          expect(caption?.closest(".player-seat")).toBeNull();
+        } else {
+          expect(caption).toBeNull();
+          expect(
+            card.querySelector(
+              style === "glass"
+                ? ".seat-name"
+                : ".printed-player-card__name-band .printed-player-card__name",
+            ),
+          ).toHaveTextContent(name);
+        }
       }
       const card = screen.getByRole("button", { name: `Seat 1: ${name}` });
       const artwork = card.querySelector("img");
@@ -59,8 +71,8 @@ describe("GameTable", () => {
       rerender(tree());
       expect(screen.getByRole("button", { name: `Seat 1: ${name}` })).toBe(card);
       expect(card.querySelector("img")).toBe(artwork);
-      expect(card.nextElementSibling).toBe(caption);
-      expect(caption).toHaveTextContent(name);
+      expect(container.querySelector(".player-seat-caption")).toBeNull();
+      expect(card).toHaveTextContent(name);
     },
   );
 
@@ -682,8 +694,8 @@ describe("GameTable", () => {
         expect(card.firstElementChild).toHaveClass("liquid-card-glass");
         expect(card.firstElementChild).toHaveAttribute("aria-hidden", "true");
         expect(card.querySelectorAll(".liquid-card-glass")).toHaveLength(1);
-        expect(card.nextElementSibling).toHaveClass("player-seat-caption");
-        expect(card.nextElementSibling).not.toHaveAttribute("data-player-glass");
+        expect(card.querySelector(".seat-name")).toHaveTextContent(/Player/);
+        expect(card.querySelector(".seat-name")).not.toHaveAttribute("data-player-glass");
       }
       if (!readOnly) {
         fireEvent.click(cards[6]!);
@@ -825,8 +837,7 @@ describe("GameTable", () => {
     );
 
     const player = screen.getByRole("button", { name: "Seat 1: Player 1" });
-    expect(player.nextElementSibling).toHaveClass("player-seat-caption");
-    expect(player.nextElementSibling).toHaveTextContent("Player 1");
+    expect(player.querySelector(".seat-name")).toHaveTextContent("Player 1");
     const badges = player.querySelector(".seat-badges");
     expect(screen.getByRole("img", { name: "citizen" })).toBeInTheDocument();
     expect(badges).not.toHaveTextContent("Foul");

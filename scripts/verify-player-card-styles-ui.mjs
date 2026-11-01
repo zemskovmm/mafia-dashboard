@@ -101,19 +101,64 @@ export function assertPlayerCardDeparturePaint(paint, cause, finalOpacity) {
     close(paint.opticalParentOpacity, 1, "Glass optical parent is not a second fade multiplier");
 }
 
+/** Face names follow their real visibility tracks; only down/departed names stay outside. */
+export function assertPlayerCardTurnNames(frame) {
+  const external = frame.style === "glass" ? Boolean(frame.cause) : frame.face === "back";
+  const revealing = !external && frame.style !== "glass" && frame.hostTurns > 0 && frame.caption;
+  assert.equal(
+    frame.captionCount,
+    external || revealing ? 1 : 0,
+    "External names belong only to down/departed cards",
+  );
+  if (external) {
+    assert.equal(frame.names.length, 0, "No names inside down or outgoing card faces");
+    assert.ok(
+      frame.caption?.visible && frame.caption.upright && frame.caption.sibling,
+      "The external name remains visible and unmirrored outside the turning host",
+    );
+    assert.ok(
+      Math.abs(frame.caption.opacity - 1) <= 0.002,
+      "Native turns never fade the external name",
+    );
+  } else {
+    if (revealing) {
+      assert.ok(
+        frame.caption.upright && frame.caption.sibling,
+        "The reveal caption stays external",
+      );
+      if (frame.caption.visible)
+        assert.ok(
+          Math.abs(frame.caption.opacity - 1) <= 0.002,
+          "The reveal caption stays readable",
+        );
+    } else assert.equal(frame.caption, null, "Face-up cards have no external name");
+    assert.ok(
+      frame.names.length >= 1 && frame.names.length <= (frame.hostTurns ? 2 : 1),
+      "Face-up names stay on their current/outgoing fronts",
+    );
+    for (const name of frame.names) {
+      assert.equal(
+        name.front,
+        true,
+        "Names belong to front content, never the public status plane",
+      );
+      if (frame.style !== "glass")
+        assert.equal(name.inBand, true, "Printed names retain their name band");
+    }
+    assert.equal(
+      frame.names.filter(({ visible }) => visible).length + Number(Boolean(frame.caption?.visible)),
+      1,
+      "Name handoff and face visibility keep exactly one visible name",
+    );
+  }
+}
+
 /** DOM ownership is necessary, but never reported as a painted-glow proof. */
 export function assertPrintedTurnFrame(frame, { requireLighting = true } = {}) {
   assert.equal(frame.tag, "BUTTON", "Keep the native semantic action host");
   assert.equal(frame.hostTurns, 1, "Exactly the semantic host owns the physical turn");
   assert.equal(frame.innerTurns, 0, "Inner printed material must not perform a second turn");
-  assert.ok(
-    frame.caption?.visible && frame.caption.upright,
-    "The external name remains visible and unmirrored during native turns",
-  );
-  assert.ok(
-    Math.abs(frame.caption.opacity - 1) <= 0.002,
-    "Native turns never fade the external name",
-  );
+  assertPlayerCardTurnNames(frame);
   if (requireLighting)
     assert.ok(frame.lights.length > 0, "Use existing dealt/public lighting, not a test halo");
   for (const light of frame.lights) {
@@ -528,7 +573,7 @@ export async function runPlayerCardStyleScenarios({
           cards.flatMap((el) =>
             [
               ...el.querySelectorAll(
-                ".printed-player-card__role,.player-role-icon,[data-role-glyph]",
+                ".printed-player-card__role,.player-role-icon,[data-role-glyph],.seat-name,.printed-player-card__name,.printed-player-card__caption",
               ),
             ].map((node) => node.outerHTML),
           ),
@@ -536,7 +581,7 @@ export async function runPlayerCardStyleScenarios({
       assert.deepEqual(
         earlyLeaks,
         [],
-        "Privacy strips role-bearing DOM before animation completes",
+        "Privacy strips role/name face DOM before animation completes",
       );
     }
     await settled();
@@ -546,7 +591,17 @@ export async function runPlayerCardStyleScenarios({
     const rows = await page.locator(".game-shell .seat-anchor").evaluateAll((anchors) =>
       anchors.map((anchor) => {
         const host = anchor.querySelector(":scope > .player-seat");
-        const names = [...anchor.querySelectorAll(":scope > .player-seat-caption")];
+        const style = host.getAttribute("data-card-style");
+        const face = host.getAttribute("data-card-face");
+        const cause = host.getAttribute("data-departure-cause");
+        const external = style === "glass" ? Boolean(cause) : face === "back";
+        const publicNames = [...anchor.querySelectorAll(":scope > .player-seat-caption")];
+        const cardNames = [
+          ...host.querySelectorAll(
+            ".seat-name,.printed-player-card__name,.printed-player-card__caption",
+          ),
+        ];
+        const names = external ? publicNames : cardNames;
         const name = names[0];
         if (!name) return { seat: Number(anchor.dataset.seat), count: 0 };
         const rect = (node) => node.getBoundingClientRect().toJSON();
@@ -554,7 +609,7 @@ export async function runPlayerCardStyleScenarios({
         let opacity = 1,
           upright = true,
           clipped = false;
-        // The caption is a sibling, so its actual chain never reaches host.
+        // Read the real ancestry: front names turn with the face, down names do not.
         for (let node = name; node; node = node.parentElement) {
           const css = getComputedStyle(node),
             box = rect(node);
@@ -577,6 +632,23 @@ export async function runPlayerCardStyleScenarios({
         const css = getComputedStyle(name);
         return {
           seat: Number(anchor.dataset.seat),
+          style,
+          face,
+          cause,
+          external,
+          captionCount: publicNames.length,
+          faceNames: cardNames.map((node) => ({
+            front:
+              style === "glass"
+                ? !node.closest(".player-exit-back")
+                : Boolean(
+                    node
+                      .closest(".printed-player-card__surface")
+                      ?.querySelector(".printed-player-card__art"),
+                  ),
+            inBand: Boolean(node.closest(".printed-player-card__name-band")),
+            visible: node.checkVisibility({ opacityProperty: true, visibilityProperty: true }),
+          })),
           count: names.length,
           tag: name.tagName,
           text: name.textContent,
@@ -591,14 +663,18 @@ export async function runPlayerCardStyleScenarios({
           card: rect(host),
           anchor: rect(anchor),
           workspace: rect(anchor.closest(".table-workspace")),
+          artwork: host.querySelector(".player-role-icon")
+            ? rect(host.querySelector(".player-role-icon"))
+            : null,
+          band: name.closest(".printed-player-card__name-band")
+            ? rect(name.closest(".printed-player-card__name-band"))
+            : null,
           longLabelBounded:
             css.whiteSpace === "nowrap" &&
             (name.scrollWidth <= name.clientWidth ||
               (["hidden", "clip"].includes(css.overflowX) && css.textOverflow === "ellipsis")),
-          cardNames: host.querySelectorAll(
-            ".seat-name,.printed-player-card__name,.printed-player-card__caption",
-          ).length,
           cardText: host.textContent,
+          fullLabel: host.getAttribute("aria-label"),
           actions: [...anchor.querySelectorAll(".seat-actions button")]
             .filter((node) => node.getClientRects().length)
             .map(rect),
@@ -621,12 +697,23 @@ export async function runPlayerCardStyleScenarios({
       const label = `Caption seat ${row.seat}`;
       assert.equal(row.count, 1, label);
       assert.equal(row.tag, "SPAN", label);
-      assert.equal(row.hidden, "true", "Accessible identity stays on the native host");
-      assert.equal(row.sibling, true, label);
+      assertPlayerCardTurnNames({
+        ...row,
+        hostTurns: 0,
+        names: row.faceNames,
+        caption: row.external ? { ...row, sibling: row.sibling } : null,
+      });
       assert.equal(row.text, players[row.seat - 1].nickname, label);
-      assert.equal(row.title, row.text, "Full long name survives visual ellipsis");
-      assert.equal(row.cardNames, 0, "No name nodes on either face or torn artwork");
-      assert.equal(row.cardText.includes(row.text), false, "No player-name text inside the card");
+      assert.ok(row.fullLabel.includes(row.text), "Native host preserves the full player name");
+      if (row.external) {
+        assert.equal(row.hidden, "true", "Accessible identity stays on the native host");
+        assert.equal(row.title, row.text, "Full long name survives visual ellipsis");
+        assert.equal(
+          row.cardText.includes(row.text),
+          false,
+          "No player-name text inside the down card",
+        );
+      }
       assert.equal(
         row.visible && row.upright && !row.clipped && row.longLabelBounded,
         true,
@@ -634,10 +721,35 @@ export async function runPlayerCardStyleScenarios({
       );
       assert.ok(Math.abs(row.opacity - 1) <= 0.002, `${label}: no ancestor fade`);
       const b = row.bounds;
-      assert.ok(
-        b.width > 0 && b.height > 0 && b.top >= row.card.bottom - 1,
-        `${label}: below artwork`,
-      );
+      assert.ok(b.width > 0 && b.height > 0, `${label}: painted name bounds`);
+      if (row.external) assert.ok(b.top >= row.card.bottom - 1, `${label}: below card`);
+      else {
+        assert.ok(
+          b.left >= row.card.left - 1 &&
+            b.right <= row.card.right + 1 &&
+            b.top >= row.card.top - 1 &&
+            b.bottom <= row.card.bottom + 1,
+          `${label}: name stays inside its original face`,
+        );
+        if (row.style === "glass") {
+          assert.ok(
+            row.artwork && b.top >= row.artwork.bottom - 1,
+            `${label}: Glass name below artwork`,
+          );
+        } else {
+          assert.ok(
+            row.band && b.top >= row.band.top - 1 && b.bottom <= row.band.bottom + 1,
+            `${label}: printed name inside original band`,
+          );
+          const bandTop = (row.band.top - row.card.top) / row.card.height;
+          assert.ok(
+            row.style === "classic"
+              ? bandTop >= 0.41 && bandTop <= 0.47
+              : bandTop >= 0.63 && bandTop <= 0.74,
+            `${label}: original middle/lower name band`,
+          );
+        }
+      }
       assert.ok(
         Math.abs((b.left + b.right - row.anchor.left - row.anchor.right) / 2) <= 1,
         `${label}: centred on unchanged orbit anchor`,
@@ -654,7 +766,8 @@ export async function runPlayerCardStyleScenarios({
         `${label}: workspace clearance`,
       );
       for (const other of rows) {
-        assert.equal(overlap(b, other.card), false, `${label}: artwork clearance ${other.seat}`);
+        if (row !== other || row.external)
+          assert.equal(overlap(b, other.card), false, `${label}: artwork clearance ${other.seat}`);
         if (row !== other)
           assert.equal(
             overlap(b, other.bounds),
@@ -708,7 +821,7 @@ export async function runPlayerCardStyleScenarios({
               ".deceased-cross,.player-deceased-cross,[data-deceased-cross]",
             ).length,
             roleBadges: el.querySelectorAll(".role-badge,.printed-player-card__role").length,
-            roleBands: el.querySelectorAll(".printed-player-card__role-band").length,
+            nameBands: el.querySelectorAll(".printed-player-card__name-band").length,
             placement: el
               .querySelector(".printed-player-card")
               ?.getAttribute("data-role-placement"),
@@ -769,12 +882,12 @@ export async function runPlayerCardStyleScenarios({
       assert.equal(row.icons, 0, "Printed art cannot inherit custom role glyphs");
       assert.equal(row.crosses, 0, "Printed departures use a neutral back, never a cross");
       assert.equal(row.emptyRails, 0, "Empty status rails must not paint blank paper patches");
-      assert.equal(
-        row.roleBands,
-        row.placement === "ribbon" && row.roleBadges > 0 ? 1 : 0,
-        "Role band mounts only for a present role at ribbon placement",
-      );
       const back = allBacks || backs.includes(row.seat);
+      assert.equal(
+        row.nameBands,
+        back ? 0 : 1,
+        "Only fronts retain the original printed name band",
+      );
       assert.equal(row.face, back ? "back" : "front", `Seat ${row.seat} expected face`);
       assert.equal(
         row.decoded.length,
@@ -1162,7 +1275,10 @@ export async function runPlayerCardStyleScenarios({
           layoutWidth: el.offsetWidth,
           layoutHeight: el.offsetHeight,
           hit: el.contains(document.elementFromPoint(x, y)),
-          name: el.parentElement.querySelector(":scope > .player-seat-caption")?.textContent,
+          name: (
+            el.querySelector(".seat-name,.printed-player-card__name") ??
+            el.parentElement.querySelector(":scope > .player-seat-caption")
+          )?.textContent,
         };
       });
       const actions = [
@@ -1243,8 +1359,8 @@ export async function runPlayerCardStyleScenarios({
         const paper = el.querySelector(".printed-player-card");
         const current = paper.querySelector(".printed-player-card__current");
         const role = current.querySelector(".printed-player-card__role");
-        const name = el.parentElement.querySelector(":scope > .player-seat-caption");
-        const band = current.querySelector(".printed-player-card__role-band");
+        const name = current.querySelector(".printed-player-card__name");
+        const band = current.querySelector(".printed-player-card__name-band");
         const rect = (node) => {
           const b = node.getBoundingClientRect();
           return { top: b.top, bottom: b.bottom, left: b.left, right: b.right };
@@ -1256,6 +1372,7 @@ export async function runPlayerCardStyleScenarios({
           band: band ? rect(band) : null,
           card: rect(el),
           inBand: band?.contains(role) ?? false,
+          nameInBand: band?.contains(name) ?? false,
           roleLines: (() => {
             const range = document.createRange();
             range.selectNodeContents(role);
@@ -1281,25 +1398,20 @@ export async function runPlayerCardStyleScenarios({
           row.role.bottom <= row.card.bottom + 1,
         "Role remains within its native card",
       );
-      assert.equal(
-        row.band !== null,
-        placement === "ribbon",
-        "Only a role-bearing ribbon mounts a role band",
-      );
+      assert.ok(row.band && row.nameInBand, "Front names retain their original name band");
       assert.ok(
-        row.name.top >= row.card.bottom - 1,
-        "Public name stays below the artwork in every placement",
+        row.name.top >= row.band.top - 1 && row.name.bottom <= row.band.bottom + 1,
+        "Printed name remains within its on-card band in every role placement",
       );
+      if (placement === "ribbon")
+        assert.ok(
+          row.role.top >= row.name.bottom - 1 && row.role.bottom <= row.band.bottom + 1,
+          "Ribbon role sits below the name inside the same band",
+        );
       if (placement === "top")
-        assert.ok(
-          row.role.bottom <= (row.card.top + row.card.bottom) / 2,
-          "Top role stays near the top",
-        );
+        assert.ok(row.role.bottom <= row.band.top + 1, "Top role stays near the top");
       else if (placement === "below")
-        assert.ok(
-          row.role.top >= (row.card.top + row.card.bottom) / 2,
-          "Lower role stays on the lower card",
-        );
+        assert.ok(row.role.top >= row.band.bottom - 1, "Lower role stays below the name band");
       assert.ok(
         row.fullLabel.includes(row.nameText),
         "Full long name remains in the action's accessible label",
@@ -1338,6 +1450,7 @@ export async function runPlayerCardStyleScenarios({
         return {
           box: box(name),
           text: name.textContent,
+          sibling: name.parentElement === host.parentElement,
           opacity,
           upright,
           visible: name.checkVisibility({ opacityProperty: true, visibilityProperty: true }),
@@ -1364,7 +1477,28 @@ export async function runPlayerCardStyleScenarios({
           now: performance.now(),
           timeOrigin: performance.timeOrigin,
           tag: host.tagName,
+          style: host.getAttribute("data-card-style"),
+          face: host.getAttribute("data-card-face"),
+          cause: host.getAttribute("data-departure-cause"),
+          captionCount: host.parentElement.querySelectorAll(":scope > .player-seat-caption").length,
           caption: captionFrame(),
+          names: [
+            ...host.querySelectorAll(
+              ".seat-name,.printed-player-card__name,.printed-player-card__caption",
+            ),
+          ].map((node) => ({
+            text: node.textContent,
+            front:
+              host.getAttribute("data-card-style") === "glass"
+                ? !node.closest(".player-exit-back")
+                : Boolean(
+                    node
+                      .closest(".printed-player-card__surface")
+                      ?.querySelector(".printed-player-card__art"),
+                  ),
+            inBand: Boolean(node.closest(".printed-player-card__name-band")),
+            visible: node.checkVisibility({ opacityProperty: true, visibilityProperty: true }),
+          })),
           angle,
           optics: material
             ? {
@@ -1819,12 +1953,11 @@ export async function runPlayerCardStyleScenarios({
           filter: css.filter,
           colour: css.getPropertyValue("--winner-rgb").trim(),
           shadow: css.boxShadow,
-          names: [...el.parentElement.querySelectorAll(":scope > .player-seat-caption")].map(
-            (node) => ({
-              text: node.textContent,
-              visible: node.checkVisibility({ opacityProperty: true, visibilityProperty: true }),
-            }),
-          ),
+          captions: el.parentElement.querySelectorAll(":scope > .player-seat-caption").length,
+          names: [...el.querySelectorAll(".seat-name,.printed-player-card__name")].map((node) => ({
+            text: node.textContent,
+            visible: node.checkVisibility({ opacityProperty: true, visibilityProperty: true }),
+          })),
           roles: [
             ...el.querySelectorAll('.player-role-icon[role="img"],.printed-player-card__role'),
           ].map((node) => node.getAttribute("aria-label") ?? node.textContent),
@@ -1842,6 +1975,11 @@ export async function runPlayerCardStyleScenarios({
       assert.equal(row.opacity, 1);
       assert.equal(row.filter, "none");
       assert.equal(row.marks, 0);
+      assert.equal(
+        row.captions,
+        0,
+        "Completed fronts restore on-card names, including departed seats",
+      );
       assert.deepEqual(row.names, [
         { text: players.find(({ id }) => id === player.id).nickname, visible: true },
       ]);
@@ -1895,6 +2033,7 @@ export async function runPlayerCardStyleScenarios({
     const turn = async (seat, action) => {
       const probe = await printedTurnProbe(seat);
       const before = await probe.evaluate(({ sample }) => sample());
+      const name = before.caption?.text ?? before.names[0]?.text;
       try {
         await action();
         await settled();
@@ -1903,21 +2042,18 @@ export async function runPlayerCardStyleScenarios({
           rows.some((row) => row.hostTurns > 0),
           "The native card turn was observed",
         );
+        const firstCaption = rows.find(({ caption }) => caption)?.caption;
         for (const row of rows) {
-          assert.ok(
-            row.caption?.visible && row.caption.upright,
-            "Caption stays upright throughout the turn",
-          );
-          assert.ok(
-            Math.abs(row.caption.opacity - 1) <= 0.002,
-            "Caption never fades during a turn",
-          );
-          assert.equal(row.caption.text, before.caption.text);
-          for (const key of ["x", "y", "width", "height"])
-            assert.ok(
-              Math.abs(row.caption.box[key] - before.caption.box[key]) <= 1,
-              `Native turn leaves caption ${key} fixed`,
-            );
+          assertPlayerCardTurnNames(row);
+          for (const faceName of row.names) assert.equal(faceName.text, name);
+          if (row.caption) {
+            assert.equal(row.caption.text, name);
+            for (const key of ["x", "y", "width", "height"])
+              assert.ok(
+                Math.abs(row.caption.box[key] - firstCaption.box[key]) <= 1,
+                `Native turn leaves external caption ${key} fixed`,
+              );
+          }
         }
       } finally {
         await probe.evaluate(({ stop }) => stop());
@@ -1961,7 +2097,8 @@ export async function runPlayerCardStyleScenarios({
       await prefix(current.events.at(-1).sequence, () =>
         record("readonly-hidden", style, { allBacks: true }),
       );
-      await privacy(false);
+      if (style === "glass") await privacy(false);
+      else await turn(1, () => privacy(false));
       await record("day-restored", style);
     }
     for (const [fixture, stage] of [
@@ -1975,9 +2112,11 @@ export async function runPlayerCardStyleScenarios({
     const unknown = await seed("departed", { reset: true });
     await sweep("unknown-departure", { backs: [unknown.victimSeat] }, "unknown");
     const goodbye = await seed("goodbye", { reset: true });
-    await page
-      .getByRole("button", { name: `Begin day ${goodbye.state.game.day - 1}`, exact: true })
-      .click();
+    await turn(goodbye.victimSeat, () =>
+      page
+        .getByRole("button", { name: `Begin day ${goodbye.state.game.day - 1}`, exact: true })
+        .click(),
+    );
     await eventCount(goodbye.state.events.length + 1);
     await sweep("mafia-departure", { backs: [goodbye.victimSeat] }, "mafia");
     const city = await seed("pre-vote", { reset: true });
@@ -1985,17 +2124,21 @@ export async function runPlayerCardStyleScenarios({
     await eventCount(city.state.events.length + 1);
     await sweep("vote-pending");
     const pending = await saved();
+    // NightStage mounts a new table; its already-departed card settles on mount.
+    // Verify that endpoint below, not a turn on the detached daytime host.
     await page.getByRole("button", { name: "Begin night", exact: true }).click();
     await eventCount(pending.events.length + 1);
     await sweep("vote-departure", { backs: [city.victimSeat] }, "vote");
     const day = await seed("day", { reset: true });
     const { dialog } = await openPlayerPenalty(page, 5);
     await dialog.getByRole("combobox", { name: "Removal rule", exact: true }).selectOption("6.2.3");
-    await dialog.getByRole("button", { name: "Confirm discipline", exact: true }).click();
+    await turn(5, () =>
+      dialog.getByRole("button", { name: "Confirm discipline", exact: true }).click(),
+    );
     await eventCount(day.state.events.length + 1);
     await sweep("discipline-departure", { backs: [5] }, "discipline");
     // Existing bounded completion lane retains winner pixels, both parties,
-    // draw/cancel, reload, history and Undo; inventory now checks external captions too.
+    // draw/cancel, reload, history and Undo; completed names return to their fronts.
     await completionScenarios();
     const actual = report.cases
       .filter(({ kind }) => kind === "player-captions")
@@ -2849,26 +2992,15 @@ export async function runPlayerCardStyleScenarios({
             { color: "rgba(0, 0, 0, 0)", image: "none" },
             "Opaque paper must not receive a foreground accessibility wash",
           );
-          const clip = await card(1).evaluate((host) => {
-            const a = host.getBoundingClientRect(),
-              b = host.parentElement
-                .querySelector(":scope > .player-seat-caption")
-                .getBoundingClientRect();
-            return {
-              x: Math.min(a.x, b.x),
-              y: Math.min(a.y, b.y),
-              width: Math.max(a.right, b.right) - Math.min(a.x, b.x),
-              height: Math.max(a.bottom, b.bottom) - Math.min(a.y, b.y),
-            };
-          });
+          const clip = await card(1).boundingBox();
+          assert.ok(clip, "The real front contains artwork, name and role");
           const painted = await page.screenshot({ clip, animations: "disabled" });
           for (const selector of [
             ".printed-player-card__art",
-            ".player-seat-caption",
+            ".printed-player-card__name",
             ".printed-player-card__role",
           ]) {
-            const part =
-              selector === ".player-seat-caption" ? caption(1) : card(1).locator(selector);
+            const part = card(1).locator(selector);
             await part.evaluate((el) => {
               el.style.visibility = "hidden";
             });

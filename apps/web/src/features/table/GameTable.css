@@ -1,6 +1,13 @@
 /* Only the enlarged seat needs extra space; other names stay clear of its neighbours. */
-.table-stage.has-active-emphasis .player-seat.is-current + .player-seat-caption {
+.table-stage.has-active-emphasis .player-seat.is-current ~ .player-seat-caption {
   top: calc(100% + 5px + var(--seat-active-overhang, 0%));
+}
+
+/* Short landscape side-card gaps still need room for the face-down label. */
+@media (min-width: 761px) and (max-height: 700px) {
+  .table-stage .player-seat-caption.seat-name {
+    top: calc(100% + 2px);
+  }
 }
 
 /* Lower action rows clear the external name without changing the seat orbit. */

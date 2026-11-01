@@ -348,6 +348,7 @@ export const PlayerExitControls = ({
                 {index(false)}
                 {index(true)}
                 <PlayerRoleIcon />
+                {!deceased ? <span className="seat-name">{t("sample")}</span> : null}
                 {discipline}
               </PlayerExitAnimation>
             ) : (
@@ -355,6 +356,7 @@ export const PlayerExitControls = ({
                 style={style}
                 seat={7}
                 suit="◇"
+                name={t("sample")}
                 rolePlacement="below"
                 faceDown={deceased}
                 privacyHidden={false}
@@ -366,7 +368,7 @@ export const PlayerExitControls = ({
               </PrintedPlayerCard>
             )}
           </div>
-          <PlayerCardCaption name={t("sample")} />
+          {deceased ? <PlayerCardCaption name={t("sample")} /> : null}
         </div>
         {preview?.action === "opposing-result" ? (
           <PlayerFeedback

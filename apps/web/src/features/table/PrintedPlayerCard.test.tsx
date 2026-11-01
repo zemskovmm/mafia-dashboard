@@ -32,6 +32,7 @@ const fixture = (props: Partial<Props> = {}, fancy = true) => (
         style="classic"
         seat={7}
         suit="♥"
+        name="Alexandra Very-Long-Player-Name"
         role="sheriff"
         rolePlacement="below"
         faceDown={false}
@@ -134,7 +135,9 @@ describe("PrintedPlayerCard", () => {
       expect(screen.getByText("sheriff")).toBeInTheDocument();
       expect(container.querySelector(".person-icon,.player-role-icon,.deceased-cross")).toBeNull();
       expect(container.querySelectorAll("button")).toHaveLength(1);
-      expect(container.querySelector(".printed-player-card__name,.seat-name")).toBeNull();
+      expect(
+        container.querySelector(".printed-player-card__name-band .printed-player-card__name"),
+      ).toHaveTextContent("Alexandra Very-Long-Player-Name");
       rerender(fixture({ style, role: "mafia" }));
       expect(artwork).toHaveAttribute("src", getCardArtwork(style, 7).front);
       expect(animate).not.toHaveBeenCalled();
@@ -152,7 +155,7 @@ describe("PrintedPlayerCard", () => {
         "data-role-placement",
         rolePlacement,
       );
-      expect(Boolean(label.closest(".printed-player-card__role-band"))).toBe(
+      expect(Boolean(label.closest(".printed-player-card__name-band"))).toBe(
         rolePlacement === "ribbon",
       );
       expect(container.innerHTML).not.toMatch(/data-role="citizen"|role-citizen/);
@@ -188,18 +191,30 @@ describe("PrintedPlayerCard", () => {
     rerender(fixture({ faceDown: true, privacyHidden: true, role: undefined }));
     expect(animate).toHaveBeenCalledTimes(5);
     expect(container.innerHTML).not.toMatch(/sheriff|data-role-glyph/);
+    expect(container.querySelector(".printed-player-card__name")).toBeNull();
     expect(screen.getAllByLabelText("Nominated")).toHaveLength(1);
     await act(async () => animations.forEach(({ resolve }) => resolve()));
     expect(container.querySelector(".printed-player-card__outgoing")).toBeNull();
     rerender(fixture());
-    expect(animate).toHaveBeenCalledTimes(10);
+    expect(animate).toHaveBeenCalledTimes(11);
+    const caption = container.querySelector(".player-seat-caption");
+    expect(caption).toHaveTextContent("Alexandra Very-Long-Player-Name");
+    expect(caption?.closest(".player-seat")).toBeNull();
+    expect(animations.find(({ target }) => target === caption)?.frames).toEqual(
+      playerExitMotion(DEFAULT_PLAYER_EXIT_SETTINGS).front,
+    );
     expect(
       container.querySelector(".printed-player-card__outgoing .printed-player-card__back-art"),
     ).not.toBeNull();
     expect(container.querySelector(".printed-player-card__current")).toHaveTextContent("sheriff");
+    expect(container.querySelectorAll(".printed-player-card__name")).toHaveLength(1);
+    expect(
+      container.querySelector(".printed-player-card__current .printed-player-card__name"),
+    ).toHaveTextContent("Alexandra Very-Long-Player-Name");
     await act(async () => animations.forEach(({ resolve }) => resolve()));
     expect(container.querySelector(".printed-player-card__outgoing")).toBeNull();
     expect(vi.getTimerCount()).toBe(0);
+    expect(container.querySelector(".player-seat-caption")).toBeNull();
   });
 
   it("settles an exit already present at mount without inventing an old public departure", () => {
