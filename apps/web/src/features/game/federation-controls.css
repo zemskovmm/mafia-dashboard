@@ -105,3 +105,31 @@
 .federation-judge-dialog :is(button, input:not([type="checkbox"]), select) {
   min-height: 48px;
 }
+@supports (appearance: base-select) {
+  .discipline-rule-picker select,
+  .discipline-rule-picker select::picker(select) {
+    appearance: base-select;
+  }
+  .discipline-rule-picker select {
+    align-items: center;
+  }
+  .discipline-rule-picker select::picker(select) {
+    min-width: anchor-size(width);
+    width: max-content;
+    max-width: calc(100vw - 2rem);
+    max-height: min(32rem, 70dvh);
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+  }
+  .discipline-rule-picker option {
+    min-height: 48px;
+    padding: 0.5rem 0.75rem;
+  }
+  @supports (font: -apple-system-body) {
+    .federation-judge-dialog .discipline-rule-picker select {
+      /* WebKit's ordinary native select uses the declared 44px height. */
+      min-height: 44px;
+    }
+  }
+}

@@ -1,4 +1,4 @@
-/* global URL, document, localStorage, getComputedStyle, requestAnimationFrame, MutationObserver, HTMLImageElement, FontFaceSet */
+/* global URL, document, localStorage, getComputedStyle, requestAnimationFrame, MutationObserver, HTMLImageElement, FontFaceSet, CSS */
 /** Opt-in actual-App scenarios; imported by verify-ui.mjs, never a synthetic reader host.
  * APP_URL=http://127.0.0.1:5197 UI_RULES_SKETCHBOOK_ONLY=1 node scripts/verify-ui.mjs
  * Run UI_RULES_PRESENTATION=enhanced (default) and =flat in fresh contexts.
@@ -678,6 +678,67 @@ export async function runRulesSketchbookScenarios({
           .evaluateAll((els) => els.map((o) => o.value).filter(Boolean)),
         [...removalRules],
       );
+      if (await removal.evaluate(() => CSS.supports("appearance", "base-select"))) {
+        const nativeBounds = await removal.evaluate((select) => {
+          const appearance = select.style.appearance;
+          select.style.appearance = "auto";
+          const bounds = (element) => {
+            const { x, y, width, height } = element.getBoundingClientRect();
+            return { x, y, width, height };
+          };
+          const result = {
+            closedField: bounds(select),
+            closedDialog: bounds(select.closest("dialog")),
+          };
+          select.style.appearance = appearance;
+          return result;
+        });
+        const closedField = await removal.boundingBox();
+        const closedDialog = await dialog.boundingBox();
+        assert.deepEqual(
+          { closedField, closedDialog },
+          nativeBounds,
+          "Customizable picker preserves original native field and dialog dimensions",
+        );
+        await removal.click();
+        const option = removal.locator('option[value="6.2.8"]');
+        await expect(option).toBeVisible();
+        await option.scrollIntoViewIfNeeded();
+        const popupRow = await option.boundingBox();
+        assert.ok(
+          popupRow.width >= closedField.width - 4,
+          "Opened rule list is at least as wide as its unchanged field",
+        );
+        assert.ok(popupRow.height >= 48, "Native rule options retain touch-sized rows");
+        assert.ok(
+          popupRow.x >= 0 && popupRow.x + popupRow.width <= viewport.width,
+          "Rule popup stays within the viewport",
+        );
+        await screenshot(`${locale}-wide-removal-popup`);
+        await option.click();
+        await expect(removal).toHaveValue("6.2.8");
+        assert.deepEqual(await removal.boundingBox(), closedField, "Closed field is unchanged");
+        assert.deepEqual(await dialog.boundingBox(), closedDialog, "Dialog is unchanged");
+        await removal.click();
+        await expect(option).toBeVisible();
+        await page.keyboard.press("Escape");
+        await expect(option).not.toBeVisible();
+        await expect(dialog).toBeVisible();
+        await expect(removal).toHaveValue("6.2.8");
+        await removal.click();
+        const lastOption = removal.locator("option").last();
+        await lastOption.scrollIntoViewIfNeeded();
+        await lastOption.click();
+        await expect(removal).toHaveValue(removalRules.at(-1));
+        await unchanged(before);
+        report.scenarios.push({
+          locale,
+          name: "wide-native-rule-popup-selection-and-dismissal",
+          closedField,
+          closedDialog,
+          popupRow,
+        });
+      }
       for (const id of removalRules) {
         await removal.selectOption(id);
         await reference(dialog, id, locale, before);
