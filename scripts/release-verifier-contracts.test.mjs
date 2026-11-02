@@ -228,7 +228,7 @@ test("root scripts expose release contracts without nesting operational drills i
   const packageJson = JSON.parse(packageSource);
   assert.equal(
     packageJson.scripts["test:release-contracts"],
-    "node --test scripts/release-verifier-contracts.test.mjs",
+    "node --test scripts/release-verifier-contracts.test.mjs scripts/azure-release.test.mjs scripts/azure-release-cli.test.mjs",
   );
   assert.equal(packageJson.scripts["verify:release"], "node scripts/verify-release.mjs");
   assert.match(packageJson.scripts.test, /test:release-contracts/);

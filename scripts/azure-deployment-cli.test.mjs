@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 function workflowRun(name) {
-  const source = readFileSync(".github/workflows/deploy-azure.yml", "utf8");
+  const source = readFileSync(".github/workflows/deploy-azure-release.yml", "utf8");
   const step = source.split(`      - name: ${name}\n`)[1]?.split("      - ")[0];
   assert.ok(step, `missing workflow step ${name}`);
   const run = step.split("        run: |\n")[1];
@@ -18,15 +18,13 @@ function workflowRun(name) {
 }
 
 test("workflow retains publication hold/digest identity and routes explicit Storage parameters without SQL", () => {
-  const source = readFileSync(".github/workflows/deploy-azure.yml", "utf8");
-  assert.match(source, /vars\.AZURE_DEPLOY_ENABLED == 'true'/);
-  assert.match(source, /github\.event_name == 'workflow_dispatch' && inputs\.deploy/);
-  assert.match(source, /cancel-in-progress: false/);
-  assert.match(source, /initialize_storage:[\s\S]*?type: boolean\n\s+default: false/);
-  assert.match(
-    source,
-    /INITIALIZE_STORAGE: \$\{\{ github\.event_name == 'workflow_dispatch' && inputs\.initialize_storage == true \}\}/,
-  );
+  const source = readFileSync(".github/workflows/deploy-azure-release.yml", "utf8");
+  const caller = readFileSync(".github/workflows/deploy-azure.yml", "utf8");
+  assert.match(caller, /vars\.AZURE_STAGING_DEPLOY_ENABLED == 'true'/);
+  assert.match(caller, /github\.event_name == 'workflow_dispatch' && inputs\.deploy/);
+  assert.match(caller, /cancel-in-progress: false/);
+  assert.match(caller, /initialize_storage:[\s\S]*?type: boolean\n\s+default: false/);
+  assert.match(source, /INITIALIZE_STORAGE: \$\{\{ inputs\.initialize_storage \}\}/);
   assert.doesNotMatch(
     source,
     /AZURE_DATABASE_NAME|POSTGRES_PASSWORD|postgresPassword|databaseName=|--container migrate/,
@@ -167,8 +165,12 @@ test("workflow release readback rejects SQL/provider/identity/namespace drift be
     INITIALIZE_STORAGE: "false",
     DEPLOY_IMAGE: image,
     APP_NAME: "app-app",
-    GITHUB_SHA: "fixture-commit",
-    GITHUB_RUN_NUMBER: "17",
+    GITHUB_SHA: "promotion-commit-is-not-selected",
+    GITHUB_RUN_NUMBER: "999",
+    EXPECTED_COMMIT: "fixture-commit",
+    EXPECTED_VERSION: composeAppVersion(version, "17"),
+    RELEASE_ENVIRONMENT: "staging",
+    GITHUB_STEP_SUMMARY: "/dev/null",
     RELEASE_FIXTURE: JSON.stringify({
       commit: "fixture-commit",
       version: composeAppVersion(version, "17"),

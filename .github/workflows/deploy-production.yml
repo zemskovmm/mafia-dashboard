@@ -1,0 +1,57 @@
+name: Deploy production
+
+on:
+  workflow_dispatch:
+    inputs:
+      staging_run_id:
+        description: Successful staging run ID (blank selects the currently verified staging release)
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+# Share the staging lock, including selection, to freeze the live release before promotion.
+# Retain the legacy production group so old runs also cannot race this release path.
+concurrency:
+  group: azure-production
+  cancel-in-progress: false
+
+jobs:
+  select:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      image: ${{ steps.select.outputs.image }}
+      commit: ${{ steps.select.outputs.commit }}
+      build_index: ${{ steps.select.outputs.build_index }}
+      app_version: ${{ steps.select.outputs.app_version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Select exact verified staging artifact
+        id: select
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STAGING_RUN_ID: ${{ inputs.staging_run_id }}
+          STAGING_APP_URL: ${{ vars.AZURE_STAGING_APP_URL }}
+        run: node scripts/azure-release.mjs select
+
+  deploy:
+    needs: select
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/deploy-azure-release.yml
+    with:
+      environment: production
+      image: ${{ needs.select.outputs.image }}
+      commit: ${{ needs.select.outputs.commit }}
+      build_index: ${{ needs.select.outputs.build_index }}
+      app_version: ${{ needs.select.outputs.app_version }}
+      deploy_infrastructure: false
+      initialize_storage: false

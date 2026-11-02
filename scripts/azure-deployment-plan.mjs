@@ -170,6 +170,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       .filter((path) => path.endsWith(".bicep"))
       .map((path) => `infra/${path}`),
     ".github/workflows/deploy-azure.yml",
+    ".github/workflows/deploy-azure-release.yml",
+    ".github/workflows/deploy-production.yml",
+    "scripts/azure-release.mjs",
     "scripts/azure-deployment-plan.mjs",
   ];
   const files = paths.map((path) => [path, readFileSync(new URL(path, root), "utf8")]);

@@ -83,15 +83,11 @@ function deploymentConfiguration(initialize = "false") {
 
 function readbackFixture(source) {
   const block = workflowScript(source, "Verify Azure deployment");
-  assert.ok(
-    block.includes('const { version } = JSON.parse(readFileSync("package.json", "utf8"));'),
+  assert.ok(block.includes('expected_version="$EXPECTED_VERSION"'));
+  const fixture = block.replaceAll(
+    "${{ steps.app.outputs.public_url }}",
+    "https://mafia.example.test",
   );
-  const fixture = block
-    .replace(
-      'const { version } = JSON.parse(readFileSync("package.json", "utf8"));',
-      'const version = "2.7.9";',
-    )
-    .replaceAll("${{ steps.app.outputs.public_url }}", "https://mafia.example.test");
   return `
     az() { printf '%s\\n' "$MOCK_CONFIGURATION"; }
     curl() { if [[ "$*" == *"/health/version"* ]]; then printf '%s\\n' "$MOCK_IDENTITY"; else return "$MOCK_READY_STATUS"; fi; }
@@ -103,8 +99,12 @@ function readbackFixture(source) {
 function runReadback(script, configuration, identity = { version: "2.7.123", commit }, env = {}) {
   return runShell(script, {
     APP_NAME: "testapp-app",
-    GITHUB_SHA: commit,
-    GITHUB_RUN_NUMBER: "123",
+    GITHUB_SHA: "b".repeat(40),
+    GITHUB_RUN_NUMBER: "999",
+    EXPECTED_COMMIT: commit,
+    EXPECTED_VERSION: "2.7.123",
+    RELEASE_ENVIRONMENT: "staging",
+    GITHUB_STEP_SUMMARY: "/dev/null",
     MOCK_CONFIGURATION: JSON.stringify(configuration),
     MOCK_IDENTITY: JSON.stringify(identity),
     MOCK_READY_STATUS: "0",
@@ -129,15 +129,20 @@ test("root scripts expose one deterministic quality gate", async () => {
   assert.equal(packageJson.allowScripts, undefined);
 });
 
-test("pull requests run CI while main pushes and manual dispatch run deployment", async () => {
+test("pull requests run CI while main pushes and manual dispatch run staging", async () => {
   const directory = new URL(".github/workflows/", root);
   const workflows = (await readdir(directory)).filter((name) => name.endsWith(".yml")).sort();
   const [ci, deploy] = await Promise.all([
     read(".github/workflows/ci.yml"),
     read(".github/workflows/deploy-azure.yml"),
   ]);
-
-  assert.deepEqual(workflows, ["ci.yml", "deploy-azure.yml", "deploy-site-pages.yml"]);
+  assert.deepEqual(workflows, [
+    "ci.yml",
+    "deploy-azure-release.yml",
+    "deploy-azure.yml",
+    "deploy-production.yml",
+    "deploy-site-pages.yml",
+  ]);
   assert.match(ci, /^on:\n\s{2}pull_request:\n\npermissions:/m);
   assert.match(ci, /npm run ci:install[\s\S]*npm run check:local/);
   assert.doesNotMatch(ci, /postgres|TEST_DATABASE_URL|\bservices:/i);
@@ -148,7 +153,7 @@ test("pull requests run CI while main pushes and manual dispatch run deployment"
 test("every external workflow action is pinned to an immutable commit", async () => {
   const directory = new URL(".github/workflows/", root);
   const workflows = (await readdir(directory)).filter((name) => name.endsWith(".yml"));
-  assert.equal(workflows.length, 3);
+  assert.equal(workflows.length, 5);
 
   for (const workflow of workflows) {
     const source = await read(`.github/workflows/${workflow}`);
@@ -166,7 +171,8 @@ test("Azure publishes an immutable image and deploys its verified digest with le
   const publishStart = source.indexOf("\n  publish:\n");
   const deployStart = source.indexOf("\n  deploy:\n", publishStart);
   const publish = source.slice(publishStart, deployStart);
-  const deploy = source.slice(deployStart);
+  const caller = source.slice(deployStart);
+  const deploy = await read(".github/workflows/deploy-azure-release.yml");
 
   assert.match(source, /^permissions:\n\s{2}contents: read$/m);
   assert.match(source, /^jobs:\n\s{2}publish:\n/m);
@@ -183,11 +189,12 @@ test("Azure publishes an immutable image and deploys its verified digest with le
   assert.match(publish, /docker push/);
   assert.match(deploy, /permissions:\n\s{6}contents: read\n\s{6}id-token: write/);
   assert.doesNotMatch(deploy, /packages: write/);
-  assert.match(deploy, /DEPLOY_IMAGE: \$\{\{ needs\.publish\.outputs\.image \}\}/);
+  assert.match(caller, /image: \$\{\{ needs\.publish\.outputs\.image \}\}/);
+  assert.match(deploy, /DEPLOY_IMAGE: \$\{\{ inputs\.image \}\}/);
   assert.match(deploy, /image="\$DEPLOY_IMAGE"/);
   assert.match(deploy, /\/health\/version/);
-  assert.match(deploy, /--arg commit "\$GITHUB_SHA"/);
-  assert.match(deploy, /composeAppVersion\(version, process\.env\.GITHUB_RUN_NUMBER\)/);
+  assert.match(deploy, /--arg commit "\$EXPECTED_COMMIT"/);
+  assert.match(deploy, /expected_version="\$EXPECTED_VERSION"/);
   assert.match(deploy, /--arg version "\$expected_version"/);
   assert.match(deploy, /\.version == \$version and \.commit == \$commit/);
   assert.doesNotMatch(deploy, /\.version \| test\(/);
@@ -199,13 +206,15 @@ test("Azure publishes an immutable image and deploys its verified digest with le
   assert.doesNotMatch(deploy, /--container migrate|POSTGRES_PASSWORD|AZURE_DATABASE_NAME/);
   assert.match(
     publish,
-    /if: >-\n\s+github.event_name == 'workflow_dispatch' \|\|\n\s+vars.AZURE_DEPLOY_ENABLED == 'true'/,
+    /github.ref == 'refs\/heads\/main' &&[\s\S]*vars.AZURE_STAGING_DEPLOY_ENABLED == 'true'/,
   );
-  assert.match(deploy, /needs: publish/);
-  assert.match(deploy, /environment: production/);
+  assert.match(caller, /needs: publish/);
+  assert.match(caller, /environment: staging/);
+  assert.match(deploy, /environment: \$\{\{ inputs.environment \}\}/);
+  assert.match(caller, /github.event_name == 'workflow_dispatch' && inputs.deploy/);
   assert.match(
-    deploy,
-    /if: >-\n\s+\(github.event_name == 'workflow_dispatch' && inputs.deploy\) \|\|\n\s+\(github.event_name == 'push' && vars.AZURE_DEPLOY_ENABLED == 'true'\)\n\s+runs-on:/,
+    caller,
+    /github.event_name == 'push' && vars.AZURE_STAGING_DEPLOY_ENABLED == 'true'/,
   );
   assert.doesNotMatch(
     publish,
@@ -216,7 +225,7 @@ test("Azure publishes an immutable image and deploys its verified digest with le
 });
 
 test("Azure readback accepts only the configured version and exact commit", async () => {
-  const script = readbackFixture(await read(".github/workflows/deploy-azure.yml"));
+  const script = readbackFixture(await read(".github/workflows/deploy-azure-release.yml"));
   for (const [identity, expectedStatus] of [
     [{ version: "2.7.123", commit }, 0],
     [{ version: "2.7.124", commit }, 1],
@@ -236,7 +245,7 @@ test("Azure readback accepts only the configured version and exact commit", asyn
 });
 
 test("Azure readback diagnoses configuration mismatches without logging container values", async () => {
-  const script = readbackFixture(await read(".github/workflows/deploy-azure.yml"));
+  const script = readbackFixture(await read(".github/workflows/deploy-azure-release.yml"));
   const configuration = deploymentConfiguration();
   const sensitiveValue = "private-container-value-fixture";
   configuration.env.push({ name: "PRIVATE_SETTING", value: sensitiveValue });
@@ -261,7 +270,7 @@ test("Azure readback diagnoses configuration mismatches without logging containe
 });
 
 test("Azure readback rejects wrong provider, namespace, identity, images and initialization", async () => {
-  const script = readbackFixture(await read(".github/workflows/deploy-azure.yml"));
+  const script = readbackFixture(await read(".github/workflows/deploy-azure-release.yml"));
   for (const initialize of ["false", "true"]) {
     const result = runReadback(script, deploymentConfiguration(initialize), undefined, {
       INITIALIZE_STORAGE: initialize,
@@ -384,10 +393,11 @@ test("Azure readback rejects wrong provider, namespace, identity, images and ini
 });
 
 test("Azure passes one explicit managed-identity Storage target through every deployment path", async () => {
-  const [workflow, template, app] = await Promise.all([
-    read(".github/workflows/deploy-azure.yml"),
+  const [workflow, template, app, caller] = await Promise.all([
+    read(".github/workflows/deploy-azure-release.yml"),
     read("infra/main.bicep"),
     read("infra/app.bicep"),
+    read(".github/workflows/deploy-azure.yml"),
   ]);
   const fields = [
     ["storageAccountName", "AZURE_STORAGE_ACCOUNT_NAME"],
@@ -466,12 +476,12 @@ test("Azure passes one explicit managed-identity Storage target through every de
   assert.match(app, /var appEnv = concat\(\s+storageEnv/);
   assert.match(workflow, /initializeStorage="\$INITIALIZE_STORAGE"/);
   assert.match(
-    workflow,
+    caller,
     /initialize_storage:\n\s+description: [^\n]+\n\s+type: boolean\n\s+default: false/,
   );
   assert.match(
-    workflow,
-    /INITIALIZE_STORAGE: \$\{\{ github.event_name == 'workflow_dispatch' && inputs.initialize_storage == true \}\}/,
+    caller,
+    /initialize_storage: \$\{\{ github.event_name == 'workflow_dispatch' && inputs.initialize_storage == true \}\}/,
   );
   assert.match(
     workflow,
@@ -480,13 +490,11 @@ test("Azure passes one explicit managed-identity Storage target through every de
 });
 
 test("Azure applies foundation conditionally and application separately", async () => {
-  const source = await read(".github/workflows/deploy-azure.yml");
-  assert.match(
-    source,
-    /deploy_infrastructure:\n\s+description: [^\n]+\n\s+type: boolean\n\s+default: false/,
-  );
-  assert.match(source, /concurrency:\n\s+group: azure-production\n\s+cancel-in-progress: false/);
-  assert.match(source, /github.event_name == 'workflow_dispatch' && inputs.deploy/);
+  const source = await read(".github/workflows/deploy-azure-release.yml");
+  const caller = await read(".github/workflows/deploy-azure.yml");
+  assert.match(source, /deploy_infrastructure:\n\s+type: boolean\n\s+default: false/);
+  assert.match(caller, /concurrency:\n\s+group: azure-production\n\s+cancel-in-progress: false/);
+  assert.match(caller, /github.event_name == 'workflow_dispatch' && inputs.deploy/);
   assert.match(source, /node scripts\/azure-deployment-plan.mjs/);
   for (const name of [
     "Refuse unknown Storage account adoption",
@@ -529,7 +537,7 @@ test("Azure applies foundation conditionally and application separately", async 
 });
 
 test("Azure rejects missing or unsafe Storage inputs before resource mutation without echoing secrets", async () => {
-  const source = await read(".github/workflows/deploy-azure.yml");
+  const source = await read(".github/workflows/deploy-azure-release.yml");
   const script = workflowScript(source, "Validate deployment inputs");
   assert.ok(
     source.indexOf("      - name: Validate deployment inputs\n") <
@@ -652,7 +660,7 @@ test("Azure rejects missing or unsafe Storage inputs before resource mutation wi
 
 test("Azure refuses unrecorded Storage adoption and unavailable account names", async () => {
   const script = workflowScript(
-    await read(".github/workflows/deploy-azure.yml"),
+    await read(".github/workflows/deploy-azure-release.yml"),
     "Refuse unknown Storage account adoption",
   );
   const fixture = `
@@ -691,7 +699,7 @@ test("Azure refuses unrecorded Storage adoption and unavailable account names", 
 
 test("Azure what-if rejects deletes and changes to retained SQL, network or environment", async () => {
   const step = workflowStep(
-    await read(".github/workflows/deploy-azure.yml"),
+    await read(".github/workflows/deploy-azure-release.yml"),
     "Inspect foundation changes",
   );
   assert.match(step, /az deployment group what-if[\s\S]*--mode Incremental/);

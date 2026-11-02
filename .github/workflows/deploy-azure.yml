@@ -1,4 +1,4 @@
-name: Deploy Azure
+name: Deploy staging
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       deploy:
-        description: Deploy after publishing
+        description: Deploy staging after publishing
         type: boolean
         default: true
       deploy_infrastructure:
@@ -28,12 +28,13 @@ concurrency:
 jobs:
   publish:
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      vars.AZURE_DEPLOY_ENABLED == 'true'
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'workflow_dispatch' || vars.AZURE_STAGING_DEPLOY_ENABLED == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
       image: ${{ steps.publish.outputs.image }}
+      app_version: ${{ steps.version.outputs.app_version }}
     permissions:
       contents: read
       packages: write
@@ -41,6 +42,17 @@ jobs:
       IMAGE_REF: ghcr.io/${{ github.repository }}:${{ github.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Read baked application version
+        id: version
+        run: |
+          # JavaScript template, not shell expansion.
+          # shellcheck disable=SC2016
+          node --input-type=module -e '
+            import { appendFileSync, readFileSync } from "node:fs";
+            import { composeAppVersion } from "./scripts/release-verifier-contracts.mjs";
+            const { version } = JSON.parse(readFileSync("package.json", "utf8"));
+            appendFileSync(process.env.GITHUB_OUTPUT, `app_version=${composeAppVersion(version, process.env.GITHUB_RUN_NUMBER)}\n`);
+          '
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Sign in to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -88,293 +100,40 @@ jobs:
   deploy:
     needs: publish
     if: >-
-      (github.event_name == 'workflow_dispatch' && inputs.deploy) ||
-      (github.event_name == 'push' && vars.AZURE_DEPLOY_ENABLED == 'true')
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    environment: production
+      github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.deploy) ||
+        (github.event_name == 'push' && vars.AZURE_STAGING_DEPLOY_ENABLED == 'true'))
     permissions:
       contents: read
       id-token: write
-    env:
-      DEPLOY_IMAGE: ${{ needs.publish.outputs.image }}
-      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      AZURE_RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
-      AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
-      AZURE_NAME_PREFIX: ${{ vars.AZURE_NAME_PREFIX }}
-      AZURE_STORAGE_ACCOUNT_NAME: ${{ vars.AZURE_STORAGE_ACCOUNT_NAME }}
-      AZURE_STORAGE_TABLE_NAME: ${{ vars.AZURE_STORAGE_TABLE_NAME }}
-      AZURE_STORAGE_CONTAINER_NAME: ${{ vars.AZURE_STORAGE_CONTAINER_NAME }}
-      AZURE_STORAGE_PARTITION_KEY: ${{ vars.AZURE_STORAGE_PARTITION_KEY }}
-      INITIALIZE_STORAGE: ${{ github.event_name == 'workflow_dispatch' && inputs.initialize_storage == true }}
-      GHCR_USERNAME: ${{ vars.GHCR_USERNAME }}
-      GHCR_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+    uses: ./.github/workflows/deploy-azure-release.yml
+    with:
+      environment: staging
+      image: ${{ needs.publish.outputs.image }}
+      commit: ${{ github.sha }}
+      build_index: ${{ github.run_number }}
+      app_version: ${{ needs.publish.outputs.app_version }}
+      deploy_infrastructure: ${{ github.event_name == 'workflow_dispatch' && inputs.deploy_infrastructure == true }}
+      initialize_storage: ${{ github.event_name == 'workflow_dispatch' && inputs.initialize_storage == true }}
 
-      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-      MUSIC_TOKEN_ENCRYPTION_KEY: ${{ secrets.MUSIC_TOKEN_ENCRYPTION_KEY }}
+  record:
+    needs: [publish, deploy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2
+      - name: Record successfully verified staging release
+        env:
+          DEPLOY_IMAGE: ${{ needs.publish.outputs.image }}
+          STAGING_APP_URL: ${{ needs.deploy.outputs.public_url }}
+        run: node scripts/azure-release.mjs record
+      - name: Preserve immutable staging release evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          client-id: ${{ vars.AZURE_CLIENT_ID }}
-          tenant-id: ${{ vars.AZURE_TENANT_ID }}
-          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: Validate deployment inputs
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          node --input-type=module -e 'import { deploymentTarget } from "./scripts/azure-deployment-plan.mjs"; deploymentTarget();'
-          if [[ ! "$DEPLOY_IMAGE" =~ ^ghcr\.io/[a-z0-9_.-]+/[a-z0-9_.-]+@sha256:[0-9a-f]{64}$ ]]; then
-            echo "DEPLOY_IMAGE must be an immutable GHCR image digest" >&2
-            exit 1
-          fi
-          if [[ "$INITIALIZE_STORAGE" != 'true' && "$INITIALIZE_STORAGE" != 'false' ]]; then
-            echo "INITIALIZE_STORAGE must be true or false" >&2
-            exit 1
-          fi
-          : "${GHCR_USERNAME:?Missing GHCR_USERNAME}"
-          : "${GHCR_TOKEN:?Missing GHCR_PULL_TOKEN}"
-      - name: Select infrastructure deployment
-        id: plan
-        env:
-          DEPLOY_INFRASTRUCTURE: ${{ inputs.deploy_infrastructure == true }}
-        run: node scripts/azure-deployment-plan.mjs
-      - name: Verify existing deployment target
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          [[ "$(az account show --query id --output tsv)" == "$AZURE_SUBSCRIPTION_ID" ]]
-          az group show --name "$AZURE_RESOURCE_GROUP" --output none
-          environment_id=$(az containerapp show --resource-group "$AZURE_RESOURCE_GROUP" \
-            --name "${AZURE_NAME_PREFIX}-app" --query properties.managedEnvironmentId --output tsv)
-          expected_environment="/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/$AZURE_RESOURCE_GROUP/providers/Microsoft.App/managedEnvironments/${AZURE_NAME_PREFIX}-env"
-          [[ "${environment_id,,}" == "${expected_environment,,}" ]]
-          profile=$(az containerapp env show --resource-group "$AZURE_RESOURCE_GROUP" \
-            --name "${AZURE_NAME_PREFIX}-env" \
-            --query "properties.workloadProfiles[?workloadProfileType == 'Consumption'].name | [0]" --output tsv)
-          [[ -n "$profile" && "$profile" != 'null' ]]
-      - name: Refuse unknown Storage account adoption
-        if: steps.plan.outputs.deploy == 'true'
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          existing=$(az storage account list --resource-group "$AZURE_RESOURCE_GROUP" \
-            --query "[?name == '$AZURE_STORAGE_ACCOUNT_NAME'].name | [0]" --output tsv)
-          if [[ -n "$existing" && "$existing" != 'null' ]]; then
-            recorded=$(az deployment group show --resource-group "$AZURE_RESOURCE_GROUP" \
-              --name mafia-foundation \
-              --query "properties.{state:provisioningState,account:outputs.storageAccountName.value,app:outputs.containerAppName.value}" --output json)
-            jq --exit-status --arg account "$AZURE_STORAGE_ACCOUNT_NAME" --arg app "${AZURE_NAME_PREFIX}-app" \
-              '.state == "Succeeded" and .account == $account and .app == $app' <<<"$recorded" >/dev/null
-          else
-            available=$(az storage account check-name --name "$AZURE_STORAGE_ACCOUNT_NAME" --query nameAvailable --output tsv)
-            [[ "$available" == 'true' ]]
-          fi
-      - name: Validate foundation
-        if: steps.plan.outputs.deploy == 'true'
-        env:
-          FOUNDATION_FINGERPRINT: ${{ steps.plan.outputs.fingerprint }}
-        run: |
-          set -Eeuo pipefail
-          az deployment group validate \
-            --resource-group "$AZURE_RESOURCE_GROUP" \
-            --template-file infra/main.bicep \
-            --parameters \
-              storageAccountName="$AZURE_STORAGE_ACCOUNT_NAME" \
-              storageTableName="$AZURE_STORAGE_TABLE_NAME" \
-              storageContainerName="$AZURE_STORAGE_CONTAINER_NAME" \
-              location="$AZURE_LOCATION" \
-              namePrefix="$AZURE_NAME_PREFIX" \
-              foundationFingerprint="$FOUNDATION_FINGERPRINT" \
-            --output none
-      - name: Inspect foundation changes
-        if: steps.plan.outputs.deploy == 'true'
-        env:
-          FOUNDATION_FINGERPRINT: ${{ steps.plan.outputs.fingerprint }}
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          az deployment group what-if \
-            --mode Incremental \
-            --resource-group "$AZURE_RESOURCE_GROUP" \
-            --template-file infra/main.bicep \
-            --parameters \
-              storageAccountName="$AZURE_STORAGE_ACCOUNT_NAME" \
-              storageTableName="$AZURE_STORAGE_TABLE_NAME" \
-              storageContainerName="$AZURE_STORAGE_CONTAINER_NAME" \
-              location="$AZURE_LOCATION" \
-              namePrefix="$AZURE_NAME_PREFIX" \
-              foundationFingerprint="$FOUNDATION_FINGERPRINT" \
-            --no-pretty-print --output json > "$RUNNER_TEMP/foundation-what-if.json"
-          jq --exit-status '
-            .status == "Succeeded" and (.changes | type == "array") and
-            all(.changes[]; .changeType != "Delete" and
-              ((.changeType == "NoChange" or .changeType == "Ignore") or
-                (.resourceId | test("/providers/Microsoft[.](Storage/storageAccounts|ManagedIdentity/userAssignedIdentities|Authorization/roleAssignments)/"; "i"))))
-          ' "$RUNNER_TEMP/foundation-what-if.json" >/dev/null
-          jq '[.changes[] | {resourceId, changeType}]' "$RUNNER_TEMP/foundation-what-if.json"
-      - name: Deploy foundation
-        id: foundation
-        if: steps.plan.outputs.deploy == 'true'
-        env:
-          FOUNDATION_FINGERPRINT: ${{ steps.plan.outputs.fingerprint }}
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          az deployment group create \
-            --name "mafia-foundation" \
-            --mode Incremental \
-            --resource-group "$AZURE_RESOURCE_GROUP" \
-            --template-file infra/main.bicep \
-            --parameters \
-              storageAccountName="$AZURE_STORAGE_ACCOUNT_NAME" \
-              storageTableName="$AZURE_STORAGE_TABLE_NAME" \
-              storageContainerName="$AZURE_STORAGE_CONTAINER_NAME" \
-              location="$AZURE_LOCATION" \
-              namePrefix="$AZURE_NAME_PREFIX" \
-              foundationFingerprint="$FOUNDATION_FINGERPRINT" \
-            --output none
-          record=$(az deployment group show --resource-group "$AZURE_RESOURCE_GROUP" \
-            --name mafia-foundation --query 'properties.{state:provisioningState,outputs:outputs}' --output json)
-          jq --exit-status --arg fingerprint "$FOUNDATION_FINGERPRINT" \
-            --arg account "$AZURE_STORAGE_ACCOUNT_NAME" --arg table "$AZURE_STORAGE_TABLE_NAME" --arg container "$AZURE_STORAGE_CONTAINER_NAME" \
-            '.state == "Succeeded" and .outputs.foundationFingerprint.value == $fingerprint and .outputs.storageAccountName.value == $account and .outputs.storageTableName.value == $table and .outputs.storageContainerName.value == $container' <<<"$record" >/dev/null
-      - name: Deploy application
-        id: app
-        env:
-          APP_NAME: ${{ steps.plan.outputs.app_name }}
-          FOUNDATION_REASON: ${{ steps.plan.outputs.reason }}
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          app_name="$APP_NAME"
-          image="$DEPLOY_IMAGE"
-          existing_fqdn=$(az containerapp show \
-            --resource-group "$AZURE_RESOURCE_GROUP" \
-            --name "$app_name" \
-            --query properties.configuration.ingress.fqdn \
-            --output tsv)
-          [[ -n "$existing_fqdn" && "$existing_fqdn" != 'null' ]]
-          public_url="https://$existing_fqdn"
-          deploy() {
-            az deployment group create \
-              --name "mafia-app-${GITHUB_RUN_ID}" \
-              --mode Incremental \
-              --resource-group "$AZURE_RESOURCE_GROUP" \
-              --template-file infra/app.bicep \
-              --parameters \
-                location="$AZURE_LOCATION" \
-                namePrefix="$AZURE_NAME_PREFIX" \
-                storageAccountName="$AZURE_STORAGE_ACCOUNT_NAME" \
-                storageTableName="$AZURE_STORAGE_TABLE_NAME" \
-                storageContainerName="$AZURE_STORAGE_CONTAINER_NAME" \
-                storagePartitionKey="$AZURE_STORAGE_PARTITION_KEY" \
-                initializeStorage="$INITIALIZE_STORAGE" \
-                image="$image" \
-                publicAppUrl="$1" \
-                ghcrUsername="$GHCR_USERNAME" \
-                ghcrToken="$GHCR_TOKEN" \
-                googleClientId="$GOOGLE_CLIENT_ID" \
-                googleClientSecret="$GOOGLE_CLIENT_SECRET" \
-                musicTokenEncryptionKey="$MUSIC_TOKEN_ENCRYPTION_KEY" \
-              --output none
-          }
-          deploy "$public_url"
-
-          echo "public_url=$public_url" >> "$GITHUB_OUTPUT"
-          {
-            echo "### Azure deployment"
-            echo "- Image: \`$image\`"
-            echo "- URL: $public_url"
-            echo "- Storage: $AZURE_STORAGE_ACCOUNT_NAME / $AZURE_STORAGE_TABLE_NAME / $AZURE_STORAGE_CONTAINER_NAME / $AZURE_STORAGE_PARTITION_KEY"
-            echo "- Empty-store initialization requested: $INITIALIZE_STORAGE"
-            echo "- Infrastructure: $FOUNDATION_REASON"
-          } >> "$GITHUB_STEP_SUMMARY"
-      - name: Verify Azure deployment
-        env:
-          APP_NAME: ${{ steps.plan.outputs.app_name }}
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          expected_version=$(node --input-type=module -e '
-            import { readFileSync } from "node:fs";
-            import { composeAppVersion } from "./scripts/release-verifier-contracts.mjs";
-            const { version } = JSON.parse(readFileSync("package.json", "utf8"));
-            process.stdout.write(composeAppVersion(version, process.env.GITHUB_RUN_NUMBER));
-          ')
-          app_name="$APP_NAME"
-          configuration=$(az containerapp show \
-            --resource-group "$AZURE_RESOURCE_GROUP" \
-            --name "$app_name" \
-            --query '{provisioningState:properties.provisioningState,minReplicas:properties.template.scale.minReplicas,maxReplicas:properties.template.scale.maxReplicas,targetPort:properties.configuration.ingress.targetPort,image:properties.template.containers[0].image,initImage:properties.template.initContainers[0].image,identity:identity,env:properties.template.containers[0].env,initEnv:properties.template.initContainers[0].env}' \
-            --output json)
-          if ! jq --exit-status --arg image "$DEPLOY_IMAGE" \
-            --arg account "$AZURE_STORAGE_ACCOUNT_NAME" --arg table "$AZURE_STORAGE_TABLE_NAME" \
-            --arg container "$AZURE_STORAGE_CONTAINER_NAME" --arg partition "$AZURE_STORAGE_PARTITION_KEY" \
-            --arg initialize "$INITIALIZE_STORAGE" \
-            --arg identity "/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/$AZURE_RESOURCE_GROUP/providers/Microsoft.ManagedIdentity/userAssignedIdentities/${AZURE_NAME_PREFIX}-storage" '
-              def fields: map({key: .name, value: .value}) | from_entries;
-              def require(condition; description):
-                if condition then . else error("Azure deployment configuration mismatch: " + description) end;
-              # Bind before boolean expressions: jq 1.8 changed `as` precedence.
-              (.env | fields) as $env | (.initEnv | fields) as $init |
-              (.identity.userAssignedIdentities // {} | to_entries[0].value.clientId) as $client |
-              require(.provisioningState == "Succeeded"; "provisioning state") |
-              require(.minReplicas == 1 and .maxReplicas == 1; "replica count") |
-              require(.targetPort == 3000; "ingress port") |
-              require(.image == $image and .initImage == $image; "image digest") |
-              require(.identity.type == "UserAssigned" and
-                ((.identity.userAssignedIdentities | keys | map(ascii_downcase)) == [($identity | ascii_downcase)]) and
-                ($client | type == "string") and ($client | length > 0); "Storage identity") |
-              require(all([$env, $init][]; .STORAGE_PROVIDER == "azure" and
-                .AZURE_STORAGE_ACCOUNT_NAME == $account and .AZURE_STORAGE_TABLE_NAME == $table and
-                .AZURE_STORAGE_CONTAINER_NAME == $container and .AZURE_STORAGE_PARTITION_KEY == $partition and
-                .AZURE_CLIENT_ID == $client and (has("DATABASE_URL") | not) and (has("AZURE_STORAGE_CONNECTION_STRING") | not));
-                "Storage provider, namespace or credentials") |
-              require($env.AZURE_STORAGE_INITIALIZE == "false" and $init.AZURE_STORAGE_INITIALIZE == $initialize;
-                "Storage initialization") |
-              true
-            ' <<<"$configuration" >/dev/null; then
-            echo "::error::Application deployment was applied, but configuration verification failed." >&2
-            exit 1
-          fi
-          echo "Azure deployment configuration verified."
-          for _ in $(seq 1 30); do
-            if curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
-              "${{ steps.app.outputs.public_url }}/health/ready" >/dev/null; then
-              identity=$(curl --fail --silent --show-error --connect-timeout 5 --max-time 15 \
-                "${{ steps.app.outputs.public_url }}/health/version" 2>/dev/null || true)
-              if [[ -n "$identity" ]] && jq --exit-status --arg commit "$GITHUB_SHA" --arg version "$expected_version" \
-                '.version == $version and .commit == $commit' \
-                <<<"$identity" >/dev/null; then
-                exit 0
-              fi
-            fi
-            sleep 10
-          done
-          az containerapp revision list \
-            --resource-group "$AZURE_RESOURCE_GROUP" \
-            --name "$app_name" \
-            --query '[].{name:name,active:properties.active,health:properties.healthState,running:properties.runningState,image:properties.template.containers[0].image}' \
-            --output table || true
-          az containerapp logs show \
-            --resource-group "$AZURE_RESOURCE_GROUP" \
-            --name "$app_name" \
-            --type system \
-            --tail 50 || true
-          failed_revision=$(az containerapp revision list \
-            --resource-group "$AZURE_RESOURCE_GROUP" \
-            --name "$app_name" \
-            --query "[?properties.runningState == 'ActivationFailed'].name | [-1]" \
-            --output tsv 2>/dev/null || true)
-          if [[ -n "$failed_revision" && "$failed_revision" != "null" ]]; then
-            az containerapp logs show \
-              --resource-group "$AZURE_RESOURCE_GROUP" \
-              --name "$app_name" \
-              --revision "$failed_revision" \
-              --container initialize-storage \
-              --type console \
-              --tail 50 || true
-          fi
-          exit 1
+          name: staging-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release.json
+          if-no-files-found: error
+          overwrite: false
+          retention-days: 90

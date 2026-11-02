@@ -38,3 +38,4 @@ opened.
 | IDD-0006 | ADR  | Azure Table and Blob persistence    | Atomic authority, exact ordinary saves and bounded conversion exception      |          |
 | IDD-0007 | Spec | Club statistics and rating          | Observed denominators, unchanged lifetime Elo and named tournament scope     |          |
 | IDD-0008 | Spec | Public club website                 | Static club content, preserved articles, host-app overview and Pages hosting |          |
+| IDD-0009 | Spec | Release environments                | Isolated automatic staging and explicit immutable production promotion       |          |
