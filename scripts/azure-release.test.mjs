@@ -323,6 +323,8 @@ test("workflow routing is staging-first, production manual-only, and shares one 
       /concurrency:\n {2}group: azure-production\n {2}cancel-in-progress: false/,
     );
     assert.match(source, /uses: \.\/\.github\/workflows\/deploy-azure-release.yml/);
+    const deploymentJob = source.split("\n  deploy:\n")[1]?.split(/\n {2}[a-z_-]+:\n/)[0];
+    assert.match(deploymentJob, /^ {4}secrets: inherit$/m);
   }
   assert.match(production, /environment: production/);
   assert.match(production, /commit: \$\{\{ needs.select.outputs.commit \}\}/);
