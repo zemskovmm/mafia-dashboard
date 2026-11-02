@@ -197,6 +197,88 @@ export const completeMafiaShots = (game: GameState): GameState => {
   if (winner !== null) return { ...withResult, phase: "finished", winner };
   return { ...withResult, phase: nextPrivatePhase(withResult), winner: null };
 };
+const consumeSheriffCheckWindow = (game: GameState): GameState =>
+  game.pendingSheriffCheckDay === undefined ? game : { ...game, pendingSheriffCheckDay: undefined };
+
+// New windows are opt-in canonical actions. Historical states have no pending
+// entitlement marker, so their existing phase/check reducers retain their hashes.
+export const getNightCheckWindowsToOpen = (game: GameState): ("don" | "sheriff")[] => {
+  if (game.day < 1 || game.winner !== null) return [];
+  const don = game.players.find((p) => p.role === "don");
+  const pendingSheriff = game.pendingSheriffCheckDay === game.day;
+  const fromMafia = game.phase === "night-mafia-result";
+  const fromDon =
+    game.phase === "night-don-result" &&
+    game.checkResult?.kind === "don-check" &&
+    isNightCheckEligible(game, "don");
+  const fromDonSkip = game.phase === "night-don" && isNightCheckEligible(game, "don");
+  // A generic resolution stage cannot be reopened. Require a same-night removal
+  // plus either an unopened snapshot or an explicitly opened, unconsumed window.
+  const fromDonRemoval =
+    game.phase === "night-resolution" &&
+    game.nightResult !== undefined &&
+    game.checkResult === undefined &&
+    (game.nightCheckEligibility?.sheriff === false || pendingSheriff) &&
+    don?.status === "red-carded" &&
+    game.disciplinaryRemovals?.some(
+      (r) =>
+        r.seat === don.seat &&
+        r.day === game.day &&
+        r.stage === "don-check" &&
+        (r.occurredPhase === "night-don" || r.occurredPhase === "night-don-result") &&
+        r.departure === "departed" &&
+        !r.checkCompletionPending,
+    );
+  if (!fromMafia && !fromDon && !fromDonSkip && !fromDonRemoval) return [];
+  if (
+    game.disciplinaryRemovals?.some(
+      (r) =>
+        (r.departure === "pending" || r.checkCompletionPending) &&
+        !(fromDon && r.seat === don?.seat && r.stage === "don-check" && r.checkCompletionPending),
+    )
+  )
+    return [];
+  // Settle the existing boundary first for outcome precedence, without mutating
+  // the input or fabricating an announcement. An underway Don check still ends.
+  let continued = game;
+  if (fromMafia) continued = completeMafiaShots(game);
+  else if (fromDon) continued = continueDonCheck(game);
+  else if (fromDonSkip) continued = skipDonCheck(game);
+  if (continued.winner !== null || evaluateVictory(continued.players) !== null) return [];
+  return (["don", "sheriff"] as const).filter((role) => {
+    const owner = game.players.find((p) => p.role === role);
+    return (
+      (fromMafia || role === "sheriff") &&
+      owner?.status === "eliminated" &&
+      !game.disciplinaryRemovals?.some((r) => r.seat === owner.seat) &&
+      (!isNightCheckEligible(game, role) || (fromDonRemoval && pendingSheriff))
+    );
+  });
+};
+export const openNightCheckWindows = (
+  game: GameState,
+  roles: readonly ("don" | "sheriff")[],
+): GameState => {
+  const available = getNightCheckWindowsToOpen(game);
+  if (
+    !available.length ||
+    roles.length !== available.length ||
+    roles.some((role, index) => role !== available[index])
+  )
+    throw new Error("Night check windows must match the available unopened roles in order");
+  const opened: GameState = {
+    ...game,
+    nightCheckEligibility: {
+      don: roles.includes("don") || isNightCheckEligible(game, "don"),
+      sheriff: roles.includes("sheriff") || isNightCheckEligible(game, "sheriff"),
+    },
+    ...(roles.includes("sheriff") ? { pendingSheriffCheckDay: game.day } : {}),
+  };
+  if (game.phase === "night-mafia-result") return completeMafiaShots(opened);
+  if (game.phase === "night-don-result") return continueDonCheck(opened);
+  if (game.phase === "night-don") return skipDonCheck(opened);
+  return { ...opened, phase: "night-sheriff" };
+};
 export const performDonCheck = (
   game: GameState,
   targetSeat: number,
@@ -280,7 +362,7 @@ export const continueSheriffCheck = (game: GameState): GameState => {
   }
   if (!isNightCheckEligible(game, "sheriff")) throw new Error("There is no available Sheriff");
   const continued: GameState = { ...game, phase: "night-resolution", checkResult: undefined };
-  return settleCheckRemoval(continued, "sheriff");
+  return settleCheckRemoval(consumeSheriffCheckWindow(continued), "sheriff");
 };
 export const skipSheriffCheck = (game: GameState): GameState => {
   if (
@@ -292,12 +374,12 @@ export const skipSheriffCheck = (game: GameState): GameState => {
     throw new Error("There is no available Sheriff");
   }
   const continued: GameState = { ...game, phase: "night-resolution", checkResult: undefined };
-  return settleCheckRemoval(continued, "sheriff");
+  return settleCheckRemoval(consumeSheriffCheckWindow(continued), "sheriff");
 };
 export const completeNight = (game: GameState): GameState => {
   if (game.disciplinaryRemovals?.some((r) => r.departure === "pending" || r.checkCompletionPending))
     throw new Error("A pending disciplinary departure/check must settle before morning/Best Move");
-  const prepared = prepareBestMove(game);
+  const prepared = prepareBestMove(consumeSheriffCheckWindow(game));
   if (prepared.phase === "best-move") return prepared;
   const completed = completeFederationGameNight(prepared);
   if (completed.phase === "draw") return completed;

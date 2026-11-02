@@ -81,6 +81,19 @@ const initialNight = () => {
   game = applyGameEvent(game, { type: "phase.changed", payload: { to: "day" } });
   return beginNight(game);
 };
+const priorDeathsNightResult = () => {
+  const game = initialNight();
+  const priorDeaths = {
+    ...game,
+    players: game.players.map((player) =>
+      player.role === "don" || player.role === "sheriff"
+        ? { ...player, status: "eliminated" as const }
+        : player,
+    ),
+    nightCheckEligibility: { don: false, sheriff: false },
+  };
+  return resolveMafiaShots(priorDeaths).game;
+};
 const session = (state: GameSessionState): RemoteGameSession => ({
   gameId,
   name: "Physical observations",
@@ -289,6 +302,114 @@ describe("App physical-count acceptance and recovery", () => {
       );
       expect(game().nightResult).toEqual({ kind: "miss" });
       expect(game().players.every((p) => p.status === "active")).toBe(true);
+      expect(getErrorConsoleSnapshot()).toEqual([]);
+    },
+  );
+
+  it("persists a later-night deceased Don/Sheriff opening through App, replay, reload and Undo", async () => {
+    const user = userEvent.setup();
+    const initial = priorDeathsNightResult();
+    seed(initial);
+    const view = renderWorkspace();
+
+    await user.click(await screen.findByRole("button", { name: /continue night/i }));
+    expect(game()).toMatchObject({
+      phase: "night-don",
+      nightCheckEligibility: { don: true, sheriff: true },
+    });
+    expect(current().events.at(-1)).toMatchObject({
+      type: "night.check-windows-opened",
+      payload: { roles: ["don", "sheriff"] },
+    });
+    const accepted = current();
+    expect(hashGameState(replayGameLog(accepted.initialGame!, accepted.events).game)).toBe(
+      hashGameState(game()),
+    );
+    await expectServerAcceptsEvent(initial, {
+      type: "night.check-windows-opened",
+      payload: { roles: ["don", "sheriff"] },
+    });
+    await waitFor(() => expect(capturedRemote.state.events).toEqual(accepted.events));
+
+    view.unmount();
+    window.localStorage.clear();
+    activate(capturedRemote);
+    renderWorkspace();
+    expect(game()).toMatchObject({
+      phase: "night-don",
+      nightCheckEligibility: { don: true, sheriff: true },
+    });
+    await user.click(screen.getByRole("button", { name: "Undo last action" }));
+    expect(game()).toMatchObject({
+      phase: "night-mafia-result",
+      nightCheckEligibility: { don: false, sheriff: false },
+    });
+    await user.click(screen.getByRole("button", { name: /continue night/i }));
+    expect(game().phase).toBe("night-don");
+    expect(getErrorConsoleSnapshot()).toEqual([]);
+  });
+
+  it.each(["skip", "removal"] as const)(
+    "preserves the deceased Sheriff window through Don %s, save, reload, consumption and Undo",
+    async (route) => {
+      const user = userEvent.setup();
+      const base = initialNight();
+      const shooting = resolveMafiaShots({
+        ...base,
+        players: base.players.map((p) =>
+          p.role === "sheriff" ? { ...p, status: "eliminated" } : p,
+        ),
+        nightCheckEligibility: { don: true, sheriff: false },
+      }).game;
+      const initial =
+        route === "skip"
+          ? applyGameEvent(shooting, { type: "phase.changed", payload: { to: "night-don" } })
+          : applyGameEvent(
+              applyGameEvent(shooting, {
+                type: "night.check-windows-opened",
+                payload: { roles: ["sheriff"] },
+              }),
+              {
+                type: "discipline.removal-observed",
+                payload: {
+                  seat: 10,
+                  stage: "don-check",
+                  rule: "6.2.3",
+                  reason: "",
+                  checkInProgress: false,
+                },
+              },
+            );
+      seed(initial);
+      const view = renderWorkspace();
+      await user.click(
+        await screen.findByRole("button", {
+          name: route === "skip" ? "Skip Don check" : "Proceed to Sheriff check",
+        }),
+      );
+      expect(game()).toMatchObject({ phase: "night-sheriff", pendingSheriffCheckDay: initial.day });
+      const draft = {
+        type: "night.check-windows-opened",
+        payload: { roles: ["sheriff"] },
+      } as const;
+      expect(current().events.at(-1)).toMatchObject(draft);
+      await expectServerAcceptsEvent(initial, draft);
+      const accepted = current();
+      await waitFor(() => expect(capturedRemote.state.events).toEqual(accepted.events));
+      view.unmount();
+      window.localStorage.clear();
+      activate(capturedRemote);
+      renderWorkspace();
+      expect(game()).toMatchObject({ phase: "night-sheriff", pendingSheriffCheckDay: initial.day });
+      await user.click(await screen.findByRole("button", { name: "Skip Sheriff check" }));
+      expect(game()).toMatchObject({ phase: "night-resolution", sheriffChecksPerformed: 0 });
+      expect(game().pendingSheriffCheckDay).toBeUndefined();
+      expect(screen.queryByRole("button", { name: "Proceed to Sheriff check" })).toBeNull();
+      await user.click(screen.getByRole("button", { name: "Undo last action" }));
+      expect(game()).toMatchObject({ phase: "night-sheriff", pendingSheriffCheckDay: initial.day });
+      expect(hashGameState(replayGameLog(current().initialGame!, current().events).game)).toBe(
+        hashGameState(game()),
+      );
       expect(getErrorConsoleSnapshot()).toEqual([]);
     },
   );

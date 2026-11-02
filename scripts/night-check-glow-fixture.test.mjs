@@ -35,7 +35,7 @@ const executable = ts.transpileModule(construction, {
 
 for (const role of ["don", "sheriff"]) {
   for (const prior of [false, true]) {
-    test(`night glow constructs identity-only ${role} ${prior ? "prior" : "same-night"} elimination with separate display profiles`, () => {
+    test(`night glow constructs actionable ${role} ${prior ? "prior" : "same-night"} elimination with separate display profiles`, () => {
       let inputs;
       const result = runInNewContext(
         `${executable}\nJSON.stringify({ initial, owner, other, profiles });`,
@@ -62,11 +62,8 @@ for (const role of ["don", "sheriff"]) {
         profiles,
         roster.map(({ id, seat }) => ({ id, nickname: `Player ${seat}` })),
       );
-      assert.equal(
-        initial.phase,
-        prior ? (role === "don" ? "night-sheriff" : "night-resolution") : `night-${role}`,
-      );
-      assert.equal(domain.isNightCheckEligible(initial, role), !prior);
+      assert.equal(initial.phase, `night-${role}`);
+      assert.equal(domain.isNightCheckEligible(initial, role), true);
       assert.doesNotThrow(() => domain.createInitialGameBaseline(initial));
       assert.equal(owner.role, role);
       assert.equal(other.role, "citizen");

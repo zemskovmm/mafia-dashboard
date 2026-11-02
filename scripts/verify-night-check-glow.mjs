@@ -82,11 +82,7 @@ try {
         }
         const shell = page.locator(".app-shell");
         const prior = mode.startsWith("prior");
-        const expectedPhase = prior
-          ? role === "don"
-            ? "night-sheriff"
-            : "night-resolution"
-          : `night-${role}`;
+        const expectedPhase = `night-${role}`;
         await expect(shell).toHaveAttribute("data-phase", expectedPhase);
         if (renderer === "vgpu") {
           await expect(shell).toHaveAttribute("data-vgpu-status", "ready", { timeout: 15_000 });
@@ -112,16 +108,7 @@ try {
             role,
           );
         }
-        if (prior) {
-          // A role eliminated before this night has no check or active-owner glow.
-          await expect(owner).toHaveCSS("opacity", "0.48");
-          await expect(owner).toHaveCSS("filter", "grayscale(0.9)");
-          await expect(owner).not.toHaveClass(/is-mafia-shooter|is-sheriff-highlight/);
-          evidence.push({ renderer, role, mode, phase: expectedPhase, checkUnavailable: true });
-          if (mode === "prior") await screenshot(`${renderer}-${role}-${mode}`);
-          assert.deepEqual(errors, []);
-          continue;
-        }
+        // Check entitlement is independent of alive status; the current check owner stays highlighted.
         await expect(owner).toHaveCSS("opacity", "1");
         await expect(owner).toHaveCSS("filter", "none");
         await expect(owner).toBeEnabled();
@@ -165,7 +152,7 @@ try {
           visibleRoleIcons: await page.locator('.player-role-icon[role="img"]:visible').count(),
           compatMode: await page.evaluate(() => document.compatMode),
         };
-        if (mode === "check") await screenshot(`${renderer}-${role}-${mode}`);
+        if (mode === "check" || mode === "prior") await screenshot(`${renderer}-${role}-${mode}`);
         // Deceased targets remain checkable; the result stage keeps its existing dimming.
         await other.click();
         await expect(shell).toHaveAttribute("data-phase", `night-${role}-result`);
@@ -173,7 +160,12 @@ try {
         await expect(owner).toHaveCSS("filter", "grayscale(0.9)");
         if (mode === "check") await screenshot(`${renderer}-${role}-${mode}-result`);
         assert.deepEqual(errors, []);
-        evidence.push({ ...checkState, resultPhase: `night-${role}-result`, resultDimmed: true });
+        evidence.push({
+          ...checkState,
+          priorElimination: prior,
+          resultPhase: `night-${role}-result`,
+          resultDimmed: true,
+        });
         await page.evaluate(() =>
           window.localStorage.removeItem("mafia-dashboard.player-lighting.v1"),
         );

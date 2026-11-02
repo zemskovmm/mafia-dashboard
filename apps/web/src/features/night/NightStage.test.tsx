@@ -536,17 +536,50 @@ describe("NightStage", () => {
     expect(screen.getByRole("button", { name: /announce morning/i })).toBeInTheDocument();
   });
 
-  it("skips checks whose owners were already inactive before the shooting night", () => {
+  it("accepts a private-check opening for previously deceased owners after shooting", () => {
+    let game = createDayGame();
+    for (const player of game.players.filter((p) => p.role === "don" || p.role === "sheriff"))
+      game = markPlayerInactive(game, player.seat, "eliminated");
+    const shooting = resolveMafiaShots(beginNight(game)).game;
+    const onAcceptedEvent = vi.fn();
+    render(
+      <NightStage
+        game={shooting}
+        onGameChange={vi.fn()}
+        onEvent={vi.fn()}
+        onAcceptedEvent={onAcceptedEvent}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Continue night/i }));
+
+    expect(onAcceptedEvent).toHaveBeenCalledExactlyOnceWith({
+      type: "night.check-windows-opened",
+      payload: { roles: ["don", "sheriff"] },
+    });
+  });
+
+  it("continues both role owners' checks after they were eliminated before the shooting night", async () => {
+    const user = userEvent.setup();
     let game = createDayGame();
     for (const player of game.players.filter((p) => p.role === "don" || p.role === "sheriff"))
       game = markPlayerInactive(game, player.seat, "eliminated");
     game = beginNight(game);
-    const victim = game.players.find((p) => p.role === "citizen")!;
-    const result = resolveMafiaShots(toggleAllMafiaShotsForTarget(game, victim.seat));
+    const sheriff = game.players.find((p) => p.role === "sheriff")!;
+    const mafia = game.players.find((p) => p.role === "mafia")!;
+    const result = resolveMafiaShots(game);
     render(<Harness initial={result.game} />);
-    fireEvent.click(screen.getByRole("button", { name: /Continue night/i }));
-    expect(screen.queryByRole("button", { name: /^Don check/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: /^Sheriff check/ })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: /Continue night/i }));
+    expect(screen.getByText("Don check")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: `Don check ${playerLabel(sheriff)}` }));
+    expect(screen.getByText("Sheriff found")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /proceed to sheriff check/i }));
+    expect(screen.getByText("Sheriff check")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: `Sheriff check ${playerLabel(mafia)}` }));
+    expect(screen.getByText("Mafia found")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Continue night" }));
+    expect(screen.getByText("Night complete")).toBeInTheDocument();
   });
 
   it("keeps both same-night deceased owners' checks interactive", async () => {

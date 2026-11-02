@@ -106,6 +106,8 @@ export interface GameState {
     readonly don: boolean;
     readonly sheriff: boolean;
   };
+  // An additive opening's unconsumed entitlement, distinct from the old snapshot.
+  readonly pendingSheriffCheckDay?: number;
   readonly checkResult?: SecretCheckResult;
   readonly nightResult?: NightShotResult;
   readonly dayNotice?: "happy";

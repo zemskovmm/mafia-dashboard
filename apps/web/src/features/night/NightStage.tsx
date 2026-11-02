@@ -1,9 +1,11 @@
 import { useState } from "react";
 import {
+  applyGameEvent,
   completeMafiaShots,
   completeNight,
   continueDonCheck,
   continueSheriffCheck,
+  getNightCheckWindowsToOpen,
   getMafiaShotResult,
   isNightCheckEligible,
   prepareBestMove,
@@ -52,8 +54,28 @@ export const NightStage = ({
   const activePlayers = game.players.filter(({ status }) => status === "active");
   const donEligible = isNightCheckEligible(game, "don");
   const sheriffEligible = isNightCheckEligible(game, "sheriff");
+  const acceptNightAdvance = (next: GameState, legacyPayload: Record<string, unknown> = {}) => {
+    const roles = getNightCheckWindowsToOpen(game);
+    const draft: CanonicalGameEventDraft = roles.length
+      ? { type: "night.check-windows-opened", payload: { roles } }
+      : { type: "phase.changed", payload: { to: next.phase } };
+    if (onAcceptedEvent !== undefined) {
+      onAcceptedEvent(draft);
+      return;
+    }
+    onGameChange(roles.length ? applyGameEvent(game, draft) : next);
+    if (draft.type === "phase.changed") {
+      onEvent(draft.type, { from: game.phase, to: next.phase, ...legacyPayload });
+    } else {
+      onEvent(draft.type, draft.payload as Record<string, unknown>);
+    }
+  };
   const skipDon = () => {
     const next = skipDonCheck(game);
+    if (getNightCheckWindowsToOpen(game).length) {
+      acceptNightAdvance(next);
+      return;
+    }
     if (onAcceptedEvent !== undefined) {
       onAcceptedEvent({ type: "don.check-skipped", payload: {} });
     } else {
@@ -240,14 +262,7 @@ export const NightStage = ({
             }
             onClick={() => {
               const next = completeMafiaShots(game);
-              if (onAcceptedEvent !== undefined) {
-                onAcceptedEvent({
-                  type: "phase.changed",
-                  payload: { to: next.phase },
-                });
-              } else {
-                onGameChange(next);
-              }
+              acceptNightAdvance(next);
             }}
           >
             {t("night.continue")}
@@ -367,12 +382,7 @@ export const NightStage = ({
             type="button"
             onClick={() => {
               const next = continueDonCheck(game);
-              if (onAcceptedEvent !== undefined) {
-                onAcceptedEvent({
-                  type: "phase.changed",
-                  payload: { to: next.phase },
-                });
-              } else onGameChange(next);
+              acceptNightAdvance(next);
             }}
           >
             {sheriffEligible ? t("night.proceedSheriff") : t("night.continue")}
@@ -531,7 +541,11 @@ export const NightStage = ({
         }))}
         center={
           <div className="table-check-center">
-            <span className="table-prompt">{t("night.stageComplete")}</span>
+            <span className="table-prompt">
+              {getNightCheckWindowsToOpen(game).length > 0
+                ? t("night.sheriffCheck")
+                : t("night.stageComplete")}
+            </span>
             {game.nightResult === undefined ? null : (
               <MafiaShotResultCard game={game} result={game.nightResult} />
             )}
@@ -547,25 +561,15 @@ export const NightStage = ({
             }
             onClick={() => {
               const next = completeNight(game);
-              if (onAcceptedEvent !== undefined) {
-                onAcceptedEvent({
-                  type: "phase.changed",
-                  payload: { to: next.phase },
-                });
-              } else {
-                onGameChange(next);
-                onEvent("phase.changed", {
-                  from: "night-resolution",
-                  to: next.phase,
-                  day: next.day,
-                });
-              }
+              acceptNightAdvance(next, { day: next.day });
             }}
           >
             {t(
-              prepareBestMove(game).phase === "best-move"
-                ? "night.recordBestMove"
-                : "night.announceMorning",
+              getNightCheckWindowsToOpen(game).length > 0
+                ? "night.proceedSheriff"
+                : prepareBestMove(game).phase === "best-move"
+                  ? "night.recordBestMove"
+                  : "night.announceMorning",
             )}
           </button>
         }

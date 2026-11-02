@@ -1,6 +1,7 @@
 import { useCallback, useReducer, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  applyGameEvent,
   advanceSetupPhase,
   beginNight,
   beginRoleDraw,
@@ -45,9 +46,15 @@ const night = beginNight({
       : player,
   ),
 });
-let initial = completeMafiaShots(
-  resolveMafiaShots(prior ? night : toggleAllMafiaShotsForTarget(night, owner.seat)).game,
-);
+const shooting = resolveMafiaShots(
+  prior ? night : toggleAllMafiaShotsForTarget(night, owner.seat),
+).game;
+let initial = prior
+  ? applyGameEvent(shooting, {
+      type: "night.check-windows-opened",
+      payload: { roles: [role] },
+    })
+  : completeMafiaShots(shooting);
 if (role === "sheriff") initial = skipDonCheck(initial);
 
 const Harness = () => {

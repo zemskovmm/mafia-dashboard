@@ -58,6 +58,7 @@ import {
   completeNight,
   continueDonCheck,
   continueSheriffCheck,
+  openNightCheckWindows,
   performDonCheck,
   performSheriffCheck,
   recordMafiaShot,
@@ -102,6 +103,7 @@ export const canonicalGameEventTypes = [
   "car-crash.resolved",
   "car-crash.ballot-resolved",
   "mafia.shots-resolved",
+  "night.check-windows-opened",
   "don.checked",
   "don.check-skipped",
   "sheriff.checked",
@@ -216,6 +218,7 @@ export type CanonicalGameEventDraft =
         readonly result: NightShotResult;
       }
     >
+  | EventDraft<"night.check-windows-opened", { readonly roles: readonly ("don" | "sheriff")[] }>
   | EventDraft<
       "don.checked",
       {
@@ -424,6 +427,7 @@ export const canonicalGameEventSecrecy = {
   "car-crash.resolved": false,
   "car-crash.ballot-resolved": false,
   "mafia.shots-resolved": true,
+  "night.check-windows-opened": true,
   "don.checked": true,
   "don.check-skipped": true,
   "sheriff.checked": true,
@@ -880,6 +884,14 @@ const assertCanonicalPayload = (type: CanonicalGameEventType, value: unknown): v
       assertNightShotResult(payload.result, `${type} payload.result`);
       return;
     }
+    case "night.check-windows-opened":
+      assertExactKeys(payload, ["roles"], `${type} payload`);
+      if (
+        !Array.isArray(payload.roles) ||
+        !['["don"]', '["sheriff"]', '["don","sheriff"]'].includes(JSON.stringify(payload.roles))
+      )
+        throw new Error("Check windows require nonempty distinct roles in Don/Sheriff order");
+      return;
     case "don.checked":
     case "sheriff.checked":
       assertExactKeys(payload, ["targetSeat", "match"], `${type} payload`);
@@ -994,6 +1006,7 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
       "goodbyeSeats",
       "goodbyeNext",
       "nightCheckEligibility",
+      "pendingSheriffCheckDay",
       "checkResult",
       "nightResult",
       "dayNotice",
@@ -1437,6 +1450,11 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
     assertBoolean(eligibility.don, `${context}.nightCheckEligibility.don`);
     assertBoolean(eligibility.sheriff, `${context}.nightCheckEligibility.sheriff`);
   }
+  if (game.pendingSheriffCheckDay !== undefined) {
+    assertSafeInteger(game.pendingSheriffCheckDay, `${context}.pendingSheriffCheckDay`, 1);
+    if (game.pendingSheriffCheckDay !== game.day)
+      throw new Error(`${context}.pendingSheriffCheckDay must match the current night`);
+  }
   if (game.checkResult !== undefined) {
     const result = requireRecord(game.checkResult, `${context}.checkResult`);
     assertExactKeys(result, ["kind", "targetSeat", "match", "secret"], `${context}.checkResult`);
@@ -1721,6 +1739,8 @@ const applyValidatedGameEvent = (game: GameState, event: CanonicalGameEventDraft
     throw new Error("A terminal game is outside active play and cannot accept more actions");
   }
   switch (event.type) {
+    case "night.check-windows-opened":
+      return openNightCheckWindows(game, event.payload.roles);
     case "discipline.foul-issued": {
       const next = issueFoul(game, event.payload.seat, event.payload.removal);
       if (next.players.find((p) => p.seat === event.payload.seat)?.fouls !== 4)

@@ -13,6 +13,7 @@ import {
   createSeededRandom,
   createSetup,
   drawRoleForSeat,
+  markPlayerInactive,
   resolveMafiaShots,
   skipDonCheck,
   skipSheriffCheck,
@@ -20,12 +21,12 @@ import {
 } from "@mafia/game-domain";
 import type { CanonicalGameEventDraft, GameState } from "@mafia/game-domain";
 import { I18nProvider } from "../../i18n/I18nProvider.js";
-import { namedProfiles, renderWithProfiles } from "../../test-player-directory.js";
+import { namedProfiles, playerLabel, renderWithProfiles } from "../../test-player-directory.js";
 import { NightStage } from "./NightStage.js";
 
 const render = (ui: Parameters<typeof renderWithProfiles>[0]) =>
   renderWithProfiles(ui, namedProfiles("night-"));
-const night = () => {
+const day = () => {
   let setup = beginRoleDraw(
     createSetup(Array.from({ length: 10 }, (_, i) => ({ id: `night-${i + 1}`, seat: i + 1 }))),
     createSeededRandom(17),
@@ -33,8 +34,9 @@ const night = () => {
   for (let seat = 1; seat <= 10; seat += 1) setup = drawRoleForSeat(setup, seat);
   let game = createGame(completeRoleDraw(setup));
   for (let i = 0; i < 5; i += 1) game = advanceSetupPhase(game);
-  return beginNight(game);
+  return game;
 };
+const night = () => beginNight(day());
 const Harness = ({
   initial,
   changed,
@@ -64,6 +66,35 @@ const Harness = ({
 };
 
 describe("federation NightStage", () => {
+  it("records and plays both checks when their owners died on prior nights", async () => {
+    const user = userEvent.setup();
+    let base = day();
+    const don = base.players.find((player) => player.role === "don")!;
+    const sheriff = base.players.find((player) => player.role === "sheriff")!;
+    const mafia = base.players.find((player) => player.role === "mafia")!;
+    base = markPlayerInactive(base, don.seat, "eliminated");
+    base = markPlayerInactive(base, sheriff.seat, "eliminated");
+    const shooting = resolveMafiaShots(beginNight(base)).game;
+    const accepted = vi.fn();
+    render(<Harness initial={shooting} changed={vi.fn()} accepted={accepted} />);
+
+    await user.click(screen.getByRole("button", { name: "Continue night" }));
+    expect(screen.getByText("Don check")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: `Don check ${playerLabel(sheriff)}` }));
+    expect(screen.getByText("Sheriff found")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Proceed to Sheriff check" }));
+    await user.click(screen.getByRole("button", { name: `Sheriff check ${playerLabel(mafia)}` }));
+    expect(screen.getByText("Mafia found")).toBeInTheDocument();
+
+    expect(accepted.mock.calls.map(([draft]) => draft.type)).toContain(
+      "night.check-windows-opened",
+    );
+    expect(accepted.mock.calls[0]?.[0]).toEqual({
+      type: "night.check-windows-opened",
+      payload: { roles: ["don", "sheriff"] },
+    });
+  });
+
   it.each(["en", "ru"] as const)(
     "records actual multiple shooting separately from target assignments in %s",
     async (locale) => {
