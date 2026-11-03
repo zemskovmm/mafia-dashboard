@@ -18,6 +18,7 @@ import {
   rerollRoleForSeat,
   type CanonicalGameEventDraft,
   type GameState,
+  type ReplayFrame,
   type SetupState,
 } from "@mafia/game-domain";
 import { buildApp } from "./app.js";
@@ -212,7 +213,17 @@ describe("whole snapshot save", () => {
       ).href;
       // eslint-disable-next-line no-unsanitized/method -- Fixed repository-local test module.
       const ui = (await import(/* @vite-ignore */ source)) as {
-        captureUiEvent: (game: GameState, action: "foul", seat: number) => CanonicalGameEventDraft;
+        captureUiEvent: (
+          game: GameState,
+          action: "foul",
+          seat: number,
+          hostView?: "table" | "ledger",
+        ) => CanonicalGameEventDraft;
+        observeSavedLedger: (
+          game: GameState,
+          frames: readonly ReplayFrame[],
+          profiles: readonly { id: string; nickname: string }[],
+        ) => string;
         observeSavedTimeline: (
           clubId: string,
           gameId: string,
@@ -275,7 +286,8 @@ describe("whole snapshot save", () => {
       });
       expect(created.statusCode, created.body).toBe(201);
       const gameId = created.json().gameId as string;
-      const draft = ui.captureUiEvent(baseline.game, "foul", 1);
+      const draft = ui.captureUiEvent(baseline.game, "foul", 1, "ledger");
+      expect(draft).toEqual(ui.captureUiEvent(baseline.game, "foul", 1, "table"));
       expect(draft.type).toBe("foul.issued");
       const root = createGameLogEntry({
         gameId,
@@ -410,6 +422,14 @@ describe("whole snapshot save", () => {
       };
       const initialReadback = await loaders.getSession(gameId, DEFAULT_CLUB_ID);
       expect(initialReadback).toMatchObject({ gameId, status: "completed" });
+      const ledger = ui.observeSavedLedger(
+        initialReadback.state.game,
+        replayGameLog(initialReadback.state.initialGame, initialReadback.state.events, gameId)
+          .frames,
+        await directory(),
+      );
+      expect(ledger).toContain(seats[0]!.nickname);
+      expect(ledger).toContain("Foul 1");
       expect(
         replayGameLog(initialReadback.state.initialGame, initialReadback.state.events, gameId).game,
       ).toEqual(initialReadback.state.game);
@@ -440,6 +460,14 @@ describe("whole snapshot save", () => {
       expect(anonymous.text).not.toContain(seats[0]!.nickname);
       expect(anonymous.text).not.toContain(host.nickname);
       const loaded = await loaders.getSession(gameId, DEFAULT_CLUB_ID);
+      const anonymousLedger = ui.observeSavedLedger(
+        loaded.state.game,
+        replayGameLog(loaded.state.initialGame, loaded.state.events, gameId).frames,
+        remaining,
+      );
+      expect(anonymousLedger).toContain("Anonymous player");
+      expect(anonymousLedger).toContain("Foul 1");
+      expect(anonymousLedger).not.toContain(seats[0]!.nickname);
       expect(loaded.state).toEqual(JSON.parse(before.state));
       expect(loaded.results).toEqual(JSON.parse(before.results));
       expect(hashGameState(loaded.state.game)).toBe(hash);

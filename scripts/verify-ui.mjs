@@ -1547,6 +1547,24 @@ const restoreCurrentSetup = async () => {
 };
 
 try {
+  if (verificationMode === "ledger") {
+    stage("ledger");
+    const { runLedgerScenarios } = await tsImport("./verify-ledger-ui.mjs", import.meta.url);
+    await runLedgerScenarios({
+      page,
+      baseUrl,
+      club: testClub,
+      players: testPlayers,
+      api: federationApi,
+      evidenceDir:
+        process.env.LEDGER_UI_EVIDENCE_DIR ??
+        `.AI/ledger-ui/${browserName}-${page.viewportSize().width}x${page.viewportSize().height}`,
+    });
+    assertNoPageErrors();
+    stage("complete");
+    await browser.close();
+    process.exit(0);
+  }
   if (verificationMode === "player-cards") {
     stage("player-cards");
     const { runPlayerCardStyleScenarios } = await tsImport(

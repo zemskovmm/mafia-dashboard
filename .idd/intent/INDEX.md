@@ -32,7 +32,7 @@ opened.
 | -------- | ---- | ----------------------------------- | ---------------------------------------------------------------------------- | -------- |
 | IDD-0001 | Spec | Club access and player identity     | Membership, consent and privacy-preserving historical retention              |          |
 | IDD-0002 | Spec | Club Mafia gameplay                 | One current engine, setup, Casper, voting, discipline and outcomes           |          |
-| IDD-0003 | Spec | Host controls and presentation      | Native input/privacy, setup touch roles and upward gameplay penalties        |          |
+| IDD-0003 | Spec | Host controls and presentation      | Shared Table/Ledger views, native input/privacy and gameplay controls        |          |
 | IDD-0004 | Spec | Game records and continuity         | Engine-independent partial facts, optional history, recovery and Undo        |          |
 | IDD-0005 | Spec | Data compatibility and preservation | Safe admission, guarded deletion and gated one-time normalization            |          |
 | IDD-0006 | ADR  | Azure Table and Blob persistence    | Atomic authority, exact ordinary saves and bounded conversion exception      |          |

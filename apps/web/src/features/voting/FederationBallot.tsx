@@ -2,7 +2,7 @@ import { applyGameEvent, countVotes } from "@mafia/game-domain";
 import type { CanonicalGameEventDraft } from "@mafia/game-domain";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { votingMessages } from "../../i18n/messages/voting.js";
-import { GameTable } from "../table/GameTable.js";
+import { HostBoard } from "../game/HostBoard.js";
 import { usePlayerDisplayName } from "../players/player-display.js";
 import type { VotingStageProps } from "./VotingStage.js";
 import { getNominationSupporterSeats } from "../timeline/nomination-history.js";
@@ -52,7 +52,7 @@ export const FederationBallot = ({
   };
   return (
     <div className="federation-ballot-workspace">
-      <GameTable
+      <HostBoard
         animateActive
         hostName={hostName}
         privacyHidden={privacyHidden}

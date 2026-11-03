@@ -109,6 +109,7 @@ import {
 } from "./features/effects/lighting-preferences.js";
 import { VgpuLightingProvider } from "./features/effects/vgpu/VgpuLightingProvider.js";
 import { GameScreen } from "./features/game/GameScreen.js";
+import { readHostView, writeHostView } from "./features/game/host-view-preferences.js";
 import { projectPlayerActions } from "./features/game/player-action-presentation.js";
 import { GlassControls, type GlassStatus } from "./features/developer/GlassControls.js";
 import { AppBackgroundProvider, useAppBackground } from "./features/theme/AppBackground.js";
@@ -767,6 +768,8 @@ const ClubWorkspaceContent = ({
   }, [fancyEnabled]);
   const [privacyTapStage, setPrivacyTapStage] = useState(0);
   const [privacyHidden, setPrivacyHidden] = useState(false);
+  const [hostView, setHostView] = useState(readHostView);
+  const [phaseControlsTarget, setPhaseControlsTarget] = useState<HTMLDivElement | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(() => currentFullscreenElement() !== null);
   const [clearingAllData, setClearingAllData] = useState(false);
   const [clearAllDataError, setClearAllDataError] = useState(false);
@@ -2850,6 +2853,15 @@ const ClubWorkspaceContent = ({
           showTutorialHelp={showTutorialHelp}
           key={`${previewGame === null ? "live" : "preview"}-${renderedGameScreenMutationGeneration}`}
           game={previewGame ?? game}
+          hostView={hostView}
+          phaseControlsTarget={phaseControlsTarget}
+          onHostViewChange={(next) => {
+            setHostView(next);
+            writeHostView(next);
+          }}
+          historyFrames={
+            currentTimelineHistory === undefined ? undefined : displayedPresentationFrames
+          }
           playerExitSettings={playerExit}
           playerPresentation={projectPlayerActions(
             displayedPresentationFrames,
@@ -2890,6 +2902,7 @@ const ClubWorkspaceContent = ({
       <LiveSidePanel
         game={view === "game" ? (previewGame ?? game) : null}
         hidden={view !== "game"}
+        phaseControlsTargetRef={setPhaseControlsTarget}
         onSelectVotingCandidate={
           view === "game" &&
           previewGame === null &&

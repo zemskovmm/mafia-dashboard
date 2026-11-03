@@ -3,7 +3,7 @@ import type { CanonicalGameEventDraft, GameState } from "@mafia/game-domain";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { federationBestMoveMessages } from "../../i18n/messages/federation-best-move.js";
 import { usePlayerDisplayName } from "../players/player-display.js";
-import { GameTable } from "../table/GameTable.js";
+import { HostBoard } from "./HostBoard.js";
 
 import "./federation-controls.css";
 
@@ -57,7 +57,7 @@ export const FederationBestMoveStage = ({
     }
   };
   return (
-    <GameTable
+    <HostBoard
       onSeatPenalty={onSeatPenalty}
       hostName={hostName}
       privacyHidden={false}

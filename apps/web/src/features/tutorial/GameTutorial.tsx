@@ -1,5 +1,7 @@
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { tutorialMessages, type TutorialMessageKey } from "../../i18n/messages/tutorial.js";
+import { ledgerMessages } from "../../i18n/messages/ledger.js";
+import type { HostView } from "../game/host-view-preferences.js";
 import { ScreenTutorial, type TutorialSlide } from "./ScreenTutorial.js";
 
 // Only presentation/eligibility crosses this boundary: no roles, identities,
@@ -51,6 +53,7 @@ export const isGameTutorialPhase = (phase: string): phase is GameTutorialPhase =
 
 export const GameTutorial = ({
   phase,
+  hostView = "table",
   advanceLabel = "",
   nominationAvailable = true,
   foulAvailable = true,
@@ -59,6 +62,7 @@ export const GameTutorial = ({
   ballotPaused = false,
 }: {
   readonly phase: GameTutorialPhase;
+  readonly hostView?: HostView;
   readonly advanceLabel?: string;
   readonly nominationAvailable?: boolean;
   readonly foulAvailable?: boolean;
@@ -67,6 +71,45 @@ export const GameTutorial = ({
   readonly ballotPaused?: boolean;
 }) => {
   const { t } = useMessages(tutorialMessages);
+  const ledger = useMessages(ledgerMessages);
+  if (hostView === "ledger") {
+    return (
+      <ScreenTutorial
+        helpLabel={ledger.t("tutorialHelp")}
+        title={ledger.t("tutorialTitle")}
+        slides={[
+          {
+            title: ledger.t("tutorialRowsTitle"),
+            body: ledger.t("tutorialRows"),
+            target: ".ledger-player-action:not(:disabled)",
+            exampleLabel: t("exampleAction"),
+          },
+          {
+            title: ledger.t("tutorialScrollTitle"),
+            body: ledger.t("tutorialScroll"),
+            target: ".ledger-scroll",
+            exampleLabel: ledger.t("title"),
+          },
+          ...(foulAvailable || penaltyAvailable
+            ? [
+                {
+                  title: ledger.t("tutorialFoulTitle"),
+                  body: ledger.t("tutorialFoul"),
+                  target: foulAvailable ? ".ledger-foul-button" : ".ledger-penalty-button",
+                  exampleLabel: t("exampleAction"),
+                },
+              ]
+            : []),
+          {
+            title: ledger.t("tutorialAdvanceTitle"),
+            body: ledger.t("tutorialAdvance"),
+            target: ".timer-advance button, .ledger-advance button",
+            exampleLabel: t("exampleAction"),
+          },
+        ]}
+      />
+    );
+  }
   const category =
     phase === "day"
       ? "day"

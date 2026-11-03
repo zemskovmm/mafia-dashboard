@@ -23,6 +23,7 @@ export function resolveUiMode(env) {
       "LAYOUT",
       "MUSIC",
       "PLAYER_CARDS",
+      "LEDGER",
     ].map((mode) => `UI_${mode}_ONLY`),
   );
   const selected = [];
@@ -50,6 +51,7 @@ export function resolveUiMode(env) {
     return "header";
   }
   if (env.UI_PLAYER_CARDS_ONLY === "1") return "player-cards";
+  if (env.UI_LEDGER_ONLY === "1") return "ledger";
   if (env.UI_MUSIC_ONLY === "1") return "music";
   return "default";
 }

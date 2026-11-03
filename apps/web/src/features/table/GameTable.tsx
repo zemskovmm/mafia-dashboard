@@ -225,7 +225,9 @@ export const GameTable = ({
           const winningTeam =
             completed && seat.role && getRoleTeam(seat.role) === winner ? winner : undefined;
           const completionClass = completed ? " is-game-complete" : "";
-          const className = `table-card player-seat status-${seat.status ?? "active"}${activeEmphasis ? " is-current" : ""}${seat.mafiaShooter && privateCuesVisible ? " is-mafia-shooter" : ""}${seat.sheriffHighlight && privateCuesVisible ? " is-sheriff-highlight" : ""}${seat.nightCheckHighlight && privateCuesVisible ? " is-night-check-highlight" : ""}${seat.goodbyeHighlight ? " is-goodbye-highlight" : ""}${seat.votingHighlight ? " is-voting-highlight" : ""}${seat.voted ? " is-voted" : ""}${seat.dimmed && !privacyHidden ? " is-dimmed" : ""}${seat.inactive ? " is-inactive" : ""}${seat.provisionalDeceased ? " is-provisional-deceased" : ""}${exit ? " is-exiting" : ""}${waiting ? " is-awaiting-goodbye" : ""}`;
+          // Masked DOM must not publish a departure before its visible endpoint.
+          const publicStatus = privacyHidden && waiting ? "active" : (seat.status ?? "active");
+          const className = `table-card player-seat status-${publicStatus}${activeEmphasis ? " is-current" : ""}${seat.mafiaShooter && privateCuesVisible ? " is-mafia-shooter" : ""}${seat.sheriffHighlight && privateCuesVisible ? " is-sheriff-highlight" : ""}${seat.nightCheckHighlight && privateCuesVisible ? " is-night-check-highlight" : ""}${seat.goodbyeHighlight ? " is-goodbye-highlight" : ""}${seat.votingHighlight ? " is-voting-highlight" : ""}${seat.voted ? " is-voted" : ""}${seat.dimmed && !privacyHidden ? " is-dimmed" : ""}${seat.inactive ? " is-inactive" : ""}${seat.provisionalDeceased ? " is-provisional-deceased" : ""}${exit ? " is-exiting" : ""}${waiting ? " is-awaiting-goodbye" : ""}`;
           const lightingKind = resolvePlayerLightingKind({
             ...seat,
             current: activeEmphasis,

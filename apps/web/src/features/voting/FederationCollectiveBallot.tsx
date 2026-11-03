@@ -6,7 +6,7 @@ import {
 } from "@mafia/game-domain";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { votingMessages } from "../../i18n/messages/voting.js";
-import { GameTable } from "../table/GameTable.js";
+import { HostBoard } from "../game/HostBoard.js";
 import { usePlayerDisplayName } from "../players/player-display.js";
 import type { VotingStageProps } from "./VotingStage.js";
 import "./FederationBallot.css";
@@ -63,7 +63,7 @@ export const FederationCollectiveBallot = ({
   };
   return (
     <div className="federation-ballot-workspace">
-      <GameTable
+      <HostBoard
         hostName={hostName}
         privacyHidden={privacyHidden}
         onSeatPenalty={onSeatPenalty}
@@ -93,38 +93,44 @@ export const FederationCollectiveBallot = ({
             {t("resolveCarCrash")}
           </button>
         }
+        phaseTools={
+          <>
+            {!eligibility.permitted ? (
+              <p role="alert">
+                {t(
+                  eligibility.reason === "nine-three-restricted"
+                    ? "nineThreeRestricted"
+                    : eligibility.reason === "zero-round-five"
+                      ? "zeroRoundFive"
+                      : "skipMessage",
+                )}
+              </p>
+            ) : null}
+            <details className="federation-ballot-tools">
+              <summary>{t("correction")}</summary>
+              {voters.map((p) => (
+                <div key={p.seat} className="federation-review-row">
+                  <label htmlFor={`${id}-vote-${p.seat}`}>
+                    {t("liftVote", { seat: p.seat })} · {displayName(p)}
+                  </label>
+                  <select
+                    id={`${id}-vote-${p.seat}`}
+                    disabled={!eligibility.permitted}
+                    value={
+                      votes[p.seat] === undefined ? "unassigned" : votes[p.seat] ? "yes" : "no"
+                    }
+                    onChange={(event) => transcribe(p.seat, event.target.value)}
+                  >
+                    <option value="unassigned">{t("unassigned")}</option>
+                    <option value="yes">{t("liftYes")}</option>
+                    <option value="no">{t("liftNo")}</option>
+                  </select>
+                </div>
+              ))}
+            </details>
+          </>
+        }
       />
-      {!eligibility.permitted ? (
-        <p role="alert">
-          {t(
-            eligibility.reason === "nine-three-restricted"
-              ? "nineThreeRestricted"
-              : eligibility.reason === "zero-round-five"
-                ? "zeroRoundFive"
-                : "skipMessage",
-          )}
-        </p>
-      ) : null}
-      <details className="federation-ballot-tools">
-        <summary>{t("correction")}</summary>
-        {voters.map((p) => (
-          <div key={p.seat} className="federation-review-row">
-            <label htmlFor={`${id}-vote-${p.seat}`}>
-              {t("liftVote", { seat: p.seat })} · {displayName(p)}
-            </label>
-            <select
-              id={`${id}-vote-${p.seat}`}
-              disabled={!eligibility.permitted}
-              value={votes[p.seat] === undefined ? "unassigned" : votes[p.seat] ? "yes" : "no"}
-              onChange={(event) => transcribe(p.seat, event.target.value)}
-            >
-              <option value="unassigned">{t("unassigned")}</option>
-              <option value="yes">{t("liftYes")}</option>
-              <option value="no">{t("liftNo")}</option>
-            </select>
-          </div>
-        ))}
-      </details>
     </div>
   );
 };

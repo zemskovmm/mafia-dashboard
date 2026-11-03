@@ -22,7 +22,7 @@ import type { CanonicalGameEventDraft, GameState, NightShotResult } from "@mafia
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { nightMessages } from "../../i18n/messages/night.js";
 import { NightShootingObservation } from "./NightShootingObservation.js";
-import { GameTable } from "../table/GameTable.js";
+import { HostBoard } from "../game/HostBoard.js";
 import { LiquidCardGlass } from "../theme/LiquidCardGlass.js";
 import { usePlayerDisplayName } from "../players/player-display.js";
 
@@ -114,7 +114,7 @@ export const NightStage = ({
       }
     };
     return (
-      <GameTable
+      <HostBoard
         hostName={tableHostName}
         privacyHidden={false}
         onSeatPenalty={onSeatPenalty}
@@ -236,7 +236,7 @@ export const NightStage = ({
   if (game.phase === "night-mafia-result") {
     const result = getMafiaShotResult(game);
     return (
-      <GameTable
+      <HostBoard
         onSeatPenalty={onSeatPenalty}
         hostName={tableHostName}
         privacyHidden={false}
@@ -274,7 +274,7 @@ export const NightStage = ({
 
   if (game.phase === "night-don") {
     return (
-      <GameTable
+      <HostBoard
         onSeatPenalty={onSeatPenalty}
         hostName={tableHostName}
         privacyHidden={false}
@@ -352,7 +352,7 @@ export const NightStage = ({
   if (game.phase === "night-don-result" && game.checkResult?.kind === "don-check") {
     const target = game.players.find(({ seat }) => seat === game.checkResult?.targetSeat);
     return (
-      <GameTable
+      <HostBoard
         onSeatPenalty={onSeatPenalty}
         hostName={tableHostName}
         privacyHidden={false}
@@ -394,7 +394,7 @@ export const NightStage = ({
 
   if (game.phase === "night-sheriff") {
     return (
-      <GameTable
+      <HostBoard
         onSeatPenalty={onSeatPenalty}
         hostName={tableHostName}
         privacyHidden={false}
@@ -472,7 +472,7 @@ export const NightStage = ({
   if (game.phase === "night-sheriff-result" && game.checkResult?.kind === "sheriff-check") {
     const target = game.players.find(({ seat }) => seat === game.checkResult?.targetSeat);
     return (
-      <GameTable
+      <HostBoard
         onSeatPenalty={onSeatPenalty}
         hostName={tableHostName}
         privacyHidden={false}
@@ -530,7 +530,7 @@ export const NightStage = ({
 
   if (game.phase === "night-resolution") {
     return (
-      <GameTable
+      <HostBoard
         onSeatPenalty={onSeatPenalty}
         hostName={tableHostName}
         privacyHidden={false}

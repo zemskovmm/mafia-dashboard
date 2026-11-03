@@ -31,6 +31,7 @@ import {
   assertCanonicalGameEventDraft,
   createSetup,
   beginNight,
+  completeCurrentTurn,
   completeMafiaShots,
   completeNight,
   completeGoodbyeSpeech,
@@ -964,6 +965,202 @@ afterEach(() => {
   window.sessionStorage.clear();
   vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+describe("Table and Ledger host views", () => {
+  it("switches the real board without saving or remounting the timer/music, and remembers the view on reload", async () => {
+    const actual = await vi.importActual<typeof gameScreenModule>("./features/game/GameScreen.js");
+    vi.spyOn(gameScreenModule, "GameScreen").mockImplementation(actual.GameScreen);
+    restoreFederationCheckpoint(assignedGame);
+    const first = renderView(<App />);
+    await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
+    const music = await screen.findByTestId("youtube-player");
+    const timer = screen.getByRole("region", { name: "Timer controls" });
+    const advance = screen.getByRole("button", { name: "Next player" });
+    const speaker = screen.getByText("Current speaker").closest<HTMLElement>(".day-center-stack");
+    const counts = screen.getByLabelText("7 active citizens and 3 active Mafia");
+    expect(timer.nextElementSibling).toContainElement(speaker);
+    expect(speaker?.nextElementSibling).toBe(advance);
+    expect(document.querySelector(".game-header")).toContainElement(counts);
+    expect(document.querySelector(".table-workspace")).not.toContainElement(counts);
+    expect(timer.parentElement).toContainElement(advance);
+    expect(timer.nextElementSibling).toContainElement(advance);
+    expect(document.querySelector(".game-shell")).not.toContainElement(advance);
+    expect(document.querySelector(".game-shell .table-advance button")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Start 20 second timer" }));
+    const saved = window.localStorage.getItem(gameSessionStorageKey);
+    api.saveGameSession.mockClear();
+    for (const name of ["Ledger", "Table", "Ledger"]) {
+      fireEvent.click(screen.getByRole("button", { name }));
+      expect(screen.getByRole("region", { name: "Timer controls" })).toBe(timer);
+      expect(screen.getByRole("button", { name: "Next player" })).toBe(advance);
+      expect(screen.getByText("Current speaker").closest(".day-center-stack")).toBe(speaker);
+      expect(document.querySelector(".game-shell .day-center-stack")).toBeNull();
+      expect(document.querySelector(".ledger-phase-bar")).toBeNull();
+      expect(document.querySelector(".ledger-footnote")).toBeNull();
+      expect(
+        document.querySelector(
+          ".game-shell .table-advance button, .game-shell .ledger-advance button",
+        ),
+      ).toBeNull();
+      expect(screen.getByTestId("youtube-player")).toBe(music);
+      expect(screen.getByRole("button", { name: "Pause timer" })).toBeEnabled();
+      expect(window.localStorage.getItem(gameSessionStorageKey)).toBe(saved);
+    }
+    expect(musicPlayerHarness).toMatchObject({ mounts: 1, unmounts: 0 });
+    expect(api.saveGameSession).not.toHaveBeenCalled();
+    expect(screen.getByRole("table", { name: "Game ledger" })).toBeInTheDocument();
+    first.unmount();
+    renderView(<App />);
+    await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
+    expect(screen.getByRole("table", { name: "Game ledger" })).toBeInTheDocument();
+    expect(window.localStorage.getItem(gameSessionStorageKey)).toBe(saved);
+  });
+
+  it.each(["Table", "Ledger"])(
+    "advances the day below the clock in %s without resetting it or enabling Preview actions",
+    async (view) => {
+      const actual = await vi.importActual<typeof gameScreenModule>(
+        "./features/game/GameScreen.js",
+      );
+      vi.spyOn(gameScreenModule, "GameScreen").mockImplementation(actual.GameScreen);
+      let game = assignedGame;
+      while (game.currentTurnIndex < game.turnOrder.length - 2) game = completeCurrentTurn(game);
+      restoreFederationCheckpoint(game);
+      renderView(<App />);
+      await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
+      fireEvent.click(screen.getByRole("button", { name: view }));
+      const timer = screen.getByRole("region", { name: "Timer controls" });
+      const read = () =>
+        JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).current.state;
+      fireEvent.click(screen.getByRole("button", { name: "Start 20 second timer" }));
+      fireEvent.click(screen.getByRole("button", { name: "Pause timer" }));
+      fireEvent.click(screen.getByRole("button", { name: "Next player" }));
+      expect(read().game).toEqual(completeCurrentTurn(game));
+      expect(read().events.at(-1)).toMatchObject({
+        type: "turn.completed",
+        payload: { seat: game.turnOrder[game.currentTurnIndex] },
+      });
+      const lastTurn = screen.getByRole("button", { name: "Begin night" });
+      expect(timer.nextElementSibling).toContainElement(lastTurn);
+      expect(timer.nextElementSibling?.querySelector(".day-center-stack strong")).toHaveTextContent(
+        "Player 10",
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Hide timer and voting" }));
+      expect(lastTurn.closest("[inert]")).not.toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Show timer and voting" }));
+      expect(lastTurn.closest("[inert]")).toBeNull();
+      const live = read();
+      fireEvent.click(screen.getByRole("button", { name: "Open game log" }));
+      fireEvent.click(screen.getByRole("button", { name: "Preview state after log #1" }));
+      const preview = screen.getByRole("group", { name: "Log state preview controls" });
+      if (view === "Ledger") expect(timer.nextElementSibling).toContainElement(preview);
+      else expect(timer.nextElementSibling).toBeEmptyDOMElement();
+      expect(screen.queryByRole("button", { name: "Next player" })).not.toBeInTheDocument();
+      expect(read()).toEqual(live);
+      fireEvent.click(screen.getByRole("button", { name: "Exit preview" }));
+      fireEvent.click(screen.getByRole("button", { name: "Begin night" }));
+      expect(read().game).toEqual(completeCurrentTurn(completeCurrentTurn(game)));
+      if (view === "Ledger") {
+        expect(timer.nextElementSibling).toContainElement(
+          document.querySelector(".table-night-center"),
+        );
+        expect(document.querySelector(".game-ledger .ledger-phase-bar")).toBeNull();
+      } else expect(timer.nextElementSibling).toBeEmptyDOMElement();
+      expect(screen.getByRole("region", { name: "Timer controls" })).toBe(timer);
+      expect(screen.getByRole("button", { name: "Resume timer" })).toBeEnabled();
+      expect(within(timer).getByText("20", { selector: "strong" })).toBeInTheDocument();
+    },
+  );
+
+  it("keeps one pending save and canonical identity through rapid view changes", async () => {
+    const actual = await vi.importActual<typeof gameScreenModule>("./features/game/GameScreen.js");
+    vi.spyOn(gameScreenModule, "GameScreen").mockImplementation(actual.GameScreen);
+    restoreFederationCheckpoint(assignedGame);
+    renderView(<App />);
+    await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
+    fireEvent.click(screen.getByRole("button", { name: "Ledger" }));
+    const saving = deferred<void>();
+    api.saveGameSession.mockClear();
+    const save = api.saveGameSession.getMockImplementation()!;
+    api.saveGameSession.mockImplementationOnce(async (...args) => {
+      await saving.promise;
+      return save(...args);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Foul Player 2" }));
+    await waitFor(() => expect(api.saveGameSession).toHaveBeenCalledOnce());
+    const pending = window.localStorage.getItem(gameSessionStorageKey);
+    for (const name of ["Table", "Ledger", "Table", "Ledger", "Table", "Ledger"]) {
+      fireEvent.click(screen.getByRole("button", { name }));
+      expect(window.localStorage.getItem(gameSessionStorageKey)).toBe(pending);
+    }
+    expect(api.saveGameSession).toHaveBeenCalledOnce();
+    saving.resolve();
+    await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
+    expect(api.saveGameSession).toHaveBeenCalledOnce();
+  });
+
+  it("retains a provisional night target through view changes and browser restoration without sealing an event", async () => {
+    const actual = await vi.importActual<typeof gameScreenModule>("./features/game/GameScreen.js");
+    vi.spyOn(gameScreenModule, "GameScreen").mockImplementation(actual.GameScreen);
+    restoreFederationCheckpoint(beginNight(assignedGame));
+    const first = renderView(<App />);
+    await screen.findByRole("button", { name: "Assign all Mafia shots to Player 2" });
+    const read = () =>
+      JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).current.state;
+    const before = read();
+    fireEvent.click(screen.getByRole("button", { name: "Assign all Mafia shots to Player 2" }));
+    await waitFor(() =>
+      expect(read().game.shotAssignments).not.toEqual(before.game.shotAssignments),
+    );
+    const draft = read();
+    expect(draft.events).toEqual(before.events);
+    expect(draft.headEventId).toBe(before.headEventId);
+    const timer = screen.getByRole("region", { name: "Timer controls" });
+    expect(document.querySelector(".table-stage")).toContainElement(
+      document.querySelector(".table-night-center"),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Ledger" }));
+    expect(read()).toEqual(draft);
+    expect(timer.nextElementSibling).toContainElement(
+      document.querySelector(".table-night-center"),
+    );
+    expect(timer.nextElementSibling).toContainElement(
+      screen.getByRole("button", { name: "Evaluate Mafia shots" }),
+    );
+    expect(document.querySelector(".game-ledger .ledger-phase-bar")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Remove all Mafia shots from Player 2" }),
+    ).toBeEnabled();
+    expect(
+      screen.getAllByRole("button", {
+        name: /Remove shooter \d+ from target Player 2/,
+        pressed: true,
+      }),
+    ).toHaveLength(3);
+    first.unmount();
+    renderView(<App />);
+    await screen.findByRole("button", { name: "Remove all Mafia shots from Player 2" });
+    expect(screen.getByRole("table", { name: "Game ledger" })).toBeInTheDocument();
+    expect(read()).toEqual(draft);
+    fireEvent.click(screen.getByRole("button", { name: "Table" }));
+    expect(read()).toEqual(draft);
+    expect(
+      screen.getByRole("region", { name: "Timer controls" }).nextElementSibling,
+    ).toBeEmptyDOMElement();
+    expect(document.querySelector(".table-stage")).toContainElement(
+      screen.getByRole("button", { name: "Evaluate Mafia shots" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Remove all Mafia shots from Player 2" }),
+    ).toBeEnabled();
+    expect(
+      screen.getAllByRole("button", {
+        name: /Remove shooter \d+ from target Player 2/,
+        pressed: true,
+      }),
+    ).toHaveLength(3);
+  });
 });
 
 describe("player card style preference", () => {

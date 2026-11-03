@@ -2097,6 +2097,7 @@ button.player-seat.is-voting-highlight::after,
 .team-count-values {
   display: flex;
   gap: 5px;
+  white-space: nowrap;
 }
 .team-count-values > span,
 .critical-state-pill {
@@ -2161,6 +2162,31 @@ button.player-seat.is-voting-highlight::after,
 }
 #game-utility-panels .utility-panel-section {
   padding-inline: var(--nomination-inset, 0px);
+}
+.live-side-panel .timer-advance {
+  --table-control-radius: 14px;
+  position: static;
+  display: grid;
+  gap: 10px;
+  width: 100%;
+  margin-top: 10px;
+  transform: none;
+}
+.live-side-panel .timer-advance:empty {
+  display: none;
+}
+.timer-advance .day-center-stack {
+  min-width: 0;
+  gap: 2px;
+  text-align: center;
+}
+.timer-advance .day-center-stack strong {
+  font-size: 1rem;
+  overflow-wrap: anywhere;
+}
+.timer-advance .day-center-stack small {
+  color: var(--muted);
+  font-size: 0.7rem;
 }
 @media not (prefers-reduced-transparency: reduce) {
   .live-side-panel {
@@ -4977,6 +5003,19 @@ html:-webkit-full-screen #root {
   justify-content: flex-start;
   align-items: center;
   gap: var(--layout-gutter);
+}
+.game-shell .game-header > .team-counts,
+.table-layout-shell .game-shell .game-header > .team-counts {
+  position: static;
+  flex: 0 0 auto;
+  align-self: center;
+  justify-content: center;
+  height: auto;
+  gap: 3px;
+}
+.game-header .team-count-values > span,
+.game-header .critical-state-pill {
+  padding: 3px 6px;
 }
 .role-draw-heading > div {
   display: flex;

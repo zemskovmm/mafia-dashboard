@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   advanceOpeningPhase,
   completeEliminations,
@@ -12,7 +13,7 @@ import {
   isTerminalGamePhase,
   setNominationSelection,
 } from "@mafia/game-domain";
-import type { CanonicalGameEventDraft, GameState } from "@mafia/game-domain";
+import type { CanonicalGameEventDraft, GameState, ReplayFrame } from "@mafia/game-domain";
 import { useMessages, type FeatureI18n } from "../../i18n/I18nProvider.js";
 import { gameMessages, type GameMessageKey } from "../../i18n/messages/game.js";
 import {
@@ -24,7 +25,10 @@ import { RulesBookHost } from "../rules/RulesBookHost.js";
 import type { RuleReferenceId } from "../rules/rule-references.js";
 import { NightStage } from "../night/NightStage.js";
 import { usePlayerDisplayName } from "../players/player-display.js";
-import { GameTable } from "../table/GameTable.js";
+import { HostBoard, HostPresentationContext } from "./HostBoard.js";
+import { HostViewSwitch } from "./HostViewSwitch.js";
+import type { HostView } from "./host-view-preferences.js";
+import { projectLedger } from "../ledger/ledger-model.js";
 import { PlayerResultFeedback } from "../table/PlayerFeedback.js";
 import { isCriticalState } from "./critical-state.js";
 import { isGuessingState } from "./guessing-state.js";
@@ -39,6 +43,10 @@ import {
 
 interface GameScreenProps {
   readonly game: GameState;
+  readonly hostView?: HostView;
+  readonly phaseControlsTarget?: HTMLDivElement | null;
+  readonly onHostViewChange?: (view: HostView) => void;
+  readonly historyFrames?: readonly ReplayFrame[];
   readonly playerExitSettings?: PlayerExitSettings;
   readonly playerPresentation?: PlayerActionPresentation;
   readonly gameName?: string;
@@ -135,6 +143,10 @@ const phaseTitle = (game: GameState, t: GameTranslator): string => {
 
 export const GameScreen = ({
   game,
+  hostView = "table",
+  phaseControlsTarget = null,
+  onHostViewChange = () => undefined,
+  historyFrames,
   playerExitSettings = DEFAULT_PLAYER_EXIT_SETTINGS,
   playerPresentation,
   gameName,
@@ -499,6 +511,16 @@ export const GameScreen = ({
     opening || game.phase === "best-move" || game.phase.startsWith("night-") ? "night" : "day";
   const completed = isTerminalGamePhase(game.phase);
   const effectivePrivacyHidden = privacyHidden && tableCycle === "day" && !completed;
+  const ledgerScroll = useRef({ left: -1, top: 0 });
+  // Change only the DOM placement; the existing controller still owns this action.
+  const timerAdvanceTarget = game.phase === "day" && mode === "live" ? phaseControlsTarget : null;
+  const ledger = useMemo(
+    () =>
+      hostView === "ledger"
+        ? projectLedger({ frames: historyFrames, game, privacyHidden: effectivePrivacyHidden })
+        : null,
+    [hostView, historyFrames, game, effectivePrivacyHidden],
+  );
   const tutorialCheckAvailable =
     game.phase === "night-don"
       ? isNightCheckEligible(game, "don")
@@ -506,6 +528,7 @@ export const GameScreen = ({
         ? isNightCheckEligible(game, "sheriff")
         : true;
   const tutorialContext = JSON.stringify([
+    hostView,
     game.players.map(({ id }) => id),
     game.phase,
     game.day,
@@ -518,102 +541,63 @@ export const GameScreen = ({
   ]);
 
   return (
-    <PlayerExitProvider
-      game={game}
-      presentation={playerPresentation}
-      live={mode === "live"}
-      privacyHidden={effectivePrivacyHidden}
-      settings={playerExitSettings}
+    <HostPresentationContext.Provider
+      value={{
+        view: hostView,
+        ledger,
+        currentPeriod: completed ? null : tableCycle,
+        scroll: ledgerScroll,
+        controlsTarget: phaseControlsTarget,
+      }}
     >
-      <RulesBookHost
-        open={readerOpen}
-        rule={requestedRule}
-        onClose={() => {
-          setRuleRequest(null);
-          onRulesClose();
-        }}
-      />
-      <main
-        className={`game-shell phase-${game.phase}${mode === "preview" ? " is-history-preview" : ""} is-table-cycle-${tableCycle}`}
+      <PlayerExitProvider
+        game={game}
+        presentation={playerPresentation}
+        live={mode === "live"}
+        privacyHidden={effectivePrivacyHidden}
+        settings={playerExitSettings}
       >
-        <header className="game-header">
-          {clubLogo === null ? null : (
-            <img className="active-club-header-logo" src={clubLogo} alt="" />
-          )}
-          <div>
-            <p className="eyebrow">
-              {t("game.live")} · {clubName === undefined ? "" : `${clubName} · `}
-              {displayGameName}
-            </p>
-            <div className="game-tutorial-heading">
-              <h1>
-                {mode === "preview"
-                  ? `${phaseTitle(game, t)} · ${t("game.preview")}`
-                  : phaseTitle(game, t)}
-              </h1>
-              {mode === "live" && showTutorialHelp && isGameTutorialPhase(game.phase) && (
-                <GameTutorial
-                  key={tutorialContext}
-                  phase={isSkippedCarCrash(game) ? "car-crash-skipped" : game.phase}
-                  advanceLabel={game.phase === "car-crash" ? tieAdvanceLabel : dayAdvanceLabel}
-                  nominationAvailable={currentPlayer !== undefined}
-                  foulAvailable={foulAvailable}
-                  penaltyAvailable={penaltiesAvailable}
-                  checkAvailable={tutorialCheckAvailable}
-                  ballotPaused={game.ballot?.dispute !== undefined}
-                />
-              )}
+        <RulesBookHost
+          open={readerOpen}
+          rule={requestedRule}
+          onClose={() => {
+            setRuleRequest(null);
+            onRulesClose();
+          }}
+        />
+        <main
+          className={`game-shell phase-${game.phase}${mode === "preview" ? " is-history-preview" : ""} is-table-cycle-${tableCycle} host-view-${hostView}`}
+        >
+          <header className="game-header">
+            {clubLogo === null ? null : (
+              <img className="active-club-header-logo" src={clubLogo} alt="" />
+            )}
+            <div>
+              <p className="eyebrow">
+                {t("game.live")} · {clubName === undefined ? "" : `${clubName} · `}
+                {displayGameName}
+              </p>
+              <div className="game-tutorial-heading">
+                <h1>
+                  {mode === "preview"
+                    ? `${phaseTitle(game, t)} · ${t("game.preview")}`
+                    : phaseTitle(game, t)}
+                </h1>
+                {mode === "live" && showTutorialHelp && isGameTutorialPhase(game.phase) && (
+                  <GameTutorial
+                    key={tutorialContext}
+                    hostView={hostView}
+                    phase={isSkippedCarCrash(game) ? "car-crash-skipped" : game.phase}
+                    advanceLabel={game.phase === "car-crash" ? tieAdvanceLabel : dayAdvanceLabel}
+                    nominationAvailable={currentPlayer !== undefined}
+                    foulAvailable={foulAvailable}
+                    penaltyAvailable={penaltiesAvailable}
+                    checkAvailable={tutorialCheckAvailable}
+                    ballotPaused={game.ballot?.dispute !== undefined}
+                  />
+                )}
+              </div>
             </div>
-          </div>
-        </header>
-
-        <div className="live-layout">
-          <section className="table-workspace">
-            {mode !== "preview" ? (
-              <FederationDisciplineControls
-                key={game.phase}
-                game={game}
-                request={
-                  penaltiesAvailable && disciplineRequest?.game === game ? disciplineRequest : null
-                }
-                readerOpen={readerOpen}
-                onOpenRule={(rule) => {
-                  if (!penaltiesAvailable) return;
-                  setRuleRequest({ game, rule });
-                }}
-                privacyHidden={effectivePrivacyHidden}
-                onComplete={() => {
-                  setDisciplineRequest(null);
-                }}
-                onGameChange={(next) => {
-                  onGameChange(next);
-                  if (game.phase === "voting" && next.phase === "voting") {
-                    setDisciplineRequest((current) =>
-                      current?.game === game ? { ...current, game: next } : current,
-                    );
-                  }
-                }}
-                onEvent={onEvent}
-                onAcceptedEvent={
-                  onAcceptedEvent &&
-                  ((draft) => {
-                    const next = onAcceptedEvent(draft);
-                    // Only an acknowledged, locally submitted ballot command may
-                    // advance the open review's captured context. External changes close it.
-                    if (
-                      next &&
-                      (draft.type === "voting.count-disputed" ||
-                        draft.type === "voting.count-ruled" ||
-                        draft.type === "vote.corrected")
-                    ) {
-                      setDisciplineRequest((current) =>
-                        current?.game === game ? { ...current, game: next } : current,
-                      );
-                    }
-                  })
-                }
-              />
-            ) : null}
             <div
               className="team-counts"
               aria-label={
@@ -639,127 +623,191 @@ export const GameScreen = ({
                 </span>
               ) : null}
             </div>
-            <fieldset className="federation-gameplay-boundary">
-              {mode === "preview" ? (
-                <GameTable
-                  completed={completed}
-                  winner={game.winner}
-                  animateActive={game.phase === "day" || game.phase === "car-crash"}
-                  hostName={hostName}
-                  privacyHidden={effectivePrivacyHidden}
-                  seats={game.players.map((player) => ({
-                    playerId: player.id,
-                    ...player,
-                    name: displayName(player),
-                    current:
-                      player.seat === currentPlayer?.seat ||
-                      game.checkResult?.targetSeat === player.seat,
-                    fouls: player.fouls,
-                    muted: player.mutePending,
-                    ...nominationView(player.seat),
-                  }))}
-                  center={tableCenter}
-                  readOnly
-                />
-              ) : game.phase === "voting" ||
-                game.phase === "voting-cancelled" ||
-                game.phase === "car-crash-decision" ||
-                game.phase === "car-crash-result" ||
-                game.phase === "car-crash-skipped" ? (
-                <VotingStage
-                  onSeatPenalty={openPenalty}
+            <HostViewSwitch view={hostView} onChange={onHostViewChange} />
+          </header>
+
+          <div className="live-layout">
+            <section className="table-workspace">
+              {mode !== "preview" ? (
+                <FederationDisciplineControls
+                  key={game.phase}
                   game={game}
-                  hostName={hostName}
+                  request={
+                    penaltiesAvailable && disciplineRequest?.game === game
+                      ? disciplineRequest
+                      : null
+                  }
+                  readerOpen={readerOpen}
+                  onOpenRule={(rule) => {
+                    if (!penaltiesAvailable) return;
+                    setRuleRequest({ game, rule });
+                  }}
                   privacyHidden={effectivePrivacyHidden}
-                  onFoul={foulAvailable ? foulPlayer : undefined}
-                  onGameChange={onGameChange}
-                  onEvent={onEvent}
-                  onAcceptedEvent={onAcceptedEvent}
-                  onResolved={(votingGame, seats) => {
-                    onGameChange(completeEliminations(votingGame, seats));
-                    for (const seat of seats) {
-                      onEvent("player.eliminated", { seat, source: "vote" });
+                  onComplete={() => {
+                    setDisciplineRequest(null);
+                  }}
+                  onGameChange={(next) => {
+                    onGameChange(next);
+                    if (game.phase === "voting" && next.phase === "voting") {
+                      setDisciplineRequest((current) =>
+                        current?.game === game ? { ...current, game: next } : current,
+                      );
                     }
                   }}
-                />
-              ) : game.phase === "best-move" ? (
-                <FederationBestMoveStage
-                  onSeatPenalty={openPenalty}
-                  game={game}
-                  hostName={hostName}
-                  onGameChange={onGameChange}
                   onEvent={onEvent}
-                  onAcceptedEvent={onAcceptedEvent}
-                />
-              ) : game.phase.startsWith("night-") ? (
-                <NightStage
-                  onSeatPenalty={openPenalty}
-                  game={game}
-                  hostName={hostName}
-                  privacyHidden={effectivePrivacyHidden}
-                  onGameChange={onGameChange}
-                  onEvent={onEvent}
-                  onAcceptedEvent={onAcceptedEvent}
-                />
-              ) : (
-                <GameTable
-                  completed={completed}
-                  winner={game.winner}
-                  onSeatPenalty={openPenalty}
-                  onSeatFoul={foulAvailable ? foulPlayer : undefined}
-                  animateActive={game.phase === "day" || game.phase === "car-crash"}
-                  hostName={hostName}
-                  privacyHidden={effectivePrivacyHidden}
-                  seats={game.players.map((player) => ({
-                    playerId: player.id,
-                    seat: player.seat,
-                    name: displayName(player),
-                    role: player.role,
-                    status: player.status,
-                    mafiaShooter:
-                      game.phase === "mafia-planning" &&
-                      player.status === "active" &&
-                      player.team === "black",
-                    sheriffHighlight:
-                      game.phase === "sheriff-identification" &&
-                      player.status === "active" &&
-                      player.role === "sheriff",
-                    dimmed: game.phase === "mafia-planning" && player.team !== "black",
-                    inactive:
-                      game.phase === "car-crash" && !game.carCrashSeats?.includes(player.seat),
-                    votingHighlight:
-                      game.phase === "goodbye-speech" && game.goodbyeSeats?.[0] === player.seat,
-                    current:
-                      player.seat === currentPlayer?.seat &&
-                      player.status === "active" &&
-                      (game.phase === "day" || game.phase === "car-crash"),
-                    fouls: player.fouls,
-                    muted: player.mutePending,
-                    ...nominationView(player.seat),
-                  }))}
-                  seatActionLabel={(seat) =>
-                    game.phase === "day" && currentPlayer !== undefined && seat.status === "active"
-                      ? t(
-                          seat.nominationSelected
-                            ? "game.removeSelection"
-                            : seat.nominated
-                              ? "game.support"
-                              : "game.nominate",
-                          { name: seat.name },
-                        )
-                      : t("table.seat", { seat: seat.seat, name: seat.name })
+                  onAcceptedEvent={
+                    onAcceptedEvent &&
+                    ((draft) => {
+                      const next = onAcceptedEvent(draft);
+                      // Only an acknowledged, locally submitted ballot command may
+                      // advance the open review's captured context. External changes close it.
+                      if (
+                        next &&
+                        (draft.type === "voting.count-disputed" ||
+                          draft.type === "voting.count-ruled" ||
+                          draft.type === "vote.corrected")
+                      ) {
+                        setDisciplineRequest((current) =>
+                          current?.game === game ? { ...current, game: next } : current,
+                        );
+                      }
+                    })
                   }
-                  onSeatClick={(seat) => {
-                    if (game.phase === "day") toggleNomination(seat);
-                  }}
-                  center={tableCenter}
-                  advance={tableAdvance}
                 />
+              ) : null}
+              <fieldset className="federation-gameplay-boundary">
+                {mode === "preview" ? (
+                  <HostBoard
+                    completed={completed}
+                    winner={game.winner}
+                    animateActive={game.phase === "day" || game.phase === "car-crash"}
+                    hostName={hostName}
+                    privacyHidden={effectivePrivacyHidden}
+                    seats={game.players.map((player) => ({
+                      playerId: player.id,
+                      ...player,
+                      name: displayName(player),
+                      current:
+                        player.seat === currentPlayer?.seat ||
+                        game.checkResult?.targetSeat === player.seat,
+                      fouls: player.fouls,
+                      muted: player.mutePending,
+                      ...nominationView(player.seat),
+                    }))}
+                    center={tableCenter}
+                    readOnly
+                  />
+                ) : game.phase === "voting" ||
+                  game.phase === "voting-cancelled" ||
+                  game.phase === "car-crash-decision" ||
+                  game.phase === "car-crash-result" ||
+                  game.phase === "car-crash-skipped" ? (
+                  <VotingStage
+                    onSeatPenalty={openPenalty}
+                    game={game}
+                    hostName={hostName}
+                    privacyHidden={effectivePrivacyHidden}
+                    onFoul={foulAvailable ? foulPlayer : undefined}
+                    onGameChange={onGameChange}
+                    onEvent={onEvent}
+                    onAcceptedEvent={onAcceptedEvent}
+                    onResolved={(votingGame, seats) => {
+                      onGameChange(completeEliminations(votingGame, seats));
+                      for (const seat of seats) {
+                        onEvent("player.eliminated", { seat, source: "vote" });
+                      }
+                    }}
+                  />
+                ) : game.phase === "best-move" ? (
+                  <FederationBestMoveStage
+                    onSeatPenalty={openPenalty}
+                    game={game}
+                    hostName={hostName}
+                    onGameChange={onGameChange}
+                    onEvent={onEvent}
+                    onAcceptedEvent={onAcceptedEvent}
+                  />
+                ) : game.phase.startsWith("night-") ? (
+                  <NightStage
+                    onSeatPenalty={openPenalty}
+                    game={game}
+                    hostName={hostName}
+                    privacyHidden={effectivePrivacyHidden}
+                    onGameChange={onGameChange}
+                    onEvent={onEvent}
+                    onAcceptedEvent={onAcceptedEvent}
+                  />
+                ) : (
+                  <HostBoard
+                    completed={completed}
+                    winner={game.winner}
+                    onSeatPenalty={openPenalty}
+                    onSeatFoul={foulAvailable ? foulPlayer : undefined}
+                    animateActive={game.phase === "day" || game.phase === "car-crash"}
+                    hostName={hostName}
+                    privacyHidden={effectivePrivacyHidden}
+                    seats={game.players.map((player) => ({
+                      playerId: player.id,
+                      seat: player.seat,
+                      name: displayName(player),
+                      role: player.role,
+                      status: player.status,
+                      mafiaShooter:
+                        game.phase === "mafia-planning" &&
+                        player.status === "active" &&
+                        player.team === "black",
+                      sheriffHighlight:
+                        game.phase === "sheriff-identification" &&
+                        player.status === "active" &&
+                        player.role === "sheriff",
+                      dimmed: game.phase === "mafia-planning" && player.team !== "black",
+                      inactive:
+                        game.phase === "car-crash" && !game.carCrashSeats?.includes(player.seat),
+                      votingHighlight:
+                        game.phase === "goodbye-speech" && game.goodbyeSeats?.[0] === player.seat,
+                      current:
+                        player.seat === currentPlayer?.seat &&
+                        player.status === "active" &&
+                        (game.phase === "day" || game.phase === "car-crash"),
+                      fouls: player.fouls,
+                      muted: player.mutePending,
+                      ...nominationView(player.seat),
+                    }))}
+                    seatActionLabel={(seat) =>
+                      game.phase === "day" &&
+                      currentPlayer !== undefined &&
+                      seat.status === "active"
+                        ? t(
+                            seat.nominationSelected
+                              ? "game.removeSelection"
+                              : seat.nominated
+                                ? "game.support"
+                                : "game.nominate",
+                            { name: seat.name },
+                          )
+                        : t("table.seat", { seat: seat.seat, name: seat.name })
+                    }
+                    onSeatClick={(seat) => {
+                      if (game.phase === "day") toggleNomination(seat);
+                    }}
+                    center={timerAdvanceTarget === null ? tableCenter : false}
+                    advance={timerAdvanceTarget === null ? tableAdvance : false}
+                  />
+                )}
+              </fieldset>
+            </section>
+          </div>
+          {timerAdvanceTarget === null
+            ? null
+            : createPortal(
+                <>
+                  {tableCenter}
+                  {tableAdvance}
+                </>,
+                timerAdvanceTarget,
               )}
-            </fieldset>
-          </section>
-        </div>
-      </main>
-    </PlayerExitProvider>
+        </main>
+      </PlayerExitProvider>
+    </HostPresentationContext.Provider>
   );
 };

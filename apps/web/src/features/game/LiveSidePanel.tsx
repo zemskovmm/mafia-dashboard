@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode, type Ref } from "react";
 import type { GameState } from "@mafia/game-domain";
 import { GlassSurface } from "../theme/GlassSurface.js";
 import { useMessages } from "../../i18n/I18nProvider.js";
@@ -9,6 +9,7 @@ import { CollapsiblePanel } from "./CollapsiblePanel.js";
 interface LiveSidePanelProps {
   readonly game: GameState | null;
   readonly hidden?: boolean;
+  readonly phaseControlsTargetRef?: Ref<HTMLDivElement>;
   readonly onSelectVotingCandidate?: (seat: number) => void;
   readonly children: ReactNode;
 }
@@ -16,6 +17,7 @@ interface LiveSidePanelProps {
 export const LiveSidePanel = ({
   game,
   hidden = false,
+  phaseControlsTargetRef,
   onSelectVotingCandidate,
   children,
 }: LiveSidePanelProps) => {
@@ -64,6 +66,7 @@ export const LiveSidePanel = ({
         <div className="utility-panel-surface">
           <GameUtilityPanels
             game={game}
+            phaseControlsTargetRef={phaseControlsTargetRef}
             onSelectVotingCandidate={
               hidden || utilitiesHidden ? undefined : onSelectVotingCandidate
             }

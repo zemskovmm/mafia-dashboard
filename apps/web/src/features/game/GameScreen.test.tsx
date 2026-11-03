@@ -1156,7 +1156,7 @@ describe("GameScreen", () => {
     expect(document.querySelectorAll(".player-seat.is-voting-highlight")).toHaveLength(1);
   });
 
-  it("renders a historical state with only Exit and Reset actions", async () => {
+  it("renders a historical state with view selection, Exit and Reset but no gameplay actions", async () => {
     const user = userEvent.setup();
     const onExitPreview = vi.fn();
     const onResetPreview = vi.fn();
@@ -1179,6 +1179,8 @@ describe("GameScreen", () => {
       .getAllByRole("button")
       .filter((button) => !button.hasAttribute("disabled"));
     expect(actions.map((button) => button.textContent?.trim())).toEqual([
+      "Table",
+      "Ledger",
       "Exit preview",
       "Reset game to this state",
     ]);

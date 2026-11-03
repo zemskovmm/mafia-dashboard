@@ -1,3 +1,4 @@
+import type { Ref } from "react";
 import { countVotes } from "@mafia/game-domain";
 import type { GameState } from "@mafia/game-domain";
 import { Hand } from "lucide-react";
@@ -12,10 +13,15 @@ import { LiquidCardGlass } from "../theme/LiquidCardGlass.js";
 
 export interface GameUtilityPanelsProps {
   readonly game: GameState | null;
+  readonly phaseControlsTargetRef?: Ref<HTMLDivElement>;
   readonly onSelectVotingCandidate?: (seat: number) => void;
 }
 
-export const GameUtilityPanels = ({ game, onSelectVotingCandidate }: GameUtilityPanelsProps) => {
+export const GameUtilityPanels = ({
+  game,
+  phaseControlsTargetRef,
+  onSelectVotingCandidate,
+}: GameUtilityPanelsProps) => {
   const { t } = useMessages(gameMessages);
 
   const displayName = usePlayerDisplayName();
@@ -55,6 +61,7 @@ export const GameUtilityPanels = ({ game, onSelectVotingCandidate }: GameUtility
     <>
       <div className="utility-panel-section" data-panel="timer">
         <TimerControls />
+        <div ref={phaseControlsTargetRef} className="table-advance timer-advance" />
       </div>
       {showVotingOrder ? (
         <div className="utility-panel-section" data-panel="voting">

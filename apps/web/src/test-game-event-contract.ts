@@ -2,12 +2,14 @@ import {
   createGameLogEntry,
   type CanonicalGameEventDraft,
   type GameState,
+  type ReplayFrame,
 } from "@mafia/game-domain";
 import { expect } from "vitest";
 import { resolve } from "node:path";
 import { createElement } from "react";
 import { cleanup, fireEvent, render } from "@testing-library/react";
 import { GameScreen } from "./features/game/GameScreen.js";
+import { PlayerDirectoryProvider } from "./features/players/player-display.js";
 import { GameTimelineScreen } from "./features/timeline/GameTimelineScreen.js";
 import type {
   CompletedGameSessionFilters,
@@ -19,11 +21,13 @@ export const captureUiEvent = (
   game: GameState,
   action: "foul" | "red-card" | "ballot",
   seat = 1,
+  hostView: "table" | "ledger" = "table",
 ): CanonicalGameEventDraft => {
   const drafts: CanonicalGameEventDraft[] = [];
   const view = render(
     createElement(GameScreen, {
       game,
+      hostView,
       hostName: "Contract host",
       privacyHidden: false,
       onGameChange: () => undefined,
@@ -34,7 +38,13 @@ export const captureUiEvent = (
     }),
   );
   try {
-    if (action === "foul") {
+    if (action === "foul" && hostView === "ledger") {
+      const control = view.container.querySelector(
+        `[data-ledger-seat="${seat}"] .ledger-foul-button`,
+      );
+      expect(control).not.toBeNull();
+      fireEvent.click(control!);
+    } else if (action === "foul") {
       const card = view.container.querySelector<HTMLElement>(
         `.seat-anchor[data-seat="${seat}"] > .table-card`,
       );
@@ -113,6 +123,34 @@ export const expectServerAcceptsEvent = async (
     results: null,
   };
   expect(gameSessionMutationSchema.parse(request)).toEqual(request);
+};
+
+/** Render the real Ledger from the exact API-read state and its admitted history. */
+export const observeSavedLedger = (
+  game: GameState,
+  historyFrames: readonly ReplayFrame[],
+  profiles: readonly { readonly id: string; readonly nickname: string }[],
+): string => {
+  const view = render(
+    createElement(PlayerDirectoryProvider, {
+      profiles,
+      children: createElement(GameScreen, {
+        game,
+        historyFrames,
+        hostView: "ledger",
+        mode: "preview",
+        hostName: "Contract host",
+        privacyHidden: false,
+        onGameChange: () => undefined,
+        onEvent: () => undefined,
+      }),
+    }),
+  );
+  try {
+    return view.getByRole("table", { name: "Game ledger" }).textContent ?? "";
+  } finally {
+    cleanup();
+  }
 };
 
 // The caller supplies serialized real API readbacks, not fixture directory names.

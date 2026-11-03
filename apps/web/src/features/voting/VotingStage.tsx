@@ -8,7 +8,7 @@ import {
 import type { CanonicalGameEventDraft, GameState } from "@mafia/game-domain";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { votingMessages } from "../../i18n/messages/voting.js";
-import { GameTable } from "../table/GameTable.js";
+import { HostBoard } from "../game/HostBoard.js";
 import { usePlayerDisplayName } from "../players/player-display.js";
 
 import { FederationBallot } from "./FederationBallot.js";
@@ -119,7 +119,7 @@ export const VotingStage = ({
   if (game.phase === "voting-cancelled") {
     const cancellationMessage = t("disciplinaryCancellation");
     return (
-      <GameTable
+      <HostBoard
         onSeatPenalty={onSeatPenalty}
         hostName={hostName}
         privacyHidden={privacyHidden}
@@ -149,7 +149,7 @@ export const VotingStage = ({
 
   if (game.phase === "car-crash-skipped") {
     return (
-      <GameTable
+      <HostBoard
         onSeatPenalty={onSeatPenalty}
         hostName={hostName}
         privacyHidden={privacyHidden}
@@ -219,7 +219,7 @@ export const VotingStage = ({
       }),
     );
     return (
-      <GameTable
+      <HostBoard
         hostName={hostName}
         privacyHidden={privacyHidden}
         seats={game.players.map((player) => ({
