@@ -14,6 +14,8 @@ test("website publication is manual, main-only and uploads only the static site"
   );
   assert.match(workflow, /if: github\.ref == 'refs\/heads\/main'/);
   assert.match(workflow, /path: apps\/site\/dist/);
+  // upload-pages-artifact v5 excludes dotfiles unless explicitly requested.
+  assert.match(workflow, /include-hidden-files: true/);
   assert.match(workflow, /npm run build -w @mafia\/site/);
   assert.match(workflow, /enablement: false/);
   for (const [, reference] of workflow.matchAll(/uses: ([^\s]+)/g)) {

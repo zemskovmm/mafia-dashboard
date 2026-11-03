@@ -5,6 +5,20 @@ const apiTarget = process.env.MAFIA_API_PROXY_TARGET ?? "http://localhost:3000";
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    rolldownOptions: {
+      output: {
+        // Cache stable dependencies and large features independently of the shell.
+        codeSplitting: {
+          groups: [
+            { name: "react", test: /\/node_modules\/(react|react-dom|scheduler)\// },
+            { name: "statistics", test: /\/features\/statistics\// },
+            { name: "game", test: /\/features\/(game|ledger|night|voting)\// },
+          ],
+        },
+      },
+    },
+  },
   server: {
     port: 5173,
     allowedHosts: ["mbp16.tail102fab.ts.net"],

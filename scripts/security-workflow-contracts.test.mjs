@@ -179,6 +179,9 @@ test("Azure publishes an immutable image and deploys its verified digest with le
   assert.match(publish, /permissions:\n\s{6}contents: read\n\s{6}packages: write/);
   assert.doesNotMatch(publish, /id-token: write/);
   assert.match(publish, /load: true/);
+  const evidence = workflowStep(source, "Preserve immutable staging release evidence");
+  assert.match(evidence, /archive: true/);
+  assert.match(evidence, /overwrite: false/);
   assert.doesNotMatch(publish, /push: true/);
   assert.match(publish, /outputs:\n\s{6}image: \$\{\{ steps\.publish\.outputs\.image \}\}/);
   assert.match(publish, /id: publish/);
