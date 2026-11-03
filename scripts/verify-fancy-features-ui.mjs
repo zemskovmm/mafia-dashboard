@@ -1,6 +1,7 @@
 /* global URL, document, localStorage, getComputedStyle, HTMLCanvasElement, HTMLImageElement, FontFaceSet */
 /** Actual-App optional-graphics scenarios; shares verify-ui's isolated API/media fixture. */
 import assert from "node:assert/strict";
+import { enterDeveloperSection } from "./workspace-menu-paths.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -298,6 +299,7 @@ export async function runFancyFeaturesScenarios({
     const privacy = page.getByRole("button", { name: /^(Hide|Show) private info$/ });
     for (let tap = 0; tap < 5; tap++) await privacy.click();
     await page.getByRole("button", { name: "Open developer menu" }).click();
+    await enterDeveloperSection(page, "visual");
     assert.equal(
       await page.getByRole("button", { name: "Enable dev mode", exact: true }).count(),
       0,

@@ -4,7 +4,12 @@
 // Default: the CURRENT application, a private ephemeral Vite server, no backend,
 // no .env, no credentials, no external requests, and no production test hooks.
 import assert from "node:assert/strict";
+import {
+  enterManageSection,
+  enterDeveloperSection,
+} from "../../../../../scripts/workspace-menu-paths.mjs";
 import console from "node:console";
+import { registerWorkspaceMenuScenarios } from "./WorkspaceMenu.scenarios.mjs";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
@@ -114,7 +119,8 @@ const fixtureReply = (path) => {
 };
 
 // Bind every receipt to the real source tree, including concurrent changes.
-// The manifest deliberately excludes tests/evidence; it is not a synthetic bundle.
+// Bind product source plus explicitly imported focused-scenario dependencies; exclude evidence.
+// This is the actual application, not a synthetic rendered menu.
 async function sourceManifest() {
   const files = [];
   async function collect(path) {
@@ -129,6 +135,8 @@ async function sourceManifest() {
   await collect(join(repository, "packages/game-domain/src"));
   files.push(join(repository, "apps/web/index.html"));
   for (const path of [
+    "apps/web/src/features/clubs/WorkspaceMenu.scenarios.mjs",
+    "scripts/workspace-menu-paths.mjs",
     "package.json",
     "package-lock.json",
     "apps/web/package.json",
@@ -388,6 +396,8 @@ function scenario(name, options, run) {
     }
   });
 }
+registerWorkspaceMenuScenarios({ scenario, baseURL: () => baseURL, clubs, picker, settled });
+
 const englishSlogan = "The city sleeps. The game begins.";
 const russianSlogan = "Город засыпает. Игра начинается.";
 const openButton = (page) => page.getByRole("button", { name: /La Verdad.*Málaga/ });
@@ -985,8 +995,8 @@ for (const engine of ["chromium", "webkit"]) {
           const failures = [];
           row.logoPreviews = [await editorLogoReceipt(page, capture, "new-empty", failures)];
           assert.equal(
-            await page.getByRole("checkbox", { name: labels.bestMove, exact: true }).isChecked(),
-            true,
+            await page.getByRole("checkbox", { name: labels.bestMove, exact: true }).count(),
+            0,
           );
           await chooseEditorLogo(page, 0, editorLogos.square);
           await chooseEditorLogo(page, 1, editorLogos.portrait);
@@ -1015,6 +1025,7 @@ for (const engine of ["chromium", "webkit"]) {
             "actual workspace-header rendering retained",
           );
           await page.getByRole("button", { name: labels.manage, exact: true }).click();
+          await enterManageSection(page, "details", locale);
           await page.getByRole("button", { name: labels.edit, exact: true }).click();
           await page.locator(".club-editor-card").waitFor();
           row.logoPreviews.push(
@@ -1029,6 +1040,7 @@ for (const engine of ["chromium", "webkit"]) {
           await openButton(page).click();
           await settled(page);
           await page.getByRole("button", { name: labels.manage, exact: true }).click();
+          await enterManageSection(page, "details", locale);
           await page.getByRole("button", { name: labels.edit, exact: true }).click();
           assert.equal(
             await page.getByLabel(labels.name, { exact: true }).inputValue(),
@@ -1491,6 +1503,7 @@ async function openFancyStuff(page, locale, unlock = false, capture) {
     );
   }
   await page.getByRole("button", { name: labels.developer, exact: true }).click();
+  await enterDeveloperSection(page, "visual", locale);
   const details = page.locator("#dev-menu-drawer .fancy-stuff-controls");
   assert.equal(await details.evaluate((node) => node.open), false, "Fancy stuff starts collapsed");
   const summary = details.locator("summary");

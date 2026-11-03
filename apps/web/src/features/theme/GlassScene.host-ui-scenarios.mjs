@@ -1,5 +1,9 @@
 /* global window, document, getComputedStyle, innerWidth, innerHeight, localStorage, Response, URL, requestAnimationFrame */
 import assert from "node:assert/strict";
+import {
+  enterManageAction,
+  enterDeveloperSection,
+} from "../../../../../scripts/workspace-menu-paths.mjs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { writeFile } from "node:fs/promises";
@@ -148,11 +152,13 @@ export async function menu(page, name, locale = "en") {
       exact: true,
     })
     .tap();
+  await enterManageAction(page, name, locale, "tap");
   await page.getByRole("button", { name, exact: true }).tap();
 }
 
 async function openGlass(page) {
   await page.getByRole("button", { name: "Open developer menu", exact: true }).tap();
+  await enterDeveloperSection(page, "visual", "en", "tap");
   const disclosure = page.locator(".dev-glass-controls");
   if (!(await disclosure.evaluate((node) => node.open)))
     await disclosure.locator(":scope > summary").tap();

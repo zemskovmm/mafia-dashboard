@@ -1,5 +1,6 @@
 /* global URL */
 import { chromium } from "@playwright/test";
+import { enterManageSection } from "./workspace-menu-paths.mjs";
 import {
   assertExactOrigin,
   assertVerifierTarget,
@@ -127,8 +128,11 @@ try {
           playlistRequired: "Playlist required",
         };
   await page.getByRole("button", { name: labels.openManageMenu, exact: true }).click();
-  await page.getByRole("button", { name: labels.musicPlayerSetup, exact: true }).click();
+  await enterManageSection(page, "music", selectedClub.language);
   await page.locator(".music-account-name").waitFor();
+  await page.locator(".manage-toolbar-button").click();
+  const musicHandle = page.locator(".music-panel-handle");
+  if ((await musicHandle.getAttribute("aria-expanded")) !== "true") await musicHandle.click();
   const playlistSelector = page.getByLabel(labels.playlist);
   await playlistSelector.waitFor();
   if ((await playlistSelector.locator("option:not([value=''])").count()) !== playlists.length) {

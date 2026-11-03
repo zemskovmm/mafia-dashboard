@@ -6,6 +6,7 @@
  */
 /* global URL, localStorage, document, getComputedStyle, innerWidth, innerHeight, fetch, Image, MutationObserver, performance, requestAnimationFrame, cancelAnimationFrame, HTMLCanvasElement, DOMMatrix */
 import assert from "node:assert/strict";
+import { enterManageSection } from "./workspace-menu-paths.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -513,6 +514,7 @@ export async function runPlayerCardStyleScenarios({
     await page
       .getByRole("button", { name: words[locale][open ? "open" : "close"], exact: true })
       .click();
+    if (open) await enterManageSection(page, "appearance", locale);
     if (open)
       await expect(
         page.getByRole("combobox", { name: words[locale].style, exact: true }),

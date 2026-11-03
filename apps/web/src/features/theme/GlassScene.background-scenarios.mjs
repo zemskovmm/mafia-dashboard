@@ -1,6 +1,10 @@
 /* global window, document, localStorage, getComputedStyle, innerWidth, innerHeight,
    Image, HTMLCanvasElement, Storage, DOMException, setTimeout, URL */
 import assert from "node:assert/strict";
+import {
+  enterManageAction,
+  enterDeveloperSection,
+} from "../../../../../scripts/workspace-menu-paths.mjs";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -111,8 +115,10 @@ async function enter(page, url, query = "phase=day&fresh&full-app") {
 }
 async function developer(page, locale = "en", controls = false) {
   const text = labels[locale];
-  if (!(await page.locator("#dev-menu-drawer").count()))
+  if (!(await page.locator("#dev-menu-drawer").count())) {
     await page.getByRole("button", { name: text.open, exact: true }).click();
+    await enterDeveloperSection(page, "visual", locale);
+  }
   if (controls && (await page.locator(".dev-glass-controls").getAttribute("open")) === null)
     await page.locator(".dev-glass-controls > summary").click();
   return page.getByRole("combobox", { name: text.picker, exact: true });
@@ -151,6 +157,7 @@ async function pick(page, id, locale = "en", enhanced = true) {
 }
 async function manage(page, name) {
   await page.getByRole("button", { name: "Open Manage menu", exact: true }).click();
+  await enterManageAction(page, name);
   await page.getByRole("button", { name, exact: true }).click();
   await settle(page);
 }
@@ -631,7 +638,8 @@ async function routes(page, context) {
     await screenEvidence(page, id, `${id}-timeline`, context);
     await hitTarget(page.locator(".timeline-back"));
     await page.locator(".timeline-back").click();
-    await developer(page);
+    await page.getByRole("button", { name: "Open developer menu", exact: true }).click();
+    await enterDeveloperSection(page, "diagnostics");
     await page.getByRole("button", { name: "Console", exact: true }).click();
     await page.locator(".error-console-screen").waitFor();
     await screenEvidence(page, id, `${id}-console`, context);

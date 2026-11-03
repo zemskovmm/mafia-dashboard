@@ -2,6 +2,7 @@
 import { chromium, expect, webkit } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import assert from "node:assert/strict";
+import { enterManageSection, enterDeveloperSection } from "./workspace-menu-paths.mjs";
 import { assertExactOrigin } from "./session-verifier-contracts.mjs";
 import { writeFileSync } from "node:fs";
 import { tsImport } from "tsx/esm/api";
@@ -1670,8 +1671,7 @@ try {
     await page.getByRole("heading", { name: "Players & statistics" }).waitFor();
     await page.getByRole("article", { name: "Player UI Player 1", exact: true }).waitFor();
     await page.screenshot({ path: playersScreenshotPath, fullPage: true });
-    await page.getByRole("button", { name: "Open developer menu" }).click();
-    await page.getByRole("button", { name: "Game screen" }).click();
+    await page.getByRole("button", { name: "Back to game", exact: true }).click();
   }
   await setupHeading.waitFor();
   await restoreCurrentSetup();
@@ -1769,6 +1769,7 @@ try {
     }
     await verifyFadeFooter("utilities-scrolled");
     await page.getByRole("button", { name: "Open Manage menu" }).click();
+    await enterManageSection(page, "details");
     await page.locator("#manage-menu-drawer select").selectOption("ru");
     await page.locator('html[lang="ru"]').waitFor();
     await page.locator(".manage-toolbar-button").click();
@@ -1804,7 +1805,7 @@ try {
   const manageButton = page.getByRole("button", { name: "Open Manage menu" });
   await assertNativeControl(manageButton, "Manage trigger");
   await page.keyboard.press("Enter");
-  const manageHeading = page.getByRole("heading", { name: "Manage", exact: true });
+  const manageHeading = page.getByRole("heading", { name: "Menu", exact: true });
   await manageHeading.waitFor();
   await assertAccessibleControls("Manage drawer");
   await page.keyboard.press("Escape");
@@ -1852,6 +1853,7 @@ try {
       window.dispatchEvent(rejection);
     });
     await page.getByRole("button", { name: "Open developer menu" }).click();
+    await enterDeveloperSection(page, "testing");
     assert.equal(await page.getByRole("button", { name: "Enable dev mode" }).count(), 0);
     assert.equal(
       await page.getByRole("button", { name: "Show undealt role preview" }).isEnabled(),
@@ -1869,6 +1871,8 @@ try {
     if ((await page.getByRole("button", { name: /table center shadow/i }).count()) !== 0) {
       throw new Error("The permanent table-center shadow must not expose a Dev setting");
     }
+    await page.getByRole("button", { name: "Back", exact: true }).click();
+    await enterDeveloperSection(page, "diagnostics");
     await page.getByRole("button", { name: "Console" }).click();
     await page.getByRole("heading", { name: "Console", exact: true }).waitFor();
     for (const message of [
@@ -2033,6 +2037,7 @@ try {
     await page.screenshot({ path: playerControlsScreenshotPath, fullPage: true });
 
     await page.getByRole("button", { name: "Open developer menu" }).click();
+    await enterDeveloperSection(page, "visual");
     if ((await page.getByRole("button", { name: /Day\/night table indication/i }).count()) !== 0) {
       throw new Error("The static Day/night tint must not expose a Dev setting");
     }
@@ -2052,7 +2057,7 @@ try {
     await nativeRange.fill(rangeBefore);
     await page.getByRole("button", { name: "Close developer menu" }).click();
     await page.getByRole("button", { name: "Open Manage menu" }).click();
-    await page.getByRole("button", { name: "Music player setup" }).click();
+    await enterManageSection(page, "music");
     const musicSetup = page.getByRole("region", { name: "Music player setup" });
     await musicSetup.waitFor();
     await musicSetup.getByRole("button", { name: "Reload music player" }).waitFor();
@@ -2150,6 +2155,7 @@ try {
     await page.screenshot({ path: dayCycleScreenshotPath, fullPage: true });
     if (verifyVgpuSelection) {
       await page.getByRole("button", { name: "Open developer menu" }).click();
+      await enterDeveloperSection(page, "visual");
       if (
         (await page.locator(".app-shell").getAttribute("data-lighting-renderer-requested")) !==
         "vgpu"
@@ -2168,6 +2174,7 @@ try {
       let fallbackVisible = false;
       if (rendererState.effective === "legacy") {
         await page.getByRole("button", { name: "Open developer menu" }).click();
+        await enterDeveloperSection(page, "visual");
         fallbackVisible = await page
           .getByText("V-GPU unavailable — using existing CSS")
           .isVisible();
@@ -2579,6 +2586,7 @@ try {
       if (beforeFinish.game.phase !== "voting")
         throw new Error("Nominee jump implied voting completion");
       await page.getByRole("button", { name: "Open Manage menu" }).click();
+      await enterManageSection(page, "details");
       await page.locator("#manage-menu-drawer select").selectOption("ru");
       await page.locator('html[lang="ru"]').waitFor();
       await page.locator(".game-shell.phase-voting").waitFor();
@@ -2596,6 +2604,7 @@ try {
         fullPage: true,
       });
       await page.locator(".manage-toolbar-button").click();
+      await enterManageSection(page, "details", "ru");
       await page.locator("#manage-menu-drawer select").selectOption("en");
       await page.locator('html[lang="en"]').waitFor();
       await page.getByRole("button", { name: "Close Manage menu" }).click();
@@ -3063,6 +3072,7 @@ try {
     }
 
     await page.getByRole("button", { name: "Open Manage menu" }).click();
+    await enterManageSection(page, "game");
     await page.getByRole("button", { name: "Past game timeline" }).click();
     await page.getByRole("heading", { name: "Game timeline" }).waitFor();
     await page.getByText(new RegExp(`Checkpoint #${timeline.markers.at(-1).sequence}$`)).waitFor();
@@ -3085,6 +3095,7 @@ try {
     await page.getByRole("heading", { name: "Zero round" }).waitFor();
 
     await page.getByRole("button", { name: "Open Manage menu" }).click();
+    await enterManageSection(page, "game");
     await page.getByRole("button", { name: "Past game timeline" }).click();
     await page.getByRole("heading", { name: "Game timeline" }).waitFor();
     await page
@@ -3112,6 +3123,7 @@ try {
     if (!(await resetSave).ok()) throw new Error("Destructive snapshot Reset failed");
 
     await page.getByRole("button", { name: "Open Manage menu" }).click();
+    await enterManageSection(page, "game");
     await page.getByRole("button", { name: "Past game timeline" }).click();
     await page.getByRole("heading", { name: "Game timeline" }).waitFor();
     await page.getByRole("button", { name: "Generate sample game data" }).click();
@@ -3575,6 +3587,7 @@ try {
       localStorage.getItem("mafia-dashboard.game-session.v5"),
     );
     await page.getByRole("button", { name: "Open Manage menu" }).click();
+    await enterManageSection(page, "game");
     await page.getByRole("button", { name: "Past game timeline" }).click();
     await page.getByRole("heading", { name: "Game timeline" }).waitFor();
     if ((await page.locator(".timeline-marker").count()) === 0) {
@@ -3584,6 +3597,7 @@ try {
       }));
       await page.getByRole("button", { name: "Back" }).click();
       await page.getByRole("button", { name: "Open developer menu" }).click();
+      await enterDeveloperSection(page, "diagnostics");
       await page.getByRole("button", { name: "Console" }).click();
       diagnostics.console = (await page.locator(".error-console-screen").innerText()).slice(-1800);
       diagnostics.history = await page.evaluate(() => {
@@ -4151,7 +4165,7 @@ try {
   await page.screenshot({ path: selectionScreenshotPath, fullPage: true });
 
   await page.getByRole("button", { name: "Open Manage menu" }).click();
-  await page.getByRole("button", { name: "Music player setup" }).click();
+  await enterManageSection(page, "music");
   const musicSetup = page.getByRole("region", { name: "Music player setup" });
   if ((await musicSetup.getByRole("combobox").count()) !== 0)
     throw new Error("Playlist selection must not remain in Music player setup");
@@ -4691,6 +4705,7 @@ try {
   await assertSupportedPlayerLighting(activeSeat, "Current player card");
   const selectLightingRenderer = async (value) => {
     await page.getByRole("button", { name: "Open developer menu" }).click();
+    await enterDeveloperSection(page, "visual");
     const requestedRenderer = await page
       .locator(".app-shell")
       .getAttribute("data-lighting-renderer-requested");
@@ -4766,6 +4781,7 @@ try {
   let fallbackVisible = false;
   if (effectiveVgpuRenderer === "legacy") {
     await page.getByRole("button", { name: "Open developer menu" }).click();
+    await enterDeveloperSection(page, "visual");
     fallbackVisible = await page.getByText("V-GPU unavailable — using existing CSS").isVisible();
     await page.getByRole("button", { name: "Close developer menu" }).click();
   }
@@ -4851,6 +4867,7 @@ try {
   }
 
   await page.getByRole("button", { name: "Open developer menu" }).click();
+  await enterDeveloperSection(page, "visual");
   if (await page.getByRole("button", { name: /player LEDs/i }).count()) {
     throw new Error("The retired Player LEDs switch must not be offered");
   }
@@ -4864,6 +4881,7 @@ try {
     "Independent table lighting",
   );
   await page.getByRole("button", { name: "Open developer menu" }).click();
+  await enterDeveloperSection(page, "visual");
   await page.getByRole("button", { name: "Disable player glow pulse" }).click();
   await page.getByLabel("Player glow pulse speed").fill("2.5");
   await page.getByLabel("Player glow pulse strength").fill("40");
@@ -4888,6 +4906,7 @@ try {
     );
   }
   await page.getByRole("button", { name: "Open developer menu" }).click();
+  await enterDeveloperSection(page, "visual");
   await page.getByRole("button", { name: "Enable player glow pulse" }).click();
   await page.getByLabel("Player glow pulse speed").fill("1");
   await page.getByLabel("Player glow pulse strength").fill("5");

@@ -1,5 +1,6 @@
 /* global document, getComputedStyle, matchMedia */
 import assert from "node:assert/strict";
+import { enterManageSection } from "./workspace-menu-paths.mjs";
 import { mkdir } from "node:fs/promises";
 import { assertBalancedCardPlacement, assertCardSizes } from "./ui-presentation-contracts.mjs";
 
@@ -17,7 +18,7 @@ export async function verifyIpadLayout(
       await assertNativeControl(trigger, "Manage trigger");
       await page.keyboard.press("Enter");
     }
-    const heading = page.getByRole("heading", { name: "Manage", exact: true });
+    const heading = page.getByRole("heading", { name: "Menu", exact: true });
     await heading.waitFor();
     const focus = await heading.evaluate((element) => ({
       focused: document.activeElement === element,
@@ -253,6 +254,7 @@ export async function verifyIpadLayout(
   await page.getByRole("button", { name: "Open developer menu" }).click();
   assert.equal(await page.getByRole("button", { name: "Enable dev mode" }).count(), 0);
   await page.getByRole("button", { name: "Open Manage menu" }).click();
+  await enterManageSection(page, "game");
   await page.getByRole("button", { name: "Past game timeline" }).click();
   await page.getByRole("heading", { name: "Game timeline" }).waitFor();
   // The real directory nickname also stresses the native filter's intrinsic sizing.

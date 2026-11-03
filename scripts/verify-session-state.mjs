@@ -1,5 +1,6 @@
 /* global URL, document, fetch */
 import { randomUUID } from "node:crypto";
+import { enterManageSection } from "./workspace-menu-paths.mjs";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -810,9 +811,11 @@ try {
     .getByRole("button", { name: `Open ${selectedClub.name} in ${selectedClub.city}` })
     .click();
   await secondPage.getByRole("button", { name: "Open Manage menu" }).click();
+  await enterManageSection(secondPage, "game");
   await secondPage.getByRole("button", { name: `Resume ${secondName}`, exact: true }).click();
   await secondPage.getByRole("heading", { name: "Role giveaway" }).waitFor();
   await secondPage.getByRole("button", { name: "Open Manage menu" }).click();
+  await enterManageSection(secondPage, "game");
   const gameRows = secondPage.getByRole("listitem");
   await gameRows
     .filter({ has: secondPage.getByRole("button", { name: `Resume ${gameName}`, exact: true }) })
@@ -938,6 +941,7 @@ try {
     .getByRole("button", { name: `Open ${selectedClub.name} in ${selectedClub.city}`, exact: true })
     .click();
   await restartedPage.getByRole("button", { name: "Open Manage menu" }).click();
+  await enterManageSection(restartedPage, "game");
   await restartedPage.getByRole("button", { name: `Resume ${gameName}` }).click();
 
   const restoredPhaseAction = restartedPage.getByRole("button", {
@@ -969,6 +973,7 @@ try {
     .getByRole("button", { name: `Open ${selectedClub.name} in ${selectedClub.city}`, exact: true })
     .click();
   await removalPage.getByRole("button", { name: "Open Manage menu" }).click();
+  await enterManageSection(removalPage, "game");
   await removalPage.getByRole("button", { name: `Resume ${gameName}`, exact: true }).click();
   await removalPage.getByRole("button", { name: "Announce morning", exact: true }).waitFor();
   await savedCheckpoint(removalPage, "independent-removal-client", resetEntries);

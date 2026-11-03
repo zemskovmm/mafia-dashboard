@@ -6,6 +6,7 @@
  * Checkpoints establish preconditions only; every tested outcome is a UI action.
  */
 import assert from "node:assert/strict";
+import { enterManageSection, enterDeveloperSection } from "./workspace-menu-paths.mjs";
 import { randomUUID, createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -1165,6 +1166,7 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
       for (let tap = 0; tap < 5; tap++) await privacy.dispatchEvent("click");
     }
     await developerMenu.click();
+    await enterDeveloperSection(page, "visual");
     await page.locator(".dev-glass-controls:not(.player-exit-controls) > summary").click();
     const disableGlass = page.getByRole("button", { name: "Disable enhanced glass", exact: true });
     if (await disableGlass.isVisible()) await disableGlass.click();
@@ -1179,6 +1181,7 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     await checkActiveTransition(firstRow);
     await checkActiveTransition(lastRow);
     await developerMenu.click();
+    await enterDeveloperSection(page, "visual");
     await page.locator(".dev-glass-controls:not(.player-exit-controls) > summary").click();
     await page.getByRole("button", { name: "Disable enhanced glass", exact: true }).click();
     await page.getByRole("button", { name: "Close developer menu", exact: true }).click();
@@ -1558,6 +1561,7 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     await page.getByRole("button", { name: "Open developer menu", exact: true }).click();
     await expect(page.getByRole("button", { name: "Enable dev mode", exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Open Manage menu", exact: true }).click();
+    await enterManageSection(page, "game");
     await page.getByRole("button", { name: "Past game timeline", exact: true }).click();
     const shotDetails = page.getByRole("complementary", { name: "Selected event details" });
     await expect(

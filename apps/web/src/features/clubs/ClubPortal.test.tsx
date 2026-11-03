@@ -151,7 +151,7 @@ describe("ClubPortal", () => {
     expect(screen.getByRole("button", { name: "Сохранить клуб" })).toBeDisabled();
   });
 
-  it("requires explicit Owner profile consent for each club creation", async () => {
+  it("creates with Best Move enabled but hidden and requires fresh Owner profile consent", async () => {
     const user = userEvent.setup();
     const onSaveClub = vi.fn().mockResolvedValue(undefined);
 
@@ -177,9 +177,7 @@ describe("ClubPortal", () => {
     render(<Harness />);
     await user.type(screen.getByLabelText("Club name"), "Mafia Sevilla");
     await user.type(screen.getByLabelText("City"), "Sevilla");
-    const bestMove = screen.getByRole("checkbox", { name: "Enable Best move" });
-    expect(bestMove).toBeChecked();
-    await user.click(bestMove);
+    expect(screen.queryByRole("checkbox", { name: "Enable Best move" })).not.toBeInTheDocument();
 
     const consent = screen.getByRole("checkbox", {
       name: "I consent to store my Google name and email in the Owner player profile.",
@@ -199,7 +197,7 @@ describe("ClubPortal", () => {
         headerLogo: null,
         cardLogo: null,
         language: "en",
-        bestMoveEnabled: false,
+        bestMoveEnabled: true,
         ownerConsent: true,
       }),
     );

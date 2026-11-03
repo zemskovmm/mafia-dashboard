@@ -6,6 +6,7 @@
  * Screenshots remain in the ignored repository .AI/ directory.
  */
 import assert from "node:assert/strict";
+import { enterDeveloperSection } from "./workspace-menu-paths.mjs";
 import { randomUUID } from "node:crypto";
 import { mkdir, appendFile } from "node:fs/promises";
 import path from "node:path";
@@ -1004,6 +1005,7 @@ async function rolePreviewScenario(browser, engine, mode) {
     for (let tap = 0; tap < 5; tap++)
       await page.getByRole("button", { name: /^(Hide|Show) private info$/ }).click();
     await page.getByRole("button", { name: "Open developer menu" }).click();
+    await enterDeveloperSection(page, "testing");
     await expect(page.getByRole("button", { name: "Show undealt role preview" })).toBeEnabled();
     await expect(page.getByRole("button", { name: "Enable dev mode" })).toHaveCount(0);
     await page.getByRole("button", { name: "Show undealt role preview" }).click();
@@ -1094,6 +1096,7 @@ async function rolePreviewScenario(browser, engine, mode) {
     assert.equal(state.latest().state.setup.setup.assignments[2], beforePool.assignments[2]);
     const saved = checkpoint(state);
     await page.getByRole("button", { name: "Open developer menu" }).click();
+    await enterDeveloperSection(page, "testing");
     await page.getByRole("button", { name: "Hide undealt role preview" }).click();
     await expect(page.locator(".player-role-icon[role='img']")).toHaveCount(2);
     await expect(page.locator("[data-role-glyph='unknown'] [data-question-mark]")).toHaveCount(8);

@@ -1,5 +1,6 @@
 /* global localStorage, document, innerWidth, URL */
 import assert from "node:assert/strict";
+import { enterManageSection } from "./workspace-menu-paths.mjs";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { expect } from "@playwright/test";
@@ -72,7 +73,11 @@ export const verifyNotebookImport = async ({ page, request, player, evidenceDire
   for (const text of locales) {
     await page.setViewportSize({ width: 1366, height: 900 });
     await page.locator(".manage-toolbar-button").click();
+    const beforeLocale = (await page.locator("html").getAttribute("lang")) === "ru" ? "ru" : "en";
+    await enterManageSection(page, "details", beforeLocale);
     await page.getByRole("combobox", { name: /^(Language|Язык)$/u }).selectOption(text.locale);
+    await page.getByRole("button", { name: text.back, exact: true }).click();
+    await enterManageSection(page, "game", text.locale);
     await page.getByRole("button", { name: text.statistics, exact: true }).click();
     const browserRecovery = await page.evaluate(() =>
       Object.fromEntries(Object.entries(localStorage).filter(([key]) => key.includes("session"))),
@@ -173,6 +178,7 @@ export const verifyNotebookImport = async ({ page, request, player, evidenceDire
     await main.getByRole("button", { name: text.back, exact: true }).click();
     await page.getByRole("button", { name: text.backToGame, exact: true }).click();
     await page.locator(".manage-toolbar-button").click();
+    await enterManageSection(page, "game", text.locale);
     await page.getByRole("button", { name: text.timeline, exact: true }).click();
     await page
       .getByRole("combobox", { name: text.selector, exact: true })

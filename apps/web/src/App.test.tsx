@@ -219,6 +219,17 @@ const render = (...args: Parameters<typeof renderView>): ReturnType<typeof rende
   }
   return result;
 };
+// Follow only visible drawer navigation; hidden controls stay unmounted.
+const navigateMenu = (...names: string[]) => {
+  const drawer = screen.getByRole("dialog", {
+    name: /^(Manage|Developer menu|Управление|Меню разработчика)$/,
+  });
+  for (const name of names) {
+    const button = within(drawer).getByRole("button", { name });
+    expect(button).toBeVisible();
+    fireEvent.click(button);
+  }
+};
 const assignedGame: GameState = (() => {
   const players = Array.from({ length: 10 }, (_, index) => ({
     id: `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
@@ -1173,6 +1184,7 @@ describe("player card style preference", () => {
     const saved = window.localStorage.getItem(gameSessionStorageKey);
     api.saveGameSession.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Preferences", "Appearance");
     const selector = screen.getByRole("combobox", { name: "Player card style" });
     expect(selector).toHaveValue("glass");
     expect(screen.queryByRole("button", { name: "Open developer menu" })).not.toBeInTheDocument();
@@ -1188,6 +1200,7 @@ describe("player card style preference", () => {
     await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
     expect(document.querySelectorAll('.player-seat[data-card-style="classic"]')).toHaveLength(10);
     fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Preferences", "Appearance");
     expect(screen.getByRole("combobox", { name: "Player card style" })).toHaveValue("classic");
     expect(screen.getByRole("combobox", { name: "Role placement" })).toHaveValue("top");
     fireEvent.change(screen.getByRole("combobox", { name: "Player card style" }), {
@@ -1225,6 +1238,7 @@ describe("tutorial help preference", () => {
         setItem.call(this, key, value);
       });
       fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+      navigateMenu("Preferences", "Help");
       const toggle = screen.getByRole("switch", { name: "Show tutorial help buttons" });
       fireEvent.click(toggle);
       expect(toggle).not.toBeChecked();
@@ -1242,6 +1256,7 @@ describe("tutorial help preference", () => {
     const saved = window.localStorage.getItem(gameSessionStorageKey);
     api.saveGameSession.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Preferences", "Help");
     const toggle = screen.getByRole("switch", { name: "Show tutorial help buttons" });
     expect(toggle).toBeChecked();
     fireEvent.click(toggle);
@@ -1252,6 +1267,7 @@ describe("tutorial help preference", () => {
     renderView(<App />);
     await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
     fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Preferences", "Help");
     expect(screen.getByRole("switch", { name: "Show tutorial help buttons" })).not.toBeChecked();
     fireEvent.click(screen.getByRole("switch", { name: "Show tutorial help buttons" }));
     expect(screen.getByRole("switch", { name: "Show tutorial help buttons" })).toBeChecked();
@@ -1299,6 +1315,7 @@ describe("statistics navigation and separate tournament setup", () => {
       if (importState !== "dirty")
         api.createGameSession.mockImplementationOnce(() => imported.promise);
       fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+      navigateMenu("Game & records");
       fireEvent.click(screen.getByRole("button", { name: "Statistics" }));
       fireEvent.change(screen.getByLabelText("From (UTC)"), { target: { value: "2026-01-01" } });
       fireEvent.click(screen.getByRole("button", { name: "Import paper game" }));
@@ -1397,6 +1414,7 @@ describe("statistics navigation and separate tournament setup", () => {
       return saved;
     });
     fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     fireEvent.click(screen.getByRole("button", { name: "Statistics" }));
     fireEvent.click(screen.getByRole("button", { name: "Import paper game" }));
     fireEvent.change(screen.getByLabelText("Game label"), {
@@ -1472,6 +1490,7 @@ describe("statistics navigation and separate tournament setup", () => {
       return saved;
     });
     fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     fireEvent.click(screen.getByRole("button", { name: "Statistics" }));
     fireEvent.change(screen.getByLabelText("From (UTC)"), { target: { value: "2026-01-01" } });
     fireEvent.click(screen.getByRole("button", { name: "Import paper game" }));
@@ -1705,6 +1724,7 @@ describe("statistics navigation and separate tournament setup", () => {
     await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
     const original = JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).current;
     fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     fireEvent.click(screen.getByRole("button", { name: "Statistics" }));
     await screen.findByRole("option", { name: "Autumn cup" });
     fireEvent.change(screen.getByRole("combobox", { name: "Tournament scope" }), {
@@ -1756,6 +1776,7 @@ describe("statistics navigation and separate tournament setup", () => {
     const settledCurrent = JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).current;
     api.saveGameSession.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     fireEvent.click(screen.getByRole("button", { name: "Statistics" }));
     fireEvent.click(await screen.findByRole("button", { name: "Player One" }));
     fireEvent.click(await screen.findByRole("button", { name: "Change tournament" }));
@@ -1780,6 +1801,7 @@ describe("statistics navigation and separate tournament setup", () => {
     expect(api.saveGameSession).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Back to game" }));
     fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     expect(screen.getByRole("combobox", { name: "Tournament" })).toHaveValue(first);
   });
 
@@ -1809,6 +1831,7 @@ describe("statistics navigation and separate tournament setup", () => {
       api.assignGameTournament.mockReturnValueOnce(held.promise);
       const view = render(<App />);
       fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+      navigateMenu("Game & records");
       fireEvent.click(screen.getByRole("button", { name: "Statistics" }));
       fireEvent.click(await screen.findByRole("button", { name: "Player One" }));
       fireEvent.click(await screen.findByRole("button", { name: "Change tournament" }));
@@ -1877,6 +1900,7 @@ describe("statistics navigation and separate tournament setup", () => {
     render(<App />);
     await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
     fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     fireEvent.click(screen.getByRole("checkbox", { name: "Include in tournament" }));
     await screen.findByRole("option", { name: "Autumn cup" });
     fireEvent.change(screen.getByRole("combobox", { name: "Tournament" }), {
@@ -1911,6 +1935,7 @@ describe("statistics navigation and separate tournament setup", () => {
     ).toMatchObject({ confirmedTournamentId: second, pending: null });
     fireEvent.click(screen.getByRole("button", { name: "Back to game" }));
     fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     expect(screen.getByRole("combobox", { name: "Tournament" })).toHaveValue(second);
   });
 
@@ -1934,6 +1959,7 @@ describe("statistics navigation and separate tournament setup", () => {
       await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
       const original = JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!).current;
       fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+      navigateMenu("Game & records");
       fireEvent.click(screen.getByRole("checkbox", { name: "Include in tournament" }));
       await screen.findByRole("option", { name: "Autumn cup" });
       fireEvent.change(screen.getByRole("combobox", { name: "Tournament" }), {
@@ -1941,6 +1967,7 @@ describe("statistics navigation and separate tournament setup", () => {
       });
       await screen.findByRole("button", { name: /Save blocked.*1 change pending/ });
       if (switching === "new") {
+        navigateMenu("Back");
         fireEvent.click(screen.getByRole("button", { name: "Start new game" }));
         await waitFor(() =>
           expect(window.alert).toHaveBeenCalledWith(
@@ -1956,6 +1983,7 @@ describe("statistics navigation and separate tournament setup", () => {
         );
       }
       fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+      navigateMenu("Game & records");
       await screen.findByRole("option", { name: "Winter cup" });
       const retained = JSON.parse(window.localStorage.getItem(gameSessionStorageKey)!);
       expect(retained.current).toEqual(original);
@@ -1987,6 +2015,7 @@ describe("statistics navigation and separate tournament setup", () => {
     render(<App />);
     await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
     fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     fireEvent.click(screen.getByRole("checkbox", { name: "Include in tournament" }));
     await screen.findByRole("option", { name: "Autumn cup" });
     fireEvent.change(screen.getByRole("combobox", { name: "Tournament" }), {
@@ -1995,7 +2024,11 @@ describe("statistics navigation and separate tournament setup", () => {
     await waitFor(() =>
       expect(api.assignGameTournament).toHaveBeenCalledWith(gameId, first, testClub.id),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Close Manage menu" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Manage" })).getByRole("button", {
+        name: "Close menu",
+      }),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Finish the game" }));
     await waitFor(() =>
       expect(
@@ -2066,6 +2099,7 @@ describe("statistics navigation and separate tournament setup", () => {
         );
       } else {
         fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+        navigateMenu("Club settings", "Club details");
         fireEvent.click(
           screen.getByRole("button", { name: navigation === "edit" ? "Edit club" : "Delete club" }),
         );
@@ -2074,8 +2108,12 @@ describe("statistics navigation and separate tournament setup", () => {
       expect(
         screen.getByRole("button", { name: "Choose another club · current club Mafia Malaga" }),
       ).toBeInTheDocument();
-      if (navigation === "exit")
+      if (navigation === "exit") {
         fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+      } else {
+        navigateMenu("Back");
+      }
+      navigateMenu("Game & records");
       fireEvent.click(screen.getByRole("button", { name: "Statistics" }));
       fireEvent.click(await screen.findByRole("button", { name: "Player One" }));
       fireEvent.click(await screen.findByRole("button", { name: "Change tournament" }));
@@ -2332,6 +2370,7 @@ describe("statistics navigation and separate tournament setup", () => {
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     expect(screen.queryByRole("button", { name: "Players screen" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Statistics" }));
     expect(await screen.findByText("No recorded players in this scope.")).toBeInTheDocument();
@@ -2872,6 +2911,7 @@ describe("club welcome", () => {
       const privacy = await screen.findByRole("button", { name: /private info/i });
       for (let tap = 0; tap < 6; tap += 1) await user.click(privacy);
       await user.click(await screen.findByRole("button", { name: "Open developer menu" }));
+      navigateMenu("Visual effects");
       const section = screen.getByText("Fancy Features", { selector: "summary" });
       expect(section.closest("details")).not.toHaveAttribute("open");
       await user.click(section);
@@ -3006,6 +3046,7 @@ describe("club welcome", () => {
     expect(screen.queryByRole("button", { name: "Delete Mafia Malaga" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Mafia Malaga.*Málaga/i }));
     await user.click(await screen.findByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Club settings", "Club details");
     await user.click(screen.getByRole("button", { name: "Edit club" }));
 
     expect(screen.getByRole("heading", { name: "Edit Mafia Malaga" })).toBeInTheDocument();
@@ -3020,7 +3061,7 @@ describe("club welcome", () => {
     await user.click(trigger);
 
     const drawer = screen.getByRole("dialog", { name: "Manage" });
-    expect(within(drawer).getByRole("heading", { name: "Manage" })).not.toHaveAttribute("tabindex");
+    expect(within(drawer).getByRole("heading", { name: "Menu" })).not.toHaveAttribute("tabindex");
     expect(trigger).toHaveFocus();
     await user.keyboard("{Escape}");
     expect(drawer).toBeVisible();
@@ -3054,6 +3095,7 @@ describe("club welcome", () => {
     await user.click(await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i }));
     const player = await screen.findByTestId("youtube-player");
     await user.click(await screen.findByRole("button", { name: "Открыть меню управления" }));
+    navigateMenu("Настройки клуба", "Данные клуба");
     const language = screen.getByRole("combobox", { name: "Язык" });
     expect(language).toHaveValue("ru");
 
@@ -3100,6 +3142,10 @@ describe("club welcome", () => {
           name: language === "en" ? "Open Manage menu" : "Открыть меню управления",
         }),
       );
+      navigateMenu(
+        language === "en" ? "Club settings" : "Настройки клуба",
+        language === "en" ? "Club details" : "Данные клуба",
+      );
       await user.click(
         screen.getByRole("button", {
           name: language === "en" ? "Delete club" : "Удалить клуб",
@@ -3141,6 +3187,7 @@ describe("club welcome", () => {
       render(<WelcomeApp />);
       await user.click(await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i }));
       await user.click(await screen.findByRole("button", { name: "Open Manage menu" }));
+      navigateMenu("Club settings", "Club details");
       await user.click(screen.getByRole("button", { name: "Delete club" }));
       expect(api.deleteClub).toHaveBeenCalledTimes(outcome === "cancel" ? 0 : 1);
       await user.click(
@@ -3180,6 +3227,199 @@ describe("club welcome", () => {
     ).toBeNull();
     expect(window.sessionStorage.getItem("unrelated")).toBe("keep");
     expect(await screen.findByRole("link", { name: "Continue with Google" })).toBeInTheDocument();
+  });
+});
+
+describe("club Best Move setting in the actual application", () => {
+  it("saves a disabled default through Club settings and keeps it after re-entering the club", async () => {
+    const user = userEvent.setup();
+    api.getAuthSession.mockResolvedValue(authenticatedUser);
+    api.listClubs.mockResolvedValue([testClub]);
+    api.updateClub.mockResolvedValue({ ...testClub, bestMoveEnabled: false });
+    render(<WelcomeApp />);
+    await user.click(await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i }));
+    await user.click(await screen.findByRole("button", { name: "Open Manage menu" }));
+    await user.click(screen.getByRole("button", { name: "Club settings" }));
+    const toggle = screen.getByRole("switch", { name: "Enable Best move" });
+    expect(toggle).toBeChecked();
+    await user.click(toggle);
+    expect(api.updateClub).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(api.updateClub).toHaveBeenCalledWith(testClub.id, {
+        name: testClub.name,
+        city: testClub.city,
+        headerLogo: testClub.headerLogo,
+        cardLogo: testClub.cardLogo,
+        language: testClub.language,
+        bestMoveEnabled: false,
+      }),
+    );
+    await user.click(
+      within(screen.getByRole("dialog", { name: "Manage" })).getByRole("button", {
+        name: "Close menu",
+      }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Choose another club · current club Mafia Malaga" }),
+    );
+    await user.click(await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i }));
+    await user.click(await screen.findByRole("button", { name: "Open Manage menu" }));
+    await user.click(screen.getByRole("button", { name: "Club settings" }));
+    expect(screen.getByRole("switch", { name: "Enable Best move" })).not.toBeChecked();
+  });
+
+  it("cancels an unsaved Best Move edit without changing the club or game storage", async () => {
+    const user = userEvent.setup();
+    api.getAuthSession.mockResolvedValue(authenticatedUser);
+    api.listClubs.mockResolvedValue([testClub]);
+    render(<WelcomeApp />);
+    await user.click(await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i }));
+    await user.click(await screen.findByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Club settings");
+    const stored = window.localStorage.getItem(gameSessionStorageKey);
+    await user.click(screen.getByRole("switch", { name: "Enable Best move" }));
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    navigateMenu("Club settings");
+    expect(screen.getByRole("switch", { name: "Enable Best move" })).toBeChecked();
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    expect(api.updateClub).not.toHaveBeenCalled();
+    expect(window.localStorage.getItem(gameSessionStorageKey)).toBe(stored);
+    expect(api.createGameSession).not.toHaveBeenCalled();
+    expect(api.saveGameSession).not.toHaveBeenCalled();
+  });
+
+  it("keeps a failed Best Move draft retryable and guards conflicting club edits while saving", async () => {
+    const user = userEvent.setup();
+    const pending = deferred<Club>();
+    const retry = deferred<Club>();
+    api.getAuthSession.mockResolvedValue(authenticatedUser);
+    api.listClubs.mockResolvedValue([testClub]);
+    api.updateClub.mockReturnValueOnce(pending.promise).mockReturnValueOnce(retry.promise);
+    render(<WelcomeApp />);
+    await user.click(await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i }));
+    await user.click(await screen.findByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Club settings");
+    await user.click(screen.getByRole("switch", { name: "Enable Best move" }));
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(api.updateClub).toHaveBeenCalledOnce());
+    expect(screen.getByRole("switch", { name: "Enable Best move" })).toBeDisabled();
+    await act(async () => pending.reject(new Error("Club storage unavailable")));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Best Move could not be saved");
+    expect(screen.getByRole("switch", { name: "Enable Best move" })).not.toBeChecked();
+    expect(screen.getByRole("switch", { name: "Enable Best move" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Retry save" }));
+    await waitFor(() => expect(api.updateClub).toHaveBeenCalledTimes(2));
+    expect(api.updateClub.mock.calls[1]).toEqual(api.updateClub.mock.calls[0]);
+    navigateMenu("Club details");
+    expect(screen.getByRole("combobox", { name: "Language" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Edit club" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Delete club" })).toBeDisabled();
+    await act(async () => retry.resolve({ ...testClub, bestMoveEnabled: false }));
+    expect(screen.getByRole("combobox", { name: "Language" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Edit club" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Delete club" })).toBeEnabled();
+    navigateMenu("Game options");
+    expect(screen.getByRole("switch", { name: "Enable Best move" })).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+    expect(api.createGameSession).not.toHaveBeenCalled();
+    expect(api.saveGameSession).not.toHaveBeenCalled();
+  });
+
+  it("preserves club identity and logos when saving false, then language and Edit club retain that saved default", async () => {
+    const user = userEvent.setup();
+    const club = {
+      ...testClub,
+      headerLogo: "data:image/svg+xml,%3Csvg%20id='header'/%3E",
+      cardLogo: "data:image/svg+xml,%3Csvg%20id='card'/%3E",
+    };
+    api.getAuthSession.mockResolvedValue(authenticatedUser);
+    api.listClubs.mockResolvedValue([club]);
+    api.updateClub.mockImplementation(async (_clubId, input) => ({ ...club, ...input }));
+    render(
+      <I18nProvider>
+        <WelcomeApp />
+      </I18nProvider>,
+    );
+    await user.click(await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i }));
+    await user.click(await screen.findByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Club settings");
+    await user.click(screen.getByRole("switch", { name: "Enable Best move" }));
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await screen.findByText("Changes saved. Existing games are unchanged.");
+    const expected = {
+      name: club.name,
+      city: club.city,
+      headerLogo: club.headerLogo,
+      cardLogo: club.cardLogo,
+      language: "en",
+      bestMoveEnabled: false,
+    };
+    expect(api.updateClub).toHaveBeenNthCalledWith(1, club.id, expected);
+    navigateMenu("Club details");
+    await user.selectOptions(screen.getByRole("combobox", { name: "Language" }), "ru");
+    await waitFor(() =>
+      expect(api.updateClub).toHaveBeenNthCalledWith(2, club.id, { ...expected, language: "ru" }),
+    );
+    await user.click(await screen.findByRole("button", { name: "Изменить клуб" }));
+    expect(screen.queryByLabelText("Enable Best move")).toBeNull();
+    expect(screen.getByRole("combobox", { name: "Language" })).toHaveValue("ru");
+    await user.clear(screen.getByRole("textbox", { name: "City" }));
+    await user.type(screen.getByRole("textbox", { name: "City" }), "Granada");
+    await user.click(screen.getByRole("button", { name: "Save club" }));
+    await waitFor(() =>
+      expect(api.updateClub).toHaveBeenNthCalledWith(3, club.id, {
+        ...expected,
+        city: "Granada",
+        language: "ru",
+      }),
+    );
+  });
+
+  it("keeps an existing real setup snapshot unchanged while the saved default applies only to a new setup", async () => {
+    const { SetupWizard: RealSetupWizard } = await vi.importActual<typeof setupWizardModule>(
+      "./features/setup/SetupWizard.js",
+    );
+    vi.spyOn(setupWizardModule, "SetupWizard").mockImplementation(RealSetupWizard);
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    window.localStorage.setItem(
+      `mafia-dashboard.available-player-ids.${testClub.id}`,
+      JSON.stringify([...assignedGame.players.map(({ id }) => id), hostPlayerId]),
+    );
+    api.getAuthSession.mockResolvedValue(authenticatedUser);
+    api.listClubs.mockResolvedValue([testClub]);
+    api.updateClub.mockResolvedValue({ ...testClub, bestMoveEnabled: false });
+    render(<WelcomeApp />);
+    await user.click(await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i }));
+    await user.click(await screen.findByRole("combobox", { name: "Host player" }));
+    await user.click(await screen.findByRole("option", { name: "Host Player" }));
+    await screen.findByRole("button", { name: "Saved to server · tap to check connection" });
+    expect(api.createGameSession).toHaveBeenCalledOnce();
+    const saved = window.localStorage.getItem(gameSessionStorageKey);
+    expect(JSON.parse(saved!).current.state.setup.bestMoveEnabled).toBe(true);
+    const savesBefore = api.saveGameSession.mock.calls.length;
+    await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Club settings");
+    await user.click(screen.getByRole("switch", { name: "Enable Best move" }));
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await screen.findByText("Changes saved. Existing games are unchanged.");
+    expect(window.localStorage.getItem(gameSessionStorageKey)).toBe(saved);
+    expect(api.saveGameSession).toHaveBeenCalledTimes(savesBefore);
+    expect(api.createGameSession).toHaveBeenCalledOnce();
+    navigateMenu("Back");
+    await user.click(screen.getByRole("button", { name: "Start new game" }));
+    await user.click(await screen.findByRole("combobox", { name: "Host player" }));
+    await user.click(await screen.findByRole("option", { name: "Host Player" }));
+    await waitFor(() => expect(api.createGameSession).toHaveBeenCalledTimes(2));
+    expect(api.createGameSession.mock.calls[1]?.[0].state.setup).toMatchObject({
+      bestMoveEnabled: false,
+    });
+    const oldId = JSON.parse(saved!).gameId;
+    expect(
+      JSON.parse(window.localStorage.getItem(`${gameSessionStorageKey}.parked.${oldId}`)!).current
+        .state.setup.bestMoveEnabled,
+    ).toBe(true);
   });
 });
 
@@ -3225,6 +3465,14 @@ describe("workspace role authorization", () => {
 
     await user.click(manage);
     expect(screen.getByRole("button", { name: "Start new game" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Club settings" })).toBeNull();
+    navigateMenu("Preferences");
+    expect(screen.queryByRole("button", { name: "Music player setup" })).toBeNull();
+    navigateMenu("Appearance");
+    expect(screen.getByRole("combobox", { name: "Player card style" })).toBeVisible();
+    expect(screen.queryByLabelText("Glass color")).toBeNull();
+    navigateMenu("Back", "Back", "Game & records");
+    expect(screen.queryByRole("button", { name: "Past game timeline" })).toBeNull();
     expect(screen.getByRole("region", { name: "Active games" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Players screen" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Music player setup" })).toBeNull();
@@ -3235,6 +3483,7 @@ describe("workspace role authorization", () => {
     expect(api.getGameSession).toHaveBeenCalledWith(gameId, testClub.id);
     expect(await screen.findByRole("heading", { name: "Live test game" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     await user.click(await screen.findByRole("button", { name: "Delete Member table" }));
     await waitFor(() => expect(api.clearGameSession).toHaveBeenCalledWith(gameId, testClub.id));
     await waitFor(() =>
@@ -3271,9 +3520,20 @@ describe("workspace localization", () => {
     const manage = screen.getByRole("dialog", { name: "Управление" });
     expect(within(manage).getByRole("button", { name: "Начать новую игру" })).toBeInTheDocument();
     expect(within(manage).getByRole("button", { name: "Экран игроков" })).toBeInTheDocument();
+    expect(within(manage).getByRole("heading", { name: "Меню" })).toBeVisible();
+    navigateMenu("Предпочтения");
     expect(
       within(manage).getByRole("button", { name: "Настройка музыкального плеера" }),
     ).toBeInTheDocument();
+    navigateMenu("Внешний вид");
+    expect(screen.getByRole("combobox", { name: "Стиль карточек игроков" })).toBeVisible();
+    navigateMenu("Назад", "Назад", "Настройки клуба");
+    expect(screen.getByRole("button", { name: "Параметры игры" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    navigateMenu("Данные клуба");
+    expect(screen.getByRole("combobox", { name: "Язык" })).toBeVisible();
   });
 });
 
@@ -3411,7 +3671,7 @@ describe("manage menu", () => {
       connected: boolean;
       accountLabel: string | null;
     }>();
-    api.getMusicAccountStatus.mockReturnValueOnce(status.promise);
+    api.getMusicAccountStatus.mockReturnValue(status.promise);
     window.localStorage.setItem(
       musicPreferencesStorageKey(testClub.id),
       JSON.stringify({
@@ -3429,6 +3689,7 @@ describe("manage menu", () => {
     expect(screen.queryByTestId("youtube-player")).toBeNull();
     status.resolve({ configured: true, connected: false, accountLabel: null });
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Preferences", "Music player setup");
     expect(
       await screen.findByRole("link", { name: "Connect YouTube Music account" }),
     ).toHaveAttribute("href", "/api/music/oauth/start");
@@ -3444,18 +3705,50 @@ describe("manage menu", () => {
     const manage = screen.getByRole("dialog", { name: "Manage" });
     for (const name of [
       "Start new game",
+      "Game & records",
       "Players screen",
-      "Music player setup",
-      "Edit club",
-      "Delete club",
+      "Club settings",
+      "Preferences",
     ]) {
-      expect(within(manage).getByRole("button", { name })).toBeInTheDocument();
+      expect(within(manage).getByRole("button", { name })).toBeVisible();
     }
+    expect(within(manage).queryByRole("button", { name: "Music player setup" })).toBeNull();
+    expect(within(manage).queryByRole("button", { name: "Delete club" })).toBeNull();
+    expect(within(manage).queryByRole("region", { name: "Active games" })).toBeNull();
+    navigateMenu("Game & records");
+    expect(within(manage).getByRole("region", { name: "Active games" })).toBeVisible();
+    expect(within(manage).getByRole("button", { name: "Past game timeline" })).toBeVisible();
+    expect(within(manage).getByRole("button", { name: "Statistics" })).toBeVisible();
+    navigateMenu("Back", "Club settings");
+    expect(within(manage).getByRole("button", { name: "Game options" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(within(manage).getByRole("switch", { name: "Enable Best move" })).toBeVisible();
+    navigateMenu("Club details");
+    expect(within(manage).getByRole("button", { name: "Edit club" })).toBeVisible();
+    expect(within(manage).getByRole("button", { name: "Delete club" })).toBeVisible();
+    expect(within(manage).getByRole("combobox", { name: "Language" })).toBeVisible();
+    navigateMenu("Back", "Preferences");
+    expect(within(manage).getByRole("button", { name: "Music player setup" })).toBeVisible();
+    navigateMenu("Appearance");
     expect(within(manage).getByLabelText("Glass color")).toHaveAttribute("type", "color");
-    expect(within(manage).getByRole("region", { name: "Active games" })).toBeInTheDocument();
+    navigateMenu("Back", "Help");
+    expect(
+      within(manage).getByRole("switch", { name: "Show tutorial help buttons" }),
+    ).toBeVisible();
+    expect(within(manage).getByRole("button", { name: "Rules guide" })).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
     const dev = screen.getByRole("dialog", { name: "Developer menu" });
+    for (const name of [
+      "Visual effects",
+      "Game testing",
+      "Diagnostics & local data",
+      "Hide developer mode",
+    ]) {
+      expect(within(dev).getByRole("button", { name })).toBeVisible();
+    }
     expect(within(dev).queryByRole("button", { name: "Players screen" })).not.toBeInTheDocument();
     expect(
       within(dev).queryByRole("button", { name: "Music player setup" }),
@@ -3477,7 +3770,11 @@ describe("manage menu", () => {
 
     const manage = screen.getByRole("dialog", { name: "Manage" });
     expect(within(manage).queryByRole("button", { name: "Back to player selection" })).toBeNull();
-    await user.click(screen.getByRole("button", { name: "Close Manage menu" }));
+    await user.click(
+      within(screen.getByRole("dialog", { name: "Manage" })).getByRole("button", {
+        name: "Close menu",
+      }),
+    );
     const back = screen.getByRole("button", { name: "Player setup" });
     back.focus();
     await user.keyboard("{Enter}");
@@ -3521,6 +3818,7 @@ describe("developer menu", () => {
     const user = userEvent.setup();
     const first = render(<App />);
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    navigateMenu("Visual effects");
     await user.click(screen.getByText("Player exit animation", { selector: "summary" }));
     expect(screen.getByLabelText("Lift duration")).toHaveValue("100");
     expect(screen.getByLabelText("Landing duration")).toHaveValue("480");
@@ -3540,6 +3838,7 @@ describe("developer menu", () => {
     first.unmount();
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    navigateMenu("Visual effects");
     await user.click(screen.getByText("Player exit animation", { selector: "summary" }));
     expect(screen.getByLabelText("Lift duration")).toHaveValue("200");
     expect(screen.getByLabelText("Flip easing")).toHaveValue("in");
@@ -3569,6 +3868,7 @@ describe("developer menu", () => {
     const view = render(<App />);
     try {
       await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+      navigateMenu("Visual effects");
       await user.click(screen.getByText("Glass", { selector: "summary" }));
       await user.click(screen.getByText("Fine tuning", { selector: "summary" }));
       expect(document.querySelector(".app-shell")).toHaveAttribute(
@@ -3624,6 +3924,7 @@ describe("developer menu", () => {
     );
     const first = render(<App />);
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    navigateMenu("Visual effects");
     await user.selectOptions(
       screen.getByRole("combobox", { name: "Application background" }),
       "black",
@@ -3664,6 +3965,7 @@ describe("developer menu", () => {
       nominationColor: "#e6bc7e",
       nominationTreatment: "hybrid",
     });
+    navigateMenu("Back");
     await user.click(screen.getByRole("button", { name: "Hide developer mode" }));
     expect(JSON.parse(window.localStorage.getItem(key) ?? "null").enabled).toBe(true);
     expect(document.querySelector(".app-shell")).toHaveStyle("--glass-matte-blur: 0px");
@@ -3672,6 +3974,7 @@ describe("developer menu", () => {
     const lightingBefore = window.localStorage.getItem(LIGHTING_RENDERER_STORAGE_KEY);
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    navigateMenu("Visual effects");
     await user.click(screen.getByText("Glass", { selector: "summary" }));
     expect(screen.getByLabelText("Gold background light")).toHaveValue("63");
     expect(screen.getByRole("button", { name: "Enable matte glass" })).toHaveAttribute(
@@ -3708,6 +4011,7 @@ describe("developer menu", () => {
     window.localStorage.setItem("mafia-dashboard.player-lighting.v1", "disabled");
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    navigateMenu("Visual effects");
 
     expect(screen.queryByRole("button", { name: /player LEDs/i })).toBeNull();
     expect(document.querySelector(".app-shell")).not.toHaveAttribute("data-player-lighting");
@@ -3755,6 +4059,7 @@ describe("developer menu", () => {
     window.localStorage.setItem(LIGHTING_RENDERER_STORAGE_KEY, "svg");
     render(<App />);
     await userEvent.setup().click(screen.getByRole("button", { name: "Open developer menu" }));
+    navigateMenu("Visual effects");
 
     expect(screen.getByRole("button", { name: "Disable Raytracing" })).toHaveAttribute(
       "aria-pressed",
@@ -3794,6 +4099,7 @@ describe("developer menu", () => {
     const privacy = screen.getByRole("button", { name: "Hide private info" });
     for (let tap = 0; tap < 5; tap += 1) fireEvent.click(privacy);
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    navigateMenu("Game testing");
     expect(screen.queryByRole("button", { name: "Enable dev mode" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Show undealt role preview" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Generate test players" })).toBeInTheDocument();
@@ -3873,7 +4179,9 @@ describe("developer menu", () => {
     render(<App />);
     const privacy = screen.getByRole("button", { name: "Hide private info" });
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    navigateMenu("Game testing");
     await user.click(screen.getByRole("button", { name: "Show undealt role preview" }));
+    navigateMenu("Back");
     await user.click(screen.getByRole("button", { name: "Hide developer mode" }));
 
     expect(screen.queryByRole("dialog", { name: "Developer menu" })).not.toBeInTheDocument();
@@ -3920,21 +4228,27 @@ describe("developer menu", () => {
     expect(clearTimeout).toHaveBeenCalledWith(42);
   });
 
-  it("shows the exact server Canary version with a bird icon at the top, retaining it on reopen", async () => {
+  it("shows the exact server Canary version with a bird icon in Diagnostics, retaining it on reopen", async () => {
     const user = userEvent.setup();
     api.getAppVersion.mockResolvedValue("2.7.123");
     render(<App />);
 
     expect(api.getAppVersion).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    navigateMenu("Diagnostics & local data");
 
     const menu = screen.getByRole("dialog", { name: "Developer menu" });
     const version = await within(menu).findByLabelText("Canary version 2.7.123");
     expect(version).toHaveTextContent("Canary v2.7.123");
     expect(version.querySelector(".lucide-bird")).toBeInTheDocument();
-    expect(menu.firstElementChild).toContainElement(version);
-    await user.click(screen.getByRole("button", { name: "Close developer menu" }));
+    expect(menu).toContainElement(version);
+    await user.click(
+      within(screen.getByRole("dialog", { name: "Developer menu" })).getByRole("button", {
+        name: "Close menu",
+      }),
+    );
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    navigateMenu("Diagnostics & local data");
     expect(screen.getByLabelText("Canary version 2.7.123")).toBeInTheDocument();
     expect(api.getAppVersion).toHaveBeenCalledOnce();
   });
@@ -3946,6 +4260,7 @@ describe("developer menu", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    navigateMenu("Diagnostics & local data");
     const menu = screen.getByRole("dialog", { name: "Developer menu" });
     const loading = within(menu).getByLabelText("Canary version loading");
     expect(loading).toHaveTextContent("Canary vLoading…");
@@ -3955,8 +4270,13 @@ describe("developer menu", () => {
     expect(await within(menu).findByLabelText("Canary version unavailable")).toHaveTextContent(
       "Canary vUnavailable",
     );
-    await user.click(screen.getByRole("button", { name: "Close developer menu" }));
+    await user.click(
+      within(screen.getByRole("dialog", { name: "Developer menu" })).getByRole("button", {
+        name: "Close menu",
+      }),
+    );
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    navigateMenu("Diagnostics & local data");
     expect(await screen.findByLabelText("Canary version 3.4.5")).toHaveTextContent("Canary v3.4.5");
     expect(api.getAppVersion).toHaveBeenCalledTimes(2);
   });
@@ -3968,8 +4288,14 @@ describe("developer menu", () => {
     api.getAppVersion.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
-    await user.click(screen.getByRole("button", { name: "Close developer menu" }));
+    navigateMenu("Diagnostics & local data");
+    await user.click(
+      within(screen.getByRole("dialog", { name: "Developer menu" })).getByRole("button", {
+        name: "Close menu",
+      }),
+    );
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    navigateMenu("Diagnostics & local data");
     await waitFor(() => expect(api.getAppVersion).toHaveBeenCalledTimes(2));
     await act(async () => first.resolve("9.9.9"));
     expect(screen.getByLabelText("Canary version loading")).toBeInTheDocument();
@@ -3989,6 +4315,7 @@ describe("developer menu", () => {
     const privacy = screen.getByRole("button", { name: "Скрыть личную информацию" });
     for (let tap = 0; tap < 6; tap += 1) fireEvent.click(privacy);
     await user.click(screen.getByRole("button", { name: "Открыть меню разработчика" }));
+    navigateMenu("Диагностика и локальные данные");
     expect(screen.getByLabelText("Версия Canary загружается")).toHaveTextContent(
       "Canary vЗагрузка…",
     );
@@ -4044,6 +4371,7 @@ describe("developer menu", () => {
     expect(screen.getByText("Game fouls 1")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     await user.click(screen.getByRole("button", { name: "Past game timeline" }));
     expect(screen.getByText(/#1 · Checkpoint #2/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Foul 1: Player 1/i }));
@@ -4054,6 +4382,7 @@ describe("developer menu", () => {
     await user.click(screen.getByRole("button", { name: "Exit preview" }));
     expect(screen.getByText("Game fouls 1")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     await user.click(screen.getByRole("button", { name: "Past game timeline" }));
     await user.click(screen.getByRole("button", { name: "Imported game checkpoint" }));
     await user.click(screen.getByRole("button", { name: "Reset game to timeline checkpoint" }));
@@ -4069,6 +4398,7 @@ describe("developer menu", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     await user.click(screen.getByRole("button", { name: "Past game timeline" }));
 
     expect(screen.getByRole("heading", { name: "Game timeline" })).toBeInTheDocument();
@@ -4090,6 +4420,7 @@ describe("developer menu", () => {
     api.saveGameSession.mockClear();
 
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     await user.click(screen.getByRole("button", { name: "Past game timeline" }));
     await user.click(screen.getByRole("button", { name: "Imported game checkpoint" }));
     await user.click(screen.getByRole("button", { name: /back/i }));
@@ -4123,6 +4454,7 @@ describe("developer menu", () => {
     });
 
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    navigateMenu("Diagnostics & local data");
     await user.click(screen.getByRole("button", { name: "Console" }));
     expect(screen.getByRole("heading", { level: 1, name: "Console" })).toBeInTheDocument();
     expect(screen.getByText("Captured before Console navigation")).toBeInTheDocument();
@@ -4144,6 +4476,7 @@ describe("developer menu", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    navigateMenu("Diagnostics & local data");
     await user.click(screen.getByRole("button", { name: "Console" }));
 
     expect(screen.getByText("Players endpoint failed")).toBeInTheDocument();
@@ -4194,6 +4527,7 @@ describe("developer menu", () => {
     api.listPlayers.mockRejectedValueOnce(new Error("Later refresh failed"));
     vi.spyOn(window, "confirm").mockReturnValue(true);
     fireEvent.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     fireEvent.click(await screen.findByRole("button", { name: "Delete Other table" }));
     await waitFor(() => expect(api.listPlayers).toHaveBeenCalledTimes(2));
     expect(screen.queryByTestId("setup-start-blocker")).toBeNull();
@@ -4216,6 +4550,7 @@ describe("developer menu", () => {
 
     await user.click(await screen.findByRole("button", { name: /Mafia Malaga.*Málaga/i }));
     await user.click(await screen.findByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Preferences", "Appearance");
     fireEvent.change(screen.getByLabelText("Glass color"), { target: { value: "#7170ff" } });
 
     expect(document.documentElement.style.getPropertyValue("--theme-base")).toBe("#7170ff");
@@ -4252,6 +4587,7 @@ describe("developer menu", () => {
     expect(screen.getByRole("button", { name: "Generate test players" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Past game timeline" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     await user.click(screen.getByRole("button", { name: "Past game timeline" }));
     expect(screen.getByRole("button", { name: "Generate sample game data" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Back" }));
@@ -4259,6 +4595,7 @@ describe("developer menu", () => {
     await user.click(screen.getByRole("button", { name: "Hide developer mode" }));
     expect(screen.queryByRole("button", { name: "Generate test players" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     await user.click(screen.getByRole("button", { name: "Past game timeline" }));
     expect(screen.queryByRole("button", { name: "Generate sample game data" })).toBeNull();
   });
@@ -4268,6 +4605,7 @@ describe("developer menu", () => {
     window.localStorage.setItem("mafia-dashboard.center-shadow", "hidden");
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    navigateMenu("Visual effects");
 
     expect(screen.queryByRole("button", { name: /table center shadow/i })).toBeNull();
     expect(document.querySelector(".app-shell")).not.toHaveClass("is-center-shadow-hidden");
@@ -4277,6 +4615,7 @@ describe("developer menu", () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    navigateMenu("Visual effects");
     expect(screen.queryByRole("button", { name: /Day\/night table indication/i })).toBeNull();
     expect(window.localStorage.getItem("mafia-dashboard.day-night-indicator")).toBeNull();
   });
@@ -4315,6 +4654,7 @@ describe("developer menu", () => {
     api.listActiveGameSessions.mockResolvedValue(summaries);
     render(<App />);
     await user.click(await screen.findByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     expect(screen.getByText("Host Player · Day · day 2")).toBeInTheDocument();
     expect(screen.getByText("Anonymous player · Day · day 2")).toBeInTheDocument();
     expect(screen.getByText("Host not selected · Day · day 2")).toBeInTheDocument();
@@ -4338,6 +4678,7 @@ describe("developer menu", () => {
     await waitFor(() => expect(api.listActiveGameSessions).toHaveBeenCalledOnce());
 
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     expect(screen.getByRole("region", { name: "Active games" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Resume Dev table" })).toBeInTheDocument();
     expect(
@@ -4366,6 +4707,7 @@ describe("developer menu", () => {
     await waitFor(() => expect(api.listActiveGameSessions).toHaveBeenCalledOnce());
 
     await user.click(screen.getByRole("button", { name: "Открыть меню управления" }));
+    navigateMenu("Игра и записи");
 
     expect(screen.getByText("Host Player · Выстрелы мафии · день 2")).toBeInTheDocument();
     expect(screen.queryByText(/night-mafia/)).toBeNull();
@@ -4744,6 +5086,7 @@ describe("developer menu", () => {
     expect(player).toHaveAttribute("data-playlist-id", "dev-playlist");
     expect(screen.queryByRole("region", { name: "Music player setup" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Preferences");
     expect(screen.queryByRole("button", { name: "Reload music player" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Music player setup" }));
 
@@ -4758,7 +5101,11 @@ describe("developer menu", () => {
     expect(screen.getByRole("button", { name: "Disconnect account" })).toBeInTheDocument();
     expect(screen.getByTestId("youtube-player")).toBe(player);
     expect(musicPlayerHarness).toMatchObject({ mounts: 1, unmounts: 0 });
-    await user.click(screen.getByRole("button", { name: "Close Manage menu" }));
+    await user.click(
+      within(screen.getByRole("dialog", { name: "Manage" })).getByRole("button", {
+        name: "Close menu",
+      }),
+    );
     await user.click(screen.getByRole("button", { name: "Music player panel handle" }));
     expect(screen.queryByRole("combobox", { name: "YouTube Music playlist" })).toBeNull();
     expect(musicPlayerHarness).toMatchObject({ mounts: 1, unmounts: 0 });
@@ -4778,6 +5125,7 @@ describe("developer menu", () => {
       />,
     );
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    navigateMenu("Visual effects");
 
     expect(screen.queryByRole("group", { name: "Glass settings" })).not.toBeInTheDocument();
     expect(screen.queryByRole("spinbutton", { name: /Glass/i })).not.toBeInTheDocument();
@@ -4966,6 +5314,7 @@ describe("developer menu", () => {
       api.getMusicAccountStatus.mockReturnValueOnce(refresh.promise);
 
       await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+      navigateMenu("Preferences");
       await user.click(screen.getByRole("button", { name: "Music player setup" }));
       await waitFor(() => expect(api.getMusicAccountStatus).toHaveBeenCalledTimes(2));
       expect(screen.getByTestId("youtube-player")).toBe(player);
@@ -5005,6 +5354,7 @@ describe("developer menu", () => {
     await user.click(screen.getByRole("button", { name: "Start test game" }));
     expect(player).toHaveAttribute("data-playlist-id", "PL-base");
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Preferences");
     await user.click(screen.getByRole("button", { name: "Music player setup" }));
     await user.click(screen.getByRole("button", { name: "Disconnect account" }));
     await act(async () => Promise.resolve());
@@ -5054,9 +5404,15 @@ describe("developer menu", () => {
     expect(
       within(manage)
         .getAllByRole("button")
+        .filter((button) => button.getAttribute("aria-label") !== "Close menu")
         .slice(0, 4)
         .map((button) => button.textContent),
-    ).toEqual(["Start new game", "Players screen", "Past game timeline", "Statistics"]);
+    ).toEqual([
+      "Start new game",
+      expect.stringContaining("Game & records"),
+      expect.stringContaining("Players"),
+      expect.stringContaining("Club settings"),
+    ]);
     await user.click(within(manage).getByRole("button", { name: "Players screen" }));
     const banner = screen.getByRole("banner", { name: "Application status" });
     expect(within(banner).getByRole("button", { name: "Back to game" })).toBeVisible();
@@ -5065,6 +5421,7 @@ describe("developer menu", () => {
     expect(screen.getByRole("searchbox", { name: "Search players" })).toBeVisible();
     await openBook();
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     await user.click(screen.getByRole("button", { name: "Past game timeline" }));
     await openBook();
     expect(api.clearGameSession).not.toHaveBeenCalled();
@@ -5353,6 +5710,7 @@ describe("developer menu", () => {
     const logButton = screen.getByRole("button", { name: "Open game log" });
     const devButton = screen.getByRole("button", { name: "Open developer menu" });
     await user.click(devButton);
+    navigateMenu("Visual effects");
 
     expect(screen.getByRole("dialog", { name: "Developer menu" })).toBeInTheDocument();
     const background = screen.getByRole("combobox", { name: "Application background" });
@@ -5397,10 +5755,12 @@ describe("developer menu", () => {
     const privacy = await screen.findByRole("button", { name: /private info/i });
     for (let tap = 0; tap < 6; tap += 1) fireEvent.click(privacy);
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    navigateMenu("Visual effects");
     await user.selectOptions(
       screen.getByRole("combobox", { name: "Application background" }),
       "harbour",
     );
+    navigateMenu("Back");
     await user.click(screen.getByRole("button", { name: "Hide developer mode" }));
     await user.click(
       screen.getByRole("button", { name: "Choose another club · current club Mafia Malaga" }),
@@ -5426,6 +5786,7 @@ describe("developer menu", () => {
       setItem(key, value);
     });
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    navigateMenu("Visual effects");
     await user.selectOptions(
       screen.getByRole("combobox", { name: "Application background" }),
       "old-town",
@@ -5444,6 +5805,7 @@ describe("developer menu", () => {
     expect(screen.getByRole("heading", { name: "Role giveaway" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    navigateMenu("Diagnostics & local data");
 
     expect(screen.getByRole("button", { name: "Clear all data" })).toBeEnabled();
   });
@@ -5459,6 +5821,7 @@ describe("developer menu", () => {
     await waitFor(() => expect(api.saveGameSession).toHaveBeenCalled());
 
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    navigateMenu("Diagnostics & local data");
     await user.click(screen.getByRole("button", { name: "Clear all data" }));
 
     expect(confirm).toHaveBeenCalledWith(
@@ -5499,10 +5862,12 @@ describe("developer menu", () => {
     expect(musicPlayer).toHaveAttribute("data-playlist-id", "remembered-playlist");
 
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    navigateMenu("Visual effects");
     await user.selectOptions(
       screen.getByRole("combobox", { name: "Application background" }),
       "old-town",
     );
+    navigateMenu("Back", "Diagnostics & local data");
     await user.click(screen.getByRole("button", { name: "Clear all data" }));
     await waitFor(() =>
       expect(window.localStorage.getItem(musicPreferencesStorageKey(testClub.id))).toBeNull(),
@@ -5520,6 +5885,7 @@ describe("developer menu", () => {
     await user.click(screen.getByRole("button", { name: "Music player panel handle" }));
     const playlist = screen.getByRole("combobox", { name: "YouTube Music playlist" });
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    navigateMenu("Diagnostics & local data");
     await user.click(screen.getByRole("button", { name: "Console" }));
 
     expect({
@@ -5750,6 +6116,7 @@ describe("authoritative game session lifecycle", () => {
     expect(api.clearGameSession).not.toHaveBeenCalled();
     api.getGameSession.mockResolvedValueOnce(remoteSession(oldId, "Table A", "Host Player", 1, 1));
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     await user.click(await screen.findByRole("button", { name: "Resume Table A" }));
     await waitFor(() => expect(api.getGameSession).toHaveBeenCalledWith(oldId, testClub.id));
     await waitFor(() =>
@@ -5799,6 +6166,7 @@ describe("authoritative game session lifecycle", () => {
       vi.spyOn(window, "confirm").mockReturnValue(true);
       render(<App />);
       await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+      navigateMenu("Game & records");
       await user.click(await screen.findByRole("button", { name: "Delete Table A" }));
       await waitFor(() => expect(api.clearGameSession).toHaveBeenCalledWith(oldId, testClub.id));
       await user.click(screen.getByRole("button", { name: "Resume Table B" }));
@@ -5838,6 +6206,7 @@ describe("authoritative game session lifecycle", () => {
       api.listActiveGameSessions.mockResolvedValue([active]);
       render(<App />);
       await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+      navigateMenu("Game & records");
       const resume = await screen.findByRole("button", { name: "Resume Completed race" });
       const raw = window.localStorage.getItem(gameSessionStorageKey);
       await user.click(resume);
@@ -5865,9 +6234,11 @@ describe("authoritative game session lifecycle", () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     await user.click(await screen.findByRole("button", { name: "Resume Table A" }));
     await waitFor(() => expect(api.getGameSession).toHaveBeenCalledWith(gameId, testClub.id));
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     await user.click(await screen.findByRole("button", { name: "Delete Table A" }));
     await waitFor(() =>
       expect(window.localStorage.getItem("mafia-dashboard.game-session.v5")).toBeNull(),
@@ -6073,6 +6444,7 @@ describe("authoritative game session lifecycle", () => {
       await user.click(screen.getByRole("combobox", { name: "Host player" }));
       await user.click(screen.getByRole("option", { name: "Host Player" }));
       await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+      if (action === "resume") navigateMenu("Game & records");
       await user.click(
         await screen.findByRole("button", {
           name: action === "resume" ? "Resume Other table" : "Start new game",
@@ -6195,6 +6567,7 @@ describe("authoritative game session lifecycle", () => {
         });
         renderView(<App />);
         await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+        navigateMenu("Game & records");
         await user.click(await screen.findByRole("button", { name: "Resume Saved setup" }));
         expect(await screen.findByRole("button", { name: "Casper: citizen" })).toBeDisabled();
         expect(screen.getByText("Draw roles · 8 remaining")).toBeInTheDocument();
@@ -7234,6 +7607,7 @@ describe("authoritative game session lifecycle", () => {
       ),
     ).toHaveLength(5);
     await user.click(screen.getByRole("button", { name: "Open developer menu" }));
+    navigateMenu("Visual effects");
     await user.click(screen.getByText("Glass", { selector: "summary" }));
     fireEvent.change(screen.getByLabelText("Nomination tint"), { target: { value: "0" } });
     fireEvent.change(screen.getByLabelText("Nomination color"), { target: { value: "#88c7e3" } });
@@ -7942,10 +8316,12 @@ describe("authoritative game session lifecycle", () => {
 
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     await screen.findByRole("button", { name: "Resume Table A" });
 
     await user.click(screen.getByRole("button", { name: "Resume Table A" }));
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     await user.click(screen.getByRole("button", { name: "Resume Table B" }));
     sessionB.resolve(remoteSession(sessionBId, "Table B", "Host B", 7, 3));
     await screen.findByText("Host: Host Player");
@@ -7985,6 +8361,7 @@ describe("authoritative game session lifecycle", () => {
     api.getGameSession.mockReturnValue(remote.promise);
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     await screen.findByRole("button", { name: "Resume Remote table" });
 
     await user.click(screen.getByRole("button", { name: "Resume Remote table" }));
@@ -8156,6 +8533,7 @@ describe("authoritative game session lifecycle", () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     await user.click(await screen.findByRole("button", { name: "Delete Old table" }));
     await waitFor(() => expect(api.clearGameSession).toHaveBeenCalledWith(oldId, testClub.id));
     await user.click(screen.getByRole("button", { name: "Resume New table" }));
@@ -8195,6 +8573,7 @@ describe("authoritative game session lifecycle", () => {
       ).toMatchObject({ gameId: id }),
     );
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
+    navigateMenu("Game & records");
     await user.click(await screen.findByRole("button", { name: "Delete Test table" }));
 
     await waitFor(() => expect(api.clearGameSession).toHaveBeenCalledWith(id, testClub.id));

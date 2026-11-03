@@ -1,5 +1,9 @@
 /* global console, window, document, localStorage, getComputedStyle, Event, PageTransitionEvent, HTMLInputElement, HTMLCanvasElement, innerWidth, innerHeight, Storage, DOMException, URL */
 import assert from "node:assert/strict";
+import {
+  enterManageSection,
+  enterDeveloperSection,
+} from "../../../../../scripts/workspace-menu-paths.mjs";
 import { build } from "esbuild";
 import { chromium, webkit } from "@playwright/test";
 import { createServer } from "node:http";
@@ -346,12 +350,7 @@ async function verifyFollowup(page, url, config) {
           exact: true,
         })
         .click();
-      await page
-        .getByRole("button", {
-          name: ru ? "Настройка музыкального плеера" : "Music player setup",
-          exact: true,
-        })
-        .click();
+      await enterManageSection(page, "music", locale);
       await page
         .locator(".music-status")
         .filter({ hasText: ru ? "недоступ" : "unavailable" })
@@ -404,6 +403,7 @@ async function verifyFollowup(page, url, config) {
           exact: true,
         })
         .click();
+      await enterDeveloperSection(page, "visual", locale);
       receipt.title = await page
         .locator(".dev-setting-toggle strong")
         .first()
@@ -413,6 +413,8 @@ async function verifyFollowup(page, url, config) {
           undefinedToken: getComputedStyle(node).getPropertyValue("--foreground"),
         }));
       await screenshot("developer-title");
+      await page.locator(".manage-toolbar-button").click();
+      await enterManageSection(page, "game", locale);
       await page
         .getByRole("button", {
           name: ru ? "Хронология прошлых игр" : "Past game timeline",
@@ -471,9 +473,12 @@ async function verifyFollowup(page, url, config) {
           exact: true,
         })
         .click();
+      await enterDeveloperSection(page, "visual", locale);
       const canonicalBefore = await page.evaluate(
         () => JSON.parse(localStorage.getItem("mafia-dashboard.game-session.v5")).current.state,
       );
+      await page.locator(".manage-toolbar-button").click();
+      await enterManageSection(page, "game", locale);
       await page
         .getByRole("button", {
           name: ru ? "Хронология прошлых игр" : "Past game timeline",
@@ -874,6 +879,7 @@ async function verifyFollowup(page, url, config) {
       await editable(page.locator("#player-search"), "player nickname search");
       await screenshot("native-profile-fields");
       await page.locator(".manage-toolbar-button").click();
+      await enterManageSection(page, "game", locale);
       await page
         .getByRole("button", { name: ru ? "Статистика" : "Statistics", exact: true })
         .click();
@@ -886,7 +892,8 @@ async function verifyFollowup(page, url, config) {
       );
       await editable(page.locator('.statistics-screen input[type="search"]'), "statistics search");
       await page.locator(".statistics-header button").click();
-      await page.locator(".dev-toolbar-button").click();
+      await page.locator(".manage-toolbar-button").click();
+      await enterManageSection(page, "game", locale);
       await page
         .getByRole("button", {
           name: ru ? "Хронология прошлых игр" : "Past game timeline",
@@ -1028,6 +1035,7 @@ async function verifyFollowup(page, url, config) {
       const toggle = page.locator(".dev-toolbar-button");
       if (enhanced) {
         await toggle.click();
+        await enterDeveloperSection(page, "visual", locale);
         await page.locator(".dev-menu-actions > .dev-setting-toggle").nth(0).focus();
         await page.keyboard.press("Enter");
         await toggle.click();
@@ -1106,6 +1114,7 @@ async function verifyFollowup(page, url, config) {
         await screenshot("focused-current-game-glow");
       }
       await toggle.click();
+      await enterDeveloperSection(page, "visual", locale);
       await page.keyboard.press("Escape");
       assert.equal(
         await page.locator("#dev-menu-drawer").count(),
@@ -1217,6 +1226,7 @@ async function verifyFollowup(page, url, config) {
           exact: true,
         })
         .click();
+      await enterDeveloperSection(page, "visual", locale);
       receipt.disclosures = [];
       for (const selector of [
         ".dev-glass-controls",
@@ -1899,6 +1909,7 @@ try {
           );
           throw error;
         });
+      await enterDeveloperSection(page, "visual");
       assert.equal(await page.locator(".dev-glass-controls").getAttribute("open"), null);
       await page.locator(".dev-glass-controls > summary").click();
       const range = (label) => page.getByLabel(label, { exact: true });
@@ -2296,7 +2307,6 @@ try {
         () => document.querySelector(".app-shell")?.dataset.glassStatus === "ready",
       );
       await page.getByRole("button", { name: "Open developer menu" }).click();
-      await page.locator(".dev-glass-controls > summary").click();
       await page.getByRole("button", { name: "Hide developer mode" }).click();
       assert.equal(await shell.getAttribute("data-glass-status"), "ready");
       await page.reload();
@@ -2309,6 +2319,7 @@ try {
       });
       await page.reload();
       await page.getByRole("button", { name: "Open developer menu" }).click();
+      await enterDeveloperSection(page, "visual");
       await page.locator(".dev-glass-controls > summary").click();
       assert.equal(await range("Gold background light").inputValue(), "100");
       assert.equal(await range("Refraction strength").inputValue(), "24");
@@ -2348,6 +2359,7 @@ try {
       await page.getByRole("button", { name: "Close developer menu" }).click();
       await page.screenshot({ path: join(evidence, `${config.name}-game.png`) });
       await page.getByRole("button", { name: "Open developer menu" }).click();
+      await enterDeveloperSection(page, "visual");
       await page.locator(".dev-glass-controls > summary").click();
       await page.evaluate(() => {
         window.releasedGlass = document.querySelector(".glass-scene-canvas").getContext("webgl");
@@ -2528,6 +2540,7 @@ try {
         const glow = await readGlow();
         assert.notEqual(glow.shadow, "none");
         await phasePage.getByRole("button", { name: "Open developer menu" }).click();
+        await enterDeveloperSection(phasePage, "visual");
         await phasePage.locator(".dev-glass-controls > summary").click();
         await phasePage.getByRole("button", { name: "Disable matte glass" }).click();
         assert.deepEqual(await readGlow(), glow);
@@ -2550,6 +2563,7 @@ try {
         );
         await phasePage.getByRole("button", { name: "Show private info" }).click();
         await phasePage.getByRole("button", { name: "Open developer menu" }).click();
+        await enterDeveloperSection(phasePage, "visual");
         await phasePage.locator(".dev-glass-controls > summary").click();
         await phasePage.getByRole("button", { name: "Enable Raytracing" }).click();
         await phasePage.waitForFunction(
@@ -2659,6 +2673,7 @@ try {
       );
       assert.equal(await failed.locator(".liquid-card-glass").count(), 12);
       await failed.getByRole("button", { name: "Open developer menu" }).click();
+      await enterDeveloperSection(failed, "visual");
       await failed.locator(".dev-glass-controls > summary").click();
       assert.equal(
         await failed.getByLabel("Refraction strength", { exact: true }).isDisabled(),

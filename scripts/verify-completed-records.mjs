@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { enterManageSection } from "./workspace-menu-paths.mjs";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { expect } from "@playwright/test";
@@ -131,8 +132,12 @@ export const verifyCompletedRecords = async ({
   ];
   for (const text of locales) {
     await page.locator(".manage-toolbar-button").click();
-    if (text.locale === "ru")
+    if (text.locale === "ru") {
+      await enterManageSection(page, "details");
       await page.getByRole("combobox", { name: "Language", exact: true }).selectOption("ru");
+      await page.getByRole("button", { name: text.back, exact: true }).click();
+    }
+    await enterManageSection(page, "game", text.locale);
     await page.getByRole("button", { name: text.statistics, exact: true }).click();
     const statisticsScreen = page.locator(".statistics-screen");
     await expect(
@@ -161,6 +166,7 @@ export const verifyCompletedRecords = async ({
     });
     await statisticsScreen.getByRole("button", { name: text.backToGame, exact: true }).click();
     await page.locator(".manage-toolbar-button").click();
+    await enterManageSection(page, "game", text.locale);
     await page.getByRole("button", { name: text.timeline, exact: true }).click();
     const selector = page.getByRole("combobox", { name: text.selector, exact: true });
     await selector.selectOption(saved[1].session.gameId);

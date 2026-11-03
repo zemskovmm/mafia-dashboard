@@ -2,6 +2,7 @@
    WebGLRenderingContext, Event, innerWidth, innerHeight, queueMicrotask,
    requestAnimationFrame, console */
 import assert from "node:assert/strict";
+import { enterDeveloperSection } from "../../../../../scripts/workspace-menu-paths.mjs";
 import { join } from "node:path";
 import process from "node:process";
 import { PNG } from "pngjs";
@@ -347,6 +348,7 @@ async function assertPainted(page, family) {
 }
 async function openControls(page) {
   await page.getByRole("button", { name: "Open developer menu", exact: true }).click();
+  await enterDeveloperSection(page, "visual");
   if ((await page.locator(".dev-glass-controls").getAttribute("open")) === null)
     await page.locator(".dev-glass-controls > summary").click();
   if ((await page.locator(".dev-glass-advanced").getAttribute("open")) === null)

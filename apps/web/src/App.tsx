@@ -74,6 +74,7 @@ import type {
   AppUser,
 } from "./api/client.js";
 import { ClubPortal } from "./features/clubs/ClubPortal.js";
+import { DeveloperMenu, ManageMenu } from "./features/menus/WorkspaceMenus.js";
 import { ClubFire } from "./features/clubs/ClubFire.js";
 import { ClubEntryTransition, type ClubEntryOrigin } from "./features/clubs/ClubEntryTransition.js";
 import { FancyFeaturesContext, useFancyFeatures } from "./features/effects/FancyFeaturesContext.js";
@@ -459,6 +460,8 @@ const ClubWorkspaceContent = ({
   onEditClub,
   onDeleteClub,
   onLanguageChange = () => Promise.resolve(),
+  onBestMoveChange = () => Promise.resolve(),
+  clubSaving = false,
   themeColor = DEFAULT_THEME_COLOR,
   onThemeColorChange = () => undefined,
   fancyStuff,
@@ -471,6 +474,8 @@ const ClubWorkspaceContent = ({
   readonly onEditClub: () => void;
   readonly onDeleteClub: () => Promise<void>;
   readonly onLanguageChange?: (language: Locale) => Promise<void>;
+  readonly onBestMoveChange?: (enabled: boolean) => Promise<void>;
+  readonly clubSaving?: boolean;
   readonly themeColor?: string;
   readonly onThemeColorChange?: (color: string) => void;
   readonly fancyStuff: FancyStuffSettings;
@@ -1924,10 +1929,9 @@ const ClubWorkspaceContent = ({
     !musicAccountStatusError &&
     musicAccountStatus?.configured === true &&
     musicAccountStatus.connected === true;
-  const toggleMusicSetup = () => {
-    const next = !musicSetupOpen;
-    setMusicSetupOpen(next);
-    if (next && (musicAccountStatus !== null || musicAccountStatusError)) {
+  const openMusicSetup = () => {
+    setMusicSetupOpen(true);
+    if (musicAccountStatus !== null || musicAccountStatusError) {
       setMusicAccountStatusRequest((request) => request + 1);
     }
   };
@@ -2333,15 +2337,96 @@ const ClubWorkspaceContent = ({
         </aside>
       ) : null}
       {showWorkspaceTools && activeDrawer === "manage" ? (
-        <aside
-          id="manage-menu-drawer"
-          className="app-drawer manage-menu-drawer"
-          role="dialog"
-          aria-label={t("manage")}
-        >
-          <h2>{t("manage")}</h2>
-          <div className="manage-menu-actions">
-            <PlayerCardStyleControls settings={playerCards} onChange={changePlayerCards} />
+        <ManageMenu
+          club={club}
+          clubSaving={clubSaving || languageSaving}
+          onClose={() => setActiveDrawer(null)}
+          onNewGame={() => {
+            if (view === "players" && humanPlayers.length < 10) {
+              setPlayerGateError({
+                key: "addRegisteredPlayers",
+                count: 10 - humanPlayers.length,
+              });
+              setActiveDrawer(null);
+              return;
+            }
+            setPlayerGateError(null);
+            setActiveDrawer(null);
+            const openAvailablePlayers = availablePlayersForSetup.length < 10;
+            if (hasCurrentGameState) startNewGame(openAvailablePlayers);
+            else {
+              resetLocalState();
+              setAvailabilityScreenOpen(openAvailablePlayers);
+            }
+          }}
+          onPlayers={() => {
+            setPlayerGateError(null);
+            setAvailabilityScreenOpen(false);
+            setView("players");
+            setActiveDrawer(null);
+          }}
+          onTimeline={() => {
+            viewBeforeTimelineRef.current = view === "players" ? "players" : "game";
+            setStatisticsTimelineGameId(undefined);
+            setActiveDrawer(null);
+            setView("timeline");
+          }}
+          onStatistics={() => {
+            setActiveDrawer(null);
+            setStatisticsTimelineGameId(undefined);
+            setView("statistics");
+          }}
+          onEditClub={() => {
+            if (!canLeaveWorkspace()) return;
+            setActiveDrawer(null);
+            onEditClub();
+          }}
+          onDeleteClub={() => {
+            if (!canLeaveWorkspace()) return;
+            setActiveDrawer(null);
+            void onDeleteClub();
+          }}
+          onExit={exitWorkspace}
+          onOpenRules={() => {
+            setActiveDrawer(null);
+            setRulesOpen(true);
+          }}
+          onBestMoveChange={async (enabled) => {
+            try {
+              await onBestMoveChange(enabled);
+            } catch (error) {
+              reportError(error, { source: "api", context: "clubs.best-move" });
+              throw error;
+            }
+          }}
+          activeGames={activeSessionsPanel}
+          tournament={
+            game !== null && sessionSync.gameId !== null ? (
+              <section className="manage-game-metadata" aria-label={t("changeTournament")}>
+                <h3>{t("changeTournament")}</h3>
+                {tournamentPicker}
+              </section>
+            ) : null
+          }
+          onMusicOpen={openMusicSetup}
+          music={musicSetupPanel}
+          appearance={
+            <>
+              <PlayerCardStyleControls settings={playerCards} onChange={changePlayerCards} />
+              {isManager ? (
+                <label className="theme-color-field">
+                  <span>{t("glassColor")}</span>
+                  <input
+                    type="color"
+                    aria-label={t("glassColor")}
+                    value={themeColor}
+                    onChange={(event) => onThemeColorChange(event.currentTarget.value)}
+                  />
+                </label>
+              ) : null}
+            </>
+          }
+          help={
             <button
               type="button"
               role="switch"
@@ -2355,124 +2440,12 @@ const ClubWorkspaceContent = ({
             >
               {t("showTutorialHelp")} · {t(showTutorialHelp ? "settingOn" : "settingOff")}
             </button>
-            <button
-              type="button"
-              onClick={() => {
-                if (view === "players" && humanPlayers.length < 10) {
-                  setPlayerGateError({
-                    key: "addRegisteredPlayers",
-                    count: 10 - humanPlayers.length,
-                  });
-                  setActiveDrawer(null);
-                  return;
-                }
-                setPlayerGateError(null);
-                setActiveDrawer(null);
-                const openAvailablePlayers = availablePlayersForSetup.length < 10;
-                if (hasCurrentGameState) startNewGame(openAvailablePlayers);
-                else {
-                  resetLocalState();
-                  setAvailabilityScreenOpen(openAvailablePlayers);
-                }
-              }}
-            >
-              {t("startNewGame")}
-            </button>
-
-            {isManager ? (
-              <button
-                type="button"
-                onClick={() => {
-                  setPlayerGateError(null);
-                  setAvailabilityScreenOpen(false);
-                  setView("players");
-                  setActiveDrawer(null);
-                }}
-              >
-                {t("playersScreen")}
-              </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={() => {
-                viewBeforeTimelineRef.current = view === "players" ? "players" : "game";
-                setStatisticsTimelineGameId(undefined);
-                setActiveDrawer(null);
-                setView("timeline");
-              }}
-            >
-              {t("pastGameTimeline")}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setActiveDrawer(null);
-                setStatisticsTimelineGameId(undefined);
-                setView("statistics");
-              }}
-            >
-              {t("statisticsScreen")}
-            </button>
-            {isManager ? (
-              <>
-                <button
-                  type="button"
-                  aria-expanded={musicSetupOpen}
-                  aria-controls="manage-music-setup"
-                  onClick={toggleMusicSetup}
-                >
-                  {musicSetupOpen ? t("hideMusicPlayerSetup") : t("musicPlayerSetup")}
-                </button>
-                {!musicSetupOpen &&
-                !musicAccountStatusError &&
-                musicAccountStatus?.configured === true &&
-                musicAccountStatus.connected === false ? (
-                  <a className="oauth-connect" href="/api/music/oauth/start">
-                    {t("connectMusicAccount")}
-                  </a>
-                ) : null}
-                {!musicSetupOpen &&
-                !musicAccountStatusError &&
-                musicAccountStatus?.configured === false ? (
-                  <button type="button" disabled>
-                    {t("musicAccountConnectionUnavailable")}
-                  </button>
-                ) : null}
-              </>
-            ) : null}
-          </div>
-          {isManager ? musicSetupPanel : null}
-          {game !== null && sessionSync.gameId !== null ? (
-            <section className="manage-game-metadata" aria-label={t("changeTournament")}>
-              <h3>{t("changeTournament")}</h3>
-              {tournamentPicker}
-            </section>
-          ) : null}
-          {activeSessionsPanel}
-          {isManager ? (
-            <div className="manage-menu-actions manage-club-actions">
-              <button
-                type="button"
-                onClick={() => {
-                  if (!canLeaveWorkspace()) return;
-                  setActiveDrawer(null);
-                  onEditClub();
-                }}
-              >
-                {t("editClub")}
-              </button>
-              <label className="theme-color-field">
-                <span>{t("glassColor")}</span>
-                <input
-                  type="color"
-                  aria-label={t("glassColor")}
-                  value={themeColor}
-                  onChange={(event) => onThemeColorChange(event.currentTarget.value)}
-                />
-              </label>
+          }
+          language={
+            <>
               <LanguageSelector
                 value={club.language}
-                disabled={languageSaving}
+                disabled={languageSaving || clubSaving}
                 onChange={(language) => {
                   setLanguageError(false);
                   setLanguageSaving(true);
@@ -2485,56 +2458,122 @@ const ClubWorkspaceContent = ({
                 }}
               />
               {languageError ? <p role="alert">{t("clubLanguageSaveFailed")}</p> : null}
-              <button
-                type="button"
-                className="danger-action"
-                onClick={() => {
-                  if (!canLeaveWorkspace()) return;
-                  setActiveDrawer(null);
-                  void onDeleteClub();
-                }}
-              >
-                {t("deleteClub")}
-              </button>
-            </div>
-          ) : null}
-        </aside>
+            </>
+          }
+        />
       ) : null}
       {isManager && devUnlocked && showWorkspaceTools && activeDrawer === "dev" ? (
-        <aside
-          id="dev-menu-drawer"
-          className="app-drawer dev-menu-drawer"
-          role="dialog"
-          aria-label={t("developerMenu")}
-        >
-          <div className="dev-menu-header">
-            <h2>{t("devMenu")}</h2>
-            <p
-              className="dev-menu-version"
-              aria-label={
-                appVersion !== null
-                  ? t("canaryVersion", { version: appVersion })
-                  : t(appVersionUnavailable ? "canaryVersionUnavailable" : "canaryVersionLoading")
-              }
-            >
-              <Bird aria-hidden="true" strokeWidth={2.5} />
-              <span>
-                {t("canaryVersionLabel", {
-                  version:
-                    appVersion ?? t(appVersionUnavailable ? "canaryUnavailable" : "canaryLoading"),
-                })}
-              </span>
-            </p>
-          </div>
-          <div className="dev-menu-actions">
-            <GlassControls
-              settings={glass}
-              status={effectiveGlassStatus}
-              onChange={changeGlass}
-              monochromeBackground={cityBackground}
-            />
-            <PlayerExitControls settings={playerExit} onChange={changePlayerExit} />
-            <FancyStuffControls settings={fancyStuff} onChange={onFancyStuffChange} />
+        <DeveloperMenu
+          onClose={() => setActiveDrawer(null)}
+          onHide={hideDeveloperMode}
+          visualEffects={
+            <>
+              <GlassControls
+                settings={glass}
+                status={effectiveGlassStatus}
+                onChange={changeGlass}
+                monochromeBackground={cityBackground}
+              />
+              <PlayerExitControls settings={playerExit} onChange={changePlayerExit} />
+              <FancyStuffControls settings={fancyStuff} onChange={onFancyStuffChange} />
+              <DeveloperSettingToggle
+                title={t("raytracing")}
+                description={t("raytracingDescription")}
+                ariaLabel={
+                  lighting.requestedRenderer === "vgpu"
+                    ? t("disableRaytracing")
+                    : t("enableRaytracing")
+                }
+                pressed={lighting.requestedRenderer === "vgpu"}
+                stateLabel={t(lighting.requestedRenderer === "vgpu" ? "settingOn" : "settingOff")}
+                onClick={() =>
+                  selectLightingRenderer(lighting.requestedRenderer === "vgpu" ? "legacy" : "vgpu")
+                }
+              />
+              {effectiveLighting.vgpuStatus === "initializing" ? (
+                <p className="dev-renderer-status" role="status">
+                  {t("vgpuInitializing")}
+                </p>
+              ) : effectiveLighting.vgpuStatus === "fallback" ? (
+                <p className="dev-renderer-status" role="status">
+                  {t("vgpuFallback")}
+                </p>
+              ) : null}
+              <DeveloperSettingToggle
+                title={t("playerPulse")}
+                description={t("playerPulseDescription")}
+                disabled={lighting.requestedRenderer !== "vgpu"}
+                ariaLabel={
+                  lighting.playerPulse.enabled ? t("disablePlayerPulse") : t("enablePlayerPulse")
+                }
+                pressed={lighting.playerPulse.enabled}
+                stateLabel={t(lighting.playerPulse.enabled ? "settingOn" : "settingOff")}
+                onClick={() =>
+                  setPlayerPulse({
+                    ...lighting.playerPulse,
+                    enabled: !lighting.playerPulse.enabled,
+                  })
+                }
+              />
+              <label className="dev-renderer-field">
+                <span>{t("playerPulseSpeedValue", { speed: lighting.playerPulse.speed })}</span>
+                <input
+                  type="range"
+                  aria-label={t("playerPulseSpeed")}
+                  min="0.25"
+                  max="3"
+                  step="0.25"
+                  value={lighting.playerPulse.speed}
+                  disabled={lighting.requestedRenderer !== "vgpu"}
+                  onChange={(event) =>
+                    setPlayerPulse({
+                      ...lighting.playerPulse,
+                      speed: Number(event.currentTarget.value),
+                    })
+                  }
+                />
+              </label>
+              <label className="dev-renderer-field">
+                <span>
+                  {t("playerPulseStrengthValue", {
+                    strength: Math.round(lighting.playerPulse.strength * 100),
+                  })}
+                </span>
+                <input
+                  type="range"
+                  aria-label={t("playerPulseStrength")}
+                  min="0"
+                  max="50"
+                  step="1"
+                  value={Math.round(lighting.playerPulse.strength * 100)}
+                  disabled={lighting.requestedRenderer !== "vgpu"}
+                  onChange={(event) =>
+                    setPlayerPulse({
+                      ...lighting.playerPulse,
+                      strength: Number(event.currentTarget.value) / 100,
+                    })
+                  }
+                />
+              </label>
+              <label className="dev-background-field">
+                <span>{t("applicationBackground")}</span>
+                <select
+                  aria-label={t("applicationBackground")}
+                  value={background}
+                  onChange={(event) =>
+                    changeBackground(validateBackground(event.currentTarget.value))
+                  }
+                >
+                  {BACKGROUND_OPTIONS.map(({ id, message }) => (
+                    <option key={id} value={id}>
+                      {t(message)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </>
+          }
+          gameTesting={
             <DeveloperSettingToggle
               title={t("previewUndealtRoles")}
               description={t("previewUndealtRolesDescription")}
@@ -2550,127 +2589,54 @@ const ClubWorkspaceContent = ({
                 setPreviewUndealtRoles(enabled);
               }}
             />
-            <DeveloperSettingToggle
-              title={t("raytracing")}
-              description={t("raytracingDescription")}
-              ariaLabel={
-                lighting.requestedRenderer === "vgpu"
-                  ? t("disableRaytracing")
-                  : t("enableRaytracing")
-              }
-              pressed={lighting.requestedRenderer === "vgpu"}
-              stateLabel={t(lighting.requestedRenderer === "vgpu" ? "settingOn" : "settingOff")}
-              onClick={() =>
-                selectLightingRenderer(lighting.requestedRenderer === "vgpu" ? "legacy" : "vgpu")
-              }
-            />
-            {effectiveLighting.vgpuStatus === "initializing" ? (
-              <p className="dev-renderer-status" role="status">
-                {t("vgpuInitializing")}
-              </p>
-            ) : effectiveLighting.vgpuStatus === "fallback" ? (
-              <p className="dev-renderer-status" role="status">
-                {t("vgpuFallback")}
-              </p>
-            ) : null}
-            <DeveloperSettingToggle
-              title={t("playerPulse")}
-              description={t("playerPulseDescription")}
-              disabled={lighting.requestedRenderer !== "vgpu"}
-              ariaLabel={
-                lighting.playerPulse.enabled ? t("disablePlayerPulse") : t("enablePlayerPulse")
-              }
-              pressed={lighting.playerPulse.enabled}
-              stateLabel={t(lighting.playerPulse.enabled ? "settingOn" : "settingOff")}
-              onClick={() =>
-                setPlayerPulse({ ...lighting.playerPulse, enabled: !lighting.playerPulse.enabled })
-              }
-            />
-            <label className="dev-renderer-field">
-              <span>{t("playerPulseSpeedValue", { speed: lighting.playerPulse.speed })}</span>
-              <input
-                type="range"
-                aria-label={t("playerPulseSpeed")}
-                min="0.25"
-                max="3"
-                step="0.25"
-                value={lighting.playerPulse.speed}
-                disabled={lighting.requestedRenderer !== "vgpu"}
-                onChange={(event) =>
-                  setPlayerPulse({
-                    ...lighting.playerPulse,
-                    speed: Number(event.currentTarget.value),
-                  })
-                }
-              />
-            </label>
-            <label className="dev-renderer-field">
-              <span>
-                {t("playerPulseStrengthValue", {
-                  strength: Math.round(lighting.playerPulse.strength * 100),
-                })}
-              </span>
-              <input
-                type="range"
-                aria-label={t("playerPulseStrength")}
-                min="0"
-                max="50"
-                step="1"
-                value={Math.round(lighting.playerPulse.strength * 100)}
-                disabled={lighting.requestedRenderer !== "vgpu"}
-                onChange={(event) =>
-                  setPlayerPulse({
-                    ...lighting.playerPulse,
-                    strength: Number(event.currentTarget.value) / 100,
-                  })
-                }
-              />
-            </label>
-            <button
-              type="button"
-              onClick={() => {
-                viewBeforeConsoleRef.current = view === "players" ? "players" : "game";
-                setActiveDrawer(null);
-                setView("console");
-              }}
-            >
-              {t("console")}
-            </button>
-            <label className="dev-background-field">
-              <span>{t("applicationBackground")}</span>
-              <select
-                aria-label={t("applicationBackground")}
-                value={background}
-                onChange={(event) =>
-                  changeBackground(validateBackground(event.currentTarget.value))
+          }
+          diagnostics={
+            <>
+              <p
+                className="dev-menu-version"
+                aria-label={
+                  appVersion !== null
+                    ? t("canaryVersion", { version: appVersion })
+                    : t(appVersionUnavailable ? "canaryVersionUnavailable" : "canaryVersionLoading")
                 }
               >
-                {BACKGROUND_OPTIONS.map(({ id, message }) => (
-                  <option key={id} value={id}>
-                    {t(message)}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <button type="button" className="danger-action" onClick={hideDeveloperMode}>
-              {t("hideDeveloperMode")}
-            </button>
-            <button
-              type="button"
-              className="danger-action"
-              disabled={clearingAllData}
-              onClick={() => void clearApplicationData()}
-            >
-              {clearingAllData ? t("clearing") : t("clearAllData")}
-            </button>
-          </div>
-          {clearAllDataError ? (
-            <p className="dev-menu-error" role="alert">
-              {t("clearDataFailed")}
-            </p>
-          ) : null}
-        </aside>
+                <Bird aria-hidden="true" strokeWidth={2.5} />
+                <span>
+                  {t("canaryVersionLabel", {
+                    version:
+                      appVersion ??
+                      t(appVersionUnavailable ? "canaryUnavailable" : "canaryLoading"),
+                  })}
+                </span>
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  viewBeforeConsoleRef.current = view === "players" ? "players" : "game";
+                  setActiveDrawer(null);
+                  setView("console");
+                }}
+              >
+                {t("console")}
+              </button>
+              <div className="workspace-menu-danger">
+                <button
+                  type="button"
+                  className="danger-action"
+                  disabled={clearingAllData}
+                  onClick={() => void clearApplicationData()}
+                >
+                  {clearingAllData ? t("clearing") : t("clearAllData")}
+                </button>
+                {clearAllDataError ? (
+                  <p className="dev-menu-error" role="alert">
+                    {t("clearDataFailed")}
+                  </p>
+                ) : null}
+              </div>
+            </>
+          }
+        />
       ) : null}
 
       {view === "statistics" ||
@@ -3131,6 +3097,10 @@ const AppContent = () => {
   const [authUnavailable, setAuthUnavailable] = useState(false);
   const [clubs, setClubs] = useState<readonly Club[]>([]);
   const [selectedClub, setSelectedClub] = useState<Club | null>(null);
+  const clubsRef = useRef(clubs);
+  clubsRef.current = clubs;
+  const clubUpdateQueue = useRef(Promise.resolve());
+  const [clubUpdatesPending, setClubUpdatesPending] = useState(0);
   const [blockedClub, setBlockedClub] = useState<Club | null>(null);
   const [browserGameState, setBrowserGameState] = useState<BrowserGameStorageState>({
     kind: "empty",
@@ -3272,6 +3242,35 @@ const AppContent = () => {
     }
   };
 
+  // The API updates the whole club. Merge each queued change with the last
+  // acknowledged club, not the render that started an earlier request.
+  const updateClubDetails = (clubId: string, changes: Partial<ClubUpdateInput>) => {
+    setClubUpdatesPending((pending) => pending + 1);
+    const result = clubUpdateQueue.current.then(async () => {
+      const current = clubsRef.current.find((club) => club.id === clubId);
+      if (current === undefined) throw new Error("Club is no longer available");
+      const saved = await updateClub(clubId, {
+        name: current.name,
+        city: current.city,
+        headerLogo: current.headerLogo,
+        cardLogo: current.cardLogo,
+        language: current.language,
+        bestMoveEnabled: current.bestMoveEnabled,
+        ...changes,
+      });
+      clubsRef.current = clubsRef.current.map((club) => (club.id === saved.id ? saved : club));
+      setClubs(clubsRef.current);
+      setSelectedClub((club) => (club?.id === saved.id ? saved : club));
+      return saved;
+    });
+    // A failed save does not poison subsequent retries or queued changes.
+    clubUpdateQueue.current = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result.finally(() => setClubUpdatesPending((pending) => pending - 1));
+  };
+
   const saveClub = async (clubId: string | null, input: ClubInput | ClubUpdateInput) => {
     if (user === null) throw new Error("Sign in before editing a club");
     setShowDeletionNotice(false);
@@ -3279,15 +3278,20 @@ const AppContent = () => {
       if (clubId === null && (!("ownerConsent" in input) || input.ownerConsent !== true)) {
         throw new Error("Owner profile consent is required to create a club");
       }
-      const saved =
-        clubId === null
-          ? await createClub(input as ClubInput)
-          : await updateClub(clubId, input as ClubUpdateInput);
-      setClubs((current) =>
-        clubId === null
-          ? [...current, saved]
-          : current.map((club) => (club.id === clubId ? saved : club)),
-      );
+      if (clubId === null) {
+        const saved = await createClub(input as ClubInput);
+        setClubs((current) => [...current, saved]);
+      } else {
+        // Best Move has one editing surface. A hidden editor copy must not
+        // overwrite a newer default saved while the editor was being opened.
+        await updateClubDetails(clubId, {
+          name: input.name,
+          city: input.city,
+          headerLogo: input.headerLogo,
+          cardLogo: input.cardLogo,
+          language: input.language,
+        });
+      }
       setError(null);
     } catch (saveError) {
       reportError(saveError, { source: "api", context: "clubs.save" });
@@ -3348,16 +3352,11 @@ const AppContent = () => {
 
   const changeSelectedClubLanguage = async (language: Locale) => {
     if (selectedClub === null) return;
-    const saved = await updateClub(selectedClub.id, {
-      name: selectedClub.name,
-      city: selectedClub.city,
-      headerLogo: selectedClub.headerLogo,
-      cardLogo: selectedClub.cardLogo,
-      language,
-      bestMoveEnabled: selectedClub.bestMoveEnabled,
-    });
-    setSelectedClub(saved);
-    setClubs((current) => current.map((club) => (club.id === saved.id ? saved : club)));
+    await updateClubDetails(selectedClub.id, { language });
+  };
+  const changeSelectedClubBestMove = async (bestMoveEnabled: boolean) => {
+    if (selectedClub === null) return;
+    await updateClubDetails(selectedClub.id, { bestMoveEnabled });
   };
 
   const openBrowserGameOwner = () => {
@@ -3558,6 +3557,8 @@ const AppContent = () => {
               setBlockedClub(null);
             }}
             onLanguageChange={changeSelectedClubLanguage}
+            onBestMoveChange={changeSelectedClubBestMove}
+            clubSaving={clubUpdatesPending > 0}
             onStorageError={(message) => {
               cancelEntry();
               setStorageError(message);
