@@ -280,7 +280,7 @@ export async function runLedgerScenarios({ page, baseUrl, club, players, api, ev
         .getBoundingClientRect().bottom;
       const controls = [
         ...document.querySelectorAll(
-          ".host-view-switch button, .timer-advance button, .ledger-advance button, .ledger-row-controls button",
+          ".host-view-switch button, .timer-advance button, .ledger-advance button, .ledger-player-action, .ledger-row-controls button",
         ),
       ].filter((element) => {
         const box = element.getBoundingClientRect();
@@ -329,6 +329,9 @@ export async function runLedgerScenarios({ page, baseUrl, club, players, api, ev
         })),
         headerCount: document.querySelectorAll(".ledger-table thead th").length,
         columnCount: document.querySelectorAll(".ledger-table col").length,
+        actionWidth: rect(document.querySelector(".ledger-table thead th:nth-child(2)")).width,
+        hasShooters: !!document.querySelector(".ledger-row-controls .shooter-button"),
+        duplicateActions: document.querySelectorAll(".ledger-actions .ledger-player-action").length,
         emptyCellText: [...document.querySelectorAll(".ledger-table tbody td:not(.ledger-actions)")]
           .filter((cell) => !cell.querySelector(".ledger-fact"))
           .map((cell) => cell.textContent),
@@ -380,8 +383,18 @@ export async function runLedgerScenarios({ page, baseUrl, club, players, api, ev
       assert.equal(day.period, "day");
       assert.equal(night.period, "night");
       assert.equal(day.day, night.day);
-      assert.doesNotMatch(day.label, /Night|Ночь/);
-      assert.match(night.label, /^(Night|Ночь) /);
+      const round = Number(day.day);
+      assert.ok(
+        (round === 1
+          ? ["Zero round", "Нулевой круг"]
+          : [`Day ${round - 1}`, `День ${round - 1}`]
+        ).includes(day.label),
+        `${tag}: day labels begin at zero round`,
+      );
+      assert.ok(
+        [`Night ${round}`, `Ночь ${round}`].includes(night.label),
+        `${tag}: night follows its preceding day`,
+      );
     }
     assert.equal(
       geometry.periodCells.length,
@@ -424,8 +437,13 @@ export async function runLedgerScenarios({ page, baseUrl, club, players, api, ev
       );
     }
     assert.ok(
-      geometry.historyHeadings.every((text) => !/Planning|Договорка|Night 1\b|Ночь 1\b/.test(text)),
+      geometry.historyHeadings.every((text) => !/Planning|Договорка|Night 0\b|Ночь 0\b/.test(text)),
       `${tag}: opening night omitted`,
+    );
+    assert.equal(geometry.duplicateActions, 0, `${tag}: primary action lives on the player name`);
+    assert.ok(
+      geometry.actionWidth <= (geometry.hasShooters ? 216 : 112) + 1,
+      `${tag}: compact actions reserve more history width`,
     );
     assert.equal(geometry.footer, false, `${tag}: no scrolling-instruction footer`);
     assert.equal(geometry.phaseBar, false, `${tag}: no phase controls above the grid`);
@@ -465,6 +483,55 @@ export async function runLedgerScenarios({ page, baseUrl, club, players, api, ev
       );
       assert.ok(item.hit, `${tag}: occluded action ${item.name}`);
     }
+  }
+  async function verifyNameNomination(locale, words) {
+    const gameId = randomUUID();
+    const history = ledgerHistoryFixture(players, gameId);
+    let game = history.initialGame.game;
+    while (game.phase !== "day") game = domain.advanceOpeningPhase(game);
+    await seed(checkpoint(game, history, gameId), gameId, "ledger");
+    const name = row(3).locator("th .ledger-player-action");
+    await expect(name).toHaveAccessibleName(/^(Nominate|Выдвинуть)/);
+    const select = async (nominatorSeat, selected, activate) => {
+      const before = await settled();
+      await activate();
+      await expect(name).toHaveAttribute("aria-pressed", String(selected));
+      const after = await settled();
+      assert.deepEqual(
+        after.current.state.game,
+        domain.setNominationSelection(before.current.state.game, nominatorSeat, 3, selected),
+      );
+      const entry = after.current.state.events.at(-1);
+      assert.equal(entry.type, "nomination.selection-set");
+      assert.deepEqual(entry.payload, { nominatorSeat, candidateSeat: 3, selected });
+    };
+    await select(1, true, () => name.locator("strong").tap());
+    const tabKey = report.browser === "webkit" ? "Alt+Tab" : "Tab";
+    for (let index = 0; index < 120; index++) {
+      if (await name.evaluate((node) => node === document.activeElement)) break;
+      await page.keyboard.press(tabKey);
+    }
+    await expect(name).toBeFocused();
+    await select(1, false, () => page.keyboard.press("Space"));
+    await select(1, true, () => page.keyboard.press("Enter"));
+    const nominated = await settled();
+    await row(4).locator("th strong").tap();
+    assert.deepEqual(
+      (await settled()).current,
+      nominated.current,
+      "Second nomination stays rejected",
+    );
+    await button(words.next).click();
+    await expect(name).toHaveAccessibleName(/^(Support|Поддержать)/);
+    await select(2, true, () => name.locator("strong").tap());
+    await capture(`${locale}-name-nomination`, true);
+    await select(2, false, () => name.locator("strong").tap());
+    await page.reload({ waitUntil: "networkidle" });
+    assert.deepEqual(
+      (await settled()).current.state.game.nominations,
+      nominated.current.state.game.nominations,
+    );
+    report.cases.push(`${locale}:name-nomination-support-native-activation`);
   }
   async function verifyDayAdvance(locale, words) {
     const timer = await page.locator(".timer-panel").elementHandle();
@@ -701,6 +768,7 @@ export async function runLedgerScenarios({ page, baseUrl, club, players, api, ev
               undo: /^Отменить последнее действие/,
               confirm: "Отменить",
             };
+      await verifyNameNomination(locale, words);
       const id = randomUUID();
       const viewport = page.viewportSize();
       const compactPortrait = viewport.width < 1160 && viewport.height >= viewport.width;
@@ -849,6 +917,7 @@ export async function runLedgerScenarios({ page, baseUrl, club, players, api, ev
         await page.getByRole("button", { name: "Preview state after log #1", exact: true }).click();
         await expect(button("Exit preview")).toBeVisible();
         await expect(page.locator(".ledger-row-controls button")).toHaveCount(0);
+        await expect(page.locator(".ledger-player-action")).toHaveCount(0);
         await expect(button(words.next)).toHaveCount(0);
         await verifySidebar("en-preview");
         await capture("en-preview");
@@ -938,7 +1007,7 @@ export async function runLedgerScenarios({ page, baseUrl, club, players, api, ev
         report.cases.push(`${locale}:sidebar-${phase}`);
       }
     }
-    assert.equal(report.cases.length, 28, "All declared browser cases executed");
+    assert.equal(report.cases.length, 30, "All declared browser cases executed");
     assert.equal(new Set(report.cases).size, report.cases.length, "Distinct browser cases");
     report.sourcesAfter = await sourceManifest();
     assert.deepEqual(report.sourcesAfter, report.sourcesBefore, "Frozen source inputs");

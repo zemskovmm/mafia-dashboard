@@ -40,7 +40,7 @@ const en = {
   tutorialTitle: "Using the Ledger",
   tutorialRowsTitle: "Current-player actions",
   tutorialRows:
-    "Player-row buttons use the same current-phase actions as Table: nominate, vote or choose a target. Historical cells only show recorded facts.",
+    "Click a player's name to nominate, support, vote or choose a target, just as in Table. Click again to remove a selection where allowed. Historical cells only show recorded facts.",
   tutorialScrollTitle: "Read the game across days",
   tutorialScroll:
     "Four day/night pairs are ready from the start; future cells stay blank. Later rounds extend the grid and scroll horizontally. Game-wide ballot notices stay in the game log. Scroll through rounds or expand Details; neither changes the game.",
@@ -91,7 +91,7 @@ const ru: Record<keyof typeof en, string> = {
   tutorialTitle: "Как пользоваться журналом",
   tutorialRowsTitle: "Действия с игроками",
   tutorialRows:
-    "Кнопки строк выполняют те же действия текущего этапа, что и Стол: выставить, проголосовать или выбрать цель. Ячейки истории показывают только записанные факты.",
+    "Нажмите на имя игрока, чтобы выставить, поддержать, проголосовать или выбрать цель — как в виде «Стол». Повторное нажатие снимает выбор, если это разрешено. Ячейки истории показывают только записанные факты.",
   tutorialScrollTitle: "Игра по дням",
   tutorialScroll:
     "Сначала доступны четыре пары столбцов дня и ночи; будущие ячейки остаются пустыми. Следующие круги расширяют таблицу и доступны горизонтальной прокруткой. Общие события голосования остаются в журнале событий. Листайте круги или открывайте «Подробнее» — это не меняет игру.",

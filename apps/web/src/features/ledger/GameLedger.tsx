@@ -128,7 +128,7 @@ export const GameLedger = ({
                 >
                   <strong>
                     {period === "night"
-                      ? t("night", { night: day + 1 })
+                      ? t("night", { night: day })
                       : day === 1
                         ? t("zero")
                         : t("day", { day: day - 1 })}
@@ -159,6 +159,25 @@ export const GameLedger = ({
                 !completed && (seat.current || seat.currentVoter || seat.votingCandidate);
               const selected = seat.pressed ?? seat.nominationSelected ?? seat.voted;
               const action = seatActionLabel?.(seat);
+              const identity = (
+                <span className="ledger-player">
+                  <span className="ledger-seat">{seat.seat}</span>
+                  <span className="ledger-player-identity">
+                    <strong title={seat.name}>{seat.name}</strong>
+                    <span
+                      className={`ledger-role${showRole && seat.role ? ` role-${seat.role}` : ""}`}
+                    >
+                      {showRole && seat.role ? t(seat.role) : t("hidden")}
+                      {departed
+                        ? ` · ${t(seat.status === "red-carded" ? "removed" : "eliminated")}`
+                        : ""}
+                    </span>
+                  </span>
+                  {current && (
+                    <span className="ledger-current-marker" aria-label={t("currentPlayer")} />
+                  )}
+                </span>
+              );
               return (
                 <tr
                   key={`${row.playerId}:${row.seat}`}
@@ -166,23 +185,21 @@ export const GameLedger = ({
                   className={`${current ? "is-current " : ""}${departed ? "is-departed " : ""}${selected ? "is-selected " : ""}${winning ? "is-winner" : ""}`}
                 >
                   <th scope="row">
-                    <div className="ledger-player">
-                      <span className="ledger-seat">{seat.seat}</span>
-                      <div>
-                        <strong title={seat.name}>{seat.name}</strong>
-                        <span
-                          className={`ledger-role${showRole && seat.role ? ` role-${seat.role}` : ""}`}
-                        >
-                          {showRole && seat.role ? t(seat.role) : t("hidden")}
-                          {departed
-                            ? ` · ${t(seat.status === "red-carded" ? "removed" : "eliminated")}`
-                            : ""}
-                        </span>
-                      </div>
-                      {current && (
-                        <span className="ledger-current-marker" aria-label={t("currentPlayer")} />
-                      )}
-                    </div>
+                    {!readOnly && !completed && onSeatClick && action ? (
+                      <button
+                        className="ledger-player-action"
+                        type="button"
+                        aria-label={action}
+                        title={action}
+                        disabled={seatActionDisabled?.(seat) ?? false}
+                        aria-pressed={selected}
+                        onClick={() => onSeatClick(seat.seat)}
+                      >
+                        {identity}
+                      </button>
+                    ) : (
+                      identity
+                    )}
                   </th>
                   <td className="ledger-actions">
                     <div className="ledger-player-state">
@@ -208,19 +225,6 @@ export const GameLedger = ({
                     </div>
                     {!readOnly && !completed && (
                       <div className="ledger-row-controls">
-                        {onSeatClick && action && (
-                          <button
-                            className="ledger-player-action"
-                            type="button"
-                            aria-label={action}
-                            title={action}
-                            disabled={seatActionDisabled?.(seat) ?? false}
-                            aria-pressed={selected}
-                            onClick={() => onSeatClick(seat.seat)}
-                          >
-                            {renderSeatActions ? "◎" : action}
-                          </button>
-                        )}
                         {renderSeatActions?.(seat)}
                         {onSeatFoul && (seat.status ?? "active") === "active" && (
                           <button

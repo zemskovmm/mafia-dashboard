@@ -520,6 +520,7 @@ describe.each(views)("%s host-controller parity", (view) => {
       },
     });
     expect(h.game()).toMatchObject({ phase: "finished", winner: "red" });
+    if (view === "ledger") expect(document.querySelector(".ledger-player-action")).toBeNull();
     expect(h.finish).not.toHaveBeenCalled();
     const outcome = h.game();
     switchView(otherView(view));

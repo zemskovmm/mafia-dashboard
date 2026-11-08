@@ -113,12 +113,19 @@ describe("interchangeable host presentations", () => {
       const ledger = screen.getByRole("table", { name: "Game ledger" });
       const headings = within(ledger).getAllByRole("columnheader");
       expect(headings).toHaveLength(10);
-      expect(ledger).not.toHaveTextContent(/Planning|Night 1\b/);
-      expect(headings[2]).toHaveTextContent("Zero round");
-      expect(headings[2]).not.toHaveTextContent("Night");
-      expect(headings[3]).toHaveTextContent("Night 2");
-      expect(headings[8]).toHaveTextContent("Day 3");
-      expect(headings[9]).toHaveTextContent("Night 5");
+      expect(ledger).not.toHaveTextContent(/Planning|Night 0\b/);
+      expect(
+        headings.slice(2).map((heading) => heading.querySelector("strong")?.textContent),
+      ).toEqual([
+        "Zero round",
+        "Night 1",
+        "Day 1",
+        "Night 2",
+        "Day 2",
+        "Night 3",
+        "Day 3",
+        "Night 4",
+      ]);
       for (const heading of headings.slice(stage === "opening" ? 2 : 3)) {
         expect(heading).not.toHaveClass("ledger-current-day");
       }
@@ -154,6 +161,7 @@ describe("interchangeable host presentations", () => {
       expect(current).toHaveLength(1);
       expect(current[0]).toHaveAttribute("data-ledger-period", period);
       expect(current[0]).toHaveAttribute("data-ledger-day", "1");
+      expect(current[0]).toHaveTextContent(period === "day" ? "Zero round" : "Night 1");
       view.unmount();
     }
   });
@@ -187,7 +195,7 @@ describe("interchangeable host presentations", () => {
         />,
       );
       const ledger = screen.getByRole("table", { name: "Game ledger" });
-      expect(ledger).not.toHaveTextContent(/Planning|Night 1\b/);
+      expect(ledger).not.toHaveTextContent(/Planning|Night 0\b/);
       expect(ledger.querySelectorAll(".ledger-fact")).toHaveLength(expectedFacts.length);
       expect(
         within(ledger).getAllByText(/Shooting result: seat \d+ killed/).length,
@@ -284,9 +292,17 @@ describe("interchangeable host presentations", () => {
     expect(snapshot()).toBe(before);
     expect(accepted).not.toHaveBeenCalled();
     const row = document.querySelector('[data-ledger-seat="2"]')! as HTMLElement;
-    fireEvent.click(within(row).getByRole("button", { name: /^Nominate / }));
-    expect(accepted).toHaveBeenLastCalledWith(
-      expect.objectContaining({ type: "nomination.selection-set" }),
+    const name = within(row).getByRole("rowheader");
+    expect(within(name).getByRole("button", { name: /^Nominate / })).toHaveTextContent("Player 2");
+    expect(row.querySelector(".ledger-actions .ledger-player-action")).toBeNull();
+    fireEvent.click(within(name).getByText("Player 2"));
+    expect(accepted).toHaveBeenLastCalledWith({
+      type: "nomination.selection-set",
+      payload: { nominatorSeat: 1, candidateSeat: 2, selected: true },
+    });
+    expect(within(name).getByRole("button", { name: /Remove selection/ })).toHaveAttribute(
+      "aria-pressed",
+      "true",
     );
     fireEvent.click(within(row).getByRole("button", { name: /^Foul / }));
     expect(accepted).toHaveBeenLastCalledWith(expect.objectContaining({ type: "foul.issued" }));
@@ -326,6 +342,7 @@ describe("interchangeable host presentations", () => {
     expect(screen.getByRole("button", { name: "Exit preview" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: /^Foul / })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Nominate / })).not.toBeInTheDocument();
+    expect(document.querySelector(".ledger-player-action")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Table" }));
     expect(snapshot()).toBe(before);
     expect(accepted).not.toHaveBeenCalled();

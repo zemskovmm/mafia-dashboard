@@ -56,7 +56,7 @@
 
 .game-ledger {
   --ledger-identity-width: 180px;
-  --ledger-action-width: 276px;
+  --ledger-action-width: 112px;
   display: flex;
   flex: 1;
   flex-direction: column;
@@ -66,6 +66,9 @@
   min-width: 0;
   color: var(--text);
   animation: ledger-enter 180ms ease-out;
+}
+.game-ledger:has(.shooter-button) {
+  --ledger-action-width: 216px;
 }
 .ledger-phase-bar {
   display: flex;
@@ -295,8 +298,25 @@
     500 0.76rem "JetBrains Mono",
     monospace;
 }
-.ledger-player > div {
+.ledger-player-identity {
   min-width: 0;
+}
+.ledger-table tbody th {
+  padding-block: 1px;
+}
+.ledger-player-action {
+  width: 100%;
+  min-width: 48px;
+  min-height: 48px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+.ledger-player-action[aria-pressed="true"] {
+  color: var(--accent);
 }
 .ledger-player strong {
   display: block;
@@ -381,18 +401,8 @@
   font-size: 0.64rem;
   line-height: 1.25;
 }
-.ledger-row-controls .ledger-player-action {
-  flex: 1;
-}
-.ledger-row-controls .ledger-player-action[aria-pressed="true"] {
-  border-color: var(--accent);
-  color: var(--accent);
-}
 .ledger-row-controls .shooter-button {
   flex: 0 0 48px;
-}
-.ledger-row-controls:has(.shooter-button) .ledger-player-action {
-  flex: 1 0 48px;
 }
 .ledger-row-controls > .ledger-foul-button,
 .ledger-row-controls > .ledger-penalty-button {
