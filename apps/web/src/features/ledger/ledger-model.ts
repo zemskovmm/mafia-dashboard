@@ -330,6 +330,9 @@ export const projectLedger = ({ game, frames, privacyHidden }: LedgerInput): Led
             id: `${origin.id}:departure:${seat}`,
             kind: cause === "discipline" ? "removed" : "eliminated",
             period: origin.period,
+            ...(entry.type === "player.manually-removed" && entry.payload.seat === seat
+              ? { manualRemovalReason: entry.payload.reason }
+              : {}),
           },
           after,
         );

@@ -16,6 +16,12 @@ export interface PlayerActionPresentation {
 /** Only explicit current facts can explain a checkpoint; old inactive status cannot. */
 const knownCause = (game: GameState, seat: number): PlayerDepartureCause | undefined => {
   if (game.players.find((p) => p.seat === seat)?.status === "red-carded") return "discipline";
+  const manual = game.manualRemovals?.find((removal) => removal.seat === seat);
+  if (manual) {
+    if (manual.reason === "voted-out") return "vote";
+    if (manual.reason === "mafia-kill") return "mafia";
+    return "unknown";
+  }
   if (game.goodbyeSeats?.includes(seat)) {
     if (game.goodbyeNext === "night") return "vote";
     if (game.goodbyeNext === "day") return "mafia";
@@ -63,7 +69,7 @@ export const publicDepartureCauses = (
     game.players.flatMap((player) => {
       if (player.status === "red-carded") return [[player.seat, "discipline"]];
       if (player.status !== "eliminated" || pending.includes(player.seat)) return [];
-      return [[player.seat, causes[player.seat] ?? "unknown"]];
+      return [[player.seat, causes[player.seat] ?? knownCause(game, player.seat) ?? "unknown"]];
     }),
   );
 };

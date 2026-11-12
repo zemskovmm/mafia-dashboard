@@ -122,6 +122,61 @@ const allFacts = (model: LedgerModel) =>
   model.rows.flatMap(({ cells }) => cells.flatMap(({ facts }) => facts));
 
 describe("pure admitted-history ledger projection", () => {
+  it.each(
+    (["voted-out", "mafia-kill", "other"] as const).flatMap((reason) =>
+      [false, true].map((night) => ({ reason, night })),
+    ),
+  )(
+    "keeps manual $reason (night=$night) as one public elimination, without invented ballots/shots/discipline",
+    ({ reason, night }) => {
+      const h = history(night ? beginNight(zeroRound) : zeroRound);
+      const seat = h.game.players.find((player) => player.role === "citizen")!.seat;
+      const earlier = h.input(true);
+      const prefixBytes = JSON.stringify(earlier.frames.map(({ entry }) => entry));
+      h.append({ type: "player.manually-removed", payload: { seat, reason } });
+      const accepted = h.input(true);
+      const bytes = JSON.stringify(accepted);
+      const model = projectLedger(accepted);
+      expect(allFacts(model)).toEqual([
+        expect.objectContaining({
+          kind: "eliminated",
+          period: night ? "night" : "day",
+          manualRemovalReason: reason,
+        }),
+      ]);
+      expect(facts(model, seat, earlier.game.day)).toHaveLength(1);
+      expect(projectLedger({ ...accepted, privacyHidden: false })).toEqual(model);
+      expect(projectLedger(JSON.parse(bytes))).toEqual(model);
+      expect(allFacts(projectLedger(earlier))).toEqual([]);
+      expect(JSON.stringify(accepted.frames.slice(0, -1).map(({ entry }) => entry))).toBe(
+        prefixBytes,
+      );
+      expect(JSON.stringify(accepted)).toBe(bytes);
+    },
+  );
+
+  it.each(["voted-out", "mafia-kill", "other"] as const)(
+    "shows only the public manual %s fact while preserving a private earlier shooting result",
+    (reason) => {
+      const h = history(beginNight(zeroRound));
+      const seat = h.game.players.find((player) => player.role === "citizen")!.seat;
+      const shooters = h.game.players.filter((player) => player.team === "black");
+      shoot(h, Object.fromEntries(shooters.map((player) => [player.seat, seat])));
+      const prefix = h.input(true);
+      expect(allFacts(projectLedger(prefix))).toEqual([]);
+      h.append({ type: "player.manually-removed", payload: { seat, reason } });
+      expect(allFacts(projectLedger(h.input(true)))).toEqual([
+        expect.objectContaining({
+          kind: "eliminated",
+          period: "night",
+          manualRemovalReason: reason,
+        }),
+      ]);
+      expect(allFacts(projectLedger(prefix))).toEqual([]);
+      expect(h.game.nightResult).toEqual({ kind: "kill", targetSeat: seat });
+    },
+  );
+
   it("retains accepted nominations after the current game has cleared them", () => {
     expect(sample.game.nominations).toEqual([]);
     const model = projectLedger({ ...sample, privacyHidden: false });

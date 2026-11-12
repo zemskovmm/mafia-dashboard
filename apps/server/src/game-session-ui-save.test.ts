@@ -9,6 +9,7 @@ import {
   completeRoleDraw,
   createGame,
   createGameLogEntry,
+  createInitialGameBaseline,
   createSeededRandom,
   createSetup,
   drawRoleForSeat,
@@ -17,18 +18,28 @@ import {
   replayGameLog,
   rerollRoleForSeat,
   type CanonicalGameEventDraft,
+  type GameLogEntry,
   type GameState,
+  type InitialGameBaseline,
+  type ManualRemovalReason,
   type ReplayFrame,
   type SetupState,
 } from "@mafia/game-domain";
 import { buildApp } from "./app.js";
 import { DEFAULT_CLUB_ID } from "./club-store.js";
 import { blobReference } from "./azure-storage.js";
+import { createAzureStores } from "./azure-stores.js";
 import { createApplicationStorageFixture } from "./test-helpers/storage-fixture.js";
 import { verifyAdjudicationHttp } from "./test-helpers/adjudication-http.js";
 
 let fixture: Awaited<ReturnType<typeof createApplicationStorageFixture>>;
 let app: Awaited<ReturnType<typeof buildApp>>;
+const owner = {
+  id: "00000000-0000-4000-8000-000000000001",
+  email: "owner@mafiamalaga.es",
+  name: "Owner",
+  picture: null,
+};
 
 const rawGame = async (gameId: string) => {
   const row = await fixture.storage.getEntity(`club:${DEFAULT_CLUB_ID}:game:${gameId}`);
@@ -54,12 +65,6 @@ const resultProjection = async (gameId: string) =>
     .map(({ playerId, won }) => ({ player_id: playerId, won }));
 
 beforeAll(async () => {
-  const owner = {
-    id: "00000000-0000-4000-8000-000000000001",
-    email: "owner@mafiamalaga.es",
-    name: "Owner",
-    picture: null,
-  };
   fixture = await createApplicationStorageFixture(owner);
   app = await buildApp({
     stores: fixture.stores,
@@ -486,4 +491,217 @@ describe("whole snapshot save", () => {
   it("preserves a pending and completed adjudication through Azure HTTP reads", async () => {
     await verifyAdjudicationHttp(app, DEFAULT_CLUB_ID);
   });
+
+  it.each<ManualRemovalReason>(["voted-out", "mafia-kill", "other"])(
+    "restores manual removal (%s) and retained Undo prefixes through API and private Azure storage",
+    async (reason) => {
+      // Use the same branch selection as App Undo, without importing its React host.
+      const source = pathToFileURL(
+        resolve(process.cwd(), "../web/src/features/game/game-history.ts"),
+      ).href;
+      // eslint-disable-next-line no-unsanitized/method -- Fixed repository-local test module.
+      const { getActiveBranch, getUndoableEvents, replayToEvent } = (await import(
+        /* @vite-ignore */ source
+      )) as {
+        getActiveBranch: (events: readonly GameLogEntry[], head: string | null) => GameLogEntry[];
+        getUndoableEvents: (events: readonly GameLogEntry[]) => GameLogEntry[];
+        replayToEvent: (
+          baseline: InitialGameBaseline,
+          events: readonly GameLogEntry[],
+          head: string,
+        ) => GameState;
+      };
+      const headers = { "x-club-id": DEFAULT_CLUB_ID };
+      const players: { id: string; seat: number }[] = [];
+      for (let seat = 1; seat <= 10; seat += 1) {
+        const response = await app.inject({
+          method: "POST",
+          url: "/api/players",
+          headers,
+          payload: {
+            nickname: `Manual removal ${seat} ${randomUUID()}`,
+            consent: false,
+            firstName: null,
+            lastName: null,
+            email: null,
+          },
+        });
+        expect(response.statusCode, response.body).toBe(201);
+        players.push({ id: response.json().player.id as string, seat });
+      }
+      let setup = beginRoleDraw(createSetup(players), createSeededRandom(71));
+      for (let seat = 1; seat <= 10; seat += 1) setup = drawRoleForSeat(setup, seat);
+      let opening = createGame(completeRoleDraw(setup));
+      while (opening.phase !== "day") opening = advanceSetupPhase(opening);
+      const baseline = createInitialGameBaseline(opening);
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/game-sessions",
+        headers,
+        payload: {
+          creationId: randomUUID(),
+          name: `Manual removal ${reason}`,
+          state: {},
+          results: null,
+        },
+      });
+      expect(created.statusCode, created.body).toBe(201);
+      const gameId = created.json().gameId as string;
+      const url = `/api/game-sessions/${gameId}`;
+      const accept = (
+        before: GameState,
+        events: readonly GameLogEntry[],
+        draft: CanonicalGameEventDraft,
+      ) =>
+        createGameLogEntry({
+          gameId,
+          id: randomUUID(),
+          sequence: events.length + 1,
+          parentEventId: events.at(-1)?.id ?? null,
+          createdAt: "2026-11-12T16:00:00.000Z",
+          before,
+          draft,
+        });
+      const root = accept(opening, [], { type: "game.checkpointed", payload: {} });
+      const foul = accept(root.after, [root.entry], {
+        type: "foul.issued",
+        payload: { seat: 1, foulNumber: 1, redCarded: false },
+      });
+      const prefix = [root.entry, foul.entry];
+      const baselineBytes = JSON.stringify(baseline);
+      const prefixBytes = JSON.stringify(prefix);
+      const snapshot = (game: GameState, events: readonly GameLogEntry[]) => ({
+        setup: null,
+        game,
+        hostPlayerId: null,
+        playlistId: "",
+        initialGame: baseline,
+        events,
+        headEventId: events.at(-1)!.id,
+        resetReturnEventId: null,
+        log: [],
+        legacyLog: [],
+        undoHistory: [],
+        undoBudget: 0,
+      });
+      const save = async (state: ReturnType<typeof snapshot>) => {
+        const response = await app.inject({
+          method: "PUT",
+          url,
+          headers,
+          payload: {
+            name: `Manual removal ${reason}`,
+            mutationId: randomUUID(),
+            state: JSON.parse(JSON.stringify(state)),
+            results: null,
+          },
+        });
+        expect(response.statusCode, response.body).toBe(200);
+      };
+      await save(snapshot(foul.after, prefix));
+      const before = await rawGame(gameId);
+      const removed = accept(foul.after, prefix, {
+        type: "player.manually-removed",
+        payload: { seat: 1, reason },
+      });
+      await save(snapshot(removed.after, [...prefix, removed.entry]));
+
+      // Reopen the real HTTP application over fresh Azure clients, not saved response objects.
+      const reopened = createAzureStores(fixture.options);
+      const reader = await buildApp({
+        stores: reopened.stores,
+        defaultClubId: DEFAULT_CLUB_ID,
+        authenticateRequest: async () => owner,
+      });
+      try {
+        const read = async (expected: ReturnType<typeof snapshot>) => {
+          const response = await reader.inject({ method: "GET", url, headers });
+          expect(response.statusCode, response.body).toBe(200);
+          const loaded = response.json().session.state as ReturnType<typeof snapshot>;
+          expect(loaded).toEqual(JSON.parse(JSON.stringify(expected)));
+          expect(JSON.parse((await rawGame(gameId)).state)).toEqual(loaded);
+          expect(JSON.stringify(loaded.initialGame)).toBe(baselineBytes);
+          expect(JSON.stringify(loaded.events.slice(0, prefix.length))).toBe(prefixBytes);
+          const replay = replayGameLog(loaded.initialGame, loaded.events, gameId);
+          expect(replay.game).toEqual(loaded.game);
+          expect(replay.frames.map(({ after }) => hashGameState(after))).toEqual(
+            loaded.events.map(({ stateHashAfter }) => stateHashAfter),
+          );
+          return loaded;
+        };
+        let loaded = await read(snapshot(removed.after, [...prefix, removed.entry]));
+        expect(loaded.initialGame.replayVersion).toBe(3);
+        expect(loaded.events.at(-1)).toEqual(removed.entry);
+        expect(loaded.game.players[0]).toEqual({ ...foul.after.players[0], status: "eliminated" });
+        expect(loaded.game.manualRemovals).toEqual([{ seat: 1, reason }]);
+        expect(loaded.game.phase).toBe("day");
+        for (const key of [
+          "disciplinaryRemovals",
+          "ballotCancellationDay",
+          "redCardIssuedThisDay",
+          "votingCancellation",
+          "goodbyeSeats",
+          "bestMove",
+        ] as const)
+          expect(loaded.game[key]).toBeUndefined();
+        expect(replayGameLog(createInitialGameBaseline(loaded.game), [], gameId).game).toEqual(
+          loaded.game,
+        );
+        const corrupt = loaded.events.map((entry) =>
+          entry.id === removed.entry.id
+            ? { ...entry, stateHashAfter: `sha256:${"0".repeat(64)}` }
+            : entry,
+        );
+        expect(() => replayGameLog(loaded.initialGame, corrupt, gameId)).toThrow();
+        const publicLog = await reader.inject({
+          method: "GET",
+          url: `/api/games/${gameId}/events?visibility=public`,
+          headers,
+        });
+        expect(publicLog.statusCode, publicLog.body).toBe(200);
+        expect(publicLog.json().events).toContainEqual(
+          expect.objectContaining({
+            type: "player.manually-removed",
+            payload: { seat: 1, reason },
+          }),
+        );
+
+        const next = accept(loaded.game, loaded.events, {
+          type: "foul.issued",
+          payload: { seat: 2, foulNumber: 1, redCarded: false },
+        });
+        await save(snapshot(next.after, [...loaded.events, next.entry]));
+        loaded = await read(snapshot(next.after, [...loaded.events, next.entry]));
+        // Undo the later action retains the manual-removal fact, even with legacy budget zero.
+        for (const expected of [removed.after, foul.after]) {
+          const last = getUndoableEvents(getActiveBranch(loaded.events, loaded.headEventId)).at(
+            -1,
+          )!;
+          const retained = getActiveBranch(loaded.events, last.parentEventId);
+          const undone = replayToEvent(loaded.initialGame, retained, last.parentEventId!);
+          expect(undone).toEqual(expected);
+          await save(snapshot(undone, retained));
+          loaded = await read(snapshot(undone, retained));
+        }
+        expect(loaded.game.manualRemovals).toBeUndefined();
+        expect(loaded.game.players[0]?.status).toBe("active");
+        expect((await rawGame(gameId)).state).toBe(before.state);
+
+        const replacement = accept(loaded.game, loaded.events, {
+          type: "turn.completed",
+          payload: { seat: 1 },
+        });
+        await save(snapshot(replacement.after, [...loaded.events, replacement.entry]));
+        loaded = await read(snapshot(replacement.after, [...loaded.events, replacement.entry]));
+        expect(loaded.events.map(({ id }) => id)).toEqual([
+          ...prefix.map(({ id }) => id),
+          replacement.entry.id,
+        ]);
+        expect(loaded.game.manualRemovals).toBeUndefined();
+      } finally {
+        await reader.close();
+        await reopened.end();
+      }
+    },
+  );
 });

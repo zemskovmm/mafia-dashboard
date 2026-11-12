@@ -1,4 +1,4 @@
-import type { GameState, ReplayFrame } from "@mafia/game-domain";
+import type { GameState, ManualRemovalReason, ReplayFrame } from "@mafia/game-domain";
 
 /** Presentation facts only: never persisted or passed back to canonical replay. */
 export type LedgerFactKind =
@@ -35,6 +35,8 @@ export interface LedgerFact {
   readonly id: string;
   readonly kind: LedgerFactKind;
   readonly period: "day" | "night";
+  /** Public reason annotation; not evidence of a ballot or any physical shots. */
+  readonly manualRemovalReason?: ManualRemovalReason;
   readonly values?: Readonly<Record<string, string | number>>;
   readonly provisional?: boolean;
 }

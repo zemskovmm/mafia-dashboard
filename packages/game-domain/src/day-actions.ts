@@ -67,7 +67,7 @@ export const cancelVoting = (
 
 export const isVotingRequired = (day: number, nominationCount: number): boolean =>
   nominationCount > 0 && (day > 1 || nominationCount > 1);
-const completeDay = (game: GameState): GameState => {
+export const completeDay = (game: GameState): GameState => {
   const nominations = getActiveNominations(game);
   if (game.redCardIssuedThisDay === true || game.ballotCancellationDay === game.day) {
     return cancelVoting({ ...game, nominations }, { reason: "red-card" });
@@ -571,7 +571,19 @@ export const completeCarCrashResult = (game: GameState): GameState => {
   if (game.phase !== "car-crash-result" || game.carCrashResult === undefined) {
     throw new Error("Only a reviewed car-crash result can continue");
   }
-  if (!game.carCrashResult.eliminate) return transitionToNight(game);
+  if (!game.carCrashResult.eliminate) {
+    // A manual correction may have created a numerical win while this accepted
+    // result was awaiting Continue. Untouched historical paths remain unchanged.
+    const winner = game.manualRemovals?.length ? evaluateVictory(game.players) : null;
+    return winner === null
+      ? transitionToNight(game)
+      : {
+          ...game,
+          phase: "finished",
+          winner,
+          carCrashResult: undefined,
+        };
+  }
   const seats = game.carCrashResult.seats.filter(
     (seat) => game.players.find((p) => p.seat === seat)?.status === "active",
   );

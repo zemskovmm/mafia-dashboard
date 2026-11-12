@@ -4,6 +4,7 @@ import { tryApplyGameEvent } from "@mafia/game-domain";
 import type {
   CanonicalGameEventDraft,
   GameState,
+  ManualRemovalReason,
   RemovalObservation,
   RemovalOccurrenceStage,
 } from "@mafia/game-domain";
@@ -111,7 +112,7 @@ const PenaltyForm = ({
   const [seat, setSeat] = useState(
     request?.seat ?? game.players.find((p) => p.status === "active")?.seat ?? 1,
   );
-  const [action, setAction] = useState<"foul" | "removal" | "opponent-victory">(
+  const [action, setAction] = useState<"foul" | "removal" | "manual-removal" | "opponent-victory">(
     request?.action ?? "removal",
   );
   const [stage, setStage] = useState<RemovalOccurrenceStage | "">(
@@ -119,6 +120,7 @@ const PenaltyForm = ({
   );
   const [rule, setRule] = useState("");
   const [reason, setReason] = useState("");
+  const [manualReason, setManualReason] = useState<ManualRemovalReason | "">("");
   const [checkInProgress, setCheckInProgress] = useState(false);
   const player = game.players.find((p) => p.seat === seat);
   const fourth = action === "foul" && player?.fouls === 3;
@@ -137,25 +139,30 @@ const PenaltyForm = ({
           checkInProgress: !!checkOwner && checkInProgress,
         }
       : null;
-  const event: CanonicalGameEventDraft | null = !removal
-    ? {
-        type: "foul.issued",
-        payload: {
-          seat,
-          foulNumber: (player?.fouls ?? 0) + 1,
-          redCarded: false,
-          phase: game.phase,
-          currentTurnIndex: game.currentTurnIndex,
-        },
-      }
-    : observation
-      ? fourth
+  const event: CanonicalGameEventDraft | null =
+    action === "manual-removal"
+      ? manualReason
+        ? { type: "player.manually-removed", payload: { seat, reason: manualReason } }
+        : null
+      : !removal
         ? {
-            type: "discipline.foul-issued",
-            payload: { seat, foulNumber: 4, redCarded: true, removal: observation },
+            type: "foul.issued",
+            payload: {
+              seat,
+              foulNumber: (player?.fouls ?? 0) + 1,
+              redCarded: false,
+              phase: game.phase,
+              currentTurnIndex: game.currentTurnIndex,
+            },
           }
-        : { type: "discipline.removal-observed", payload: observation }
-      : null;
+        : observation
+          ? fourth
+            ? {
+                type: "discipline.foul-issued",
+                payload: { seat, foulNumber: 4, redCarded: true, removal: observation },
+              }
+            : { type: "discipline.removal-observed", payload: observation }
+          : null;
   const legal = event ? tryApplyGameEvent(game, event).ok : false;
   const submit = (draft: CanonicalGameEventDraft) => {
     const result = tryApplyGameEvent(game, draft);
@@ -190,7 +197,11 @@ const PenaltyForm = ({
               }}
             >
               {game.players.map((p) => (
-                <option key={p.seat} value={p.seat}>
+                <option
+                  key={p.seat}
+                  value={p.seat}
+                  disabled={action === "manual-removal" && p.status !== "active"}
+                >
                   #{p.seat} · {displayName(p)}
                 </option>
               ))}
@@ -206,6 +217,7 @@ const PenaltyForm = ({
           >
             {shortcut ? null : <option value="foul">{t("discipline.foul")}</option>}
             <option value="removal">{t("discipline.removal")}</option>
+            <option value="manual-removal">{t("discipline.manualRemoval")}</option>
             <option value="opponent-victory">{t("discipline.opponentVictory")}</option>
           </select>
         </label>
@@ -227,6 +239,25 @@ const PenaltyForm = ({
               if (event && legal) accept(event);
             }}
           >
+            {action === "manual-removal" ? (
+              <>
+                <p>{t("manualRemoval.hint")}</p>
+                <label>
+                  {t("manualRemoval.reason")}
+                  <select
+                    value={manualReason}
+                    onChange={(e) => setManualReason(e.target.value as ManualRemovalReason | "")}
+                  >
+                    <option value="">{t("manualRemoval.chooseReason")}</option>
+                    {(["voted-out", "mafia-kill", "other"] as const).map((value) => (
+                      <option key={value} value={value}>
+                        {t(`manualRemoval.${value}`)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            ) : null}
             {removal ? (
               <>
                 {shortcut && stage ? (
@@ -292,7 +323,7 @@ const PenaltyForm = ({
               </>
             ) : null}
             <button type="submit" disabled={!legal}>
-              {t("discipline.confirm")}
+              {t(action === "manual-removal" ? "manualRemoval.confirm" : "discipline.confirm")}
             </button>
           </form>
         )}

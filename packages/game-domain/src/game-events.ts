@@ -1,4 +1,5 @@
 import { assertCasperRole } from "./casper.js";
+import { assertManualRemoval, manuallyRemovePlayer } from "./manual-removal.js";
 import {
   announceDisciplinaryRemovals,
   assertRemovalObservation,
@@ -80,6 +81,7 @@ import type {
   LegalVotingSkipReason,
   OpponentVictoryAdjudication,
   RemovalObservation,
+  ManualRemoval,
 } from "./types.js";
 /** Canonical serialization shape, never a gameplay selector. */
 export const CURRENT_REPLAY_VERSION = 3 as const;
@@ -137,6 +139,7 @@ export const canonicalGameEventTypes = [
   "car-crash.count-completed",
   "mafia.shots-observed",
   "nomination.selection-set",
+  "player.manually-removed",
 ] as const;
 export type CanonicalGameEventType = (typeof canonicalGameEventTypes)[number];
 interface EventDraft<Type extends CanonicalGameEventType, Payload> {
@@ -155,6 +158,7 @@ type WithOptionalDisciplineContext<Payload> =
 export type CanonicalGameEventDraft =
   | EventDraft<"game.started", Record<string, never>>
   | EventDraft<"game.checkpointed", Record<string, never>>
+  | EventDraft<"player.manually-removed", ManualRemoval>
   | EventDraft<
       "phase.changed",
       {
@@ -461,6 +465,7 @@ export const canonicalGameEventSecrecy = {
   "car-crash.count-completed": false,
   "mafia.shots-observed": true,
   "nomination.selection-set": true,
+  "player.manually-removed": false,
 } as const satisfies Readonly<Record<CanonicalGameEventType, boolean>>;
 export const canonicalSecretGameEventTypes = canonicalGameEventTypes.filter(
   (type) => canonicalGameEventSecrecy[type],
@@ -682,6 +687,10 @@ const assertAdjudication = (value: unknown, context: string): void => {
 const assertCanonicalPayload = (type: CanonicalGameEventType, value: unknown): void => {
   const payload = requireRecord(value, `${type} payload`);
   switch (type) {
+    case "player.manually-removed":
+      assertExactKeys(payload, ["seat", "reason"], `${type} payload`);
+      assertManualRemoval(payload as unknown as ManualRemoval);
+      return;
     case "discipline.foul-issued": {
       assertExactKeys(payload, ["seat", "foulNumber", "redCarded", "removal"], `${type} payload`);
       assertSeat(payload.seat, `${type}.seat`);
@@ -998,6 +1007,7 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
       "adjudication",
       "rulesDrawReason",
       "disciplinaryRemovals",
+      "manualRemovals",
       "votingCancellation",
       "votingRound",
       "carCrashSeats",
@@ -1105,6 +1115,24 @@ const assertGameState: (value: unknown, context: string) => asserts value is Gam
     )
   )
     throw new Error("First-day departures must identify inactive players");
+  if (game.manualRemovals !== undefined) {
+    if (!Array.isArray(game.manualRemovals))
+      throw new Error("Manual removal metadata must be an array");
+    const seen = new Set<number>();
+    for (const item of game.manualRemovals) {
+      const removal = requireRecord(item, `${context}.manualRemovals`);
+      assertExactKeys(removal, ["seat", "reason"], `${context}.manualRemovals`);
+      assertManualRemoval(removal as unknown as ManualRemoval);
+      if (
+        seen.has(removal.seat as number) ||
+        !(game.players as GameState["players"]).some(
+          (p) => p.seat === removal.seat && p.status !== "active",
+        )
+      )
+        throw new Error("Manual removals must identify unique known inactive players");
+      seen.add(removal.seat as number);
+    }
+  }
   if (game.disciplinaryRemovals !== undefined) {
     if (!Array.isArray(game.disciplinaryRemovals))
       throw new Error("Disciplinary removal ledger must be an array");
@@ -1739,6 +1767,8 @@ const applyValidatedGameEvent = (game: GameState, event: CanonicalGameEventDraft
     throw new Error("A terminal game is outside active play and cannot accept more actions");
   }
   switch (event.type) {
+    case "player.manually-removed":
+      return manuallyRemovePlayer(game, event.payload);
     case "night.check-windows-opened":
       return openNightCheckWindows(game, event.payload.roles);
     case "discipline.foul-issued": {
@@ -1800,8 +1830,16 @@ const applyValidatedGameEvent = (game: GameState, event: CanonicalGameEventDraft
       // Carry the displayed assignments into canonical state so a draft/acceptance
       // race cannot turn an extra physical shot into a first shot or discard its basis.
       let observed: GameState = { ...game, shotAssignments: {} };
-      for (const [shooter, target] of Object.entries(event.payload.shotAssignments))
-        observed = recordMafiaShot(observed, Number(shooter), target!);
+      for (const [shooter, target] of Object.entries(event.payload.shotAssignments)) {
+        const seat = Number(shooter);
+        // Carry a removed shooter's unchanged earlier assignment, not a new shot.
+        // New/changed assignments and observations still require an active shooter.
+        observed =
+          game.manualRemovals?.some((removal) => removal.seat === seat) &&
+          game.shotAssignments[seat] === target
+            ? { ...observed, shotAssignments: { ...observed.shotAssignments, [seat]: target } }
+            : recordMafiaShot(observed, seat, target!);
+      }
       return recordShotObservations(observed, event.payload.observations);
     }
     case "best-move.number-accepted":

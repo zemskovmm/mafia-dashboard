@@ -1,7 +1,7 @@
 import * as domain from "@mafia/game-domain";
 import type { CanonicalGameEventDraft, GameState, ReplayFrame } from "@mafia/game-domain";
 import { describe, expect, it } from "vitest";
-import { projectPlayerActions } from "./player-action-presentation.js";
+import { advanceDepartureCauses, projectPlayerActions } from "./player-action-presentation.js";
 
 const day = (): GameState => {
   let setup = domain.beginRoleDraw(
@@ -38,6 +38,71 @@ const history = (initial: GameState) => {
 };
 
 describe("history-derived player presentation", () => {
+  it.each([
+    ["voted-out", "vote"],
+    ["mafia-kill", "mafia"],
+    ["other", "unknown"],
+  ] as const)(
+    "restores the explicit manual %s cause without phase inference or discipline",
+    (reason, cause) => {
+      const before = day();
+      const seat = before.players.find((player) => player.role === "citizen")!.seat;
+      const after = {
+        ...before,
+        players: before.players.map((player) =>
+          player.seat === seat ? { ...player, status: "eliminated" as const } : player,
+        ),
+        manualRemovals: [{ seat, reason }],
+      };
+      const bytes = JSON.stringify(after);
+      // A restored checkpoint has no observed transition to explain the endpoint.
+      expect(advanceDepartureCauses({}, before, after)).toEqual({ [seat]: cause });
+      expect(projectPlayerActions([], JSON.parse(bytes)).endpoints).toEqual({ [seat]: cause });
+      expect(projectPlayerActions([], after).action).toBeUndefined();
+      expect(projectPlayerActions([], before).endpoints).toEqual({});
+      expect(JSON.stringify(after)).toBe(bytes);
+      expect(after.players.find((player) => player.seat === seat)?.fouls).toBe(0);
+    },
+  );
+
+  it("releases a public manual other departure even beside a matching historical private kill", () => {
+    const before = domain.beginNight(day());
+    const seat = before.players.find((player) => player.role === "citizen")!.seat;
+    const after = {
+      ...before,
+      nightResult: { kind: "kill" as const, targetSeat: seat },
+      players: before.players.map((player) =>
+        player.seat === seat ? { ...player, status: "eliminated" as const } : player,
+      ),
+      manualRemovals: [{ seat, reason: "other" as const }],
+    };
+    expect(projectPlayerActions([], after).endpoints).toEqual({ [seat]: "unknown" });
+  });
+
+  it.each([
+    ["voted-out", "vote"],
+    ["mafia-kill", "mafia"],
+    ["other", "unknown"],
+  ] as const)(
+    "keeps accepted manual %s public beside an earlier private shooting result",
+    (reason, cause) => {
+      const h = history(domain.beginNight(day()));
+      const seat = h.game.players.find((player) => player.role === "citizen")!.seat;
+      const shot = domain.resolveMafiaShots(domain.toggleAllMafiaShotsForTarget(h.game, seat));
+      h.accept({
+        type: "mafia.shots-resolved",
+        payload: { shots: shot.secretShots, result: shot.result },
+      });
+      const prefix = h.frames.slice();
+      expect(projectPlayerActions(prefix, h.game).endpoints).toEqual({});
+      h.accept({ type: "player.manually-removed", payload: { seat, reason } });
+      expect(h.game.nightResult).toEqual({ kind: "kill", targetSeat: seat });
+      expect(projectPlayerActions(h.frames, h.game).endpoints).toEqual({ [seat]: cause });
+      expect(projectPlayerActions(h.frames, h.game).action?.fouls).toEqual({});
+      expect(projectPlayerActions(prefix, prefix.at(-1)!.after).endpoints).toEqual({});
+    },
+  );
+
   it("keeps accepted night kills private through checks/goodbye, restores holes only at public release", () => {
     const night = domain.beginNight(day());
     const victim = night.players.find((p) => p.role === "citizen")!.seat;

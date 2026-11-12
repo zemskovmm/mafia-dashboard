@@ -74,6 +74,7 @@ export const FederationCollectiveBallot = ({
           muted: p.mutePending,
           inactive: p.status !== "active",
           voted: votes[p.seat] !== undefined,
+          pressed: votes[p.seat] === true,
           votingHighlight: votes[p.seat] === true,
         }))}
         seatActionDisabled={(seat) => seat.status !== "active" || !eligibility.permitted}

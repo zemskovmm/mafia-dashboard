@@ -1,8 +1,17 @@
+import type { ManualRemovalReason } from "@mafia/game-domain";
 import type { LedgerFactKind } from "../../features/ledger/ledger-types.js";
 import type { FeatureMessages } from "../I18nProvider.js";
 
+export const ledgerManualRemovalMessageKeys = {
+  "voted-out": "manuallyRemovedVote",
+  "mafia-kill": "manuallyRemovedMafia",
+  other: "manuallyRemovedOther",
+} as const satisfies Readonly<Record<ManualRemovalReason, string>>;
+type LedgerHistoryMessageKey =
+  LedgerFactKind | (typeof ledgerManualRemovalMessageKeys)[ManualRemovalReason];
+
 /** Labels describe observed facts, not reconstructed rule outcomes. */
-export const ledgerHistoryMessages: FeatureMessages<LedgerFactKind> = {
+export const ledgerHistoryMessages: FeatureMessages<LedgerHistoryMessageKey> = {
   en: {
     nomination: "Nominated seat {seat}",
     support: "Additional supporters: {count} · seats {seats}",
@@ -30,6 +39,9 @@ export const ledgerHistoryMessages: FeatureMessages<LedgerFactKind> = {
     bestMoveSkipped: "Best Move: no numbers recorded",
     foul: "Foul {count}",
     eliminated: "Eliminated",
+    manuallyRemovedVote: "Eliminated · manually recorded: voted out",
+    manuallyRemovedMafia: "Eliminated · manually recorded: killed by Mafia",
+    manuallyRemovedOther: "Eliminated · manually recorded: other reason",
     removed: "Removed by discipline",
   },
   ru: {
@@ -59,6 +71,9 @@ export const ledgerHistoryMessages: FeatureMessages<LedgerFactKind> = {
     bestMoveSkipped: "Лучший ход: номера не записаны",
     foul: "Фол {count}",
     eliminated: "Выбыл",
+    manuallyRemovedVote: "Выбыл · записано вручную: выбыл по голосованию",
+    manuallyRemovedMafia: "Выбыл · записано вручную: убит мафией",
+    manuallyRemovedOther: "Выбыл · записано вручную: другая причина",
     removed: "Удалён за нарушение",
   },
 };

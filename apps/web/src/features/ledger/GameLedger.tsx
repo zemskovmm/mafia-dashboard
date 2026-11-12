@@ -4,7 +4,10 @@ import { getRoleTeam } from "@mafia/game-domain";
 import { Hand, MessageCircleOff, Plus, ShieldAlert } from "lucide-react";
 import { useMessages } from "../../i18n/I18nProvider.js";
 import { ledgerMessages } from "../../i18n/messages/ledger.js";
-import { ledgerHistoryMessages } from "../../i18n/messages/ledger-history.js";
+import {
+  ledgerHistoryMessages,
+  ledgerManualRemovalMessageKeys,
+} from "../../i18n/messages/ledger-history.js";
 import { usePlayerExits } from "../game/PlayerExitProvider.js";
 import type { HostBoardProps, LedgerScrollPosition } from "../game/HostBoard.js";
 import type { LedgerFact, LedgerModel } from "./ledger-types.js";
@@ -72,7 +75,12 @@ export const GameLedger = ({
   }, [scrollPosition]);
   const fact = (value: LedgerFact) => (
     <span key={value.id} className={`ledger-fact${value.provisional ? " is-provisional" : ""}`}>
-      {history.t(value.kind, value.values)}
+      {history.t(
+        value.manualRemovalReason
+          ? ledgerManualRemovalMessageKeys[value.manualRemovalReason]
+          : value.kind,
+        value.values,
+      )}
       {value.provisional && <em>{t("draft")}</em>}
     </span>
   );

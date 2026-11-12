@@ -310,6 +310,7 @@ export const prepareBestMove = (game: GameState): GameState => {
   const victim = requireSeat(game, game.nightResult.targetSeat);
   if (
     victim.status === "red-carded" ||
+    game.manualRemovals?.some((removal) => removal.seat === victim.seat) ||
     isCasperPlayer(victim) ||
     evaluateVictory(game.players) !== null
   )

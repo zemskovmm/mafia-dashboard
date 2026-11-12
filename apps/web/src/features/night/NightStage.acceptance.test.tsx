@@ -306,6 +306,49 @@ describe("App physical-count acceptance and recovery", () => {
     },
   );
 
+  it("continues physical shooting after manual removal without losing prior observations", async () => {
+    const user = userEvent.setup();
+    seed(initialNight());
+    const view = renderWorkspace();
+    await user.click(await screen.findByRole("button", { name: "Observed multiple shooting" }));
+    await user.click(
+      screen.getByRole("button", { name: "Record observed shot by #8 at Player 2" }),
+    );
+    expect(game().shotObservations).toEqual([{ shooterSeat: 8, targetSeat: 2, additional: false }]);
+    await user.click(screen.getByRole("button", { name: "Ledger" }));
+    await user.click(screen.getByRole("button", { name: "Penalty for Player 8" }));
+    const dialog = within(screen.getByRole("dialog"));
+    await user.selectOptions(dialog.getByLabelText("Discipline action"), "manual-removal");
+    await user.selectOptions(dialog.getByLabelText("Removal reason"), "other");
+    await user.click(dialog.getByRole("button", { name: "Remove player" }));
+    expect(game().players.find((player) => player.seat === 8)?.status).toBe("eliminated");
+    await user.click(
+      screen.getByRole("button", { name: "Record observed shot by #9 at Player 3" }),
+    );
+    expect(game().shotAssignments).toEqual({ 8: 2, 9: 3 });
+    expect(game().shotObservations).toEqual([
+      { shooterSeat: 8, targetSeat: 2, additional: false },
+      { shooterSeat: 9, targetSeat: 3, additional: false },
+    ]);
+    const accepted = current();
+    expect(accepted.events.map((event) => event.type)).toEqual([
+      "game.checkpointed",
+      "mafia.shots-observed",
+      "player.manually-removed",
+      "mafia.shots-observed",
+    ]);
+    expect(hashGameState(replayGameLog(accepted.initialGame!, accepted.events).game)).toBe(
+      hashGameState(game()),
+    );
+    await waitFor(() => expect(capturedRemote.state.events).toEqual(accepted.events));
+    view.unmount();
+    renderWorkspace();
+    expect(game().shotAssignments).toEqual({ 8: 2, 9: 3 });
+    expect(game().shotObservations).toEqual((accepted.game as GameState).shotObservations);
+    expect(game().manualRemovals).toEqual([{ seat: 8, reason: "other" }]);
+    expect(getErrorConsoleSnapshot()).toEqual([]);
+  });
+
   it("persists a later-night deceased Don/Sheriff opening through App, replay, reload and Undo", async () => {
     const user = userEvent.setup();
     const initial = priorDeathsNightResult();

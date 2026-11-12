@@ -275,6 +275,7 @@ const eventMessageKeys: Readonly<Record<string, ShellMessageKey>> = {
   "phase.changed": "eventPhaseChanged",
   "turn.completed": "eventTurnCompleted",
   "player.nominated": "eventPlayerNominated",
+  "player.manually-removed": "eventPlayerManuallyRemoved",
   "foul.issued": "eventFoulIssued",
   "voting.resolved": "eventVotingResolved",
   "car-crash.resolved": "eventCarCrashResolved",
@@ -865,7 +866,10 @@ const ClubWorkspaceContent = ({
       entries: [...legacyLog, ...projection.frames.map(({ entry }) => toLocalLogEntry(entry))],
       summaries: new Map(
         timeline.markers
-          .filter(({ eventId }) => summaryIds.has(eventId))
+          .filter(
+            ({ eventId, eventType }) =>
+              summaryIds.has(eventId) || eventType === "player.manually-removed",
+          )
           .map((marker) => [marker.eventId, marker]),
       ),
     };

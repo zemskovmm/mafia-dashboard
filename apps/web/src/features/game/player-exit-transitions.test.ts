@@ -22,6 +22,25 @@ const citizens = (game: GameState) =>
   game.players.filter((p) => p.role === "citizen" && p.status === "active").map((p) => p.seat);
 
 describe("accepted player exit transitions", () => {
+  it.each(["voted-out", "mafia-kill", "other"] as const)(
+    "animates a newly accepted manual %s at night once, without waiting for historical results",
+    (reason) => {
+      const before = domain.beginNight(day());
+      const seat = citizens(before)[0]!;
+      const after = {
+        ...before,
+        nightResult: { kind: "kill" as const, targetSeat: seat },
+        players: before.players.map((player) =>
+          player.seat === seat ? { ...player, status: "eliminated" as const } : player,
+        ),
+        manualRemovals: [{ seat, reason }],
+      };
+      expect(playerExitSeats(before, after)).toEqual([seat]);
+      expect(playerExitSeats(after, JSON.parse(JSON.stringify(after)))).toEqual([]);
+      expect(playerExitSeats(after, before)).toEqual([]);
+    },
+  );
+
   it("waits for the entire ordinary goodbye list", () => {
     const before = day();
     const seats = citizens(before).slice(0, 2);

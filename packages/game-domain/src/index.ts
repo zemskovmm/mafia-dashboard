@@ -3,6 +3,7 @@ export * from "./casper.js";
 export * from "./game-events.js";
 export * from "./history-diagnostics.js";
 export * from "./game.js";
+export * from "./manual-removal.js";
 export * from "./federation-actions.js";
 export * from "./federation-discipline.js";
 export * from "./night-actions.js";

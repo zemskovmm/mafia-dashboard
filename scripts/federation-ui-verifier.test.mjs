@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { readFile } from "node:fs/promises";
 import { tsImport } from "tsx/esm/api";
 
-const { checkpoint, currentSetupState } = await tsImport(
+const { checkpoint, collectiveBallotFixture, currentSetupState } = await tsImport(
   "./verify-federation-ui.mjs",
   import.meta.url,
 );
@@ -52,6 +52,28 @@ test("browser preconditions are v3 canonical roots with actual domain hashes", (
   assert.equal(
     domain.hashGameState(domain.replayGameLog(state.initialGame, state.events, id).game),
     domain.hashGameState(state.game),
+  );
+});
+
+test("collective fixture reaches an admitted untouched count through the actual repeated tie", () => {
+  let game = opening();
+  while (game.phase !== "day") game = domain.advanceOpeningPhase(game);
+  const decision = collectiveBallotFixture(game);
+  assert.equal(decision.phase, "car-crash-decision");
+  assert.equal(decision.votingRound, "repeat");
+  assert.deepEqual(decision.carCrashSeats, [4, 6]);
+  assert.deepEqual(decision.carCrashVotes, {});
+  assert.deepEqual(decision.voteAssignments, {});
+  assert.equal(decision.carCrashResult, undefined);
+  const state = checkpoint(decision, { ...currentSetupState(), setup: null }, id);
+  assert.equal(isCurrentGameSessionState(state), true);
+  assert.deepEqual(
+    state.events.map((event) => event.type),
+    ["game.checkpointed"],
+  );
+  assert.equal(
+    domain.hashGameState(domain.replayGameLog(state.initialGame, state.events, id).game),
+    domain.hashGameState(decision),
   );
 });
 
@@ -263,5 +285,5 @@ test("federation gameplay scenarios route penalties through real player input, n
   assert.match(source, /I reviewed the external recording[\s\S]*?toBeChecked/);
   assert.match(source, /rule-only-removal-\$\{locale\}/);
   assert.match(source, /post-result-victim-shooter-swipe-save-reload-replay/);
-  assert.match(source, /assert\.equal\(row\.scenarios\.length, 12 \+ 3\)/);
+  assert.match(source, /assert\.equal\(row\.scenarios\.length, 12 \+ 3 \+ 6\)/);
 });

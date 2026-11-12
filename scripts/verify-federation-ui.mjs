@@ -12,6 +12,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect } from "@playwright/test";
 import {
+  applyGameEvent,
   beginNight,
   completeCurrentTurn,
   completeMafiaShots,
@@ -22,8 +23,10 @@ import {
   nominate,
   replayGameLog,
   resolveMafiaShots,
+  resolveVote,
   skipDonCheck,
   skipSheriffCheck,
+  startVoting,
 } from "../packages/game-domain/src/index.ts";
 import { assertExactOrigin } from "./session-verifier-contracts.mjs";
 
@@ -162,6 +165,37 @@ export function checkpoint(game, template, gameId) {
   };
   replay(state);
   return state;
+}
+/** Establish the real repeated-tie precondition, never a collective-count outcome. */
+export function collectiveBallotFixture(day) {
+  let game = nominate(day, day.turnOrder[day.currentTurnIndex], 4);
+  game = completeCurrentTurn(game);
+  game = startVoting(nominate(game, game.turnOrder[game.currentTurnIndex], 6));
+  const finishTie = (initial) => {
+    let ballot = applyGameEvent(initial, {
+      type: "voting.candidate-selected",
+      payload: { candidateSeat: 4 },
+    });
+    for (let voterSeat = 1; voterSeat <= 5; voterSeat++)
+      ballot = applyGameEvent(ballot, {
+        type: "vote.recorded",
+        payload: { voterSeat, candidateSeat: 4 },
+      });
+    ballot = applyGameEvent(ballot, {
+      type: "voting.candidate-selected",
+      payload: { candidateSeat: 6 },
+    });
+    return applyGameEvent(ballot, {
+      type: "voting.resolved",
+      payload: { voteAssignments: ballot.voteAssignments, result: resolveVote(ballot) },
+    });
+  };
+  game = finishTie(game);
+  while (game.phase === "car-crash") game = completeCurrentTurn(game);
+  game = finishTie(game);
+  assert.equal(game.phase, "car-crash-decision");
+  assert.deepEqual(game.carCrashVotes, {});
+  return game;
 }
 /** Actual retained upward penalty input using pointer or trusted Chromium touch. */
 export async function openPlayerPenalty(page, seat, { locale = "en", input = "pointer" } = {}) {
@@ -1404,28 +1438,94 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
         club.language = previousLanguage;
       }
     }
-    // Untouched zero-support counts are explicitly finished, not fabricated no votes.
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      const id = randomUUID();
-      const count = {
-        ...clone(day),
-        phase: "car-crash-decision",
-        carCrashSeats: [1, 2],
-        carCrashVotes: {},
-      };
-      await seed(page, api, checkpoint(count, template, id), id);
-      const finish = page.getByRole("button", { name: "Resolve car crash", exact: true });
-      await expect(finish).toBeEnabled();
-      await finish.click();
-      const completed = await saveReplay(page, api, `zero-support-count-${attempt}`, width, height);
-      assert.equal(completed.env.current.state.game.carCrashResult.yesVotes, 0);
-      assert.equal(completed.env.current.state.game.carCrashResult.eliminate, false);
-      assert.deepEqual(completed.env.current.state.game.carCrashVotes, {});
-      assert.equal(branch(completed.env.current.state).at(-1).type, "car-crash.count-completed");
-      await page.reload({ waitUntil: "networkidle" });
-      replay((await settled(page, api)).current.state);
-      row.screenshots.push(await capture(page, `zero-support-count-${attempt}`, width, height));
-      row.scenarios.push({ name: `zero-support-count-${attempt}-reload`, ...completed.proof });
+    // Real post-revote collective counts: native first-tap/off/on, partial, half and majority.
+    const collective = collectiveBallotFixture(day);
+    for (const view of ["table", "ledger"]) {
+      for (const hands of [0, 2, 5, 6]) {
+        const id = randomUUID();
+        const initial = checkpoint(collective, template, id);
+        const label =
+          hands === 0
+            ? `zero-support-count-${view === "table" ? 1 : 2}`
+            : `collective-${view}-${hands}-support`;
+        await seed(page, api, initial, id);
+        await page
+          .getByRole("button", { name: view === "table" ? "Table" : "Ledger", exact: true })
+          .click();
+        const decision = page.getByRole("status", { name: "Car-crash decision", exact: true });
+        const finish = page.getByRole("button", { name: "Resolve car crash", exact: true });
+        const voter = (seat) =>
+          page.getByRole("button", {
+            name: `Vote as ${display(collective, seat)} to eliminate all car-crash players`,
+            exact: true,
+          });
+        const tap = async (seat) => {
+          const action = voter(seat);
+          // Touch the actual person glyph, not a synthetic React callback.
+          await (view === "table" ? action.locator(".person-icon") : action).tap();
+        };
+        await expect(decision).toContainText("0 of 10 eliminate votes");
+        await expect(finish).toBeEnabled();
+        if (hands > 0) {
+          await tap(1);
+          await expect(decision).toContainText("1 of 10 eliminate votes");
+          await expect(voter(1)).toHaveAttribute("aria-pressed", "true");
+          const first = await settled(page, api);
+          assert.deepEqual(first.current.state.game.carCrashVotes, { 1: true });
+          assert.equal(first.current.state.headEventId, initial.headEventId);
+          await tap(1);
+          await expect(decision).toContainText("0 of 10 eliminate votes");
+          await expect(voter(1)).toHaveAttribute("aria-pressed", "false");
+          assert.deepEqual((await settled(page, api)).current.state.game.carCrashVotes, {
+            1: false,
+          });
+          await tap(1);
+          for (let seat = 2; seat <= hands; seat++) await tap(seat);
+        }
+        const votes = Object.fromEntries(
+          Array.from({ length: hands }, (_, index) => [index + 1, true]),
+        );
+        await expect(decision).toContainText(`${hands} of 10 eliminate votes`);
+        const draft = await settled(page, api);
+        assert.deepEqual(draft.current.state.game.carCrashVotes, votes);
+        assert.equal(draft.current.state.game.phase, "car-crash-decision");
+        assert.equal(
+          draft.current.state.headEventId,
+          initial.headEventId,
+          "Taps remain provisional until explicit completion",
+        );
+        await expect(finish).toBeEnabled();
+        await finish.tap();
+        const completed = await saveReplay(page, api, label, width, height);
+        assert.equal(completed.env.current.state.game.carCrashResult.yesVotes, hands);
+        assert.equal(completed.env.current.state.game.carCrashResult.eliminate, hands > 5);
+        assert.deepEqual(completed.env.current.state.game.carCrashVotes, votes);
+        assert.deepEqual(branch(completed.env.current.state).at(-1), {
+          ...branch(completed.env.current.state).at(-1),
+          type: "car-crash.count-completed",
+          payload: {
+            votes,
+            result: { eliminate: hands > 5, seats: [4, 6], yesVotes: hands, eligibleVoters: 10 },
+          },
+        });
+        await page.reload({ waitUntil: "networkidle" });
+        const restored = await settled(page, api);
+        replay(restored.current.state);
+        assert.equal(restored.current.state.headEventId, completed.env.current.state.headEventId);
+        assert.deepEqual(restored.current.state.game.carCrashVotes, votes);
+        // Retain the shared Table geometry gate even for the Ledger action path.
+        await page.getByRole("button", { name: "Table", exact: true }).click();
+        row.screenshots.push(await capture(page, label, width, height));
+        row.scenarios.push({ name: `${label}-reload`, ...completed.proof });
+        if (hands === 2) {
+          await undo(page);
+          const undone = await settled(page, api);
+          replay(undone.current.state);
+          assert.equal(undone.current.state.headEventId, initial.headEventId);
+          assert.deepEqual(undone.current.state.game.carCrashVotes, {});
+          assert.equal(undone.current.state.game.phase, "car-crash-decision");
+        }
+      }
     }
 
     const shotsId = randomUUID();
@@ -1778,7 +1878,7 @@ export async function runFederationScenarios({ page, baseUrl, club, players, api
     }
 
     api.clean();
-    assert.equal(row.scenarios.length, 12 + 3);
+    assert.equal(row.scenarios.length, 12 + 3 + 6);
     assert.deepEqual(row.geometryFailures, [], "No primary-control overflow");
     assert.ok(row.nativeDialogCases.length >= 4, "Native Escape/Close dismissal cases retained");
     console.log(

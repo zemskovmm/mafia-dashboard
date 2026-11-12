@@ -2,6 +2,11 @@ export type Role = "sheriff" | "citizen" | "mafia" | "don";
 export type Team = "red" | "black";
 export type SetupStep = "music" | "role-draw" | "mafia-planning";
 export type PlayerStatus = "active" | "eliminated" | "red-carded";
+export type ManualRemovalReason = "voted-out" | "mafia-kill" | "other";
+export interface ManualRemoval {
+  readonly seat: number;
+  readonly reason: ManualRemovalReason;
+}
 export type GamePhase =
   | "mafia-planning"
   | "mafia-sleep"
@@ -77,6 +82,8 @@ export interface GameState {
   readonly adjudication?: OpponentVictoryAdjudication;
   readonly rulesDrawReason?: RulesDrawReason;
   readonly disciplinaryRemovals?: readonly DisciplinaryRemoval[];
+  /** Explicit non-disciplinary host corrections; absent on untouched historical paths. */
+  readonly manualRemovals?: readonly ManualRemoval[];
   readonly phase: GamePhase;
   readonly day: number;
   readonly bestMoveEnabled?: boolean;

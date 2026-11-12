@@ -1189,6 +1189,131 @@ describe("YouTubePlaylistPlayer", () => {
     }
   });
 
+  it.each([
+    {
+      name: "an unclassified queue",
+      videoIds: ["a", "b", "c"],
+      initialKeys: [],
+      current: 0,
+      next: 1,
+    },
+    {
+      name: "a regular track already reached during giveaway",
+      videoIds: ["a", "b", "c"],
+      initialKeys: ["a:0"],
+      current: 1,
+      next: 2,
+    },
+    {
+      name: "an unmarked duplicate of the playing Initial track",
+      videoIds: ["a", "a", "b"],
+      initialKeys: ["a:0"],
+      current: 0,
+      next: 2,
+    },
+  ])(
+    "changes songs for Mafia planning with $name",
+    async ({ videoIds, initialKeys, current, next }) => {
+      api.listMusicPlaylistItems.mockResolvedValue(
+        videoIds.map((videoId, position) => ({
+          videoId,
+          title: `Track ${position}`,
+          position,
+          thumbnailUrl: null,
+        })),
+      );
+      const fake = installQueuePlayer();
+      const handle = createRef<YouTubePlayerHandle>();
+      const onQueueOrderChange = vi.fn();
+      render(
+        <YouTubePlaylistPlayer
+          ref={handle}
+          playlistId="PL-planning"
+          initialStageEntryKeys={initialKeys}
+          onStateChange={vi.fn()}
+          onQueueOrderChange={onQueueOrderChange}
+          expanded
+        />,
+      );
+      await fake.ready();
+      fake.player.getPlaylistIndex.mockReturnValue(current);
+      fake.state(1);
+      fake.player.cuePlaylist.mockClear();
+
+      act(() => {
+        expect(handle.current!.playFirstRegularTrack()).toBe(true);
+      });
+
+      expect(fake.player.loadPlaylist).toHaveBeenCalledExactlyOnceWith(videoIds, next, 0);
+      expect(videoIds[next]).not.toBe(videoIds[current]);
+      expect(fake.player.cuePlaylist).not.toHaveBeenCalled();
+      expect(fake.player.pauseVideo).not.toHaveBeenCalled();
+      expect(onQueueOrderChange).not.toHaveBeenCalled();
+      expect(screen.getAllByRole("listitem").map((item) => item.textContent)).toEqual(
+        videoIds.map((_, index) => expect.stringContaining(`Track ${index}`)),
+      );
+      expect(fake.constructorSpy).toHaveBeenCalledOnce();
+      expect(fake.player.destroy).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { name: "a single-track queue", videoIds: ["a"], initialKeys: [], state: 1 },
+    {
+      name: "only repeated copies of the playing song",
+      videoIds: ["a", "a"],
+      initialKeys: [],
+      state: 1,
+    },
+    { name: "no different regular song", videoIds: ["a", "b"], initialKeys: ["b:1"], state: 1 },
+    { name: "only Initial entries", videoIds: ["a", "b"], initialKeys: ["a:0", "b:1"], state: 1 },
+    { name: "paused playback", videoIds: ["a", "b"], initialKeys: [], state: 2 },
+    { name: "a buffering player", videoIds: ["a", "b"], initialKeys: [], state: 3 },
+    { name: "a cued player", videoIds: ["a", "b"], initialKeys: [], state: 5 },
+  ])(
+    "does not restart or start music for Mafia planning with $name",
+    async ({ videoIds, initialKeys, state }) => {
+      api.listMusicPlaylistItems.mockResolvedValue(
+        videoIds.map((videoId, position) => ({
+          videoId,
+          title: `Track ${position}`,
+          position,
+          thumbnailUrl: null,
+        })),
+      );
+      const fake = installQueuePlayer();
+      const handle = createRef<YouTubePlayerHandle>();
+      const onQueueOrderChange = vi.fn();
+      render(
+        <YouTubePlaylistPlayer
+          ref={handle}
+          playlistId="PL-planning-noop"
+          initialStageEntryKeys={initialKeys}
+          onStateChange={vi.fn()}
+          onQueueOrderChange={onQueueOrderChange}
+        />,
+      );
+      expect(handle.current!.playFirstRegularTrack()).toBe(false);
+      await fake.ready();
+      fake.state(state);
+      fake.player.cuePlaylist.mockClear();
+
+      act(() => {
+        expect(handle.current!.playFirstRegularTrack()).toBe(false);
+      });
+
+      expect(fake.player.loadPlaylist).not.toHaveBeenCalled();
+      expect(fake.player.cuePlaylist).not.toHaveBeenCalled();
+      expect(fake.player.playVideo).not.toHaveBeenCalled();
+      expect(fake.player.playVideoAt).not.toHaveBeenCalled();
+      expect(fake.player.pauseVideo).not.toHaveBeenCalled();
+      expect(fake.player.setVolume).not.toHaveBeenCalled();
+      expect(onQueueOrderChange).not.toHaveBeenCalled();
+      expect(fake.constructorSpy).toHaveBeenCalledOnce();
+      expect(fake.player.destroy).not.toHaveBeenCalled();
+    },
+  );
+
   it("restores remembered queue order by stable entry key", async () => {
     api.listMusicPlaylistItems.mockResolvedValue([
       { videoId: "duplicate", title: "Duplicate first", position: 0, thumbnailUrl: null },

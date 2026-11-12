@@ -2,6 +2,7 @@ import {
   isSecretGameEventType,
   isTerminalGamePhase,
   type GameState,
+  type ManualRemovalReason,
   type ReplayFrame,
 } from "@mafia/game-domain";
 import {
@@ -79,6 +80,7 @@ export type TimelineMarkerKind =
   | "don-check"
   | "sheriff-check"
   | "check-skipped"
+  | "manual-removal"
   | "foul"
   | "discipline"
   | "red-card"
@@ -522,6 +524,24 @@ const describeMarker = (frame: ReplayFrame, text: TimelineText): MarkerDescripti
         label: text.t("Sheriff check skipped"),
         ariaLabel: text.t("Sheriff check skipped"),
       };
+    case "player.manually-removed": {
+      const reasonKeys = {
+        "voted-out": "Manual removal voted out",
+        "mafia-kill": "Manual removal mafia kill",
+        other: "Manual removal other",
+      } as const satisfies Readonly<Record<ManualRemovalReason, TimelineConsoleMessageKey>>;
+      if (
+        integer(payload.seat) === null ||
+        typeof payload.reason !== "string" ||
+        !Object.hasOwn(reasonKeys, payload.reason)
+      )
+        return genericDescription(eventType, text);
+      const label = text.t("{player} manually removed: {reason}", {
+        player: playerLabel(frame, payload.seat, text),
+        reason: text.t(reasonKeys[payload.reason as keyof typeof reasonKeys]),
+      });
+      return { kind: "manual-removal", icon: "circle", label, ariaLabel: label };
+    }
     case "foul.issued": {
       const foulNumber = integer(payload.foulNumber);
       if (

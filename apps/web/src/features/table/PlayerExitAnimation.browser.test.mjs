@@ -71,9 +71,10 @@ const built = await build({
           timeline:cause=>playerDepartureTimeline(settings,cause),defaultSettings:DEFAULT_PLAYER_EXIT_SETTINGS,seam:PLAYER_TEAR_SEAM_POINTS,
           restore(){setGeneration(g=>g+1);},
           save(){sessionStorage.setItem('exit-fixture',JSON.stringify({snapshot,settings,style,glass,projected,background}));},
-          load(kind='goodbye') {
-            const initial=day();
+          load(kind='goodbye', foulCount=0) {
+            let initial=day();
             const seats=initial.players.filter(p=>p.role==='citizen').map(p=>p.seat);
+            for(let foul=0;foul<foulCount;foul++) initial=domain.issueFoul(initial,seats[0]);
             let next=kind==='goodbye' ? domain.completeEliminations(initial,seats.slice(0,2)) : kind==='finished' ? domain.completeEliminations(initial,seats.slice(0,4)) : kind==='night' ? domain.beginNight(initial) : initial;
             // Unknown-cause baselines stay in active play: completed games reveal all fronts.
             if(kind==='unknown') {
@@ -606,6 +607,120 @@ for (const [name, engine, launch] of [
         }
         assert.deepEqual(errors, []);
       } finally {
+        await browser.close();
+      }
+    },
+  );
+}
+
+for (const [name, engine, launch] of [
+  ["chrome", chromium, { channel: "chrome" }],
+  ["webkit", webkit, {}],
+]) {
+  test(
+    `${name}: foul indicators disappear at public departure, not before`,
+    { timeout: 120000 },
+    async () => {
+      const browser = await engine.launch({ ...launch, headless: true });
+      const page = await browser.newPage({ viewport: { width: 1366, height: 1024 } });
+      const errors = [];
+      const results = [];
+      page.on("pageerror", (error) => errors.push(error.message));
+      try {
+        const html = await readFile(join(output, "fixture.html"), "utf8");
+        await page.route("http://player-exit.test/**", (route) =>
+          route.fulfill({ status: 200, contentType: "text/html", body: html }),
+        );
+        await page.goto("http://player-exit.test/");
+        await page.waitForFunction(() => !!window.exitFixture);
+        for (const style of ["glass", "classic", "heritage", "noir"]) {
+          for (const cause of ["vote", "discipline"]) {
+            await page.evaluate(
+              ({ style, cause }) => {
+                document.body.dataset.departureScenarios = "true";
+                window.exitFixture.setStyle(style);
+                window.exitFixture.setPrivacy(cause === "vote");
+                window.exitFixture.setSettings((settings) => ({
+                  ...settings,
+                  liftMs: 700,
+                  landingMs: 1400,
+                }));
+                window.exitFixture.load(cause === "vote" ? "goodbye" : "day", 3);
+              },
+              { style, cause },
+            );
+            await page.waitForFunction(
+              (style) =>
+                document.querySelector(".seat-anchor > .player-seat")?.dataset.cardStyle === style,
+              style,
+            );
+            const victim = await page.evaluate(() => window.exitFixture.victim);
+            const target = page.locator(cardSelector(victim));
+            assert.equal(await target.locator(".foul-dot").count(), 3);
+            assert.equal(await target.getAttribute("data-player-exit"), null);
+            await page.evaluate(
+              ({ selector, cause }) => {
+                const probe = { frames: [], seen: false, done: false };
+                window.foulProbe = probe;
+                const record = () => {
+                  const host = document.querySelector(selector);
+                  const request = host?.getAttribute("data-player-exit");
+                  probe.frames.push({
+                    time: window.performance.now(),
+                    request,
+                    indicators: host?.querySelectorAll(".foul-dot,.foul-markers,.card-mute").length,
+                    rotate: host ? getComputedStyle(host).rotate : null,
+                  });
+                  if (request) probe.seen = true;
+                  if (probe.seen && !request) probe.done = true;
+                  else window.requestAnimationFrame(record);
+                };
+                record();
+                if (cause === "vote") window.exitFixture.advance();
+                else window.exitFixture.foul();
+              },
+              { selector: cardSelector(victim), cause },
+            );
+            await page.waitForFunction(() =>
+              window.foulProbe.frames.some(
+                (frame) => frame.request && parseFloat(frame.rotate?.split(" ").at(-1) ?? "0") > 35,
+              ),
+            );
+            await page.screenshot({
+              path: join(output, `${name}-${style}-${cause}-foul-flip.png`),
+            });
+            await page.waitForFunction(() => window.foulProbe.done);
+            const frames = await page.evaluate(() => window.foulProbe.frames);
+            const moving = frames.filter((frame) => frame.request);
+            assert.ok(moving.length > 5, "Natural playback records the actual departure");
+            assert.ok(
+              moving.every((frame) => frame.indicators === 0),
+              "No foul or pending-mute overlay on any flip frame",
+            );
+            assert.equal(await target.locator(".foul-dot,.foul-markers,.card-mute").count(), 0);
+            assert.equal(
+              await page.evaluate(
+                () =>
+                  window.exitFixture.game.players.find((p) => p.seat === window.exitFixture.victim)
+                    .fouls,
+              ),
+              cause === "vote" ? 3 : 4,
+              "The hidden indicator does not change the recorded foul count",
+            );
+            await page.evaluate(() => window.exitFixture.save());
+            await page.reload();
+            await page.waitForFunction(() => !!window.exitFixture);
+            assert.equal(await target.locator(".foul-dot,.foul-markers,.card-mute").count(), 0);
+            assert.equal(await target.getAttribute("data-player-exit"), null);
+            results.push({ style, cause, frames, restoredWithoutReplay: true });
+          }
+        }
+        assert.deepEqual(errors, []);
+      } finally {
+        await writeFile(
+          join(output, `${name}-foul-indicators.json`),
+          JSON.stringify(results, null, 2),
+        );
         await browser.close();
       }
     },

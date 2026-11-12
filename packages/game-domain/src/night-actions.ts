@@ -387,7 +387,11 @@ export const completeNight = (game: GameState): GameState => {
   const turnOrder = getDayOrder(game.players, previousOpeningSeat + 1);
   const targetSeat = game.nightResult?.kind === "kill" ? game.nightResult.targetSeat : undefined;
   const victim = game.players.find((p) => p.seat === targetSeat);
-  const goodbyeSeats = victim?.status === "eliminated" ? [victim.seat] : [];
+  const goodbyeSeats =
+    victim?.status === "eliminated" &&
+    !game.manualRemovals?.some((removal) => removal.seat === victim.seat)
+      ? [victim.seat]
+      : [];
   return {
     ...completed,
     phase: goodbyeSeats.length ? "goodbye-speech" : "day",

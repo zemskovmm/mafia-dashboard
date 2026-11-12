@@ -275,7 +275,7 @@ export const GameTable = ({
                 className="card-discipline-status"
                 request={exits.feedback[seat.seat]}
               >
-                {seat.fouls ? (
+                {seat.fouls && !departed ? (
                   <span
                     className="card-status-slot foul-markers"
                     role="img"
@@ -286,7 +286,7 @@ export const GameTable = ({
                     ))}
                   </span>
                 ) : null}
-                {seat.muted ? (
+                {seat.muted && !departed ? (
                   <span
                     className="card-status-slot card-mute"
                     role="img"

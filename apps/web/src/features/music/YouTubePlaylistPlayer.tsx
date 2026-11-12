@@ -706,7 +706,12 @@ export const YouTubePlaylistPlayer = forwardRef<YouTubePlayerHandle, YouTubePlay
         )
           return false;
         const marked = new Set(initialStageEntryKeys);
-        const index = queueRef.current.findIndex((item) => !marked.has(queueEntryKey(item)));
+        const currentVideoId = currentEntry()?.videoId;
+        // A regular entry may already be playing, or repeat the Initial video.
+        // Change the song without collapsing distinct queue occurrences.
+        const index = queueRef.current.findIndex(
+          (item) => !marked.has(queueEntryKey(item)) && item.videoId !== currentVideoId,
+        );
         if (index < 0) return false;
         controllerRef.current?.cancelActiveFade({ pausePendingPlayback: false });
         player.setVolume(FULL_VOLUME);

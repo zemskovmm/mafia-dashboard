@@ -12,9 +12,12 @@ export const pendingGoodbyeSeats = (game: GameState): readonly number[] => {
 /** Snapshot presentation must not announce a private kill or an unfinished goodbye. */
 export const pendingPublicDepartureSeats = (game: GameState): readonly number[] => {
   const goodbye = pendingGoodbyeSeats(game);
-  return privateNight(game) && game.nightResult?.kind === "kill"
-    ? [...new Set([...goodbye, game.nightResult.targetSeat])]
-    : goodbye;
+  const pending =
+    privateNight(game) && game.nightResult?.kind === "kill"
+      ? [...new Set([...goodbye, game.nightResult.targetSeat])]
+      : goodbye;
+  // A manual departure is already public, even if an older night result names this seat.
+  return pending.filter((seat) => !game.manualRemovals?.some((removal) => removal.seat === seat));
 };
 
 /** Only compare accepted forward states within one live GameScreen generation. */
@@ -35,11 +38,12 @@ export const playerExitSeats = (previous: GameState, next: GameState): readonly 
   const waiting = pendingGoodbyeSeats(next);
   for (const player of next.players) {
     const pair = samePlayer(player.seat);
+    const manual = next.manualRemovals?.some((removal) => removal.seat === player.seat);
     if (
       pair?.before.status === "active" &&
       pair.after.status === "eliminated" &&
-      !waiting.includes(player.seat) &&
-      (!privateNight(previous) || next.phase === "finished")
+      (manual ||
+        (!waiting.includes(player.seat) && (!privateNight(previous) || next.phase === "finished")))
     )
       seats.add(player.seat);
   }
