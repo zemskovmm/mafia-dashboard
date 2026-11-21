@@ -13,7 +13,6 @@ const defaults = {
   refraction: 14,
   goldLight: 25,
   matte: true,
-  profile: "edge",
   frosting: 50,
   tint: 13,
   edgeHighlights: 100,
@@ -873,10 +872,7 @@ export async function verifySharedPlayerGlass({ browser, config, url, evidence, 
           await page.getByLabel(label, { exact: true }).inputValue(),
           String(defaults[field]),
         );
-      assert.equal(
-        await page.getByLabel("Refraction profile", { exact: true }).inputValue(),
-        "edge",
-      );
+      assert.equal(await page.getByLabel("Refraction profile", { exact: true }).count(), 0);
       await redraw(page);
       await snapshot(page, "ordinary");
       await page.evaluate(() => {
@@ -960,24 +956,6 @@ export async function verifySharedPlayerGlass({ browser, config, url, evidence, 
         await setRange(page, label, defaults[field]);
         receipt.controls[field] = delta;
       }
-      await snapshot(page, "edgeProfile");
-      await page.getByLabel("Refraction profile", { exact: true }).selectOption("simple");
-      await redraw(page);
-      const profile = await difference(page, "edgeProfile", family);
-      assert.ok(
-        profile.surfaces.every((s) => s.changed > 8),
-        JSON.stringify({ scenario, profile }),
-      );
-      assert.equal(profile.outside, 0);
-      assert.deepEqual(await saved(page), { ...defaults, profile: "simple" });
-      await page.getByLabel("Refraction profile", { exact: true }).selectOption("edge");
-      await redraw(page);
-      assert.equal(
-        (await difference(page, "edgeProfile", family)).allChanged,
-        0,
-        "Edge/simple/edge must restore the exact baseline",
-      );
-      receipt.controls.profile = profile;
       await snapshot(page, "matteOn");
       await page.getByRole("button", { name: "Disable matte glass", exact: true }).click();
       await redraw(page);

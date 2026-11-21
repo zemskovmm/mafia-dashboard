@@ -1,6 +1,6 @@
-/* Native game controls share the cards' frosted, warm-rimmed material.
-   Blur is a CSS fallback material, never a filter on the icon/text subtree;
-   it works independently of WebGL readiness and does not add canvases. */
+/* Native game controls share the cards' frosted, warm-rimmed material. The
+   collector reads eligibility from this same CSS rule, so selected controls
+   and nested nomination targets never acquire a second lens. */
 .app-shell[data-glass-settings]
   :is(
     .app-fixed-toolbar > button,
@@ -10,6 +10,8 @@
     .table-center button,
     .seat-actions button,
     .role-draw-heading > button,
+    .ledger-phase-bar button,
+    .ledger-row-controls > button,
     .timer-panel button,
     .nomination-panel button,
     .live-music-controls button,
@@ -21,6 +23,7 @@
     .has-additional-shots,
     [aria-pressed="true"]
   ) {
+  --host-glass-button: 1;
   --control-gold: var(--button-glass-gold, 0.35);
   border-color: rgb(229 199 137 / calc(0.2 + var(--control-gold) * 0.4));
   background:
@@ -36,6 +39,19 @@
     inset 0 -1px 4px rgb(217 238 215 / 10%);
   -webkit-backdrop-filter: blur(var(--button-glass-frost, 4.2px)) saturate(1.18);
   backdrop-filter: blur(var(--button-glass-frost, 4.2px)) saturate(1.18);
+}
+@media not (prefers-reduced-transparency: reduce) {
+  .app-shell[data-glass-status="ready"]
+    button[data-glass-painted="true"]:not(
+      [data-player-glass],
+      .is-selected,
+      .has-additional-shots,
+      [aria-pressed="true"]
+    ) {
+    background: transparent;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
 }
 .app-shell[data-glass-settings]
   :is(.table-advance, .table-center, .nomination-panel, .youtube-session-queue)
@@ -56,6 +72,8 @@
       .table-center button,
       .seat-actions button,
       .role-draw-heading > button,
+      .ledger-phase-bar button,
+      .ledger-row-controls > button,
       .timer-panel button,
       .nomination-panel button,
       .live-music-controls button,

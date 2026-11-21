@@ -110,6 +110,13 @@ export const RoleDrawPresentation = ({
         animations.push(animation);
       }
       synchronizeCardAnimations(animations, request.startedAt);
+      // Like departures, a WAAPI turn does not mutate DOM attributes per frame.
+      card.dispatchEvent(
+        new CustomEvent("player-exit-motion", {
+          bubbles: true,
+          detail: { duration: motion.duration - elapsed },
+        }),
+      );
     } catch {
       // A later animate() can fail after earlier ones started; observe their
       // cancellation rejections before settling the partial request.

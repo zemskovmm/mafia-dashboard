@@ -31,7 +31,7 @@ class TestMutationObserver {
 const frames = new Map<number, FrameRequestCallback>();
 const renderers: GlassRenderer[] = [];
 const media = new Map<string, MediaQueryList>();
-const loseContext = vi.fn();
+const lose = () => vi.mocked(createGlassRenderer).mock.lastCall?.[2]?.();
 let serial = 0;
 const paint = () => {
   const batch = [...frames.values()];
@@ -45,7 +45,6 @@ beforeEach(() => {
   frames.clear();
   renderers.length = 0;
   media.clear();
-  loseContext.mockClear();
   TestResizeObserver.instances = [];
   TestMutationObserver.instances = [];
   vi.stubGlobal("ResizeObserver", TestResizeObserver);
@@ -69,16 +68,12 @@ beforeEach(() => {
       return result;
     }),
   );
-  vi.mocked(createGlassRenderer).mockImplementation(() => {
+  vi.mocked(createGlassRenderer).mockImplementation(async () => {
     const renderer = { draw: vi.fn(), dispose: vi.fn() };
     renderers.push(renderer);
     return renderer;
   });
-  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation((type: string) =>
-    type === "webgl"
-      ? ({ getExtension: () => ({ loseContext }) } as unknown as WebGLRenderingContext)
-      : null,
-  );
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
     x: 10,
     y: 10,
@@ -104,7 +99,7 @@ afterEach(async () => {
 describe("GlassScene Fancy policy", () => {
   it.each(["departure", "role"])(
     "blends a planar %s back into shared optics without a one-frame material switch",
-    (kind) => {
+    async (kind) => {
       let now = 0;
       vi.spyOn(performance, "now").mockImplementation(() => now);
       render(
@@ -120,6 +115,7 @@ describe("GlassScene Fancy policy", () => {
           <button data-player-glass="table">Boris</button>
         </div>,
       );
+      await act(async () => undefined);
       const card = screen.getByRole("button", { name: "Ada" });
       const scene = () => vi.mocked(renderers[0]!.draw).mock.lastCall![0];
       paint();
@@ -163,7 +159,7 @@ describe("GlassScene Fancy policy", () => {
     },
   );
 
-  it("hands off only a nonplanar departure after drawing and reacquires planar tear, fade and settlement", () => {
+  it("hands off only a nonplanar departure after drawing and reacquires planar tear, fade and settlement", async () => {
     let now = 0;
     vi.spyOn(performance, "now").mockImplementation(() => now);
     render(
@@ -178,6 +174,7 @@ describe("GlassScene Fancy policy", () => {
         </div>
       </SharedGlassContext.Provider>,
     );
+    await act(async () => undefined);
     const card = screen.getByRole("button", { name: "Ada" });
     const neighbor = screen.getByRole("button", { name: "Boris" });
     const fallback = card.firstElementChild;
@@ -248,10 +245,10 @@ describe("GlassScene Fancy policy", () => {
 
   it.each(["reduced", "settled", "context-lost"] as const)(
     "releases a partial optical handoff on %s without fading public content",
-    (interruption) => {
+    async (interruption) => {
       let now = 0;
       vi.spyOn(performance, "now").mockImplementation(() => now);
-      const { container } = render(
+      render(
         <div className="app-shell">
           <GlassScene settings={DEFAULT_GLASS_SETTINGS} onStatus={vi.fn()} />
           <button data-player-glass="table" data-player-exit="1">
@@ -259,6 +256,7 @@ describe("GlassScene Fancy policy", () => {
           </button>
         </div>,
       );
+      await act(async () => undefined);
       const card = screen.getByRole("button", { name: "Ada" });
       card.style.setProperty("--player-exit-fade", "0.45");
       card.style.rotate = "y 90deg";
@@ -273,11 +271,7 @@ describe("GlassScene Fancy policy", () => {
       expect(card.style.getPropertyValue("--glass-local-weight")).toBe("0.5");
       expect(card.style.opacity).toBe("");
       if (interruption === "context-lost") {
-        act(() =>
-          container
-            .querySelector("canvas")!
-            .dispatchEvent(new Event("webglcontextlost", { cancelable: true })),
-        );
+        act(lose);
         expect(card).not.toHaveAttribute("data-glass-painted");
         expect(frames.size).toBe(0);
       } else {
@@ -294,7 +288,7 @@ describe("GlassScene Fancy policy", () => {
     },
   );
 
-  it("collects one torn material from resolved host properties without fading public content", () => {
+  it("collects one torn material from resolved host properties without fading public content", async () => {
     render(
       <div className="app-shell">
         <GlassScene settings={DEFAULT_GLASS_SETTINGS} onStatus={vi.fn()} />
@@ -304,6 +298,7 @@ describe("GlassScene Fancy policy", () => {
         <button data-player-glass="table">Boris</button>
       </div>,
     );
+    await act(async () => undefined);
     const card = screen.getByRole("button", { name: "Ada" });
     card.style.setProperty("--player-exit-tear", "0.5");
     card.style.setProperty("--player-exit-gap", "99");
@@ -325,7 +320,7 @@ describe("GlassScene Fancy policy", () => {
     expect(vi.mocked(renderers[0]!.draw).mock.lastCall![0].surfaces[0]?.opacity).toBe(0.8);
   });
 
-  it("wakes for finite player motion beyond the ordinary settle window and paints the endpoint", () => {
+  it("wakes for finite player motion beyond the ordinary settle window and paints the endpoint", async () => {
     let now = 0;
     vi.spyOn(performance, "now").mockImplementation(() => now);
     const { unmount } = render(
@@ -340,6 +335,7 @@ describe("GlassScene Fancy policy", () => {
     now = 1000;
     paint();
     expect(frames.size).toBe(0);
+    await act(async () => undefined);
     const card = screen.getByRole("button", { name: "Ada" });
     card.style.rotate = "y 45deg";
     act(() => {
@@ -380,52 +376,53 @@ describe("GlassScene Fancy policy", () => {
     expect(frames.size).toBe(0);
   });
 
-  it("clears painted ownership before context disposal and recovers on the same canvas across a departure turn", async () => {
+  it("clears painted ownership before context disposal and recovers on a fresh canvas across a departure turn", async () => {
     let now = 0;
     vi.spyOn(performance, "now").mockImplementation(() => now);
     const onStatus = vi.fn();
-    const { container, unmount } = render(
+    const fixture = (enabled: boolean) => (
       <SharedGlassContext.Provider value={true}>
         <div className="app-shell">
-          <GlassScene settings={DEFAULT_GLASS_SETTINGS} onStatus={onStatus} />
+          <GlassScene settings={{ ...DEFAULT_GLASS_SETTINGS, enabled }} onStatus={onStatus} />
           <button data-player-glass="table" data-player-exit="1">
             <LiquidCardGlass />
             Ada
           </button>
         </div>
-      </SharedGlassContext.Provider>,
+      </SharedGlassContext.Provider>
     );
+    const { container, rerender, unmount } = render(fixture(true));
+    await act(async () => undefined);
     const canvas = container.querySelector("canvas")!;
     const card = screen.getByRole("button", { name: "Ada" });
     const fallback = card.firstElementChild;
     const disposals: Array<readonly [boolean, boolean, number]> = [];
-    const disposed = () => {
+    const disposed = (target: HTMLCanvasElement) => () => {
       disposals.push([
-        canvas.style.visibility === "hidden",
+        target.style.visibility === "hidden",
         card.hasAttribute("data-glass-painted"),
         frames.size,
       ]);
     };
-    vi.mocked(renderers[0]!.dispose).mockImplementation(disposed);
+    vi.mocked(renderers[0]!.dispose).mockImplementation(disposed(canvas));
     paint();
     expect(card).toHaveAttribute("data-glass-painted", "true");
     const staleFrame = [...frames.values()][0]!;
-    const loss = new Event("webglcontextlost", { cancelable: true });
-    act(() => canvas.dispatchEvent(loss));
-    expect(loss.defaultPrevented).toBe(true);
+    act(lose);
     expect(onStatus).toHaveBeenLastCalledWith("context-lost");
-    expect(renderers[0]!.dispose).toHaveBeenCalledExactlyOnceWith(false);
+    expect(renderers[0]!.dispose).toHaveBeenCalledExactlyOnceWith();
     expect(disposals).toEqual([[true, false, 0]]);
-    expect(loseContext).not.toHaveBeenCalled();
     act(() => staleFrame(performance.now()));
     expect(renderers[0]!.draw).toHaveBeenCalledOnce();
     expect(frames.size).toBe(0);
 
     card.style.rotate = "y 90deg";
-    act(() => canvas.dispatchEvent(new Event("webglcontextrestored")));
-    expect(container.querySelector("canvas")).toBe(canvas);
+    rerender(fixture(false));
+    await act(async () => rerender(fixture(true)));
+    const restoredCanvas = container.querySelector("canvas")!;
+    expect(restoredCanvas).not.toBe(canvas);
     expect(createGlassRenderer).toHaveBeenCalledTimes(2);
-    vi.mocked(renderers[1]!.dispose).mockImplementation(disposed);
+    vi.mocked(renderers[1]!.dispose).mockImplementation(disposed(restoredCanvas));
     paint();
     expect(onStatus).toHaveBeenLastCalledWith("ready");
     expect(vi.mocked(renderers[1]!.draw).mock.lastCall![0].surfaces).toHaveLength(0);
@@ -450,13 +447,12 @@ describe("GlassScene Fancy policy", () => {
       opacity: 0.45,
     });
     await act(async () => unmount());
-    expect(renderers[0]!.dispose).toHaveBeenCalledExactlyOnceWith(false);
-    expect(renderers[1]!.dispose).toHaveBeenCalledExactlyOnceWith(false);
+    expect(renderers[0]!.dispose).toHaveBeenCalledExactlyOnceWith();
+    expect(renderers[1]!.dispose).toHaveBeenCalledExactlyOnceWith();
     expect(disposals).toEqual([
       [true, false, 0],
       [true, false, 0],
     ]);
-    expect(loseContext).toHaveBeenCalledOnce();
     expect(frames.size).toBe(0);
     expect(card).not.toHaveAttribute("data-glass-painted");
   });
@@ -471,6 +467,7 @@ describe("GlassScene Fancy policy", () => {
       </FancyFeaturesContext.Provider>
     );
     const { container, rerender, unmount } = render(fixture(true));
+    await act(async () => undefined);
     const preference = media.get("(prefers-reduced-transparency: reduce)")!;
     act(() => {
       Object.assign(preference, { matches: true });
@@ -479,26 +476,141 @@ describe("GlassScene Fancy policy", () => {
     expect(renderers[0]?.dispose).toHaveBeenCalledOnce();
     expect(onStatus).toHaveBeenLastCalledWith("reduced-transparency");
     await act(async () => rerender(fixture(false)));
-    rerender(fixture(true));
+    await act(async () => rerender(fixture(true)));
     expect(createGlassRenderer).toHaveBeenCalledOnce();
-    act(() => {
+    await act(async () => {
       Object.assign(preference, { matches: false });
       preference.dispatchEvent(new Event("change"));
     });
     expect(createGlassRenderer).toHaveBeenCalledTimes(2);
     const oldCanvas = container.querySelector("canvas")!;
-    act(() => {
-      oldCanvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
-    });
+    act(lose);
     expect(renderers[1]?.dispose).toHaveBeenCalledOnce();
     expect(onStatus).toHaveBeenLastCalledWith("context-lost");
     await act(async () => rerender(fixture(false)));
-    rerender(fixture(true));
+    await act(async () => rerender(fixture(true)));
     expect(container.querySelector("canvas")).not.toBe(oldCanvas);
     expect(createGlassRenderer).toHaveBeenCalledTimes(3);
     paint();
     expect(onStatus).toHaveBeenLastCalledWith("ready");
     await act(async () => unmount());
+  });
+
+  it.each(["foreground", "hidden", "backgrounded"] as const)(
+    "falls back after device loss (%s), bounds retries and repaints only from the current canvas",
+    async (when) => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+      const status = vi.fn();
+      const { container, unmount } = render(
+        <div className="app-shell">
+          <GlassScene settings={DEFAULT_GLASS_SETTINGS} onStatus={status} />
+          <button data-player-glass="table">Ada</button>
+        </div>,
+      );
+      const visibility = () => document.dispatchEvent(new Event("visibilitychange"));
+      const show = () => window.dispatchEvent(new Event("pageshow"));
+      const elapse = () => act(async () => vi.advanceTimersByTimeAsync(5000));
+      const card = screen.getByRole("button", { name: "Ada" });
+      const calls = vi.mocked(createGlassRenderer).mock.calls;
+      await act(async () => undefined);
+      paint();
+      expect(card).toHaveAttribute("data-glass-painted", "true");
+
+      // Losing again before the retry can paint must not start another timer.
+      const obsolete = { draw: vi.fn(), dispose: vi.fn() };
+      vi.mocked(createGlassRenderer).mockImplementationOnce(async (_target, _image, onLost) => {
+        onLost?.();
+        return obsolete;
+      });
+      if (when === "hidden") hidden.mockReturnValue(true);
+      act(lose);
+      expect(status).toHaveBeenLastCalledWith("context-lost");
+      expect(card).not.toHaveAttribute("data-glass-painted");
+      expect(container.querySelector("canvas")).toBeNull();
+      expect(createGlassRenderer).toHaveBeenCalledOnce();
+      if (when === "backgrounded") {
+        hidden.mockReturnValue(true);
+        act(visibility);
+        expect(vi.getTimerCount()).toBe(0);
+      }
+      await elapse();
+      if (when !== "foreground") {
+        expect(createGlassRenderer).toHaveBeenCalledOnce();
+        hidden.mockReturnValue(false);
+        await act(async () => visibility());
+      }
+      expect(createGlassRenderer).toHaveBeenCalledTimes(2);
+      expect(calls[1]![0]).not.toBe(calls[0]![0]);
+      expect(obsolete.dispose).toHaveBeenCalledOnce();
+      expect(obsolete.draw).not.toHaveBeenCalled();
+      expect(card).not.toHaveAttribute("data-glass-painted");
+      await act(async () => show()); // A subsequent event for the same return cannot retry.
+      await elapse();
+      expect(createGlassRenderer).toHaveBeenCalledTimes(2);
+
+      // A new foreground visit can retry; paired return events must share it.
+      act(() => window.dispatchEvent(new Event("pagehide")));
+      await act(async () => {
+        show();
+        visibility();
+      });
+      expect(createGlassRenderer).toHaveBeenCalledTimes(3);
+      act(() => calls[0]![2]?.());
+      expect(card).not.toHaveAttribute("data-glass-painted");
+      expect(calls[2]![0]).toHaveStyle({ visibility: "hidden" });
+      paint();
+      expect(status).toHaveBeenLastCalledWith("ready");
+      expect(card).toHaveAttribute("data-glass-painted", "true");
+
+      // A successful repaint re-arms recovery; unmount cancels it again.
+      act(lose);
+      expect(vi.getTimerCount()).toBe(1);
+      unmount();
+      expect(vi.getTimerCount()).toBe(0);
+      act(show);
+      act(visibility);
+      await elapse();
+      expect(createGlassRenderer).toHaveBeenCalledTimes(3);
+      expect(frames.size).toBe(0);
+    },
+  );
+
+  it("disposes a superseded pending renderer without revoking its successor", async () => {
+    let finish!: (renderer: GlassRenderer) => void;
+    const late = { draw: vi.fn(), dispose: vi.fn() };
+    vi.mocked(createGlassRenderer).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const onStatus = vi.fn();
+    const fixture = (enabled: boolean) => (
+      <div className="app-shell">
+        <GlassScene settings={{ ...DEFAULT_GLASS_SETTINGS, enabled }} onStatus={onStatus} />
+        <button data-player-glass="profile">Ada</button>
+      </div>
+    );
+    const { container, rerender } = render(fixture(true));
+    await act(async () => undefined);
+    const first = vi.mocked(createGlassRenderer).mock.calls[0]!;
+    const card = screen.getByRole("button", { name: "Ada" });
+    expect(onStatus).toHaveBeenLastCalledWith("initializing");
+    expect(card).not.toHaveAttribute("data-glass-painted");
+    rerender(fixture(false));
+    await act(async () => rerender(fixture(true)));
+    paint();
+    expect(container.querySelector("canvas")).not.toBe(first[0]);
+    await act(async () => {
+      first[2]?.();
+      finish(late);
+    });
+    expect(late.dispose).toHaveBeenCalledOnce();
+    expect(late.draw).not.toHaveBeenCalled();
+    expect(renderers[0]?.dispose).not.toHaveBeenCalled();
+    expect(onStatus).toHaveBeenLastCalledWith("ready");
+    expect(card).toHaveAttribute("data-glass-painted", "true");
   });
 
   it("reuses shared decoded images and ignores obsolete background preparation without mutating images", async () => {
@@ -546,12 +658,11 @@ describe("GlassScene Fancy policy", () => {
         .mocked(HTMLCanvasElement.prototype.getContext)
         .mock.calls.filter(([kind]) => kind === "webgl"),
     ).toHaveLength(0);
-    expect(loseContext).not.toHaveBeenCalled();
     expect(oldTown.image).toHaveAttribute("src", "/backgrounds/old-town.svg");
     expect(removeSource).not.toHaveBeenCalled();
     expect(loadVisualImage("/backgrounds/old-town.svg")).toBe(prepared);
 
-    rerender(fixture(true, "harbour"));
+    await act(async () => rerender(fixture(true, "harbour")));
     expect(createImage).toHaveBeenCalledTimes(2);
     const harbour = images[1]!;
     await act(async () => rerender(fixture(true)));
@@ -559,6 +670,7 @@ describe("GlassScene Fancy policy", () => {
     expect(createGlassRenderer).toHaveBeenLastCalledWith(
       expect.any(HTMLCanvasElement),
       oldTown.image,
+      expect.any(Function),
     );
     await act(async () => harbour.resolve());
     expect(createGlassRenderer).toHaveBeenCalledOnce();
@@ -570,6 +682,7 @@ describe("GlassScene Fancy policy", () => {
     expect(createGlassRenderer).toHaveBeenLastCalledWith(
       expect.any(HTMLCanvasElement),
       oldTown.image,
+      expect.any(Function),
     );
     await act(async () => unmount());
     expect(removeSource).not.toHaveBeenCalled();
@@ -599,7 +712,7 @@ describe("GlassScene Fancy policy", () => {
     expect(frames.size).toBe(0);
     expect(container.querySelector("canvas")).toBeNull();
 
-    rerender(fixture(true));
+    await act(async () => rerender(fixture(true)));
     expect(createGlassRenderer).toHaveBeenCalledOnce();
     const firstCanvas = container.querySelector("canvas");
     const observer = TestResizeObserver.instances[0]!;
@@ -614,12 +727,11 @@ describe("GlassScene Fancy policy", () => {
       expect(mutation.disconnect).toHaveBeenCalledOnce();
     expect(card).not.toHaveAttribute("data-glass-painted");
     expect(container.querySelector("canvas")).toBeNull();
-    expect(loseContext).toHaveBeenCalledOnce();
     expect(frames.size).toBe(0);
     act(() => staleFrame(performance.now()));
     expect(renderers[0]?.draw).toHaveBeenCalledOnce();
 
-    rerender(fixture(true));
+    await act(async () => rerender(fixture(true)));
     expect(createGlassRenderer).toHaveBeenCalledTimes(2);
     expect(container.querySelector("canvas")).not.toBe(firstCanvas);
     paint();
@@ -629,7 +741,6 @@ describe("GlassScene Fancy policy", () => {
     expect(draft).toHaveValue("preserved");
     await act(async () => unmount());
     expect(renderers[1]?.dispose).toHaveBeenCalledOnce();
-    expect(loseContext).toHaveBeenCalledTimes(2);
     expect(frames.size).toBe(0);
   });
 });

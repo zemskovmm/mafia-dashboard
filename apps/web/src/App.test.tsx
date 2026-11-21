@@ -3895,19 +3895,30 @@ describe("developer menu", () => {
     }
   });
 
-  it("mounts fresh shared glass across setup, availability and player management without developer access", async () => {
+  it("mounts the glass host and preserves fallback across setup, availability and player management without developer access", async () => {
     window.localStorage.removeItem(DEVELOPER_UNLOCKED_STORAGE_KEY);
     const user = userEvent.setup();
+    const expectGlassHost = async () => {
+      expect(document.querySelector(".glass-scene-layer")).toBeInTheDocument();
+      // No GPU in jsdom: the failed canvas must not suppress CSS fallback.
+      await waitFor(() =>
+        expect(document.querySelector(".app-shell")).toHaveAttribute(
+          "data-glass-status",
+          "unavailable",
+        ),
+      );
+      expect(document.querySelector("[data-glass-painted='true']")).toBeNull();
+    };
     renderView(<App />);
     await screen.findByRole("button", { name: "Select available players" });
-    expect(document.querySelector(".glass-scene-canvas")).toBeInTheDocument();
+    await expectGlassHost();
     expect(screen.queryByRole("button", { name: "Open developer menu" })).toBeNull();
     await user.click(screen.getByRole("button", { name: "Select available players" }));
-    expect(document.querySelector(".glass-scene-canvas")).toBeInTheDocument();
+    await expectGlassHost();
     await user.click(screen.getByRole("button", { name: "Close available players" }));
     await user.click(screen.getByRole("button", { name: "Open Manage menu" }));
     await user.click(screen.getByRole("button", { name: "Players screen" }));
-    expect(document.querySelector(".glass-scene-canvas")).toBeInTheDocument();
+    await expectGlassHost();
   });
 
   it("tunes device-local glass in a collapsed drawer section and resets only glass", async () => {
@@ -3920,6 +3931,7 @@ describe("developer menu", () => {
         refraction: 10,
         goldLight: 25,
         matte: true,
+        profile: "simple",
       }),
     );
     const first = render(<App />);
@@ -3954,9 +3966,13 @@ describe("developer menu", () => {
       refraction: 10,
       goldLight: 63,
       matte: false,
+      surfaces: {
+        table: { refraction: 1, shine: 12 },
+        panels: { refraction: 3, shine: 24 },
+        buttons: { refraction: 5, shine: 38 },
+      },
       buttonFrosting: 70,
       buttonGold: 35,
-      profile: "edge",
       frosting: 50,
       tint: 13,
       edgeHighlights: 100,

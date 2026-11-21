@@ -244,15 +244,17 @@
 [data-player-glass] > :not(.liquid-card-glass, .vgpu-player-lighting, .active-player-lighting) {
   z-index: 1;
 }
-.app-shell[data-glass-status="ready"] [data-glass-painted="true"] > .liquid-card-glass {
-  visibility: hidden;
-}
-/* The draw updates shared weight before exposing its complementary local
-   optical layers. Keep the material parent opaque so backdrop sampling works. */
-.app-shell[data-glass-status="ready"]
-  [data-glass-painted="true"][data-glass-blending="true"]
-  > .liquid-card-glass {
-  visibility: visible;
+@media not (prefers-reduced-transparency: reduce) {
+  .app-shell[data-glass-status="ready"] [data-glass-painted="true"] > .liquid-card-glass {
+    visibility: hidden;
+  }
+  /* The draw updates shared weight before exposing its complementary local
+     optical layers. Keep the material parent opaque so backdrop sampling works. */
+  .app-shell[data-glass-status="ready"]
+    [data-glass-painted="true"][data-glass-blending="true"]
+    > .liquid-card-glass {
+    visibility: visible;
+  }
 }
 
 /* Master OFF is a static material, not the expensive local optics fallback.

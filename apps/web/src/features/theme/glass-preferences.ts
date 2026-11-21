@@ -1,12 +1,21 @@
 export const GLASS_STORAGE_KEY = "mafia-dashboard.glass.v1";
 
+export type SurfaceOptics = Readonly<{ refraction: number; shine: number }>;
+export const DEFAULT_SURFACE_OPTICS = {
+  table: { refraction: 1, shine: 12 },
+  panels: { refraction: 3, shine: 24 },
+  buttons: { refraction: 5, shine: 38 },
+} as const satisfies Record<string, SurfaceOptics>;
+export type GlassSurfaceGroup = keyof typeof DEFAULT_SURFACE_OPTICS;
+
 export interface GlassSettings {
   readonly version: 1;
   readonly enabled: boolean;
   readonly refraction: number;
   readonly goldLight: number;
   readonly matte: boolean;
-  readonly profile: "edge" | "simple";
+  /** @deprecated Legacy fixture compatibility only. Not read, written, or used by Liquid Glass. */
+  readonly profile?: "edge" | "simple";
   readonly frosting: number;
   readonly tint: number;
   readonly edgeHighlights: number;
@@ -16,6 +25,7 @@ export interface GlassSettings {
   readonly nominationTreatment: "icons" | "tint" | "hybrid";
   readonly buttonFrosting: number;
   readonly buttonGold: number;
+  readonly surfaces: Readonly<Record<GlassSurfaceGroup, SurfaceOptics>>;
 }
 
 export const DEFAULT_GLASS_SETTINGS: GlassSettings = Object.freeze({
@@ -24,7 +34,6 @@ export const DEFAULT_GLASS_SETTINGS: GlassSettings = Object.freeze({
   refraction: 14,
   goldLight: 25,
   matte: true,
-  profile: "edge",
   frosting: 50,
   tint: 13,
   edgeHighlights: 100,
@@ -34,6 +43,7 @@ export const DEFAULT_GLASS_SETTINGS: GlassSettings = Object.freeze({
   nominationTreatment: "hybrid",
   buttonFrosting: 70,
   buttonGold: 35,
+  surfaces: DEFAULT_SURFACE_OPTICS,
 });
 
 const validNumber = (value: unknown, maximum: number, fallback: number): number =>
@@ -45,16 +55,27 @@ export const validateGlassSettings = (value: unknown): GlassSettings => {
   if (value === null || typeof value !== "object" || !("version" in value) || value.version !== 1)
     return DEFAULT_GLASS_SETTINGS;
   const record = value as Record<string, unknown>;
+  const optics = (group: GlassSurfaceGroup): SurfaceOptics => {
+    const groups = record.surfaces;
+    const candidate =
+      groups && typeof groups === "object" ? (groups as Record<string, unknown>)[group] : null;
+    const fields = (candidate && typeof candidate === "object" ? candidate : {}) as Record<
+      string,
+      unknown
+    >;
+    const defaults = DEFAULT_SURFACE_OPTICS[group];
+    return {
+      refraction: validNumber(fields.refraction, 24, defaults.refraction),
+      shine: validNumber(fields.shine, 100, defaults.shine),
+    };
+  };
   return {
     version: 1,
+    surfaces: { table: optics("table"), panels: optics("panels"), buttons: optics("buttons") },
     enabled: typeof record.enabled === "boolean" ? record.enabled : DEFAULT_GLASS_SETTINGS.enabled,
     refraction: validNumber(record.refraction, 24, DEFAULT_GLASS_SETTINGS.refraction),
     goldLight: validNumber(record.goldLight, 100, DEFAULT_GLASS_SETTINGS.goldLight),
     matte: typeof record.matte === "boolean" ? record.matte : DEFAULT_GLASS_SETTINGS.matte,
-    profile:
-      record.profile === "edge" || record.profile === "simple"
-        ? record.profile
-        : DEFAULT_GLASS_SETTINGS.profile,
     frosting: validNumber(record.frosting, 100, DEFAULT_GLASS_SETTINGS.frosting),
     tint: validNumber(record.tint, 30, DEFAULT_GLASS_SETTINGS.tint),
     edgeHighlights: validNumber(record.edgeHighlights, 100, DEFAULT_GLASS_SETTINGS.edgeHighlights),

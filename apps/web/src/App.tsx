@@ -2082,7 +2082,9 @@ const ClubWorkspaceContent = ({
   );
 
   const glassSceneMounted =
-    fancyEnabled && glass.enabled && (view === "game" || view === "players");
+    fancyEnabled &&
+    glass.enabled &&
+    (view === "game" || view === "players" || view === "statistics" || view === "import");
   const effectiveGlassStatus: GlassStatus = !fancyEnabled
     ? "off"
     : glassReducedTransparency

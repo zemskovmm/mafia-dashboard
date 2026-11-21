@@ -8,12 +8,16 @@ import {
 } from "./glass-preferences.js";
 
 const approvedDefaults = {
+  surfaces: {
+    table: { refraction: 1, shine: 12 },
+    panels: { refraction: 3, shine: 24 },
+    buttons: { refraction: 5, shine: 38 },
+  },
   version: 1,
   enabled: true,
   refraction: 14,
   goldLight: 25,
   matte: true,
-  profile: "edge",
   frosting: 50,
   tint: 13,
   edgeHighlights: 100,
@@ -26,12 +30,12 @@ const approvedDefaults = {
 } as const;
 
 const customizedSettings = {
+  surfaces: approvedDefaults.surfaces,
   version: 1,
   enabled: false,
   refraction: 10,
   goldLight: 70,
   matte: false,
-  profile: "simple",
   frosting: 75,
   tint: 20,
   edgeHighlights: 80,
@@ -56,6 +60,20 @@ const numericFields = [
 ] as const;
 
 describe("device-local glass preferences", () => {
+  it("defaults only the invalid or missing group fields, retaining zero and legacy card optics", () => {
+    const saved = validateGlassSettings({
+      ...customizedSettings,
+      surfaces: { table: { refraction: 0, shine: -1 }, panels: { shine: 82 } },
+    });
+    expect(saved).toEqual({
+      ...customizedSettings,
+      surfaces: {
+        table: { refraction: 0, shine: 12 },
+        panels: { refraction: 3, shine: 82 },
+        buttons: approvedDefaults.surfaces.buttons,
+      },
+    });
+  });
   it("discards retired glyph/check choices, including on persisted writes, without resetting retained values", () => {
     const old = {
       ...customizedSettings,
@@ -125,19 +143,20 @@ describe("device-local glass preferences", () => {
       });
     }
   });
-  it("accepts only the two global profiles without resetting other choices", () => {
-    for (const profile of ["edge", "simple"]) {
-      expect(validateGlassSettings({ ...customizedSettings, profile })).toEqual({
-        ...customizedSettings,
-        profile,
-      });
+  it("reads and saves all retained v1 choices without the retired profile", () => {
+    for (const profile of ["edge", "simple"] as const) {
+      const legacy = { ...customizedSettings, profile };
+      expect(readGlassSettings(() => ({ getItem: () => JSON.stringify(legacy) }))).toEqual(
+        customizedSettings,
+      );
+      const setItem = vi.fn();
+      writeGlassSettings(legacy, () => ({ setItem }));
+      expect(setItem).toHaveBeenCalledExactlyOnceWith(GLASS_STORAGE_KEY, expect.any(String));
+      expect(JSON.parse(setItem.mock.calls[0]![1])).toEqual(customizedSettings);
     }
-    for (const profile of [undefined, null, false, 0, "", "Edge", "unknown"]) {
-      expect(validateGlassSettings({ ...customizedSettings, profile })).toEqual({
-        ...customizedSettings,
-        profile: "edge",
-      });
-    }
+    expect(validateGlassSettings({ ...customizedSettings, profile: "unknown" })).toEqual(
+      customizedSettings,
+    );
   });
   it.each([true, false, undefined, null, 0, "false"])(
     "round-trips matte %s independently of valid existing v1 settings",
