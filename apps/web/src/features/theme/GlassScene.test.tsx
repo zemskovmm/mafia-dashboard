@@ -98,7 +98,7 @@ afterEach(async () => {
 
 describe("GlassScene Fancy policy", () => {
   it.each(["departure", "role"])(
-    "blends a planar %s back into shared optics without a one-frame material switch",
+    "keeps frost on the first planar %s frame according to its material owner",
     async (kind) => {
       let now = 0;
       vi.spyOn(performance, "now").mockImplementation(() => now);
@@ -135,22 +135,36 @@ describe("GlassScene Fancy policy", () => {
       card.classList.remove("is-role-flipping");
       paint();
       expect(card).toHaveAttribute("data-glass-painted", "true");
+      if (kind === "role") {
+        expect(scene().surfaces[0]?.opacity).toBe(1);
+        expect(card).not.toHaveAttribute("data-glass-blending");
+        expect(card.style.getPropertyValue("--glass-local-weight")).toBe("");
+        return;
+      }
       expect(card).toHaveAttribute("data-glass-blending", "true");
       expect(scene().surfaces[0]?.opacity).toBe(0);
       expect(card.style.getPropertyValue("--glass-local-weight")).toBe("1");
-      now = 110;
+      const duration = 120;
+      now = 50 + duration / 4;
+      paint();
+      const quarter = 0.25;
+      expect(scene().surfaces[0]?.opacity).toBeCloseTo(quarter);
+      const previousWeight = card.style.getPropertyValue("--glass-local-weight");
+      expect(Number(previousWeight)).toBeCloseTo(1 - quarter);
+      now = 50 + duration / 2;
       paint();
       expect(scene().surfaces[0]?.opacity).toBeCloseTo(0.5);
       expect(card.style.getPropertyValue("--glass-local-weight")).toBe("0.5");
       expect(scene().surfaces[1]?.opacity).toBe(1);
-      now = 170;
+      now = 50 + duration;
       paint();
       expect(scene().surfaces[0]?.opacity).toBe(1);
       expect(card).not.toHaveAttribute("data-glass-blending");
       expect(card.style.getPropertyValue("--glass-local-weight")).toBe("");
       expect(handoffs).toEqual([
         [0, ""],
-        [0.5, "1"],
+        [quarter, "1"],
+        [0.5, previousWeight],
         [1, "0.5"],
       ]);
       now = 1100;

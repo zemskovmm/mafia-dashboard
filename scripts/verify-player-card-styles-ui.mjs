@@ -1473,8 +1473,13 @@ export async function runPlayerCardStyleScenarios({
           ),
         ];
         const material = host.querySelector(":scope > .liquid-card-glass");
+        const backdrop = material?.querySelector(".liquid-card-glass__backdrop");
+        const backdropStyle = backdrop && getComputedStyle(backdrop);
         const facing = (node) =>
           Math.cos((angle * Math.PI) / 180) * (parseFloat(getComputedStyle(node).scale) || 1);
+        const edge = host.matches(".is-role-dealt[data-player-glass]")
+          ? getComputedStyle(host, "::before")
+          : null;
         return {
           now: performance.now(),
           timeOrigin: performance.timeOrigin,
@@ -1502,12 +1507,25 @@ export async function runPlayerCardStyleScenarios({
             visible: node.checkVisibility({ opacityProperty: true, visibilityProperty: true }),
           })),
           angle,
+          dealtEdge: edge
+            ? {
+                host: getComputedStyle(host).borderTopColor,
+                border: edge.borderTopColor,
+                width: edge.borderTopWidth,
+                content: edge.content,
+                zIndex: Number(edge.zIndex),
+                role: host.dataset.roleDrawRole,
+              }
+            : null,
           optics: material
             ? {
                 shared: host.dataset.glassPainted === "true",
                 blending: host.dataset.glassBlending === "true",
                 weight: parseFloat(host.style.getPropertyValue("--glass-local-weight")),
                 visibility: getComputedStyle(material).visibility,
+                backdropFilter:
+                  backdropStyle?.getPropertyValue("backdrop-filter") ||
+                  backdropStyle?.getPropertyValue("-webkit-backdrop-filter"),
                 materialFacing: facing(material),
                 glowFacing: [...host.querySelectorAll(":scope > .role-draw-glow")].map(facing),
               }
@@ -1551,7 +1569,7 @@ export async function runPlayerCardStyleScenarios({
         if (row.hostTurns && firstActive === undefined) firstActive = row.now;
         if (
           rows.length >= 450 ||
-          row.now - (firstActive ?? started) > (firstActive === undefined ? 4000 : 1400)
+          row.now - (firstActive ?? started) > (firstActive === undefined ? 4000 : 2200)
         ) {
           stopped = true;
           return;
@@ -1580,6 +1598,7 @@ export async function runPlayerCardStyleScenarios({
     { interrupt = false, openingBoundary = false } = {},
   ) {
     const before = await saved();
+    const observeDealtEdge = kind.startsWith("enhanced-") || kind.startsWith("fallback-");
     const probe = await printedTurnProbe(seat);
     const initial = await probe.evaluate(({ sample }) => sample());
     const label = `en-${style}-${kind}-natural`;
@@ -1656,10 +1675,18 @@ export async function runPlayerCardStyleScenarios({
             );
             assert.equal(row.optics.visibility, "visible");
           }
+          if (observeDealtEdge)
+            assert.equal(row.optics.blending, false, "No second material animation on landing");
+          if (observeDealtEdge && !row.optics.shared)
+            assert.notEqual(
+              row.optics.backdropFilter,
+              "none",
+              "The standalone local role material keeps its configured backdrop filter",
+            );
           if (row.optics.shared && !row.optics.blending)
             assert.equal(row.optics.visibility, "hidden", "No duplicate local/shared paint");
         }
-        if (initial.optics.shared) {
+        if (initial.optics.shared && !observeDealtEdge) {
           const blend = rows.filter((row) => row.optics.blending);
           assert.ok(
             blend.some((row) => row.optics.weight > 0 && row.optics.weight < 1),
@@ -1670,7 +1697,36 @@ export async function runPlayerCardStyleScenarios({
               blend[index].optics.weight <= blend[index - 1].optics.weight,
               "The optical handoff never reverses",
             );
+        }
+        if (initial.optics.shared)
           assert.equal(rows.at(-1).optics.shared, true, "Enhanced Glass returns after the turn");
+        if (observeDealtEdge) {
+          assert.ok(rows.at(-1).dealtEdge, "The settled dealt role still has a semantic edge");
+          const landed = rows.filter((row) => !row.hostTurns && row.now > active.at(-1).now);
+          const recoveringGlow = landed
+            .filter((row) => !row.optics.blending && (!initial.optics.shared || row.optics.shared))
+            .flatMap((row) => row.lights.filter((light) => light.className === "role-draw-glow"));
+          assert.ok(
+            recoveringGlow.some((light) => light.opacity > 0.4 && light.opacity < 1),
+            "Role light is still easing after the frost has settled",
+          );
+          for (const { dealtEdge } of rows.filter(({ dealtEdge }) => dealtEdge)) {
+            const color = /^(mafia|don)$/.test(dealtEdge.role)
+              ? "rgba(255, 95, 79, 0.85)"
+              : "rgba(118, 205, 255, 0.85)";
+            // The role cue must not sit behind the local backdrop filter while
+            // the shared WebGPU lens and the local material overlap.
+            if (initial.optics.shared) {
+              assert.equal(dealtEdge.host, "rgba(0, 0, 0, 0)");
+              assert.equal(dealtEdge.content, '""');
+              assert.equal(dealtEdge.border, color);
+              assert.equal(dealtEdge.width, "1px");
+              assert.ok(dealtEdge.zIndex > 0, "The edge paints above local optics");
+            } else {
+              assert.equal(dealtEdge.host, color);
+              assert.equal(dealtEdge.content, "none");
+            }
+          }
         }
       }
       // At the positive private-light boundary, the required outcome is removal,
@@ -2160,8 +2216,7 @@ export async function runPlayerCardStyleScenarios({
         await page.addInitScript(() => {
           const original = HTMLCanvasElement.prototype.getContext;
           HTMLCanvasElement.prototype.getContext = function (type, ...options) {
-            if (this.classList.contains("glass-scene-canvas") && type.startsWith("webgl"))
-              return null;
+            if (this.classList.contains("glass-scene-canvas") && type === "webgpu") return null;
             return original.call(this, type, ...options);
           };
         });

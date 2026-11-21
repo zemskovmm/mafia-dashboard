@@ -14,6 +14,7 @@ import {
 
 const empty: SceneRect = [0, 0, 0, 0];
 const opticalHandoffMs = 120;
+
 const deviceRetryDelayMs = 500;
 const panelSelector =
   ".glass-surface,.player-setup-card,.table-workspace,.nomination-panel,.timer-panel";
@@ -204,7 +205,7 @@ export const GlassScene = ({
           Number.isFinite(degrees) &&
           Math.abs(Math.sin((degrees * Math.PI) / 180)) > 1e-4;
         if (turning) {
-          localTurns.set(element, null);
+          if (element.hasAttribute("data-player-exit")) localTurns.set(element, null);
           return [];
         }
         const rect = visibleRect(element, s);
@@ -272,13 +273,9 @@ export const GlassScene = ({
         const handoff = localTurns.get(element);
         if (handoff !== undefined) {
           const began = handoff ?? now;
-          // Only the returning planar lens blends. The semantic card, public
-          // content and shared opaque scene never receive this opacity.
-          if (
-            !motion.matches &&
-            (element.hasAttribute("data-player-exit") ||
-              element.classList.contains("role-draw-card"))
-          )
+          // Departures continue into tear/fade. Role flips finish here: draw
+          // the full lens before markPainted hides the turning material.
+          if (!motion.matches && element.hasAttribute("data-player-exit"))
             sharedWeight = Math.min(1, Math.max(0, (now - began) / opticalHandoffMs));
           if (sharedWeight < 1) {
             localTurns.set(element, began);

@@ -25,8 +25,9 @@
 }
 .table-stage .player-seat.role-draw-card.is-role-dealt {
   --role-draw-rgb: 118 205 255;
+  --role-draw-edge: rgb(var(--role-draw-rgb) / 85%);
   scale: 1.04;
-  border-color: rgb(var(--role-draw-rgb) / 85%);
+  border-color: var(--role-draw-edge);
   box-shadow:
     0 0 26px rgb(var(--role-draw-rgb) / 48%),
     0 9px 25px rgb(0 0 0 / 40%);
@@ -38,6 +39,25 @@
   ) {
   --role-draw-rgb: 255 95 79;
 }
+/* The local backdrop can sample and blur the button's own border during the
+   WebGPU handoff. Keep the same role edge above both optical layers. */
+.app-shell[data-glass-status="ready"]
+  .table-stage
+  .player-seat.role-draw-card.is-role-dealt[data-player-glass] {
+  border-color: transparent;
+}
+.app-shell[data-glass-status="ready"]
+  .table-stage
+  .player-seat.role-draw-card.is-role-dealt[data-player-glass]::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border: 1px solid var(--role-draw-edge);
+  border-radius: inherit;
+  z-index: 2;
+  pointer-events: none;
+}
+
 /* This full-face wash is NOT the glass child: enhanced glass may hide that child.
    Shadows remain outside the host perimeter rather than a clipped inner border. */
 .player-seat.role-draw-card > .role-draw-glow {
@@ -51,6 +71,18 @@
     rgb(var(--role-draw-rgb) / 24%),
     rgb(var(--role-draw-rgb) / 9%)
   );
+}
+/* Keep a visible cue through the turn. On landing, only its light gains
+   opacity; the incoming face and its hit target are already fully present. */
+@media (prefers-reduced-motion: no-preference) and (not (prefers-reduced-transparency: reduce)) {
+  .player-seat.role-draw-card.is-role-dealt[data-player-glass] > .role-draw-glow {
+    opacity: 1;
+    transition: opacity 1s ease-in-out;
+  }
+  .player-seat.role-draw-card.is-role-dealt.is-role-flipping[data-player-glass] > .role-draw-glow {
+    opacity: 0.4;
+    transition-duration: 140ms;
+  }
 }
 .role-draw-icon[data-role-glyph="sheriff"],
 .role-draw-icon[data-role-glyph="mafia"],

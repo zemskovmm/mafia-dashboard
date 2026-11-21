@@ -1256,7 +1256,7 @@ test("real printed-turn probe observes native host/light geometry and immediate 
     offsetHeight: 150,
     getBoundingClientRect: () => rectangle,
     contains: (node) => node === glow,
-    matches: () => privateVisible,
+    matches: (selector) => !selector.includes("[data-player-glass]") && privateVisible,
     classList: { contains: () => false },
     querySelector: () => null,
     querySelectorAll: (selector) =>
@@ -1363,7 +1363,7 @@ test("real printed-turn probe observes native host/light geometry and immediate 
   assert.equal(reroll.names[0].front && reroll.names[0].inBand && reroll.names[0].visible, true);
   assert.equal(reroll.names[1].visible, false);
   assert.equal(moves, 0, "Probe does not pause, finish or seek the native action");
-  now = 1501;
+  now = 2301;
   queued();
   postFrame();
   const count = probe.rows.length;
