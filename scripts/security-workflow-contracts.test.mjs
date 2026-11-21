@@ -155,6 +155,8 @@ test("registry push outputs a digest only after exact registry readback", async 
       [
         "-c",
         `
+    GITHUB_OUTPUT=$(mktemp) || exit 1
+    trap 'cat "$GITHUB_OUTPUT"; rm -f "$GITHUB_OUTPUT"' EXIT
     docker() {
       case "$1" in
         push) printf '%s\\n' "$PUSH"; return "$PUSH_STATUS" ;;
@@ -172,7 +174,6 @@ test("registry push outputs a digest only after exact registry readback", async 
           REMOTE: remote,
           PUSH_STATUS: pushStatus,
           IMAGE_REF: "ghcr.io/fixture/dashboard:build-1",
-          GITHUB_OUTPUT: "/dev/stdout",
         },
         encoding: "utf8",
         timeout: 5_000,
