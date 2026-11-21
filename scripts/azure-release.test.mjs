@@ -1,354 +1,321 @@
-/* global URL, Buffer, structuredClone */
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { test } from "node:test";
+import { deployRelease, readHealth, validateRelease } from "./azure-release.mjs";
 
-const load = () => import("./azure-release.mjs");
-const repository = "zemskovmm/mafia-dashboard";
 const commit = "a".repeat(40);
-const image = `ghcr.io/${repository}@sha256:${"b".repeat(64)}`;
-const stagingUrl = "https://mafiadashboard-stg-app.fixture.northeurope.azurecontainerapps.io";
-const run = {
-  id: 123,
-  run_attempt: 2,
-  run_number: 170,
-  head_sha: commit,
-  head_branch: "main",
-  event: "push",
-  path: ".github/workflows/deploy-azure.yml",
-  workflow_id: 42,
-  status: "completed",
-  conclusion: "success",
-  repository: { full_name: repository, id: 55 },
-  head_repository: { full_name: repository, id: 55 },
+const image = `ghcr.io/zemskovmm/mafia-dashboard@sha256:${"b".repeat(64)}`;
+const source = { head: commit, packageVersion: "2.7.9" };
+const environment = {
+  GITHUB_REPOSITORY: "zemskovmm/mafia-dashboard",
+  GITHUB_REF: "refs/heads/main",
+  GITHUB_EVENT_NAME: "workflow_dispatch",
+  GITHUB_SHA: commit,
+  GITHUB_RUN_NUMBER: "17",
+  DEPLOY_IMAGE: image,
+  EXPECTED_COMMIT: commit,
+  EXPECTED_VERSION: "2.7.17",
+  APP_BUILD_INDEX: "17",
+  AZURE_SUBSCRIPTION_ID: "9f0da8f6-9da5-4bef-9738-cb26f2a19e58",
+  AZURE_RESOURCE_GROUP: "rg-mafia-dashboard-prod-weu",
+  AZURE_LOCATION: "northeurope",
+  AZURE_NAME_PREFIX: "mafiadashboard",
+  AZURE_STORAGE_ACCOUNT_NAME: "mafiadata6du4xvao4bfk2",
+  AZURE_STORAGE_TABLE_NAME: "MafiaEntities",
+  AZURE_STORAGE_CONTAINER_NAME: "mafia-live",
+  AZURE_STORAGE_PARTITION_KEY: "production-v1",
 };
-const release = {
-  schemaVersion: 1,
-  repository,
-  workflow: ".github/workflows/deploy-azure.yml",
-  branch: "main",
-  runId: "123",
-  runAttempt: "2",
-  buildIndex: "170",
-  commit,
-  image,
-  packageVersion: "1.0.0",
-  appVersion: "1.0.170",
-  stagingUrl,
-  verification: "azure-readiness-version-configuration",
-};
-const artifact = {
-  id: 456,
-  name: "staging-release-123-2",
-  expired: false,
-  digest: `sha256:${"c".repeat(64)}`,
-  workflow_run: {
-    id: 123,
-    repository_id: 55,
-    head_repository_id: 55,
-    head_sha: commit,
-    head_branch: "main",
-  },
-};
+const release = { commit, buildIndex: "17", version: "2.7.17", image };
+const group = `/subscriptions/${environment.AZURE_SUBSCRIPTION_ID}/resourceGroups/${environment.AZURE_RESOURCE_GROUP}/providers`;
+const fqdn = "mafiadashboard-app.fixture.northeurope.azurecontainerapps.io";
+const origin = `https://${fqdn}`;
+const runtimeClient = "test-runtime-client";
+const storageEnv = Object.fromEntries(
+  Object.entries(environment).filter(([key]) => key.startsWith("AZURE_STORAGE_")),
+);
 
-function fixture(overrides = {}) {
-  const calls = [];
+function app(currentImage = `ghcr.io/zemskovmm/mafia-dashboard@sha256:${"c".repeat(64)}`) {
+  const common = {
+    ...storageEnv,
+    AZURE_STORAGE_INITIALIZE: "false",
+    AZURE_CLIENT_ID: runtimeClient,
+    STORAGE_PROVIDER: "azure",
+  };
+  const entries = (fields) => Object.entries(fields).map(([name, value]) => ({ name, value }));
   return {
-    calls,
-    repository,
-    requestedRunId: "",
-    stagingUrl,
-    api: async (path) => {
-      calls.push(path);
-      if (path.endsWith("/workflows/deploy-azure.yml"))
-        return { id: 42, path: run.path, state: "active" };
-      if (path.includes("/workflows/deploy-azure.yml/runs?")) return { workflow_runs: [run] };
-      if (path.includes("/artifacts?")) return { total_count: 1, artifacts: [artifact] };
-      if (path.endsWith("/runs/123")) return run;
-      throw new Error(`Unexpected API request ${path}`);
+    id: `${group}/Microsoft.App/containerApps/mafiadashboard-app`,
+    location: "North Europe",
+    identity: {
+      type: "UserAssigned",
+      userAssignedIdentities: {
+        [`${group}/Microsoft.ManagedIdentity/userAssignedIdentities/mafiadashboard-storage`]: {
+          clientId: runtimeClient,
+        },
+      },
     },
-    readArtifact: async () => structuredClone(release),
-    currentIdentity: async () => ({ version: release.appVersion, commit }),
-    ...overrides,
+    properties: {
+      managedEnvironmentId: `${group}/Microsoft.App/managedEnvironments/mafiadashboard-env`,
+      provisioningState: "Succeeded",
+      latestRevisionName: "mafiadashboard-app--active",
+      latestReadyRevisionName: "mafiadashboard-app--active",
+      configuration: {
+        activeRevisionsMode: "Single",
+        ingress: { fqdn, targetPort: 3000, external: true, allowInsecure: false },
+        registries: [{ server: "ghcr.io", passwordSecretRef: "ghcr-token" }],
+        secrets: [{ name: "ghcr-token" }, { name: "google-client-secret" }],
+      },
+      template: {
+        scale: { minReplicas: 1, maxReplicas: 1 },
+        containers: [
+          {
+            name: "app",
+            image: currentImage,
+            resources: { cpu: 0.5, memory: "1Gi" },
+            env: [
+              ...entries({
+                ...common,
+                PUBLIC_APP_URL: origin,
+                TRUST_PROXY_HOPS: "1",
+                CUSTOM_RUNTIME_FLAG: "test-fixture-private-value",
+              }),
+              { name: "GOOGLE_CLIENT_SECRET", secretRef: "google-client-secret" },
+            ],
+            probes: [{ type: "Readiness", httpGet: { path: "/health/ready", port: 3000 } }],
+          },
+        ],
+        initContainers: [
+          {
+            name: "initialize-storage",
+            image: currentImage,
+            command: ["node"],
+            args: ["apps/server/dist/initialize-storage.js"],
+            env: entries(common),
+          },
+        ],
+      },
+    },
   };
 }
 
-test("release records freeze staging build identity, never the promotion's identity", async () => {
-  const { validateReleaseRecord } = await load();
-  const selected = validateReleaseRecord(release, run, { repository, workflowId: 42 });
-  assert.deepEqual(selected, release);
-  assert.ok(Object.isFrozen(selected));
-  release.image = image; // Caller mutation cannot replace the selected snapshot.
-  assert.equal(selected.buildIndex, "170");
-  assert.equal(selected.appVersion, "1.0.170");
-});
-
-test("promotion rejects wrong repository/workflow/branch/status/event/attempt/build/digest evidence", async () => {
-  const { validateReleaseRecord } = await load();
-  for (const mutation of [
-    { status: "in_progress" },
-    { conclusion: "failure" },
-    { conclusion: "cancelled" },
-    { head_branch: "feature" },
-    { event: "pull_request" },
-    { path: ".github/workflows/other.yml" },
-    { workflow_id: 99 },
-    { head_sha: "d".repeat(40) },
-    { run_attempt: 3 },
-    { run_number: 171 },
-    { repository: { full_name: "other/repo", id: 55 } },
-    { head_repository: { full_name: repository, id: 56 } },
-  ])
-    assert.throws(
-      () => validateReleaseRecord(release, { ...run, ...mutation }, { repository, workflowId: 42 }),
-      undefined,
-      JSON.stringify(mutation),
-    );
-  for (const mutation of [
-    { schemaVersion: 2 },
-    { repository: "other/repo" },
-    { workflow: ".github/workflows/other.yml" },
-    { branch: "feature" },
-    { runId: "0123" },
-    { runId: "124" },
-    { runAttempt: "1" },
-    { buildIndex: "171" },
-    { commit: "d".repeat(40) },
-    { appVersion: "1.0.171" },
-    { image: `ghcr.io/${repository}:main` },
-    { image: `ghcr.io/other/repo@sha256:${"b".repeat(64)}` },
-    { image: `${image}\nunsafe=1` },
-    { verification: undefined },
-    { stagingUrl: "https://mafiadashboard-app.fixture.northeurope.azurecontainerapps.io" },
-  ])
-    assert.throws(
-      () => validateReleaseRecord({ ...release, ...mutation }, run, { repository, workflowId: 42 }),
-      undefined,
-      JSON.stringify(mutation),
-    );
-});
-
-test("default selects the newest run without filtering away failures, and matches current staging", async () => {
-  const { selectStagingRelease } = await load();
-  const options = fixture();
-  assert.deepEqual(await selectStagingRelease(options), release);
-  assert.ok(options.calls.some((path) => path.includes("branch=main")));
-  assert.ok(options.calls.every((path) => !path.includes("status=success")));
-  for (const current of [
-    null,
-    {},
-    { version: "1.0.171", commit },
-    { version: "1.0.170", commit: "d".repeat(40) },
+test("release accepts only same-run immutable production identity", () => {
+  assert.deepEqual(validateRelease(environment, source), release);
+  for (const [key, value] of Object.entries({
+    GITHUB_REF: "refs/tags/main",
+    GITHUB_EVENT_NAME: "push",
+    GITHUB_REPOSITORY: "fork/mafia-dashboard",
+    GITHUB_SHA: "b".repeat(40),
+    GITHUB_RUN_NUMBER: "017",
+    EXPECTED_COMMIT: "c".repeat(40),
+    EXPECTED_VERSION: "2.7.18",
+    APP_BUILD_INDEX: "18",
+    DEPLOY_IMAGE: "ghcr.io/zemskovmm/mafia-dashboard:main",
+  }))
+    assert.throws(() => validateRelease({ ...environment, [key]: value }, source), Error, key);
+  for (const bad of [
+    undefined,
+    `${image}\n`,
+    image.replace("zemskovmm", "different"),
+    image.slice(0, -1),
   ]) {
-    await assert.rejects(
-      selectStagingRelease(fixture({ currentIdentity: async () => current })),
-      /current staging/i,
+    assert.throws(
+      () => validateRelease({ ...environment, DEPLOY_IMAGE: bad }, source),
+      /immutable GHCR digest/,
     );
   }
-  await assert.rejects(
-    selectStagingRelease(fixture({ stagingUrl: `${stagingUrl}/path` })),
-    /staging.*origin/i,
-  );
-  const base = fixture();
-  await assert.rejects(
-    selectStagingRelease(
-      fixture({
-        api: async (path) =>
-          path.includes("/runs/123") ? { ...run, conclusion: "failure" } : base.api(path),
-      }),
-    ),
-    /successful/i,
-  );
-  await assert.rejects(
-    selectStagingRelease(
-      fixture({
-        api: async (path) => (path.includes("/runs?") ? { workflow_runs: [] } : base.api(path)),
-      }),
-    ),
-    /staging run/i,
-  );
+  for (const key of Object.keys(environment).filter((name) => name.startsWith("AZURE_"))) {
+    assert.throws(
+      () => validateRelease({ ...environment, [key]: "wrong-fixture" }, source),
+      new RegExp(key),
+    );
+  }
 });
 
-test("explicit historical selection is exact, successful, and independent of current staging", async () => {
-  const { selectStagingRelease } = await load();
-  const options = fixture({
-    requestedRunId: "123",
-    currentIdentity: async () => {
-      throw new Error("must not inspect current staging");
+function revision(id, template = app(image).properties.template) {
+  return { id, properties: { active: true, healthState: "Healthy", trafficWeight: 100, template } };
+}
+
+function harness(...responses) {
+  const patches = [];
+  const reports = [];
+  const checks = [];
+  const io = {
+    readApp: () => responses.shift(),
+    readRevision: (id) => revision(id),
+    updateApp: (patch) => patches.push(patch),
+    health: (...args) => {
+      checks.push(args);
+      return true;
     },
-  });
-  const selected = await selectStagingRelease(options);
-  assert.deepEqual(selected, release);
-  assert.ok(options.calls.every((path) => !path.includes("/runs?")));
-  for (const requestedRunId of ["0", "0123", "123\n", "-1", "1/../123", "9007199254740992"]) {
-    await assert.rejects(selectStagingRelease(fixture({ requestedRunId })), /run ID/i);
-  }
-});
+    report: (message) => reports.push(message),
+    attempts: responses.length - 1,
+    pause: () => {},
+  };
+  return { io, patches, reports, checks };
+}
 
-test("missing, expired, duplicate, mismatched and unavailable artifacts fail closed", async () => {
-  const { selectStagingRelease } = await load();
-  for (const artifacts of [
-    [],
-    [artifact, artifact],
-    [{ ...artifact, expired: true }],
-    [{ ...artifact, digest: null }],
-    [{ ...artifact, name: "staging-release-123-1" }],
-    [{ ...artifact, workflow_run: { ...artifact.workflow_run, head_sha: "d".repeat(40) } }],
-  ]) {
-    const base = fixture();
-    await assert.rejects(
-      selectStagingRelease(
-        fixture({
-          api: async (path) =>
-            path.includes("/artifacts?")
-              ? { total_count: artifacts.length, artifacts }
-              : base.api(path),
-        }),
-      ),
-      /artifact/i,
-    );
-  }
-  await assert.rejects(
-    selectStagingRelease(
-      fixture({
-        readArtifact: async () => {
-          throw new Error("artifact unavailable");
+test("only app and init images change; both must be ready before health verifies success", async () => {
+  const prior = app();
+  const inProgress = app(image);
+  inProgress.properties.latestReadyRevisionName = "previous";
+  const wrongDigest = app(image);
+  wrongDigest.properties.template.initContainers[0].image =
+    prior.properties.template.initContainers[0].image;
+  const { io, patches, reports, checks } = harness(
+    prior,
+    inProgress,
+    wrongDigest,
+    app(image),
+    app(image),
+  );
+  const revisions = [];
+  io.readRevision = (id) => {
+    revisions.push(id);
+    return revision(id, revisions.length === 1 ? prior.properties.template : undefined);
+  };
+  await deployRelease(release, io);
+  assert.deepEqual(revisions, Array(2).fill(`${prior.id}/revisions/mafiadashboard-app--active`));
+  assert.deepEqual(patches, [
+    {
+      properties: {
+        template: {
+          revisionSuffix: "",
+          containers: app(image).properties.template.containers,
+          initContainers: app(image).properties.template.initContainers,
         },
-      }),
-    ),
-    /unavailable/,
-  );
-});
-
-test("a rerun during selection invalidates evidence instead of changing the selected release", async () => {
-  const { selectStagingRelease } = await load();
-  const base = fixture();
-  let reads = 0;
-  await assert.rejects(
-    selectStagingRelease(
-      fixture({
-        api: async (path) =>
-          path.endsWith("/runs/123") && ++reads > 1
-            ? { ...run, run_attempt: 3, status: "in_progress", conclusion: null }
-            : base.api(path),
-      }),
-    ),
-    /successful|attempt|changed/i,
-  );
-});
-
-test("archive digest must match before parsing its immutable release record", async () => {
-  const { verifyArtifactDigest } = await load();
-  const { createHash } = await import("node:crypto");
-  const bytes = Buffer.from("real downloaded artifact bytes");
-  const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-  assert.doesNotThrow(() => verifyArtifactDigest(bytes, digest));
-  assert.throws(() => verifyArtifactDigest(Buffer.from("changed bytes"), digest), /digest/i);
-  assert.throws(() => verifyArtifactDigest(bytes, undefined), /digest/i);
-});
-
-test("environment bindings reject any cross-environment target before Azure login", async () => {
-  const { RELEASE_TARGETS, assertReleaseTarget } = await load();
-  for (const environment of ["staging", "production"]) {
-    assert.doesNotThrow(() =>
-      assertReleaseTarget(environment, { ...RELEASE_TARGETS[environment] }),
-    );
-    for (const field of Object.keys(RELEASE_TARGETS[environment])) {
-      assert.throws(
-        () =>
-          assertReleaseTarget(environment, { ...RELEASE_TARGETS[environment], [field]: "wrong" }),
-        /target/i,
-        field,
-      );
-    }
-    assert.throws(
-      () =>
-        assertReleaseTarget(
-          environment,
-          RELEASE_TARGETS[environment === "staging" ? "production" : "staging"],
-        ),
-      /target/i,
-    );
-  }
-  assert.throws(() => assertReleaseTarget("preview", RELEASE_TARGETS.staging), /environment/i);
-});
-
-test("selected registry digest is available and exact before any Azure change", async () => {
-  const { spawnSync } = await import("node:child_process");
-  const source = await readFile(
-    new URL("../.github/workflows/deploy-azure-release.yml", import.meta.url),
-    "utf8",
-  );
-  const block = source
-    .split("      - name: Verify selected registry digest\n")[1]
-    ?.split("      - ")[0];
-  const script = block
-    ?.split("        run: |\n")[1]
-    ?.split("\n")
-    .map((line) => line.slice(10))
-    .join("\n");
-  assert.ok(script);
-  for (const [digest, status, expected] of [
-    [image.split("@")[1], "0", 0],
-    [`sha256:${"d".repeat(64)}`, "0", 1],
-    ["", "1", 1],
-  ]) {
-    const result = spawnSync(
-      "bash",
-      ["-c", `docker() { printf '%s' "$REGISTRY_DIGEST"; return "$REGISTRY_STATUS"; }\n${script}`],
-      {
-        env: { DEPLOY_IMAGE: image, REGISTRY_DIGEST: digest, REGISTRY_STATUS: status },
-        encoding: "utf8",
       },
-    );
-    assert.equal(result.status, expected, result.stderr);
+    },
+  ]);
+  assert.deepEqual(checks, [[origin, release]]);
+  assert.match(reports[0], /verification pending/);
+  assert.equal(reports[1], `Verified production release: ${commit} / 2.7.17 / ${image}`);
+  assert.doesNotMatch(reports.join("\n"), /test-fixture-private-value/);
+});
+
+test("wrong live bindings prevent mutation; configuration drift prevents a verified release", async () => {
+  for (const [diagnostic, mutate] of [
+    [
+      "app resource",
+      (a) => {
+        a.id += "-wrong";
+      },
+    ],
+    [
+      "managed environment",
+      (a) => {
+        a.properties.managedEnvironmentId += "-wrong";
+      },
+    ],
+    [
+      "HTTPS ingress",
+      (a) => {
+        a.properties.configuration.ingress.fqdn = "not-the-app.invalid";
+      },
+    ],
+    [
+      "replica count",
+      (a) => {
+        a.properties.template.scale.maxReplicas = 2;
+      },
+    ],
+    [
+      "Storage identity",
+      (a) => {
+        a.identity.type = "SystemAssigned";
+      },
+    ],
+    [
+      "unique environment bindings",
+      (a) => {
+        a.properties.template.containers[0].env.push({ name: "PUBLIC_APP_URL", value: origin });
+      },
+    ],
+    [
+      "credential fallback",
+      (a) => {
+        a.properties.template.initContainers[0].env.push({
+          name: "AZURE_STORAGE_CONNECTION_STRING",
+          value: "test-fixture-private-value",
+        });
+      },
+    ],
+    ...[
+      "PUBLIC_APP_URL",
+      "TRUST_PROXY_HOPS",
+      ...Object.keys(storageEnv),
+      "STORAGE_PROVIDER",
+      "AZURE_CLIENT_ID",
+      "AZURE_STORAGE_INITIALIZE",
+    ].map((name) => [
+      name,
+      (a) => {
+        const container = ["PUBLIC_APP_URL", "TRUST_PROXY_HOPS"].includes(name)
+          ? a.properties.template.containers[0]
+          : a.properties.template.initContainers[0];
+        container.env.find((field) => field.name === name).value = "test-fixture-private-value";
+      },
+    ]),
+  ]) {
+    for (const phase of ["before", "after"]) {
+      const before = app();
+      const after = app(image);
+      mutate(phase === "before" ? before : after);
+      const { io, patches, reports, checks } = harness(before, after);
+      await assert.rejects(deployRelease(release, io), {
+        message: `Production binding mismatch: ${diagnostic}`,
+      });
+      assert.equal(patches.length, phase === "before" ? 0 : 1);
+      assert.equal(checks.length, 0);
+      assert.doesNotMatch(reports.join("\n"), /Verified|test-fixture-private-value/);
+    }
+  }
+  const after = app(image);
+  after.properties.template.containers[0].env.pop();
+  const { io, checks } = harness(app(), after);
+  await assert.rejects(deployRelease(release, io), /runtime configuration changed/);
+  assert.equal(checks.length, 0);
+});
+
+test("an inactive or non-serving revision cannot pass even when its digest matches", async () => {
+  for (const overrides of [{ active: false }, { trafficWeight: 0 }, { healthState: "Unhealthy" }]) {
+    const { io, reports, checks } = harness(app(image), app(image));
+    io.readRevision = (id) => {
+      const serving = revision(id);
+      return { ...serving, properties: { ...serving.properties, ...overrides } };
+    };
+    await assert.rejects(deployRelease(release, io), /verification timed out/);
+    assert.deepEqual(checks, []);
+    assert.doesNotMatch(reports.join("\n"), /Verified/);
   }
 });
 
-test("workflow routing is staging-first, production manual-only, and shares one release lock", async () => {
-  const read = (path) => readFile(new URL(`../.github/workflows/${path}`, import.meta.url), "utf8");
-  const [staging, production, deploy] = await Promise.all([
-    read("deploy-azure.yml"),
-    read("deploy-production.yml"),
-    read("deploy-azure-release.yml"),
-  ]);
-  assert.match(staging, /vars.AZURE_STAGING_DEPLOY_ENABLED == 'true'/);
-  assert.doesNotMatch(staging, /AZURE_DEPLOY_ENABLED|environment: production/);
-  assert.match(production, /^on:\n {2}workflow_dispatch:/m);
-  assert.doesNotMatch(production, /^ {2}(push|pull_request|schedule|workflow_run):/m);
-  for (const source of [staging, production]) {
-    assert.match(source, /github.ref == 'refs\/heads\/main'/);
-    assert.match(
-      source,
-      /concurrency:\n {2}group: azure-production\n {2}cancel-in-progress: false/,
+test("already-applied digest is not updated; unverifiable health does not report success", async () => {
+  const { io, patches, reports } = harness(app(image), app(image));
+  io.health = () => false;
+  await assert.rejects(deployRelease(release, io), /verification timed out/);
+  assert.equal(patches.length, 0);
+  assert.doesNotMatch(reports.join("\n"), /Verified/);
+});
+
+test("health checks the same origin with no redirects and requires exact baked identity", async () => {
+  for (const [readiness, version, expected] of [
+    [true, { commit, version: "2.7.17" }, true],
+    [false, { commit, version: "2.7.17" }, false],
+    [true, { commit: "wrong", version: "2.7.17" }, false],
+    [true, { commit, version: "2.7.170" }, false],
+    [true, null, false],
+  ]) {
+    const calls = [];
+    const check = (url, options) => {
+      calls.push(url);
+      assert.equal(options.redirect, "error");
+      if (url.endsWith("/ready")) return { ok: readiness };
+      return { ok: true, json: () => version };
+    };
+    assert.equal(await readHealth(origin, release, check), expected);
+    assert.deepEqual(
+      calls,
+      readiness
+        ? [`${origin}/health/ready`, `${origin}/health/version`]
+        : [`${origin}/health/ready`],
     );
-    assert.match(source, /uses: \.\/\.github\/workflows\/deploy-azure-release.yml/);
-    const deploymentJob = source.split("\n  deploy:\n")[1]?.split(/\n {2}[a-z_-]+:\n/)[0];
-    assert.match(deploymentJob, /^ {4}secrets: inherit$/m);
   }
-  assert.match(production, /environment: production/);
-  assert.match(production, /commit: \$\{\{ needs.select.outputs.commit \}\}/);
-  assert.match(production, /build_index: \$\{\{ needs.select.outputs.build_index \}\}/);
-  assert.match(production, /app_version: \$\{\{ needs.select.outputs.app_version \}\}/);
-  assert.doesNotMatch(
-    production,
-    /docker\/build-push-action|docker push|APP_BUILD_INDEX=.*github.run_number/,
-  );
-  assert.match(deploy, /environment: \$\{\{ inputs.environment \}\}/);
-  assert.match(deploy, /EXPECTED_COMMIT: \$\{\{ inputs.commit \}\}/);
-  assert.match(deploy, /EXPECTED_VERSION: \$\{\{ inputs.app_version \}\}/);
-  assert.match(deploy, /--arg commit "\$EXPECTED_COMMIT" --arg version "\$expected_version"/);
-  assert.doesNotMatch(deploy, /--arg commit "\$GITHUB_SHA"|process.env.GITHUB_RUN_NUMBER/);
-  assert.ok(
-    deploy.indexOf("name: Validate environment binding") < deploy.indexOf("uses: azure/login@"),
-  );
-  const digestStep = deploy.indexOf("name: Verify selected registry digest");
-  assert.ok(digestStep > deploy.indexOf("name: Validate environment binding"));
-  assert.ok(digestStep < deploy.indexOf("name: Select infrastructure deployment"));
-  assert.match(deploy, /docker buildx imagetools inspect "\$DEPLOY_IMAGE"/);
-  assert.match(deploy, /password: \$\{\{ secrets.GHCR_PULL_TOKEN \}\}/);
-  assert.ok(staging.indexOf("  record:\n") > staging.indexOf("  deploy:\n"));
-  assert.match(staging, /needs: \[publish, deploy\]/);
-  assert.match(staging, /if-no-files-found: error/);
-  assert.match(staging, /overwrite: false/);
 });

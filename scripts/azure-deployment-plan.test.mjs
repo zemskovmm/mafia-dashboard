@@ -231,10 +231,9 @@ test("fingerprint covers complete deployment inputs independent of commit histor
   const files = [
     ["infra/main.bicep", "foundation"],
     ["infra/app.bicep", "app"],
-    [".github/workflows/deploy-azure.yml", "staging caller"],
     [".github/workflows/deploy-azure-release.yml", "deployment implementation"],
     [".github/workflows/deploy-production.yml", "production caller"],
-    ["scripts/azure-release.mjs", "release selection and environment bindings"],
+    ["scripts/azure-release.mjs", "release validation"],
     ["scripts/azure-deployment-plan.mjs", "helper"],
   ];
   const hash = foundationFingerprint(files, target);

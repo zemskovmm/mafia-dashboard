@@ -5,29 +5,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-function workflowRun(name) {
+test("routine production deployment only updates the image of the existing app", () => {
   const source = readFileSync(".github/workflows/deploy-azure-release.yml", "utf8");
-  const step = source.split(`      - name: ${name}\n`)[1]?.split("      - ")[0];
-  assert.ok(step, `missing workflow step ${name}`);
-  const run = step.split("        run: |\n")[1];
-  assert.ok(run, `missing literal run block ${name}`);
-  return run
-    .split("\n")
-    .map((line) => (line.startsWith("          ") ? line.slice(10) : line))
-    .join("\n");
-}
-
-test("workflow retains publication hold/digest identity and routes explicit Storage parameters without SQL", () => {
-  const source = readFileSync(".github/workflows/deploy-azure-release.yml", "utf8");
-  const caller = readFileSync(".github/workflows/deploy-azure.yml", "utf8");
-  assert.match(caller, /vars\.AZURE_STAGING_DEPLOY_ENABLED == 'true'/);
-  assert.match(caller, /github\.event_name == 'workflow_dispatch' && inputs\.deploy/);
-  assert.match(caller, /cancel-in-progress: false/);
-  assert.match(caller, /initialize_storage:[\s\S]*?type: boolean\n\s+default: false/);
-  assert.match(source, /INITIALIZE_STORAGE: \$\{\{ inputs\.initialize_storage \}\}/);
+  const caller = readFileSync(".github/workflows/deploy-production.yml", "utf8");
+  assert.match(caller, /group: azure-production\n {2}cancel-in-progress: false/);
+  assert.match(source, /^ {4}environment: production$/m);
+  assert.match(source, /node scripts\/azure-release\.mjs deploy/);
   assert.doesNotMatch(
-    source,
-    /AZURE_DATABASE_NAME|POSTGRES_PASSWORD|postgresPassword|databaseName=|--container migrate/,
+    source + caller,
+    /deploy_infrastructure|initialize_storage|--template-file|node scripts\/azure-deployment-plan\.mjs/,
   );
   for (const name of [
     "AZURE_STORAGE_ACCOUNT_NAME",
@@ -36,21 +22,12 @@ test("workflow retains publication hold/digest identity and routes explicit Stor
     "AZURE_STORAGE_PARTITION_KEY",
   ])
     assert.ok(source.includes(`${name}: \${{ vars.${name} }}`), name);
-  assert.match(source, /storagePartitionKey="\$AZURE_STORAGE_PARTITION_KEY"/);
-  assert.match(source, /initializeStorage="\$INITIALIZE_STORAGE"/);
-  assert.match(source, /--container initialize-storage/);
-  assert.match(source, /--mode Incremental/);
-  assert.doesNotMatch(source, /--mode Complete/);
-  assert.match(source, /node scripts\/azure-deployment-plan\.mjs/);
-  assert.match(source, /\/health\/ready/);
-  assert.match(source, /\/health\/version/);
-  assert.match(source, /\.version == \$version and \.commit == \$commit/);
 });
 
-test("workflow input validation executes Storage/digest guards before any Azure side effect", () => {
-  const script = workflowRun("Validate deployment inputs");
+test("standalone foundation what-if gate rejects deletions and retained resource writes", () => {
+  const directory = mkdtempSync(join(tmpdir(), "mafia-foundation-what-if-"));
+  const file = join(directory, "what-if.json");
   const env = {
-    ...process.env,
     AZURE_SUBSCRIPTION_ID: "sub",
     AZURE_RESOURCE_GROUP: "group",
     AZURE_LOCATION: "northeurope",
@@ -59,162 +36,70 @@ test("workflow input validation executes Storage/digest guards before any Azure 
     AZURE_STORAGE_TABLE_NAME: "MafiaEntities",
     AZURE_STORAGE_CONTAINER_NAME: "mafia-live",
     AZURE_STORAGE_PARTITION_KEY: "production-v1",
-    GHCR_USERNAME: "fixture",
-    GHCR_TOKEN: "test-only-fixture",
-    DEPLOY_IMAGE: `ghcr.io/owner/app@sha256:${"a".repeat(64)}`,
-    INITIALIZE_STORAGE: "false",
+    // This check consumes only the local result; it must not call Azure CLI.
+    PATH: directory,
   };
-  const run = (extra) =>
-    spawnSync("bash", ["-c", script], { env: { ...env, ...extra }, encoding: "utf8" });
-  assert.equal(run({}).status, 0, run({}).stderr);
-  for (const extra of [
-    { AZURE_STORAGE_ACCOUNT_NAME: "" },
-    { AZURE_STORAGE_PARTITION_KEY: "bad/value" },
-    { DEPLOY_IMAGE: "ghcr.io/owner/app:latest" },
-    { INITIALIZE_STORAGE: "reset" },
-  ])
-    assert.notEqual(run(extra).status, 0, JSON.stringify(extra));
-});
-
-test("foundation what-if gate rejects deletions and retained resource writes", () => {
-  const script = workflowRun("Inspect foundation changes");
-  const directory = mkdtempSync(join(tmpdir(), "mafia-foundation-what-if-"));
-  const env = {
-    ...process.env,
-    RUNNER_TEMP: directory,
-    AZURE_RESOURCE_GROUP: "group",
-    AZURE_LOCATION: "northeurope",
-    AZURE_NAME_PREFIX: "app",
-    AZURE_STORAGE_ACCOUNT_NAME: "appstorage",
-    AZURE_STORAGE_TABLE_NAME: "MafiaEntities",
-    AZURE_STORAGE_CONTAINER_NAME: "mafia-live",
-    FOUNDATION_FINGERPRINT: "a".repeat(64),
+  const run = (result) => {
+    writeFileSync(file, JSON.stringify(result));
+    return spawnSync(
+      process.execPath,
+      ["scripts/azure-deployment-plan.mjs", "--check-foundation-what-if", file],
+      { env, encoding: "utf8" },
+    );
   };
-  const run = (changes) => {
-    const fixture = JSON.stringify({ status: "Succeeded", changes });
-    return spawnSync("bash", ["-c", `az() { printf '%s\\n' '${fixture}'; }\n${script}`], {
-      env,
-      encoding: "utf8",
-    });
-  };
-  const change = (type, changeType) => ({
-    resourceId: `/subscriptions/sub/resourceGroups/group/providers/${type}/fixture`,
+  const change = (resource, changeType) => ({
+    resourceId: `/subscriptions/sub/resourceGroups/group/providers/${resource}`,
     changeType,
   });
+  const account = "Microsoft.Storage/storageAccounts/appstorage";
   try {
-    const safe = run([
-      change("Microsoft.Storage/storageAccounts", "Create"),
-      change("Microsoft.ManagedIdentity/userAssignedIdentities", "NoChange"),
-    ]);
+    const safe = run({
+      status: "Succeeded",
+      changes: [
+        change(account, "Create"),
+        change(`${account}/tableServices/default/tables/MafiaEntities`, "Modify"),
+        change("Microsoft.ManagedIdentity/userAssignedIdentities/app-storage", "Create"),
+        change(
+          `${account}/providers/Microsoft.Authorization/roleAssignments/00000000-0000-0000-0000-000000000001`,
+          "Create",
+        ),
+        change("Microsoft.Network/virtualNetworks/retained", "Ignore"),
+      ],
+    });
     assert.equal(safe.status, 0, safe.stderr);
     for (const changes of [
-      [change("Microsoft.Storage/storageAccounts", "Delete")],
-      [change("Microsoft.Network/virtualNetworks", "Modify")],
-      [change("Microsoft.DBforPostgreSQL/flexibleServers", "Modify")],
-      [change("Microsoft.App/managedEnvironments", "Create")],
-    ])
-      assert.notEqual(run(changes).status, 0);
+      [change(account, "Delete")],
+      [change(account, "Unsupported")],
+      [change("Microsoft.Storage/storageAccounts/other", "Modify")],
+      [change(`${account}/tableServices/default/tables/OtherTable`, "Modify")],
+      [
+        change(
+          "Microsoft.Authorization/roleAssignments/00000000-0000-0000-0000-000000000001",
+          "Create",
+        ),
+      ],
+      [change("Microsoft.Network/virtualNetworks/retained", "Modify")],
+      [change("Microsoft.DBforPostgreSQL/flexibleServers/retained", "Modify")],
+      [change("Microsoft.App/managedEnvironments/retained", "Create")],
+      [
+        {
+          resourceId: `/subscriptions/sub/resourceGroups/other/providers/${account}`,
+          changeType: "Create",
+        },
+      ],
+    ]) {
+      const refused = run({ status: "Succeeded", changes });
+      assert.equal(refused.status, 1, JSON.stringify(changes));
+      assert.match(refused.stderr, /Foundation what-if includes/);
+    }
+    for (const result of [{ status: "Failed", changes: [] }, { status: "Succeeded" }]) {
+      const refused = run(result);
+      assert.equal(refused.status, 1, JSON.stringify(result));
+      assert.match(refused.stderr, /did not return a successful change list/);
+    }
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
-});
-
-test("workflow release readback rejects SQL/provider/identity/namespace drift before public health checks", async () => {
-  const script = workflowRun("Verify Azure deployment").replaceAll(
-    "${{ steps.app.outputs.public_url }}",
-    "https://fixture.invalid",
-  );
-  const { composeAppVersion } = await import("./release-verifier-contracts.mjs");
-  const { version } = JSON.parse(readFileSync("package.json", "utf8"));
-  const image = `ghcr.io/owner/app@sha256:${"a".repeat(64)}`;
-  const fields = {
-    STORAGE_PROVIDER: "azure",
-    AZURE_STORAGE_ACCOUNT_NAME: "appstorage",
-    AZURE_STORAGE_TABLE_NAME: "MafiaEntities",
-    AZURE_STORAGE_CONTAINER_NAME: "mafia-live",
-    AZURE_STORAGE_PARTITION_KEY: "production-v1",
-    AZURE_CLIENT_ID: "identity-client",
-    AZURE_STORAGE_INITIALIZE: "false",
-  };
-  const config = {
-    provisioningState: "Succeeded",
-    minReplicas: 1,
-    maxReplicas: 1,
-    targetPort: 3000,
-    image,
-    initImage: image,
-    identity: {
-      type: "UserAssigned",
-      userAssignedIdentities: {
-        "/subscriptions/sub/resourceGroups/group/providers/Microsoft.ManagedIdentity/userAssignedIdentities/app-storage":
-          { clientId: "identity-client" },
-      },
-    },
-    env: Object.entries(fields).map(([name, value]) => ({ name, value })),
-    initEnv: Object.entries(fields).map(([name, value]) => ({ name, value })),
-  };
-  const env = {
-    ...process.env,
-    AZURE_SUBSCRIPTION_ID: "sub",
-    AZURE_RESOURCE_GROUP: "group",
-    AZURE_NAME_PREFIX: "app",
-    AZURE_STORAGE_ACCOUNT_NAME: "appstorage",
-    AZURE_STORAGE_TABLE_NAME: "MafiaEntities",
-    AZURE_STORAGE_CONTAINER_NAME: "mafia-live",
-    AZURE_STORAGE_PARTITION_KEY: "production-v1",
-    INITIALIZE_STORAGE: "false",
-    DEPLOY_IMAGE: image,
-    APP_NAME: "app-app",
-    GITHUB_SHA: "promotion-commit-is-not-selected",
-    GITHUB_RUN_NUMBER: "999",
-    EXPECTED_COMMIT: "fixture-commit",
-    EXPECTED_VERSION: composeAppVersion(version, "17"),
-    RELEASE_ENVIRONMENT: "staging",
-    GITHUB_STEP_SUMMARY: "/dev/null",
-    RELEASE_FIXTURE: JSON.stringify({
-      commit: "fixture-commit",
-      version: composeAppVersion(version, "17"),
-    }),
-  };
-  const run = (fixture) =>
-    spawnSync(
-      "bash",
-      [
-        "-c",
-        `az() { printf '%s\\n' "$CONFIG_FIXTURE"; }\ncurl() { printf '%s\\n' "$RELEASE_FIXTURE"; }\n${script}`,
-      ],
-      { env: { ...env, CONFIG_FIXTURE: JSON.stringify(fixture) }, encoding: "utf8" },
-    );
-  const healthy = run(config);
-  assert.equal(healthy.status, 0, healthy.stderr);
-  for (const fixture of [
-    { ...config, provisioningState: "Failed" },
-    { ...config, minReplicas: 0 },
-    { ...config, maxReplicas: 2 },
-    { ...config, targetPort: 80 },
-    { ...config, initImage: `${image}-wrong` },
-    { ...config, identity: { type: "None" } },
-    {
-      ...config,
-      env: config.env.map((item) =>
-        item.name === "STORAGE_PROVIDER" ? { ...item, value: "postgres" } : item,
-      ),
-    },
-    {
-      ...config,
-      env: config.env.map((item) =>
-        item.name === "AZURE_STORAGE_ACCOUNT_NAME" ? { ...item, value: "unknownstorage" } : item,
-      ),
-    },
-    { ...config, env: [...config.env, { name: "DATABASE_URL", secretRef: "database-url" }] },
-    {
-      ...config,
-      env: config.env.map((item) =>
-        item.name === "AZURE_CLIENT_ID" ? { ...item, value: "wrong-client" } : item,
-      ),
-    },
-  ])
-    assert.notEqual(run(fixture).status, 0);
 });
 
 test("selection CLI emits safe outputs and fails closed on Azure errors", () => {

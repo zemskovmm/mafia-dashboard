@@ -12,21 +12,11 @@ set -Eeuo pipefail
 
 fail() { printf '%s\n' "$1" >&2; exit 1; }
 
-# Explicit project targets: a staging invocation must never repair production trust.
-case "$GITHUB_ENVIRONMENT" in
-  staging)
-    expected_group=rg-mafia-dashboard-staging-neu
-    expected_identity=mafiadashboard-stg-github
-    ;;
-  production)
-    expected_group=rg-mafia-dashboard-prod-weu
-    expected_identity=mafiadashboard-github
-    ;;
-  *) fail 'Unsupported GITHUB_ENVIRONMENT; choose staging or production explicitly.' ;;
-esac
-[[ "$AZURE_RESOURCE_GROUP" == "$expected_group" && "$AZURE_IDENTITY_NAME" == "$expected_identity" ]] ||
-  fail 'Azure resource group/identity does not match the selected GitHub environment.'
-[[ "$AZURE_LOCATION" == northeurope ]] || fail 'The approved targets are in northeurope.'
+[[ "$GITHUB_ENVIRONMENT" == production ]] ||
+  fail 'Unsupported GITHUB_ENVIRONMENT; choose production explicitly.'
+[[ "$AZURE_RESOURCE_GROUP" == rg-mafia-dashboard-prod-weu && "$AZURE_IDENTITY_NAME" == mafiadashboard-github ]] ||
+  fail 'Azure resource group/identity does not match the production target.'
+[[ "$AZURE_LOCATION" == northeurope ]] || fail 'The approved target is in northeurope.'
 [[ "$GITHUB_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail 'Invalid GITHUB_REPOSITORY.'
 
 subject_repository=${GITHUB_FEDERATED_SUBJECT%:environment:*}

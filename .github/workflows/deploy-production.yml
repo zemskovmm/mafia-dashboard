@@ -2,58 +2,97 @@ name: Deploy production
 
 on:
   workflow_dispatch:
-    inputs:
-      staging_run_id:
-        description: Successful staging run ID (blank selects the currently verified staging release)
-        type: string
-        default: ""
 
 permissions:
   contents: read
 
-# Share the staging lock, including selection, to freeze the live release before promotion.
-# Retain the legacy production group so old runs also cannot race this release path.
 concurrency:
   group: azure-production
   cancel-in-progress: false
 
 jobs:
-  select:
+  check:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: check
     if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
     permissions:
       contents: read
-      actions: read
+      packages: write
     outputs:
-      image: ${{ steps.select.outputs.image }}
-      commit: ${{ steps.select.outputs.commit }}
-      build_index: ${{ steps.select.outputs.build_index }}
-      app_version: ${{ steps.select.outputs.app_version }}
+      image: ${{ steps.publish.outputs.image }}
+      commit: ${{ steps.build_identity.outputs.commit }}
+      build_index: ${{ steps.build_identity.outputs.build_index }}
+      app_version: ${{ steps.build_identity.outputs.app_version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Select exact verified staging artifact
-        id: select
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Read baked application identity
+        id: build_identity
+        run: node scripts/azure-release.mjs build-identity
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Sign in to GitHub Container Registry
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build immutable image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ steps.build_identity.outputs.tag }}
+          build-args: |
+            APP_COMMIT=${{ steps.build_identity.outputs.commit }}
+            APP_BUILD_INDEX=${{ steps.build_identity.outputs.build_index }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ steps.build_identity.outputs.commit }}
+            org.opencontainers.image.version=${{ steps.build_identity.outputs.app_version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Push immutable image
+        id: publish
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          STAGING_RUN_ID: ${{ inputs.staging_run_id }}
-          STAGING_APP_URL: ${{ vars.AZURE_STAGING_APP_URL }}
-        run: node scripts/azure-release.mjs select
+          IMAGE_REF: ${{ steps.build_identity.outputs.tag }}
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          push_output=$(docker push "$IMAGE_REF" 2>&1) || { echo "Image push failed" >&2; exit 1; }
+          if [[ "$push_output" =~ digest:\ (sha256:[0-9a-f]{64})[[:space:]] ]]; then
+            digest="${BASH_REMATCH[1]}"
+          else
+            echo "Docker push did not report an image digest" >&2
+            exit 1
+          fi
+          remote_digest=$(docker buildx imagetools inspect "$IMAGE_REF" --format '{{.Manifest.Digest}}')
+          if [[ "$remote_digest" != "$digest" ]]; then
+            echo "Published tag no longer resolves to the pushed digest" >&2
+            exit 1
+          fi
+          echo "image=${IMAGE_REF%:*}@$digest" >> "$GITHUB_OUTPUT"
 
   deploy:
-    needs: select
+    needs: publish
     if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
       id-token: write
     uses: ./.github/workflows/deploy-azure-release.yml
-    # GitHub requires inheritance to resolve the called job's environment secrets.
-    secrets: inherit
     with:
-      environment: production
-      image: ${{ needs.select.outputs.image }}
-      commit: ${{ needs.select.outputs.commit }}
-      build_index: ${{ needs.select.outputs.build_index }}
-      app_version: ${{ needs.select.outputs.app_version }}
-      deploy_infrastructure: false
-      initialize_storage: false
+      image: ${{ needs.publish.outputs.image }}
+      commit: ${{ needs.publish.outputs.commit }}
+      build_index: ${{ needs.publish.outputs.build_index }}
+      app_version: ${{ needs.publish.outputs.app_version }}

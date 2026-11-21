@@ -9,15 +9,16 @@ const subscription = "00000000-0000-0000-0000-000000000001";
 const tenant = "00000000-0000-0000-0000-000000000002";
 const client = "00000000-0000-0000-0000-000000000003";
 const principal = "00000000-0000-0000-0000-000000000004";
-const staging = {
+const production = {
   AZURE_SUBSCRIPTION_ID: subscription,
   AZURE_TENANT_ID: tenant,
-  AZURE_RESOURCE_GROUP: "rg-mafia-dashboard-staging-neu",
+  AZURE_RESOURCE_GROUP: "rg-mafia-dashboard-prod-weu",
   AZURE_LOCATION: "northeurope",
-  AZURE_IDENTITY_NAME: "mafiadashboard-stg-github",
+  AZURE_IDENTITY_NAME: "mafiadashboard-github",
   GITHUB_REPOSITORY: "zemskovmm/mafia-dashboard",
-  GITHUB_ENVIRONMENT: "staging",
-  GITHUB_FEDERATED_SUBJECT: "repo:zemskovmm@8973322/mafia-dashboard@1320321469:environment:staging",
+  GITHUB_ENVIRONMENT: "production",
+  GITHUB_FEDERATED_SUBJECT:
+    "repo:zemskovmm@8973322/mafia-dashboard@1320321469:environment:production",
 };
 
 function fixtureRun(extra = {}, fixture = {}) {
@@ -83,7 +84,7 @@ fs.writeFileSync(process.env.FIXTURE_STATE, JSON.stringify(state));
     const result = spawnSync("bash", ["scripts/bootstrap-azure-oidc.sh"], {
       env: {
         PATH: `${directory}:${process.env.PATH}`,
-        ...staging,
+        ...production,
         ...extra,
         FIXTURE_CALLS: callsPath,
         FIXTURE_STATE: statePath,
@@ -107,25 +108,36 @@ fs.writeFileSync(process.env.FIXTURE_STATE, JSON.stringify(state));
 
 test("OIDC bootstrap rejects a subject for the wrong environment before invoking either provider", () => {
   const result = fixtureRun({
-    GITHUB_FEDERATED_SUBJECT:
-      "repo:zemskovmm@8973322/mafia-dashboard@1320321469:environment:production",
+    GITHUB_FEDERATED_SUBJECT: production.GITHUB_FEDERATED_SUBJECT.replace(/production$/, "staging"),
   });
   assert.notEqual(result.status, 0);
   assert.deepEqual(result.calls, [], "invalid environment binding must not contact providers");
+});
+
+test("OIDC bootstrap rejects the retired staging target before invoking either provider", () => {
+  const result = fixtureRun({
+    AZURE_RESOURCE_GROUP: "rg-mafia-dashboard-staging-neu",
+    AZURE_IDENTITY_NAME: "mafiadashboard-stg-github",
+    GITHUB_ENVIRONMENT: "staging",
+    GITHUB_FEDERATED_SUBJECT: production.GITHUB_FEDERATED_SUBJECT.replace(/production$/, "staging"),
+  });
+  assert.match(result.stderr, /Unsupported GITHUB_ENVIRONMENT/);
+  assert.notEqual(result.status, 0);
+  assert.deepEqual(result.calls, []);
 });
 
 const option = (call, name) => call[call.indexOf(name) + 1];
 const matching = (result, prefix) =>
   result.calls.filter((call) => call.slice(0, prefix.length).join(" ") === prefix.join(" "));
 
-test("staging bootstrap binds exact immutable subject, RG Contributor and environment variables with readbacks", () => {
+test("production bootstrap binds exact immutable subject, RG Contributor and environment variables with readbacks", () => {
   const result = fixtureRun();
   assert.equal(result.status, 0, result.stderr);
   const [credential] = matching(result, ["az", "identity", "federated-credential", "create"]);
-  assert.ok(credential, "staging needs its own federated credential");
-  assert.equal(option(credential, "--name"), "github-staging");
-  assert.equal(option(credential, "--identity-name"), staging.AZURE_IDENTITY_NAME);
-  assert.equal(option(credential, "--subject"), staging.GITHUB_FEDERATED_SUBJECT);
+  assert.ok(credential, "new deployment identity needs a federated credential");
+  assert.equal(option(credential, "--name"), "github-production");
+  assert.equal(option(credential, "--identity-name"), production.AZURE_IDENTITY_NAME);
+  assert.equal(option(credential, "--subject"), production.GITHUB_FEDERATED_SUBJECT);
   assert.equal(option(credential, "--issuer"), "https://token.actions.githubusercontent.com");
   assert.equal(option(credential, "--audiences"), "api://AzureADTokenExchange");
   const [grant] = matching(result, ["az", "role", "assignment", "create"]);
@@ -135,7 +147,7 @@ test("staging bootstrap binds exact immutable subject, RG Contributor and enviro
   assert.equal(option(grant, "--assignee-principal-type"), "ServicePrincipal");
   assert.equal(
     option(grant, "--scope"),
-    `/subscriptions/${subscription}/resourceGroups/${staging.AZURE_RESOURCE_GROUP}`,
+    `/subscriptions/${subscription}/resourceGroups/${production.AZURE_RESOURCE_GROUP}`,
   );
   const writes = matching(result, ["gh", "variable", "set"]);
   assert.deepEqual(writes.map((call) => call[3]).sort(), [
@@ -146,8 +158,8 @@ test("staging bootstrap binds exact immutable subject, RG Contributor and enviro
     "AZURE_TENANT_ID",
   ]);
   for (const call of [...writes, ...matching(result, ["gh", "variable", "get"])]) {
-    assert.equal(option(call, "--repo"), staging.GITHUB_REPOSITORY);
-    assert.equal(option(call, "--env"), "staging");
+    assert.equal(option(call, "--repo"), production.GITHUB_REPOSITORY);
+    assert.equal(option(call, "--env"), "production");
   }
   assert.equal(matching(result, ["gh", "variable", "get"]).length, writes.length);
   assert.equal(matching(result, ["az", "identity", "federated-credential", "show"]).length, 1);
@@ -155,7 +167,7 @@ test("staging bootstrap binds exact immutable subject, RG Contributor and enviro
   assert.doesNotMatch(JSON.stringify(result.calls), /Owner|listKeys|secret|password|access-token/);
 });
 
-test("bootstrap requires explicit target inputs and refuses mixed-environment or malformed bindings without provider calls", () => {
+test("bootstrap requires explicit target inputs and refuses non-production or malformed bindings without provider calls", () => {
   for (const key of [
     "AZURE_IDENTITY_NAME",
     "GITHUB_REPOSITORY",
@@ -170,13 +182,13 @@ test("bootstrap requires explicit target inputs and refuses mixed-environment or
     assert.deepEqual(result.calls, [], key);
   }
   for (const extra of [
-    { AZURE_RESOURCE_GROUP: "rg-mafia-dashboard-prod-weu" },
-    { AZURE_IDENTITY_NAME: "mafiadashboard-github" },
+    { AZURE_RESOURCE_GROUP: "rg-other" },
+    { AZURE_IDENTITY_NAME: "other-github" },
     { GITHUB_ENVIRONMENT: "preview" },
     { GITHUB_REPOSITORY: "other/repository" },
     { GITHUB_REPOSITORY: "zemskovmm/mafia-dashboard; false" },
-    { GITHUB_FEDERATED_SUBJECT: `${staging.GITHUB_FEDERATED_SUBJECT}:extra` },
-    { GITHUB_FEDERATED_SUBJECT: "repo:zemskovmm@8973322/mafia-dashboard:environment:staging" },
+    { GITHUB_FEDERATED_SUBJECT: `${production.GITHUB_FEDERATED_SUBJECT}:extra` },
+    { GITHUB_FEDERATED_SUBJECT: "repo:zemskovmm@8973322/mafia-dashboard:environment:production" },
     { AZURE_LOCATION: "westeurope" },
     { AZURE_SUBSCRIPTION_ID: "bad/subscription" },
   ]) {
@@ -187,19 +199,13 @@ test("bootstrap requires explicit target inputs and refuses mixed-environment or
 });
 
 test("explicit production bootstrap reuses only matching existing trust and Contributor without expanding authority", () => {
-  const subject = staging.GITHUB_FEDERATED_SUBJECT.replace(/staging$/, "production");
-  const scope = `/subscriptions/${subscription}/resourceGroups/rg-mafia-dashboard-prod-weu`;
+  const scope = `/subscriptions/${subscription}/resourceGroups/${production.AZURE_RESOURCE_GROUP}`;
   const result = fixtureRun(
-    {
-      GITHUB_ENVIRONMENT: "production",
-      GITHUB_FEDERATED_SUBJECT: subject,
-      AZURE_RESOURCE_GROUP: "rg-mafia-dashboard-prod-weu",
-      AZURE_IDENTITY_NAME: "mafiadashboard-github",
-    },
+    {},
     {
       credential: {
         name: "github-production",
-        subject,
+        subject: production.GITHUB_FEDERATED_SUBJECT,
         issuer: "https://token.actions.githubusercontent.com",
         audiences: ["api://AzureADTokenExchange"],
       },
@@ -229,7 +235,7 @@ test("account, identity and existing federation mismatches stop before grants or
     {
       credential: {
         name: "github-production",
-        subject: staging.GITHUB_FEDERATED_SUBJECT.replace(/staging$/, "production"),
+        subject: production.GITHUB_FEDERATED_SUBJECT.replace(/production$/, "preview"),
         issuer: "https://token.actions.githubusercontent.com",
         audiences: ["api://AzureADTokenExchange"],
       },

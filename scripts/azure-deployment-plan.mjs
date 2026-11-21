@@ -24,6 +24,42 @@ export function foundationFingerprint(files, target) {
     .digest("hex");
 }
 
+// Keep a read-only what-if gate for separately authorized Incremental maintenance.
+export function assertSafeFoundationChanges(result, target) {
+  if (result?.status !== "Succeeded" || !Array.isArray(result.changes)) {
+    throw new Error("Foundation what-if did not return a successful change list");
+  }
+  const scope =
+    `/subscriptions/${target.subscriptionId}/resourcegroups/${target.resourceGroup}/providers/`.toLowerCase();
+  const storage = `microsoft.storage/storageaccounts/${target.storageAccountName}`.toLowerCase();
+  const writable = new Set([
+    storage,
+    `${storage}/blobservices/default`,
+    `${storage}/blobservices/default/containers/${target.storageContainerName}`.toLowerCase(),
+    `${storage}/tableservices/default`,
+    `${storage}/tableservices/default/tables/${target.storageTableName}`.toLowerCase(),
+    `microsoft.managedidentity/userassignedidentities/${target.namePrefix}-storage`.toLowerCase(),
+  ]);
+  const storageRole = `${storage}/providers/microsoft.authorization/roleassignments/`;
+  const roleIdPattern = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
+  for (const change of result.changes) {
+    const id = typeof change?.resourceId === "string" ? change.resourceId.toLowerCase() : "";
+    if (id.length <= scope.length || !id.startsWith(scope)) {
+      throw new Error("Foundation what-if includes a resource outside the selected target");
+    }
+    if (["NoChange", "Ignore"].includes(change.changeType)) continue;
+    const relative = id.slice(scope.length);
+    const isStorageRole =
+      relative.startsWith(storageRole) && roleIdPattern.test(relative.slice(storageRole.length));
+    if (
+      !["Create", "Modify", "Deploy"].includes(change.changeType) ||
+      (!writable.has(relative) && !isStorageRole)
+    ) {
+      throw new Error("Foundation what-if includes an unsafe change");
+    }
+  }
+}
+
 export function selectFoundation({ target, fingerprint, force, readAzure }) {
   if (force) return { deploy: true, reason: "manual override" };
   const record = readAzure([
@@ -163,13 +199,19 @@ export function deploymentTarget(env = process.env) {
   );
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+function main(args) {
   const target = deploymentTarget();
+  if (args.length === 2 && args[0] === "--check-foundation-what-if") {
+    assertSafeFoundationChanges(JSON.parse(readFileSync(args[1], "utf8")), target);
+    console.log("Foundation what-if passed change-scope checks");
+    return;
+  }
+  if (args.length !== 0)
+    throw new Error("Expected --check-foundation-what-if <json-file> or no arguments");
   const paths = [
     ...readdirSync(new URL("infra/", root), { recursive: true })
       .filter((path) => path.endsWith(".bicep"))
       .map((path) => `infra/${path}`),
-    ".github/workflows/deploy-azure.yml",
     ".github/workflows/deploy-azure-release.yml",
     ".github/workflows/deploy-production.yml",
     "scripts/azure-release.mjs",
@@ -189,3 +231,5 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   );
   console.log(`Infrastructure deployment: ${selection.deploy} (${selection.reason})`);
 }
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) main(process.argv.slice(2));

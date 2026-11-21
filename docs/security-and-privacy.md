@@ -81,11 +81,11 @@ This policy only selects the key for the existing fail-closed fixed-window limit
 
 ## Build and workflow safeguards
 
-Pull requests run one `CI` workflow that performs formatting, lint, typecheck, tests, and the application build. Pushes to `main` run only `Deploy Azure`, which builds, publishes, and deploys the image without repeating CI.
+Pull requests and pushes to `main` run only `CI`: formatting, lint, typecheck, tests, and application build checks. CI does not publish images, use production deployment credentials, or deploy to Azure or Pages. The manual production workflow is restricted to trusted `main`, runs the quality gate for its own commit, and builds and publishes one release image before deployment. See the [Azure deployment guide](azure-deployment.md) for the release and verification steps.
 
-Every CI/Docker lockfile install uses `npm ci --ignore-scripts --no-audit`, then explicitly runs `npm rebuild esbuild`; no other dependency lifecycle scripts execute. Production pruning also disables lifecycle scripts and npm's implicit advisory request. External action implementations and Node base images remain pinned to immutable commits or digests. The deployment publish job verifies the registry-reported image digest and deploys that immutable reference.
+Every CI/Docker lockfile install uses `npm ci --ignore-scripts --no-audit`, then explicitly runs `npm rebuild esbuild`; no other dependency lifecycle scripts execute. Production pruning also disables lifecycle scripts and npm's implicit advisory request. External action implementations and Node base images remain pinned to immutable commits or digests. The production deployment uses the registry-verified image digest from the same release run, not the mutable commit tag. Package-write permission is scoped to publication; the protected deployment job uses OIDC to update the existing production app.
 
-There is no dedicated Security workflow, automated dependency advisory audit, repository secret/misconfiguration scan, or production-image vulnerability scan. Main pushes also do not rerun the pull-request quality gate. These are accepted operational trade-offs; the retained ESLint security/DOM-sink rules and application tests run only through pull-request CI or explicit local verification.
+There is no dedicated Security workflow, automated dependency advisory audit, repository secret/misconfiguration scan, or production-image vulnerability scan. These are accepted operational trade-offs; the retained ESLint security/DOM-sink rules and application tests run in CI and in the manual release quality gate.
 
 ## Verification
 
@@ -117,7 +117,6 @@ For a deployed HTTPS origin, sample the root and `/api/auth/session` responses a
 | Host/cloud operator access                                 | Operational trust boundary; protect credentials, backups, and console access outside the application                                                               |
 | Denial of service beyond login throttling                  | Infrastructure-level rate limiting/WAF is not part of the pilot baseline                                                                                           |
 | Automated dependency/repository/image security scanning    | Not configured; local review and dependency maintenance are operator responsibilities                                                                              |
-| Main-push quality verification                             | Not configured; main deployment relies on prior pull-request CI or explicit local verification                                                                     |
 | GitHub Advanced Security/CodeQL                            | Unavailable in the current private repository                                                                                                                      |
 
 Revisit this model when adding horizontal scale, anonymous/public views, new identity providers, exports, centralized logging, or a different backup system.

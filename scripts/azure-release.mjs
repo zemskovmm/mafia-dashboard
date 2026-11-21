@@ -1,389 +1,363 @@
-/* global URL */
-import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { deploymentTarget } from "./azure-deployment-plan.mjs";
+import { setTimeout as delay } from "node:timers/promises";
+import { URL, fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { composeAppVersion } from "./release-verifier-contracts.mjs";
 
-export const STAGING_WORKFLOW = ".github/workflows/deploy-azure.yml";
-const REPOSITORY = "zemskovmm/mafia-dashboard";
-const commonTarget = {
-  subscriptionId: "9f0da8f6-9da5-4bef-9738-cb26f2a19e58",
-  location: "northeurope",
-  storageTableName: "MafiaEntities",
-  storageContainerName: "mafia-live",
-};
-export const RELEASE_TARGETS = Object.freeze({
-  staging: Object.freeze({
-    ...commonTarget,
-    resourceGroup: "rg-mafia-dashboard-staging-neu",
-    namePrefix: "mafiadashboard-stg",
-    storageAccountName: "mafiastg6du4xvao4bfk2",
-    storagePartitionKey: "staging-v1",
-  }),
-  production: Object.freeze({
-    ...commonTarget,
-    resourceGroup: "rg-mafia-dashboard-prod-weu",
-    namePrefix: "mafiadashboard",
-    storageAccountName: "mafiadata6du4xvao4bfk2",
-    storagePartitionKey: "production-v1",
-  }),
+const repository = "zemskovmm/mafia-dashboard";
+const registryImage = `ghcr.io/${repository}`;
+const production = Object.freeze({
+  AZURE_SUBSCRIPTION_ID: "9f0da8f6-9da5-4bef-9738-cb26f2a19e58",
+  AZURE_RESOURCE_GROUP: "rg-mafia-dashboard-prod-weu",
+  AZURE_LOCATION: "northeurope",
+  AZURE_NAME_PREFIX: "mafiadashboard",
+  AZURE_STORAGE_ACCOUNT_NAME: "mafiadata6du4xvao4bfk2",
+  AZURE_STORAGE_TABLE_NAME: "MafiaEntities",
+  AZURE_STORAGE_CONTAINER_NAME: "mafia-live",
+  AZURE_STORAGE_PARTITION_KEY: "production-v1",
 });
+const group = `/subscriptions/${production.AZURE_SUBSCRIPTION_ID}/resourceGroups/${production.AZURE_RESOURCE_GROUP}/providers`;
+const appId = `${group}/Microsoft.App/containerApps/${production.AZURE_NAME_PREFIX}-app`;
+const environmentId = `${group}/Microsoft.App/managedEnvironments/${production.AZURE_NAME_PREFIX}-env`;
+const storageIdentityId = `${group}/Microsoft.ManagedIdentity/userAssignedIdentities/${production.AZURE_NAME_PREFIX}-storage`;
+const managementUrl = (id) => `https://management.azure.com${id}?api-version=2024-03-01`;
 
-const requireCondition = (condition, message) => {
-  if (!condition) throw new Error(message);
-};
+class ReleaseError extends Error {}
+
+function requireCondition(condition, message) {
+  if (!condition) throw new ReleaseError(message);
+}
+
 const canonicalId = (value) =>
   typeof value === "string" && /^[1-9][0-9]*$/.test(value) && Number.isSafeInteger(Number(value));
-const sameRun = (a, b) =>
-  ["id", "run_attempt", "run_number", "head_sha", "status", "conclusion"].every(
-    (key) => a[key] === b[key],
-  );
+const sameId = (actual, expected) =>
+  typeof actual === "string" && actual.toLowerCase() === expected.toLowerCase();
 
-export function assertReleaseTarget(environment, target) {
+export function buildIdentity(env, { head, packageVersion }) {
+  const commit = env.GITHUB_SHA;
+  const buildIndex = env.GITHUB_RUN_NUMBER;
   requireCondition(
-    environment === "staging" || environment === "production",
-    "Unknown release environment",
+    env.GITHUB_REPOSITORY === repository &&
+      env.GITHUB_REF === "refs/heads/main" &&
+      env.GITHUB_EVENT_NAME === "workflow_dispatch",
+    "Production release requires a manual dispatch from trusted main",
   );
-  const expected = RELEASE_TARGETS[environment];
-  for (const [field, value] of Object.entries(expected)) {
-    requireCondition(target[field] === value, `Release target mismatch: ${environment} ${field}`);
-  }
+  requireCondition(
+    /^[0-9a-f]{40}$/.test(commit) && commit === head,
+    "Release checkout SHA mismatch",
+  );
+  requireCondition(canonicalId(buildIndex), "Invalid workflow build index");
+  return { commit, buildIndex, version: composeAppVersion(packageVersion, buildIndex) };
 }
 
-function assertStagingOrigin(value) {
-  let url;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new Error("Invalid staging origin");
+export function validateRelease(env, source) {
+  const identity = buildIdentity(env, source);
+  for (const [key, value] of Object.entries(production)) {
+    requireCondition(env[key] === value, `Production target mismatch: ${key}`);
   }
+  requireCondition(env.EXPECTED_COMMIT === identity.commit, "Published commit mismatch");
+  requireCondition(env.APP_BUILD_INDEX === identity.buildIndex, "Published build index mismatch");
+  requireCondition(env.EXPECTED_VERSION === identity.version, "Published version mismatch");
+  const image = env.DEPLOY_IMAGE;
   requireCondition(
-    url.origin === value &&
-      /^https:\/\/mafiadashboard-stg-app\.[a-z0-9-]+\.northeurope\.azurecontainerapps\.io$/.test(
-        value,
+    typeof image === "string" &&
+      image.startsWith(`${registryImage}@`) &&
+      /^sha256:[0-9a-f]{64}$/.test(image.slice(registryImage.length + 1)),
+    "Release image must be the repository's immutable GHCR digest",
+  );
+  return { ...identity, image };
+}
+
+function assertBindings(app) {
+  const require = (condition, label) =>
+    requireCondition(condition, `Production binding mismatch: ${label}`);
+  const properties = app?.properties;
+  const config = properties?.configuration;
+  const template = properties?.template;
+  const containers = template?.containers;
+  const init = template?.initContainers;
+  // ARM returns either the region code or its display name on this resource.
+  require(sameId(app?.id, appId) &&
+    [production.AZURE_LOCATION, "North Europe"].includes(app.location), "app resource");
+  require(sameId(properties?.managedEnvironmentId ?? properties?.environmentId, environmentId) &&
+    (!properties.environmentId ||
+      sameId(properties.environmentId, environmentId)), "managed environment");
+  require(config?.activeRevisionsMode === "Single", "single revision mode");
+  const ingress = config.ingress;
+  const fqdn = ingress?.fqdn;
+  require(ingress?.external === true &&
+    ingress.allowInsecure === false &&
+    ingress.targetPort === 3000 &&
+    /^mafiadashboard-app\.[a-z0-9-]+\.northeurope\.azurecontainerapps\.io$/.test(
+      fqdn,
+    ), "HTTPS ingress");
+  const origin = `https://${fqdn}`;
+  require(template?.scale?.minReplicas === 1 && template.scale.maxReplicas === 1, "replica count");
+  require(Array.isArray(containers) &&
+    containers.length === 1 &&
+    containers[0]?.name === "app" &&
+    Array.isArray(init) &&
+    init.length === 1 &&
+    init[0]?.name === "initialize-storage", "app and init containers");
+  require(isDeepStrictEqual(init[0].command, ["node"]) &&
+    isDeepStrictEqual(init[0].args, [
+      "apps/server/dist/initialize-storage.js",
+    ]), "Storage readiness command");
+  const identities = Object.entries(app.identity?.userAssignedIdentities ?? {});
+  const clientId = identities[0]?.[1]?.clientId;
+  require(app.identity?.type === "UserAssigned" &&
+    identities.length === 1 &&
+    sameId(identities[0]?.[0], storageIdentityId) &&
+    typeof clientId === "string" &&
+    clientId !== "", "Storage identity");
+  for (const container of [containers[0], init[0]]) {
+    require(Array.isArray(container.env), "container environment");
+    const entries = new Map(container.env.map((entry) => [entry?.name, entry]));
+    require(entries.size === container.env.length &&
+      !entries.has(undefined), "unique environment bindings");
+    const expected = {
+      STORAGE_PROVIDER: "azure",
+      AZURE_CLIENT_ID: clientId,
+      AZURE_STORAGE_INITIALIZE: "false",
+      ...Object.fromEntries(
+        Object.entries(production).filter(([name]) => name.startsWith("AZURE_STORAGE_")),
       ),
-    "Invalid staging origin",
-  );
-}
-
-function assertSuccessfulRun(run, repository, workflowId) {
-  requireCondition(
-    repository === REPOSITORY &&
-      run?.repository?.full_name === repository &&
-      run?.head_repository?.full_name === repository &&
-      Number.isSafeInteger(run.repository.id) &&
-      run.head_repository.id === run.repository.id,
-    "Staging run repository mismatch",
-  );
-  requireCondition(
-    run.path === STAGING_WORKFLOW &&
-      run.workflow_id === workflowId &&
-      Number.isSafeInteger(workflowId),
-    "Staging workflow mismatch",
-  );
-  requireCondition(
-    run.head_branch === "main" && ["push", "workflow_dispatch"].includes(run.event),
-    "Staging run must use trusted main",
-  );
-  requireCondition(
-    run.status === "completed" && run.conclusion === "success",
-    "Staging run must be completed and successful",
-  );
-  requireCondition(
-    [run.id, run.run_attempt, run.run_number].every(
-      (value) => Number.isSafeInteger(value) && value > 0,
-    ),
-    "Invalid staging run identity",
-  );
-  requireCondition(/^[0-9a-f]{40}$/.test(run.head_sha), "Invalid staging commit");
-}
-
-function assertRecordShape(record) {
-  requireCondition(
-    record?.schemaVersion === 1 && record.verification === "azure-readiness-version-configuration",
-    "Missing verified staging release record",
-  );
-  requireCondition(
-    record.repository === REPOSITORY &&
-      record.workflow === STAGING_WORKFLOW &&
-      record.branch === "main",
-    "Release record repository/workflow/branch mismatch",
-  );
-  requireCondition(
-    [record.runId, record.runAttempt, record.buildIndex].every(canonicalId),
-    "Invalid release record run/attempt/build identity",
-  );
-  requireCondition(
-    typeof record.commit === "string" && /^[0-9a-f]{40}$/.test(record.commit),
-    "Invalid release record commit",
-  );
-  requireCondition(
-    typeof record.image === "string" &&
-      record.image.startsWith(`ghcr.io/${REPOSITORY}@sha256:`) &&
-      /^ghcr\.io\/[a-z0-9_.-]+\/[a-z0-9_.-]+@sha256:[0-9a-f]{64}$/.test(record.image),
-    "Release image must be the repository's immutable digest",
-  );
-  requireCondition(
-    record.appVersion === composeAppVersion(record.packageVersion, record.buildIndex),
-    "Release record baked version mismatch",
-  );
-  assertStagingOrigin(record.stagingUrl);
-}
-
-export function validateReleaseRecord(record, run, { repository, workflowId }) {
-  assertSuccessfulRun(run, repository, workflowId);
-  assertRecordShape(record);
-  for (const [field, value] of Object.entries({
-    runId: run.id,
-    runAttempt: run.run_attempt,
-    buildIndex: run.run_number,
-  })) {
-    requireCondition(record[field] === String(value), `Release record ${field} mismatch`);
-  }
-  requireCondition(record.commit === run.head_sha, "Release record commit mismatch");
-  return Object.freeze({ ...record });
-}
-
-export function verifyArtifactDigest(bytes, digest) {
-  requireCondition(
-    typeof digest === "string" && /^sha256:[0-9a-f]{64}$/.test(digest),
-    "Missing artifact digest",
-  );
-  requireCondition(
-    `sha256:${createHash("sha256").update(bytes).digest("hex")}` === digest,
-    "Downloaded artifact digest mismatch",
-  );
-}
-
-export async function selectStagingRelease({
-  repository,
-  requestedRunId = "",
-  stagingUrl,
-  api,
-  readArtifact,
-  currentIdentity,
-}) {
-  requireCondition(repository === REPOSITORY, "Release repository mismatch");
-  requireCondition(
-    requestedRunId === "" || canonicalId(requestedRunId),
-    "Staging run ID must be a canonical positive safe integer",
-  );
-  const base = `repos/${repository}/actions`;
-  const workflow = await api(`${base}/workflows/deploy-azure.yml`);
-  requireCondition(
-    workflow?.path === STAGING_WORKFLOW && workflow.state === "active",
-    "Staging workflow unavailable",
-  );
-  let runId = requestedRunId;
-  if (!runId) {
-    assertStagingOrigin(stagingUrl);
-    // Do not filter for success: the latest failed/incomplete run must block default promotion.
-    const response = await api(`${base}/workflows/deploy-azure.yml/runs?branch=main&per_page=1`);
-    requireCondition(response.workflow_runs?.length === 1, "No current staging run available");
-    runId = String(response.workflow_runs[0].id);
-    requireCondition(canonicalId(runId), "Invalid staging run ID");
-  }
-  const run = await api(`${base}/runs/${runId}`);
-  assertSuccessfulRun(run, repository, workflow.id);
-  requireCondition(String(run.id) === runId, "Staging run ID mismatch");
-  const artifactName = `staging-release-${run.id}-${run.run_attempt}`;
-  const response = await api(`${base}/runs/${runId}/artifacts?name=${artifactName}&per_page=100`);
-  requireCondition(
-    response.total_count === 1 && response.artifacts?.length === 1,
-    "Exactly one staging release artifact is required",
-  );
-  const artifact = response.artifacts[0];
-  const artifactRun = artifact.workflow_run;
-  requireCondition(
-    artifact.name === artifactName &&
-      artifact.expired === false &&
-      Number.isSafeInteger(artifact.id) &&
-      artifact.id > 0 &&
-      /^sha256:[0-9a-f]{64}$/.test(artifact.digest ?? "") &&
-      artifactRun?.id === run.id &&
-      artifactRun.repository_id === run.repository.id &&
-      artifactRun.head_repository_id === run.head_repository.id &&
-      artifactRun.head_sha === run.head_sha &&
-      artifactRun.head_branch === "main",
-    "Staging release artifact metadata mismatch or expired",
-  );
-  const record = validateReleaseRecord(await readArtifact(artifact), run, {
-    repository,
-    workflowId: workflow.id,
-  });
-  if (!requestedRunId) {
-    requireCondition(
-      record.stagingUrl === stagingUrl,
-      "Release origin does not match current staging origin",
-    );
-    const identity = await currentIdentity(stagingUrl);
-    requireCondition(
-      identity?.commit === record.commit && identity?.version === record.appVersion,
-      "Release does not match current staging identity",
-    );
-    const latest = await api(`${base}/workflows/deploy-azure.yml/runs?branch=main&per_page=1`);
-    requireCondition(
-      latest.workflow_runs?.length === 1 && sameRun(latest.workflow_runs[0], run),
-      "Current staging run changed during selection",
-    );
-  }
-  const currentRun = await api(`${base}/runs/${runId}`);
-  assertSuccessfulRun(currentRun, repository, workflow.id);
-  requireCondition(sameRun(currentRun, run), "Staging run changed during selection");
-  return record;
-}
-
-const gh = (path) =>
-  execFileSync("gh", ["api", "-H", "X-GitHub-Api-Version: 2022-11-28", path], {
-    timeout: 60_000,
-    maxBuffer: 5 * 1024 * 1024,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-const api = async (path) => JSON.parse(gh(path).toString("utf8"));
-
-function readArtifact(artifact) {
-  const bytes = gh(`repos/${REPOSITORY}/actions/artifacts/${artifact.id}/zip`);
-  verifyArtifactDigest(bytes, artifact.digest);
-  const directory = mkdtempSync(join(tmpdir(), "mafia-release-"));
-  const archive = join(directory, "release.zip");
-  try {
-    writeFileSync(archive, bytes);
-    const entries = execFileSync("unzip", ["-Z1", archive], {
-      encoding: "utf8",
-      timeout: 10_000,
-    }).trim();
-    requireCondition(entries === "release.json", "Unexpected staging release artifact contents");
-    return JSON.parse(
-      execFileSync("unzip", ["-p", archive, "release.json"], {
-        encoding: "utf8",
-        timeout: 10_000,
-        maxBuffer: 64 * 1024,
-      }),
-    );
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-  }
-}
-
-const currentIdentity = async (origin) => {
-  // Readiness failure is not permission to promote a matching stale version response.
-  execFileSync(
-    "curl",
-    [
-      "--fail",
-      "--silent",
-      "--show-error",
-      "--connect-timeout",
-      "5",
-      "--max-time",
-      "30",
-      `${origin}/health/ready`,
-    ],
-    { timeout: 35_000, stdio: ["ignore", "pipe", "pipe"] },
-  );
-  return JSON.parse(
-    execFileSync(
-      "curl",
-      [
-        "--fail",
-        "--silent",
-        "--show-error",
-        "--connect-timeout",
-        "5",
-        "--max-time",
-        "30",
-        `${origin}/health/version`,
-      ],
-      { encoding: "utf8", timeout: 35_000, stdio: ["ignore", "pipe", "pipe"] },
-    ),
-  );
-};
-
-async function main(command) {
-  const env = process.env;
-  if (command === "validate-target") {
-    requireCondition(
-      env.GITHUB_REPOSITORY === REPOSITORY && env.GITHUB_REF === "refs/heads/main",
-      "Release requires trusted repository main",
-    );
-    const caller =
-      env.RELEASE_ENVIRONMENT === "production"
-        ? ".github/workflows/deploy-production.yml"
-        : STAGING_WORKFLOW;
-    requireCondition(
-      env.GITHUB_WORKFLOW_REF === `${REPOSITORY}/${caller}@refs/heads/main`,
-      "Release caller workflow mismatch",
-    );
-    requireCondition(
-      ["push", "workflow_dispatch"].includes(env.GITHUB_EVENT_NAME) &&
-        (env.RELEASE_ENVIRONMENT !== "production" || env.GITHUB_EVENT_NAME === "workflow_dispatch"),
-      "Production requires manual dispatch",
-    );
-    assertReleaseTarget(env.RELEASE_ENVIRONMENT, deploymentTarget());
-    requireCondition(
-      /^[0-9a-f]{40}$/.test(env.EXPECTED_COMMIT ?? "") && canonicalId(env.APP_BUILD_INDEX),
-      "Invalid selected release commit/build index",
-    );
-    requireCondition(
-      typeof env.EXPECTED_VERSION === "string" &&
-        /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.[1-9][0-9]*$/.test(env.EXPECTED_VERSION) &&
-        env.EXPECTED_VERSION.split(".")[2] === env.APP_BUILD_INDEX,
-      "Invalid selected release version",
-    );
-    requireCondition(
-      env.RELEASE_ENVIRONMENT !== "production" || env.INITIALIZE_STORAGE === "false",
-      "Production promotion cannot initialize Storage",
-    );
-  } else if (command === "record") {
-    const { version } = JSON.parse(readFileSync("package.json", "utf8"));
-    const record = {
-      schemaVersion: 1,
-      repository: env.GITHUB_REPOSITORY,
-      workflow: STAGING_WORKFLOW,
-      branch: "main",
-      runId: env.GITHUB_RUN_ID,
-      runAttempt: env.GITHUB_RUN_ATTEMPT,
-      buildIndex: env.GITHUB_RUN_NUMBER,
-      commit: env.GITHUB_SHA,
-      image: env.DEPLOY_IMAGE,
-      packageVersion: version,
-      appVersion: composeAppVersion(version, env.GITHUB_RUN_NUMBER),
-      stagingUrl: env.STAGING_APP_URL,
-      verification: "azure-readiness-version-configuration",
+      ...(container.name === "app" ? { PUBLIC_APP_URL: origin, TRUST_PROXY_HOPS: "1" } : {}),
     };
-    // The caller runs this job only after deployment readback passed. GitHub's
-    // completed run status is checked independently during promotion.
-    assertRecordShape(record);
-    writeFileSync(join(env.RUNNER_TEMP, "release.json"), `${JSON.stringify(record, null, 2)}\n`);
-  } else if (command === "select") {
-    const record = await selectStagingRelease({
-      repository: env.GITHUB_REPOSITORY,
-      requestedRunId: env.STAGING_RUN_ID ?? "",
-      stagingUrl: env.STAGING_APP_URL,
-      api,
-      readArtifact,
-      currentIdentity,
+    for (const [name, value] of Object.entries(expected)) {
+      const entry = entries.get(name);
+      require(entry?.value === value && !entry.secretRef, name);
+    }
+    require(!entries.has("DATABASE_URL") &&
+      !entries.has("AZURE_STORAGE_CONNECTION_STRING"), "credential fallback");
+    if (entries.has("GOOGLE_OAUTH_REDIRECT_URI")) {
+      require(entries.get("GOOGLE_OAUTH_REDIRECT_URI")?.value ===
+        `${origin}/api/music/oauth/callback`, "music callback origin");
+    }
+  }
+  return { origin, containers, init, properties };
+}
+
+// JSON Merge Patch replaces arrays in full: copy every existing container field,
+// changing only its image. Leave secrets, ingress, identity, and scale out of PATCH.
+const replaceImages = (containers, image) =>
+  containers.map((container) => ({ ...container, image }));
+const withoutImages = (template) => ({
+  ...template,
+  revisionSuffix: null,
+  containers: replaceImages(template.containers, null),
+  initContainers: replaceImages(template.initContainers, null),
+});
+
+function hasServingDigest(revision, id, image) {
+  const properties = revision?.properties;
+  const containers = properties?.template?.containers;
+  const init = properties?.template?.initContainers;
+  return (
+    sameId(revision?.id, id) &&
+    properties?.active === true &&
+    properties.healthState === "Healthy" &&
+    properties.trafficWeight === 100 &&
+    containers?.length === 1 &&
+    containers[0]?.name === "app" &&
+    containers[0].image === image &&
+    init?.length === 1 &&
+    init[0]?.name === "initialize-storage" &&
+    init[0].image === image
+  );
+}
+
+export async function deployRelease(
+  release,
+  { readApp, readRevision, updateApp, health, pause, report, attempts = 30 },
+) {
+  const before = await readApp();
+  const current = assertBindings(before);
+  requireCondition(
+    current.properties.provisioningState === "Succeeded",
+    "Production app is not provisioned successfully",
+  );
+  if ([...current.containers, ...current.init].some(({ image }) => image !== release.image)) {
+    await updateApp({
+      properties: {
+        template: {
+          revisionSuffix: "", // Let Azure assign a unique revision name.
+          containers: replaceImages(current.containers, release.image),
+          initContainers: replaceImages(current.init, release.image),
+        },
+      },
     });
+  }
+  report(
+    `Production image update accepted or already applied; verification pending: ${release.image}`,
+  );
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const after = await readApp();
+    const properties = after?.properties;
+    requireCondition(
+      properties?.provisioningState !== "Failed",
+      "Production image update failed in Azure",
+    );
+    if (
+      properties?.provisioningState === "Succeeded" &&
+      /^mafiadashboard-app--[a-z0-9-]+$/.test(properties.latestRevisionName) &&
+      properties.latestRevisionName === properties.latestReadyRevisionName
+    ) {
+      const applied = assertBindings(after);
+      requireCondition(
+        applied.origin === current.origin &&
+          isDeepStrictEqual(properties.configuration, current.properties.configuration) &&
+          isDeepStrictEqual(after.identity, before.identity) &&
+          isDeepStrictEqual(
+            withoutImages(properties.template),
+            withoutImages(current.properties.template),
+          ),
+        "Production runtime configuration changed during deployment",
+      );
+      if ([...applied.containers, ...applied.init].every(({ image }) => image === release.image)) {
+        const id = `${appId}/revisions/${properties.latestRevisionName}`;
+        if (
+          hasServingDigest(await readRevision(id), id, release.image) &&
+          (await health(applied.origin, release))
+        ) {
+          report(
+            `Verified production release: ${release.commit} / ${release.version} / ${release.image}`,
+          );
+          return;
+        }
+      }
+    }
+    if (attempt + 1 < attempts) await pause();
+  }
+  throw new ReleaseError(
+    "Production digest, revision readiness or serving version verification timed out; the image update may already be applied",
+  );
+}
+
+function run(command, args, failure) {
+  // Never forward Azure output/errors to Actions logs; they can contain settings.
+  const result = spawnSync(command, args, { encoding: "utf8", timeout: 30_000 });
+  requireCondition(result.status === 0, failure);
+  return result.stdout.trim();
+}
+
+function readAzureResource(id, failure) {
+  const json = run(
+    "az",
+    [
+      "rest",
+      "--method",
+      "get",
+      "--url",
+      managementUrl(id),
+      "--output",
+      "json",
+      "--only-show-errors",
+    ],
+    failure,
+  );
+  try {
+    return JSON.parse(json);
+  } catch {
+    throw new ReleaseError("Invalid Azure production readback");
+  }
+}
+
+export async function readHealth(origin, release, requestUrl = globalThis.fetch) {
+  const request = (path) =>
+    requestUrl(`${origin}${path}`, {
+      redirect: "error",
+      signal: globalThis.AbortSignal.timeout(5_000),
+    });
+  try {
+    const ready = await request("/health/ready");
+    await ready.body?.cancel();
+    if (!ready.ok) return false;
+    const version = await request("/health/version");
+    if (!version.ok) {
+      await version.body?.cancel();
+      return false;
+    }
+    const identity = await version.json();
+    return identity?.version === release.version && identity?.commit === release.commit;
+  } catch {
+    return false;
+  }
+}
+
+async function main(command, env) {
+  const source = {
+    head: run("git", ["rev-parse", "HEAD"], "Cannot read release checkout SHA"),
+    packageVersion: JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"))
+      .version,
+  };
+  if (command === "build-identity") {
+    const { commit, buildIndex, version } = buildIdentity(env, source);
+    requireCondition(
+      canonicalId(env.GITHUB_RUN_ID) && canonicalId(env.GITHUB_RUN_ATTEMPT),
+      "Invalid release run identity",
+    );
+    const tag = `${registryImage}:${commit}-${env.GITHUB_RUN_ID}-${env.GITHUB_RUN_ATTEMPT}`;
     appendFileSync(
       env.GITHUB_OUTPUT,
-      `image=${record.image}\ncommit=${record.commit}\nbuild_index=${record.buildIndex}\napp_version=${record.appVersion}\nrun_id=${record.runId}\nrun_attempt=${record.runAttempt}\n`,
+      `commit=${commit}\nbuild_index=${buildIndex}\napp_version=${version}\ntag=${tag}\n`,
     );
-    appendFileSync(
-      env.GITHUB_STEP_SUMMARY,
-      `### Selected verified staging release\n- Staging run: ${record.runId} (attempt ${record.runAttempt})\n- Commit: \`${record.commit}\`\n- Version: \`${record.appVersion}\`\n- Image: \`${record.image}\`\n\nSelection is frozen; production uses its own configuration and data.\n`,
-    );
-  } else {
-    throw new Error("Expected validate-target, record or select command");
+    return;
   }
+  const release = validateRelease(env, source);
+  if (command === "validate") return;
+  requireCondition(command === "deploy", "Unknown Azure release command");
+  await deployRelease(release, {
+    readApp: () => readAzureResource(appId, "Cannot read the existing production app"),
+    readRevision: (id) => readAzureResource(id, "Cannot read the active production revision"),
+    updateApp: (patch) => {
+      // Existing template values are private; do not pass them in CLI arguments.
+      const directory = mkdtempSync(join(tmpdir(), "mafia-production-patch-"));
+      try {
+        const body = join(directory, "template.json");
+        writeFileSync(body, JSON.stringify(patch), { mode: 0o600 });
+        run(
+          "az",
+          [
+            "rest",
+            "--method",
+            "patch",
+            "--url",
+            managementUrl(appId),
+            "--headers",
+            "Content-Type=application/json",
+            "--body",
+            `@${body}`,
+            "--output",
+            "none",
+            "--only-show-errors",
+          ],
+          "Azure did not confirm acceptance of the production image update",
+        );
+      } finally {
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+    health: readHealth,
+    pause: () => delay(10_000),
+    report: (message) => appendFileSync(env.GITHUB_STEP_SUMMARY, `${message}\n`),
+  });
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  main(process.argv[2]).catch((error) => {
-    console.error(error.message);
+  try {
+    await main(process.argv[2], process.env);
+  } catch (error) {
+    // Only fixed diagnostics and validated release identity reach the logs.
+    console.error(
+      error instanceof ReleaseError
+        ? error.message
+        : "Production release could not complete safely",
+    );
     process.exitCode = 1;
-  });
+  }
 }
